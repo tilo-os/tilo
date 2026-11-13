@@ -179,6 +179,7 @@ impl ResourceApp for DiskUsageShell {
     const ID: &'static str = "so.tilo.disk-usage";
     const READS_HOST: &'static [ui::launch::HostSource] = &[ui::launch::HostSource::Files];
     const TITLE: &'static str = "Disk Usage Analyzer";
+    const TITLE_KEY: &'static str = "disk-usage-app-title";
     const ICON: Option<&'static str> = Some("disk-usage");
 
     fn view(cx: &mut ViewCx<DiskUsage>) -> Element {

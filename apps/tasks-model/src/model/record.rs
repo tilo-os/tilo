@@ -182,7 +182,7 @@ impl Tracker {
 )]
 impl Tracker {
     /// Create an issue.
-    #[action(writes = issues)]
+    #[action(writes = issues, step = "create")]
     pub fn create(
         &mut self,
         cx: &mut ActionCx,

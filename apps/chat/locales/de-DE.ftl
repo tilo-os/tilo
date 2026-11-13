@@ -6,10 +6,7 @@ chat-person-chat-private = Private Unterhaltung
 # Die Verfasserin oder der Mitglied einer Nachricht, dessen Profilkarte sich öffnet.
 chat-person-card = { $name }, Profil
 chat-person-chat-placeholder = Private Nachricht schreiben
-chat-person-chat-unavailable = Private Unterhaltung nicht möglich. Wähle jemanden in diesem Arbeitsbereich.
 chat-person-chat-empty = Schreib eine Nachricht, bevor du sie sendest.
-chat-person-chat-empty-conversation = Nachrichten hier sehen nur du und diese Person.
-chat-header-search = Suchen
 
 # Kennzeichnung in der `@`-Auswahl für Software statt einer Person, damit auf
 # einen Blick klar ist, wer angesprochen wird.
@@ -65,9 +62,6 @@ chat-call-open = Anrufunterhaltung öffnen
 chat-call-join = Stumm beitreten
 chat-call-leave-action = Anruf verlassen
 chat-call-status = Anrufstatus
-chat-call-select-input = Mikrofon wählen
-chat-call-input = Eingang
-chat-call-input-hint = Eingang aus dem Anrufstatus
 
 # Die Verbindungszeile unter dem Video des Anrufffensters.
 chat-call-connected = Verbunden
@@ -123,7 +117,7 @@ chat-model-stop = Stoppen
 chat-model-retry = Erneut versuchen
 chat-model-continue = Fortsetzen
 chat-model-author = Assistent
-chat-model-attribution = { $model } (Modellausgabe, angefragt von { $person })
+chat-model-attribution = { $model }, angefragt von { $person }
 chat-bot-attribution = { $name } (Bot: { $bot })
 chat-via-attribution = { $name }, über { $service }
 chat-bridge-name = { $service }-Brücke
@@ -138,7 +132,7 @@ chat-thread-replies = { $count ->
     }
 
 chat-context-sharing = Teilt den Live-Kontext von Chat
-chat-context-following = Folgt dem Live-Kontext von Chat. Beenden über die Bedienelemente des Arbeitsbereichs
+chat-context-following = Folgt dem Live-Kontext von Chat
 chat-context-stop = Teilen beenden
 chat-header-call-open = Anruf öffnen
 
@@ -178,7 +172,7 @@ chat-share-loading = Live-Ansicht wird geöffnet …
 chat-share-open-to-see = Öffne es, um es live zu sehen
 chat-share-open = { $title } öffnen, geteilt von { $name }
 chat-share-pick = { $title } teilen
-chat-voice-unavailable = Anrufe können hier nicht starten: Kein Gerät trägt die Anrufe dieses Arbeitsbereichs
+chat-voice-unavailable = Anrufe können in diesem Arbeitsbereich noch nicht starten
 chat-call-not-joined = Tritt zuerst dem Anruf bei.
 
 # „Du“ gehört der lesenden Person; geteilte und alte Namen nennen ihre Person.
@@ -299,7 +293,7 @@ chat-feedback-replay-description = Die Aufzeichnung in { $app } öffnen und Schr
 
 ## Die eigenen Bedienelemente und Bezeichnungen der Unterhaltung
 chat-surface = Chat
-chat-surface-detail = Kanäle im aktuellen Tilo-Arbeitsbereich
+chat-surface-detail = Kanäle in diesem Arbeitsbereich
 chat-messages = Nachrichten
 chat-earlier-arriving = Frühere Nachrichten sind unterwegs
 chat-add-channel = Kanal hinzufügen
@@ -455,3 +449,6 @@ chat-effects-call-status = Anrufstatus
 chat-effects-start-call = Anruf starten
 chat-effects-start-video-call = Videoanruf starten
 chat-effects-select-input = Mikrofon wählen
+
+## What the app is called in a window and in the launcher
+chat-app-title = Chat

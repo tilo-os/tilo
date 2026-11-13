@@ -97,7 +97,7 @@ canvas-dock-unfold = Show the layers and history
 canvas-medium-plain = Plain
 canvas-medium-oil = Oil
 canvas-medium-watercolour = Watercolour
-canvas-layer-rename = Layer name, double-click to rename
+canvas-layer-rename = Layer name
 canvas-layer-hide-name = Hide { $name }
 canvas-layer-show-name = Show { $name }
 canvas-layer-lock-name = Lock { $name }
@@ -199,7 +199,7 @@ canvas-checkpoint-name = Checkpoint { $number }
 canvas-history-now = Now
 canvas-history-steps = { $steps } steps
 canvas-history-created = Created
-canvas-viewing-past = Shown on the canvas
+canvas-viewing-past = Viewing this version
 canvas-restore = Restore
 canvas-preview-banner = An earlier version. Esc returns to now
 canvas-kind-image = Picture
@@ -350,7 +350,7 @@ canvas-export-view = What’s in view
 canvas-export-selection = Selection
 canvas-export-transparent = Transparent background
 canvas-export-summary = { $width } × { $height } pixels, { $format }
-canvas-export-svg-summary = { $width } × { $height } units, vector; painted layers as pictures
+canvas-export-svg-summary = { $width } × { $height } units, vector. Painted layers become pictures.
 canvas-export-bytes = about { $size }
 canvas-export-jpeg-opaque = JPEG keeps the ground
 canvas-export-too-large = Too large: a picture is at most { $pixels } pixels a side
@@ -370,8 +370,8 @@ canvas-save = Save
 canvas-copy-of = { $title } copy
 canvas-duplicated = Saved a copy as { $name }
 canvas-save-failed = Could not save: { $why }
-canvas-chooser-gone = the file chooser went away
-canvas-files-failed = Files could not answer: { $why }
+canvas-chooser-gone = the file chooser was closed
+canvas-files-failed = Files didn’t respond: { $why }
 canvas-picture-failed = The picture was not added: { $why }
 canvas-write-refused = The artwork was not changed: { $why }
 canvas-export-edited = { $title } edited
@@ -398,9 +398,9 @@ canvas-workspace-pixel = Pixel
 canvas-tools-focused = Suggested tools
 canvas-tools-all = All tools
 
-canvas-size-pixel-32 = Sprite · 32 × 32
-canvas-size-pixel-64 = Sprite · 64 × 64
-canvas-size-pixel-128 = Scene · 128 × 128
+canvas-size-pixel-32 = Sprite
+canvas-size-pixel-64 = Sprite
+canvas-size-pixel-128 = Scene
 canvas-start-transparent = Transparent
 
 ## History: what each change did, by field and by verb
@@ -526,3 +526,6 @@ canvas-artwork-combine = Combine shapes
 canvas-tools-use-brush = Use brush
 canvas-tools-use-colour = Use colour
 canvas-tools-use-pigment = Load pigment
+
+## What the app is called in a window and in the launcher
+canvas-app-title = Canvas

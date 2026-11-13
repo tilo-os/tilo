@@ -995,6 +995,10 @@ struct WorkspacesInner {
     memberships: memberships::Memberships,
     /// The workspace lists people's devices kept here ([`personal`]).
     personal: personal::PersonalLists,
+    /// How many sessions of each device key are open here now, by key: every
+    /// session of every person's, so a record says which of their keys is
+    /// here ([`personal`]).
+    online: std::sync::Mutex<HashMap<[u8; 32], usize>>,
     /// The devices the host's own person runs an agent on, and their open
     /// sessions ([`agent_door`]).
     agent_door: agent_door::AgentDoor,
@@ -1211,6 +1215,7 @@ impl Workspaces {
                 own: std::sync::OnceLock::new(),
                 memberships: memberships::Memberships::default(),
                 personal: personal::PersonalLists::new(&dir),
+                online: std::sync::Mutex::default(),
                 agent_door: agent_door::AgentDoor::default(),
                 own_address: std::sync::OnceLock::new(),
             }),

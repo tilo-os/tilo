@@ -34,7 +34,7 @@ use tilo_actions::remote::{
     CataloguePage, CatalogueQuery, Completer, InvocationReceipt, InvocationState, InvokeArgument,
     InvokeRequest, NODE_PERMITS_ACTION, NODE_RESOURCE_PREFIX, Pending, ReceiptStatus,
     SHARE_NODE_ACTION, UNSHARE_NODE_ACTION, agent_door, application_provider,
-    application_provider_record, identity_admin, pending, provider_workspace,
+    application_provider_record, identity_admin, pending, provider_workspace, session_actions,
     workspace_activity as wire,
 };
 use tilo_actions::{ActorKind, InvocationId};
@@ -175,12 +175,19 @@ pub struct DesktopSession {
     /// The invocations a person's door admitted, and that door, which
     /// answers for them.
     door_invocations: std::sync::Mutex<HashMap<InvocationId, Arc<dyn ActionHost + Send + Sync>>>,
+    /// The host actions a window asked the desk to choose for the person
+    /// ([`session_actions::SHOW_CONNECT`]), for the desktop to take.
+    chosen: Chosen,
     woken: Arc<AtomicBool>,
 }
+
+/// Host actions asked of the desk, by id, waiting for the desktop.
+type Chosen = Arc<std::sync::Mutex<Vec<String>>>;
 
 /// The desktop's end of its [`DesktopSession`].
 pub struct Openings {
     asked: Asked,
+    chosen: Chosen,
     nodes: Arc<std::sync::Mutex<Vec<NodeAsk>>>,
     activity: ActivityRequests,
     /// What the windows opened since [`Openings::take_reveals`] are to show.
@@ -214,6 +221,7 @@ pub fn serve(
     let asked = Asked::default();
     let nodes = Arc::<std::sync::Mutex<Vec<NodeAsk>>>::default();
     let activity = activity::Door::new(Arc::clone(&woken));
+    let chosen = Chosen::default();
     (
         Arc::new(DesktopSession {
             workspace: workspace.into(),
@@ -222,10 +230,12 @@ pub fn serve(
             activity: Arc::clone(&activity),
             person_doors: std::sync::Mutex::default(),
             door_invocations: std::sync::Mutex::default(),
+            chosen: Arc::clone(&chosen),
             woken,
         }),
         Openings {
             asked,
+            chosen,
             nodes,
             activity: activity.requests(),
             reveals: std::cell::RefCell::default(),
@@ -345,6 +355,31 @@ impl DesktopSession {
     }
 }
 
+impl DesktopSession {
+    /// Show the person how an agent or a computer connects as them: the host action their own card
+    /// chooses ([`session_actions::CONNECT_AGENT`]), which the desktop's host carries out.
+    fn show_connect(
+        &self,
+        caller: &Caller,
+        request: &InvokeRequest,
+    ) -> Result<InvocationReceipt, ActionHostError> {
+        // Shown to the person on their own screen, as their card shows it: never an agent's.
+        if caller.actor().kind != ActorKind::Person {
+            return Err(ActionHostError::UnknownAction);
+        }
+        self.chosen
+            .lock_recover()
+            .push(session_actions::CONNECT_AGENT.to_owned());
+        self.woken.store(true, Ordering::Release);
+        Ok(InvocationReceipt {
+            invocation: request.invocation,
+            status: ReceiptStatus::Completed {
+                output: tilo_actions::ActionOutput::default(),
+            },
+        })
+    }
+}
+
 impl ActionHost for DesktopSession {
     fn query(
         &self,
@@ -372,6 +407,9 @@ impl ActionHost for DesktopSession {
         }
         if PERSON_PROVIDERS.contains(&request.target.provider.as_str()) {
             return self.ask_person_door(caller, request);
+        }
+        if request.target == session_actions::target(session_actions::SHOW_CONNECT) {
+            return Pending::ready(self.show_connect(caller, &request));
         }
         if let Some(node) = request
             .target
@@ -501,8 +539,12 @@ impl Openings {
         handle: &DesktopHandle,
         may_open: impl Fn(&str, bool) -> Result<(), ActionHostError>,
     ) -> bool {
+        let chosen = std::mem::take(&mut *self.chosen.lock_recover());
+        for id in &chosen {
+            handle.choose_host_action(id);
+        }
         let asked = std::mem::take(&mut *self.asked.lock_recover());
-        let any = !asked.is_empty();
+        let any = !asked.is_empty() || !chosen.is_empty();
         for Opening {
             app,
             record,

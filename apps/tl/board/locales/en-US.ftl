@@ -15,7 +15,7 @@ d-acqkumvl = Title
 d-6hfpfyn7 = Notes
 
 d-4oqrwuyr = Column
-    .doc = The column it was in, before cards were kept in their columns.
+    .doc = The column it was in, in a board whose cards were not yet kept in their columns.
 
 d-s7oqe7sc-filter-column = Column
 
@@ -40,10 +40,10 @@ d-skl3ywy2 = Board
 d-hpfol33z = Columns
 
 d-tuoyjxa6 = Cards
-    .doc = Every card, before cards were kept in their columns.
+    .doc = Every card, in a board whose cards were not yet kept in their columns.
 
 d-pf6eoju5 = Place cards
-    .doc = Puts each card of a board from before cards were kept in their columns into its column, in the order the board showed them.
+    .doc = Puts each card of a board kept before cards stood in their columns into the column it was in, in the order the board showed them.
 
 d-2lxgfocl = New column
     .doc = Adds a column at the right of the board.

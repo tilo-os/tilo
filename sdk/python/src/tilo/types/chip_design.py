@@ -23,6 +23,7 @@ __all__ = [
 
 class Project(Resource):
     """Chip Design — `chip_design.project`."""
+    __surface__ = "so.tilo.chip-design@994cb5cd1f2f6a7b"
     @property
     def reports(self) -> Any:
         """Read only."""

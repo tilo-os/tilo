@@ -286,6 +286,11 @@ fn a_copy_started_while_the_host_is_away_refuses_its_apps_actions_saying_why() {
     tilo_test_env::wait_until(format!("{} holding Chat for its host", copy.label), || {
         copy.state().to_string().contains("to take this device in")
     });
+    // The copy says it holds the workspace but waits for its host, which is not this device: what
+    // `tilo-vm vm branch` reads to know a branch was taken in.
+    let row = held_row(&copy, &site);
+    assert_eq!(row["awaiting_host"], true, "{row}");
+    assert_eq!(row["hosted_here"], false, "{row}");
     // Opening an app meanwhile is refused at once, saying why.
     let asked = std::time::Instant::now();
     let opened = copy.act("applications", CHAT, &serde_json::json!({}));
@@ -441,6 +446,19 @@ fn a_copy_lists_the_logins_its_source_saved_and_runs_its_providers_actions() {
     );
 }
 
+/// What `device` says of the workspace `site` serves (`workspace_hosts`): who hosts it, and
+/// whether its host took `device` in yet. `Null` while `device` does not hold it.
+fn held_row(device: &Device, site: &Site) -> serde_json::Value {
+    device.ask(&serde_json::json!({"op": "workspace_hosts"}))["answer"]["workspaces"]
+        .as_array()
+        .and_then(|held| {
+            held.iter()
+                .find(|row| row["room"].as_str() == Some(site.workspace.as_str()))
+                .cloned()
+        })
+        .unwrap_or_default()
+}
+
 /// Wait until `site` took `device` in as a device of its person's own: the workspace's record names
 /// this device, and its apps join there as it.
 fn wait_admitted(device: &Device, site: &Site) {
@@ -454,6 +472,7 @@ fn wait_admitted(device: &Device, site: &Site) {
         if log
             .lines()
             .any(|line| line.contains(&admitted) && line.contains("member=true"))
+            && held_row(device, site)["awaiting_host"] == false
         {
             return;
         }

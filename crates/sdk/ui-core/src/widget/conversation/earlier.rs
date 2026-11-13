@@ -11,7 +11,7 @@ use vello::kurbo::Rect;
 use crate::paint::PaintCtx;
 use crate::tokens::TextRole;
 
-/// "Earlier messages aren't available on this device's hosts", centred in
+/// "Earlier messages aren't on this device", centred in
 /// the band the earlier lines would take.
 pub struct EarlierUnavailableFace;
 

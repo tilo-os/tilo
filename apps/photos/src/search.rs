@@ -778,7 +778,7 @@ mod tests {
             let mut doc = open_doc("receipt.png");
             let mut library = crate::test_doc::library(&doc);
             let (_, photo) = library.photos.iter_mut().next().unwrap();
-            let content = photo.image.content.clone();
+            let content = photo.image.hash();
             photo.set_analysis(Some(ImageAnalysis {
                 ocr_text: "invoice 42 north harbour".into(),
                 description: "A dog beside a bicycle".into(),

@@ -14,7 +14,7 @@ use super::{
     mirror_of, name_version_changes, note_derived, note_versions, record_splices, told_differently,
     write_as_a_known_actor,
 };
-use crate::action::DynEdit;
+use crate::action::{DynAction, DynEdit};
 use crate::chunk::{self, ChunkNo};
 use crate::index::derive::Reached;
 use crate::index::overlay::Overlay;
@@ -128,8 +128,9 @@ impl TiloStore {
         let arrived = doc
             .committed_document()
             .get_changes(inner.chunks.seen(chunk));
-        let (committed, every_one_an_action) = committed_edits(&arrived);
+        let (committed, every_one_an_action) = committed_edits(&arrived, &inner.sent);
         let taken = inner.drop_committed_local(chunk, &committed);
+        inner.forget_sent();
         let mut items = taken.items;
         inner.rollback(chunk);
         let (changed, ends, placed) = inner.apply_new_changes(chunk, &arrived, &before);
@@ -339,16 +340,47 @@ impl Inner {
 /// action records the action it made, and so the edits it wrote; a change that records none —
 /// the record's own genesis, a merge — took none of the store's writes. Also whether every one
 /// of `changes` records some.
-fn committed_edits(changes: &[automerge::Change]) -> (Vec<(automerge::ChangeHash, DynEdit)>, bool) {
+pub(super) fn committed_edits(
+    changes: &[automerge::Change],
+    sent: &[DynAction],
+) -> (Vec<(automerge::ChangeHash, DynEdit)>, bool) {
     let mut every = true;
     let mut out = Vec::new();
     for change in changes {
         let hash = change.hash();
-        let edits = idx::reflect::edits_of(change);
+        let mut edits = idx::reflect::edits_of(change);
+        if edits.is_empty()
+            && let Some(action) = sent_as(change, sent)
+        {
+            edits.clone_from(&action.edits);
+        }
         every &= !edits.is_empty();
         out.extend(edits.into_iter().map(|edit| (hash, edit)));
     }
     (out, every)
+}
+
+/// The action of `sent` the change `change` records with its large parts kept as content: the
+/// recorded action does not decode without that content, which may never reach this device,
+/// but it reads as the action this store handed over with those parts taken out. Without this
+/// the store would not know its own write in the record, and would write it again over every
+/// change that arrives after it: a long note's whole body, over a peer's edit of it.
+fn sent_as<'a>(change: &automerge::Change, sent: &'a [DynAction]) -> Option<&'a DynAction> {
+    if sent.is_empty() {
+        return None;
+    }
+    let context = change
+        .message()
+        .and_then(tilo_actions::ActionContext::from_change_message)?;
+    let recorded = context.action?;
+    if recorded.type_id != crate::action::ACTION_TYPE || recorded.content_parts().is_empty() {
+        return None;
+    }
+    sent.iter().find(|action| {
+        action
+            .encode()
+            .is_ok_and(|ran| recorded.recorded_parts_of(&ran).is_some())
+    })
 }
 
 /// The documents a sync tells those who read the mirror of, per document: the fields the

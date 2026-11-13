@@ -17,6 +17,11 @@
 import { resourceProxy } from "tilo-sdk";
 import type * as tilo from "tilo-sdk";
 
+/** The version of the surface these types were made from: a workspace whose app
+ * publishes another refuses their actions rather than run what they no longer
+ * describe. */
+export const SURFACE = "so.tilo.code-editor@356770e6900d66da";
+
 export interface Entry {
   kind: EntryKind;
   name: string;
@@ -177,6 +182,6 @@ export interface Project extends tilo.Resource {
 
 /** The `code_editor.project` kind at `path`. */
 export function project(ws: tilo.Workspace, path: string): Project {
-  return resourceProxy(ws, path) as unknown as Project;
+  return resourceProxy(ws, path, SURFACE) as unknown as Project;
 }
 

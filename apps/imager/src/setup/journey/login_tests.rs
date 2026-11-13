@@ -723,8 +723,7 @@ fn mixed_login_group_selects_only_eligible_children_and_keeps_reconnect_reason()
     let view = selection.logins_view(true, None, |_, _| {});
     let harness = ui::headless::FrameHarness::new(ui::State::new(), view, (1180, 820));
     let inspection = harness.inspection_json().unwrap();
-    assert!(inspection.contains("1 of 1 available sign-ins selected"));
-    assert!(!inspection.contains("2 of 2 selected"));
+    assert!(inspection.contains("Select the 1 sign-in"));
     assert!(inspection.contains(&super::super::t_args(
         "installer-service-source-reconnect-required",
         &[(

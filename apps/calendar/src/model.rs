@@ -88,13 +88,15 @@ pub enum Priority {
 }
 
 impl Priority {
-    pub fn label(self) -> &'static str {
-        match self {
-            Priority::None => "No priority",
-            Priority::Low => "Low priority",
-            Priority::Medium => "Medium priority",
-            Priority::High => "High priority",
-        }
+    /// How a priority reads in a row or an action: the catalogue's words, so a
+    /// German window says "Keine Priorität".
+    pub fn display_label(self) -> String {
+        crate::resource::t(match self {
+            Priority::None => "calendar-tasks-priority-none",
+            Priority::Low => "calendar-tasks-priority-low",
+            Priority::Medium => "calendar-tasks-priority-medium",
+            Priority::High => "calendar-tasks-priority-high",
+        })
     }
     pub fn flag(self) -> &'static str {
         match self {

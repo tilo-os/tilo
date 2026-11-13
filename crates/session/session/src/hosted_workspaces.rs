@@ -23,6 +23,7 @@ use tilo_actions::remote::{
 };
 use tilo_delivery_protocol::workspace_join::{IrohWorkspaceHostHintV1, WorkspaceHostMode};
 use tilo_desktop_model::WorkspaceId;
+use tilo_identity_host::device_admin;
 use tilo_lock::MutexRecover as _;
 use tilo_relay_session::workspaces::PersonalList;
 use tilo_session_client::PeerConfig;
@@ -139,16 +140,15 @@ impl HostedWorkspaces {
     }
 
     /// The person's devices as the record on each host of a workspace `engine` holds lists them:
-    /// every key `room.personal` answers there, once, each saying whether that host refuses it.
-    /// A key their root certified on another of their devices — a browser in its own tab, a device
-    /// paired there — is in that record and in no fleet of this one's, so this is what lists the
-    /// person's devices and not the devices this machine happens to know.
+    /// every key `room.personal` answers there, once, each saying whether that host refuses it,
+    /// the browser it is a tab of, the agent it runs and when it was last there. A key their root
+    /// certified on another of their devices — a browser in its own tab, a device paired there —
+    /// is in that record and in no fleet of this one's, so this is what lists the person's
+    /// devices and not the devices this machine happens to know. The workspaces the hosts name
+    /// come with it, so a grant's one workspace is listed by name.
     ///
     /// Empty when no workspace of theirs is placed on a host.
-    pub(crate) fn record_devices(
-        &self,
-        engine: &Engine,
-    ) -> Pending<Vec<(tilo_user_identity::DeviceCert, bool, Option<String>)>> {
+    pub(crate) fn record_devices(&self, engine: &Engine) -> Pending<device_admin::Record> {
         let asks: Vec<_> = hosts_of(engine)
             .into_iter()
             .filter_map(|on| {
@@ -163,12 +163,11 @@ impl HostedWorkspaces {
             })
             .collect();
         if asks.is_empty() {
-            return Pending::ready(Vec::new());
+            return Pending::ready(device_admin::Record::default());
         }
         let (answer, answered) = pending();
         self.0.runtime.spawn(async move {
-            let mut devices: Vec<(tilo_user_identity::DeviceCert, bool, Option<String>)> =
-                Vec::new();
+            let mut record = device_admin::Record::default();
             for ask in asks {
                 let Some(Ok(receipt)) = ask.await else {
                     continue;
@@ -182,24 +181,23 @@ impl HostedWorkspaces {
                 ) else {
                     continue;
                 };
+                record.workspaces.extend(
+                    list.workspaces
+                        .into_iter()
+                        .map(|workspace| (workspace.workspace, workspace.name)),
+                );
                 for device in list.devices {
-                    match devices.iter_mut().find(|(known, ..)| {
-                        known.device_public_key == device.cert.device_public_key
-                    }) {
-                        Some((known, refused, browser)) => {
-                            *refused |= device.revoked;
-                            if browser.is_none() {
-                                *browser = device.browser;
-                            }
-                            if known.issued_at_ns < device.cert.issued_at_ns {
-                                *known = device.cert;
-                            }
-                        }
-                        None => devices.push((device.cert, device.revoked, device.browser)),
-                    }
+                    record.add(device_admin::RecordDevice {
+                        cert: device.cert,
+                        refused: device.revoked,
+                        browser: device.browser,
+                        agent: device.agent,
+                        last_active_ms: device.last_active_ms,
+                        online: device.online,
+                    });
                 }
             }
-            answer.complete(devices);
+            answer.complete(record);
         });
         answered
     }

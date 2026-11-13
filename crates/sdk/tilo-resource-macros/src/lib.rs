@@ -396,6 +396,30 @@ fn audience_option(meta: &syn::meta::ParseNestedMeta<'_>) -> syn::Result<syn::Id
     Ok(syn::Ident::new(variant, value.span()))
 }
 
+/// `step = "create"`: the kind of step an action takes, named by the
+/// `tilo_actions::StepKind` variant it is.
+fn step_option(meta: &syn::meta::ParseNestedMeta<'_>) -> syn::Result<syn::Ident> {
+    let value = meta.value()?.parse::<syn::LitStr>()?;
+    let variant = match value.value().as_str() {
+        "create" => "Create",
+        "write" => "Write",
+        "edit" => "Edit",
+        "delete" => "Delete",
+        "move" => "Move",
+        "read" => "Read",
+        "run" => "Run",
+        "work" => "Work",
+        _ => {
+            return Err(syn::Error::new(
+                value.span(),
+                "expected `step = \"create\"`, \"write\", \"edit\", \"delete\", \"move\", \"read\", \
+                 \"run\" or \"work\"",
+            ));
+        }
+    };
+    Ok(syn::Ident::new(variant, value.span()))
+}
+
 /// Fields named by a space-separated `"a b"` list.
 /// `keywords = "mkdir, make directory"`: an action's other words, one
 /// phrase each, comma separated. An empty phrase or one that is the same

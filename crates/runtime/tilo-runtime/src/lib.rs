@@ -22,6 +22,7 @@ pub mod device_grants;
 pub mod enter;
 #[cfg(target_os = "macos")]
 mod i18n;
+pub mod key_runs;
 pub mod mcp;
 pub mod mcp_http;
 pub mod mcp_process;

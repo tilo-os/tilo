@@ -44,7 +44,7 @@ impl PlaceRowText {
                     Sky::from_code(snap.current.weather_code),
                     snap.current.is_day,
                 ))),
-                secondary: Sky::label(snap.current.weather_code).to_string(),
+                secondary: Sky::label(snap.current.weather_code),
                 temperature: Some(format!(
                     "{}°",
                     snap.temp_in(snap.current.temperature, units).round() as i64
@@ -123,7 +123,6 @@ pub(crate) fn morning_preview(
                 "condition",
                 ArgValue::from(Sky::label(snapshot.current.weather_code)),
             ),
-            ("time", ArgValue::from(snapshot.current.time.clone())),
         ],
     );
     let detail = CATALOG.t_args(
@@ -134,7 +133,12 @@ pub(crate) fn morning_preview(
                 i64::try_from(snapshot.fetched_at)
                     .ok()
                     .and_then(|seconds| chrono::DateTime::from_timestamp(seconds, 0))
-                    .map_or_else(|| snapshot.fetched_at.to_string(), |time| time.to_rfc3339()),
+                    .map_or_else(
+                        || snapshot.fetched_at.to_string(),
+                        |time| {
+                            ui::format::timestamp(&time.with_timezone(&chrono::Local).naive_local())
+                        },
+                    ),
             ),
         )],
     );

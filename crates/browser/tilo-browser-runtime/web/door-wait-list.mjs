@@ -211,7 +211,7 @@ export function mountWaitList({elements, root, workspace, contact = null, mail =
     try {
       const left = await leaveIt();
       show(left.mail ? 'inbox' : 'listed', left.email);
-      note.textContent = say('arrival-wait-again-sent', 'Asked again. We send at most one link an hour, so check your spam folder too.');
+      note.textContent = say('arrival-wait-again-sent', 'Sent again. We send at most one link an hour, so check your spam folder too.');
       note.setAttribute('role', 'status');
     } catch (refusal) {
       failed(refusal);

@@ -322,9 +322,16 @@ pub trait Effect: Sized + 'static {
     }
 
     /// Decode one invocation's payload, as the operation's specs encode it.
+    ///
+    /// Read where the effect runs, as an action's arguments are read where
+    /// it is invoked: an effect is never replayed, so content its arguments
+    /// name — a reference, or the data inline — is read from this window's
+    /// store and kept, sealed, in it ([`crate::content::invoking`]).
     fn from_payload(payload: &[u8]) -> Result<Self, EffectDecodeError> {
-        let Payload { effect, args } = decode_payload(payload)?;
-        Self::decode(&effect, &args)
+        crate::content::invoking(|| {
+            let Payload { effect, args } = decode_payload(payload)?;
+            Self::decode(&effect, &args)
+        })
     }
 }
 
@@ -1584,5 +1591,57 @@ mod tests {
             }
             .arguments()
         );
+    }
+
+    /// A content transform whose inputs are the bytes themselves.
+    #[derive(Clone, Debug, PartialEq, Effect)]
+    #[effect(operation = "test.readers")]
+    enum Readers {
+        /// Open documents.
+        #[effect(kind = "read")]
+        Open {
+            #[param(content, "The documents")]
+            documents: Vec<crate::Bytes>,
+        },
+    }
+
+    /// An effect is never replayed: the content its arguments name is read
+    /// where the effect runs. A caller's address — a `tilo.content:<hash>`
+    /// an operation collecting content answers, or the reference alone, as
+    /// requests named it before content was sealed — decodes into the
+    /// reference that opens exactly those bytes.
+    #[test]
+    fn an_effects_content_argument_is_read_where_the_effect_runs() {
+        let window = tilo_wake::WakeScope::new();
+        let workspace = tilo_content::ContentStore::memory_in_workspace().sealing();
+        crate::content::register(&window.handle(), workspace.clone());
+        let _entered = window.enter();
+        let documents: Vec<Vec<u8>> = [7_u8, 8].into_iter().map(|byte| vec![byte; 4096]).collect();
+        let references: Vec<String> = documents
+            .iter()
+            .map(|bytes| workspace.put(bytes).expect("kept"))
+            .collect();
+        let arguments = serde_json::Map::from_iter([(
+            "documents".to_owned(),
+            serde_json::json!([
+                tilo_actions::content_resource(&references[0]).expect("an address"),
+                references[1].clone(),
+            ]),
+        )]);
+        let spec = Readers::specs().remove(0);
+        assert!(spec.params()[0].is_content_list());
+        let encoded = crate::content::invoking(|| spec.build_json(&arguments).unwrap());
+
+        let Readers::Open { documents: read } =
+            Readers::from_payload(&encoded.payload).expect("read where it runs");
+        assert_eq!(read.len(), 2);
+        for (read, kept) in read.iter().zip(&references) {
+            assert_eq!(
+                read.reference().as_deref(),
+                Some(kept.as_str()),
+                "the reference that opens exactly those bytes"
+            );
+            assert!(read.read(&workspace).is_some(), "and the bytes themselves");
+        }
     }
 }

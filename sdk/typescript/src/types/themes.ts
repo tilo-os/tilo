@@ -17,6 +17,11 @@
 import { resourceProxy } from "tilo-sdk";
 import type * as tilo from "tilo-sdk";
 
+/** The version of the surface these types were made from: a workspace whose app
+ * publishes another refuses their actions rather than run what they no longer
+ * describe. */
+export const SURFACE = "so.tilo.themes@19e215a1dfe522b0";
+
 export interface Ink {
   primary: number;
   secondary: number;
@@ -104,6 +109,6 @@ export interface Studio extends tilo.Resource {
 
 /** The `themes.studio` kind at `path`. */
 export function studio(ws: tilo.Workspace, path: string): Studio {
-  return resourceProxy(ws, path) as unknown as Studio;
+  return resourceProxy(ws, path, SURFACE) as unknown as Studio;
 }
 

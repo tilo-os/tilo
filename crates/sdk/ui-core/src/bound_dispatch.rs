@@ -1771,8 +1771,16 @@ pub(crate) fn refusal_reason(error: &tilo_actions::DoorError) -> String {
             "It isn't available to you here.".to_owned()
         }
         DoorError::ConfirmationRequired => "It needs your go-ahead first.".to_owned(),
-        DoorError::Unavailable { reason, .. } | DoorError::Failed(reason) => reason.clone(),
-        other => other.to_string(),
+        DoorError::Unavailable { code, reason } => {
+            internal_refusal(code).map_or_else(|| reason.clone(), str::to_owned)
+        }
+        DoorError::Failed(reason) => reason.clone(),
+        // A person's click carries the value its control offers: a value the
+        // action does not take is the control's fault, not theirs.
+        DoorError::MissingArgument(_)
+        | DoorError::UnexpectedArgument(_)
+        | DoorError::InvalidArguments(_)
+        | DoorError::ArgumentOutOfRange { .. } => "It couldn't run. Try again.".to_owned(),
     };
     let mut reason = reason.trim().to_owned();
     if let Some(first) = reason.chars().next()
@@ -1784,6 +1792,57 @@ pub(crate) fn refusal_reason(error: &tilo_actions::DoorError) -> String {
         reason.push('.');
     }
     reason
+}
+
+/// What a person reads for a refusal the toolkit's own routing made, by
+/// its code: those refusals say, for an agent or a log, which step of the
+/// dispatch stopped, never what the person can do. `None` for a refusal
+/// worded for the person (an app's own, a host's, a permission's).
+fn internal_refusal(code: &str) -> Option<&'static str> {
+    const UNREACHABLE: &str = "It can't be reached right now. Try again.";
+    const CHANGED: &str = "It changed before it could run. Try again.";
+    const COULD_NOT_RUN: &str = "It couldn't run. Try again.";
+    Some(match code {
+        "authoritative_host_unavailable"
+        | "broker_unavailable"
+        | "bound_broker_route_required"
+        | "bound_broker_route_unavailable"
+        | "provider_unavailable"
+        | "remote_actions_unavailable"
+        | "application_launch_broker_disconnected" => UNREACHABLE,
+        "stale_pending_palette_action"
+        | "stale_pending_control"
+        | "stale_ordinary_confirmation"
+        | "stale_deferred_intent"
+        | "stale_revision"
+        | "published_invocation_revision_changed"
+        | "published_invocation_contract_changed"
+        | "action_document_replaced"
+        | "closed_lifetime"
+        | "record_unavailable" => CHANGED,
+        "cross_record_reentry"
+        | "ambiguous_action_target"
+        | "ambiguous_action_identity"
+        | "undeclared_document_mutation"
+        | "unsupported_continuation_identity"
+        | "unsupported_deferred_intent"
+        | "published_invocation_unauthorized"
+        | "publication_identity_collision"
+        | "private_view"
+        | "native_history_unobserved"
+        | "native_history_unconfirmed"
+        | "history_action_unavailable"
+        | "history_action_ambiguous"
+        | "broker_request_identity_exhausted"
+        | "application_launch_queue_full"
+        | "application_launch_invalid_receipt"
+        | "action_invocation_identity_conflict"
+        | "unknown_action"
+        | "unknown_invocation"
+        | "invocation_conflict"
+        | "invalid_arguments" => COULD_NOT_RUN,
+        _ => return None,
+    })
 }
 
 /// The refusal of an invocation the participant may not take.

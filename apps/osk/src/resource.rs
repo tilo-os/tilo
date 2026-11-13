@@ -163,6 +163,7 @@ impl ResourceApp for OskShell {
     type Resource = Osk;
     const ID: &'static str = crate::KEYBOARD_APP_ID;
     const TITLE: &'static str = "On-screen keyboard";
+    const TITLE_KEY: &'static str = "osk-app-title";
     const ICON: Option<&'static str> = Some("osk");
     const BEHAVIOUR: ComponentBehaviour = ComponentBehaviour {
         window: WindowRole::InputSurface,

@@ -1584,6 +1584,13 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
             )
         }
     };
+    // The page keeps the person's settings, as their session does on a
+    // device: what a window's controls change of them is answered here.
+    crate::kept_settings::serve(
+        &mut frame,
+        &config.author(),
+        ui::storage::SettingsDocument::Session,
+    );
     if let Some(desktop) = &mut desktop {
         frame
             .attach_owner_wake_queue(desktop.shared.owner_wakes.clone())

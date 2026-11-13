@@ -231,13 +231,15 @@ impl Chat {
             .collect()
     }
 
-    /// The names hosts gave their agent tasks, and the devices that admitted
-    /// them their agents.
+    /// The names hosts gave their agent tasks.
     #[must_use]
     pub fn agent_authors(&self) -> HashMap<String, String> {
         self.agent_names
             .iter()
-            .filter(|(_, name)| !name.trim().is_empty())
+            .filter(|(participant, name)| {
+                participant.starts_with(tilo_actions::AGENT_TASK_PARTICIPANT_PREFIX)
+                    && !name.trim().is_empty()
+            })
             .map(|(participant, name)| (participant.clone(), name.clone()))
             .collect()
     }

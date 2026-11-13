@@ -1833,10 +1833,20 @@ impl<M: ListModel> crate::widget::PaintedRowLifts for VirtualList<M> {
 }
 
 impl<M: ListModel + 'static> Widget for VirtualList<M> {
-    /// The rows it shows now, in a native scroller as tall as all of them.
+    /// The rows it shows now, in a native scroller as tall as all of them;
+    /// the rows the person chose say so, as the list paints them chosen.
     fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
         cx.element("ul");
         cx.children();
+        let chosen: Vec<vello::kurbo::Rect> = self
+            .mounted
+            .iter()
+            .filter(|row| self.row_selection(row.index).selected)
+            .map(|row| row.widget.get_rect())
+            .collect();
+        if !chosen.is_empty() {
+            cx.choose_children(&chosen);
+        }
     }
 
     crate::provides!(

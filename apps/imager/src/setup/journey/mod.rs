@@ -100,8 +100,8 @@ use ui::tilo_resource::{self, AbsolutePath, ActionRef, Binds, Effect};
 use ui::tokens::{Rhythm, TextRole};
 use ui::widget::{
     AppModel, Avatar, AvatarSize, Button, ButtonRole, Card, Checkbox, Container, DrawChild as _,
-    Field, IconWidget, LabelPlacement, ListRow, ModelPath, NumberInput, Row, Scrollable, Spacer,
-    Text, TextInput, TextInputKind, Widget,
+    Fact, Facts, Field, IconWidget, LabelPlacement, ListRow, ModelPath, NumberInput, Property, Row,
+    Scrollable, Spacer, Text, TextInput, TextInputKind, Widget,
 };
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -1311,7 +1311,10 @@ impl InstallerPreview {
                 }
                 _ => {}
             }
-            if self.restart.blocks() && !matches!(effect, InstallerPreviewEffect::ReadPreview) {
+            // A stored preparation this window cannot open blocks what acts on
+            // it, never the page around it: the person still moves through the
+            // wizard while the check runs, or after it failed.
+            if self.restart.blocks() && !restart_controller::navigates(&effect) {
                 return Err("installer-restart-unavailable");
             }
         }

@@ -3469,7 +3469,7 @@ mod tests {
             let public_error = invoke_action(&mut app, &prepare_review).unwrap_err();
             assert!(!public_error.contains(&source_text));
             assert!(!public_error.contains(&destination_text));
-            assert!(public_error.contains("read-status"), "{public_error}");
+            assert!(public_error.contains("import status"), "{public_error}");
             assert!(app.status.contains(&collision.display().to_string()));
             assert!(
                 observe_import(&mut app).unwrap()["local"]["status"]

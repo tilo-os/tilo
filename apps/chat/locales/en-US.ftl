@@ -6,13 +6,10 @@ chat-person-chat-private = Private conversation
 # A message's author or a member, opening their profile card.
 chat-person-card = { $name }, profile
 chat-person-chat-placeholder = Write a private message
-chat-person-chat-unavailable = Private conversation unavailable. Choose someone in this workspace.
 chat-person-chat-empty = Write a message before sending.
 chat-send-empty = Write a message, or attach something to send.
 chat-send-needs-recipient = Choose who the message goes to.
 chat-send-one-conversation = A conversation goes on its own: choose it, or the people to send to.
-chat-person-chat-empty-conversation = Messages here are private to you and this person.
-chat-header-search = Search
 
 # Marker beside a participant in the `@` picker that is an agent rather than a
 # person, so somebody can tell at a glance that they are addressing software.
@@ -68,9 +65,6 @@ chat-call-open = Open call conversation
 chat-call-join = Join muted
 chat-call-leave-action = Leave call
 chat-call-status = Call status
-chat-call-select-input = Select microphone
-chat-call-input = Input
-chat-call-input-hint = Input from call status
 
 # The call window's connection line under its video.
 chat-call-connected = Connected
@@ -125,7 +119,7 @@ chat-model-stop = Stop
 chat-model-retry = Retry
 chat-model-continue = Continue
 chat-model-author = Assistant
-chat-model-attribution = { $model } (model output, requested by { $person })
+chat-model-attribution = { $model }, requested by { $person }
 chat-bot-attribution = { $name } (bot: { $bot })
 chat-via-attribution = { $name }, from { $service }
 chat-bridge-name = { $service } bridge
@@ -140,7 +134,7 @@ chat-thread-replies = { $count ->
     }
 
 chat-context-sharing = Sharing live Chat context
-chat-context-following = Following live Chat context · Stop following in workspace controls
+chat-context-following = Following live Chat context
 chat-context-stop = Stop sharing
 chat-header-call-open = Open call
 
@@ -158,7 +152,7 @@ chat-quote-caption = In reply to
 chat-quote-earlier = A message above
 chat-conversation-read-only = You can read this conversation but not write in it.
 chat-direct-unavailable = You can't open that conversation yet: this device hasn't loaded the workspace's chat.
-chat-person-unknown = There's nobody in this workspace to message there.
+chat-person-unknown = There's nobody in this workspace to message.
 chat-agent-author = { $name } (agent)
 chat-resource-link-copied = Link copied
 chat-resource-link-unavailable = Link unavailable
@@ -180,7 +174,7 @@ chat-share-loading = Loading the live view…
 chat-share-open-to-see = Open it to see it live
 chat-share-open = Open { $title }, shared by { $name }
 chat-share-pick = Share { $title }
-chat-voice-unavailable = Calls can't start here: no host carries this workspace's calls
+chat-voice-unavailable = Calls can't start in this workspace yet
 chat-call-not-joined = Join the call first.
 
 # "You" belongs to the current reader; shared/legacy names identify their person.
@@ -301,7 +295,7 @@ chat-feedback-replay-description = Open the recording in { $app } and step throu
 
 ## The conversation's own controls and labels
 chat-surface = Chat
-chat-surface-detail = Channels in the current Tilo workspace
+chat-surface-detail = Channels in this workspace
 chat-messages = Messages
 chat-earlier-arriving = Earlier messages are on their way
 chat-add-channel = Add channel
@@ -454,3 +448,6 @@ chat-effects-call-status = Call status
 chat-effects-start-call = Start a call
 chat-effects-start-video-call = Start a video call
 chat-effects-select-input = Select microphone
+
+## What the app is called in a window and in the launcher
+chat-app-title = Chat

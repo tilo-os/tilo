@@ -122,6 +122,7 @@ impl ResourceApp for SpeedTestShell {
     type Resource = SpeedTest;
     const ID: &'static str = "so.tilo.speed-test";
     const TITLE: &'static str = "Speed Test";
+    const TITLE_KEY: &'static str = "speed-test-app-title";
 
     fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
         Some(&crate::locales::CATALOG)

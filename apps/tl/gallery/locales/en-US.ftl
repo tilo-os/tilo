@@ -4,7 +4,7 @@
 d-so-tilo-lang-gallery = Gallery
 
 d-bxbqgdkv = Item
-    .doc = The toolkit's components as an app written in tilolang places them: each `ui.*` component, in the groups people meet them in, with the values an app would give it.
+    .doc = The toolkit's components as an app written in tilolang places them: each component of the toolkit, in the groups people meet them in, with the values an app would give it.
     .noun = { $count ->
         [one] item
        *[other] items

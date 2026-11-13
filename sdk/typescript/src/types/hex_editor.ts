@@ -17,6 +17,11 @@
 import { resourceProxy } from "tilo-sdk";
 import type * as tilo from "tilo-sdk";
 
+/** The version of the surface these types were made from: a workspace whose app
+ * publishes another refuses their actions rather than run what they no longer
+ * describe. */
+export const SURFACE = "so.tilo.hex-editor@7d5dcf386447ee8e";
+
 /** Hex document — `hex-editor.document`. */
 export interface Document extends tilo.Resource {
   readonly name: unknown;
@@ -39,6 +44,6 @@ export interface Document extends tilo.Resource {
 
 /** The `hex-editor.document` kind at `path`. */
 export function hexEditorDocument(ws: tilo.Workspace, path: string): Document {
-  return resourceProxy(ws, path) as unknown as Document;
+  return resourceProxy(ws, path, SURFACE) as unknown as Document;
 }
 

@@ -206,13 +206,12 @@ fn checked_origins(config: &WebConfig) -> Result<(), String> {
             "the plain HTTP listener must be a loopback address unless a proxy publishes it".into(),
         );
     }
-    if config
-        .public_origin
-        .as_ref()
-        .is_some_and(|origin| !origin.starts_with("https://") || config.plain_listen.is_none())
-    {
+    if config.public_origin.as_ref().is_some_and(|origin| {
+        !tilo_net::Url::parse(origin).is_ok_and(|url| tilo_net::secure_origin(&url))
+            || config.plain_listen.is_none()
+    }) {
         return Err(
-            "a public origin is an https:// origin published for the plain listener".into(),
+            "a public origin is an https:// origin (or an http:// one on this machine) published for the plain listener".into(),
         );
     }
     Ok(())

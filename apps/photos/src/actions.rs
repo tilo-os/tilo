@@ -10,7 +10,7 @@
 
 // `#[derive(Effect)]` names the crate as `tilo_resource`.
 use ui::tilo_resource;
-use ui::tilo_resource::Effect;
+use ui::tilo_resource::{Bytes, Effect};
 
 /// A stable, metadata-only position in the chronological timeline.
 ///
@@ -211,7 +211,7 @@ pub enum PhotosEffect {
     )]
     MakeThumbnails {
         #[param(content, "The photographs' content, in order")]
-        photos: Vec<String>,
+        photos: Vec<Bytes>,
     },
     /// Save edited photograph: the photograph this window shows.
     #[effect(job)]
@@ -411,10 +411,11 @@ pub fn export_edited_content(
     let photo = library
         .photo(photo_id)
         .ok_or_else(|| "that photograph is no longer in the library".to_string())?;
-    let source_content = &photo.image.content;
     let edits = photo.edits;
-    let source = store
-        .read(source_content)
+    let source = photo
+        .image
+        .content
+        .read(store)
         .ok_or_else(|| "the addressed photograph bytes are unavailable".to_string())?;
     let original = crate::pixels::decode(&source)
         .ok_or_else(|| "the addressed photograph bytes are not a supported image".to_string())?;
@@ -433,41 +434,42 @@ pub fn export_edited_content(
     })
 }
 
-/// Make thumbnails of `photos` (content hashes or `tilo.content:`
-/// addresses) from `store`: the local run of the offloadable
-/// `make-thumbnails`, byte for byte what the thumbnails package's
+/// Make thumbnails of `photos` from `store`: the local run of the
+/// offloadable `make-thumbnails`, byte for byte what the thumbnails package's
 /// `thumbnail-batch` entrypoint makes on another device. As there, content
 /// named twice is one input, and a picture that is not an image makes no
 /// thumbnail of its own while the rest still do. Its failure is listed in
-/// the answer by the photograph the caller named, so the person can see
-/// which picture to look at.
+/// the answer by the photograph's content, so the person can see which
+/// picture to look at.
+///
+/// Each photograph is read through [`Bytes::read`], as the rest of Photos
+/// opens one: the reference a record keeps carries the key its bytes are
+/// sealed with, so what is thumbnailed is the picture, never the ciphertext
+/// the store holds under their address.
 ///
 /// # Errors
 ///
-/// Names content that is not a photograph's content, or a store failure.
+/// A store failure.
 pub fn make_thumbnails(
-    photos: &[String],
+    photos: &[Bytes],
     store: &tilo_content::ContentStore,
 ) -> Result<tilo_actions::ActionOutput, String> {
-    // Each distinct content once, in the order the caller first named it
+    // Each distinct picture once, in the order the caller first named it
     // (the entrypoint's order, so the offloaded run answers the same list),
-    // with that first name: what a failure is reported against.
-    let mut distinct_hashes = std::collections::BTreeSet::new();
-    let mut seen: Vec<(&str, &str)> = Vec::with_capacity(photos.len());
+    // by the content hash that names it the same on every device.
+    let mut distinct = std::collections::BTreeSet::new();
+    let mut named: Vec<(String, &Bytes)> = Vec::with_capacity(photos.len());
     for photo in photos {
-        let hash = tilo_actions::content_hash(photo).unwrap_or(photo);
-        if !crate::model::is_content_hash(hash) {
-            return Err(format!("`{photo}` is not a photograph's content"));
-        }
-        if distinct_hashes.insert(hash) {
-            seen.push((hash, photo));
+        let hash = photo.hash();
+        if distinct.insert(hash) {
+            named.push((crate::model::content_hex(&hash), photo));
         }
     }
-    let mut inputs = Vec::with_capacity(seen.len());
+    let mut inputs = Vec::with_capacity(named.len());
     let mut missing = Vec::new();
-    for (hash, photo) in &seen {
-        match store.read(hash) {
-            Some(bytes) => inputs.push((*photo, bytes)),
+    for (photo, content) in &named {
+        match content.read(store) {
+            Some(bytes) => inputs.push((photo.as_str(), bytes)),
             None => missing.push(json_failure(photo, "is not on this device")),
         }
     }
@@ -489,7 +491,7 @@ pub fn make_thumbnails(
                 })?);
             }
             Err(error) => {
-                tracing::warn!(photo, %error, "photos: a picture made no thumbnail");
+                tracing::warn!(%photo, %error, "photos: a picture made no thumbnail");
                 failed.push(json_failure(photo, "is not an image"));
             }
         }

@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # The web page and the tilo.sh stack end to end, on one stack: the Lounge's
-# relay, the front door, the web entry and the programs this checkout built,
+# relay, the API server, the web entry and the programs this checkout built,
 # brought up once by tilo-sh/stack.sh as production's manifests bring them up
 # (their images' entrypoints, their environment, production's Caddy in front).
 # The site every flow meets is the web entry image's, not a server beside it,
-# and the door is the front door. They start once; then every flow runs at the
+# and the API is the API server. They start once; then every flow runs at the
 # same time against them, each as people of its own (a fresh browser profile
 # per person, so a fresh root, device and membership), never a stack of its
 # own. A flow that hangs is stopped at its own limit and named.
@@ -42,7 +42,7 @@
 #   setup-resume   a setup lands where it was through reloads, closed tabs,
 #                  history, a second tab, a code running out and the network
 #                  dropping
-#   visa           the visa run against the front door (check.sh's steps 2-6):
+#   visa           the visa run against the API server (check.sh's steps 2-6):
 #                  applicant workspaces, a one-workspace key and MCP, the agent
 #                  fills the form, a reviewer joins by invitation and takes the
 #                  run back, and the revoked keys are refused
@@ -54,6 +54,16 @@
 #                  list and confirms through the mail (a second Lounge, whose
 #                  door takes people by invitation: the one policy the stack
 #                  cannot have at once)
+#   onboarding     one stranger's whole way in, on a whole tilo.sh of its own
+#                  (test-onboarding.sh: the stack, whose door takes people by
+#                  invitation as production's does): the wait list and its
+#                  confirmation mail, the invitation the person who runs the
+#                  host sends from the workspace's own wait list and the mail it
+#                  carries, the workspace of their own they land in and the
+#                  agent set up there. It stops at the passkey: a browser that
+#                  forgot the site signs the person in, and the host refuses to
+#                  certify the tab as one of their devices
+#                  (integration/onboarding.mjs)
 #   restart        the Lounge's relay starts again on its volume, and a person
 #                  who was not here reads the chat people-call wrote and
 #                  writes in it
@@ -119,13 +129,17 @@ print("ok: the directory lists the Lounge, joined at its door as an editor")
     share-link) exec node "$integration/share-link.mjs" "$site_origin" "$relay_origin" "$room" "$out" ;;
     reloads) exec node "$integration/reloads.mjs" "$site_origin" "$out" ;;
     agent-setup|setup-resume)
-      exec node "$integration/$flow.mjs" "$site_origin" "$relay_origin" "$TILO_CLI_BIN" "$E2E_SITE_CA" "$out" ;;
+      exec node "$integration/$flow.mjs" "$site_origin" "$relay_origin" "$TILO_CLI_BIN" "$out" ;;
     signin|visa|entry|passkey) exec bash "$tilo_sh/check.sh" --flow "$flow" ;;
     wait-list)
       # A second Lounge, whose door takes people by invitation: the one
       # deployment setting the stack above cannot have at once, on addresses
       # of its own (direct-lounge.sh, LOUNGE_PORT_BASE).
       exec bash "$lounge_dir/test-wait-list-door.sh" "$E2E_BUNDLE" "$out" ;;
+    onboarding)
+      # A whole tilo.sh of its own, on addresses of its own: the stack's door
+      # takes people by invitation, so it cannot be the one above.
+      ONBOARDING_PORT_BASE=25100 exec bash "$lounge_dir/test-onboarding.sh" "$E2E_BUNDLE" "$out" ;;
     restart)
       earlier=$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["chat"])' \
         "$E2E_WORK/people-call/report.json") || { echo 'FAIL: people-call left no chat message behind'; exit 1; }
@@ -145,8 +159,11 @@ work=${2:?$usage}
 shift 2
 all=(signin directory boot people-call people-desk people-menus people-invite share-link agent-setup setup-resume visa entry passkey wait-list restart)
 # Run only when named: a person reloading their workspace page twenty times
-# in one browser, counting the reloads that crash or never come back.
-named_only=(reloads)
+# in one browser, counting the reloads that crash or never come back; and a
+# stranger's whole onboarding, which brings up a whole tilo.sh of its own
+# rather than using the stack the other flows share, and which stops at the
+# passkey return (the host refuses to certify the tab).
+named_only=(reloads onboarding)
 asked=("$@")
 [[ ${#asked[@]} -gt 0 ]] || read -r -a asked <<< "${E2E_FLOWS:-${all[*]}}"
 for flow in "${asked[@]}"; do
@@ -211,7 +228,7 @@ bash "$tilo_sh/stack.sh" status || true
 timing 'phase=the stack up'
 
 export E2E_WORK=$work E2E_BUNDLE=$bundle E2E_SITE=$site_origin E2E_RELAY=$relay_origin E2E_ROOM=$room \
-  E2E_ROLES=$roles E2E_SITE_CA=$state/local-ca.pem E2E_DOOR=$door_origin TILO_CLI_BIN=$tilo_bin
+  E2E_ROLES=$roles E2E_API_URL=$api_origin TILO_CLI_BIN=$tilo_bin
 
 # What each of the stack's services complained about while it ran: each error
 # and warning it logged, without its time, with how often. A failing check
@@ -319,7 +336,7 @@ fi
 # flow slower rather than the run shorter (measured: with nine flows and four
 # people cases at once, steps a run of three cases passes in 15-20 s ran out at
 # 45 s - a search opening, a composer showing, a call's channel).
-order=(setup-resume visa people-call people-invite people-desk people-menus boot wait-list share-link agent-setup entry passkey directory reloads)
+order=(setup-resume visa people-call people-invite people-desk people-menus boot wait-list onboarding share-link agent-setup entry passkey directory reloads)
 queue=()
 for flow in "${order[@]}"; do [[ " ${parallel[*]} " == *" $flow "* ]] && queue+=("$flow"); done
 at_once=${E2E_PARALLEL:-4}

@@ -790,10 +790,17 @@ impl Session {
         // arrangement, its undo, the windows and the notices, which the REPL already calls.
         // Each is answered on the loop's pass, where the arrangement is. The desk's styles, read
         // from the store, share the desk's reading (shell.md §6).
-        let steps: std::sync::Arc<dyn crate::platform::steps::SessionSteps> = session_doors.clone();
-        let session_actions =
-            std::sync::Arc::new(crate::session_actions::SessionActions::new(steps));
+        let steps: std::sync::Arc<dyn crate::platform::steps::SessionSteps> =
+            std::sync::Arc::clone(&session_doors)
+                as std::sync::Arc<dyn crate::platform::steps::SessionSteps>;
+        let session_actions = std::sync::Arc::new(crate::session_actions::SessionActions::new(
+            std::sync::Arc::clone(&steps),
+        ));
         session_doors.keep_actions(std::sync::Arc::clone(&session_actions));
+        // The person's settings, answered under the provider Settings' window names for each
+        // control it shows: the session keeps them in its settings service, and this is what the
+        // broker hands a change of them, on the loop's pass, as it hands the session's own steps.
+        let settings_steps = std::sync::Arc::new(crate::settings_steps::SettingsSteps::new(steps));
         // The runs the broker reads: each agent the person admits at the door works in a run of its
         // own among them, beside the conversations' turns.
         session_doors.keep_runs(conversations.runs());
@@ -1067,6 +1074,7 @@ impl Session {
                 fanout: std::sync::Arc::clone(&channels_fanout),
                 task_programs,
                 session_actions: Some(std::sync::Arc::clone(&session_actions)),
+                settings_steps: Some(std::sync::Arc::clone(&settings_steps)),
                 nearby: nearby.as_ref().map(std::sync::Arc::clone),
             },
         )?;
@@ -1720,6 +1728,7 @@ impl Session {
             active_workspace: None,
             published_workspace: crate::published_workspace::Published::none(),
             published_steps: Some(std::sync::Arc::clone(&session_actions)),
+            settings_steps: Some(settings_steps),
             kept_at: Instant::now(),
             tool_input: std::time::Duration::ZERO,
             magnifier: (
@@ -2518,6 +2527,20 @@ impl Session {
         }
         let rows = tilo_actions::door::survey_placed(&self.shared.doors.resources());
         if actions.offer(rows)
+            && let Some(broker) = self.action_plane.as_ref().and_then(Plane::agent_broker)
+        {
+            broker.host_steps_changed();
+        }
+    }
+
+    /// Hand the broker the settings the session publishes again when they moved: what Settings'
+    /// window's controls are decided against, read here on the loop that holds the service, so a
+    /// catalogue built on the broker's own thread never waits on it.
+    pub(crate) fn follow_settings_steps(&self) {
+        let Some(steps) = &self.settings_steps else {
+            return;
+        };
+        if steps.offer(&self.shared.services.borrow())
             && let Some(broker) = self.action_plane.as_ref().and_then(Plane::agent_broker)
         {
             broker.host_steps_changed();

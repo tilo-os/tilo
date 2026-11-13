@@ -455,11 +455,7 @@ pub fn trending(ui: Ui<'_>) -> Scrollable {
     let mut videos: Vec<&Video> = ui.model.videos.iter().collect();
     videos.sort_by_key(|v| std::cmp::Reverse(v.views));
     let body: Element = if videos.is_empty() {
-        Box::new(
-            EmptyState::new(t("tube-trending-empty-title"))
-                .with_icon(Icon::Flame)
-                .with_message(t("tube-trending-empty-message")),
-        )
+        Box::new(EmptyState::new(t("tube-trending-empty-title")).with_icon(Icon::Flame))
     } else {
         video_grid(ui, videos)
     };
@@ -507,11 +503,7 @@ pub fn subscriptions(ui: Ui<'_>) -> Scrollable {
     }
     let feed = model.subscription_feed();
     let latest: Element = if feed.is_empty() {
-        Box::new(
-            EmptyState::new(t("tube-subscriptions-empty-title"))
-                .with_icon(Icon::Bell)
-                .with_message(t("tube-subscriptions-empty-message")),
-        )
+        Box::new(EmptyState::new(t("tube-subscriptions-empty-title")).with_icon(Icon::Bell))
     } else {
         Box::new(
             Section::new(vec![video_grid(ui, feed)])
@@ -537,9 +529,7 @@ pub fn history(ui: Ui<'_>) -> Scrollable {
     let videos = model.history_videos();
     if videos.is_empty() {
         children.push(Box::new(
-            EmptyState::new(t("tube-history-empty-title"))
-                .with_icon(Icon::History)
-                .with_message(t("tube-history-empty-message")),
+            EmptyState::new(t("tube-history-empty-title")).with_icon(Icon::History),
         ));
     } else {
         children.push(Box::new(MediaGrid::new(

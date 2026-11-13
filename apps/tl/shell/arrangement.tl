@@ -1,15 +1,14 @@
-/// The person's arrangement: what is open where (docs/designs/app-language/shell.md §2,
-/// workspace-model.md §9). It is the desk itself — a row across a workspace, a strip of places in
+/// The person's arrangement: what is open where. It is the desk itself — a row across a workspace, a strip of places in
 /// a row, a place showing a resource through a view — which the session keeps with the desk the
 /// workspace shares, with history and undo.
 ///
 /// The session reads it off the live desk tree and publishes its reading as
-/// `session.arrangement`. The shell's views read it (§9) and change it only through the arranging
+/// `session.arrangement`. The shell's views read it and change it only through the arranging
 /// actions on `shell:arrangement` (`so.tilo.session`'s), so a person, an agent and a script
 /// arrange the same way, attributed and undoable.
 ///
 /// Every entry names the shell that made it (`shell`): a shell that does not know an entry
-/// another shell made keeps it and never changes or removes it (§2).
+/// another shell made keeps it and never changes or removes it.
 /// The person's desk as the session reads it off the desk: the workspaces it holds, its
 /// rows, its strips, and every place. Which preset it shows and which strip stands in front are
 /// the shell's own view of it (`viewing`), this package's record, so a shell is picked per
@@ -59,7 +58,7 @@ type ArrangementStrip (origin: session.arrangement_strip) {
 }
 
 /// A place: one window, showing a resource through a view. A place is the shell's view of a
-/// resource, so two places may show one resource ("another view", §3), each with its own state.
+/// resource, so two places may show one resource, each with its own state.
 type ArrangementPlace (origin: session.arrangement_place) {
     key: Text merge register
     /// The strip it is in.
@@ -77,14 +76,13 @@ type ArrangementPlace (origin: session.arrangement_place) {
     /// window has no title. The session resolves it, so the bar, the chips, the switcher, the
     /// overview and search never disagree, and none of them falls back to an app id.
     name: Text merge register
-    /// Whether the person pinned it: an agent's arrangement leaves it alone (§5).
+    /// Whether the person pinned it: an agent's arrangement leaves it alone.
     pinned: Bool
     /// The shell that made it; empty reads as this shell's.
     shell: Text merge register
 }
 
-/// How wide a strip stands within its row, as the record keeps it in per-mille (§2's strip
-/// widths: the presets and free widths).
+/// How wide a strip stands within its row, in per-mille of the row's width.
 enum Width {
     /// Three tenths of the row: a list, a set of options.
     narrow
@@ -108,8 +106,8 @@ fn permille_of(w: Width) -> Int {
     }
 }
 
-/// A way of laying out the same resources and actions a person picked before styles were views
-/// (`shell.md` §6): `Viewing.showing` kept one. It is declared still, and unchanged, so the
+/// A way of laying out the same resources and actions a person picked before the desk had
+/// styles: `Viewing.showing` kept one. It is declared still, and unchanged, so the
 /// record the old shell wrote — an enum value the store holds as it wrote it — reads as it was
 /// and the migration below can name the style it stands for. Nothing writes it again.
 enum Preset {
@@ -133,7 +131,7 @@ enum Preset {
 type Viewing {
     /// The desk style the person shows, as a view reference: a package and a view
     /// (`so.tilo.shell:strips`, `me.styles:timeline`). A desk style is a view of the
-    /// arrangement any installed package declares (shell.md §6); empty shows this shell's
+    /// arrangement any installed package declares; empty shows this shell's
     /// strips.
     style: Text
     /// The preset the person showed before styles were views. It kept its declaration, its type
@@ -156,8 +154,8 @@ migration action name_the_style(v: Viewing) {
     }
 }
 
-/// The style reference a preset stands for: this package's own view of that name (`shell.md`
-/// §6, the four that ship).
+/// The style reference a preset stands for: this package's own view of that name, the four
+/// that ship.
 fn style_named(p: Preset) -> Text {
     match p {
         .frames => "so.tilo.shell:frames",
@@ -169,24 +167,21 @@ fn style_named(p: Preset) -> Text {
 
 default view viewing_settings for Viewing
 
-/// The shell's own settings: the desk style the person shows, and where to pick another (§6,
-/// §8). The styles every installed package offers are listed by their own words; picking one
+/// The shell's own settings: the desk style the person shows, and where to pick another. The
+/// styles every installed package offers are listed by their own words; picking one
 /// switches the desk, and the style's own settings stand under the list, from its own record.
 view viewing_settings(v: Viewing) {
     let d = root Desk
     page {
         section("Desk") {
-            ui.Text(
-                "The same places, shown as the style you pick. Switching keeps every window where it is.",
-            )
+            ui.Text("Switching a style keeps every window where it is.")
             style_switch(v, d)
         }
     }
 }
 
-/// Shows the desk through the style `shown` (§6): a view reference, a package and a view
-/// (`so.tilo.shell:strips`). Switching keeps the arrangement: the same places stand where they
-/// were, drawn another way.
+/// Shows the desk through the style `shown`: a package and a view (`so.tilo.shell:strips`).
+/// Switching keeps the arrangement: the same places stand where they were, drawn another way.
 action show_style(v: Viewing, shown: Text) (icon: .layout_grid, label: "Show as") {
     require v.style != shown "It is shown that way already"
     v.style = shown

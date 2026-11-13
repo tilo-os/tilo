@@ -553,9 +553,8 @@ view note_details(n: Note) {
         }
         // The facts are as wide as their words (`fill: 0`), so the trail takes the room they
         // leave and elides its middle where that is not enough, never the other way round.
-        // One fact follows the next after the separator every caption line uses, as history
-        // writes "You created it · Jun 22".
-        row(gap: .tight, align: .center, fill: 0.0) {
+        // The gap separates one fact from the next; no glyph stands between them.
+        row(gap: .related, align: .center, fill: 0.0) {
             // When it was made, and when it was written since: one moment says both.
             if let at = made {
                 row(gap: .tight) {
@@ -564,9 +563,6 @@ view note_details(n: Note) {
                 }
             }
             if shows_edited {
-                if made != .none {
-                    ui.Text("·", role: .caption, secondary: true)
-                }
                 if let at = edited {
                     row(gap: .tight) {
                         text("Edited", role: .caption, secondary: true)
@@ -576,9 +572,6 @@ view note_details(n: Note) {
             }
             // A note nobody has written yet holds no words to count.
             if count > 0 {
-                if made != .none or shows_edited {
-                    ui.Text("·", role: .caption, secondary: true)
-                }
                 if count == 1 {
                     text("1 word", role: .caption, secondary: true)
                 } else {
@@ -673,7 +666,7 @@ fn file_name(n: Note) -> Text {
         .replace("\n", "-")
         .replace("<", "-")
         .replace(">", "-")
-    if safe == "" or safe == "." or safe == ".." { say("Note") } else { safe }
+    if safe == "" or safe == "." or safe == ".." { std.say("Note") } else { safe }
 }
 
 /// The page each note `n` links to is written at, by the note's id: what its links name, so a

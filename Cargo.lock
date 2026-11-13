@@ -2716,6 +2716,7 @@ dependencies = [
  "tilo-process",
  "tilo-resource",
  "tilo-rt",
+ "tilo-seal",
  "tilo-sort",
  "tilo-startup-metrics",
  "tilo-test-env",
@@ -17192,6 +17193,7 @@ dependencies = [
  "themes",
  "tilo-action-policy",
  "tilo-actions",
+ "tilo-api",
  "tilo-app",
  "tilo-automation",
  "tilo-automerge",
@@ -17207,7 +17209,6 @@ dependencies = [
  "tilo-doc",
  "tilo-doc-codecs",
  "tilo-feedback-transport",
- "tilo-front-door",
  "tilo-live",
  "tilo-lock",
  "tilo-model-gateway",
@@ -17261,6 +17262,49 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-api"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "collab-types",
+ "ed25519-dalek 3.0.0",
+ "futures-util",
+ "getrandom 0.4.3",
+ "hex",
+ "hmac 0.13.0",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "iroh",
+ "iroh-base",
+ "percent-encoding",
+ "schemars",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tilo-actions",
+ "tilo-clock",
+ "tilo-delivery-protocol",
+ "tilo-endpoint-reachability",
+ "tilo-files",
+ "tilo-net",
+ "tilo-relay-client",
+ "tilo-relay-protocol",
+ "tilo-relay-session",
+ "tilo-runtime",
+ "tilo-session-client",
+ "tilo-session-core",
+ "tilo-user-identity",
+ "tilo-workspace-directory",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "url",
+ "uuid",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-app"
 version = "0.1.0"
 dependencies = [
@@ -17286,6 +17330,7 @@ dependencies = [
  "tilo-reference",
  "tilo-resource",
  "tilo-runner-native",
+ "tilo-seal",
  "tilo-search",
  "tilo-test-env",
  "tilo-ui",
@@ -17821,6 +17866,8 @@ dependencies = [
  "postcard",
  "serde",
  "serde_json",
+ "settings",
+ "settings-sections",
  "settings-store",
  "tilo-action-policy",
  "tilo-actions",
@@ -17852,6 +17899,7 @@ dependencies = [
  "tilo-session-core",
  "tilo-sheets",
  "tilo-sort",
+ "tilo-test-env",
  "tilo-ui",
  "tilo-user-identity",
  "tilo-vello",
@@ -18020,6 +18068,7 @@ dependencies = [
  "tempfile",
  "tilo-actions",
  "tilo-advisory-lock",
+ "tilo-api",
  "tilo-automerge-isolate",
  "tilo-clock",
  "tilo-control",
@@ -18741,6 +18790,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-docs"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "clap",
+ "pulldown-cmark",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-document"
 version = "0.1.0"
 dependencies = [
@@ -19057,45 +19120,6 @@ dependencies = [
  "tilo-lock",
  "tilo-paths",
  "tilo-test-env",
- "workspace-hack",
-]
-
-[[package]]
-name = "tilo-front-door"
-version = "0.1.0"
-dependencies = [
- "base64 0.22.1",
- "collab-types",
- "ed25519-dalek 3.0.0",
- "getrandom 0.4.3",
- "hex",
- "http-body-util",
- "hyper",
- "hyper-util",
- "iroh",
- "iroh-base",
- "serde",
- "serde_json",
- "sha2 0.11.0",
- "tilo-actions",
- "tilo-clock",
- "tilo-delivery-protocol",
- "tilo-endpoint-reachability",
- "tilo-files",
- "tilo-net",
- "tilo-relay-client",
- "tilo-relay-protocol",
- "tilo-relay-session",
- "tilo-runtime",
- "tilo-session-client",
- "tilo-session-core",
- "tilo-user-identity",
- "tilo-workspace-directory",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "url",
- "uuid",
  "workspace-hack",
 ]
 
@@ -19584,6 +19608,10 @@ dependencies = [
  "tilo-test-env",
  "workspace-hack",
 ]
+
+[[package]]
+name = "tilo-local"
+version = "0.1.0"
 
 [[package]]
 name = "tilo-locale"
@@ -28312,6 +28340,7 @@ dependencies = [
  "tilo-advisory-lock",
  "tilo-agent-participant",
  "tilo-ai-bench",
+ "tilo-api",
  "tilo-app",
  "tilo-app-cli",
  "tilo-app-launch",
@@ -28401,7 +28430,6 @@ dependencies = [
  "tilo-font-catalog",
  "tilo-formats",
  "tilo-frame-metrics",
- "tilo-front-door",
  "tilo-fs",
  "tilo-fs-client",
  "tilo-handoff",

@@ -144,6 +144,7 @@ impl ResourceApp for RemoteShell {
     type Resource = Remote;
     const ID: &'static str = REMOTE_APP_ID;
     const TITLE: &'static str = "Remote Desktop";
+    const TITLE_KEY: &'static str = "remote-app-title";
     const ICON: Option<&'static str> = Some("remote");
 
     fn catalog() -> Option<&'static EmbeddedCatalog> {

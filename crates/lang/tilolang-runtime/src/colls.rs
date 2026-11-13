@@ -76,7 +76,7 @@ impl CollSeen {
     }
 
     /// Whether this is what was seen of `coll`.
-    fn is_of(&self, coll: &CollRef) -> bool {
+    pub(crate) fn is_of(&self, coll: &CollRef) -> bool {
         self.coll.field == coll.field
             && self.coll.target == coll.target
             && self.coll.filter == coll.filter
@@ -123,11 +123,6 @@ impl CollSeen {
                 .holds
                 .iter()
                 .all(|(item, seen)| listing.holds(item) == Some(*seen))
-    }
-
-    /// Whether everything seen is still so in the store.
-    pub fn holds_now(&self, core: &Core) -> bool {
-        listing_of(&**core.store.borrow(), &self.coll).is_ok_and(|listing| self.holds(&listing))
     }
 
     /// Take on what `other`, of the same collection, saw.

@@ -279,10 +279,15 @@ pub fn index_file(
     // Decode once before staging. Header dimensions alone are not a promise
     // that the complete payload is a safe image.
     let decoded = crate::pixels::decode(&bytes).ok_or_else(|| tr("photos-import-unsafe"))?;
-    let content = store.put(&bytes).map_err(|error| {
-        tracing::warn!(%error, "photos: could not store an imported original");
-        tr("photos-import-not-kept")
-    })?;
+    // Kept in the store, however small: a photograph's pixels live there,
+    // never in the record.
+    let content = store
+        .put(&bytes)
+        .map(|reference| ui::tilo_resource::Bytes::kept_as(&bytes, &reference))
+        .map_err(|error| {
+            tracing::warn!(%error, "photos: could not store an imported original");
+            tr("photos-import-not-kept")
+        })?;
     let name = path
         .file_name()
         .and_then(|name| name.to_str())
@@ -580,8 +585,10 @@ mod tests {
                 (indexed.photo.image.width, indexed.photo.image.height),
                 (2, 3)
             );
-            let hash = &indexed.photo.image.content;
-            assert_eq!(store.read(hash).as_deref(), Some(source.as_slice()));
+            assert_eq!(
+                indexed.photo.image.content.read(&store).as_deref(),
+                Some(source.as_slice())
+            );
         }
     }
 

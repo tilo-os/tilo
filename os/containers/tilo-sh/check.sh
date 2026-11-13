@@ -4,7 +4,7 @@
 #   1. a fresh startup identity, in its own headless Chromium on the local
 #      site, approves a server key `tilo keys create` asks for, on the site's
 #      own /sign-in page; the pictures of what it reads there (the sign-in
-#      card, the door's grants page, and the key that page makes) are kept in
+#      card, the API server's grants page, and the key that page makes) are kept in
 #      WORK/startup, light and dark. The page also makes a recovery key for
 #      them, so the machine can hold that person and answer what their hosts
 #      ask them (`tilo-approve`);
@@ -85,7 +85,7 @@
 #   check.sh --flow signin|visa|entry|passkey
 #
 # runs one of those steps against a stack that is already up and named by
-# E2E_SITE, E2E_RELAY, E2E_DOOR and E2E_WORK, which is how test-e2e.sh runs
+# E2E_SITE, E2E_RELAY, E2E_API_URL and E2E_WORK, which is how test-e2e.sh runs
 # them beside the page's own flows; `visa` reads the key `signin` approved,
 # from E2E_WORK/signin/startup.json.
 #
@@ -117,11 +117,11 @@ step() {
 startup_identity() {
   step '1. a fresh startup identity approves a server key on the local site'
   node "$here/integration/person.mjs" "$site" "$relay" "$work/startup" \
-    --key 'Visa backend' --tilo "$tilo" --door "$door" --no-pages \
+    --key 'Visa backend' --tilo "$tilo" --api "$api" --no-pages \
     --root "$work/startup/person.json" > "$work/startup.json" \
     || fail "the startup's key was not approved (see $work/startup)"
   key=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["key"])' "$work/startup.json")
-  # The key they did not let operate web pages, made on the door's grants page:
+  # The key they did not let operate web pages, made on the API server's grants page:
   # what the last step holds to being asked about each page action.
   plain_key=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["noPagesKey"])' "$work/startup.json")
   [[ -n $plain_key ]] || fail 'the startup made no key without the Browser scope (see $work/startup)'
@@ -133,18 +133,18 @@ startup_identity() {
 reviewer_up() {
   reviewer_port=$((base + 50))
   sdk_python "$here/integration/reviewer.py" \
-    "$reviewer_port" "$site" "$relay" "$door" "$tilo" "$work" > "$work/reviewer.out" 2> "$work/reviewer.log" &
+    "$reviewer_port" "$site" "$relay" "$api" "$tilo" "$work" > "$work/reviewer.out" 2> "$work/reviewer.log" &
   pids+=($!)
   for _ in $(seq 100); do grep -q invitee "$work/reviewer.out" 2>/dev/null && break; sleep 0.2; done
   grep -q invitee "$work/reviewer.out" || fail "the reviewer did not start: $(cat "$work/reviewer.log")"
 }
 
-# 2-6: the visa run against the front door, with the reviewer's helper up.
+# 2-6: the visa run against the API server, with the reviewer's helper up.
 visa_run() {
-  step '2-6. the visa run against the local door'
+  step '2-6. the visa run against the local API server'
   local visa_began=$SECONDS status
   set +e
-  TILO_DOOR=$door TILO_API_KEY=$key TILO_INVITEE=http://127.0.0.1:$reviewer_port/accept \
+  TILO_API_URL=$api TILO_API_KEY=$key TILO_INVITEE=http://127.0.0.1:$reviewer_port/accept \
     VISA_APPLICANTS=${VISA_APPLICANTS:-25} VISA_REVOKE_SERVER_KEY=1 \
     sdk_python "$repo/sdk/python/examples/visa_proof.py" \
     2>&1 | tee "$work/visa.log"
@@ -195,7 +195,7 @@ if [[ ${1:-} == --flow ]]; then
   flow=${2:?--flow names signin, visa, entry or passkey}
   work=${E2E_WORK:?E2E_WORK names the work directory}"/$flow"
   site=${E2E_SITE:?E2E_SITE names the site} relay=${E2E_RELAY:?E2E_RELAY names the relay}
-  door=${E2E_DOOR:?E2E_DOOR names the front door}
+  api=${E2E_API_URL:?E2E_API_URL names the API server}
   mkdir -p "$work"
   # The stack's addresses and helpers, and the tilo command it serves.
   # shellcheck source=stack.sh
@@ -222,9 +222,9 @@ fi
 work=${1:-$state/check}
 mkdir -p "$work"
 find "$work" -mindepth 1 -delete
-site=https://tilo.localhost:$((base + 20))
-relay=https://127.0.0.1:$base
-door=http://localhost:$((base + 10))
+site=http://tilo.localhost:$((base + 20))
+relay=http://127.0.0.1:$base
+api=http://localhost:$((base + 10))
 report=$work/report.json
 
 # TILO_SH_ONLY names the steps to run, comma separated (`1`, `2-6`, `7`): what
@@ -377,17 +377,17 @@ if [[ $hosted == 1 ]]; then
       HOSTED_VISA_PLANS=$plans HOSTED_VISA_ACCOUNT=$vm_account \
       HOSTED_VISA_APPROVER=$approve HOSTED_VISA_ROOT=$work/startup/root \
       HOSTED_VISA_RELAY=$relay_address HOSTED_VISA_UNSCOPED_KEY=$plain_key \
-      sdk_python "$here/integration/hosted-visa.py" "$door" "$key" "$work/hosted" "$form_url" "$1"
+      sdk_python "$here/integration/hosted-visa.py" "$api" "$key" "$work/hosted" "$form_url" "$1"
   }
   # A Linux command in that workspace's VM, as its people and their agents
   # run them (integration/hosted-terminal.py).
   hosted_terminal() { # PHASE
-    HOSTED_TERMINAL_CLI=$tilo HOSTED_TERMINAL_DOOR=$door \
+    HOSTED_TERMINAL_CLI=$tilo HOSTED_TERMINAL_API_URL=$api \
       HOSTED_TERMINAL_PLANS=$plans HOSTED_TERMINAL_ACCOUNT=$vm_account \
       HOSTED_TERMINAL_APPROVER=$approve HOSTED_TERMINAL_ROOT=$work/startup/root \
       HOSTED_TERMINAL_RELAY=$relay_address \
       HOSTED_TERMINAL_SITE=$site HOSTED_TERMINAL_SITE_RELAY=$relay \
-      sdk_python "$here/integration/hosted-terminal.py" "$door" "$key" "$work/hosted" "$1"
+      sdk_python "$here/integration/hosted-terminal.py" "$api" "$key" "$work/hosted" "$1"
   }
   launch=$SECONDS
   if runs_step 10; then

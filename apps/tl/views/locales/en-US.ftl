@@ -4,7 +4,7 @@
 d-so-tilo-lang-views = Views
 
 d-bqgmjsyo = Written view
-    .doc = A view of the person's own: a tilolang `view` definition, written as an app declares one (`view open_threads(m: mail.Mail) {"{"} ...
+    .doc = A view of the person's own: a view written in tilolang, as an app declares one, kept as their code in their own record.
     .noun = { $count ->
         [one] written view
        *[other] written views
@@ -19,13 +19,13 @@ d-3pj7zyxo = Definition
     .doc = The view, as its author wrote it.
 
 d-3eioszed = Author
-    .doc = Who wrote it, as the host recorded them: the agent task that answered with it, the person, or who sent it to them.
+    .doc = Who wrote it: the agent task that answered with it, the person, or who sent it to them.
 
 d-loizxjpf = Kept
     .doc = Whether the person kept it.
 
 d-bckibjl6 = Shows
-    .doc = The type of the one resource it takes (`so.tilo.lang.mail.Thread`), as the check found it: what it can be the default view of.
+    .doc = The type of the one resource it takes (`mail.Thread`), so what it can be the default view of.
 
 d-bqgmjsyo-filter-kept = Kept
 
@@ -39,7 +39,7 @@ d-uibilwji = Default
     }
 
 d-2atmuo4h = Shows
-    .doc = The type, as the platform names it (`so.tilo.lang.mail.Thread`).
+    .doc = The type it shows, by its name in the app language (`mail.Thread`).
 
 d-h6n4gvgn = Device
 
@@ -70,7 +70,7 @@ d-xdu35ffc = Tablet
 d-s4nfjmw3 = Phone
 
 d-rgftdohw = Answer
-    .doc = Keeps the view an agent answered with, written by the invoker, which the host records.
+    .doc = Records the view an agent answered with, under the name of whoever asked.
 
 d-dif5k2ju = New view
     .doc = A view the person writes, kept among their own.
@@ -87,7 +87,7 @@ d-w2bt45l7 = Show this type with it
     .w-this-view-shows-no-one-type = This view shows no one type
 
 d-fwot2jcg = Add to my views
-    .doc = Adds the view a message sent to the person's own.
+    .doc = Adds the view a message sent to the person's own views.
     .w-the-message-sends-no-view = The message sends no view
     .w-who-sent-the-message-is-not = Who sent the message is not known
 

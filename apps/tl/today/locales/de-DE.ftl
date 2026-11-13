@@ -3,7 +3,7 @@
 d-so-tilo-lang-today = Heute
 
 d-2lehvjd6 = Heute
-    .doc = Der Tag auf einen Blick, über die Wurzeln anderer Apps: es zeichnet ihre Ressourcen mit ihren Ansichten, sodass jeder Teil die Autorität seiner eigenen App behält.
+    .doc = Der Tag auf einen Blick, über die Wurzeln anderer Apps: Jeder Teil ist ein Ort seiner eigenen App und wird von ihr gezeichnet.
     .noun = { $count ->
         [one] Heute
        *[other] Heute

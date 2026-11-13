@@ -57,20 +57,14 @@ impl VideoEditorApp {
 
     /// The preview's words over an empty canvas, stacked about its centre:
     /// where the title starts and, when `offer`, where Go to clip stands
-    /// under the hint.
+    /// under it.
     pub(super) fn preview_hint_stack(
         canvas: Rect,
         tr: &mut TextRenderer,
         theme: &Theme,
-        hint: bool,
+        th: f64,
         offer: bool,
     ) -> (f64, Option<Rect>) {
-        let th = line_height(tr, &theme.text(TextRole::Body).strong());
-        let hh = if hint {
-            line_height(tr, &theme.text(TextRole::Caption))
-        } else {
-            -S1
-        };
         let (bw, bh) = if offer {
             (
                 ButtonFace::new(Rect::ZERO, &crate::resource::CATALOG.t(GO_TO_CLIP_LABEL))
@@ -82,9 +76,9 @@ impl VideoEditorApp {
             (0.0, 0.0)
         };
         let below = if offer { S2 + bh } else { 0.0 };
-        let top = canvas.center().y - (th + S1 + hh + below) / 2.0;
+        let top = canvas.center().y - f64::midpoint(th, below);
         let button = offer.then(|| {
-            let y = top + th + S1 + hh + S2;
+            let y = top + th + S2;
             let x = canvas.center().x - bw / 2.0;
             Rect::new(x, y, x + bw, y + bh)
         });
@@ -100,7 +94,8 @@ impl VideoEditorApp {
             return None;
         }
         self.with_dialog_layout(|_, tr, theme| {
-            Self::preview_hint_stack(r.canvas, tr, theme, true, true).1
+            let th = line_height(tr, &theme.text(TextRole::Body).strong());
+            Self::preview_hint_stack(r.canvas, tr, theme, th, true).1
         })
     }
 }

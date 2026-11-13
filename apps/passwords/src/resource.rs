@@ -52,6 +52,7 @@ impl ResourceApp for PasswordsShell {
     type Resource = Passwords;
     const ID: &'static str = "so.tilo.passwords";
     const TITLE: &'static str = "Passwords";
+    const TITLE_KEY: &'static str = "passwords-app-title";
     const ICON: Option<&'static str> = Some("passwords");
     fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
         Some(&crate::CATALOG)

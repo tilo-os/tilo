@@ -33,6 +33,7 @@ impl ResourceApp for SlidesShell {
     // Each window shows the document it opened, never another window's.
     const WINDOW_RESOURCE: bool = true;
     const TITLE: &'static str = "Slides";
+    const TITLE_KEY: &'static str = "slides-app-title";
     const ICON: Option<&'static str> = Some("slides");
     const OPENS: &'static [&'static str] = &[ODP_MEDIA_TYPE, PPTX_MEDIA_TYPE];
     const ARGUMENTS: usize = 1;

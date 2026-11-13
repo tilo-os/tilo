@@ -17,6 +17,11 @@
 import { resourceProxy } from "tilo-sdk";
 import type * as tilo from "tilo-sdk";
 
+/** The version of the surface these types were made from: a workspace whose app
+ * publishes another refuses their actions rather than run what they no longer
+ * describe. */
+export const SURFACE = "so.tilo.camera@18dea311f732a035";
+
 /** Camera — `camera`. */
 export interface Camera extends tilo.Resource {
   readonly scans: unknown;
@@ -31,6 +36,6 @@ export interface Camera extends tilo.Resource {
 
 /** The `camera` kind at `path`. */
 export function camera(ws: tilo.Workspace, path: string): Camera {
-  return resourceProxy(ws, path) as unknown as Camera;
+  return resourceProxy(ws, path, SURFACE) as unknown as Camera;
 }
 

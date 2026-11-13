@@ -18,7 +18,7 @@ windows-shared-session-trust = Apps in the Windows appliance share one Windows u
 windows-appliance = Windows appliance
 windows-shared-access = Shared access
 windows-shared-with = Used by
-windows-no-redirects = Nothing right now
+windows-no-redirects = None
 windows-route-wine = Wine
 windows-route-proton = Proton
 windows-route-vm = Windows VM
@@ -115,7 +115,6 @@ windows-temporary-connection-starting = Connecting Windows temporarily and openi
 ## The Windows appliance: how it stands, what it says and what it refuses.
 ## Each of these is a sentence a person reads, never a literal in the code.
 
-windows-appliance-checking-status = Checking the Windows appliance…
 
 windows-power-running = Running
 windows-power-suspended = Suspended

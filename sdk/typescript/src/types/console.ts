@@ -17,6 +17,11 @@
 import { resourceProxy } from "tilo-sdk";
 import type * as tilo from "tilo-sdk";
 
+/** The version of the surface these types were made from: a workspace whose app
+ * publishes another refuses their actions rather than run what they no longer
+ * describe. */
+export const SURFACE = "so.tilo.console@aab123dc70040e2a";
+
 /** Agent runs shown — `console.view`. */
 export interface View extends tilo.Resource {
   agent: unknown;
@@ -26,6 +31,6 @@ export interface View extends tilo.Resource {
 
 /** The `console.view` kind at `path`. */
 export function view(ws: tilo.Workspace, path: string): View {
-  return resourceProxy(ws, path) as unknown as View;
+  return resourceProxy(ws, path, SURFACE) as unknown as View;
 }
 

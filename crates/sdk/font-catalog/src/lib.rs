@@ -43,6 +43,15 @@ pub const INSTALLED_ROOT: &str = "/usr/share/fonts/tilo";
 /// build names it from its profile directory, which holds the running program
 /// (or its `deps`/`examples`), so it is found above the program; the build
 /// directory's path is not compiled in.
+///
+/// A build directory can carry a build's units without the catalog its build
+/// script published (a store that keeps compiled units and moves them to
+/// another job), so a run of an existing build looks next at the catalogs
+/// prepared in the artifact cache ([`prepared_catalogs`]), which is where the
+/// test environment (`tools/test-env-setup.sh`) and [`find_root`]'s readers
+/// look: the same pins, prepared once from the image's seed or the release
+/// store. What neither has stays the compiled-in name, so a caller that needs
+/// the bytes fails on them rather than reading another build's catalog.
 #[must_use]
 pub fn checkout_root() -> PathBuf {
     static ROOT: OnceLock<PathBuf> = OnceLock::new();
@@ -51,16 +60,20 @@ pub fn checkout_root() -> PathBuf {
         if named.is_absolute() {
             return named.to_path_buf();
         }
-        std::env::current_exe()
+        let beside_program = std::env::current_exe()
             .ok()
-            .and_then(|program| {
+            .into_iter()
+            .flat_map(|program| {
                 program
                     .ancestors()
                     .skip(1)
                     .map(|directory| directory.join(named))
-                    .find(|root| root.join("manifest.toml").is_file())
-            })
-            .unwrap_or_else(|| named.to_path_buf())
+                    .collect::<Vec<_>>()
+            });
+        let prepared_here = std::env::var_os("TILO_FONT_ASSET_CACHE")
+            .into_iter()
+            .flat_map(|cache| prepared_catalogs(Path::new(&cache)));
+        find_root(beside_program.chain(prepared_here)).unwrap_or_else(|| named.to_path_buf())
     })
     .clone()
 }

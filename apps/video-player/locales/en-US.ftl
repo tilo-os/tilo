@@ -1,7 +1,7 @@
 video-formats-title = Play more video and audio formats
 video-missing-decoder-title = Can’t play this video yet
 video-missing-decoder-message = It uses { $codec }.
-video-formats-unavailable = This video has not reported a missing decoder.
+video-formats-unavailable = No video is missing a format.
 
 ## History: what each change to the shared library did
 
@@ -93,3 +93,6 @@ video-player-library-add-to-watch-later = Add to Watch later
 video-player-library-add-annotation = Add annotation
 video-player-library-delete-annotation = Delete annotation
 video-player-library-set-transport = Record playback position
+
+## What the app is called in a window and in the launcher
+video-player-app-title = Video Player

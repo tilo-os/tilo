@@ -36,15 +36,16 @@ type Message {
     reply_to: Option<Message>
     /// The side conversation branched off this message.
     thread: Option<Thread>
-    /// What a message said before messages were rich text, kept as it was written.
+    /// What a message says, in a message kept as parts rather than as rich text: its pieces, as
+    /// it was written.
     parts: Collection<Part>
     /// Whether it is pinned to its channel, which search finds.
     pinned: Bool = false
     /// Who reacted, by emoji.
     reactions: Map<Set<Principal>>
-    /// A view the message sends, as its sender had it among their views: its tilolang
-    /// definition, which a reader adds to their own views (Views' `add`), its author whoever
-    /// sent the message. Empty for a message that sends none.
+    /// A view the message sends, as its sender had it among their views: a reader adds it to
+    /// their own views, and its author is whoever sent the message. Empty for a message that
+    /// sends none.
     sent_view: Text
 
     search {
@@ -72,9 +73,9 @@ type Direct {
     threads: Collection<Thread>
 }
 
-/// A piece of a message from before messages were rich text: its text, or a block's source.
+/// A piece of a message kept as parts rather than as rich text: its text, or a block's source.
 type Part {
-    /// `text` or `block`.
+    /// Whether the piece is text or a block's source.
     kind: Text merge register
     body: Text
 }
@@ -94,7 +95,7 @@ row view direct_summary for Direct
 row view category_summary for Category
 
 /// Adds a text channel to the sidebar.
-primary action new_channel(all: Conversations, name: Text = say("new-channel")) -> TextChannel (
+primary action new_channel(all: Conversations, name: Text = std.say("new-channel")) -> TextChannel (
     icon: .plus,
     label: "New channel",
 ) {
@@ -102,7 +103,7 @@ primary action new_channel(all: Conversations, name: Text = say("new-channel")) 
 }
 
 /// Adds a category to the sidebar.
-action new_category(all: Conversations, name: Text = say("New category")) -> Category (
+action new_category(all: Conversations, name: Text = std.say("New category")) -> Category (
     icon: .folder_plus,
     label: "New category",
 ) {
@@ -110,7 +111,7 @@ action new_category(all: Conversations, name: Text = say("New category")) -> Cat
 }
 
 /// Adds a text channel to a category.
-action add_channel(c: Category, name: Text = say("new-channel")) -> TextChannel (
+action add_channel(c: Category, name: Text = std.say("new-channel")) -> TextChannel (
     icon: .plus,
     label: "New channel",
 ) {

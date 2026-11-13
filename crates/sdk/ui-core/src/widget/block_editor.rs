@@ -8927,7 +8927,8 @@ impl Widget for BlockEditor {
     /// The document's blocks as what they are: paragraphs, headings, list
     /// items, with their marks and the caret.
     fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        cx.blocks(self.composed_blocks());
+        let edges = self.composed_edges(cx.theme());
+        cx.blocks(self.composed_blocks(), edges);
     }
 
     /// The described component's instance, for the generic adapter to take new props in place
@@ -10075,8 +10076,8 @@ impl Widget for BlockEditor {
             }
         }
 
-        // Runs AFTER the block loop: pixel_x_for_byte needs this frame's
-        // fresh `char_x_positions`. Cross-block selections are resolved from
+        // Runs AFTER the block loop: a run's bands need this frame's
+        // fresh layout. Cross-block selections are resolved from
         // their start block id once per frame.
         let document_selections = self.resolve_document_selections(presence);
         for (i, b) in self.blocks.iter().enumerate() {

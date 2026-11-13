@@ -27,6 +27,10 @@ use tilo_actions::surface::{Surface, VerbSurface};
 pub const PYTHON_OUT: &str = "tilo_types";
 /// Where `--lang ts` writes its types without `--out`.
 pub const TYPESCRIPT_OUT: &str = "tilo-types";
+/// Where `--lang openapi` writes the API's description without `--out`.
+pub const OPENAPI_OUT: &str = ".";
+/// The file `--lang openapi` writes.
+const OPENAPI_FILE: &str = "openapi.json";
 /// An app's surface, and its manifest, in the app's directory.
 const SURFACE_FILE: &str = "surface.toml";
 const MANIFEST_FILE: &str = "tilo-app.toml";
@@ -67,10 +71,11 @@ pub enum SdkCmd {
     #[command(
         after_help = "Examples:\n  tilo sdk gen --lang python              tilo_types/, from this checkout's apps\n  \
                             tilo sdk gen --lang ts -w jane-doe      tilo-types/, from that workspace's apps\n  \
-                            tilo sdk gen --lang python --check      Say whether the types are current"
+                            tilo sdk gen --lang python --check      Say whether the types are current\n  \
+                            tilo sdk gen --lang openapi --out docs/api   The API's description"
     )]
     Gen {
-        /// The language the types are written in.
+        /// The language the types are written in, or `openapi` for the API's description.
         #[arg(long)]
         lang: Lang,
         /// The directory to write them in.
@@ -86,6 +91,8 @@ pub enum SdkCmd {
 pub enum Lang {
     Python,
     Ts,
+    /// The API's description (`OpenAPI`), with these apps' actions.
+    Openapi,
 }
 
 /// One app whose types are generated: its id, what people call it, and the bytes of its
@@ -98,9 +105,9 @@ pub struct App {
 }
 
 /// `tilo sdk gen`.
-pub fn generate(door: Option<&str>, workspace: Option<&str>, cmd: SdkCmd) -> ExitCode {
+pub fn generate(api: Option<&str>, workspace: Option<&str>, cmd: SdkCmd) -> ExitCode {
     let SdkCmd::Gen { lang, out, check } = cmd;
-    let apps = match surfaces(door, workspace) {
+    let apps = match surfaces(api, workspace) {
         Ok(apps) => apps,
         Err(error) => {
             eprintln!("tilo: {error:#}");
@@ -120,6 +127,7 @@ pub fn generate(door: Option<&str>, workspace: Option<&str>, cmd: SdkCmd) -> Exi
     let files = match lang {
         Lang::Python => python_files(&apps),
         Lang::Ts => typescript_files(&apps),
+        Lang::Openapi => openapi_files(&apps),
     };
     let files = match files {
         Ok(files) => files,
@@ -132,6 +140,7 @@ pub fn generate(door: Option<&str>, workspace: Option<&str>, cmd: SdkCmd) -> Exi
         PathBuf::from(match lang {
             Lang::Python => PYTHON_OUT,
             Lang::Ts => TYPESCRIPT_OUT,
+            Lang::Openapi => OPENAPI_OUT,
         })
     });
     match land(&out, &files, check) {
@@ -145,9 +154,9 @@ pub fn generate(door: Option<&str>, workspace: Option<&str>, cmd: SdkCmd) -> Exi
 
 /// The apps whose types are generated: the ones installed in `workspace`, or else the ones of
 /// the checkout this runs in.
-fn surfaces(door: Option<&str>, workspace: Option<&str>) -> Result<Vec<App>> {
+fn surfaces(api: Option<&str>, workspace: Option<&str>) -> Result<Vec<App>> {
     match workspace {
-        Some(workspace) => crate::hosted::surfaces(door, workspace),
+        Some(workspace) => crate::hosted::surfaces(api, workspace),
         None => committed(Path::new("apps")),
     }
 }
@@ -755,6 +764,25 @@ fn distinct(fields: &[Member]) -> Vec<(&Member, bool)> {
 // -- Python -----------------------------------------------------------------
 
 /// The Python types of `apps`: a module per app, and the package that holds them.
+/// The API's description (`openapi.json`), its `runAction` typed per action of `apps`.
+///
+/// # Errors
+/// An app's surface is not one.
+pub fn openapi_files(apps: &[App]) -> Result<Vec<(PathBuf, String)>> {
+    let apps: Vec<tilo_api::v1::openapi::App> = apps
+        .iter()
+        .map(|app| tilo_api::v1::openapi::App {
+            id: app.id.clone(),
+            title: app.title.clone(),
+            surface: app.surface.clone(),
+        })
+        .collect();
+    let described = tilo_api::v1::openapi::document(&apps).map_err(|error| anyhow!(error))?;
+    let mut text = serde_json::to_string_pretty(&described)?;
+    text.push('\n');
+    Ok(vec![(PathBuf::from(OPENAPI_FILE), text)])
+}
+
 pub fn python_files(apps: &[App]) -> Result<Vec<(PathBuf, String)>> {
     let mut files = Vec::new();
     for app in apps {
@@ -853,8 +881,9 @@ fn python_module(app: &App, types: &Types) -> String {
     for declaration in &types.declarations {
         python_declaration(&mut out, declaration);
     }
+    let surface = tilo_api::v1::surface_version(&app.id, &app.surface);
     for class in &types.classes {
-        python_class(&mut out, class);
+        python_class(&mut out, class, &surface);
     }
     out
 }
@@ -949,7 +978,10 @@ fn python_declaration(out: &mut String, declaration: &Declaration) {
     }
 }
 
-fn python_class(out: &mut String, class: &Class) {
+/// `class` as a Python class, made from the surface whose version is `surface`: its actions
+/// name that version, so a workspace whose app publishes another refuses them instead of
+/// running what these types no longer describe.
+fn python_class(out: &mut String, class: &Class, surface: &str) {
     let _ = writeln!(out, "class {}(Resource):", class.name);
     let mut text = one_line(&class.label);
     if !text.is_empty() {
@@ -957,8 +989,9 @@ fn python_class(out: &mut String, class: &Class) {
     }
     let _ = write!(text, "`{}`.", class.kind);
     doc(out, &text, 1);
+    let _ = writeln!(out, "    __surface__ = \"{surface}\"");
     if class.fields.is_empty() && class.actions.is_empty() {
-        out.push_str("    pass\n\n");
+        out.push('\n');
         return;
     }
     let mut taken: Vec<String> = Vec::new();
@@ -1247,6 +1280,14 @@ fn typescript_module(app: &App, types: &Types) -> String {
     out.push('\n');
     out.push_str("import { resourceProxy } from \"tilo-sdk\";\n");
     out.push_str("import type * as tilo from \"tilo-sdk\";\n\n");
+    let _ = writeln!(
+        out,
+        "/** The version of the surface these types were made from: a workspace whose app\n\
+         \x20* publishes another refuses their actions rather than run what they no longer\n\
+         \x20* describe. */\n\
+         export const SURFACE = \"{}\";\n",
+        tilo_api::v1::surface_version(&app.id, &app.surface)
+    );
     for declaration in &types.declarations {
         typescript_declaration(&mut out, declaration);
     }
@@ -1392,7 +1433,7 @@ fn typescript_class(out: &mut String, class: &Class) {
         out,
         "/** The `{}` kind at `path`. */\n\
          export function {made}(ws: tilo.Workspace, path: string): {} {{\n\
-         \x20 return resourceProxy(ws, path) as unknown as {};\n\
+         \x20 return resourceProxy(ws, path, SURFACE) as unknown as {};\n\
          }}\n\n",
         class.kind, class.name, class.name,
     );

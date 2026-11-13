@@ -291,7 +291,7 @@ fn rows(tiles: Vec<Element>, per_row: usize) -> Element {
 
 /// "1920 × 1080".
 fn sides(width: f64, height: f64) -> String {
-    format!("{width:.0} by {height:.0}")
+    format!("{width:.0} × {height:.0}")
 }
 
 /// The size tiles: the presets turned as the dialog says, and any size.

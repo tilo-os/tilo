@@ -17,6 +17,11 @@
 import { resourceProxy } from "tilo-sdk";
 import type * as tilo from "tilo-sdk";
 
+/** The version of the surface these types were made from: a workspace whose app
+ * publishes another refuses their actions rather than run what they no longer
+ * describe. */
+export const SURFACE = "so.tilo.music@d92862e59d2efe32";
+
 export interface Album {
   id: string;
   title: string;
@@ -92,6 +97,6 @@ export interface Library extends tilo.Resource {
 
 /** The `music.library` kind at `path`. */
 export function library(ws: tilo.Workspace, path: string): Library {
-  return resourceProxy(ws, path) as unknown as Library;
+  return resourceProxy(ws, path, SURFACE) as unknown as Library;
 }
 

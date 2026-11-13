@@ -76,10 +76,10 @@ impl TiloStore {
     }
 
     /// The instant the items of `ty` next come to hold of, or stop holding of, a filter that
-    /// reads the clock (`fields` naming the fields it compares it with): the value the index
-    /// keeps that comes closest after it, so the view that asked wakes there rather than at
-    /// every minute. A package whose index is still being built cannot say
-    /// ([`NextChange::Unknown`]).
+    /// reads the clock (`fields` naming the fields it compares it with): the value the index,
+    /// and the store's writes the index has not taken in, keep that comes closest after it, so
+    /// the view that asked wakes there rather than at every minute. A package whose index is
+    /// still being built cannot say ([`NextChange::Unknown`]).
     pub(super) fn next_change(
         &self,
         ty: &TypeId,
@@ -89,15 +89,11 @@ impl TiloStore {
             return Ok(NextChange::Unknown);
         };
         let clock = self.clock();
-        match self
-            .held()
-            .apps
-            .get(&schema.app)
-            .filter(|held| held.ready())
-        {
+        let inside = self.held();
+        match inside.apps.get(&schema.app).filter(|held| held.ready()) {
             Some(held) => held
                 .index
-                .next_change(&schema.id, fields, clock)
+                .next_change(&schema.id, fields, clock, &inside.overlay)
                 .map_err(backend),
             None => Ok(NextChange::Unknown),
         }

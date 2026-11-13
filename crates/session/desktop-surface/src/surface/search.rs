@@ -356,6 +356,14 @@ impl DesktopHandle {
             .any(|action| action.id == id)
     }
 
+    /// Choose the host action `id` for the person, as their pick in search or a banner does: the
+    /// host carries it out on its next pass ([`Self::take_host_choices`]). An app asks for one
+    /// through the desk ([`tilo_actions::remote::session_actions::SHOW_CONNECT`]).
+    pub fn choose_host_action(&self, id: &str) {
+        self.shared.borrow_mut().host_choices.push(id.to_owned());
+        self.wake();
+    }
+
     /// The host actions the person chose since the last call, by id.
     pub fn take_host_choices(&self) -> Vec<String> {
         std::mem::take(&mut self.shared.borrow_mut().host_choices)

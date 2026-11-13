@@ -599,7 +599,7 @@ fn status_timeline(pane: &Pane) -> Element {
             continue;
         };
         let fact = ui::fact::Measured::known(
-            ui::fact::Measure::new("Application status"),
+            ui::fact::Measure::new(say("publisher-status")),
             summary.clone(),
             "registry",
             instant,
@@ -661,6 +661,7 @@ impl ResourceApp for App {
     type Resource = Publisher;
     const ID: &'static str = crate::APP_ID;
     const TITLE: &'static str = crate::APP_TITLE;
+    const TITLE_KEY: &'static str = "publisher-app-title";
 
     fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
         Some(&crate::locales::CATALOG)

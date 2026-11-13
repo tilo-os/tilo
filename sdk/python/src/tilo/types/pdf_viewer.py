@@ -254,6 +254,7 @@ class Stroke(TypedDict):
 
 class Document(Resource):
     """PDF — `pdf.document`."""
+    __surface__ = "so.tilo.pdf-viewer@df5c8c476ed389e7"
     @property
     def source(self) -> Any:
         """Read only."""
@@ -298,12 +299,11 @@ class Document(Resource):
 
     def pin_source(self,
         *,
-        hash: str,
-        len: int,
+        source: Any,
         name: str,
     ) -> Run | None:
         """Runs the app's action."""
-        return self.action("pin-source", hash=hash, len=len, name=name)
+        return self.action("pin-source", source=source, name=name)
 
     def adopt_existing(self,
         *,
@@ -459,6 +459,7 @@ class Document(Resource):
 
 class SignatureProfile(Resource):
     """Signature — `pdf.signature-profile`."""
+    __surface__ = "so.tilo.pdf-viewer@df5c8c476ed389e7"
     signer: str
     strokes: list[Stroke]
 

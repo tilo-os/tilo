@@ -490,6 +490,12 @@ mod component_adapter {
         /// its layout as they were. A difference fails a test; any other
         /// debug build logs it. What the check's own sync wrote is part of
         /// the next witness, as any pass's is.
+        ///
+        /// The proof runs as [`crate::component_inputs::proving`]: what a
+        /// frame's own hook takes in beside the tree's sync (an app's finished
+        /// work, moved into the state its views are keyed by) is the frame's
+        /// take-in, not the tree's sync, and taking it in again here would
+        /// change the tree the check means to find unchanged.
         #[cfg(debug_assertions)]
         fn verify_rest(&mut self, state: &AutoCommit) {
             let shown = |widget: &Self| {
@@ -528,7 +534,7 @@ mod component_adapter {
                 let binding = self.component.callback_binding();
                 let before = shown(self);
                 let ((), reads) = crate::component_inputs::reading(&binding.lifetime, || {
-                    self.sync_root(state);
+                    crate::component_inputs::proving(|| self.sync_root(state));
                 });
                 ((before, shown(self)), reads)
             });

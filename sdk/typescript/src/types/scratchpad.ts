@@ -17,6 +17,11 @@
 import { resourceProxy } from "tilo-sdk";
 import type * as tilo from "tilo-sdk";
 
+/** The version of the surface these types were made from: a workspace whose app
+ * publishes another refuses their actions rather than run what they no longer
+ * describe. */
+export const SURFACE = "so.tilo.scratchpad@2fb5aa26aed56da8";
+
 /** Note — `scratchpad.note`. */
 export interface Note extends tilo.Resource {
   body: unknown;
@@ -24,6 +29,6 @@ export interface Note extends tilo.Resource {
 
 /** The `scratchpad.note` kind at `path`. */
 export function note(ws: tilo.Workspace, path: string): Note {
-  return resourceProxy(ws, path) as unknown as Note;
+  return resourceProxy(ws, path, SURFACE) as unknown as Note;
 }
 

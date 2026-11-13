@@ -46,6 +46,7 @@ impl ResourceApp for App {
     type Resource = Studio;
     const ID: &'static str = APP_ID;
     const TITLE: &'static str = APP_TITLE;
+    const TITLE_KEY: &'static str = "themes-app-title";
 
     fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
         Some(&crate::locales::CATALOG)
@@ -98,3 +99,25 @@ impl ResourceApp for App {
 ui::dev_reload_entry!(App);
 
 ui::reach_tests!(App);
+
+/// German is one of the languages the studio ships, and its window is named
+/// there too: the key the framework resolves the title through reads
+/// "Design-Studio".
+#[cfg(test)]
+mod window_name_tests {
+    #[test]
+    fn the_window_is_named_in_german() {
+        let catalog = &crate::locales::CATALOG;
+        catalog.set_locale("de-DE");
+        assert_eq!(
+            catalog.t(<super::App as ui::framework::ResourceApp>::TITLE_KEY),
+            "Design-Studio",
+            "a German window is titled in German"
+        );
+        catalog.set_locale("en-US");
+        assert_eq!(
+            catalog.t(<super::App as ui::framework::ResourceApp>::TITLE_KEY),
+            "Theme Studio"
+        );
+    }
+}

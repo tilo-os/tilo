@@ -2182,7 +2182,7 @@ impl TerminalWidget {
         let failed = writer.write_all(bytes).is_err() || writer.flush().is_err();
         drop(writer);
         if failed {
-            self.mark_disconnected("Terminal input failed — session unavailable");
+            self.mark_disconnected("Terminal input failed. Session unavailable.");
             return Err("terminal input failed; the session is now disconnected".to_string());
         }
         Ok(())
@@ -2796,11 +2796,17 @@ impl TerminalWidget {
         edits: &mut ui::widget::Edits<'_>,
     ) {
         for (run, asked) in std::mem::take(&mut self.runs.ended) {
+            // The run's output is kept where this window keeps content, and
+            // the run names it by the reference that store answered: a
+            // record's content travels sealed, so a plain hash would name
+            // nothing its readers could open.
             let output = if run.output.is_empty() {
                 None
             } else {
                 match self.content.put(&run.output) {
-                    Ok(hash) => Some(hash),
+                    Ok(reference) => {
+                        Some(ui::tilo_resource::Bytes::kept_as(&run.output, &reference))
+                    }
                     Err(error) => {
                         tracing::warn!(%error, "terminal could not keep a run's output");
                         None
@@ -2827,11 +2833,6 @@ impl TerminalWidget {
                 tool: crate::parse::tool_of(&run.command).to_owned(),
                 undoable: crate::undoability::of(&run.command) == Some(true),
                 items: crate::parse::items(&run.command, &run.output),
-                output_len: if output.is_some() {
-                    u64::try_from(run.output.len()).unwrap_or(u64::MAX)
-                } else {
-                    0
-                },
                 output,
                 command: run.command,
                 cwd: run.cwd,
@@ -4825,7 +4826,6 @@ impl TerminalWidget {
         } else {
             EmptyStateContent {
                 icon: Some(Icon::Terminal),
-                message: Some("Output appears here once a shell session starts."),
                 ..EmptyStateContent::new("No shell running")
             }
         };
@@ -6677,7 +6677,7 @@ impl TerminalWidget {
             output_rx,
             content,
         );
-        widget.mark_disconnected("Terminal process has not opened — input unavailable");
+        widget.mark_disconnected("Terminal process has not opened. Input unavailable.");
         widget
     }
 
@@ -6820,7 +6820,7 @@ impl TerminalWidget {
                 }
             });
         if reader_result.is_err() {
-            widget.mark_disconnected("Terminal unavailable — PTY reader could not start");
+            widget.mark_disconnected("Terminal unavailable. Its input could not be read.");
             request_terminal_wake(&widget.waker);
         }
     }

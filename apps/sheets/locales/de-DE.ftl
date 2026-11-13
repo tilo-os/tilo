@@ -52,7 +52,6 @@ sheets-doc-settings-time-format = Zeitformat der Arbeitsmappe festgelegt
 # Notion-Export importieren.
 sheets-notion-import-title = Notion-Export importieren
 sheets-notion-files = Notion-Export
-sheets-notion-json-files = Notion-Datenbankliste
 sheets-notion-imported =
     { $tables ->
         [one] Eine Tabelle importiert
@@ -155,3 +154,6 @@ sheets-workbook-add-chart = Diagramm hinzufügen
 sheets-workbook-edit-chart = Diagramm bearbeiten
 sheets-workbook-rename-sheet = Blatt umbenennen
 sheets-workbook-comment = Zellen kommentieren
+
+## What the app is called in a window and in the launcher
+sheets-app-title = Tabellen

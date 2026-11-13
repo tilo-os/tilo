@@ -1299,6 +1299,7 @@ impl ResourceApp for CalendarShell {
     type Resource = Calendar;
     const ID: &'static str = "so.tilo.calendar";
     const TITLE: &'static str = "Calendar";
+    const TITLE_KEY: &'static str = "calendar-app-title";
     const ICON: Option<&'static str> = Some("calendar");
     const OPENS: &'static [&'static str] = &["text/calendar"];
     const ARGUMENTS: usize = 1;

@@ -82,6 +82,7 @@ impl ResourceApp for LogsShell {
     const ID: &'static str = "so.tilo.logs";
     const READS_HOST: &'static [ui::launch::HostSource] = &[ui::launch::HostSource::Journal];
     const TITLE: &'static str = "Logs";
+    const TITLE_KEY: &'static str = "logs-app-title";
 
     fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
         Some(&crate::locales::CATALOG)

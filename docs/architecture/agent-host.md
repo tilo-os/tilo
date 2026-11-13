@@ -69,7 +69,7 @@ Summary:
 An agent on device A (a Tilo box, or a laptop running an enrolled
 `tilo-runtime`) can act on device B — its apps, files, terminal and
 workspace — exactly as if it ran on B, over B's own agent door. There is no
-TLS or HTTP listener, no SSH and no hosted proxy: the door is carried over
+TLS or HTTP listener, no SSH and no hosted proxy: the API server is carried over
 iroh, as ALPN `tilo-agent-door/1` on the endpoint each device already runs
 (`crates/runtime/tilo-runtime/src/remote_door.rs`).
 
@@ -138,9 +138,9 @@ Device-to-device *actions* (`tilo.own-device`) still admit only the person at
 the device, never an agent: an agent reaches another device through that
 device's agent door, where its person decides.
 
-## Hosted workspaces: the MCP front door
+## Hosted workspaces: the API server
 
-A hosting provider puts [`tilo-front-door`](../../crates/hosting/tilo-front-door/README.md)
+A hosting provider puts [`tilo-api`](../../crates/hosting/tilo-api/README.md)
 in front of the `tilo-runtime` HTTP endpoints of the workspaces it hosts. It is
 the proxy those endpoints expect: the person authorizes an agent there (OAuth
 2.1 as the MCP authorization profile asks, signing in with a device of theirs
@@ -148,7 +148,7 @@ through `tilo_user_identity::SignInProof`) for all their workspaces or one, and
 each agent session is routed to the endpoint of the workspace it acts in with
 that endpoint's token. Listing and creating workspaces go to the person's hosts
 as their own operations (`room.list`, `room.create`), asked by a device of the
-person the door holds; a host may refuse.
+person the API server holds; a host may refuse.
 
 ## What this is not
 

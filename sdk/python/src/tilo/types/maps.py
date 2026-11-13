@@ -102,6 +102,7 @@ class DownloadedRegion(TypedDict):
 
 class Workspace(Resource):
     """Maps — `maps.workspace`."""
+    __surface__ = "so.tilo.maps@f2f3ecd3c968866a"
     places: list[Place]
     @property
     def recents(self) -> Any:
@@ -217,6 +218,7 @@ class Workspace(Resource):
 
 class OfflineAreas(Resource):
     """Offline areas — `maps.offline-areas`."""
+    __surface__ = "so.tilo.maps@f2f3ecd3c968866a"
     devices: dict[str, Any]
 
     def record(self,

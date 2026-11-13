@@ -308,7 +308,7 @@ pub fn renderable(project: &Project) -> Result<(), String> {
         ));
     }
     if let Some(item) =
-        placed(project).find(|item| tilo_actions::content_hash(&item.path).is_none())
+        placed(project).find(|item| tilo_actions::named_reference(&item.path).is_none())
     {
         return Err(format!(
             "{} is not workspace content: an agent's render reads only sources imported with \
@@ -319,20 +319,21 @@ pub fn renderable(project: &Project) -> Result<(), String> {
     Ok(())
 }
 
-/// The workspace content every source `project` places is read from, once each,
-/// lowercase.
+/// The workspace content every source `project` places is read from, once
+/// each, as the record names it: a source's content reference carries the key
+/// its bytes are sealed with, so a reader opens them where a bare address
+/// would only find ciphertext.
 #[must_use]
 pub fn placed_content(project: &Project) -> Vec<String> {
-    let mut hashes: Vec<String> = Vec::new();
+    let mut references: Vec<&str> = Vec::new();
     for item in placed(project) {
-        if let Some(hash) = tilo_actions::content_hash(&item.path) {
-            let hash = hash.to_ascii_lowercase();
-            if !hashes.contains(&hash) {
-                hashes.push(hash);
-            }
+        if let Some(reference) = tilo_actions::named_reference(&item.path)
+            && !references.contains(&reference)
+        {
+            references.push(reference);
         }
     }
-    hashes
+    references.into_iter().map(str::to_owned).collect()
 }
 
 /// `project` rendering only `start..end` (each defaulting to its render

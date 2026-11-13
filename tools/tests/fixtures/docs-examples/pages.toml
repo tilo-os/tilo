@@ -1,0 +1,20 @@
+# A book whose one page carries an example of every language the docs run.
+#
+# It is tools/tests/test_doc_examples.py's fixture and the shape a page of
+# docs/tilo-sh/pages.toml is checked against: tools/docs/doc_examples.py
+# `run` executes it against a local Tilo, `check` reads it as a page author's
+# would be read. The page's examples are kept runnable, so the file is also the
+# example a page author copies.
+
+base = "/docs/"
+repository = "https://code.tilo.so/tilo/tilo"
+
+[examples]
+languages = ["python", "typescript", "sh"]
+
+[[page]]
+slug = ""
+source = "tools/tests/fixtures/docs-examples/index.md"
+section = "Get started"
+nav = "Example"
+description = "One example of every language, run against a local Tilo."

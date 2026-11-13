@@ -2238,7 +2238,10 @@ impl CalendarApp {
                         "calendar-tasks-row-priority",
                         &[
                             ("title", ui::i18n::ArgValue::from(name)),
-                            ("priority", ui::i18n::ArgValue::from(task.priority.label())),
+                            (
+                                "priority",
+                                ui::i18n::ArgValue::from(task.priority.display_label()),
+                            ),
                         ],
                     );
                 }

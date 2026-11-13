@@ -37,10 +37,13 @@ impl SelectionKey {
 
     fn decode(bytes: &[u8]) -> Result<Self, String> {
         if bytes.len() > MAX_PREFERENCE_BYTES {
-            return Err("Saved download selection exceeds its size limit.".into());
+            return Err(crate::setup::strings::t(
+                "imager-setup-error-download-selection-too-large",
+            ));
         }
-        let key: Self = serde_json::from_slice(bytes)
-            .map_err(|error| format!("Saved download selection is invalid: {error}"))?;
+        let key: Self = serde_json::from_slice(bytes).map_err(|_| {
+            crate::setup::strings::t("imager-setup-error-download-selection-invalid")
+        })?;
         key.validate()?;
         Ok(key)
     }
@@ -57,7 +60,9 @@ impl SelectionKey {
                 .bytes()
                 .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
         {
-            return Err("Saved download selection has an unsupported value.".into());
+            return Err(crate::setup::strings::t(
+                "imager-setup-error-download-selection-invalid",
+            ));
         }
         Ok(())
     }
@@ -148,9 +153,18 @@ pub(super) struct InternalDownloadFlow {
 
 impl InternalDownloadFlow {
     #[cfg(not(test))]
-    pub(super) fn new(capabilities: Capabilities, staging: StagingLink) -> Result<Self, String> {
-        let preference = SelectionPreference::live()?;
-        let saved = preference.load()?;
+    /// The flow reading this computer's saved download selection. A failure
+    /// names, as a catalogue message, what this computer cannot do, so the
+    /// card states it in the window's language instead of the source one.
+    pub(super) fn new(
+        capabilities: Capabilities,
+        staging: StagingLink,
+    ) -> Result<Self, &'static str> {
+        let preference =
+            SelectionPreference::live().map_err(|_| "imager-setup-error-download-no-folder")?;
+        let saved = preference
+            .load()
+            .map_err(|_| "imager-setup-error-download-unreadable")?;
         let mut flow = Self {
             capabilities,
             preference,
@@ -282,7 +296,9 @@ impl InternalDownloadFlow {
 
     fn resolve(&mut self, key: &SelectionKey) -> Result<InternalRelease, String> {
         if !self.capabilities.supports(Experience::FullOs) {
-            return Err("Full Tilo download is not supported on this computer.".into());
+            return Err(crate::setup::strings::t(
+                "imager-setup-error-download-unsupported",
+            ));
         }
         let architecture = self.host_architecture().to_string();
         let mut releases = self
@@ -291,18 +307,16 @@ impl InternalDownloadFlow {
             .filter(|release| release.architecture() == architecture);
         let release = releases
             .next()
-            .ok_or("The selected Full Tilo download is no longer offered.")?;
+            .ok_or_else(|| crate::setup::strings::t("imager-setup-error-download-not-offered"))?;
         if releases.next().is_some() {
-            return Err(
-                "More than one Full Tilo download is offered for this computer; selection policy is unresolved."
-                    .into(),
-            );
+            return Err(crate::setup::strings::t(
+                "imager-setup-error-download-multiple",
+            ));
         }
         if !key.matches(&release) {
-            return Err(
-                "The selected Full Tilo download changed. Review the current download before continuing."
-                    .into(),
-            );
+            return Err(crate::setup::strings::t(
+                "imager-setup-error-download-changed",
+            ));
         }
         Ok(release)
     }
@@ -312,16 +326,15 @@ impl InternalDownloadFlow {
             self.worker = Some(match self.staging.clone() {
                 Some(link) => Worker::spawn(staging_consumer(link))?,
                 None => Worker::spawn(|_, _, _, _| {
-                    Err(
-                        "Protected staging is not available; verified download data was retained."
-                            .into(),
-                    )
+                    Err(crate::setup::strings::t(
+                        "imager-setup-error-staging-not-built-retained",
+                    ))
                 })?,
             });
         }
-        self.worker
-            .as_ref()
-            .ok_or("Download worker is unavailable.".into())
+        self.worker.as_ref().ok_or(crate::setup::strings::t(
+            "imager-setup-error-download-unavailable",
+        ))
     }
 
     /// Follow a capability change (the host probe finished).
@@ -346,7 +359,7 @@ impl InternalDownloadFlow {
             .worker
             .as_ref()
             .zip(self.token.as_ref())
-            .ok_or("The verified download is no longer held.")?;
+            .ok_or_else(|| crate::setup::strings::t("imager-setup-error-download-lost"))?;
         worker.consume(token)?;
         self.consumed = true;
         self.set_pending(
@@ -445,7 +458,9 @@ impl InternalDownloadFlow {
 
     pub(super) fn start_selected(&mut self, key: SelectionKey) -> Result<(), String> {
         if !self.can_start() {
-            return Err("A Full Tilo download cannot start in its current state.".into());
+            return Err(crate::setup::strings::t(
+                "imager-setup-error-download-start-unavailable",
+            ));
         }
         let release = self.resolve(&key)?;
         self.preference.save(&key)?;
@@ -460,12 +475,13 @@ impl InternalDownloadFlow {
 
     pub(super) fn resume(&mut self) -> Result<(), String> {
         if self.pending.is_some() || !self.can_resume() {
-            return Err("This saved download cannot be resumed yet.".into());
+            return Err(crate::setup::strings::t(
+                "imager-setup-error-download-resume-unavailable",
+            ));
         }
-        let key = self
-            .saved
-            .clone()
-            .ok_or("There is no saved download selection to resume.")?;
+        let key = self.saved.clone().ok_or(crate::setup::strings::t(
+            "imager-setup-error-no-saved-download",
+        ))?;
         let release = self.resolve(&key)?;
         let token = self.ensure_worker()?.start(release)?;
         self.token = Some(token);
@@ -494,13 +510,19 @@ impl InternalDownloadFlow {
                 )
             )
         {
-            return Err("The download is not currently active.".into());
+            // Pause and cancel answer with the message naming the control the
+            // person pressed.
+            return Err(crate::setup::strings::t(if cancel {
+                "imager-setup-error-download-cancel-unavailable"
+            } else {
+                "imager-setup-error-download-pause-unavailable"
+            }));
         }
         let (worker, token) = self
             .worker
             .as_ref()
             .zip(self.token.as_ref())
-            .ok_or("The active download is unavailable.")?;
+            .ok_or_else(|| crate::setup::strings::t("imager-setup-error-download-unavailable"))?;
         if cancel {
             worker.cancel(token)?;
             self.set_pending(
@@ -529,21 +551,24 @@ impl InternalDownloadFlow {
                 )
             )
         {
-            return Err("Unfinished download data is not available to discard.".into());
+            return Err(crate::setup::strings::t(
+                "imager-setup-error-download-discard-unavailable",
+            ));
         }
-        let key = self
-            .saved
-            .clone()
-            .ok_or("There is no saved download selection to discard.")?;
+        let key = self.saved.clone().ok_or(crate::setup::strings::t(
+            "imager-setup-error-no-unfinished-download",
+        ))?;
         let release = self.resolve(&key)?;
         let target = self
             .token
             .clone()
-            .ok_or("The prior download operation is unavailable.")?;
+            .ok_or_else(|| crate::setup::strings::t("imager-setup-error-download-unavailable"))?;
         let token = self
             .worker
             .as_ref()
-            .ok_or("The download worker is unavailable.")?
+            .ok_or(crate::setup::strings::t(
+                "imager-setup-error-download-unavailable",
+            ))?
             .discard(&target, release)?;
         self.token = Some(token);
         self.set_pending(
@@ -555,13 +580,15 @@ impl InternalDownloadFlow {
 
     pub(super) fn release(&mut self) -> Result<(), String> {
         if self.pending.is_some() || self.presentation.phase != Some(WorkerPhase::Ready) {
-            return Err("The verified download is not available to keep for later.".into());
+            return Err(crate::setup::strings::t(
+                "imager-setup-error-download-release-unavailable",
+            ));
         }
         let (worker, token) = self
             .worker
             .as_ref()
             .zip(self.token.as_ref())
-            .ok_or("The verified download is no longer held.")?;
+            .ok_or_else(|| crate::setup::strings::t("imager-setup-error-download-lost"))?;
         worker.release(token)?;
         self.set_pending(
             PendingCommand::Release,
@@ -696,7 +723,7 @@ impl SelectionPreference {
     #[cfg(not(test))]
     fn live() -> Result<Self, String> {
         let root = tilo_paths::data_local_dir()
-            .ok_or("A device-local settings folder is unavailable on this computer.")?;
+            .ok_or_else(|| crate::setup::strings::t("imager-setup-error-download-no-folder"))?;
         Ok(Self::at(
             root.join("tilo")
                 .join("setup")
@@ -712,15 +739,15 @@ impl SelectionPreference {
         let mut file = match File::open(&self.path) {
             Ok(file) => file,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(error) => {
-                return Err(format!(
-                    "Saved download selection could not be read: {error}"
+            Err(_) => {
+                return Err(crate::setup::strings::t(
+                    "imager-setup-error-download-unreadable",
                 ));
             }
         };
         if file
             .metadata()
-            .map_err(|error| format!("Saved download selection could not be inspected: {error}"))?
+            .map_err(|_| crate::setup::strings::t("imager-setup-error-download-unreadable"))?
             .len()
             > MAX_PREFERENCE_BYTES as u64
         {
@@ -730,7 +757,7 @@ impl SelectionPreference {
         Read::by_ref(&mut file)
             .take((MAX_PREFERENCE_BYTES + 1) as u64)
             .read_to_end(&mut bytes)
-            .map_err(|error| format!("Saved download selection could not be read: {error}"))?;
+            .map_err(|_| crate::setup::strings::t("imager-setup-error-download-unreadable"))?;
         if bytes.len() > MAX_PREFERENCE_BYTES {
             return Ok(None);
         }
@@ -745,12 +772,12 @@ impl SelectionPreference {
             .filter(|path| !path.as_os_str().is_empty())
             .unwrap_or_else(|| Path::new("."));
         fs::create_dir_all(parent)
-            .map_err(|error| format!("Download selection could not be saved: {error}"))?;
+            .map_err(|_| crate::setup::strings::t("imager-setup-error-download-unsaved"))?;
         let name = self
             .path
             .file_name()
             .and_then(|name| name.to_str())
-            .ok_or("Download selection path has no ordinary file name.")?;
+            .ok_or_else(|| crate::setup::strings::t("imager-setup-error-download-unsaved"))?;
         let write_result = (|| -> Result<(), std::io::Error> {
             let mut file = tempfile::Builder::new()
                 .prefix(&format!(".{name}."))
@@ -764,8 +791,10 @@ impl SelectionPreference {
             }
             Ok(())
         })();
-        if let Err(error) = write_result {
-            return Err(format!("Download selection could not be saved: {error}"));
+        if write_result.is_err() {
+            return Err(crate::setup::strings::t(
+                "imager-setup-error-download-unsaved",
+            ));
         }
         Ok(())
     }
@@ -889,7 +918,9 @@ mod tests {
             let preference_root = tempfile::tempdir().unwrap();
             let key = SelectionKey::from_release(&server.release(&bytes));
             let worker = Worker::fixture_for_test(root.path(), server.transport(), |_, _, _, _| {
-                Err("Protected staging is unavailable.".into())
+                Err(crate::setup::strings::t(
+                    "imager-setup-error-staging-unavailable",
+                ))
             });
             let mut changed_flow = InternalDownloadFlow::fixture(
                 supported(),
@@ -903,7 +934,9 @@ mod tests {
             assert!(server.requests().is_empty());
 
             let worker = Worker::fixture_for_test(root.path(), server.transport(), |_, _, _, _| {
-                Err("Protected staging is unavailable.".into())
+                Err(crate::setup::strings::t(
+                    "imager-setup-error-staging-unavailable",
+                ))
             });
             let mut ambiguous = InternalDownloadFlow::fixture(
                 supported(),
@@ -919,7 +952,9 @@ mod tests {
             assert!(ambiguous.token.is_none());
 
             let worker = Worker::fixture_for_test(root.path(), server.transport(), |_, _, _, _| {
-                Err("Protected staging is unavailable.".into())
+                Err(crate::setup::strings::t(
+                    "imager-setup-error-staging-unavailable",
+                ))
             });
             let mut unsupported_capabilities = supported();
             unsupported_capabilities.internal_dual_boot = false;
@@ -956,7 +991,9 @@ mod tests {
             let preference_root = tempfile::tempdir().unwrap();
             let key = SelectionKey::from_release(&server.release(&bytes));
             let worker = Worker::fixture_for_test(root.path(), server.transport(), |_, _, _, _| {
-                Err("Protected staging is not available in this build.".into())
+                Err(crate::setup::strings::t(
+                    "imager-setup-error-staging-not-built",
+                ))
             });
             let mut flow = InternalDownloadFlow::fixture(
                 supported(),
@@ -1017,7 +1054,9 @@ mod tests {
             let preference_path = preference_root.path().join("selection.json");
             let key = SelectionKey::from_release(&server.release(&bytes));
             let worker = Worker::fixture_for_test(root.path(), server.transport(), |_, _, _, _| {
-                Err("Protected staging is unavailable.".into())
+                Err(crate::setup::strings::t(
+                    "imager-setup-error-staging-unavailable",
+                ))
             });
             let mut flow = InternalDownloadFlow::fixture(
                 supported(),
@@ -1046,7 +1085,7 @@ mod tests {
 
             assert_eq!(
                 duplicate.unwrap_err(),
-                "A Full Tilo download cannot start in its current state."
+                crate::setup::strings::t("imager-setup-error-download-start-unavailable")
             );
             assert_eq!(token_after, token);
             assert_eq!(preference_inode_after, preference_inode);
@@ -1075,7 +1114,9 @@ mod tests {
             let preference_path = preference_root.path().join("selection.json");
             let key = SelectionKey::from_release(&server.release(&bytes));
             let worker = Worker::fixture_for_test(root.path(), server.transport(), |_, _, _, _| {
-                Err("Protected staging is unavailable.".into())
+                Err(crate::setup::strings::t(
+                    "imager-setup-error-staging-unavailable",
+                ))
             });
             let mut flow = InternalDownloadFlow::fixture(
                 supported(),
@@ -1097,7 +1138,7 @@ mod tests {
 
             assert_eq!(
                 flow.start_selected(key).unwrap_err(),
-                "A Full Tilo download cannot start in its current state."
+                crate::setup::strings::t("imager-setup-error-download-start-unavailable")
             );
             assert_eq!(flow.token.as_ref(), Some(&token));
             assert_eq!(
@@ -1142,7 +1183,9 @@ mod tests {
             let preference_path = preference_root.path().join("selection.json");
             let key = SelectionKey::from_release(&server.release(&bytes));
             let worker = Worker::fixture_for_test(root.path(), server.transport(), |_, _, _, _| {
-                Err("Protected staging is unavailable.".into())
+                Err(crate::setup::strings::t(
+                    "imager-setup-error-staging-unavailable",
+                ))
             });
             let mut flow = InternalDownloadFlow::fixture(
                 supported(),
@@ -1168,7 +1211,9 @@ mod tests {
             ]);
             let resumed_worker =
                 Worker::fixture_for_test(root.path(), resumed_server.transport(), |_, _, _, _| {
-                    Err("Protected staging is unavailable.".into())
+                    Err(crate::setup::strings::t(
+                        "imager-setup-error-staging-unavailable",
+                    ))
                 });
             let mut resumed = InternalDownloadFlow::fixture(
                 supported(),
@@ -1212,7 +1257,9 @@ mod tests {
             let preference_root = tempfile::tempdir().unwrap();
             let key = SelectionKey::from_release(&server.release(&bytes));
             let worker = Worker::fixture_for_test(root.path(), server.transport(), |_, _, _, _| {
-                Err("Protected staging is unavailable.".into())
+                Err(crate::setup::strings::t(
+                    "imager-setup-error-staging-unavailable",
+                ))
             });
             let mut flow = InternalDownloadFlow::fixture(
                 supported(),
@@ -1260,7 +1307,9 @@ mod tests {
             let preference_root = tempfile::tempdir().unwrap();
             let key = SelectionKey::from_release(&server.release(&bytes));
             let worker = Worker::fixture_for_test(root.path(), server.transport(), |_, _, _, _| {
-                Err("Protected staging is unavailable.".into())
+                Err(crate::setup::strings::t(
+                    "imager-setup-error-staging-unavailable",
+                ))
             });
             let mut flow = InternalDownloadFlow::fixture(
                 supported(),
@@ -1278,7 +1327,9 @@ mod tests {
             let reopened_server = Server::new(vec![response(200, "", &bytes)]);
             let reopened_worker =
                 Worker::fixture_for_test(root.path(), reopened_server.transport(), |_, _, _, _| {
-                    Err("Protected staging is unavailable.".into())
+                    Err(crate::setup::strings::t(
+                        "imager-setup-error-staging-unavailable",
+                    ))
                 });
             let mut reopened = InternalDownloadFlow::fixture(
                 supported(),
@@ -1314,7 +1365,9 @@ mod tests {
             let preference_root = tempfile::tempdir().unwrap();
             let key = SelectionKey::from_release(&server.release(&bytes));
             let worker = Worker::fixture_for_test(root.path(), server.transport(), |_, _, _, _| {
-                Err("Protected staging is unavailable.".into())
+                Err(crate::setup::strings::t(
+                    "imager-setup-error-staging-unavailable",
+                ))
             });
             let mut flow = InternalDownloadFlow::fixture(
                 supported(),

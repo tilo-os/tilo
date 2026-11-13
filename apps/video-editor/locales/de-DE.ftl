@@ -117,7 +117,7 @@ video-editor-mask-rotation = Die Maske eines Clips gedreht
 video-editor-mask-feather = Die Maske eines Clips weichgezeichnet
 video-editor-mask-invert = { $new ->
     [true] Die Maske eines Clips invertiert
-   *[false] Die Invertierung der Maske eines Clips aufgehoben
+   *[false] Die Maske eines Clips wiederhergestellt
 }
 
 video-editor-marker-t = Die Marke { $item } verschoben
@@ -147,7 +147,7 @@ video-editor-add-track = Eine { $kind ->
    *[other] Bild-
 }spur hinzugefügt
 video-editor-reset-mix = Pegel und Panorama einer Spur zurückgesetzt
-video-editor-trim-lanes = Die Spuren ausgeglichen
+video-editor-trim-lanes = Den Pegel der Spuren gesenkt
 video-editor-delete-track = Eine Spur gelöscht
 video-editor-place-clip = Einen Clip auf die Zeitleiste gelegt
 video-editor-delete-media = Eine Quelle gelöscht
@@ -188,6 +188,9 @@ video-editor-a11y-start-export = Export starten
 video-editor-a11y-close-export = Export schließen
 video-editor-a11y-export-details = Details zum Exportfehler
 video-editor-a11y-export-blocked = Warum der Export nicht laufen kann
+video-editor-a11y-marker-edit-note = Notiz zu { $marker } bearbeiten
+video-editor-a11y-marker-rename = { $marker } umbenennen
+video-editor-a11y-marker-delete = { $marker } löschen
 video-editor-a11y-close-shortcuts = Kürzel schließen
 video-editor-a11y-chroma-key = { $on ->
     [true] Chroma-Key ausschalten
@@ -280,6 +283,9 @@ video-editor-type-title = Titeltext
 video-editor-font = Schrift
 video-editor-colour = Farbe
 video-editor-preview-too-small = Zu wenig Platz für die Vorschau
+video-editor-preview-empty = Kein Clip unter dem Abspielkopf
+video-editor-preview-unavailable = Dieses Gerät kann die Vorschau nicht anzeigen
+video-editor-inspector-empty = Kein Clip ausgewählt
 video-editor-no-audio = Kein Ton
 video-editor-mix = Mix
 video-editor-no-preview = Keine Vorschau
@@ -393,3 +399,6 @@ video-editor-project-clear-effects = Effekte entfernen
 video-editor-project-unlink = Verknüpfung lösen
 video-editor-project-link-audio = Ton abtrennen
 video-editor-project-link-with = Clips verknüpfen
+
+## What the app is called in a window and in the launcher
+video-editor-app-title = Video-Editor

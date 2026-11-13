@@ -294,6 +294,16 @@ If an app hand-rolls text editing, it will get these wrong — use the shared co
 
 ## 4. Chrome & copy
 
+- First ask whether the text should exist. Find where and when it shows in
+  the code before touching its words. Text that explains a limitation ("The
+  playlist's videos arrive when it is opened", on the open playlist), restates
+  what the layout already shows, or describes what a pane is for is fixed at
+  the cause: show a loading state, remove the limitation, or delete the text.
+  Rewording it keeps the problem.
+- Every word names something the person can see or do. A vague verb or
+  phrase that stands in for a fact ("touched", "kept things moving", "handed
+  off a capture", "took a change") is replaced by the fact the code knows, or
+  the text goes.
 - No marketing slop in placeholders or badges ("Search privacy-respecting
   videos" → "Search"; no "no ads" pill).
 - No internal / implementation labels in user-facing chrome (e.g. "CRDT-synced",

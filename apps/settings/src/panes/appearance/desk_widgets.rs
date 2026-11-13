@@ -12,7 +12,7 @@ use ui::widget::Element;
 
 use crate::i18n::t;
 use crate::prefs::DeskWidgetsPrefs;
-use provider_settings_ui::widgets::{Item, note, rows, section};
+use provider_settings_ui::widgets::{Item, rows, section};
 
 fn show_label(mode: ShowMode) -> String {
     t(match mode {
@@ -33,7 +33,6 @@ pub(super) fn card(cx: &mut ViewCx<DeskWidgetsPrefs>) -> Element {
         for (id, on) in WidgetId::ALL.into_iter().zip(*on) {
             body.extend(widget_rows(cx, id, on));
         }
-        body.push(note(&t("settings-desk-note")));
         section(&t("settings-desk-card"), rows(body)).into_element()
     })
 }

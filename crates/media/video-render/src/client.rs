@@ -2,7 +2,7 @@
 //! the helper on it with the output file it writes into, and follow it to
 //! the end.
 
-use std::io::Write as _;
+use std::io::{Read, Write as _};
 use std::os::fd::OwnedFd;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
@@ -164,15 +164,16 @@ impl JobDir {
             .map_err(|error| format!("the timeline could not be handed over: {error}"))
     }
 
-    /// Copy source `hash` from `reader` for the helper, within the budget.
-    pub fn put_source(&mut self, hash: &str, reader: &mut dyn std::io::Read) -> Result<(), String> {
-        if hash.is_empty() || !hash.bytes().all(|b| b.is_ascii_hexdigit()) {
-            return Err(format!("{hash:?} is not a content hash"));
+    /// Copy the source kept under `address` from `reader` for the helper,
+    /// within the budget.
+    pub fn put_source(&mut self, address: &str, reader: &mut dyn Read) -> Result<(), String> {
+        if !ui::content::valid_hash(address) {
+            return Err(format!("{address:?} is not a content hash"));
         }
         let mut file =
-            std::fs::File::create(self.path.join(SOURCES).join(hash.to_ascii_lowercase()))
+            std::fs::File::create(self.path.join(SOURCES).join(address.to_ascii_lowercase()))
                 .map_err(|error| format!("a source could not be handed over: {error}"))?;
-        let mut limited = std::io::Read::take(reader, self.budget.saturating_add(1));
+        let mut limited = Read::take(reader, self.budget.saturating_add(1));
         let copied = std::io::copy(&mut limited, &mut file)
             .map_err(|error| format!("a source could not be handed over: {error}"))?;
         if copied > self.budget {

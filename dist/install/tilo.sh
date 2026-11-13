@@ -32,8 +32,21 @@ main() {
   need() { command -v "$1" >/dev/null 2>&1 || fail "this install needs $1, which this computer doesn't have"; }
   need uname
   need tar
+  # Releases come over https, or over plain http from this computer itself
+  # (a copy of tilo.sh running here), which never leaves it.
+  protocols='=https,file'
+  case $releases in
+    http://*)
+      host=${releases#http://}
+      host=${host%%/*}
+      case $host in \[*) host=${host%%]*}] ;; *) host=${host%:*} ;; esac
+      case $host in
+        localhost | *.localhost | '[::1]') protocols='=https,http,file' ;;
+        127.*) case $host in *[!0-9.]*) ;; *) protocols='=https,http,file' ;; esac ;;
+      esac ;;
+  esac
   if command -v curl >/dev/null 2>&1; then
-    fetch() { curl -fsSL --proto '=https,file' --tlsv1.2 -o "$2" "$1"; }
+    fetch() { curl -fsSL --proto "$protocols" --tlsv1.2 -o "$2" "$1"; }
   elif command -v wget >/dev/null 2>&1; then
     fetch() { wget -q -O "$2" "$1"; }
   else

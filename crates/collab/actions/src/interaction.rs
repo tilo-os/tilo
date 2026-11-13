@@ -53,7 +53,7 @@ pub struct InteractionActor {
     pub id: String,
     pub kind: ActorKind,
     /// The person an agent, a Shortcut or an app acts for, as the host
-    /// admitted the delegation: what presence names as "Claude, for Ada".
+    /// admitted the delegation: what presence names as "Claude for Ada".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub for_person: Option<String>,
 }
@@ -192,6 +192,13 @@ pub struct InteractionAction {
     pub label: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub app: Option<ActionApp>,
+    /// The kind of step the action declares it takes
+    /// ([`StepKind`](crate::StepKind)), so a surface says it in the reader's
+    /// language instead of reading it off the label's English words. Absent
+    /// for an action whose declaration names none, whose step reads as the
+    /// part of the record it acts on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step: Option<crate::StepKind>,
 }
 
 /// One broker-normalized, transient semantic interaction event.
@@ -462,6 +469,7 @@ mod tests {
                     id: "org.tilo.Sheets".into(),
                     label: "Sheets".into(),
                 }),
+                step: None,
             },
             resource: ActionResource {
                 id: "sheets.sheet:budget".into(),

@@ -230,6 +230,7 @@ class PersonAccount(TypedDict):
 
 class Root(Resource):
     """Settings — `settings.root`."""
+    __surface__ = "so.tilo.settings@985a39fcdb234d68"
     def inspect_input_sources(self,
         *,
         query: str | None = None,
@@ -290,6 +291,7 @@ class Root(Resource):
 
 class Appearance(Resource):
     """Appearance — `settings.appearance`."""
+    __surface__ = "so.tilo.settings@985a39fcdb234d68"
     mode: str
     dark_theme: str
     light_theme: str
@@ -327,6 +329,7 @@ class Appearance(Resource):
 
 class AppearanceDevice(Resource):
     """Appearance on this device — `settings.appearance-device`."""
+    __surface__ = "so.tilo.settings@985a39fcdb234d68"
     @property
     def distribution_defaults(self) -> Any | None:
         """Read only."""
@@ -335,6 +338,7 @@ class AppearanceDevice(Resource):
 
 class Accessibility(Resource):
     """Accessibility — `settings.accessibility`."""
+    __surface__ = "so.tilo.settings@985a39fcdb234d68"
     large_cursor: bool
     cursor_size: int
     cursor_theme: str
@@ -378,11 +382,13 @@ class Accessibility(Resource):
 
 class AccessibilityDevice(Resource):
     """Accessibility on this device — `settings.accessibility-device`."""
+    __surface__ = "so.tilo.settings@985a39fcdb234d68"
     apply_to_sign_in: bool
 
 
 class Input(Resource):
     """Input — `settings.input`."""
+    __surface__ = "so.tilo.settings@985a39fcdb234d68"
     touchpad_natural_scroll: bool
     mouse_natural_scroll: bool
     tap_to_click: bool
@@ -456,6 +462,7 @@ class Input(Resource):
 
 class InputDevice(Resource):
     """Input on this device — `settings.input-device`."""
+    __surface__ = "so.tilo.settings@985a39fcdb234d68"
     touchpad_enabled: bool
     touchpad_disabled_on_external_mouse: bool
     @property
@@ -594,6 +601,7 @@ class InputDevice(Resource):
 
 class TextAssistance(Resource):
     """Spelling and text — `settings.text-assistance`."""
+    __surface__ = "so.tilo.settings@985a39fcdb234d68"
     check_spelling: bool
     auto_correct: bool
     spelling_language: str
@@ -601,6 +609,7 @@ class TextAssistance(Resource):
 
 class Power(Resource):
     """Power — `settings.power`."""
+    __surface__ = "so.tilo.settings@985a39fcdb234d68"
     auto_suspend: bool
     suspend_minutes: int
     battery_suspend_minutes: int | None
@@ -627,6 +636,7 @@ class Power(Resource):
 
 class DeskWidgets(Resource):
     """Desk widgets — `settings.desk_widgets`."""
+    __surface__ = "so.tilo.settings@985a39fcdb234d68"
     music: WidgetPrefs
     team: WidgetPrefs
     calendar: WidgetPrefs
@@ -635,6 +645,7 @@ class DeskWidgets(Resource):
 
 class SearchHistory(Resource):
     """Search history — `settings.search_history`."""
+    __surface__ = "so.tilo.settings@985a39fcdb234d68"
     chosen: str
     chosen_for_text: str
     places: Any
@@ -642,6 +653,7 @@ class SearchHistory(Resource):
 
 class Updates(Resource):
     """Updates — `settings.updates`."""
+    __surface__ = "so.tilo.settings@985a39fcdb234d68"
     @property
     def auto(self) -> bool:
         """Read only."""
@@ -662,6 +674,7 @@ class Updates(Resource):
 
 class Notifications(Resource):
     """Notifications — `settings.notifications`."""
+    __surface__ = "so.tilo.settings@985a39fcdb234d68"
     do_not_disturb: bool
     show_banners: bool
     show_previews: bool
@@ -686,6 +699,7 @@ class Notifications(Resource):
 
 class Audio(Resource):
     """Sound — `settings.audio`."""
+    __surface__ = "so.tilo.settings@985a39fcdb234d68"
     system_sounds: SystemSoundPrefs
     balance: float
     @property
@@ -708,6 +722,7 @@ class Audio(Resource):
 
 class AudioDevice(Resource):
     """Sound on this device — `settings.audio-device`."""
+    __surface__ = "so.tilo.settings@985a39fcdb234d68"
     @property
     def output_device(self) -> str | None:
         """Read only."""
@@ -728,6 +743,7 @@ class AudioDevice(Resource):
 
 class Display(Resource):
     """Displays — `settings.display`."""
+    __surface__ = "so.tilo.settings@985a39fcdb234d68"
     @property
     def auto_brightness(self) -> bool:
         """Read only."""
@@ -749,6 +765,7 @@ class Display(Resource):
 
 class NightLight(Resource):
     """Night light — `settings.night-light`."""
+    __surface__ = "so.tilo.settings@985a39fcdb234d68"
     night_light: bool
     night_light_temperature: int
     night_light_schedule: bool
@@ -756,6 +773,7 @@ class NightLight(Resource):
 
 class Locale(Resource):
     """Region and language — `settings.locale`."""
+    __surface__ = "so.tilo.settings@985a39fcdb234d68"
     currency: Currency
     date_format: DateStyle
     time_format: TimeStyle
@@ -766,6 +784,7 @@ class Locale(Resource):
 
 class Continuity(Resource):
     """Continuity — `settings.continuity`."""
+    __surface__ = "so.tilo.settings@985a39fcdb234d68"
     @property
     def enabled(self) -> bool:
         """Read only."""
@@ -826,6 +845,7 @@ class Continuity(Resource):
 
 class Shortcuts(Resource):
     """Keyboard shortcuts — `settings.shortcuts`."""
+    __surface__ = "so.tilo.settings@985a39fcdb234d68"
     @property
     def bindings(self) -> Any:
         """Read only."""
@@ -858,6 +878,7 @@ class Shortcuts(Resource):
 
 class ShellViews(Resource):
     """Shell views — `shell-views`."""
+    __surface__ = "so.tilo.settings@985a39fcdb234d68"
     @property
     def bindings(self) -> dict[str, Binding]:
         """Read only."""
@@ -898,16 +919,19 @@ class ShellViews(Resource):
 
 class DesktopControls(Resource):
     """Desktop controls — `settings.desktop-controls`."""
+    __surface__ = "so.tilo.settings@985a39fcdb234d68"
     vim_mode: bool
 
 
 class DesktopControlsDevice(Resource):
     """Desktop controls on this device — `settings.desktop-controls-device`."""
+    __surface__ = "so.tilo.settings@985a39fcdb234d68"
     hide_top_bar: bool
 
 
 class AgentProviders(Resource):
     """Agent model providers — `settings.agent-providers`."""
+    __surface__ = "so.tilo.settings@985a39fcdb234d68"
     @property
     def config(self) -> ProviderConfig:
         """Read only."""
@@ -924,6 +948,7 @@ class AgentProviders(Resource):
 
 class HostedAgentProviders(Resource):
     """Hosted agent model providers — `settings.hosted-agent-providers`."""
+    __surface__ = "so.tilo.settings@985a39fcdb234d68"
     @property
     def hosted(self) -> HostedProfiles:
         """Read only."""
@@ -936,6 +961,7 @@ class HostedAgentProviders(Resource):
 
 class DefaultApps(Resource):
     """Default apps — `settings.default-apps`."""
+    __surface__ = "so.tilo.settings@985a39fcdb234d68"
     @property
     def handlers(self) -> dict[str, str]:
         """Read only."""
@@ -952,11 +978,13 @@ class DefaultApps(Resource):
 
 class Clock(Resource):
     """Clock — `settings.clock`."""
+    __surface__ = "so.tilo.settings@985a39fcdb234d68"
     automatic_zone: bool
 
 
 class DisplayArrangement(Resource):
     """Display arrangement — `settings.display-arrangement`."""
+    __surface__ = "so.tilo.settings@985a39fcdb234d68"
     @property
     def arrangement(self) -> Any:
         """Read only."""
@@ -969,6 +997,7 @@ class DisplayArrangement(Resource):
 
 class AutomaticDisplay(Resource):
     """Automatic display input — `settings.automatic-display`."""
+    __surface__ = "so.tilo.settings@985a39fcdb234d68"
     @property
     def automatic_display_input(self) -> bool:
         """Read only."""
@@ -981,6 +1010,7 @@ class AutomaticDisplay(Resource):
 
 class DisplayChange(Resource):
     """Display change — `settings.display-change`."""
+    __surface__ = "so.tilo.settings@985a39fcdb234d68"
     @property
     def id(self) -> int:
         """Read only."""
@@ -1013,6 +1043,7 @@ class DisplayChange(Resource):
 
 class OskSources(Resource):
     """On-screen keyboard layouts — `settings.osk-sources`."""
+    __surface__ = "so.tilo.settings@985a39fcdb234d68"
     @property
     def layout(self) -> str:
         """Read only."""
@@ -1033,6 +1064,7 @@ class OskSources(Resource):
 
 class DeviceVpn(Resource):
     """Your devices as a VPN — `settings.device-vpn`."""
+    __surface__ = "so.tilo.settings@985a39fcdb234d68"
     exit: bool
     @property
     def through(self) -> Any | None:
@@ -1086,11 +1118,13 @@ class DeviceVpn(Resource):
 
 class Identity(Resource):
     """Your colour — `settings.identity`."""
+    __surface__ = "so.tilo.settings@985a39fcdb234d68"
     colour: str | None
 
 
 class NetworkUsage(Resource):
     """Data usage — `settings.network-usage`."""
+    __surface__ = "so.tilo.settings@985a39fcdb234d68"
     reset_day: Any
     limit_gb: int
     @property
@@ -1145,6 +1179,7 @@ class NetworkUsage(Resource):
 
 class AgentDoor(Resource):
     """Agents from your other devices — `settings.agent-door`."""
+    __surface__ = "so.tilo.settings@985a39fcdb234d68"
     @property
     def accept_own_devices(self) -> bool:
         """Read only."""
@@ -1157,6 +1192,7 @@ class AgentDoor(Resource):
 
 class Accounts(Resource):
     """Accounts — `tilo.accounts`."""
+    __surface__ = "so.tilo.settings@985a39fcdb234d68"
     accounts: list[PersonAccount]
     active: dict[str, str]
 

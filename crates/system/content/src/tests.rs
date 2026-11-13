@@ -571,3 +571,176 @@ fn another_device_keeps_sealed_content_exactly_from_its_reference_and_bytes() {
         Err(ContentError::HashMismatch)
     );
 }
+
+/// A store whose members hold `secret`.
+struct Members<B>(B, tilo_seal::SymmetricKey);
+
+impl<B: ContentBackend> ContentBackend for Members<B> {
+    fn put(&self, reader: &mut dyn Read, mime: &str) -> Result<Stored, ContentError> {
+        self.0.put(reader, mime)
+    }
+
+    fn open(&self, hash: &str) -> Result<Option<ContentReader>, ContentError> {
+        self.0.open(hash)
+    }
+
+    fn has(&self, hash: &str) -> bool {
+        self.0.has(hash)
+    }
+
+    fn max_item_bytes(&self) -> usize {
+        self.0.max_item_bytes()
+    }
+
+    fn scratch_dir(&self) -> Option<std::path::PathBuf> {
+        self.0.scratch_dir()
+    }
+
+    fn content_secret(&self) -> Option<tilo_seal::SymmetricKey> {
+        Some(self.1.clone())
+    }
+}
+
+/// A reader of `bytes` that adds what it hands out to `read`.
+struct Metered<'a> {
+    bytes: &'a [u8],
+    read: &'a std::cell::Cell<usize>,
+}
+
+impl Read for Metered<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.bytes.len().min(buf.len());
+        let (handed, rest) = self.bytes.split_at(n);
+        buf.get_mut(..n).unwrap_or_default().copy_from_slice(handed);
+        self.bytes = rest;
+        self.read.set(self.read.get().saturating_add(n));
+        Ok(n)
+    }
+}
+
+#[test]
+fn a_sealing_store_refuses_an_oversized_item_at_the_limit() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = ContentStore::new(Members(
+        DirBackend::with_limits(dir.path(), limits(4096, 1 << 20, 16)),
+        tilo_seal::SymmetricKey::generate().unwrap(),
+    ))
+    .sealing();
+    let read = std::cell::Cell::new(0);
+    let oversized = vec![7_u8; 64 * 1024];
+    let mut reader = Metered {
+        bytes: &oversized,
+        read: &read,
+    };
+    assert_eq!(
+        store.put_reader(&mut reader, "video/mp4"),
+        Err(ContentError::ItemTooLarge {
+            actual: 4097,
+            limit: 4096
+        })
+    );
+    assert_eq!(
+        read.get(),
+        4097,
+        "refused at the limit, not once it has been read and held whole"
+    );
+    assert!(files_under(dir.path()).is_empty(), "and nothing is kept");
+}
+
+#[test]
+fn a_large_item_is_sealed_from_a_file_beside_the_store() {
+    let secret = tilo_seal::SymmetricKey::generate().unwrap();
+    // Past what a sealing store keeps in memory: what it hashes waits in a file beside its own
+    // content, and the second pass seals from there.
+    let picture = [TINY_PNG, &vec![4_u8; 2 * 1024 * 1024 + 17]].concat();
+    let dir = tempfile::tempdir().unwrap();
+    let store = ContentStore::new(Members(DirBackend::new(dir.path()), secret.clone())).sealing();
+    let read = std::cell::Cell::new(0);
+    let mut reader = Metered {
+        bytes: &picture,
+        read: &read,
+    };
+    let sealed = store.put_reader(&mut reader, "image/png").unwrap();
+    assert_eq!(read.get(), picture.len(), "read once");
+
+    // What sealing the plaintext whole under its key names: the buffered path's reference.
+    let mut hash = convergent_hasher(&secret);
+    hash.update(&picture);
+    let key = tilo_seal::SymmetricKey::from_bytes(*hash.finalize().as_bytes());
+    let buffered = tilo_seal::content::seal(&key, &picture).unwrap();
+    assert_eq!(content_address(&sealed.hash), Some(hash_bytes(&buffered)));
+    assert_eq!(
+        store.read(&sealed.hash).as_deref(),
+        Some(picture.as_slice()),
+        "and it opens as the reference says"
+    );
+    let leftover = std::fs::read_dir(dir.path())
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|entry| entry.file_name().to_string_lossy().starts_with(".sealing-"))
+        .count();
+    assert_eq!(leftover, 0, "no spill file is left behind");
+
+    // A store with no directory of its own keeps what it hashes in memory, and names it alike.
+    let in_memory = ContentStore::new(Members(MemoryBackend::default(), secret)).sealing();
+    let mut again = Metered {
+        bytes: &picture,
+        read: &read,
+    };
+    assert_eq!(
+        in_memory.put_reader(&mut again, "image/png").unwrap().hash,
+        sealed.hash
+    );
+}
+
+#[test]
+fn the_same_bytes_stored_twice_by_members_are_one_sealed_item() {
+    let picture = [TINY_PNG, &vec![9_u8; 64 * 1024 + 3]].concat();
+    let secret = tilo_seal::SymmetricKey::generate().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let store = ContentStore::new(Members(DirBackend::new(dir.path()), secret)).sealing();
+    let reference = store.put(&picture).unwrap();
+    assert!(is_sealed(&reference));
+    let kept = files_under(dir.path());
+    let mut streamed = picture.as_slice();
+    assert_eq!(
+        store.put_reader(&mut streamed, "image/png").unwrap().hash,
+        reference,
+        "the same bytes, put again, are named alike"
+    );
+    assert_eq!(files_under(dir.path()), kept, "and kept once");
+    assert_eq!(store.read(&reference).as_deref(), Some(picture.as_slice()));
+    assert!(
+        files_under(dir.path())
+            .iter()
+            .all(|file| !file.windows(64).any(|w| w == &picture[..64])),
+        "sealed all the same"
+    );
+    // A reader with no secret (a device opening the record, a host) reads it
+    // by its reference, as any sealed item.
+    let reader = ContentStore::in_dir(dir.path());
+    assert_eq!(reader.read(&reference).as_deref(), Some(picture.as_slice()));
+    // A reference an earlier writer sealed under a fresh key still opens.
+    let fresh = reader.sealing().put(&picture).unwrap();
+    assert_ne!(fresh, reference);
+    assert_eq!(store.read(&fresh).as_deref(), Some(picture.as_slice()));
+    assert!(names(&reference, &picture));
+
+    let elsewhere = tempfile::tempdir().unwrap();
+    let other = ContentStore::new(Members(
+        DirBackend::new(elsewhere.path()),
+        tilo_seal::SymmetricKey::generate().unwrap(),
+    ))
+    .sealing();
+    let theirs = other.put(&picture).unwrap();
+    assert_ne!(
+        content_address(&theirs),
+        content_address(&reference),
+        "members of another workspace seal the same bytes to other ciphertext"
+    );
+    assert_ne!(
+        other.read(content_address(&theirs).unwrap().as_str()),
+        store.read(content_address(&reference).unwrap().as_str())
+    );
+}

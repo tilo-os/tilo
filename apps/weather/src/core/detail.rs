@@ -669,7 +669,7 @@ impl Hero {
                 (
                     Some((Sky::from_code(cur.weather_code), cur.is_day)),
                     format!("{}°", snap.temp_in(cur.temperature, units).round() as i64),
-                    Sky::label(cur.weather_code).to_string(),
+                    Sky::label(cur.weather_code),
                     range,
                 )
             },
@@ -1148,7 +1148,7 @@ impl DayColumns {
         if let Some(snap) = snapshot {
             for (i, d) in snap.daily.iter().enumerate() {
                 label_w = label_w.max(width(&day_label(i, d), &body));
-                cond_w = cond_w.max(width(Sky::label(d.weather_code), &body));
+                cond_w = cond_w.max(width(&Sky::label(d.weather_code), &body));
                 let lo = snap.temp_in(d.temp_min, units).round() as i64;
                 let hi = snap.temp_in(d.temp_max, units).round() as i64;
                 temp_w = temp_w
@@ -1321,7 +1321,7 @@ impl ForecastRows<'_> {
             };
             let style = theme.text(TextRole::Body);
             let label = ctx.text.elide_to_width_style(
-                Sky::label(d.weather_code),
+                &Sky::label(d.weather_code),
                 (limit - geo.cond_x).max(1.0) as f32,
                 &style,
             );
@@ -1899,7 +1899,7 @@ mod accessibility_tests {
         let reading = hours.children[1].description.clone().unwrap_or_default();
         assert!(reading.starts_with(&degrees), "{reading}");
         assert!(
-            reading.contains(Sky::label(second.weather_code)),
+            reading.contains(Sky::label(second.weather_code).as_str()),
             "{reading}"
         );
         if second.precip_probability >= 5.0 {
@@ -1925,7 +1925,10 @@ mod accessibility_tests {
             Some(format!("{high} to {low}").as_str()),
             "{reading}"
         );
-        assert!(reading.contains(Sky::label(day.weather_code)), "{reading}");
+        assert!(
+            reading.contains(Sky::label(day.weather_code).as_str()),
+            "{reading}"
+        );
         assert!(reading.contains("UV index"), "{reading}");
     }
 

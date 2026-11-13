@@ -451,6 +451,10 @@ pub struct Session {
     /// The session's own actions, as the broker's steps: what each pass hands the rows it read.
     #[cfg(target_os = "linux")]
     pub(crate) published_steps: Option<std::sync::Arc<crate::session_actions::SessionActions>>,
+    /// The person's settings, as the broker's steps of Settings' own provider: what each pass
+    /// hands the settings the session's service published.
+    #[cfg(target_os = "linux")]
+    pub(crate) settings_steps: Option<std::sync::Arc<crate::settings_steps::SettingsSteps>>,
     /// When the desk's own bookkeeping last read it.
     pub(crate) kept_at: Instant,
     /// What the desk's input a tool handed the loop cost this pass, read with

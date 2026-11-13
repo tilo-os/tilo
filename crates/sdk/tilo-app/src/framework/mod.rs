@@ -438,7 +438,7 @@ pub use workspace::{WorkspaceHandle, WorkspaceRecord};
 /// binds reads and writes to the resource's content lane.
 pub mod content {
     pub use tilo_content::{
-        ContentStore, ImageFormat, hash_bytes, image_format, image_size, valid_hash,
-        valid_reference,
+        ContentStore, ImageFormat, content_address, hash_bytes, image_format, image_size,
+        is_sealed, valid_hash, valid_reference,
     };
 }

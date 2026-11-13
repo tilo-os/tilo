@@ -99,10 +99,8 @@ pub(crate) fn scenario(scenario: Option<&str>) -> Vec<Invoke<PdfMarkup>> {
     if scenario == Some(FORM) {
         return filled_form();
     }
-    let len = u64::try_from(SAMPLE_PDF.len()).unwrap_or(u64::MAX);
     let mut actions = vec![crate::actions::pin_source_action(
-        &tilo_content::hash_bytes(SAMPLE_PDF),
-        len,
+        &ui::tilo_resource::Bytes::of(SAMPLE_PDF),
         SAMPLE_NAME,
     )];
     actions.extend(sample_review().iter().map(Invoke::from));
@@ -114,9 +112,8 @@ pub(crate) fn scenario(scenario: Option<&str>) -> Vec<Invoke<PdfMarkup>> {
 fn filled_form() -> Vec<Invoke<PdfMarkup>> {
     use crate::actions::set_form_value_action;
     use crate::model::FormEntry;
-    let len = u64::try_from(FORM_PDF.len()).unwrap_or(u64::MAX);
     vec![
-        crate::actions::pin_source_action(&tilo_content::hash_bytes(FORM_PDF), len, FORM_NAME),
+        crate::actions::pin_source_action(&ui::tilo_resource::Bytes::of(FORM_PDF), FORM_NAME),
         set_form_value_action("name", &FormEntry::Text("Amara Okafor".into())),
         set_form_value_action(
             "agree",

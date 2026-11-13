@@ -646,13 +646,20 @@ impl Page<'_> {
         if wired_profiles.len() > 1 {
             settings.push(setting_row(
                 &t("net-edit-profile"),
-                Box::new(
-                    Dropdown::from_state(
-                        wired_profiles.iter().map(|p| profile_label(p)).collect(),
+                Box::new({
+                    let mut dropdown = Dropdown::from_state(
+                        wired_profiles.iter().map(|p| p.uuid.clone()).collect(),
                         &self.wired_profile,
                     )
-                    .with_placeholder(&profile_label(profile)),
-                ),
+                    .with_placeholder(&profile_label(profile));
+                    dropdown.set_value_options(
+                        wired_profiles
+                            .iter()
+                            .map(|p| (p.uuid.clone(), profile_label(p)))
+                            .collect(),
+                    );
+                    dropdown
+                }),
             ));
         }
         settings.extend(self.ipv4_rows(profile, "settings.network.ipv4"));
@@ -665,10 +672,10 @@ impl Page<'_> {
         profiles: &[&'a SavedNetworkProfile],
         selection: &LocalState<String>,
     ) -> Option<&'a SavedNetworkProfile> {
-        let label = selection.get();
+        let chosen = selection.get();
         profiles
             .iter()
-            .find(|p| profile_label(p) == label)
+            .find(|p| p.uuid == chosen)
             .or_else(|| profiles.first())
             .copied()
     }
@@ -872,7 +879,6 @@ impl Page<'_> {
                     .map_or_else(|| t("net-signal-unknown"), |dbm| format!("{dbm} dBm"));
                 hotspot_rows.push(value_row(&client.mac, &signal));
             }
-            hotspot_rows.push(note(&t("net-hotspot-clients-caption")));
         }
         card_with_action(
             &t("net-hotspot"),
@@ -920,7 +926,7 @@ impl Page<'_> {
             )),
         )];
         if let Some(d) = &self.diagnostics {
-            out.push(value_row("NetworkManager", &d.network_manager_state));
+            out.push(value_row(&t("net-diag-service"), &d.network_manager_state));
             out.push(value_row(
                 &t("net-diag-internet"),
                 &connectivity_shown(d.connectivity),
@@ -943,8 +949,6 @@ impl Page<'_> {
             for recommendation in &d.recommendations {
                 out.push(note(recommendation));
             }
-        } else {
-            out.push(note(&t("net-diag-idle")));
         }
         out
     }

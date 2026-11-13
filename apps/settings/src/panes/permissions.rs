@@ -1107,7 +1107,6 @@ fn device_security_card(security: &DeviceSecurity) -> SettingsSection {
                     &t_args("perm-firewall-error", &[("error", error.as_str().into())]),
                 ),
             },
-            note(&t("perm-security-caption")),
         ]),
     )
 }
@@ -1144,10 +1143,7 @@ fn workspace_grants_intro_card(cx: &ViewCx<Settings>) -> SettingsSection {
 fn no_workspace_grants_card() -> SettingsSection {
     section(
         &t("perm-no-grants-title"),
-        rows(vec![
-            note(&t("perm-no-grants-body")),
-            note(&t("perm-no-grants-caption")),
-        ]),
+        rows(vec![note(&t("perm-no-grants-body"))]),
     )
 }
 
@@ -1186,14 +1182,6 @@ fn push_workspace_grant_cards(panel: &mut Vec<SettingsSection>, all: &[WsGrants]
         };
         panel.push(section(&title, rows(body)));
     }
-}
-
-/// Where the compositor enforces the grants.
-fn enforcement_card() -> SettingsSection {
-    section(
-        &t("perm-enforcement-title"),
-        rows(vec![note(&t("perm-enforcement-caption"))]),
-    )
 }
 
 /// The workspace grants a state document holds; `None` when there is no
@@ -1249,8 +1237,6 @@ fn panel(
         // The intro card above stands alone until they are read.
         Grants::Reading => {}
     }
-
-    panel.push(enforcement_card());
 
     page(panel)
 }

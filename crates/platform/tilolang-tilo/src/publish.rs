@@ -2014,6 +2014,10 @@ impl Published<'_> {
         ) else {
             return;
         };
+        if self.partial {
+            self.reached_members(node, &at, path, nodes);
+            return;
+        }
         let mut held: std::collections::BTreeMap<String, ResourceSpec> =
             std::mem::take(&mut node.children)
                 .into_iter()
@@ -2041,19 +2045,66 @@ impl Published<'_> {
                         nodes.remove(&item);
                         ordered.extend(self.item(&item));
                     }
-                    // A whole record's tree holds every item of its collections. One a window
-                    // reaches holds what it reached of them, and grows by the items a change
-                    // names rather than by all ten thousand a collection has.
-                    None if self.partial => {
-                        if nodes.remove(&item) {
-                            ordered.extend(self.item(&item));
-                        }
-                    }
+                    // A whole record's tree holds every item of its collections; one a window
+                    // reaches is [`Self::reached_members`]'.
                     None => ordered.extend(self.item(&item)),
                 }
             }
         }
         node.children = ordered;
+    }
+
+    /// [`Self::membership`] of a tree that holds what a window reached of the record: the items
+    /// it holds keep their order, those `nodes` names are read again (and leave once they are
+    /// gone), and one it did not hold joins where its collection's listing puts it, found among
+    /// the held ones by their places. The collection is not read whole: adding a task to ten
+    /// thousand reads where the new one and a few held ones stand.
+    fn reached_members(
+        &self,
+        node: &mut ResourceSpec,
+        at: &tilolang_runtime::value::ResourceRef,
+        path: &str,
+        nodes: &mut std::collections::BTreeSet<String>,
+    ) {
+        let published = resource_id(&self.types.meta().app, "");
+        let item_at = |child: &ResourceSpec| -> Option<String> {
+            child
+                .id
+                .as_str()
+                .strip_prefix(published.as_str())
+                .map(str::to_owned)
+        };
+        let place = |item: &str| -> Option<usize> {
+            let (_, field) = self.holder(item).filter(|(holder, _)| holder == path)?;
+            let (before, _, _) = self.members(at, self.schema_at(path)?, &field)?;
+            let id = crate::index::derive::id_of(item)?;
+            before.checked_add(self.store.position(at, &field, id)?)
+        };
+        let mut children = Vec::with_capacity(node.children.len());
+        for child in std::mem::take(&mut node.children) {
+            match item_at(&child) {
+                Some(item) if nodes.remove(&item) => children.extend(self.item(&item)),
+                _ => children.push(child),
+            }
+        }
+        let joining: Vec<String> = nodes
+            .iter()
+            .filter(|item| self.holder(item).is_some_and(|(holder, _)| holder == path))
+            .cloned()
+            .collect();
+        for item in joining {
+            nodes.remove(&item);
+            let (Some(now), Some(spec)) = (place(&item), self.item(&item)) else {
+                continue;
+            };
+            let at = children.partition_point(|child| {
+                item_at(child)
+                    .and_then(|held| place(&held))
+                    .is_some_and(|held| held < now)
+            });
+            children.insert(at, spec);
+        }
+        node.children = children;
     }
 
     /// Rebuild the items at `paths` in place, each with its own items; drop those gone. An item

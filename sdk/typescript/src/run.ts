@@ -1,8 +1,7 @@
-/** A run: an invocation that has not finished, and what to do with it. */
+/** A run: an action that has not finished, and what to do with it. */
 
 import type { Endpoint } from "./endpoint.ts";
-import { resultOf, type Answer } from "./wire.ts";
-import type { Event } from "./models.ts";
+import { type ActionAnswer, type Event, resultOf } from "./models.ts";
 import { ProtocolError } from "./errors.ts";
 
 /**
@@ -17,6 +16,7 @@ export class Run<Result = unknown> {
   readonly invocationId: string;
   path: string | null;
   link: string | null = null;
+  links: string[] = [];
 
   constructor(endpoint: Endpoint, invocationId: string, path: string | null = null) {
     this.endpoint = endpoint;
@@ -24,7 +24,11 @@ export class Run<Result = unknown> {
     this.path = path;
   }
 
-  /** The resource whose action the run is, `app/name` without the action. */
+  toString(): string {
+    return `Run(${this.invocationId})`;
+  }
+
+  /** The resource whose action the run is, `app/resource` without the action. */
   get resource(): string | null {
     if (this.path === null || !this.path.includes("#")) {
       return null;
@@ -32,52 +36,49 @@ export class Run<Result = unknown> {
     return this.path.split("#")[0] ?? null;
   }
 
-  /** The whole typed answer once the invocation is done. */
-  async answer(timeoutMs: number | null = null): Promise<Answer> {
+  /** The run's whole answer once it is no longer pending. */
+  async answer(timeoutMs: number | null = null): Promise<ActionAnswer> {
     const answer = await this.endpoint.wait(this.invocationId, timeoutMs);
-    const path = answer.path;
-    if (typeof path === "string" && path !== "") {
-      this.path = path;
-    }
-    if (typeof answer.link === "string" && answer.link !== "") {
-      this.link = answer.link;
-    }
+    this.note(answer);
     return answer;
   }
 
   /** The action's result; a refusal the host made throws `Refused`. */
   async result(timeoutMs: number | null = null): Promise<Result> {
-    const answer = await this.answer(timeoutMs);
-    return resultOf(answer) as Result;
+    return resultOf(await this.answer(timeoutMs)) as Result;
   }
 
-  /** Stop the invocation. */
-  cancel(): Promise<Answer> {
-    return this.endpoint.status(this.invocationId, true);
+  /** Stop the run. */
+  async cancel(): Promise<ActionAnswer> {
+    const answer = await this.endpoint.cancel(this.invocationId);
+    this.note(answer);
+    return answer;
   }
 
   /** The run's events, from started to succeeded, failed or cancelled. */
-  async *output(): AsyncGenerator<Event> {
-    for await (const event of this.endpoint.watch()) {
-      if (event.kind !== "run" || event.invocationId !== this.invocationId) {
-        continue;
-      }
-      yield event;
-      if (event.phase === "succeeded" || event.phase === "failed" || event.phase === "cancelled") {
-        return;
-      }
-    }
+  output(): AsyncGenerator<Event> {
+    return this.endpoint.output(this.invocationId);
   }
 
-  /** Take the run back: its app's one step, or the whole task. */
-  async undo(): Promise<unknown> {
+  /** Take the run back: its app's one step. */
+  async undo(): Promise<ActionAnswer> {
     if (this.path === null) {
       await this.answer();
     }
-    const resource = this.resource;
-    if (resource === null) {
+    if (this.resource === null) {
       throw new ProtocolError("this run names no resource, so there is no app step to undo");
     }
-    return this.endpoint.outcome(`${resource}#undo`, { steps: 1 });
+    return this.endpoint.undo(this.invocationId);
+  }
+
+  /** What the run's answer says about where it reached. */
+  private note(answer: ActionAnswer): void {
+    if (answer.path !== null && answer.path !== "") {
+      this.path = answer.path;
+    }
+    this.links = answer.links;
+    if (answer.link !== null) {
+      this.link = answer.link;
+    }
   }
 }

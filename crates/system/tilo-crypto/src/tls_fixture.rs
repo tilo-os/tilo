@@ -18,7 +18,9 @@ impl Drop for TlsFixture {
     }
 }
 
-/// Generate a constrained ephemeral CA and an IP-SAN server certificate.
+/// Generate a constrained ephemeral CA and an IP-SAN server certificate. A
+/// loopback server is named `localhost` as well: a page served there is a
+/// secure context with a name, which passkeys need (they refuse an address).
 pub fn generate_tls_fixture(server_ip: std::net::IpAddr) -> Result<TlsFixture, String> {
     use rcgen::{
         BasicConstraints, CertificateParams, DistinguishedName, DnType, ExtendedKeyUsagePurpose,
@@ -48,7 +50,11 @@ pub fn generate_tls_fixture(server_ip: std::net::IpAddr) -> Result<TlsFixture, S
         .map_err(|error| format!("cannot generate TLS CA certificate: {error}"))?;
     let issuer = Issuer::new(ca_params, ca_key);
 
-    let mut server_params = CertificateParams::new(vec![server_ip.to_string()])
+    let mut names = vec![server_ip.to_string()];
+    if server_ip.is_loopback() {
+        names.push("localhost".to_owned());
+    }
+    let mut server_params = CertificateParams::new(names)
         .map_err(|error| format!("cannot encode TLS server IP: {error}"))?;
     server_params.not_before = not_before;
     server_params.not_after = not_after;
@@ -136,5 +142,11 @@ mod tests {
         assert!(san.0.iter().any(
             |name| matches!(name, GeneralName::IpAddress(bytes) if bytes.as_bytes() == [127, 0, 0, 1])
         ));
+        assert!(
+            san.0.iter().any(
+                |name| matches!(name, GeneralName::DnsName(dns) if dns.as_str() == "localhost")
+            ),
+            "a loopback server is named localhost too"
+        );
     }
 }

@@ -319,11 +319,20 @@ impl AuthorDirectory {
         } else {
             let principal = hex::encode(invoker.actor.as_bytes());
             let author = self.resolve(&principal);
+            // Software is painted as presence paints it: by the one rule, from what it is.
+            let author =
+                if invoker.kind.acts_for_someone() {
+                    let painted = self.color_overrides.get(&invoker.actor).copied();
+                    author.with_rgb(painted.unwrap_or_else(|| {
+                        crate::presence::participant_color(&invoker.actor, true)
+                    }))
+                } else {
+                    author
+                };
             match &invoker.name {
-                // An agent goes by the name its admission certified for it,
-                // in the colour presence draws that agent in.
+                // An agent goes by the name its admission certified for it.
                 Some(name) => {
-                    let mut named = author.with_rgb(collab_types::presence::agent_rgb(name));
+                    let mut named = author;
                     named.name.clone_from(name);
                     named
                 }
@@ -591,6 +600,23 @@ pub fn author_for_identity(name: impl Into<String>, identity: &str) -> HistoryAu
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An agent's change is painted in the colour presence paints that agent in, never by its
+    /// display name or its person's.
+    #[test]
+    fn an_agents_change_wears_the_agents_presence_colour() {
+        let invoker = tilo_actions::ActionInvoker::actor("agent:task-947ea551c632")
+            .with_kind(tilo_actions::ActorKind::Agent)
+            .acting_for("ada")
+            .named(Some("Helper #1".into()));
+        let entry = tilo_actions::ActionContext::default().with_invoker(invoker);
+        let author = AuthorDirectory::new().resolve_entry("00", Some(&entry));
+        assert_eq!(author.name, "Helper #1");
+        assert_eq!(
+            author.rgb(),
+            crate::presence::participant_color("agent:task-947ea551c632", true)
+        );
+    }
 
     #[test]
     fn actors_are_named_by_registration_handle_or_agent_and_never_misread() {

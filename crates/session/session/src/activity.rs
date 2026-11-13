@@ -958,6 +958,10 @@ pub struct OwnAction {
     pub id: String,
     /// What the step did, e.g. "Edited the text".
     pub action: String,
+    /// The kind of step it is, from what its change declared
+    /// ([`tilo_actions::StepKind::of_did`]), so the line is the catalogue's
+    /// words for it rather than a verb read off the title.
+    pub step: tilo_actions::StepKind,
     /// The record's title.
     pub resource: String,
     /// The app's name.
@@ -1084,9 +1088,11 @@ impl Activity {
                             .map(|title| (*title).to_owned())
                     })
                     .unwrap_or_default();
+                let step = step_kind(entry);
                 actions.push(OwnAction {
                     id: hex::encode(entry.id.0),
                     action,
+                    step,
                     resource: bounded_title(&resource),
                     app: bounded_title(&app_name),
                     at_ms,
@@ -1100,7 +1106,8 @@ impl Activity {
         actions.dedup_by(|a, b| a.id == b.id);
         actions.reverse();
         actions.dedup_by(|older, newer| {
-            older.action == newer.action
+            older.step == newer.step
+                && older.action == newer.action
                 && older.resource == newer.resource
                 && older.app == newer.app
         });
@@ -1126,62 +1133,23 @@ impl Activity {
 const MAX_DOING_BYTES: usize = collab_types::presence::MAX_ACTIVITY_BYTES;
 
 /// What someone is doing now, read off the newest of their own steps (`actions`, oldest first, as
-/// [`Activity::own_actions`] gives them): "Writing in #general", "Editing ‘Launch plan’ in Notes".
-/// The verb comes from the step's title (an app's past-tense history sentence, "Posted a message",
-/// "Edited the text") where it says plainly what kind of work it was, else it is "Working on". A
-/// record named like its app (a chat's one record, "Chat") is said once: "Working in Chat", never
-/// "Working on Chat in Chat". `None` while they took no step lately.
+/// [`Activity::own_actions`] gives them): "Writing in Launch plan", "Schreibt in Launch plan". The
+/// line is the catalogue's words for the kind of step it was, on the record it acted in — never a
+/// verb read off an English title — and a channel is named as its app shows it. `None` while they
+/// took no step lately.
 #[must_use]
 pub fn doing_now(actions: &[OwnAction]) -> Option<String> {
     let action = actions.last()?;
-    let title = action.action.trim();
-    let verb = doing(title);
     let resource = action.resource.trim();
     let app = action.app.trim();
-    let line = if resource.is_empty() && app.is_empty() {
-        title.to_owned()
-    } else if resource.is_empty() || resource.eq_ignore_ascii_case(app) || resource.starts_with('#')
-    {
-        // In the app as a whole, or in a channel, named as the app shows it.
-        let place = if resource.starts_with('#') {
-            resource
-        } else {
-            app
-        };
-        format!("{} in {place}", verb.unwrap_or("Working"))
-    } else {
-        let verb = verb.unwrap_or("Working on");
-        if app.is_empty() {
-            format!("{verb} ‘{resource}’")
-        } else {
-            format!("{verb} ‘{resource}’ in {app}")
-        }
-    };
-    let line = clipped(&line, ui::MAX_STATUS_CHARS, MAX_DOING_BYTES);
+    let record = if resource.is_empty() { app } else { resource };
+    let step = tilo_actions::Step::new(action.step, Some(record)).in_app(Some(app));
+    let line = clipped(
+        &ui::step::line(&step),
+        ui::MAX_STATUS_CHARS,
+        MAX_DOING_BYTES,
+    );
     (!line.is_empty()).then_some(line)
-}
-
-/// The present-tense verb for a step's title, where its first word says what kind of work it was:
-/// writing, editing, drawing, reviewing.
-fn doing(title: &str) -> Option<&'static str> {
-    let first = title
-        .split_whitespace()
-        .next()?
-        .trim_matches(|c: char| !c.is_alphanumeric())
-        .to_lowercase();
-    Some(match first.as_str() {
-        "post" | "posted" | "send" | "sent" | "reply" | "replied" | "write" | "wrote"
-        | "answer" | "answered" | "message" | "messaged" => "Writing",
-        "edit" | "edited" | "change" | "changed" | "type" | "typed" | "rename" | "renamed"
-        | "format" | "formatted" | "rewrite" | "rewrote" => "Editing",
-        "draw" | "drew" | "sketch" | "sketched" | "paint" | "painted" => "Drawing",
-        "comment" | "commented" | "review" | "reviewed" | "resolve" | "resolved" | "suggest"
-        | "suggested" => "Reviewing",
-        "add" | "added" | "create" | "created" | "make" | "made" | "insert" | "inserted" => {
-            "Adding to"
-        }
-        _ => return None,
-    })
 }
 
 /// At most `chars` characters and `bytes` bytes of `text`, an ellipsis marking a cut.
@@ -1240,6 +1208,18 @@ fn shared_part(context: &tilo_actions::ActionContext) -> Option<String> {
     } else {
         format!("#{label}")
     })
+}
+
+/// The kind of step `entry` is, from what its change declared
+/// ([`tilo_actions::StepKind::of_did`]); [`StepKind::Work`] where it declared
+/// no kind of its own.
+fn step_kind(entry: &ui::widget::HistoryEntry) -> tilo_actions::StepKind {
+    entry
+        .context
+        .as_ref()
+        .and_then(|context| context.what.as_ref())
+        .and_then(tilo_actions::StepKind::of_did)
+        .unwrap_or(tilo_actions::StepKind::Work)
 }
 
 /// Whether `entry` is something its author did: housekeeping an app does on its own, and content
@@ -1371,10 +1351,16 @@ mod tests {
 
     use super::*;
 
-    fn step(action: &str, resource: &str, app: &str) -> super::OwnAction {
+    fn step(
+        kind: tilo_actions::StepKind,
+        action: &str,
+        resource: &str,
+        app: &str,
+    ) -> super::OwnAction {
         super::OwnAction {
             id: String::new(),
             action: action.into(),
+            step: kind,
             resource: resource.into(),
             app: app.into(),
             at_ms: 0,
@@ -1384,31 +1370,36 @@ mod tests {
     #[test]
     fn the_line_says_what_kind_of_work_and_where_from_the_newest_step() {
         use super::doing_now;
+        use tilo_actions::StepKind;
         assert_eq!(doing_now(&[]), None, "no step lately, nothing to say");
-        let older = step("Opened", "Plan", "Notes");
+        let older = step(StepKind::Read, "Opened", "Plan", "Notes");
         assert_eq!(
-            doing_now(&[older.clone(), step("Posted a message", "#general", "Chat")]).as_deref(),
+            doing_now(&[
+                older.clone(),
+                step(StepKind::Write, "Posted a message", "#general", "Chat")
+            ])
+            .as_deref(),
             Some("Writing in #general")
         );
         assert_eq!(
-            doing_now(&[step("Post", "Chat", "Chat")]).as_deref(),
-            Some("Writing in Chat"),
-            "a bare verb reads the same"
+            doing_now(&[step(StepKind::Create, "Created Agent issue", "", "Tasks")]).as_deref(),
+            Some("Creating in Tasks"),
+            "a step that makes something new names the app it makes it in"
         );
         assert_eq!(
-            doing_now(&[step("Opened", "chat", "Chat")]).as_deref(),
-            Some("Working in Chat"),
-            "a record named like its app is said once, whatever the case"
+            doing_now(&[step(
+                StepKind::Edit,
+                "Edited the text",
+                "Launch plan",
+                "Notes"
+            )])
+            .as_deref(),
+            Some("Editing Launch plan"),
+            "the record it acted in, never its English title turned into a verb"
         );
-        assert_eq!(
-            doing_now(&[step("Edited the text", "Launch plan", "Notes")]).as_deref(),
-            Some("Editing ‘Launch plan’ in Notes")
-        );
-        assert_eq!(
-            doing_now(&[older]).as_deref(),
-            Some("Working on ‘Plan’ in Notes")
-        );
-        let long = doing_now(&[step("Edited", &"é".repeat(200), "Notes")]).expect("a line");
+        assert_eq!(doing_now(&[older]).as_deref(), Some("Reading Plan"));
+        let long = doing_now(&[step(StepKind::Edit, "Edited", &"é".repeat(200), "Notes")])
+            .expect("a line");
         assert!(
             long.len() <= collab_types::presence::MAX_ACTIVITY_BYTES,
             "{long}"

@@ -208,6 +208,9 @@ struct ActionOptions {
     prepare: Option<syn::Path>,
     /// `audience = "agents"` or `"people"`: who listings offer it to.
     audience: Option<syn::Ident>,
+    /// `step = "create"`: the kind of step it takes, as presence and the
+    /// activity card say it (`tilo_actions::StepKind`).
+    step: Option<syn::Ident>,
 }
 
 fn action_options(attr: &Attribute) -> syn::Result<ActionOptions> {
@@ -231,6 +234,7 @@ fn action_options(attr: &Attribute) -> syn::Result<ActionOptions> {
         writes: Vec::new(),
         prepare: None,
         audience: None,
+        step: None,
     };
     if matches!(attr.meta, Meta::Path(_)) {
         return Ok(options);
@@ -291,9 +295,11 @@ fn action_options(attr: &Attribute) -> syn::Result<ActionOptions> {
             options.writes.push(meta.value()?.parse::<syn::Ident>()?);
         } else if meta.path.is_ident("audience") {
             options.audience = Some(crate::audience_option(&meta)?);
+        } else if meta.path.is_ident("step") {
+            options.step = Some(crate::step_option(&meta)?);
         } else {
             return Err(meta.error(
-                "expected `id = \"...\"`, `label`, `keywords`, `icon`, `field`, `moderation`, `destructive`, `irreversible`, `housekeeping`, `external`, `local`, `incoming_message`, `answers`, `writes = field`, `prepare = path`, `item = field`, `audience = \"agents\"` or `undo = path`",
+                "expected `id = \"...\"`, `label`, `keywords`, `icon`, `field`, `moderation`, `destructive`, `irreversible`, `housekeeping`, `external`, `local`, `incoming_message`, `answers`, `writes = field`, `prepare = path`, `item = field`, `audience = \"agents\"`, `step = \"create\"` or `undo = path`",
             ));
         }
         if options.housekeeping && options.external {
@@ -1382,6 +1388,22 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
         }
 
         let destructive = verb.options.destructive;
+        // What kind of step it takes: what its declaration names, else what
+        // its shape says — a verb that takes something away is a deletion, one
+        // that acts on an item of a collection changes that item.
+        let step_variant = verb.options.step.clone().or_else(|| {
+            if destructive {
+                Some(syn::Ident::new("Delete", proc_macro2::Span::call_site()))
+            } else if verb.options.item.is_some() {
+                Some(syn::Ident::new("Edit", proc_macro2::Span::call_site()))
+            } else {
+                None
+            }
+        });
+        let step = step_variant.as_ref().map_or_else(
+            || quote!(::core::option::Option::None),
+            |kind| quote!(::core::option::Option::Some(#krate::__private::StepKind::#kind)),
+        );
         let irreversible = verb.options.irreversible;
         let housekeeping = verb.options.housekeeping;
         let answer = if verb.options.answers {
@@ -1490,6 +1512,7 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
                 content: #content,
                 item_field: #item_field,
                 writes: &[#(#declared_writes),*],
+                step: #step,
                 shape: <#self_ty as #krate::Model>::SHAPE,
                 params: #params_mod::#variant::__PARAMS,
             }

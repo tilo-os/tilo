@@ -701,14 +701,12 @@ impl Mail {
 /// bytes are verified before the draft names them.
 fn prepare_attachment(params: &mut mailbox::Attach) -> Result<(), String> {
     let given = params.content.trim();
-    let reference = ui::tilo_actions::content_hash(given)
-        .or_else(|| given.strip_prefix(crate::attachment_store::PREFIX))
+    let named = given
+        .strip_prefix(crate::attachment_store::PREFIX)
         .unwrap_or(given);
-    if !tilo_content::valid_reference(reference) {
-        return Err(format!(
-            "{given:?} is not a content reference: attach what another step handed over"
-        ));
-    }
+    let reference = ui::tilo_actions::named_reference(named).ok_or_else(|| {
+        format!("{given:?} is not a content reference: attach what another step handed over")
+    })?;
     let bytes =
         tilo_resource::content::read_hash(reference).map_err(|refusal| refusal.to_string())?;
     let staged = if tilo_content::is_sealed(reference) {
@@ -1689,6 +1687,7 @@ impl ResourceApp for MailShell {
     type Resource = Mail;
     const ID: &'static str = "so.tilo.mail";
     const TITLE: &'static str = "Mail";
+    const TITLE_KEY: &'static str = "mail-app-title";
     const ICON: Option<&'static str> = Some("mail");
 
     /// The person's accounts, kept by Settings, and the directory of their
@@ -1872,17 +1871,17 @@ mod tests {
             .strip_prefix(crate::attachment_store::PREFIX)
             .unwrap();
         assert!(tilo_content::is_sealed(reference), "{reference}");
-        assert!(
-            app.call(
+        let again = app
+            .call(
                 "attach",
                 serde_json::json!({
-                    "content": ui::tilo_actions::content_resource(reference),
+                    "content": &attachments[0].content_id,
                     "name": "again.csv",
                 }),
             )
-            .is_err(),
-            "the same file is attached once"
-        );
+            .unwrap_err()
+            .to_string();
+        assert!(again.contains("already carries"), "the same file: {again}");
         let missing = tilo_content::hash_bytes(b"never stored");
         assert!(
             app.call(

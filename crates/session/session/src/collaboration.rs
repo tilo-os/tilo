@@ -104,15 +104,20 @@ impl Session {
                             let window = doing.app.as_deref().and_then(|app| {
                                 app_window(tree, &self.shared.notes, &seated.workspace, app)
                             });
-                            let line = lines::acting(
-                                &doing.action,
+                            let step = tilo_actions::Step::new(
+                                doing.step.unwrap_or(tilo_actions::StepKind::Work),
                                 window.as_ref().map(|(_, title)| title.as_str()),
-                            );
-                            (line, window.map(|(record, _)| record))
+                            )
+                            .in_app(doing.app.as_deref());
+                            (lines::step(&step), window.map(|(record, _)| record))
                         }
                         None => (lines::waiting(), None),
                     };
-                    let (r, g, b) = collab_types::presence::agent_rgb(&seated.agent);
+                    // The colour of who its changes are by, as every window paints them.
+                    let (r, g, b) = seated.principal.as_deref().map_or_else(
+                        || collab_types::presence::agent_rgb(&seated.agent),
+                        |principal| ui::presence::participant_color(principal, true),
+                    );
                     let face = tilo_session_client::presence::view(
                         0,
                         ui::time::unix_now_ms(),

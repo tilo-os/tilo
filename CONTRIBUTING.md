@@ -89,37 +89,39 @@ bash tools/policy/run.sh
 
 [`docs/policies.md`](docs/policies.md) explains each rule.
 
-## Run the desktop
+## Run it
 
-On a Linux machine with a Wayland desktop, build and start the Tilo desktop in
-a window, with the apps you name installed as signed packages in private
-state:
-
-```sh
-dist/dev/nested-session.sh --apps "notes chat"
-```
-
-It does not touch your login session; close the window or press Ctrl-C to stop
-it. `--headless` runs it offscreen and `--help` lists the other options. On
-macOS each app runs as a native window of its own: `cargo run --locked -p notes`.
-
-For changes to the OS image, boot or devices, use a development VM:
-`cargo run --locked -p tilo-vm -- guide quickstart`.
-
-## Run the web desktop
-
-The same apps run in the browser, compiled to WebAssembly. You need the
-`wasm32-unknown-unknown` Rust target, the `wasm-bindgen` CLI at the version
-`crates/browser/tilo-browser-runtime/Cargo.toml` pins, and Node.js:
+One command each, from anywhere in the checkout. Each builds only what changed,
+takes `--help` for its options, and `--check` to start it, ask it something,
+stop it and say whether it worked.
 
 ```sh
-rustup target add wasm32-unknown-unknown
-crates/browser/tilo-browser-runtime/scripts/build.sh "$PWD/target/web-desktop" \
-  --bundle desktop --profile quick
-python3 -m http.server -d target/web-desktop
+cargo desktop              # the Tilo desktop in a window on your desktop
+cargo headless             # the session and its apps with no window, for agents and tests
+cargo web                  # the web desktop, served by the local tilo.sh stack
 ```
 
-Then open <http://localhost:8000> in a browser with WebGPU.
+`cargo desktop` (Linux with a Wayland desktop) installs the apps as signed
+packages in private state and opens the desktop in a window of its own; pick
+apps with `--apps "notes chat"`. It and `cargo headless` have their own runtime
+directory, session bus and state, and never reach your session bus, the system
+bus, systemd or logind; `cargo desktop --check` proves that on any machine,
+without a display. Close the window or press Ctrl-C to stop either.
+`cargo headless` prints how to drive it once it answers (`tilo-control` on its
+control socket); `--ready FILE` writes the same as JSON for a script.
+
+`cargo web` builds the desktop bundle and serves it with the relay, front door
+and web entry production runs, on 127.0.0.1; it loads the page's modules and
+runtime back before it prints the address, and fails naming what is missing.
+The stack keeps running until `cargo web down`. It needs the
+`wasm32-unknown-unknown` Rust target (`rustup target add
+wasm32-unknown-unknown`), the `wasm-bindgen` CLI at the version
+`crates/browser/tilo-browser-runtime/Cargo.toml` pins, `curl`, `bwrap`,
+`openssl` and `python3`; [testing tilo.sh](docs/testing-tilo-sh.md) covers the stack.
+
+A single app in its own window needs none of these: `cargo run --locked -p
+notes` (on macOS too). For changes to the OS image, boot or devices, use a
+development VM: `cargo run --locked -p tilo-vm -- guide quickstart`.
 
 ## Write your first app
 

@@ -17,6 +17,11 @@
 import { resourceProxy } from "tilo-sdk";
 import type * as tilo from "tilo-sdk";
 
+/** The version of the surface these types were made from: a workspace whose app
+ * publishes another refuses their actions rather than run what they no longer
+ * describe. */
+export const SURFACE = "so.tilo.mail@c0f0bb93ba1205e5";
+
 export interface DraftAttachment {
   content_id: string;
   filename: string;
@@ -273,7 +278,7 @@ export interface Mailbox extends tilo.Resource {
 
 /** The `mail.mailbox` kind at `path`. */
 export function mailbox(ws: tilo.Workspace, path: string): Mailbox {
-  return resourceProxy(ws, path) as unknown as Mailbox;
+  return resourceProxy(ws, path, SURFACE) as unknown as Mailbox;
 }
 
 /** Accounts — `tilo.accounts`. */
@@ -303,7 +308,7 @@ export interface Accounts extends tilo.Resource {
 
 /** The `tilo.accounts` kind at `path`. */
 export function accounts(ws: tilo.Workspace, path: string): Accounts {
-  return resourceProxy(ws, path) as unknown as Accounts;
+  return resourceProxy(ws, path, SURFACE) as unknown as Accounts;
 }
 
 /** Contact identities — `tilo.contacts.identities`. */
@@ -366,7 +371,7 @@ export interface Identities extends tilo.Resource {
 
 /** The `tilo.contacts.identities` kind at `path`. */
 export function identities(ws: tilo.Workspace, path: string): Identities {
-  return resourceProxy(ws, path) as unknown as Identities;
+  return resourceProxy(ws, path, SURFACE) as unknown as Identities;
 }
 
 /** Trusted senders — `mail.trusted-senders`. */
@@ -382,7 +387,7 @@ export interface TrustedSenders extends tilo.Resource {
 
 /** The `mail.trusted-senders` kind at `path`. */
 export function trustedSenders(ws: tilo.Workspace, path: string): TrustedSenders {
-  return resourceProxy(ws, path) as unknown as TrustedSenders;
+  return resourceProxy(ws, path, SURFACE) as unknown as TrustedSenders;
 }
 
 /** Mail on your devices — `mail.copies`. */
@@ -398,6 +403,6 @@ export interface Copies extends tilo.Resource {
 
 /** The `mail.copies` kind at `path`. */
 export function copies(ws: tilo.Workspace, path: string): Copies {
-  return resourceProxy(ws, path) as unknown as Copies;
+  return resourceProxy(ws, path, SURFACE) as unknown as Copies;
 }
 

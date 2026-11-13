@@ -35,11 +35,7 @@ view notices(d: Desk) {
             }
             body: {
                 if all.is_empty() {
-                    ui.EmptyState(
-                        "Nothing to catch up on",
-                        message: "Apps and agents leave a notice when something needs you",
-                        icon: .bell,
-                    )
+                    ui.EmptyState("Nothing to catch up on", icon: .bell)
                 } else {
                     ui.TextInput(bind: query, placeholder: "Search notifications")
                     if shown.is_empty() {
@@ -158,12 +154,14 @@ view banner(d: Desk) {
     }
 }
 
-/// A banner on a desk with the room: the notice with its kind's tone and its first action.
+/// A banner on a desk with the room: the notice with its kind's tone, what sent it, its first
+/// action.
 view banner_full(d: Desk, n: Notice) {
     let actions = actions_of(d, n)
     ui.Banner(
         n.title,
-        message: banner_line(n),
+        message: n.body,
+        source: n.origin_app,
         kind: if n.kind == "error" {
             .error
         } else if n.kind == "warning" {
@@ -176,10 +174,10 @@ view banner_full(d: Desk, n: Notice) {
     }
 }
 
-/// A banner on a narrow desk: the notice as a row, its actions under it.
+/// A banner on a narrow desk: the notice as a row with what sent it, its actions under it.
 view banner_row(d: Desk, n: Notice) {
     stack(gap: .related) {
-        ui.ListRow(n.title, secondary: banner_line(n)) {
+        ui.ListRow(n.title, secondary: n.body, meta: n.origin_app) {
             trailing: {
                 ui.Badge(
                     dot: true,
@@ -200,13 +198,6 @@ view banner_row(d: Desk, n: Notice) {
             }
         }
     }
-}
-
-/// What a banner says under its title: what it says, and who sent it. The parts are joined only
-/// when both are there, so a notice with no sender (the session's own) never trails a separator
-/// after what it says, and one saying nothing is the sender alone.
-fn banner_line(n: Notice) -> Text {
-    return [n.body, n.origin_app].filter(part -> part != "").join(" — ")
 }
 
 /// The actions `n` offers, in its sender's order.

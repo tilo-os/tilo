@@ -739,7 +739,7 @@ fn owned_routes_isolate_documents_and_admit_only_custodied_bytes() {
                 .app
                 .document_sync_status()
                 .unwrap()
-                .contains("connection or owner changed")
+                .contains("connection changed")
         );
         assert_eq!(fixture.value(0, "draft").as_deref(), Some("local"));
     }
@@ -1515,7 +1515,7 @@ fn remote_delivery_waits_for_pending_edits_and_recovers_overflow() {
                     .app
                     .document_sync_status()
                     .unwrap()
-                    .contains("current edit")
+                    .contains("edit finishes")
             );
             fixture
                 .records
@@ -1690,7 +1690,7 @@ fn remote_delivery_waits_for_pending_edits_and_recovers_overflow() {
                 .app
                 .document_sync_status()
                 .unwrap()
-                .contains("queue is full")
+                .contains("Too many changes from others")
         );
         layout(&mut fixture.app);
         assert!(
@@ -1701,7 +1701,7 @@ fn remote_delivery_waits_for_pending_edits_and_recovers_overflow() {
                 .iter()
                 .any(|(_, node)| node
                     .label()
-                    .is_some_and(|label| label.contains("queue is full"))),
+                    .is_some_and(|label| label.contains("Too many changes from others"))),
             "recovery is visible in shared History chrome"
         );
         fixture
@@ -1726,7 +1726,7 @@ fn remote_delivery_waits_for_pending_edits_and_recovers_overflow() {
                 .app
                 .document_sync_status()
                 .unwrap()
-                .contains("queue is full")
+                .contains("Too many changes from others")
         );
         fixture.app.apply_signed_document_envelope(&incoming, None);
         assert_eq!(fixture.app.document_sync_status(), None);
@@ -2463,7 +2463,7 @@ fn round2_deferred_recovery_keeps_later_traffic(owned: bool, later_snapshot: boo
                 .app
                 .document_sync_status()
                 .unwrap()
-                .contains("queue is full")
+                .contains("Too many changes from others")
         );
     }
     assert_eq!(
@@ -2523,7 +2523,7 @@ fn round2_deferred_recovery_keeps_later_traffic(owned: bool, later_snapshot: boo
                 .app
                 .document_sync_status()
                 .unwrap()
-                .contains("queue is full"),
+                .contains("Too many changes from others"),
             "older S cannot clear the obligation created by refused later traffic"
         );
         assert_eq!(value(&fixture, "refused-newer-change"), None);
@@ -4864,7 +4864,7 @@ fn partial_capture_failed_through_return_never_automatically_dispatches_old_queu
             .confirmation
             .as_ref()
             .unwrap_err()
-            .contains("custody")
+            .contains("bring back")
     );
 
     failed.set(false);
@@ -6436,7 +6436,7 @@ fn host_chrome_lists_framework_history_changes_and_opens_at_the_chosen_one() {
     assert!(
         recent
             .iter()
-            .all(|command| command.enabled && command.label.contains(" · "))
+            .all(|command| command.enabled && command.label.contains(" by "))
     );
     let entry = |command: &crate::host_chrome::model::HostCommand| {
         command.invocation().unwrap().arguments["entry"]

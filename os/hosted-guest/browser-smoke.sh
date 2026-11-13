@@ -122,12 +122,16 @@ echo 'session: ends on SIGTERM'
 # workspace's Linux apps: it serves a display, and a Wayland program of this
 # root filesystem connects to it and draws. Nothing it made is kept.
 apps_home=/home/tilo
-apps_runtime=$work/apps-runtime
+# A directory of the tenant's own: the smoke's is the browser user's, which
+# the tenant may not enter, so a configuration there would go unread.
+apps_work=$(mktemp -d)
+chown tilo:tilo "$apps_work"
+apps_runtime=$apps_work/runtime
 install -d -m 0700 -o tilo -g tilo "$apps_runtime"
-printf 'TILO_SESSION_ARGS=\nTILO_SESSION_RUNTIME_DIR=%s\n' "$apps_runtime" > "$work/apps.env"
-chown tilo:tilo "$work/apps.env"
+printf 'TILO_SESSION_ARGS=\nTILO_SESSION_RUNTIME_DIR=%s\n' "$apps_runtime" > "$apps_work/apps.env"
+chown tilo:tilo "$apps_work/apps.env"
 setpriv --reuid=tilo --regid=tilo --init-groups env HOME="$apps_home" \
-    /usr/libexec/tilo/apps-session "$work/apps.env" > "$work/session.log" 2>&1 &
+    /usr/libexec/tilo/apps-session "$apps_work/apps.env" > "$work/session.log" 2>&1 &
 apps_pid=$!
 tries=600
 display=
@@ -159,6 +163,6 @@ done
 kill -0 "$apps_pid" 2>/dev/null && { echo 'the browser smoke: the apps session did not end within 10 s of SIGTERM' >&2; exit 1; }
 wait "$apps_pid" 2>/dev/null || true
 # The tenant's home keeps nothing of the session: no identity is in the image.
-rm -rf "$apps_home/.config/tilo" "$apps_home/.local/share/tilo" "$apps_home/.local/state/tilo" \
+rm -rf "$apps_work" "$apps_home/.config/tilo" "$apps_home/.local/share/tilo" "$apps_home/.local/state/tilo" \
     "$apps_home/.cache/tilo"
 echo 'apps: ends on SIGTERM'

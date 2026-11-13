@@ -361,7 +361,7 @@ impl SetupApp {
         let (internal_download_flow, internal_download_error) =
             match InternalDownloadFlow::new(capabilities.platform, internal_install.link()) {
                 Ok(flow) => (Some(flow), None),
-                Err(error) => (None, Some(error)),
+                Err(error) => (None, Some(error.to_owned())),
             };
         Self {
             dirty: true,
@@ -1014,10 +1014,13 @@ impl SetupApp {
                 super::strings::t(presentation.title_key),
             ));
         }
-        let detail = self
-            .internal_download_error
-            .clone()
-            .unwrap_or_else(|| super::strings::t("imager-desktop-cannot-download"));
+        // The flow's construction failure is a catalogue message like every
+        // other word the card says, so a translated window states it in its
+        // own language.
+        let detail = self.internal_download_error.as_deref().map_or_else(
+            || super::strings::t("imager-desktop-cannot-download"),
+            super::strings::t,
+        );
         content = content.push(Box::new(
             Text::new(&detail)
                 .with_id("setup.internal.status")
@@ -2588,7 +2591,7 @@ mod tests {
             assert!(duplicate_is_error);
             assert_eq!(
                 duplicate_status,
-                "A Full Tilo download cannot start in its current state."
+                crate::setup::strings::t("imager-setup-error-download-start-unavailable")
             );
             assert_eq!(requests_after, requests);
             let deadline = tilo_test_env::hang_deadline();

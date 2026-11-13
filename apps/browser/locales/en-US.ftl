@@ -48,12 +48,11 @@ browser-personal-bookmarks-empty = No bookmarks here
 browser-personal-bookmarks-remove = Remove bookmark item
 browser-personal-bookmarks-unnamed-folder = Untitled folder
 browser-workspace-bookmarks = Workspace bookmarks
-browser-continuity-failed = We couldn’t finish bringing your browsing over.
+browser-continuity-failed = We couldn’t finish bringing your browsing data over.
 browser-continuity-retry = Try again
 browser-service-forget = Forget account on this device
 browser-service-forgetting = Forgetting this account on this device…
 browser-service-forgotten = Local website session removed
-browser-service-custody-backend-needed = Saved account credentials have not been revoked. A custody backend is needed to remove them.
 browser-service-forget-open-first = Open the selected account in this window first.
 browser-service-forget-wait = Wait for the selected account to finish opening.
 browser-service-forget-fence-failed = The selected account could not be fenced for forgetting.
@@ -64,9 +63,9 @@ browser-service-open = Open { $name }
 browser-engine-failed = Close Browser and open it again. If it still won’t start, update or reinstall Browser in Store.
 
 ## Toolbar
-browser-back = Back; hold or right-click for history
+browser-back = Back
 browser-back-tooltip = Back (Alt+Left); hold or right-click for history
-browser-forward = Forward; hold or right-click for history
+browser-forward = Forward
 browser-forward-tooltip = Forward (Alt+Right); hold or right-click for history
 browser-stop = Stop loading
 browser-reload = Reload
@@ -544,3 +543,6 @@ browser-application = Browser
 browser-application-add-bookmark = Bookmark a page
 browser-application-remove-bookmark = Remove a bookmark
 browser-application-set-site-protection = Tracker protection
+
+## What the app is called in a window and in the launcher
+browser-app-title = Browser

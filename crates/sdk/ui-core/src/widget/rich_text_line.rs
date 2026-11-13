@@ -596,7 +596,7 @@ impl RichTextLine {
         self.prev_text = self.inner.value().to_string();
         self.prev_cursor = self.inner.cursor_pos();
 
-        // Marks are char-indexed; convert to byte ranges for `pixel_x_for_byte`.
+        // Marks are char-indexed; convert to byte ranges for the line's geometry.
         self.author_runs.clear();
         if let Some(obj) = self.inner.bound_obj().cloned() {
             let text = self.inner.value().to_string();
@@ -872,19 +872,6 @@ impl RichTextLine {
         self.inner.line_style(text_scale)
     }
 
-    /// Returns 0.0 before the first draw.
-    pub fn pixel_x_for_byte(&self, theme: &Theme, byte: usize) -> f64 {
-        let xs = self.inner.char_x_positions();
-        if xs.is_empty() {
-            return self.inner.get_rect().x0;
-        }
-        let idx = byte.min(xs.len().saturating_sub(1));
-        // The same inset the line's text is laid out at, multiline or not.
-        let pad = self.text_inset(theme);
-        let x = xs.get(idx).copied().unwrap_or(0.0);
-        self.inner.get_rect().x0 + pad + x - self.inner.scroll_x()
-    }
-
     /// So a peer caret on this line is pixel-identical to the line's own focused caret.
     pub fn caret_rect(&self, theme: &Theme, byte: usize) -> Rect {
         self.inner.caret_rect(theme, byte)
@@ -894,7 +881,7 @@ impl RichTextLine {
         self.inner.selection_rect(theme, start, end)
     }
 
-    /// Inverse of `pixel_x_for_byte`, using the shaped caret stops.
+    /// The byte whose caret stop is nearest `x`, from the shaped caret stops.
     pub fn byte_for_pixel_x(&self, _theme: &Theme, x: f64) -> usize {
         self.inner
             .byte_at_point(Point::new(x, self.inner.get_rect().center().y))
@@ -1931,7 +1918,7 @@ fn transient_color(theme: &Theme, kind: TokenKind) -> vello::peniko::Color {
 }
 
 /// Clamps to the end. Converts Automerge marks (char-indexed) to the byte
-/// offsets `pixel_x_for_byte` uses.
+/// offsets the line's geometry uses.
 fn char_to_byte(text: &str, char_idx: usize) -> usize {
     text.char_indices()
         .nth(char_idx)
@@ -2115,7 +2102,7 @@ mod tests {
             );
 
             let target = 6;
-            let x = line.pixel_x_for_byte(&large, target);
+            let x = line.caret_rect(&large, target).x0;
             assert_eq!(
                 line.byte_for_pixel_x(&large, x),
                 target,
@@ -2144,20 +2131,19 @@ mod tests {
                 let theme = Theme::dark().with_text_scale(scale);
                 let mut line = RichTextLine::new().with_text("WWW end");
                 layout_and_draw(&mut line, &theme, 400.0);
-                let plain = line.pixel_x_for_byte(&theme, 3);
+                let plain = line.caret_rect(&theme, 3).x0;
                 line.set_marks(vec![MarkSpan::new(0..3, Mark::Bold)]);
                 layout_and_draw(&mut line, &theme, 400.0);
-                let bold = line.pixel_x_for_byte(&theme, 3);
+                let bold = line.caret_rect(&theme, 3).x0;
                 assert!(
                     (bold - plain).abs() > 0.1,
                     "bold must change the authoritative advances"
                 );
-                assert!((line.caret_rect(&theme, 3).x0 - bold).abs() < 0.01);
                 assert!((line.selection_rect(&theme, 0, 3).x1 - bold).abs() < 0.01);
                 assert_eq!(line.byte_for_pixel_x(&theme, bold), 3);
                 line.set_marks(vec![]);
                 layout_and_draw(&mut line, &theme, 400.0);
-                assert!((line.pixel_x_for_byte(&theme, 3) - plain).abs() < 0.01);
+                assert!((line.caret_rect(&theme, 3).x0 - plain).abs() < 0.01);
             }
         }
 
@@ -2170,9 +2156,8 @@ mod tests {
                 line.inner_mut().set_selection(7, 10);
                 layout_and_draw(&mut line, &theme, 80.0);
                 assert!(line.inner().scroll_x() > 0.0);
-                let x = line.pixel_x_for_byte(&theme, 10);
+                let x = line.caret_rect(&theme, 10).x0;
                 assert!(x <= line.get_rect().x1);
-                assert!((line.caret_rect(&theme, 10).x0 - x).abs() < 0.01);
                 assert!((line.selection_rect(&theme, 7, 10).x1 - x).abs() < 0.01);
                 assert_eq!(line.byte_for_pixel_x(&theme, x), 10);
             }

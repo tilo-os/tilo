@@ -17,6 +17,11 @@
 import { resourceProxy } from "tilo-sdk";
 import type * as tilo from "tilo-sdk";
 
+/** The version of the surface these types were made from: a workspace whose app
+ * publishes another refuses their actions rather than run what they no longer
+ * describe. */
+export const SURFACE = "so.tilo.tube@fdb44416bbb8c189";
+
 export interface Reply {
   comment: string;
   text: string;
@@ -78,7 +83,7 @@ export interface Library extends tilo.Resource {
 
 /** The `tube.library` kind at `path`. */
 export function library(ws: tilo.Workspace, path: string): Library {
-  return resourceProxy(ws, path) as unknown as Library;
+  return resourceProxy(ws, path, SURFACE) as unknown as Library;
 }
 
 /** Watch history — `tube.watch-history`. */
@@ -105,6 +110,6 @@ export interface WatchHistory extends tilo.Resource {
 
 /** The `tube.watch-history` kind at `path`. */
 export function watchHistory(ws: tilo.Workspace, path: string): WatchHistory {
-  return resourceProxy(ws, path) as unknown as WatchHistory;
+  return resourceProxy(ws, path, SURFACE) as unknown as WatchHistory;
 }
 

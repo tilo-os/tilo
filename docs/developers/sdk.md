@@ -8,7 +8,9 @@ history and undo. There is no second API.
 
 Both SDKs are published as `tilo-sdk` (`uv add tilo-sdk`, `bun add tilo-sdk`). The Python module
 is `tilo`: plain `tilo` on PyPI is another project's name, so only the distribution is
-`tilo-sdk`. A release tag publishes both, at that tag's version.
+`tilo-sdk`. A release tag publishes both, at that tag's version ([Publishing the
+SDKs](../publishing.md#publishing-the-sdks) has the tag, the credentials and what the native
+packages will publish as).
 
 ## One model, four ways in
 
@@ -116,12 +118,13 @@ the caller's. Revoking a key ends every key minted from it.
 
 ## Wire
 
-The SDK talks to the same endpoints as MCP: `https://mcp.tilo.sh/mcp` for the account and
-`https://mcp.tilo.sh/w/<workspace>/mcp` for one workspace. It makes the same calls, gets
-structured answers instead of agent text, and has a watch stream on top. Each tool's request
-and answer shapes, the `_meta` keys, run grouping and watch are in
-[`sdk-wire.md`](sdk-wire.md). File bytes go through content upload, then the Files app's
-actions.
+The SDKs speak Tilo's `/v1` JSON API, [`api.md`](api.md): an action is
+`POST …/resources/{path}/actions/{action}`, a run is followed at `…/runs/{run}`, and a
+watch is the workspace's event stream (`…/events`, resumed with `Last-Event-ID`). Each call
+carries an `Idempotency-Key`, so a retry runs nothing twice, and a run's calls carry
+`Tilo-Run` and `Tilo-Run-Title`. They can also reach a Tilo host in process, through the same
+Rust client the API server runs: no second implementation, no socket. File bytes go through
+`…/uploads`, then the Files app's actions.
 
 ## tilolang
 

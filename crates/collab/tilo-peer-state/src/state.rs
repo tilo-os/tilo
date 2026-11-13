@@ -88,6 +88,7 @@ pub use seed::{seed_workspace, workspace_seed};
 mod compaction_set;
 mod sealed_compaction;
 mod sealed_history;
+mod unsent_bases;
 pub use sealed_compaction::{
     OpenedHistory, OpenedRecord, OpenedWrite, SealCheckpoint, UnmergedReason, UnmergedWrite,
 };

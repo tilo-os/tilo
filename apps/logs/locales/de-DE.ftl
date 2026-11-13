@@ -41,3 +41,6 @@ logs-effects-export-filtered-jsonl = Gefilterte Protokolle exportieren
 logs-effects-select-entry = Eintragsdetails anzeigen
 logs-journal = Systemprotokoll
 logs-journal-clear-filters = Filter zurücksetzen
+
+## What the app is called in a window and in the launcher
+logs-app-title = Protokolle

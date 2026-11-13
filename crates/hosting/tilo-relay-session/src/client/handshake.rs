@@ -28,7 +28,13 @@ where
         postcard::to_allocvec(&hello).map_err(|e| ClientError::Codec(e.to_string()))?;
     write_frame(send, &hello_bytes).await?;
     let ack = read_ack(recv).await?;
-    let relay_peer = verify_ack(&ack, server, revocations, &client_nonce)?;
+    let relay_peer = verify_ack(
+        &ack,
+        server,
+        &own_cert.user_public_key,
+        revocations,
+        &client_nonce,
+    )?;
     let ack2 = tilo_relay_client::signer::signed_ack2(signer, &ack.server_nonce)
         .await
         .map_err(ClientError::Sign)?;
@@ -44,6 +50,8 @@ where
 pub(super) struct AwaitingAck {
     client_nonce: [u8; 32],
     server: ExpectedServer,
+    /// The person whose device dialled.
+    own_user: [u8; 32],
     revocations: RevocationList,
 }
 
@@ -55,7 +63,14 @@ impl AwaitingAck {
         R: tokio::io::AsyncRead + Unpin,
     {
         let ack = read_ack(recv).await?;
-        verify_ack(&ack, &self.server, &self.revocations, &self.client_nonce).map(drop)
+        verify_ack(
+            &ack,
+            &self.server,
+            &self.own_user,
+            &self.revocations,
+            &self.client_nonce,
+        )
+        .map(drop)
     }
 }
 
@@ -102,6 +117,7 @@ where
     Ok(AwaitingAck {
         client_nonce,
         server,
+        own_user: own_cert.user_public_key,
         revocations,
     })
 }
@@ -130,10 +146,15 @@ where
     handshake_frame(&ack_bytes)
 }
 
-/// The server `ack` proves, checked against who this device dialled.
+/// The server `ack` proves, checked against who this device dialled. A
+/// host pinned as a device of the dialling device's own person (`own_user`)
+/// proves that exact device under their root and needs no host capability:
+/// whichever host of theirs it is, the person's relay or their own computer,
+/// it is theirs.
 fn verify_ack(
     ack: &HelloAck,
     server: &ExpectedServer,
+    own_user: &[u8; 32],
     revocations: &RevocationList,
     client_nonce: &[u8; 32],
 ) -> Result<AuthenticatedPeer, ClientError> {
@@ -148,7 +169,7 @@ fn verify_ack(
         )?);
     }
     match (server.user.as_ref(), server.device.as_ref()) {
-        (Some(user), Some(device)) if server.own_device => Ok(auth::verify_own_device_ack(
+        (Some(user), Some(device)) if user == own_user => Ok(auth::verify_own_device_ack(
             ack,
             user,
             device,
@@ -166,12 +187,11 @@ fn verify_ack(
             }
             Ok(relay_peer)
         }
-        (None, _) if !server.own_device => Ok(auth::verify_pinned_host_ack(
+        (None, _) => Ok(auth::verify_pinned_host_ack(
             ack,
             revocations,
             now_ns,
             client_nonce,
         )?),
-        (None, _) => Err(ClientError::Auth(crate::auth::AuthError::PolicyReject)),
     }
 }

@@ -10,8 +10,8 @@
 //! point drawn at random each round; `TILO_CHAT_RESTART_SEED` repeats a round and
 //! `TILO_CHAT_RESTART_ROUNDS` runs more of them.
 
-use super::door_on_relay::{OnRelay, approved_key, door_on_relay};
-use super::front_door::{ISSUER, Mcp};
+use super::api::{ISSUER, Mcp};
+use super::api_on_relay::{OnRelay, api_on_relay, approved_key};
 use super::*;
 use serde_json::json;
 
@@ -52,7 +52,7 @@ async fn round(seed: u64) {
         draw ^= draw << 17;
         draw.checked_rem(below).unwrap_or(0)
     };
-    let on_relay = door_on_relay(ISSUER).await;
+    let on_relay = api_on_relay(ISSUER).await;
     let lobby = on_relay.lobby.clone();
     let workspaces = on_relay.hosted.relay.workspaces().unwrap();
     let serving = workspaces.serving_certificate().clone();
@@ -100,7 +100,7 @@ async fn round(seed: u64) {
     let mut posted = Vec::new();
     {
         let mut lounge = Mcp {
-            door: &on_relay.door,
+            api: &on_relay.api,
             path: format!("/w/{lobby}/mcp"),
             token: key,
             session: None,

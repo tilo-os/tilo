@@ -145,9 +145,6 @@ struct InteractiveWorkspaceScope {
 struct ExpectedServer {
     user: Option<[u8; 32]>,
     device: Option<[u8; 32]>,
-    /// The pinned device is one of this person's own, hosting workspaces
-    /// itself: it proves `user` and `device` but needs no host capability.
-    own_device: bool,
     interactive_scope: Option<InteractiveWorkspaceScope>,
 }
 
@@ -773,7 +770,6 @@ impl RelayClient {
             ExpectedServer {
                 user: expected_server_user,
                 device: expected_server_device,
-                own_device: false,
                 interactive_scope: None,
             },
             credentials,
@@ -797,7 +793,6 @@ impl RelayClient {
             ExpectedServer {
                 user: expected_server_user,
                 device: expected_server_device,
-                own_device: false,
                 interactive_scope: None,
             },
             ClientCredentials {
@@ -828,7 +823,6 @@ impl RelayClient {
             ExpectedServer {
                 user: Some(expected_server_user),
                 device: Some(expected_server_device),
-                own_device: false,
                 interactive_scope: None,
             },
             ClientCredentials {
@@ -870,7 +864,6 @@ impl RelayClient {
             ExpectedServer {
                 user: Some(own_user),
                 device: Some(expected_device),
-                own_device: true,
                 interactive_scope: None,
             },
             ClientCredentials {
@@ -913,7 +906,6 @@ impl RelayClient {
             &ExpectedServer {
                 user: Some(own_cert.user_public_key),
                 device: Some(expected_device),
-                own_device: true,
                 interactive_scope: None,
             },
         )
@@ -973,7 +965,6 @@ impl RelayClient {
             ExpectedServer {
                 user: None,
                 device: None,
-                own_device: false,
                 interactive_scope: Some(scope),
             },
             ClientCredentials {
@@ -1017,7 +1008,6 @@ impl RelayClient {
             ExpectedServer {
                 user: expected_server_user,
                 device: expected_server_device,
-                own_device: false,
                 interactive_scope: None,
             },
             credentials,
@@ -1292,7 +1282,6 @@ where
         &ExpectedServer {
             user: Some(expected_server_user),
             device: expected_server_device,
-            own_device: false,
             interactive_scope: None,
         },
     )

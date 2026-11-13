@@ -19,18 +19,29 @@ fn markup_record(path: &str) -> ui::record::RecordId {
 /// A paper as the workspace holds it: the markup record its file gets, three
 /// pages of plan, its source pinned under its name — a record the relay
 /// published, which no window of this device started.
-fn paper(pages: usize, hash: &str, len: u64, name: &str) -> ui::tilo_resource::Doc {
-    assert_eq!(hash.len(), 64, "a source is named by its content hash");
+fn paper(pages: usize, hash: [u8; 32], len: u64, name: &str) -> ui::tilo_resource::Doc {
     let mut doc = ui::tilo_resource::Doc::new();
     <PdfMarkup as ui::tilo_resource::Resource>::initialize(&mut doc)
         .expect("an empty markup record");
+    let source = ui::tilo_resource::Bytes::Blob {
+        hash,
+        len,
+        sealed: None,
+    };
     for action in [
         PdfMarkup::START_PAGE_PLAN.with(pages),
-        pdf_viewer::actions::pin_source_action(hash, len, name),
+        pdf_viewer::actions::pin_source_action(&source, name),
     ] {
         apply(&mut doc, action);
     }
     doc
+}
+
+/// The content hash some test record pins: bytes no device here holds.
+fn absent_hash() -> [u8; 32] {
+    let mut hash = [0xb3_u8; 32];
+    hash[1] = 0xa1;
+    hash
 }
 
 /// Apply `action` the way the record's own window would.
@@ -45,7 +56,7 @@ fn application_pdf() -> (&'static str, ui::record::RecordId, ui::tilo_resource::
     (
         "application.pdf",
         markup_record("/papers/application.pdf"),
-        paper(3, &"b3a1".repeat(16), 4096, "application.pdf"),
+        paper(3, absent_hash(), 4096, "application.pdf"),
     )
 }
 
@@ -128,7 +139,7 @@ fn capture_the_empty_state_with_and_without_the_workspaces_documents() {
         (
             "contract-2026.pdf",
             markup_record("/papers/contract-2026.pdf"),
-            paper(12, &"c0de".repeat(16), 96_512, "contract-2026.pdf"),
+            paper(12, [0xc0; 32], 96_512, "contract-2026.pdf"),
         ),
     ])
     .expect("a reader on the workspace the papers are in");

@@ -261,19 +261,7 @@ impl ShownActor {
         action: &PublishedAction,
         argument: Option<&str>,
     ) -> Option<Self> {
-        let shown = caller.map_or_else(
-            || {
-                tilo_actions::InteractionActor::new(
-                    actor.id.clone(),
-                    if actor.is_agent {
-                        tilo_actions::ActorKind::Agent
-                    } else {
-                        tilo_actions::ActorKind::Person
-                    },
-                )
-            },
-            Caller::actor,
-        );
+        let shown = caller.map_or_else(|| actor.shown(), Caller::actor);
         let remote = caller.is_some_and(|caller| caller.device_public_key().is_some());
         if !shown.kind.acts_for_someone() && shown.for_person.is_none() && !remote {
             return None;
@@ -292,6 +280,9 @@ impl ShownActor {
                     id: surface.app_id.clone(),
                     label: surface.app_id.clone(),
                 }),
+                // What the app declared this action does, so the line beside
+                // the actor's face says it in the reader's language.
+                step: action.contract.step,
             },
             anchor: anchor_of(action, &resource, argument),
             resource,

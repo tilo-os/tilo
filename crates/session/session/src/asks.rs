@@ -269,7 +269,7 @@ impl Shared {
                     String::new(),
                     2,
                     crate::i18n::t("profile-name-not-saved"),
-                    error,
+                    String::new(),
                 ));
             }
         }
@@ -524,6 +524,9 @@ impl Shared {
             SESSION_RESTART => self.power_effect(PowerEffect::Restart),
             SESSION_SHUT_DOWN => self.power_effect(PowerEffect::ShutDown),
             REPORT_PROBLEM => self.report_problem(),
+            // How an agent or a computer connects as the person, asked of the desk by an app
+            // (Settings' Devices and access): what their own card's entry opens.
+            people::CONNECT_AGENT => self.invoke_app_action(LaunchpadAppAction::connect_agent()),
             choice => {
                 // A device another of the person's devices found asks here to act as them: the
                 // banner's own buttons are its answer.

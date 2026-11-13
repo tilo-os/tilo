@@ -135,3 +135,6 @@ clocks-effects-float-timer = Timer schweben lassen
 clocks-effects-float-stopwatch = Stoppuhr schweben lassen
 clocks-on-devices = Uhren auf jedem Gerät
 clocks-on-devices-keep = Uhren dieses Geräts übernehmen
+
+## What the app is called in a window and in the launcher
+clocks-app-title = Uhren

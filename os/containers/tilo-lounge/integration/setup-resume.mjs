@@ -26,21 +26,20 @@
 //   9. an agent that runs `tilo login` the moment the prompt shows, before the
 //      Lounge let the tab in, is waited for, never refused, and gets in.
 //
-// usage: node setup-resume.mjs SITE_URL RELAY_ORIGIN TILO_BIN SITE_CA OUT_DIR
+// usage: node setup-resume.mjs SITE_URL RELAY_ORIGIN TILO_BIN OUT_DIR
 //
 // Saves a capture of each resumed state and a JSON report to OUT_DIR; exits
 // non-zero when any case lands on the wrong screen.
 import {execFile} from 'node:child_process';
 import {chmodSync, mkdirSync, writeFileSync} from 'node:fs';
-import {connect} from 'node:tls';
 import {join} from 'node:path';
 import {launch, sleep} from '../../../../tools/web/chrome.mjs';
 import {stepLimit, deskMetrics, machine} from './waits.mjs';
 import {clock} from './timing.mjs';
 
-const [site, relay, tiloBin, siteCa, out] = process.argv.slice(2);
-if (!site || !relay || !tiloBin || !siteCa || !out) {
-  console.error('usage: node setup-resume.mjs SITE_URL RELAY_ORIGIN TILO_BIN SITE_CA OUT_DIR');
+const [site, relay, tiloBin, out] = process.argv.slice(2);
+if (!site || !relay || !tiloBin || !out) {
+  console.error('usage: node setup-resume.mjs SITE_URL RELAY_ORIGIN TILO_BIN OUT_DIR');
   process.exit(2);
 }
 mkdirSync(out, {recursive: true});
@@ -219,17 +218,7 @@ const codeOf = prompt => prompt?.match(/tilo login ([2-9A-HJKMNP-TV-Z]{3}-[2-9A-
 const steps = tab => tab.evaluate(`document.getElementById('first-run-steps')?.innerText ?? ''`).catch(() => '');
 
 // The agent's computer, as agent-setup.mjs makes it: its own home, a
-// `claude` that records how it was asked, Claude Code's marker, and the
-// test certificates trusted only through TILO_TEST_CA_FILE.
-const relayPem = await new Promise((resolve, reject) => {
-  const {hostname, port} = new URL(relay);
-  const socket = connect({host: hostname, port: Number(port || 443), rejectUnauthorized: false}, () => {
-    const der = socket.getPeerCertificate(false).raw;
-    socket.end();
-    resolve(`-----BEGIN CERTIFICATE-----\n${der.toString('base64').match(/.{1,64}/g).join('\n')}\n-----END CERTIFICATE-----\n`);
-  });
-  socket.on('error', reject);
-});
+// `claude` that records how it was asked, and Claude Code's marker.
 const computer = name => {
   const home = join(out, `computer-${name}`);
   mkdirSync(join(home, 'bin'), {recursive: true});
@@ -254,9 +243,8 @@ printf '{"mcpServers":{"%s":{"type":"stdio","command":"%s","args":[%s],"env":{}}
   "$name" "$command" "\${args%,}" > "$HOME/.claude.json"
 `);
   chmodSync(join(home, 'bin', 'claude'), 0o755);
-  writeFileSync(join(home, 'relay.pem'), relayPem);
   return {PATH: `${join(home, 'bin')}:${process.env.PATH}`, HOME: home, XDG_STATE_HOME: join(home, 'state'),
-    XDG_CONFIG_HOME: join(home, 'config'), CLAUDECODE: '1', TILO_TEST_CA_FILE: `${siteCa}:${join(home, 'relay.pem')}`};
+    XDG_CONFIG_HOME: join(home, 'config'), CLAUDECODE: '1'};
 };
 // `tilo login CODE` on that computer: a promise of how it ended, and `asked`,
 // which resolves once it says it waits for the person's tab, the moment the

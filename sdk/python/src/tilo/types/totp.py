@@ -35,6 +35,7 @@ class StoredAccount(TypedDict):
 
 class Vault(Resource):
     """Authenticator — `totp.vault`."""
+    __surface__ = "so.tilo.totp@7557a43b95820399"
     accounts: list[StoredAccount]
 
     def move_up(self, *, account: str) -> Run | None:

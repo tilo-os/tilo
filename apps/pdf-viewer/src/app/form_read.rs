@@ -295,8 +295,10 @@ mod tests {
             let bytes = std::fs::read(std::path::Path::new(env!("OUT_DIR")).join(fixture))
                 .expect("the fixture");
             app.record_source = Some(crate::markup::PinnedSource {
-                hash: content.put(&bytes).expect("stored"),
-                len: u64::try_from(bytes.len()).expect("small"),
+                source: ui::tilo_resource::Bytes::kept_as(
+                    &bytes,
+                    &content.put(&bytes).expect("stored"),
+                ),
                 name: fixture.into(),
             });
         };
@@ -350,8 +352,10 @@ mod tests {
         let mut app = crate::app::PdfApp::empty_with_content(content.clone());
         let bytes = empty_form_pdf();
         app.record_source = Some(crate::markup::PinnedSource {
-            hash: content.put(&bytes).expect("stored"),
-            len: u64::try_from(bytes.len()).expect("small"),
+            source: ui::tilo_resource::Bytes::kept_as(
+                &bytes,
+                &content.put(&bytes).expect("stored"),
+            ),
             name: "empty-form.pdf".into(),
         });
         let refused = app

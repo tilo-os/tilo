@@ -565,7 +565,7 @@ impl VideoEditorApp {
             // The painted empty state's own words, so one state is not
             // described two ways.
             AccessNode::new(Role::StaticText)
-                .with_name(format!("{INSPECTOR_EMPTY_TITLE}. {INSPECTOR_EMPTY_HINT}."))
+                .with_name(crate::resource::CATALOG.t(INSPECTOR_EMPTY_TITLE))
                 .with_key(0)
         });
         // Rows are a flat painted list but a nested tree: walk it once, opening
@@ -673,10 +673,13 @@ impl VideoEditorApp {
     ) -> AccessNode {
         let verbs: Vec<AccessNode> = MARKER_VERBS
             .iter()
-            .map(|verb| {
+            .map(|(message, key)| {
                 AccessNode::new(Role::Button)
-                    .with_name(format!("{verb} {name}"))
-                    .with_hashed_key((m.id, *verb))
+                    .with_name(
+                        crate::resource::CATALOG
+                            .t_args(message, &[("marker", ui::i18n::ArgValue::from(name))]),
+                    )
+                    .with_hashed_key((m.id, *key))
                     .with_state(AccessState::new().focusable(true))
             })
             .collect();
@@ -1883,11 +1886,11 @@ impl VideoEditorApp {
         action: &ui::a11y::Action,
     ) -> bool {
         use ui::a11y::{Action, hash_key};
-        let field = if hash_key(&(m.id, MARKER_VERBS[0])) == verb {
+        let field = if hash_key(&(m.id, MARKER_VERBS[0].1)) == verb {
             MarkerField::Note
-        } else if hash_key(&(m.id, MARKER_VERBS[1])) == verb {
+        } else if hash_key(&(m.id, MARKER_VERBS[1].1)) == verb {
             MarkerField::Name
-        } else if hash_key(&(m.id, MARKER_VERBS[2])) == verb {
+        } else if hash_key(&(m.id, MARKER_VERBS[2].1)) == verb {
             return match action {
                 Action::Focus => true,
                 Action::Activate => {

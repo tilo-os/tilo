@@ -940,10 +940,10 @@ fn icloud_rows_are_marked_best_effort_and_offer_reauthentication() {
         texts
     });
     assert!(
-        texts.iter().any(|text| text == "Re-authenticate — Files"),
+        texts.iter().any(|text| text == "Sign in again"),
         "{texts:?}"
     );
-    assert!(texts.iter().any(|text| text == "Best effort"), "{texts:?}");
+    assert!(texts.iter().any(|text| text == "Unofficial"), "{texts:?}");
     assert!(
         !texts.iter().any(|text| text == "Edit"),
         "cloud storage accounts have no password form to edit"

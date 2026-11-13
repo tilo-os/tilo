@@ -240,6 +240,14 @@ async function recordArrived(peer, {app, record}) {
   }
 }
 
+/** The apps this page shows as HTML (`mountDesktop({dom: true})`): every
+ * widget of their windows renders as its own elements (`Widget::html`), so
+ * the page holds real text, fields, lists and buttons that the browser lays
+ * out, finds, selects and reads out. Any other app is drawn on the canvas
+ * until its widgets render as HTML too; which renderer shows an app is this
+ * page's choice, never the link's. */
+export const HTML_APPS = new Set(['so.tilo.notes']);
+
 /** Mount what `route` shows, then show its target. `directory` is what the
  * desktop's workspace directory browses (`deps.directory`), handed to
  * whichever mount draws the desk: the page's own, or a peer's. */
@@ -251,7 +259,8 @@ export async function present({route, peer, surface, mountDesktop, directory = n
   if (mode === 'app') {
     if (!target.app) throw new Error('This link opens a whole workspace, so it opens on the desktop');
     if (peer && target.record !== undefined) await recordArrived(peer, target);
-    const mounted = await mount(surface, {...shown, app: target.app, ...recordOption(target.record), onStatus});
+    const html = HTML_APPS.has(target.app) ? {dom: true} : {};
+    const mounted = await mount(surface, {...shown, app: target.app, ...recordOption(target.record), ...html, onStatus});
     await openTarget({mount: mounted, target, mode});
     return {mount: mounted};
   }

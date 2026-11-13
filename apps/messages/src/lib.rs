@@ -312,6 +312,7 @@ impl ResourceApp for MessagesShell {
     type Resource = Messages;
     const ID: &'static str = "so.tilo.messages";
     const TITLE: &'static str = "Messages";
+    const TITLE_KEY: &'static str = "messages-app-title";
     const ICON: Option<&'static str> = Some("chat");
 
     /// The person's accounts, kept by Settings, and the directory of their

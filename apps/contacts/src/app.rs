@@ -1485,21 +1485,15 @@ impl ContactsApp {
     /// Beside the content, an empty book is said once, by the content's
     /// first-run pane; a narrow window's list stands alone, so it says so
     /// itself rather than show nothing. While the first contact is being
-    /// written the form takes that pane's place, so the list says it then
-    /// too, and where the new contact will appear.
+    /// written the form takes that pane's place, so the list says the book
+    /// is empty then too.
     fn list_empty_state(&self) -> (Option<String>, Option<String>, Option<Icon>) {
         let creating = self.mode == Mode::Edit && self.form.as_ref().is_some_and(|f| f.is_new);
         match self.group_filter.as_deref() {
             Some(FAVORITES_FILTER) => (Some("No favorites yet".to_owned()), None, None),
             Some(_) => (Some("No one is in this group".to_owned()), None, None),
             None if self.store.is_empty() && (self.list_alone || creating) => {
-                let message = if self.read_only() {
-                    Some(CATALOG.t(VIEW_ONLY_MESSAGE))
-                } else if creating {
-                    Some("The contact you're adding appears here once you save it.".to_owned())
-                } else {
-                    None
-                };
+                let message = self.read_only().then(|| CATALOG.t(VIEW_ONLY_MESSAGE));
                 (
                     Some("No contacts yet".to_owned()),
                     message,

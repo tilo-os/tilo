@@ -107,3 +107,6 @@ code-editor-project-rerun = Im Terminal erneut ausführen
 code-editor-project-rerun-test = Test im Terminal erneut ausführen
 code-editor-project-stop = Im Terminal stoppen
 code-editor-project-record-run = Terminallauf erfassen
+
+## What the app is called in a window and in the launcher
+code-editor-app-title = Code-Editor

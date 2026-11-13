@@ -210,7 +210,12 @@ impl Decorator for Kept {
     }
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
-        if let Some(sync) = self.upkeep.sync.as_mut() {
+        // A proof that the sync owes nothing runs the tree's sync alone: the
+        // work this window takes in is what the frame runs beside it, and
+        // taking it in again would change the tree the proof measures.
+        if !ui_core::component_inputs::is_proving()
+            && let Some(sync) = self.upkeep.sync.as_mut()
+        {
             sync();
         }
         self.content.sync(state, path);

@@ -212,10 +212,9 @@ impl Music {
             self.menu_actions.push(super::Action::Back);
         }
         for (playlist, (name, _)) in playlists {
-            let label =
-                crate::i18n::t_args("music-spotify-playlist-choice", &[("name", name.into())]);
-            self.push_menu(
-                label,
+            self.push_menu_with_detail(
+                name,
+                Some("Spotify".to_owned()),
                 super::Action::SpotifyEffect(MusicEffect::SpotifyPlaylistAdd {
                     playlist,
                     track: track.into(),

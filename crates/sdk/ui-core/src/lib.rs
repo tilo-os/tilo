@@ -349,6 +349,7 @@ pub mod shell_tabs;
 mod slot_row;
 pub mod snap;
 pub mod state;
+pub mod step;
 pub mod strip_layers;
 pub mod surface;
 /// The actions socket a session hands a surface app is a descriptor of a
@@ -556,7 +557,7 @@ pub use widget::name_field::{NameField, NameFieldOutcome};
 // Re-exported so an app reaches the whole history stack through `tilo_ui::`
 // without knowing the module layout.
 pub use history_source::groups as history_groups;
-pub use history_source::sentence::{author_line, wire_author_line};
+pub use history_source::sentence::{acting_line, author_line, wire_author_line};
 pub use history_source::{
     ActivityBrief, ActivityBriefAction, ActivityDigest, ActivityNarrator, AuthorDirectory,
     CompareError, GroundedNarrative, HistoryComparison, HistoryFacetIndex, HistoryResourceTarget,

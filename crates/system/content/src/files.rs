@@ -124,6 +124,10 @@ impl ContentBackend for FilesBackend {
         collected.hashes.sort();
         Ok(collected)
     }
+
+    fn max_item_bytes(&self) -> usize {
+        self.limits.max_item_bytes
+    }
 }
 
 #[cfg(test)]

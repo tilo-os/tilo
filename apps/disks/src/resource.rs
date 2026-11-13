@@ -405,6 +405,7 @@ impl ResourceApp for DisksShell {
     const ID: &'static str = "so.tilo.disks";
     const READS_HOST: &'static [ui::launch::HostSource] = &[ui::launch::HostSource::Disks];
     const TITLE: &'static str = "Disks";
+    const TITLE_KEY: &'static str = "disks-app-title";
 
     fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
         Some(&crate::locales::CATALOG)

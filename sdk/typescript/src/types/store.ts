@@ -17,6 +17,11 @@
 import { resourceProxy } from "tilo-sdk";
 import type * as tilo from "tilo-sdk";
 
+/** The version of the surface these types were made from: a workspace whose app
+ * publishes another refuses their actions rather than run what they no longer
+ * describe. */
+export const SURFACE = "so.tilo.store@e40586bf33717a0d";
+
 export interface Report {
   status: string;
   note: string;
@@ -76,6 +81,6 @@ export interface Catalog extends tilo.Resource {
 
 /** The `store.catalog` kind at `path`. */
 export function catalog(ws: tilo.Workspace, path: string): Catalog {
-  return resourceProxy(ws, path) as unknown as Catalog;
+  return resourceProxy(ws, path, SURFACE) as unknown as Catalog;
 }
 

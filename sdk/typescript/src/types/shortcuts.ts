@@ -17,6 +17,11 @@
 import { resourceProxy } from "tilo-sdk";
 import type * as tilo from "tilo-sdk";
 
+/** The version of the surface these types were made from: a workspace whose app
+ * publishes another refuses their actions rather than run what they no longer
+ * describe. */
+export const SURFACE = "so.tilo.shortcuts@a41479e69568cbd8";
+
 /** Shortcuts — `shortcuts.workbench`. */
 export interface Workbench extends tilo.Resource {
   drafts: unknown;
@@ -107,6 +112,6 @@ export interface Workbench extends tilo.Resource {
 
 /** The `shortcuts.workbench` kind at `path`. */
 export function workbench(ws: tilo.Workspace, path: string): Workbench {
-  return resourceProxy(ws, path) as unknown as Workbench;
+  return resourceProxy(ws, path, SURFACE) as unknown as Workbench;
 }
 

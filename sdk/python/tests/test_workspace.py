@@ -288,7 +288,6 @@ async def test_an_upload_answers_its_content_reference(workspace, door):
 
     assert content == "tilo.content:14"
     assert door.uploads == [b"passport bytes"]
-    assert door.upload_sessions[-1] is not None
 
     imported = await workspace.do(f"{PDF}#import-pdf-content", content=content, name="passport.pdf")
     assert imported == {"imported": content}

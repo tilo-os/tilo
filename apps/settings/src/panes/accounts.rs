@@ -2402,12 +2402,7 @@ impl AccountsPane {
                 mount.map(|mount| mount.paused),
                 &mut details,
             ));
-            entries.extend(Self::account_maintenance_entries(
-                view,
-                runtime.is_some_and(|status| {
-                    status.health == accounts::AccountSyncHealth::NeedsAuthentication
-                }),
-            ));
+            entries.extend(Self::account_maintenance_entries(view));
         }
         let label = self.account_row_label(view, &mut details);
         let menu = (!entries.is_empty()).then(|| {
@@ -2508,44 +2503,17 @@ impl AccountsPane {
     /// What the account's menu offers to keep it working: edit it, sign in
     /// again, check it, and remove it. Each entry runs the account row's own
     /// action, so the host admits it as it does a button.
-    fn account_maintenance_entries(view: &AccountView, needs_sign_in: bool) -> Vec<AccountEntry> {
+    fn account_maintenance_entries(view: &AccountView) -> Vec<AccountEntry> {
         let mut actions = Vec::new();
-        let service_label = |action: String| {
-            let service = if view.kind == AccountKind::Mail {
-                Some(t("accounts-service-mail"))
-            } else if view.kind.is_cloud_storage()
-                || matches!(view.kind, AccountKind::WebDav | AccountKind::Nextcloud)
-            {
-                Some(t("accounts-service-files"))
-            } else {
-                None
-            };
-            service.map_or_else(
-                || action.clone(),
-                |service| {
-                    t_args(
-                        "accounts-service-action",
-                        &[
-                            ("action", action.clone().into()),
-                            ("service", service.into()),
-                        ],
-                    )
-                },
-            )
-        };
-        let reauth_label = if view.kind == AccountKind::ICloudDrive && needs_sign_in {
-            t("accounts-reauth-icloud")
-        } else {
-            t("accounts-reauth")
-        };
-        let reauth_label = service_label(reauth_label);
-        let edit = service_label(t("accounts-edit"));
+        // The menu belongs to one account, so its entries name the action
+        // alone; the service is already the row they open from.
+        let reauth_label = t("accounts-reauth");
+        let edit = t("accounts-edit");
         let check = if view.kind == AccountKind::Mail {
             t("accounts-check-server")
         } else {
             t("accounts-verify")
         };
-        let check = service_label(check);
         let remove = t(if view.kind == AccountKind::Mail {
             "accounts-disconnect-mail"
         } else if view.kind.is_cloud_storage()
@@ -2718,7 +2686,6 @@ impl AccountsPane {
                         ))
                     });
                 }
-                fields.push(note(&t("accounts-form-caption")));
                 fields.push(buttons);
                 fields
             }),

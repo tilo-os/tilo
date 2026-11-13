@@ -23,6 +23,7 @@ __all__ = [
 
 class Session(Resource):
     """Diff & Merge — `diffmerge.session`."""
+    __surface__ = "so.tilo.diffmerge@ddf89499bfa36ad7"
     @property
     def comparison(self) -> Any:
         """Read only."""

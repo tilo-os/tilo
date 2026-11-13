@@ -243,7 +243,7 @@ root Talk
 
 default view talk for Talk
 
-action say(t: Talk, s: Text) {
+action set_said(t: Talk, s: Text) {
     t.said = s
 }
 
@@ -257,7 +257,7 @@ view talk(t: Talk) {
         button("Toggle", on: set(open, not open))
         button("More", on: set(n, n + 1))
         input(bind: draft)
-        button("Send", on: say(t, "{draft}!"))
+        button("Send", on: set_said(t, "{draft}!"))
     }
 }
 "#;

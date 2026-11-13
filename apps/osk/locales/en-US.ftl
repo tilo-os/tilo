@@ -58,7 +58,7 @@ osk-key-alt-latched = Alt, held for the next key
 osk-key-alt-locked = Alt, locked
 osk-toolbar-dismiss = Hide keyboard
 
-osk-context-unavailable = The focused field action is unavailable.
+osk-context-unavailable = This key doesn't work in this field.
 osk-context-stale = The field changed. Choose the action again.
 
 ## History: what each change of the learned record did
@@ -80,3 +80,6 @@ osk-learned = What the keyboard learned
 osk-learned-learn = Learn words
 osk-learned-forget = Forget learned words
 osk-keyboard = On-screen keyboard
+
+## What the app is called in a window and in the launcher
+osk-app-title = On-screen keyboard

@@ -4,7 +4,7 @@
     "action": "activate-window",
     "resource_kind": "canvas.artwork",
     "label": "Show this window",
-    "description": "Ask the platform to reveal the existing window, keeping its document owner.",
+    "description": "Bring this app's window to the front.",
     "operation": "View",
     "params": []
   },
@@ -2640,7 +2640,7 @@
     "resource": "canvas.artwork",
     "action": "look",
     "resource_kind": "canvas.artwork",
-    "label": "Look at the artwork",
+    "label": "Look at artwork",
     "description": "Look at the artwork. See the artwork as a picture: the whole of it, or a region up close. Answers with the image and the revision it shows. grid: true overlays labelled coordinates for placing marks.",
     "operation": "Effect",
     "params": [
@@ -3099,6 +3099,28 @@
             "null"
           ]
         }
+      }
+    ]
+  },
+  {
+    "resource": "canvas.artwork",
+    "action": "read",
+    "resource_kind": "canvas.artwork",
+    "label": "Read the content",
+    "description": "What this holds as typed data: with no item, the resource and the ids of what it contains; with an item id, that item's content. With version, read frozen historical content and its exact heads without changing the live resource.",
+    "operation": "View",
+    "params": [
+      {
+        "name": "item",
+        "ty": "text",
+        "description": "A nested resource's id, as the first read lists it (default: the whole resource)",
+        "nullable": true
+      },
+      {
+        "name": "version",
+        "ty": "text",
+        "description": "A change id, exact causal frontier, or checkpoint name (default: current)",
+        "nullable": true
       }
     ]
   },
@@ -3848,7 +3870,7 @@
     "resource": "canvas.artwork",
     "action": "use-brush",
     "resource_kind": "canvas.artwork",
-    "label": "Use brush preset",
+    "label": "Use brush",
     "description": "Use brush preset.",
     "operation": "View",
     "params": [
@@ -4255,8 +4277,8 @@
     "resource": "person:canvas.recent-artworks",
     "action": "forget",
     "resource_kind": "canvas.recent-artworks",
-    "label": "The artwork at `path` on `device` moved or was removed",
-    "description": null,
+    "label": "Forget a recent artwork",
+    "description": "The artwork at `path` on `device` moved or was removed.",
     "operation": "Effect",
     "params": [
       {
@@ -4419,6 +4441,28 @@
   },
   {
     "resource": "person:canvas.recent-artworks",
+    "action": "read",
+    "resource_kind": "canvas.recent-artworks",
+    "label": "Read the content",
+    "description": "What this holds as typed data: with no item, the resource and the ids of what it contains; with an item id, that item's content. With version, read frozen historical content and its exact heads without changing the live resource.",
+    "operation": "View",
+    "params": [
+      {
+        "name": "item",
+        "ty": "text",
+        "description": "A nested resource's id, as the first read lists it (default: the whole resource)",
+        "nullable": true
+      },
+      {
+        "name": "version",
+        "ty": "text",
+        "description": "A change id, exact causal frontier, or checkpoint name (default: current)",
+        "nullable": true
+      }
+    ]
+  },
+  {
+    "resource": "person:canvas.recent-artworks",
     "action": "redo",
     "resource_kind": "canvas.recent-artworks",
     "label": "Redo",
@@ -4437,8 +4481,8 @@
     "resource": "person:canvas.recent-artworks",
     "action": "remember",
     "resource_kind": "canvas.recent-artworks",
-    "label": "`recent` was opened or saved on `device`: it moves to the front",
-    "description": null,
+    "label": "Record a recent artwork",
+    "description": "`recent` was opened or saved on `device`: it moves to the front.",
     "operation": "Effect",
     "params": [
       {

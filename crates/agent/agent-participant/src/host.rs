@@ -623,16 +623,23 @@ mod tests {
         let state = tempfile::tempdir().unwrap();
         let host = agent_host(state.path());
         let address = host.put_content(WORKSPACE, b"a picture's bytes").unwrap();
-        let hash = tilo_actions::content_hash(&address).unwrap();
-        assert_eq!(hash, tilo_content::hash_bytes(b"a picture's bytes"));
+        let reference = tilo_actions::content_hash(&address).unwrap();
+        assert!(tilo_content::is_sealed(reference), "{reference}");
         assert_eq!(
             host.content(WORKSPACE, &address).as_deref(),
             Some(&b"a picture's bytes"[..])
         );
         assert_eq!(
-            host.content(&WORKSPACE.to_uppercase(), hash).as_deref(),
+            host.content(&WORKSPACE.to_uppercase(), reference)
+                .as_deref(),
             Some(&b"a picture's bytes"[..]),
-            "a bare hash, in the workspace however its uuid is spelt"
+            "a bare reference, in the workspace however its uuid is spelt"
+        );
+        let stored = tilo_content::content_address(reference).unwrap();
+        assert_ne!(
+            host.content(WORKSPACE, &stored).as_deref(),
+            Some(&b"a picture's bytes"[..]),
+            "the store holds ciphertext alone"
         );
         // Kept under the state directory: a host started again reads it.
         let again = agent_host(state.path());
@@ -723,7 +730,7 @@ mod tests {
     fn the_host_keeps_credentials_and_content_and_nothing_learned() {
         let state = tempfile::tempdir().unwrap();
         let host = agent_host(state.path());
-        host.put_content(WORKSPACE, b"a picture's bytes").unwrap();
+        let reference = host.put_content(WORKSPACE, b"a picture's bytes").unwrap();
         // A grant survives a restart, which is the state file's whole job.
         let root = SigningKey::from_bytes(&[7; 32]);
         let expires_at = tilo_clock::unix_now_ns().saturating_add(3_600_000_000_000);
@@ -734,10 +741,16 @@ mod tests {
         // The credential file, and the one content address the workspace
         // holds: no file of any other kind anywhere under it.
         let kept = contents(&state.path().join(CONTENT_DIR));
-        let address = tilo_content::hash_bytes(b"a picture's bytes");
+        let reference = tilo_actions::content_hash(&reference).unwrap();
+        let address = tilo_content::content_address(reference).unwrap();
         assert_eq!(
             kept.keys().map(String::as_str).collect::<Vec<_>>(),
             vec![address.as_str()],
+        );
+        assert_ne!(
+            kept[&address].as_slice(),
+            b"a picture's bytes",
+            "kept sealed"
         );
         assert_eq!(documents(state.path()), vec!["agents.json"]);
         // The state file is the credentials and the grants, nothing about

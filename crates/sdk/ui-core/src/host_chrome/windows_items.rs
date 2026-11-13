@@ -184,7 +184,10 @@ mod tests {
             .collect();
         assert_eq!(titles[..2], ["Search…", "Show History"], "{titles:?}");
         assert_eq!(titles.len(), 4, "and two recent changes: {titles:?}");
-        assert!(titles[2..].iter().all(|title| title.contains(" · ")));
+        assert!(
+            titles[2..].iter().all(|title| title.contains(" by ")),
+            "a change names who made it: {titles:?}"
+        );
         let windows = PlatformConventions::new(Platform::Windows);
         let search = commands
             .iter()

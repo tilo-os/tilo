@@ -19,7 +19,7 @@ use std::pin::Pin;
 use std::time::Duration;
 
 use crate::{
-    ARGUMENTS_JSON_PREFIX, ActionAddress, ActionOutput, ActionParam, Offload, content_hash,
+    ARGUMENTS_JSON_PREFIX, ActionAddress, ActionOutput, ActionParam, Offload, named_reference,
     remote::InvokeRequest,
 };
 
@@ -88,23 +88,21 @@ pub trait ActionOffload: Send + Sync {
 
 /// The content an invocation's `arguments` name through the content
 /// parameters among `params` ([`ActionParam::is_content`],
-/// [`ActionParam::is_content_list`]), in declaration order: a bare hash or a
-/// `tilo.content:` address each.
+/// [`ActionParam::is_content_list`]), in declaration order: a `tilo.content:`
+/// address, or the reference alone. Each is named by its address, which is
+/// what the caller's workspace keeps and hands another device, whether or not
+/// the record that names it keeps the content sealed
+/// ([`content_address`](tilo_content::content_address)).
 pub fn content_inputs(
     params: &[ActionParam],
     arguments: &serde_json::Map<String, serde_json::Value>,
 ) -> Result<Vec<String>, String> {
-    let hash = |name: &str, value: &serde_json::Value| -> Result<String, String> {
+    let address = |name: &str, value: &serde_json::Value| -> Result<String, String> {
         let text = value
             .as_str()
             .ok_or_else(|| format!("`{name}` is not a content address"))?;
-        let hash = content_hash(text).unwrap_or(text);
-        let valid = hash.len() == 64
-            && hash
-                .bytes()
-                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte));
-        valid
-            .then(|| hash.to_owned())
+        named_reference(text)
+            .and_then(tilo_content::content_address)
             .ok_or_else(|| format!("`{name}` is not a content address"))
     };
     let mut inputs = Vec::new();
@@ -116,13 +114,13 @@ pub fn content_inputs(
             continue;
         };
         if param.is_content() {
-            inputs.push(hash(&param.name, value)?);
+            inputs.push(address(&param.name, value)?);
         } else if param.is_content_list() {
             let items = value
                 .as_array()
                 .ok_or_else(|| format!("`{}` is not a list of content", param.name))?;
             for item in items {
-                inputs.push(hash(&param.name, item)?);
+                inputs.push(address(&param.name, item)?);
             }
         }
     }
@@ -184,10 +182,25 @@ mod tests {
         assert_eq!(argument_inputs(&params, None), Ok(Vec::new()));
         assert!(argument_inputs(&params, Some("free text")).is_err());
 
-        // A path is never content, nor is a hash spelled otherwise.
-        for wrong in ["/home/someone/secret.png", &"B".repeat(64)] {
-            let arguments = serde_json::json!({ "images": [wrong] });
-            assert!(content_inputs(&params, arguments.as_object().unwrap()).is_err());
-        }
+        // Content the record keeps sealed is handed over by the address the
+        // workspace keeps it under, as bare content already was.
+        let sealed = tilo_content::ContentStore::memory()
+            .sealing()
+            .put(b"a photograph")
+            .unwrap();
+        assert!(tilo_content::is_sealed(&sealed), "{sealed}");
+        let address = tilo_content::content_address(&sealed).unwrap();
+        let arguments = serde_json::json!({
+            "images": [sealed],
+            "cover": format!("tilo.content:{sealed}"),
+        });
+        assert_eq!(
+            content_inputs(&params, arguments.as_object().unwrap()),
+            Ok(vec![address.clone(), address])
+        );
+
+        // A path is never content.
+        let arguments = serde_json::json!({ "images": ["/home/someone/secret.png"] });
+        assert!(content_inputs(&params, arguments.as_object().unwrap()).is_err());
     }
 }

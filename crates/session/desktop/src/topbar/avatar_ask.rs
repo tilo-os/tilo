@@ -240,8 +240,13 @@ impl TopBarChrome {
             return false;
         };
         match event {
+            // Escape folds the ask only once the person has moved to it: the bar holds their
+            // focus. A card that arrived unasked stands beside the avatar while they work and
+            // never answers the keys they are typing where they are — their window's Escape,
+            // their search's Escape — so it shows without taking the keyboard from them.
             WindowEvent::KeyboardInput { event: key, .. }
-                if key.state == winit::event::ElementState::Pressed
+                if self.focused
+                    && key.state == winit::event::ElementState::Pressed
                     && key.logical_key
                         == winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape) =>
             {
@@ -637,6 +642,15 @@ mod tests {
         }
     }
 
+    /// Move to the ask, as a person answering it does: a press on the bar the card hangs from
+    /// gives the bar the keyboard. A card that arrived unasked never answers the keys typed where
+    /// the person was, so its own keys are taken only after this.
+    fn move_to_the_bar(frame: &mut Framed<DesktopChrome>) {
+        let bar = bar_rect(frame);
+        Framed::harness_mut(frame).click_at(bar.x0 + 4.0, bar.y0 + bar.height() / 2.0);
+        settle(frame);
+    }
+
     fn ask_rect(frame: &Framed<DesktopChrome>) -> Rect {
         frame.bar().avatar_ask_rect()
     }
@@ -942,6 +956,7 @@ mod tests {
     #[test]
     fn escape_folds_the_ask_and_its_answer_reaches_the_host() {
         let (mut frame, host) = asking_desktop((1440, 900));
+        move_to_the_bar(&mut frame);
         Framed::harness_mut(&mut frame).key("Escape");
         assert!(host.ask.borrow().as_ref().is_some_and(|ask| !ask.open));
         settle(&mut frame);
@@ -1040,6 +1055,7 @@ mod tests {
             !ask.is_zero_area() && ask.y0 >= bar.y0 && ask.y1 <= bar.y1,
             "the ask opens in the band {ask:?}, not under it {bar:?}"
         );
+        move_to_the_bar(&mut frame);
         Framed::harness_mut(&mut frame).key("Escape");
         assert!(
             host.ask.borrow().as_ref().is_some_and(|ask| !ask.open),

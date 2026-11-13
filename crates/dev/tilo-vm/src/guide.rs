@@ -137,6 +137,8 @@ mod tests {
                 "qemu:///session",
                 "tilo-vm vm branch box a b c --stop",
                 "tilo-device-branch.service",
+                "--no-admit",
+                "to take this device in",
             ] {
                 assert!(text.contains(needle), "quickstart lacks {needle}");
             }

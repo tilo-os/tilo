@@ -293,6 +293,7 @@ impl ResourceApp for FeedsShell {
     type Resource = Library;
     const ID: &'static str = "so.tilo.feeds";
     const TITLE: &'static str = "Feeds";
+    const TITLE_KEY: &'static str = "feeds-app-title";
     const ICON: Option<&'static str> = Some("feeds");
 
     fn view(cx: &mut ViewCx<Library>) -> Element {

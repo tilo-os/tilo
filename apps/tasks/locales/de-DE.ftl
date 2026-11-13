@@ -63,7 +63,7 @@ tasks-project-involve = Jemanden hinzufügen
 tasks-project-person-placeholder = Wer
 tasks-project-role-placeholder = Was sie tun
 tasks-project-tasks = Aufgaben
-tasks-project-no-tasks = Noch keine Aufgaben hier.
+tasks-project-no-tasks = Noch arbeitet nichts darauf hin.
 tasks-project-documents = Dokumente
 tasks-project-no-documents = Noch keine Dokumente.
 tasks-project-gone-title = Dieses Projekt wurde gelöscht
@@ -83,7 +83,7 @@ tasks-fact-due = Fällig { $date }
 tasks-thread = Gespräch
 tasks-thread-last-from = { $speaker } sagte
 tasks-thread-empty-title = Noch nichts gesagt
-tasks-thread-empty-message = Was du einer Aufgabe in ihrem Gespräch schreibst, steht hier.
+tasks-thread-empty-message = Schreibe eine Nachricht, um das Gespräch zu beginnen.
 tasks-thread-draft = Nachricht
 tasks-thread-placeholder = Nachricht schreiben
 tasks-thread-send = Senden
@@ -113,3 +113,6 @@ tasks-issue-status = { $item } nach { $new } verschoben
 tasks-issue-labels = Labels von { $item } geändert
 tasks-issue-links = Verknüpfungen von { $item } geändert
 tasks-add-label = { $item } mit { $label } versehen
+
+## What the app is called in a window and in the launcher
+tasks-app-title = Aufgaben

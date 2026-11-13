@@ -151,16 +151,18 @@ pub fn json_in(text: &str) -> Value {
         .unwrap_or_else(|| panic!("no object in {text}"))
 }
 
-/// The `tilo.content:<hash>` a tool's answer names.
+/// The `tilo.content:<reference>` a tool's answer names, with the key a
+/// sealed reference carries.
 #[must_use]
 pub fn content_in(text: &str) -> String {
     let start = text
         .find("tilo.content:")
         .unwrap_or_else(|| panic!("no content named in {text}"));
-    text[start..]
+    let reference: String = text[start + "tilo.content:".len()..]
         .chars()
-        .take("tilo.content:".len() + 64)
-        .collect()
+        .take_while(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+        .collect();
+    format!("tilo.content:{}", reference.trim_end_matches('.'))
 }
 
 /// Put `bytes` into the workspace through the session's uploads, in

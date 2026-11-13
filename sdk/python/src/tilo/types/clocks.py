@@ -24,6 +24,7 @@ __all__ = [
 
 class Collection(Resource):
     """Clocks — `clocks.collection`."""
+    __surface__ = "so.tilo.clocks@d3069d6f03debbee"
     world_clocks: Any
     alarms: Any
     timers: Any
@@ -120,6 +121,7 @@ class Collection(Resource):
 
 class OnDevices(Resource):
     """Clocks on each device — `clocks.on-devices`."""
+    __surface__ = "so.tilo.clocks@d3069d6f03debbee"
     devices: Any
 
     def keep(self,

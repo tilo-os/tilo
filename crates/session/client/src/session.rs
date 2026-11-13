@@ -256,6 +256,7 @@ fn session_task(
         dial: Dial::for_page(&vault),
         reports: Arc::clone(&reports),
         workspaces: BTreeSet::new(),
+        emptied: false,
         planes_due: BTreeSet::new(),
         governance_batch: None,
         kept: BTreeMap::new(),
@@ -370,6 +371,10 @@ struct Task {
     /// What this session reports to its links.
     reports: Arc<Reports>,
     workspaces: BTreeSet<u64>,
+    /// Whether the host deleted the last workspace this session held: it has
+    /// nothing left to be admitted to, so it stays done instead of dialling a
+    /// host that only ends the connection again.
+    emptied: bool,
     /// The joined workspaces whose live plane may have to be joined, followed
     /// or left ([`Self::settle_planes`]): those whose governance, channel
     /// keys or plane changed since it last looked, and every one on each
@@ -939,26 +944,53 @@ impl Task {
                 }
                 self.fail("transport-unavailable", error.to_string());
             }
+            if self.emptied && !self.asked_again(&mut commands).await {
+                return self.closed().await;
+            }
             attempt = attempt.saturating_add(1);
-            let sleep = n0_future::time::sleep(self.offline(attempt));
-            tokio::pin!(sleep);
-            loop {
-                tokio::select! {
-                    biased;
-                    command = commands.recv() => match command {
-                        None | Some(Command::Client(Cmd::Stop)) => return self.closed().await,
-                        Some(Command::Client(Cmd::Reconnect | Cmd::Retry)) => break,
-                        Some(Command::Client(Cmd::Refresh)) => {
-                            self.positions.clear();
-                            self.received.clear();
-                            break;
-                        }
-                        Some(command) => self.apply_offline(command).await,
-                    },
-                    () = &mut sleep => break,
-                }
+            if !self.wait_offline(attempt, &mut commands).await {
+                return self.closed().await;
             }
         }
+    }
+
+    /// Wait out this attempt's backoff, serving what the person asks offline.
+    /// `false` when they closed the session instead.
+    async fn wait_offline(
+        &mut self,
+        attempt: u32,
+        commands: &mut mpsc::UnboundedReceiver<Command>,
+    ) -> bool {
+        let sleep = n0_future::time::sleep(self.offline(attempt));
+        tokio::pin!(sleep);
+        loop {
+            tokio::select! {
+                biased;
+                command = commands.recv() => match command {
+                    None | Some(Command::Client(Cmd::Stop)) => return false,
+                    Some(Command::Client(Cmd::Reconnect | Cmd::Retry)) => return true,
+                    Some(Command::Client(Cmd::Refresh)) => {
+                        self.positions.clear();
+                        self.received.clear();
+                        return true;
+                    }
+                    Some(command) => self.apply_offline(command).await,
+                },
+                () = &mut sleep => return true,
+            }
+        }
+    }
+
+    /// Whether a session the host left holding nothing goes on: it stays
+    /// failed until the person asks for a connection again — no dial reaches a
+    /// workspace that is gone — and `false` when they closed it instead.
+    async fn asked_again(&mut self, commands: &mut mpsc::UnboundedReceiver<Command>) -> bool {
+        self.stop_until_asked(
+            WORKSPACE_DELETED.0,
+            WORKSPACE_DELETED.1.to_owned(),
+            commands,
+        )
+        .await
     }
 
     async fn closed(mut self) {

@@ -62,6 +62,56 @@ pub use client::{Client, ClientBuilder, Redirects, Request, RequestBuilder, Resp
 pub use error::NetError;
 pub use url::Url;
 
+/// Whether `url` is on an origin browsers treat as secure: `https`, or plain
+/// `http` on this machine (`localhost`, a name under it, or a loopback
+/// address), which never leaves it. A host that must be reached privately
+/// takes such an origin; the local copy of tilo.sh serves itself so.
+#[must_use]
+pub fn secure_origin(url: &Url) -> bool {
+    match url.scheme() {
+        "https" => true,
+        "http" => match url.host() {
+            Some(url::Host::Domain(name)) => {
+                let name = name.trim_end_matches('.').to_ascii_lowercase();
+                name == "localhost" || name.ends_with(".localhost")
+            }
+            Some(url::Host::Ipv4(address)) => address.is_loopback(),
+            Some(url::Host::Ipv6(address)) => address.is_loopback(),
+            None => false,
+        },
+        _ => false,
+    }
+}
+
+#[cfg(test)]
+mod secure_origin_tests {
+    use super::{Url, secure_origin};
+
+    #[test]
+    fn https_anywhere_and_http_only_on_this_machine() {
+        for secure in [
+            "https://tilo.sh",
+            "https://eu1.tilo.sh:8443",
+            "http://localhost:24110",
+            "http://tilo.localhost:24120",
+            "http://127.0.0.1:24100",
+            "http://127.1.2.3",
+            "http://[::1]:80",
+        ] {
+            assert!(secure_origin(&Url::parse(secure).unwrap()), "{secure}");
+        }
+        for open in [
+            "http://tilo.sh",
+            "http://localhost.tilo.sh",
+            "http://10.0.0.1",
+            "ws://localhost",
+            "ftp://localhost",
+        ] {
+            assert!(!secure_origin(&Url::parse(open).unwrap()), "{open}");
+        }
+    }
+}
+
 #[cfg(not(target_family = "wasm"))]
 pub use native::tls::{
     client_config, client_config_also_trusting, client_config_with_roots, crypto_provider,

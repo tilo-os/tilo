@@ -240,25 +240,27 @@ impl PdfMarkup {
 
     /// Pin the source.
     ///
-    /// Names the PDF bytes the markup is made against by their content. The
-    /// first pin of a record wins: it never re-targets its markup.
+    /// The PDF bytes the markup is made against, as whoever pins them kept
+    /// them where this window keeps content. The first pin of a record wins:
+    /// it never re-targets its markup.
     #[action(external)]
     pub fn pin_source(
         &mut self,
-        #[param("The content hash of the PDF bytes")] hash: String,
-        #[param("How many bytes they are")] len: u64,
+        #[param("The PDF bytes, kept where the workspace's content is")] source: Bytes,
         #[param("The file's name")] name: String,
     ) -> Result<(), Refusal> {
         if !self.source.is_empty() {
             return Ok(());
         }
-        let hash = crate::markup::unhex(&hash.to_ascii_lowercase())
-            .ok_or("a source is named by its 64-digit content hash")?;
-        self.source = Bytes::Blob {
-            hash,
-            len,
-            sealed: None,
-        };
+        if source.is_empty() {
+            return Err(Refusal::new("a source is the document's bytes"));
+        }
+        if source.inline().is_some() {
+            return Err(Refusal::new(
+                "a source is kept where the workspace's content is",
+            ));
+        }
+        self.source = source;
         self.source_name = name;
         Ok(())
     }
@@ -852,6 +854,7 @@ impl ResourceApp for PdfViewerShell {
     // Each window shows what it opened, never another window's.
     const WINDOW_RESOURCE: bool = true;
     const TITLE: &'static str = "PDF Viewer";
+    const TITLE_KEY: &'static str = "pdf-viewer-app-title";
     const ICON: Option<&'static str> = Some("pdf-viewer");
     const OPENS: &'static [&'static str] = &["application/pdf"];
     /// The PDF to open (`pdf-viewer paper.pdf`).
@@ -910,11 +913,11 @@ impl ResourceApp for PdfViewerShell {
         let (Some(file), Some(content)) = (input.file(), input.content()) else {
             return Vec::new();
         };
-        let Ok(hash) = content.put(file.bytes()) else {
+        let Ok(reference) = content.put(file.bytes()) else {
             return Vec::new();
         };
-        let len = u64::try_from(file.bytes().len()).unwrap_or(u64::MAX);
-        vec![crate::actions::pin_source_action(&hash, len, file.name())]
+        let source = Bytes::kept_as(file.bytes(), &reference);
+        vec![crate::actions::pin_source_action(&source, file.name())]
     }
 
     #[cfg(feature = "samples")]

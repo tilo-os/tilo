@@ -17,6 +17,11 @@
 import { resourceProxy } from "tilo-sdk";
 import type * as tilo from "tilo-sdk";
 
+/** The version of the surface these types were made from: a workspace whose app
+ * publishes another refuses their actions rather than run what they no longer
+ * describe. */
+export const SURFACE = "so.tilo.poker@dd294257cf5033a9";
+
 /** Poker table — `so.tilo.poker.table`. */
 export interface Table extends tilo.Resource {
   players: unknown;
@@ -40,6 +45,6 @@ export interface Table extends tilo.Resource {
 
 /** The `so.tilo.poker.table` kind at `path`. */
 export function table(ws: tilo.Workspace, path: string): Table {
-  return resourceProxy(ws, path) as unknown as Table;
+  return resourceProxy(ws, path, SURFACE) as unknown as Table;
 }
 

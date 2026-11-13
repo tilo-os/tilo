@@ -1,5 +1,5 @@
 //! Which MCP client a run or a grant comes from, as the name it goes by
-//! says: the front door names a run "<client> #<number>" and a grant by the
+//! says: the API server names a run "<client> #<number>" and a grant by the
 //! client's own name.
 //!
 //! The name a client gave the door is all the history and the door carry, so

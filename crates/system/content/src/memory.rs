@@ -87,6 +87,10 @@ impl ContentBackend for MemoryBackend {
     fn release(&self, hash: &str) -> Result<Collected, ContentError> {
         self.remove_where(|kept| kept == hash)
     }
+
+    fn max_item_bytes(&self) -> usize {
+        self.limits.max_item_bytes
+    }
 }
 
 impl MemoryBackend {

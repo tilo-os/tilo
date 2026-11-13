@@ -706,10 +706,10 @@ fn a_desk_that_cannot_be_read_starts_empty_and_says_the_desk_is_still_there() {
     let shown = session.notifications().log().active().to_vec();
     let about = shown
         .iter()
-        .find(|notice| notice.body.contains(&path.display().to_string()))
+        .find(|notice| notice.title == "Your desk could not be read")
         .unwrap_or_else(|| {
             panic!(
-                "the person is told where their desk is: {:?}",
+                "the person is told their desk could not be read: {:?}",
                 shown
                     .iter()
                     .map(|notice| (notice.title.clone(), notice.body.clone()))
@@ -717,8 +717,9 @@ fn a_desk_that_cannot_be_read_starts_empty_and_says_the_desk_is_still_there() {
             )
         });
     assert!(
-        !about.title.trim().is_empty(),
-        "the notice says what happened"
+        about.body.contains("unchanged"),
+        "and that it is still there as it was: {}",
+        about.body
     );
     assert_eq!(
         about.severity,

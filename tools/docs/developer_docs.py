@@ -1,18 +1,28 @@
 #!/usr/bin/env python3
-"""Check and export the documentation books published on tilo.so.
+"""Check and export the documentation books published on tilo.so and tilo.sh.
 
-`docs/developers/pages.toml` lists the published pages, which stay where they
-are in the repository. `check` renders each of them and fails when a page is
-missing or has no title, or when a link names a file, directory or heading
-that does not exist. `export --out DIR` writes what the site consumes:
+A book's page list (`docs/developers/pages.toml`, `docs/tilo-sh/pages.toml`)
+names the published pages, which stay where they are in the repository; a page
+two sites publish is listed in both, from its one file. `check` renders each
+page and fails when a page is missing or has no title, or when a link names a
+file, directory or heading that does not exist. `export --out DIR` writes what
+a site consumes:
 
     DIR/manifest.json     the navigation: sections, pages, the API reference
     DIR/pages/<id>.md     each page with front matter, links rewritten
 
-A link between listed pages becomes the other page's site address. A link to
-an API source in `[api].sources` becomes the API reference. A link to any
-other file or directory becomes that path on the repository host, pinned to
-`--commit` when one is given. Links inside code are left alone.
+A link between listed pages becomes the other page's site address: the page in
+this book when it lists the file, else the related book's, with its origin when
+that book is published on another site. A link to an API source in
+`[api].sources` becomes the API reference. A link to any other file or
+directory becomes that path on the repository host, pinned to `--commit` when
+one is given. Links inside code are left alone.
+
+A page with a `generator` is written from the code it documents (its `source`)
+at build time: `generate --out DIR` runs each generator, and `export
+--generated DIR` publishes what they wrote, failing when a page is missing, so
+a reference is never copied by hand and cannot fall behind its code. A link to
+that source opens the reference.
 """
 
 from __future__ import annotations
@@ -91,6 +101,7 @@ class Page:
     section: str
     nav: str
     description: str
+    generator: str = ""
 
     @property
     def id(self) -> str:
@@ -107,9 +118,19 @@ class Manifest:
     pages: tuple[Page, ...]
     related_manifests: tuple[str, ...] = ()
     path: str = MANIFEST
+    origin: str = ""
+    title: str = ""
+    example_languages: tuple[str, ...] = ()
 
     def url(self, page: Page) -> str:
         return f"{self.base}{page.slug}/" if page.slug else self.base
+
+    def address_from(self, other: "Manifest", path: str) -> str:
+        """`path` in this book as a page of `other` links to it: with this
+        book's origin when the two are published on different sites."""
+        if self.origin and other.origin and self.origin != other.origin:
+            return self.origin + path
+        return path
 
 
 @dataclass
@@ -137,7 +158,7 @@ def load_manifest(root: Path, manifest_path: str = MANIFEST, tree: SourceTree | 
     seen_slugs: set[str] = set()
     seen_sources: set[str] = set()
     for entry in data.get("page", []):
-        unknown = set(entry) - {"slug", "source", "section", "nav", "description"}
+        unknown = set(entry) - {"slug", "source", "section", "nav", "description", "generator"}
         if unknown:
             raise DocsError(f"{manifest_path}: unknown page keys {sorted(unknown)}")
         page = Page(
@@ -146,9 +167,11 @@ def load_manifest(root: Path, manifest_path: str = MANIFEST, tree: SourceTree | 
             section=entry.get("section", ""),
             nav=entry.get("nav", ""),
             description=entry.get("description", ""),
+            generator=entry.get("generator", ""),
         )
-        if Path(page.source).is_absolute() or ".." in Path(page.source).parts:
-            raise DocsError(f"{manifest_path}: page source must stay inside the repository")
+        for path in (page.source, page.generator):
+            if Path(path).is_absolute() or ".." in Path(path).parts:
+                raise DocsError(f"{manifest_path}: page source and generator must stay inside the repository")
         if page.slug and not SLUG.fullmatch(page.slug):
             raise DocsError(f"{manifest_path}: slug {page.slug!r} is not lowercase kebab case")
         if page.slug in seen_slugs:
@@ -162,6 +185,12 @@ def load_manifest(root: Path, manifest_path: str = MANIFEST, tree: SourceTree | 
         pages.append(page)
     if not pages or pages[0].slug:
         raise DocsError(f"{manifest_path}: the first page must have slug = \"\" (the section's index)")
+    origin = data.get("origin", "")
+    if origin and not re.fullmatch(r"https://[a-z0-9.-]+(?::[0-9]+)?", origin):
+        raise DocsError(f"{manifest_path}: origin must be https://host, with no path: {origin!r}")
+    languages = data.get("examples", {}).get("languages", [])
+    if not all(isinstance(language, str) and language for language in languages):
+        raise DocsError(f"{manifest_path}: [examples].languages must be a list of language names")
     return Manifest(
         base=base,
         repository=data.get("repository", "").rstrip("/"),
@@ -171,6 +200,9 @@ def load_manifest(root: Path, manifest_path: str = MANIFEST, tree: SourceTree | 
         pages=tuple(pages),
         related_manifests=tuple(data.get("related_manifests", [])),
         path=manifest_path,
+        origin=origin,
+        title=data.get("title", ""),
+        example_languages=tuple(languages),
     )
 
 
@@ -230,27 +262,33 @@ def anchors_of(markdown: str) -> set[str]:
 
 class Linker:
     def __init__(self, root: Path, manifest: Manifest, commit: str | None, tree: SourceTree | None = None,
-                 related_books_on_site: bool = True):
+                 related_books_on_site: bool = True, generated: dict[str, str] | None = None):
+        """`generated` holds the text each generated page's generator wrote,
+        by page id; without it a generated page is checked for its generator
+        only, and links into it for the page alone."""
         self.root = root
         self.tree = tree or SourceTree(root)
         self.manifest = manifest
+        self.generated = generated
         books = [manifest, *(load_manifest(root, path, self.tree) for path in manifest.related_manifests)]
-        self.by_source: dict[str, Page] = {}
         self.routes: dict[str, str] = {}
         self.api_routes: dict[str, str] = {}
+        # A file this book lists is its own page here; a file only a related
+        # book lists is that book's page.
+        self.generated_sources: dict[str, Page | None] = {}
         for book in books:
             on_site = related_books_on_site or book is manifest
             for page in book.pages:
-                if page.source in self.by_source:
-                    raise DocsError(f"{page.source}: published by more than one book")
-                self.by_source[page.source] = page
+                if page.generator and page.source not in self.generated_sources:
+                    self.generated_sources[page.source] = page if book is manifest else None
                 # A related book is always read so links into it can be checked.
                 # It gets a site address only when the site publishes it too;
                 # otherwise the link points at the repository.
-                if on_site:
-                    self.routes[page.source] = book.url(page)
+                if on_site and page.source not in self.routes:
+                    self.routes[page.source] = book.address_from(manifest, book.url(page))
             if on_site:
-                self.api_routes.update({source: book.base + book.api_path for source in book.api_sources})
+                for source in book.api_sources:
+                    self.api_routes.setdefault(source, book.address_from(manifest, book.base + book.api_path))
         self.ref = f"commit/{commit}" if commit else "branch/main"
         self.anchors: dict[str, set[str]] = {}
 
@@ -282,6 +320,13 @@ class Linker:
     def check_anchor(self, source: str, fragment: str) -> str | None:
         if not fragment:
             return None
+        if source in self.generated_sources:
+            page = self.generated_sources[source]
+            text = self.generated.get(page.id) if page is not None and self.generated is not None else None
+            if text is None:
+                # Its headings are known once its generator ran (export).
+                return None
+            self.anchors.setdefault(source, anchors_of(text))
         if source not in self.anchors:
             text = self.tree.read_text(source)
             self.anchors[source] = anchors_of(text)
@@ -324,7 +369,17 @@ class Linker:
     def render(self, page: Page) -> Rendered:
         if not self.tree.exists(page.source):
             return Rendered(page, "", "", set(), [f"{self.manifest.path}: {page.source} does not exist"])
-        markdown = self.tree.read_text(page.source)
+        if page.generator:
+            if not self.tree.exists(page.generator):
+                return Rendered(page, "", "", set(), [f"{self.manifest.path}: generator {page.generator} does not exist"])
+            if self.generated is None:
+                return Rendered(page, page.nav, "", set())
+            if page.id not in self.generated:
+                return Rendered(page, "", "", set(), [
+                    f"{self.manifest.path}: no generated page {page.id}.md: run `developer_docs.py generate`"])
+            markdown = self.generated[page.id]
+        else:
+            markdown = self.tree.read_text(page.source)
         problems: list[str] = []
         found = headings(markdown)
         if not found or found[0][0] != 1:
@@ -341,10 +396,51 @@ class Linker:
 
 def render_all(root: Path, commit: str | None, manifest_path: str = MANIFEST,
                tree: SourceTree | None = None,
-               related_books_on_site: bool = True) -> tuple[Manifest, list[Rendered]]:
+               related_books_on_site: bool = True,
+               generated: dict[str, str] | None = None) -> tuple[Manifest, list[Rendered]]:
     manifest = load_manifest(root, manifest_path, tree)
-    linker = Linker(root, manifest, commit, tree, related_books_on_site)
+    linker = Linker(root, manifest, commit, tree, related_books_on_site, generated)
     return manifest, [linker.render(page) for page in manifest.pages]
+
+
+def read_generated(manifest: Manifest, directories: list[Path]) -> dict[str, str]:
+    """The pages generators wrote, by page id, from the first directory that has each."""
+    found: dict[str, str] = {}
+    for page in manifest.pages:
+        if not page.generator:
+            continue
+        for directory in directories:
+            path = directory / f"{page.id}.md"
+            if path.is_file():
+                found[page.id] = path.read_text(encoding="utf-8")
+                break
+    return found
+
+
+def generator_command(root: Path, generator: str) -> list[str]:
+    path = str(root / generator)
+    if generator.endswith(".py"):
+        return [sys.executable, "-I", path]
+    if generator.endswith(".ts"):
+        return ["bun", path]
+    return [path]
+
+
+def generate(root: Path, manifest_path: str, out: Path, only: list[str]) -> list[str]:
+    """Run the generators of the book's pages (or of the pages `only` names)
+    into `out/<id>.md`, and answer the ids written."""
+    manifest = load_manifest(root, manifest_path)
+    pages = [page for page in manifest.pages if page.generator and (not only or page.id in only)]
+    unknown = set(only) - {page.id for page in pages}
+    if unknown:
+        raise DocsError(f"{manifest_path}: no generated pages {sorted(unknown)}")
+    out.mkdir(parents=True, exist_ok=True)
+    for page in pages:
+        command = [*generator_command(root, page.generator), "--root", str(root), "--out", str(out / f"{page.id}.md")]
+        result = subprocess.run(command, cwd=root)
+        if result.returncode:
+            raise DocsError(f"{page.generator} failed for {page.id} (exit {result.returncode})")
+    return [page.id for page in pages]
 
 
 def front_matter(values: dict[str, object]) -> str:
@@ -354,8 +450,10 @@ def front_matter(values: dict[str, object]) -> str:
 
 
 def export(root: Path, out: Path, commit: str | None, manifest_path: str = MANIFEST,
-           tree: SourceTree | None = None, related_books_on_site: bool = True) -> None:
-    manifest, rendered = render_all(root, commit, manifest_path, tree, related_books_on_site)
+           tree: SourceTree | None = None, related_books_on_site: bool = True,
+           generated_dirs: tuple[Path, ...] = ()) -> None:
+    generated = read_generated(load_manifest(root, manifest_path, tree), list(generated_dirs))
+    manifest, rendered = render_all(root, commit, manifest_path, tree, related_books_on_site, generated)
     fail_on_problems(rendered)
     destination = out.resolve()
     books = [manifest, *(load_manifest(root, path, tree) for path in manifest.related_manifests)]
@@ -394,12 +492,17 @@ def export(root: Path, out: Path, commit: str | None, manifest_path: str = MANIF
             "source": page.source,
             "sourceUrl": f"{manifest.repository}/src/{ref}/{page.source}",
         }
+        if page.generator:
+            entry["generator"] = page.generator
         if not sections or sections[-1]["title"] != page.section:
             sections.append({"title": page.section, "pages": []})
         sections[-1]["pages"].append(entry)  # type: ignore[union-attr]
         document = front_matter({**entry, "section": page.section, "order": order}) + "\n" + item.markdown
         (out / "pages" / f"{page.id}.md").write_text(document, encoding="utf-8")
     index = {
+        "title": manifest.title,
+        "origin": manifest.origin,
+        "examples": {"languages": list(manifest.example_languages)},
         "base": manifest.base,
         "commit": commit,
         "repository": manifest.repository,
@@ -428,9 +531,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--revision", default="HEAD", help="Git source revision (with --git-dir)")
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("check", help="render every page and fail on a broken page or link")
+    generate_parser = commands.add_parser("generate", help="write the generated pages (<id>.md) into a directory")
+    generate_parser.add_argument("--out", type=Path, required=True)
+    generate_parser.add_argument("--only", action="append", default=[], metavar="ID",
+                                 help="only this page (repeatable)")
     export_parser = commands.add_parser("export", help="write the pages and navigation for the site")
     export_parser.add_argument("--out", type=Path, required=True)
     export_parser.add_argument("--commit", help="pin repository links to this commit (default: HEAD)")
+    export_parser.add_argument("--generated", type=Path, action="append", default=[],
+                               help="a directory of generated pages (<id>.md), from `generate`")
     export_parser.add_argument(
         "--related-books", choices=("site", "repository"), default="site",
         help="address links into a related book on this site (default), or at the repository "
@@ -449,9 +558,13 @@ def main(argv: list[str] | None = None) -> int:
                 fail_on_problems(rendered)
                 count += len(book.pages)
             print(f"developer docs OK ({count} pages, links resolved)")
+        elif args.command == "generate":
+            written = generate(root, args.manifest, args.out, args.only)
+            print(f"generated {len(written)} pages into {args.out}")
         else:
             commit = tree.revision or args.commit or head_commit(root)
-            export(root, args.out, commit, args.manifest, tree, args.related_books == "site")
+            export(root, args.out, commit, args.manifest, tree, args.related_books == "site",
+                   tuple(args.generated))
             print(f"developer docs exported to {args.out}")
     except DocsError as error:
         print(f"developer docs: {error}", file=sys.stderr)

@@ -51,8 +51,11 @@ mod cases {
             ))
         }
 
-        fn say(&self, text: &str) -> ResourceRef {
-            returned_ref(self.call("say", vec![Value::resource(&self.board), Value::text(text)]))
+        fn say_text(&self, text: &str) -> ResourceRef {
+            returned_ref(self.call(
+                "say_text",
+                vec![Value::resource(&self.board), Value::text(text)],
+            ))
         }
 
         fn body(&self, post: &ResourceRef) -> RichValue {
@@ -74,7 +77,7 @@ mod cases {
     #[test]
     fn plain_text_is_paragraphs_and_the_excerpt_is_its_first_line_with_text() {
         let b = Workspace::on(&AmStore::new(), None);
-        let post = b.say("\nHello there\nsecond line");
+        let post = b.say_text("\nHello there\nsecond line");
         assert_eq!(b.body(&post).written_text(), "\nHello there\nsecond line");
         assert_eq!(
             b.done("excerpt_of", vec![Value::resource(&post)]),
@@ -180,7 +183,7 @@ mod cases {
     fn text_stored_with_an_older_reference_form_still_refers_to_its_resource() {
         let b = Workspace::on(&AmStore::new(), None);
         let task = b.task("Fix the build");
-        let post = b.say("placeholder");
+        let post = b.say_text("placeholder");
         // As the first rich text wrote a resource: its published id as the mark's value.
         let mut old = RichValue::from_text("see ");
         old.blocks[0].text.push_str("Fix the build");
@@ -236,7 +239,7 @@ mod cases {
         let (mut sa, mut sb) = (AmStore::new(), AmStore::new());
         let a = Workspace::on(&sa, None);
         let task = a.task("Ship it");
-        let post = a.say("Plan for today");
+        let post = a.say_text("Plan for today");
         sa.sync_with(&mut sb).unwrap();
         let b = Workspace::on(&sb, Some(&a.board));
         let first_id = a.body(&post).blocks[0].id.clone();
@@ -269,7 +272,7 @@ mod cases {
     fn concurrent_typing_in_one_paragraph_keeps_both() {
         let (mut sa, mut sb) = (AmStore::new(), AmStore::new());
         let a = Workspace::on(&sa, None);
-        let post = a.say("Hello");
+        let post = a.say_text("Hello");
         sa.sync_with(&mut sb).unwrap();
         let b = Workspace::on(&sb, Some(&a.board));
         let edit = |w: &Workspace, text: &str| {
@@ -360,7 +363,7 @@ mod cases {
 
         let store = AmStore::new();
         let b = Workspace::on(&store, None);
-        let post = b.say("Standup");
+        let post = b.say_text("Standup");
         let task = b.task("Fix the build");
         b.done(
             "embed",
@@ -449,7 +452,7 @@ mod cases {
     #[test]
     fn anchors_resolve_to_the_paragraphs_they_cite() {
         let b = Workspace::on(&AmStore::new(), None);
-        let post = b.say("Intro\nDetails\nOutro");
+        let post = b.say_text("Intro\nDetails\nOutro");
         let body = b.body(&post);
         assert_eq!(
             body.at_anchor("¶2").map(|p| p.text.as_str()),

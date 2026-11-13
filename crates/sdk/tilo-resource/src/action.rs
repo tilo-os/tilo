@@ -171,16 +171,6 @@ impl ActionCx {
             .and_then(|invoker| invoker.appearance)
     }
 
-    /// The name the host that admitted an agent knows it by, as the envelope
-    /// pinned it; `None` for anyone else, and for an agent its host named not.
-    #[must_use]
-    pub fn agent_name(&self) -> Option<String> {
-        tilo_actions::invoking_context()
-            .and_then(|context| context.invoker)
-            .filter(|invoker| invoker.kind == tilo_actions::ActorKind::Agent)
-            .and_then(|invoker| invoker.name)
-    }
-
     /// What kind of actor invoked the action (a person, an agent, a
     /// Shortcut), as the envelope pinned it.
     #[must_use]

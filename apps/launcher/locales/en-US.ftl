@@ -25,3 +25,6 @@ so-tilo-launcher-search-answer = Answer step
 so-tilo-launcher-search-back = Go back
 so-tilo-launcher-search-dismiss = Close search
 launcher-search = Search
+
+## What the app is called in a window and in the launcher
+launcher-app-title = Search

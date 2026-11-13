@@ -449,6 +449,42 @@ name = "codemap"
 run = "python3 -I tools/docs/codemap.py --check"
 fix = "python3 -I tools/docs/codemap.py"
 
+# The developer documentation's reference pages are written from what they
+# document (tools/docs/reference), never copied: a generator reads the Python
+# SDK, the `tilo` command or the runtime's own tool list and writes one page,
+# and stops when a public item has no doc text. So a reference cannot describe
+# something the tree no longer has, and the pages are complete or this is red.
+# The site publishes what these write.
+[[check]]
+name = "docs-reference"
+run = "bash tools/ci/docs-reference.sh"
+outputs = [
+  "/target/docs/generated/rest-api.md",
+  "/target/docs/generated/python-sdk.md",
+  "/target/docs/generated/cli.md",
+  "/target/docs/generated/mcp-tools.md",
+]
+
+# The same for the TypeScript SDK, whose page is read with the TypeScript
+# compiler API: it needs bun and the SDK's locked packages, which the ci-sdk
+# image carries (sdk-typescript's image).
+[[check]]
+name = "docs-reference-sdk"
+run = "bash tools/ci/docs-reference-sdk.sh"
+image = { check = "image-ci-sdk", path = "/target/publish/ci-sdk/image.oci.tar" }
+requires = ["arch=x86_64"]
+outputs = ["/target/docs/generated/typescript-sdk.md"]
+
+# The developer docs served at https://tilo.sh/docs/ (tools/docs/build-site.sh): the pages of
+# docs/tilo-sh/pages.toml with the reference pages the two checks above generated from the code, so the
+# web entry's image ships the docs of the commit it is built from.
+[[check]]
+name = "docs-site"
+run = "bash tools/docs/build-site.sh /target/docs/site /target/docs/generated"
+needs = ["docs-reference", "docs-reference-sdk"]
+outputs = ["/target/docs/site/**"]
+git = true
+
 [[check]]
 name = "fmt"
 run = "cargo fmt --check"
@@ -640,8 +676,8 @@ heavy = true
 
 [[check]]
 name = "sdk-types"
-run = "cargo run --locked -q -p tilo-cli -- sdk gen --lang python --out sdk/python/src/tilo/types --check\ncargo run --locked -q -p tilo-cli -- sdk gen --lang ts --out sdk/typescript/src/types --check\n"
-fix = "cargo run --locked -q -p tilo-cli -- sdk gen --lang python --out sdk/python/src/tilo/types\ncargo run --locked -q -p tilo-cli -- sdk gen --lang ts --out sdk/typescript/src/types\n"
+run = "cargo run --locked -q -p tilo-cli -- sdk gen --lang python --out sdk/python/src/tilo/types --check\ncargo run --locked -q -p tilo-cli -- sdk gen --lang ts --out sdk/typescript/src/types --check\ncargo run --locked -q -p tilo-cli -- sdk gen --lang openapi --out docs/api --check\n"
+fix = "cargo run --locked -q -p tilo-cli -- sdk gen --lang python --out sdk/python/src/tilo/types\ncargo run --locked -q -p tilo-cli -- sdk gen --lang ts --out sdk/typescript/src/types\ncargo run --locked -q -p tilo-cli -- sdk gen --lang openapi --out docs/api\n"
 
 # The SDKs' suites need their ecosystems' tools and locked dependencies, which no other check's
 # image carries: uv with the Python SDK's environment from sdk/python/uv.lock, bun with the
@@ -661,6 +697,24 @@ run = "bash tools/ci/sdk-typescript.sh"
 image = { check = "image-ci-sdk", path = "/target/publish/ci-sdk/image.oci.tar" }
 requires = ["arch=x86_64"]
 
+# The developer docs' code examples, run the way a reader runs them: every block of an example
+# is a whole program that reaches the API with TILO_API_URL and TILO_API_KEY (tools/docs/
+# doc_examples.py). The host that serves them is the api-on-relay example of
+# tilo-agent-participant, and sh examples run the tilo command, so both are built here and
+# handed to the check that runs the examples in the SDKs' image.
+[[check]]
+name = "docs-examples-build"
+run = "set -eu\nmkdir -p \"$CARGO_TARGET_DIR/docs-examples\"\ncargo build --locked -p tilo-agent-participant --example api-on-relay\ncargo build --locked -p tilo-cli --bin tilo\ncp \"$CARGO_TARGET_DIR/debug/examples/api-on-relay\" \"$CARGO_TARGET_DIR/debug/tilo\" \"$CARGO_TARGET_DIR/docs-examples/\"\n"
+requires = ["arch=x86_64"]
+outputs = ["/target/docs-examples/**"]
+
+[[check]]
+name = "docs-examples"
+run = "bash tools/ci/docs-examples.sh /target/docs-examples"
+needs = ["docs-examples-build"]
+image = { check = "image-ci-sdk", path = "/target/publish/ci-sdk/image.oci.tar" }
+requires = ["arch=x86_64"]
+
 # The SDKs' release to npm and PyPI, tools/ci/publish/sdks.sh: both packages publish under the
 # one name tilo-sdk (on PyPI plain `tilo` belongs to an unrelated project, on npm the @tilo scope
 # is not available), and the version is the release tag's, never a number in the tree. The check
@@ -671,9 +725,10 @@ requires = ["arch=x86_64"]
 #
 # What runs on main is the same build with no token: both packages are built as a tag would
 # build them, their artifacts are packed and read back, and the version a tag would write is
-# exercised on a stand-in. A renamed package, a manifest that stops being publishable or an
-# import package that falls out of the wheel breaks here, long before a tag does. It runs again
-# in the tag's own publish run, on that tag's version, before anything is sent.
+# exercised on a stand-in. Only a check that publishes is told the reference it runs for, so this
+# one never sees the tag; the publish check builds and checks the tag's version itself before it
+# sends anything. A renamed package, a manifest that stops being publishable or an import
+# package that falls out of the wheel breaks here, long before a tag does.
 [[check]]
 name = "publish-sdks-dry-run"
 run = "bash tools/ci/publish/sdks.sh check"
@@ -690,6 +745,12 @@ image = { check = "image-ci-sdk", path = "/target/publish/ci-sdk/image.oci.tar" 
 requires = ["arch=x86_64"]
 on = ["tag:v[0-9]*.[0-9]*.[0-9]*", "dispatch"]
 secrets = ["NPM_TOKEN", "PYPI_TOKEN"]
+
+# The SDKs' native halves are designed, not built: sdk/python/native (PyO3, wheels of the same
+# tilo-sdk project) and sdk/typescript/native (napi-rs, the tilo-sdk-native packages) do not
+# exist yet, and nothing here publishes something a tree does not build. The step that will, with
+# its names and its exact commands, is the native part of the SDKs' section of
+# docs/publishing.md; it joins this chain, beside publish-sdks, when those crates land.
 
 [[check]]
 name = "sdk-policy"
@@ -4581,6 +4642,47 @@ run = "python3 tools/ci/workspace_unify.py --check"
 requires = ["arch=arm64"]
 fix = "python3 tools/ci/workspace_unify.py --write"
 
+# `cargo headless --check` and `cargo desktop --check` (crates/dev/tilo-local) on the session the
+# nested-session check built: each starts the development session the way a developer does, asks
+# it something (its actions; its window, opened on a throwaway headless Tilo standing in for the
+# developer's desktop) and stops it, with listening traps where the host's session bus, system bus,
+# login bus and systemd would be. A connection to any of them fails the check: the commands must
+# never reach the session of whoever runs them.
+[[check]]
+name = "run-headless"
+run = "bash tools/test-env.sh cargo run --locked -q -p tilo-local -- headless --check --no-build --apps notes"
+needs = ["nested-session"]
+env = { TILO_NESTED_SESSION_BUILD = "/target/nested-session" }
+requires = ["arch=x86_64"]
+isolation = "vm"
+timeout_secs = 1200
+on = ["idle"]
+
+[[check]]
+name = "run-desktop"
+run = "bash tools/test-env.sh cargo run --locked -q -p tilo-local -- desktop --check --no-build --apps notes"
+needs = ["nested-session"]
+env = { TILO_NESTED_SESSION_BUILD = "/target/nested-session" }
+requires = ["arch=x86_64"]
+isolation = "vm"
+timeout_secs = 1200
+on = ["idle"]
+
+# `cargo web --check` on the bundle and programs the checks beside it built: the local stack brought
+# up on the shipped bundle, its page loaded back module by module down to the runtime's
+# WebAssembly, then stopped. A bundle missing a piece the page imports fails here, by name.
+[[check]]
+name = "run-web"
+run = "cargo run --locked -q -p tilo-local -- web --check --bundle /target/publish/web-desktop/bundle"
+needs = ["web-desktop-bundle", "tilo-sh-binaries", "tilo-sh-caddy", "cli-x86_64"]
+# openssl signs the stack's own releases, as the release key signs production's.
+setup = { run = "dnf install -y --setopt=install_weak_deps=False openssl && dnf clean all" }
+env = { TILO_SH_PROGRAMS = "/target/publish/tilo-sh/bin", TILO_SH_LOUNGE = "/target/publish/tilo-sh/lounge", TILO_SH_CADDY = "/target/publish/tilo-sh-caddy/caddy", TILO_SH_CLI_DIR = "/target/publish/cli/linux-x86_64" }
+requires = ["arch=x86_64"]
+isolation = "nested"
+timeout_secs = 1200
+on = ["idle"]
+
 [[check]]
 name = "nested-terminal"
 run = "bash tools/test-env.sh python3 -I dist/dev/nested-terminal-check.py --out /target/nested-terminal"
@@ -4667,8 +4769,8 @@ on = ["dispatch"]
 
 [[check]]
 name = "image-web-entry-context"
-run = "bash tools/ci/publish/web-entry-context.sh /target/publish/web-entry/context /target/publish/web-desktop/bundle"
-needs = ["web-desktop-bundle"]
+run = "bash tools/ci/publish/web-entry-context.sh /target/publish/web-entry/context /target/publish/web-desktop/bundle /target/docs/site"
+needs = ["web-desktop-bundle", "docs-site"]
 outputs = ["/target/publish/web-entry/context/**"]
 git = true
 requires = ["arch=x86_64"]
@@ -4844,7 +4946,7 @@ requires = ["arch=x86_64"]
 isolation = "nested"
 # What it found, not what it ran: each flow's pages, reports and consoles, and each of the stack's
 # own logs; the site it served is the web entry's laid-out context again.
-outputs = ["/target/e2e/*.log", "/target/e2e/state/logs/*.log", "/target/e2e/signin/**", "/target/e2e/boot/**", "/target/e2e/people-call/**", "/target/e2e/people-desk/**", "/target/e2e/people-menus/**", "/target/e2e/people-invite/**", "/target/e2e/share-link/**", "/target/e2e/agent-setup/**", "/target/e2e/setup-resume/**", "/target/e2e/visa/**", "/target/e2e/entry/**", "/target/e2e/passkey/**", "/target/e2e/wait-list/**", "/target/e2e/restart/**"]
+outputs = ["/target/e2e/*.log", "/target/e2e/state/logs/*.log", "/target/e2e/signin/**", "/target/e2e/boot/**", "/target/e2e/people-call/**", "/target/e2e/people-desk/**", "/target/e2e/people-menus/**", "/target/e2e/people-invite/**", "/target/e2e/share-link/**", "/target/e2e/agent-setup/**", "/target/e2e/setup-resume/**", "/target/e2e/visa/**", "/target/e2e/entry/**", "/target/e2e/passkey/**", "/target/e2e/wait-list/**", "/target/e2e/onboarding/**", "/target/e2e/restart/**"]
 # What a failure keeps of why: every service's log, which says which of them did not answer.
 evidence = ["/target/e2e/state/logs/**"]
 timeout_secs = 1200
@@ -4948,7 +5050,7 @@ default = false
 [[check]]
 name = "tilo-sh-local-vm"
 run = "bash os/containers/tilo-sh/check-in-vm.sh /target/tilo-sh-local-vm"
-setup = { run = "dnf install -y --setopt=install_weak_deps=False podman util-linux xfsprogs python3-httpx && dnf clean all" }
+setup = { run = "dnf install -y --setopt=install_weak_deps=False podman util-linux xfsprogs python3-httpx openssl && dnf clean all" }
 needs = ["tilo-sh-binaries", "tilo-sh-caddy", "image-web-entry-context", "cli-x86_64", "image-vm-host", "image-hosted-guest", "tilo-sh-tools"]
 env = { TILO_SH_PROGRAMS = "/target/publish/tilo-sh/bin", TILO_SH_LOUNGE = "/target/publish/tilo-sh/lounge", TILO_SH_SITE = "/target/publish/web-entry/context", TILO_SH_CADDY = "/target/publish/tilo-sh-caddy/caddy", TILO_SH_CLI_DIR = "/target/publish/cli/linux-x86_64", TILO_SH_STATE = "/target/tilo-sh-local-vm-state", TILO_SH_FRESH = "1", TILO_SH_VM_HOST = "1", TILO_SH_IMAGE_VM_HOST = "/target/publish/vm-host/image.oci.tar", TILO_SH_HOSTED_GUEST = "/target/publish/hosted-guest/image", TILO_SH_BROWSER_FREE_ACTIONS = "200", TILO_SH_TILO_ENROLL = "/target/tilo-sh-tools/tilo-enroll", TILO_SH_TILO_APPROVE = "/target/tilo-sh-tools/tilo-approve" }
 requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
@@ -5130,63 +5232,63 @@ isolation = "vm"
 timeout_secs = 3600
 default = false
 
-# The front door of hosted Tilo (os/containers/tilo-front-door): the MCP endpoint behind
+# The Tilo API server (os/containers/tilo-api): the MCP endpoint behind
 # https://mcp.tilo.sh, with OAuth for agents and routing to the workspace's host. It is
 # configured entirely by its environment, so the deployment's values never enter the image. Its
-# program is t's own compile (front-door-binaries), so the image is packaging only: the pinned
+# program is t's own compile (api-binaries), so the image is packaging only: the pinned
 # Fedora base and the packages from the frozen RPM snapshot. Tested in a micro-VM against a real
 # start, and published on dispatch as dev-<commit> for the infra repository's deployment to pin,
 # signed on a release tag.
 [[check]]
-name = "front-door-binaries"
-run = "bash tools/ci/publish/server-binaries.sh front-door /target/publish/front-door/binaries"
+name = "api-binaries"
+run = "bash tools/ci/publish/server-binaries.sh api /target/publish/api/binaries"
 env = { CARGO_BUILD_JOBS = "8" }
 requires = ["arch=x86_64"]
-outputs = ["/target/publish/front-door/binaries/**"]
+outputs = ["/target/publish/api/binaries/**"]
 timeout_secs = 7200
 default = false
 
 [[check]]
-name = "image-front-door"
-run = "bash tools/ci/publish/front-door-build.sh /target/publish/rpm-snapshot/x86_64 /target/publish/rpms/x86_64 /target/publish/front-door/binaries /target/publish/front-door"
-needs = ["front-door-binaries", "rpm-snapshot-x86_64", "image-rpms-x86_64"]
+name = "image-api"
+run = "bash tools/ci/publish/api-build.sh /target/publish/rpm-snapshot/x86_64 /target/publish/rpms/x86_64 /target/publish/api/binaries /target/publish/api"
+needs = ["api-binaries", "rpm-snapshot-x86_64", "image-rpms-x86_64"]
 image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
 requires = ["arch=x86_64"]
 isolation = "vm"
 git = true
-outputs = ["/target/publish/front-door/image.oci.tar", "/target/publish/front-door/digest", "/target/publish/front-door/rpms-source"]
+outputs = ["/target/publish/api/image.oci.tar", "/target/publish/api/digest", "/target/publish/api/rpms-source"]
 timeout_secs = 7200
 default = false
 
 [[check]]
-name = "test-image-front-door"
+name = "test-image-api"
 image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
-run = "bash os/containers/tilo-front-door/test-image.sh /target/publish/front-door/image.oci.tar"
-needs = ["image-front-door"]
+run = "bash os/containers/tilo-api/test-image.sh /target/publish/api/image.oci.tar"
+needs = ["image-api"]
 requires = ["arch=x86_64"]
 isolation = "vm"
 timeout_secs = 1800
 default = false
 
 [[check]]
-name = "sign-front-door"
+name = "sign-api"
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
-run = "bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/front-door /target/publish/front-door"
-needs = ["image-front-door", "test-image-front-door", "signing-tools"]
-outputs = ["/target/publish/front-door/payload.json", "/target/publish/front-door/signature", "/target/publish/front-door/dry-run.pub"]
+run = "bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/api /target/publish/api"
+needs = ["image-api", "test-image-api", "signing-tools"]
+outputs = ["/target/publish/api/payload.json", "/target/publish/api/signature", "/target/publish/api/dry-run.pub"]
 id_token = ["sts.amazonaws.com"]
 env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-release-signing", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTReleaseSigner", TILO_SIGNING_AUDIENCE = "sts.amazonaws.com" }
 requires = ["arch=any"]
 on = ["dispatch"]
 
 [[check]]
-name = "publish-front-door"
+name = "publish-api"
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
-run = "bash tools/ci/publish/oci-publish.sh any registry.tilo.so/tilo/front-door /target/publish/front-door 'dev:dev-{commit}' 'release:sha-{commit}'"
-needs = ["image-front-door", "test-image-front-door", "signing-tools"]
-optional_needs = ["sign-front-door"]
-outputs = ["/target/publish/front-door/receipt.json"]
-pointers = { front-door = "/target/publish/front-door/receipt.json" }
+run = "bash tools/ci/publish/oci-publish.sh any registry.tilo.so/tilo/api /target/publish/api 'dev:dev-{commit}' 'release:sha-{commit}'"
+needs = ["image-api", "test-image-api", "signing-tools"]
+optional_needs = ["sign-api"]
+outputs = ["/target/publish/api/receipt.json"]
+pointers = { api = "/target/publish/api/receipt.json" }
 id_token = ["registry.tilo.so"]
 requires = ["arch=any"]
 on = ["dispatch"]

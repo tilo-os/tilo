@@ -21,7 +21,7 @@ use ui::widget::{Button, Checkbox, Dropdown, Row, Spacer, TextInput, TextInputKi
 
 use crate::accounts::AccountKind;
 use crate::channel::{self, Receiver, TryRecvError};
-use crate::i18n::t;
+use crate::i18n::{t, t_args};
 use provider_settings_ui::widgets::{Item, SettingsSection, field_row, note, row, rows, section};
 
 /// Opens a URL in the person's browser.
@@ -738,11 +738,9 @@ impl SignInFlow {
         let launch = self.opener.open(authorization.url());
         let Some(canceller) = authorization.canceller() else {
             // The provider will show the code instead of redirecting.
-            self.message = Some(format!(
-                "Another program is using the ports Tilo listens on for {}'s answer. Sign in \
-                 and allow access in your browser, then paste the code {} shows you here.",
-                cloud.sign_in_with(),
-                cloud.sign_in_with()
+            self.message = Some(t_args(
+                "accounts-sign-in-pasted-waiting",
+                &[("service", cloud.sign_in_with().into())],
             ));
             self.code.set(String::new());
             self.stage = Stage::PastedCode {
@@ -780,9 +778,9 @@ impl SignInFlow {
             }),
         );
 
-        self.message = Some(format!(
-            "Continue in your browser: sign in with {} and allow access. This page updates when you are done.",
-            cloud.sign_in_with()
+        self.message = Some(t_args(
+            "accounts-sign-in-browser",
+            &[("service", cloud.sign_in_with().into())],
         ));
         self.stage = Stage::Waiting {
             urls: None,
@@ -1094,10 +1092,7 @@ impl SignInFlow {
                     challenge,
                     apple_id: self.apple_id.with(|id| id.trim().to_string()),
                 };
-                self.message = Some(
-                    "Apple sent a verification code to your trusted devices. Enter it to finish."
-                        .into(),
-                );
+                self.message = Some(t("accounts-sign-in-icloud-code"));
                 (None, true)
             }
             Outcome::CodeRejected(challenge, error) => {
@@ -1168,22 +1163,18 @@ impl SignInFlow {
         &self,
         bind: &dyn Fn(Button, super::AccountsEffect) -> Button,
     ) -> SettingsSection {
-        let title = format!(
-            "{} {}",
+        let service = if self.kind == AccountKind::GoogleDrive {
+            t("accounts-google-provider")
+        } else {
+            self.kind.label().to_owned()
+        };
+        let title = t_args(
             if self.existing_id.is_some() {
-                if self.kind == AccountKind::ICloudDrive {
-                    "Re-authenticate"
-                } else {
-                    "Sign in again to"
-                }
+                "accounts-sign-in-again-to"
             } else {
-                "Connect"
+                "accounts-sign-in-connect"
             },
-            if self.kind == AccountKind::GoogleDrive {
-                t("accounts-google-provider")
-            } else {
-                self.kind.label().to_owned()
-            }
+            &[("service", service.as_str().into())],
         );
         let mut fields: Vec<Item> = Vec::new();
         let unavailable = self.unavailable_reason();
@@ -1194,7 +1185,7 @@ impl SignInFlow {
         if !waiting {
             match &self.stage {
                 Stage::PastedCode { .. } => fields.push(field_row(
-                    "Code",
+                    &t("accounts-sign-in-code"),
                     Box::new(
                         TextInput::from_state(&self.code)
                             .with_kind(TextInputKind::Code)
@@ -1204,7 +1195,7 @@ impl SignInFlow {
                     ),
                 )),
                 Stage::Code { .. } => fields.push(field_row(
-                    "Verification code",
+                    &t("accounts-sign-in-verification-code"),
                     Box::new(
                         TextInput::from_state(&self.code)
                             .with_kind(TextInputKind::Code)
@@ -1220,21 +1211,18 @@ impl SignInFlow {
             fields.push(note(message));
         }
         if self.kind.best_effort() && unavailable.is_none() {
-            fields.push(note(
-                "Best effort: Apple offers no public iCloud Drive API, so Tilo uses the one \
-                 iCloud.com uses. It can change without notice. Your Apple ID password is used \
-                 only to sign in and is never stored.",
-            ));
+            fields.push(note(&t("accounts-best-effort-icloud")));
+            fields.push(note(&t("accounts-sign-in-icloud-note")));
         }
         let mut buttons = Row::new();
         if unavailable.is_none() && !waiting {
             let label = match (&self.stage, self.kind) {
-                (Stage::Code { .. } | Stage::PastedCode { .. }, _) => "settings-accounts-verify",
-                (_, AccountKind::ICloudDrive) => "settings-accounts-sign-in",
-                _ => &t("accounts-services-continue"),
+                (Stage::Code { .. } | Stage::PastedCode { .. }, _) => t("settings-accounts-verify"),
+                (_, AccountKind::ICloudDrive) => t("settings-accounts-sign-in"),
+                _ => t("accounts-services-continue"),
             };
             buttons = buttons.push(Box::new(bind(
-                Button::new("settings.accounts.form.save", label)
+                Button::new("settings.accounts.form.save", &label)
                     .role(ui::widget::ButtonRole::Primary),
                 super::AccountsEffect::SaveAccountForm,
             )));
@@ -1279,7 +1267,7 @@ impl SignInFlow {
             fields.push(note(&t("accounts-files-mode-description")));
         }
         fields.push(field_row(
-            "Display name",
+            &t("accounts-display-name"),
             Box::new(
                 TextInput::from_state(&self.name)
                     .with_kind(TextInputKind::Name)

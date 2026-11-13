@@ -1,4 +1,4 @@
-"""Against a real front door: `TILO_TEST_DOOR` and `TILO_TEST_KEY` name one.
+"""Against a real API server: `TILO_TEST_API_URL` and `TILO_TEST_KEY` name one.
 
 The door is the local harness; the key reaches every workspace of its person.
 Nothing here fakes the wire: it is the same calls a person's agent makes.
@@ -13,11 +13,11 @@ import pytest
 
 from tilo import AskPending, AsyncTilo, KeyRevoked, Refused
 
-DOOR = os.environ.get("TILO_TEST_DOOR")
+DOOR = os.environ.get("TILO_TEST_API_URL")
 KEY = os.environ.get("TILO_TEST_KEY")
 
 pytestmark = pytest.mark.skipif(
-    not (DOOR and KEY), reason="TILO_TEST_DOOR and TILO_TEST_KEY name a front door"
+    not (DOOR and KEY), reason="TILO_TEST_API_URL and TILO_TEST_KEY name an API server"
 )
 
 

@@ -27,6 +27,12 @@
 //! hands back what arrives. Two windows showing one record each queue on
 //! their own lane, so what one asks for is never what the other sends.
 //!
+//! Content an app stores is sealed under a key derived from the content
+//! secret of the members who read the record, once its route holds their
+//! keys ([`ContentLane::hold_secret`]): the same bytes stored twice, by any
+//! window on a record of the same members, are one item under one
+//! reference. Before the keys arrive, each item is sealed under a fresh key.
+//!
 //! A record other than the window's own — one of the person's records,
 //! kept in their own workspace — has a lane of its own that names its route
 //! ([`ContentLane::record_store`]): its content lives where that record
@@ -101,6 +107,12 @@ pub struct ContentLane {
     /// The record's host carries its content to the record's other
     /// readers.
     served: std::sync::atomic::AtomicBool,
+    /// The content secret of the members who read the record, while its
+    /// route holds their keys.
+    secret: Mutex<Option<tilo_seal::SymmetricKey>>,
+    /// The record's own lane ([`Self::of`]), for a window's lane: the
+    /// secret is the record's, whichever window stores.
+    record: OnceLock<Arc<ContentLane>>,
 }
 
 /// What the window sends on the record's route.
@@ -134,6 +146,7 @@ impl ContentLane {
     /// collaboration (a browser page's replication), reaches it through
     /// [`Self::on_route`] for as long as the window keeps it.
     pub fn show_on_route(app: &str, record: &str, lane: &Arc<Self>) {
+        let _ = lane.record.set(Self::of(app, record));
         let mut lanes = window_lanes();
         let kept = lanes
             .entry((app.to_owned(), record.to_owned()))
@@ -220,6 +233,21 @@ impl ContentLane {
     pub fn serve(&self) {
         self.served
             .store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    /// The record's route holds the keys of the members who read it, whose
+    /// content secret is `secret`, or no longer holds them (`None`). What the
+    /// record's windows store from now on is sealed under keys derived from
+    /// it.
+    pub fn hold_secret(&self, secret: Option<tilo_seal::SymmetricKey>) {
+        *self.secret.lock_recover() = secret;
+    }
+
+    fn content_secret(&self) -> Option<tilo_seal::SymmetricKey> {
+        self.secret
+            .lock_recover()
+            .clone()
+            .or_else(|| self.record.get()?.content_secret())
     }
 
     fn is_served(&self) -> bool {
@@ -340,6 +368,10 @@ pub struct RecordContent {
 impl RecordContent {
     /// `local`, joined to the route `lane` reaches.
     pub fn store(local: ContentStore, lane: Arc<ContentLane>) -> ContentStore {
+        // What reaches this backend is already as it is kept (sealed, or
+        // public): `local` stores it under its own address, never sealing it
+        // again, as a lent store that seals would.
+        let local = local.unsealed();
         ContentStore::from_backend(Arc::new(Self { local, lane })).sealing()
     }
 
@@ -416,6 +448,18 @@ impl ContentBackend for RecordContent {
         live: &std::collections::BTreeSet<String>,
     ) -> Result<Collected, ContentError> {
         self.local.collect_unreferenced(live)
+    }
+
+    fn content_secret(&self) -> Option<tilo_seal::SymmetricKey> {
+        self.lane.content_secret()
+    }
+
+    fn max_item_bytes(&self) -> usize {
+        MAX_RECORD_CONTENT_BYTES
+    }
+
+    fn scratch_dir(&self) -> Option<std::path::PathBuf> {
+        self.local.scratch_dir()
     }
 }
 

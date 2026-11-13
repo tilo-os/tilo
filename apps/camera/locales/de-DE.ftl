@@ -2,7 +2,7 @@
 
 ## Verlauf: was jede Änderung am Eintrag der Kamera getan hat
 
-camera-register-capture = Eine neue Aufnahme weitergegeben
+camera-register-capture = Ein Foto oder Video aufgenommen
 camera-record-scan = { $raw } eingelesen
 
 camera-title = Kamera
@@ -11,7 +11,7 @@ camera-title = Kamera
 
 camera-action-use-device = { $device } verwenden
 camera-action-stop-recording = Aufnahme beenden
-camera-action-register-capture = Aufnahme weitergeben
+camera-action-register-capture = Letzte Aufnahme anbieten
 camera-action-record-scan = Gescannten Code festhalten
 camera-effect-open-camera = Kamera öffnen
 camera-effect-open-scanner = Scan öffnen
@@ -116,3 +116,6 @@ camera-refresh = Aktualisieren
 camera-scanning = Wird gescannt…
 camera-scan-page = Seite scannen
 camera-open-in = In { $destination } öffnen
+
+## What the app is called in a window and in the launcher
+camera-app-title = Kamera

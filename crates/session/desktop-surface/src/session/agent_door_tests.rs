@@ -131,3 +131,54 @@ fn the_persons_asks_reach_the_door_the_host_hands_the_session() {
     assert_eq!(door.admitted.lock().unwrap().len(), 2);
     assert!(session.observe(&person, &InvocationId::new()).is_none());
 }
+
+/// What a window shows its tiles as: a notice, which is all a test needs.
+struct Notices;
+
+impl crate::TileSource for Notices {
+    fn tile(
+        &mut self,
+        _: &tilo_desktop_model::Workspace,
+        tab: &tilo_desktop_model::Tab,
+    ) -> ui::widget::TileHost {
+        ui::widget::TileHost::new(ui::widget::TileContent::Notice {
+            title: tab.title.clone(),
+            detail: String::new(),
+        })
+    }
+}
+
+/// A window asking the desk to show how an agent or a computer connects
+/// (Settings' "Connect an agent or computer") chooses the host action the
+/// person's own card does, which the page carries out: one setup, wherever
+/// it is opened. An agent acting for the person can't ask for it.
+#[test]
+fn a_window_asks_the_desk_for_the_persons_connect_setup() {
+    use tilo_actions::remote::session_actions;
+    let mut minter = tilo_desktop_model::IdMinter::new(7);
+    let tree = crate::seed_tree(&mut minter, "Desk", Vec::new());
+    let handle = crate::DesktopSurface::new(tree, 7, Box::new(Notices)).1;
+    let (session, openings) = super::serve("workspace", Arc::default());
+    let person = Caller::local_person("ada").in_workspace("workspace");
+    let connect = || InvokeRequest {
+        target: session_actions::target(session_actions::SHOW_CONNECT),
+        argument: InvokeArgument::Json(serde_json::Map::new()),
+        ..ask(agent_door::DOOR)
+    };
+
+    let agent = person.clone().delegated_to("claude-code");
+    assert_eq!(
+        answer(session.invoke(&agent, connect())).unwrap_err(),
+        ActionHostError::UnknownAction
+    );
+    assert!(answer(session.invoke(&person, connect())).is_ok());
+    assert!(
+        openings.open(&handle, |_, _| Ok(())),
+        "the desktop takes the ask on its next frame"
+    );
+    assert_eq!(
+        handle.take_host_choices(),
+        [session_actions::CONNECT_AGENT.to_owned()],
+        "the choice the person's card makes"
+    );
+}

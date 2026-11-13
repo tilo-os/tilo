@@ -158,6 +158,7 @@ impl ResourceApp for WindowsShell {
     const ID: &'static str = "so.tilo.windows";
     const READS_HOST: &'static [ui::launch::HostSource] = &[ui::launch::HostSource::Processes];
     const TITLE: &'static str = "Windows Apps";
+    const TITLE_KEY: &'static str = "windows-app-title";
     const ICON: Option<&'static str> = Some("windows");
     /// An installer to add (`windows setup.exe`).
     const ARGUMENTS: usize = 1;

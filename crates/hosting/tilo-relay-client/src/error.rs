@@ -6,15 +6,15 @@
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum LinkError {
     /// The host was not reached, or answered with a server error.
-    #[error("host unavailable: {0}")]
+    #[error("the host could not be reached: {0}")]
     Unavailable(String),
     /// The host refused this device, giving no reason the device can act
     /// on (a route's `401`/`403` text).
-    #[error("host refused: {0}")]
+    #[error("the host refused: {0}")]
     Refused(String),
     /// Another host answers here than the one this device pinned: the host
     /// was set up again.
-    #[error("host is not the pinned device")]
+    #[error("the host is not the one this computer knew: it was set up again")]
     HostChanged,
     /// A body did not decode: something between here and the host (a proxy's
     /// error page), or a host speaking another version, answered.
@@ -42,13 +42,13 @@ pub enum LinkError {
 #[derive(Debug, thiserror::Error)]
 pub enum CertifyError {
     /// The request could not be built or signed.
-    #[error("certification request: {0}")]
+    #[error("the request could not be made: {0}")]
     Request(String),
     /// The host could not be reached or answered badly.
-    #[error("certification transport: {0}")]
+    #[error("{0}")]
     Transport(#[from] LinkError),
     /// An approver declined, or the host refused.
-    #[error("certification denied: {0}")]
+    #[error("{0}")]
     Denied(String),
     /// The host is busy with this person's changes: nothing ran, and the
     /// same request works once `retry_after_ms` passed.
@@ -58,7 +58,7 @@ pub enum CertifyError {
         retry_after_ms: u64,
     },
     /// No approver answered in time.
-    #[error("no approver answered the certification request")]
+    #[error("no approving device answered in time")]
     Expired,
     /// Iroh dial or bi-stream.
     #[error("iroh: {0}")]

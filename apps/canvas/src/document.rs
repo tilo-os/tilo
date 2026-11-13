@@ -33,7 +33,8 @@ const FORMAT: &str = "tilo-artwork";
 /// The largest artwork file read, in bytes: room for a few large photos.
 pub const MAX_FILE_BYTES: usize = 256 << 20;
 const DOCUMENT_ENTRY: &str = "artwork.json";
-/// Where the package keeps pictures, each named by its content hash.
+/// Where the package keeps pictures, each named by the reference the marks
+/// name it by: a plain content address, or one that carries a key.
 const CONTENT_DIR: &str = "content/";
 
 /// A size a new artwork starts at.
@@ -508,13 +509,15 @@ pub fn pack(
     let mut missing = Vec::new();
     for address in file.pictures() {
         let held = ui::tilo_actions::content_hash(address)
-            .and_then(|hash| Some((hash, store.read(hash)?)));
-        let Some((hash, bytes)) = held else {
+            .and_then(|reference| Some((reference, store.read(reference)?)));
+        let Some((reference, bytes)) = held else {
             missing.push(address.to_owned());
             continue;
         };
-        // Pictures are compressed already: kept as they are.
-        zip.start_file(format!("{CONTENT_DIR}{hash}"), stored)
+        // Pictures are compressed already: kept as they are, under the
+        // reference the artwork's marks name them by, so the file opens
+        // where those bytes are.
+        zip.start_file(format!("{CONTENT_DIR}{reference}"), stored)
             .map_err(|error| failed(&error))?;
         zip.write_all(&bytes).map_err(|error| failed(&error))?;
     }
@@ -547,22 +550,26 @@ pub fn unpack(bytes: &[u8], store: &tilo_content::ContentStore) -> Result<Artwor
     for index in 0..archive.len() {
         let entry = archive.by_index(index).map_err(|error| broken(&error))?;
         let name = entry.name().map_err(|error| broken(&error))?;
-        let Some(hash) = name.strip_prefix(CONTENT_DIR).map(str::to_owned) else {
+        let Some(reference) = name.strip_prefix(CONTENT_DIR).map(str::to_owned) else {
             continue;
         };
-        if !tilo_content::valid_hash(&hash) {
-            return Err(broken(&format!("{hash:?} names no content")));
+        if !tilo_content::valid_reference(&reference) {
+            return Err(broken(&format!("{reference:?} names no content")));
         }
-        if store.has(&hash) {
+        if store.has(&reference) {
             continue;
         }
         let picture = inflate(entry, crate::picture::MAX_PICTURE_BYTES as u64, &mut budget)
             .map_err(|error| broken(&error))?;
-        if !tilo_content::verify(&hash, &picture) {
-            return Err(broken(&format!("its picture {hash} is not that content")));
+        if !tilo_content::names(&reference, &picture) {
+            return Err(broken(&format!(
+                "its picture {reference} is not that content"
+            )));
         }
+        // Kept under the reference the artwork names it by, sealed as it was
+        // sealed when it was saved, so the marks that named it find it.
         store
-            .put(&picture)
+            .put_as(&reference, &picture)
             .map_err(|error| format!("the artwork's picture could not be kept: {error}"))?;
     }
     Ok(file)

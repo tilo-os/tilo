@@ -80,25 +80,19 @@ impl ResourceApp for App {
 
     fn view(cx: &mut ViewCx<Shelf>) -> Element {
         let p = cx.paths();
-        // Labels are the generated keys of locales/en-US.ftl: a misspelt one
-        // does not compile.
+        // Labels are the messages of locales/en-US.ftl under the locale the
+        // reader picked.
         let reader = cx
             .input(p.reader.clone())
             .with_id("reader-input")
-            .with_placeholder(crate::locales::keys::LOCALIZED_READER_PLACEHOLDER);
+            .with_placeholder("localized-reader-placeholder");
         let name = cx.value_at(&p.reader);
         let books = cx.value_at(&p.books);
-        let add = cx.button(
-            crate::locales::keys::LOCALIZED_ADD,
-            Shelf::ADD_BOOK.invoke(),
-        );
-        let remove = cx.button(
-            crate::locales::keys::LOCALIZED_REMOVE,
-            Shelf::REMOVE_BOOK.invoke(),
-        );
+        let add = cx.button("localized-add", Shelf::ADD_BOOK.invoke());
+        let remove = cx.button("localized-remove", Shelf::REMOVE_BOOK.invoke());
         Box::new(ui::column![
             Text::new("localized-title").with_role(TextRole::Title),
-            labeled_field(crate::locales::keys::LOCALIZED_READER_LABEL, reader),
+            labeled_field("localized-reader-label", reader),
             ModelView::from_state(&name, |name| greeting(name)),
             ModelView::from_state(&books, |books| book_count(*books)),
             ui::row![remove, add],

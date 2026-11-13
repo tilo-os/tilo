@@ -69,7 +69,7 @@ pub struct Record {
     /// Scanned codes, newest first.
     #[model(readonly)]
     pub scans: Vec<ScanEntry>,
-    /// The capture taken last, to hand off to Photos or Video Player.
+    /// The capture taken last, to offer in Photos or Video Player.
     #[model(readonly)]
     pub recent: Option<SharedCapture>,
 }
@@ -95,11 +95,10 @@ impl Record {
     read_content = Record::read_document
 )]
 impl Record {
-    /// Hand off a capture.
+    /// Offer the latest capture.
     ///
-    /// The capture taken last, whose verified bytes are in the content
-    /// store, becomes the one Camera offers to open in Photos or Video
-    /// Player.
+    /// The capture taken last becomes the one Camera offers to open in
+    /// Photos or Video Player.
     #[action(label = "camera-action-register-capture")]
     pub fn register_capture(&mut self, #[param("The capture")] capture: SharedCapture) {
         self.recent = Some(capture);

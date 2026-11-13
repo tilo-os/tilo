@@ -12,9 +12,6 @@ db-view-switcher = View
 db-tab-query = Query
 db-tab-data = Data
 db-tab-structure = Structure
-db-tab-query-hint = Write SQL and run it against the open connection.
-db-tab-data-hint = The rows of the selected table.
-db-tab-structure-hint = The columns, keys and indexes of the selected table.
 
 ## Query pane
 
@@ -204,3 +201,6 @@ db-client-workspace-add-connection = Add connection
 db-client-workspace-remove-connection = Remove saved connection
 db-client-workspace-save-query = Save query
 db-client-workspace-remove-query = Remove saved query
+
+## What the app is called in a window and in the launcher
+db-client-app-title = Database Client

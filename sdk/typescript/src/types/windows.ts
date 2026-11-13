@@ -17,6 +17,11 @@
 import { resourceProxy } from "tilo-sdk";
 import type * as tilo from "tilo-sdk";
 
+/** The version of the surface these types were made from: a workspace whose app
+ * publishes another refuses their actions rather than run what they no longer
+ * describe. */
+export const SURFACE = "so.tilo.windows@88e1e8cbfc0827d1";
+
 /** One of "wine", "proton", "vm". */
 export type Route = "wine" | "proton" | "vm";
 
@@ -31,6 +36,6 @@ export interface Manager extends tilo.Resource {
 
 /** The `windows.manager` kind at `path`. */
 export function manager(ws: tilo.Workspace, path: string): Manager {
-  return resourceProxy(ws, path) as unknown as Manager;
+  return resourceProxy(ws, path, SURFACE) as unknown as Manager;
 }
 

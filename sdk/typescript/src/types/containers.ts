@@ -17,6 +17,11 @@
 import { resourceProxy } from "tilo-sdk";
 import type * as tilo from "tilo-sdk";
 
+/** The version of the surface these types were made from: a workspace whose app
+ * publishes another refuses their actions rather than run what they no longer
+ * describe. */
+export const SURFACE = "so.tilo.containers@b42312555d9f57f9";
+
 export interface CreateDraft {
   name: string;
   image: string;
@@ -35,6 +40,6 @@ export interface Engine extends tilo.Resource {
 
 /** The `containers.engine` kind at `path`. */
 export function engine(ws: tilo.Workspace, path: string): Engine {
-  return resourceProxy(ws, path) as unknown as Engine;
+  return resourceProxy(ws, path, SURFACE) as unknown as Engine;
 }
 

@@ -116,7 +116,7 @@ impl FileHistoryTransport for Counted {
     }
 }
 /// The session's report for a submit or lookup that found no receipt.
-const UNAVAILABLE_ACK: &str = "Restore acknowledgement is unavailable";
+const UNAVAILABLE_ACK: &str = "The restore may not have happened";
 fn wait(driver: &mut ui::headless::FrameHarness, text: &str) {
     assert!(
         driver.wait_until(tilo_test_env::hang_bound(), |driver| driver
@@ -270,7 +270,7 @@ async fn framework_history_real_backend_uncertain_result_restore_undo_redo_and_r
     );
     driver.key("Escape");
     driver.click_named("history-files-result").unwrap();
-    wait(driver, "Restored revision");
+    wait(driver, "Restored version");
     assert_eq!(
         *transport.lookups.lock().unwrap(),
         vec![submitted[0].intent_id],
@@ -603,7 +603,7 @@ fn framework_history_recovers_sessions_after_a_b_a() {
         wait(driver, "historical bytes");
         driver.click_named("history-restore").unwrap();
         confirm(driver, "production replacement-intent refusal");
-        wait(driver, "An earlier restore is still pending");
+        wait(driver, "An earlier restore hasn't finished");
         driver.key("Escape");
         assert_eq!(
             serde_json::from_slice::<CheckedHistoryRequestV1>(
@@ -647,7 +647,7 @@ fn framework_history_recovers_sessions_after_a_b_a() {
         )
         .unwrap();
         driver.click_named("history-files-result").unwrap();
-        wait(driver, "Restored revision");
+        wait(driver, "Restored version");
         source.set_target(Some(target(&b, record_b, "B again")));
         wait(driver, &format!("timeline-entry:{}", version_b.0.simple()));
         source.set_target(Some(target(&a, record_a, "A third")));

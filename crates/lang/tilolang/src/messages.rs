@@ -259,7 +259,7 @@ pub fn source_catalogue(meta: &PackageMeta) -> String {
             attribute(&mut out, &word.key, &pattern(&word.text));
         }
     }
-    // The words a `fn` says (`say("...")`) are its attributes; a fn that says none is no word
+    // The words a `fn` says (`std.say("...")`) are its attributes; a fn that says none is no word
     // a person reads.
     for function in &meta.fns {
         let mut said = meta

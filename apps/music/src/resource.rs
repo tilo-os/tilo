@@ -300,6 +300,7 @@ impl ResourceApp for MusicShell {
     type Resource = Library;
     const ID: &'static str = "so.tilo.music";
     const TITLE: &'static str = "Music";
+    const TITLE_KEY: &'static str = "music-app-title";
     const ICON: Option<&'static str> = Some("music");
     /// A local audio file or a `music://` link to play or open.
     const ARGUMENTS: usize = 1;

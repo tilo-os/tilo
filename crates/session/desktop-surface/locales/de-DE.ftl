@@ -135,156 +135,29 @@ control-hint-pan = Seitwärts scrollen
 control-hint-pan-touch = Links oder rechts wischen
 
 # Arbeitsbereichsaktivität
-a11y-shell-workspace-activity = Aktivität im Arbeitsbereich
-a11y-shell-activity-everyone = Alle
-a11y-shell-activity-more-people = Weitere Personen
-a11y-shell-activity-more-people-description = Weitere Filter für Mitwirkende anzeigen
-a11y-shell-activity-resume = { $target } fortsetzen
-a11y-shell-activity-resume-description = Die zuletzt bearbeitete Ressource öffnen: { $target }
-a11y-shell-activity-boundary-newer = Die letzte Aktion in die neuere Arbeitssitzung verschieben
-a11y-shell-activity-boundary-older = Die erste Aktion in die ältere Arbeitssitzung verschieben
-a11y-shell-activity-boundary-newer-description = Diese Grenze neu ziehen, indem eine Aktion in die neuere Arbeitssitzung wandert
-a11y-shell-activity-boundary-older-description = Diese Grenze neu ziehen, indem eine Aktion in die ältere Arbeitssitzung wandert
-a11y-shell-activity-more-sessions = Weitere Arbeitssitzungen
-a11y-shell-activity-more-sessions-description = Weitere Arbeitssitzungen anzeigen
-a11y-shell-activity-everything = Alles
-a11y-shell-activity-agent-tasks = Agent-Aufgaben
-a11y-shell-activity-unclassified = Nicht zugeordnet
-a11y-shell-activity-more-lenses = Weitere Ansichten
-a11y-shell-activity-more-lenses-description = Weitere Verlaufsansichten anzeigen
-a11y-shell-activity-history-entries = Verlaufseinträge
-a11y-shell-activity-previous-checkpoint = Vorheriger Zwischenstand
-a11y-shell-activity-next-checkpoint = Nächster Zwischenstand
-a11y-shell-activity-pause-replay = Wiedergabe pausieren
-a11y-shell-activity-play-replay = Wiedergabe abspielen
-a11y-shell-activity-history-scope = Verlaufsumfang
-a11y-shell-activity-history-view = Verlaufsansicht
-a11y-shell-activity-open-tasks-description = Öffnet die App Aufgaben mit den Aufgaben dieses Arbeitsbereichs
-a11y-shell-activity-time-range = Zeitraum
-a11y-shell-activity-person-filter = Personenfilter
-a11y-shell-activity-brief-description = { $detail }; zuletzt geändert { $when }; { $count } { $count ->
-        [one] Änderung
-       *[other] Änderungen
-    } von { $authors }
-a11y-shell-activity-history-lens = Verlaufsansicht
-a11y-shell-activity-undo-task-description = Jeden betroffenen Eintrag dieser Agent-Aufgabe rückgängig machen; spätere Änderungen anderer bleiben erhalten
-a11y-shell-activity-history-action = Aktion für den ausgewählten Verlauf
-a11y-shell-activity-explorer-panel = Explorer-Bereich
-a11y-shell-activity-timeline-description = Verlaufseinträge; mit den Pfeiltasten navigieren
-a11y-shell-activity-checkpoints-description = Durch die Zwischenstände des Arbeitsbereichs gehen
-a11y-shell-activity-replay-description = Die Wiedergabe des Arbeitsbereichs abspielen oder pausieren
-a11y-shell-activity-view-catch-up = Eine Zusammenfassung der Ergebnisse, seit dieses Gerät den Arbeitsbereich zuletzt angesehen hat
-a11y-shell-activity-view-explore = Der vollständige Verlauf des Arbeitsbereichs mit Filtern und Herkunft
-a11y-shell-activity-view-replay = Eine kausale Wiedergabe der Anordnung und der Aktivität der Beteiligten
-a11y-shell-activity-entry-author = Von { $author }
-a11y-shell-activity-selected-detail = Details zum ausgewählten Verlauf
-a11y-shell-activity-selected-detail-description = { $title }; { $count } { $count ->
-        [one] Aktion
-       *[other] Aktionen
-    }; von { $authors }
-a11y-shell-activity-agent-run-description = Anweisung: { $instruction }; zugewiesen von { $issuer }; ausgeführt von { $agent }; Begründung: { $reason }
-a11y-shell-activity-reason-not-recorded = nicht erfasst
-a11y-shell-activity-agent-step = { $app } in { $record }: { $summary }
-a11y-shell-activity-agent-review = Prüfung der Agent-Aufgabe
-activity-view-catch-up = Neues
 activity-view-tasks = Aufgaben
-activity-view-explore = Verlauf
-activity-view-replay = Wiedergabe
-activity-title-catch-up = Während du weg warst
 activity-title-whats-new = Neues
 activity-title-explore = Arbeitsbereich-Aktivität
 activity-title-replay = Arbeitsbereich wiedergeben
-activity-workspace-fallback = Dieser Arbeitsbereich
 activity-source-workspace = Arbeitsbereich
 activity-scope-this-workspace = Dieser Arbeitsbereich
 activity-scope-all-workspaces = Alle Arbeitsbereiche
-activity-scope-workspace-short = Arbeitsbereich
-activity-scope-all-short = Alle
-activity-scope-here = Hier
 activity-period-all-time = Gesamter Zeitraum
 activity-period-today = Heute
 activity-period-week = 7 Tage
 activity-period-month = 30 Tage
-activity-people-everyone = Alle
 
-activity-filter-time = Zeit
-activity-filter-people = Personen
-activity-filter-apps = Apps
-activity-filter-kind = Art
-activity-filter-all = Alle
 activity-detail-restore = Wiederherstellen
-activity-history-compare = Diese Änderung vergleichen
 activity-history-undo = Diese Änderung rückgängig machen
 activity-history-restore = Diese Version wiederherstellen
-activity-first-people = Erste Personen…
-activity-more = Mehr…
-activity-pane-timeline = Zeitleiste
-activity-pane-browse = Durchsuchen
 activity-pane-details = Details
-activity-resume-heading = Zuletzt bearbeitet
-activity-resume-button = Fortsetzen
-activity-pending-edits = Warte auf laufende Bearbeitungen
-activity-catch-up-quiet = { $workspace } · Nichts Neues braucht deine Aufmerksamkeit
-activity-catch-up-one = { $workspace } · { $name } hat die Arbeit vorangebracht
-activity-catch-up-two = { $workspace } · { $first } und { $second } haben die Arbeit vorangebracht
-activity-catch-up-many = { $workspace } · { $first }, { $second } und { $others } { $others ->
-        [one] weitere Person waren
-       *[other] weitere Personen waren
-    } aktiv
-activity-changes-workspace = { $workspace } · { $changes } { $changes ->
-        [one] Änderung
-       *[other] Änderungen
-    } von { $people } { $people ->
-        [one] Person
-       *[other] Personen
-    }
-activity-changes-everywhere = Alle Arbeitsbereiche auf diesem Gerät · { $changes } { $changes ->
-        [one] Änderung
-       *[other] Änderungen
-    } von { $people } { $people ->
-        [one] Person
-       *[other] Personen
-    }
-activity-coverage-excluded = Verlauf nicht verfügbar für { $apps }
-activity-coverage-missing = { $count } { $count ->
-        [one] Eintrag
-       *[other] Einträge
-    } nicht verfügbar
-activity-coverage-capped = { $count } { $count ->
-        [one] weiterer Eintrag
-       *[other] weitere Einträge
-    } abgeschnitten
-activity-replay-checkpoints-unavailable = { $count } { $count ->
-        [one] Prüfpunkt
-       *[other] Prüfpunkte
-    } nicht verfügbar
-activity-latest = Zuletzt · { $headline }
-activity-history-pending = Der Verlauf wartet auf laufende Bearbeitungen
-activity-caught-up = Du bist auf dem neuesten Stand
 activity-history-gone = Diese Änderungen sind nicht mehr im Verlauf.
 activity-served-personal-only = Das kann nur die Person an diesem Gerät.
-activity-served-read-only = Dieser Desktop zeigt den Verlauf, kann ihn aber nicht ändern.
+activity-served-read-only = Der Verlauf lässt sich von hier aus nicht ändern.
 activity-served-unavailable = Der Verlauf dieses Arbeitsbereichs wird hier nicht aufbewahrt.
-activity-summary-on-device = Zusammenfassung auf dem Gerät
-activity-session-move-newer = 1 Aktion neuer
-activity-session-move-older = 1 Aktion älter
-activity-more-sessions = Weitere Arbeitssitzungen…
-activity-first-sessions = Erste Arbeitssitzungen…
-activity-brief-underlying = { $count } { $count ->
-        [one] Schritt
-       *[other] Schritte
-    }
-activity-brief-open-explorer = Diese Arbeitssitzung im Verlauf öffnen
-activity-brief-show-affected = Jeden Schritt zeigen
-activity-browse-by = Durchsuchen nach
-activity-more-lenses = Weitere Ansichten…
-activity-first-lenses = Erste Ansichten…
 activity-lens-everything = Alles
 activity-lens-agent-tasks = Agent-Aufgaben  { $count }
 activity-lens-unclassified = Nicht zugeordnet  { $count }
-activity-provenance = Herkunft
-activity-select-prompt = Wähle eine Arbeitssitzung oder einen Bereich von Aktionen
-activity-select-hint = Sieh, wer es war, was es betraf, und vergleiche vorher und nachher.
 activity-detail-open = Öffnen
 activity-detail-open-app = App öffnen
 activity-detail-compare = Vergleichen
@@ -304,19 +177,7 @@ activity-action-move-boundary = Grenze der Arbeitssitzung verschieben
 activity-action-undo-record = Diese Änderung rückgängig machen
 activity-action-choose-source = Morgenquelle wählen
 activity-action-source = Morgenquelle verwenden
-activity-no-resource = Keine Ressource angegeben
-activity-what-changed = Was sich geändert hat
-activity-comparison-counts = { $actions } { $actions ->
-        [one] Aktion
-       *[other] Aktionen
-    } · { $changes } { $changes ->
-        [one] Dokumentänderung
-       *[other] Dokumentänderungen
-    }
-activity-no-differences = Keine inhaltlichen Unterschiede in dieser Auswahl
-activity-comparison-more = +{ $count } weitere
-activity-preview-unavailable = Vorschau nicht verfügbar
-activity-preview-unavailable-detail = Die Herkunft dieser Aktion ist bekannt, aber es gibt keinen gespeicherten Vorher-nachher-Stand.
+activity-no-resource = Keine Datei und kein Eintrag
 activity-change-resolved-field = Gleichzeitige Änderungen an { $field } aufgelöst
 activity-change-updated-field = { $field } aktualisiert
 activity-change-removed-field = { $field } entfernt
@@ -339,23 +200,18 @@ activity-change-concurrent-list = Gleichzeitige Listenänderungen
 activity-change-formatting = Textformatierung geändert
 activity-change-content = Inhalt
 activity-agent-task = Agent-Aufgabe
-activity-agent-task-people = Zugewiesen von { $issuer }  ·  Ausgeführt von { $agent }
+activity-agent-task-people = Zugewiesen von { $issuer }, ausgeführt von { $agent }
 activity-agent-fallback = Agent
 activity-unknown-collaborator = Unbekannte Person
-activity-why-this-work = Warum diese Arbeit
-activity-no-decision = Es wurde kein Entscheidungsweg aufgezeichnet.
-activity-affected-records = Betroffene Einträge
 activity-undo-task-needs-open = Öffne alle betroffenen Dokumente, um diese Aufgabe gemeinsam rückgängig zu machen.
 activity-undo-run-needs-open = Öffne jedes Dokument, das dieser Lauf geändert hat, um ihn gemeinsam rückgängig zu machen.
 activity-undo-run-in-progress = Das Rückgängigmachen dieses Laufs läuft noch.
-activity-undo-run-nothing-to-undo = Dieser Lauf hat kein Dokument geändert, das einen eigenen Verlauf führt.
-activity-undo-task-needs-documents = Nichts geändert. Öffne zuerst alle betroffenen Dokumente.
+activity-undo-run-nothing-to-undo = Dieser Lauf hat nichts geändert, was sich rückgängig machen lässt.
 activity-undo-task-partial = Aufgabe teilweise rückgängig gemacht; spätere Bearbeitungen anderer wurden behalten.
 activity-undo-task-partial-records = Aufgabe rückgängig gemacht, außer den unten genannten Einträgen.
 activity-undo-task-record-left = { $record } in { $app } wurde nicht rückgängig gemacht.
 activity-detail-undo-step = Diesen Schritt rückgängig
 activity-undo-task-done = Ganze Aufgabe als neuer Verlaufseintrag rückgängig gemacht.
-activity-undo-task-gone = Die Auswirkungen der Aufgabe waren bereits entfernt.
 activity-undo-task-refused = Die Aufgabe konnte nicht rückgängig gemacht werden. { $detail }
 activity-undo-task-unavailable = Aufgaben können hier nicht rückgängig gemacht werden.
 activity-removed-workspace = ein entfernter Arbeitsbereich
@@ -363,42 +219,7 @@ activity-receipt-completed = Abgeschlossen
 activity-receipt-failed = Fehlgeschlagen
 activity-receipt-cancelled = Abgebrochen
 activity-receipt-ended = { $status }: { $what }
-activity-replay-pending = Die Wiedergabe wartet auf laufende Bearbeitungen
-activity-replay-unavailable = Für diese Prüfpunkte ist keine Wiedergabe des Arbeitsbereichs verfügbar
-activity-replay-empty = Noch keine wiedergebbaren Prüfpunkte
-activity-replay-pause = Pause
-activity-replay-play = Abspielen
-activity-replay-position = Prüfpunkt { $position } von { $total } · { $when }
-activity-replay-no-workspace = Der Arbeitsbereich existierte zu diesem Prüfpunkt nicht
-activity-replay-empty-window = Leeres Fenster
 activity-replay-layout-not-recorded = Fenstergrößen und ausgewählte Tabs wurden nicht aufgezeichnet
-activity-presence-trail = Anwesenheitsverlauf
-workspace-create-task = { $manual ->
-    [true] Aufgabe „{ $title }“ zum Selbermachen angelegt
-   *[false] Aufgabe „{ $title }“ angelegt
-}
-workspace-attach-resource = { $resource } an die Aufgabe angehängt
-workspace-set-execution-budget = Laufzeit der Aufgabe festgelegt
-workspace-approve-run = Lauf { $run } freigegeben
-workspace-start-run = Lauf { $run } gestartet
-workspace-add-direction = Anweisung { $revision } gegeben
-workspace-apply-direction = Anweisung { $revision } befolgt
-workspace-finish = { $outcome ->
-    [done] Aufgabe erledigt
-    [waiting] Angehalten, um zu warten
-   *[cancelled] Aufgabe abgebrochen
-}
-workspace-abandon = Lauf aufgegeben
-workspace-retry = Aufgabe erneut eingereiht
-workspace-cancel = Aufgabe abgebrochen
-workspace-report = Fortschritt gemeldet
-workspace-set-status = { $status ->
-    [queued] Aufgabe eingereiht
-    [in-progress] Aufgabe begonnen
-    [waiting] Aufgabe auf Warten gesetzt
-    [done] Aufgabe als erledigt markiert
-   *[cancelled] Aufgabe abgebrochen
-}
 # Ereignisse im Arbeitsbereich-Verlauf
 activity-event-removed-workspaces = { $count } { $count ->
         [one] Arbeitsbereich
@@ -494,14 +315,10 @@ activity-capability-invite-token = ein Einladungstoken
 desktop-system-status = Systemstatus
 desktop-app-unavailable = Anwendung nicht verfügbar
 desktop-app-identity-unavailable = Anwendungsidentität nicht verfügbar
-desktop-app-integration-unavailable = { $app }: Anwendungsintegration oder benötigter Dienst nicht verfügbar
-desktop-app-no-adapter = Kein semantischer Anwendungsadapter; prozesslokale Pixel lassen sich nicht wiederherstellen
+desktop-app-integration-unavailable = { $app } lässt sich auf diesem Rechner nicht öffnen
+desktop-app-no-adapter = Das Fenster dieser App lässt sich hier nicht zeigen
 desktop-search-copied = Kopiert
 desktop-search-searching = Suche läuft…
-desktop-view-switch-workspace = Zu { $workspace } wechseln
-desktop-view-review-activity = Arbeitsbereich-Aktivität ansehen
-desktop-view-explore-activity = Arbeitsbereich-Aktivität erkunden
-desktop-view-replay-activity = Arbeitsbereich-Aktivität wiedergeben
 
 ## Desktop window search
 search-window-nth = { $nth } von { $count }
@@ -516,7 +333,7 @@ a11y-notifications-description = { $count ->
 } Mit Pfeil hoch und runter wählen, mit Bild auf und Bild ab einen Bildschirm weiterspringen, mit Pos1 oder Ende zur neuesten oder ältesten springen. Eingabe öffnet die gewählte Benachrichtigung oder klappt ihre App-Gruppe auf, Entf verwirft sie.
 a11y-notifications-list = Aufbewahrte Benachrichtigungen
 a11y-notifications-clear = Alle Benachrichtigungen löschen
-a11y-notifications-clear-description = Löscht den aufbewahrten Benachrichtigungsverlauf dieser Sitzung. Acht Sekunden lang kannst du das rückgängig machen.
+a11y-notifications-clear-description = Löscht alle Benachrichtigungen. Acht Sekunden lang kannst du das rückgängig machen.
 a11y-notifications-cleared = Benachrichtigungen gelöscht
 a11y-notifications-undo = Löschen der Benachrichtigungen rückgängig machen
 a11y-notifications-undo-description = Stellt die gelöschten Benachrichtigungen in ihrer ursprünglichen Reihenfolge wieder her. Drücke Eingabe oder Leertaste.
@@ -531,7 +348,6 @@ history-severity-info = Information
 history-severity-warning = Warnung
 history-severity-error = Fehler
 history-notification-description-sourced = { $severity }. Von { $source }. { $time }
-history-notification-description-sourced-body = { $severity }. Von { $source }. { $time }. { $body }
 host-action-source-identity = Identität
 host-action-source-devices = Geräte
 host-action-source-workspace = Arbeitsbereich
@@ -543,12 +359,6 @@ notification-center-group-description = { $count } Benachrichtigungen. Eingabe z
 notification-center-dismiss-all = Alle von { $app } verwerfen
 notification-reply = Antworten
 notification-center-dismiss = Verwerfen
-notification-center-hand-to = An { $agent } übergeben
-notification-center-hand-to-description = Übergibt diese Benachrichtigung als Aufgabe an den Agenten des Arbeitsbereichs.
-notification-center-group-count = { $count ->
-        [one] { $count } Benachrichtigung
-       *[other] { $count } Benachrichtigungen
-    }
 notification-lock-count = { $count ->
     [one] 1 Benachrichtigung
    *[other] { $count } Benachrichtigungen
@@ -559,8 +369,6 @@ notification-stack-a11y = Benachrichtigungen
 notification-group-system = System
 notification-center-undo = Rückgängig
 notification-not-now = Später
-notification-app-failed-title = Eine App konnte nicht geöffnet werden
-notification-service-unavailable = Das ist auf diesem Desktop noch nicht verfügbar
 
 # Deine Geräte: ein neues von einem deiner anderen koppeln und deine
 # Identitäten verwalten, wie die Einstellungen die Sitzung darum bitten.
@@ -602,15 +410,6 @@ pairing-approve = { $code } bestätigen
 pairing-decline = Ablehnen
 
 # Workspace settings
-workspace-settings-roles-resource = Berechtigungsrollen von { $workspace }
-workspace-settings-role-save = Berechtigungsrolle erstellen oder aktualisieren
-workspace-settings-role-save-placeholder = Rollenname
-workspace-settings-role-save-description = Speichere eine wiederverwendbare Rolle mit minimalen Rechten aus App-, Aktions-, Datei-, Ressourcen- oder Arbeitsbereichsregeln.
-workspace-settings-role-assign = Berechtigungsrolle zuweisen
-workspace-settings-role-assign-placeholder = Rolle und Mitwirkende
-workspace-settings-role-assign-description = Weise einer Person, Anwendung oder einem Agenten eine gespeicherte Rolle mit minimalen Rechten zu.
-workspace-settings-role-assign-named = { $role } zuweisen
-workspace-settings-role-assign-named-placeholder = Identität der mitwirkenden Person
 workspace-settings-title = Arbeitsbereichseinstellungen
 workspace-settings-close = Einstellungen schließen
 workspace-settings-tab-general = Allgemein
@@ -650,7 +449,6 @@ workspace-settings-role-moderator = Moderator
 workspace-settings-role-editor = Bearbeiter
 workspace-settings-role-commenter = Kommentator
 workspace-settings-role-viewer = Betrachter
-workspace-settings-role-blocked = Gesperrt
 workspace-settings-role-admin = Admin
 workspace-settings-role-guest = Gast
 workspace-settings-role-owner-preview = Kann Personen, Berechtigungen und Einstellungen des Arbeitsbereichs verwalten.
@@ -658,9 +456,7 @@ workspace-settings-role-moderator-preview = Kann geteilte Arbeit bearbeiten, Nac
 workspace-settings-role-editor-preview = Kann geteilte Arbeit ansehen, kommentieren und bearbeiten.
 workspace-settings-role-commenter-preview = Kann geteilte Arbeit ansehen und kommentieren, aber nicht bearbeiten.
 workspace-settings-role-viewer-preview = Kann geteilte Arbeit ansehen, aber weder kommentieren noch bearbeiten.
-workspace-settings-role-blocked-preview = Kein Zugriff auf diesen Arbeitsbereich.
 workspace-settings-scope-workspace = dieser Arbeitsbereich
-workspace-settings-scope-app = die App { $app }
 workspace-settings-scope-workspace-files = Dateien des Arbeitsbereichs
 workspace-settings-scope-workspace-folder = „{ $folder }“ in diesem Arbeitsbereich
 workspace-settings-scope-path = Dateien unter { $path }
@@ -671,16 +467,6 @@ workspace-settings-scope-screencast = Bildschirmaufnahme
 workspace-settings-scope-remote-desktop = Fernsteuerung von Zeiger und Tastatur
 workspace-settings-scope-any-host = ein beliebiger Netzwerkhost
 workspace-settings-scope-host = Netzwerkhost { $host }
-workspace-settings-scope-action = „{ $action }“ auf { $resource } in { $app }
-workspace-settings-scope-action-on-kind = „{ $action }“ auf jeder Ressource vom Typ { $kind } in { $app }
-workspace-settings-scope-resource-type = { $kind ->
-    [note] jede Notiz
-    [file] jede Datei
-    [cluster] jeder gespeicherte Cluster
-    [kanban] jedes Board
-   *[chat-log] jeder Chatverlauf
-}
-workspace-settings-scope-resource-instance = ein Dokument ({ $id })
 workspace-settings-scope-workspace-object = Diesen Arbeitsbereich
 workspace-settings-scope-app-object = Die App { $app }
 workspace-settings-scope-workspace-files-object = Dateien des Arbeitsbereichs
@@ -706,20 +492,9 @@ workspace-settings-scope-resource-instance-object = Ein Dokument ({ $id })
 workspace-settings-allows-control = { $what } steuern
 workspace-settings-allows-use = { $what } verwenden
 workspace-settings-allows-reach = { $what } erreichen
-workspace-settings-allows-run = { $what } ausführen
-workspace-settings-allows-administer = { $what } verwalten
 workspace-settings-allows-edit = { $what } bearbeiten
-workspace-settings-allows-comment = { $what } kommentieren
-workspace-settings-allows-invite = Andere einladen: { $what }
 workspace-settings-allows-view = { $what } ansehen
-workspace-settings-kind-read = Lesen
-workspace-settings-kind-undoable = Änderungen
-workspace-settings-kind-outside = Wirkungen nach außen
 workspace-settings-subject-foreign-device = Geräte, die nicht die eigenen sind
-workspace-settings-grant-placeholder = Wer, wo und was
-workspace-settings-grant-description = Jemandem, einem Agenten oder einer App eine Antwort für Arten von Aktionen in einem Teil dieses Arbeitsbereichs geben.
-workspace-settings-revoke-placeholder = Welche Berechtigung
-workspace-settings-revoke-description = Eine Berechtigung anhand ihrer Kennung zurücknehmen.
 workspace-settings-expiry-once = Einmal
 workspace-settings-expiry-session = Sitzung
 workspace-settings-expiry-until = Bis
@@ -730,7 +505,7 @@ workspace-settings-granted-by-app = erteilt von der App { $app }
 workspace-settings-granted-by-agent = erteilt von Agent { $id }
 workspace-settings-granted-by-token = erteilt über Token { $id }
 workspace-settings-granted-by-workspace = erteilt vom Arbeitsbereich { $id }
-workspace-settings-permission-detail = { $allows } · { $grantor }
+workspace-settings-permission-detail = { $allows }, { $grantor }
 workspace-settings-section-apps = Apps
 workspace-settings-section-app-actions = App-Aktionen
 workspace-settings-section-people = Personen
@@ -752,7 +527,7 @@ workspace-settings-members-count = { $count ->
     [one] 1 Person teilt diesen Arbeitsbereich
    *[other] { $count } Personen teilen diesen Arbeitsbereich
 }
-workspace-settings-members-help = Wer entfernt wird, erhält keine Synchronisierung und Änderungen mehr; bereits heruntergeladene Kopien bleiben bei der Person.
+workspace-settings-members-help = Wer entfernt wird, erhält keine Änderungen und Aktualisierungen mehr; bereits heruntergeladene Kopien bleiben auf den Geräten der Person.
 workspace-settings-you-manage = Von dir verwaltet
 workspace-settings-view-only = Nur ansehen
 workspace-settings-members-empty-title = Sonst ist niemand in diesem Arbeitsbereich
@@ -809,7 +584,7 @@ workspace-settings-agent-access-change = Änderungen
 workspace-settings-agent-access-outside = Wirkungen nach außen
 workspace-settings-agent-access-set-here = Hier gesetzt
 workspace-settings-agent-access-reset = Standard verwenden
-workspace-settings-agent-access-always = Immer erlaubt · { $count }
+workspace-settings-agent-access-always = { $count } immer erlaubt
 workspace-settings-agent-exception = { $action } in { $app }
 workspace-settings-agent-access-stop = Wieder fragen
 workspace-settings-agent-model = Modell
@@ -839,8 +614,8 @@ workspace-settings-revoke = Entziehen
 workspace-settings-unavailable-app = Nicht verfügbare App
 workspace-settings-apps-empty-title = Keine Dateiverknüpfungen installiert
 workspace-settings-apps-empty-detail = Noch keine App gibt einen unterstützten Dateityp an.
-workspace-settings-apps-intro-title = Standards ohne Bindung
-workspace-settings-apps-intro-detail = Der Arbeitsbereich gibt eine Grundlage vor; jede Person kann ausdrücklich etwas anderes wählen.
+workspace-settings-apps-intro-title = Standard-Apps
+workspace-settings-apps-intro-detail = Jede Art von Datei öffnet in der App des Arbeitsbereichs, solange du keine eigene wählst.
 workspace-settings-apps-header = Standard-Apps
 workspace-settings-workspace-choice = Wahl des Arbeitsbereichs
 workspace-settings-your-choice = Deine Wahl
@@ -857,15 +632,14 @@ workspace-settings-apps-custom-rules = { $count ->
     [one] 1 eigene Regel
    *[other] { $count } eigene Regeln
 }
-workspace-settings-permissions-intro-title = Zugriff ist ausdrücklich und widerrufbar
-workspace-settings-permissions-intro-detail = Freigaben werden von der App-Sandbox durchgesetzt und bleiben auf diesen Arbeitsbereich beschränkt.
+workspace-settings-permissions-intro-title = Berechtigungen
+workspace-settings-permissions-intro-detail = Jede Berechtigung sagt, wer was tun darf, und wo.
 workspace-settings-active-grants = { $count ->
     [one] 1 aktive Freigabe
    *[other] { $count } aktive Freigaben
 }
 workspace-settings-permissions-empty-title = Keine Berechtigungen erteilt
 workspace-settings-permissions-empty-detail = Apps erhalten nichts, bis es hier erteilt oder in einer Abfrage erlaubt wird.
-workspace-settings-more = +{ $count } weitere
 workspace-settings-who = Wer
 workspace-settings-who-agent = Wer: ein Agent, nur mit Zugriff auf dieses Fenster
 workspace-settings-nobody-to-grant = Noch niemand, dem du etwas erteilen kannst. Lade jemanden ein oder öffne hier eine App.
@@ -873,23 +647,16 @@ workspace-settings-what-it-allows = Was es erlaubt
 workspace-settings-grant-header = Berechtigung erteilen
 workspace-settings-expiry-caption = Gültigkeit
 workspace-settings-grant = Erteilen
-workspace-settings-role-sheet-title = Zugriff auf den Arbeitsbereich wählen
-workspace-settings-role-sheet-description = { $person } ist derzeit { $role }. Wähle genau, was diese Person tun kann.
 workspace-settings-remove-sheet-title = Diese Person entfernen?
-workspace-settings-remove-sheet-description = Die Person erhält keine Synchronisierung und Änderungen mehr. Heruntergeladene Kopien bleiben auf ihren Geräten.
+workspace-settings-remove-sheet-description = Die Person erhält keine Änderungen und Aktualisierungen mehr. Heruntergeladene Kopien bleiben auf ihren Geräten.
 workspace-settings-revoke-sheet-title = Diese Berechtigung entziehen?
-workspace-settings-revoke-sheet-description = Die ausgewählte Berechtigung gilt sofort nicht mehr. Prüfe zuerst ihre Aktivität, wenn du unsicher bist.
+workspace-settings-revoke-sheet-description = Sie gilt sofort nicht mehr. Prüfe zuerst ihre Aktivität, wenn du unsicher bist.
 workspace-settings-keep-access = Zugriff behalten
 workspace-settings-review-activity = Zuerst Aktivität prüfen
 workspace-settings-remove-person = Person entfernen
-workspace-settings-no-changes = Es werden keine Änderungen vorgenommen.
-workspace-settings-open-history = Öffne vor der Entscheidung den Verlauf des Arbeitsbereichs.
-workspace-settings-remove-person-detail = Dadurch verliert die Person ihre Berechtigungen im Arbeitsbereich.
 workspace-settings-keep-permission = Berechtigung behalten
 workspace-settings-revoke-permission = Berechtigung entziehen
-workspace-settings-revoke-permission-detail = Dadurch wird die ausgewählte Berechtigung sofort entfernt.
 workspace-settings-workspace-fallback = Arbeitsbereich
-workspace-settings-current-workspace = Aktueller Arbeitsbereich
 workspace-settings-identity-title = Identität des Arbeitsbereichs
 workspace-settings-identity-description = Dieser Name erscheint in der oberen Leiste, in Einladungen und in geteilten Aktivitäten.
 workspace-settings-name-label = Name des Arbeitsbereichs
@@ -941,18 +708,13 @@ a11y-shell-people-agent = Agent
 a11y-shell-people-now = Jetzt: { $activity }
 a11y-shell-people-recent-toggle = Was { $name } zuletzt gemacht hat
 a11y-shell-people-recent-toggle-description = Ihre letzten Änderungen ein- oder ausblenden
-a11y-shell-rename = Deinen Namen ändern, { $name }
-a11y-shell-rename-description = Wähle den Namen, den andere hier sehen
 a11y-shell-sharing-change = Ändern, was du teilst
-a11y-shell-follow-collaborator = Mitwirkender Person folgen
 a11y-shell-follow = { $name } folgen
 a11y-shell-follow-description = Die Live-Ansicht dieser Person im Arbeitsbereich spiegeln
 a11y-shell-stop-following = { $name } nicht mehr folgen
 a11y-shell-invite = Personen einladen
 a11y-shell-invite-description = Eine authentifizierte Einladung in den Arbeitsbereich erstellen
 a11y-shell-join = Arbeitsbereich beitreten
-a11y-shell-join-description = Mit einer authentifizierten Einladung verbinden
-a11y-shell-workspace-activity-description = Gruppierte Ergebnisse prüfen und sehen, was in deiner Abwesenheit passiert ist
 
 # Empty-workspace launchpad
 launchpad-title = Etwas anfangen
@@ -977,8 +739,6 @@ launchpad-invite-detail-private = Gemeinsam mit jemandem daran arbeiten
 
 # Empty-workspace launchpad: the keyboard hint under the cards
 launchpad-keyboard-hint = Pfeiltasten bewegen, Eingabe öffnet, Super+N zeigt alle Apps
-
-# Peers arriving in and leaving a workspace, batched into one toast
 
 # Moved from the shell catalogue with the code that uses them
 people-panel-agent-tag = Agent
@@ -1165,8 +925,6 @@ tilo-about-link-community = Community
 
 notification-preview-hidden = Benachrichtigungsvorschau verborgen
 
-activity-acknowledge-viewed = Als gesehen markieren
-activity-acknowledge-description = Markiert die hier gezeigten Änderungen als gesehen. Wartende Aufgaben bleiben offen.
 notification-alarm-dismiss = Verwerfen
 notification-alarm-snooze = In 5 Minuten erneut erinnern
 notification-sender-claims = App sagt: { $name }
@@ -1178,33 +936,19 @@ notification-quiet-focus-until = Fokus bis { $time }
 
 activity-morning-choose = Für den Morgen auswählen
 activity-morning-remove = Morgenquelle entfernen
-activity-morning-empty = Morgenquellen: Ressource unter Verlauf, dann Details auswählen. Bis zu acht Quellen; keine wird automatisch verbunden.
-activity-morning-description = Ausgewählte Morgenquellen: Anbieter-Vorschauen aus autorisierten Ressourcen. Aktualisierung oder Zeitplan ausdrücklich wählen.
 activity-morning-unavailable = Diese Quelle ist hier nicht verfügbar
 activity-morning-source-unnamed = Gewählte Quelle
-activity-morning-source = { $source }, letzte Aktivität { $time } · möglicherweise nicht aktuell
+activity-morning-source = { $source }, letzte Aktivität { $time }
 
 activity-morning-open = Morgenquelle öffnen
 
-activity-morning-payload-unavailable = Anbieter-Zusammenfassung nicht verfügbar. Quelle öffnen, um sie zu prüfen oder zu aktualisieren.
+activity-morning-payload-unavailable = Noch keine Zusammenfassung. Aktualisiere die Quelle, um es erneut zu versuchen.
 
 activity-morning-refresh = Quelle aktualisieren
 activity-morning-draft = Geplante Aktualisierung entwerfen…
-activity-morning-draft-description = Öffnet einen Entwurf in Shortcuts. Zeitplan wählen und Berechtigungen vor dem Speichern prüfen; noch ist nichts aktiviert.
 activity-morning-command-unavailable = Quellenaktion nicht verfügbar
-activity-morning-command-pending = Anfrage läuft
-activity-morning-command-accepted = Anfrage angenommen; Ergebnis in Aktionen prüfen
-activity-morning-command-refused = Anfrage abgelehnt
-activity-morning-recorded = { $source } · letzte aufgezeichnete Arbeitsbereichsaktivität: { $time }
 
 activity-morning-next = Nächste ausgewählte Quelle
-
-workspace-settings-hint-close = Schließen
-workspace-settings-hint-save = Speichern
-workspace-settings-hint-cancel = Abbrechen
-workspace-settings-hint-choose = Auswählen
-
-workspace-settings-hint-apply = Übernehmen
 
 # Jemand anderes hat ein Fenster außer Sicht geöffnet: der Hinweis am Rand
 desktop-window-opened-elsewhere = { $person } hat { $app } geöffnet
@@ -1227,7 +971,7 @@ feedback-picker-picked = { $count ->
     [one] 1 Teil gewählt. Umschalt-Klick oder Ziehen wählt mehr.
    *[other] { $count } Teile gewählt. Umschalt-Klick oder Ziehen wählt mehr.
 }
-feedback-picker-continue = Weiter
+feedback-picker-continue = Prüfen
 feedback-picker-cancel = Abbrechen
 feedback-part-in = { $what } in { $app }
 feedback-part-named = „{ $name }“ ({ $role ->
@@ -1286,7 +1030,11 @@ desktop-actions-launchpad = Startfeld
 desk-focus-window = { $window } fokussieren
 desk-close-window = { $window } schließen
 desk-look-window = { $window } als Bild ansehen
+desk-look-window-action = Das Fenster als Bild ansehen
+desk-look-window-detail = Sieht ein Fenster, das dieser Desktop nicht selbst führt, so an, wie es gerade aussieht: antwortet mit dem Bild, aufbewahrt im Arbeitsbereich, in dem das Fenster steht.
 desk-read-window = Lesen, was { $window } zeigt
+desk-read-window-action = Wie das Fenster sich selbst nennt
+desk-read-window-detail = Was ein Fenster, das dieser Desktop nicht selbst führt, über sich sagt: sein Titel und die App, zu der es gehört.
 session-host-new-workspace = Neuer Arbeitsbereich
 session-host-new-workspace-description = Auf diesem Rechner anlegen
 session-host-branch-workspace = Arbeitsbereich abzweigen
@@ -1294,7 +1042,7 @@ session-host-branch-workspace-description = Eine Kopie dieses Bereichs, die ihre
 desktop-branch-workspace-name = { $name } Abzweig
 desktop-cannot-branch-workspace = Dieser Arbeitsbereich enthält, was du nicht lesen kannst, darum kann er hier nicht abgezweigt werden
 session-branching-workspace = { $name } wird abgezweigt
-session-branching-workspace-body = { $branch } öffnet sich, sobald seine Einträge, Dateien und Umgebungen kopiert sind.
+session-branching-workspace-body = { $branch } öffnet sich, sobald seine Inhalte und Dateien kopiert sind.
 session-branched-workspace = { $branch } ist bereit
 session-branched-workspace-body = Er enthält, was { $name } enthält, mit dir als einzigem Mitglied. Sein Chat ist geblieben.
 session-branch-failed = { $branch } ist nicht vollständig
@@ -1330,16 +1078,12 @@ desk-first-strip = Das ist die erste Leiste
 desk-last-strip = Das ist die letzte Leiste
 desk-window-edge = Nichts geändert. Das Fenster kann nicht weiter in diese Richtung.
 desktop-no-strip = Hier gibt es keine Leiste namens { $name }
-desktop-strip-not-here = Diese Leiste ist nicht mehr in diesem Arbeitsbereich
 desktop-workspace-gone = Diesen Arbeitsbereich gibt es hier nicht mehr
 desktop-no-workspace-to-leave = Es gibt keinen Arbeitsbereich zu verlassen
 desktop-no-workspace-to-delete = Es gibt keinen Arbeitsbereich zu löschen
 desktop-only-workspace = Das ist der einzige Arbeitsbereich hier
 desktop-workspace-stays = Dieser Arbeitsbereich bleibt: Jemand anderes ist darin, oder ein anderes deiner Geräte hält ihn.
 desktop-cannot-delete-workspace = Dieser Desktop kann keine Arbeitsbereiche löschen
-desktop-window-not-here = Dieses Fenster ist nicht mehr auf diesem Desktop
-desktop-nothing-to-move-to = Es gibt kein Ziel für dieses Fenster
-desktop-move-no-record = Ein Fenster zu verschieben braucht keinen Eintrag
 desktop-actions-search = Suche
 session-input = Eingabegeräte
 session-toggle-touchpad = Touchpad ein- oder ausschalten
@@ -1356,8 +1100,6 @@ session-displays = Bildschirme
 session-displays-next = Nächste Bildschirmanordnung
 session-displays-set = Bildschirme anordnen
 session-clipboard = Zwischenablage
-session-clipboard-paste-files = Dateien hier einfügen
-session-param-paste-destination = Der Ordner, in den die kopierten Dateien eingefügt werden
 
 session-window-share = Geteilte Fenster
 session-window-share-share = Ein Fenster mit dem Raum teilen
@@ -1370,7 +1112,7 @@ session-window-share-allow-input = Den Raum das Fenster bedienen lassen
 session-window-share-param-on = Ob sie es bedienen dürfen; weglassen zum Umschalten
 session-window-share-watch = Ein Fenster zeigen, das ein anderes Mitglied teilt
 session-window-share-unwatch = Es nicht mehr zeigen
-session-window-share-workspace-left = Diese Sitzung ist nicht mehr im Arbeitsbereich
+session-window-share-workspace-left = Dieser Rechner ist nicht mehr im Arbeitsbereich
 
 ## The on-screen readout for the hardware keys.
 desktop-actions-osd = Bildschirmanzeige
@@ -1393,7 +1135,6 @@ osd-brightness = Helligkeit { $percent } %
 osd-no-backlight = Kein regelbarer Bildschirm
 osd-microphone-muted = Mikrofon stummgeschaltet
 osd-microphone-on = Mikrofon an
-osd-keyboard-backlight-off = Tastaturbeleuchtung aus
 osd-keyboard-backlight = Tastaturbeleuchtung { $percent } %
 osd-airplane-mode-on = Flugmodus an
 osd-airplane-mode-off = Flugmodus aus
@@ -1471,7 +1212,6 @@ desk-monitor-memory = Arbeitsspeicher
 desk-monitor-temperature = Temperatur
 desk-monitor-cpu-short = CPU
 desk-monitor-memory-short = RAM
-desk-widget-resize = { $widget } vergrößern
 
 hung-app-title = Antwortet nicht
 hung-app-card = { $window } antwortet nicht
@@ -1491,7 +1231,7 @@ profile-agent-revoke = Zugriff entziehen
 profile-agent-now = Gerade
 task-programs-resource = Aufgabenprogramme
 task-programs-run = Ein Programm ausführen
-task-programs-run-detail = Führt ein tilolang-Programm als Schritt des Laufs der Aufgabe aus, als der Agent, der an der Aufgabe arbeitet, und antwortet, was es gelesen oder geändert hat.
+task-programs-run-detail = Führt ein Programm als Schritt der Aufgabe aus und antwortet, was es gelesen oder geändert hat.
 
 ## What a grant covers when it covers the whole tree
 workspace-settings-scope-everything = Alles

@@ -52,8 +52,8 @@ run = "python3 tools/policy/check_workflow_package_paths.py --edges normal,build
 
 [[step]]
 name = "developer-docs"
-label = "Developer docs pages and links"
-run = "python3 -m unittest tools/tests/test_developer_docs.py tools/tests/test_development_book.py tools/tests/test_development_tool_help.py && python3 tools/docs/developer_docs.py check && python3 tools/docs/check_development_book.py"
+label = "Developer docs pages, links and examples"
+run = "python3 -m unittest tools/tests/test_developer_docs.py tools/tests/test_development_book.py tools/tests/test_development_tool_help.py tools/tests/test_doc_examples.py && python3 tools/docs/developer_docs.py check && python3 -I tools/docs/doc_examples.py check && python3 tools/docs/check_development_book.py"
 
 [[step]]
 name = "suites"

@@ -294,6 +294,18 @@ impl Inner {
         }
     }
 
+    /// Let go of the actions handed over to commit whose writes the mirror no longer holds as
+    /// its own: the record holds them, or they were taken back.
+    pub(super) fn forget_sent(&mut self) {
+        let local = &self.local;
+        self.sent.retain(|action| {
+            action
+                .edits
+                .iter()
+                .any(|edit| local.iter().any(|write| write.edit.bare() == edit.bare()))
+        });
+    }
+
     /// Write the store's pending writes of the chunk `chunk` onto the mirror again, as pending
     /// ops: after the record's changes reached it, which rolled the whole open transaction back.
     /// What the record has not taken is still what the store answers, so it is written back as

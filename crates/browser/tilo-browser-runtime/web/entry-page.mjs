@@ -26,8 +26,8 @@ import {applicationName, loadRuntime, mountDesktop, prefetchApplication, prefetc
 import {connectPeer, httpsPost, identityProfile, inspectInvitation, joinWorkspace, openInvitation, profileDevice, withCustody} from './peer.mjs';
 import {readBrowserAccounts} from './browser-accounts.mjs';
 import {idbStorage, openDeviceCustody} from './device-custody.mjs';
-import {createIdentityActions, SIGN_IN, syncProfile} from './identity-actions.mjs';
-import {firstRun, MCP_URL, openFirstRun, setupDone} from './first-run.mjs';
+import {createIdentityActions, SIGN_IN, setupOrigin, syncProfile} from './identity-actions.mjs';
+import {firstRun, MCP_URL, openFirstRun, readSetup, setupDone} from './first-run.mjs';
 import {pickImageFile, squarePhoto} from './profile-photos.mjs';
 import {deviceLabel, pairingFailure, pairSecret, whenRequested} from './pairing.mjs';
 import {readInstallSecret, SET_UP, SETUP_PHASES, setUpFailure, setUpMachine} from './machine-setup.mjs';
@@ -517,8 +517,10 @@ function askLine({label: text, action, save}) {
 }
 
 /** A link to hand on: shown to select, with a button that copies it
- * (inside the person's click, which a browser's clipboard asks for). */
-function shareCard({title, body, link}) {
+ * (inside the person's click, which a browser's clipboard asks for).
+ * `copied`: the link was just written from the press that opened this, so
+ * the button says so and the press is the only one a person makes. */
+function shareCard({title, body, link, copied = false}) {
   return new Promise(resolve => {
     const form = document.createElement('form');
     form.className = 'tilo-entry-card';
@@ -529,15 +531,19 @@ function shareCard({title, body, link}) {
     field.setAttribute('aria-label', 'Link');
     field.addEventListener('focus', () => field.select());
     const copy = Object.assign(document.createElement('button'), {type: 'button', textContent: 'Copy link'});
-    copy.addEventListener('click', async () => {
+    const took = async () => {
       try {
         await navigator.clipboard.writeText(link);
         copy.textContent = 'Copied';
+        return true;
       } catch {
         field.focus();
         copy.textContent = 'Select the link and copy it';
+        return false;
       }
-    });
+    };
+    copy.addEventListener('click', took);
+    if (copied) void took();
     const done = Object.assign(document.createElement('button'), {type: 'submit', textContent: 'Done'});
     form.addEventListener('submit', event => { event.preventDefault(); form.remove(); resolve(); });
     form.append(heading, about, field, copy, done);
@@ -1280,6 +1286,18 @@ export async function startEntryPage({mode}) {
         }
       });
     }
+    // A link that carries a secret (an invitation, a pairing) never shows the
+    // first screen: the person is let in without it. A person who has not been
+    // set up here and was let in this way into the site's own home workspace is
+    // handed on to the bare site, where the first screen is — its skip, or
+    // their agent, opens a workspace of their own instead of leaving them on
+    // the shared desktop they landed in. A link into another workspace is that
+    // workspace's, and is left alone.
+    if (!embed && !firstRun && here.kind === 'room' && readSetup()?.step !== 'done'
+        && page.peer?.workspace && page.peer.workspace === homeRoomOf(page.entry)) {
+      loadPage(page.entry.base);
+      return;
+    }
     // A tab an agent just signed in as a device of the person: it paired
     // through the home workspace, and opens the person's own one next.
     if (!embed && page.peer && openOwnAsked()) void openOwnAfterSignIn({page, status});
@@ -1345,6 +1363,12 @@ export async function startEntryPage({mode}) {
         askWorkspaceName: save => askLine({label: 'Name of the new workspace', action: 'Create', save}),
         chooseMachine: origins => card('Create the workspace on', [...origins.map(origin => [new URL(origin).host, origin]), ['Cancel', null]]),
         share: shareCard,
+        copy: text => navigator.clipboard.writeText(text).then(() => true, () => false),
+        // What the page says of the invitation it keeps ready for one press
+        // (`data-invite-link`): making it, ready to hand over, or failed.
+        said: (what, state) => {
+          if (what === 'invite-link') document.documentElement.dataset.inviteLink = state;
+        },
         waitingList: waitingCard,
         fail: text => card(text, [['Close', null]]),
       },
@@ -1512,6 +1536,14 @@ function rememberedWorkspace(scope) {
   if (scope?.kind !== 'room' || !scope.room) return null;
   const origin = new URL(scope.host).origin;
   return enteredWorkspaces().find(entry => entry.origin === origin && entry.room === scope.room) ?? null;
+}
+
+/** The workspace the site's own door names, as its admission address spells it
+ * (`<relay>/peer/v1/directory/<room>/`): the site's home. */
+function homeRoomOf(entry) {
+  const admission = entry?.home?.admission;
+  const match = typeof admission === 'string' ? admission.match(/\/directory\/([^/]+)\/?$/) : null;
+  return match ? match[1] : null;
 }
 
 /** The workspace this browser was admitted to through the home workspace's door. */
@@ -1719,8 +1751,9 @@ function offerWaitList({workspace, contact, mail, messages}) {
 /**
  * Signing in at the door with an identity the person already has: their
  * passkey opens it (its envelope from the hosts that keep it), and the page
- * loads again to join as them. A member gets in; anyone else is told this
- * identity is not in `named` yet, with the wait list still there.
+ * loads again to join as them, opening a workspace of their own rather than
+ * the home workspace's shared desktop. A member gets in; anyone else is told
+ * this identity is not in `named` yet, with the wait list still there.
  */
 function offerSignIn({workspace, named, messages}) {
   const say = (key, english, args) => localized(messages, key, english, args);
@@ -1754,6 +1787,15 @@ function offerSignIn({workspace, named, messages}) {
         ...listedWorkspaces({home: workspace}).map(listed => listed.host.origin)].filter(Boolean))];
       const identity = await signInWithPasskey({fetchEnvelope: root => fetchEnvelope(root, origins)});
       try { sessionStorage.setItem(DOOR_SIGNED_IN, identity.userPublicKey); } catch { /* Said less, nothing lost. */ }
+      // Signed in at the door of the site's own workspace, the person comes
+      // back to a workspace of their own, as a tab their agent signed in
+      // does: the home workspace's shared desktop is where people meet, not
+      // where someone starts.
+      try { globalThis.sessionStorage?.setItem(OPEN_OWN, '1'); } catch { /* Then the home workspace stays in front. */ }
+      // Someone who signs in has been here: the first screen of a first
+      // visit is not theirs, and would name a new workspace for them that
+      // their host does not keep.
+      setupDone();
       location.reload();
     } catch (error) {
       console.warn('signing in at the door:', error);
@@ -1889,9 +1931,11 @@ function keepIdentity({peer, mount, home, name, runtime, link, naming, photos}) 
     profiled: at => peer?.setProfileChanged?.(at),
     // The card's "Connect an agent" is the first screen's own setup, shown
     // again with a fresh code: the same prompt and the same MCP address the
-    // person saw when they arrived.
-    showAgentSetup: peer?.origin
-      ? () => { connectAnAgent({origin: peer.origin, identity, runtime, link}); }
+    // person saw when they arrived. On the person's own desktop no workspace
+    // peer is in front, so the code comes from their home host, as the first
+    // screen's did.
+    showAgentSetup: setupOrigin({peer, home})
+      ? () => { connectAnAgent({origin: setupOrigin({peer, home}), identity, runtime, link}); }
       : null,
   });
   void actions.attach(mount);
@@ -1996,7 +2040,8 @@ function agentSetupCodes({origin, identity, runtime, link}) {
   // What the setup keeps of a code names whose it is: a code kept for
   // another person or host is not this tab's to follow.
   const ours = saved => saved?.person === identity.userPublicKey && saved?.host === host;
-  const make = async () => {
+  const make = () => makeCode().catch(error => { throw hostNamed(error, host); });
+  const makeCode = async () => {
     const agents = await agentActions();
     const pairing = await agents.connectAgent({workspace: setUpIn ?? namedOwnWorkspace(host, identity.userPublicKey)});
     const made = await codes.create(pairing.link);
@@ -2047,7 +2092,8 @@ function connectAnAgent({origin, identity, runtime, link}) {
 function offerFirstRunCodes({origin, identity, runtime, link}) {
   if (firstRunCodesOffered || !firstRun || !origin || !runtime?.createLoginCode) return;
   firstRunCodesOffered = true;
-  const setup = agentSetupCodes({origin, identity, runtime, link});
+  const host = new URL(origin).origin;
+  const setup = agentSetupCodes({origin: host, identity, runtime, link});
   firstRun.offerSetup(setup.make, setup.resume);
   const {codes, ours} = setup;
   // Claimed by a device of the person: this tab asks to be certified as a
@@ -2065,7 +2111,7 @@ function offerFirstRunCodes({origin, identity, runtime, link}) {
   };
   firstRun.offerAgentSignIn(async () => {
     const made = await codes.create(null);
-    return {...made, saved: {...made.saved, person: identity.userPublicKey, host}, signIn};
+    return {...made, saved: {...made.saved, person: identity.userPublicKey, host: new URL(origin).origin}, signIn};
   }, saved => (ours(saved) ? {...codes.resume(saved), signIn} : null));
 }
 
@@ -2185,9 +2231,10 @@ function standInOf({peer, identity, runtime}) {
  */
 function loginCodes(runtime, origin) {
   const post = httpsPost(origin);
+  const named = error => { throw hostNamed(error, origin); };
   return {
     async create(link = null) {
-      const made = JSON.parse(await runtime.createLoginCode(post, link));
+      const made = JSON.parse(await runtime.createLoginCode(post, link).catch(named));
       return this.resume({code: made.code, expiresAt: made.expires_at_ms, follow: made.follow});
     },
     /** A code made before, from what was kept of it (`{code, expiresAt,
@@ -2195,9 +2242,20 @@ function loginCodes(runtime, origin) {
      * else the page kept with it), followed again: kept again whole. */
     resume(saved) {
       return {code: saved.code, expiresAt: saved.expiresAt, saved: {...saved},
-        follow: async () => JSON.parse(await runtime.followLoginCode(post, saved.follow))};
+        follow: async () => JSON.parse(await runtime.followLoginCode(post, saved.follow).catch(named))};
     },
   };
+}
+
+/** `error`, naming the host at `origin` it came from (`origin`, as
+ * `first-run.mjs` `setupFailure` reads it) unless it names one already: the
+ * codes' host is not the page's own (tilo.sh's come from eu1.tilo.sh), and
+ * the screen says which one did not answer. */
+function hostNamed(error, origin) {
+  if (error && typeof error === 'object' && !error.origin) {
+    try { error.origin = new URL(origin).origin; } catch { /* Then the screen names the site. */ }
+  }
+  return error;
 }
 
 /**

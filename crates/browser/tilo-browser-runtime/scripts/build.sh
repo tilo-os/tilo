@@ -12,7 +12,7 @@
 #
 # usage: build.sh OUTPUT_DIR [--profile release|assert|dev|quick] [--[no-]wasm-opt] [--names]
 #                 [--bundle runtime|desktop] [--no-split] [--update]
-#                 [--wasm-only | --wasm-from WASM_DIR]
+#                 [--wasm-only | --wasm-from WASM_DIR] [--wasm-steps auto|builder|local]
 # `--profile release` compiles with Cargo's `wasm-release` profile and runs
 # wasm-opt (binaryen) unless `--no-wasm-opt`; `dev` skips it unless `--wasm-opt`.
 # `assert` is release optimisation with the assertions and overflow checks a
@@ -27,7 +27,7 @@
 # its module is split (tools/web/wasm-split/split.sh) into a start module and
 # one module per app, fetched when the app first opens. `--no-split` (dev and
 # quick only) leaves it whole, for a loop that is not about loading apps.
-# `--update` (dev and quick only; also with `--module-only`) brings an OUTPUT_DIR this script built
+# `--update` (dev and quick only; also with `--module-only` and `--wasm-only`) brings an OUTPUT_DIR this script built
 # before up to date, step by step: the module is bound and split again only
 # when the linked module changed, the page's modules and entry pages are
 # copied again, and fonts, data and the compute module are kept. A loop that
@@ -51,11 +51,21 @@
 # crate's pinned wasm-bindgen. Compiles with `cargo`, or with the cargo `$CARGO`
 # names: a cargo that compiles elsewhere brings the module back to this tree's
 # target directory, and the script reads it there as it always does.
+# `--wasm-steps` says where the steps that turn the linked module into pkg/
+# run: wasm-bindgen wants several gigabytes and wasm-opt over one module
+# alone wants more, which is the build's memory, not the compile's. `auto`
+# (the default, or $TILO_BUNDLE_WASM_STEPS) runs them on the builder when
+# `$CARGO` is a drop-in that runs a program there and brings a directory of
+# the target dir back (`rcargo exec`), and beside the compile otherwise;
+# `builder` refuses to run them here, `local` never sends them away. The
+# fetched directory holds what a local run writes — pkg/, data/, apps.json
+# and wasm.json — so a builder build and a local one record the same
+# build.json, down to the tools that ran on the builder.
 set -euo pipefail
 
 crate=$(cd "$(dirname "$0")/.." && pwd)
 repo=$(cd "$crate/../../.." && pwd)
-usage='usage: build.sh OUTPUT_DIR [--profile release|assert|dev|quick] [--[no-]wasm-opt] [--names] [--bundle runtime|desktop] [--no-split] [--update] [--wasm-only | --wasm-from WASM_DIR] [--module-only]'
+usage='usage: build.sh OUTPUT_DIR [--profile release|assert|dev|quick] [--[no-]wasm-opt] [--names] [--bundle runtime|desktop] [--no-split] [--update] [--wasm-only | --wasm-from WASM_DIR] [--module-only] [--wasm-steps auto|builder|local]'
 out=${1:?$usage}
 shift
 profile=release
@@ -67,6 +77,7 @@ wasm_only=0
 module_only=0
 wasm_from=
 names=0
+steps=${TILO_BUNDLE_WASM_STEPS:-auto}
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --profile) profile=${2:?--profile needs a value}; shift 2 ;;
@@ -79,9 +90,14 @@ while [[ $# -gt 0 ]]; do
     --wasm-only) wasm_only=1; shift ;;
     --module-only) module_only=1; shift ;;
     --wasm-from) wasm_from=${2:?--wasm-from needs a directory}; shift 2 ;;
+    --wasm-steps) steps=${2:?--wasm-steps needs a value}; shift 2 ;;
     *) echo "unknown argument: $1" >&2; echo "$usage" >&2; exit 2 ;;
   esac
 done
+case "$steps" in
+  auto|builder|local) ;;
+  *) echo "unsupported --wasm-steps: $steps" >&2; exit 2 ;;
+esac
 case "$profile" in
   release) cargo_profile=wasm-release artifact=wasm-release optimize=${optimize:-1} ;;
   assert) cargo_profile=wasm-assert artifact=wasm-assert optimize=${optimize:-1} ;;
@@ -98,8 +114,8 @@ esac
 [[ $module_only == 0 || ( $wasm_only == 0 && -z $wasm_from ) ]] || {
   echo '--module-only builds nothing but pkg/; not with --wasm-only or --wasm-from' >&2; exit 2;
 }
-[[ $update == 0 || ( $wasm_only == 0 && -z $wasm_from ) ]] || {
-  echo '--update builds whole bundles; not with --wasm-only or --wasm-from' >&2; exit 2;
+[[ $update == 0 || -z $wasm_from ]] || {
+  echo '--update builds what it compiles; not with --wasm-from' >&2; exit 2;
 }
 # The runtime bundle's profile strips the symbols at link time; the desktop's
 # keeps them for its splitter.
@@ -122,14 +138,17 @@ if [[ $bundle == desktop ]]; then
 fi
 [[ "$out" == /* ]] || { echo 'OUTPUT_DIR must be absolute' >&2; exit 2; }
 # Stale modules beside new ones would make the bundle's provenance ambiguous.
+# What says an output is this script's: build.json, or wasm.json for --wasm-only.
+record=build.json
+[[ $wasm_only == 0 ]] || record=wasm.json
 # A module-only output is pkg/ alone (pkg.next is what a stopped build left,
 # which it replaces), and its stamp names the linked module
 # (and so the profile) it was made from.
 if [[ $update == 1 && $module_only == 1 && -d "$out" && -z "$(ls -A "$out" | grep -vxE 'pkg|pkg\.next')" ]]; then
   :
-elif [[ $update == 1 && -f "$out/build.json" ]]; then
+elif [[ $update == 1 && -f "$out/$record" ]]; then
   python3 -c 'import json,sys; b=json.load(open(sys.argv[1])); sys.exit(b.get("bundle")!=sys.argv[2] or b.get("profile")!=sys.argv[3])' \
-    "$out/build.json" "$bundle" "$profile" || {
+    "$out/$record" "$bundle" "$profile" || {
     echo "--update: $out holds another bundle or profile; build into an empty directory" >&2; exit 2;
   }
 else
@@ -148,7 +167,29 @@ if [[ "${TILO_USE_ZIG:-0}" == 1 ]]; then
 fi
 bindgen=${WASM_BINDGEN:-wasm-bindgen}
 cargo=${CARGO:-cargo}
-if [[ -z $wasm_from ]]; then
+# Whether this cargo both compiles elsewhere and runs a program there,
+# bringing a directory of the target dir back (`rcargo exec`): asked of the
+# cargo itself, whose help for exec names `--fetch`, so a wrapper around one
+# (os/containers/tilo-sh/cargo.sh) counts, and a local cargo answers `no such
+# command`. The steps that turn the linked module into pkg/ then go with the
+# compile.
+runs_on_builder() {
+  local help
+  help=$("$cargo" exec --help 2>/dev/null) && [[ $help == *--fetch* ]]
+}
+if [[ $steps == auto ]]; then
+  if [[ -z $wasm_from && $module_only == 0 ]] && runs_on_builder; then steps=builder; else steps=local; fi
+elif [[ $steps == builder ]]; then
+  runs_on_builder || {
+    echo "--wasm-steps builder needs a cargo that runs a program on its builder (\`rcargo exec\`), and CARGO ($cargo) has no exec" >&2
+    exit 2
+  }
+  [[ -z $wasm_from && $module_only == 0 ]] || {
+    echo '--wasm-steps builder is for the module and the bundle; not with --module-only or --wasm-from' >&2
+    exit 2
+  }
+fi
+if [[ -z $wasm_from && $steps == local ]]; then
   pinned=$(sed -n 's/^wasm-bindgen = "=\(.*\)"$/\1/p' "$crate/Cargo.toml")
   [[ "$("$bindgen" --version)" == "wasm-bindgen $pinned" ]] || {
     echo "wasm-bindgen CLI must be $pinned to match the crate" >&2; exit 2;
@@ -181,8 +222,10 @@ linked="$target_dir/wasm32-unknown-unknown/$artifact/${package//-/_}.wasm"
 # no module to read (a wasm-bindgen that makes its output itself), so
 # such a pkg/ is never reused.
 made_from=""
-# Size and modification time, with GNU stat or the BSD stat of macOS.
-file_stamp() { stat -c '%s %Y' "$1" 2>/dev/null || stat -f '%z %m' "$1"; }
+# Its content, not its modification time: a cargo that compiles elsewhere (t,
+# rcargo) writes the module it brings back anew on every build, changed or not,
+# and a new time alone would bind and split it again (minutes) for nothing.
+file_stamp() { { sha256sum "$1" 2>/dev/null || shasum -a 256 "$1"; } | cut -d' ' -f1; }
 if [[ -f "$linked" ]]; then made_from="$(file_stamp "$linked") split=$split"; fi
 if [[ -n "$made_from" ]] && kept pkg/.made-from && [[ "$(cat "$out/pkg/.made-from")" == "$made_from" ]]; then
   echo "pkg: unchanged module, kept" >&2
@@ -256,6 +299,50 @@ wasm_opt_version=
 if [[ $optimize == 1 ]]; then wasm_opt_version=$(wasm-opt --version); fi
 }
 
+# The same wasm phase, on the builder the cargo compiles on, and the directory
+# of this tree's target dir the fetch brings its output back in. One directory
+# per bundle, profile and options, replaced by each build there: wasm-bindgen
+# writes several gigabytes and wasm-opt over the start module alone more,
+# which is memory this machine does not spend when it is not the builder.
+wasm_on_builder() {
+  local stage=web-bundle-wasm-$bundle-$profile args=(--bundle "$bundle" --profile "$profile")
+  local script=${crate#"$repo"/}/scripts/build-wasm-on-builder.sh
+  if [[ $names == 1 ]]; then stage+=-names; args+=(--names); fi
+  if [[ $optimize == 1 ]]; then args+=(--wasm-opt); else stage+=-no-wasm-opt; args+=(--no-wasm-opt); fi
+  if [[ $split == 0 ]]; then stage+=-no-split; args+=(--no-split); fi
+  # An --update loop keeps the builder's previous output too, so a module that
+  # did not change is not bound and split again there.
+  if [[ $update == 1 ]]; then args+=(--update); fi
+  # Named in what this run fetches, so a directory an earlier run left here
+  # is never taken for this one's.
+  local run
+  run=$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')
+  echo "wasm: binding, splitting and optimizing on the builder ($cargo exec; $stage)" >&2
+  "$cargo" --fetch "$stage" exec bash "$script" "$stage" "$run" "${args[@]}" >&2 || {
+    echo 'the wasm phase failed on the builder (above)' >&2; exit 1;
+  }
+  target_dir=$("$cargo" metadata --format-version 1 --no-deps --offline |
+    python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')
+  local dir=$target_dir/$stage file missing=()
+  # What a build of it writes: a directory without these is a fetch that
+  # brought too little, never a bundle, and says which file it looked for.
+  for file in wasm.json pkg/tilo_browser_runtime.js pkg/tilo_browser_runtime_bg.wasm; do
+    [[ -s "$dir/$file" ]] || missing+=("$file")
+  done
+  [[ ${#missing[@]} == 0 ]] || {
+    echo "the builder build left no ${missing[*]} in $dir (fetched from the builder's $stage)" >&2
+    exit 1
+  }
+  [[ -f $dir/run && "$(<"$dir/run")" == "$run" ]] || {
+    echo "$dir is not what this build made on the builder (its run is not $run): did the fetch bring it back?" >&2
+    exit 1
+  }
+  printf '%s\n' "$dir"
+}
+
+if [[ -z $wasm_from && $steps == builder ]]; then
+  wasm_from=$(wasm_on_builder)
+fi
 if [[ -z $wasm_from ]]; then
   build_wasm
 else
@@ -275,8 +362,21 @@ PY
   ) || exit 2
   eval "$read_wasm"
   mkdir -p "$out"
-  cp -R "$wasm_from/pkg" "$out/pkg"
-  [[ ! -d $wasm_from/data ]] || cp -R "$wasm_from/data" "$out/data"
+  # pkg/ is swapped, never copied into: an output this script built before
+  # holds one already, and a copy beside it is a bundle with two.
+  if [[ $update == 1 && -f $wasm_from/pkg/.made-from && -f $out/pkg/.made-from ]] &&
+     [[ "$(<"$wasm_from/pkg/.made-from")" == "$(<"$out/pkg/.made-from")" ]]; then
+    echo 'pkg: unchanged module, kept' >&2
+  else
+    rm -rf "$out/pkg"
+    cp -R "$wasm_from/pkg" "$out/pkg"
+  fi
+  # What the module was compiled from can be unchanged while these are not
+  # (a manifest that names apps), so they follow the module and not --update.
+  if [[ -d $wasm_from/data ]]; then
+    rm -rf "$out/data"
+    cp -R "$wasm_from/data" "$out/data"
+  fi
   [[ ! -f $wasm_from/apps.json ]] || cp "$wasm_from/apps.json" "$out/apps.json"
 fi
 # The module the page loads first, whole: a pkg/ without it is a page that

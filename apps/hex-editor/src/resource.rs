@@ -179,6 +179,7 @@ impl ResourceApp for HexEditorShell {
     // Each window shows the document it opened, never another window's.
     const WINDOW_RESOURCE: bool = true;
     const TITLE: &'static str = "Hex Editor";
+    const TITLE_KEY: &'static str = "hex-editor-app-title";
     const ICON: Option<&'static str> = Some("hex-editor");
     const OPENS: &'static [&'static str] = &[ui::application::ANY_MEDIA_TYPE];
     const ARGUMENTS: usize = 1;

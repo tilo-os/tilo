@@ -89,6 +89,27 @@ class Install(unittest.TestCase):
         self.assertIn("tilo login", done.stderr, "says what comes next")
         self.assertEqual(sorted(p.name for p in self.installed.parent.iterdir()), ["tilo"], "no leftovers")
 
+    def test_plain_http_only_from_this_computer(self):
+        import functools
+        import http.server
+        import threading
+
+        handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=str(self.release.parent))
+        handler.log_message = lambda *args: None
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.shutdown)
+        port = server.server_address[1]
+        done = self.install(TILO_RELEASES=f"http://127.0.0.1:{port}")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(run(self.installed).stdout, b"tilo 0.0.0\n")
+        self.installed.unlink()
+        # A name that only starts like this computer's leaves it: refused
+        # before anything is asked of it.
+        done = self.install(TILO_RELEASES=f"http://127.0.0.1.example:{port}")
+        self.assertNotEqual(done.returncode, 0)
+        self.assertFalse(self.installed.exists())
+
     def test_another_directory_and_an_update_in_place(self):
         target = self.home / "bin"
         self.assertEqual(self.install(TILO_INSTALL_DIR=str(target)).returncode, 0)

@@ -597,8 +597,10 @@ fn a_history_missing_a_write_opens_without_it_and_keeps_what_waits_for_it() {
     let mut author = Author::new(&f.host);
     let (first, second) = (author.edit("first", "1"), author.edit("second", "2"));
     let unreadable = author.edit("third", "3");
-    // `second` builds on `first`, which this replica never got; the write
-    // after it does not open with the keys this key holder has.
+    // `second` builds on `first`, which this replica never got and which
+    // `second`'s own writer never sent: it reads as stuck behind that change.
+    // Another device bringing it after all (below) still completes the record.
+    // The write after it does not open with the keys this key holder has.
     let late = write(&f.host, &f.other, &keys, &second, now);
     admit(&mut f.host, &f.other, late, now);
     let foreign = ChannelGroup::create(channel(), MemberKey::generate("other").unwrap())
@@ -627,7 +629,7 @@ fn a_history_missing_a_write_opens_without_it_and_keeps_what_waits_for_it() {
         matches!(
             opened.unmerged.as_slice(),
             [
-                UnmergedWrite { author: a, seq: 1, reason: UnmergedReason::MissingDependencies { missing } },
+                UnmergedWrite { author: a, seq: 1, reason: UnmergedReason::BehindUnsent { missing } },
                 UnmergedWrite { author: b, seq: 2, reason: UnmergedReason::Unreadable(_) },
             ] if *a == other && *b == other && missing.len() == 1
         ),
@@ -2600,4 +2602,251 @@ fn checkpoints_written_as_changes_fill_a_sealed_history_with_copies_of_the_recor
     assert_eq!(held(&f.host).len(), pieces.len());
     let sealed = write(&f.host, &editor, &keys, &author.edit("value", "on"), now);
     admit(&mut f.host, &editor, sealed, now);
+}
+
+/// What `peer`'s record reads as for its authority, opened with `keys`.
+fn captured(
+    f: &Fixture,
+    peer: &StatePeer,
+    keys: &ChannelContentKeys,
+) -> Result<AutoCommit, crate::PeerDocumentReadError> {
+    peer.capture_document(
+        f.authority.device_public_key,
+        (APP, RECORD),
+        f.now,
+        1024 * 1024,
+        Some(&mut |op| open(keys, op)),
+    )
+    .map(|capture| AutoCommit::load(&capture.into_bytes()).unwrap())
+}
+
+fn text(doc: &AutoCommit, key: &str) -> Option<String> {
+    doc.get(ROOT, key)
+        .unwrap()
+        .and_then(|(value, _)| value.into_string().ok())
+}
+
+/// A page that held a sealed record's keys before the record itself wrote a change in that moment,
+/// which it let go unsigned and unsent, and its next change, built on the first, was taken: the
+/// record holds a change whose base its own writer never sent, and no device ever will. A reader
+/// reads the record without it rather than refusing the whole record as incomplete, and a member's
+/// own compaction still refuses to fold it away.
+#[test]
+fn a_change_built_on_one_its_writer_never_sent_is_read_without_it() {
+    let mut f = fixture();
+    let now = f.now;
+    let keys = f.keys();
+    let mut page = Author::new(&f.host);
+    let _let_go = page.edit("early-1", "first");
+    let built_on = page.edit("early-2", "second");
+    let stuck = write(&f.host, &f.other, &keys, &built_on, now);
+    admit(&mut f.host, &f.other, stuck, now);
+    let mut member = Author::new(&f.host);
+    let later = write(&f.host, &f.owner, &keys, &member.edit("later", "kept"), now);
+    admit(&mut f.host, &f.owner, later, now);
+
+    let read = captured(&f, &f.host, &keys).expect("the record reads");
+    assert_eq!(text(&read, "value").as_deref(), Some("base"));
+    assert_eq!(text(&read, "later").as_deref(), Some("kept"));
+    assert_eq!(text(&read, "early-2"), None);
+    let other = f.other.verifying_key().to_bytes();
+    let opened = f
+        .host
+        .publication()
+        .opened_document(APP, RECORD, &mut |op| open(&keys, op))
+        .unwrap()
+        .unwrap();
+    assert!(
+        matches!(
+            opened.unmerged.as_slice(),
+            [UnmergedWrite { author, seq: 1, reason: UnmergedReason::BehindUnsent { missing } }]
+                if *author == other && missing.len() == 1
+        ),
+        "{:?}",
+        opened.unmerged
+    );
+    assert!(
+        mint(&mut f.host, &keys, &f.owner, now).is_err(),
+        "only the workspace's store folds a write away"
+    );
+}
+
+/// A change whose base is in a write its writer signed and this replica has not taken in yet may
+/// still arrive: the record waits for it.
+#[test]
+fn a_change_whose_writer_signed_its_base_keeps_the_record_waiting() {
+    let mut f = fixture();
+    let now = f.now;
+    let keys = f.keys();
+    let mut page = Author::new(&f.host);
+    let (first, second) = (
+        page.edit("early-1", "first"),
+        page.edit("early-2", "second"),
+    );
+    let on_its_way = write(&f.host, &f.other, &keys, &first, now);
+    let (metadata, payload) = keys
+        .seal_content(artifact(), ContentRetention::Delta, &second)
+        .unwrap();
+    let after = message(signed(
+        &f.other,
+        2,
+        OpKind::Change,
+        payload,
+        Some(metadata),
+        now,
+    ));
+    admit(&mut f.host, &f.other, after, now);
+
+    assert!(matches!(
+        captured(&f, &f.host, &keys),
+        Err(crate::PeerDocumentReadError::Incomplete)
+    ));
+    let opened = f
+        .host
+        .publication()
+        .opened_document(APP, RECORD, &mut |op| open(&keys, op))
+        .unwrap()
+        .unwrap();
+    assert!(
+        matches!(
+            opened.unmerged.as_slice(),
+            [UnmergedWrite {
+                seq: 2,
+                reason: UnmergedReason::MissingDependencies { .. },
+                ..
+            }]
+        ),
+        "{:?}",
+        opened.unmerged
+    );
+    // Signed and on its way: the host replays it in its writer's order, and the record reads whole
+    // then (as it did before any of this).
+    drop(on_its_way);
+}
+
+/// A reader that keeps a record opened between reads keeps the writes it read without, and takes
+/// one in once what it builds on turns up after all.
+#[test]
+fn a_kept_reader_takes_a_write_it_read_without_in_once_its_base_arrives() {
+    let mut f = fixture();
+    let now = f.now;
+    let keys = f.keys();
+    let mut page = Author::new(&f.host);
+    let (first, second) = (
+        page.edit("early-1", "first"),
+        page.edit("early-2", "second"),
+    );
+    let stuck = write(&f.host, &f.other, &keys, &second, now);
+    admit(&mut f.host, &f.other, stuck, now);
+    let mut kept = KeptRecord::default();
+    let reader = f.authority.device_public_key;
+    let mut opener = |op: &SignedOp| open(&keys, op);
+    let read = f
+        .host
+        .open_document(
+            reader,
+            (APP, RECORD),
+            now,
+            1 << 20,
+            Some(&mut opener),
+            &mut kept,
+        )
+        .expect("the record reads without the stuck write")
+        .clone();
+    assert_eq!(
+        text(&AutoCommit::load(&read.save()).unwrap(), "early-2"),
+        None
+    );
+
+    let brought = write(&f.host, &f.owner, &keys, &first, now);
+    admit(&mut f.host, &f.owner, brought, now);
+    let read = f
+        .host
+        .open_document(
+            reader,
+            (APP, RECORD),
+            now,
+            1 << 20,
+            Some(&mut opener),
+            &mut kept,
+        )
+        .expect("the record reads whole")
+        .clone();
+    let read = AutoCommit::load(&read.save()).unwrap();
+    assert_eq!(text(&read, "early-1").as_deref(), Some("first"));
+    assert_eq!(text(&read, "early-2").as_deref(), Some("second"));
+}
+
+/// A device writes a record under one Automerge writer of its own across reloads, as the shared
+/// desktop does. Its page lost a change and sent the next one, built on it; reloaded, the page read
+/// the record without either and wrote again, numbering its next change as the lost one was
+/// numbered. The stuck write still builds on a change no device will ever send: a reader reads the
+/// record with what the reloaded page wrote, and without the stuck write, after one write and after
+/// two.
+#[test]
+fn a_writer_reloaded_after_losing_a_change_reads_without_what_it_built_on_it() {
+    let mut f = fixture();
+    let now = f.now;
+    let keys = f.keys();
+    let actor = automerge::ActorId::from(b"one device, every load".as_slice());
+    let base = f.host.document(APP, RECORD).unwrap();
+    let mut page = Author(AutoCommit::load(&base).unwrap().with_actor(actor.clone()));
+    let _let_go = page.edit("early-1", "first");
+    let stuck = write(
+        &f.host,
+        &f.other,
+        &keys,
+        &page.edit("early-2", "second"),
+        now,
+    );
+    admit(&mut f.host, &f.other, stuck, now);
+
+    let mut reloaded = Author(AutoCommit::load(&base).unwrap().with_actor(actor));
+    let again = write(&f.host, &f.other, &keys, &reloaded.edit("again", "1"), now);
+    admit(&mut f.host, &f.other, again, now);
+    let read = captured(&f, &f.host, &keys).expect("the record reads after one write");
+    assert_eq!(text(&read, "again").as_deref(), Some("1"));
+    assert_eq!(text(&read, "early-2"), None);
+    let opened = f
+        .host
+        .publication()
+        .opened_document(APP, RECORD, &mut |op| open(&keys, op))
+        .unwrap()
+        .unwrap();
+    assert!(
+        matches!(
+            opened.unmerged.as_slice(),
+            [UnmergedWrite {
+                seq: 1,
+                reason: UnmergedReason::BehindUnsent { .. },
+                ..
+            }]
+        ),
+        "{:?}",
+        opened.unmerged
+    );
+
+    let more = write(&f.host, &f.other, &keys, &reloaded.edit("again", "2"), now);
+    admit(&mut f.host, &f.other, more, now);
+    let read = captured(&f, &f.host, &keys).expect("the record reads after two writes");
+    assert_eq!(text(&read, "again").as_deref(), Some("2"));
+    assert_eq!(text(&read, "early-2"), None);
+    let opened = f
+        .host
+        .publication()
+        .opened_document(APP, RECORD, &mut |op| open(&keys, op))
+        .unwrap()
+        .unwrap();
+    assert!(
+        matches!(
+            opened.unmerged.as_slice(),
+            [UnmergedWrite {
+                seq: 1,
+                reason: UnmergedReason::BehindUnsent { .. },
+                ..
+            }]
+        ),
+        "{:?}",
+        opened.unmerged
+    );
 }

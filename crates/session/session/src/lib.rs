@@ -53,6 +53,10 @@ pub mod search;
 mod search_agent;
 mod search_ask;
 mod session_actions;
+// The person's settings, which Settings' window drives through the broker as another provider's
+// actions: the session keeps them in its settings service, so the answer is this host's.
+#[cfg(target_os = "linux")]
+mod settings_steps;
 // What a message from another member is, and whether the workspace's policy grants it: the gate
 // table every host asks, named here as the session always has.
 pub use tilo_session_client::gate as workspace_gate;

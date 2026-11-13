@@ -631,13 +631,17 @@ impl Workspaces {
         request_id: [u8; 32],
         now: u64,
     ) -> Result<Value, ActionHostError> {
-        let own = self.own().ok_or(ActionHostError::UnknownAction)?;
         let person = device.user_public_key;
         let name = args.text("name")?;
         let moving = args.text("room")?;
         let seconds = args
             .integer("expires_in_seconds")?
             .unwrap_or(OWN_INVITATION_SECONDS);
+        let Some(own) = self.own() else {
+            return self
+                .enter_host_persons(device, name, moving, request_id, expiry(now, seconds))
+                .await;
+        };
         // A grant for one workspace enters that one, already made: it makes no other.
         let makes = device
             .capabilities
@@ -717,6 +721,34 @@ impl Workspaces {
             MemberRole::Editor,
             request_id,
             expiry(now, seconds),
+        )
+        .await
+    }
+
+    /// Invite the host's own person (`device` is theirs) into the workspace
+    /// `room` governed here, as a host that keeps no workspaces of anyone
+    /// else's answers `room.create-own`: every workspace it governs is
+    /// theirs, so another device of theirs, or a key of theirs whose scope
+    /// reaches it, enters it as them. It makes none: that is `room.create`.
+    async fn enter_host_persons(
+        &self,
+        device: &DeviceCert,
+        name: Option<&str>,
+        room: Option<&str>,
+        request_id: [u8; 32],
+        expires_at_ns: u64,
+    ) -> Result<Value, ActionHostError> {
+        let room = match (name, room) {
+            (None, Some(room)) if self.lists_to(device, room) => room,
+            _ => return Err(refused(&NOT_YOUR_OWN)),
+        };
+        let summary = self.summary(room).await.map_err(|error| refused(&error))?;
+        self.invite_own_person(
+            summary,
+            device.user_public_key,
+            MemberRole::Editor,
+            request_id,
+            expires_at_ns,
         )
         .await
     }

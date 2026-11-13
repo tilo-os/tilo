@@ -21,7 +21,7 @@ d-b5k7mvka = Trouble
 d-33f3rqw2 = Online
 
 d-hzbwof46 = Fetched
-    .doc = When the account's mail was last taken in from its server, as the clock the person read it at: the epoch when it never was.
+    .doc = When the account's mail was last taken in from its server, as the clock the person read it at: 1970 when it never was.
 
 d-jxc5rufs = Signature
     .doc = What the account's messages end with: the person's own, per account, as every mail client signs a message.
@@ -192,7 +192,7 @@ d-w26tzvt4 = References
 d-yfyt2cfh = Sent
 
 d-lgrwf5yf = Send at
-    .doc = When it goes, and `Time` is never empty, so a draft not sent yet says the epoch.
+    .doc = When it goes: 1970 for a draft not sent yet.
 
 d-h2nvr2op = Recalled
     .doc = It was taken back before it went: it never leaves, and it is a draft again.
@@ -215,7 +215,7 @@ d-gkuo27e6 = Drafts
 d-z3zcztpz = Labels
 
 d-4ow5ydy5 = Hold
-    .doc = How many seconds a sent message waits before it goes, so it can be taken back: the person's setting, ten by default, and what rules out holding it not at all.
+    .doc = How many seconds a sent message waits before it goes, so it can be taken back: the person's setting, ten by default, and no wait at all when it is zero.
 
 d-su4h67i5-filter-hold = Hold
 
@@ -229,7 +229,7 @@ d-eon6gbrn = New message
     .doc = Starts a message from the account.
 
 d-ygbvdl5l = New message
-    .doc = Starts a message from the first account, where there is one: a window with no account offers nothing to press and says where an account comes from, rather than a control that cannot run.
+    .doc = Starts a message from the first account.
     .w-add-a-mail-account-in-settings = Add a mail account in Settings first
 
 d-hirareiw = Reply
@@ -440,7 +440,7 @@ d-n2xgxnbw = Message
 
 d-oqpazwvc = Editor
     .w-sending = Sending
-    .w-it-goes-in-a-moment-take = It goes in a moment. Take it back if you need to.
+    .w-it-goes-in-a-moment = It goes in a moment.
     .w-undo-send = Undo send
     .w-name-example-org = name@example.org
     .w-subject = Subject

@@ -1,26 +1,30 @@
 /** One workspace: what is in it, what to do there, and who is there. */
 
 import type { Tilo } from "./client.ts";
-import { Endpoint, RunGroup, withinRun } from "./endpoint.ts";
+import { type Endpoint, RunGroup, withinRun } from "./endpoint.ts";
 import {
-  hitOf,
-  invitationOf,
-  memberOf,
   type Event,
   type Hit,
+  hitOf,
   type Invitation,
+  invitationOf,
   type Listing,
   Listing as ListingValue,
   type Member,
+  memberOf,
   type MintedKey,
   type ProgramAnswer,
   type WorkspaceInfo,
 } from "./models.ts";
-import { ProtocolError, Refused, keyRefusal } from "./errors.ts";
-import { resourceProxy, type Resource } from "./resource.ts";
-import type { Answer } from "./wire.ts";
+import { ProtocolError, refusalOf } from "./errors.ts";
+import { resourceProxy, type Resource, type Surface } from "./resource.ts";
+import { query as queryOf, routes } from "./routes.ts";
+import { collect } from "./transport.ts";
 
 const RUN_PREFIX = "sdk:";
+
+/** A file's bytes, as they go up: one upload's own type, when the caller knows it. */
+export type FileBytes = Uint8Array | ArrayBuffer | Blob;
 
 /**
  * File bytes in and out of the workspace, named `tilo.content:<hash>`.
@@ -38,86 +42,43 @@ export class Files {
   /**
    * Upload bytes and answer their `tilo.content:<hash>` reference.
    *
-   * The door names content by its hash, so `name` is a caller's own label,
-   * kept beside the reference rather than sent.
+   * The host names content by its hash, so a byte sequence goes up once,
+   * whatever a caller would have called the file.
    */
-  async upload(data: Uint8Array | ArrayBuffer | Blob, name: string | null = null): Promise<string> {
-    const workspace = await this.workspace.id();
-    const transport = this.workspace.client.transport;
-    const session = transport.session(workspace);
-    if (session.id === null) {
-      await session.open();
-    }
-    const bytes =
-      data instanceof Blob
-        ? new Uint8Array(await data.arrayBuffer())
-        : data instanceof Uint8Array
-          ? data
-          : new Uint8Array(data);
-    const response = await transport.request("PUT", `/w/${workspace}/content`, {
-      data: bytes,
-      session: session.id,
+  async upload(data: FileBytes): Promise<string> {
+    const endpoint = await this.workspace.endpoint();
+    const contentType =
+      data instanceof Blob && data.type !== "" ? data.type : "application/octet-stream";
+    const answer = await endpoint.answer("POST", routes.uploads(endpoint.id), {
+      data: await bytesOfFile(data),
+      headers: { "content-type": contentType },
     });
-    let body: Record<string, unknown> = {};
-    try {
-      const parsed = await response.clone().json();
-      if (parsed && typeof parsed === "object") {
-        body = parsed as Record<string, unknown>;
-      }
-    } catch {
-      body = {};
+    if (typeof answer.content !== "string" || answer.content === "") {
+      throw new ProtocolError("the host took the upload without naming the content");
     }
-    if (response.status >= 400 || typeof body.content !== "string") {
-      const error = body.error;
-      const typed = response.status === 401 ? keyRefusal(error, response.status) : null;
-      if (typed !== null) {
-        throw typed;
-      }
-      if (error && typeof error === "object") {
-        const detail = error as Record<string, unknown>;
-        throw new Refused(
-          String(detail.code ?? "upload_failed"),
-          String(detail.message ?? ""),
-          Array.isArray(detail.next_steps) ? detail.next_steps.map(String) : [],
-        );
-      }
-      throw new ProtocolError(
-        `the door answered the upload with ${response.status}`,
-        response.status,
-      );
-    }
-    void name;
-    return body.content;
+    return answer.content;
   }
 
   /** The bytes of `content`, a `tilo.content:<hash>` in this workspace. */
   async download(content: string): Promise<Uint8Array> {
-    const pieces: Uint8Array[] = [];
-    let received = 0;
-    for (;;) {
-      const answer = await this.workspace.call("tilo_get", { content, offset: received });
-      const { bytes, size } = answer;
-      if (typeof bytes !== "string" || typeof size !== "number") {
-        throw new ProtocolError(`tilo_get answered no bytes for ${content}`);
-      }
-      const piece = Uint8Array.from(atob(bytes), (char) => char.charCodeAt(0));
-      pieces.push(piece);
-      received += piece.length;
-      if (received >= size) {
-        break;
-      }
-      if (piece.length === 0) {
-        throw new ProtocolError(`tilo_get stopped at ${received} of ${size} bytes of ${content}`);
-      }
+    const endpoint = await this.workspace.endpoint();
+    const route = routes.content(endpoint.id, content);
+    const reply = await endpoint.request("GET", route, { stream: true, idempotent: false });
+    if (reply.status >= 400) {
+      throw refusalOf(reply.status, reply.body);
     }
-    const whole = new Uint8Array(received);
-    let at = 0;
-    for (const piece of pieces) {
-      whole.set(piece, at);
-      at += piece.length;
-    }
-    return whole;
+    return reply.chunks === null ? new Uint8Array() : collect(reply.chunks);
   }
+}
+
+async function bytesOfFile(data: FileBytes): Promise<Uint8Array> {
+  if (data instanceof Uint8Array) {
+    return data;
+  }
+  if (data instanceof ArrayBuffer) {
+    return new Uint8Array(data);
+  }
+  return new Uint8Array(await data.arrayBuffer());
 }
 
 /** The keys that reach this one workspace. */
@@ -130,8 +91,7 @@ export class WorkspaceKeys {
 
   /** A key for an agent to act in this workspace, narrower than your own. */
   async mint(name: string | null = null, expiresIn: number | null = null): Promise<MintedKey> {
-    const workspace = await this.workspace.id();
-    return this.workspace.client.mintKey(workspace, name, expiresIn);
+    return this.workspace.client.mintKey(await this.workspace.id(), name, expiresIn);
   }
 }
 
@@ -142,7 +102,6 @@ export class WorkspaceKeys {
  * administer, and invites as an editor at most.
  */
 export class Members {
-  static readonly PATH = "workspace/members";
   readonly workspace: Workspace;
 
   constructor(workspace: Workspace) {
@@ -153,24 +112,30 @@ export class Members {
   async invite(
     options: { role?: "viewer" | "commenter" | "editor"; email?: string } = {},
   ): Promise<Invitation> {
-    const args: Record<string, unknown> = { role: options.role ?? "viewer" };
-    if (options.email !== undefined) args.email = options.email;
-    const result = await this.workspace.do(`${Members.PATH}#invite`, args);
-    if (result === null || typeof result !== "object" || Array.isArray(result)) {
-      throw new ProtocolError("the door invited without answering a link");
+    const endpoint = await this.workspace.endpoint();
+    const json: Record<string, unknown> = { role: options.role ?? "viewer" };
+    if (options.email !== undefined) {
+      json.email = options.email;
     }
-    return invitationOf(result as Record<string, unknown>);
+    return invitationOf(
+      await endpoint.answer("POST", routes.invitations(endpoint.id), { json }),
+    );
   }
 
   /** The members of the workspace, each with their role. */
   async list(): Promise<Member[]> {
-    const result = (await this.workspace.do(`${Members.PATH}#list`)) as
-      | { members?: unknown }
-      | null;
-    const rows = Array.isArray(result?.members) ? result.members : [];
-    return rows
-      .filter((row): row is Record<string, unknown> => row !== null && typeof row === "object")
-      .map(memberOf);
+    const listed = await this.#listed();
+    return listed.members
+      .filter((row) => row !== null && typeof row === "object")
+      .map((row) => memberOf(row as Record<string, unknown>));
+  }
+
+  async #listed(): Promise<{ members: unknown[] }> {
+    const endpoint = await this.workspace.endpoint();
+    const answer = await endpoint.answer("GET", routes.members(endpoint.id), {
+      idempotent: false,
+    });
+    return { members: Array.isArray(answer.members) ? answer.members : [] };
   }
 }
 
@@ -203,9 +168,10 @@ export class Workspace {
   }
 
   toString(): string {
-    return `Workspace(${this.#info?.name ?? this.ref})`;
+    return `Workspace(${this.#info?.name || this.ref})`;
   }
 
+  /** The workspace as the account lists it: its id, name, host and your role. */
   async info(): Promise<WorkspaceInfo> {
     if (this.#info === null) {
       this.#info = await this.client.workspaceInfo(this.ref);
@@ -213,23 +179,14 @@ export class Workspace {
     return this.#info;
   }
 
+  /** Its id. */
   async id(): Promise<string> {
     return (await this.info()).id;
   }
 
-  get endpoint(): Endpoint {
-    if (this.#info === null) {
-      throw new ProtocolError(
-        `the workspace ${this.ref} is not resolved yet: use an awaited call first`,
-      );
-    }
-    return new Endpoint(this.client.transport, this.#info.id);
-  }
-
-  /** One typed call in this workspace, its session opened on first use. */
-  async call(tool: string, args: Record<string, unknown>): Promise<Answer> {
-    await this.info();
-    return this.endpoint.call(tool, args);
+  /** @internal This workspace's calls. */
+  async endpoint(): Promise<Endpoint> {
+    return this.client.at(await this.id());
   }
 
   /** The apps, an app's resources, or one resource's children and actions. */
@@ -237,23 +194,28 @@ export class Workspace {
     path: string | null = null,
     options: { kind?: string | null; limit?: number | null; cursor?: string | null } = {},
   ): Promise<Listing> {
-    const args: Record<string, unknown> = {};
-    if (path !== null) {
-      args.path = path;
-    }
-    if (options.kind != null) {
-      args.kind = options.kind;
-    }
-    if (options.limit != null) {
-      args.limit = options.limit;
-    }
-    if (options.cursor != null) {
-      args.cursor = options.cursor;
-    }
-    const answer = await this.call("tilo_ls", args);
-    return new ListingValue(answer, (cursor) =>
-      this.ls(path, { ...options, cursor }),
-    );
+    const endpoint = await this.endpoint();
+    const page = async (cursor: string | null): Promise<Listing> => {
+      const fields = queryOf({
+        path,
+        kind: options.kind,
+        limit: options.limit,
+        cursor,
+      });
+      const answer = await endpoint.answer(
+        "GET",
+        `${routes.resources(endpoint.id)}${fields}`,
+        { idempotent: false },
+      );
+      return new ListingValue(answer, (next) => page(next));
+    };
+    return page(options.cursor ?? null);
+  }
+
+  /** One resource's answer, as the API gives it. */
+  async readRaw(path: string): Promise<Record<string, unknown>> {
+    const endpoint = await this.endpoint();
+    return endpoint.answer("GET", routes.resource(endpoint.id, path), { idempotent: false });
   }
 
   /** A resource read whole: its fields, its children and its actions. */
@@ -262,67 +224,55 @@ export class Workspace {
   }
 
   /**
-   * A record of `app` as plain data, `{revision, records: [{record, value}]}`: the app's
-   * record of the workspace for an empty `record`. `parts` reads the chain of parts the
-   * record is the base of (a chat's messages); `after` waits for a write past that
-   * revision. Chat's conversations are read so.
+   * A resource as a typed object: fields, actions and field edits. `surface`
+   * is the app's version the types were made from, which generated types
+   * pass, and which every call through them sends.
    */
-  async record(
-    app: string,
-    record = "",
-    options: { parts?: boolean; after?: string | null } = {},
-  ): Promise<Record<string, unknown>> {
-    const args: Record<string, unknown> = { path: `record:${app}:${record}`, parts: options.parts ?? false };
-    if (options.after != null) {
-      args.after = options.after;
-    }
-    return this.call("tilo_read", args);
-  }
-
-  /** A resource as a typed object: fields, actions and field edits. */
-  resource(path: string): Resource {
-    return resourceProxy(this, path);
+  resource(path: string, surface: Surface = null): Resource {
+    return resourceProxy(this, path, surface);
   }
 
   /** Search the workspace by words, best first. */
-  async find(query: string, app: string | null = null, limit: number | null = null): Promise<Hit[]> {
-    const args: Record<string, unknown> = { query };
-    if (app !== null) {
-      args.app = app;
-    }
-    if (limit !== null) {
-      args.limit = limit;
-    }
-    const answer = await this.call("tilo_find", args);
+  async find(words: string, app: string | null = null, limit: number | null = null): Promise<Hit[]> {
+    const endpoint = await this.endpoint();
+    const answer = await endpoint.answer(
+      "GET",
+      `${routes.search(endpoint.id)}${queryOf({ q: words, app, limit })}`,
+      { idempotent: false },
+    );
     return Array.isArray(answer.hits)
-      ? answer.hits.map((hit) => hitOf(hit as Record<string, unknown>))
+      ? answer.hits
+          .filter((hit): hit is Record<string, unknown> => hit !== null && typeof hit === "object")
+          .map(hitOf)
       : [];
+  }
+
+  /**
+   * One call in this workspace, `app/resource#action`: its result, the `Run`
+   * that follows it, or `AskPending` when it waits for the person. `surface`
+   * is sent as `Tilo-Surface` for a call made through generated types.
+   */
+  async call(
+    path: string,
+    args: Record<string, unknown> = {},
+    surface: string | null = null,
+  ): Promise<unknown> {
+    return (await this.endpoint()).action(path, args, surface);
   }
 
   /** Run one action: its result, or the `Run` that follows it. */
   async do(path: string, args: Record<string, unknown> = {}): Promise<unknown> {
-    await this.info();
-    return this.endpoint.outcome(path, args);
+    return this.call(path, args);
   }
 
-  /** How a pending invocation went, or stop it. */
-  async status(invocationId: string, cancel = false): Promise<Answer> {
-    await this.info();
-    return this.endpoint.status(invocationId, cancel);
-  }
-
-  /** Run a tilolang program as this run's task. */
+  /** Run a tilolang program as one step. */
   async program(source: string, confirm: boolean | null = null): Promise<ProgramAnswer> {
-    await this.info();
-    return this.endpoint.program(source, confirm);
+    return (await this.endpoint()).program(source, confirm);
   }
 
   /** Each change, run event and presence change, the cursor kept. */
-  async *watch(path: string | null = null, waitMs: number | null = null): AsyncGenerator<Event> {
-    await this.info();
-    for await (const event of this.endpoint.watch(path, waitMs)) {
-      yield event;
-    }
+  async *watch(path: string | null = null): AsyncGenerator<Event> {
+    yield* (await this.endpoint()).events(path);
   }
 
   /**
@@ -332,11 +282,12 @@ export class Workspace {
    * default) or `desktop`.
    */
   async link(path: string, options: { mode?: "app" | "desktop" | null } = {}): Promise<string> {
-    const args: Record<string, unknown> = { path };
-    if (options.mode != null) {
-      args.mode = options.mode;
-    }
-    const answer = await this.call("tilo_link", args);
+    const endpoint = await this.endpoint();
+    const answer = await endpoint.answer(
+      "GET",
+      `${routes.links(endpoint.id)}${queryOf({ path, mode: options.mode })}`,
+      { idempotent: false },
+    );
     if (typeof answer.link !== "string" || answer.link === "") {
       throw new ProtocolError(`the workspace answered no link for ${path}`);
     }
@@ -348,13 +299,7 @@ export class Workspace {
    * apps record one undo step and history shows the title.
    */
   async run<T>(title: string, body: (run: RunGroup) => Promise<T>): Promise<T> {
-    await this.info();
-    const group = new RunGroup(this.endpoint, title, runId(title));
+    const group = new RunGroup(await this.id(), title, runId(title));
     return withinRun(group, () => body(group));
-  }
-
-  /** A key for an agent to act in this workspace; `keys.mint` is the same. */
-  mintMcp(name: string | null = null, expiresIn: number | null = null): Promise<MintedKey> {
-    return this.keys.mint(name, expiresIn);
   }
 }

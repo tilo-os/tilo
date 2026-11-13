@@ -104,6 +104,9 @@ thread_local! {
     /// A pass that must run whatever its witness says: a check that a
     /// skipped pass changed nothing, which reruns every pass it skipped.
     static FORCED: Cell<bool> = const { Cell::new(false) };
+    /// A pass that runs as a proof nothing changed, so it leaves out the work
+    /// a frame takes in beside the tree's sync ([`proving`]).
+    static PROVING: Cell<bool> = const { Cell::new(false) };
 }
 
 /// Run `pass` as the pass of the component `owner` names, gathering what it
@@ -407,6 +410,29 @@ impl Drop for Forcing {
 #[inline(never)]
 pub(crate) fn forced() -> bool {
     FORCED.with(Cell::get)
+}
+
+/// Run `check` as a proof that a pass at rest changes nothing: it syncs
+/// without the work a frame takes in beside the tree's sync — what an app's
+/// own hook moves into the state its views are keyed by when finished work
+/// arrives. Taking that in again would change the tree the proof means to
+/// find unchanged, and it is the frame's take-in, not the tree's sync.
+pub fn proving<R>(check: impl FnOnce() -> R) -> R {
+    struct Proving(bool);
+    impl Drop for Proving {
+        fn drop(&mut self) {
+            PROVING.with(|proving| proving.set(self.0));
+        }
+    }
+    let _proving = Proving(PROVING.with(|proving| proving.replace(true)));
+    check()
+}
+
+/// Whether the pass running is a proof ([`proving`]).
+#[inline(never)]
+#[must_use]
+pub fn is_proving() -> bool {
+    PROVING.with(Cell::get)
 }
 
 /// What a pass read outside its component ([`reading`]).

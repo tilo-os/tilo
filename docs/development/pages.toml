@@ -1,4 +1,5 @@
 base = "/docs/development/"
+origin = "https://tilo.so"
 repository = "https://code.tilo.so/tilo/tilo"
 related_manifests = ["docs/developers/pages.toml"]
 

@@ -25,8 +25,9 @@ class Element {
 
 // Run the real page wiring and workspace actions. Replace only the booted
 // WASM/GPU peer, arrival animation, and root custody with fixtures.
-async function fixture({boot, remembered = [], own = false, search = '', session = {}, member = null} = {}) {
-  const values = new Map();
+async function fixture({boot, remembered = [], own = false, search = '', session = {}, local = {}, member = null, entry = null} = {}) {
+  const values = new Map(Object.entries(local));
+  let assigned = null;
   const stored = new Map(Object.entries(session));
   const listeners = [];
   globalThis.localStorage = {getItem: key => values.get(key) ?? null, setItem: (key, value) => values.set(key, value), removeItem: key => values.delete(key)};
@@ -36,8 +37,9 @@ async function fixture({boot, remembered = [], own = false, search = '', session
     const index = listeners.findIndex(held => held.type === type && held.listener === listener);
     if (index >= 0) listeners.splice(index, 1);
   };
-  globalThis.location = {href: 'https://web.example/#/room', search, pathname: '/', reload: () => calls.push('reload'), assign: () => calls.push('assign')};
-  globalThis.history = {pushState: () => calls.push('history')};
+  globalThis.location = {href: 'https://web.example/#/room', search, pathname: '/', reload: () => calls.push('reload'),
+    assign: url => { calls.push('assign'); assigned = url; }};
+  globalThis.history = {pushState: (_state, _title, url) => { calls.push('history'); assigned = url ?? assigned; }};
   globalThis.document = {body: new Element('body'), documentElement: {dataset: {}, toggleAttribute() {}}, createElement: tag => new Element(tag),
     getElementById: id => id === 'status' ? status : id === 'surface' ? new Element('canvas') : null};
   const status = {textContent: 'Loading…'};
@@ -52,7 +54,7 @@ async function fixture({boot, remembered = [], own = false, search = '', session
     membership: {list: async () => ({name: 'Current', members: []}), mayInvite: async () => false, waitList: async () => { throw new Error('only someone the room lets invite lists the wait list'); }},
     workspaces: {create: async name => ({room: 'created', name}), enter: async () => calls.push('enter')},
     dispose: async () => calls.push('dispose')};
-  const page = {peer: own ? null : {...peer, ...member}, entry: {base: 'https://web.example/'},
+  const page = {peer: own ? null : {...peer, ...member}, entry: entry ?? {base: 'https://web.example/'},
     mount: {setHostActions: actions => shown.push(actions), setOwnPerson: person => calls.push(['own', person]), flush: async () => calls.push('flush'), cleanup: async () => calls.push('cleanup')},
     router: {route: {target: {scope: own ? {kind: 'own'} : {kind: 'room', host: ORIGIN, room: 'current'}}}, stop: () => calls.push('stop')},
     link: {format: route => `https://web.example/#/${route.target.scope.room}`}};
@@ -113,7 +115,7 @@ async function fixture({boot, remembered = [], own = false, search = '', session
   // A page that cannot get in throws its cause on, to the console.
   const failure = await startEntryPage({mode: 'desktop'}).then(() => null, error => error);
   await tick();
-  return {calls, shown, diagnostics, page, prepared, mounted: globalThis.__entryPageFixture.mounted, listeners, session: stored, failure};
+  return {calls, shown, diagnostics, page, prepared, mounted: globalThis.__entryPageFixture.mounted, listeners, session: stored, failure, at: () => assigned};
 }
 
 test('the GPU device opens as the page starts, while the host is asked, once', async () => {
@@ -226,8 +228,10 @@ test('a wait-list invitation is the short link its site keeps, not the invitatio
   assert.equal(row.children[1].textContent, 'Invite');
   row.children[1].listeners.get('click')();
   await tick();
-  assert.deepEqual(calls.filter(call => Array.isArray(call) && call[0] === 'sealed'),
-    [['sealed', 'https://web.example/', ORIGIN, 'SIGNED-invitation']],
+  // The link kept ready for the one-press copy is sealed the same way as the
+  // row's: both are the site's short link, naming the host they admit into.
+  assert.deepEqual(calls.filter(call => Array.isArray(call) && call[0] === 'sealed').at(-1),
+    ['sealed', 'https://web.example/', ORIGIN, 'SIGNED-invitation'],
     'the invitation is sealed onto the page’s own site, naming the host it admits into');
   const share = document.body.children.find(form => form.dataset.card === 'share');
   assert.ok(share, 'a door that sends no mail shares the link instead');
@@ -467,4 +471,30 @@ test('the bar follows the session after the mount, not the mount alone', async (
   session = sessionOf();
   statuses[0]();
   assert.notEqual(root.connection, 'offline', 'and it clears once the transport is back');
+});
+
+test('a person let in by a link into the site’s own home is handed to the bare site, where the first screen is', async () => {
+  // A link that carries a secret never shows the first screen, so a person who
+  // has not been set up here and was let in by one would stay on the shared
+  // desktop: the site's home, which is where people meet, not where someone
+  // starts. The bare site offers the first screen, and its skip or their agent
+  // opens a workspace of their own.
+  const home = {name: 'Lounge', host: {origin: ORIGIN}, admission: `${ORIGIN}/peer/v1/directory/current/`};
+  const entry = {base: 'https://web.example/', home};
+  const {calls, failure, at} = await fixture({entry});
+  assert.equal(failure, null);
+  // The site and the workspace share an address but for the fragment, so the
+  // page takes itself there and loads again: the bare entry, not the link.
+  assert.deepEqual(calls.filter(call => call === 'reload' || call === 'assign'), ['reload'],
+    'the page loaded the site itself again, not the workspace the link named');
+  assert.equal(at(), 'https://web.example/');
+});
+
+test('a person already set up keeps the workspace a link into the site’s own home opened', async () => {
+  const home = {name: 'Lounge', host: {origin: ORIGIN}, admission: `${ORIGIN}/peer/v1/directory/current/`};
+  const {failure, at} = await fixture({entry: {base: 'https://web.example/', home},
+    local: {'tilo-setup': JSON.stringify({step: 'done'})}});
+  assert.equal(failure, null);
+  assert.notEqual(at(), 'https://web.example/',
+    'a person who has been set up is not sent to the first screen again');
 });

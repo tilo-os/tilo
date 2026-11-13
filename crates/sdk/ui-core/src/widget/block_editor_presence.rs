@@ -28,28 +28,21 @@ impl BlockEditor {
         let brect = line.get_rect();
         // A caret's name chip ends before the text's own right edge.
         let text_right = brect.x1 - line.text_inset(ctx.theme);
-        let _tr_rect = {
-            let p0 = transformed(ctx.transform, Point::new(brect.x0, brect.y0));
-            let p1 = transformed(ctx.transform, Point::new(brect.x1, brect.y1));
-            Rect::new(p0.x, p0.y, p1.x, p1.y)
-        };
         // Drawn first, under caret/selection: the runs each foreign
-        // author wrote, marker-style in their color.
+        // author wrote, marker-style in their color, band by band as the
+        // run wraps.
         for (bs, be, author) in line.author_runs() {
             if self.local_author.as_deref() == Some(author.as_str()) {
                 continue;
             }
-            let x0 = line.pixel_x_for_byte(ctx.theme, *bs);
-            let x1 = line.pixel_x_for_byte(ctx.theme, *be);
-            let p0 = transformed(ctx.transform, Point::new(x0, brect.y0));
-            let p1 = transformed(ctx.transform, Point::new(x1, brect.y1));
+            let bands: Vec<Rect> = line
+                .mark_rects(ctx.theme, *bs..*be)
+                .into_iter()
+                .map(|band| ctx.transform.transform_rect_bbox(band))
+                .collect();
             let user = crate::permissions::UserId(author.clone());
-            ctx.presence.draw_peer_authorship(
-                ctx.scene,
-                ctx.theme,
-                &user,
-                &[Rect::new(p0.x, p0.y, p1.x, p1.y)],
-            );
+            ctx.presence
+                .draw_peer_authorship(ctx.scene, ctx.theme, &user, &bands);
         }
         // A peer's recently-inserted run glows and decays over
         // TYPING_FADE. Drawn over authorship, under caret/selection.

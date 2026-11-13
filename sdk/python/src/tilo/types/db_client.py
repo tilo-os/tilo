@@ -23,6 +23,7 @@ __all__ = [
 
 class Workspace(Resource):
     """Database — `db-client.workspace`."""
+    __surface__ = "so.tilo.db-client@2ed1a840d562110d"
     connections: Any
     saved_queries: Any
     sql: Any

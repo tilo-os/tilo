@@ -28,7 +28,7 @@ view overview(d: Desk) {
                     on press: session.join_workspace()
                 }
             }
-            ui.TextInput(bind: query, placeholder: "Search windows across your workspaces") {
+            ui.TextInput(bind: query, placeholder: "Search windows") {
                 on submit: session.search(query: query)
             }
             rooms_here(d)
@@ -165,7 +165,7 @@ view window_place(d: Desk, w: Win, weight: Float, peek: Bool) {
 /// person's other device is named with it until it can be pictured live.
 fn app_line(w: Win) -> Text {
     if w.device_name != "" {
-        return "{w.origin_app} · {w.device_name}"
+        return "{w.origin_app} on {w.device_name}"
     }
     return w.origin_app
 }
@@ -209,12 +209,7 @@ view window_menu(d: Desk, w: Win) {
 /// or moving it here. What apps hold is the platform search's, not the overview's.
 view found(d: Desk, elsewhere: List<Win>) {
     if elsewhere.is_empty() {
-        ui.EmptyState(
-            "Nothing matches",
-            message: "Finds windows in every workspace. What is inside an app is in Search",
-            icon: .search,
-            inline: true,
-        )
+        ui.EmptyState("Nothing matches", icon: .search, inline: true)
     } else {
         ui.Section("Windows") {
             for w in elsewhere.take(16) {

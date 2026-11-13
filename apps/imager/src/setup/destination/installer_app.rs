@@ -2146,15 +2146,16 @@ impl InstallerApp {
 
     /// A navigation row for `step`: `Back` at the leading edge, shown only
     /// when the step has a predecessor so the first step has no dangling
-    /// Back, and the forward action (`forward_key`, the catalogue message
-    /// naming it, primary, running `forward`, optionally disabled) at the
-    /// trailing one. A real `ui::Row` so its buttons stay in the focusable
-    /// order.
+    /// Back, and the forward action at the trailing one when `forward` names
+    /// one (`forward_key` is the catalogue message naming it, primary,
+    /// running its control, optionally disabled). A step whose forward action
+    /// is one of its own controls above the row passes `None`: every step
+    /// still gets its Back from this one place. A real `ui::Row`, so its
+    /// buttons stay in the focusable order.
     fn nav_row(
         &self,
         step: Step,
-        forward: Control,
-        forward_key: &str,
+        forward: Option<(Control, &str)>,
         forward_disabled: bool,
     ) -> Box<dyn Widget> {
         let mut row = Row::new().no_wrap();
@@ -2166,13 +2167,16 @@ impl InstallerApp {
                     .large(),
             ));
         }
-        row = row.push(Box::new(Spacer::new())).push(Box::new(
-            ActionButton::new(forward_key, forward)
-                .with_test_id("installer.next")
-                .primary()
-                .large()
-                .disabled(forward_disabled),
-        ));
+        row = row.push(Box::new(Spacer::new()));
+        if let Some((forward, forward_key)) = forward {
+            row = row.push(Box::new(
+                ActionButton::new(forward_key, forward)
+                    .with_test_id("installer.next")
+                    .primary()
+                    .large()
+                    .disabled(forward_disabled),
+            ));
+        }
         Box::new(row)
     }
 
@@ -2213,7 +2217,11 @@ impl InstallerApp {
             Step::Network => self.compose_network_step(theme, &mut children, &mut actions),
             Step::Accounts => {
                 children.push(self.accounts_form.view());
-                actions.push(self.nav_row(Step::Accounts, self.next_control(), NEXT_KEY, false));
+                actions.push(self.nav_row(
+                    Step::Accounts,
+                    Some((self.next_control(), NEXT_KEY)),
+                    false,
+                ));
             }
             Step::Disk => self.compose_disk_step(theme, &mut children, &mut actions),
             Step::Account => self.compose_account_step(theme, &mut children, &mut actions),
@@ -2388,7 +2396,11 @@ impl InstallerApp {
         } else {
             "imager-installer-continue-offline"
         };
-        actions.push(self.nav_row(Step::Network, self.next_control(), continue_key, false));
+        actions.push(self.nav_row(
+            Step::Network,
+            Some((self.next_control(), continue_key)),
+            false,
+        ));
     }
 
     /// Add the Wi-Fi error or the currently visible network choices.
@@ -2533,8 +2545,7 @@ impl InstallerApp {
         }
         actions.push(self.nav_row(
             Step::Disk,
-            self.next_control(),
-            NEXT_KEY,
+            Some((self.next_control(), NEXT_KEY)),
             self.selected_disk.is_none() || unavailable,
         ));
     }
@@ -2858,7 +2869,7 @@ impl InstallerApp {
                 .with_external_buffer(Arc::clone(&self.password_confirmation))
                 .with_secret(true),
         ));
-        actions.push(self.nav_row(Step::Account, self.next_control(), NEXT_KEY, false));
+        actions.push(self.nav_row(Step::Account, Some((self.next_control(), NEXT_KEY)), false));
     }
 
     fn compose_keyboard_step(
@@ -2892,7 +2903,7 @@ impl InstallerApp {
                 .with_placeholder(&crate::setup::strings::t("installer-keyboard-layout")),
         ));
         children.push(Box::new(KeyboardView::new(&self.keymap)));
-        actions.push(self.nav_row(Step::Keyboard, self.next_control(), NEXT_KEY, false));
+        actions.push(self.nav_row(Step::Keyboard, Some((self.next_control(), NEXT_KEY)), false));
         children.push(Box::new(
             Text::new(&crate::setup::strings::t("installer-recovery-tools"))
                 .with_role(TextRole::Caption)
@@ -3009,8 +3020,7 @@ impl InstallerApp {
 
         actions.push(self.nav_row(
             Step::Options,
-            self.next_control(),
-            NEXT_KEY,
+            Some((self.next_control(), NEXT_KEY)),
             !self.filesystem_policy_ready(),
         ));
     }
@@ -3071,7 +3081,7 @@ impl InstallerApp {
                 .with_test_id("codecs_undo"),
             )));
             children.push(Box::new(Spacer::fixed(theme.tokens.spacing.s6)));
-            children.push(self.nav_row(Step::Media, self.next_control(), NEXT_KEY, false));
+            children.push(self.nav_row(Step::Media, Some((self.next_control(), NEXT_KEY)), false));
         } else {
             children.push(centered_media_control(Box::new(
                 ActionButton::new(
@@ -3088,16 +3098,9 @@ impl InstallerApp {
                     .with_test_id("codecs_skip"),
             )));
             children.push(Box::new(Spacer::fixed(theme.tokens.spacing.s6)));
-            children.push(Box::new(
-                Row::new()
-                    .with_padding(0.0, 0.0)
-                    .push(Box::new(
-                        ActionButton::new("installer-preview-back", self.back_control())
-                            .with_icon(ui::icons::Icon::ChevronLeft)
-                            .with_test_id("installer.back"),
-                    ))
-                    .push(Box::new(Spacer::new())),
-            ));
+            // Install and Skip above the row are this step's forward actions,
+            // so the row is the wizard's one navigation row, Back and all.
+            children.push(self.nav_row(Step::Media, None, false));
         }
     }
 
@@ -3445,8 +3448,7 @@ impl InstallerApp {
             || self.hardware_blocks_install();
         actions.push(self.nav_row(
             Step::Review,
-            self.control(self.begin_effect()),
-            "installer-action-begin",
+            Some((self.control(self.begin_effect()), "installer-action-begin")),
             begin_disabled,
         ));
     }

@@ -99,6 +99,7 @@ async fn the_relays_person_creates_and_lists_rooms_as_actions() {
         offered(&host, &laptop, &caller(&laptop)).await,
         [
             CREATE_ROOM,
+            tilo_relay_session::workspaces::CREATE_OWN_ROOM,
             DELETE_ROOM,
             LIST_ROOMS,
             tilo_relay_session::workspaces::LIST_PERSONAL,

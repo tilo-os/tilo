@@ -76,6 +76,7 @@ class UserAccount(TypedDict):
 
 class Sources(Resource):
     """Image sources — `imager.sources`."""
+    __surface__ = "so.tilo.imager@1f8dfe0ce0ddb4f8"
     @property
     def source(self) -> Source | None:
         """Read only."""

@@ -109,11 +109,17 @@ fn a_deck_exported_as_pptx_content_imports_into_a_new_deck() {
         .unwrap()
         .unwrap();
     let address = output.resources.first().cloned().unwrap();
-    let hash = address.strip_prefix("tilo.content:").unwrap();
-    let bytes = source.content().read(hash).unwrap();
+    let reference = address.strip_prefix("tilo.content:").unwrap();
+    assert!(tilo_content::is_sealed(reference), "{address}");
+    // What another device receives of the deck is the ciphertext, under its
+    // address; the address the export answered opens it there.
+    let carried = source
+        .content()
+        .read(&tilo_content::content_address(reference).unwrap())
+        .expect("the exported deck, as it is carried");
 
     let mut target = app();
-    target.content().put(&bytes).unwrap();
+    target.content().put_public(&carried).unwrap();
     let outline = call(
         &mut target,
         "import-pptx-content",
@@ -128,4 +134,36 @@ fn a_deck_exported_as_pptx_content_imports_into_a_new_deck() {
         .unwrap_err()
         .to_string();
     assert!(refused.contains("someone wrote"), "{refused}");
+}
+
+/// The reference alone opens the deck too, as a plan that carried the content
+/// gives it: the address's key is what opens the sealed bytes, so the import
+/// reads the deck whether or not the `tilo.content:` prefix came with it.
+#[test]
+fn a_deck_imports_from_the_sealed_reference_alone() {
+    let mut source = app();
+    call(&mut source, "add-slide", json!({"title": "Roadmap"}));
+    let output = source
+        .call_on_output("slides.deck", "export-pptx-content", json!({}))
+        .unwrap()
+        .unwrap();
+    let address = output.resources.first().cloned().unwrap();
+    let reference = address.strip_prefix("tilo.content:").unwrap().to_owned();
+    assert!(tilo_content::is_sealed(&reference), "{reference}");
+    // The ciphertext, as another device receives it.
+    let carried = source
+        .content()
+        .read(&tilo_content::content_address(&reference).unwrap())
+        .expect("the exported deck, as it is carried");
+
+    let mut target = app();
+    target.content().put_public(&carried).unwrap();
+    let outline = call(
+        &mut target,
+        "import-pptx-content",
+        json!({"content": reference}),
+    );
+    assert!(outline.as_str().unwrap().contains("Roadmap"), "{outline}");
+    target.settle();
+    assert_eq!(titles(&target), ["Roadmap"]);
 }

@@ -41,7 +41,7 @@ use crate::replies::Replies;
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
 use provider_settings_ui::widgets::{
-    SettingsSection, note, rows, section, section_with, value_row,
+    Item, SettingsSection, note, rows, section, section_with, value_row,
 };
 
 crate::effects::effect_family!(StorageEffect => answer);
@@ -1147,14 +1147,14 @@ impl StorageModel {
             .take(8)
             .map(|e| {
                 value_row(
-                    &e.owner,
                     &t_args(
                         "settings-storage-item-meta",
                         &[
-                            ("size", ui::format::size(e.bytes).into()),
+                            ("owner", e.owner.as_str().into()),
                             ("category", category_label(e.category).into()),
                         ],
                     ),
+                    &ui::format::size(e.bytes),
                 )
             })
             .collect();
@@ -1195,7 +1195,7 @@ impl StorageModel {
                     Button::new("storage.clean", &remove),
                     &SettingsEffect::from(StorageEffect::CleanUpCaches),
                 ));
-                let mut preview_rows = vec![note(&t("settings-storage-cleanup-caption"))];
+                let mut preview_rows: Vec<Item> = Vec::new();
                 let cache_item = t("settings-storage-cache-item");
                 preview_rows.extend(preview.items.iter().take(8).map(|i| {
                     value_row(

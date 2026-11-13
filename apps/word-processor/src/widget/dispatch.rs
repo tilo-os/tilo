@@ -1371,15 +1371,11 @@ impl Editor {
         content: &str,
         name: Option<&str>,
     ) -> ui::framework::EffectAnswer {
-        let hash = ui::tilo_actions::content_hash(content.trim())
-            // A plan that carried the content gives its bare reference.
-            .unwrap_or_else(|| content.trim())
+        let hash = ui::tilo_actions::named_reference(content)
+            .ok_or_else(|| {
+                format!("`{content}` names no content: give `tilo.content:<reference>`")
+            })?
             .to_owned();
-        if !tilo_content::valid_reference(&hash) {
-            return Err(format!(
-                "`{content}` names no content: give `tilo.content:<reference>`"
-            ));
-        }
         let doc = cx.document().ok_or("the document is not at hand")?.clone();
         let containers = crate::model::open(&doc)?;
         let written =

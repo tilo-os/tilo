@@ -332,7 +332,11 @@ impl FrameHarness {
     }
 
     /// The row as HTML: a toolbar across the top of the window, each slot a
-    /// real button named as a reader hears it, over the row's painted band.
+    /// real button showing its face, named as a reader hears it, and the
+    /// location as its words. A notice stands over the
+    /// app's top as a status that is read out, and does not move what the
+    /// app shows. While a menu is open, the location is edited or the search
+    /// is open, the row shows its paint, which those draw over the app.
     pub(super) fn slot_row_composition(&self) -> Option<crate::composition::Composed> {
         use crate::composition::{Composed, Own};
         use std::hash::{Hash, Hasher};
@@ -341,59 +345,120 @@ impl FrameHarness {
             return None;
         }
         let window = Rect::new(0.0, 0.0, f64::from(self.viewport.0), hosted.inset);
-        let slots = hosted.row.accessibility();
-        let mut hash = std::collections::hash_map::DefaultHasher::new();
-        serde_json::to_string(&slots)
-            .unwrap_or_default()
-            .hash(&mut hash);
-        window.width().to_bits().hash(&mut hash);
-        format!("{:?}", self.theme.tokens.colors.text_primary).hash(&mut hash);
-        let children = slots
-            .iter()
-            .filter_map(|slot| {
-                let rect = slot.bounds?.to_rect();
-                (rect.width() > 0.0 && rect.height() > 0.0).then(|| Composed {
-                    tag: Some("button"),
-                    fallback: false,
-                    path: format!(
-                        "{WINDOW_SLOTS}#{}",
-                        slot.action_target.as_deref().unwrap_or_default()
-                    ),
-                    widget: "WindowSlot".into(),
-                    rect: [rect.x0, rect.y0, rect.width(), rect.height()],
-                    clip: None,
-                    layout: None,
-                    scroll: None,
-                    semantics: Some(slot.clone()),
-                    own: None,
-                    focusable: true,
-                    flows: false,
-                    surfaces: Vec::new(),
-                    children: Vec::new(),
-                })
-            })
-            .collect();
-        Some(Composed {
-            tag: Some("header"),
-            fallback: false,
-            path: WINDOW_SLOTS.into(),
-            widget: "WindowSlots".into(),
-            rect: [window.x0, window.y0, window.width(), window.height()],
-            clip: None,
-            layout: None,
-            scroll: None,
-            semantics: Some(
-                crate::a11y::AccessNode::new(crate::a11y::Role::Toolbar)
-                    .with_name(self.window_tab().title),
-            ),
-            own: Some(Own::Painted {
+        let nodes = hosted.row.accessibility();
+        let named = |key: &str| {
+            nodes
+                .iter()
+                .find(|node| node.action_target.as_deref() == Some(key))
+                .cloned()
+        };
+        let mut row = Composed::new(
+            WINDOW_SLOTS.into(),
+            "WindowSlots",
+            [window.x0, window.y0, window.width(), window.height()],
+        );
+        row.tag = Some("header");
+        row.semantics = Some(
+            crate::a11y::AccessNode::new(crate::a11y::Role::Toolbar)
+                .with_name(self.window_tab().title),
+        );
+        if !hosted.row.composes() {
+            // Its paint, with each slot a real button over it.
+            let mut hash = std::collections::hash_map::DefaultHasher::new();
+            serde_json::to_string(&nodes)
+                .unwrap_or_default()
+                .hash(&mut hash);
+            window.width().to_bits().hash(&mut hash);
+            format!("{:?}", self.theme.tokens.colors.text_primary).hash(&mut hash);
+            row.own = Some(Own::Painted {
                 version: hash.finish(),
-            }),
-            focusable: false,
-            flows: false,
-            surfaces: Vec::new(),
-            children,
-        })
+            });
+            row.children = nodes
+                .iter()
+                .filter_map(|slot| {
+                    let rect = slot.bounds?.to_rect();
+                    (rect.width() > 0.0 && rect.height() > 0.0).then(|| {
+                        let mut button = Composed::new(
+                            format!(
+                                "{WINDOW_SLOTS}#{}",
+                                slot.action_target.as_deref().unwrap_or_default()
+                            ),
+                            "WindowSlot",
+                            [rect.x0, rect.y0, rect.width(), rect.height()],
+                        );
+                        button.tag = Some("button");
+                        button.semantics = Some(slot.clone());
+                        button.focusable = true;
+                        button
+                    })
+                })
+                .collect();
+            return Some(row);
+        }
+        row.surfaces.push((
+            [window.x0, window.y0, window.width(), window.height()],
+            "ground",
+        ));
+        let strip = hosted.row.strip_card(&self.theme);
+        for (key, rect, own) in hosted.row.composed_parts(&self.theme) {
+            let notice = key == crate::widget::window_toolbar_row::STRIP_KEY;
+            let location = key == crate::widget::window_toolbar_row::LOCATION_KEY;
+            let mut part = Composed::new(
+                format!("{WINDOW_SLOTS}#{key}"),
+                "WindowSlot",
+                [rect.x0, rect.y0, rect.width(), rect.height()],
+            );
+            part.own = Some(own);
+            if notice {
+                part.widget = "WindowNotice".into();
+                part.semantics = nodes
+                    .iter()
+                    .find(|node| node.live.is_some() && node.role == crate::a11y::Role::StaticText)
+                    .cloned();
+            } else if location {
+                part.widget = "WindowLocation".into();
+                part.semantics =
+                    named(crate::widget::window_toolbar_row::LOCATION_TARGET).or_else(|| {
+                        nodes
+                            .iter()
+                            .find(|node| node.bounds.is_some_and(|b| b.to_rect() == rect))
+                            .cloned()
+                    });
+                if part
+                    .semantics
+                    .as_ref()
+                    .is_some_and(|node| node.action_target.is_some())
+                {
+                    part.tag = Some("button");
+                    part.focusable = true;
+                }
+            } else {
+                part.tag = Some("button");
+                part.focusable = true;
+                part.semantics = named(&key);
+            }
+            row.children.push(part);
+        }
+        // The notice: a card over the app at the window's
+        // foot, that comes and goes without moving the app.
+        if let Some(band) = strip {
+            let mut card = Composed::new(
+                format!("{WINDOW_SLOTS}#strip"),
+                "WindowNoticeStrip",
+                [band.x0, band.y0, band.width(), band.height()],
+            );
+            card.surfaces
+                .push(([band.x0, band.y0, band.width(), band.height()], "raised"));
+            if let Some(index) = row
+                .children
+                .iter()
+                .position(|child| child.widget == "WindowNotice")
+            {
+                card.children.push(row.children.remove(index));
+            }
+            row.children.push(card);
+        }
+        Some(row)
     }
 
     /// The row's band alone, at `scale`, for its picture.

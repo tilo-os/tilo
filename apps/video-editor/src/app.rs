@@ -183,12 +183,10 @@ const KEY_BOX: f64 = 20.0;
 const BIN_BREAKPOINT: f64 = 900.0;
 
 /// The preview's and the inspector's empty states, in one place each so the
-/// painted words and the spoken ones cannot drift apart. They did: the
-/// inspector said "No clip selected / Click a clip in the timeline" on screen
-/// and "Nothing selected. Select a clip on the timeline to edit it." to a
-/// reader, which is two descriptions of one state.
-const PREVIEW_EMPTY_TITLE: &str = "No clip at playhead";
-const PREVIEW_EMPTY_HINT: &str = "Move the playhead over a clip to see it";
+/// painted words and the spoken ones cannot drift apart. They are catalogue
+/// messages, so a German window says them in German.
+const PREVIEW_EMPTY_TITLE: &str = "video-editor-preview-empty";
+const PREVIEW_UNAVAILABLE: &str = "video-editor-preview-unavailable";
 /// The catalogue message naming the marker list's add button, shared by the
 /// paint and the accessibility tree so a reader is offered the control the
 /// screen actually shows.
@@ -198,18 +196,23 @@ const ADD_MARKER_LABEL: &str = "video-editor-marker-add";
 const ADD_MARKER_KEY: &str = "add marker";
 
 /// The three controls a marker row carries, in painted order (see
-/// [`marker_row_parts`]). They are painted only under the pointer but are
-/// hit-tested whether painted or not, so for a reader -- which has no pointer
-/// -- they are the only route to a marker's note, its name, or its removal.
-const MARKER_VERBS: [&str; 3] = ["Edit note on", "Rename", "Delete"];
+/// [`marker_row_parts`]): the catalogue message a reader hears them by, and
+/// the name the router addresses them by. They are painted only under the
+/// pointer but are hit-tested whether painted or not, so for a reader --
+/// which has no pointer -- they are the only route to a marker's note, its
+/// name, or its removal.
+const MARKER_VERBS: [(&str, &str); 3] = [
+    ("video-editor-a11y-marker-edit-note", "marker-edit-note"),
+    ("video-editor-a11y-marker-rename", "marker-rename"),
+    ("video-editor-a11y-marker-delete", "marker-delete"),
+];
 
 /// The key the master mix node is addressed by, before hashing. A constant
 /// rather than a literal at each site so the node and the router cannot drift
 /// apart.
 const MIX_METER_KEY: &str = "mix meter";
 
-const INSPECTOR_EMPTY_TITLE: &str = "No clip selected";
-const INSPECTOR_EMPTY_HINT: &str = "Click a clip in the timeline to edit it";
+const INSPECTOR_EMPTY_TITLE: &str = "video-editor-inspector-empty";
 
 /// Below this window width the inspector collapses to an overlay flap from
 /// the right, exactly as the bin does from the left.

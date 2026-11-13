@@ -1345,3 +1345,97 @@ fn a_file_is_a_field_a_parameter_and_the_persons_choice() {
     // The parameter is the file itself: no form asks for it, the person's chooser fills it.
     assert!(!Ty::File.asked_by_form());
 }
+
+/// The messages a declaration wrote, as `declaration.key text`: what a catalogue translates.
+fn messages(m: &Module) -> Vec<String> {
+    m.words
+        .iter()
+        .map(|w| format!("{}.{} {}", w.view, w.key, w.text))
+        .collect()
+}
+
+/// Whether `view` (by its id) says `words`.
+fn says(m: &Module, view: &str, words: &str) -> bool {
+    messages(m)
+        .iter()
+        .any(|w| w.starts_with(&format!("{view}.")) && w.ends_with(words))
+}
+
+/// The types and the chip view the words of a list are shown with: a view whose one parameter is
+/// words it shows, as the toolkit's own are.
+const WORDY: &str = "type Task {\n    title: Text\n    place: Text\n}\ntype Tasks {\n    items: Collection<Task>\n}\n\
+view chip(label: Text) {\n    text(label)\n}\n";
+
+/// A literal a `let` keeps is a message of the view where a prop of words shows it, as one written
+/// into the prop is: where the words were written is nothing a person reading the window sees.
+#[test]
+fn the_words_a_let_keeps_are_the_views_messages() {
+    let (m, ids) = lower(&format!(
+        "{WORDY}view todo(ts: Tasks) {{\n    let empty = \"No tasks yet\"\n    let tail = \"{{ts.items.len()}}\"\n    stack {{\n        text(empty)\n        text(tail)\n    }}\n}}"
+    ));
+    let todo = ids.get("todo").expect("the view's id");
+    assert!(says(&m, todo, "No tasks yet"), "{:#?}", messages(&m));
+    // A literal of no words is text, kept in a `let` as it is written anywhere else.
+    assert!(
+        !says(&m, todo, "{ts.items.len()}"),
+        "a literal of no words is text: {:#?}",
+        messages(&m)
+    );
+}
+
+/// A literal a branch chose is the words the prop shows whatever branch the person's day takes:
+/// an `if`'s arms and the words a `??` falls back to are the same message as a literal written
+/// where the prop is, and each is registered once.
+#[test]
+fn the_words_a_branch_chose_are_the_views_messages() {
+    let (m, ids) = lower(&format!(
+        "{WORDY}view todo(ts: Tasks) {{\n    let heading = if ts.items.is_empty() {{ \"Nothing to do\" }} else {{ \"Your day\" }}\n    let name = ts.items.find(t -> t.place == \"inbox\")?.title ?? \"Inbox\"\n    stack {{\n        ui.Chip(heading, tone: .neutral)\n        text(name)\n        text(if ts.items.is_empty() {{ \"Nothing to do\" }} else {{ \"Your day\" }})\n    }}\n}}"
+    ));
+    let todo = ids.get("todo").expect("the view's id");
+    for want in ["Nothing to do", "Your day", "Inbox"] {
+        assert!(says(&m, todo, want), "{want} in {:#?}", messages(&m));
+    }
+    // One text is one message of the view, however many branches and sites write it.
+    let heading = messages(&m)
+        .into_iter()
+        .filter(|w| w.starts_with(&format!("{todo}.")) && w.ends_with("Nothing to do"))
+        .count();
+    assert_eq!(heading, 1, "{:#?}", messages(&m));
+}
+
+/// A component's `Text` parameter shows the words given to it, so the literal a caller keeps in a
+/// `let` and passes on is the caller's message too: a sentence is translated where it is written,
+/// not by the view that lays it out.
+#[test]
+fn the_words_a_component_parameter_shows_are_the_callers() {
+    let (m, ids) = lower(&format!(
+        "{WORDY}view todo(ts: Tasks) {{\n    let label = \"All tasks\"\n    stack {{\n        chip(label)\n        ui.Chip(\"Chip says\", tone: .neutral)\n    }}\n}}"
+    ));
+    let todo = ids.get("todo").expect("the view's id");
+    let chip = ids.get("chip").expect("the chip view's id");
+    assert!(says(&m, todo, "All tasks"), "{:#?}", messages(&m));
+    assert!(
+        !says(&m, chip, "All tasks"),
+        "the words are the caller's: {:#?}",
+        messages(&m)
+    );
+    assert!(says(&m, todo, "Chip says"), "{:#?}", messages(&m));
+}
+
+/// A literal that reaches no prop of words is data: a tag a piece of code compares, an address a
+/// link opens. A `let` keeps it as the text it is, and the catalogue never names it.
+#[test]
+fn a_literal_no_prop_of_words_shows_stays_data() {
+    let (m, _) = lower(&format!(
+        "{WORDY}view todo(ts: Tasks) {{\n    let place = \"inbox\"\n    let address = \"https://tilo.coffee\"\n    stack {{\n        ui.Link(address)\n        text(if ts.items.any(t -> t.place == place) {{ \"Here\" }} else {{ \"Nowhere\" }})\n    }}\n}}"
+    ));
+    let said = messages(&m);
+    assert!(
+        !said
+            .iter()
+            .any(|w| w.ends_with("inbox") || w.ends_with("tilo.coffee")),
+        "a tag and an address are data: {said:#?}"
+    );
+    // The words the view shows are still its messages.
+    assert!(said.iter().any(|w| w.ends_with("Nowhere")), "{said:#?}");
+}

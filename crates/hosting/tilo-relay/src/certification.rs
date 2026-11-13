@@ -423,7 +423,10 @@ impl CertificationProtocol {
     /// workspace it serves: whose devices it queues, and whose root may answer
     /// for them.
     async fn admits(&self, user: [u8; 32]) -> bool {
-        match &self.workspaces {
+        if user == self.identity.user_public_key {
+            return true;
+        }
+        let served = match &self.workspaces {
             Some(workspaces) => {
                 crate::workspace_access::admits_person(
                     workspaces,
@@ -432,7 +435,15 @@ impl CertificationProtocol {
                 )
                 .await
             }
-            None => user == self.identity.user_public_key,
+            None => false,
+        };
+        // A workspace this relay governs keeps its members itself, apart from
+        // the sessions it holds: a member of the Lounge is a member whether or
+        // not their device has a session open, and their own new device is
+        // theirs to approve there as the host's own person's is.
+        match self.records.get() {
+            Some(governed) => served || governed.admits_person(user).await,
+            None => served,
         }
     }
 
@@ -446,6 +457,13 @@ impl CertificationProtocol {
         let reply = if self.admits(approval.user_public_key).await {
             self.member_approve(approval, unix_now_ns())
         } else {
+            // Said here as well as to the page: a person who cannot approve
+            // their own device is stuck at the door, and what the page shows
+            // them names none of this.
+            tracing::warn!(
+                person = %hex::encode(approval.user_public_key),
+                "a device approval was refused: the person is in no workspace this host serves"
+            );
             ApproverReply::Refused {
                 reason: "only a member approves devices here".into(),
             }

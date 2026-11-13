@@ -18,7 +18,6 @@ pub(crate) fn view(cx: &ViewCx<Filter>, nav: &Nav) -> Element {
         let Some(range) = selection.clone() else {
             return Box::new(
                 EmptyState::new(tr("activity-select-prompt"))
-                    .with_message(tr("activity-select-hint"))
                     .with_icon(Icon::History)
                     .with_id("activity-detail-none"),
             );

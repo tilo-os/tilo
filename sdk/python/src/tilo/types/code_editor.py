@@ -77,6 +77,7 @@ class Terminal(TypedDict):
 
 class Project(Resource):
     """Code Editor — `code_editor.project`."""
+    __surface__ = "so.tilo.code-editor@356770e6900d66da"
     files: list[Entry]
     buffers: dict[str, Any]
     @property

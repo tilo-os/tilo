@@ -15,8 +15,7 @@ use vello::peniko::ImageData;
 use super::{
     ANALYSIS_QUEUE_LIMIT, AnalysisJob, AnalysisJobKind, AnalysisOutcome, AnalysisResult,
     ImageAnalysisComponent, LibraryAnalysisHit, LiveContent, PendingPeopleScan, PeopleScanProgress,
-    Photos, THUMBNAIL_QUEUE_LIMIT, THUMBNAIL_SIZE, ThumbnailResult, decode_key, thumbnail_key,
-    to_peniko,
+    Photos, THUMBNAIL_QUEUE_LIMIT, THUMBNAIL_SIZE, ThumbnailResult, thumbnail_key, to_peniko,
 };
 
 impl PeopleScanProgress {
@@ -107,7 +106,7 @@ fn analysis_worker(
             .send(AnalysisResult {
                 invocation: job.invocation,
                 photo_id: job.photo_id,
-                content: job.image.content.clone(),
+                content: job.image.hash(),
                 result: match job.kind {
                     AnalysisJobKind::Ocr { language } => AnalysisOutcome::Image {
                         component: ImageAnalysisComponent::Ocr,
@@ -139,27 +138,18 @@ pub(super) fn with_thumbnail_wake(
     service
 }
 
-/// The shared-pipeline request for one library photograph. Its content
-/// reference is the preview's content address and persists in the preview
-/// cache; a malformed address has no stable identity, so its preview is
-/// generated for this session only.
+/// The shared-pipeline request for one library photograph, keyed by the
+/// picture's content hash so its preview persists and is shared by every
+/// device and every reference the same bytes are kept under.
 pub(super) fn thumbnail_request(
     image: &OpenImage,
     content: &ContentStore,
 ) -> thumbnail::ThumbRequest {
-    let persistent = thumbnail::ThumbKey::of_address(&image.content, THUMBNAIL_SIZE);
-    let key = persistent.unwrap_or_else(|| {
-        thumbnail::ThumbKey::of_bytes(decode_key(image).as_bytes(), THUMBNAIL_SIZE)
-    });
+    let key = thumbnail::ThumbKey::of_hash(image.content.hash(), THUMBNAIL_SIZE);
     let (image, content) = (image.clone(), content.clone());
-    let request = thumbnail::ThumbRequest::load(key, thumbnail::FileCategory::Image, move || {
+    thumbnail::ThumbRequest::load(key, thumbnail::FileCategory::Image, move || {
         crate::model::bytes_of(&image, &content)
-    });
-    if persistent.is_some() {
-        request
-    } else {
-        request.transient()
-    }
+    })
 }
 
 impl Photos {
@@ -229,7 +219,7 @@ impl Photos {
                 .values()
                 .filter(|photo| {
                     !photo.analysis().is_some_and(|analysis| {
-                        analysis.has_vision_component(&photo.image.content, &capability.revision)
+                        analysis.has_vision_component(&photo.image.hash(), &capability.revision)
                     })
                 })
                 .filter_map(|photo| {
@@ -383,7 +373,7 @@ impl Photos {
             .photo(&completed.photo_id)
             .cloned()
             .as_ref()
-            .is_none_or(|photo| photo.image.content != completed.content);
+            .is_none_or(|photo| photo.image.hash() != completed.content);
         let item_result = match completed.result {
             AnalysisOutcome::Image {
                 component: ImageAnalysisComponent::Vision,
@@ -487,7 +477,7 @@ impl Photos {
                     .photo(&completed.photo_id)
                     .cloned()
                     .as_ref()
-                    .is_none_or(|photo| photo.image.content != completed.content);
+                    .is_none_or(|photo| photo.image.hash() != completed.content);
             let update = if stale {
                 tilo_actions::InvocationUpdate::Failed {
                     invocation: completed.invocation,

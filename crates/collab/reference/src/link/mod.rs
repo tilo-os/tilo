@@ -117,8 +117,15 @@ pub struct HostOrigin {
     authority_at: usize,
 }
 
+/// Whether `host` is this computer: `localhost`, a name under it (which a
+/// browser resolves to loopback itself), a `127.x` address or `[::1]`.
 fn is_loopback(host: &str) -> bool {
-    matches!(host, "localhost" | "127.0.0.1" | "[::1]")
+    host == "localhost"
+        || host == "[::1]"
+        || host.ends_with(".localhost")
+        || host
+            .parse::<std::net::Ipv4Addr>()
+            .is_ok_and(|address| address.is_loopback())
 }
 
 fn split_authority(authority: &str) -> Result<(&str, Option<&str>), LinkError> {
@@ -757,6 +764,18 @@ mod tests {
         assert_eq!(
             HostOrigin::from_authority("[::1]:8080").unwrap().as_str(),
             "http://[::1]:8080"
+        );
+        assert_eq!(
+            HostOrigin::from_authority("tilo.localhost:24120")
+                .unwrap()
+                .as_str(),
+            "http://tilo.localhost:24120",
+            "a name under localhost is this computer, as a browser resolves it"
+        );
+        assert!(WebEntry::new("http://tilo.localhost:24120/").is_ok());
+        assert!(
+            HostOrigin::new("http://localhost.tilo.so").is_err(),
+            "a name that only starts like this computer's leaves it"
         );
         assert!(
             HostOrigin::from_authority("tilo.so:443").is_err(),

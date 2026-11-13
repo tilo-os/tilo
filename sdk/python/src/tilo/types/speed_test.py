@@ -23,6 +23,7 @@ __all__ = [
 
 class Results(Resource):
     """Internet speed test — `speed-test.results`."""
+    __surface__ = "so.tilo.speed-test@3fb52e93b9c21f28"
     @property
     def results(self) -> Any:
         """Read only."""

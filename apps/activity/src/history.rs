@@ -61,7 +61,7 @@ fn feed(cx: &ViewCx<Filter>, nav: &Nav, query: &wire::FeedQuery, narrows: bool) 
         let mut parts = vec![filters(cx, &nav, feed, narrows)];
         let found = found(feed, &filter);
         if feed.entries.is_empty() {
-            parts.push(empty(feed));
+            parts.push(empty(feed, narrows));
         } else {
             let shown = feed.clone();
             let listed = nav.clone();
@@ -133,13 +133,14 @@ fn found(feed: &wire::Feed, filter: &Filter) -> Vec<wire::Entry> {
         .collect()
 }
 
-fn empty(feed: &wire::Feed) -> Element {
+/// The empty feed; the hint to clear filters only shows when a filter narrows it.
+fn empty(feed: &wire::Feed, narrows: bool) -> Element {
     let state = if feed.pending {
         EmptyState::new(tr("activity-history-pending")).with_icon(Icon::Clock)
+    } else if narrows {
+        EmptyState::new(tr("activity-history-no-match")).with_icon(Icon::History)
     } else {
-        EmptyState::new(tr("activity-history-empty"))
-            .with_message(tr("activity-history-empty-message"))
-            .with_icon(Icon::History)
+        EmptyState::new(tr("activity-history-empty")).with_icon(Icon::History)
     };
     Box::new(state.with_id("activity-history-empty"))
 }
@@ -390,17 +391,22 @@ fn entry_row(
     }
     place.extend(entry.resource.clone().or_else(|| entry.app.clone()));
     // Where the change is not, and why: a device that refused it says so on
-    // the change's own row, so its author reads which of their devices hold
+    // the change's own line, so its author reads which of their devices hold
     // it.
-    place.extend(entry.refused.iter().map(|refusal| {
-        trf(
-            "activity-entry-not-on",
-            &[
-                ("device", refusal.label.clone().into()),
-                ("reason", refusal.reason.clone().into()),
-            ],
-        )
-    }));
+    let refused = entry
+        .refused
+        .iter()
+        .map(|refusal| {
+            trf(
+                "activity-entry-not-on",
+                &[
+                    ("device", refusal.label.clone().into()),
+                    ("reason", refusal.reason.clone().into()),
+                ],
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(". ");
     let mut row = ListRow::new(
         format!("activity-entry-{}", entry.id),
         entry.summary.clone(),
@@ -411,6 +417,9 @@ fn entry_row(
     row = ui::author_face(row, &entry.author);
     if !place.is_empty() {
         row = row.secondary(place.join(", "));
+    }
+    if !refused.is_empty() {
+        row = row.note(refused);
     }
     let chosen = nav.clone();
     let one = wire::Range::one(&entry.id);

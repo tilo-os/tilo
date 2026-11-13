@@ -1,11 +1,11 @@
 //! A backend running one workspace per customer deletes a customer's
-//! workspace when they leave, through the front door on the relay: the
+//! workspace when they leave, through the API server on the relay: the
 //! workspace leaves every listing, what the relay kept of it goes from its
 //! disk and from its person's storage, the key minted for it is revoked and
 //! says so, and a member's page open in it is told it was deleted. Only its
 //! owner's key reaching all their workspaces deletes it.
-use super::door_on_relay::{OnRelay, accept_invitation, approved_key, door_on_relay};
-use super::front_door::{ISSUER, Mcp, upload};
+use super::api::{ISSUER, Mcp, upload};
+use super::api_on_relay::{OnRelay, accept_invitation, api_on_relay, approved_key};
 use super::hosted_documents::application_pdf;
 use super::*;
 use serde_json::{Value, json};
@@ -203,11 +203,11 @@ async fn only_member_hears_deleted(
     reason = "one customer's workspace, from its making to everything it kept being gone"
 )]
 async fn a_server_key_deletes_a_customers_workspace_and_everything_it_kept_goes() {
-    let on_relay = door_on_relay(ISSUER).await;
-    let door = Arc::clone(&on_relay.door);
+    let on_relay = api_on_relay(ISSUER).await;
+    let api = Arc::clone(&on_relay.api);
     let (_, key) = server_key(&on_relay, "Ada").await;
     let mut account = Mcp {
-        door: &door,
+        api: &api,
         path: "/mcp".into(),
         token: key,
         session: None,
@@ -237,7 +237,7 @@ async fn a_server_key_deletes_a_customers_workspace_and_everything_it_kept_goes(
         .await;
     let minted_key = minted["token"].as_str().unwrap().to_owned();
     let mut agent = Mcp {
-        door: &door,
+        api: &api,
         path: format!("/w/{workspace}/mcp"),
         token: minted_key.clone(),
         session: None,
@@ -323,7 +323,7 @@ async fn a_server_key_deletes_a_customers_workspace_and_everything_it_kept_goes(
     assert!(ids.contains(&kept), "{ids:?}");
     // Its key is told it was revoked, not that it never was a key.
     let mut minted_again = Mcp {
-        door: &door,
+        api: &api,
         path: format!("/w/{workspace}/mcp"),
         token: minted_key,
         session: None,
@@ -382,11 +382,11 @@ async fn a_server_key_deletes_a_customers_workspace_and_everything_it_kept_goes(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn neither_a_minted_key_nor_a_member_deletes_a_workspace() {
-    let on_relay = door_on_relay(ISSUER).await;
-    let door = Arc::clone(&on_relay.door);
+    let on_relay = api_on_relay(ISSUER).await;
+    let api = Arc::clone(&on_relay.api);
     let (_, key) = server_key(&on_relay, "Ada").await;
     let mut account = Mcp {
-        door: &door,
+        api: &api,
         path: "/mcp".into(),
         token: key,
         session: None,
@@ -407,7 +407,7 @@ async fn neither_a_minted_key_nor_a_member_deletes_a_workspace() {
         .did("account/keys#mint", json!({"workspace": workspace}))
         .await;
     let mut agent = Mcp {
-        door: &door,
+        api: &api,
         path: "/mcp".into(),
         token: minted["token"].as_str().unwrap().to_owned(),
         session: None,
@@ -426,7 +426,7 @@ async fn neither_a_minted_key_nor_a_member_deletes_a_workspace() {
     let (rosa, rosa_key) = server_key(&on_relay, "Rosa").await;
     let _ = invite(&mut account, &on_relay, &workspace, &rosa).await;
     let mut member = Mcp {
-        door: &door,
+        api: &api,
         path: "/mcp".into(),
         token: rosa_key,
         session: None,
@@ -443,7 +443,7 @@ async fn neither_a_minted_key_nor_a_member_deletes_a_workspace() {
     // It stays, and the minted key still works there.
     assert!(listed(&mut account).await.contains(&workspace));
     let mut in_workspace = Mcp {
-        door: &door,
+        api: &api,
         path: format!("/w/{workspace}/mcp"),
         token: minted["token"].as_str().unwrap().to_owned(),
         session: None,

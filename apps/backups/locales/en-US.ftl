@@ -20,10 +20,6 @@ backups-size-in-files = { $count ->
     [one] { $size } in one file
    *[other] { $size } in { $files } files
 }
-backups-progress-files = { $count ->
-    [one] One file copied, { $size }
-   *[other] { $files } files copied, { $size }
-}
 
 ## Summary tiles: the unit after a number
 backups-unit-minutes = { $count ->
@@ -158,3 +154,6 @@ backups-operation-order-snapshots = Order snapshots
 backups-operation-read-snapshot = Read snapshot
 backups-operation-show-schedule = Show global retention policy
 backups-workspace = Backups
+
+## What the app is called in a window and in the launcher
+backups-app-title = Backups

@@ -371,6 +371,9 @@ pub struct Hosted {
     /// notices — offered to a turn's agent as the broker's steps, so it arranges the
     /// screen as the REPL does.
     pub session_actions: Option<std::sync::Arc<crate::session_actions::SessionActions>>,
+    /// The person's settings, which Settings' window changes through the broker as another
+    /// provider's actions: the session keeps them, so its service answers them here.
+    pub settings_steps: Option<std::sync::Arc<crate::settings_steps::SettingsSteps>>,
     /// This session's Nearby Send: the person's other devices, and the spool
     /// a file reaches them from. `None` on a session that runs none, where
     /// Files' send has no route at all.
@@ -976,6 +979,7 @@ fn seams(
         tools,
         task_programs,
         session_actions,
+        settings_steps,
         nearby,
         file_clipboard,
         personal,
@@ -1258,6 +1262,13 @@ fn seams(
                 // notices, which a turn's agent arranges the screen with (shell.md §8.1).
                 session_actions
                     .map(|actions| actions as std::sync::Arc<dyn HostStepServices>)
+                    .into_iter()
+                    .collect(),
+                // The person's settings, under the provider Settings' window names for every
+                // control it shows: the session keeps them, so its settings service runs each
+                // change, with the broker admitting it as any caller's first.
+                settings_steps
+                    .map(|settings| settings as std::sync::Arc<dyn HostStepServices>)
                     .into_iter()
                     .collect(),
             ]
@@ -1610,6 +1621,7 @@ mod tests {
             tools: None,
             task_programs: None,
             session_actions: Some(test_session_actions()),
+            settings_steps: None,
             file_clipboard: std::sync::Arc::new(crate::file_clipboard::NativeFileClipboard::new(
                 std::sync::Arc::new(|| ()),
             )),

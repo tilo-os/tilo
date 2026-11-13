@@ -301,7 +301,7 @@ pub(crate) async fn connect(key: &SigningKey, device: &Device) -> Result<Entered
     let link = PairingLink::parse(&format!(
         "{}#/@{}/w/{}?pair={}",
         device.site,
-        device.host_origin.trim_start_matches("https://"),
+        host_of(&device.host_origin),
         device.workspace,
         device.user
     ))
@@ -336,8 +336,8 @@ fn site_origin(flag: Option<&str>) -> Result<String> {
         .unwrap_or_else(|| DEFAULT_SITE.to_owned());
     let url = tilo_net::Url::parse(named.trim())
         .with_context(|| format!("{named} is not a site's address"))?;
-    if url.scheme() != "https" {
-        bail!("{named} is not an https:// site");
+    if !tilo_net::secure_origin(&url) {
+        bail!("{named} is not an https:// site (or an http:// one on this computer)");
     }
     Ok(url.origin().ascii_serialization())
 }
@@ -358,7 +358,7 @@ async fn home_host(site: &Origin) -> Result<String> {
         .and_then(Value::as_str)
         .with_context(unreachable)?;
     let url = tilo_net::Url::parse(origin).with_context(unreachable)?;
-    if url.scheme() != "https" {
+    if !tilo_net::secure_origin(&url) {
         bail!("{}: its host {origin} is not https", unreachable());
     }
     Ok(url.origin().ascii_serialization())
@@ -749,12 +749,19 @@ async fn set_up(reporter: &Reporter<'_>, link: &str, agent: &Agent) -> Result<Ex
             }
         }
         Err(error) => {
+            // Said to the person's tab and to the agent alike: what did not
+            // happen, the host's own reason, and what happens next.
             reporter
                 .failed(&format!(
-                    "Logged in, but entering the workspace failed: {error:#}"
+                    "Logged in, but this computer could not open the workspace yet: {error:#}. \
+                     Your agent tries again when it next uses Tilo."
                 ))
                 .await;
-            println!("Entering {place} failed for now ({error:#}); tilo mcp tries again.");
+            println!(
+                "Logged in, but this computer could not open {place} yet: {error:#}. \
+                 tilo mcp tries again each time it starts; if it keeps failing, run tilo login \
+                 with a new code from the person's tab."
+            );
         }
     }
     println!();
@@ -779,7 +786,12 @@ async fn vouch(reporter: &Reporter<'_>, host: &dyn HttpClient) -> Result<ExitCod
 }
 
 pub(crate) fn host_of(origin: &str) -> &str {
-    origin.trim_start_matches("https://").trim_end_matches('/')
+    // A host on this computer is plain http, which a link names by its
+    // address alone, as it names an https host by its name.
+    origin
+        .trim_start_matches("https://")
+        .trim_start_matches("http://")
+        .trim_end_matches('/')
 }
 
 pub(crate) const NOT_LOGGED_IN: &str = "This computer is not logged in to Tilo. Ask the person to open tilo.sh, choose \"Set up with your agent\" and paste you the prompt it copies; it has you run tilo login with their code, like: tilo login K7Q-MX2P";

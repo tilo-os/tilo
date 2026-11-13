@@ -15,7 +15,9 @@
 #
 # Its addresses are LOUNGE_PORT_BASE (default 19780) and the four ports after
 # it, so a second Lounge (another door, another admission) runs beside the
-# first on a base of its own.
+# first on a base of its own. The site is named LOUNGE_SITE_NAME (default
+# 127.0.0.1); `localhost` gives it a name, which a page needs to make a
+# passkey (a passkey belongs to a site's name, never to an address).
 
 lounge_here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 lounge_repo=$(cd -- "$lounge_here/../../.." && pwd)
@@ -99,7 +101,7 @@ start_lounge() {
   lounge_http_port=$((base + 4))
   local site_port=$((base + 2))
   relay_origin=https://127.0.0.1:$lounge_web_port
-  site_origin=https://127.0.0.1:$site_port
+  site_origin=https://${LOUNGE_SITE_NAME:-127.0.0.1}:$site_port
 
   [[ -f $bundle/build.json ]] || lounge_fail "no desktop bundle at $bundle"
   python3 -I "$lounge_repo/crates/browser/tilo-browser-runtime/container/layout.py" "$bundle" "$work/site"
@@ -135,11 +137,11 @@ start_lounge() {
   local site_pid=$!
   lounge_pids+=("$site_pid")
   for _ in $(seq 300); do
-    grep -q "\"url\": *\"$site_origin\"" "$site_log" && break
+    grep -q "\"url\": *\"https://127.0.0.1:$site_port\"" "$site_log" && break
     kill -0 "$site_pid" 2>/dev/null || lounge_fail "the web entry stopped: $(cat "$site_log")"
     sleep 0.1
   done
-  grep -q "\"url\": *\"$site_origin\"" "$site_log" || lounge_fail "the web entry did not start: $(cat "$site_log")"
+  grep -q "\"url\": *\"https://127.0.0.1:$site_port\"" "$site_log" || lounge_fail "the web entry did not start: $(cat "$site_log")"
   echo "ok: the web entry is served at $site_origin (the Lounge and it up in $((SECONDS - started))s)"
 }
 

@@ -200,6 +200,7 @@ impl ResourceApp for TypstEditorShell {
     // Each window shows the document it opened, never another window's.
     const WINDOW_RESOURCE: bool = true;
     const TITLE: &'static str = "Typst";
+    const TITLE_KEY: &'static str = "typst-editor-app-title";
     const ICON: Option<&'static str> = Some("typst-editor");
     /// The narrow-window scenarios are captured at a phone width.
     fn shot_viewport(scenario: Option<&str>) -> (u32, u32) {

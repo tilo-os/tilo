@@ -598,9 +598,11 @@ fn update_checks_run_promptly_and_stamp_only_on_completion() {
         release.send(()).unwrap();
         settle(&mut pane, |pane| pane.firmware_refresh_pending);
         assert!(pane.firmware_updates.is_err());
-        assert!(pane.notice().is_some_and(|message| {
-            message.contains("Firmware metadata could not be refreshed")
-        }));
+        assert!(
+            pane.notice().is_some_and(|message| {
+                message.contains("Firmware updates could not be checked")
+            })
+        );
     }
 
     // Case `duplicate_update_checks_are_cleared_while_one_is_pending`.
@@ -680,7 +682,7 @@ fn restart_and_rollback_are_confirmed_and_reported() {
         // The confirmation view has to actually carry the caveats, or the
         // second click is uninformed.
         let shown = pane.rollback_card_lines().join("\n");
-        for phrase in ["do NOT revert", "next app update"] {
+        for phrase in ["do not revert", "next app update"] {
             assert!(
                 shown.contains(phrase),
                 "the confirmation must say what a rollback does not undo \

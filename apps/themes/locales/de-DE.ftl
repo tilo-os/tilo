@@ -138,7 +138,7 @@ themes-studio-reset = Auf Voreinstellung zurücksetzen
 themes-studio-switch-polarity = Zwischen Hell und Dunkel wechseln
 
 ## The preview's own sample window
-themes-app-title = Theme Studio
+themes-app-title = Design-Studio
 themes-preview-inbox = Posteingang
 themes-preview-move-title = In den Papierkorb legen?
 themes-preview-move-body = Die Datei bleibt 30 Tage wiederherstellbar.
@@ -150,3 +150,26 @@ themes-preview-shared = Geteilt mit Ada und Bo
 themes-preview-edited = Vor 2 Minuten bearbeitet
 themes-preview-field = Budgetnotizen
 themes-preview-share = Teilen
+
+## Die Zeilen der Auswahllisten im Editor
+themes-option-dark = Dunkel
+themes-option-light = Hell
+themes-option-accent = Akzent
+themes-option-monochrome = Monochrom
+themes-option-your-colour = Eigene Farbe
+themes-option-chosen-hue = Gewählter Farbton
+themes-option-always = Immer
+themes-option-with-the-typeface = Mit der Schriftart
+themes-option-frosted = Milchglas
+themes-option-solid = Deckend
+
+## Mehr aus dem Beispielsfenster der Vorschau
+themes-preview-conversations = 12 Unterhaltungen
+themes-preview-drafts = Entwürfe
+themes-preview-shared-with-me = Geteilt
+themes-preview-copy-link = Link kopieren
+themes-preview-rename = Umbenennen
+themes-preview-subject-review = Der Quartalsbericht
+themes-preview-subject-budget = Re: Budgetnotizen
+themes-preview-subject-critique = Die Kritik am Freitag
+themes-preview-subject-compiler = Ein Compiler für alle

@@ -923,9 +923,10 @@ pub struct MediaItem {
     /// model never stores raw RGB so theming stays OS-controlled.
     pub palette: u8,
     /// Workspace-relative path to the source bytes on the P2P FUSE
-    /// (`/var/workspace/<path>`). This — not the bytes — is what the CRDT
-    /// replicates; the decode path hydrates the bytes on demand. See
-    /// [`crate::media`] for the seam.
+    /// (`/var/workspace/<path>`), or the content reference a source imported
+    /// from the workspace's content store is read by. This — not the bytes —
+    /// is what the CRDT replicates; the decode path hydrates the bytes on
+    /// demand. See [`crate::media`] for the seam.
     pub path: String,
     /// The title's text and styling, for a [`MediaKind::Text`] item. `None`
     /// for every decoded source — a title is the one media whose picture

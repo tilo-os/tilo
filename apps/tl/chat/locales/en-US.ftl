@@ -56,7 +56,7 @@ d-kxekobh6 = Thread
     .doc = The side conversation branched off this message.
 
 d-mwily5kw = Parts
-    .doc = What a message said before messages were rich text, kept as it was written.
+    .doc = What a message says, in a message kept as parts rather than as rich text: its pieces, as it was written.
 
 d-4zr7hti6 = Pinned
     .doc = Whether it is pinned to its channel, which search finds.
@@ -65,7 +65,7 @@ d-ofad24rc = Reactions
     .doc = Who reacted, by emoji.
 
 d-dh6346no = Sent view
-    .doc = A view the message sends, as its sender had it among their views: its tilolang definition, which a reader adds to their own views (Views' `add`), its author whoever sent the message.
+    .doc = A view the message sends, as its sender had it among their views: a reader adds it to their own views, and its author is whoever sent the message.
 
 d-hk2t6bvk-filter-pinned = Pinned
 
@@ -103,14 +103,14 @@ d-3p73kpuw = Threads
 d-5nkbpj6q-filter-person = Person
 
 d-yx5sbebu = Part
-    .doc = A piece of a message from before messages were rich text: its text, or a block's source.
+    .doc = A piece of a message kept as parts rather than as rich text: its text, or a block's source.
     .noun = { $count ->
         [one] part
        *[other] parts
     }
 
 d-zevnbs3i = Kind
-    .doc = `text` or `block`.
+    .doc = Whether the piece is text or a block's source.
 
 d-3hkzkqvr = Body
 

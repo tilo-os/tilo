@@ -1,15 +1,15 @@
 //! Hosted workspaces from a shell, with an API key: `tilo keys`,
 //! `tilo account workspaces`, `tilo do -w`, `tilo files` and `tilo run`.
 //!
-//! These make the very calls an agent makes through the front door's MCP
+//! These make the very calls an agent makes through the API server's MCP
 //! endpoints (`/mcp` for the account, `/w/<workspace>/mcp` for one workspace),
 //! asking for the typed answer, so a script sees what an agent sees. Making
 //! workspaces and keys are actions on the account (`account/workspaces#create`,
-//! `account/keys#mint`). A file goes in as one upload (`PUT
-//! /w/<workspace>/content`), and the reference it answers is what actions take.
+//! `account/keys#mint`). A file goes in as one upload (`POST
+//! /v1/workspaces/<workspace>/uploads`), and the reference it answers is what actions take.
 //!
-//! The key comes from `TILO_API_KEY`, and the door from `--door` or
-//! `TILO_DOOR` (`https://mcp.tilo.sh`). `tilo keys create` gets a key: it
+//! The key comes from `TILO_API_KEY`, and the API server from `--api` or
+//! `TILO_API_URL` (`https://mcp.tilo.sh`). `tilo keys create` gets a key: it
 //! asks the person, who approves it in their Tilo.
 
 use anyhow::{Context as _, Result, anyhow, bail};
@@ -19,9 +19,9 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
 
-/// The door hosted Tilo answers at.
-pub const DEFAULT_DOOR: &str = "https://mcp.tilo.sh";
-pub const DOOR_ENV: &str = "TILO_DOOR";
+/// The API server hosted Tilo answers at.
+pub const DEFAULT_API_URL: &str = "https://mcp.tilo.sh";
+pub const API_URL_ENV: &str = "TILO_API_URL";
 pub const KEY_ENV: &str = "TILO_API_KEY";
 const SESSION_HEADER: &str = "mcp-session-id";
 const MAX_ANSWER: usize = 64 * 1024 * 1024;
@@ -110,7 +110,9 @@ pub enum WorkspacesCmd {
     Ls,
     /// Create a workspace; the host may refuse (quota, payment).
     Create {
+        /// What to call it, as your workspaces list will name it.
         name: String,
+        /// The host to create it on, by name; the default host without one.
         #[arg(long)]
         host: Option<String>,
     },
@@ -123,10 +125,14 @@ pub enum WorkspacesCmd {
 pub enum FilesCmd {
     /// Upload a file into a workspace: prints its reference, which actions
     /// take (`pdf-viewer#import-pdf-content content=tilo.content:…`).
-    Put { file: PathBuf },
+    Put {
+        /// The file to upload, by its path here.
+        file: PathBuf,
+    },
     /// Download a file of a workspace by its reference (an export's
     /// answer, `tilo.content:…`) into `--output`, or to standard output.
     Get {
+        /// The reference to fetch, as an action or an upload answered it.
         content: String,
         /// Where to write it; standard output when absent.
         #[arg(short, long)]
@@ -134,9 +140,9 @@ pub enum FilesCmd {
     },
 }
 
-/// Where and as whom: the door, the key, and whether to answer JSON.
+/// Where and as whom: the api, the key, and whether to answer JSON.
 pub struct Client {
-    door: String,
+    api: String,
     key: String,
     json: bool,
     http: tilo_net::Client,
@@ -148,20 +154,24 @@ fn runtime() -> Result<tokio::runtime::Runtime> {
         .build()?)
 }
 
-fn door_of(door: Option<&str>) -> String {
-    door.map(str::to_owned)
-        .or_else(|| std::env::var(DOOR_ENV).ok().filter(|door| !door.is_empty()))
-        .unwrap_or_else(|| DEFAULT_DOOR.to_owned())
+fn api_url_of(api: Option<&str>) -> String {
+    api.map(str::to_owned)
+        .or_else(|| {
+            std::env::var(API_URL_ENV)
+                .ok()
+                .filter(|api| !api.is_empty())
+        })
+        .unwrap_or_else(|| DEFAULT_API_URL.to_owned())
         .trim_end_matches('/')
         .to_owned()
 }
 
 impl Client {
-    /// The client for `door`, with the key `TILO_API_KEY` holds.
+    /// The client for `api`, with the key `TILO_API_KEY` holds.
     ///
     /// # Errors
     /// No key is set.
-    pub fn from_env(door: Option<&str>, json: bool) -> Result<Self> {
+    pub fn from_env(api: Option<&str>, json: bool) -> Result<Self> {
         let key = std::env::var(KEY_ENV)
             .ok()
             .filter(|key| !key.trim().is_empty())
@@ -171,7 +181,7 @@ impl Client {
                 )
             })?;
         Ok(Self {
-            door: door_of(door),
+            api: api_url_of(api),
             key: key.trim().to_owned(),
             json,
             http: tilo_net::Client::new(),
@@ -180,7 +190,7 @@ impl Client {
 
     /// Open an MCP session at `path` (`/mcp`, or `/w/<workspace>/mcp`).
     async fn session(&self, path: &str) -> Result<Session<'_>> {
-        let url = format!("{}{path}", self.door);
+        let url = format!("{}{path}", self.api);
         let (status, headers, answer) = self
             .post_patiently(
                 &url,
@@ -192,7 +202,7 @@ impl Client {
             .await?;
         if status == 401 {
             bail!(
-                "the door does not take this key: it expired or was revoked. `tilo keys create` asks for a new one"
+                "the API server does not take this key: it expired or was revoked. `tilo keys create` asks for a new one"
             );
         }
         if status == 403 {
@@ -201,14 +211,18 @@ impl Client {
         if let Some(error) = answer.get("error") {
             bail!(
                 "{}",
-                error["message"].as_str().unwrap_or("the door refused")
+                error["message"]
+                    .as_str()
+                    .unwrap_or("the API server refused")
             );
         }
         let id = headers
             .get(SESSION_HEADER)
             .and_then(|value| value.to_str().ok())
             .map(str::to_owned)
-            .ok_or_else(|| anyhow!("the door answered HTTP {status} and opened no session"))?;
+            .ok_or_else(|| {
+                anyhow!("the API server answered HTTP {status} and opened no session")
+            })?;
         let session = Session {
             client: self,
             url,
@@ -220,7 +234,7 @@ impl Client {
         Ok(session)
     }
 
-    /// [`Self::post`], asked again while the door answers that the host is
+    /// [`Self::post`], asked again while the API server answers that the host is
     /// busy with the person's changes (it ran nothing): after the wait it
     /// says, with jitter, for at most [`RETRY_DEADLINE`]. Past it, the busy
     /// answer stands.
@@ -272,7 +286,7 @@ impl Client {
         let response = request
             .send()
             .await
-            .with_context(|| format!("reaching {}", self.door))?;
+            .with_context(|| format!("reaching {}", self.api))?;
         let status = response.status().as_u16();
         let headers = response.headers().clone();
         let bytes = response.bytes_limited(MAX_ANSWER).await?;
@@ -335,7 +349,7 @@ impl Client {
     }
 }
 
-/// One MCP session at the door.
+/// One MCP session at the api.
 struct Session<'a> {
     client: &'a Client,
     url: String,
@@ -369,7 +383,7 @@ impl Session<'_> {
         answer
             .get("result")
             .cloned()
-            .ok_or_else(|| anyhow!("the door answered HTTP {status} with no result"))
+            .ok_or_else(|| anyhow!("the API server answered HTTP {status} with no result"))
     }
 
     async fn close(self) {
@@ -384,7 +398,7 @@ impl Session<'_> {
     }
 }
 
-/// How long the door asks to wait before the same call works, when `answer`
+/// How long the API server asks to wait before the same call works, when `answer`
 /// says the host was busy with the person's changes and ran nothing: a
 /// JSON-RPC error's `data`, or a tool's typed failure.
 fn busy_wait(answer: &Value) -> Option<Duration> {
@@ -466,14 +480,14 @@ pub(crate) fn run(future: impl std::future::Future<Output = Result<ExitCode>>) -
 
 /// `tilo do <path> name=value… -w <workspace>`.
 pub fn act(
-    door: Option<&str>,
+    api: Option<&str>,
     json: bool,
     workspace: &str,
     path: &str,
     args: &[String],
 ) -> ExitCode {
     run(async {
-        let client = Client::from_env(door, json)?;
+        let client = Client::from_env(api, json)?;
         let arguments = arguments(args)?;
         let workspace = client.workspace(workspace).await?;
         let session = client.session(&format!("/w/{workspace}/mcp")).await?;
@@ -487,9 +501,9 @@ pub fn act(
 
 /// `tilo run <file.tl> -w <workspace>`: the program as one task, one step
 /// for undo.
-pub fn program(door: Option<&str>, json: bool, workspace: &str, file: &Path) -> ExitCode {
+pub fn program(api: Option<&str>, json: bool, workspace: &str, file: &Path) -> ExitCode {
     run(async {
-        let client = Client::from_env(door, json)?;
+        let client = Client::from_env(api, json)?;
         let program =
             std::fs::read_to_string(file).with_context(|| format!("reading {}", file.display()))?;
         let workspace = client.workspace(workspace).await?;
@@ -502,13 +516,13 @@ pub fn program(door: Option<&str>, json: bool, workspace: &str, file: &Path) -> 
 
 /// The surfaces of the apps installed in `workspace`: each app's `surface.toml`, as the
 /// workspace's own read of the app answers it (`tilo sdk gen -w`).
-pub fn surfaces(door: Option<&str>, workspace: &str) -> Result<Vec<crate::sdk::App>> {
-    runtime()?.block_on(read_surfaces(door, workspace))
+pub fn surfaces(api: Option<&str>, workspace: &str) -> Result<Vec<crate::sdk::App>> {
+    runtime()?.block_on(read_surfaces(api, workspace))
 }
 
 /// [`surfaces`], over the workspace's MCP endpoint.
-async fn read_surfaces(door: Option<&str>, workspace: &str) -> Result<Vec<crate::sdk::App>> {
-    let client = Client::from_env(door, false)?;
+async fn read_surfaces(api: Option<&str>, workspace: &str) -> Result<Vec<crate::sdk::App>> {
+    let client = Client::from_env(api, false)?;
     let workspace = client.workspace(workspace).await?;
     let session = client.session(&format!("/w/{workspace}/mcp")).await?;
     let apps = installed(&session).await;
@@ -560,9 +574,9 @@ async fn installed(session: &Session<'_>) -> Result<Vec<crate::sdk::App>> {
 }
 
 /// `tilo account …`.
-pub fn account(door: Option<&str>, json: bool, cmd: AccountCmd) -> ExitCode {
+pub fn account(api: Option<&str>, json: bool, cmd: AccountCmd) -> ExitCode {
     run(async {
-        let client = Client::from_env(door, json)?;
+        let client = Client::from_env(api, json)?;
         let AccountCmd::Workspaces(cmd) = cmd;
         let (path, args) = match cmd {
             WorkspacesCmd::Ls => ("account/workspaces#list", json!({})),
@@ -585,9 +599,9 @@ pub fn account(door: Option<&str>, json: bool, cmd: AccountCmd) -> ExitCode {
 }
 
 /// `tilo files …`.
-pub fn files(door: Option<&str>, json: bool, workspace: &str, cmd: FilesCmd) -> ExitCode {
+pub fn files(api: Option<&str>, json: bool, workspace: &str, cmd: FilesCmd) -> ExitCode {
     run(async {
-        let client = Client::from_env(door, json)?;
+        let client = Client::from_env(api, json)?;
         let file = match cmd {
             FilesCmd::Put { file } => file,
             FilesCmd::Get { content, output } => {
@@ -598,13 +612,13 @@ pub fn files(door: Option<&str>, json: bool, workspace: &str, cmd: FilesCmd) -> 
         let workspace = client.workspace(workspace).await?;
         let response = client
             .http
-            .put(format!("{}/w/{workspace}/content", client.door))
+            .post(format!("{}/v1/workspaces/{workspace}/uploads", client.api))
             .bearer_auth(&client.key)
             .timeout(Duration::from_secs(10 * 60))
             .body(bytes)
             .send()
             .await
-            .with_context(|| format!("reaching {}", client.door))?;
+            .with_context(|| format!("reaching {}", client.api))?;
         let status = response.status().as_u16();
         let answer: Value =
             serde_json::from_slice(&response.bytes_limited(MAX_ANSWER).await?).unwrap_or_default();
@@ -670,11 +684,11 @@ async fn download(
                 piece.get("bytes").and_then(Value::as_str),
                 piece.get("size").and_then(Value::as_u64),
             ) else {
-                bail!("the door answered no bytes for {content}");
+                bail!("the API server answered no bytes for {content}");
             };
             let decoded = base64::engine::general_purpose::STANDARD
                 .decode(encoded)
-                .context("the door's bytes are not base64")?;
+                .context("the API server's bytes are not base64")?;
             if decoded.is_empty() && (bytes.len() as u64) < size {
                 bail!("the download stopped at {} of {size} bytes", bytes.len());
             }
@@ -706,7 +720,7 @@ async fn download(
 
 /// `tilo members … -w <workspace>`: the workspace's `workspace/members`
 /// actions, as `tilo do` runs any action there.
-pub fn members(door: Option<&str>, json: bool, workspace: &str, cmd: MembersCmd) -> ExitCode {
+pub fn members(api: Option<&str>, json: bool, workspace: &str, cmd: MembersCmd) -> ExitCode {
     let (path, args) = match cmd {
         MembersCmd::Invite { role, email } => (
             "workspace/members#invite",
@@ -716,11 +730,11 @@ pub fn members(door: Option<&str>, json: bool, workspace: &str, cmd: MembersCmd)
         ),
         MembersCmd::Ls => ("workspace/members#list", Vec::new()),
     };
-    act(door, json, workspace, path, &args)
+    act(api, json, workspace, path, &args)
 }
 
 /// `tilo keys …`.
-pub fn keys(door: Option<&str>, json: bool, workspace: Option<&str>, cmd: KeysCmd) -> ExitCode {
+pub fn keys(api: Option<&str>, json: bool, workspace: Option<&str>, cmd: KeysCmd) -> ExitCode {
     run(async {
         let client = match cmd {
             KeysCmd::Create {
@@ -729,7 +743,7 @@ pub fn keys(door: Option<&str>, json: bool, workspace: Option<&str>, cmd: KeysCm
                 no_browser_pages,
             } => {
                 return create_key(
-                    &door_of(door),
+                    &api_url_of(api),
                     json,
                     &name,
                     workspace,
@@ -738,7 +752,7 @@ pub fn keys(door: Option<&str>, json: bool, workspace: Option<&str>, cmd: KeysCm
                 )
                 .await;
             }
-            _ => Client::from_env(door, json)?,
+            _ => Client::from_env(api, json)?,
         };
         let (path, args) = match cmd {
             KeysCmd::Create { .. } => return Ok(ExitCode::FAILURE),
@@ -765,7 +779,7 @@ pub fn keys(door: Option<&str>, json: bool, workspace: Option<&str>, cmd: KeysCm
 
 /// Ask the person for a key and wait until they answer.
 async fn create_key(
-    door: &str,
+    api: &str,
     json: bool,
     name: &str,
     workspace: Option<&str>,
@@ -774,7 +788,7 @@ async fn create_key(
 ) -> Result<ExitCode> {
     let http = tilo_net::Client::new();
     let asked = http
-        .post(format!("{door}/keys/new"))
+        .post(format!("{api}/keys/new"))
         .header("content-type", "application/json")
         .body(
             json!({
@@ -787,7 +801,7 @@ async fn create_key(
         )
         .send()
         .await
-        .with_context(|| format!("reaching {door}"))?;
+        .with_context(|| format!("reaching {api}"))?;
     let status = asked.status().as_u16();
     let asked: Value =
         serde_json::from_slice(&asked.bytes_limited(MAX_ANSWER).await?).unwrap_or_default();
@@ -797,7 +811,7 @@ async fn create_key(
             asked
                 .pointer("/error/message")
                 .and_then(Value::as_str)
-                .unwrap_or("the door refused")
+                .unwrap_or("the API server refused")
         );
     }
     let field = |name: &str| asked.get(name).and_then(Value::as_str).unwrap_or_default();
@@ -816,12 +830,12 @@ async fn create_key(
     loop {
         tokio::time::sleep(interval).await;
         let answer = http
-            .post(format!("{door}/keys/poll"))
+            .post(format!("{api}/keys/poll"))
             .header("content-type", "application/json")
             .body(json!({"poll": poll}).to_string())
             .send()
             .await
-            .with_context(|| format!("reaching {door}"))?;
+            .with_context(|| format!("reaching {api}"))?;
         let status = answer.status().as_u16();
         let answer: Value =
             serde_json::from_slice(&answer.bytes_limited(MAX_ANSWER).await?).unwrap_or_default();

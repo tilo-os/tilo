@@ -125,7 +125,7 @@ const SELF_CARD: &str = "";
 /// answers it with the setup its first screen shows (a `tilo login` prompt and Tilo's MCP
 /// address); a desktop has no login code to hand out, so it shows Console's Connect place, where
 /// the commands that add Tilo to an agent are and the agents already let in are listed.
-pub const CONNECT_AGENT: &str = "connect-agent";
+pub const CONNECT_AGENT: &str = tilo_actions::remote::session_actions::CONNECT_AGENT;
 
 /// The own card's action that opens Settings' "Devices and access": everything that acts as the
 /// person, and taking any of it back.
@@ -960,7 +960,8 @@ impl Panel {
         match id {
             "identities" => Some("settings://users"),
             "identity-backup" => Some("settings://about"),
-            "pair-device" | DEVICES_ACCESS => Some("settings://devices_sync"),
+            "pair-device" => Some("settings://devices_sync"),
+            DEVICES_ACCESS => Some("settings://devices_access"),
             _ => None,
         }
     }

@@ -61,3 +61,6 @@ hex-editor-document-delete-bytes = Bytes löschen
 ## The endianness strip
 hex-editor-little-endian = Little Endian
 hex-editor-big-endian = Big Endian
+
+## What the app is called in a window and in the launcher
+hex-editor-app-title = Hex-Editor

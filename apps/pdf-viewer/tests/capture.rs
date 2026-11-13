@@ -44,16 +44,22 @@ fn capture_waits_for_production_visual_work() {
         "opened PDF exposes its resources"
     );
     let opened = std::fs::read(&path).expect("opened bytes");
-    assert_eq!(
-        app.state().pinned_source().map(|source| source.hash),
-        Some(tilo_content::hash_bytes(&opened)),
-        "the record pins the bytes its markup is made against"
-    );
-    // The profile's content store is the one the reader keeps documents in.
+    let pinned = app
+        .state()
+        .pinned_source()
+        .expect("the record pins the bytes its markup is made against");
+    assert_eq!(pinned.hash(), tilo_content::hash_bytes(&opened));
+    // The profile's content store is the one the reader keeps documents in,
+    // and the record's reference opens them there.
     let content = ContentStore::in_dir(profile.path().join("content"));
-    assert!(
-        content.has(&tilo_content::hash_bytes(&opened)),
+    assert_eq!(
+        pinned.bytes(&content).as_deref(),
+        Some(opened.as_slice()),
         "the opened document is kept in the content-addressed store"
+    );
+    assert!(
+        !content.has(&pinned.hash()),
+        "and kept sealed, never in the clear"
     );
 
     // Arrival of an imported payload must invalidate the materialised plan,

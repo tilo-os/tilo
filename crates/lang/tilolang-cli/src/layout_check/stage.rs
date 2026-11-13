@@ -788,9 +788,17 @@ impl Staged {
                 .harness
                 .settle_for_capture(ui::time::Duration::from_secs(2))
         {
+            // A frame a widget asks for is named by the widget; one a motion asks for is named
+            // where the motion was started; and what else the window is owed — a frame at rest,
+            // an image on its way — is named, since none of those is a motion that never ends.
+            let now = ui::time::now();
             return Err(format!(
-                "the window still moves after two seconds: {:?}",
-                self.harness.frame_requesters()
+                "the window still moves after two seconds: {:?} asked, {:?} started motions, \
+                 the schedule {:?} with {} images on their way",
+                self.harness.frame_requesters(),
+                ui::motion::frames_wanted_by(now),
+                self.harness.frame_schedule(),
+                ui::image_store::loads_in_flight(),
             ));
         }
         Ok(())
@@ -1044,6 +1052,7 @@ mod tests {
                 id: descriptor.address.action.clone(),
                 label: descriptor.action_label.clone(),
                 app: None,
+                step: None,
             },
             resource: tilo_actions::ActionResource {
                 id: descriptor.address.resource.clone(),

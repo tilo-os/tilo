@@ -17,6 +17,11 @@
 import { resourceProxy } from "tilo-sdk";
 import type * as tilo from "tilo-sdk";
 
+/** The version of the surface these types were made from: a workspace whose app
+ * publishes another refuses their actions rather than run what they no longer
+ * describe. */
+export const SURFACE = "so.tilo.passwords@f1fa1743f50c3e74";
+
 /** Password vault — `passwords.vault`. */
 export interface Vault extends tilo.Resource {
   denyAccess(args: {
@@ -44,6 +49,6 @@ export interface Vault extends tilo.Resource {
 
 /** The `passwords.vault` kind at `path`. */
 export function vault(ws: tilo.Workspace, path: string): Vault {
-  return resourceProxy(ws, path) as unknown as Vault;
+  return resourceProxy(ws, path, SURFACE) as unknown as Vault;
 }
 

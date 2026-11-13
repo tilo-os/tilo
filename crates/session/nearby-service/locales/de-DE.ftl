@@ -1,6 +1,5 @@
 nearby-error-destination-not-folder = das Ziel für Nearby Send ist kein Ordner
 nearby-error-too-large = die Übertragung überschreitet die Größenbegrenzung
-nearby-error-destination-name = für das Ziel von Nearby Send ist kein Name verfügbar
 nearby-error-outside-grant = die Quelle für Nearby Send liegt außerhalb der Freigabe von Dateien
 nearby-error-one-item = Nearby Send braucht genau eine normale Datei oder einen Ordner
 nearby-error-queue-full = die Warteschlange für Übertragungen ist voll

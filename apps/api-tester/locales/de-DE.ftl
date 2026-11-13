@@ -171,3 +171,6 @@ api-tester-workspace-open-sent = Gesendete Anfrage erneut öffnen
 api-tester-workspace-save-sent = Gesendete Anfrage speichern
 api-tester-workspace-delete-sent = Gesendete Anfrage verwerfen
 api-tester-workspace-record-sent = Gesendete Anfrage erfassen
+
+## What the app is called in a window and in the launcher
+api-tester-app-title = API-Tester

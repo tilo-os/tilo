@@ -1,122 +1,124 @@
-/** A resource as an object: fields, actions and field edits. */
+/** A resource as an object, and the surface a generated type sends with it. */
 
 import { describe, expect, it } from "bun:test";
 
-import { kebab, segments, Tilo } from "../src/index.ts";
-import { FakeDoor, PDF, TODO } from "./fakeDoor.ts";
+import { SurfaceChanged, Tilo } from "../src/index.ts";
+import { pdfViewer } from "../src/types/index.ts";
+import { FakeApi, PDF, SURFACE, TODO, WORKSPACE_ID } from "./fakeApi.ts";
 
-function open(house: FakeDoor): Tilo {
-  return new Tilo({ key: house.key, door: "https://door.test", fetch: house.fetch });
+function open(api: FakeApi): Tilo {
+  return new Tilo({ url: "https://api.test", key: api.key, fetch: api.fetch });
 }
 
 describe("a resource", () => {
-  it("reads a field from the snapshot", async () => {
-    const tilo = open(new FakeDoor());
+  it("reads a field as an attribute, in either spelling", async () => {
+    const api = new FakeApi();
+    const form = await open(api).workspace("jane-doe").read(PDF);
 
-    const page = await tilo.workspace("jane-doe").read(TODO);
-
-    expect(page.title).toBe("Todo");
-    expect(page.fields.title).toBe("Todo");
-    await tilo.close();
-  });
-
-  it("names a field in either spelling", async () => {
-    const tilo = open(new FakeDoor());
-    const document = await tilo.workspace("jane-doe").read(PDF);
-
-    expect(document.formValues).toEqual(document.form_values);
-    await tilo.close();
+    expect(form.page_count).toBe(3);
+    expect(form.pageCount).toBe(3);
+    expect(form.form_values).toEqual({ surname: "Doe", given_name: "Jane" });
   });
 
   it("sends an assignment as a field edit", async () => {
-    const house = new FakeDoor();
-    const tilo = open(house);
-    const page = tilo.workspace("jane-doe").resource(TODO);
-    await page.load();
+    const api = new FakeApi();
+    const page = await open(api).workspace("jane-doe").read(TODO);
 
     page.title = "Done";
     await page.flush();
 
-    expect(house.edits).toEqual([
+    expect(api.edits).toEqual([
       { resource: TODO, edit: { path: [{ field: "title" }], op: "set", value: "Done" } },
     ]);
-    expect(house.fields[TODO]?.title).toBe("Done");
-    await tilo.close();
+    expect(api.last()?.path).toBe(`/v1/workspaces/${WORKSPACE_ID}/resources/${TODO}/actions/field-edit`);
   });
 
-  it("edits a map one key down and takes an entry away", async () => {
-    const house = new FakeDoor();
-    const tilo = open(house);
-    const document = await tilo.workspace("jane-doe").read(PDF);
+  it("edits a field one level down, and removes a key", async () => {
+    const api = new FakeApi();
+    const form = await open(api).workspace("jane-doe").read(PDF);
 
-    const form = document.formValues as Record<string, unknown>;
-    form.surname = "Roe";
-    await document.flush();
+    (form.form_values as Record<string, unknown>).surname = "Okafor";
+    await form.flush();
+    await form.remove("form_values", "given_name");
 
-    expect(house.edits.at(-1)).toEqual({
-      resource: PDF,
-      edit: { path: [{ field: "form_values" }, { key: "surname" }], op: "set", value: "Roe" },
+    expect(api.edits[0]?.edit).toEqual({
+      path: [{ field: "form_values" }, { key: "surname" }],
+      op: "set",
+      value: "Okafor",
     });
-    expect(house.fields[PDF]?.form_values.surname).toBe("Roe");
-
-    await document.remove("form_values", "given_name");
-    expect(house.edits.at(-1)?.edit.op).toBe("remove-key");
-    expect(house.fields[PDF]?.form_values).toEqual({ surname: "Roe" });
-    await tilo.close();
+    expect(api.edits[1]?.edit).toEqual({
+      path: [{ field: "form_values" }, { key: "given_name" }],
+      op: "remove-key",
+      value: null,
+    });
   });
 
-  it("names an item as a step", async () => {
-    const house = new FakeDoor();
-    const tilo = open(house);
-    const page = await tilo.workspace("jane-doe").read(TODO);
+  it("runs an action by its camelCase name", async () => {
+    const api = new FakeApi();
+    const form = await open(api).workspace("jane-doe").read(PDF);
 
-    await page.edit(["blocks", { item: "c01e" }, "text"], "Buy oat milk");
+    const read = (await (form.readFormFields as () => Promise<{ fields: string[] }>)()) as {
+      fields: string[];
+    };
 
-    expect(house.edits.at(-1)?.edit.path).toEqual([
-      { field: "blocks" },
-      { item: "c01e" },
-      { key: "text" },
-    ]);
-    await tilo.close();
+    expect(read.fields).toEqual(["surname", "given_name"]);
+    expect(api.last()?.path).toBe(
+      `/v1/workspaces/${WORKSPACE_ID}/resources/${PDF}/actions/read-form-fields`,
+    );
   });
 
-  it("runs a method as the action", async () => {
-    const house = new FakeDoor();
-    const tilo = open(house);
-    const document = await tilo.workspace("jane-doe").read(PDF);
-
-    const readFormFields = document.readFormFields as () => Promise<unknown>;
-    const result = await readFormFields();
-
-    expect(result).toEqual({ fields: ["surname", "given_name"] });
-    expect(house.asked("tilo_do").at(-1)?.arguments.path).toBe(`${PDF}#read-form-fields`);
-    await tilo.close();
-  });
-
-  it("asks for a read before its fields", async () => {
-    const tilo = open(new FakeDoor());
-    const resource = tilo.workspace("jane-doe").resource(TODO);
-
-    expect(() => resource.title).toThrow(/load\(\)/);
-    await tilo.close();
+  it("says to read it before an action of it is called", async () => {
+    const api = new FakeApi();
+    const form = open(api).workspace("jane-doe").resource(PDF);
+    expect(() => (form.readFormFields as () => unknown)()).toThrow(/is not read yet/);
   });
 });
 
-describe("names", () => {
-  it("maps snake and camel case to kebab", () => {
-    expect(kebab("read_form_fields")).toBe("read-form-fields");
-    expect(kebab("readFormFields")).toBe("read-form-fields");
-    expect(kebab("read-form-fields")).toBe("read-form-fields");
-    expect(kebab("open")).toBe("open");
-    expect(kebab("addRequest")).toBe("add-request");
+describe("a generated type", () => {
+  it("reads the app's fields", async () => {
+    const api = new FakeApi();
+    const form: pdfViewer.Document = pdfViewer.pdfDocument(open(api).workspace("jane-doe"), PDF);
+    await form.load();
+
+    expect(form.page_count).toBe(3);
+    expect(form.form_values).toEqual({ surname: "Doe", given_name: "Jane" });
   });
 
-  it("builds a field path", () => {
-    expect(segments(["form_values", "surname"])).toEqual([
-      { field: "form_values" },
-      { key: "surname" },
-    ]);
-    expect(segments([{ item: "c01e" }])).toEqual([{ item: "c01e" }]);
-    expect(() => segments([])).toThrow();
+  it("sends its surface with every call it makes", async () => {
+    const api = new FakeApi();
+    const form = open(api).workspace("jane-doe").resource(PDF, { surface: api.surface });
+    await form.load();
+
+    form.reading_fraction = 0.5;
+    await form.flush();
+    await form.action("read-form-fields");
+
+    const edits = api.calls.filter((call) => call.path.endsWith("/actions/field-edit"));
+    expect(edits[0]?.headers["tilo-surface"]).toBe(SURFACE);
+    expect(api.last()?.headers["tilo-surface"]).toBe(SURFACE);
+  });
+
+  it("throws SurfaceChanged when the workspace publishes another surface", async () => {
+    const api = new FakeApi();
+    const form = open(api)
+      .workspace("jane-doe")
+      .resource(PDF, "so.tilo.pdf-viewer@ffffffffffffffff");
+    await form.load();
+
+    const failure = form.action("read-form-fields");
+
+    await expect(failure).rejects.toBeInstanceOf(SurfaceChanged);
+    const refused = (await failure.catch((error) => error)) as SurfaceChanged;
+    expect(refused.code).toBe("surface_changed");
+    expect(refused.message).toContain("tilo sdk gen");
+    expect(refused.nextSteps[0]).toContain("tilo sdk gen");
+  });
+
+  it("sends no surface for a plain resource", async () => {
+    const api = new FakeApi();
+    const form = await open(api).workspace("jane-doe").read(PDF);
+    await form.action("read-form-fields");
+
+    expect(api.last()?.headers["tilo-surface"]).toBeUndefined();
   });
 });

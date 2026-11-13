@@ -23,6 +23,10 @@ pub const DETAIL: &str = "detail~";
 /// The event of the composed shell that goes back from the window after the root's.
 pub const BACK: &str = "back";
 
+/// The prop of a composed shell whose window has nothing at all to list, so it shows the app's
+/// one state where its columns stand ([`nothing_listed`]).
+pub const NOTHING_LISTED: &str = "nothing_listed";
+
 fn shell_kind() -> String {
     kind("NavShell")
 }
@@ -351,7 +355,7 @@ pub fn nothing_listed(mut shell: UiNode) -> UiNode {
     shell = with_slot(shell, "content", vec![state]);
     shell
         .props
-        .insert("nothing_listed".to_owned(), Value::Bool(true));
+        .insert(NOTHING_LISTED.to_owned(), Value::Bool(true));
     // The window opens on its one state: no column keeps a front for a column that is gone.
     shell.props.remove("pane");
     shell

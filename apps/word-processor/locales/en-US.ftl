@@ -62,7 +62,6 @@ a11y-highlight = Highlight #{ $hex }
 a11y-highlight-clear = Clear highlight
 
 ## Status bar
-status-untitled = Untitled
 
 ## Header / footer edit-mode tabs
 band-header = Header
@@ -157,7 +156,7 @@ style-menu-delete = Delete style
 style-menu-duplicate = Duplicate style
 
 ## Transient toasts (confirmation cues)
-toast-toc-empty = Add headings first — a table of contents lists them
+toast-toc-empty = Add headings first
 toast-save-failed = Could not save the document
 toast-view-only = This document is open to view only.
 toast-file-dialog-failed = Could not open the file chooser
@@ -210,12 +209,6 @@ color-cyan = cyan
 color-pink = pink
 color-orange = orange
 panel-close = Close
-
-# A selected file differs from the current admitted workspace document.
-file-choice-title = Choose the document to open
-file-choice-body = This file differs from the workspace document. Keep the workspace version, or import the selected file into its history.
-file-choice-keep = Keep workspace version
-file-choice-use = Use selected file
 
 ## Inspector and status band
 status-words = { $words } { $words ->
@@ -338,3 +331,6 @@ word-processor-document-adopt-comments = Keep imported comments
 word-processor-document-set-page-margins = Set page margins
 word-processor-document-generate-toc = Generate table of contents
 word-processor-document-note-file-written = Record a written file
+
+## What the app is called in a window and in the launcher
+word-processor-app-title = Word Processor

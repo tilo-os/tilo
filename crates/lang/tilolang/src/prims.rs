@@ -264,8 +264,10 @@ pub fn arg_choice(prim: &str, arg: &str) -> Option<&'static str> {
     })
 }
 
-/// Free functions of the language itself; `open` and `set` are the platform's actions on the
-/// workspace and on view state.
+/// Free functions of the language itself, written as a bare name; `open` and `set` are the
+/// platform's actions on the workspace and on view state. A word an app naturally takes for one
+/// of its own actions is not here: the words marker is `std.say`, in the library's namespace
+/// (`stdlib::NS`), so a chat app's `say` action keeps the bare name.
 pub const BUILTINS: &[&str] = &[
     "outside",
     "model_call",
@@ -278,7 +280,6 @@ pub const BUILTINS: &[&str] = &[
     "set",
     "resource",
     "preview_rows",
-    "say",
 ];
 
 /// The fields of `workspace`.

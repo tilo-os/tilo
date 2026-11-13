@@ -340,3 +340,6 @@ ebook-library-delete-highlight = Delete highlight
 ebook-library-delete-annotation = Delete annotation
 ebook-library-remove-font = Remove font
 ebook-library-delete-scheme = Delete scheme
+
+## What the app is called in a window and in the launcher
+ebook-app-title = Books

@@ -113,3 +113,13 @@ incremental = true
 
 [profile.release]
 incremental = false
+
+# Run Tilo from this checkout, one command each (crates/dev/tilo-local; each
+# takes --help and --check): the desktop in a window on the desktop you use,
+# the session with no window for agents and tests, and the web desktop on the
+# local hosting stack. `cargo local` lists them.
+[alias]
+desktop = ["run", "--locked", "--quiet", "--package", "tilo-local", "--", "desktop"]
+headless = ["run", "--locked", "--quiet", "--package", "tilo-local", "--", "headless"]
+web = ["run", "--locked", "--quiet", "--package", "tilo-local", "--", "web"]
+local = ["run", "--locked", "--quiet", "--package", "tilo-local", "--"]

@@ -99,6 +99,7 @@ impl ResourceApp for GitClientShell {
     type Resource = GitClient;
     const ID: &'static str = "so.tilo.git-client";
     const TITLE: &'static str = "Git";
+    const TITLE_KEY: &'static str = "git-client-app-title";
     const ICON: Option<&'static str> = Some("git-client");
     /// The repository to open, by path.
     const ARGUMENTS: usize = 1;

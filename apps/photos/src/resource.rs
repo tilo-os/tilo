@@ -248,7 +248,7 @@ impl PhotoLibrary {
         let merged = crate::model::merge_image_analysis(
             photo.analysis().as_ref(),
             analysis,
-            &photo.image.content,
+            &photo.image.hash(),
         );
         photo.set_analysis(Some(merged));
         Ok(())
@@ -485,6 +485,7 @@ impl ResourceApp for PhotosShell {
     type Resource = PhotoLibrary;
     const ID: &'static str = "so.tilo.photos";
     const TITLE: &'static str = "Photos";
+    const TITLE_KEY: &'static str = "photos-app-title";
     const ICON: Option<&'static str> = Some("photos");
     const OPENS: &'static [&'static str] = &["image/png", "image/jpeg", "image/webp"];
     /// A photograph to open, or a folder of them to import, into the library.
@@ -556,14 +557,14 @@ impl ResourceApp for PhotosShell {
             );
             return Vec::new();
         };
-        let hash = match content.put(file.bytes()) {
-            Ok(hash) => hash,
+        let kept = match content.put(file.bytes()) {
+            Ok(reference) => ui::tilo_resource::Bytes::kept_as(file.bytes(), &reference),
             Err(error) => {
                 tracing::warn!(%error, "photos: could not keep the launched photograph");
                 return Vec::new();
             }
         };
-        let open = OpenImage::new(file.name(), width, height, hash);
+        let open = OpenImage::new(file.name(), width, height, kept);
         vec![import(&LibraryPhoto::from_image(open))]
     }
 

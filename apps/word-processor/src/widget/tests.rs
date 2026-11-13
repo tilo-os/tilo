@@ -6877,6 +6877,7 @@ fn semantic_text_caret_is_painted_without_a_selection_or_input() {
                 id: "type-text".into(),
                 label: "Type text".into(),
                 app: None,
+                step: None,
             },
             resource: tilo_actions::ActionResource {
                 id: "word-processor.document".into(),

@@ -365,14 +365,14 @@ pub const PAGES: &[Page] = &[
         slug: "region_formats",
     },
     Page { slug: "time_date" },
+    Page {
+        slug: "keyboard_shortcuts",
+    },
     Page { slug: "displays" },
     Page { slug: "sound" },
     Page { slug: "speakers" },
     Page { slug: "keyboard" },
     Page { slug: "pointing" },
-    Page {
-        slug: "keyboard_shortcuts",
-    },
     Page { slug: "printers" },
     Page { slug: "power" },
     Page {

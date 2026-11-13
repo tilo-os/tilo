@@ -995,14 +995,8 @@ fn an_agents_run_gets_the_agent_rendering() {
             .values()
             .find(|run| (run.actor.0 == "agent:helper") == (actor == "agent"))
             .unwrap();
-        let Bytes::Blob { hash, .. } = &run.output else {
-            panic!("printed nothing: {run:?}");
-        };
-        let hex = hash.iter().fold(String::new(), |mut hex, b| {
-            let _ = std::fmt::Write::write_fmt(&mut hex, format_args!("{b:02x}"));
-            hex
-        });
-        String::from_utf8(app.content().read(&hex).expect("the output")).unwrap()
+        let printed = run.output.read(&app.content()).expect("the output");
+        String::from_utf8(printed).unwrap()
     };
     assert!(
         output("person").contains("p:\r\nf0.txt\r\nf1.txt\r\nf2.txt"),

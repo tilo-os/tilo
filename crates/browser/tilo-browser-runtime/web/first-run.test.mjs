@@ -807,3 +807,15 @@ test('the agent setup can be shown again from the person\'s card, in the same pl
   assert.notEqual(screen().removed, true, 'the same screen is shown the next time');
   assert.equal(openFirstRun({getElementById: () => null}), null, 'a page without one shows nothing');
 });
+
+test('a host that did not answer is named, and one on this computer is not blamed on the connection', () => {
+  const unreached = origin => Object.assign(new Error('The host could not be reached'), {code: 'unreachable', origin});
+  assert.equal(setupFailure(unreached('https://eu1.tilo.sh'), {site: 'https://tilo.sh'}),
+    'Couldn’t reach eu1.tilo.sh. Check your connection, then try again.');
+  assert.equal(setupFailure(unreached('http://127.0.0.1:24100'), {site: 'http://tilo.localhost:24120'}),
+    'Couldn’t reach 127.0.0.1:24100 on this computer. Check that it is running, then try again.');
+  assert.equal(setupFailure(unreached('https://eu1.tilo.localhost:24100'), {site: 'https://tilo.localhost:24120'}),
+    'Couldn’t reach eu1.tilo.localhost:24100 on this computer. It isn’t running, or this browser doesn’t trust its certificate.');
+  assert.equal(setupFailure(new TypeError('Failed to fetch'), {site: 'https://tilo.sh'}),
+    'Couldn’t reach tilo.sh. Check your connection, then try again.');
+});

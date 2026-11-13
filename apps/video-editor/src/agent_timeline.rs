@@ -12,9 +12,9 @@
 //! so they replicate, undo and replay like a person's edits; [`answer`] tells
 //! the caller what each did.
 //!
-//! A source imported from content stores its content address
-//! (`tilo.content:<hash>`) as its path: what a render on the workspace's host
-//! reads its bytes by, where a file path would mean nothing.
+//! A source imported from content stores the reference that opens it
+//! (`tilo.content:<reference>`) as its path: what a render on the workspace's
+//! host reads its bytes by, where a file path would mean nothing.
 
 use std::io::Read as _;
 
@@ -71,24 +71,9 @@ pub fn content_media_id(hash: &str) -> Uuid {
     uuid::Builder::from_random_bytes(bytes).into_uuid()
 }
 
-/// The hash a content address names: `tilo.content:<hash>`, or the bare hash.
-pub fn content_hash_of(address: &str) -> Result<String, String> {
-    let address = address.trim();
-    let hash = tilo_actions::content_hash(address)
-        .unwrap_or(address)
-        .to_ascii_lowercase();
-    if hash.len() == 64 && hash.chars().all(|c| c.is_ascii_hexdigit()) {
-        Ok(hash)
-    } else {
-        Err(format!(
-            "`{address}` names no content: give `tilo.content:<hash>`"
-        ))
-    }
-}
-
-/// The content address of a source imported from content, `None` for a file.
+/// The content reference a source was imported from, `None` for a file.
 fn content_of(media: &MediaItem) -> Option<&str> {
-    tilo_actions::content_hash(&media.path).map(|_| media.path.as_str())
+    tilo_actions::named_reference(&media.path).map(|_| media.path.as_str())
 }
 
 /// The kind and number a lane's name reads as: `V2` a second video track,
@@ -1280,41 +1265,50 @@ pub fn effect<H: 'static>(
     }
 }
 
-/// The bin source the content at `address` makes in `project`: the one
-/// already imported from it, else a new one from its container's metadata.
+/// The bin source the content `named` makes in `project`: the one already
+/// imported from it, else a new one from its container's metadata.
+///
+/// The content is read through the reference `named` carries, so a workspace
+/// that keeps content sealed is read as the media it holds, never as the
+/// ciphertext stored under its address; the source's path is that same
+/// reference, so a render on the workspace's host opens it as well.
 pub fn imported(
     project: &Project,
     store: &ContentStore,
-    address: &str,
+    named: &str,
     name: Option<&str>,
     duration: Option<f64>,
 ) -> Result<MediaItem, String> {
-    let hash = content_hash_of(address)?;
-    let id = content_media_id(&hash);
+    let refusal = || format!("`{named}` names no content: give `tilo.content:<reference>`");
+    let reference = tilo_actions::named_reference(named).ok_or_else(refusal)?;
+    // The address is what names the content the same on every device, so the
+    // same media keeps its id wherever it is imported.
+    let address = ui::framework::content::content_address(reference).ok_or_else(refusal)?;
+    let id = content_media_id(&address);
     if let Some(existing) = project.media(id) {
         return Ok(existing.clone());
     }
     let mut head = Vec::new();
     store
-        .open(&hash)
-        .ok_or_else(|| format!("content `{hash}` is not held in this workspace"))?
+        .open(reference)
+        .ok_or_else(|| format!("content `{reference}` is not held in this workspace"))?
         .take(PROBE_BYTES)
         .read_to_end(&mut head)
-        .map_err(|error| format!("content `{hash}` could not be read: {error}"))?;
+        .map_err(|error| format!("content `{reference}` could not be read: {error}"))?;
     let name = name.map(str::trim).filter(|name| !name.is_empty());
     let hint = std::path::Path::new(name.unwrap_or("content"));
     let probed = crate::probe::probe_bytes(&head, hint)
-        .map_err(|error| format!("content `{hash}` {error}"))?;
+        .map_err(|error| format!("content `{reference}` {error}"))?;
     let duration = match (probed.duration, duration) {
         (known, _) if known > 0.0 => known,
         (_, Some(given)) if given.is_finite() && given > 0.0 => given,
         _ => {
             return Err(format!(
-                "content `{hash}`'s container does not say how long it lasts: give duration"
+                "content `{reference}`'s container does not say how long it lasts: give duration"
             ));
         }
     };
-    let short: String = hash.chars().take(8).collect();
+    let short: String = address.chars().take(8).collect();
     let name = name.map_or_else(
         || format!("{}-{short}", probed.kind.label().to_ascii_lowercase()),
         str::to_owned,
@@ -1330,7 +1324,7 @@ pub fn imported(
         // import carries it.
         fps: probed.fps,
         palette: u8::try_from(project.media.len() % 7).unwrap_or(0),
-        path: tilo_actions::content_resource(&hash).unwrap_or_default(),
+        path: tilo_actions::content_resource(reference).unwrap_or_default(),
         text: None,
         has_audio: probed.has_audio,
     })

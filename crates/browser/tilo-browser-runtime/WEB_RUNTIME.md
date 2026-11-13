@@ -31,6 +31,20 @@ Tools: the pinned Rust toolchain with
 `wasm32-unknown-unknown`, a wasm-bindgen CLI matching the crate's pinned
 wasm-bindgen, binaryen, Node.js.
 
+`--wasm-steps` (or `$TILO_BUNDLE_WASM_STEPS`) says where the steps that turn
+the linked module into `pkg/` run: wasm-bindgen wants several gigabytes and
+wasm-opt over the start module alone wants more, which is the build's memory
+rather than the compile's. `auto` runs them on the builder when `$CARGO` is a
+drop-in that runs a program there and brings a directory of the target dir
+back (`rcargo exec`, or the local stack's `os/containers/tilo-sh/cargo.sh`,
+which hands it to rcargo when it builds with t), and beside the compile
+otherwise, so a machine that only asked for the build needs no wasm-bindgen
+or binaryen of its own; `builder` refuses to run them here, `local` never
+sends them away. Only the finished directory comes back (`pkg/`, `data/`,
+`apps.json`, `wasm.json`), the one a local run writes, so both make the same
+`pkg/` and record the same `build.json`; a fetch that brings back too little,
+or an earlier run's, stops the build and names what it looked for.
+
 ## Cargo features of `tilo-browser-runtime`
 
 The crate has no Cargo features: the one wasm32 build carries the toolkit,

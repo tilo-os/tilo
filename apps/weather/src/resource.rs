@@ -183,6 +183,7 @@ impl ResourceApp for WeatherShell {
     type Resource = Weather;
     const ID: &'static str = "so.tilo.weather";
     const TITLE: &'static str = "Weather";
+    const TITLE_KEY: &'static str = "weather-app-title";
 
     fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
         Some(&crate::locales::CATALOG)

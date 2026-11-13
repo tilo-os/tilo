@@ -1128,3 +1128,77 @@ fn a_screen_reader_hears_what_the_screen_says_before_the_workspace_synced() {
     );
     crate::workspace_sync::set(None);
 }
+
+/// A control's place is the layout's: a window that has laid out and has not
+/// yet painted still finds the empty state's action inside it, never at the
+/// window's origin, where a box nothing placed stands.
+#[test]
+fn the_layout_places_the_action_without_a_paint() {
+    let mut state = EmptyState::new("No notes yet")
+        .with_message("Notes you write show up here.")
+        .with_action("New note")
+        .on_view(|| {});
+    lay_out(&mut state, 600.0, 400.0);
+    let action = state.action_rect();
+    let box_ = Widget::get_rect(&state);
+    assert!(
+        !action.is_zero_area(),
+        "the layout places the action: {action:?}"
+    );
+    let published = state
+        .engine
+        .as_ref()
+        .map(Widget::get_rect)
+        .expect("the action is a published button");
+    assert_eq!(
+        published, action,
+        "the published button stands where the action does"
+    );
+    assert!(
+        box_.contains(action.center()),
+        "inside the state that holds it: {action:?} in {box_:?}"
+    );
+
+    // Placed by a host of its own, the same holds.
+    let mut placed = EmptyState::new("No notes yet").with_action("New note");
+    let external = Rect::new(120.0, 60.0, 720.0, 460.0);
+    placed.apply_layout_external(external);
+    let action = placed.action_rect();
+    assert!(
+        !action.is_zero_area() && external.contains(action.center()),
+        "a host-placed state places its action too: {action:?} in {external:?}"
+    );
+}
+
+/// The same for the "Details" disclosure: laid out without a paint, it stands
+/// under the action, inside the state, and answers a press.
+#[test]
+fn the_layout_places_the_details_disclosure_without_a_paint() {
+    let detail = "command process failed: No such file or directory (os error 2)";
+    let mut state = EmptyState::new("Podman isn't available")
+        .with_message("Install Podman to manage containers here.")
+        .with_action("Try again")
+        .with_details(detail);
+    lay_out(&mut state, 600.0, 400.0);
+    let toggle = state.details_rect;
+    let box_ = Widget::get_rect(&state);
+    assert!(
+        !toggle.is_zero_area(),
+        "the layout places the disclosure: {toggle:?}"
+    );
+    assert!(
+        box_.contains(toggle.center()),
+        "inside the state: {toggle:?} in {box_:?}"
+    );
+    assert!(
+        toggle.y0 >= state.action_rect().y1,
+        "under the action: {toggle:?} {:?}",
+        state.action_rect()
+    );
+    dispatch(&mut state, &cursor(toggle.center()));
+    assert!(
+        dispatch(&mut state, &mouse_press()),
+        "the click opens it before anything painted"
+    );
+    assert!(state.details_open());
+}

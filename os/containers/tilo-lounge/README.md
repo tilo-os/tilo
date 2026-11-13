@@ -127,18 +127,23 @@ whole-program link the image's own build spends.
 
 `test-e2e.sh` is the web page end to end, on every change that reaches it
 (`t test e2e`): the tilo.sh stack runs through production's own entrypoints
-for this image, the front door and the web entry (`os/containers/tilo-sh`'s
+for this image, the API server and the web entry (`os/containers/tilo-sh`'s
 `stack.sh`), from what the checks beside it built, and every flow runs at the
 same time against that one site, relay and room, each as people of its own in
 headless Chromium: the page booting, two people chatting and calling, the
 desk's menus and gestures, an invitation, a shared link, a setup through an
 agent and its resumes, the startup identity approving a server key and the
 visa run beside it, fresh visitors' entry into the Lounge, the wait list of a
-door that takes people by invitation, and the chat read back after the relay
-restarts. Each flow runs alone too:
+door that takes people by invitation, a stranger's onboarding on a tilo.sh of
+its own (`test-onboarding.sh`: the wait list, the two mails, the invitation the
+person who runs the host sends from the workspace's wait list, and the
+workspace of their own with their agent set up in it; it stops at the passkey,
+which the host refuses to certify the tab for), and the chat read back after
+the relay restarts. Each flow runs alone too:
 
 ```
 bash os/containers/tilo-lounge/test-e2e.sh out/web-desktop/bundle /tmp/e2e people-call
+bash os/containers/tilo-lounge/test-onboarding.sh out/web-desktop/bundle /tmp/onboarding
 ```
 
 It needs node, a headless Chrome (`CHROME`, else Playwright's cache), curl,

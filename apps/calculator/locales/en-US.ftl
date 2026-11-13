@@ -139,3 +139,6 @@ calculator-document-add-function = Add curve
 calculator-document-add-surface = Add surface
 calculator-document-delete-function = Remove curve
 calculator-document-delete-surface = Remove surface
+
+## What the app is called in a window and in the launcher
+calculator-app-title = Calculator

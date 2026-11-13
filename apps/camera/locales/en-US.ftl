@@ -2,7 +2,7 @@
 
 ## History: what each change to the camera's record did
 
-camera-register-capture = Handed off a new capture
+camera-register-capture = Took a photo or a video
 camera-record-scan = Scanned { $raw }
 
 camera-title = Camera
@@ -11,7 +11,7 @@ camera-title = Camera
 
 camera-action-use-device = Use { $device }
 camera-action-stop-recording = Stop recording
-camera-action-register-capture = Hand off capture
+camera-action-register-capture = Offer the latest capture
 camera-action-record-scan = Record scanned code
 camera-effect-open-camera = Open Camera
 camera-effect-open-scanner = Open Scan
@@ -116,3 +116,6 @@ camera-refresh = Refresh
 camera-scanning = Scanning…
 camera-scan-page = Scan page
 camera-open-in = Open in { $destination }
+
+## What the app is called in a window and in the launcher
+camera-app-title = Camera

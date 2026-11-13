@@ -128,6 +128,7 @@ class StoredContent(TypedDict):
 
 class Library(Resource):
     """Books — `ebook.library`."""
+    __surface__ = "so.tilo.ebook@9e00c5d2e4943c8a"
     entries: list[LibraryEntry]
     progress: dict[str, Progress]
     settings: Settings
@@ -267,11 +268,13 @@ class Library(Resource):
 
 class BooksCatalogues(Resource):
     """Book catalogues — `settings.books-catalogues`."""
+    __surface__ = "so.tilo.ebook@9e00c5d2e4943c8a"
     keep_catalogues: bool
 
 
 class Files(Resource):
     """Book files — `ebook.files`."""
+    __surface__ = "so.tilo.ebook@9e00c5d2e4943c8a"
     devices: dict[str, Any]
 
     def keep(self,

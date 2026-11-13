@@ -23,6 +23,7 @@ __all__ = [
 
 class Workbench(Resource):
     """Shortcuts — `shortcuts.workbench`."""
+    __surface__ = "so.tilo.shortcuts@a41479e69568cbd8"
     drafts: Any
     ignored: Any
 

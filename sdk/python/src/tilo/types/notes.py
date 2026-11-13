@@ -36,6 +36,7 @@ class Tag(TypedDict):
 
 class Notebook(Resource):
     """Notebook — `notes.notebook`."""
+    __surface__ = "so.tilo.notes@cec36ca8d20cd4bb"
     pages: list[Page]
     tags: list[Tag]
     @property

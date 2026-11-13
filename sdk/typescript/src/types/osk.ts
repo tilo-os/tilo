@@ -17,6 +17,11 @@
 import { resourceProxy } from "tilo-sdk";
 import type * as tilo from "tilo-sdk";
 
+/** The version of the surface these types were made from: a workspace whose app
+ * publishes another refuses their actions rather than run what they no longer
+ * describe. */
+export const SURFACE = "so.tilo.osk@cc8a202934dfe9a2";
+
 export interface KeyOffset {
   dx: number;
   dy: number;
@@ -57,7 +62,7 @@ export interface Keyboard extends tilo.Resource {
 
 /** The `osk.keyboard` kind at `path`. */
 export function keyboard(ws: tilo.Workspace, path: string): Keyboard {
-  return resourceProxy(ws, path) as unknown as Keyboard;
+  return resourceProxy(ws, path, SURFACE) as unknown as Keyboard;
 }
 
 /** What the keyboard learned — `osk.learned`. */
@@ -73,6 +78,6 @@ export interface Learned extends tilo.Resource {
 
 /** The `osk.learned` kind at `path`. */
 export function learned(ws: tilo.Workspace, path: string): Learned {
-  return resourceProxy(ws, path) as unknown as Learned;
+  return resourceProxy(ws, path, SURFACE) as unknown as Learned;
 }
 

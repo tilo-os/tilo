@@ -446,6 +446,22 @@ fn a_workspace_whose_answer_names_nobody_marks_everyone_else_offline() {
     assert_eq!(app.live_status(&me), Presence::Online, "I am here");
 }
 
+/// An agent a person admitted is named with them, as presence knows whom it acts for: "Helper
+/// for Ada" to everyone else, "Helper for you" to Ada.
+#[test]
+fn an_agent_is_named_with_the_person_it_acts_for() {
+    use ui::permissions::UserId;
+    let (mut app, _) = app_with_doc();
+    let mut presence = ui::presence::PresenceCtx::default();
+    presence.set_display_name(UserId("ada".into()), "Ada");
+    presence.set_display_name(UserId("agent:helper".into()), "Helper");
+    presence.set_acting_for(UserId("agent:helper".into()), Some(UserId("ada".into())));
+    app.adopt_workspace(&presence);
+    assert_eq!(app.user_name("agent:helper"), "Helper for Ada");
+    app.me.id = "ada".into();
+    assert_eq!(app.user_name("agent:helper"), "Helper for you");
+}
+
 #[test]
 fn the_workspaces_call_places_its_people_in_the_voice_channel_by_person() {
     let (mut app, _) = app_with_doc();

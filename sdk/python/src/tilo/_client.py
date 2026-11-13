@@ -189,9 +189,11 @@ class AsyncTilo:
         return self.transport.handoff(value)
 
     async def aclose(self) -> None:
+        """Close every session this client has open: await it, or use `async with`."""
         await self.transport.aclose()
 
     def close(self) -> Any:
+        """Close the client; with the sync client this stops its event loop too."""
         if self.sync:
             self.transport.loop.run(self.transport.aclose())
             self.transport.loop.stop()
@@ -402,6 +404,7 @@ class Tilo(AsyncTilo):
         self.close()
 
     def close(self) -> None:
+        """Close every session this client has open, and stop its event loop."""
         if self.transport.loop is not None:
             self.transport.loop.run(self.transport.aclose())
             self.transport.loop.stop()

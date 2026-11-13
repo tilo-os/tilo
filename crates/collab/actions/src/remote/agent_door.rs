@@ -8,7 +8,7 @@
 //! it makes there is attributed to it in the workspace's history
 //! ([`super::workspace_activity`]), where its runs are read and undone.
 //!
-//! The model is the MCP front door's (`crates/hosting/tilo-front-door`): a
+//! The model is the API server's (`crates/hosting/tilo-api`): a
 //! grant reaches every workspace of the person or exactly one, and each MCP
 //! session through it is one run, named for the person ("Claude Code #2") as
 //! History names it. Whoever runs the door serves [`PROVIDER`]; a host

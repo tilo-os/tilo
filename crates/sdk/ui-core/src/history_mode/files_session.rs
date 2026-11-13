@@ -710,13 +710,10 @@ pub(super) fn outcome_message(outcome: &Outcome) -> String {
     match outcome {
         Outcome::Applied { receipt } => I18nManager::format(
             "history-files-outcome-applied",
-            &[
-                (
-                    "revision",
-                    receipt.restored_revision.version_id.0.to_string().into(),
-                ),
-                ("intent", receipt.intent_id.to_string().into()),
-            ],
+            &[(
+                "revision",
+                receipt.restored_revision.version_id.0.to_string().into(),
+            )],
         ),
         Outcome::Unchanged { .. } => I18nManager::lookup_plain("history-files-outcome-unchanged"),
         Outcome::RecoveryPending { .. } => {
@@ -726,10 +723,9 @@ pub(super) fn outcome_message(outcome: &Outcome) -> String {
         Outcome::NotVisible => I18nManager::lookup_plain("history-files-not-visible"),
         Outcome::ReadOnly => I18nManager::lookup_plain("history-files-outcome-read-only"),
         Outcome::PendingWrites => I18nManager::lookup_plain("history-files-outcome-pending-writes"),
-        Outcome::UnsupportedOwner { mapping } => I18nManager::format(
-            "history-files-outcome-unsupported-owner",
-            &[("mapping", mapping.clone().into())],
-        ),
+        Outcome::UnsupportedOwner { .. } => {
+            I18nManager::lookup_plain("history-files-outcome-unsupported-owner")
+        }
         Outcome::Unavailable => I18nManager::lookup_plain("history-files-outcome-unavailable"),
         Outcome::InvalidRequest => I18nManager::lookup_plain("history-files-outcome-invalid"),
     }
@@ -821,10 +817,7 @@ mod tests {
             };
             controller.load();
             assert!(controller.drain());
-            assert_eq!(
-                controller.message,
-                "File history is unavailable on this host"
-            );
+            assert_eq!(controller.message, "This file has no history here");
             assert!(!controller.has_results(), "no immediate retry loop");
         }
         // phase: files_activity_rejects_incoherent_page_metadata_and_order
@@ -953,7 +946,7 @@ mod tests {
             })
             .unwrap();
         initial.drain();
-        assert_eq!(initial.message, "0 immutable versions");
+        assert_eq!(initial.message, "0 versions");
 
         let mut controller = controller();
         controller.active = false;
@@ -1028,7 +1021,7 @@ mod tests {
         controller.drain();
         assert_eq!(
             controller.message,
-            "Invalid backend result; the exact request remains unresolved"
+            "Couldn't tell whether the restore ran. Check the file's history"
         );
         controller
             .tx
@@ -1040,7 +1033,7 @@ mod tests {
         controller.drain();
         assert_eq!(
             controller.message,
-            "Invalid backend result; the exact request remains unresolved"
+            "Couldn't tell whether the restore ran. Check the file's history"
         );
     }
 
@@ -1215,7 +1208,7 @@ mod tests {
                 .unwrap();
             controller.drain();
             assert!(controller.scope.is_none());
-            assert!(controller.message.contains("binding changed"));
+            assert!(controller.message.contains("another file"));
         }
         // phase: files_closed_generation_retains_original_intent_result_without_retargeting
         {

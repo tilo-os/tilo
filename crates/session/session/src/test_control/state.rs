@@ -181,6 +181,38 @@ pub(super) fn state_dump(tree: &DesktopTree, desk: &Desk<'_>) -> Json {
     }})
 }
 
+/// Who hosts each workspace this computer holds, and whether its host took this computer in yet: a
+/// machine copied from another holds its workspaces before their hosts admit it, and `tilo-vm vm
+/// branch` waits for that. One row per held workspace: its id (`room`), its name on the desk, the
+/// host's name as its person gave it, whether this computer is the host, and whether it still
+/// waits for the host. A socket sees what [`shown`] lets it see of the desk: an app its own
+/// workspace, and nothing of a locked desk but through a development socket.
+pub(super) fn workspace_hosts(tree: &DesktopTree, desk: &Desk<'_>, ctx: &Context) -> Json {
+    let rows: Vec<Json> = if ctx.gate != Gate::Dev && desk.locked {
+        Vec::new()
+    } else {
+        tree.workspaces
+            .iter()
+            .filter(|workspace| {
+                ctx.scope
+                    .as_ref()
+                    .is_none_or(|scope| workspace.id().to_string() == scope.workspace)
+            })
+            .filter_map(|workspace| {
+                let hosting = desk.engine?.hosting(workspace.id())?;
+                Some(json!({
+                    "room": workspace.id().to_string(),
+                    "name": workspace.name.clone(),
+                    "host": hosting.host,
+                    "hosted_here": hosting.here,
+                    "awaiting_host": !hosting.admitted,
+                }))
+            })
+            .collect()
+    };
+    json!({"answer": {"workspaces": rows}})
+}
+
 /// Who is here, as every surface here draws them: this device's own row, and each workspace this
 /// session takes part in with everyone present in it, as the collaboration plane says. `Null` when
 /// this session takes part in no plane.

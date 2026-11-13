@@ -6,7 +6,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   fetchEnvelope, fetchProfile, fitDisplayName, hex, IdentityError, installNodeCertificate, MAX_DISPLAY_NAME_BYTES,
-  nodeInstallInfo, publishProfile, unhex,
+  keptIdentity, nodeInstallInfo, publishProfile, signInWithPasskey, unhex,
 } from './identity.mjs';
 
 /** What resolved a promise: its value, or the error it refused with. */
@@ -173,4 +173,33 @@ test('a node is asked what it runs, and only a session its own key vouches for i
   await nodeInstallInfo({origin: 'https://node.example', devicePublicKey: node, installToken: 't', fetch: asked});
   assert.equal(asked.requests[0].init.method, 'GET');
   assert.equal(asked.requests[0].init.headers['x-tilo-install-token'], 't');
+});
+
+/** A browser's IndexedDB store, in memory. */
+function memoryStorage(entries = {}) {
+  const kept = new Map(Object.entries(entries));
+  return {get: async key => kept.get(key), put: async (key, value) => { kept.set(key, value); }};
+}
+
+test('a person signed in with a passkey is the person this browser keeps, replacing whoever it was', async () => {
+  const root = 'cd'.repeat(32);
+  // The browser was someone else first: a visitor it made at the door.
+  const storage = memoryStorage({identity: {rootPublicKey: 'ef'.repeat(32), held: 'held-before', envelope: {wraps: []}}});
+  const envelope = {root: root, wraps: [{kind: 'passkey'}]};
+  const runtime = {
+    rootEnvelopePublicKey: () => root,
+    rootOpenPasskey: async () => ({userPublicKey: root, held: 'held-by-this-browser'}),
+    rootHeld: async (publicKey, held) => ({userPublicKey: publicKey, held, lock() {}}),
+    rootEnvelopeKept: () => true,
+  };
+  const credentials = {get: async () => ({
+    rawId: new Uint8Array([1, 2, 3]).buffer,
+    response: {userHandle: new TextEncoder().encode(root).buffer},
+    getClientExtensionResults: () => ({prf: {results: {first: new Uint8Array(32).fill(9).buffer}}}),
+  })};
+  const signedIn = await signInWithPasskey({rpId: 'tilo.test', fetchEnvelope: async () => envelope, storage, credentials,
+    persist: null, runtime});
+  assert.equal(signedIn.userPublicKey, root);
+  assert.deepEqual(await keptIdentity({storage}), {rootPublicKey: root, held: 'held-by-this-browser'},
+    'the next load opens the person who signed in, not the visitor the browser was');
 });

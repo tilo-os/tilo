@@ -3,6 +3,11 @@
 # Keys are added as surfaces are migrated off literals; a string that is still
 # a literal in the source is not translated yet, not intentionally excluded.
 
+## First run
+mail-first-run-title = No email account yet
+mail-first-run-hint = Add an email account in Settings, under External accounts.
+mail-first-run-action = Open External accounts
+
 ## Compose window
 mail-compose-label-to = To
 mail-compose-label-cc = Cc
@@ -95,7 +100,7 @@ mail-forward-too-large = { $count ->
    *[other] { $files } are more than one message can carry, so they are not attached
 }
 
-mail-account-secret-unavailable = This account's password could not be opened on this device. Check the account in Settings, under External Accounts.
+mail-account-secret-unavailable = This account's password could not be opened on this device. Check the account in Settings, under External accounts.
 mail-import-sign-in-required = Imported account settings require authentication. Sign in before connecting.
 
 ## Reader: an HTML message's remote content, links and format
@@ -227,7 +232,6 @@ mail-folder-archive = Archive
 mail-folder-trash = Trash
 mail-folder-junk = Junk
 mail-refresh-offline = Cannot refresh { $folder } for { $account } while IMAP is offline
-mail-first-run-message = Email accounts are added in Settings, under External Accounts.
 
 ## The window bar's slots
 mail-bulk-done = Done
@@ -281,3 +285,6 @@ mail-mailbox-draft-message = Draft message
 mail-trusted-senders = Trusted senders
 mail-trusted-senders-trust = Trust this sender
 mail-trusted-senders-distrust = Stop trusting this sender
+
+## What the app is called in a window and in the launcher
+mail-app-title = Mail

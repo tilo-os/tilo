@@ -17,6 +17,11 @@
 import { resourceProxy } from "tilo-sdk";
 import type * as tilo from "tilo-sdk";
 
+/** The version of the surface these types were made from: a workspace whose app
+ * publishes another refuses their actions rather than run what they no longer
+ * describe. */
+export const SURFACE = "so.tilo.contacts@5c664e5f9acae0fb";
+
 export interface Address {
   id: string;
   label: string;
@@ -109,7 +114,7 @@ export interface Book extends tilo.Resource {
 
 /** The `contacts.book` kind at `path`. */
 export function book(ws: tilo.Workspace, path: string): Book {
-  return resourceProxy(ws, path) as unknown as Book;
+  return resourceProxy(ws, path, SURFACE) as unknown as Book;
 }
 
 /** Contact identities — `tilo.contacts.identities`. */
@@ -172,6 +177,6 @@ export interface Identities extends tilo.Resource {
 
 /** The `tilo.contacts.identities` kind at `path`. */
 export function identities(ws: tilo.Workspace, path: string): Identities {
-  return resourceProxy(ws, path) as unknown as Identities;
+  return resourceProxy(ws, path, SURFACE) as unknown as Identities;
 }
 

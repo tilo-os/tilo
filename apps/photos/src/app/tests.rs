@@ -399,7 +399,7 @@ fn canvas_and_places_feedback_stay_honest_and_presentation_only() {
     {
         let mut app = test_app();
         let mut doc = crate::test_doc::new_doc();
-        let waiting = OpenImage::new("/not-present/yet.png", 1200, 800, "0".repeat(64));
+        let waiting = OpenImage::named("/not-present/yet.png", 1200, 800, &"0".repeat(64));
         app.state()
             .show_photo(&crate::test_doc::put_image(&mut doc, &waiting));
         sync(&mut app, &mut doc);
@@ -416,7 +416,10 @@ fn canvas_and_places_feedback_stay_honest_and_presentation_only() {
             "bad.png",
             1200,
             800,
-            app.state().content.put(b"not image data").unwrap(),
+            ui::tilo_resource::Bytes::kept_as(
+                b"not image data",
+                &app.state().content.put(b"not image data").unwrap(),
+            ),
         );
         app.state()
             .show_photo(&crate::test_doc::put_image(&mut doc, &bad));
@@ -482,11 +485,11 @@ fn people_review_commits_only_explicit_canonical_actions() {
     {
         let mut app = test_app();
         let mut doc = crate::test_doc::new_doc();
-        let photo = LibraryPhoto::from_image(OpenImage::new(
+        let photo = LibraryPhoto::from_image(OpenImage::named(
             "/photos/person.png",
             20,
             10,
-            tilo_content::hash_bytes(b"people-review"),
+            &tilo_content::hash_bytes(b"people-review"),
         ));
         let photo_id = photo.id.clone();
         apply(
@@ -527,18 +530,18 @@ fn people_review_commits_only_explicit_canonical_actions() {
     {
         let mut app = test_app();
         let mut doc = crate::test_doc::new_doc();
-        let first = LibraryPhoto::from_image(OpenImage::new(
+        let first = LibraryPhoto::from_image(OpenImage::named(
             "/photos/first.png",
             20,
             10,
-            tilo_content::hash_bytes(b"first-person"),
+            &tilo_content::hash_bytes(b"first-person"),
         ));
         let first_id = first.id.clone();
-        let mut second = LibraryPhoto::from_image(OpenImage::new(
+        let mut second = LibraryPhoto::from_image(OpenImage::named(
             "/photos/second.png",
             20,
             10,
-            tilo_content::hash_bytes(b"second-person"),
+            &tilo_content::hash_bytes(b"second-person"),
         ));
         second.people = crate::model::labels(["Alex".to_owned()]);
         apply(
@@ -925,12 +928,8 @@ fn analysis_queue_is_shared_bounded_and_commits_only_current_results() {
         app.state().analysis_rx = receiver;
         let mut doc = crate::test_doc::new_doc();
         let content = "a".repeat(64);
-        let photo = LibraryPhoto::from_image(OpenImage::new(
-            "drain-components.png",
-            20,
-            10,
-            content.clone(),
-        ));
+        let photo =
+            LibraryPhoto::from_image(OpenImage::named("drain-components.png", 20, 10, &content));
         let id = photo.id.clone();
         crate::test_doc::set_library(
             &mut doc,
@@ -1008,7 +1007,7 @@ fn analysis_queue_is_shared_bounded_and_commits_only_current_results() {
         let mut app = test_app();
         let mut doc = crate::test_doc::new_doc();
         let content = "a".repeat(64);
-        let image = OpenImage::new("/photos/one.png", 20, 10, &content);
+        let image = OpenImage::named("/photos/one.png", 20, 10, &content);
         let photo = LibraryPhoto::from_image(image);
         let id = photo.id.clone();
         crate::test_doc::set_library(
@@ -2259,13 +2258,11 @@ fn thumbnail_queue_is_bounded_wakes_its_host_and_rejects_stale_results() {
             })
             .unwrap();
         let app = test_app();
-        let stored = app
-            .state()
-            .content
-            .put(&pixels::encode_png(&shots_pattern(16, 8)).unwrap())
-            .unwrap();
+        let picture = pixels::encode_png(&shots_pattern(16, 8)).unwrap();
+        let stored = app.state().content.put(&picture).unwrap();
+        let kept = ui::tilo_resource::Bytes::kept_as(&picture, &stored);
         let missing = tilo_content::hash_bytes(b"never stored");
-        for (content, succeeds) in [(stored, true), (missing, false)] {
+        for (content, succeeds) in [(kept, true), (crate::model::named_content(&missing), false)] {
             let image = OpenImage::new("thumbnail.png", 16, 8, content);
             let request = thumbnail_request(&image, &app.state().content);
             let key = request.key();
@@ -2676,7 +2673,12 @@ fn crop_to_view_uses_the_edited_image_aspect_ratio() {
             .content
             .put(&pixels::encode_png(&original).unwrap())
             .unwrap();
-        let open = OpenImage::new("crop.png", 400, 200, hash);
+        let open = OpenImage::new(
+            "crop.png",
+            400,
+            200,
+            ui::tilo_resource::Bytes::kept_as(&pixels::encode_png(&original).unwrap(), &hash),
+        );
         let id = crate::test_doc::put_image(&mut doc, &open);
         let edits = crate::model::Edits {
             crop: Rect01 {
@@ -2750,7 +2752,12 @@ fn edited_content_effect_returns_exact_pngs_and_rejects_bad_sources() {
         let source_png = pixels::encode_png(&original).expect("source PNG");
         let store = tilo_content::ContentStore::memory();
         let source_hash = store.put(&source_png).expect("stage source content");
-        let open = OpenImage::new("fixture.png", 3, 2, source_hash.clone());
+        let open = OpenImage::new(
+            "fixture.png",
+            3,
+            2,
+            ui::tilo_resource::Bytes::kept_as(&source_png, &source_hash),
+        );
         let edits = crate::model::Edits {
             crop: crate::model::Rect01 {
                 x: 1.0 / 3.0,
@@ -2813,7 +2820,7 @@ fn edited_content_effect_returns_exact_pngs_and_rejects_bad_sources() {
         // The rendering is an output: the photograph is still its original plus
         // the edits recorded against it.
         assert_eq!(
-            crate::test_doc::photo(&doc, &resource_id).map(|photo| photo.image.content),
+            crate::test_doc::photo(&doc, &resource_id).map(|photo| photo.image.hash()),
             Some(source_hash)
         );
         assert_eq!(crate::test_doc::photo_edits(&doc, &resource_id), edits);
@@ -2846,7 +2853,7 @@ fn edited_content_effect_returns_exact_pngs_and_rejects_bad_sources() {
     eprintln!("phase edited_content_effect_rejects_missing_or_misdirected_source_bytes");
     {
         let missing = "f".repeat(64);
-        let open = OpenImage::new("missing.png", 3, 2, missing);
+        let open = OpenImage::named("missing.png", 3, 2, &missing);
         let mut doc = crate::test_doc::new_doc();
         let photo_id = crate::test_doc::put_image(&mut doc, &open);
         let encoded = |resource_id: String| PhotosEffect::ExportEditedContent {

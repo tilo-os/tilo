@@ -110,17 +110,13 @@ view window_row(w: Win) {
 /// workspace.
 view desk_doors(d: Desk) {
     ui.Section("The desk") {
-        ui.ListRow(
-            "Overview",
-            secondary: "Every strip and window, to search and move",
-            icon: .layout_grid,
-        ) {
+        ui.ListRow("Overview", icon: .layout_grid) {
             on activate: device.show_surface(device.desk, surface: "overview")
         }
-        ui.ListRow("Workspaces", secondary: "Who is in each, and what it holds", icon: .layers) {
+        ui.ListRow("Workspaces", icon: .layers) {
             on activate: device.show_surface(device.desk, surface: "workspaces")
         }
-        ui.ListRow("Notifications", secondary: "What apps and agents told you", icon: .bell) {
+        ui.ListRow("Notifications", icon: .bell) {
             on activate: device.show_surface(device.desk, surface: "centre")
         }
     }

@@ -17,6 +17,11 @@
 import { resourceProxy } from "tilo-sdk";
 import type * as tilo from "tilo-sdk";
 
+/** The version of the surface these types were made from: a workspace whose app
+ * publishes another refuses their actions rather than run what they no longer
+ * describe. */
+export const SURFACE = "so.tilo.calendar@aeed9cd7510e3f72";
+
 export interface Attendee {
   id: string;
   name: string;
@@ -276,7 +281,7 @@ export interface Calendar extends tilo.Resource {
 
 /** The `calendar.calendar` kind at `path`. */
 export function calendar(ws: tilo.Workspace, path: string): Calendar {
-  return resourceProxy(ws, path) as unknown as Calendar;
+  return resourceProxy(ws, path, SURFACE) as unknown as Calendar;
 }
 
 /** Accounts — `tilo.accounts`. */
@@ -306,7 +311,7 @@ export interface Accounts extends tilo.Resource {
 
 /** The `tilo.accounts` kind at `path`. */
 export function accounts(ws: tilo.Workspace, path: string): Accounts {
-  return resourceProxy(ws, path) as unknown as Accounts;
+  return resourceProxy(ws, path, SURFACE) as unknown as Accounts;
 }
 
 /** Contact identities — `tilo.contacts.identities`. */
@@ -369,6 +374,6 @@ export interface Identities extends tilo.Resource {
 
 /** The `tilo.contacts.identities` kind at `path`. */
 export function identities(ws: tilo.Workspace, path: string): Identities {
-  return resourceProxy(ws, path) as unknown as Identities;
+  return resourceProxy(ws, path, SURFACE) as unknown as Identities;
 }
 

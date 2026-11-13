@@ -54,6 +54,8 @@ pub const MAX_IMPORTED_PAGES: usize = 512;
 /// before it has downloaded the blob.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ImportedPage {
+    /// The payload's content reference: the address it is kept under, and the
+    /// key that opens it when the workspace keeps content sealed.
     pub hash: String,
     pub kind: String,
     pub page: usize,
@@ -63,8 +65,7 @@ pub struct ImportedPage {
 
 impl ImportedPage {
     pub fn valid(&self) -> bool {
-        self.hash.len() == 64
-            && self.hash.bytes().all(|byte| byte.is_ascii_hexdigit())
+        tilo_content::valid_reference(&self.hash)
             && matches!(self.kind.as_str(), "pdf" | "image")
             && self.page > 0
             && self.width_milli > 0
@@ -211,10 +212,25 @@ pub struct PdfMarkup {
 /// The PDF bytes a record's markup is made against.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PinnedSource {
-    pub hash: String,
-    pub len: u64,
+    /// The bytes, kept where this window keeps content: its hash and the
+    /// reference that opens it.
+    pub source: Bytes,
     /// The file name it was opened under; empty when it was not named.
     pub name: String,
+}
+
+impl PinnedSource {
+    /// The bytes as `store` holds them; `None` while they are not here.
+    #[must_use]
+    pub fn bytes(&self, store: &tilo_content::ContentStore) -> Option<Vec<u8>> {
+        self.source.read(store)
+    }
+
+    /// The bytes' content hash, which names them the same everywhere.
+    #[must_use]
+    pub fn hash(&self) -> String {
+        hex::encode(self.source.hash())
+    }
 }
 
 impl PdfMarkup {
@@ -274,14 +290,10 @@ impl PdfMarkup {
     /// The PDF bytes the markup is made against, once pinned.
     #[must_use]
     pub fn pinned_source(&self) -> Option<PinnedSource> {
-        match &self.source {
-            Bytes::Blob { hash, len, .. } => Some(PinnedSource {
-                hash: hex::encode(hash),
-                len: *len,
-                name: self.source_name.clone(),
-            }),
-            _ => None,
-        }
+        (!self.source.is_empty()).then(|| PinnedSource {
+            source: self.source.clone(),
+            name: self.source_name.clone(),
+        })
     }
 
     /// The source whose markup has been taken over.
@@ -408,13 +420,6 @@ impl PdfMarkup {
     pub fn adopted_entries(&self) -> Vec<AdoptedEntry> {
         self.adopted.values().cloned().collect()
     }
-}
-
-/// The 32 bytes a 64-digit hex hash names.
-pub(crate) fn unhex(hash: &str) -> Option<[u8; 32]> {
-    let mut out = [0u8; 32];
-    hex::decode_to_slice(hash, &mut out).ok()?;
-    Some(out)
 }
 
 #[cfg(test)]

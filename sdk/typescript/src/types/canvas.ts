@@ -17,6 +17,11 @@
 import { resourceProxy } from "tilo-sdk";
 import type * as tilo from "tilo-sdk";
 
+/** The version of the surface these types were made from: a workspace whose app
+ * publishes another refuses their actions rather than run what they no longer
+ * describe. */
+export const SURFACE = "so.tilo.canvas@ef24e3a02750c41c";
+
 export interface Adjust {
   exposure: number | null;
   contrast: number | null;
@@ -336,7 +341,7 @@ export interface Artwork extends tilo.Resource {
 
 /** The `canvas.artwork` kind at `path`. */
 export function artwork(ws: tilo.Workspace, path: string): Artwork {
-  return resourceProxy(ws, path) as unknown as Artwork;
+  return resourceProxy(ws, path, SURFACE) as unknown as Artwork;
 }
 
 /** Recent artworks — `canvas.recent-artworks`. */
@@ -354,6 +359,6 @@ export interface RecentArtworks extends tilo.Resource {
 
 /** The `canvas.recent-artworks` kind at `path`. */
 export function recentArtworks(ws: tilo.Workspace, path: string): RecentArtworks {
-  return resourceProxy(ws, path) as unknown as RecentArtworks;
+  return resourceProxy(ws, path, SURFACE) as unknown as RecentArtworks;
 }
 

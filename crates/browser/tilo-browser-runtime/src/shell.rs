@@ -1513,7 +1513,7 @@ impl BrowserShell {
             ProfileChoice::Action(id) if id == DEVICES_ACCESS => {
                 self.requests.borrow_mut().push(HostRequest::ShowInApp {
                     app: SETTINGS_APP.into(),
-                    resource: "settings.section:devices_sync".into(),
+                    resource: "settings.section:devices_access".into(),
                 });
                 return;
             }

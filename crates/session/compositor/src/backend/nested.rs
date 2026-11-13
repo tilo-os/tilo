@@ -20,7 +20,7 @@ use smithay::backend::winit::{
 use smithay::output::{Mode, Output};
 use smithay::reexports::calloop::LoopHandle;
 use smithay::utils::{Buffer, Physical, Point, Rectangle, Size, Transform};
-use winit::dpi::PhysicalSize;
+use winit::dpi::{LogicalSize, PhysicalSize};
 use winit::window::{Window as WinitWindow, WindowAttributes};
 
 use super::{Backend, BackendError, Screenshot, failed, refuse_disabling};
@@ -41,8 +41,12 @@ const REFRESH_MHZ: i32 = 60_000;
 /// How the window starts.
 #[derive(Clone, Debug, PartialEq)]
 pub struct NestedConfig {
-    /// The window's first size, in physical pixels.
+    /// The window's first size, in physical pixels, or in the host's logical pixels when
+    /// [`Self::logical`] says so.
     pub size: (u16, u16),
+    /// Whether [`Self::size`] is in the host's logical pixels: the window then opens at the same
+    /// apparent size on a desktop at any scale, without asking that desktop for its scale.
+    pub logical: bool,
     /// The scale clients render at.
     pub scale: f64,
     /// The window's title.
@@ -53,6 +57,7 @@ impl Default for NestedConfig {
     fn default() -> Self {
         Self {
             size: (1280, 800),
+            logical: false,
             scale: 1.0,
             title: "Tilo".into(),
         }
@@ -66,13 +71,14 @@ impl NestedConfig {
     }
 
     fn attributes(&self) -> WindowAttributes {
-        WinitWindow::default_attributes()
-            .with_title(&self.title)
-            .with_inner_size(PhysicalSize::new(
-                u32::from(self.size.0),
-                u32::from(self.size.1),
-            ))
-            .with_visible(true)
+        let attributes = WinitWindow::default_attributes().with_title(&self.title);
+        let (width, height) = (u32::from(self.size.0), u32::from(self.size.1));
+        if self.logical {
+            attributes.with_inner_size(LogicalSize::new(width, height))
+        } else {
+            attributes.with_inner_size(PhysicalSize::new(width, height))
+        }
+        .with_visible(true)
     }
 }
 

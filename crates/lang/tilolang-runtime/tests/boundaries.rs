@@ -1329,7 +1329,7 @@ action switch_back(b: Board) {
     b.way = ""
 }
 
-action say(b: Board, s: Text) {
+action set_said(b: Board, s: Text) {
     b.said = s
 }
 
@@ -1413,7 +1413,7 @@ view board(b: Board) {
         call(
             &rt,
             &app,
-            "say",
+            "set_said",
             vec![Value::resource(&board), Value::text("hello")],
         );
         view.poll_patches().unwrap();

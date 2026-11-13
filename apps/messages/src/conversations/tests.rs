@@ -344,7 +344,7 @@ fn a_past_version_reads_and_shows_its_messages() {
     assert!(shown.contains("Ada"), "{shown}");
     assert!(shown.contains("Marker kumquat parade"), "{shown}");
     assert!(shown.contains("Grace"), "{shown}");
-    assert!(!shown.contains("Your people, together"), "{shown}");
+    assert!(!shown.contains("No conversations yet"), "{shown}");
 
     app.effect(&MessagesEffect::OpenConversation {
         conversation: "Ada".into(),
@@ -358,5 +358,5 @@ fn a_past_version_reads_and_shows_its_messages() {
     assert!(then.contains("Ada"), "{then}");
     assert!(then.contains("Marker kumquat parade"), "{then}");
     assert!(!then.contains("Grace"), "{then}");
-    assert!(!then.contains("Your people, together"), "{then}");
+    assert!(!then.contains("No conversations yet"), "{then}");
 }

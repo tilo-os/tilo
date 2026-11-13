@@ -15,6 +15,8 @@ mod typing_desktop;
 
 #[path = "a11y.rs"]
 mod a11y;
+#[path = "ask_over_search.rs"]
+mod ask_over_search;
 #[path = "card_composites.rs"]
 mod card_composites;
 #[path = "catalogue.rs"]
@@ -29,6 +31,8 @@ mod emoji;
 mod page_top_bar;
 #[path = "palette_above_windows.rs"]
 mod palette_above_windows;
+#[path = "popover_frame.rs"]
+mod popover_frame;
 #[path = "press_outside.rs"]
 mod press_outside;
 #[path = "search_overlay.rs"]

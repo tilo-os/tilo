@@ -116,7 +116,7 @@ pub(crate) fn account_label(a: &Account) -> String {
     let issuer = safe_identity_field(&a.issuer, &a.secret);
     let label = safe_identity_field(&a.label, &a.secret);
     match (issuer.is_empty(), label.is_empty()) {
-        (false, false) => format!("{issuer} — {label}"),
+        (false, false) => format!("{issuer}: {label}"),
         (false, true) => issuer.to_string(),
         (true, false) => label.to_string(),
         (true, true) => "Account".to_string(),
@@ -202,6 +202,7 @@ impl ResourceApp for TotpShell {
     type Resource = Totp;
     const ID: &'static str = "so.tilo.totp";
     const TITLE: &'static str = "Authenticator";
+    const TITLE_KEY: &'static str = "totp-app-title";
     const ICON: Option<&'static str> = Some("totp");
     // The window shows secrets: captures, recordings and remote viewers get
     // a placeholder in every launch.

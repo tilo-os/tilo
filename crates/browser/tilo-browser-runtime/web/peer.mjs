@@ -36,6 +36,7 @@ import {identityProfile} from './identity-profile.mjs';
 import {currentIdentity, fitDisplayName, IdentityError} from './identity.mjs';
 import {FETCH_PROXY_PATH} from './fetch-proxy.mjs';
 import {siteHost, STALE_SITE_HOST, staleSiteHost, staleSiteHostReport} from './site-host.mjs';
+import {deviceLabel} from './pairing.mjs';
 
 export {
   addPasskey, browserIdentity, browserPerson, certifyDevice, createIdentity, currentIdentity, fetchEnvelope, fetchProfile, fitDisplayName, IdentityError, installNode,
@@ -438,7 +439,7 @@ export async function withCustody(custody, connecting, signal) {
 }
 
 async function connect({
-  origin, userPublicKey, label = 'Browser', workspace, custody, store, runtime, identity, deviceCertificate,
+  origin, userPublicKey, label = deviceLabel(), workspace, custody, store, runtime, identity, deviceCertificate,
   profile, device, displayName = '',
   fetch: fetcher, desktop, signal, onStatus, onPairingCode, live: liveEnabled = true,
   voice: voiceOptions = {}, requireExistingCertificate = false, namespaces = globalThis.localStorage,
@@ -490,9 +491,16 @@ async function connect({
   const ownColor = () => runtime.presenceColor(userPublicKey);
   // Who the host is and where it is dialled: as the page's own site names
   // it, handed on by the entry that took it (`enterOnSession`), else asked
-  // of the host here.
+  // of the host here. An answer from a door says where the host's packet
+  // relay answers and nothing of how a page reaches the host itself (the
+  // WebTransport origin, and the certificate a page pins when the host's is
+  // not trusted by the browser): the site's own naming of the host has
+  // that, and the host is the same one, so it is kept.
   const named = siteHost(origin)?.info;
   let host = answered?.address ? answered : named ?? JSON.parse(await runtime.hostInfo(post));
+  if (answered?.address && !answered.address.web && named?.address?.web) {
+    host = {...answered, address: {...answered.address, web: named.address.web}};
+  }
   if (!host.address) throw new Error('the host named no iroh endpoint to reach it at');
   const listeners = new Set();
   /** Called after each published status, so a surface follows the session
@@ -1413,7 +1421,7 @@ export async function openInvitation(site, secret, {runtime} = {}) {
  * that host). Resolves to the `CertifiedPeer`.
  */
 export async function pairDevice(options) {
-  const {origin, userPublicKey, label = 'Browser', door, signal} = options;
+  const {origin, userPublicKey, label = deviceLabel(), door, signal} = options;
   if (!origin || !userPublicKey) throw new TypeError('origin and userPublicKey are required');
   const profile = options.profile ?? identityProfile({userPublicKey}, origin);
   // A caller's device key (`options.custody`, of `profile`) stays the
@@ -1583,7 +1591,7 @@ async function enterOnSession({
 }
 
 async function join({
-  origin, invitation, door, identity, displayName = '', label = 'Browser', signal, onProgress,
+  origin, invitation, door, identity, displayName = '', label = deviceLabel(), signal, onProgress,
   admissionToken, runtime, custody, profile, fetch: fetcher, certified, ...connectOptions
 }) {
   // A device certified elsewhere (`certified`, a paired device) asks as

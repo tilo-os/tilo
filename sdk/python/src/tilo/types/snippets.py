@@ -23,6 +23,7 @@ __all__ = [
 
 class Library(Resource):
     """Snippets — `snippets.library`."""
+    __surface__ = "so.tilo.snippets@ac8a87311686dc62"
     snippets: Any
 
     def new_snippet(self,

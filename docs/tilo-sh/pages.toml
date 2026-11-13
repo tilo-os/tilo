@@ -1,0 +1,169 @@
+# The developer documentation published at https://tilo.sh/docs/.
+#
+# Same format as docs/developers/pages.toml (tools/docs/developer_docs.py):
+# the pages stay where they are in this repository, and this list chooses which
+# of them tilo.sh publishes, in what order and under which address. A page both
+# sites publish is listed in both lists, from its one source file.
+#
+# A page with `generator` is written at build time from what it documents
+# (`source`): a reference is generated, never copied by hand. A link to that
+# source from any page opens the reference.
+#
+# Every fenced block marked `example=<id>` is a whole program, run against a
+# local Tilo by the docs-examples check; the blocks of one example are its
+# tabs, one per language, and `[examples].languages` says which languages each
+# example must have.
+
+base = "/docs/"
+origin = "https://tilo.sh"
+repository = "https://code.tilo.so/tilo/tilo"
+title = "Tilo docs"
+related_manifests = ["docs/developers/pages.toml"]
+
+[examples]
+languages = ["python", "typescript"]
+
+[[page]]
+slug = ""
+source = "docs/tilo-sh/index.md"
+section = "Get started"
+nav = "Overview"
+description = "Workspaces for your agents and the people who check their work: what Tilo gives you and where to start."
+
+[[page]]
+slug = "quickstart"
+source = "docs/tilo-sh/quickstart.md"
+section = "Get started"
+nav = "Quickstart"
+description = "Sign up, make your first workspace and connect your agent to it."
+
+[[page]]
+slug = "hosts"
+source = "docs/tilo-sh/hosts.md"
+section = "Concepts"
+nav = "Hosts"
+description = "The computers that keep workspaces, ours at tilo.sh and ones you run, and how a workspace is made on one."
+
+[[page]]
+slug = "workspaces"
+source = "docs/tilo-sh/workspaces.md"
+section = "Concepts"
+nav = "Workspaces"
+description = "What a workspace holds, how to name one, your role in it, inviting people, and deleting it for good."
+
+[[page]]
+slug = "resources-and-actions"
+source = "docs/tilo-sh/resources-and-actions.md"
+section = "Concepts"
+nav = "Resources and actions"
+description = "Paths, fields, the three kinds of action, field edits, the catalogue and the typed SDK classes generated from it."
+
+[[page]]
+slug = "identities"
+source = "docs/tilo-sh/identities.md"
+section = "Concepts"
+nav = "Identities and keys"
+description = "People, devices and agents, what a key reaches, its expiry, minting narrower keys and revoking them."
+
+[[page]]
+slug = "runs-and-history"
+source = "docs/tilo-sh/runs-and-history.md"
+section = "Concepts"
+nav = "Runs and history"
+description = "Runs, attribution, each record's history, undo by step or by run, and the links a person opens."
+
+[[page]]
+slug = "approvals"
+source = "docs/tilo-sh/approvals.md"
+section = "Concepts"
+nav = "Approvals"
+description = "Actions that ask a person first: AskPending, what a person is asked, and how their answer releases one request."
+
+[[page]]
+slug = "one-workspace-per-customer"
+source = "docs/developers/one-workspace-per-customer.md"
+section = "Guides"
+nav = "One workspace per customer"
+description = "A workspace and a key per customer, from one backend key: the visa application, built end to end."
+
+[[page]]
+slug = "hosted-browser"
+source = "docs/tilo-sh/hosted-browser.md"
+section = "Guides"
+nav = "The hosted Browser"
+description = "An agent fills a web form in a workspace's own Browser, and a person approves the submission."
+
+[[page]]
+slug = "files"
+source = "docs/tilo-sh/files.md"
+section = "Guides"
+nav = "Files"
+description = "Bytes up once by content reference, the actions that take one, exports that answer one, and getting them out."
+
+[[page]]
+slug = "search"
+source = "docs/tilo-sh/search.md"
+section = "Guides"
+nav = "Search"
+description = "Walking a workspace by listing, and the desktop's search by words where a host runs it."
+
+[[page]]
+slug = "events"
+source = "docs/tilo-sh/events.md"
+section = "Guides"
+nav = "Webhooks and events"
+description = "The watch stream: changes, run events and presence, from a cursor, and why there are no webhooks yet."
+
+[[page]]
+slug = "errors"
+source = "docs/tilo-sh/errors.md"
+section = "Reference"
+nav = "Errors"
+description = "Refused, RateLimited, AskPending and ProtocolError, the codes a host answers with, and keys that are turned away."
+
+[[page]]
+slug = "rest-api"
+source = "docs/api/openapi.json"
+generator = "tools/docs/reference/openapi.py"
+section = "Reference"
+nav = "REST API"
+description = "Every route under /v1, what it takes and what it answers, with a curl line for each, generated from the API's OpenAPI description."
+
+[[page]]
+slug = "python-sdk"
+source = "sdk/python/src/tilo/__init__.py"
+generator = "tools/docs/reference/python_sdk.py"
+section = "Reference"
+nav = "Python SDK"
+description = "Every class, method and exception of the Python package, with signatures and docstrings, generated from its sources."
+
+[[page]]
+slug = "typescript-sdk"
+source = "sdk/typescript/src/index.ts"
+generator = "tools/docs/reference/typescript_sdk.ts"
+section = "Reference"
+nav = "TypeScript SDK"
+description = "Everything the JavaScript and TypeScript package exports, with signatures and TSDoc, generated from its sources."
+
+[[page]]
+slug = "cli"
+source = "crates/system/tilo-cli/src/main.rs"
+generator = "tools/docs/reference/cli.py"
+section = "Reference"
+nav = "Command line"
+description = "Every command of tilo, with its usage, arguments and options, generated from the command itself."
+
+[[page]]
+slug = "mcp-tools"
+source = "crates/runtime/tilo-runtime/src/mcp_agent.rs"
+generator = "tools/docs/reference/mcp_tools.py"
+section = "Reference"
+nav = "MCP tools"
+description = "The tools an agent gets in a workspace, what each one does and what it takes, generated from the server's own tool list."
+
+[[page]]
+slug = "own-host"
+source = "docs/tilo-sh/own-host.md"
+section = "Your own host"
+nav = "Your own host"
+description = "Running the same product on a machine you control, and pointing the SDKs, the command and an agent at it."

@@ -192,6 +192,19 @@ mod tests {
         assert_eq!(named.reference().as_deref(), Some(held.as_str()));
         assert_eq!(named.hash(), *blake3::hash(&picture).as_bytes());
 
+        // The reference alone names the same content: an operation that
+        // collects content takes a bare reference, sealed or plain, and the
+        // hash content was named by before it was sealed still reads where
+        // the bytes were kept so.
+        let bare = invoking(|| decode(serde_json::json!(held))).unwrap();
+        assert_eq!(bare.hash(), *blake3::hash(&picture).as_bytes());
+        assert_eq!(bare.read(&workspace), Some(picture.clone()));
+        let plain = ContentStore::memory_in_workspace();
+        let plain_hash = plain.put(b"kept in the clear").unwrap();
+        register(&window.handle(), plain.clone());
+        let earlier = invoking(|| decode(serde_json::json!(plain_hash))).unwrap();
+        assert_eq!(earlier.read(&plain), Some(b"kept in the clear".to_vec()));
+
         let missing = format!("tilo.content:{elsewhere}");
         let refused = invoking(|| decode(serde_json::json!(missing.clone()))).unwrap_err();
         assert!(

@@ -127,11 +127,7 @@ view strips_view(a: Arrangement, v: Viewing, lists: Bool) {
         // A desk the session has published no workspace of yet: it holds nothing to draw.
         scroll(axis: .both) {
             stack(gap: .group, fill) {
-                ui.EmptyState(
-                    "No window here yet",
-                    message: "Open something into this strip.",
-                    inline: true,
-                )
+                ui.EmptyState("No window here yet", inline: true)
             }
         }
     }
@@ -173,11 +169,7 @@ view rows_of_the_desk(a: Arrangement, v: Viewing, held: ArrangementRow, lists: B
             if let s = front {
                 strip_window(a, v, s, lists, fill(1))
             } else {
-                ui.EmptyState(
-                    "No window here yet",
-                    message: "Open something into this strip.",
-                    inline: true,
-                )
+                ui.EmptyState("No window here yet", inline: true)
             }
         } else {
             scroll(axis: .horizontal, fill) {
@@ -186,11 +178,7 @@ view rows_of_the_desk(a: Arrangement, v: Viewing, held: ArrangementRow, lists: B
                         row_window(a, v, s, lists)
                     }
                     if strips.is_empty() {
-                        ui.EmptyState(
-                            "No window here yet",
-                            message: "Open something into this strip.",
-                            inline: true,
-                        )
+                        ui.EmptyState("No window here yet", inline: true)
                     }
                 }
             }
@@ -244,11 +232,7 @@ view strip_window(a: Arrangement, v: Viewing, s: ArrangementStrip, lists: Bool) 
             if let p = shown {
                 place_content(p)
             } else {
-                ui.EmptyState(
-                    "Nothing here",
-                    message: "Open something into this strip.",
-                    inline: true,
-                )
+                ui.EmptyState("Nothing here", inline: true)
             }
         }
     }

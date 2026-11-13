@@ -758,7 +758,7 @@ fn with_nobody_yet_the_window_says_how_to_start() {
     let heading = harness
         .a11y_nodes()
         .into_iter()
-        .find(|(_, node)| node.label() == Some("Your people, together"))
+        .find(|(_, node)| node.label() == Some("No conversations yet"))
         .map(|(_, node)| node)
         .expect("the empty People pane has an empty state");
     let bounds = heading.bounds().expect("the empty state is laid out");
@@ -858,7 +858,10 @@ fn without_the_messaging_service_setup_says_why_and_offers_nothing_dead() {
     );
     let tree = app.harness().inspection_json().unwrap();
     assert!(tree.contains("isn't running here"), "{tree}");
-    assert!(tree.contains("a browser has none"), "{tree}");
+    assert!(
+        tree.contains("Link WhatsApp or Signal on a Tilo computer instead"),
+        "{tree}"
+    );
 }
 
 /// Every verb and field the app publishes reads in its own words in History,

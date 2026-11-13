@@ -70,6 +70,26 @@ pub mod keys {
     pub const THEMES_NEW: ui::i18n::LabelKey = ui::i18n::LabelKey::new("themes-new");
     pub const THEMES_NEW_THEME: ui::i18n::LabelKey = ui::i18n::LabelKey::new("themes-new-theme");
     pub const THEMES_NONE: ui::i18n::LabelKey = ui::i18n::LabelKey::new("themes-none");
+    pub const THEMES_OPTION_ACCENT: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("themes-option-accent");
+    pub const THEMES_OPTION_ALWAYS: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("themes-option-always");
+    pub const THEMES_OPTION_CHOSEN_HUE: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("themes-option-chosen-hue");
+    pub const THEMES_OPTION_DARK: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("themes-option-dark");
+    pub const THEMES_OPTION_FROSTED: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("themes-option-frosted");
+    pub const THEMES_OPTION_LIGHT: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("themes-option-light");
+    pub const THEMES_OPTION_MONOCHROME: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("themes-option-monochrome");
+    pub const THEMES_OPTION_SOLID: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("themes-option-solid");
+    pub const THEMES_OPTION_WITH_THE_TYPEFACE: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("themes-option-with-the-typeface");
+    pub const THEMES_OPTION_YOUR_COLOUR: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("themes-option-your-colour");
     pub const THEMES_PALETTE: ui::i18n::LabelKey = ui::i18n::LabelKey::new("themes-palette");
     pub const THEMES_POLARITY: ui::i18n::LabelKey = ui::i18n::LabelKey::new("themes-polarity");
     pub const THEMES_PRESENCE: ui::i18n::LabelKey = ui::i18n::LabelKey::new("themes-presence");
@@ -85,12 +105,18 @@ pub mod keys {
     pub const THEMES_PREVIEW: ui::i18n::LabelKey = ui::i18n::LabelKey::new("themes-preview");
     pub const THEMES_PREVIEW_CANCEL: ui::i18n::LabelKey =
         ui::i18n::LabelKey::new("themes-preview-cancel");
+    pub const THEMES_PREVIEW_CONVERSATIONS: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("themes-preview-conversations");
+    pub const THEMES_PREVIEW_COPY_LINK: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("themes-preview-copy-link");
     pub const THEMES_PREVIEW_DESKTOP: ui::i18n::LabelKey =
         ui::i18n::LabelKey::new("themes-preview-desktop");
     pub const THEMES_PREVIEW_DIALOG: ui::i18n::LabelKey =
         ui::i18n::LabelKey::new("themes-preview-dialog");
     pub const THEMES_PREVIEW_DOCUMENT: ui::i18n::LabelKey =
         ui::i18n::LabelKey::new("themes-preview-document");
+    pub const THEMES_PREVIEW_DRAFTS: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("themes-preview-drafts");
     pub const THEMES_PREVIEW_EDITED: ui::i18n::LabelKey =
         ui::i18n::LabelKey::new("themes-preview-edited");
     pub const THEMES_PREVIEW_FIELD: ui::i18n::LabelKey =
@@ -117,10 +143,22 @@ pub mod keys {
         ui::i18n::LabelKey::new("themes-preview-move-title");
     pub const THEMES_PREVIEW_PRESENCE: ui::i18n::LabelKey =
         ui::i18n::LabelKey::new("themes-preview-presence");
+    pub const THEMES_PREVIEW_RENAME: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("themes-preview-rename");
     pub const THEMES_PREVIEW_SHARE: ui::i18n::LabelKey =
         ui::i18n::LabelKey::new("themes-preview-share");
     pub const THEMES_PREVIEW_SHARED: ui::i18n::LabelKey =
         ui::i18n::LabelKey::new("themes-preview-shared");
+    pub const THEMES_PREVIEW_SHARED_WITH_ME: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("themes-preview-shared-with-me");
+    pub const THEMES_PREVIEW_SUBJECT_BUDGET: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("themes-preview-subject-budget");
+    pub const THEMES_PREVIEW_SUBJECT_COMPILER: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("themes-preview-subject-compiler");
+    pub const THEMES_PREVIEW_SUBJECT_CRITIQUE: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("themes-preview-subject-critique");
+    pub const THEMES_PREVIEW_SUBJECT_REVIEW: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("themes-preview-subject-review");
     pub const THEMES_RADIUS: ui::i18n::LabelKey = ui::i18n::LabelKey::new("themes-radius");
     pub const THEMES_REASON_NOT_A_DOCUMENT: ui::i18n::LabelKey =
         ui::i18n::LabelKey::new("themes-reason-not-a-document");

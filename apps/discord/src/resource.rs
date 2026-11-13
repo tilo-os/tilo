@@ -391,6 +391,7 @@ impl ResourceApp for Discord {
     type Resource = Guild;
     const ID: &'static str = crate::APP_ID;
     const TITLE: &'static str = "Discord";
+    const TITLE_KEY: &'static str = "discord-app-title";
     // A workspace bridges one server, so its guild record is the workspace's own.
     const WORKSPACE_RECORD: bool = true;
 

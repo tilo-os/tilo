@@ -32,7 +32,7 @@ RETRY_DEADLINE = 60.0
 
 
 def door_from(door: str | None) -> str:
-    return (door or os.environ.get("TILO_DOOR") or DEFAULT_DOOR).rstrip("/")
+    return (door or os.environ.get("TILO_API_URL") or DEFAULT_DOOR).rstrip("/")
 
 
 def key_from(key: str | None) -> str | None:

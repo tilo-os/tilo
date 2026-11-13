@@ -26,7 +26,7 @@
 //                   then forgets the site, and they sign in again with that
 //                   passkey: the same person comes back.
 //
-// usage: node person.mjs SITE RELAY OUT_DIR [--follow LINK] [--key NAME --tilo BIN --door DOOR [--no-pages]] [--root FILE] [--passkey]
+// usage: node person.mjs SITE RELAY OUT_DIR [--follow LINK] [--key NAME --tilo BIN --api URL [--no-pages]] [--root FILE] [--passkey]
 //
 // Prints one JSON line: {arrivedMs, joinedMs, room, followed, key, entered}.
 // `arrivedMs` is a fresh visitor's entry: from navigating to the site to the
@@ -46,7 +46,7 @@ const option = name => {
   return at < 0 ? null : rest[at + 1];
 };
 if (!site || !relay || !out) {
-  console.error('usage: node person.mjs SITE RELAY OUT_DIR [--follow LINK] [--key NAME --tilo BIN --door DOOR [--no-pages]] [--root FILE]');
+  console.error('usage: node person.mjs SITE RELAY OUT_DIR [--follow LINK] [--key NAME --tilo BIN --api URL [--no-pages]] [--root FILE]');
   process.exit(2);
 }
 const follow = option('--follow');
@@ -55,16 +55,15 @@ const rootFile = option('--root');
 const noPages = rest.includes('--no-pages');
 const passkey = rest.includes('--passkey');
 const tiloBin = option('--tilo');
-const door = option('--door');
+const door = option('--api');
 const windowName = option('--window');
 const typed = option('--type');
 mkdirSync(out, {recursive: true});
 
 const report = {site, relay};
-// The relay's certificate is the local Caddy's: accepted, as a person who
-// trusts it would. A software GPU, and no sandbox where this runs as root.
+// The stack is plain HTTP on this machine: no certificate to accept, as for
+// any person's browser. A software GPU, and no sandbox where this runs as root.
 const browser = await launch({args: [
-  '--ignore-certificate-errors',
   '--enable-features=Vulkan', '--use-vulkan=swiftshader', '--use-angle=swiftshader',
   '--disable-dev-shm-usage',
   ...(process.getuid?.() === 0 ? ['--no-sandbox'] : []),
@@ -294,13 +293,13 @@ if (windowName) {
 }
 
 if (keyName) {
-  if (!tiloBin || !door) await finish(2, '--key needs --tilo and --door');
+  if (!tiloBin || !door) await finish(2, '--key needs --tilo and --api');
   // A backend's terminal: its own home, the local door.
   const home = join(out, 'terminal');
   mkdirSync(home, {recursive: true});
   const terminal = spawn(tiloBin, ['keys', 'create', keyName], {
     env: {...process.env, HOME: home, XDG_STATE_HOME: join(home, 'state'), XDG_CONFIG_HOME: join(home, 'config'),
-      TILO_DOOR: door},
+      TILO_API_URL: door},
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let said = '';

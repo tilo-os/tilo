@@ -22,17 +22,15 @@ files-shortcuts-size = Larger, smaller items
 files-shortcuts-refresh = Refresh
 files-selection-empty = Select files first.
 files-clipboard-source-unavailable = A selected file has changed or is no longer available. Select it again before copying.
-files-clipboard-source-changed = The shown object differs from its retained selection. Select it again before copying.
+files-clipboard-source-changed = The file shown here is not the one you selected. Select it again before copying.
 files-clipboard-unavailable = Copy and paste isn’t available right now.
 files-clipboard-empty = The workspace file clipboard is empty.
 files-clipboard-undone = Paste undone.
 files-selection-unavailable = That item is no longer in this folder.
-files-selection-too-large = Select at most 256 items in one request.
-files-copy-too-large = Copy items from one folder at a time when there are more than 256.
+files-selection-too-large = Select at most 256 items at a time.
+files-copy-too-large = Copy at most 256 items at a time, from one folder.
 
 ## Availability actions and status
-files-opening-document = Opening document…
-files-document-opening-cancelled = Document opening was cancelled
 files-keep-offline = Keep offline
 files-use-automatic-storage = Use automatic storage
 files-pinned-by-parent = Pinned by parent folder
@@ -93,8 +91,6 @@ files-empty-trash-summary = { $count ->
 files-empty-trash-confirm = Empty Trash
 
 ## Properties and availability sheet
-files-property-collaborative-record = Collaborative record: { $record }
-files-property-content = Content: { $hash }…
 files-residency-metadata-only = metadata only
 files-residency-partly-local = partly local ({ $bytes } bytes)
 files-residency-local = local ({ $bytes } bytes)
@@ -155,7 +151,6 @@ files-cloud-converted-slides = Google presentation. Imports as .pptx; conversion
 files-cloud-loading = Reading cloud folder…
 files-cloud-busy = A cloud request is already running.
 files-cloud-invalid-reply = The cloud service returned an unexpected reply.
-files-cloud-selected = Selected: { $name }
 files-cloud-select = Select
 files-cloud-more = Load more
 files-cloud-import = Import once…
@@ -172,39 +167,18 @@ files-version-history = Version history…
 files-restore-previous = Restore previous version
 files-resolve-keep-current = Resolve { $conflict }: keep current
 files-resolve-use-other = Resolve { $conflict }: use other (device { $device })
-files-history-version-line = { $action } { $time } by { $person } on device { $device }
-files-history-older = Older versions aren’t on this device yet
-files-conflict-needs-review = Needs review
-files-conflict-resolved-strategy = Resolved: { $strategy }
 files-conflict-resolved = Resolved
 files-strategy-keep-current = Keep current
 files-strategy-use-other = Use other
 files-strategy-keep-both = Keep both
 files-strategy-merge = Merge
-files-conflict-line = Conflict { $conflict }: { $count } { $count ->
-    [one] version
-   *[other] versions
-}, { $state }
-files-conflict-resolve-hint = Resolve from the context menu: keep current or use other
-files-conflict-unsupported-hint = Keep both and Merge aren’t available for this file yet
-files-history-title = Version history of { $name }
-files-history-summary = { $versions } { $versions ->
-    [one] version
-   *[other] versions
-}, { $heads } current { $heads ->
-    [one] head
-   *[other] heads
-}
 files-history-change-pending = A history change is already in progress
 files-select-file-with-history = Select one collaborative file with history first
-files-version-restored = Version restored as a new history entry
-files-restoring-version = Restoring that version…
 files-keeping-current = Keeping the current version…
 files-applying-other = Applying the other version…
 files-merging-versions = Safely merging non-overlapping changes…
 files-merge-review-menu = Review merge
 files-merge-review-title = Review the merge of { $name }
-files-merge-review-summary = No changes have been made yet
 files-merge-review-checking = Comparing the two versions…
 files-merge-review-checking-detail = Nothing changes while this runs.
 files-merge-review-safe = Safe to merge
@@ -212,8 +186,6 @@ files-merge-review-needs-review = Needs review. No merge will be applied.
 files-merge-review-unavailable = The versions can’t be compared right now. Refresh the file and compare them in Version history.
 files-merge-review-no-apply = Keep both, or choose one after comparing them.
 files-merge-review-incoming = Incoming revision from device { $device }
-files-merge-review-diff = Version history shows both versions side by side.
-files-merge-review-guard = If either version changes before you apply, nothing is merged.
 files-merge-review-undo = You can restore either earlier version afterwards without losing later work.
 files-merge-apply-safe = Apply safe merge
 files-merge-apply-safe-detail = Applies only if both versions can still be kept whole.
@@ -226,26 +198,6 @@ files-history-action-moved = Moved
 files-history-action-deleted = Deleted
 files-history-action-conflict-resolved = Resolved conflict
 files-history-action-restored = Restored
-files-history-action-changed = Changed
-files-history-current-version = { $action } (current version)
-files-history-preview-title = Selected version
-files-history-compare-title = Compare with current version
-files-history-selected-action = Action: { $action }
-files-history-selected-by = By: { $person }
-files-history-selected-at = When: { $time }
-files-history-version-id = Version: { $id }
-files-history-content-identity = Content identity: { $hash }
-files-history-metadata-identity = Metadata identity: { $hash }
-files-history-no-content = no file content
-files-history-compare-content = Content: { $state }
-files-history-compare-metadata = Metadata: { $state }
-files-history-same = unchanged
-files-history-different = changed
-files-history-show-activity = Show in workspace activity
-files-history-compare = Compare with current
-files-history-hide-compare = Show version details
-files-history-restore-selected = Restore this version
-files-history-current-version-label = Current version
 
 ## Accessible collaborative state
 files-a11y-transfer-failed = Transfer failed
@@ -326,9 +278,6 @@ files-a11y-current-folder = Current folder: { $path }
 files-a11y-places = Places
 files-a11y-favourite = Favorite
 files-a11y-system-location = System location
-files-a11y-place-description = { $section }, { $path }
-files-a11y-current-breadcrumb = Current folder, { $path }. Press Enter to edit the path
-files-a11y-open-folder = Open { $path }
 files-empty-trash = Trash is empty
 files-empty-folder = This folder is empty
 files-item-count = { $count } { $count ->
@@ -449,7 +398,6 @@ files-archive-create-failed-title = Couldn’t compress
 
 ## File-operation validation
 files-folder-name-empty = Folder name cannot be empty
-files-folder-name-slash = Folder name cannot contain '/'
 files-name-empty = Name cannot be empty
 files-name-slash = Name cannot contain '/'
 files-no-parent = No parent directory
@@ -500,14 +448,6 @@ files-open-with-default = { $app } (default)
 files-open-with-app = Open with { $app }
 files-open-with-app-param = Application
 files-open-with-not-a-candidate = { $app } does not open this file
-files-open-with-launch-unavailable = The application did not start. Open the file with another one.
-files-open-with-selection-changed = The file changed. Open it again.
-files-open-with-action-unavailable = Open with isn’t available right now.
-files-open-with-write-required = You don’t have permission to edit this file.
-files-open-with-default-unavailable = Choosing a default application isn’t available on this device.
-files-open-with-access-unavailable = This application can’t open the file that way.
-files-open-with-busy = Another file is still opening. Try again in a moment.
-files-open-with-timeout = The file didn’t open. Try again.
 files-open-with-no-workspace = There is no workspace to bring this file into.
 files-place-recent = Recent
 files-empty-recent = No recent files yet
@@ -523,7 +463,7 @@ files-account-sign-in-where = You can do that in Settings, under External accoun
 files-account-service-at-host = { $service } at { $host }
 files-account-folder = Folder: { $path }
 files-account-check-again = Check again
-files-account-check-again-detail = Reads the account's state again and opens its folder once it is available.
+files-account-check-again-detail = Checks the account again and opens its folder once it is available.
 files-action-send-airdrop = Send to a verified AirDrop lab receiver…
 files-airdrop-unavailable = Verified AirDrop lab transfer is unavailable on this host.
 files-airdrop-endpoint-invalid = Enter the receiver's literal IP address and a TLS port from 1 to 65535.
@@ -536,7 +476,7 @@ files-airdrop-action-detail = You confirm the receiver before this file is sent.
 
 files-nearby-status = Transfer status
 files-nearby-transfer-unavailable = This transfer is no longer available in this Files window.
-files-nearby-status-detail = Read this transfer’s phase and confirmed byte counts.
+files-nearby-status-detail = This transfer’s phase and confirmed byte counts.
 
 files-clipboard-recovered = Recovered { $count } interrupted transfers. Recoverable copies are in Trash.
 files-menu-recover-transfers = Recover interrupted transfers
@@ -557,7 +497,7 @@ file-explorer-rename = Renamed { $entry } to { $name }
 file-explorer-trash = Moved files to Trash
 file-explorer-move = Moved files to { $to }
 file-explorer-copy = Copied files to { $to }
-file-explorer-revert = Took back a change to files
+file-explorer-revert = Undid a change to files
 file-explorer-write-file = Wrote the file { $name }
 file-explorer-compress = Compressed files into an archive
 

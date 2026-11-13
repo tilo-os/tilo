@@ -212,6 +212,17 @@ impl RouteKeys {
         }
     }
 
+    /// The content secret of the members these keys belong to
+    /// ([`channel_crypto::ChannelContentKeys::record_content_secret`]), while
+    /// the current epoch's key is held.
+    pub(super) fn content_secret(&self) -> Option<tilo_seal::SymmetricKey> {
+        match &self.keys {
+            Keys::Content { keys, .. } => keys.record_content_secret().ok(),
+            Keys::Group(group) => group.content_keys().ok()?.record_content_secret().ok(),
+            Keys::Plain | Keys::Unsealable | Keys::Pending(_) => None,
+        }
+    }
+
     /// The state, once per change, for the app.
     pub(super) fn take_state_change(&mut self) -> Option<ChannelAccessState> {
         let state = self.state();

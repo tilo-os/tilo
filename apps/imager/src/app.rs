@@ -2485,10 +2485,7 @@ impl ImagerApp {
             .filter(|last| !last.phase.is_active())
             .unwrap_or_else(|| Progress {
                 phase: JobPhase::Failed,
-                error: Some(
-                    "The writer stopped unexpectedly. Reconnect the drive, then review and retry."
-                        .into(),
-                ),
+                error: Some(crate::setup::strings::t("imager-write-worker-stopped")),
                 ..self.progress.clone()
             });
         if failed {
@@ -2502,10 +2499,7 @@ impl ImagerApp {
         // turn that race into a claim that the medium is ready to use.
         if outcome.phase == JobPhase::Success && cancelled {
             outcome.phase = JobPhase::Failed;
-            outcome.error = Some(
-                "Image writing was cancelled. The drive may be incomplete; review and retry before using it."
-                    .into(),
-            );
+            outcome.error = Some(crate::setup::strings::t("imager-write-cancelled"));
         }
         let name = self
             .source
@@ -3977,6 +3971,56 @@ mod tests {
             labels
                 .iter()
                 .all(|label| !matches!(label.as_str(), "Back" | "Continue" | "Browse…")),
+            "the source language is left in the German window: {labels:?}"
+        );
+    }
+
+    /// The customization form's sections, field names and the storage choice
+    /// read in the window's language, not the source one.
+    #[test]
+    fn the_customization_form_reads_in_the_windows_language() {
+        let catalog = &crate::resource::CATALOG;
+        let previous = catalog.current_locale();
+        catalog.set_locale("de-DE");
+        let mut host =
+            ui::prelude::TestApp::<crate::resource::ImagerShell>::capture(Some("customize"))
+                .unwrap();
+        let labels: Vec<String> = host
+            .harness()
+            .a11y_nodes()
+            .into_iter()
+            .filter_map(|(_, node)| node.label().map(str::to_owned))
+            .collect();
+        catalog.set_locale(&previous);
+        for german in [
+            "Identität",
+            "Region",
+            "Speicher",
+            "Hostname",
+            "Vollständiger Name",
+            "Benutzername",
+            "Sprache und Region",
+            "Zeitzone",
+            "Tastaturbelegung",
+            "Dateisystem",
+        ] {
+            assert!(
+                labels.iter().any(|label| label == german),
+                "{german} is missing from {labels:?}"
+            );
+        }
+        assert!(
+            labels.iter().all(|label| !matches!(
+                label.as_str(),
+                "Identity"
+                    | "Storage"
+                    | "Full name"
+                    | "Username"
+                    | "Language and locale"
+                    | "Time zone"
+                    | "Keyboard layout"
+                    | "Filesystem"
+            )),
             "the source language is left in the German window: {labels:?}"
         );
     }
@@ -5715,7 +5759,7 @@ mod tests {
 
             assert_eq!(app.progress.phase, JobPhase::Failed);
             assert!(app.progress.error.as_deref().is_some_and(|message| {
-                message.contains("cancelled") && message.contains("incomplete")
+                message.contains("incomplete") && message.contains("review and retry")
             }));
             assert_eq!(app.step, Step::Done);
         }

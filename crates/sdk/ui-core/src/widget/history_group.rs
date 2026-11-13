@@ -277,11 +277,11 @@ impl HistoryGroup {
         parts
     }
 
-    /// "Alice", "Alice and Bob", "Alice, Bob + 4".
+    /// "Alice", "Claude for Ada", "Alice and Bob", "Alice, Bob + 4".
     pub fn authors_label(&self) -> String {
         match self.authors.as_slice() {
             [] => String::new(),
-            [a] => a.name.clone(),
+            [a] => crate::history_source::sentence::author_line(a),
             [a, b] => authors_pair(&a.name, &b.name),
             [a, b, rest @ ..] => authors_more(&a.name, &b.name, rest.len()),
         }

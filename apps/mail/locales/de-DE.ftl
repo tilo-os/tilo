@@ -1,5 +1,10 @@
 # Mail — deutsche Übersetzung (de-DE).
 
+## Erster Start
+mail-first-run-title = Noch kein E-Mail-Konto
+mail-first-run-hint = Füge in den Einstellungen unter Externe Konten ein E-Mail-Konto hinzu.
+mail-first-run-action = Externe Konten öffnen
+
 ## Fenster zum Schreiben
 mail-compose-label-to = An
 mail-compose-label-cc = Cc
@@ -224,7 +229,6 @@ mail-folder-archive = Archiv
 mail-folder-trash = Papierkorb
 mail-folder-junk = Spam
 mail-refresh-offline = { $folder } für { $account } lässt sich nicht aktualisieren, solange IMAP offline ist
-mail-first-run-message = E-Mail-Konten werden in den Einstellungen unter Externe Konten hinzugefügt.
 
 ## Die Plätze der Fensterleiste
 mail-bulk-done = Fertig
@@ -278,3 +282,6 @@ mail-mailbox-draft-message = Nachricht entwerfen
 mail-trusted-senders = Vertrauenswürdige Absender
 mail-trusted-senders-trust = Diesem Absender vertrauen
 mail-trusted-senders-distrust = Diesem Absender nicht mehr vertrauen
+
+## What the app is called in a window and in the launcher
+mail-app-title = Mail

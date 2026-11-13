@@ -4,7 +4,9 @@ passwords-show-access = Show app access
 passwords-permission-expired = That permission is no longer active
 passwords-session-access = This session
 passwords-persistent-access = Until you revoke access
-passwords-account-scope = { $service } · account { $account } · link { $generation }
+passwords-account-scope = { $service }
+    Account { $account }
+    Link { $generation }
 passwords-service-signal = Signal
 passwords-service-whatsapp = WhatsApp
 passwords-service-sms = SMS
@@ -22,7 +24,9 @@ passwords-request-expired = That request is no longer valid. Start again from th
 passwords-request-details = { $app } requests access to { $item }.
     Purpose: { $purpose }
     Origin: { $origin }
-    { $service } · account { $account } · link { $generation }
+    { $service }
+    Account { $account }
+    Link { $generation }
     Person: { $principal }
     Device: { $device }
 passwords-saved-item = Saved { $item }
@@ -147,3 +151,6 @@ passwords-effect-export = Export CSV…
 passwords-effect-filter = Filter vault
 passwords-effect-open = Open
 passwords-vault = Password vault
+
+## What the app is called in a window and in the launcher
+passwords-app-title = Passwords

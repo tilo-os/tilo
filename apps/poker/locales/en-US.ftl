@@ -10,7 +10,7 @@ poker-seat-open = Seat { $seat }
 poker-seat-open-detail = Open
 poker-seat-you = You
 poker-seat-your-turn = Your turn
-poker-seat-their-turn = Thinking
+poker-seat-their-turn = Their turn
 poker-seat-dealer = Dealer
 poker-seat-won = Won { $amount }
 poker-seat-bet = { $move } { $amount }
@@ -123,3 +123,6 @@ so-tilo-poker-table-leave = Leave table
 so-tilo-poker-table-deal = Deal
 so-tilo-poker-table-show = Show cards
 so-tilo-poker-table-skip = Fold idle player
+
+## What the app is called in a window and in the launcher
+poker-app-title = Poker

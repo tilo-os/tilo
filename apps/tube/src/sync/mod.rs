@@ -165,7 +165,8 @@ pub type SyncResult<T> = Result<T, SyncError>;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SyncCapability {
     pub available: bool,
-    pub summary: &'static str,
+    /// The catalogue message saying whether sync is available and what it needs.
+    pub summary_key: &'static str,
 }
 
 /// Product-facing status for device sync. Availability still depends on the
@@ -175,12 +176,12 @@ pub const fn capability() -> SyncCapability {
     #[cfg(feature = "grayjay-sync")]
     return SyncCapability {
         available: true,
-        summary: "Encrypted Grayjay sync is available when the desktop's secret store is unlocked.",
+        summary_key: "tube-sync-available-note",
     };
     #[cfg(not(feature = "grayjay-sync"))]
     SyncCapability {
         available: false,
-        summary: "This build does not include Grayjay device sync.",
+        summary_key: "tube-sync-not-built",
     }
 }
 

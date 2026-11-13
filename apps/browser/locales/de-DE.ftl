@@ -48,12 +48,11 @@ browser-personal-bookmarks-empty = Hier gibt es keine Lesezeichen
 browser-personal-bookmarks-remove = Lesezeichen entfernen
 browser-personal-bookmarks-unnamed-folder = Unbenannter Ordner
 browser-workspace-bookmarks = Lesezeichen des Arbeitsbereichs
-browser-continuity-failed = Wir konnten das Übernehmen deiner Browserdaten nicht abschließen.
+browser-continuity-failed = Wir konnten deine Browserdaten nicht vollständig übernehmen.
 browser-continuity-retry = Erneut versuchen
 browser-service-forget = Konto auf diesem Gerät vergessen
 browser-service-forgetting = Dieses Konto wird auf diesem Gerät vergessen …
 browser-service-forgotten = Lokale Websitesitzung entfernt
-browser-service-custody-backend-needed = Gespeicherte Kontozugangsdaten wurden nicht widerrufen. Zum Entfernen wird ein Verwahrungsdienst benötigt.
 browser-service-forget-open-first = Öffne zuerst das ausgewählte Konto in diesem Fenster.
 browser-service-forget-wait = Warte, bis das ausgewählte Konto fertig geöffnet ist.
 browser-service-forget-fence-failed = Das ausgewählte Konto konnte zum Vergessen nicht abgeschottet werden.
@@ -64,9 +63,9 @@ browser-service-open = { $name } öffnen
 browser-engine-failed = Schließe Browser und öffne ihn erneut. Startet er weiterhin nicht, aktualisiere Browser im Store oder installiere ihn neu.
 
 ## Toolbar
-browser-back = Zurück; gedrückt halten oder Rechtsklick für den Verlauf
+browser-back = Zurück
 browser-back-tooltip = Zurück (Alt+Links); gedrückt halten oder Rechtsklick für den Verlauf
-browser-forward = Vor; gedrückt halten oder Rechtsklick für den Verlauf
+browser-forward = Vor
 browser-forward-tooltip = Vor (Alt+Rechts); gedrückt halten oder Rechtsklick für den Verlauf
 browser-stop = Laden stoppen
 browser-reload = Neu laden
@@ -544,3 +543,6 @@ browser-application = Browser
 browser-application-add-bookmark = Seite als Lesezeichen merken
 browser-application-remove-bookmark = Lesezeichen entfernen
 browser-application-set-site-protection = Tracker-Schutz
+
+## What the app is called in a window and in the launcher
+browser-app-title = Browser

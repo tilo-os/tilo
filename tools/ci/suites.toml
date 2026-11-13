@@ -73,6 +73,11 @@ inputs = ["scripts/headless-examples/spawn-headless.sh"]
 suites = ["scripts/headless-examples/test_spawn_headless.py"]
 
 [[group]]
+name = "headless-check-window-read"
+inputs = ["scripts/headless-examples/tilolang-e2e.py"]
+suites = ["scripts/headless-examples/test_tilolang_e2e.py"]
+
+[[group]]
 name = "runtime-dependency-closure"
 inputs = ["os/scripts/collect-runtime-dependencies.py", "os/scripts/bake-runtime-bundle.sh", "os/scripts/verify-runtime-bundle-closure.sh", "dist/apps/package-apps.sh"]
 suites = ["os/tests/test_runtime_dependency_closure.py"]
@@ -908,6 +913,13 @@ readers = [
 ]
 
 [[cargo]]
+package = "tilo-local"
+# The launcher runs the development session's scripts, the web bundle's build and the local
+# hosting stack from the checkout it is built in.
+inputs = ["dist/dev/nested-session.sh", "dist/dev/nested-session-build.sh", "os/containers/tilo-sh/", "crates/browser/tilo-browser-runtime/scripts/build.sh"]
+readers = ["crates/dev/tilo-local/src/main.rs"]
+
+[[cargo]]
 package = "onboarding-walk"
 # The names test reads the onboarding app whose controls it walks.
 inputs = ["crates/session/onboarding/src/"]
@@ -1442,7 +1454,7 @@ inputs = [
 readers = [
   "crates/agent/agent-participant/tests/it.rs",
   "crates/agent/agent-participant/tests/campaign_bench.rs",
-  "crates/agent/agent-participant/examples/door-on-relay.rs",
+  "crates/agent/agent-participant/examples/api-on-relay.rs",
   "crates/agent/agent-participant/examples/mounted-resource.rs",
 ]
 
@@ -1650,6 +1662,10 @@ suite = "os/containers/tilo-lounge/test-wait-list-door.sh"
 reason = "needs the built web desktop bundle, headless Chromium and the built relay and crypto programs, and a mail sink it runs itself; the wait-list-door check runs it in its image"
 
 [[unrequired]]
+suite = "os/containers/tilo-lounge/test-onboarding.sh"
+reason = "one flow of the e2e check, on a whole tilo.sh of its own (the stack, whose door takes people by invitation and whose mail goes to a sink it reads): it needs the built web desktop bundle, the stack's programs, context, site and Caddy, headless Chromium, the tilo command, and minutes of a machine's walls; the e2e check runs it beside the other flows"
+
+[[unrequired]]
 suite = "os/containers/tilo-lounge/test-page-tour.sh"
 reason = "a newcomer's tour kept as pictures for a person to review, judging nothing on looks; needs the built web desktop bundle, headless Chromium and the built relay, CLI and crypto programs; the page-tour check runs it on request"
 
@@ -1666,8 +1682,8 @@ suite = "os/containers/tilo-vm-host/test-image.sh"
 reason = "inspects the built VM host image with buildah as root, so it needs the archive image-vm-host writes and a micro-VM step"
 
 [[unrequired]]
-suite = "os/containers/tilo-front-door/test-image.sh"
-reason = "starts the built front door image with buildah as root in a loopback network, so it needs the archive image-front-door writes and a micro-VM step"
+suite = "os/containers/tilo-api/test-image.sh"
+reason = "starts the built API server image with buildah as root in a loopback network, so it needs the archive image-api writes and a micro-VM step"
 
 [[unrequired]]
 suite = "crates/session/tilo-ntfs-helper/tests/test_stage_install.py"
@@ -2156,7 +2172,7 @@ readers = ["crates/system/tilo-cli/src/aliases.rs", "crates/system/tilo-cli/src/
 
 # The Python SDK's suite runs as `uv run --frozen --offline pytest` in the ci-sdk image by the
 # sdk-python check, which carries uv and the SDK's locked dependencies. The integration test is
-# gated with it and skips unless a front door is named by TILO_TEST_DOOR and TILO_TEST_KEY.
+# gated with it and skips unless an API server is named by TILO_TEST_API_URL and TILO_TEST_KEY.
 [[covered]]
 suite = "sdk/python/tests/test_integration.py"
 check = "sdk-python"

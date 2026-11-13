@@ -163,7 +163,7 @@ impl Photos {
             |(analyzed, available, awaiting), photo| {
                 if photo.analysis().is_some_and(|analysis| {
                     analysis
-                        .vision_provenance_for_content(&photo.image.content)
+                        .vision_provenance_for_content(&photo.image.hash())
                         .is_some()
                 }) {
                     (analyzed + 1, available, awaiting)

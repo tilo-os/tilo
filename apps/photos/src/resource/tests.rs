@@ -10,8 +10,7 @@ use crate::model::{
 };
 
 fn portable_photo(path: &str, width: u32, height: u32) -> LibraryPhoto {
-    let hash = tilo_content::hash_bytes(path.as_bytes());
-    LibraryPhoto::from_image(OpenImage::new(path, width, height, hash))
+    LibraryPhoto::from_image(OpenImage::fixture(path, width, height))
 }
 
 /// A library holding `photos`, imported through the door.
@@ -115,7 +114,7 @@ fn an_import_is_content_addressed_portable_idempotent_and_bounded() {
     let mut library = Replica::<PhotoLibrary>::new();
     let origin = "/var/home/alice/Private/harbour.png";
     let hash = "a".repeat(64);
-    let image = OpenImage::new(origin, 800, 600, hash.clone());
+    let image = OpenImage::named(origin, 800, 600, &hash);
     library
         .apply(PhotoLibrary::IMPORT_PHOTO.with((image.clone(), None, None)))
         .expect("a content-addressed photograph imports");
@@ -136,7 +135,12 @@ fn an_import_is_content_addressed_portable_idempotent_and_bounded() {
     assert_eq!(library.state().unwrap().photos.len(), 1);
 
     // Content that is not a hash names no bytes any device could resolve.
-    let unaddressed = OpenImage::new("/private/unaddressed.png", 20, 10, "unaddressed");
+    let unaddressed = OpenImage::new(
+        "/private/unaddressed.png",
+        20,
+        10,
+        ui::tilo_resource::Bytes::of(b"unaddressed"),
+    );
     assert!(
         library
             .apply(PhotoLibrary::IMPORT_PHOTO.with((unaddressed, None, None)))
@@ -620,7 +624,7 @@ fn shared_analysis_is_bounded_pinned_and_merges_by_component() {
     eprintln!("phase shared_analysis_is_bounded_readable_and_removable");
     {
         let item = portable_photo("analysis.png", 40, 20);
-        let content = item.image.content.clone();
+        let content = item.image.hash();
         let mut library = library_of(std::slice::from_ref(&item));
         merge(
             &mut library,
@@ -658,7 +662,7 @@ fn shared_analysis_is_bounded_pinned_and_merges_by_component() {
     eprintln!("phase text_then_image_and_image_then_text_keep_each_component");
     {
         let item = portable_photo("ocr-then-vision.png", 40, 20);
-        let content = item.image.content.clone();
+        let content = item.image.hash();
         let mut library = library_of(std::slice::from_ref(&item));
         merge(
             &mut library,
@@ -683,7 +687,7 @@ fn shared_analysis_is_bounded_pinned_and_merges_by_component() {
     eprintln!("phase a_new_vision_pass_refreshes_only_incidental_text");
     {
         let item = portable_photo("vision-refresh.png", 40, 20);
-        let content = item.image.content.clone();
+        let content = item.image.hash();
         let mut library = library_of(std::slice::from_ref(&item));
         let mut first = vision(&content);
         first.ocr_text = "old sign".into();
@@ -702,7 +706,7 @@ fn shared_analysis_is_bounded_pinned_and_merges_by_component() {
     eprintln!("phase a_component_of_other_bytes_is_replaced_not_kept");
     {
         let item = portable_photo("stale-analysis.png", 40, 20);
-        let content = item.image.content.clone();
+        let content = item.image.hash();
         let mut replaced = item.clone();
         replaced.set_analysis(Some(vision(&"f".repeat(64))));
         let mut library = Replica::<PhotoLibrary>::new();
@@ -723,7 +727,7 @@ fn shared_analysis_is_bounded_pinned_and_merges_by_component() {
     eprintln!("phase analysis_needs_a_pinned_model_but_keeps_an_empty_scene");
     {
         let item = portable_photo("blank-vision.png", 40, 20);
-        let content = item.image.content.clone();
+        let content = item.image.hash();
         let mut library = library_of(std::slice::from_ref(&item));
 
         let mut unpinned = vision(&content);
@@ -749,7 +753,7 @@ fn shared_analysis_is_bounded_pinned_and_merges_by_component() {
     eprintln!("phase concurrent_text_and_image_analysis_both_survive");
     {
         let item = portable_photo("concurrent-analysis.png", 40, 20);
-        let content = item.image.content.clone();
+        let content = item.image.hash();
         let mut text = library_of(std::slice::from_ref(&item));
         let mut image = text.fork();
         merge(&mut text, &item.id, ocr(&content, "concurrent receipt")).unwrap();

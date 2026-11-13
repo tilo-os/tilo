@@ -139,3 +139,6 @@ calculator-document-add-function = Kurve hinzufügen
 calculator-document-add-surface = Fläche hinzufügen
 calculator-document-delete-function = Kurve entfernen
 calculator-document-delete-surface = Fläche entfernen
+
+## What the app is called in a window and in the launcher
+calculator-app-title = Rechner
