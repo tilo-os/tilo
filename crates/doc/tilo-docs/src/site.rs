@@ -1,14 +1,6 @@
-//! Writes a book as a static site under the book's base:
-//!
-//! ```text
-//! index.html, <slug>/index.html   each page
-//! index.md, <slug>.md             each page as Markdown, front matter and all
-//! llms.txt, llms-full.txt         the book for agents
-//! search.json                     the search index
-//! assets/…                        style, script, icon and fonts, named by content
-//! ```
-//!
-//! Every link into the book must name a page that exists, and a heading on it.
+//! Writes a book as a static site under the book's base: each page as
+//! `index.html` and as its Markdown, `llms.txt` and `llms-full.txt` for agents,
+//! `search.json`, and assets named by their content.
 
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
@@ -24,11 +16,8 @@ use crate::search;
 const STYLE: &str = include_str!("../assets/docs.css");
 const SCRIPT: &str = include_str!("../assets/docs.js");
 const ICON: &str = include_str!("../assets/icon.svg");
-/// Marks a directory this program wrote, which it may replace.
 const MARKER: &str = ".tilo-docs";
 
-/// The faces the site sets text in, from a font catalog when one is given:
-/// `(file in the catalog, family, style)`.
 const FONTS: [(&str, &str, &str); 2] = [
     ("TiloSans[wdth,wght].ttf", "Tilo Sans", "normal"),
     ("TiloSans-Italic[wdth,wght].ttf", "Tilo Sans", "italic"),
@@ -37,8 +26,6 @@ const FONT_LICENSE: &str = "LICENSES/Tilo-Sans-OFL.txt";
 
 #[derive(Debug, Default)]
 pub struct Options {
-    /// A font catalog (`crates/sdk/ui-core/assets/fonts` prepared, or a web
-    /// bundle's `fonts/`); without one the site uses the reader's system faces.
     pub fonts: Option<PathBuf>,
 }
 
@@ -48,11 +35,6 @@ pub struct Report {
     pub files: usize,
 }
 
-/// Builds `book` into `out`, replacing what an earlier build wrote there.
-///
-/// # Errors
-/// When `out` holds files this program did not write, a link into the book
-/// names no page or heading, or a file cannot be written.
 pub fn build(book: &Book, out: &Path, options: &Options) -> Result<Report, Error> {
     prepare(out)?;
     let mut writer = Writer { out, files: 0 };
@@ -219,8 +201,6 @@ fn write_assets(writer: &mut Writer<'_>, book: &Book, options: &Options) -> Resu
     })
 }
 
-/// Every link into the book's base names a page and, with a fragment, one of
-/// its headings.
 fn check_links(book: &Book, rendered: &[Rendered]) -> Result<(), Error> {
     let mut anchors: HashMap<&str, HashSet<&str>> = HashMap::new();
     let mut files: HashSet<String> = HashSet::new();
@@ -341,7 +321,6 @@ mod tests {
             search.contains("[\"upload-a-file\",\"Upload a file\"]"),
             "{search}"
         );
-        // A second build replaces the first.
         build(&book, &out, &Options::default()).unwrap();
     }
 

@@ -6,20 +6,15 @@ use std::fmt::Write as _;
 
 use crate::html::escape;
 
-/// The kinds of token that get a colour; everything else is plain text.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Token {
     Keyword,
     String,
     Comment,
     Number,
-    /// `true`, `None`, `null`.
     Literal,
-    /// A name called as a function, or a shell line's command.
     Function,
-    /// An object key (JSON, TOML) or a shell option (`--name`).
     Key,
-    /// A shell variable (`$TILO_API_KEY`).
     Variable,
 }
 
@@ -142,7 +137,6 @@ impl Family {
     }
 }
 
-/// `code` as HTML, its tokens wrapped in `<span class="…">`.
 #[must_use]
 pub fn highlight(language: &str, code: &str) -> String {
     let family = Family::of(language);
@@ -162,20 +156,15 @@ pub fn highlight(language: &str, code: &str) -> String {
     out
 }
 
-/// Reads tokens off the front of what is left of the code.
 struct Lexer<'a> {
     family: Family,
     rest: &'a str,
-    /// No word has been read on this line yet (a shell line's first word is
-    /// its command).
     line_start: bool,
-    /// The last character written.
     previous: Option<char>,
     out: &'a mut String,
 }
 
 impl Lexer<'_> {
-    /// Writes the next `len` bytes as `token`.
     fn emit(&mut self, token: Option<Token>, len: usize) {
         let (text, rest) = self.rest.split_at_checked(len).unwrap_or((self.rest, ""));
         match token {
@@ -193,7 +182,6 @@ impl Lexer<'_> {
         self.rest = rest;
     }
 
-    /// The length of the longest prefix whose characters all `keep`.
     fn prefix_len(text: &str, keep: impl Fn(char) -> bool) -> usize {
         text.find(|c: char| !keep(c)).unwrap_or(text.len())
     }
@@ -249,9 +237,6 @@ impl Lexer<'_> {
                 || self.previous.is_none_or(char::is_whitespace))
     }
 
-    /// The length of the string starting here: triple quotes in Python,
-    /// backslash escapes, and up to the line's end for an unclosed one-line
-    /// string.
     fn string_len(&self, quote: char) -> usize {
         let triple: String = std::iter::repeat_n(quote, 3).collect();
         if self.family == Family::Python
@@ -302,7 +287,6 @@ impl Lexer<'_> {
         self.emit(token, len);
     }
 
-    /// A shell word: the line's command, an option, a variable, or plain.
     fn shell_word(&mut self, c: char) {
         if c == '$' {
             let name = self.rest.get(1..).map_or(0, |after| {
@@ -333,7 +317,6 @@ impl Lexer<'_> {
         } else {
             None
         };
-        // After a pipe or `&&` the next word is a command again.
         self.line_start = matches!(word, "|" | "||" | "&&" | ";" | "sudo" | "env");
         self.emit(token, len);
     }

@@ -1,11 +1,10 @@
 //! Tilo's documentation books, from the pages `tools/docs/developer_docs.py
-//! export` writes to a static site: HTML with search, dark mode and
-//! language tabs that stay in step, each page's Markdown beside it, and
-//! `llms.txt` for agents.
+//! export` writes to a static site: HTML with search, dark mode and language tabs
+//! that stay in step, each page's Markdown beside it, and `llms.txt` for agents.
 //!
 //! A page is a record: its front matter (`book::Page`) and its Markdown. The
-//! site is one way to show those records; the renderer keeps no state of its
-//! own, so the same pages can be read as records elsewhere.
+//! renderer keeps no state of its own, so the same pages can be read as records
+//! elsewhere.
 
 pub mod book;
 pub mod highlight;

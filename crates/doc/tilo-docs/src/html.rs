@@ -1,6 +1,3 @@
-//! HTML text escaping.
-
-/// `text` safe inside HTML text and quoted attribute values.
 #[must_use]
 pub fn escape(text: &str) -> String {
     let mut out = String::with_capacity(text.len());

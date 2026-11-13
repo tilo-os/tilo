@@ -7,7 +7,6 @@ use crate::markdown::Heading;
 
 #[derive(Debug, Serialize)]
 pub struct Entry<'a> {
-    /// The page's address.
     pub url: &'a str,
     pub title: &'a str,
     pub section: &'a str,
@@ -27,10 +26,6 @@ impl<'a> Entry<'a> {
     }
 }
 
-/// The index as compact JSON.
-///
-/// # Panics
-/// Never: the entries are plain strings.
 #[must_use]
 pub fn index(entries: &[Entry<'_>]) -> String {
     #[expect(
