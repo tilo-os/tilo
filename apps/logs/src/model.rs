@@ -140,7 +140,6 @@ impl LogEntry {
         let now = ui::clock::local_now();
         let now_us = u64::try_from(now.timestamp_micros()).unwrap_or(0);
         let (ty, tmo, td, ..) = civil(local_us(now_us));
-        // format: machine (a journal time to the millisecond, as journalctl writes it)
         let precise = ui::format::machine!(
             "a journal time to the millisecond, as journalctl writes it",
             format!("{hh:02}:{mm:02}:{ss:02}.{milli:03}")
