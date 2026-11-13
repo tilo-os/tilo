@@ -449,6 +449,11 @@ pub struct ResourceViewSpec {
     /// it opens the desktop at this view.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub desktop: bool,
+    /// What a place of the resource shows when it stands as content on its own (a place on the
+    /// canvas, an answer's view) rather than as its app's window: the view the words naming the
+    /// resource, not its app, place it through. At most one view of a resource is so.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub place: bool,
 }
 
 impl ResourceViewSpec {
@@ -466,6 +471,7 @@ impl ResourceViewSpec {
             mount: None,
             range: None,
             desktop: false,
+            place: false,
         }
     }
 
@@ -485,6 +491,13 @@ impl ResourceViewSpec {
     #[must_use]
     pub fn with_primary(mut self, primary: bool) -> Self {
         self.primary = primary;
+        self
+    }
+
+    /// Make it what a place of the resource shows standing on its own ([`Self::place`]).
+    #[must_use]
+    pub fn with_place(mut self, place: bool) -> Self {
+        self.place = place;
         self
     }
 

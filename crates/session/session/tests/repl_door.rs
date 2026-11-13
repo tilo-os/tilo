@@ -740,7 +740,7 @@ fn my_mails_on_the_canvas_places_mails_root() {
             .map(|(kind, _)| kind.as_str())
             .collect::<Vec<_>>(),
         ["tl.so.tilo.lang.mail.Mail"],
-        "\"my mails\" places Mail's root, which Mail draws as its inbox: {found:?}"
+        "\"my mails\" places Mail's root, through the inbox's list: {found:?}"
     );
 }
 

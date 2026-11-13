@@ -440,6 +440,11 @@ d-4fjgzcq6 = Zusammengeführt
     .w-all-mail = Alle Mails
     .w-labels = Labels
 
+d-m5y6nl2m = Alle Posteingänge
+    .w-add-a-mail-account-in-settings = Füge in den Einstellungen ein Mailkonto hinzu
+
+d-tfom3oeo = Unterhaltungen des Kontos
+
 d-gka45our = Postfächer
     .w-all-mail = Alle Mails
     .w-labels = Labels
