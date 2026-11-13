@@ -310,49 +310,54 @@ pub(super) fn serve(
 mod tests {
     use super::*;
 
-    #[test]
-    fn native_configuration_preserves_unicode_spellings_and_rejects_control_tokens() {
-        let mut config = SpeechConfig {
-            language: "fr".into(),
-            vocabulary: vec!["Élodie".into(), "Straße".into()],
-        };
-        assert_eq!(
-            configuration(&config).unwrap().as_slice(),
-            "fr\0Élodie\nStraße\0".as_bytes()
-        );
-        for invalid in [
-            "",
-            "two words",
-            "line\nbreak",
-            "nul\0byte",
-            "<|prompt",
-            "prompt|>",
-        ] {
-            config.vocabulary = vec![invalid.into()];
+    tilo_test_env::scenario! {
+        /// The configuration handed to the native recogniser.
+        fn native_configuration_keeps_spellings_and_enforces_its_limits;
+
+        phase native_configuration_preserves_unicode_spellings_and_rejects_control_tokens;
+        {
+            let mut config = SpeechConfig {
+                language: "fr".into(),
+                vocabulary: vec!["Élodie".into(), "Straße".into()],
+            };
+            assert_eq!(
+                configuration(&config).unwrap().as_slice(),
+                "fr\0Élodie\nStraße\0".as_bytes()
+            );
+            for invalid in [
+                "",
+                "two words",
+                "line\nbreak",
+                "nul\0byte",
+                "<|prompt",
+                "prompt|>",
+            ] {
+                config.vocabulary = vec![invalid.into()];
+                assert!(matches!(configuration(&config), Err(SpeechError::Protocol)));
+            }
+            config.vocabulary.clear();
+            config.language = "unavailable".into();
+            assert!(matches!(
+                configuration(&config),
+                Err(SpeechError::UnsupportedLanguage)
+            ));
+        }
+
+        phase native_configuration_enforces_word_count_character_and_byte_limits;
+        {
+            let mut config = SpeechConfig {
+                language: "auto".into(),
+                vocabulary: vec!["word".into(); 256],
+            };
+            assert!(configuration(&config).is_ok());
+            config.vocabulary.push("extra".into());
+            assert!(matches!(configuration(&config), Err(SpeechError::Protocol)));
+            config.vocabulary = vec!["é".repeat(128)];
+            assert!(configuration(&config).is_ok());
+            config.vocabulary = vec!["é".repeat(129)];
+            assert!(matches!(configuration(&config), Err(SpeechError::Protocol)));
+            config.vocabulary = vec!["é".repeat(128); 64];
             assert!(matches!(configuration(&config), Err(SpeechError::Protocol)));
         }
-        config.vocabulary.clear();
-        config.language = "unavailable".into();
-        assert!(matches!(
-            configuration(&config),
-            Err(SpeechError::UnsupportedLanguage)
-        ));
-    }
-
-    #[test]
-    fn native_configuration_enforces_word_count_character_and_byte_limits() {
-        let mut config = SpeechConfig {
-            language: "auto".into(),
-            vocabulary: vec!["word".into(); 256],
-        };
-        assert!(configuration(&config).is_ok());
-        config.vocabulary.push("extra".into());
-        assert!(matches!(configuration(&config), Err(SpeechError::Protocol)));
-        config.vocabulary = vec!["é".repeat(128)];
-        assert!(configuration(&config).is_ok());
-        config.vocabulary = vec!["é".repeat(129)];
-        assert!(matches!(configuration(&config), Err(SpeechError::Protocol)));
-        config.vocabulary = vec!["é".repeat(128); 64];
-        assert!(matches!(configuration(&config), Err(SpeechError::Protocol)));
     }
 }

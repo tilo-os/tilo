@@ -313,72 +313,77 @@ mod tests {
                 "io.tilo.local-model.image":owned.image}}})
     }
 
-    #[test]
-    fn exact_container_gate_refuses_foreign_identity_image_or_labels() {
-        let owned = owned();
-        let body = observed(&owned);
-        owned.verify_observation(&body).unwrap();
-        for (pointer, value) in [
-            ("/Config/Cmd", serde_json::json!(["foreign-model"])),
-            ("/Id", serde_json::json!("e".repeat(64))),
-            (
-                "/ImageDigest",
-                serde_json::json!(format!("sha256:{}", "e".repeat(64))),
-            ),
-            (
-                "/ImageName",
-                serde_json::json!("registry.example/runtime:latest"),
-            ),
-            (
-                "/Config/Labels/io.tilo.local-model.run",
-                serde_json::json!("e".repeat(64)),
-            ),
-            (
-                "/Config/Labels/io.tilo.local-model.model",
-                serde_json::Value::Null,
-            ),
-            (
-                "/Config/Labels/io.tilo.local-model.image",
-                serde_json::Value::Null,
-            ),
-        ] {
-            let mut changed = body.clone();
-            *changed.pointer_mut(pointer).unwrap() = value;
-            assert!(owned.verify_observation(&changed).is_err(), "{pointer}");
-        }
-        assert!(owned.verify_observation(&serde_json::json!({})).is_err());
-    }
+    tilo_test_env::scenario! {
+        /// The checks that decide whether a container or unit is this service's to act on.
+        fn ownership_gates_pass_only_the_exact_container_selector_and_quiescent_unit;
 
-    #[test]
-    fn persisted_container_selector_cannot_be_a_prefix_flag_or_tag() {
-        for malformed in ["", "a", "--all", "A", "a\n"] {
+        phase exact_container_gate_refuses_foreign_identity_image_or_labels;
+        {
+            let owned = owned();
+            let body = observed(&owned);
+            owned.verify_observation(&body).unwrap();
+            for (pointer, value) in [
+                ("/Config/Cmd", serde_json::json!(["foreign-model"])),
+                ("/Id", serde_json::json!("e".repeat(64))),
+                (
+                    "/ImageDigest",
+                    serde_json::json!(format!("sha256:{}", "e".repeat(64))),
+                ),
+                (
+                    "/ImageName",
+                    serde_json::json!("registry.example/runtime:latest"),
+                ),
+                (
+                    "/Config/Labels/io.tilo.local-model.run",
+                    serde_json::json!("e".repeat(64)),
+                ),
+                (
+                    "/Config/Labels/io.tilo.local-model.model",
+                    serde_json::Value::Null,
+                ),
+                (
+                    "/Config/Labels/io.tilo.local-model.image",
+                    serde_json::Value::Null,
+                ),
+            ] {
+                let mut changed = body.clone();
+                *changed.pointer_mut(pointer).unwrap() = value;
+                assert!(owned.verify_observation(&changed).is_err(), "{pointer}");
+            }
+            assert!(owned.verify_observation(&serde_json::json!({})).is_err());
+        }
+
+        phase persisted_container_selector_cannot_be_a_prefix_flag_or_tag;
+        {
+            for malformed in ["", "a", "--all", "A", "a\n"] {
+                let mut changed = owned();
+                changed.container_id = malformed.into();
+                assert!(changed.validate().is_err());
+            }
             let mut changed = owned();
-            changed.container_id = malformed.into();
+            changed.image = "registry.example/runtime:latest".into();
+            assert!(changed.validate().is_err());
+            changed = owned();
+            changed.run_id = "../another-unit".into();
             assert!(changed.validate().is_err());
         }
-        let mut changed = owned();
-        changed.image = "registry.example/runtime:latest".into();
-        assert!(changed.validate().is_err());
-        changed = owned();
-        changed.run_id = "../another-unit".into();
-        assert!(changed.validate().is_err());
-    }
 
-    #[test]
-    fn stopped_unit_requires_no_queued_work_and_observable_quiescence() {
-        verify_stopped_unit("LoadState=loaded\nActiveState=inactive\nMainPID=0\nJob=\n").unwrap();
-        verify_stopped_unit("LoadState=not-found\nActiveState=inactive\nJob=\n").unwrap();
-        for properties in [
-            "",
-            "LoadState=loaded\nActiveState=activating\nMainPID=0\nJob=\n",
-            "LoadState=loaded\nActiveState=inactive\nMainPID=0\nJob=12\n",
-            "LoadState=loaded\nActiveState=inactive\nMainPID=4\nJob=\n",
-            "LoadState=loaded\nActiveState=inactive\nMainPID=0\n",
-            "LoadState=loaded\nActiveState=inactive\nJob=\n",
-            "LoadState=error\nActiveState=inactive\nMainPID=0\nJob=\n",
-            "LoadState=loaded\nActiveState=active\nActiveState=inactive\nMainPID=0\nJob=\n",
-        ] {
-            assert!(verify_stopped_unit(properties).is_err(), "{properties}");
+        phase stopped_unit_requires_no_queued_work_and_observable_quiescence;
+        {
+            verify_stopped_unit("LoadState=loaded\nActiveState=inactive\nMainPID=0\nJob=\n").unwrap();
+            verify_stopped_unit("LoadState=not-found\nActiveState=inactive\nJob=\n").unwrap();
+            for properties in [
+                "",
+                "LoadState=loaded\nActiveState=activating\nMainPID=0\nJob=\n",
+                "LoadState=loaded\nActiveState=inactive\nMainPID=0\nJob=12\n",
+                "LoadState=loaded\nActiveState=inactive\nMainPID=4\nJob=\n",
+                "LoadState=loaded\nActiveState=inactive\nMainPID=0\n",
+                "LoadState=loaded\nActiveState=inactive\nJob=\n",
+                "LoadState=error\nActiveState=inactive\nMainPID=0\nJob=\n",
+                "LoadState=loaded\nActiveState=active\nActiveState=inactive\nMainPID=0\nJob=\n",
+            ] {
+                assert!(verify_stopped_unit(properties).is_err(), "{properties}");
+            }
         }
     }
 }

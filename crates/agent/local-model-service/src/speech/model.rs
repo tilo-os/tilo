@@ -118,64 +118,69 @@ pub(super) fn seal_verified(
 mod tests {
     use super::*;
 
-    #[test]
-    fn verified_descriptor_stays_immutable_after_source_changes() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("source");
-        let bytes = b"immutable verified model fixture";
-        std::fs::write(&path, bytes).unwrap();
-        let model = seal_verified(
-            File::open(&path).unwrap(),
-            bytes.len() as u64,
-            &hex::encode(Sha256::digest(bytes)),
-            "test".into(),
-            "revision".into(),
-        )
-        .unwrap();
-        std::fs::write(&path, b"different source bytes").unwrap();
-        let mut actual = Vec::new();
-        model.file().read_to_end(&mut actual).unwrap();
-        assert_eq!(actual, bytes);
-        assert!(model.file().set_len(0).is_err());
-        assert!(model.file().write_all(b"x").is_err());
-        // SAFETY: live owned descriptor; sealing forbids removing or adding seals.
-        assert_eq!(
-            unsafe {
-                libc::fcntl(
-                    model.file().as_raw_fd(),
-                    libc::F_ADD_SEALS,
-                    libc::F_SEAL_FUTURE_WRITE,
-                )
-            },
-            -1
-        );
-        model.check_seals().unwrap();
-    }
+    tilo_test_env::scenario! {
+        /// Sealing a speech model file: the descriptor it yields and the snapshots it refuses.
+        fn a_sealed_speech_model_is_immutable_and_admitted_only_as_verified;
 
-    #[test]
-    fn snapshot_refuses_changed_size_digest_and_existing_admission_limit() {
-        let file = tempfile::tempfile().unwrap();
-        (&file).write_all(b"fixture").unwrap();
-        for (size, digest) in [
-            (6, hex::encode(Sha256::digest(b"fixtur"))),
-            (8, hex::encode(Sha256::digest(b"fixturex"))),
-            (7, "0".repeat(64)),
-        ] {
-            let mut source = file.try_clone().unwrap();
-            source.seek(SeekFrom::Start(0)).unwrap();
-            assert!(
-                seal_verified(source, size, &digest, "test".into(), "revision".into()).is_err()
-            );
-        }
-        assert!(matches!(
-            seal_verified(
-                file,
-                742_090_464,
-                &"0".repeat(64),
+        phase verified_descriptor_stays_immutable_after_source_changes;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("source");
+            let bytes = b"immutable verified model fixture";
+            std::fs::write(&path, bytes).unwrap();
+            let model = seal_verified(
+                File::open(&path).unwrap(),
+                bytes.len() as u64,
+                &hex::encode(Sha256::digest(bytes)),
                 "test".into(),
-                "revision".into()
-            ),
-            Err(SpeechError::ModelUnavailable)
-        ));
+                "revision".into(),
+            )
+            .unwrap();
+            std::fs::write(&path, b"different source bytes").unwrap();
+            let mut actual = Vec::new();
+            model.file().read_to_end(&mut actual).unwrap();
+            assert_eq!(actual, bytes);
+            assert!(model.file().set_len(0).is_err());
+            assert!(model.file().write_all(b"x").is_err());
+            // SAFETY: live owned descriptor; sealing forbids removing or adding seals.
+            assert_eq!(
+                unsafe {
+                    libc::fcntl(
+                        model.file().as_raw_fd(),
+                        libc::F_ADD_SEALS,
+                        libc::F_SEAL_FUTURE_WRITE,
+                    )
+                },
+                -1
+            );
+            model.check_seals().unwrap();
+        }
+
+        phase snapshot_refuses_changed_size_digest_and_existing_admission_limit;
+        {
+            let file = tempfile::tempfile().unwrap();
+            (&file).write_all(b"fixture").unwrap();
+            for (size, digest) in [
+                (6, hex::encode(Sha256::digest(b"fixtur"))),
+                (8, hex::encode(Sha256::digest(b"fixturex"))),
+                (7, "0".repeat(64)),
+            ] {
+                let mut source = file.try_clone().unwrap();
+                source.seek(SeekFrom::Start(0)).unwrap();
+                assert!(
+                    seal_verified(source, size, &digest, "test".into(), "revision".into()).is_err()
+                );
+            }
+            assert!(matches!(
+                seal_verified(
+                    file,
+                    742_090_464,
+                    &"0".repeat(64),
+                    "test".into(),
+                    "revision".into()
+                ),
+                Err(SpeechError::ModelUnavailable)
+            ));
+        }
     }
 }

@@ -240,68 +240,73 @@ mod tests {
         Ok(input)
     }
 
-    #[test]
-    fn private_stream_preserves_pcm_and_finishes_once() {
-        let mut input = configured().expect("valid configuration");
-        input
-            .accept(&request(RequestKind::Audio, 2, &[0, 128, 255, 127, 0, 0]))
-            .expect("valid PCM");
-        assert_eq!(input.samples(), &[-1.0, 32767.0 / 32768.0, 0.0]);
-        input
-            .accept(&request(RequestKind::Draft, 3, &[]))
-            .expect("draft");
-        assert_eq!(input.samples().len(), 3);
-        input
-            .accept(&request(RequestKind::Finish, 4, &[]))
-            .expect("finish");
-        assert!(matches!(
-            input.accept(&request(RequestKind::Audio, 5, &[0, 0])),
-            Err(SpeechError::Protocol)
-        ));
-    }
+    tilo_test_env::scenario! {
+        /// The PCM stream between the service and its speech worker.
+        fn the_private_speech_stream_is_exact_ordered_and_budgeted;
 
-    #[test]
-    fn gaps_replay_malformed_audio_and_control_payloads_fail() {
-        let mut input = configured().expect("valid configuration");
-        for bytes in [
-            request(RequestKind::Audio, 3, &[0, 0]),
-            request(RequestKind::Audio, 1, &[0, 0]),
-            request(RequestKind::Audio, 2, &[0]),
-            request(RequestKind::Audio, 2, &[]),
-            request(RequestKind::Draft, 2, &[0]),
-            request(RequestKind::Configure, 2, &[]),
-            vec![1],
-        ] {
-            assert!(matches!(input.accept(&bytes), Err(SpeechError::Protocol)));
-            assert_eq!(input.sequence(), 1);
-            assert!(input.samples().is_empty());
-        }
-    }
-
-    #[test]
-    fn the_real_pcm_parser_enforces_the_session_budget() {
-        let mut input = configured().expect("valid configuration");
-        let chunk = vec![0; 64 * 1024];
-        while input.samples().len() + chunk.len() / 2 <= MAX_SAMPLES {
+        phase private_stream_preserves_pcm_and_finishes_once;
+        {
+            let mut input = configured().expect("valid configuration");
             input
-                .accept(&request(RequestKind::Audio, input.sequence() + 1, &chunk))
-                .expect("bounded audio");
+                .accept(&request(RequestKind::Audio, 2, &[0, 128, 255, 127, 0, 0]))
+                .expect("valid PCM");
+            assert_eq!(input.samples(), &[-1.0, 32767.0 / 32768.0, 0.0]);
+            input
+                .accept(&request(RequestKind::Draft, 3, &[]))
+                .expect("draft");
+            assert_eq!(input.samples().len(), 3);
+            input
+                .accept(&request(RequestKind::Finish, 4, &[]))
+                .expect("finish");
+            assert!(matches!(
+                input.accept(&request(RequestKind::Audio, 5, &[0, 0])),
+                Err(SpeechError::Protocol)
+            ));
         }
-        let remaining = MAX_SAMPLES - input.samples().len();
-        input
-            .accept(&request(
-                RequestKind::Audio,
-                input.sequence() + 1,
-                &vec![0; remaining * 2],
-            ))
-            .expect("bounded audio");
-        let before = input.sequence();
-        assert!(matches!(
-            input.accept(&request(RequestKind::Audio, before + 1, &[0, 0])),
-            Err(SpeechError::AudioTooLong)
-        ));
-        assert_eq!(input.sequence(), before);
-        assert_eq!(input.samples().len(), MAX_SAMPLES);
+
+        phase gaps_replay_malformed_audio_and_control_payloads_fail;
+        {
+            let mut input = configured().expect("valid configuration");
+            for bytes in [
+                request(RequestKind::Audio, 3, &[0, 0]),
+                request(RequestKind::Audio, 1, &[0, 0]),
+                request(RequestKind::Audio, 2, &[0]),
+                request(RequestKind::Audio, 2, &[]),
+                request(RequestKind::Draft, 2, &[0]),
+                request(RequestKind::Configure, 2, &[]),
+                vec![1],
+            ] {
+                assert!(matches!(input.accept(&bytes), Err(SpeechError::Protocol)));
+                assert_eq!(input.sequence(), 1);
+                assert!(input.samples().is_empty());
+            }
+        }
+
+        phase the_real_pcm_parser_enforces_the_session_budget;
+        {
+            let mut input = configured().expect("valid configuration");
+            let chunk = vec![0; 64 * 1024];
+            while input.samples().len() + chunk.len() / 2 <= MAX_SAMPLES {
+                input
+                    .accept(&request(RequestKind::Audio, input.sequence() + 1, &chunk))
+                    .expect("bounded audio");
+            }
+            let remaining = MAX_SAMPLES - input.samples().len();
+            input
+                .accept(&request(
+                    RequestKind::Audio,
+                    input.sequence() + 1,
+                    &vec![0; remaining * 2],
+                ))
+                .expect("bounded audio");
+            let before = input.sequence();
+            assert!(matches!(
+                input.accept(&request(RequestKind::Audio, before + 1, &[0, 0])),
+                Err(SpeechError::AudioTooLong)
+            ));
+            assert_eq!(input.sequence(), before);
+            assert_eq!(input.samples().len(), MAX_SAMPLES);
+        }
     }
 
     #[cfg(feature = "whisper")]

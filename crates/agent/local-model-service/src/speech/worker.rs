@@ -646,183 +646,193 @@ mod tests {
         }
     }
 
-    #[test]
-    fn real_pipe_sends_only_new_pcm_and_retires_after_finish() {
-        let (decoder, messages, result, mut input) = serve_inline(
-            RecordingDecoder::default(),
-            &frames(&[
-                (RequestKind::Configure, 1, br#"{"language":"en"}"#),
-                (RequestKind::Audio, 2, &[0, 128, 0, 0]),
-                (RequestKind::Draft, 3, &[]),
-                (RequestKind::Audio, 4, &[255, 127]),
-                (RequestKind::Draft, 5, &[]),
-                (RequestKind::Finish, 6, &[]),
-                (RequestKind::Configure, 1, br#"{"language":"en"}"#),
-            ]),
-        );
-        result.expect("actual worker dispatch");
-        let last = 32767.0 / 32768.0;
-        assert_eq!(decoder.pushes, [vec![-1.0, 0.0], vec![last]]);
-        assert_eq!(decoder.drafts, [vec![-1.0, 0.0], vec![-1.0, 0.0, last]]);
-        assert_eq!(decoder.finals, [vec![-1.0, 0.0, last]]);
-        assert!(matches!(
-            messages.as_slice(),
-            [
-                SpeechReply::Ready { sequence: 1, .. },
-                SpeechReply::Draft { sequence: 3, .. },
-                SpeechReply::Draft { sequence: 5, .. },
-                SpeechReply::Done { sequence: 6, .. }
-            ]
-        ));
-        // The next session's configuration frame is still on the pipe.
-        assert_eq!(configured(&mut input).sequence(), 1);
-    }
+    tilo_test_env::scenario! {
+        /// The worker's pipe from readiness to retirement.
+        fn the_worker_pipe_carries_only_new_pcm_and_stops_on_a_failed_or_unconfigured_decoder;
 
-    #[test]
-    fn decoder_failure_stops_pipe_before_draft_or_final() {
-        let (decoder, messages, result, _) = serve_inline(
-            RecordingDecoder {
-                reject_audio: true,
-                ..RecordingDecoder::default()
-            },
-            &frames(&[
-                (RequestKind::Configure, 1, br#"{"language":"en"}"#),
-                (RequestKind::Audio, 2, &[0, 0]),
-                (RequestKind::Draft, 3, &[]),
-                (RequestKind::Finish, 4, &[]),
-            ]),
-        );
-        assert!(matches!(result, Err(SpeechError::Recognition)));
-        assert_eq!(decoder.pushes, [vec![0.0]]);
-        assert!(decoder.drafts.is_empty() && decoder.finals.is_empty());
-        assert!(matches!(
-            messages.as_slice(),
-            [SpeechReply::Ready { sequence: 1, .. }]
-        ));
-    }
+        phase real_pipe_sends_only_new_pcm_and_retires_after_finish;
+        {
+            let (decoder, messages, result, mut input) = serve_inline(
+                RecordingDecoder::default(),
+                &frames(&[
+                    (RequestKind::Configure, 1, br#"{"language":"en"}"#),
+                    (RequestKind::Audio, 2, &[0, 128, 0, 0]),
+                    (RequestKind::Draft, 3, &[]),
+                    (RequestKind::Audio, 4, &[255, 127]),
+                    (RequestKind::Draft, 5, &[]),
+                    (RequestKind::Finish, 6, &[]),
+                    (RequestKind::Configure, 1, br#"{"language":"en"}"#),
+                ]),
+            );
+            result.expect("actual worker dispatch");
+            let last = 32767.0 / 32768.0;
+            assert_eq!(decoder.pushes, [vec![-1.0, 0.0], vec![last]]);
+            assert_eq!(decoder.drafts, [vec![-1.0, 0.0], vec![-1.0, 0.0, last]]);
+            assert_eq!(decoder.finals, [vec![-1.0, 0.0, last]]);
+            assert!(matches!(
+                messages.as_slice(),
+                [
+                    SpeechReply::Ready { sequence: 1, .. },
+                    SpeechReply::Draft { sequence: 3, .. },
+                    SpeechReply::Draft { sequence: 5, .. },
+                    SpeechReply::Done { sequence: 6, .. }
+                ]
+            ));
+            // The next session's configuration frame is still on the pipe.
+            assert_eq!(configured(&mut input).sequence(), 1);
+        }
 
-    #[test]
-    fn unconfigured_decoder_never_emits_readiness() {
-        let mut decoder = RecordingDecoder::default();
-        let (mut input, client) = UnixStream::pair().expect("socket pair");
-        drop(client);
-        let mut output = Vec::new();
-        assert!(matches!(
-            serve_decoder(
-                ("fixture", "revision"),
-                SpeechInput::default(),
-                &mut decoder,
-                &mut input,
-                &mut output
-            ),
-            Err(SpeechError::Protocol)
-        ));
-        assert!(output.is_empty());
-        assert!(
-            decoder.pushes.is_empty() && decoder.drafts.is_empty() && decoder.finals.is_empty()
-        );
-    }
+        phase decoder_failure_stops_pipe_before_draft_or_final;
+        {
+            let (decoder, messages, result, _) = serve_inline(
+                RecordingDecoder {
+                    reject_audio: true,
+                    ..RecordingDecoder::default()
+                },
+                &frames(&[
+                    (RequestKind::Configure, 1, br#"{"language":"en"}"#),
+                    (RequestKind::Audio, 2, &[0, 0]),
+                    (RequestKind::Draft, 3, &[]),
+                    (RequestKind::Finish, 4, &[]),
+                ]),
+            );
+            assert!(matches!(result, Err(SpeechError::Recognition)));
+            assert_eq!(decoder.pushes, [vec![0.0]]);
+            assert!(decoder.drafts.is_empty() && decoder.finals.is_empty());
+            assert!(matches!(
+                messages.as_slice(),
+                [SpeechReply::Ready { sequence: 1, .. }]
+            ));
+        }
 
-    #[test]
-    fn endpoint_correction_replaces_provisional_text_and_preserves_spoken_corrections() {
-        let (decoder, messages, result, _) = serve_inline(
-            CorrectingEndpointDecoder::default(),
-            &frames(&[
-                (
-                    RequestKind::Configure,
-                    1,
-                    br#"{"language":"de","vocabulary":["Hongkong","Kowloon"]}"#,
+        phase unconfigured_decoder_never_emits_readiness;
+        {
+            let mut decoder = RecordingDecoder::default();
+            let (mut input, client) = UnixStream::pair().expect("socket pair");
+            drop(client);
+            let mut output = Vec::new();
+            assert!(matches!(
+                serve_decoder(
+                    ("fixture", "revision"),
+                    SpeechInput::default(),
+                    &mut decoder,
+                    &mut input,
+                    &mut output
                 ),
-                (RequestKind::Audio, 2, &[0, 0]),
-                (RequestKind::Draft, 3, &[]),
-                (RequestKind::Audio, 4, &[0, 64]),
-                (RequestKind::Finish, 5, &[]),
-            ]),
-        );
-        result.expect("real production pipe endpoint dispatch");
-        assert!(decoder.finished);
-        assert_eq!(decoder.final_samples, [0.0, 0.5]);
-        assert!(matches!(messages.as_slice(), [
-            SpeechReply::Ready { draft_policy: DraftPolicy::Incremental, .. },
-            SpeechReply::Draft { sequence: 3, text: provisional },
-            SpeechReply::Done { sequence: 5, text: final_text }
-        ] if provisional == "Vielen Dank." && final_text == "Für Hongkong — nein, für Kowloon. 東京 café"));
+                Err(SpeechError::Protocol)
+            ));
+            assert!(output.is_empty());
+            assert!(
+                decoder.pushes.is_empty() && decoder.drafts.is_empty() && decoder.finals.is_empty()
+            );
+        }
     }
 
-    #[test]
-    fn stable_provisional_text_is_not_committed_when_the_pipe_ends_before_finish() {
-        let (decoder, messages, result, _) = serve_inline(
-            CorrectingEndpointDecoder::default(),
-            &frames(&[
-                (RequestKind::Configure, 1, br#"{"language":"de"}"#),
-                (RequestKind::Audio, 2, &[0, 0]),
-                (RequestKind::Draft, 3, &[]),
-            ]),
-        );
-        assert!(matches!(result, Err(SpeechError::WorkerStopped)));
-        assert!(!decoder.finished);
-        assert!(matches!(messages.as_slice(), [
-            SpeechReply::Ready { .. }, SpeechReply::Draft { sequence: 3, text }
-        ] if text == "Vielen Dank."));
-    }
+    tilo_test_env::scenario! {
+        /// What the worker does with a provisional decode around an endpoint and a finish.
+        fn provisional_text_is_corrected_replied_and_never_committed_early;
 
-    /// A decoded provisional text reaches the client while it sends nothing.
-    #[test]
-    fn a_completed_provisional_decode_is_replied_without_a_new_request() {
-        let mut worker = Endpoint::start(
-            DeferredDraft {
-                nap: Some(Duration::from_millis(100)),
-                ..DeferredDraft::default()
-            },
-            &frames(&[
-                (RequestKind::Configure, 1, br#"{"language":"en"}"#),
-                (RequestKind::Audio, 2, &[0, 0]),
-                (RequestKind::Draft, 3, &[]),
-            ]),
-        );
-        assert!(matches!(
-            worker.reply(),
-            SpeechReply::Ready { sequence: 1, .. }
-        ));
-        assert!(matches!(
-            worker.reply(),
-            SpeechReply::Draft { sequence: 3, text } if text == "provisional"
-        ));
-        worker.send(&frames(&[(RequestKind::Finish, 4, &[])]));
-        assert!(matches!(
-            worker.reply(),
-            SpeechReply::Done { sequence: 4, text } if text == "final"
-        ));
-        worker.settle();
-    }
+        phase endpoint_correction_replaces_provisional_text_and_preserves_spoken_corrections;
+        {
+            let (decoder, messages, result, _) = serve_inline(
+                CorrectingEndpointDecoder::default(),
+                &frames(&[
+                    (
+                        RequestKind::Configure,
+                        1,
+                        br#"{"language":"de","vocabulary":["Hongkong","Kowloon"]}"#,
+                    ),
+                    (RequestKind::Audio, 2, &[0, 0]),
+                    (RequestKind::Draft, 3, &[]),
+                    (RequestKind::Audio, 4, &[0, 64]),
+                    (RequestKind::Finish, 5, &[]),
+                ]),
+            );
+            result.expect("real production pipe endpoint dispatch");
+            assert!(decoder.finished);
+            assert_eq!(decoder.final_samples, [0.0, 0.5]);
+            assert!(matches!(messages.as_slice(), [
+                SpeechReply::Ready { draft_policy: DraftPolicy::Incremental, .. },
+                SpeechReply::Draft { sequence: 3, text: provisional },
+                SpeechReply::Done { sequence: 5, text: final_text }
+            ] if provisional == "Vielen Dank." && final_text == "Für Hongkong — nein, für Kowloon. 東京 café"));
+        }
 
-    /// A provisional decode still running never delays the final.
-    #[test]
-    fn finish_answers_while_a_provisional_decode_still_runs() {
-        let (release, gate) = mpsc::channel();
-        let running = Arc::new(AtomicBool::new(false));
-        let mut worker = Endpoint::start(
-            DeferredDraft {
-                gate: Some(gate),
-                running: Arc::clone(&running),
-                ..DeferredDraft::default()
-            },
-            &frames(&[
-                (RequestKind::Configure, 1, br#"{"language":"en"}"#),
-                (RequestKind::Audio, 2, &[0, 0]),
-                (RequestKind::Draft, 3, &[]),
-                (RequestKind::Finish, 4, &[]),
-            ]),
-        );
-        assert!(matches!(
-            worker.reply(),
-            SpeechReply::Ready { sequence: 1, .. }
-        ));
-        let reply = worker.reply();
-        let still_running = running.load(Ordering::SeqCst);
-        release.send(()).expect("release the provisional decode");
-        assert!(still_running, "the provisional decode was still running");
-        assert!(matches!(reply, SpeechReply::Done { sequence: 4, text } if text == "final"));
-        worker.settle();
+        phase stable_provisional_text_is_not_committed_when_the_pipe_ends_before_finish;
+        {
+            let (decoder, messages, result, _) = serve_inline(
+                CorrectingEndpointDecoder::default(),
+                &frames(&[
+                    (RequestKind::Configure, 1, br#"{"language":"de"}"#),
+                    (RequestKind::Audio, 2, &[0, 0]),
+                    (RequestKind::Draft, 3, &[]),
+                ]),
+            );
+            assert!(matches!(result, Err(SpeechError::WorkerStopped)));
+            assert!(!decoder.finished);
+            assert!(matches!(messages.as_slice(), [
+                SpeechReply::Ready { .. }, SpeechReply::Draft { sequence: 3, text }
+            ] if text == "Vielen Dank."));
+        }
+
+        phase a_completed_provisional_decode_is_replied_without_a_new_request;
+        // A decoded provisional text reaches the client while it sends nothing.
+        {
+            let mut worker = Endpoint::start(
+                DeferredDraft {
+                    nap: Some(Duration::from_millis(100)),
+                    ..DeferredDraft::default()
+                },
+                &frames(&[
+                    (RequestKind::Configure, 1, br#"{"language":"en"}"#),
+                    (RequestKind::Audio, 2, &[0, 0]),
+                    (RequestKind::Draft, 3, &[]),
+                ]),
+            );
+            assert!(matches!(
+                worker.reply(),
+                SpeechReply::Ready { sequence: 1, .. }
+            ));
+            assert!(matches!(
+                worker.reply(),
+                SpeechReply::Draft { sequence: 3, text } if text == "provisional"
+            ));
+            worker.send(&frames(&[(RequestKind::Finish, 4, &[])]));
+            assert!(matches!(
+                worker.reply(),
+                SpeechReply::Done { sequence: 4, text } if text == "final"
+            ));
+            worker.settle();
+        }
+
+        phase finish_answers_while_a_provisional_decode_still_runs;
+        // A provisional decode still running never delays the final.
+        {
+            let (release, gate) = mpsc::channel();
+            let running = Arc::new(AtomicBool::new(false));
+            let mut worker = Endpoint::start(
+                DeferredDraft {
+                    gate: Some(gate),
+                    running: Arc::clone(&running),
+                    ..DeferredDraft::default()
+                },
+                &frames(&[
+                    (RequestKind::Configure, 1, br#"{"language":"en"}"#),
+                    (RequestKind::Audio, 2, &[0, 0]),
+                    (RequestKind::Draft, 3, &[]),
+                    (RequestKind::Finish, 4, &[]),
+                ]),
+            );
+            assert!(matches!(
+                worker.reply(),
+                SpeechReply::Ready { sequence: 1, .. }
+            ));
+            let reply = worker.reply();
+            let still_running = running.load(Ordering::SeqCst);
+            release.send(()).expect("release the provisional decode");
+            assert!(still_running, "the provisional decode was still running");
+            assert!(matches!(reply, SpeechReply::Done { sequence: 4, text } if text == "final"));
+            worker.settle();
+        }
     }
 }

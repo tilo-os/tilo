@@ -1689,293 +1689,520 @@ mod tests {
     use agent_provider_config::local::RuntimeKind;
     use std::io::{Cursor, Write as _};
 
-    #[test]
-    fn offline_developer_fetch_uses_signed_identity_and_existing_hash_gate() {
-        let bytes = b"actual offline fixture";
-        let dir = tempfile::tempdir().unwrap();
-        let input = dir.path().join("inputs");
-        fs::create_dir(&input).unwrap();
-        let mut release = model(bytes);
-        release.artifact.url = format!("offline:sha256:{}", release.artifact.sha256);
-        let payload = catalog::CatalogPayload {
-            schema: 1,
-            models: vec![release.clone()],
-            runtimes: vec![],
-            recommendation: release.id.clone(),
-        };
-        let pin = &release.artifact;
-        fs::write(input.join(&pin.sha256), bytes).unwrap();
-        let store = dir.path().join("store");
-        let mut service = LocalModelService::open(
-            &store,
-            developer::OfflineTransport::new(&input, &payload).unwrap(),
-            Supervisor {
-                command: None,
-                stopped: vec![],
-            },
-        )
-        .unwrap();
-        fs::write(
-            store.join("partial").join(format!("{}.part", pin.sha256)),
-            &bytes[..3],
-        )
-        .unwrap();
-        let object = service.fetch_verified(pin).unwrap();
-        assert_eq!(fs::read(&object).unwrap(), bytes);
-        let mut unknown = pin.clone();
-        unknown.url = "offline:sha256:unknown".into();
-        assert!(service.fetch_verified(&unknown).is_err());
-        fs::remove_file(&object).unwrap();
-        fs::write(input.join(&pin.sha256), vec![b'x'; bytes.len()]).unwrap();
-        assert!(matches!(
-            service.fetch_verified(pin),
-            Err(ServiceError::DigestMismatch)
-        ));
-        assert!(!object.exists());
-        let mut normal = LocalModelService::open(
-            dir.path().join("normal"),
-            Transport {
-                bytes: bytes.to_vec(),
-                starts: vec![],
-            },
-            Supervisor {
-                command: None,
-                stopped: vec![],
-            },
-        )
-        .unwrap();
-        assert!(matches!(
-            normal.fetch_verified(pin),
-            Err(ServiceError::NonHttpsArtifact)
-        ));
-        assert!(normal.transport.starts.is_empty());
-    }
+    tilo_test_env::scenario! {
+        /// The offline developer transport: what it delivers and what it refuses.
+        fn offline_developer_fetch_keeps_the_signed_identity_and_refuses_what_it_cannot_verify;
 
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn offline_developer_fetch_refuses_links_and_wrong_sizes() {
-        use std::os::unix::fs::symlink;
-        let dir = tempfile::tempdir().unwrap();
-        let input = dir.path().join("inputs");
-        fs::create_dir(&input).unwrap();
-        let bytes = b"source";
-        let mut release = model(bytes);
-        release.artifact.url = format!("offline:sha256:{}", release.artifact.sha256);
-        let pin = release.artifact.clone();
-        let payload = catalog::CatalogPayload {
-            schema: 1,
-            models: vec![release],
-            runtimes: vec![],
-            recommendation: String::new(),
-        };
-        let real = dir.path().join("real");
-        fs::write(&real, bytes).unwrap();
-        symlink(&real, input.join(&pin.sha256)).unwrap();
-        let mut service = LocalModelService::open(
-            dir.path().join("store"),
-            developer::OfflineTransport::new(&input, &payload).unwrap(),
-            Supervisor {
-                command: None,
-                stopped: vec![],
-            },
-        )
-        .unwrap();
-        assert!(service.fetch_verified(&pin).is_err());
-        fs::remove_file(input.join(&pin.sha256)).unwrap();
-        fs::write(input.join(&pin.sha256), b"short").unwrap();
-        assert!(matches!(
-            service.fetch_verified(&pin),
-            Err(ServiceError::InvalidArtifact)
-        ));
-        fs::write(input.join(&pin.sha256), bytes).unwrap();
-        let linked = dir.path().join("linked-inputs");
-        symlink(&input, &linked).unwrap();
-        let mut linked_service = LocalModelService::open(
-            dir.path().join("linked-store"),
-            developer::OfflineTransport::new(&linked, &payload).unwrap(),
-            Supervisor {
-                command: None,
-                stopped: vec![],
-            },
-        )
-        .unwrap();
-        assert!(linked_service.fetch_verified(&pin).is_err());
-        assert!(
-            !dir.path()
-                .join("linked-store/sha256")
-                .join(&pin.sha256)
-                .exists()
-        );
-    }
+        phase offline_developer_fetch_uses_signed_identity_and_existing_hash_gate;
+        {
+            let bytes = b"actual offline fixture";
+            let dir = tempfile::tempdir().unwrap();
+            let input = dir.path().join("inputs");
+            fs::create_dir(&input).unwrap();
+            let mut release = model(bytes);
+            release.artifact.url = format!("offline:sha256:{}", release.artifact.sha256);
+            let payload = catalog::CatalogPayload {
+                schema: 1,
+                models: vec![release.clone()],
+                runtimes: vec![],
+                recommendation: release.id.clone(),
+            };
+            let pin = &release.artifact;
+            fs::write(input.join(&pin.sha256), bytes).unwrap();
+            let store = dir.path().join("store");
+            let mut service = LocalModelService::open(
+                &store,
+                developer::OfflineTransport::new(&input, &payload).unwrap(),
+                Supervisor {
+                    command: None,
+                    stopped: vec![],
+                },
+            )
+            .unwrap();
+            fs::write(
+                store.join("partial").join(format!("{}.part", pin.sha256)),
+                &bytes[..3],
+            )
+            .unwrap();
+            let object = service.fetch_verified(pin).unwrap();
+            assert_eq!(fs::read(&object).unwrap(), bytes);
+            let mut unknown = pin.clone();
+            unknown.url = "offline:sha256:unknown".into();
+            assert!(service.fetch_verified(&unknown).is_err());
+            fs::remove_file(&object).unwrap();
+            fs::write(input.join(&pin.sha256), vec![b'x'; bytes.len()]).unwrap();
+            assert!(matches!(
+                service.fetch_verified(pin),
+                Err(ServiceError::DigestMismatch)
+            ));
+            assert!(!object.exists());
+            let mut normal = LocalModelService::open(
+                dir.path().join("normal"),
+                Transport {
+                    bytes: bytes.to_vec(),
+                    starts: vec![],
+                },
+                Supervisor {
+                    command: None,
+                    stopped: vec![],
+                },
+            )
+            .unwrap();
+            assert!(matches!(
+                normal.fetch_verified(pin),
+                Err(ServiceError::NonHttpsArtifact)
+            ));
+            assert!(normal.transport.starts.is_empty());
+        }
 
-    #[test]
-    fn signed_execution_builds_bounded_engine_argv_and_rejects_layout_mismatch() {
-        let mut runtime = RuntimeRelease {
-            id: "test-runtime".into(),
-            kind: RuntimeKind::NvidiaCuda,
-            version: "pinned".into(),
-            artifact: artifact(b"runtime"),
-            oci_image: format!("registry.example.invalid/runtime@sha256:{}", "a".repeat(64)),
-            execution: Some(RuntimeExecution::LlamaCpp {
-                max_context_tokens: 16384,
-                gpu_layers: 12,
-                parallel_slots: None,
-            }),
-        };
-        let mut release = model(b"weights");
-        release.context_window = 4096;
-        release.allowed_runtimes.insert(RuntimeKind::NvidiaCuda);
-        assert!(runtime_arguments(&runtime, &release, "/models/model.gguf", 8000).is_err());
-        release.artifact_format = ModelArtifactFormat::LlamaCppGguf;
-        release.vision = true;
-        assert!(runtime_arguments(&runtime, &release, "/models/model.gguf", 8000).is_err());
-        release.vision = false;
-        let args = runtime_arguments(&runtime, &release, "/models/model.gguf", 8000).unwrap();
-        assert_eq!(
-            args,
-            [
-                "--model",
-                "/models/model.gguf",
-                "--alias",
-                "tiny",
-                "--ctx-size",
-                "4096",
-                "--n-gpu-layers",
-                "12",
-                "--jinja",
-                "--host",
-                "127.0.0.1",
-                "--port",
-                "8000"
-            ]
-        );
-        for slots in [1, 64, 65] {
-            runtime.execution = Some(RuntimeExecution::LlamaCpp {
-                max_context_tokens: 16384,
-                gpu_layers: 12,
-                parallel_slots: std::num::NonZeroU16::new(slots),
-            });
-            let generated = runtime_arguments(&runtime, &release, "/models/model.gguf", 8000);
-            if slots == 65 {
-                assert!(generated.is_err());
-            } else {
-                let mut expected = args.clone();
-                expected.splice(9..9, ["--parallel".into(), slots.to_string()]);
-                assert_eq!(generated.unwrap(), expected);
+        phase offline_developer_fetch_refuses_links_and_wrong_sizes;
+        {
+            #[cfg(target_os = "linux")]
+            {
+                use std::os::unix::fs::symlink;
+                let dir = tempfile::tempdir().unwrap();
+                let input = dir.path().join("inputs");
+                fs::create_dir(&input).unwrap();
+                let bytes = b"source";
+                let mut release = model(bytes);
+                release.artifact.url = format!("offline:sha256:{}", release.artifact.sha256);
+                let pin = release.artifact.clone();
+                let payload = catalog::CatalogPayload {
+                    schema: 1,
+                    models: vec![release],
+                    runtimes: vec![],
+                    recommendation: String::new(),
+                };
+                let real = dir.path().join("real");
+                fs::write(&real, bytes).unwrap();
+                symlink(&real, input.join(&pin.sha256)).unwrap();
+                let mut service = LocalModelService::open(
+                    dir.path().join("store"),
+                    developer::OfflineTransport::new(&input, &payload).unwrap(),
+                    Supervisor {
+                        command: None,
+                        stopped: vec![],
+                    },
+                )
+                .unwrap();
+                assert!(service.fetch_verified(&pin).is_err());
+                fs::remove_file(input.join(&pin.sha256)).unwrap();
+                fs::write(input.join(&pin.sha256), b"short").unwrap();
+                assert!(matches!(
+                    service.fetch_verified(&pin),
+                    Err(ServiceError::InvalidArtifact)
+                ));
+                fs::write(input.join(&pin.sha256), bytes).unwrap();
+                let linked = dir.path().join("linked-inputs");
+                symlink(&input, &linked).unwrap();
+                let mut linked_service = LocalModelService::open(
+                    dir.path().join("linked-store"),
+                    developer::OfflineTransport::new(&linked, &payload).unwrap(),
+                    Supervisor {
+                        command: None,
+                        stopped: vec![],
+                    },
+                )
+                .unwrap();
+                assert!(linked_service.fetch_verified(&pin).is_err());
+                assert!(
+                    !dir.path()
+                        .join("linked-store/sha256")
+                        .join(&pin.sha256)
+                        .exists()
+                );
             }
         }
-        runtime.kind = RuntimeKind::Cpu;
-        assert!(runtime_arguments(&runtime, &release, "/models/model.gguf", 8000).is_err());
-        runtime.execution = Some(RuntimeExecution::Vllm {
-            max_context_tokens: 1024,
-            cpu_offload_gib: 16,
-        });
-        release.artifact_format = ModelArtifactFormat::VllmGguf;
-        let args = runtime_arguments(&runtime, &release, "/models/model.gguf", 8000).unwrap();
-        // The image's entrypoint is `vllm serve`: the model comes first.
-        assert_eq!(args.first().map(String::as_str), Some("/models/model.gguf"));
-        assert!(
-            args.windows(2)
-                .any(|pair| pair == ["--served-model-name", "tiny"])
-        );
-        assert!(
-            args.windows(2)
-                .any(|pair| pair == ["--max-model-len", "1024"])
-        );
-        assert!(
-            args.windows(2)
-                .any(|pair| pair == ["--cpu-offload-gb", "16"])
-        );
-        for invalid_id in ["--host", "alias,other", "", "bad\0id"] {
-            release.id = invalid_id.into();
+    }
+
+    tilo_test_env::scenario! {
+        /// From the signed execution metadata to the command the supervisor starts.
+        fn a_signed_execution_becomes_a_bounded_supervised_launch;
+
+        phase signed_execution_builds_bounded_engine_argv_and_rejects_layout_mismatch;
+        {
+            let mut runtime = RuntimeRelease {
+                id: "test-runtime".into(),
+                kind: RuntimeKind::NvidiaCuda,
+                version: "pinned".into(),
+                artifact: artifact(b"runtime"),
+                oci_image: format!("registry.example.invalid/runtime@sha256:{}", "a".repeat(64)),
+                execution: Some(RuntimeExecution::LlamaCpp {
+                    max_context_tokens: 16384,
+                    gpu_layers: 12,
+                    parallel_slots: None,
+                }),
+            };
+            let mut release = model(b"weights");
+            release.context_window = 4096;
+            release.allowed_runtimes.insert(RuntimeKind::NvidiaCuda);
             assert!(runtime_arguments(&runtime, &release, "/models/model.gguf", 8000).is_err());
+            release.artifact_format = ModelArtifactFormat::LlamaCppGguf;
+            release.vision = true;
+            assert!(runtime_arguments(&runtime, &release, "/models/model.gguf", 8000).is_err());
+            release.vision = false;
+            let args = runtime_arguments(&runtime, &release, "/models/model.gguf", 8000).unwrap();
+            assert_eq!(
+                args,
+                [
+                    "--model",
+                    "/models/model.gguf",
+                    "--alias",
+                    "tiny",
+                    "--ctx-size",
+                    "4096",
+                    "--n-gpu-layers",
+                    "12",
+                    "--jinja",
+                    "--host",
+                    "127.0.0.1",
+                    "--port",
+                    "8000"
+                ]
+            );
+            for slots in [1, 64, 65] {
+                runtime.execution = Some(RuntimeExecution::LlamaCpp {
+                    max_context_tokens: 16384,
+                    gpu_layers: 12,
+                    parallel_slots: std::num::NonZeroU16::new(slots),
+                });
+                let generated = runtime_arguments(&runtime, &release, "/models/model.gguf", 8000);
+                if slots == 65 {
+                    assert!(generated.is_err());
+                } else {
+                    let mut expected = args.clone();
+                    expected.splice(9..9, ["--parallel".into(), slots.to_string()]);
+                    assert_eq!(generated.unwrap(), expected);
+                }
+            }
+            runtime.kind = RuntimeKind::Cpu;
+            assert!(runtime_arguments(&runtime, &release, "/models/model.gguf", 8000).is_err());
+            runtime.execution = Some(RuntimeExecution::Vllm {
+                max_context_tokens: 1024,
+                cpu_offload_gib: 16,
+            });
+            release.artifact_format = ModelArtifactFormat::VllmGguf;
+            let args = runtime_arguments(&runtime, &release, "/models/model.gguf", 8000).unwrap();
+            // The image's entrypoint is `vllm serve`: the model comes first.
+            assert_eq!(args.first().map(String::as_str), Some("/models/model.gguf"));
+            assert!(
+                args.windows(2)
+                    .any(|pair| pair == ["--served-model-name", "tiny"])
+            );
+            assert!(
+                args.windows(2)
+                    .any(|pair| pair == ["--max-model-len", "1024"])
+            );
+            assert!(
+                args.windows(2)
+                    .any(|pair| pair == ["--cpu-offload-gb", "16"])
+            );
+            for invalid_id in ["--host", "alias,other", "", "bad\0id"] {
+                release.id = invalid_id.into();
+                assert!(runtime_arguments(&runtime, &release, "/models/model.gguf", 8000).is_err());
+            }
+        }
+
+        phase service_launches_signed_llama_metadata_through_existing_supervisor;
+        {
+            let bytes = b"synthetic model and runtime fixture";
+            let mut runtime = signed_fixture_runtime(bytes);
+            let mut release = model(bytes);
+            release.artifact_format = ModelArtifactFormat::LlamaCppGguf;
+            release.context_window = 4096;
+            let dir = tempfile::tempdir().unwrap();
+            let mut service = service_for(dir.path(), bytes);
+            service.install_with_runtime(&runtime, &release).unwrap();
+            let endpoint = service.start(&runtime, &release, 9000).unwrap();
+            assert_eq!(endpoint.model_id, "tiny");
+            assert_eq!(endpoint.url, "http://127.0.0.1:9000/v1");
+            let command = service.supervisor.command.as_ref().unwrap();
+            assert_eq!(command.runtime_image, runtime.release.oci_image);
+            assert_eq!(
+                command.model_path,
+                service.object_path(&release.artifact.sha256).unwrap()
+            );
+            assert!(
+                command
+                    .args
+                    .windows(2)
+                    .any(|pair| pair == ["--alias", "tiny"])
+            );
+            assert!(
+                command
+                    .args
+                    .windows(2)
+                    .any(|pair| pair == ["--ctx-size", "1024"])
+            );
+            service.supervisor.command = None;
+            runtime.release.execution = None;
+            assert!(service.start(&runtime, &release, 9000).is_err());
+            assert!(service.supervisor.command.is_none());
         }
     }
 
-    #[test]
-    fn service_launches_signed_llama_metadata_through_existing_supervisor() {
-        let bytes = b"synthetic model and runtime fixture";
-        let mut runtime = signed_fixture_runtime(bytes);
-        let mut release = model(bytes);
-        release.artifact_format = ModelArtifactFormat::LlamaCppGguf;
-        release.context_window = 4096;
-        let dir = tempfile::tempdir().unwrap();
-        let mut service = service_for(dir.path(), bytes);
-        service.install_with_runtime(&runtime, &release).unwrap();
-        let endpoint = service.start(&runtime, &release, 9000).unwrap();
-        assert_eq!(endpoint.model_id, "tiny");
-        assert_eq!(endpoint.url, "http://127.0.0.1:9000/v1");
-        let command = service.supervisor.command.as_ref().unwrap();
-        assert_eq!(command.runtime_image, runtime.release.oci_image);
-        assert_eq!(
-            command.model_path,
-            service.object_path(&release.artifact.sha256).unwrap()
-        );
-        assert!(
-            command
-                .args
-                .windows(2)
-                .any(|pair| pair == ["--alias", "tiny"])
-        );
-        assert!(
-            command
-                .args
-                .windows(2)
-                .any(|pair| pair == ["--ctx-size", "1024"])
-        );
-        service.supervisor.command = None;
-        runtime.release.execution = None;
-        assert!(service.start(&runtime, &release, 9000).is_err());
-        assert!(service.supervisor.command.is_none());
-    }
+    tilo_test_env::scenario! {
+        /// The runtime the service owns: observation, stop, failed launch, refused admission and the
+        /// state transactions that record them, each case on a service of its own.
+        fn an_owned_runtime_keeps_exact_custody_through_stop_failure_and_refusal;
 
-    #[test]
-    fn owned_runtime_unavailable_observation_and_retention_failure_do_not_prevent_stop() {
-        let bytes = b"counter observer failure fixture";
-        let runtime = signed_fixture_runtime(bytes);
-        let mut release = model(bytes);
-        release.artifact_format = ModelArtifactFormat::LlamaCppGguf;
-        let root = tempfile::tempdir().unwrap();
-        let mut service = service_for(root.path(), bytes);
-        service.install_with_runtime(&runtime, &release).unwrap();
-        service.start(&runtime, &release, 9000).unwrap();
-        assert!(matches!(
-            service.runtime_observations().get("tiny"),
-            Some(run_observation::Observed::Unavailable { .. })
-        ));
-        fs::write(root.path().join("run-observations"), b"not a directory").unwrap();
-        assert_eq!(service.stop("tiny").unwrap(), LocalModelStatus::Installed);
-        assert_eq!(service.supervisor.stopped, ["svc-1"]);
-        assert!(
-            load_state(&root.path().join(STATE_FILE)).unwrap().models["tiny"]
+        phase owned_runtime_unavailable_observation_and_retention_failure_do_not_prevent_stop;
+        {
+            let bytes = b"counter observer failure fixture";
+            let runtime = signed_fixture_runtime(bytes);
+            let mut release = model(bytes);
+            release.artifact_format = ModelArtifactFormat::LlamaCppGguf;
+            let root = tempfile::tempdir().unwrap();
+            let mut service = service_for(root.path(), bytes);
+            service.install_with_runtime(&runtime, &release).unwrap();
+            service.start(&runtime, &release, 9000).unwrap();
+            assert!(matches!(
+                service.runtime_observations().get("tiny"),
+                Some(run_observation::Observed::Unavailable { .. })
+            ));
+            fs::write(root.path().join("run-observations"), b"not a directory").unwrap();
+            assert_eq!(service.stop("tiny").unwrap(), LocalModelStatus::Installed);
+            assert_eq!(service.supervisor.stopped, ["svc-1"]);
+            assert!(
+                load_state(&root.path().join(STATE_FILE)).unwrap().models["tiny"]
+                    .process
+                    .is_none()
+            );
+            assert!(matches!(
+                run_observation::retained(root.path()),
+                run_observation::Observed::Unavailable { .. }
+            ));
+        }
+
+        phase owned_runtime_observation_refuses_retired_state_frontier;
+        {
+            let bytes = b"retired counter observer fixture";
+            let runtime = signed_fixture_runtime(bytes);
+            let mut release = model(bytes);
+            release.artifact_format = ModelArtifactFormat::LlamaCppGguf;
+            let root = tempfile::tempdir().unwrap();
+            let mut service = service_for(root.path(), bytes);
+            service.install_with_runtime(&runtime, &release).unwrap();
+            service.start(&runtime, &release, 9000).unwrap();
+            let stale = service_for(root.path(), bytes);
+            service.stop("tiny").unwrap();
+            let observations = stale.runtime_observations();
+            assert_eq!(
+                observations.get("tiny"),
+                Some(&run_observation::Observed::unavailable(
+                    "runtime state frontier unavailable or changed"
+                ))
+            );
+        }
+
+        phase owned_runtime_concurrent_stop_prevents_stale_ready_publication;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let bytes = b"barrier runtime fixture";
+            let runtime = signed_fixture_runtime(bytes);
+            let mut release = model(bytes);
+            release.artifact_format = ModelArtifactFormat::LlamaCppGguf;
+            release.context_window = 4096;
+            let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+            let (resume_tx, resume_rx) = std::sync::mpsc::channel();
+            let mut running = LocalModelService::open(
+                dir.path(),
+                Transport {
+                    bytes: bytes.to_vec(),
+                    starts: vec![],
+                },
+                BarrierSupervisor {
+                    state_path: dir.path().join(STATE_FILE),
+                    entered: Some(entered_tx),
+                    resume: Some(resume_rx),
+                    fail_start: false,
+                    fail_stop: false,
+                },
+            )
+            .unwrap();
+            running.install_with_runtime(&runtime, &release).unwrap();
+            running.mark_starting(&release.id).unwrap();
+            let thread = std::thread::spawn(move || running.start(&runtime, &release, 9000));
+            tilo_test_env::recv("the launch to enter", &entered_rx);
+            let mut stopped = service_for(dir.path(), bytes);
+            let prepared = stopped.state.models["tiny"].process.clone().unwrap();
+            assert!(prepared.container.is_some());
+            assert!(stopped.mark_starting("tiny").is_err());
+            assert_eq!(stopped.stop("tiny").unwrap(), LocalModelStatus::Installed);
+            resume_tx.send(()).unwrap();
+            assert!(thread.join().unwrap().is_err());
+            let observed = load_state(&dir.path().join(STATE_FILE)).unwrap();
+            assert_eq!(observed.models["tiny"].status, LocalModelStatus::Installed);
+            assert!(observed.models["tiny"].process.is_none());
+        }
+
+        phase owned_runtime_failed_launch_and_cleanup_retain_durable_exact_custody;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let bytes = b"failed runtime fixture";
+            let runtime = signed_fixture_runtime(bytes);
+            let mut release = model(bytes);
+            release.artifact_format = ModelArtifactFormat::LlamaCppGguf;
+            release.context_window = 4096;
+            let mut service = LocalModelService::open(
+                dir.path(),
+                Transport {
+                    bytes: bytes.to_vec(),
+                    starts: vec![],
+                },
+                BarrierSupervisor {
+                    state_path: dir.path().join(STATE_FILE),
+                    entered: None,
+                    resume: None,
+                    fail_start: true,
+                    fail_stop: true,
+                },
+            )
+            .unwrap();
+            service.install_with_runtime(&runtime, &release).unwrap();
+            assert!(service.start(&runtime, &release, 9000).is_err());
+            let handle = load_state(&dir.path().join(STATE_FILE)).unwrap().models["tiny"]
                 .process
-                .is_none()
-        );
-        assert!(matches!(
-            run_observation::retained(root.path()),
-            run_observation::Observed::Unavailable { .. }
-        ));
-    }
+                .clone()
+                .unwrap();
+            assert!(handle.container.is_some());
+            service
+                .record_failure("tiny", "worker recorded failure")
+                .unwrap();
+            assert_eq!(
+                load_state(&dir.path().join(STATE_FILE)).unwrap().models["tiny"].process,
+                Some(handle.clone())
+            );
+            assert!(service.queue_install(&release).is_err());
+            assert!(service.mark_starting("tiny").is_err());
+            assert!(service.stop("tiny").is_err());
+            assert_eq!(
+                load_state(&dir.path().join(STATE_FILE)).unwrap().models["tiny"].process,
+                Some(handle)
+            );
+        }
 
-    #[test]
-    fn owned_runtime_observation_refuses_retired_state_frontier() {
-        let bytes = b"retired counter observer fixture";
-        let runtime = signed_fixture_runtime(bytes);
-        let mut release = model(bytes);
-        release.artifact_format = ModelArtifactFormat::LlamaCppGguf;
-        let root = tempfile::tempdir().unwrap();
-        let mut service = service_for(root.path(), bytes);
-        service.install_with_runtime(&runtime, &release).unwrap();
-        service.start(&runtime, &release, 9000).unwrap();
-        let stale = service_for(root.path(), bytes);
-        service.stop("tiny").unwrap();
-        let observations = stale.runtime_observations();
-        assert_eq!(
-            observations.get("tiny"),
-            Some(&run_observation::Observed::unavailable(
-                "runtime state frontier unavailable or changed"
-            ))
-        );
+        phase owned_runtime_refused_admission_retains_detached_custody_and_exact_recovery;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let bytes = b"orphan custody fixture";
+            let mut canonical = service_for(dir.path(), bytes);
+            canonical.install_model(&model(bytes)).unwrap();
+            let mut stale = LocalModelService::open(
+                dir.path(),
+                Transport {
+                    bytes: bytes.to_vec(),
+                    starts: vec![],
+                },
+                BarrierSupervisor {
+                    state_path: dir.path().join(STATE_FILE),
+                    entered: None,
+                    resume: None,
+                    fail_start: true,
+                    fail_stop: true,
+                },
+            )
+            .unwrap();
+            canonical
+                .record_failure("tiny", "new canonical frontier")
+                .unwrap();
+            let command = VllmCommand {
+                runtime_image: format!("registry.example/runtime@sha256:{}", "c".repeat(64)),
+                runtime_kind: RuntimeKind::Cpu,
+                args: vec!["serve".into()],
+                model_path: dir.path().join("fixture"),
+                model_container_path: "/models/model.gguf".into(),
+                endpoint: LocalEndpoint {
+                    url: "http://127.0.0.1:9000/v1".into(),
+                    model_id: "tiny".into(),
+                },
+                runtime_extension_id: "fixture".into(),
+            };
+            let prior = std::fs::read(dir.path().join(STATE_FILE)).unwrap();
+            assert!(stale.start_prepared("tiny", &command).is_err());
+            assert_eq!(std::fs::read(dir.path().join(STATE_FILE)).unwrap(), prior);
+            let receipt_path = dir
+                .path()
+                .join("orphan-custody")
+                .join(format!("{}.json", "b".repeat(64)));
+            assert!(receipt_path.is_file());
+            assert!(
+                ownership::recover_orphan(dir.path(), &mut stale.supervisor, &"b".repeat(64)).is_err()
+            );
+            assert!(receipt_path.is_file());
+            let body = std::fs::read(&receipt_path).unwrap();
+            std::fs::remove_file(&receipt_path).unwrap();
+            let foreign_path = dir.path().join("foreign-receipt.json");
+            std::fs::write(&foreign_path, &body).unwrap();
+            std::os::unix::fs::symlink(&foreign_path, &receipt_path).unwrap();
+            assert!(
+                ownership::recover_orphan(dir.path(), &mut stale.supervisor, &"b".repeat(64)).is_err()
+            );
+            assert_eq!(std::fs::read(&foreign_path).unwrap(), body);
+            std::fs::remove_file(&receipt_path).unwrap();
+            std::fs::write(&receipt_path, &body).unwrap();
+            std::fs::set_permissions(&receipt_path, std::fs::Permissions::from_mode(0o644)).unwrap();
+            assert!(
+                ownership::recover_orphan(dir.path(), &mut stale.supervisor, &"b".repeat(64)).is_err()
+            );
+            std::fs::set_permissions(&receipt_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+            let mut changed: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            changed["process"]["container"]["run_id"] = serde_json::json!("c".repeat(64));
+            std::fs::write(&receipt_path, serde_json::to_vec(&changed).unwrap()).unwrap();
+            assert!(
+                ownership::recover_orphan(dir.path(), &mut stale.supervisor, &"b".repeat(64)).is_err()
+            );
+            std::fs::write(&receipt_path, &body).unwrap();
+            let handle = stale.supervisor.prepare(&command).unwrap();
+            canonical.state.models.get_mut("tiny").unwrap().process = Some(handle);
+            canonical.persist().unwrap();
+            stale.supervisor.fail_stop = false;
+            assert!(
+                ownership::recover_orphan(dir.path(), &mut stale.supervisor, &"b".repeat(64)).is_err()
+            );
+            assert!(receipt_path.is_file());
+            canonical.state.models.get_mut("tiny").unwrap().process = None;
+            canonical.persist().unwrap();
+            let current = std::fs::read(dir.path().join(STATE_FILE)).unwrap();
+            ownership::recover_orphan(dir.path(), &mut stale.supervisor, &"b".repeat(64)).unwrap();
+            assert!(!receipt_path.exists());
+            assert_eq!(std::fs::read(dir.path().join(STATE_FILE)).unwrap(), current);
+            assert!(
+                ownership::recover_orphan(dir.path(), &mut stale.supervisor, "../foreign").is_err()
+            );
+        }
+
+        phase owned_runtime_state_transactions_merge_foreign_models_and_refuse_stale_custody;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let bytes = b"merge fixture";
+            let mut first = service_for(dir.path(), bytes);
+            let mut second = service_for(dir.path(), bytes);
+            first.install_model(&model(bytes)).unwrap();
+            let mut other = model(bytes);
+            other.id = "other".into();
+            second.install_model(&other).unwrap();
+            assert_eq!(
+                load_state(&dir.path().join(STATE_FILE))
+                    .unwrap()
+                    .models
+                    .len(),
+                2
+            );
+            first.state.models.get_mut("tiny").unwrap().process = Some(ProcessHandle {
+                id: "retained-legacy".into(),
+                container: None,
+            });
+            first.persist().unwrap();
+            assert!(second.record_failure("tiny", "stale worker").is_err());
+            let observed = load_state(&dir.path().join(STATE_FILE)).unwrap();
+            assert_eq!(observed.models.len(), 2);
+            assert_eq!(
+                observed.models["tiny"].process.as_ref().unwrap().id,
+                "retained-legacy"
+            );
+            assert_eq!(observed.models["other"].status, LocalModelStatus::Installed);
+        }
     }
 
     pub(crate) fn signed_fixture_runtime(bytes: &[u8]) -> SignedRuntime {
@@ -2092,215 +2319,6 @@ mod tests {
                 Ok(())
             }
         }
-    }
-
-    #[test]
-    fn owned_runtime_concurrent_stop_prevents_stale_ready_publication() {
-        let dir = tempfile::tempdir().unwrap();
-        let bytes = b"barrier runtime fixture";
-        let runtime = signed_fixture_runtime(bytes);
-        let mut release = model(bytes);
-        release.artifact_format = ModelArtifactFormat::LlamaCppGguf;
-        release.context_window = 4096;
-        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
-        let (resume_tx, resume_rx) = std::sync::mpsc::channel();
-        let mut running = LocalModelService::open(
-            dir.path(),
-            Transport {
-                bytes: bytes.to_vec(),
-                starts: vec![],
-            },
-            BarrierSupervisor {
-                state_path: dir.path().join(STATE_FILE),
-                entered: Some(entered_tx),
-                resume: Some(resume_rx),
-                fail_start: false,
-                fail_stop: false,
-            },
-        )
-        .unwrap();
-        running.install_with_runtime(&runtime, &release).unwrap();
-        running.mark_starting(&release.id).unwrap();
-        let thread = std::thread::spawn(move || running.start(&runtime, &release, 9000));
-        tilo_test_env::recv("the launch to enter", &entered_rx);
-        let mut stopped = service_for(dir.path(), bytes);
-        let prepared = stopped.state.models["tiny"].process.clone().unwrap();
-        assert!(prepared.container.is_some());
-        assert!(stopped.mark_starting("tiny").is_err());
-        assert_eq!(stopped.stop("tiny").unwrap(), LocalModelStatus::Installed);
-        resume_tx.send(()).unwrap();
-        assert!(thread.join().unwrap().is_err());
-        let observed = load_state(&dir.path().join(STATE_FILE)).unwrap();
-        assert_eq!(observed.models["tiny"].status, LocalModelStatus::Installed);
-        assert!(observed.models["tiny"].process.is_none());
-    }
-
-    #[test]
-    fn owned_runtime_failed_launch_and_cleanup_retain_durable_exact_custody() {
-        let dir = tempfile::tempdir().unwrap();
-        let bytes = b"failed runtime fixture";
-        let runtime = signed_fixture_runtime(bytes);
-        let mut release = model(bytes);
-        release.artifact_format = ModelArtifactFormat::LlamaCppGguf;
-        release.context_window = 4096;
-        let mut service = LocalModelService::open(
-            dir.path(),
-            Transport {
-                bytes: bytes.to_vec(),
-                starts: vec![],
-            },
-            BarrierSupervisor {
-                state_path: dir.path().join(STATE_FILE),
-                entered: None,
-                resume: None,
-                fail_start: true,
-                fail_stop: true,
-            },
-        )
-        .unwrap();
-        service.install_with_runtime(&runtime, &release).unwrap();
-        assert!(service.start(&runtime, &release, 9000).is_err());
-        let handle = load_state(&dir.path().join(STATE_FILE)).unwrap().models["tiny"]
-            .process
-            .clone()
-            .unwrap();
-        assert!(handle.container.is_some());
-        service
-            .record_failure("tiny", "worker recorded failure")
-            .unwrap();
-        assert_eq!(
-            load_state(&dir.path().join(STATE_FILE)).unwrap().models["tiny"].process,
-            Some(handle.clone())
-        );
-        assert!(service.queue_install(&release).is_err());
-        assert!(service.mark_starting("tiny").is_err());
-        assert!(service.stop("tiny").is_err());
-        assert_eq!(
-            load_state(&dir.path().join(STATE_FILE)).unwrap().models["tiny"].process,
-            Some(handle)
-        );
-    }
-
-    #[test]
-    fn owned_runtime_refused_admission_retains_detached_custody_and_exact_recovery() {
-        let dir = tempfile::tempdir().unwrap();
-        let bytes = b"orphan custody fixture";
-        let mut canonical = service_for(dir.path(), bytes);
-        canonical.install_model(&model(bytes)).unwrap();
-        let mut stale = LocalModelService::open(
-            dir.path(),
-            Transport {
-                bytes: bytes.to_vec(),
-                starts: vec![],
-            },
-            BarrierSupervisor {
-                state_path: dir.path().join(STATE_FILE),
-                entered: None,
-                resume: None,
-                fail_start: true,
-                fail_stop: true,
-            },
-        )
-        .unwrap();
-        canonical
-            .record_failure("tiny", "new canonical frontier")
-            .unwrap();
-        let command = VllmCommand {
-            runtime_image: format!("registry.example/runtime@sha256:{}", "c".repeat(64)),
-            runtime_kind: RuntimeKind::Cpu,
-            args: vec!["serve".into()],
-            model_path: dir.path().join("fixture"),
-            model_container_path: "/models/model.gguf".into(),
-            endpoint: LocalEndpoint {
-                url: "http://127.0.0.1:9000/v1".into(),
-                model_id: "tiny".into(),
-            },
-            runtime_extension_id: "fixture".into(),
-        };
-        let prior = std::fs::read(dir.path().join(STATE_FILE)).unwrap();
-        assert!(stale.start_prepared("tiny", &command).is_err());
-        assert_eq!(std::fs::read(dir.path().join(STATE_FILE)).unwrap(), prior);
-        let receipt_path = dir
-            .path()
-            .join("orphan-custody")
-            .join(format!("{}.json", "b".repeat(64)));
-        assert!(receipt_path.is_file());
-        assert!(
-            ownership::recover_orphan(dir.path(), &mut stale.supervisor, &"b".repeat(64)).is_err()
-        );
-        assert!(receipt_path.is_file());
-        let body = std::fs::read(&receipt_path).unwrap();
-        std::fs::remove_file(&receipt_path).unwrap();
-        let foreign_path = dir.path().join("foreign-receipt.json");
-        std::fs::write(&foreign_path, &body).unwrap();
-        std::os::unix::fs::symlink(&foreign_path, &receipt_path).unwrap();
-        assert!(
-            ownership::recover_orphan(dir.path(), &mut stale.supervisor, &"b".repeat(64)).is_err()
-        );
-        assert_eq!(std::fs::read(&foreign_path).unwrap(), body);
-        std::fs::remove_file(&receipt_path).unwrap();
-        std::fs::write(&receipt_path, &body).unwrap();
-        std::fs::set_permissions(&receipt_path, std::fs::Permissions::from_mode(0o644)).unwrap();
-        assert!(
-            ownership::recover_orphan(dir.path(), &mut stale.supervisor, &"b".repeat(64)).is_err()
-        );
-        std::fs::set_permissions(&receipt_path, std::fs::Permissions::from_mode(0o600)).unwrap();
-        let mut changed: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        changed["process"]["container"]["run_id"] = serde_json::json!("c".repeat(64));
-        std::fs::write(&receipt_path, serde_json::to_vec(&changed).unwrap()).unwrap();
-        assert!(
-            ownership::recover_orphan(dir.path(), &mut stale.supervisor, &"b".repeat(64)).is_err()
-        );
-        std::fs::write(&receipt_path, &body).unwrap();
-        let handle = stale.supervisor.prepare(&command).unwrap();
-        canonical.state.models.get_mut("tiny").unwrap().process = Some(handle);
-        canonical.persist().unwrap();
-        stale.supervisor.fail_stop = false;
-        assert!(
-            ownership::recover_orphan(dir.path(), &mut stale.supervisor, &"b".repeat(64)).is_err()
-        );
-        assert!(receipt_path.is_file());
-        canonical.state.models.get_mut("tiny").unwrap().process = None;
-        canonical.persist().unwrap();
-        let current = std::fs::read(dir.path().join(STATE_FILE)).unwrap();
-        ownership::recover_orphan(dir.path(), &mut stale.supervisor, &"b".repeat(64)).unwrap();
-        assert!(!receipt_path.exists());
-        assert_eq!(std::fs::read(dir.path().join(STATE_FILE)).unwrap(), current);
-        assert!(
-            ownership::recover_orphan(dir.path(), &mut stale.supervisor, "../foreign").is_err()
-        );
-    }
-
-    #[test]
-    fn owned_runtime_state_transactions_merge_foreign_models_and_refuse_stale_custody() {
-        let dir = tempfile::tempdir().unwrap();
-        let bytes = b"merge fixture";
-        let mut first = service_for(dir.path(), bytes);
-        let mut second = service_for(dir.path(), bytes);
-        first.install_model(&model(bytes)).unwrap();
-        let mut other = model(bytes);
-        other.id = "other".into();
-        second.install_model(&other).unwrap();
-        assert_eq!(
-            load_state(&dir.path().join(STATE_FILE))
-                .unwrap()
-                .models
-                .len(),
-            2
-        );
-        first.state.models.get_mut("tiny").unwrap().process = Some(ProcessHandle {
-            id: "retained-legacy".into(),
-            container: None,
-        });
-        first.persist().unwrap();
-        assert!(second.record_failure("tiny", "stale worker").is_err());
-        let observed = load_state(&dir.path().join(STATE_FILE)).unwrap();
-        assert_eq!(observed.models.len(), 2);
-        assert_eq!(
-            observed.models["tiny"].process.as_ref().unwrap().id,
-            "retained-legacy"
-        );
-        assert_eq!(observed.models["other"].status, LocalModelStatus::Installed);
     }
 
     pub(crate) fn artifact(bytes: &[u8]) -> PinnedArtifact {
@@ -2571,11 +2589,12 @@ mod tests {
         }
     }
 
-    /// A content-addressed fetch resumes and promotes atomically, and a verified fetch publishes each
-    /// confirmed byte count.
-    #[test]
-    fn model_fetches_resume_and_publish_only_verified_bytes() {
-        // Phase: content_addressed_fetch_resumes_and_promotes_atomically.
+    tilo_test_env::scenario! {
+        /// A content-addressed fetch resumes and promotes atomically, and a verified fetch publishes each
+        /// confirmed byte count.
+        fn model_fetches_resume_and_publish_only_verified_bytes;
+
+        phase content_addressed_fetch_resumes_and_promotes_atomically;
         {
             let bytes = b"a local model";
             let dir = tempfile::tempdir().unwrap();
@@ -2604,7 +2623,7 @@ mod tests {
             assert!(!partial.exists());
         }
 
-        // Phase: verified_fetch_publishes_each_confirmed_byte_count.
+        phase verified_fetch_publishes_each_confirmed_byte_count;
         {
             let bytes = b"chunked";
             let dir = tempfile::tempdir().unwrap();
@@ -2634,38 +2653,41 @@ mod tests {
                 ]
             );
         }
+
+        phase model_delivery_refuses_cached_links_and_non_files;
+        {
+            #[cfg(unix)]
+            {
+                let bytes = b"pinned object";
+                let dir = tempfile::tempdir().unwrap();
+                let pin = artifact(bytes);
+                let mut service = service_for(dir.path(), bytes);
+                let path = service.object_path(&pin.sha256).unwrap();
+                let outside = dir.path().join("outside-object");
+                fs::write(&outside, bytes).unwrap();
+                std::os::unix::fs::symlink(&outside, &path).unwrap();
+                assert!(service.fetch_verified(&pin).is_err());
+                assert!(service.transport.starts.is_empty());
+                fs::remove_file(&path).unwrap();
+                fs::create_dir(&path).unwrap();
+                assert!(service.fetch_verified(&pin).is_err());
+                fs::remove_dir(&path).unwrap();
+                fs::write(&path, bytes).unwrap();
+                assert_eq!(service.fetch_verified(&pin).unwrap(), path);
+                assert!(service.transport.starts.is_empty());
+                fs::write(&path, b"pinned object extra").unwrap();
+                assert!(service.fetch_verified(&pin).is_err());
+            }
+        }
     }
 
-    #[cfg(unix)]
-    #[test]
-    fn model_delivery_refuses_cached_links_and_non_files() {
-        let bytes = b"pinned object";
-        let dir = tempfile::tempdir().unwrap();
-        let pin = artifact(bytes);
-        let mut service = service_for(dir.path(), bytes);
-        let path = service.object_path(&pin.sha256).unwrap();
-        let outside = dir.path().join("outside-object");
-        fs::write(&outside, bytes).unwrap();
-        std::os::unix::fs::symlink(&outside, &path).unwrap();
-        assert!(service.fetch_verified(&pin).is_err());
-        assert!(service.transport.starts.is_empty());
-        fs::remove_file(&path).unwrap();
-        fs::create_dir(&path).unwrap();
-        assert!(service.fetch_verified(&pin).is_err());
-        fs::remove_dir(&path).unwrap();
-        fs::write(&path, bytes).unwrap();
-        assert_eq!(service.fetch_verified(&pin).unwrap(), path);
-        assert!(service.transport.starts.is_empty());
-        fs::write(&path, b"pinned object extra").unwrap();
-        assert!(service.fetch_verified(&pin).is_err());
-    }
+    tilo_test_env::scenario! {
+        /// A verified snapshot is safely extracted to a content-addressed directory; the path policy
+        /// refuses traversal and absolute names; expansion beyond the signed installed size and symlinks are
+        /// refused before promotion.
+        fn model_snapshots_extract_only_within_their_signed_shape;
 
-    /// A verified snapshot is safely extracted to a content-addressed directory; the path policy
-    /// refuses traversal and absolute names; expansion beyond the signed installed size and symlinks are
-    /// refused before promotion.
-    #[test]
-    fn model_snapshots_extract_only_within_their_signed_shape() {
-        // Phase: verified_snapshot_is_safely_extracted_to_a_content_addressed_directory.
+        phase verified_snapshot_is_safely_extracted_to_a_content_addressed_directory;
         {
             let bytes = snapshot(&[
                 ("config.json", b"{}"),
@@ -2699,7 +2721,7 @@ mod tests {
             );
         }
 
-        // Phase: snapshot_path_policy_refuses_traversal_and_absolute_names.
+        phase snapshot_path_policy_refuses_traversal_and_absolute_names;
         {
             assert!(matches!(
                 safe_snapshot_path(Path::new("../escape.safetensors")),
@@ -2711,7 +2733,7 @@ mod tests {
             ));
         }
 
-        // Phase: snapshot_refuses_expansion_beyond_signed_installed_size.
+        phase snapshot_refuses_expansion_beyond_signed_installed_size;
         {
             let bytes = snapshot(&[
                 ("config.json", b"{}"),
@@ -2742,7 +2764,7 @@ mod tests {
             assert!(!snapshot.exists());
         }
 
-        // Phase: snapshot_refuses_symlinks_before_promotion.
+        phase snapshot_refuses_symlinks_before_promotion;
         {
             let bytes = snapshot_with_symlink();
             let dir = tempfile::tempdir().unwrap();
@@ -2785,14 +2807,75 @@ mod tests {
         .unwrap()
     }
 
-    #[test]
-    fn speech_install_uses_verified_objects_and_never_launches_a_runtime() {
-        for format in [
-            ModelArtifactFormat::WhisperGgml,
-            ModelArtifactFormat::WhistleCact,
-            ModelArtifactFormat::SileroGgml,
-        ] {
-            assert_speech_install(format);
+    tilo_test_env::scenario! {
+        /// Speech and other in-process models: installed from verified objects, never launched.
+        fn models_that_run_in_process_install_from_verified_objects_without_a_runtime;
+
+        phase speech_install_uses_verified_objects_and_never_launches_a_runtime;
+        {
+            for format in [
+                ModelArtifactFormat::WhisperGgml,
+                ModelArtifactFormat::WhistleCact,
+                ModelArtifactFormat::SileroGgml,
+            ] {
+                assert_speech_install(format);
+            }
+        }
+
+        phase in_process_models_install_without_a_runtime_and_are_found_by_capability;
+        // An in-process model installs through the verified download and the
+        // licence record alone, is found by capability from the store on disk,
+        // is never started, and disappears from the lookup once removed.
+        {
+            let bytes = b"onnx graph";
+            let dir = tempfile::tempdir().unwrap();
+            let release = onnx_model(bytes);
+            let mut service = service_for(dir.path(), bytes);
+            assert_eq!(
+                installed_in_process_model(dir.path(), InProcessCapability::Segmentation).unwrap(),
+                None
+            );
+            assert!(matches!(
+                service.install_in_process_with_progress(&release),
+                Err(ServiceError::LicenseNotAccepted(_))
+            ));
+            assert!(matches!(
+                service.install_in_process_with_progress(&model(bytes)),
+                Err(ServiceError::NotInProcess(_))
+            ));
+
+            service.record_license_acceptance(&release).unwrap();
+            service.queue_install(&release).unwrap();
+            assert_eq!(
+                installed_in_process_model(dir.path(), InProcessCapability::Segmentation).unwrap(),
+                None,
+                "a queued download is not an installed model"
+            );
+            assert_eq!(
+                service.install_in_process_with_progress(&release).unwrap(),
+                LocalModelStatus::Installed
+            );
+            assert!(service.supervisor.command.is_none());
+
+            let found = installed_in_process_model(dir.path(), InProcessCapability::Segmentation)
+                .unwrap()
+                .expect("installed segmentation model");
+            assert_eq!(found.id, "subject");
+            assert_eq!(found.revision, "c".repeat(64));
+            assert_eq!(found.sha256, release.artifact.sha256);
+            assert_eq!(found.license_id, "Apache-2.0");
+            assert_eq!(
+                found.path,
+                dir.path().join("sha256").join(&release.artifact.sha256)
+            );
+            assert_eq!(fs::read(&found.path).unwrap(), bytes);
+
+            service.remove("subject").unwrap();
+            assert!(!found.path.exists());
+            assert_eq!(
+                installed_in_process_model(dir.path(), InProcessCapability::Segmentation).unwrap(),
+                None
+            );
         }
     }
 
@@ -2987,67 +3070,12 @@ mod tests {
         Ok(bytes)
     }
 
-    /// An in-process model installs through the verified download and the
-    /// licence record alone, is found by capability from the store on disk,
-    /// is never started, and disappears from the lookup once removed.
-    #[test]
-    fn in_process_models_install_without_a_runtime_and_are_found_by_capability() {
-        let bytes = b"onnx graph";
-        let dir = tempfile::tempdir().unwrap();
-        let release = onnx_model(bytes);
-        let mut service = service_for(dir.path(), bytes);
-        assert_eq!(
-            installed_in_process_model(dir.path(), InProcessCapability::Segmentation).unwrap(),
-            None
-        );
-        assert!(matches!(
-            service.install_in_process_with_progress(&release),
-            Err(ServiceError::LicenseNotAccepted(_))
-        ));
-        assert!(matches!(
-            service.install_in_process_with_progress(&model(bytes)),
-            Err(ServiceError::NotInProcess(_))
-        ));
+    tilo_test_env::scenario! {
+        /// Acceptance is pinned to the exact model release, status persists and removal stops the supervised
+        /// service, and the command is argv that never uses a mutable tag.
+        fn the_installed_model_is_pinned_supervised_and_launched_by_digest;
 
-        service.record_license_acceptance(&release).unwrap();
-        service.queue_install(&release).unwrap();
-        assert_eq!(
-            installed_in_process_model(dir.path(), InProcessCapability::Segmentation).unwrap(),
-            None,
-            "a queued download is not an installed model"
-        );
-        assert_eq!(
-            service.install_in_process_with_progress(&release).unwrap(),
-            LocalModelStatus::Installed
-        );
-        assert!(service.supervisor.command.is_none());
-
-        let found = installed_in_process_model(dir.path(), InProcessCapability::Segmentation)
-            .unwrap()
-            .expect("installed segmentation model");
-        assert_eq!(found.id, "subject");
-        assert_eq!(found.revision, "c".repeat(64));
-        assert_eq!(found.sha256, release.artifact.sha256);
-        assert_eq!(found.license_id, "Apache-2.0");
-        assert_eq!(
-            found.path,
-            dir.path().join("sha256").join(&release.artifact.sha256)
-        );
-        assert_eq!(fs::read(&found.path).unwrap(), bytes);
-
-        service.remove("subject").unwrap();
-        assert!(!found.path.exists());
-        assert_eq!(
-            installed_in_process_model(dir.path(), InProcessCapability::Segmentation).unwrap(),
-            None
-        );
-    }
-
-    /// Acceptance is pinned to the exact model release, status persists and removal stops the supervised
-    /// service, and the command is argv that never uses a mutable tag.
-    #[test]
-    fn the_installed_model_is_pinned_supervised_and_launched_by_digest() {
-        // Phase: acceptance_is_pinned_to_the_exact_model_release.
+        phase acceptance_is_pinned_to_the_exact_model_release;
         {
             let bytes = b"licensed";
             let dir = tempfile::tempdir().unwrap();
@@ -3078,7 +3106,7 @@ mod tests {
             ));
         }
 
-        // Phase: status_persists_and_remove_stops_the_supervised_service.
+        phase status_persists_and_remove_stops_the_supervised_service;
         {
             let bytes = b"model";
             let dir = tempfile::tempdir().unwrap();
@@ -3122,7 +3150,7 @@ mod tests {
             );
         }
 
-        // Phase: command_is_argv_and_never_uses_a_mutable_tag.
+        phase command_is_argv_and_never_uses_a_mutable_tag;
         {
             let command = VllmCommand {
                 runtime_image: "registry.example.invalid/tilo/vllm@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
