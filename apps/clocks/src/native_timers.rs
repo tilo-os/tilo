@@ -388,110 +388,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn reenabled_alarm_hands_off_the_previously_delivered_date() {
-        let now = chrono::Local::now();
-        let id = Id::from_raw("rearmed-alarm");
-        let mut clocks = Clocks::default();
-        clocks.alarms.push(
-            id.clone(),
-            crate::Alarm {
-                label: "Wake up".into(),
-                hour: 12,
-                minute: 0,
-                repeat: 0,
-                enabled: true,
-                enabled_at_ms: now.timestamp_millis(),
-            },
-        );
-        let mut delivery = Delivery::default();
-        delivery.alarms.insert(
-            id.as_str().to_owned(),
-            crate::schedule::ArmedAlarm {
-                last_rung: Some(now.date_naive()),
-                ..Default::default()
-            },
-        );
-        crate::schedule::tick(&clocks, &mut delivery, now.with_timezone(&Utc), now);
-        let host = TestScheduler::default();
-        reconcile(
-            None,
-            &clocks,
-            &mut delivery,
-            &host,
-            now.with_timezone(&Utc),
-            |_| Ok(()),
-        )
-        .unwrap();
-        assert_eq!(
-            host.alarm_last_rung.borrow().get(&alarm_id(id.as_str())),
-            Some(&Some(now.date_naive())),
-            "the host must exclude the app's consumed local date"
-        );
-    }
-
-    #[test]
-    fn service_history_restores_occurrences_without_rearming_delivered_alarms() {
-        let now = chrono::Local::now();
-        let yesterday = now - chrono::Duration::days(1);
-        let mut clocks = Clocks::default();
-        let id = Id::from_raw("restore-alarm");
-        clocks.alarms.push(
-            id.clone(),
-            crate::Alarm {
-                label: "Wake up".into(),
-                hour: 12,
-                minute: 0,
-                repeat: 0,
-                enabled: true,
-                enabled_at_ms: 1,
-            },
-        );
-        let mut delivery = Delivery::default();
-        let mut state = ui::notify::AlarmState {
-            tag: alarm_id(id.as_str()),
-            alarm: ui::notify::CalendarAlarm {
-                hour: 12,
-                minute: 0,
-                weekdays: 0,
-            },
-            enabled_at_ms: 1,
-            next_at: None,
-            last_at: Some(system_time(yesterday.with_timezone(&Utc))),
-            last_rung: Some(yesterday.date_naive()),
-        };
-        restore_alarms(&clocks, &mut delivery, &[state.clone()]);
-        let due = crate::schedule::tick(&clocks, &mut delivery, now.with_timezone(&Utc), now);
-        assert!(matches!(
-            due.due.as_slice(),
-            [crate::DueEvent::Alarm {
-                native_scheduled: true,
-                ..
-            }]
-        ));
-        assert_eq!(due.finished_alarms, vec![id.clone()]);
-        assert!(
-            crate::schedule::tick(&clocks, &mut delivery, now.with_timezone(&Utc), now)
-                .due
-                .is_empty()
-        );
-        // A timezone-adjusted future occurrence is restored exactly, rather
-        // than cancelling it because the app retained the old UTC deadline.
-        let future = now.with_timezone(&Utc) + chrono::Duration::hours(4);
-        state.next_at = Some(system_time(future));
-        state.last_at = None;
-        state.last_rung = None;
-        restore_alarms(&clocks, &mut delivery, &[state]);
-        assert_eq!(
-            delivery.alarms.get(id.as_str()).unwrap().next_due_ms,
-            Some(future.timestamp_millis())
-        );
-        assert_eq!(
-            delivery.native_alarms_scheduled.get(id.as_str()),
-            Some(&future.timestamp_millis())
-        );
-    }
-
     fn running(label: &str) -> Clocks {
         let mut clocks = Clocks::default();
         clocks.timers.push(
@@ -739,6 +635,110 @@ mod tests {
             );
             assert!(restarted.native_completed_alarms.is_empty());
             assert!(restarted.native_alarm_owners.is_empty());
+        }
+
+        phase reenabled_alarm_hands_off_the_previously_delivered_date;
+        {
+            let now = chrono::Local::now();
+            let id = Id::from_raw("rearmed-alarm");
+            let mut clocks = Clocks::default();
+            clocks.alarms.push(
+                id.clone(),
+                crate::Alarm {
+                    label: "Wake up".into(),
+                    hour: 12,
+                    minute: 0,
+                    repeat: 0,
+                    enabled: true,
+                    enabled_at_ms: now.timestamp_millis(),
+                },
+            );
+            let mut delivery = Delivery::default();
+            delivery.alarms.insert(
+                id.as_str().to_owned(),
+                crate::schedule::ArmedAlarm {
+                    last_rung: Some(now.date_naive()),
+                    ..Default::default()
+                },
+            );
+            crate::schedule::tick(&clocks, &mut delivery, now.with_timezone(&Utc), now);
+            let host = TestScheduler::default();
+            reconcile(
+                None,
+                &clocks,
+                &mut delivery,
+                &host,
+                now.with_timezone(&Utc),
+                |_| Ok(()),
+            )
+            .unwrap();
+            assert_eq!(
+                host.alarm_last_rung.borrow().get(&alarm_id(id.as_str())),
+                Some(&Some(now.date_naive())),
+                "the host must exclude the app's consumed local date"
+            );
+        }
+
+        phase service_history_restores_occurrences_without_rearming_delivered_alarms;
+        {
+            let now = chrono::Local::now();
+            let yesterday = now - chrono::Duration::days(1);
+            let mut clocks = Clocks::default();
+            let id = Id::from_raw("restore-alarm");
+            clocks.alarms.push(
+                id.clone(),
+                crate::Alarm {
+                    label: "Wake up".into(),
+                    hour: 12,
+                    minute: 0,
+                    repeat: 0,
+                    enabled: true,
+                    enabled_at_ms: 1,
+                },
+            );
+            let mut delivery = Delivery::default();
+            let mut state = ui::notify::AlarmState {
+                tag: alarm_id(id.as_str()),
+                alarm: ui::notify::CalendarAlarm {
+                    hour: 12,
+                    minute: 0,
+                    weekdays: 0,
+                },
+                enabled_at_ms: 1,
+                next_at: None,
+                last_at: Some(system_time(yesterday.with_timezone(&Utc))),
+                last_rung: Some(yesterday.date_naive()),
+            };
+            restore_alarms(&clocks, &mut delivery, &[state.clone()]);
+            let due = crate::schedule::tick(&clocks, &mut delivery, now.with_timezone(&Utc), now);
+            assert!(matches!(
+                due.due.as_slice(),
+                [crate::DueEvent::Alarm {
+                    native_scheduled: true,
+                    ..
+                }]
+            ));
+            assert_eq!(due.finished_alarms, vec![id.clone()]);
+            assert!(
+                crate::schedule::tick(&clocks, &mut delivery, now.with_timezone(&Utc), now)
+                    .due
+                    .is_empty()
+            );
+            // A timezone-adjusted future occurrence is restored exactly, rather
+            // than cancelling it because the app retained the old UTC deadline.
+            let future = now.with_timezone(&Utc) + chrono::Duration::hours(4);
+            state.next_at = Some(system_time(future));
+            state.last_at = None;
+            state.last_rung = None;
+            restore_alarms(&clocks, &mut delivery, &[state]);
+            assert_eq!(
+                delivery.alarms.get(id.as_str()).unwrap().next_due_ms,
+                Some(future.timestamp_millis())
+            );
+            assert_eq!(
+                delivery.native_alarms_scheduled.get(id.as_str()),
+                Some(&future.timestamp_millis())
+            );
         }
 
         phase reconcile_touches_only_owned_timers_and_persists_ownership_before_the_host;
