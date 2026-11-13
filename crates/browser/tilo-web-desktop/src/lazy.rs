@@ -175,6 +175,14 @@ split_code! {
 }
 
 split_code! {
+    /// The keeper of the person's settings sections (their models and the
+    /// record machinery answering for them): the page fetches it as it
+    /// starts, so the start module carries neither.
+    mod settings_keeper: tilo_browser_runtime::SettingsKeeper = tilo_browser_runtime::builtin_settings_keeper()
+        => tilo_browser_runtime::SETTINGS_KEEPER, module = "settings_keeper", hash = "2f7c4d18b6e93a50";
+}
+
+split_code! {
     /// The profile card: the first card that opens asks for it.
     mod profile_card: tilo_desktop::profile_card::MakeProfileCard = tilo_desktop::profile_card::builtin_profile_card()
         => tilo_desktop::profile_card::PROFILE_CARD, module = "profile_card", hash = "5f81c2e94a3d07b6";
@@ -297,4 +305,24 @@ pub(crate) fn register() {
     desktop_search::register();
     notification_centre::register();
     page_view::register();
+    settings_keeper::register();
+    prepare_settings_keeper_after_first_frame();
+}
+
+/// Once the page has drawn its first frame, fetch the keeper of the person's
+/// settings sections.
+///
+/// Nothing of it is needed for the first frame, and the peer a workspace is
+/// entered through is the larger module: the keeper goes after that frame and
+/// lands before the peer does, so a control that changes a setting has it. A
+/// change asked for before the fetch is in says so and asks again.
+fn prepare_settings_keeper_after_first_frame() {
+    let work = Closure::once_into_js(move |_deadline: f64| {
+        if tilo_browser_runtime::first_frame_presented() {
+            let _ = tilo_browser_runtime::SETTINGS_KEEPER.get();
+        } else {
+            prepare_settings_keeper_after_first_frame();
+        }
+    });
+    after_idle(SPELLING_POLL_MS, &work);
 }

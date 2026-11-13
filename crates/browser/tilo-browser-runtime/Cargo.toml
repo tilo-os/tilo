@@ -145,6 +145,11 @@ deferred-sheets = []
 # the browser desktop fetches as its own module the first time a page holding
 # someone's root is asked to answer. Without it they are linked in.
 deferred-questions = []
+# The bundling crate supplies the keeper of the person's settings sections
+# (`SETTINGS_KEEPER`), which the browser desktop fetches as its own module as
+# the page starts. Without it the keeper and the sections' models are linked
+# in.
+deferred-settings-keeper = []
 
 [dependencies]
 # The host's endpoint address, as the page receives and dials it.

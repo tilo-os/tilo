@@ -9,15 +9,36 @@
 //! the page is that session: it keeps the settings document
 //! (`crate::settings`), so it answers those actions itself, in the person's
 //! name, and the change lands in the page's settings at once.
+//!
+//! The sections' models, and the record machinery that answers for them, are
+//! most of what a start module would carry and nothing a first frame draws,
+//! so the browser desktop fetches them as a module of their own
+//! ([`SETTINGS_KEEPER`], `deferred-settings-keeper`) and every mount it builds
+//! answers the sections through the code once it is in. A change asked for
+//! before then says so and asks again: the page fetches the keeper once it has
+//! drawn its first frame, and long before the peer a workspace is entered
+//! through lands.
 
 use tilo_actions::remote::settings_records;
-use ui::headless::FrameHarness;
+use ui::headless::{FrameHarness, ServedProvider};
 use ui::storage::SettingsDocument;
 
-/// Answer the settings sections the windows in `frame` change, kept in
-/// `document`, as `person`'s: what they change is theirs, undone and redone
-/// as their steps.
-pub(crate) fn serve(frame: &mut FrameHarness, person: &str, document: SettingsDocument) {
+/// The page's keeper of the person's settings sections: the maker of the
+/// provider that answers their actions, kept in the person's settings
+/// document.
+///
+/// It is linked in, unless the `deferred-settings-keeper` feature leaves it to
+/// the bundling crate: the browser desktop fetches it ([`SETTINGS_KEEPER`]) as
+/// its own module, so neither the sections' models nor the code keeping them
+/// stands in the start module.
+#[derive(Clone, Copy)]
+pub struct SettingsKeeper {
+    make: fn(&str, SettingsDocument) -> ServedProvider,
+}
+
+/// The provider that answers the sections' actions as `person`'s, kept in
+/// `document`: what they change is theirs, undone and redone as their steps.
+fn make(person: &str, document: SettingsDocument) -> ServedProvider {
     let records = tilo_app::framework::SettingsRecords::of_person_named_in(
         settings_sections::APP_ID,
         settings_sections::APP_TITLE,
@@ -26,7 +47,43 @@ pub(crate) fn serve(frame: &mut FrameHarness, person: &str, document: SettingsDo
         &[settings_sections::declare],
         document,
     );
-    frame.serve_provider(settings_records::PROVIDER, records.served_for(person));
+    records.served_for(person)
+}
+
+/// The keeper over the person's settings document.
+#[must_use]
+pub fn builtin_settings_keeper() -> SettingsKeeper {
+    SettingsKeeper { make }
+}
+
+ui::lazy_code! {
+    /// The keeper of the person's settings sections, fetched as the page
+    /// starts where the bundle defers it (`deferred-settings-keeper`).
+    pub static SETTINGS_KEEPER: SettingsKeeper = builtin_settings_keeper, feature = "deferred-settings-keeper";
+}
+
+/// Answer the settings sections the windows in `frame` change, kept in
+/// `document`, as `person`'s: what they change is theirs, undone and redone
+/// as their steps.
+pub(crate) fn serve(frame: &mut FrameHarness, person: &str, document: SettingsDocument) {
+    let person = person.to_owned();
+    let mut kept: Option<ServedProvider> = None;
+    frame.serve_provider(
+        settings_records::PROVIDER,
+        Box::new(move |invocation| {
+            let keeper =
+                SETTINGS_KEEPER
+                    .get()
+                    .ok_or_else(|| tilo_actions::DoorError::Unavailable {
+                        code: "settings_loading".to_owned(),
+                        reason:
+                            "the page is still fetching the code that keeps the person's settings"
+                                .to_owned(),
+                    })?;
+            let serve = kept.get_or_insert_with(|| (keeper.make)(&person, document.clone()));
+            serve(invocation)
+        }),
+    );
 }
 
 #[cfg(test)]
