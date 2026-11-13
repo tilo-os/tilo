@@ -957,156 +957,6 @@ mod tests {
             .unwrap();
     }
 
-    #[test]
-    fn the_policy_reads_from_the_owner_file_and_refuses_a_malformed_one() {
-        assert_eq!(Policy::parse("").unwrap(), Policy::default());
-        let policy = Policy::parse(
-            "[vm_image]\nunused_days = 3\n[test_caches]\nremove = false\n[space]\nlow_free_gb = 10\n",
-        )
-        .unwrap();
-        assert_eq!(policy.vm_image.unused_days, 3);
-        assert!(policy.vm_image.remove);
-        assert!(!policy.test_caches.remove);
-        assert!(policy.flatpak.remove_unused_runtimes);
-        assert_eq!(policy.space.low_free_gb, 10);
-        // A typo must not silently fall back to cleaning everything.
-        assert!(Policy::parse("[test_caches]\nremvoe = false\n").is_err());
-
-        let dir = tempfile::tempdir().unwrap();
-        let mine = dir.path().join("mine.toml");
-        let image = dir.path().join("image.toml");
-        std::fs::write(&image, "[vm_image]\nunused_days = 1\n").unwrap();
-        assert_eq!(
-            Policy::load(&[mine.clone(), image.clone()])
-                .unwrap()
-                .vm_image
-                .unused_days,
-            1
-        );
-        std::fs::write(&mine, "[vm_image]\nunused_days = 30\n").unwrap();
-        assert_eq!(
-            Policy::load(&[mine, image]).unwrap().vm_image.unused_days,
-            30
-        );
-    }
-
-    #[test]
-    fn age_and_free_space_decide_what_goes() {
-        let policy = Policy::default();
-        let age = &policy.test_caches;
-        let plenty = conditions(Some(100_000_000_000));
-        assert_eq!(decide(at(NOW - 15 * DAY), age, &policy, plenty), Ok(()));
-        assert_eq!(
-            decide(at(NOW - 10 * DAY), age, &policy, plenty),
-            Err((KeptBecause::Recent, Some(NOW + 4 * DAY)))
-        );
-        // Low on space: age no longer protects it.
-        let low = conditions(Some(1_000_000_000));
-        assert_eq!(decide(at(NOW - DAY), age, &policy, low), Ok(()));
-        let off = AgePolicy {
-            remove: false,
-            unused_days: 0,
-        };
-        assert_eq!(
-            decide(at(0), &off, &policy, low),
-            Err((KeptBecause::Disabled, None))
-        );
-    }
-
-    #[test]
-    fn a_stale_vm_image_copy_goes_and_one_in_use_or_recent_stays() {
-        let policy = Policy::default();
-        let plenty = conditions(Some(100_000_000_000));
-
-        // Stale: unused for 20 days.
-        let root = tempfile::tempdir().unwrap();
-        let layout = root.path().join("image");
-        file(&layout.join("blobs/sha256/aa"), 8192, 20);
-        file(&layout.join("index.json"), 100, 20);
-        age_dir(&layout.join("blobs/sha256"), 20);
-        age_dir(&layout.join("blobs"), 20);
-        age_dir(&layout, 20);
-        // A compressing filesystem may store the blob in far fewer blocks
-        // than its length, and counts them only once written out.
-        rustix::fs::syncfs(File::open(root.path()).unwrap()).unwrap();
-        let mut record = Record::default();
-        clean_vm_image(&mut record, root.path(), &policy, plenty).unwrap();
-        assert!(!layout.exists(), "{record:?}");
-        assert_eq!(record.removed.len(), 1);
-        assert_eq!(record.removed[0].kind, Kind::VmImage);
-        assert!(record.removed[0].bytes > 0, "{record:?}");
-
-        // In use: an upgrade holds image.lock while it copies.
-        file(&layout.join("index.json"), 100, 20);
-        age_dir(&layout, 20);
-        let upgrade =
-            FileLock::open(&root.path().join("locks/image.lock"), LockMode::Exclusive).unwrap();
-        let mut record = Record::default();
-        clean_vm_image(&mut record, root.path(), &policy, conditions(Some(0))).unwrap();
-        assert!(layout.exists());
-        assert_eq!(record.kept[0].because, KeptBecause::InUse);
-        drop(upgrade);
-
-        // Recent: read by an upgrade three days ago.
-        age(&layout.join("index.json"), 3);
-        let mut record = Record::default();
-        clean_vm_image(&mut record, root.path(), &policy, plenty).unwrap();
-        assert!(layout.exists());
-        assert_eq!(record.kept[0].because, KeptBecause::Recent);
-        assert_eq!(record.kept[0].eligible, Some(NOW + 11 * DAY));
-
-        // No copy, nothing recorded.
-        let empty = tempfile::tempdir().unwrap();
-        let mut record = Record::default();
-        clean_vm_image(&mut record, empty.path(), &policy, plenty).unwrap();
-        assert_eq!(record, Record::default());
-    }
-
-    #[test]
-    fn old_test_fixtures_go_while_current_and_locked_ones_stay() {
-        let policy = Policy::default();
-        let plenty = conditions(Some(100_000_000_000));
-        let root = tempfile::tempdir().unwrap();
-        let ntfs = root.path().join("ntfs-fixtures");
-        // The previous generator revision's set, untouched for a month.
-        file(&ntfs.join("0ld0ld/disk.img"), 4096, 30);
-        file(&ntfs.join("0ld0ld/manifest.json"), 10, 30);
-        age_dir(&ntfs.join("0ld0ld"), 30);
-        // The current one, read by yesterday's run.
-        file(&ntfs.join("cur7e7/disk.img"), 4096, 1);
-        // A loose file directly under the root.
-        file(&root.path().join("gst-registry.bin"), 100, 40);
-        // A media cache that a running test holds.
-        let media = root.path().join("tilo-media-test-fixtures");
-        file(&media.join("clip.webm"), 100, 40);
-        let running = FileLock::open(&media.join(".lock"), LockMode::Exclusive).unwrap();
-
-        let mut record = Record::default();
-        clean_test_caches(&mut record, root.path(), &policy, plenty).unwrap();
-        drop(running);
-
-        assert!(!ntfs.join("0ld0ld").exists());
-        assert!(!root.path().join("gst-registry.bin").exists());
-        assert!(ntfs.join("cur7e7/disk.img").exists());
-        assert!(media.join("clip.webm").exists());
-        let removed: Vec<&str> = record.removed.iter().map(|r| r.name.as_str()).collect();
-        assert_eq!(removed, ["ntfs-fixtures/0ld0ld", "gst-registry.bin"]);
-        let kept: Vec<(&str, KeptBecause)> = record
-            .kept
-            .iter()
-            .map(|k| (k.name.as_str(), k.because))
-            .collect();
-        assert_eq!(
-            kept,
-            [
-                ("ntfs-fixtures/cur7e7", KeptBecause::Recent),
-                ("tilo-media-test-fixtures/clip.webm", KeptBecause::InUse),
-            ]
-        );
-        // The locks themselves are never cleaned.
-        assert!(ntfs.join(".lock").exists());
-    }
-
     /// A stand-in `flatpak` that keeps the runtimes its "installed apps" name and removes the
     /// rest when asked for `uninstall --unused`, recording what it was asked.
     fn fake_flatpak(dir: &Path, installed: &[&str], used: &[&str]) -> Flatpak {
@@ -1138,44 +988,198 @@ mod tests {
         Flatpak { program, root }
     }
 
-    #[test]
-    fn flatpak_decides_which_runtimes_are_unused_and_apps_keep_theirs() {
-        let dir = tempfile::tempdir().unwrap();
-        let flatpak = fake_flatpak(
-            dir.path(),
-            &[
-                "org.gnome.Platform/aarch64/48",
-                "org.gnome.Platform/aarch64/51",
-                "org.freedesktop.Platform/aarch64/25.08",
-            ],
-            // An installed app uses GNOME 51 and freedesktop 25.08.
-            &[
-                "org.gnome.Platform/aarch64/51",
-                "org.freedesktop.Platform/aarch64/25.08",
-            ],
-        );
-        let mut record = Record::default();
-        clean_flatpak(&mut record, &flatpak, &Policy::default());
-        assert_eq!(record.failed, []);
-        assert_eq!(record.removed.len(), 1, "{record:?}");
-        assert_eq!(record.removed[0].name, "org.gnome.Platform/aarch64/48");
-        assert!(record.removed[0].bytes >= 2048);
-        // The cleanup never names a runtime: Flatpak's own notion of unused decides.
-        let calls = std::fs::read_to_string(dir.path().join("calls")).unwrap();
-        assert_eq!(
-            calls.lines().collect::<Vec<_>>(),
-            [
-                "list --system --runtime --columns=ref",
-                "uninstall --system --unused --noninteractive -y",
-                "list --system --runtime --columns=ref",
-            ]
-        );
+    tilo_test_env::scenario! {
+        fn the_policy_decides_what_goes_by_age_use_and_free_space;
 
-        // Turned off by policy: Flatpak is not even asked.
-        let off = Policy::parse("[flatpak]\nremove_unused_runtimes = false\n").unwrap();
-        std::fs::remove_file(dir.path().join("calls")).unwrap();
-        clean_flatpak(&mut Record::default(), &flatpak, &off);
-        assert!(!dir.path().join("calls").exists());
+        phase the_policy_reads_from_the_owner_file_and_refuses_a_malformed_one;
+        {
+            assert_eq!(Policy::parse("").unwrap(), Policy::default());
+            let policy = Policy::parse(
+                "[vm_image]\nunused_days = 3\n[test_caches]\nremove = false\n[space]\nlow_free_gb = 10\n",
+            )
+            .unwrap();
+            assert_eq!(policy.vm_image.unused_days, 3);
+            assert!(policy.vm_image.remove);
+            assert!(!policy.test_caches.remove);
+            assert!(policy.flatpak.remove_unused_runtimes);
+            assert_eq!(policy.space.low_free_gb, 10);
+            // A typo must not silently fall back to cleaning everything.
+            assert!(Policy::parse("[test_caches]\nremvoe = false\n").is_err());
+
+            let dir = tempfile::tempdir().unwrap();
+            let mine = dir.path().join("mine.toml");
+            let image = dir.path().join("image.toml");
+            std::fs::write(&image, "[vm_image]\nunused_days = 1\n").unwrap();
+            assert_eq!(
+                Policy::load(&[mine.clone(), image.clone()])
+                    .unwrap()
+                    .vm_image
+                    .unused_days,
+                1
+            );
+            std::fs::write(&mine, "[vm_image]\nunused_days = 30\n").unwrap();
+            assert_eq!(
+                Policy::load(&[mine, image]).unwrap().vm_image.unused_days,
+                30
+            );
+        }
+
+        phase age_and_free_space_decide_what_goes;
+        {
+            let policy = Policy::default();
+            let age = &policy.test_caches;
+            let plenty = conditions(Some(100_000_000_000));
+            assert_eq!(decide(at(NOW - 15 * DAY), age, &policy, plenty), Ok(()));
+            assert_eq!(
+                decide(at(NOW - 10 * DAY), age, &policy, plenty),
+                Err((KeptBecause::Recent, Some(NOW + 4 * DAY)))
+            );
+            // Low on space: age no longer protects it.
+            let low = conditions(Some(1_000_000_000));
+            assert_eq!(decide(at(NOW - DAY), age, &policy, low), Ok(()));
+            let off = AgePolicy {
+                remove: false,
+                unused_days: 0,
+            };
+            assert_eq!(
+                decide(at(0), &off, &policy, low),
+                Err((KeptBecause::Disabled, None))
+            );
+        }
+
+        phase a_stale_vm_image_copy_goes_and_one_in_use_or_recent_stays;
+        {
+            let policy = Policy::default();
+            let plenty = conditions(Some(100_000_000_000));
+
+            // Stale: unused for 20 days.
+            let root = tempfile::tempdir().unwrap();
+            let layout = root.path().join("image");
+            file(&layout.join("blobs/sha256/aa"), 8192, 20);
+            file(&layout.join("index.json"), 100, 20);
+            age_dir(&layout.join("blobs/sha256"), 20);
+            age_dir(&layout.join("blobs"), 20);
+            age_dir(&layout, 20);
+            // A compressing filesystem may store the blob in far fewer blocks
+            // than its length, and counts them only once written out.
+            rustix::fs::syncfs(File::open(root.path()).unwrap()).unwrap();
+            let mut record = Record::default();
+            clean_vm_image(&mut record, root.path(), &policy, plenty).unwrap();
+            assert!(!layout.exists(), "{record:?}");
+            assert_eq!(record.removed.len(), 1);
+            assert_eq!(record.removed[0].kind, Kind::VmImage);
+            assert!(record.removed[0].bytes > 0, "{record:?}");
+
+            // In use: an upgrade holds image.lock while it copies.
+            file(&layout.join("index.json"), 100, 20);
+            age_dir(&layout, 20);
+            let upgrade =
+                FileLock::open(&root.path().join("locks/image.lock"), LockMode::Exclusive).unwrap();
+            let mut record = Record::default();
+            clean_vm_image(&mut record, root.path(), &policy, conditions(Some(0))).unwrap();
+            assert!(layout.exists());
+            assert_eq!(record.kept[0].because, KeptBecause::InUse);
+            drop(upgrade);
+
+            // Recent: read by an upgrade three days ago.
+            age(&layout.join("index.json"), 3);
+            let mut record = Record::default();
+            clean_vm_image(&mut record, root.path(), &policy, plenty).unwrap();
+            assert!(layout.exists());
+            assert_eq!(record.kept[0].because, KeptBecause::Recent);
+            assert_eq!(record.kept[0].eligible, Some(NOW + 11 * DAY));
+
+            // No copy, nothing recorded.
+            let empty = tempfile::tempdir().unwrap();
+            let mut record = Record::default();
+            clean_vm_image(&mut record, empty.path(), &policy, plenty).unwrap();
+            assert_eq!(record, Record::default());
+        }
+
+        phase old_test_fixtures_go_while_current_and_locked_ones_stay;
+        {
+            let policy = Policy::default();
+            let plenty = conditions(Some(100_000_000_000));
+            let root = tempfile::tempdir().unwrap();
+            let ntfs = root.path().join("ntfs-fixtures");
+            // The previous generator revision's set, untouched for a month.
+            file(&ntfs.join("0ld0ld/disk.img"), 4096, 30);
+            file(&ntfs.join("0ld0ld/manifest.json"), 10, 30);
+            age_dir(&ntfs.join("0ld0ld"), 30);
+            // The current one, read by yesterday's run.
+            file(&ntfs.join("cur7e7/disk.img"), 4096, 1);
+            // A loose file directly under the root.
+            file(&root.path().join("gst-registry.bin"), 100, 40);
+            // A media cache that a running test holds.
+            let media = root.path().join("tilo-media-test-fixtures");
+            file(&media.join("clip.webm"), 100, 40);
+            let running = FileLock::open(&media.join(".lock"), LockMode::Exclusive).unwrap();
+
+            let mut record = Record::default();
+            clean_test_caches(&mut record, root.path(), &policy, plenty).unwrap();
+            drop(running);
+
+            assert!(!ntfs.join("0ld0ld").exists());
+            assert!(!root.path().join("gst-registry.bin").exists());
+            assert!(ntfs.join("cur7e7/disk.img").exists());
+            assert!(media.join("clip.webm").exists());
+            let removed: Vec<&str> = record.removed.iter().map(|r| r.name.as_str()).collect();
+            assert_eq!(removed, ["ntfs-fixtures/0ld0ld", "gst-registry.bin"]);
+            let kept: Vec<(&str, KeptBecause)> = record
+                .kept
+                .iter()
+                .map(|k| (k.name.as_str(), k.because))
+                .collect();
+            assert_eq!(
+                kept,
+                [
+                    ("ntfs-fixtures/cur7e7", KeptBecause::Recent),
+                    ("tilo-media-test-fixtures/clip.webm", KeptBecause::InUse),
+                ]
+            );
+            // The locks themselves are never cleaned.
+            assert!(ntfs.join(".lock").exists());
+        }
+
+        phase flatpak_decides_which_runtimes_are_unused_and_apps_keep_theirs;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let flatpak = fake_flatpak(
+                dir.path(),
+                &[
+                    "org.gnome.Platform/aarch64/48",
+                    "org.gnome.Platform/aarch64/51",
+                    "org.freedesktop.Platform/aarch64/25.08",
+                ],
+                // An installed app uses GNOME 51 and freedesktop 25.08.
+                &[
+                    "org.gnome.Platform/aarch64/51",
+                    "org.freedesktop.Platform/aarch64/25.08",
+                ],
+            );
+            let mut record = Record::default();
+            clean_flatpak(&mut record, &flatpak, &Policy::default());
+            assert_eq!(record.failed, []);
+            assert_eq!(record.removed.len(), 1, "{record:?}");
+            assert_eq!(record.removed[0].name, "org.gnome.Platform/aarch64/48");
+            assert!(record.removed[0].bytes >= 2048);
+            // The cleanup never names a runtime: Flatpak's own notion of unused decides.
+            let calls = std::fs::read_to_string(dir.path().join("calls")).unwrap();
+            assert_eq!(
+                calls.lines().collect::<Vec<_>>(),
+                [
+                    "list --system --runtime --columns=ref",
+                    "uninstall --system --unused --noninteractive -y",
+                    "list --system --runtime --columns=ref",
+                ]
+            );
+
+            // Turned off by policy: Flatpak is not even asked.
+            let off = Policy::parse("[flatpak]\nremove_unused_runtimes = false\n").unwrap();
+            std::fs::remove_file(dir.path().join("calls")).unwrap();
+            clean_flatpak(&mut Record::default(), &flatpak, &off);
+            assert!(!dir.path().join("calls").exists());
+        }
     }
 
     /// A machine on bootc's composefs backend: deployments under `state/deploy`, boot
@@ -1243,190 +1247,198 @@ mod tests {
         left
     }
 
-    #[test]
-    fn os_images_no_deployment_boots_go_and_the_current_and_previous_stay() {
-        let dir = tempfile::tempdir().unwrap();
-        // The running generation, the rollback, and two older ones whose boot entries an
-        // update replaced, plus the half of an update that was cancelled.
-        let bootc = fake_bootc(
-            dir.path(),
-            &["current", "previous", "older", "oldest", "cancelled"],
-            &["current", "previous"],
-        );
-        let mut record = Record::default();
-        clean_os_images(&mut record, &bootc, &Policy::default());
-        assert_eq!(record.failed, []);
-        assert_eq!(remaining(&bootc), ["current", "previous"]);
-        assert!(bootc.sysroot.join("composefs/images/current").exists());
-        assert!(bootc.sysroot.join("composefs/images/previous").exists());
-        assert!(!bootc.sysroot.join("composefs/images/older").exists());
-        // bootc decides what no boot entry names, while no update and no boot entry
-        // rename can run.
-        let calls = std::fs::read_to_string(dir.path().join("calls")).unwrap();
-        assert_eq!(
-            calls.lines().collect::<Vec<_>>(),
-            ["internals composefs-gc --prune-repo", "held", "held"]
-        );
-        // The lock is created as the update requires it: owner-only.
-        let mode = std::fs::metadata(&bootc.update_lock)
-            .unwrap()
-            .permissions()
-            .mode();
-        assert_eq!(mode & 0o777, 0o600);
-        // A second run finds nothing more to remove and keeps both.
-        clean_os_images(&mut Record::default(), &bootc, &Policy::default());
-        assert_eq!(remaining(&bootc), ["current", "previous"]);
-    }
+    tilo_test_env::scenario! {
+        fn os_images_are_collected_only_when_no_deployment_boots_them;
 
-    #[test]
-    fn an_update_or_a_boot_entry_rename_in_progress_keeps_the_os_images_for_later() {
-        let dir = tempfile::tempdir().unwrap();
-        let bootc = fake_bootc(dir.path(), &["current", "older"], &["current"]);
-        let calls = dir.path().join("calls");
+        phase os_images_no_deployment_boots_go_and_the_current_and_previous_stay;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            // The running generation, the rollback, and two older ones whose boot entries an
+            // update replaced, plus the half of an update that was cancelled.
+            let bootc = fake_bootc(
+                dir.path(),
+                &["current", "previous", "older", "oldest", "cancelled"],
+                &["current", "previous"],
+            );
+            let mut record = Record::default();
+            clean_os_images(&mut record, &bootc, &Policy::default());
+            assert_eq!(record.failed, []);
+            assert_eq!(remaining(&bootc), ["current", "previous"]);
+            assert!(bootc.sysroot.join("composefs/images/current").exists());
+            assert!(bootc.sysroot.join("composefs/images/previous").exists());
+            assert!(!bootc.sysroot.join("composefs/images/older").exists());
+            // bootc decides what no boot entry names, while no update and no boot entry
+            // rename can run.
+            let calls = std::fs::read_to_string(dir.path().join("calls")).unwrap();
+            assert_eq!(
+                calls.lines().collect::<Vec<_>>(),
+                ["internals composefs-gc --prune-repo", "held", "held"]
+            );
+            // The lock is created as the update requires it: owner-only.
+            let mode = std::fs::metadata(&bootc.update_lock)
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o600);
+            // A second run finds nothing more to remove and keeps both.
+            clean_os_images(&mut Record::default(), &bootc, &Policy::default());
+            assert_eq!(remaining(&bootc), ["current", "previous"]);
+        }
 
-        // An update holds its lock from download to activation.
-        let update = try_hold_update_lock(&bootc.update_lock).unwrap().unwrap();
-        let mut record = Record::default();
-        clean_os_images(&mut record, &bootc, &Policy::default());
-        assert!(!calls.exists(), "bootc ran during an update");
-        assert_eq!(record.kept.len(), 1);
-        assert_eq!(record.kept[0].because, KeptBecause::InUse);
-        assert_eq!(remaining(&bootc), ["current", "older"]);
-        drop(update);
+        phase an_update_or_a_boot_entry_rename_in_progress_keeps_the_os_images_for_later;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let bootc = fake_bootc(dir.path(), &["current", "older"], &["current"]);
+            let calls = dir.path().join("calls");
 
-        // tilo-deployment renames boot entries under the ESP's lock.
-        let esp = try_hold_directory(bootc.esp.as_deref().unwrap())
-            .unwrap()
+            // An update holds its lock from download to activation.
+            let update = try_hold_update_lock(&bootc.update_lock).unwrap().unwrap();
+            let mut record = Record::default();
+            clean_os_images(&mut record, &bootc, &Policy::default());
+            assert!(!calls.exists(), "bootc ran during an update");
+            assert_eq!(record.kept.len(), 1);
+            assert_eq!(record.kept[0].because, KeptBecause::InUse);
+            assert_eq!(remaining(&bootc), ["current", "older"]);
+            drop(update);
+
+            // tilo-deployment renames boot entries under the ESP's lock.
+            let esp = try_hold_directory(bootc.esp.as_deref().unwrap())
+                .unwrap()
+                .unwrap();
+            let mut record = Record::default();
+            clean_os_images(&mut record, &bootc, &Policy::default());
+            assert!(!calls.exists(), "bootc ran while boot entries were renamed");
+            assert_eq!(record.kept[0].because, KeptBecause::InUse);
+            drop(esp);
+
+            // Turned off by policy: bootc is not asked.
+            let off = Policy::parse("[os_images]\nremove = false\n").unwrap();
+            let mut record = Record::default();
+            clean_os_images(&mut record, &bootc, &off);
+            assert!(!calls.exists());
+            assert_eq!(record.kept[0].because, KeptBecause::Disabled);
+
+            // Once nothing holds it, the next run collects.
+            clean_os_images(&mut Record::default(), &bootc, &Policy::default());
+            assert_eq!(remaining(&bootc), ["current"]);
+        }
+
+        phase a_machine_without_a_composefs_repository_has_no_os_images_to_collect;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let mut bootc = fake_bootc(dir.path(), &[], &[]);
+            bootc.sysroot = dir.path().join("elsewhere");
+            let mut record = Record::default();
+            clean_os_images(&mut record, &bootc, &Policy::default());
+            assert_eq!(record, Record::default());
+            assert!(!dir.path().join("calls").exists());
+        }
+
+        phase a_failed_os_image_collection_says_why;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let mut bootc = fake_bootc(dir.path(), &["current"], &["current"]);
+            let program = dir.path().join("failing-bootc");
+            std::fs::write(
+                &program,
+                "#!/bin/sh\necho 'error: repository is locked' >&2\nexit 1\n",
+            )
             .unwrap();
-        let mut record = Record::default();
-        clean_os_images(&mut record, &bootc, &Policy::default());
-        assert!(!calls.exists(), "bootc ran while boot entries were renamed");
-        assert_eq!(record.kept[0].because, KeptBecause::InUse);
-        drop(esp);
-
-        // Turned off by policy: bootc is not asked.
-        let off = Policy::parse("[os_images]\nremove = false\n").unwrap();
-        let mut record = Record::default();
-        clean_os_images(&mut record, &bootc, &off);
-        assert!(!calls.exists());
-        assert_eq!(record.kept[0].because, KeptBecause::Disabled);
-
-        // Once nothing holds it, the next run collects.
-        clean_os_images(&mut Record::default(), &bootc, &Policy::default());
-        assert_eq!(remaining(&bootc), ["current"]);
+            std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+            bootc.program = program;
+            let mut record = Record::default();
+            clean_os_images(&mut record, &bootc, &Policy::default());
+            assert_eq!(record.failed.len(), 1);
+            assert_eq!(record.failed[0].kind, Kind::OsImage);
+            assert_eq!(record.failed[0].error, "error: repository is locked");
+        }
     }
 
-    #[test]
-    fn a_machine_without_a_composefs_repository_has_no_os_images_to_collect() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut bootc = fake_bootc(dir.path(), &[], &[]);
-        bootc.sysroot = dir.path().join("elsewhere");
-        let mut record = Record::default();
-        clean_os_images(&mut record, &bootc, &Policy::default());
-        assert_eq!(record, Record::default());
-        assert!(!dir.path().join("calls").exists());
-    }
+    tilo_test_env::scenario! {
+        fn a_cleanup_is_recorded_and_read_back_as_status;
 
-    #[test]
-    fn a_failed_os_image_collection_says_why() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut bootc = fake_bootc(dir.path(), &["current"], &["current"]);
-        let program = dir.path().join("failing-bootc");
-        std::fs::write(
-            &program,
-            "#!/bin/sh\necho 'error: repository is locked' >&2\nexit 1\n",
-        )
-        .unwrap();
-        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
-        bootc.program = program;
-        let mut record = Record::default();
-        clean_os_images(&mut record, &bootc, &Policy::default());
-        assert_eq!(record.failed.len(), 1);
-        assert_eq!(record.failed[0].kind, Kind::OsImage);
-        assert_eq!(record.failed[0].error, "error: repository is locked");
-    }
-
-    #[test]
-    fn status_says_what_was_freed_kept_and_when_it_can_go() {
-        let record = Record {
-            finished: NOW - 3 * 3600,
-            removed: vec![
-                Removed {
+        phase status_says_what_was_freed_kept_and_when_it_can_go;
+        {
+            let record = Record {
+                finished: NOW - 3 * 3600,
+                removed: vec![
+                    Removed {
+                        kind: Kind::FlatpakRuntime,
+                        name: "org.gnome.Platform/aarch64/48".into(),
+                        bytes: 900_000_000,
+                    },
+                    Removed {
+                        kind: Kind::TestCache,
+                        name: "ntfs-fixtures/0ld0ld".into(),
+                        bytes: 300_000_000,
+                    },
+                ],
+                kept: vec![
+                    Kept {
+                        kind: Kind::VmImage,
+                        name: "the copy of the last developer image upgrade".into(),
+                        bytes: 4_100_000_000,
+                        because: KeptBecause::Recent,
+                        eligible: Some(NOW + 9 * DAY),
+                    },
+                    Kept {
+                        kind: Kind::TestCache,
+                        name: "tilo-media-test-fixtures/clip.webm".into(),
+                        bytes: 2_000_000,
+                        because: KeptBecause::InUse,
+                        eligible: None,
+                    },
+                ],
+                failed: vec![Failed {
                     kind: Kind::FlatpakRuntime,
-                    name: "org.gnome.Platform/aarch64/48".into(),
-                    bytes: 900_000_000,
-                },
-                Removed {
-                    kind: Kind::TestCache,
-                    name: "ntfs-fixtures/0ld0ld".into(),
-                    bytes: 300_000_000,
-                },
-            ],
-            kept: vec![
-                Kept {
-                    kind: Kind::VmImage,
-                    name: "the copy of the last developer image upgrade".into(),
-                    bytes: 4_100_000_000,
-                    because: KeptBecause::Recent,
-                    eligible: Some(NOW + 9 * DAY),
-                },
-                Kept {
-                    kind: Kind::TestCache,
-                    name: "tilo-media-test-fixtures/clip.webm".into(),
-                    bytes: 2_000_000,
-                    because: KeptBecause::InUse,
-                    eligible: None,
-                },
-            ],
-            failed: vec![Failed {
-                kind: Kind::FlatpakRuntime,
-                name: "unused Flatpak runtimes".into(),
-                error: "error: database locked".into(),
-            }],
-        };
-        assert_eq!(
-            render("Disk cleanup", Some(&record), at(NOW)),
-            "Disk cleanup, last run 3 hours ago:\n\
+                    name: "unused Flatpak runtimes".into(),
+                    error: "error: database locked".into(),
+                }],
+            };
+            assert_eq!(
+                render("Disk cleanup", Some(&record), at(NOW)),
+                "Disk cleanup, last run 3 hours ago:\n\
              \x20 Freed 1.2 GB: removed Flatpak runtime org.gnome.Platform 48, test cache ntfs-fixtures/0ld0ld.\n\
              \x20 Kept the copy of the last developer image upgrade (4.1 GB): used recently; it can go in 9 days.\n\
              \x20 Kept test cache tilo-media-test-fixtures/clip.webm (2 MB): it was in use.\n\
              \x20 Could not remove unused Flatpak runtimes: error: database locked\n"
-        );
-        assert_eq!(
-            render(
-                "Test caches",
-                Some(&Record {
-                    finished: NOW - 30 * 3600,
-                    ..Record::default()
-                }),
-                at(NOW)
-            ),
-            "Test caches, last run yesterday:\n  Nothing needed removing.\n"
-        );
-        assert_eq!(
-            render("Disk cleanup", None, at(NOW)),
-            "Disk cleanup: has not run yet; it runs daily.\n"
-        );
-    }
+            );
+            assert_eq!(
+                render(
+                    "Test caches",
+                    Some(&Record {
+                        finished: NOW - 30 * 3600,
+                        ..Record::default()
+                    }),
+                    at(NOW)
+                ),
+                "Test caches, last run yesterday:\n  Nothing needed removing.\n"
+            );
+            assert_eq!(
+                render("Disk cleanup", None, at(NOW)),
+                "Disk cleanup: has not run yet; it runs daily.\n"
+            );
+        }
 
-    #[test]
-    fn the_record_round_trips_and_is_readable_by_everyone() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("state/cache-gc.json");
-        let record = Record {
-            finished: NOW,
-            removed: vec![Removed {
-                kind: Kind::VmImage,
-                name: "x".into(),
-                bytes: 1,
-            }],
-            ..Record::default()
-        };
-        write_record(&path, &record).unwrap();
-        assert_eq!(read_record(&path), Some(record));
-        assert_eq!(
-            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
-            0o644
-        );
+        phase the_record_round_trips_and_is_readable_by_everyone;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("state/cache-gc.json");
+            let record = Record {
+                finished: NOW,
+                removed: vec![Removed {
+                    kind: Kind::VmImage,
+                    name: "x".into(),
+                    bytes: 1,
+                }],
+                ..Record::default()
+            };
+            write_record(&path, &record).unwrap();
+            assert_eq!(read_record(&path), Some(record));
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o644
+            );
+        }
     }
 }

@@ -1495,76 +1495,80 @@ mod tests {
         text.clone()
     }
 
-    /// The read action's value is a type of the surface's own: the class that reads the form
-    /// answers a `FormFields`, not a bare dict.
-    #[test]
-    fn a_python_read_action_answers_the_type_its_surface_declares() {
-        let python = python_of(&pdf_viewer());
-        assert!(
-            python.contains("    def read_form_fields(self) -> FormFields:\n"),
-            "{python}"
-        );
-        assert!(
-            python.contains("        return self.action(\"read-form-fields\")\n"),
-            "{python}"
-        );
-        assert!(
-            python.contains(
-                "class FormFields(TypedDict):\n    file: str\n    fields: list[FormFieldRow]\n"
-            ),
-            "{python}"
-        );
-        // A read-only field is a property: read, and never assigned.
-        assert!(
-            python.contains(
-                "    @property\n    def source(self) -> Any:\n        \"\"\"Read only.\"\"\"\n\
+    tilo_test_env::scenario! {
+        fn the_generated_sdk_types_follow_the_apps_surface;
+
+        phase a_python_read_action_answers_the_type_its_surface_declares;
+        // The read action's value is a type of the surface's own: the class that reads the form
+        // answers a `FormFields`, not a bare dict.
+        {
+            let python = python_of(&pdf_viewer());
+            assert!(
+                python.contains("    def read_form_fields(self) -> FormFields:\n"),
+                "{python}"
+            );
+            assert!(
+                python.contains("        return self.action(\"read-form-fields\")\n"),
+                "{python}"
+            );
+            assert!(
+                python.contains(
+                    "class FormFields(TypedDict):\n    file: str\n    fields: list[FormFieldRow]\n"
+                ),
+                "{python}"
+            );
+            // A read-only field is a property: read, and never assigned.
+            assert!(
+                python.contains(
+                    "    @property\n    def source(self) -> Any:\n        \"\"\"Read only.\"\"\"\n\
                  \x20       return self.fields[\"source\"]\n"
-            ),
-            "{python}"
-        );
-        // An enum of cases without fields is the literals the wire carries.
-        assert!(
-            python.contains(
-                "MarkupStyle = Literal[\"highlight\", \"underline\", \"strikeout\", \"squiggly\"]"
-            ),
-            "{python}"
-        );
-    }
+                ),
+                "{python}"
+            );
+            // An enum of cases without fields is the literals the wire carries.
+            assert!(
+                python.contains(
+                    "MarkupStyle = Literal[\"highlight\", \"underline\", \"strikeout\", \"squiggly\"]"
+                ),
+                "{python}"
+            );
+        }
 
-    /// The same in TypeScript: the action is camel case, and its arguments keep the names the
-    /// wire takes them under.
-    #[test]
-    fn a_typescript_read_action_answers_the_type_its_surface_declares() {
-        let ts = typescript_of(&pdf_viewer());
-        assert!(
-            ts.contains("  readFormFields(): Promise<FormFields>;\n"),
-            "{ts}"
-        );
-        assert!(
-            ts.contains("    from_page?: number;\n    to_page?: number;\n"),
-            "{ts}"
-        );
-        assert!(
-            ts.contains(
-                "export interface FormFields {\n  file: string;\n  fields: FormFieldRow[];\n}\n"
-            ),
-            "{ts}"
-        );
-        assert!(ts.contains("  readonly source: unknown;\n"), "{ts}");
-        // `document` is the page's own: the factory is named for the app.
-        assert!(
-            ts.contains(
-                "export function pdfDocument(ws: tilo.Workspace, path: string): Document {"
-            ),
-            "{ts}"
-        );
-    }
+        phase a_typescript_read_action_answers_the_type_its_surface_declares;
+        // The same in TypeScript: the action is camel case, and its arguments keep the names the
+        // wire takes them under.
+        {
+            let ts = typescript_of(&pdf_viewer());
+            assert!(
+                ts.contains("  readFormFields(): Promise<FormFields>;\n"),
+                "{ts}"
+            );
+            assert!(
+                ts.contains("    from_page?: number;\n    to_page?: number;\n"),
+                "{ts}"
+            );
+            assert!(
+                ts.contains(
+                    "export interface FormFields {\n  file: string;\n  fields: FormFieldRow[];\n}\n"
+                ),
+                "{ts}"
+            );
+            assert!(ts.contains("  readonly source: unknown;\n"), "{ts}");
+            // `document` is the page's own: the factory is named for the app.
+            assert!(
+                ts.contains(
+                    "export function pdfDocument(ws: tilo.Workspace, path: string): Document {"
+                ),
+                "{ts}"
+            );
+        }
 
-    /// An action of the app whose name the SDK's own resource answers to is said so, rather
-    /// than shadowing it.
-    #[test]
-    fn an_action_the_sdk_owns_is_named_rather_than_shadowed() {
-        let ts = typescript_of(&pdf_viewer());
-        assert!(!ts.contains("  refresh("), "{ts}");
+        phase an_action_the_sdk_owns_is_named_rather_than_shadowed;
+        // An action of the app whose name the SDK's own resource answers to is said so, rather
+        // than shadowing it.
+        {
+            let ts = typescript_of(&pdf_viewer());
+            assert!(!ts.contains("  refresh("), "{ts}");
+        }
     }
 }

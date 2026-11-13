@@ -108,41 +108,45 @@ mod tests {
         (dir, path, server)
     }
 
-    #[test]
-    fn asks_for_one_word_and_returns_the_listing_with_its_status() {
-        let (_dir, path, server) = serve_once("0\nDeployments:\n  booted    image\n");
-        let answer = ask(&path, false).unwrap();
-        assert_eq!(server.join().unwrap(), "text\n");
-        assert_eq!(
-            answer,
-            Answer {
-                code: 0,
-                text: "Deployments:\n  booted    image\n".to_owned()
-            }
-        );
-    }
+    tilo_test_env::scenario! {
+        fn the_deployment_status_is_asked_over_its_socket;
 
-    #[test]
-    fn json_is_its_own_request() {
-        let (_dir, path, server) = serve_once("0\n{}\n");
-        ask(&path, true).unwrap();
-        assert_eq!(server.join().unwrap(), "json\n");
-    }
+        phase asks_for_one_word_and_returns_the_listing_with_its_status;
+        {
+            let (_dir, path, server) = serve_once("0\nDeployments:\n  booted    image\n");
+            let answer = ask(&path, false).unwrap();
+            assert_eq!(server.join().unwrap(), "text\n");
+            assert_eq!(
+                answer,
+                Answer {
+                    code: 0,
+                    text: "Deployments:\n  booted    image\n".to_owned()
+                }
+            );
+        }
 
-    #[test]
-    fn a_failed_listing_keeps_its_status() {
-        let (_dir, path, server) = serve_once("1\ntilo-deployment: no ESP\n");
-        let answer = ask(&path, false).unwrap();
-        server.join().unwrap();
-        assert_eq!(answer.code, 1);
-        assert_eq!(answer.text, "tilo-deployment: no ESP\n");
-    }
+        phase json_is_its_own_request;
+        {
+            let (_dir, path, server) = serve_once("0\n{}\n");
+            ask(&path, true).unwrap();
+            assert_eq!(server.join().unwrap(), "json\n");
+        }
 
-    #[test]
-    fn a_service_that_dies_without_an_answer_is_an_error() {
-        let (_dir, path, server) = serve_once("");
-        let error = ask(&path, false).unwrap_err().to_string();
-        server.join().unwrap();
-        assert!(error.contains("gave no answer"), "{error}");
+        phase a_failed_listing_keeps_its_status;
+        {
+            let (_dir, path, server) = serve_once("1\ntilo-deployment: no ESP\n");
+            let answer = ask(&path, false).unwrap();
+            server.join().unwrap();
+            assert_eq!(answer.code, 1);
+            assert_eq!(answer.text, "tilo-deployment: no ESP\n");
+        }
+
+        phase a_service_that_dies_without_an_answer_is_an_error;
+        {
+            let (_dir, path, server) = serve_once("");
+            let error = ask(&path, false).unwrap_err().to_string();
+            server.join().unwrap();
+            assert!(error.contains("gave no answer"), "{error}");
+        }
     }
 }

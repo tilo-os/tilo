@@ -1205,224 +1205,232 @@ mod tests {
         env
     }
 
-    /// `docs/developers/api.md`, with the headers it takes.
-    #[test]
-    fn the_hosted_commands_are_the_apis_routes() {
-        let _key = keyed();
-        let api_server = fake_api();
-        let url = api_server.url();
-        let reach = Reach {
-            api: Some(&url),
-            key_file: None,
-            json: false,
-        };
+    tilo_test_env::scenario! {
+        fn the_hosted_commands_call_the_api;
 
-        // A workspace is made as `POST /v1/workspaces`, once per idempotency key.
-        account(
-            reach,
-            AccountCmd::Workspaces(WorkspacesCmd::Create {
-                name: "Applicant: Jane Doe".into(),
-            }),
-        );
-        let made = api_server.drain_requests();
-        assert_eq!(made.len(), 1);
-        assert_eq!(made[0].method, "POST");
-        assert_eq!(made[0].target, "/v1/workspaces");
-        assert_eq!(made[0].header("authorization"), Some("Bearer tilo_sk_test"));
-        assert!(
-            made[0].header("idempotency-key").is_some(),
-            "a call that makes something names its invocation"
-        );
-        assert_eq!(
-            serde_json::from_slice::<Value>(&made[0].body).unwrap(),
-            json!({"name": "Applicant: Jane Doe"})
-        );
-
-        // A file goes in as one upload, and the reference it answers is what
-        // the command prints.
-        let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("passport.png");
-        std::fs::write(&file, b"hello").unwrap();
-        files(
-            reach,
-            "applicant-jane-doe",
-            FilesCmd::Put {
-                paths: vec![file],
-                store: false,
-            },
-        );
-        let put = api_server.drain_requests();
-        let upload = put.last().expect("the upload");
-        assert_eq!(upload.target, format!("/v1/workspaces/{WORKSPACE}/uploads"));
-        assert_eq!(upload.method, "POST");
-        assert_eq!(upload.body, b"hello");
-        assert_eq!(
-            upload.header("content-type"),
-            Some("application/octet-stream")
-        );
-        assert!(upload.header("idempotency-key").is_some());
-
-        // An action is `POST …/resources/{path}/actions/{action}`: its
-        // arguments are the body, and its run is named.
-        act(reach, "applicant-jane-doe", "pdf-viewer#open", &[]);
-        let acted = api_server.drain_requests();
-        assert_eq!(
-            acted.len(),
-            2,
-            "the workspace is named by a read of the list, then the action runs"
-        );
-        let action = acted.last().expect("the action");
-        assert_eq!(
-            action.target,
-            format!("/v1/workspaces/{WORKSPACE}/resources/pdf-viewer/actions/open")
-        );
-        assert_eq!(action.header("prefer"), Some("wait=60"));
-        assert_eq!(action.header("tilo-run-title"), Some("pdf-viewer#open"));
-        assert!(
-            action
-                .header("tilo-run")
-                .is_some_and(|run| run == action.header("idempotency-key").unwrap_or_default()),
-            "one invocation, one run, one idempotency key"
-        );
-        assert_eq!(
-            serde_json::from_slice::<Value>(&action.body).unwrap(),
-            json!({})
-        );
-
-        // A file comes back by the reference, its bytes as they were.
-        let out = dir.path().join("passport.back");
-        files(
-            reach,
-            "applicant-jane-doe",
-            FilesCmd::Get {
-                content: "tilo.content:abc".into(),
-                output: Some(out.clone()),
-            },
-        );
-        assert_eq!(std::fs::read(&out).unwrap(), b"hello");
-        let got = api_server.drain_requests();
-        assert_eq!(
-            got.last().expect("the read").target,
-            format!("/v1/workspaces/{WORKSPACE}/content/tilo.content%3Aabc")
-        );
-    }
-
-    /// A host busy with the person's changes answers `429` and names the wait;
-    /// the same call is asked again under the id it first went with, so the
-    /// host runs one invocation however often it is retried.
-    #[test]
-    fn a_busy_host_is_asked_again_under_the_same_idempotency_key() {
-        let _key = keyed();
-        let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let counted = Arc::clone(&asked);
-        let api_server = test_http::Responder::handle(move |_request: &test_http::Request| {
-            let first = counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0;
-            let reply = |status: u16, body: Value| {
-                Some(
-                    test_http::Reply::status(status)
-                        .header("content-type", "application/json")
-                        .body(body.to_string()),
-                )
-            };
-            if first {
-                reply(
-                    429,
-                    json!({"error": {"code": "rate_limited", "message": "busy",
-                        "retry_after_ms": 1}}),
-                )
-            } else {
-                reply(200, json!({"revoked": "grant-1"}))
-            }
-        });
-        let url = api_server.url();
-        keys(
-            Reach {
+        phase the_hosted_commands_are_the_apis_routes;
+        // `docs/developers/api.md`, with the headers it takes.
+        {
+            let _key = keyed();
+            let api_server = fake_api();
+            let url = api_server.url();
+            let reach = Reach {
                 api: Some(&url),
                 key_file: None,
                 json: false,
-            },
-            None,
-            KeysCmd::Revoke {
-                grant: "grant-1".into(),
-            },
-        );
-        let sent = api_server.drain_requests();
-        assert_eq!(sent.len(), 2, "the busy answer is retried, not reported");
-        assert_eq!(sent[1].target, "/v1/keys/grant-1");
-        assert_eq!(
-            sent[0].header("idempotency-key"),
-            sent[1].header("idempotency-key")
-        );
+            };
+
+            // A workspace is made as `POST /v1/workspaces`, once per idempotency key.
+            account(
+                reach,
+                AccountCmd::Workspaces(WorkspacesCmd::Create {
+                    name: "Applicant: Jane Doe".into(),
+                }),
+            );
+            let made = api_server.drain_requests();
+            assert_eq!(made.len(), 1);
+            assert_eq!(made[0].method, "POST");
+            assert_eq!(made[0].target, "/v1/workspaces");
+            assert_eq!(made[0].header("authorization"), Some("Bearer tilo_sk_test"));
+            assert!(
+                made[0].header("idempotency-key").is_some(),
+                "a call that makes something names its invocation"
+            );
+            assert_eq!(
+                serde_json::from_slice::<Value>(&made[0].body).unwrap(),
+                json!({"name": "Applicant: Jane Doe"})
+            );
+
+            // A file goes in as one upload, and the reference it answers is what
+            // the command prints.
+            let dir = tempfile::tempdir().unwrap();
+            let file = dir.path().join("passport.png");
+            std::fs::write(&file, b"hello").unwrap();
+            files(
+                reach,
+                "applicant-jane-doe",
+                FilesCmd::Put {
+                    paths: vec![file],
+                    store: false,
+                },
+            );
+            let put = api_server.drain_requests();
+            let upload = put.last().expect("the upload");
+            assert_eq!(upload.target, format!("/v1/workspaces/{WORKSPACE}/uploads"));
+            assert_eq!(upload.method, "POST");
+            assert_eq!(upload.body, b"hello");
+            assert_eq!(
+                upload.header("content-type"),
+                Some("application/octet-stream")
+            );
+            assert!(upload.header("idempotency-key").is_some());
+
+            // An action is `POST …/resources/{path}/actions/{action}`: its
+            // arguments are the body, and its run is named.
+            act(reach, "applicant-jane-doe", "pdf-viewer#open", &[]);
+            let acted = api_server.drain_requests();
+            assert_eq!(
+                acted.len(),
+                2,
+                "the workspace is named by a read of the list, then the action runs"
+            );
+            let action = acted.last().expect("the action");
+            assert_eq!(
+                action.target,
+                format!("/v1/workspaces/{WORKSPACE}/resources/pdf-viewer/actions/open")
+            );
+            assert_eq!(action.header("prefer"), Some("wait=60"));
+            assert_eq!(action.header("tilo-run-title"), Some("pdf-viewer#open"));
+            assert!(
+                action
+                    .header("tilo-run")
+                    .is_some_and(|run| run == action.header("idempotency-key").unwrap_or_default()),
+                "one invocation, one run, one idempotency key"
+            );
+            assert_eq!(
+                serde_json::from_slice::<Value>(&action.body).unwrap(),
+                json!({})
+            );
+
+            // A file comes back by the reference, its bytes as they were.
+            let out = dir.path().join("passport.back");
+            files(
+                reach,
+                "applicant-jane-doe",
+                FilesCmd::Get {
+                    content: "tilo.content:abc".into(),
+                    output: Some(out.clone()),
+                },
+            );
+            assert_eq!(std::fs::read(&out).unwrap(), b"hello");
+            let got = api_server.drain_requests();
+            assert_eq!(
+                got.last().expect("the read").target,
+                format!("/v1/workspaces/{WORKSPACE}/content/tilo.content%3Aabc")
+            );
+        }
+
+        phase a_busy_host_is_asked_again_under_the_same_idempotency_key;
+        // A host busy with the person's changes answers `429` and names the wait;
+        // the same call is asked again under the id it first went with, so the
+        // host runs one invocation however often it is retried.
+        {
+            let _key = keyed();
+            let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let counted = Arc::clone(&asked);
+            let api_server = test_http::Responder::handle(move |_request: &test_http::Request| {
+                let first = counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0;
+                let reply = |status: u16, body: Value| {
+                    Some(
+                        test_http::Reply::status(status)
+                            .header("content-type", "application/json")
+                            .body(body.to_string()),
+                    )
+                };
+                if first {
+                    reply(
+                        429,
+                        json!({"error": {"code": "rate_limited", "message": "busy",
+                            "retry_after_ms": 1}}),
+                    )
+                } else {
+                    reply(200, json!({"revoked": "grant-1"}))
+                }
+            });
+            let url = api_server.url();
+            keys(
+                Reach {
+                    api: Some(&url),
+                    key_file: None,
+                    json: false,
+                },
+                None,
+                KeysCmd::Revoke {
+                    grant: "grant-1".into(),
+                },
+            );
+            let sent = api_server.drain_requests();
+            assert_eq!(sent.len(), 2, "the busy answer is retried, not reported");
+            assert_eq!(sent[1].target, "/v1/keys/grant-1");
+            assert_eq!(
+                sent[0].header("idempotency-key"),
+                sent[1].header("idempotency-key")
+            );
+        }
     }
 
-    #[test]
-    fn options_are_json_where_they_parse() {
-        assert_eq!(
-            arguments(&[
-                "name=Jane Doe".into(),
-                "count=3".into(),
-                "ok=true".into(),
-                "edit={\"op\":\"set\"}".into()
-            ])
-            .unwrap(),
-            serde_json::json!({"name": "Jane Doe", "count": 3, "ok": true,
-                "edit": {"op": "set"}})
-        );
-        assert!(arguments(&["nothing".into()]).is_err());
-    }
+    tilo_test_env::scenario! {
+        fn hosted_arguments_and_answers_read_as_a_person_wrote_them;
 
-    #[test]
-    fn a_workspace_is_named_by_its_words() {
-        assert_eq!(slug("Applicant: Jane Doe"), "applicant-jane-doe");
-        assert_eq!(slug("applicant-jane-doe"), "applicant-jane-doe");
-        assert!(is_uuid("3f2a8c1e-0b4d-4e5f-9a6b-7c8d9e0f1a2b"));
-        assert!(!is_uuid("jane-doe"));
-    }
+        phase options_are_json_where_they_parse;
+        {
+            assert_eq!(
+                arguments(&[
+                    "name=Jane Doe".into(),
+                    "count=3".into(),
+                    "ok=true".into(),
+                    "edit={\"op\":\"set\"}".into()
+                ])
+                .unwrap(),
+                serde_json::json!({"name": "Jane Doe", "count": 3, "ok": true,
+                    "edit": {"op": "set"}})
+            );
+            assert!(arguments(&["nothing".into()]).is_err());
+        }
 
-    #[test]
-    fn a_workspace_line_names_its_id_and_where_it_lives() {
-        let row = serde_json::json!({"id": "3f2a8c1e-0b4d-4e5f-9a6b-7c8d9e0f1a2b",
-            "name": "Applicant: Jane Doe", "host": "eu1.tilo.sh", "role": "owner"});
-        assert_eq!(
-            workspace_line(&row),
-            "Applicant: Jane Doe (id 3f2a8c1e-0b4d-4e5f-9a6b-7c8d9e0f1a2b, on eu1.tilo.sh, \
+        phase a_workspace_is_named_by_its_words;
+        {
+            assert_eq!(slug("Applicant: Jane Doe"), "applicant-jane-doe");
+            assert_eq!(slug("applicant-jane-doe"), "applicant-jane-doe");
+            assert!(is_uuid("3f2a8c1e-0b4d-4e5f-9a6b-7c8d9e0f1a2b"));
+            assert!(!is_uuid("jane-doe"));
+        }
+
+        phase a_workspace_line_names_its_id_and_where_it_lives;
+        {
+            let row = serde_json::json!({"id": "3f2a8c1e-0b4d-4e5f-9a6b-7c8d9e0f1a2b",
+                "name": "Applicant: Jane Doe", "host": "eu1.tilo.sh", "role": "owner"});
+            assert_eq!(
+                workspace_line(&row),
+                "Applicant: Jane Doe (id 3f2a8c1e-0b4d-4e5f-9a6b-7c8d9e0f1a2b, on eu1.tilo.sh, \
              owner)"
-        );
-    }
+            );
+        }
 
-    #[test]
-    fn an_action_answer_says_what_ran_and_where_it_is() {
-        let done = serde_json::json!({"status": "ok", "path": "notes#open",
-            "run": "run-1", "link": "https://tilo.sh/#/w/x/notes/Todo"});
-        assert_eq!(
-            action_text(&done),
-            "ok notes#open\nhttps://tilo.sh/#/w/x/notes/Todo"
-        );
-        let pending = serde_json::json!({"status": "pending", "run": "run-2",
-            "path": "pdf-viewer#import-pdf-content", "ask": {"url": "https://tilo.sh/approve/1"}});
-        assert_eq!(
-            action_text(&pending),
-            "pending run-2: it waits for you, at https://tilo.sh/approve/1 \
+        phase an_action_answer_says_what_ran_and_where_it_is;
+        {
+            let done = serde_json::json!({"status": "ok", "path": "notes#open",
+                "run": "run-1", "link": "https://tilo.sh/#/w/x/notes/Todo"});
+            assert_eq!(
+                action_text(&done),
+                "ok notes#open\nhttps://tilo.sh/#/w/x/notes/Todo"
+            );
+            let pending = serde_json::json!({"status": "pending", "run": "run-2",
+                "path": "pdf-viewer#import-pdf-content", "ask": {"url": "https://tilo.sh/approve/1"}});
+            assert_eq!(
+                action_text(&pending),
+                "pending run-2: it waits for you, at https://tilo.sh/approve/1 \
              (pdf-viewer#import-pdf-content)"
-        );
-    }
+            );
+        }
 
-    #[test]
-    fn the_people_of_a_workspace_are_a_line_each() {
-        let listed = serde_json::json!({
-            "members": [{"name": "Ada", "role": "owner", "owner": true, "administrator": true},
-                        {"name": "Rosa Ortiz", "role": "editor"}],
-            "invitations": [{"id": "inv-1", "role": "viewer", "status": "pending"}],
-        });
-        assert_eq!(
-            members_text(&listed),
-            "members:\n  Ada — owner, administrator\n  Rosa Ortiz — editor\n\
+        phase the_people_of_a_workspace_are_a_line_each;
+        {
+            let listed = serde_json::json!({
+                "members": [{"name": "Ada", "role": "owner", "owner": true, "administrator": true},
+                            {"name": "Rosa Ortiz", "role": "editor"}],
+                "invitations": [{"id": "inv-1", "role": "viewer", "status": "pending"}],
+            });
+            assert_eq!(
+                members_text(&listed),
+                "members:\n  Ada — owner, administrator\n  Rosa Ortiz — editor\n\
              invitations:\n  viewer invitation pending, inv-1"
-        );
-        let alone = serde_json::json!({"members": [], "invitations": []});
-        assert_eq!(
-            members_text(&alone),
-            "members:\n  nobody yet\ninvitations: none open"
-        );
+            );
+            let alone = serde_json::json!({"members": [], "invitations": []});
+            assert_eq!(
+                members_text(&alone),
+                "members:\n  nobody yet\ninvitations: none open"
+            );
+        }
     }
 }

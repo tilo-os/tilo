@@ -487,251 +487,259 @@ mod tests {
         }
     }
 
-    #[test]
-    fn the_image_is_the_newest_build_for_this_device() {
-        assert_eq!(
-            plan(
-                &dev(
-                    Some("lenovo-83ed"),
-                    Some("registry.tilo.so/tilo/tilo-vm:pr-4227-4ab5dcc-lenovo-83ed")
-                ),
-                None
-            )
-            .unwrap(),
-            Plan::Switch("registry.tilo.so/tilo/tilo-vm:lenovo-83ed-ci".into())
-        );
-        // Already following it: fetch its newest build.
-        let following = dev(
-            Some("lenovo-83ed"),
-            Some("registry.tilo.so/tilo/tilo-vm:lenovo-83ed-ci"),
-        );
-        let upgrade = plan(&following, None).unwrap();
-        assert_eq!(
-            upgrade,
-            Plan::Upgrade("registry.tilo.so/tilo/tilo-vm:lenovo-83ed-ci".into())
-        );
-        assert_eq!(upgrade.bootc_words(), vec!["upgrade".to_owned()]);
-        assert_eq!(
-            plan(&dev(None, None), None).unwrap(),
-            Plan::Switch("registry.tilo.so/tilo/tilo-vm:main-ci".into())
-        );
-        // --to names a CI build, for this board or generic.
-        assert_eq!(
-            plan(&following, Some("pr-4433-c5d51ba"))
-                .unwrap()
-                .bootc_words(),
-            vec![
-                "switch".to_owned(),
-                "registry.tilo.so/tilo/tilo-vm:pr-4433-c5d51ba-lenovo-83ed".to_owned()
-            ]
-        );
-        assert_eq!(
-            image_for("main-1a2b3c4-lenovo-83ed", Some("lenovo-83ed")),
-            "registry.tilo.so/tilo/tilo-vm:main-1a2b3c4-lenovo-83ed"
-        );
-        assert_eq!(
-            image_for("main-1a2b3c4", None),
-            "registry.tilo.so/tilo/tilo-vm:main-1a2b3c4-ci"
-        );
-        assert_eq!(
-            image_for("localhost/tilo-vm:mine", Some("lenovo-83ed")),
-            "localhost/tilo-vm:mine"
-        );
-        let signed = Facts::default();
-        assert_eq!(plan(&signed, None).unwrap(), Plan::Signed);
-        let error = plan(&signed, Some("main-1a2b3c4")).unwrap_err().to_string();
-        assert!(error.contains("signed Tilo OS image"), "{error}");
-    }
+    tilo_test_env::scenario! {
+        fn staging_through_bootc_shows_progress_and_explains_refusals;
 
-    #[test]
-    fn facts_come_from_the_image_and_bootc() {
-        let root = std::env::temp_dir().join(format!("tilo-os-facts-{}", std::process::id()));
-        std::fs::create_dir_all(root.join("usr/lib/tilo")).unwrap();
-        std::fs::write(root.join("usr/lib/tilo/image-flavour"), "dev\n").unwrap();
-        std::fs::write(
-            root.join("usr/lib/tilo/hardware-profile.json"),
-            r#"{"schema_version":1,"id":"lenovo-83ed"}"#,
-        )
-        .unwrap();
-        let facts = Facts::read_image(&root).with_bootc_status(
-            r#"{"spec":{"image":{"image":"registry.tilo.so/tilo/tilo-vm:lenovo-83ed-ci","transport":"registry"}},
-                "status":{"booted":{"image":{"image":{"image":"registry.tilo.so/tilo/tilo-vm:pr-1-abc-lenovo-83ed"}}}}}"#,
-        );
-        std::fs::remove_dir_all(&root).unwrap();
-        assert!(facts.development);
-        assert_eq!(facts.board.as_deref(), Some("lenovo-83ed"));
-        assert_eq!(
-            facts.follows,
-            Some((
-                "registry".to_owned(),
-                "registry.tilo.so/tilo/tilo-vm:lenovo-83ed-ci".to_owned()
-            ))
-        );
-        assert!(!Facts::read_image(Path::new("/nonexistent")).development);
-    }
-
-    #[test]
-    fn bootc_refusals_read_as_sentences() {
-        let space = Failure::from_bootc(
-            "error: Switching: Composefs Switching: Performing Upgrade Operation: Insufficient free space for registry.tilo.so/tilo/tilo-vm:lenovo-83ed-ci (available: 2.3 GB required: 5.2 GB)",
-        );
-        assert_eq!(
-            space,
-            Failure::NoSpace {
-                needed: "5.2 GB".into(),
-                free: "2.3 GB".into()
-            }
-        );
-        let sentence = space.sentence();
-        assert!(
-            sentence
-                .starts_with("not enough space: the new OS image needs 5.2 GB, 2.3 GB is free."),
-            "{sentence}"
-        );
-        assert!(
-            sentence.contains("already downloaded is kept"),
-            "{sentence}"
-        );
-        for up_to_date in [
-            "No changes in: registry.tilo.so/tilo/tilo-vm:lenovo-83ed-ci",
-            "error: Switching: Composefs Switching: Target image has the same fs-verity digest as the existing Some(Booted) deployment.",
-        ] {
+        phase bootc_refusals_read_as_sentences;
+        {
+            let space = Failure::from_bootc(
+                "error: Switching: Composefs Switching: Performing Upgrade Operation: Insufficient free space for registry.tilo.so/tilo/tilo-vm:lenovo-83ed-ci (available: 2.3 GB required: 5.2 GB)",
+            );
             assert_eq!(
-                Failure::from_bootc(up_to_date).sentence(),
-                "already up to date: this machine runs the newest image"
+                space,
+                Failure::NoSpace {
+                    needed: "5.2 GB".into(),
+                    free: "2.3 GB".into()
+                }
+            );
+            let sentence = space.sentence();
+            assert!(
+                sentence
+                    .starts_with("not enough space: the new OS image needs 5.2 GB, 2.3 GB is free."),
+                "{sentence}"
+            );
+            assert!(
+                sentence.contains("already downloaded is kept"),
+                "{sentence}"
+            );
+            for up_to_date in [
+                "No changes in: registry.tilo.so/tilo/tilo-vm:lenovo-83ed-ci",
+                "error: Switching: Composefs Switching: Target image has the same fs-verity digest as the existing Some(Booted) deployment.",
+            ] {
+                assert_eq!(
+                    Failure::from_bootc(up_to_date).sentence(),
+                    "already up to date: this machine runs the newest image"
+                );
+            }
+            assert!(matches!(
+                Failure::from_bootc("Target image has the same fs-verity digest as the existing Some(Staged) deployment."),
+                Failure::UpToDate(text) if text.contains("already staged")
+            ));
+            assert_eq!(
+                Failure::from_bootc("warning: x\nerror: pulling: connection refused\n").sentence(),
+                "the upgrade did not stage: error: pulling: connection refused"
             );
         }
-        assert!(matches!(
-            Failure::from_bootc("Target image has the same fs-verity digest as the existing Some(Staged) deployment."),
-            Failure::UpToDate(text) if text.contains("already staged")
-        ));
-        assert_eq!(
-            Failure::from_bootc("warning: x\nerror: pulling: connection refused\n").sentence(),
-            "the upgrade did not stage: error: pulling: connection refused"
-        );
+
+        phase progress_shows_stages_bytes_layers_and_speed;
+        {
+            let start = Instant::now();
+            let at = |seconds| start + Duration::from_secs(seconds);
+            let bytes = |done: u64, steps: u64| {
+                format!(
+                    r#"{{"type":"ProgressBytes","task":"pulling","description":"Pulling image","id":"x","bytesCached":0,"bytes":{done},"bytesTotal":3400000000,"stepsCached":180,"steps":{steps},"stepsTotal":223,"subtasks":[]}}"#
+                )
+            };
+            let mut view = ProgressView::starting_at(true, start);
+            assert_eq!(
+                view.line(r#"{"type":"Start","version":"0.1.0"}"#, at(0)),
+                None
+            );
+            assert_eq!(
+                view.line(&bytes(1_200_000_000, 200), at(40)).unwrap(),
+                "Downloading 1.2 GB of 3.4 GB, 23 of 223 layers to go (180 already here), 30 MB/s"
+            );
+            assert_eq!(
+                view.line(
+                    r#"{"type":"ProgressSteps","task":"importing","description":"Importing Image","id":"i","stepsCached":0,"steps":0,"stepsTotal":1,"subtasks":[]}"#,
+                    at(50)
+                )
+                .unwrap(),
+                "Importing Image"
+            );
+            assert_eq!(view.line("not json", at(51)), None);
+
+            // Off a terminal: the first line, then one every ten seconds, and the end.
+            let mut plain = ProgressView::starting_at(false, start);
+            assert!(plain.line(&bytes(100_000_000, 190), at(1)).is_some());
+            assert!(plain.line(&bytes(200_000_000, 191), at(5)).is_none());
+            assert!(plain.line(&bytes(900_000_000, 199), at(12)).is_some());
+            assert!(plain.line(&bytes(3_400_000_000, 223), at(13)).is_some());
+        }
+
+        phase staging_runs_bootc_with_progress_and_explains_refusals;
+        // A stand-in bootc: what it was asked, its progress drawn, its refusal
+        // explained, and "no changes" with success read as up to date.
+        {
+            let dir = std::env::temp_dir().join(format!("tilo-os-stage-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let fake = |name: &str, body: &str| {
+                let path = dir.join(name);
+                std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+                }
+                path.display().to_string()
+            };
+            let args = dir.join("args");
+            let ok = fake(
+                "ok",
+                &format!(
+                    "echo \"$@\" > {}\necho '{{\"type\":\"ProgressBytes\",\"task\":\"pulling\",\"description\":\"Pulling\",\"id\":\"x\",\"bytesCached\":0,\"bytes\":5000000,\"bytesTotal\":5000000,\"stepsCached\":0,\"steps\":2,\"stepsTotal\":2,\"subtasks\":[]}}' >&3\necho 'Queued for next boot' >&2",
+                    args.display()
+                ),
+            );
+            let plan = Plan::Switch("registry.tilo.so/tilo/tilo-vm:lenovo-83ed-ci".into());
+            let mut out = Vec::new();
+            assert_eq!(stage(&ok, &plan, &mut out, false).unwrap(), Ok(()));
+            assert_eq!(
+                std::fs::read_to_string(&args).unwrap().trim(),
+                "switch registry.tilo.so/tilo/tilo-vm:lenovo-83ed-ci --quiet --progress-fd 3"
+            );
+            let shown = String::from_utf8(out).unwrap();
+            assert!(
+                shown.contains("Downloading 5 MB of 5 MB, 0 of 2 layers to go"),
+                "{shown}"
+            );
+
+            let full = fake(
+                "full",
+                "echo 'error: Insufficient free space for x (available: 2.3 GB required: 5.2 GB)' >&2; exit 1",
+            );
+            assert_eq!(
+                stage(&full, &plan, &mut Vec::new(), false).unwrap(),
+                Err(Failure::NoSpace {
+                    needed: "5.2 GB".into(),
+                    free: "2.3 GB".into()
+                })
+            );
+            let same = fake("same", "echo 'No changes in: x'");
+            assert!(matches!(
+                stage(&same, &Plan::Upgrade("x".into()), &mut Vec::new(), false).unwrap(),
+                Err(Failure::UpToDate(_))
+            ));
+            std::fs::remove_dir_all(&dir).unwrap();
+        }
     }
 
-    #[test]
-    fn progress_shows_stages_bytes_layers_and_speed() {
-        let start = Instant::now();
-        let at = |seconds| start + Duration::from_secs(seconds);
-        let bytes = |done: u64, steps: u64| {
-            format!(
-                r#"{{"type":"ProgressBytes","task":"pulling","description":"Pulling image","id":"x","bytesCached":0,"bytes":{done},"bytesTotal":3400000000,"stepsCached":180,"steps":{steps},"stepsTotal":223,"subtasks":[]}}"#
+    tilo_test_env::scenario! {
+        fn an_update_follows_the_image_this_device_boots;
+
+        phase the_image_is_the_newest_build_for_this_device;
+        {
+            assert_eq!(
+                plan(
+                    &dev(
+                        Some("lenovo-83ed"),
+                        Some("registry.tilo.so/tilo/tilo-vm:pr-4227-4ab5dcc-lenovo-83ed")
+                    ),
+                    None
+                )
+                .unwrap(),
+                Plan::Switch("registry.tilo.so/tilo/tilo-vm:lenovo-83ed-ci".into())
+            );
+            // Already following it: fetch its newest build.
+            let following = dev(
+                Some("lenovo-83ed"),
+                Some("registry.tilo.so/tilo/tilo-vm:lenovo-83ed-ci"),
+            );
+            let upgrade = plan(&following, None).unwrap();
+            assert_eq!(
+                upgrade,
+                Plan::Upgrade("registry.tilo.so/tilo/tilo-vm:lenovo-83ed-ci".into())
+            );
+            assert_eq!(upgrade.bootc_words(), vec!["upgrade".to_owned()]);
+            assert_eq!(
+                plan(&dev(None, None), None).unwrap(),
+                Plan::Switch("registry.tilo.so/tilo/tilo-vm:main-ci".into())
+            );
+            // --to names a CI build, for this board or generic.
+            assert_eq!(
+                plan(&following, Some("pr-4433-c5d51ba"))
+                    .unwrap()
+                    .bootc_words(),
+                vec![
+                    "switch".to_owned(),
+                    "registry.tilo.so/tilo/tilo-vm:pr-4433-c5d51ba-lenovo-83ed".to_owned()
+                ]
+            );
+            assert_eq!(
+                image_for("main-1a2b3c4-lenovo-83ed", Some("lenovo-83ed")),
+                "registry.tilo.so/tilo/tilo-vm:main-1a2b3c4-lenovo-83ed"
+            );
+            assert_eq!(
+                image_for("main-1a2b3c4", None),
+                "registry.tilo.so/tilo/tilo-vm:main-1a2b3c4-ci"
+            );
+            assert_eq!(
+                image_for("localhost/tilo-vm:mine", Some("lenovo-83ed")),
+                "localhost/tilo-vm:mine"
+            );
+            let signed = Facts::default();
+            assert_eq!(plan(&signed, None).unwrap(), Plan::Signed);
+            let error = plan(&signed, Some("main-1a2b3c4")).unwrap_err().to_string();
+            assert!(error.contains("signed Tilo OS image"), "{error}");
+        }
+
+        phase facts_come_from_the_image_and_bootc;
+        {
+            let root = std::env::temp_dir().join(format!("tilo-os-facts-{}", std::process::id()));
+            std::fs::create_dir_all(root.join("usr/lib/tilo")).unwrap();
+            std::fs::write(root.join("usr/lib/tilo/image-flavour"), "dev\n").unwrap();
+            std::fs::write(
+                root.join("usr/lib/tilo/hardware-profile.json"),
+                r#"{"schema_version":1,"id":"lenovo-83ed"}"#,
             )
-        };
-        let mut view = ProgressView::starting_at(true, start);
-        assert_eq!(
-            view.line(r#"{"type":"Start","version":"0.1.0"}"#, at(0)),
-            None
-        );
-        assert_eq!(
-            view.line(&bytes(1_200_000_000, 200), at(40)).unwrap(),
-            "Downloading 1.2 GB of 3.4 GB, 23 of 223 layers to go (180 already here), 30 MB/s"
-        );
-        assert_eq!(
-            view.line(
-                r#"{"type":"ProgressSteps","task":"importing","description":"Importing Image","id":"i","stepsCached":0,"steps":0,"stepsTotal":1,"subtasks":[]}"#,
-                at(50)
-            )
-            .unwrap(),
-            "Importing Image"
-        );
-        assert_eq!(view.line("not json", at(51)), None);
+            .unwrap();
+            let facts = Facts::read_image(&root).with_bootc_status(
+                r#"{"spec":{"image":{"image":"registry.tilo.so/tilo/tilo-vm:lenovo-83ed-ci","transport":"registry"}},
+                "status":{"booted":{"image":{"image":{"image":"registry.tilo.so/tilo/tilo-vm:pr-1-abc-lenovo-83ed"}}}}}"#,
+            );
+            std::fs::remove_dir_all(&root).unwrap();
+            assert!(facts.development);
+            assert_eq!(facts.board.as_deref(), Some("lenovo-83ed"));
+            assert_eq!(
+                facts.follows,
+                Some((
+                    "registry".to_owned(),
+                    "registry.tilo.so/tilo/tilo-vm:lenovo-83ed-ci".to_owned()
+                ))
+            );
+            assert!(!Facts::read_image(Path::new("/nonexistent")).development);
+        }
 
-        // Off a terminal: the first line, then one every ten seconds, and the end.
-        let mut plain = ProgressView::starting_at(false, start);
-        assert!(plain.line(&bytes(100_000_000, 190), at(1)).is_some());
-        assert!(plain.line(&bytes(200_000_000, 191), at(5)).is_none());
-        assert!(plain.line(&bytes(900_000_000, 199), at(12)).is_some());
-        assert!(plain.line(&bytes(3_400_000_000, 223), at(13)).is_some());
-    }
-
-    /// A stand-in bootc: what it was asked, its progress drawn, its refusal
-    /// explained, and "no changes" with success read as up to date.
-    #[test]
-    fn staging_runs_bootc_with_progress_and_explains_refusals() {
-        let dir = std::env::temp_dir().join(format!("tilo-os-stage-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let fake = |name: &str, body: &str| {
-            let path = dir.join(name);
-            std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
-            }
-            path.display().to_string()
-        };
-        let args = dir.join("args");
-        let ok = fake(
-            "ok",
-            &format!(
-                "echo \"$@\" > {}\necho '{{\"type\":\"ProgressBytes\",\"task\":\"pulling\",\"description\":\"Pulling\",\"id\":\"x\",\"bytesCached\":0,\"bytes\":5000000,\"bytesTotal\":5000000,\"stepsCached\":0,\"steps\":2,\"stepsTotal\":2,\"subtasks\":[]}}' >&3\necho 'Queued for next boot' >&2",
-                args.display()
-            ),
-        );
-        let plan = Plan::Switch("registry.tilo.so/tilo/tilo-vm:lenovo-83ed-ci".into());
-        let mut out = Vec::new();
-        assert_eq!(stage(&ok, &plan, &mut out, false).unwrap(), Ok(()));
-        assert_eq!(
-            std::fs::read_to_string(&args).unwrap().trim(),
-            "switch registry.tilo.so/tilo/tilo-vm:lenovo-83ed-ci --quiet --progress-fd 3"
-        );
-        let shown = String::from_utf8(out).unwrap();
-        assert!(
-            shown.contains("Downloading 5 MB of 5 MB, 0 of 2 layers to go"),
-            "{shown}"
-        );
-
-        let full = fake(
-            "full",
-            "echo 'error: Insufficient free space for x (available: 2.3 GB required: 5.2 GB)' >&2; exit 1",
-        );
-        assert_eq!(
-            stage(&full, &plan, &mut Vec::new(), false).unwrap(),
-            Err(Failure::NoSpace {
-                needed: "5.2 GB".into(),
-                free: "2.3 GB".into()
-            })
-        );
-        let same = fake("same", "echo 'No changes in: x'");
-        assert!(matches!(
-            stage(&same, &Plan::Upgrade("x".into()), &mut Vec::new(), false).unwrap(),
-            Err(Failure::UpToDate(_))
-        ));
-        std::fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn restart_and_root_decisions() {
-        assert_eq!(restart_decision(true, false, false), Restart::Now);
-        assert_eq!(restart_decision(false, false, true), Restart::Ask);
-        assert_eq!(restart_decision(false, true, true), Restart::Later);
-        assert_eq!(restart_decision(false, false, false), Restart::Later);
-        assert_eq!(
-            sudo_args(
-                Path::new("/usr/bin/tilo"),
-                Some("main-1a2b3c4"),
-                true,
-                false,
-                false
-            ),
-            vec![
-                "--",
-                "/usr/bin/tilo",
-                "os",
-                "upgrade",
-                "--to",
-                "main-1a2b3c4",
-                "--yes"
-            ]
-        );
-        let note = restart_note(&Plan::Switch("img".into()));
-        assert!(
-            note.contains("developer layers swapped onto the old image are dropped"),
-            "{note}"
-        );
-        assert!(note.contains("passphrase"), "{note}");
+        phase restart_and_root_decisions;
+        {
+            assert_eq!(restart_decision(true, false, false), Restart::Now);
+            assert_eq!(restart_decision(false, false, true), Restart::Ask);
+            assert_eq!(restart_decision(false, true, true), Restart::Later);
+            assert_eq!(restart_decision(false, false, false), Restart::Later);
+            assert_eq!(
+                sudo_args(
+                    Path::new("/usr/bin/tilo"),
+                    Some("main-1a2b3c4"),
+                    true,
+                    false,
+                    false
+                ),
+                vec![
+                    "--",
+                    "/usr/bin/tilo",
+                    "os",
+                    "upgrade",
+                    "--to",
+                    "main-1a2b3c4",
+                    "--yes"
+                ]
+            );
+            let note = restart_note(&Plan::Switch("img".into()));
+            assert!(
+                note.contains("developer layers swapped onto the old image are dropped"),
+                "{note}"
+            );
+            assert!(note.contains("passphrase"), "{note}");
+        }
     }
 }

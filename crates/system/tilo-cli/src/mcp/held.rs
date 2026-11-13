@@ -535,35 +535,39 @@ mod tests {
         );
     }
 
-    /// A device logged in anew is another device: its connections reach a
-    /// holder of their own.
-    #[test]
-    fn each_device_has_its_own_holder() {
-        let dir = Path::new("/state/tilo/device");
-        assert_ne!(
-            Place::at(dir, dir, &[1; 32]).socket,
-            Place::at(dir, dir, &[2; 32]).socket
-        );
-    }
+    tilo_test_env::scenario! {
+        fn a_devices_holder_listens_at_a_place_of_its_own;
 
-    /// A home however deep still has a socket short enough to listen at:
-    /// its holder listens in the account's own directory, which nobody else
-    /// may enter.
-    #[test]
-    fn a_deep_home_still_listens_in_a_private_directory() {
-        use std::os::unix::fs::PermissionsExt as _;
-        let home = tempfile::tempdir().unwrap();
-        let deep = home.path().join("a".repeat(120)).join("state/tilo/device");
-        std::fs::create_dir_all(&deep).unwrap();
-        let place = Place::of(&deep, &[3; 32]).unwrap();
-        assert!(
-            place.socket.as_os_str().len() < 100,
-            "{}",
-            place.socket.display()
-        );
-        let sockets = place.socket.parent().unwrap();
-        let mode = std::fs::metadata(sockets).unwrap().permissions().mode();
-        assert_eq!(mode & 0o077, 0, "{} is {mode:o}", sockets.display());
-        assert!(place.lock.starts_with(&deep));
+        phase each_device_has_its_own_holder;
+        // A device logged in anew is another device: its connections reach a
+        // holder of their own.
+        {
+            let dir = Path::new("/state/tilo/device");
+            assert_ne!(
+                Place::at(dir, dir, &[1; 32]).socket,
+                Place::at(dir, dir, &[2; 32]).socket
+            );
+        }
+
+        phase a_deep_home_still_listens_in_a_private_directory;
+        // A home however deep still has a socket short enough to listen at:
+        // its holder listens in the account's own directory, which nobody else
+        // may enter.
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let home = tempfile::tempdir().unwrap();
+            let deep = home.path().join("a".repeat(120)).join("state/tilo/device");
+            std::fs::create_dir_all(&deep).unwrap();
+            let place = Place::of(&deep, &[3; 32]).unwrap();
+            assert!(
+                place.socket.as_os_str().len() < 100,
+                "{}",
+                place.socket.display()
+            );
+            let sockets = place.socket.parent().unwrap();
+            let mode = std::fs::metadata(sockets).unwrap().permissions().mode();
+            assert_eq!(mode & 0o077, 0, "{} is {mode:o}", sockets.display());
+            assert!(place.lock.starts_with(&deep));
+        }
     }
 }

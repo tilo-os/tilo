@@ -2118,129 +2118,103 @@ mod tests {
         }
     }
 
-    #[test]
-    fn every_tool_that_has_its_own_command_adds_the_server_through_it() {
-        let tilo = Path::new("/opt/tilo");
-        assert_eq!(
-            strings(&Tool::Claude.cli_add(SERVER, tilo, &["mcp"]).unwrap()),
-            [
-                "mcp",
-                "add",
-                "--scope",
-                "user",
-                "tilo",
-                "--",
-                "/opt/tilo",
-                "mcp"
-            ]
-        );
-        assert_eq!(
-            strings(&Tool::Codex.cli_add(SERVER, tilo, &["mcp"]).unwrap()),
-            ["mcp", "add", "tilo", "--", "/opt/tilo", "mcp"]
-        );
-        // Gemini CLI takes the command positionally.
-        assert_eq!(
-            strings(&Tool::Gemini.cli_add(SERVER, tilo, &["mcp"]).unwrap()),
-            ["mcp", "add", "--scope", "user", "tilo", "/opt/tilo", "mcp"]
-        );
-        assert_eq!(
-            strings(&Tool::Amp.cli_add(SERVER, tilo, &["mcp"]).unwrap()),
-            ["mcp", "add", "tilo", "--", "/opt/tilo", "mcp"]
-        );
-        // OpenCode adds it to every project's configuration.
-        assert_eq!(
-            strings(&Tool::OpenCode.cli_add(SERVER, tilo, &["mcp"]).unwrap()),
-            ["mcp", "add", "tilo", "--global", "--", "/opt/tilo", "mcp"]
-        );
-        // Cline's own wizard is skipped.
-        assert_eq!(
-            strings(&Tool::Cline.cli_add(SERVER, tilo, &["mcp"]).unwrap()),
-            ["mcp", "add", "tilo", "--yes", "--", "/opt/tilo", "mcp"]
-        );
-        // VS Code takes the server itself, as JSON.
-        assert_eq!(
-            strings(&Tool::VsCode.cli_add(SERVER, tilo, &["mcp"]).unwrap()),
-            [
-                "--add-mcp",
-                "{\"name\":\"tilo\",\"type\":\"stdio\",\"command\":\"/opt/tilo\",\"args\":[\"mcp\"]}"
-            ]
-        );
-        // Cursor's CLI only reads the editor's file: there is no command to
-        // add a server with.
-        assert!(Tool::Cursor.cli_add(SERVER, tilo, &["mcp"]).is_none());
-        // The rest have no command of their own: their file is the way in.
-        assert!(Tool::Zed.cli_add(SERVER, tilo, &["mcp"]).is_none());
-        assert!(Tool::Goose.cli_add(SERVER, tilo, &["mcp"]).is_none());
-        assert_eq!(
-            strings(&Tool::Codex.cli_remove(SERVER).unwrap()),
-            ["mcp", "remove", "tilo"]
-        );
-    }
+    tilo_test_env::scenario! {
+        fn a_tools_own_command_is_what_adds_the_server;
 
-    #[test]
-    fn a_command_that_refuses_the_server_is_not_the_one_that_adds_it() {
-        // `claude` is here and adds it: Tilo trusts the tool it asked.
-        let fake = FakeHome::new(&[], &["claude"]);
-        assert_eq!(
-            register(Tool::Claude, Path::new("/opt/tilo"), &fake),
-            Registered::Added
-        );
-        assert_eq!(
-            fake.ran.borrow()[0][1..],
-            [
-                "mcp",
-                "add",
-                "--scope",
-                "user",
-                "tilo",
-                "--",
-                "/opt/tilo",
-                "mcp"
-            ][..]
-        );
-        // Its own command is not here: its file is what Tilo writes.
-        let fake = FakeHome::new(&[], &[]);
-        assert_eq!(
-            register(Tool::Cursor, Path::new("/opt/tilo"), &fake),
-            Registered::Added
-        );
-        assert_eq!(
-            server_at(Tool::Cursor, &fake).unwrap(),
-            Server {
-                program: PathBuf::from("/opt/tilo"),
-                args: vec!["mcp".to_owned()]
-            }
-        );
-    }
+        phase every_tool_that_has_its_own_command_adds_the_server_through_it;
+        {
+            let tilo = Path::new("/opt/tilo");
+            assert_eq!(
+                strings(&Tool::Claude.cli_add(SERVER, tilo, &["mcp"]).unwrap()),
+                [
+                    "mcp",
+                    "add",
+                    "--scope",
+                    "user",
+                    "tilo",
+                    "--",
+                    "/opt/tilo",
+                    "mcp"
+                ]
+            );
+            assert_eq!(
+                strings(&Tool::Codex.cli_add(SERVER, tilo, &["mcp"]).unwrap()),
+                ["mcp", "add", "tilo", "--", "/opt/tilo", "mcp"]
+            );
+            // Gemini CLI takes the command positionally.
+            assert_eq!(
+                strings(&Tool::Gemini.cli_add(SERVER, tilo, &["mcp"]).unwrap()),
+                ["mcp", "add", "--scope", "user", "tilo", "/opt/tilo", "mcp"]
+            );
+            assert_eq!(
+                strings(&Tool::Amp.cli_add(SERVER, tilo, &["mcp"]).unwrap()),
+                ["mcp", "add", "tilo", "--", "/opt/tilo", "mcp"]
+            );
+            // OpenCode adds it to every project's configuration.
+            assert_eq!(
+                strings(&Tool::OpenCode.cli_add(SERVER, tilo, &["mcp"]).unwrap()),
+                ["mcp", "add", "tilo", "--global", "--", "/opt/tilo", "mcp"]
+            );
+            // Cline's own wizard is skipped.
+            assert_eq!(
+                strings(&Tool::Cline.cli_add(SERVER, tilo, &["mcp"]).unwrap()),
+                ["mcp", "add", "tilo", "--yes", "--", "/opt/tilo", "mcp"]
+            );
+            // VS Code takes the server itself, as JSON.
+            assert_eq!(
+                strings(&Tool::VsCode.cli_add(SERVER, tilo, &["mcp"]).unwrap()),
+                [
+                    "--add-mcp",
+                    "{\"name\":\"tilo\",\"type\":\"stdio\",\"command\":\"/opt/tilo\",\"args\":[\"mcp\"]}"
+                ]
+            );
+            // Cursor's CLI only reads the editor's file: there is no command to
+            // add a server with.
+            assert!(Tool::Cursor.cli_add(SERVER, tilo, &["mcp"]).is_none());
+            // The rest have no command of their own: their file is the way in.
+            assert!(Tool::Zed.cli_add(SERVER, tilo, &["mcp"]).is_none());
+            assert!(Tool::Goose.cli_add(SERVER, tilo, &["mcp"]).is_none());
+            assert_eq!(
+                strings(&Tool::Codex.cli_remove(SERVER).unwrap()),
+                ["mcp", "remove", "tilo"]
+            );
+        }
 
-    #[test]
-    fn a_tools_file_keeps_every_other_server_and_its_comments() {
-        let fake = FakeHome::new(
-            &[(
-                ".cursor/mcp.json",
-                "{\n  // the person's own servers\n  \"mcpServers\": {\n    \"canvas\": {\n      \
-                 \"command\": \"python3\",\n      \"args\": [\"session.py\", \"mcp\"]\n    }\n  }\n}\n",
-            )],
-            &[],
-        );
-        assert_eq!(
-            register(Tool::Cursor, Path::new("/opt/tilo"), &fake),
-            Registered::Added
-        );
-        let text = fake.text(".cursor/mcp.json");
-        assert!(text.contains("// the person's own servers"), "{text}");
-        assert!(text.contains("\"canvas\""), "{text}");
-        assert!(text.contains("\"tilo\""), "{text}");
-        assert_eq!(
-            server_at(Tool::Cursor, &fake).unwrap().program,
-            PathBuf::from("/opt/tilo")
-        );
-        // The second time is the same file: nothing to add.
-        assert_eq!(
-            register(Tool::Cursor, Path::new("/opt/tilo"), &fake),
-            Registered::Already
-        );
-        assert_eq!(fake.text(".cursor/mcp.json"), text);
+        phase a_command_that_refuses_the_server_is_not_the_one_that_adds_it;
+        {
+            // `claude` is here and adds it: Tilo trusts the tool it asked.
+            let fake = FakeHome::new(&[], &["claude"]);
+            assert_eq!(
+                register(Tool::Claude, Path::new("/opt/tilo"), &fake),
+                Registered::Added
+            );
+            assert_eq!(
+                fake.ran.borrow()[0][1..],
+                [
+                    "mcp",
+                    "add",
+                    "--scope",
+                    "user",
+                    "tilo",
+                    "--",
+                    "/opt/tilo",
+                    "mcp"
+                ][..]
+            );
+            // Its own command is not here: its file is what Tilo writes.
+            let fake = FakeHome::new(&[], &[]);
+            assert_eq!(
+                register(Tool::Cursor, Path::new("/opt/tilo"), &fake),
+                Registered::Added
+            );
+            assert_eq!(
+                server_at(Tool::Cursor, &fake).unwrap(),
+                Server {
+                    program: PathBuf::from("/opt/tilo"),
+                    args: vec!["mcp".to_owned()]
+                }
+            );
+        }
     }
 
     #[test]
@@ -2275,189 +2249,223 @@ mod tests {
         assert_eq!(entry["command"], json!(["/opt/tilo", "mcp"]));
     }
 
-    #[test]
-    fn amp_keeps_its_servers_under_its_own_key() {
-        let fake = FakeHome::new(
-            &[(
-                "../config/amp/settings.json",
-                "{\n  \"amp.mcpServers\": {\n    \"other\": {\"command\": \"other\"}\n  }\n}\n",
-            )],
-            &[],
-        );
-        assert_eq!(
-            register(Tool::Amp, Path::new("/opt/tilo"), &fake),
-            Registered::Added
-        );
-        let text = fake.text("../config/amp/settings.json");
-        assert!(text.contains("\"other\""), "{text}");
-        assert_eq!(
-            server_at(Tool::Amp, &fake).unwrap(),
-            Server {
-                program: PathBuf::from("/opt/tilo"),
-                args: vec!["mcp".to_owned()]
-            }
-        );
-    }
+    tilo_test_env::scenario! {
+        fn a_tools_file_gains_the_server_and_keeps_what_it_held;
 
-    #[test]
-    fn vs_code_gets_a_stdio_server_under_servers() {
-        let fake = FakeHome::new(
-            &[(
-                "../config/Code/User/mcp.json",
-                "{\n  \"servers\": {\n    \"other\": {\"type\": \"stdio\", \"command\": \"other\"}\n  }\n}\n",
-            )],
-            &[],
-        );
-        assert_eq!(
-            register(Tool::VsCode, Path::new("/opt/tilo"), &fake),
-            Registered::Added
-        );
-        let text = fake.text("../config/Code/User/mcp.json");
-        let entry: Value =
-            serde_json::from_str(&at_path(&text, &["servers", "tilo"]).unwrap()).unwrap();
-        assert_eq!(entry["type"], "stdio");
-        assert_eq!(entry["command"], "/opt/tilo");
-        assert_eq!(entry["args"], json!(["mcp"]));
-        assert!(text.contains("\"other\""), "{text}");
-    }
-
-    #[test]
-    fn zed_settings_keep_their_comments_and_gain_a_context_server() {
-        let fake = FakeHome::new(
-            &[(
-                "../config/zed/settings.json",
-                "// Zed settings\n{\n  // how it looks\n  \"theme\": \"One Dark\",\n  \
-                 \"context_servers\": {}\n}\n",
-            )],
-            &[],
-        );
-        assert_eq!(
-            register(Tool::Zed, Path::new("/opt/tilo"), &fake),
-            Registered::Added
-        );
-        let text = fake.text("../config/zed/settings.json");
-        assert!(text.contains("// Zed settings"), "{text}");
-        assert!(text.contains("// how it looks"), "{text}");
-        assert!(text.contains("\"One Dark\""), "{text}");
-        let entry: Value =
-            serde_json::from_str(&at_path(&text, &["context_servers", "tilo"]).unwrap()).unwrap();
-        assert_eq!(entry["command"], "/opt/tilo");
-        assert_eq!(entry["args"], json!(["mcp"]));
-        assert_eq!(entry["env"], json!({}));
-    }
-
-    #[test]
-    fn the_apps_that_keep_servers_under_mcpservers_take_one_beside_the_others() {
-        for (tool, path) in [
-            (Tool::ClaudeDesktop, "Claude/claude_desktop_config.json"),
-            (Tool::Windsurf, ".codeium/windsurf/mcp_config.json"),
-            (
-                Tool::Cline,
-                "Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json",
-            ),
-            (
-                Tool::Roo,
-                "Code/User/globalStorage/rooveterinaryinc.roo-cline/settings/mcp_settings.json",
-            ),
-        ] {
-            let fake = FakeHome::new(&[], &[]);
-            // Each keeps its file under its own configuration directory.
-            let file = tool.files(&fake).into_iter().next().unwrap();
-            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
-            std::fs::write(
-                &file,
-                "{\n  \"mcpServers\": {\n    \"other\": {\"command\": \"other\"}\n  }\n}\n",
-            )
-            .unwrap();
-            assert_eq!(
-                register(tool, Path::new("/opt/tilo"), &fake),
-                Registered::Added,
-                "{path}"
+        phase a_tools_file_keeps_every_other_server_and_its_comments;
+        {
+            let fake = FakeHome::new(
+                &[(
+                    ".cursor/mcp.json",
+                    "{\n  // the person's own servers\n  \"mcpServers\": {\n    \"canvas\": {\n      \
+                 \"command\": \"python3\",\n      \"args\": [\"session.py\", \"mcp\"]\n    }\n  }\n}\n",
+                )],
+                &[],
             );
-            let text = std::fs::read_to_string(&file).unwrap();
-            assert!(text.contains("\"other\""), "{tool:?}: {text}");
             assert_eq!(
-                server_at(tool, &fake).unwrap().program,
-                PathBuf::from("/opt/tilo"),
-                "{path}"
+                register(Tool::Cursor, Path::new("/opt/tilo"), &fake),
+                Registered::Added
+            );
+            let text = fake.text(".cursor/mcp.json");
+            assert!(text.contains("// the person's own servers"), "{text}");
+            assert!(text.contains("\"canvas\""), "{text}");
+            assert!(text.contains("\"tilo\""), "{text}");
+            assert_eq!(
+                server_at(Tool::Cursor, &fake).unwrap().program,
+                PathBuf::from("/opt/tilo")
+            );
+            // The second time is the same file: nothing to add.
+            assert_eq!(
+                register(Tool::Cursor, Path::new("/opt/tilo"), &fake),
+                Registered::Already
+            );
+            assert_eq!(fake.text(".cursor/mcp.json"), text);
+        }
+
+        phase amp_keeps_its_servers_under_its_own_key;
+        {
+            let fake = FakeHome::new(
+                &[(
+                    "../config/amp/settings.json",
+                    "{\n  \"amp.mcpServers\": {\n    \"other\": {\"command\": \"other\"}\n  }\n}\n",
+                )],
+                &[],
+            );
+            assert_eq!(
+                register(Tool::Amp, Path::new("/opt/tilo"), &fake),
+                Registered::Added
+            );
+            let text = fake.text("../config/amp/settings.json");
+            assert!(text.contains("\"other\""), "{text}");
+            assert_eq!(
+                server_at(Tool::Amp, &fake).unwrap(),
+                Server {
+                    program: PathBuf::from("/opt/tilo"),
+                    args: vec!["mcp".to_owned()]
+                }
             );
         }
-    }
 
-    #[test]
-    fn codex_keeps_its_other_tables_and_its_server_is_replaced_where_it_stands() {
-        let fake = FakeHome::new(
-            &[(
-                ".codex/config.toml",
-                "model = \"gpt\"\n\n[mcp_servers.other]\ncommand = \"/opt/other\"\n",
-            )],
-            &[],
-        );
-        assert_eq!(
-            register(Tool::Codex, Path::new("/opt/tilo"), &fake),
-            Registered::Added
-        );
-        let text = fake.text(".codex/config.toml");
-        let config: toml::Value = toml::from_str(&text).unwrap();
-        assert_eq!(config["model"].as_str(), Some("gpt"));
-        assert_eq!(
-            config["mcp_servers"]["other"]["command"].as_str(),
-            Some("/opt/other")
-        );
-        assert_eq!(
-            config["mcp_servers"]["tilo"]["command"].as_str(),
-            Some("/opt/tilo")
-        );
-        assert_eq!(
-            config["mcp_servers"]["tilo"]["args"][0].as_str(),
-            Some("mcp")
-        );
-        // Pointed at another copy of Tilo, the table is replaced in place and
-        // the tables after it stay.
-        let fake = FakeHome::new(
-            &[(
-                ".codex/config.toml",
-                "model = \"gpt\"\n\n[mcp_servers.tilo]\ncommand = \"/old/tilo\"\nargs = [\"mcp\"]\n\n[something]\nkey = 1\n",
-            )],
-            &[],
-        );
-        assert_eq!(
-            register(Tool::Codex, Path::new("/opt/tilo"), &fake),
-            Registered::Added
-        );
-        let text = fake.text(".codex/config.toml");
-        let config: toml::Value = toml::from_str(&text).unwrap();
-        assert_eq!(
-            config["mcp_servers"]["tilo"]["command"].as_str(),
-            Some("/opt/tilo")
-        );
-        assert_eq!(config["something"]["key"].as_integer(), Some(1));
-        assert_eq!(config["model"].as_str(), Some("gpt"));
-    }
+        phase vs_code_gets_a_stdio_server_under_servers;
+        {
+            let fake = FakeHome::new(
+                &[(
+                    "../config/Code/User/mcp.json",
+                    "{\n  \"servers\": {\n    \"other\": {\"type\": \"stdio\", \"command\": \"other\"}\n  }\n}\n",
+                )],
+                &[],
+            );
+            assert_eq!(
+                register(Tool::VsCode, Path::new("/opt/tilo"), &fake),
+                Registered::Added
+            );
+            let text = fake.text("../config/Code/User/mcp.json");
+            let entry: Value =
+                serde_json::from_str(&at_path(&text, &["servers", "tilo"]).unwrap()).unwrap();
+            assert_eq!(entry["type"], "stdio");
+            assert_eq!(entry["command"], "/opt/tilo");
+            assert_eq!(entry["args"], json!(["mcp"]));
+            assert!(text.contains("\"other\""), "{text}");
+        }
 
-    #[test]
-    fn goose_keeps_its_extensions_and_gains_one_more() {
-        let fake = FakeHome::new(
-            &[(
-                "../config/goose/config.yaml",
-                "GOOSE_MODEL: gpt\nextensions:\n  developer:\n    enabled: true\n    type: builtin\n    name: developer\n",
-            )],
-            &[],
-        );
-        assert_eq!(
-            register(Tool::Goose, Path::new("/opt/tilo"), &fake),
-            Registered::Added
-        );
-        let text = fake.text("../config/goose/config.yaml");
-        assert!(text.contains("GOOSE_MODEL: gpt"), "{text}");
-        assert!(text.contains("developer:"), "{text}");
-        assert_eq!(
-            server_at(Tool::Goose, &fake).unwrap(),
-            Server {
-                program: PathBuf::from("/opt/tilo"),
-                args: vec!["mcp".to_owned()]
+        phase zed_settings_keep_their_comments_and_gain_a_context_server;
+        {
+            let fake = FakeHome::new(
+                &[(
+                    "../config/zed/settings.json",
+                    "// Zed settings\n{\n  // how it looks\n  \"theme\": \"One Dark\",\n  \
+                 \"context_servers\": {}\n}\n",
+                )],
+                &[],
+            );
+            assert_eq!(
+                register(Tool::Zed, Path::new("/opt/tilo"), &fake),
+                Registered::Added
+            );
+            let text = fake.text("../config/zed/settings.json");
+            assert!(text.contains("// Zed settings"), "{text}");
+            assert!(text.contains("// how it looks"), "{text}");
+            assert!(text.contains("\"One Dark\""), "{text}");
+            let entry: Value =
+                serde_json::from_str(&at_path(&text, &["context_servers", "tilo"]).unwrap()).unwrap();
+            assert_eq!(entry["command"], "/opt/tilo");
+            assert_eq!(entry["args"], json!(["mcp"]));
+            assert_eq!(entry["env"], json!({}));
+        }
+
+        phase the_apps_that_keep_servers_under_mcpservers_take_one_beside_the_others;
+        {
+            for (tool, path) in [
+                (Tool::ClaudeDesktop, "Claude/claude_desktop_config.json"),
+                (Tool::Windsurf, ".codeium/windsurf/mcp_config.json"),
+                (
+                    Tool::Cline,
+                    "Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json",
+                ),
+                (
+                    Tool::Roo,
+                    "Code/User/globalStorage/rooveterinaryinc.roo-cline/settings/mcp_settings.json",
+                ),
+            ] {
+                let fake = FakeHome::new(&[], &[]);
+                // Each keeps its file under its own configuration directory.
+                let file = tool.files(&fake).into_iter().next().unwrap();
+                std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+                std::fs::write(
+                    &file,
+                    "{\n  \"mcpServers\": {\n    \"other\": {\"command\": \"other\"}\n  }\n}\n",
+                )
+                .unwrap();
+                assert_eq!(
+                    register(tool, Path::new("/opt/tilo"), &fake),
+                    Registered::Added,
+                    "{path}"
+                );
+                let text = std::fs::read_to_string(&file).unwrap();
+                assert!(text.contains("\"other\""), "{tool:?}: {text}");
+                assert_eq!(
+                    server_at(tool, &fake).unwrap().program,
+                    PathBuf::from("/opt/tilo"),
+                    "{path}"
+                );
             }
-        );
+        }
+
+        phase codex_keeps_its_other_tables_and_its_server_is_replaced_where_it_stands;
+        {
+            let fake = FakeHome::new(
+                &[(
+                    ".codex/config.toml",
+                    "model = \"gpt\"\n\n[mcp_servers.other]\ncommand = \"/opt/other\"\n",
+                )],
+                &[],
+            );
+            assert_eq!(
+                register(Tool::Codex, Path::new("/opt/tilo"), &fake),
+                Registered::Added
+            );
+            let text = fake.text(".codex/config.toml");
+            let config: toml::Value = toml::from_str(&text).unwrap();
+            assert_eq!(config["model"].as_str(), Some("gpt"));
+            assert_eq!(
+                config["mcp_servers"]["other"]["command"].as_str(),
+                Some("/opt/other")
+            );
+            assert_eq!(
+                config["mcp_servers"]["tilo"]["command"].as_str(),
+                Some("/opt/tilo")
+            );
+            assert_eq!(
+                config["mcp_servers"]["tilo"]["args"][0].as_str(),
+                Some("mcp")
+            );
+            // Pointed at another copy of Tilo, the table is replaced in place and
+            // the tables after it stay.
+            let fake = FakeHome::new(
+                &[(
+                    ".codex/config.toml",
+                    "model = \"gpt\"\n\n[mcp_servers.tilo]\ncommand = \"/old/tilo\"\nargs = [\"mcp\"]\n\n[something]\nkey = 1\n",
+                )],
+                &[],
+            );
+            assert_eq!(
+                register(Tool::Codex, Path::new("/opt/tilo"), &fake),
+                Registered::Added
+            );
+            let text = fake.text(".codex/config.toml");
+            let config: toml::Value = toml::from_str(&text).unwrap();
+            assert_eq!(
+                config["mcp_servers"]["tilo"]["command"].as_str(),
+                Some("/opt/tilo")
+            );
+            assert_eq!(config["something"]["key"].as_integer(), Some(1));
+            assert_eq!(config["model"].as_str(), Some("gpt"));
+        }
+
+        phase goose_keeps_its_extensions_and_gains_one_more;
+        {
+            let fake = FakeHome::new(
+                &[(
+                    "../config/goose/config.yaml",
+                    "GOOSE_MODEL: gpt\nextensions:\n  developer:\n    enabled: true\n    type: builtin\n    name: developer\n",
+                )],
+                &[],
+            );
+            assert_eq!(
+                register(Tool::Goose, Path::new("/opt/tilo"), &fake),
+                Registered::Added
+            );
+            let text = fake.text("../config/goose/config.yaml");
+            assert!(text.contains("GOOSE_MODEL: gpt"), "{text}");
+            assert!(text.contains("developer:"), "{text}");
+            assert_eq!(
+                server_at(Tool::Goose, &fake).unwrap(),
+                Server {
+                    program: PathBuf::from("/opt/tilo"),
+                    args: vec!["mcp".to_owned()]
+                }
+            );
+        }
     }
 
     #[test]
@@ -2477,20 +2485,6 @@ mod tests {
             register(Tool::Cursor, Path::new("/opt/tilo"), &fake),
             Registered::Failed(_)
         ));
-    }
-
-    #[test]
-    fn a_configuration_tilo_does_not_know_is_read_for_the_server() {
-        let text = "{\n  \"tools\": {\n    \"mcp\": {\n      \"tilo\": {\"command\": \"/opt/tilo\", \
-                    \"args\": [\"mcp\"]}\n    }\n  }\n}\n";
-        assert_eq!(
-            find_server(text, SERVER),
-            Some(Server {
-                program: PathBuf::from("/opt/tilo"),
-                args: vec!["mcp".to_owned()]
-            })
-        );
-        assert_eq!(find_server("{}", SERVER), None);
     }
 
     #[cfg(unix)]
@@ -2564,331 +2558,357 @@ mod tests {
         );
     }
 
-    #[test]
-    fn where_each_tool_keeps_its_file_depends_on_the_kind_of_computer() {
-        let mut fake = FakeHome::new(&[], &[]);
-        let files = |fake: &FakeHome, tool: Tool| -> Vec<String> {
-            tool.files(fake)
-                .into_iter()
-                .map(|path| path.display().to_string())
-                .collect()
-        };
-        assert_eq!(
-            files(&fake, Tool::Cursor),
-            [fake.home.join(".cursor/mcp.json").display().to_string()]
-        );
-        assert_eq!(
-            files(&fake, Tool::Claude),
-            [fake.home.join(".claude.json").display().to_string()]
-        );
-        assert_eq!(
-            files(&fake, Tool::VsCode),
-            [fake.config.join("Code/User/mcp.json").display().to_string()]
-        );
-        fake.os = Os::Mac;
-        assert_eq!(
-            files(&fake, Tool::ClaudeDesktop),
-            [fake
-                .home
-                .join("Library/Application Support/Claude/claude_desktop_config.json")
-                .display()
-                .to_string()]
-        );
-        assert_eq!(
-            files(&fake, Tool::VsCode),
-            [fake
-                .home
-                .join("Library/Application Support/Code/User/mcp.json")
-                .display()
-                .to_string()]
-        );
-        fake.os = Os::Windows;
-        assert_eq!(
-            files(&fake, Tool::Zed),
-            [fake
-                .root
-                .join("appdata/Zed/settings.json")
-                .display()
-                .to_string()]
-        );
-        assert_eq!(
-            files(&fake, Tool::ClaudeDesktop),
-            [fake
-                .root
-                .join("appdata/Claude/claude_desktop_config.json")
-                .display()
-                .to_string()]
-        );
-        assert_eq!(
-            files(&fake, Tool::Cline),
-            [
-                fake.root
-                    .join("appdata/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json")
+    tilo_test_env::scenario! {
+        fn the_server_is_read_from_where_each_tool_keeps_it;
+
+        phase a_configuration_tilo_does_not_know_is_read_for_the_server;
+        {
+            let text = "{\n  \"tools\": {\n    \"mcp\": {\n      \"tilo\": {\"command\": \"/opt/tilo\", \
+                    \"args\": [\"mcp\"]}\n    }\n  }\n}\n";
+            assert_eq!(
+                find_server(text, SERVER),
+                Some(Server {
+                    program: PathBuf::from("/opt/tilo"),
+                    args: vec!["mcp".to_owned()]
+                })
+            );
+            assert_eq!(find_server("{}", SERVER), None);
+        }
+
+        phase where_each_tool_keeps_its_file_depends_on_the_kind_of_computer;
+        {
+            let mut fake = FakeHome::new(&[], &[]);
+            let files = |fake: &FakeHome, tool: Tool| -> Vec<String> {
+                tool.files(fake)
+                    .into_iter()
+                    .map(|path| path.display().to_string())
+                    .collect()
+            };
+            assert_eq!(
+                files(&fake, Tool::Cursor),
+                [fake.home.join(".cursor/mcp.json").display().to_string()]
+            );
+            assert_eq!(
+                files(&fake, Tool::Claude),
+                [fake.home.join(".claude.json").display().to_string()]
+            );
+            assert_eq!(
+                files(&fake, Tool::VsCode),
+                [fake.config.join("Code/User/mcp.json").display().to_string()]
+            );
+            fake.os = Os::Mac;
+            assert_eq!(
+                files(&fake, Tool::ClaudeDesktop),
+                [fake
+                    .home
+                    .join("Library/Application Support/Claude/claude_desktop_config.json")
                     .display()
-                    .to_string(),
-                fake.home
-                    .join(".cline/data/settings/cline_mcp_settings.json")
+                    .to_string()]
+            );
+            assert_eq!(
+                files(&fake, Tool::VsCode),
+                [fake
+                    .home
+                    .join("Library/Application Support/Code/User/mcp.json")
                     .display()
-                    .to_string()
-            ]
-        );
-        assert_eq!(
-            files(&fake, Tool::OpenCode),
-            [
-                fake.config
-                    .join("opencode/opencode.jsonc")
+                    .to_string()]
+            );
+            fake.os = Os::Windows;
+            assert_eq!(
+                files(&fake, Tool::Zed),
+                [fake
+                    .root
+                    .join("appdata/Zed/settings.json")
                     .display()
-                    .to_string(),
-                fake.config
-                    .join("opencode/opencode.json")
+                    .to_string()]
+            );
+            assert_eq!(
+                files(&fake, Tool::ClaudeDesktop),
+                [fake
+                    .root
+                    .join("appdata/Claude/claude_desktop_config.json")
                     .display()
-                    .to_string()
-            ]
-        );
+                    .to_string()]
+            );
+            assert_eq!(
+                files(&fake, Tool::Cline),
+                [
+                    fake.root
+                        .join("appdata/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json")
+                        .display()
+                        .to_string(),
+                    fake.home
+                        .join(".cline/data/settings/cline_mcp_settings.json")
+                        .display()
+                        .to_string()
+                ]
+            );
+            assert_eq!(
+                files(&fake, Tool::OpenCode),
+                [
+                    fake.config
+                        .join("opencode/opencode.jsonc")
+                        .display()
+                        .to_string(),
+                    fake.config
+                        .join("opencode/opencode.json")
+                        .display()
+                        .to_string()
+                ]
+            );
+        }
     }
 
-    #[test]
-    fn an_agent_is_found_by_its_environment_first() {
-        let env = |pairs: &'static [(&'static str, &'static str)]| {
-            move |name: &str| {
-                pairs
-                    .iter()
-                    .find(|(key, _)| *key == name)
-                    .map(|(_, value)| (*value).to_owned())
-            }
-        };
-        let codex_parent = vec![Process {
-            comm: "codex".into(),
-            args: vec!["codex".into()],
-        }];
-        let found = detect(&env(&[("CLAUDECODE", "1")]), codex_parent.clone());
-        assert_eq!(found, known(Tool::Claude));
-        assert_eq!(found.tool, Some(Tool::Claude));
-        assert_eq!(
-            detect(&env(&[("CLAUDE_CODE_ENTRYPOINT", "cli")]), Vec::new()).name,
-            "Claude Code"
-        );
-        assert_eq!(
-            detect(&env(&[("CODEX_SANDBOX", "seatbelt")]), Vec::new()).name,
-            "Codex"
-        );
-        assert_eq!(
-            detect(&env(&[("GEMINI_CLI", "1")]), Vec::new()).tool,
-            Some(Tool::Gemini)
-        );
-        assert_eq!(
-            detect(&env(&[("CURSOR_AGENT", "1")]), Vec::new()).tool,
-            Some(Tool::Cursor)
-        );
-        // An editor's own terminal says which agent mode reads the server.
-        assert_eq!(
-            detect(&env(&[("TERM_PROGRAM", "vscode")]), Vec::new()).tool,
-            Some(Tool::VsCode)
-        );
-        assert_eq!(
-            detect(&env(&[("TERM_PROGRAM", "zed")]), Vec::new()).tool,
-            Some(Tool::Zed)
-        );
-        // Nothing in the environment: the nearest agent process says.
-        assert_eq!(detect(&env(&[]), codex_parent).name, "Codex");
-    }
+    tilo_test_env::scenario! {
+        fn the_agent_asking_is_recognised_and_told_its_own_way;
 
-    #[test]
-    fn an_agent_is_found_among_the_processes_it_runs_under() {
-        let none = |_: &str| None;
-        let shell = Process {
-            comm: "bash".into(),
-            args: vec![
-                "/bin/bash".into(),
-                "-c".into(),
-                "tilo login K7Q-MX2P".into(),
-            ],
-        };
-        let node_claude = Process {
-            comm: "node".into(),
-            args: vec![
-                "node".into(),
-                "/usr/lib/node_modules/@anthropic-ai/claude-code/cli.js".into(),
-            ],
-        };
-        assert_eq!(
-            detect(&none, vec![shell.clone(), node_claude]).name,
-            "Claude Code"
-        );
-        let found = detect(
-            &none,
-            vec![
-                shell.clone(),
-                Process {
-                    comm: "cursor-agent".into(),
-                    args: Vec::new(),
-                },
-            ],
-        );
-        assert_eq!(
-            (found.name.as_str(), found.tool),
-            ("Cursor", Some(Tool::Cursor))
-        );
-        assert_eq!(
-            detect(
-                &none,
-                vec![Process {
-                    comm: "goose".into(),
-                    args: vec!["/Users/you/.local/bin/goose".into(), "session".into()],
-                }]
-            )
-            .tool,
-            Some(Tool::Goose)
-        );
-        // A terminal inside VS Code: its agent mode is what reads the server.
-        assert_eq!(
-            detect(
+        phase an_agent_is_found_by_its_environment_first;
+        {
+            let env = |pairs: &'static [(&'static str, &'static str)]| {
+                move |name: &str| {
+                    pairs
+                        .iter()
+                        .find(|(key, _)| *key == name)
+                        .map(|(_, value)| (*value).to_owned())
+                }
+            };
+            let codex_parent = vec![Process {
+                comm: "codex".into(),
+                args: vec!["codex".into()],
+            }];
+            let found = detect(&env(&[("CLAUDECODE", "1")]), codex_parent.clone());
+            assert_eq!(found, known(Tool::Claude));
+            assert_eq!(found.tool, Some(Tool::Claude));
+            assert_eq!(
+                detect(&env(&[("CLAUDE_CODE_ENTRYPOINT", "cli")]), Vec::new()).name,
+                "Claude Code"
+            );
+            assert_eq!(
+                detect(&env(&[("CODEX_SANDBOX", "seatbelt")]), Vec::new()).name,
+                "Codex"
+            );
+            assert_eq!(
+                detect(&env(&[("GEMINI_CLI", "1")]), Vec::new()).tool,
+                Some(Tool::Gemini)
+            );
+            assert_eq!(
+                detect(&env(&[("CURSOR_AGENT", "1")]), Vec::new()).tool,
+                Some(Tool::Cursor)
+            );
+            // An editor's own terminal says which agent mode reads the server.
+            assert_eq!(
+                detect(&env(&[("TERM_PROGRAM", "vscode")]), Vec::new()).tool,
+                Some(Tool::VsCode)
+            );
+            assert_eq!(
+                detect(&env(&[("TERM_PROGRAM", "zed")]), Vec::new()).tool,
+                Some(Tool::Zed)
+            );
+            // Nothing in the environment: the nearest agent process says.
+            assert_eq!(detect(&env(&[]), codex_parent).name, "Codex");
+        }
+
+        phase an_agent_is_found_among_the_processes_it_runs_under;
+        {
+            let none = |_: &str| None;
+            let shell = Process {
+                comm: "bash".into(),
+                args: vec![
+                    "/bin/bash".into(),
+                    "-c".into(),
+                    "tilo login K7Q-MX2P".into(),
+                ],
+            };
+            let node_claude = Process {
+                comm: "node".into(),
+                args: vec![
+                    "node".into(),
+                    "/usr/lib/node_modules/@anthropic-ai/claude-code/cli.js".into(),
+                ],
+            };
+            assert_eq!(
+                detect(&none, vec![shell.clone(), node_claude]).name,
+                "Claude Code"
+            );
+            let found = detect(
                 &none,
                 vec![
                     shell.clone(),
                     Process {
-                        comm: "code".into(),
-                        args: vec!["/usr/share/code/code".into()],
-                    }
+                        comm: "cursor-agent".into(),
+                        args: Vec::new(),
+                    },
+                ],
+            );
+            assert_eq!(
+                (found.name.as_str(), found.tool),
+                ("Cursor", Some(Tool::Cursor))
+            );
+            assert_eq!(
+                detect(
+                    &none,
+                    vec![Process {
+                        comm: "goose".into(),
+                        args: vec!["/Users/you/.local/bin/goose".into(), "session".into()],
+                    }]
+                )
+                .tool,
+                Some(Tool::Goose)
+            );
+            // A terminal inside VS Code: its agent mode is what reads the server.
+            assert_eq!(
+                detect(
+                    &none,
+                    vec![
+                        shell.clone(),
+                        Process {
+                            comm: "code".into(),
+                            args: vec!["/usr/share/code/code".into()],
+                        }
+                    ]
+                )
+                .tool,
+                Some(Tool::VsCode)
+            );
+            // Claude Desktop spells its process with a capital; Claude Code does
+            // not, and is the one whose name is found first.
+            assert_eq!(
+                detect(
+                    &none,
+                    vec![Process {
+                        comm: "Claude".into(),
+                        args: vec!["/opt/claude-desktop/claude".into()],
+                    }]
+                )
+                .tool,
+                Some(Tool::ClaudeDesktop)
+            );
+            assert_eq!(detect(&none, vec![shell]).name, UNKNOWN_AGENT);
+        }
+
+        phase agent_names_the_known_ones_by_name_or_program_and_keeps_others;
+        {
+            assert_eq!(named("claude"), known(Tool::Claude));
+            assert_eq!(named("codex").tool, Some(Tool::Codex));
+            assert_eq!(named(" Gemini CLI ").tool, Some(Tool::Gemini));
+            assert_eq!(named("cursor").tool, Some(Tool::Cursor));
+            assert_eq!(named("VS Code").tool, Some(Tool::VsCode));
+            assert_eq!(named("roo-code").tool, Some(Tool::Roo));
+            assert_eq!(
+                named("Hermes"),
+                Agent {
+                    name: "Hermes".into(),
+                    tool: None
+                }
+            );
+        }
+
+        phase the_agent_is_told_where_its_own_command_and_file_are;
+        {
+            let tilo = Path::new("/opt/tilo");
+            // A tool whose own command adds servers is told that command.
+            assert!(
+                how_to_add(Tool::Codex, tilo)
+                    .starts_with("Add it: codex mcp add tilo -- /opt/tilo mcp"),
+                "{}",
+                how_to_add(Tool::Codex, tilo)
+            );
+            // One that keeps a file is told the entry to write, and where.
+            let told = how_to_add(Tool::Zed, tilo);
+            assert!(told.contains("zed/settings.json"), "{told}");
+            assert!(told.contains("context_servers"), "{told}");
+            assert!(told.contains("\"tilo\": "), "{told}");
+            assert!(told.contains("\"command\":\"/opt/tilo\""), "{told}");
+            // An agent Tilo does not know is told the server itself, both ways.
+            let told = how_to_add_any("Hermes", tilo);
+            assert!(told.contains("/opt/tilo"), "{told}");
+            assert!(told.contains(MCP_URL), "{told}");
+        }
+    }
+
+    tilo_test_env::scenario! {
+        fn connecting_registers_a_door_for_the_desktop_or_a_named_device;
+
+        phase connecting_registers_the_desktops_door;
+        // Connecting registers the door, in every directory for Claude Code,
+        // under the name `tilo` with `--connect`, so it reaches the login's
+        // own desktop and never starts one.
+        {
+            let door = std::path::Path::new("/usr/libexec/tilo/tilo-runtime-mcp");
+            let claude: Vec<String> = Tool::Claude
+                .registration(door, None)
+                .into_iter()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect();
+            assert_eq!(
+                claude,
+                [
+                    "mcp",
+                    "add",
+                    "--scope",
+                    "user",
+                    "tilo",
+                    "--",
+                    "/usr/libexec/tilo/tilo-runtime-mcp",
+                    "--connect"
                 ]
-            )
-            .tool,
-            Some(Tool::VsCode)
-        );
-        // Claude Desktop spells its process with a capital; Claude Code does
-        // not, and is the one whose name is found first.
-        assert_eq!(
-            detect(
-                &none,
-                vec![Process {
-                    comm: "Claude".into(),
-                    args: vec!["/opt/claude-desktop/claude".into()],
-                }]
-            )
-            .tool,
-            Some(Tool::ClaudeDesktop)
-        );
-        assert_eq!(detect(&none, vec![shell]).name, UNKNOWN_AGENT);
-    }
+            );
+            let codex: Vec<String> = Tool::Codex
+                .registration(door, None)
+                .into_iter()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect();
+            assert_eq!(
+                codex,
+                [
+                    "mcp",
+                    "add",
+                    "tilo",
+                    "--",
+                    "/usr/libexec/tilo/tilo-runtime-mcp",
+                    "--connect"
+                ]
+            );
+        }
 
-    #[test]
-    fn agent_names_the_known_ones_by_name_or_program_and_keeps_others() {
-        assert_eq!(named("claude"), known(Tool::Claude));
-        assert_eq!(named("codex").tool, Some(Tool::Codex));
-        assert_eq!(named(" Gemini CLI ").tool, Some(Tool::Gemini));
-        assert_eq!(named("cursor").tool, Some(Tool::Cursor));
-        assert_eq!(named("VS Code").tool, Some(Tool::VsCode));
-        assert_eq!(named("roo-code").tool, Some(Tool::Roo));
-        assert_eq!(
-            named("Hermes"),
-            Agent {
-                name: "Hermes".into(),
-                tool: None
-            }
-        );
-    }
+        phase connecting_to_another_device_registers_its_door_beside_this_ones;
+        // Connecting to another device registers its own server, named after
+        // the device, carried to that device's door.
+        {
+            let door = std::path::Path::new("/usr/libexec/tilo/tilo-runtime-mcp");
+            let remote = Remote {
+                device: "Build Box".into(),
+                workspace: Some("cccccccc-cccc-4ccc-8ccc-cccccccccccc".into()),
+            };
+            let claude: Vec<String> = Tool::Claude
+                .registration(door, Some(&remote))
+                .into_iter()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect();
+            assert_eq!(
+                claude,
+                [
+                    "mcp",
+                    "add",
+                    "--scope",
+                    "user",
+                    "tilo-build-box",
+                    "--",
+                    "/usr/libexec/tilo/tilo-runtime-mcp",
+                    "--connect",
+                    "--device",
+                    "Build Box",
+                    "--workspace",
+                    "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+                ]
+            );
+        }
 
-    #[test]
-    fn the_agent_is_told_where_its_own_command_and_file_are() {
-        let tilo = Path::new("/opt/tilo");
-        // A tool whose own command adds servers is told that command.
-        assert!(
-            how_to_add(Tool::Codex, tilo)
-                .starts_with("Add it: codex mcp add tilo -- /opt/tilo mcp"),
-            "{}",
-            how_to_add(Tool::Codex, tilo)
-        );
-        // One that keeps a file is told the entry to write, and where.
-        let told = how_to_add(Tool::Zed, tilo);
-        assert!(told.contains("zed/settings.json"), "{told}");
-        assert!(told.contains("context_servers"), "{told}");
-        assert!(told.contains("\"tilo\": "), "{told}");
-        assert!(told.contains("\"command\":\"/opt/tilo\""), "{told}");
-        // An agent Tilo does not know is told the server itself, both ways.
-        let told = how_to_add_any("Hermes", tilo);
-        assert!(told.contains("/opt/tilo"), "{told}");
-        assert!(told.contains(MCP_URL), "{told}");
-    }
-
-    /// Connecting registers the door, in every directory for Claude Code,
-    /// under the name `tilo` with `--connect`, so it reaches the login's
-    /// own desktop and never starts one.
-    #[test]
-    fn connecting_registers_the_desktops_door() {
-        let door = std::path::Path::new("/usr/libexec/tilo/tilo-runtime-mcp");
-        let claude: Vec<String> = Tool::Claude
-            .registration(door, None)
-            .into_iter()
-            .map(|arg| arg.to_string_lossy().into_owned())
-            .collect();
-        assert_eq!(
-            claude,
-            [
-                "mcp",
-                "add",
-                "--scope",
-                "user",
-                "tilo",
-                "--",
-                "/usr/libexec/tilo/tilo-runtime-mcp",
-                "--connect"
-            ]
-        );
-        let codex: Vec<String> = Tool::Codex
-            .registration(door, None)
-            .into_iter()
-            .map(|arg| arg.to_string_lossy().into_owned())
-            .collect();
-        assert_eq!(
-            codex,
-            [
-                "mcp",
-                "add",
-                "tilo",
-                "--",
-                "/usr/libexec/tilo/tilo-runtime-mcp",
-                "--connect"
-            ]
-        );
-    }
-
-    /// Connecting to another device registers its own server, named after
-    /// the device, carried to that device's door.
-    #[test]
-    fn connecting_to_another_device_registers_its_door_beside_this_ones() {
-        let door = std::path::Path::new("/usr/libexec/tilo/tilo-runtime-mcp");
-        let remote = Remote {
-            device: "Build Box".into(),
-            workspace: Some("cccccccc-cccc-4ccc-8ccc-cccccccccccc".into()),
-        };
-        let claude: Vec<String> = Tool::Claude
-            .registration(door, Some(&remote))
-            .into_iter()
-            .map(|arg| arg.to_string_lossy().into_owned())
-            .collect();
-        assert_eq!(
-            claude,
-            [
-                "mcp",
-                "add",
-                "--scope",
-                "user",
-                "tilo-build-box",
-                "--",
-                "/usr/libexec/tilo/tilo-runtime-mcp",
-                "--connect",
-                "--device",
-                "Build Box",
-                "--workspace",
-                "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
-            ]
-        );
-    }
-
-    #[test]
-    fn a_workspace_is_named_by_its_id() {
-        assert!(workspace_id("CCCCCCCC-cccc-4ccc-8ccc-cccccccccccc").is_ok());
-        assert!(workspace_id("Studio").is_err());
-        assert!(workspace_id("cccccccc-cccc-4ccc-8ccc-ccccccccccc").is_err());
+        phase a_workspace_is_named_by_its_id;
+        {
+            assert!(workspace_id("CCCCCCCC-cccc-4ccc-8ccc-cccccccccccc").is_ok());
+            assert!(workspace_id("Studio").is_err());
+            assert!(workspace_id("cccccccc-cccc-4ccc-8ccc-ccccccccccc").is_err());
+        }
     }
 }

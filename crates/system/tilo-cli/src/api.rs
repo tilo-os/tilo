@@ -681,55 +681,59 @@ pub fn encode_path(path: &str) -> String {
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_path_is_encoded_a_segment_at_a_time() {
-        assert_eq!(encode_path("pdf-viewer"), "pdf-viewer");
-        assert_eq!(encode_path("notes/Q3 4 plan"), "notes/Q3%204%20plan");
-        assert_eq!(encode_path("a b/c#d"), "a%20b/c%23d");
-        assert_eq!(encode_path("/notes/"), "notes");
-    }
+    tilo_test_env::scenario! {
+        fn an_api_call_encodes_its_path_and_reads_its_refusals;
 
-    #[test]
-    fn a_refusal_names_what_went_wrong_and_what_to_do() {
-        let answer = Answer {
-            status: 403,
-            body: serde_json::json!({"error": {"code": "beyond_scope",
-                "message": "this key does not reach that workspace",
-                "next_steps": ["GET /v1/workspaces names the workspaces it reaches"]}})
-            .to_string()
-            .into_bytes(),
-        };
-        assert_eq!(
-            answer.refused().to_string(),
-            "this key does not reach that workspace (beyond_scope)\n  \
+        phase a_path_is_encoded_a_segment_at_a_time;
+        {
+            assert_eq!(encode_path("pdf-viewer"), "pdf-viewer");
+            assert_eq!(encode_path("notes/Q3 4 plan"), "notes/Q3%204%20plan");
+            assert_eq!(encode_path("a b/c#d"), "a%20b/c%23d");
+            assert_eq!(encode_path("/notes/"), "notes");
+        }
+
+        phase a_refusal_names_what_went_wrong_and_what_to_do;
+        {
+            let answer = Answer {
+                status: 403,
+                body: serde_json::json!({"error": {"code": "beyond_scope",
+                    "message": "this key does not reach that workspace",
+                    "next_steps": ["GET /v1/workspaces names the workspaces it reaches"]}})
+                .to_string()
+                .into_bytes(),
+            };
+            assert_eq!(
+                answer.refused().to_string(),
+                "this key does not reach that workspace (beyond_scope)\n  \
              GET /v1/workspaces names the workspaces it reaches"
-        );
-        let bare = Answer {
-            status: 500,
-            body: Vec::new(),
-        };
-        assert_eq!(
-            bare.refused().to_string(),
-            "the API refused the call (HTTP 500)"
-        );
-    }
+            );
+            let bare = Answer {
+                status: 500,
+                body: Vec::new(),
+            };
+            assert_eq!(
+                bare.refused().to_string(),
+                "the API refused the call (HTTP 500)"
+            );
+        }
 
-    #[test]
-    fn only_a_busy_host_says_how_long_to_wait() {
-        let busy = Answer {
-            status: 429,
-            body: serde_json::json!({"error": {"code": "rate_limited", "retry_after_ms": 480}})
-                .to_string()
-                .into_bytes(),
-        };
-        assert_eq!(busy.busy_for(), Some(Duration::from_millis(480)));
-        let refused = Answer {
-            status: 422,
-            body: serde_json::json!({"error": {"code": "refused"}})
-                .to_string()
-                .into_bytes(),
-        };
-        assert_eq!(refused.busy_for(), None);
+        phase only_a_busy_host_says_how_long_to_wait;
+        {
+            let busy = Answer {
+                status: 429,
+                body: serde_json::json!({"error": {"code": "rate_limited", "retry_after_ms": 480}})
+                    .to_string()
+                    .into_bytes(),
+            };
+            assert_eq!(busy.busy_for(), Some(Duration::from_millis(480)));
+            let refused = Answer {
+                status: 422,
+                body: serde_json::json!({"error": {"code": "refused"}})
+                    .to_string()
+                    .into_bytes(),
+            };
+            assert_eq!(refused.busy_for(), None);
+        }
     }
 
     /// This computer's own key, as `tilo login` kept it, is a key file the API

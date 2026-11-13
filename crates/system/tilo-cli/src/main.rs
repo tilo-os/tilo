@@ -1655,315 +1655,209 @@ mod tests {
     use super::*;
     use clap::{CommandFactory, FromArgMatches};
 
-    #[test]
-    fn failed_deployment_preserves_the_job_reason_journal_and_exit_status() {
-        let directory = std::env::temp_dir().join(format!(
-            "tilo-deployment-diagnostics-{}-{}",
-            std::process::id(),
-            tilo_clock::try_unix_now_ns().unwrap()
-        ));
-        std::fs::create_dir(&directory).unwrap();
-        let stderr_path = directory.join("job.stderr");
-        let journal_path = directory.join("journal.stdout");
-        let mut start = Command::new("/bin/sh");
-        start.args([
-            "-c",
-            "test \"$1\" = start && test \"$2\" = --wait && test \"$3\" = tilo-deployment-update.service || exit 99; printf '%s\\n' 'Job for tilo-deployment-update.service failed because the control process exited with error code.' >&2; exit 7",
-            "systemctl-fixture",
-        ]);
-        start.stderr(std::fs::File::create(&stderr_path).unwrap());
-        let mut journal = Command::new("/bin/sh");
-        journal.args([
-            "-c",
-            "test \"$1\" = -u && test \"$2\" = tilo-deployment-update.service && test \"$4\" = 80 || exit 99; printf '%s\\n' 'tilo-deployment: bootc upgrade failed: registry unavailable'",
-            "journalctl-fixture",
-        ]);
-        journal.stdout(std::fs::File::create(&journal_path).unwrap());
-        let mut diagnostics = Vec::new();
-        assert_eq!(
-            run_privileged_unit(
-                start,
-                journal,
-                "tilo-deployment-update.service",
-                "Stage image",
-                &mut diagnostics
-            )
-            .unwrap(),
-            exit_code(Some(7))
-        );
-        assert_eq!(
-            std::fs::read_to_string(&stderr_path).unwrap(),
-            "Job for tilo-deployment-update.service failed because the control process exited with error code.\n"
-        );
-        assert_eq!(
-            std::fs::read_to_string(&journal_path).unwrap(),
-            "tilo-deployment: bootc upgrade failed: registry unavailable\n"
-        );
-        let diagnostics = String::from_utf8(diagnostics).unwrap();
-        assert!(
-            diagnostics.contains("journalctl -u tilo-deployment-update.service -n 80 --no-pager")
-        );
-        assert!(!diagnostics.contains("polkit"));
-        assert!(!diagnostics.contains("seat"));
-        assert!(!diagnostics.contains("sudo"));
-        std::fs::remove_dir_all(directory).unwrap();
-    }
+    tilo_test_env::scenario! {
+        fn a_failed_deployment_keeps_the_units_failure_and_its_journal;
 
-    #[test]
-    fn unreadable_journal_is_reported_without_replacing_the_unit_failure() {
-        let mut start = Command::new("/bin/sh");
-        start.args(["-c", "exit 7"]);
-        let mut journal = Command::new("/bin/sh");
-        journal.args(["-c", "exit 1"]);
-        let mut diagnostics = Vec::new();
-        assert_eq!(
-            run_privileged_unit(
-                start,
-                journal,
-                "tilo-deployment-update.service",
-                "Stage image",
-                &mut diagnostics,
-            )
-            .unwrap(),
-            exit_code(Some(7))
-        );
-        let diagnostics = String::from_utf8(diagnostics).unwrap();
-        assert!(diagnostics.contains("reading tilo-deployment-update.service's journal failed"));
-        assert!(!diagnostics.contains("polkit"));
-    }
-
-    #[test]
-    fn the_command_tree_parses_namespaces_and_completes_both_argv0s() {
-        // Phase `the_command_tree_is_well_formed`.
-        // clap's own consistency check: duplicate names, bad arg definitions, a subcommand with no
-        // help. Fails the build rather than a user's first attempt to use it.
+        phase failed_deployment_preserves_the_job_reason_journal_and_exit_status;
         {
-            Cli::command().debug_assert();
-            DeviceCli::command().debug_assert();
-        }
-        {
-            let mut output = Vec::new();
-            clap_complete::generate(Shell::Bash, &mut Cli::command(), "tilo", &mut output);
-            clap_complete::generate(
-                Shell::Bash,
-                &mut DeviceCli::command(),
-                "system",
-                &mut output,
-            );
-            let script = String::from_utf8(output).expect("completion is UTF-8");
-            assert!(script.contains("_tilo()"), "{script}");
-            assert!(script.contains("default tilo"), "{script}");
-            assert!(script.contains("_system()"), "{script}");
-            assert!(script.contains("default system"), "{script}");
-        }
-        {
-            assert_eq!(human_duration(Duration::from_secs(9)), "9s");
-            assert_eq!(human_duration(Duration::from_secs(125)), "2m 05s");
-        }
-        // Phase `status_takes_the_unprivileged_path`.
-        // `status` must not require root. A person diagnosing a machine that won't boot properly
-        // shouldn't have to authenticate to be told what's on it, which requiring it would push
-        // them towards `sudo` for a read.
-        {
-            let cli = Cli::try_parse_from(["tilo", "status"]).expect("parses");
-            assert!(
-                matches!(cli.cmd, Cmd::Status { json: false }),
-                "status must parse without flags"
-            );
-        }
-        {
-            let system = Cli::try_parse_from(["tilo", "system", "status"]).expect("system parses");
-            assert!(matches!(
-                system.cmd,
-                Cmd::Device {
-                    cmd: DeviceCmd::Status { json: false }
-                }
+            let directory = std::env::temp_dir().join(format!(
+                "tilo-deployment-diagnostics-{}-{}",
+                std::process::id(),
+                tilo_clock::try_unix_now_ns().unwrap()
             ));
-            let app = Cli::try_parse_from(["tilo", "app", "u", "browser"]).expect("app parses");
-            assert!(matches!(app.cmd, Cmd::App { .. }));
-        }
-        // Phase `system_argv0_is_the_same_system_namespace`.
-        {
-            let args = vec![
-                OsString::from("system"),
-                OsString::from("update"),
-                OsString::from("-y"),
-            ];
-            assert_eq!(noun_of(&args).as_deref(), Some("system"));
-            let cli = DeviceCli::try_parse_from(args).expect("the system alias parses");
-            assert!(matches!(
-                cli.cmd,
-                DeviceCmd::Upgrade {
-                    yes: true,
-                    reboot: false,
-                    ..
-                }
-            ));
-            let os =
-                Cli::try_parse_from(["tilo", "os", "upgrade", "--to", "main-1a2b3c4", "--check"])
-                    .expect("os upgrade parses");
-            assert!(matches!(
-                os.cmd,
-                Cmd::Device {
-                    cmd: DeviceCmd::Upgrade { check: true, to: Some(ref to), .. }
-                } if to == "main-1a2b3c4"
-            ));
-        }
-    }
-
-    #[test]
-    fn the_cleanup_units_command_lines_parse() {
-        // tilo-cache-gc.service, tilo-os-image-gc.service, and the disk-pressure condition.
-        let caches = Cli::try_parse_from(["tilo", "os", "clean", "--only", "caches"]).unwrap();
-        assert!(matches!(
-            caches.cmd,
-            Cmd::Device {
-                cmd: DeviceCmd::Clean {
-                    only: Some(CleanPart::Caches),
-                    check_low_space: false
-                }
-            }
-        ));
-        let images = Cli::try_parse_from(["tilo", "os", "clean", "--only", "os-images"]).unwrap();
-        assert!(matches!(
-            images.cmd,
-            Cmd::Device {
-                cmd: DeviceCmd::Clean {
-                    only: Some(CleanPart::OsImages),
-                    ..
-                }
-            }
-        ));
-        let pressure = Cli::try_parse_from(["tilo", "os", "clean", "--check-low-space"]).unwrap();
-        assert!(matches!(
-            pressure.cmd,
-            Cmd::Device {
-                cmd: DeviceCmd::Clean {
-                    only: None,
-                    check_low_space: true
-                }
-            }
-        ));
-    }
-
-    #[test]
-    fn providers_are_discovered_forwarded_and_overridable() {
-        {
-            assert!(!command_available(std::ffi::OsStr::new(
-                "tilo-provider-that-does-not-exist"
-            )));
-        }
-        {
-            assert_eq!(app_binary_from(None), OsString::from("app"));
+            std::fs::create_dir(&directory).unwrap();
+            let stderr_path = directory.join("job.stderr");
+            let journal_path = directory.join("journal.stdout");
+            let mut start = Command::new("/bin/sh");
+            start.args([
+                "-c",
+                "test \"$1\" = start && test \"$2\" = --wait && test \"$3\" = tilo-deployment-update.service || exit 99; printf '%s\\n' 'Job for tilo-deployment-update.service failed because the control process exited with error code.' >&2; exit 7",
+                "systemctl-fixture",
+            ]);
+            start.stderr(std::fs::File::create(&stderr_path).unwrap());
+            let mut journal = Command::new("/bin/sh");
+            journal.args([
+                "-c",
+                "test \"$1\" = -u && test \"$2\" = tilo-deployment-update.service && test \"$4\" = 80 || exit 99; printf '%s\\n' 'tilo-deployment: bootc upgrade failed: registry unavailable'",
+                "journalctl-fixture",
+            ]);
+            journal.stdout(std::fs::File::create(&journal_path).unwrap());
+            let mut diagnostics = Vec::new();
             assert_eq!(
-                app_binary_from(Some(OsString::from("/custom/app"))),
-                OsString::from("/custom/app")
-            );
-        }
-        {
-            let cli = Cli::try_parse_from(["tilo", "app", "--help"])
-                .expect("app help must be forwarded rather than consumed by the super-command");
-            assert!(matches!(cli.cmd, Cmd::App { args } if args == [OsString::from("--help")]));
-            assert!(is_help_request(&[OsString::from("--help")]));
-            assert!(is_help_request(&[
-                OsString::from("update"),
-                OsString::from("-h")
-            ]));
-            assert!(!is_help_request(&[
-                OsString::from("update"),
-                OsString::from("browser")
-            ]));
-        }
-        // Phase `the_helper_path_is_overridable_and_defaults_to_libexec`.
-        // The helper path is a single named constant, not a string repeated at each call site — the
-        // failure mode being one verb pointing at a path the image does not have.
-        {
-            // Not asserting on a process-global env var here (tests run in parallel); assert the
-            // default, which is the part that ships.
-            assert!(
-                helper().ends_with("tilo-deployment"),
-                "the helper must be tilo-deployment, got {}",
-                helper()
-            );
-        }
-    }
-
-    #[test]
-    fn umbrella_update_runs_available_providers_and_fails_on_any_failure() {
-        {
-            let mut app_runs = 0;
-            let mut system_runs = 0;
-            let status = update_available_providers(
-                true,
-                false,
-                "app unavailable",
-                || {
-                    app_runs += 1;
-                    Ok(ExitCode::SUCCESS)
-                },
-                || {
-                    system_runs += 1;
-                    Ok(ExitCode::SUCCESS)
-                },
-            )
-            .unwrap();
-            assert_eq!(status, ExitCode::SUCCESS);
-            assert_eq!((app_runs, system_runs), (1, 0));
-
-            let status = update_available_providers(
-                false,
-                true,
-                "app unavailable",
-                || Ok(ExitCode::SUCCESS),
-                || Ok(ExitCode::SUCCESS),
-            )
-            .unwrap();
-            assert_eq!(status, ExitCode::SUCCESS);
-        }
-        {
-            assert!(
-                update_available_providers(
-                    false,
-                    false,
-                    "app unavailable",
-                    || Ok(ExitCode::SUCCESS),
-                    || Ok(ExitCode::SUCCESS)
-                )
-                .is_err()
-            );
-            assert_eq!(
-                update_available_providers(
-                    true,
-                    true,
-                    "app unavailable",
-                    || Ok(ExitCode::FAILURE),
-                    || Ok(ExitCode::SUCCESS)
+                run_privileged_unit(
+                    start,
+                    journal,
+                    "tilo-deployment-update.service",
+                    "Stage image",
+                    &mut diagnostics
                 )
                 .unwrap(),
-                ExitCode::FAILURE
+                exit_code(Some(7))
             );
-
-            let mut apps = 0;
-            let mut system = 0;
             assert_eq!(
-                update_available_providers(
+                std::fs::read_to_string(&stderr_path).unwrap(),
+                "Job for tilo-deployment-update.service failed because the control process exited with error code.\n"
+            );
+            assert_eq!(
+                std::fs::read_to_string(&journal_path).unwrap(),
+                "tilo-deployment: bootc upgrade failed: registry unavailable\n"
+            );
+            let diagnostics = String::from_utf8(diagnostics).unwrap();
+            assert!(
+                diagnostics.contains("journalctl -u tilo-deployment-update.service -n 80 --no-pager")
+            );
+            assert!(!diagnostics.contains("polkit"));
+            assert!(!diagnostics.contains("seat"));
+            assert!(!diagnostics.contains("sudo"));
+            std::fs::remove_dir_all(directory).unwrap();
+        }
+
+        phase unreadable_journal_is_reported_without_replacing_the_unit_failure;
+        {
+            let mut start = Command::new("/bin/sh");
+            start.args(["-c", "exit 7"]);
+            let mut journal = Command::new("/bin/sh");
+            journal.args(["-c", "exit 1"]);
+            let mut diagnostics = Vec::new();
+            assert_eq!(
+                run_privileged_unit(
+                    start,
+                    journal,
+                    "tilo-deployment-update.service",
+                    "Stage image",
+                    &mut diagnostics,
+                )
+                .unwrap(),
+                exit_code(Some(7))
+            );
+            let diagnostics = String::from_utf8(diagnostics).unwrap();
+            assert!(diagnostics.contains("reading tilo-deployment-update.service's journal failed"));
+            assert!(!diagnostics.contains("polkit"));
+        }
+    }
+
+    tilo_test_env::scenario! {
+        fn providers_are_found_and_an_update_runs_the_ones_there_are;
+
+        phase providers_are_discovered_forwarded_and_overridable;
+        {
+            {
+                assert!(!command_available(std::ffi::OsStr::new(
+                    "tilo-provider-that-does-not-exist"
+                )));
+            }
+            {
+                assert_eq!(app_binary_from(None), OsString::from("app"));
+                assert_eq!(
+                    app_binary_from(Some(OsString::from("/custom/app"))),
+                    OsString::from("/custom/app")
+                );
+            }
+            {
+                let cli = Cli::try_parse_from(["tilo", "app", "--help"])
+                    .expect("app help must be forwarded rather than consumed by the super-command");
+                assert!(matches!(cli.cmd, Cmd::App { args } if args == [OsString::from("--help")]));
+                assert!(is_help_request(&[OsString::from("--help")]));
+                assert!(is_help_request(&[
+                    OsString::from("update"),
+                    OsString::from("-h")
+                ]));
+                assert!(!is_help_request(&[
+                    OsString::from("update"),
+                    OsString::from("browser")
+                ]));
+            }
+            // Phase `the_helper_path_is_overridable_and_defaults_to_libexec`.
+            // The helper path is a single named constant, not a string repeated at each call site — the
+            // failure mode being one verb pointing at a path the image does not have.
+            {
+                // Not asserting on a process-global env var here (tests run in parallel); assert the
+                // default, which is the part that ships.
+                assert!(
+                    helper().ends_with("tilo-deployment"),
+                    "the helper must be tilo-deployment, got {}",
+                    helper()
+                );
+            }
+        }
+
+        phase umbrella_update_runs_available_providers_and_fails_on_any_failure;
+        {
+            {
+                let mut app_runs = 0;
+                let mut system_runs = 0;
+                let status = update_available_providers(
                     true,
-                    true,
+                    false,
                     "app unavailable",
                     || {
-                        apps += 1;
+                        app_runs += 1;
                         Ok(ExitCode::SUCCESS)
                     },
                     || {
-                        system += 1;
-                        anyhow::bail!("the deployment service is unavailable")
-                    }
+                        system_runs += 1;
+                        Ok(ExitCode::SUCCESS)
+                    },
                 )
-                .unwrap(),
-                ExitCode::FAILURE,
-                "one provider error must not turn a completed app update into an indeterminate CLI error"
-            );
-            assert_eq!((apps, system), (1, 1));
+                .unwrap();
+                assert_eq!(status, ExitCode::SUCCESS);
+                assert_eq!((app_runs, system_runs), (1, 0));
+
+                let status = update_available_providers(
+                    false,
+                    true,
+                    "app unavailable",
+                    || Ok(ExitCode::SUCCESS),
+                    || Ok(ExitCode::SUCCESS),
+                )
+                .unwrap();
+                assert_eq!(status, ExitCode::SUCCESS);
+            }
+            {
+                assert!(
+                    update_available_providers(
+                        false,
+                        false,
+                        "app unavailable",
+                        || Ok(ExitCode::SUCCESS),
+                        || Ok(ExitCode::SUCCESS)
+                    )
+                    .is_err()
+                );
+                assert_eq!(
+                    update_available_providers(
+                        true,
+                        true,
+                        "app unavailable",
+                        || Ok(ExitCode::FAILURE),
+                        || Ok(ExitCode::SUCCESS)
+                    )
+                    .unwrap(),
+                    ExitCode::FAILURE
+                );
+
+                let mut apps = 0;
+                let mut system = 0;
+                assert_eq!(
+                    update_available_providers(
+                        true,
+                        true,
+                        "app unavailable",
+                        || {
+                            apps += 1;
+                            Ok(ExitCode::SUCCESS)
+                        },
+                        || {
+                            system += 1;
+                            anyhow::bail!("the deployment service is unavailable")
+                        }
+                    )
+                    .unwrap(),
+                    ExitCode::FAILURE,
+                    "one provider error must not turn a completed app update into an indeterminate CLI error"
+                );
+                assert_eq!((apps, system), (1, 1));
+            }
         }
     }
 
@@ -1982,277 +1876,399 @@ mod tests {
             .collect()
     }
 
-    /// The help is about the person: on a Tilo laptop in a desktop session it
-    /// lists exactly what works there, with real examples and no narration
-    /// about providers or other distributions.
-    #[test]
-    fn help_on_a_tilo_desktop_lists_what_works_there_verbatim() {
-        assert_eq!(
-            listed(EVERYWHERE),
-            [
-                "app",
-                "action",
-                "workspace",
-                "keys",
-                "members",
-                "account",
-                "files",
-                "run",
-                "sdk",
-                "device",
-                "agent",
-                "package"
-            ]
-        );
-        let help = command_here(EVERYWHERE).render_help().to_string();
-        assert_eq!(
-            help,
-            concat!(
-                "Use apps and actions, and look after your devices\n",
-                "\n",
-                "Usage: tilo [OPTIONS] <COMMAND>\n",
-                "\n",
-                "Commands:\n",
-                "  app        Find, get, update and remove apps\n",
-                "  action     See what this desktop can do, and do it\n",
-                "  workspace  Your workspaces on this desktop\n",
-                "  keys       Keys to your hosted workspaces, for your code and its agents\n",
-                "  members    The people in a hosted workspace, inviting more, and how it names you\n",
-                "  account    Your hosted account: its workspaces\n",
-                "  files      Files into a hosted workspace\n",
-                "  run        Run a tilolang program in a hosted workspace, as one undoable step\n",
-                "  sdk        Write the SDK's types for a workspace's apps, from their surfaces\n",
-                "  device     Your devices: update them, go back, repair them, develop on them\n",
-                "  agent      Connect agents to this desktop, and choose their models\n",
-                "  package    Make and sign packages\n",
-                "  help       Print this message or the help of the given subcommand(s)\n",
-                "\n",
-                "Options:\n",
-                "  -w, --workspace <WORKSPACE>  A hosted workspace to act in, by name or id\n",
-                "      --key-file <FILE>        A key this computer holds (`tilo keys export`), instead of TILO_API_KEY\n",
-                "  -h, --help                   Print help\n",
-                "  -V, --version                Print version\n",
-                "\n",
-                "Examples:\n",
-                "  tilo open calculator                       Open Calculator\n",
-                "  tilo open notes ~/plan.md                  Open a file in Notes\n",
-                "  tilo actions                               What this desktop can do\n",
-                "  tilo do new-terminal-window                Do one of those things\n",
-                "  tilo app search pdf                        Find apps\n",
-                "  tilo app update                            Update every app\n",
-                "  tilo status                                What runs on this device\n",
-                "  tilo device update                         Move onto the newest system\n",
-                "  tilo update                                Update apps and this device\n",
-                "  tilo agent connect claude                  Let Claude Code act on this desktop\n",
-                "  tilo package pack                          Make a package of your app\n",
-                "  tilo keys create \"Visa backend\"            A key for your own backend: you approve it in your Tilo\n",
-                "  tilo account workspaces create \"Jane Doe\"  A hosted workspace, one per customer\n",
-                "  tilo keys mint -w jane-doe                 An MCP URL and token for an agent in that workspace alone\n",
-            )
-        );
-    }
+    tilo_test_env::scenario! {
+        fn help_lists_what_works_where_it_is_asked;
 
-    /// On another distribution, what can't work there is simply absent: no
-    /// desktop commands without a desktop, no `system` off Tilo OS. Typing one
-    /// anyway still parses, and answers with what it needs.
-    #[test]
-    fn help_elsewhere_leaves_out_what_cannot_work() {
-        let elsewhere = Here {
-            desktop: false,
-            apps: true,
-            system: false,
-            has: |_| false,
-        };
-        assert_eq!(
-            listed(elsewhere),
-            [
-                "app", "keys", "members", "account", "files", "run", "sdk", "login"
-            ]
-        );
-        let help = command_here(elsewhere).render_help().to_string();
-        for absent in [
-            "tilo open",
-            "tilo do",
-            "tilo actions",
-            "device update",
-            "status",
-        ] {
-            assert!(!help.contains(absent), "{absent} in:\n{help}");
+        phase help_on_a_tilo_desktop_lists_what_works_there_verbatim;
+        // The help is about the person: on a Tilo laptop in a desktop session it
+        // lists exactly what works there, with real examples and no narration
+        // about providers or other distributions.
+        {
+            assert_eq!(
+                listed(EVERYWHERE),
+                [
+                    "app",
+                    "action",
+                    "workspace",
+                    "keys",
+                    "members",
+                    "account",
+                    "files",
+                    "run",
+                    "sdk",
+                    "device",
+                    "agent",
+                    "package"
+                ]
+            );
+            let help = command_here(EVERYWHERE).render_help().to_string();
+            assert_eq!(
+                help,
+                concat!(
+                    "Use apps and actions, and look after your devices\n",
+                    "\n",
+                    "Usage: tilo [OPTIONS] <COMMAND>\n",
+                    "\n",
+                    "Commands:\n",
+                    "  app        Find, get, update and remove apps\n",
+                    "  action     See what this desktop can do, and do it\n",
+                    "  workspace  Your workspaces on this desktop\n",
+                    "  keys       Keys to your hosted workspaces, for your code and its agents\n",
+                    "  members    The people in a hosted workspace, inviting more, and how it names you\n",
+                    "  account    Your hosted account: its workspaces\n",
+                    "  files      Files into a hosted workspace\n",
+                    "  run        Run a tilolang program in a hosted workspace, as one undoable step\n",
+                    "  sdk        Write the SDK's types for a workspace's apps, from their surfaces\n",
+                    "  device     Your devices: update them, go back, repair them, develop on them\n",
+                    "  agent      Connect agents to this desktop, and choose their models\n",
+                    "  package    Make and sign packages\n",
+                    "  help       Print this message or the help of the given subcommand(s)\n",
+                    "\n",
+                    "Options:\n",
+                    "  -w, --workspace <WORKSPACE>  A hosted workspace to act in, by name or id\n",
+                    "      --key-file <FILE>        A key this computer holds (`tilo keys export`), instead of TILO_API_KEY\n",
+                    "  -h, --help                   Print help\n",
+                    "  -V, --version                Print version\n",
+                    "\n",
+                    "Examples:\n",
+                    "  tilo open calculator                       Open Calculator\n",
+                    "  tilo open notes ~/plan.md                  Open a file in Notes\n",
+                    "  tilo actions                               What this desktop can do\n",
+                    "  tilo do new-terminal-window                Do one of those things\n",
+                    "  tilo app search pdf                        Find apps\n",
+                    "  tilo app update                            Update every app\n",
+                    "  tilo status                                What runs on this device\n",
+                    "  tilo device update                         Move onto the newest system\n",
+                    "  tilo update                                Update apps and this device\n",
+                    "  tilo agent connect claude                  Let Claude Code act on this desktop\n",
+                    "  tilo package pack                          Make a package of your app\n",
+                    "  tilo keys create \"Visa backend\"            A key for your own backend: you approve it in your Tilo\n",
+                    "  tilo account workspaces create \"Jane Doe\"  A hosted workspace, one per customer\n",
+                    "  tilo keys mint -w jane-doe                 An MCP URL and token for an agent in that workspace alone\n",
+                )
+            );
         }
-        let nothing = Here {
-            desktop: false,
-            apps: false,
-            system: false,
-            has: |_| false,
-        };
-        // A bare computer (the tilo.sh installer's) logs in to the person's
-        // workspace, and reaches hosted workspaces with a key.
-        assert_eq!(
-            listed(nothing),
-            ["keys", "members", "account", "files", "run", "sdk", "login"]
-        );
-        let bare = command_here(nothing).render_help().to_string();
-        assert!(bare.contains("tilo keys create"), "{bare}");
-        assert!(!bare.contains("tilo open"), "{bare}");
-        // Hidden, not removed: a typed command reaches its one plain sentence.
-        let typed = command_here(nothing)
-            .try_get_matches_from(["tilo", "device", "status"])
-            .expect("a hidden command still parses");
-        assert!(Cli::from_arg_matches(&typed).is_ok());
-        // No narration about the program in any help it prints.
-        for here in [EVERYWHERE, elsewhere, nothing] {
-            let mut command = command_here(here);
-            let mut texts = vec![command.render_long_help().to_string()];
-            for sub in command.get_subcommands_mut() {
-                texts.push(sub.render_long_help().to_string());
+
+        phase help_elsewhere_leaves_out_what_cannot_work;
+        // On another distribution, what can't work there is simply absent: no
+        // desktop commands without a desktop, no `system` off Tilo OS. Typing one
+        // anyway still parses, and answers with what it needs.
+        {
+            let elsewhere = Here {
+                desktop: false,
+                apps: true,
+                system: false,
+                has: |_| false,
+            };
+            assert_eq!(
+                listed(elsewhere),
+                [
+                    "app", "keys", "members", "account", "files", "run", "sdk", "login"
+                ]
+            );
+            let help = command_here(elsewhere).render_help().to_string();
+            for absent in [
+                "tilo open",
+                "tilo do",
+                "tilo actions",
+                "device update",
+                "status",
+            ] {
+                assert!(!help.contains(absent), "{absent} in:\n{help}");
             }
-            for text in texts {
-                for word in [
-                    "provider",
-                    "distribution",
-                    "PATH",
-                    "bootc",
-                    "OS image",
-                    "Tilo OS-only",
-                ] {
-                    assert!(!text.contains(word), "{word} in:\n{text}");
+            let nothing = Here {
+                desktop: false,
+                apps: false,
+                system: false,
+                has: |_| false,
+            };
+            // A bare computer (the tilo.sh installer's) logs in to the person's
+            // workspace, and reaches hosted workspaces with a key.
+            assert_eq!(
+                listed(nothing),
+                ["keys", "members", "account", "files", "run", "sdk", "login"]
+            );
+            let bare = command_here(nothing).render_help().to_string();
+            assert!(bare.contains("tilo keys create"), "{bare}");
+            assert!(!bare.contains("tilo open"), "{bare}");
+            // Hidden, not removed: a typed command reaches its one plain sentence.
+            let typed = command_here(nothing)
+                .try_get_matches_from(["tilo", "device", "status"])
+                .expect("a hidden command still parses");
+            assert!(Cli::from_arg_matches(&typed).is_ok());
+            // No narration about the program in any help it prints.
+            for here in [EVERYWHERE, elsewhere, nothing] {
+                let mut command = command_here(here);
+                let mut texts = vec![command.render_long_help().to_string()];
+                for sub in command.get_subcommands_mut() {
+                    texts.push(sub.render_long_help().to_string());
+                }
+                for text in texts {
+                    for word in [
+                        "provider",
+                        "distribution",
+                        "PATH",
+                        "bootc",
+                        "OS image",
+                        "Tilo OS-only",
+                    ] {
+                        assert!(!text.contains(word), "{word} in:\n{text}");
+                    }
                 }
             }
         }
     }
 
-    #[test]
-    fn open_action_and_do_parse_under_every_name() {
-        let open = Cli::try_parse_from(["tilo", "open", "calc", "a.txt", "https://tilo.so"])
-            .expect("open parses");
-        assert!(matches!(
-            open.cmd,
-            Cmd::Open { ref app, ref items } if app == "calc" && items == &["a.txt", "https://tilo.so"]
-        ));
-        let run = Cli::try_parse_from(["tilo", "do", "rename-note", "title=Groceries", "--force"])
-            .expect("do parses");
-        assert!(matches!(
-            run.cmd,
-            Cmd::Do { ref action, ref args } if action == "rename-note" && args == &["title=Groceries", "--force"]
-        ));
-        let branch = Cli::try_parse_from(["tilo", "workspace", "branch", "Research", "Question 2"])
-            .expect("workspace branch parses");
-        assert!(matches!(
-            branch.cmd,
-            Cmd::Workspace {
-                cmd: desktop::WorkspaceCmd::Branch { ref source, ref name }
-            } if source == "Research" && name == "Question 2"
-        ));
-        assert!(
-            Cli::try_parse_from(["tilo", "workspace", "branch", "Research"]).is_err(),
-            "a branch is named"
-        );
-        let list = Cli::try_parse_from(["tilo", "actions", "volume"]).expect("actions parses");
-        assert!(matches!(list.cmd, Cmd::Actions { ref filter } if filter == &["volume"]));
-        let show = Cli::try_parse_from(["tilo", "action", "show", "mute"]).expect("show parses");
-        assert!(matches!(
-            show.cmd,
-            Cmd::Action { cmd: desktop::ActionCmd::Show { ref action } } if action == "mute"
-        ));
-        let app_open = Cli::try_parse_from(["tilo", "app", "open", "notes", "plan.md"])
-            .expect("app open parses");
-        assert!(matches!(
-            app_open.cmd,
-            Cmd::App { ref args } if args.first().is_some_and(|verb| verb == "open")
-        ));
-        let standalone = ActionCli::try_parse_from(["action", "run", "mute"]).expect("action run");
-        assert!(matches!(
-            standalone.cmd,
-            desktop::ActionCmd::Run { ref action, .. } if action == "mute"
-        ));
-        ActionCli::command().debug_assert();
-        for (argv0, noun) in [
-            ("/usr/bin/action", Some("action")),
-            ("tilo-action", Some("action")),
-            ("/usr/bin/system", Some("system")),
-            ("tilo-device", Some("device")),
-            ("tilo-package", Some("package")),
-            ("/usr/bin/agent", Some("agent")),
-            ("device", Some("device")),
-            ("/usr/bin/tilo", None),
-        ] {
-            assert_eq!(
-                noun_of(&[OsString::from(argv0)]).as_deref(),
-                noun,
-                "{argv0}"
-            );
+    tilo_test_env::scenario! {
+        fn the_command_line_parses_under_every_name_it_goes_by;
+
+        phase the_command_tree_parses_namespaces_and_completes_both_argv0s;
+        {
+            // Phase `the_command_tree_is_well_formed`.
+            // clap's own consistency check: duplicate names, bad arg definitions, a subcommand with no
+            // help. Fails the build rather than a user's first attempt to use it.
+            {
+                Cli::command().debug_assert();
+                DeviceCli::command().debug_assert();
+            }
+            {
+                let mut output = Vec::new();
+                clap_complete::generate(Shell::Bash, &mut Cli::command(), "tilo", &mut output);
+                clap_complete::generate(
+                    Shell::Bash,
+                    &mut DeviceCli::command(),
+                    "system",
+                    &mut output,
+                );
+                let script = String::from_utf8(output).expect("completion is UTF-8");
+                assert!(script.contains("_tilo()"), "{script}");
+                assert!(script.contains("default tilo"), "{script}");
+                assert!(script.contains("_system()"), "{script}");
+                assert!(script.contains("default system"), "{script}");
+            }
+            {
+                assert_eq!(human_duration(Duration::from_secs(9)), "9s");
+                assert_eq!(human_duration(Duration::from_secs(125)), "2m 05s");
+            }
+            // Phase `status_takes_the_unprivileged_path`.
+            // `status` must not require root. A person diagnosing a machine that won't boot properly
+            // shouldn't have to authenticate to be told what's on it, which requiring it would push
+            // them towards `sudo` for a read.
+            {
+                let cli = Cli::try_parse_from(["tilo", "status"]).expect("parses");
+                assert!(
+                    matches!(cli.cmd, Cmd::Status { json: false }),
+                    "status must parse without flags"
+                );
+            }
+            {
+                let system = Cli::try_parse_from(["tilo", "system", "status"]).expect("system parses");
+                assert!(matches!(
+                    system.cmd,
+                    Cmd::Device {
+                        cmd: DeviceCmd::Status { json: false }
+                    }
+                ));
+                let app = Cli::try_parse_from(["tilo", "app", "u", "browser"]).expect("app parses");
+                assert!(matches!(app.cmd, Cmd::App { .. }));
+            }
+            // Phase `system_argv0_is_the_same_system_namespace`.
+            {
+                let args = vec![
+                    OsString::from("system"),
+                    OsString::from("update"),
+                    OsString::from("-y"),
+                ];
+                assert_eq!(noun_of(&args).as_deref(), Some("system"));
+                let cli = DeviceCli::try_parse_from(args).expect("the system alias parses");
+                assert!(matches!(
+                    cli.cmd,
+                    DeviceCmd::Upgrade {
+                        yes: true,
+                        reboot: false,
+                        ..
+                    }
+                ));
+                let os =
+                    Cli::try_parse_from(["tilo", "os", "upgrade", "--to", "main-1a2b3c4", "--check"])
+                        .expect("os upgrade parses");
+                assert!(matches!(
+                    os.cmd,
+                    Cmd::Device {
+                        cmd: DeviceCmd::Upgrade { check: true, to: Some(ref to), .. }
+                    } if to == "main-1a2b3c4"
+                ));
+            }
         }
-    }
 
-    /// `device` and `package` verbs another program owns parse with every
-    /// argument kept for it, `--help` included, and leave help where the
-    /// program is missing.
-    #[test]
-    fn handed_on_verbs_keep_their_arguments_and_show_only_where_they_work() {
-        let matches = command_here(EVERYWHERE)
-            .try_get_matches_from(["tilo", "package", "inspect", "x.tapp", "--help"])
-            .expect("package inspect parses");
-        let (_, package) = matches.subcommand().expect("a noun");
-        let (verb, args) = nouns::picked(package, nouns::PACKAGE).expect("a handed-on verb");
-        assert_eq!(
-            (verb.program, verb.prefix),
-            ("tilo-app-package", &["inspect"][..])
-        );
-        assert_eq!(args, ["x.tapp", "--help"]);
-        let matches = command_here(EVERYWHERE)
-            .try_get_matches_from(["tilo", "device", "swap", "tilo-session", "--target", "lab"])
-            .expect("device swap parses");
-        let (_, device) = matches.subcommand().expect("a noun");
-        let (verb, args) = nouns::picked(device, nouns::DEVICE).expect("a handed-on verb");
-        assert_eq!((verb.program, verb.prefix), ("tilo-vm", &["swap"][..]));
-        assert_eq!(args, ["tilo-session", "--target", "lab"]);
-        let matches = command_here(EVERYWHERE)
-            .try_get_matches_from(["tilo", "device", "status"])
-            .expect("device status parses");
-        let (_, device) = matches.subcommand().expect("a noun");
-        assert!(nouns::picked(device, nouns::DEVICE).is_none());
-
-        let bare = Here {
-            desktop: false,
-            apps: false,
-            system: false,
-            has: |_| false,
-        };
-        let device = device_here(DeviceCli::command(), bare);
-        let shown: Vec<&str> = device
-            .get_subcommands()
-            .filter(|sub| !sub.is_hide_set())
-            .map(clap::Command::get_name)
-            .collect();
-        assert_eq!(shown, ["clean", "health"]);
-        assert!(!device_examples(bare).contains("swap"));
-        let agent = agent_here(AgentCli::command(), bare);
-        assert!(agent.get_subcommands().all(clap::Command::is_hide_set));
-        let all: Vec<String> = completing(EVERYWHERE)
-            .get_subcommands()
-            .filter(|sub| !sub.is_hide_set())
-            .map(|sub| sub.get_name().to_owned())
-            .collect();
-        for name in ["open", "do", "app", "device", "agent", "package", "update"] {
-            assert!(all.iter().any(|listed| listed == name), "{name} in {all:?}");
+        phase the_cleanup_units_command_lines_parse;
+        {
+            // tilo-cache-gc.service, tilo-os-image-gc.service, and the disk-pressure condition.
+            let caches = Cli::try_parse_from(["tilo", "os", "clean", "--only", "caches"]).unwrap();
+            assert!(matches!(
+                caches.cmd,
+                Cmd::Device {
+                    cmd: DeviceCmd::Clean {
+                        only: Some(CleanPart::Caches),
+                        check_low_space: false
+                    }
+                }
+            ));
+            let images = Cli::try_parse_from(["tilo", "os", "clean", "--only", "os-images"]).unwrap();
+            assert!(matches!(
+                images.cmd,
+                Cmd::Device {
+                    cmd: DeviceCmd::Clean {
+                        only: Some(CleanPart::OsImages),
+                        ..
+                    }
+                }
+            ));
+            let pressure = Cli::try_parse_from(["tilo", "os", "clean", "--check-low-space"]).unwrap();
+            assert!(matches!(
+                pressure.cmd,
+                Cmd::Device {
+                    cmd: DeviceCmd::Clean {
+                        only: None,
+                        check_low_space: true
+                    }
+                }
+            ));
         }
-    }
 
-    #[test]
-    fn completions_ask_the_desktop_for_app_and_action_names() {
-        for shell in [Shell::Bash, Shell::Zsh, Shell::Fish] {
-            let glue = desktop::dynamic_completions(shell);
+        phase open_action_and_do_parse_under_every_name;
+        {
+            let open = Cli::try_parse_from(["tilo", "open", "calc", "a.txt", "https://tilo.so"])
+                .expect("open parses");
+            assert!(matches!(
+                open.cmd,
+                Cmd::Open { ref app, ref items } if app == "calc" && items == &["a.txt", "https://tilo.so"]
+            ));
+            let run = Cli::try_parse_from(["tilo", "do", "rename-note", "title=Groceries", "--force"])
+                .expect("do parses");
+            assert!(matches!(
+                run.cmd,
+                Cmd::Do { ref action, ref args } if action == "rename-note" && args == &["title=Groceries", "--force"]
+            ));
+            let branch = Cli::try_parse_from(["tilo", "workspace", "branch", "Research", "Question 2"])
+                .expect("workspace branch parses");
+            assert!(matches!(
+                branch.cmd,
+                Cmd::Workspace {
+                    cmd: desktop::WorkspaceCmd::Branch { ref source, ref name }
+                } if source == "Research" && name == "Question 2"
+            ));
             assert!(
-                glue.contains("tilo complete actions") || glue.contains("tilo complete \"$what\""),
-                "{shell}"
+                Cli::try_parse_from(["tilo", "workspace", "branch", "Research"]).is_err(),
+                "a branch is named"
             );
-            assert!(glue.contains("open"), "{shell}");
+            let list = Cli::try_parse_from(["tilo", "actions", "volume"]).expect("actions parses");
+            assert!(matches!(list.cmd, Cmd::Actions { ref filter } if filter == &["volume"]));
+            let show = Cli::try_parse_from(["tilo", "action", "show", "mute"]).expect("show parses");
+            assert!(matches!(
+                show.cmd,
+                Cmd::Action { cmd: desktop::ActionCmd::Show { ref action } } if action == "mute"
+            ));
+            let app_open = Cli::try_parse_from(["tilo", "app", "open", "notes", "plan.md"])
+                .expect("app open parses");
+            assert!(matches!(
+                app_open.cmd,
+                Cmd::App { ref args } if args.first().is_some_and(|verb| verb == "open")
+            ));
+            let standalone = ActionCli::try_parse_from(["action", "run", "mute"]).expect("action run");
+            assert!(matches!(
+                standalone.cmd,
+                desktop::ActionCmd::Run { ref action, .. } if action == "mute"
+            ));
+            ActionCli::command().debug_assert();
+            for (argv0, noun) in [
+                ("/usr/bin/action", Some("action")),
+                ("tilo-action", Some("action")),
+                ("/usr/bin/system", Some("system")),
+                ("tilo-device", Some("device")),
+                ("tilo-package", Some("package")),
+                ("/usr/bin/agent", Some("agent")),
+                ("device", Some("device")),
+                ("/usr/bin/tilo", None),
+            ] {
+                assert_eq!(
+                    noun_of(&[OsString::from(argv0)]).as_deref(),
+                    noun,
+                    "{argv0}"
+                );
+            }
         }
-        let typed =
-            Cli::try_parse_from(["tilo", "complete", "apps", "cal"]).expect("complete parses");
-        assert!(matches!(
-            typed.cmd,
-            Cmd::Complete { what: desktop::Completing::Apps, prefix: Some(ref prefix) } if prefix == "cal"
-        ));
+
+        phase handed_on_verbs_keep_their_arguments_and_show_only_where_they_work;
+        // `device` and `package` verbs another program owns parse with every
+        // argument kept for it, `--help` included, and leave help where the
+        // program is missing.
+        {
+            let matches = command_here(EVERYWHERE)
+                .try_get_matches_from(["tilo", "package", "inspect", "x.tapp", "--help"])
+                .expect("package inspect parses");
+            let (_, package) = matches.subcommand().expect("a noun");
+            let (verb, args) = nouns::picked(package, nouns::PACKAGE).expect("a handed-on verb");
+            assert_eq!(
+                (verb.program, verb.prefix),
+                ("tilo-app-package", &["inspect"][..])
+            );
+            assert_eq!(args, ["x.tapp", "--help"]);
+            let matches = command_here(EVERYWHERE)
+                .try_get_matches_from(["tilo", "device", "swap", "tilo-session", "--target", "lab"])
+                .expect("device swap parses");
+            let (_, device) = matches.subcommand().expect("a noun");
+            let (verb, args) = nouns::picked(device, nouns::DEVICE).expect("a handed-on verb");
+            assert_eq!((verb.program, verb.prefix), ("tilo-vm", &["swap"][..]));
+            assert_eq!(args, ["tilo-session", "--target", "lab"]);
+            let matches = command_here(EVERYWHERE)
+                .try_get_matches_from(["tilo", "device", "status"])
+                .expect("device status parses");
+            let (_, device) = matches.subcommand().expect("a noun");
+            assert!(nouns::picked(device, nouns::DEVICE).is_none());
+
+            let bare = Here {
+                desktop: false,
+                apps: false,
+                system: false,
+                has: |_| false,
+            };
+            let device = device_here(DeviceCli::command(), bare);
+            let shown: Vec<&str> = device
+                .get_subcommands()
+                .filter(|sub| !sub.is_hide_set())
+                .map(clap::Command::get_name)
+                .collect();
+            assert_eq!(shown, ["clean", "health"]);
+            assert!(!device_examples(bare).contains("swap"));
+            let agent = agent_here(AgentCli::command(), bare);
+            assert!(agent.get_subcommands().all(clap::Command::is_hide_set));
+            let all: Vec<String> = completing(EVERYWHERE)
+                .get_subcommands()
+                .filter(|sub| !sub.is_hide_set())
+                .map(|sub| sub.get_name().to_owned())
+                .collect();
+            for name in ["open", "do", "app", "device", "agent", "package", "update"] {
+                assert!(all.iter().any(|listed| listed == name), "{name} in {all:?}");
+            }
+        }
+
+        phase completions_ask_the_desktop_for_app_and_action_names;
+        {
+            for shell in [Shell::Bash, Shell::Zsh, Shell::Fish] {
+                let glue = desktop::dynamic_completions(shell);
+                assert!(
+                    glue.contains("tilo complete actions") || glue.contains("tilo complete \"$what\""),
+                    "{shell}"
+                );
+                assert!(glue.contains("open"), "{shell}");
+            }
+            let typed =
+                Cli::try_parse_from(["tilo", "complete", "apps", "cal"]).expect("complete parses");
+            assert!(matches!(
+                typed.cmd,
+                Cmd::Complete { what: desktop::Completing::Apps, prefix: Some(ref prefix) } if prefix == "cal"
+            ));
+        }
     }
 }
