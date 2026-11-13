@@ -445,6 +445,7 @@ impl FilesState {
         if let Some((account, folder)) = self.cloud_title() {
             let title =
                 folder.map_or_else(|| account.clone(), |folder| format!("{account} / {folder}"));
+            // window-bar: fallback, the bar names the folder while it hosts the window
             chrome
                 .nav
                 .set_content_header_leading(Some(ui::widget::Text::new(&title).into_widget()));
@@ -454,9 +455,11 @@ impl FilesState {
             let (leading, actions, toolbar) = crate::toolbar::FileToolbar::new(self.cmds.clone());
             self.toolbar = toolbar;
             self.update_toolbar();
+            // window-bar: fallback, the bar shows the path while it hosts the window
             chrome
                 .nav
                 .set_content_header_leading(Some(Box::new(leading)));
+            // window-bar: fallback, the bar holds the folder's actions while it hosts the window
             chrome.nav.set_content_header("", vec![Box::new(actions)]);
             self.cloud.header_shown = false;
         }

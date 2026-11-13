@@ -344,6 +344,7 @@ impl DailyControls {
             .with_id("browser.find")
             .with_padding(theme.tokens.spacing.s3, theme.tokens.spacing.s1)
             .push(Box::new(
+                // window-bar: fallback, the bar's search finds in the page while it hosts the window
                 TextInput::from_state(&self.query)
                     .with_id(FIND_INPUT)
                     .with_kind(ui::widget::TextInputKind::Search)
