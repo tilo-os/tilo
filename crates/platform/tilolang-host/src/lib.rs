@@ -1128,5 +1128,18 @@ mod tests {
         let other = collaboration::record::RecordId::for_file_record(uuid::Uuid::from_u128(10));
         assert!(!opens_record(&owns, other.as_str()));
         assert!(!opens_record(&owns, "not a record"));
+        // Naming nothing names no record: not the workspace's, whose route names none, by the
+        // empty name or by the key its custody keeps it under, and not a member's own.
+        let primary = collaboration::record::RecordId::package_primary();
+        for unnamed in ["", primary.as_str()] {
+            assert!(
+                !opens_record(&workspaces, unnamed),
+                "`{unnamed}` opened the workspace's record"
+            );
+            assert!(
+                !opens_record(&owns, unnamed),
+                "`{unnamed}` opened a member's own record"
+            );
+        }
     }
 }
