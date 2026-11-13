@@ -384,19 +384,19 @@ fn middle_drag(
     (from_x, from_y): (f64, f64),
     (dx, dy): (f64, f64),
 ) {
-    let _ = harness.dispatch_to_root(&crate::synthetic_input::cursor_moved(from_x, from_y));
-    let _ = harness.dispatch_to_root(&crate::synthetic_input::mouse_input(
+    harness.send(&crate::synthetic_input::cursor_moved(from_x, from_y));
+    harness.send(&crate::synthetic_input::mouse_input(
         ElementState::Pressed,
         MouseButton::Middle,
     ));
     for step in 1..=4 {
         let fraction = f64::from(step) / 4.0;
-        let _ = harness.dispatch_to_root(&crate::synthetic_input::cursor_moved(
+        harness.send(&crate::synthetic_input::cursor_moved(
             from_x + dx * fraction,
             from_y + dy * fraction,
         ));
     }
-    let _ = harness.dispatch_to_root(&crate::synthetic_input::mouse_input(
+    harness.send(&crate::synthetic_input::mouse_input(
         ElementState::Released,
         MouseButton::Middle,
     ));
@@ -442,7 +442,7 @@ fn the_arrow_keys_pan_a_canvas_whose_press_put_the_keyboard_in_it() {
     let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
     let mut harness = mounted(map_of(&[("one", 100.0)], viewport));
     let before = laid(&harness, "one");
-    let _ = harness.dispatch_to_root(&crate::synthetic_input::named_key(
+    harness.send(&crate::synthetic_input::named_key(
         winit::keyboard::NamedKey::ArrowRight,
     ));
     harness.relayout();
@@ -459,7 +459,7 @@ fn the_arrow_keys_pan_a_canvas_whose_press_put_the_keyboard_in_it() {
     );
     let mut before = laid(&harness, "one");
     for round in 1..=3 {
-        let _ = harness.dispatch_to_root(&crate::synthetic_input::named_key(
+        harness.send(&crate::synthetic_input::named_key(
             winit::keyboard::NamedKey::ArrowRight,
         ));
         harness.relayout();
