@@ -26,8 +26,8 @@ fn every_package_in_apps_tl_checks_clean() {
     let mut dirs: Vec<_> = std::fs::read_dir(&root)
         .unwrap()
         .map(|entry| entry.unwrap().path())
-        // A tilolang package is a directory of `.tl` files; a native app beside them (the
-        // session's committed `surface.toml`) is what packages `use`, not one to check.
+        // A tilolang package is a directory of `.tl` files; a native app beside them (the session's
+        // committed `surface.toml`) is what packages `use`, not one to check.
         .filter(|path| tilolang::source::source_paths(path).is_ok_and(|files| !files.is_empty()))
         .collect();
     dirs.sort();
@@ -51,9 +51,9 @@ fn every_package_in_apps_tl_checks_clean() {
     assert!(failed.is_empty(), "{}", failed.join("\n"));
 }
 
-/// A message leaves the catalogue when its declaration leaves the source, so writing the
-/// catalogue has to prune it: what `--write-ids` writes is what a check calls current, and the
-/// id of what went is retired, never reused.
+/// A message leaves the catalogue when its declaration leaves the source, so writing the catalogue
+/// has to prune it: what `--write-ids` writes is what a check calls current, and the id of what
+/// went is retired, never reused.
 #[test]
 fn writing_the_source_catalogue_prunes_the_messages_its_source_no_longer_has() {
     let scratch = tempfile::tempdir().unwrap();
@@ -89,9 +89,9 @@ fn writing_the_source_catalogue_prunes_the_messages_its_source_no_longer_has() {
         "{written}"
     );
 
-    // A translation has every word of its source and no more, so writing the source catalogue
-    // drops the word the source stopped saying from the German one, and keeps the German words
-    // of the messages the source still has.
+    // A translation has every word of its source and no more, so writing the source catalogue drops
+    // the word the source stopped saying from the German one, and keeps the German words of the
+    // messages the source still has.
     let german = dir.join("locales/de-DE.ftl");
     let translated = std::fs::read_to_string(&german).unwrap();
     assert!(
@@ -115,9 +115,9 @@ fn writing_the_source_catalogue_prunes_the_messages_its_source_no_longer_has() {
     assert!(passed, "what writing leaves is current:\n{stderr}");
 }
 
-/// A word no message of the source has ever had is its translator's own mistake, not one the
-/// source dropped, so writing the catalogue cannot take it away: it stays reported until its
-/// translator removes it.
+/// A word no message of the source has ever had is its translator's own mistake, not one the source
+/// dropped, so writing the catalogue cannot take it away: it stays reported until its translator
+/// removes it.
 #[test]
 fn writing_the_source_catalogue_keeps_a_translations_own_word_reported() {
     let scratch = tempfile::tempdir().unwrap();
@@ -178,10 +178,6 @@ fn a_native_app_read_action_answers_with_its_published_type() {
 
 /// Compile the package at `dir` against the PDF viewer's published surface, as `tilolang check`
 /// compiles against a native app beside a package.
-///
-/// The app answers under an id a package names: an app id is dotted identifiers, so the real
-/// one's hyphen (`so.tilo.pdf-viewer`) is no `use` a program writes. The surface is the app's
-/// own, committed file.
 fn compile_against_apps(dir: &Path) -> Result<(), String> {
     let scratch = dir.parent().expect("the package has a directory");
     let app = scratch.join("pdf");
@@ -202,8 +198,8 @@ fn compile_against_apps(dir: &Path) -> Result<(), String> {
         .map_err(|error| error.to_string())
 }
 
-/// Runs `check` on `dir`, writing with `--write-ids` when `write`: whether it passed, and what
-/// it said.
+/// Runs `check` on `dir`, writing with `--write-ids` when `write`: whether it passed, and what it
+/// said.
 fn check(dir: &Path, write: bool) -> (bool, String) {
     let mut command = Command::new(env!("CARGO_BIN_EXE_tilolang"));
     command.arg("check").arg(dir);
@@ -217,8 +213,7 @@ fn check(dir: &Path, write: bool) -> (bool, String) {
     )
 }
 
-/// The counter at `dir` without its decrement: the action, and the button that ran it. Its
-/// catalogues still have the message, so they have a word to drop.
+/// The counter at `dir` without its decrement: the action, and the button that ran it.
 fn drop_decrement(dir: &Path) {
     let source = dir.join("app.tl");
     let text = std::fs::read_to_string(&source).unwrap();

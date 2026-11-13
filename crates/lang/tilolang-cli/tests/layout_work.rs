@@ -17,9 +17,6 @@ use std::path::Path;
 
 use tilolang_cli::layout_check::{self, Options};
 
-/// The frames one layout may cost. A layout is one frame, a stage from a scenario a few, and a
-/// change the app answers a frame of its own: the board's stages and the frames a motion takes
-/// to land add up to between 16 and 23 a layout, and this holds them to 30.
 const FRAMES_PER_LAYOUT: u64 = 30;
 
 /// The layout nodes one layout may build: every node of the tree the frame rebuilds, 142 of them
@@ -27,15 +24,14 @@ const FRAMES_PER_LAYOUT: u64 = 30;
 const NODES_PER_LAYOUT: u64 = 180;
 
 /// The text shaped outside the renderer's cache, per layout: these strings are the same on every
-/// layout, so the cache holds all of them after the first, and only a stage's own words are
-/// shaped again: 10 a layout for the board.
+/// layout, so the cache holds all of them after the first, and only a stage's own words are shaped
+/// again: 10 a layout for the board.
 const SHAPED_PER_LAYOUT: u64 = 14;
 
 fn manifest() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
 }
 
-/// A small app laid out every way the check lays one out.
 fn board() -> layout_check::Report {
     layout_check::check(&Options {
         dirs: vec![manifest().join("tests/layout_check/board")],

@@ -191,8 +191,7 @@ fn person_at_control(
 
 /// A REPL started on a nested session (`--session`) tells the person at the desk that it asks to
 /// act as them, and gives itself no answer: the door's admission stays theirs, on the sheet, or
-/// their `--admit-repl` made as they started the session. The session's control socket is the
-/// person's, not the REPL's, and it is sent nothing.
+/// their `--admit-repl` made as they started the session.
 #[test]
 fn the_repl_asks_the_person_and_never_answers_its_own_admission() {
     let runtime = tempfile::tempdir().unwrap();

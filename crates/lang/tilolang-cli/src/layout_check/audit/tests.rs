@@ -24,8 +24,9 @@ fn node(widget: &str, id: &str, rect: [f64; 4], role: Option<Role>) -> Inspectio
     }
 }
 
-/// A title cut off with room beside it is the defect; one that fills its row, or has
-/// nothing to spare, is not.
+/// A title cut off with room beside it is the defect;
+/// one that fills its row, or has nothing to spare, is
+/// not.
 #[test]
 fn a_title_is_only_cut_off_unfairly_when_room_stands_beside_it() {
     assert!(title_cut_with_room(180.0, 99.0, 77.0));
@@ -51,9 +52,9 @@ fn header_row(
     }
 }
 
-/// A header row holds its title against its actions by one rule: a label the row could show
-/// as its icon gives way before the title is cut, room standing empty beside the title is
-/// the title's, and the app's primary action never leaves the row.
+/// A header row holds its title against its actions by one rule: a label the row could show as its
+/// icon gives way before the title is cut, room standing empty beside the title is the title's, and
+/// the app's primary action never leaves the row.
 #[test]
 fn a_header_row_gives_up_its_labels_before_its_title() {
     assert!(
@@ -120,9 +121,8 @@ fn a_header_row_the_shell_reports_is_checked_where_it_stands() {
     assert!(found[0].detail.contains("primary"), "{}", found[0].detail);
 }
 
-/// A sidebar stands beside content of the window's own: a pane narrower than a column is a
-/// phone's screen, so the sidebar folds behind the bar's toggle there instead. The shell reports
-/// where its sidebar stood and how wide the pane beside it is, and the check holds it to it.
+/// A sidebar stands beside content of the window's own: a pane narrower than a column is a phone's
+/// screen, so the sidebar folds behind the bar's toggle there instead.
 #[test]
 fn a_sidebar_beside_a_phone_screen_is_caught() {
     use ui::widget::SidebarStanding;
@@ -144,8 +144,8 @@ fn a_sidebar_beside_a_phone_screen_is_caught() {
         with(SidebarStanding::Docked, WidthClass::Medium, 420.0).is_empty(),
         "content of a column's width stands beside the sidebar"
     );
-    // A grid of tiles or a surface drawn on works narrower than a column: the same width is what
-    // its own kind asks for there.
+    // A grid of tiles or a surface drawn on works narrower than a
+    // column: the same width is what its own kind asks for there.
     let mut phone_pane = node("NavShell", "shell", [0.0, 0.0, 616.0, 700.0], None);
     let mut layout = shell_layout(SidebarStanding::Docked, WidthClass::Compact, 336.0);
     layout.needs = WidthClass::Compact;
@@ -175,9 +175,10 @@ fn overlaps(children: Vec<InspectionNode>) -> Vec<Problem> {
         .collect()
 }
 
-/// A window shell places its header row's buttons itself, over its columns: two of them
-/// covering each other (an action over the search button) is caught, though the shell
-/// layers its columns on purpose.
+/// A window shell places its header row's buttons itself, over its
+/// columns: two of them covering each other (an action over the
+/// search button) is caught, though the shell layers its columns on
+/// purpose.
 #[test]
 fn controls_a_shell_places_over_each_other_are_caught() {
     let found = overlaps(vec![
@@ -198,9 +199,8 @@ fn controls_a_shell_places_over_each_other_are_caught() {
     assert_eq!(found[0].keys.first().map(String::as_str), Some("new"));
 }
 
-/// A column of a board as a height it did not get leaves it: the view scrolling its cards
-/// has no room, so the cards under its heading cannot be brought into view. Given the room
-/// of a pane, the same view holds them and nothing is lost.
+/// A column of a board as a height it did not get leaves it: the view scrolling its cards has no
+/// room, so the cards under its heading cannot be brought into view.
 #[test]
 fn a_scroll_view_with_no_room_loses_the_cards_it_holds() {
     let lane = |height: f64| {
@@ -240,8 +240,8 @@ fn a_scroll_view_with_no_room_loses_the_cards_it_holds() {
     );
 }
 
-/// A list keeps no scroller of its own inside the page that scrolls it: the page carries the
-/// rows past the window's edge, and the list stands as tall as them.
+/// A list keeps no scroller of its own inside the page that scrolls it: the page carries the rows
+/// past the window's edge, and the list stands as tall as them.
 #[test]
 fn a_list_scrolling_inside_the_page_that_scrolls_it_is_caught() {
     fn list_filling(height: f64) -> InspectionNode {
@@ -295,9 +295,9 @@ fn a_list_scrolling_inside_the_page_that_scrolls_it_is_caught() {
     );
 }
 
-/// A row taking half the window is the page itself, and caught — unless its content is as
-/// tall as it is: a conversation's message fills its row whatever the row's height, and a
-/// row that tall is no page stretched around one line.
+/// A row taking half the window is the page itself, and caught — unless its content is as tall as
+/// it is: a conversation's message fills its row whatever the row's height, and a row that tall is
+/// no page stretched around one line.
 #[test]
 fn a_tall_row_is_caught_only_when_its_line_floats_in_it() {
     let bare_rows = |content: InspectionNode| {
@@ -322,9 +322,8 @@ fn a_tall_row_is_caught_only_when_its_line_floats_in_it() {
     );
 }
 
-/// A page is the readable column, its gutter counted once: a page given a column of its own
-/// inside one counts it twice, so its content stands inset from the rows beside it and narrower
-/// than them. A page holding rows, and no page, is the column itself.
+/// A page is the readable column, its gutter counted once: a page given a column of its own inside
+/// one counts it twice, so its content stands inset from the rows beside it and narrower than them.
 #[test]
 fn a_page_inside_a_page_is_caught() {
     let page_rows = |inner: Vec<InspectionNode>| {
@@ -363,14 +362,12 @@ fn a_page_inside_a_page_is_caught() {
     );
 }
 
-/// A bar docked at the foot of a column stands in the column the content over it is read at:
-/// an entry that adds to a list is as wide as the list, its leading edge where the list's is.
-/// A bar across the window beside the list it adds to is the defect, and one standing on the
-/// column is not, the room the content's scroller keeps for its bar aside.
+/// A bar docked at the foot of a column stands in the column the content over it is read at: an
+/// entry that adds to a list is as wide as the list, its leading edge where the list's is.
 #[test]
 fn a_docked_bar_wider_than_the_column_over_it_is_caught() {
-    // The Docked's content as a scroller `scroll` wide holding a page `page` wide, its list
-    // `list` wide, and the bar of `bar` at its foot.
+    // The Docked's content as a scroller `scroll` wide holding a page `page` wide, its list `list`
+    // wide, and the bar of `bar` at its foot.
     let docked = |scroll: [f64; 4], page: [f64; 4], list: [f64; 4], bar: [f64; 4]| {
         let mut page = node_of("Page", "page", page);
         page.children.push(node_of("DescribedList", "list", list));
@@ -423,9 +420,8 @@ fn a_docked_bar_wider_than_the_column_over_it_is_caught() {
     );
 }
 
-/// A scroll view's content stands in a box the view holds it in, which is the view's own
-/// content and no container of its own: what the view scrolls through may go on past the
-/// view. A box inside that content still holds what it holds, and is caught.
+/// A scroll view's content stands in a box the view holds it in, which is the view's own content
+/// and no container of its own: what the view scrolls through may go on past the view.
 #[test]
 fn a_scroll_views_content_box_passes_its_scrolling_on() {
     let scrolled = |content: InspectionNode| {
@@ -469,8 +465,8 @@ fn a_scroll_views_content_box_passes_its_scrolling_on() {
     );
 }
 
-/// A column header that reads 0, and a place whose quiet count reads 0: a count says
-/// something wants attention, so zero is no badge and no room kept for one.
+/// A column header that reads 0, and a place whose quiet count reads 0: a count says something
+/// wants attention, so zero is no badge and no room kept for one.
 #[test]
 fn a_count_of_zero_is_caught_where_it_is_drawn() {
     let mut shell = node("NavShell", "shell", [0.0, 0.0, 400.0, 300.0], None);
@@ -505,9 +501,9 @@ fn a_count_of_zero_is_caught_where_it_is_drawn() {
     assert_eq!(zeros.len(), 2, "{zeros:?}");
 }
 
-/// A column header and the place beside it in the sidebar drawing the same number: the
-/// same count twice on one screen. A different number, or a place past the header, is not
-/// the same count again.
+/// A column header and the place beside it in the sidebar
+/// drawing the same number: the same count twice on one
+/// screen.
 #[test]
 fn a_header_count_the_place_beside_it_shows_is_caught_once() {
     let repeated = |header: u32, shown: u32, list_x0: f64| {
@@ -568,9 +564,8 @@ fn counted(
     header
 }
 
-/// A bar naming the page while the page shows those words as its own title: the same title
-/// twice on one screen. A bar whose title is already covered, or a page whose heading says
-/// other words, is no repeat.
+/// A bar naming the page while the page shows those words
+/// as its own title: the same title twice on one screen.
 #[test]
 fn a_bar_naming_a_page_beside_the_pages_own_heading_is_caught_once() {
     let repeated = |bar_title: Option<&str>, page: Option<&str>| {
@@ -622,8 +617,7 @@ fn a_bar_naming_a_page_beside_the_pages_own_heading_is_caught_once() {
     );
 }
 
-/// A bar with one way back has that way at its leading edge. A back control standing beside
-/// the sidebar toggle is two ways from one corner: caught.
+/// A bar with one way back has that way at its leading edge.
 #[test]
 fn a_back_control_beside_the_sidebar_toggle_is_caught() {
     let beside = |toggle: Option<[f64; 4]>, back: Option<[f64; 4]>| {
@@ -641,7 +635,6 @@ fn a_back_control_beside_the_sidebar_toggle_is_caught() {
             .filter(|problem| problem.kind == Kind::DoubleNavigation)
             .count()
     };
-    // A toggle named for the window's corner, and back after it.
     let toggle = Some([8.0, 18.0, 44.0, 44.0]);
     let beside_toggle = Some([60.0, 18.0, 44.0, 44.0]);
     assert_eq!(
@@ -689,9 +682,7 @@ fn lone_doors(root: &InspectionNode) -> Vec<Problem> {
         .collect()
 }
 
-/// A page's "…" is the item's actions at the trailing edge of the title's line. One
-/// standing in a column takes a line of the document for its glyph alone, under the title:
-/// caught. Beside the title, and in the window bar, a menu is where it belongs.
+/// A page's "…" is the item's actions at the trailing edge of the title's line.
 #[test]
 fn a_pages_dots_are_caught_only_off_the_titles_line() {
     let page = |content: InspectionNode| {
@@ -755,9 +746,8 @@ fn empty_headings(root: &InspectionNode) -> Vec<Problem> {
         .collect()
 }
 
-/// A heading nobody named takes its band's height over a lane's cards all the same: the
-/// strip says nothing, and the cards start below it. Named, it is the lane's words; a lane
-/// no heading heads starts its cards where a list starts its first row.
+/// A heading nobody named takes its band's height over a lane's cards all the same: the strip says
+/// nothing, and the cards start below it.
 #[test]
 fn a_heading_with_nothing_in_it_is_caught() {
     let heading = |name: &str| {
@@ -827,8 +817,8 @@ fn crowded_headings(root: &InspectionNode) -> Vec<Problem> {
         .collect()
 }
 
-/// A section's heading belongs to what follows it: it keeps clearly more room under the block
-/// over it than over its own content, or it reads as that block's last line.
+/// A section's heading belongs to what follows it: it keeps clearly more room under the block over
+/// it than over its own content, or it reads as that block's last line.
 #[test]
 fn a_heading_keeps_more_room_over_it_than_over_its_content() {
     let page = |above: f64, below: f64| {
@@ -909,8 +899,8 @@ fn unruled_bodies(root: &InspectionNode) -> Vec<Problem> {
         .collect()
 }
 
-/// A page's own sections stand under a rule, apart from the writing the page holds: a heading
-/// set like the writing's own and standing no further from it reads as another line of the text.
+/// A page's own sections stand under a rule, apart from the writing the page holds: a heading set
+/// like the writing's own and standing no further from it reads as another line of the text.
 #[test]
 fn a_page_section_after_the_writing_stands_under_a_rule() {
     let page = |between: Vec<InspectionNode>, wrapped: bool| {
@@ -969,10 +959,9 @@ fn a_page_section_after_the_writing_stands_under_a_rule() {
     );
 }
 
-/// A card standing empty in a column paints a filled block with nothing in it, and what it
-/// promised is not there: a surface is drawn for what it holds, so one holding nothing — or
-/// only a placeholder that never filled — is no surface at all. What holds words, a control
-/// or anything laid out of its own is a surface doing its work.
+/// A card standing empty in a column paints a filled block with nothing in it, and what it promised
+/// is not there: a surface is drawn for what it holds, so one holding nothing — or only a
+/// placeholder that never filled — is no surface at all.
 #[test]
 fn a_surface_with_nothing_in_it_is_caught() {
     let column = |surface: Option<InspectionNode>, under: Option<InspectionNode>| {
@@ -1056,11 +1045,9 @@ fn placeholder_panes(root: &InspectionNode) -> Vec<Problem> {
         .collect()
 }
 
-/// A pane that only says nothing is chosen, standing beside the list the window chooses
-/// from, takes the room the rows would list in: with nothing chosen the list lists for the
-/// whole window, and the pane appears when a row is chosen. A window that lists no items
-/// beside it keeps its pane, and so does a phone, where the pane stands over the list it
-/// pushed aside rather than beside it.
+/// A pane that only says nothing is chosen, standing beside the list the window chooses from, takes
+/// the room the rows would list in: with nothing chosen the list lists for the whole window, and
+/// the pane appears when a row is chosen.
 #[test]
 fn a_pane_saying_nothing_is_chosen_beside_the_list_is_caught() {
     let window = [0.0, 0.0, 1280.0, 800.0];
@@ -1129,9 +1116,8 @@ fn bare_rows(root: &InspectionNode) -> Vec<Problem> {
         .collect()
 }
 
-/// A page whose content is one row: the row is stretched over the column and its line
-/// floats at the column's middle, where a page around it would hold it at the top. A list's
-/// rows are their line's height, and a page that holds a row is no finding.
+/// A page whose content is one row: the row is stretched over the column and its line floats at the
+/// column's middle, where a page around it would hold it at the top.
 #[test]
 fn a_page_drawn_as_one_row_is_caught() {
     let shell = |content: Vec<InspectionNode>| {
@@ -1186,9 +1172,9 @@ fn holding(mut outer: InspectionNode, children: Vec<InspectionNode>) -> Inspecti
     outer
 }
 
-/// Layers that each hold text somewhere cover nothing until the text itself meets: a bar
-/// across the top and a dock on the foot of a desk drawn over the whole window are two
-/// layers whose words stand apart; a caption drawn on another caption is caught.
+/// Layers that each hold text somewhere cover nothing until the text itself meets: a bar across the
+/// top and a dock on the foot of a desk drawn over the whole window are two layers whose words
+/// stand apart; a caption drawn on another caption is caught.
 #[test]
 fn layers_cover_each_other_only_where_their_text_meets() {
     let layer = |id: &str, text: [f64; 4]| {
@@ -1213,8 +1199,8 @@ fn layers_cover_each_other_only_where_their_text_meets() {
         ],
     );
     assert_eq!(inspected(&meeting).len(), 1);
-    // Text a scroller has moved out of its view is not read, so it covers nothing: a
-    // conversation scrolled to its end, its first messages above its top edge.
+    // Text a scroller has moved out of its view is not read, so it covers nothing: a conversation
+    // scrolled to its end, its first messages above its top edge.
     let mut scroller = holding(
         node("Scroll", "scroller", [0.0, 100.0, 800.0, 400.0], None),
         vec![node("Text", "scrolled-out", [8.0, 8.0, 120.0, 20.0], None)],
@@ -1233,9 +1219,9 @@ fn layers_cover_each_other_only_where_their_text_meets() {
     assert!(inspected(&desk_over_scroller).is_empty());
 }
 
-/// Windows on a desktop stand over each other by design: the one drawn later is opaque
-/// and covers the one under it, and that is no finding; two plain boxes side by side in a
-/// free placement covering each other still are.
+/// Windows on a desktop stand over each other by design: the one drawn later is opaque and covers
+/// the one under it, and that is no finding; two plain boxes side by side in a free placement
+/// covering each other still are.
 #[test]
 fn a_window_over_another_window_is_no_finding() {
     let window = |id: &str, at: [f64; 4]| {
@@ -1270,8 +1256,8 @@ fn a_window_over_another_window_is_no_finding() {
     assert_eq!(inspected(&boxes).len(), 1);
 }
 
-/// On touch a control smaller than a finger's target is caught, at its own box grown by
-/// what it reports; with a mouse, whose hit areas grow about the face, nothing is.
+/// On touch a control smaller than a finger's target is caught, at its own box grown by what it
+/// reports; with a mouse, whose hit areas grow about the face, nothing is.
 #[test]
 fn a_control_smaller_than_a_finger_is_caught_on_touch() {
     let mut root = node("Column", "root", [0.0, 0.0, 400.0, 300.0], None);
@@ -1300,9 +1286,8 @@ fn a_control_smaller_than_a_finger_is_caught_on_touch() {
     assert!(small(None).is_empty());
 }
 
-/// A long word in a column narrower than it: text that wraps breaks it anywhere and shows
-/// all of it; text that keeps its words whole (source code's soft wrap) is clipped, and
-/// caught.
+/// A long word in a column narrower than it: text that wraps breaks it anywhere and shows all of
+/// it; text that keeps its words whole (source code's soft wrap) is clipped, and caught.
 #[test]
 fn text_that_cannot_break_a_word_wider_than_its_column_is_caught() {
     use ui::widget::arrange::{Length, Slot, Stack};
@@ -1324,8 +1309,7 @@ fn text_that_cannot_break_a_word_wider_than_its_column_is_caught() {
 }
 
 /// A line given less room than its text needs: its last rows are laid out and painted nowhere,
-/// which reads as a line cut short over empty space. A line with room for its text is no
-/// finding.
+/// which reads as a line cut short over empty space.
 #[test]
 fn a_line_with_less_room_than_its_text_needs_is_caught() {
     let cut = |height: f32| {
@@ -1348,8 +1332,8 @@ fn a_line_with_less_room_than_its_text_needs_is_caught() {
     assert_eq!(cut(200.0), 0, "room for the whole sentence is no finding");
 }
 
-/// A place on a canvas past its viewport is reached by panning, so it is no finding; the
-/// same place in a region of a plain column reaches past it, and is caught.
+/// A place on a canvas past its viewport is reached by panning, so it is no finding; the same place
+/// in a region of a plain column reaches past it, and is caught.
 #[test]
 fn a_place_past_a_canvas_viewport_pans_and_past_a_column_overflows() {
     use ui::widget::{LayoutInfo, ManualLayout, ScrollDirection, ScrollLayout};
@@ -1375,8 +1359,9 @@ fn a_place_past_a_canvas_viewport_pans_and_past_a_column_overflows() {
         view.child_clip = Some([0.0, 0.0, 320.0, 300.0]);
         view.layout = outer;
         view.children = vec![region];
-        // The window is wider than the view, so the place stays within the window and only
-        // the view's own box is passed.
+        // The window is wider than the view, so the place stays
+        // within the window and only the view's own box is
+        // passed.
         inspect(&view, (600, 300), None, 1.0)
             .into_iter()
             .map(|p| p.kind)
@@ -1411,8 +1396,8 @@ fn a_framed_action_over_a_button_is_caught() {
     assert_eq!(found.len(), 1, "{found:?}");
 }
 
-/// What a shell layers on purpose is no finding: a column under its header's buttons, and
-/// buttons side by side.
+/// What a shell layers on purpose is no finding: a column
+/// under its header's buttons, and buttons side by side.
 #[test]
 fn a_shells_columns_and_buttons_side_by_side_are_not() {
     let mut column = node("Column", "content", [0.0, 0.0, 400.0, 300.0], None);
@@ -1503,8 +1488,8 @@ fn an_edge_between_device_pixels_is_found_at_the_outermost_box_it_moves() {
     assert!(off_pixel(&window([20.0, 10.0, 100.0, 40.0]), 1.5).is_empty());
 }
 
-/// A bar's control: `id` in `slot`, named `name`, showing `icon`, asking for `words` wide of
-/// them where it is a menu button (`menu`).
+/// A bar's control: `id` in `slot`, named `name`, showing `icon`, asking for `words` wide of them
+/// where it is a menu button (`menu`).
 fn control(
     slot: &'static str,
     id: &str,
@@ -1535,8 +1520,8 @@ fn kinds(layout: &ui::window_toolbar::BarLayout) -> Vec<Kind> {
         .collect()
 }
 
-/// A window shows one bar: a header row of the app's under the bar is a second row, and the
-/// bar is where the app's title, navigation and actions stand.
+/// A window shows one bar: a header row of the app's under the bar is a second row, and the bar is
+/// where the app's title, navigation and actions stand.
 #[test]
 fn a_header_row_under_the_bar_is_a_second_row() {
     let found = super::stacked_header_rows(44.0, 56.0);
@@ -1557,9 +1542,9 @@ fn a_header_row_under_the_bar_is_a_second_row() {
     );
 }
 
-/// Every column says what it shows, and offers what acts on it, in a row of its own at the
-/// window's top at every time: a window that declares that row and draws none at rest loses it
-/// until the person reaches for the window's bar.
+/// Every column says what it shows, and offers what acts on it, in a row of its own at the window's
+/// top at every time: a window that declares that row and draws none at rest loses it until the
+/// person reaches for the window's bar.
 #[test]
 fn a_column_declares_its_header_and_draws_it_at_rest() {
     let frame = |key: &'static str, x0: f64, header: Rect| ui::widget::ColumnFrame {
@@ -1639,8 +1624,9 @@ fn an_action_the_window_offers_is_never_offered_again_by_its_bar() {
     );
 }
 
-/// One bar shows each control once: the same action under two ids, or two controls one glyph
-/// apart, is one control too many.
+/// One bar shows each control once: the same action under two
+/// ids, or two controls one glyph apart, is one control too
+/// many.
 #[test]
 fn a_bar_shows_each_control_once() {
     let twice = bar(
@@ -1705,8 +1691,7 @@ fn an_apps_own_door_beside_the_bars_is_one_door_too() {
         0.0,
     );
     assert_eq!(kinds(&doors), vec![Kind::DuplicateBarControl]);
-    // Every control of a window's own bar stands once: its navigation, its "…", its
-    // controls.
+    // Every control of a window's own bar stands once: its navigation, its "…", its controls.
     let window = bar(
         vec![
             control(
@@ -1758,8 +1743,8 @@ fn an_apps_own_door_beside_the_bars_is_one_door_too() {
     assert!(kinds(&window).is_empty(), "{:?}", kinds(&window));
 }
 
-/// An action that asks for its words stands with them where the bar has room, and as its
-/// icon only where it has not.
+/// An action that asks for its words stands with them where
+/// the bar has room, and as its icon only where it has not.
 #[test]
 fn a_bar_says_what_an_action_does_where_it_has_room_for_the_words() {
     let icon = |spare: f64| {
@@ -1819,8 +1804,8 @@ fn a_bar_says_what_an_action_does_where_it_has_room_for_the_words() {
         400.0,
     );
     assert!(kinds(&quiet).is_empty());
-    // The window's own furniture is no action of the app's: the strip's door wears the "+"
-    // everyone reads, at its square chip, and says its name under the pointer alone.
+    // The window's own furniture is no action of the app's: the strip's door wears the "+" everyone
+    // reads, at its square chip, and says its name under the pointer alone.
     let door =
         ui::window_toolbar::BarControl::new("new-tab", "tab-new", Rect::new(0.0, 0.0, 32.0, 28.0))
             .named("New tab")
@@ -1829,9 +1814,9 @@ fn a_bar_says_what_an_action_does_where_it_has_room_for_the_words() {
     assert!(kinds(&bar(vec![door], 400.0)).is_empty());
 }
 
-/// A choice a list painted wide of what its row shows fills the gutter beside it: the lift
-/// the list recorded is read against the row's own box, grown by the row's bleed and no
-/// further, so the strip the person sees stands where the row does.
+/// A choice a list painted wide of what its row shows fills the gutter beside it: the lift the list
+/// recorded is read against the row's own box, grown by the row's bleed and no further, so the
+/// strip the person sees stands where the row does.
 #[test]
 fn a_lift_reaching_past_what_its_row_shows_is_a_selection_bleed() {
     let lift = |whole: [f64; 4], content: [f64; 4]| ui::widget::RowLift {
@@ -1849,8 +1834,8 @@ fn a_lift_reaching_past_what_its_row_shows_is_a_selection_bleed() {
     assert_eq!(reach_past(empty), None, "no lift at all");
 }
 
-/// A chevron folds the words of its row, so it centres on the line they stand on: the step in
-/// front of them is the chevron's column, not a second baseline beside it.
+/// A chevron folds the words of its row, so it centres on the line they stand on: the step in front
+/// of them is the chevron's column, not a second baseline beside it.
 #[test]
 fn a_chevron_centres_on_the_line_of_the_row_it_folds() {
     use super::text::chevron_off_line;
@@ -1876,9 +1861,10 @@ fn a_chevron_centres_on_the_line_of_the_row_it_folds() {
     );
 }
 
-/// The one main action a window declares stands in its bar as the primary button: a bar
-/// that shows it as every other action, behind its door, or not at all is what a person
-/// cannot tell from the rest of the row.
+/// The one main action a window declares stands in its bar as the
+/// primary button: a bar that shows it as every other action, behind its
+/// door, or not at all is what a person cannot tell from the rest of the
+/// row.
 #[test]
 fn a_bar_keeps_its_main_action_as_the_primary_button() {
     let main = ui::window_toolbar::WindowToolbar {
@@ -1950,14 +1936,11 @@ fn a_bar_keeps_its_main_action_as_the_primary_button() {
     );
     let absent = bar(Vec::new(), 0.0);
     assert_eq!(super::bar_primary(Some(&main), &absent).len(), 1);
-    // A window that declares no main action has none drawn as one.
     assert!(super::bar_primary(None, &shown).is_empty());
 }
 
-/// The bar's words are the bar's, painted where no widget lays them out: two of them drawn in
-/// one place are two words a person reads as one string of letters. A pill naming the window
-/// where its location already does paints its words on the location's, and the check reads the
-/// two labels as one place.
+/// The bar's words are the bar's, painted where no widget lays them out: two of them drawn in one
+/// place are two words a person reads as one string of letters.
 #[test]
 fn a_bar_word_painted_where_another_stands_is_two_words_in_one_place() {
     let window = node("TilolangWindow", "window", [0.0, 0.0, 900.0, 600.0], None);
@@ -2002,8 +1985,8 @@ fn a_bar_word_painted_where_another_stands_is_two_words_in_one_place() {
     );
 }
 
-/// The frame's words are read where the window shows them, under the bar: a word at the top of
-/// the frame stands below the bar's own words, never over them.
+/// The frame's words are read where the window shows them, under the bar: a word at the top of the
+/// frame stands below the bar's own words, never over them.
 #[test]
 fn a_frames_words_stand_under_the_bars() {
     let mut root = node("TilolangWindow", "window", [0.0, 0.0, 900.0, 600.0], None);
@@ -2025,8 +2008,8 @@ fn a_frames_words_stand_under_the_bars() {
     );
 }
 
-/// Two words on one card stand apart from the page under it: the card is a ground of its own,
-/// and what it covers is behind it — so only words sharing one ground are found.
+/// Two words on one card stand apart from the page under it: the card is a ground of its own, and
+/// what it covers is behind it — so only words sharing one ground are found.
 #[test]
 fn words_on_a_ground_of_their_own_stand_apart() {
     let mut root = node("TilolangWindow", "window", [0.0, 0.0, 900.0, 600.0], None);
@@ -2037,7 +2020,6 @@ fn words_on_a_ground_of_their_own_stand_apart() {
         Some(Role::StaticText),
     ));
     let mut card = node("Card", "page ~card", [8.0, 40.0, 300.0, 120.0], None);
-    // A card's own line, over the page's heading behind it.
     card.children.push(node(
         "Text",
         "page ~card ~title",
@@ -2052,8 +2034,8 @@ fn words_on_a_ground_of_their_own_stand_apart() {
 }
 
 /// A rounded surface stands inside its column with a gutter on every side: one glued to the
-/// column's edges, cut by them, or one standing on the window's edge where no column holds it,
-/// is found — and the same surface a gutter in is no finding.
+/// column's edges, cut by them, or one standing on the window's edge where no column holds it, is
+/// found — and the same surface a gutter in is no finding.
 #[test]
 fn a_rounded_surface_keeps_a_gutter_from_its_column_and_the_window() {
     let shell_with = |banner: InspectionNode| {
@@ -2169,8 +2151,8 @@ fn a_card_a_page_scrolls_is_no_card_on_the_edge() {
         .is_empty(),
         "and one the floor cuts through is too"
     );
-    // Its sides are the layout's to keep clear: a card across the page's whole width is one on
-    // the frame, however it is scrolled.
+    // Its sides are the layout's to keep clear: a card across the page's whole width is one on the
+    // frame, however it is scrolled.
     let across = found(&column_with(node_of(
         "Card",
         "card",
@@ -2185,8 +2167,8 @@ fn a_card_a_page_scrolls_is_no_card_on_the_edge() {
 }
 
 /// A card keeps a sibling's gap from what stands over and under it: a notice glued to the list
-/// under it, or a card pressed against the one above it, is found — and the same card with the
-/// gap the toolkit's rhythm gives is no finding. A box beside it in a row is no neighbour.
+/// under it, or a card pressed against the one above it, is found — and the same card with the gap
+/// the toolkit's rhythm gives is no finding.
 #[test]
 fn a_card_keeps_a_gap_from_its_neighbours() {
     let column_with = |children: Vec<InspectionNode>| {
@@ -2277,8 +2259,8 @@ fn document(rows: Vec<InspectionNode>, rect: [f64; 4]) -> InspectionNode {
     tree
 }
 
-/// An item stands once: the document of a row standing open that lists an item the list
-/// shows again is the same item twice, while a document listing items of its own is not.
+/// An item stands once: the document of a row standing open that lists an item the list shows again
+/// is the same item twice, while a document listing items of its own is not.
 #[test]
 fn an_item_shown_in_an_open_rows_document_and_again_in_the_list_is_caught() {
     let held = |rows: Vec<InspectionNode>| {
@@ -2338,8 +2320,9 @@ fn an_item_shown_in_an_open_rows_document_and_again_in_the_list_is_caught() {
         "nothing of the document stands in the list again"
     );
 
-    // A page's document naming the item it was made from, as one reference row: it is no row
-    // of a list, and no finding.
+    // A page's document naming the item it was made from, as
+    // one reference row: it is no row of a list, and no
+    // finding.
     let mut open = list_row("Call the landlord", [304.0, 100.0, 952.0, 400.0], true);
     let mut section = node("Section", "linked", [344.0, 260.0, 912.0, 60.0], None);
     section.children = vec![node_of("ListRow", "reference", [344.0, 260.0, 912.0, 36.0])];
@@ -2423,8 +2406,7 @@ fn a_group_heading_takes_one_band_and_stands_on_the_row_it_heads() {
 
 /// The first band a list that heads its rows draws — the heading over its first run, or the first
 /// row where the list leaves that heading out — stands on the column's content gutter, where a
-/// page's first block stands: one closer to the box over the list hugs it. A list whose rows name
-/// no group is one block and leads with its rows.
+/// page's first block stands: one closer to the box over the list hugs it.
 #[test]
 fn a_list_that_heads_its_rows_starts_its_first_band_on_the_content_gutter() {
     let theme = ui::Theme::dark();
@@ -2496,9 +2478,9 @@ fn a_list_that_heads_its_rows_starts_its_first_band_on_the_content_gutter() {
     );
 }
 
-/// A page's body stands under the text a control beside its heading leads to only where the
-/// column has the room: on a phone's screen it starts on the gutter, and a section standing a
-/// control's width in is what a person sees the page lose on every line.
+/// A page's body stands under the text a control beside its heading leads to only where the column
+/// has the room: on a phone's screen it starts on the gutter, and a section standing a control's
+/// width in is what a person sees the page lose on every line.
 #[test]
 fn a_page_on_a_phone_screen_starts_its_body_on_the_gutter() {
     let theme = ui::Theme::dark();
@@ -2513,7 +2495,6 @@ fn a_page_on_a_phone_screen_starts_its_body_on_the_gutter() {
         page.children.push(stack);
         page
     };
-    // A control's cell and the gap after it, under a fine pointer.
     let lead = 32.0 + f64::from(theme.tokens.spacing.rhythm.get(ui::tokens::Rhythm::Related));
     let phone = indented_bodies(&page(390.0, 24.0 + lead, 302.0), &theme, None);
     assert_eq!(phone.len(), 1, "{phone:?}");
@@ -2586,8 +2567,9 @@ fn grouped_list(title: &str, count: u32, heading: &str, rows: u32) -> Inspection
     grouped_list_of(title, count, heading, rows, 0)
 }
 
-/// A list drawing one group heading over `rows` rows, `done` of them checked off, under the
-/// title its window reads.
+/// A list drawing one group heading over `rows` rows,
+/// `done` of them checked off, under the title its window
+/// reads.
 fn grouped_list_of(title: &str, count: u32, heading: &str, rows: u32, done: u32) -> InspectionNode {
     let mut shell = node("NavShell", "shell", [0.0, 0.0, 400.0, 700.0], None);
     let mut list = node(
@@ -2673,8 +2655,8 @@ fn day_fact_card(heading: Option<&str>, fact: &str) -> InspectionNode {
     stack_node("window", [0.0, 0.0, 400.0, 700.0], vec![card])
 }
 
-/// A row whose trailing fact names the day the card over it names is caught; a fact naming
-/// another day, or a row under no heading at all, is not.
+/// A row whose trailing fact names the day the card over it names is caught; a fact naming another
+/// day, or a row under no heading at all, is not.
 #[test]
 fn a_rows_day_fact_naming_the_day_the_heading_says_is_caught() {
     let repeats = |heading: Option<&str>, fact: &str| {
@@ -2740,8 +2722,8 @@ fn a_lone_group_heading_repeating_the_titles_words_is_caught() {
         0,
         "a heading counting rows the list does not show heads part of it"
     );
-    // A heading counts what is left to do: three rows under it, one of them finished, read as
-    // the two the title counts, and say what the title says.
+    // A heading counts what is left to do: three rows under it, one of them finished, read as the
+    // two the title counts, and say what the title says.
     assert_eq!(
         repeated(&grouped_list_of("Today", 2, "Today", 3, 1)),
         1,

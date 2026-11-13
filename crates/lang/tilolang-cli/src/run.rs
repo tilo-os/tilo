@@ -29,14 +29,13 @@ pub struct RunOptions {
     pub headless: bool,
     /// Render with lavapipe only, never this machine's GPU (`nested-session.sh --software`).
     pub software: bool,
-    /// The sessions' state (default: the tool's state directory).
     pub state: Option<PathBuf>,
-    /// The Tilo checkout whose nested session runs the apps.
     pub repo: Option<PathBuf>,
 }
 
-/// Prepare each session's state (keys, the Tilo runtime bundle and the tilolang one) and
-/// answer the runtimes they baked. One build serves them all, so they bake the same.
+/// Prepare each session's state (keys, the Tilo runtime
+/// bundle and the tilolang one) and answer the runtimes they
+/// baked.
 fn prepare(script: &std::path::Path, peers: &[Peer]) -> Result<(String, String), String> {
     let mut baked: Option<(String, String)> = None;
     for peer in peers {
@@ -62,7 +61,6 @@ fn prepare(script: &std::path::Path, peers: &[Peer]) -> Result<(String, String),
     baked.ok_or_else(|| "no session to run".to_owned())
 }
 
-/// The command that starts the session.
 fn session_command(
     repo: &std::path::Path,
     options: &RunOptions,
@@ -88,10 +86,8 @@ fn session_command(
     command
 }
 
-/// Have the process `command` starts stop as an interrupt stops it when this process ends in a
-/// way that runs none of its own code (a signal, a kill): the kernel sends it SIGTERM then. The
-/// session script's cleanup stops what it started; the app the tool runs itself flushes its
-/// store on the way out ([`crate::dev`]).
+/// Have the process `command` starts stop as an interrupt stops it when this process ends in a way
+/// that runs none of its own code (a signal, a kill): the kernel sends it SIGTERM then.
 pub(crate) fn end_with_this_process(command: &mut Command) {
     use std::os::unix::process::CommandExt as _;
     let parent = rustix::process::getpid();
@@ -100,8 +96,9 @@ pub(crate) fn end_with_this_process(command: &mut Command) {
     unsafe {
         command.pre_exec(move || {
             rustix::process::set_parent_process_death_signal(Some(rustix::process::Signal::TERM))?;
-            // This process may have ended before the request: then nobody is left to signal,
-            // and the session must not start.
+            // This process may have ended before the request: then
+            // nobody is left to signal, and the session must not
+            // start.
             if rustix::process::getppid() != Some(parent) {
                 return Err(rustix::io::Errno::SRCH.into());
             }
@@ -111,10 +108,6 @@ pub(crate) fn end_with_this_process(command: &mut Command) {
 }
 
 /// The session script this tool started, by a pidfd that names that process and no other.
-///
-/// Dropped, it stops the script as an interrupt does: the script's own cleanup stops every
-/// process group it started (the shell, the apps, the services) and removes its runtime
-/// directory, and this waits until it has. A session that already ended is left as it is.
 struct Started {
     pidfd: std::os::fd::OwnedFd,
 }
@@ -135,7 +128,6 @@ impl Drop for Started {
     fn drop(&mut self) {
         use rustix::event::{PollFd, PollFlags, poll};
         let mut exited = [PollFd::new(&self.pidfd, PollFlags::IN)];
-        // Readable once the process has exited.
         if poll(&mut exited, Some(&rustix::event::Timespec::default())).is_ok_and(|ready| ready > 0)
         {
             return;
@@ -174,7 +166,6 @@ fn wait_for_file(
     }
 }
 
-/// Run the package as an app until the session ends.
 pub fn run(options: &RunOptions) -> Result<(), String> {
     let repo = session::repo_root(options.repo.as_deref(), &options.dir)?;
     let build_dir = session::build_dir(&repo);
@@ -204,7 +195,6 @@ pub fn run(options: &RunOptions) -> Result<(), String> {
     };
     let identity = crate::identity_at(&crate::state_dir().join("publisher.json"))?;
     let mut dev = Dev::in_session(build, identity, peers, build_dir.join("bin"), &repo);
-    // The sessions install them as they start.
     let apps = dev.build_for_start()?;
 
     let (sender, wakes) = mpsc::channel();
@@ -217,7 +207,6 @@ pub fn run(options: &RunOptions) -> Result<(), String> {
     let mut child = command
         .spawn()
         .map_err(|error| format!("starting the nested session: {error}"))?;
-    // From here on, however this ends, the sessions end with it.
     let _session = match Started::new(&child) {
         Ok(session) => session,
         Err(error) => {
@@ -268,7 +257,6 @@ mod tests {
         assert!(!status.success(), "{status}");
     }
 
-    /// A session that already ended is left as it is.
     #[test]
     fn a_session_that_ended_is_not_signalled() {
         let mut child = Command::new("true").spawn_locked().expect("a process");

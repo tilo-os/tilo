@@ -4,7 +4,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 static ON: AtomicBool = AtomicBool::new(false);
 
-/// Colour on or off for everything the REPL prints from now on.
 pub fn set(on: bool) {
     ON.store(on, Ordering::Relaxed);
 }
@@ -14,20 +13,16 @@ pub fn on() -> bool {
     ON.load(Ordering::Relaxed)
 }
 
-/// What a piece of output is, which picks its colour.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Role {
     /// A reference (`n3`).
     Ref,
-    /// A resource's title.
     Title,
-    /// A field name, a column heading.
     Label,
     Text,
     Number,
     /// `true`, `false`, enum cases, `none`.
     Literal,
-    /// Counts, notes on what a result covers.
     Note,
     Error,
     Done,

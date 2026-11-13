@@ -83,8 +83,8 @@ fn menu_labels(node: &tilo_ui_host::UiNode) -> Vec<String> {
         .collect()
 }
 
-/// The catch-up a window's mark opens: each item it changed, newest first, with who and
-/// when, and the one move that marks them all seen.
+/// The catch-up a window's mark opens: each item it changed, newest first, with who and when, and
+/// the one move that marks them all seen.
 fn the_catch_up_names_each_item_it_changed(window: &tilo_ui_host::UiNode) {
     let content = window
         .children
@@ -117,8 +117,8 @@ fn the_catch_up_names_each_item_it_changed(window: &tilo_ui_host::UiNode) {
         !nodes_of(content, "ui.Avatar").is_empty() && !nodes_of(content, "ui.Time").is_empty(),
         "each step says who made it and when: {content:?}"
     );
-    // A line reads as history writes a sentence: the name first, then what they did
-    // ("Scout marked it done"). A face alone does not say who.
+    // A line reads as history writes a sentence: the name
+    // first, then what they did ("Scout marked it done").
     let mut rows = Vec::new();
     nodes(content, "row", &mut rows);
     let steps: Vec<&tilo_ui_host::UiNode> = rows
@@ -181,8 +181,8 @@ fn wrong_in(staged: &stage::Staged, viewport: (u32, u32)) -> Vec<String> {
             )
         })
         .collect();
-    // And what only the frame says: a divider a person reads as a band sits in pixels, whatever
-    // the widgets that built it say they drew.
+    // And what only the frame says: a divider a person reads as a band sits in pixels, whatever the
+    // widgets that built it say they drew.
     wrong.extend(divider_rules(
         staged,
         (viewport.0 as usize, viewport.1 as usize),
@@ -206,9 +206,8 @@ fn rects(staged: &stage::Staged, name: &str) -> Vec<Rect> {
     out
 }
 
-/// Each divider of a conversation the inspection sees, in reading order: the words it says and
-/// where it stands. A day's divider and the one over the unseen part are one component, told
-/// apart by what they say and the ink they are drawn in.
+/// Each divider of a conversation the inspection sees, in
+/// reading order: the words it says and where it stands.
 fn dividers_of(staged: &stage::Staged) -> Vec<(String, Rect)> {
     fn all(node: &ui::headless::InspectionNode, out: &mut Vec<(String, Rect)>) {
         if node.widget == "SectionDivider" {
@@ -234,9 +233,10 @@ fn floating_rect(staged: &stage::Staged, name: &str) -> Option<Rect> {
     rects(staged, name).into_iter().next()
 }
 
-/// Where the floating surface the widget `name` draws stands once it is shown: a page's fields
-/// carry popovers of their own, laid out only while open, so the first one is not the surface a
-/// press opened.
+/// Where the floating surface the widget `name` draws stands once it
+/// is shown: a page's fields carry popovers of their own, laid out
+/// only while open, so the first one is not the surface a press
+/// opened.
 fn shown_floating_rect(staged: &stage::Staged, name: &str) -> Option<Rect> {
     rects(staged, name)
         .into_iter()
@@ -254,9 +254,9 @@ fn row_marks(rows: &[(String, tilo_ui_host::UiNode)]) -> Vec<tilo_ui_host::UiNod
     out
 }
 
-/// The changes the rows of `staged`'s window set down, as the row they stand in, who made it
-/// and what they did: a row the app draws at the item's page holds the mark as a node of its
-/// own, where a list row draws it in the row instead.
+/// The changes the rows of `staged`'s window set down, as the row they stand in, who made it and
+/// what they did: a row the app draws at the item's page holds the mark as a node of its own, where
+/// a list row draws it in the row instead.
 fn staged_changes(staged: &mut stage::Staged) -> Vec<(String, String, String)> {
     let rows = staged.rows();
     let mut changes = Vec::new();
@@ -276,8 +276,8 @@ fn staged_changes(staged: &mut stage::Staged) -> Vec<(String, String, String)> {
     changes
 }
 
-/// How many pixels of `rect` the frame paints in something other than the content's ground: a
-/// mark a person reads is painted where it stands, not only built.
+/// How many pixels of `rect` the frame paints in something other than the content's ground: a mark
+/// a person reads is painted where it stands, not only built.
 #[allow(
     clippy::cast_possible_truncation,
     clippy::cast_precision_loss,
@@ -327,20 +327,8 @@ fn frame(staged: &stage::Staged, viewport: (usize, usize)) -> (Vec<u8>, usize) {
     (rgba, scale)
 }
 
-/// Where a divider's rule falls short: for every divider of `staged`'s window, the rule that
-/// runs from its words out to each of the column's edges, as the frame paints it.
-///
-/// A divider is a band ruled out to both sides of its label, never a caption afloat in the
-/// column. A rule derived against the wrong surface — an edge of the ink itself painted over
-/// the conversation's ground — is a pixel the ground's own colour, so nothing but the frame
-/// tells it from a divider drawn as bare text; a step's geometry, or a scene the tests built,
-/// says everything is there.
-///
-/// And how far each rule moves the ground it lands on: a day's rule is a neutral hairline that
-/// divides two of a kind and says nothing by itself, while the band where reading starts again
-/// says where, so its rule in the accent is read at a glance — it moves the ground by
-/// [`ui::surface::COLOURED_RULE_MIN_DELTA`] at least, and clearly more than any day's rule in
-/// the same frame, never the same weight as one.
+/// Where a divider's rule falls short: for every divider of `staged`'s window, the rule that runs
+/// from its words out to each of the column's edges, as the frame paints it.
 #[allow(
     clippy::cast_possible_truncation,
     clippy::cast_precision_loss,
@@ -388,8 +376,8 @@ fn divider_rules(staged: &stage::Staged, viewport: (usize, usize)) -> Vec<String
         // The ground the band is painted on: the column beside it, outside the band itself.
         let ground = pixel((divider.x0.round() as usize).saturating_sub(2) * scale, row);
         let beneath = luminance(ground);
-        // The rule runs from the column's edge in to its words: the first 16 points on either
-        // side stand clear of any label a band this wide centres.
+        // The rule runs from the column's edge in to its words: the first 16 points on either side
+        // stand clear of any label a band this wide centres.
         let span = 16 * scale;
         let mut strength = 0.0f64;
         for (side, from, to) in [
@@ -470,12 +458,12 @@ fn list_rows(staged: &stage::Staged) -> Vec<&ui::widget::ListRow> {
     rows
 }
 
-/// The changes the rows of `staged`'s window show, as who made it, what they are called and
-/// what they did: a list row draws its mark in the row instead of holding a node of it, so
-/// what the person reads is read off the rows themselves.
+/// The changes the rows of `staged`'s window show, as who made it, what they are called and what
+/// they did: a list row draws its mark in the row instead of holding a node of it, so what the
+/// person reads is read off the rows themselves.
 fn row_changes(staged: &stage::Staged) -> Vec<(String, String, String)> {
-    // One change reads once however many rows show it: a task open where it stands shows it
-    // on its row and again over the step that made it, and both are the same change.
+    // One change reads once however many rows show it: a task open where it stands shows it on its
+    // row and again over the step that made it, and both are the same change.
     let mut changes = Vec::new();
     for change in list_rows(staged)
         .into_iter()
@@ -493,8 +481,8 @@ fn row_changes(staged: &stage::Staged) -> Vec<(String, String, String)> {
     changes
 }
 
-/// What a mark of a change the person has not seen says of it: who changed it, never the
-/// person's own step, and what they did, in words of "it".
+/// What a mark of a change the person has not seen says of it: who changed it, never the person's
+/// own step, and what they did, in words of "it".
 fn a_change_names_its_maker(identity: &str, said: &str) {
     assert!(
         !identity.is_empty() && identity != "ada",
@@ -520,8 +508,8 @@ fn the_windows_header_mark(staged: &mut stage::Staged, count: i64) -> tilo_ui_ho
         "the window counts the {count} changes she has not seen: {window:?}"
     );
     the_catch_up_names_each_item_it_changed(&window);
-    // The list is the window's content, so its header is the window's: the mark stands among
-    // the header actions, first, in the row that carries the title it counts.
+    // The list is the window's content, so its header is the window's: the mark stands among the
+    // header actions, first, in the row that carries the title it counts.
     let mut slots = Vec::new();
     nodes(&composed, "slot", &mut slots);
     let header = slots
@@ -553,8 +541,8 @@ fn window_mark(tree: &tilo_ui_host::UiNode) -> Option<tilo_ui_host::UiNode> {
         .cloned()
 }
 
-/// The window's own tabs under `root`: the strip a `TabStrip` draws (it draws as the
-/// toolkit's bar), never a tab bar an app puts in its own content.
+/// The window's own tabs under `root`: the strip a `TabStrip` draws (it draws as the toolkit's
+/// bar), never a tab bar an app puts in its own content.
 fn tab_strips(root: &dyn Widget) -> Vec<&dyn Widget> {
     named(root, "TabBar")
         .into_iter()
@@ -596,14 +584,14 @@ fn its_windows_show_their_apps_content_under_one_bar_each() {
     assert_eq!(frames.len(), 3, "two notes and a channel stand on the desk");
     for frame in frames {
         let window = frame.get_rect();
-        // What the window holds is cut at its edge, so a list scrolled past its top is
-        // never read over the window behind it.
+        // What the window holds is cut at its edge, so a list
+        // scrolled past its top is never read over the window
+        // behind it.
         assert_eq!(
             frame.child_clip_rect(),
             Some(window),
             "the window clips what it holds"
         );
-        // The window shows its resource through its type's own view, filling it.
         let shells = named(frame, "NavShell");
         let [shell] = shells[..] else {
             panic!("one app window in each frame, not {}", shells.len());
@@ -613,8 +601,8 @@ fn its_windows_show_their_apps_content_under_one_bar_each() {
             content.height() > window.height() * 0.8,
             "the app's window fills the frame: {content:?} in {window:?}"
         );
-        // The frame's controls stand in the app's own header row, at its trailing end,
-        // so the window has one bar: no bar of the frame's above the app's.
+        // The frame's controls stand in the app's own header row, at its trailing end, so the
+        // window has one bar: no bar of the frame's above the app's.
         assert!(
             (content.y0 - window.y0).abs() < 1.0,
             "no bar of the frame's stands over the app's header: {content:?} in {window:?}"
@@ -663,8 +651,8 @@ fn the_strips_windows_fill_their_strip_and_hold_their_apps_under_one_bar() {
     );
     windows_fill_their_strips(&frames);
 
-    // A strip of several places is one window whose bar is its tabs, the place in front
-    // filling it under them; a strip of one has no tab bar above its app.
+    // A strip of several places is one window whose bar is its tabs, the place in front filling it
+    // under them; a strip of one has no tab bar above its app.
     let grouped = stage::Staged::over(
         &app,
         &packages,
@@ -679,9 +667,9 @@ fn the_strips_windows_fill_their_strip_and_hold_their_apps_under_one_bar() {
     assert_eq!(group.len(), 2, "a window of places beside a window of one");
     the_places_of_a_strip_are_its_tabs(&group);
 
-    // Two windows the desk holds stand side by side, each the share of the desk its strip's
-    // width names, not the floor two of them would need: a row spreads across the desk while
-    // its windows fit, and pans to them whole once they do not.
+    // Two windows the desk holds stand side by side, each the share of the desk its strip's width
+    // names, not the floor two of them would need: a row spreads across the desk while its windows
+    // fit, and pans to them whole once they do not.
     let from = group
         .iter()
         .map(|frame| frame.get_rect().x0)
@@ -728,11 +716,10 @@ fn a_window_alone_on_the_desk_takes_the_desk() {
 
 #[test]
 fn a_place_the_desk_has_shows_its_app() {
-    // A place is made from the resource it shows (`session.Arrangement`'s `record`), so a place
-    // whose app the desk has draws that app's views, that app's header row and, with nothing in
-    // it yet, that app's empty state. A well is where another app's window shows — a terminal, a
-    // legacy surface — and a place of an app the desk has must never stand in one: that window
-    // would be blank, saying nothing of what it is for and offering nothing to start.
+    // A place is made from the resource it shows (`session.Arrangement`'s
+    // `record`), so a place whose app the desk has draws that app's views,
+    // that app's header row and, with nothing in it yet, that app's empty
+    // state.
     tilo_ui_host::i18n::ensure();
     let (app, packages) = packages();
     let staged = stage::Staged::over(
@@ -769,8 +756,8 @@ fn a_place_the_desk_has_shows_its_app() {
             place.shows
         );
     }
-    // The same holds for every place the desk draws as a window of its own, whatever it holds:
-    // a place with no resource is another shell's window, and only that stands in a well.
+    // The same holds for every place the desk draws as a window of its own, whatever it holds: a
+    // place with no resource is another shell's window, and only that stands in a well.
     for place in &desk {
         if !place.record.is_empty() || known.contains(&place.shows.as_str()) {
             assert!(
@@ -784,9 +771,8 @@ fn a_place_the_desk_has_shows_its_app() {
 
 #[test]
 fn a_window_bar_keeps_one_overflow_menu() {
-    // One bar, one "…": the window's decorations in their floating pill, the app's own controls
-    // in its header row, and one door between them for what does not fit. Two doors side by side
-    // are one menu too many, and a person cannot tell which holds what.
+    // One bar, one "…": the window's decorations in their floating pill, the app's own controls in
+    // its header row, and one door between them for what does not fit.
     tilo_ui_host::i18n::ensure();
     let (app, packages) = packages();
     let staged = stage::Staged::over(
@@ -804,7 +790,6 @@ fn a_window_bar_keeps_one_overflow_menu() {
     assert!(!frames.is_empty(), "the desk draws windows");
     for frame in frames {
         let window = frame.get_rect();
-        // The bar's band: the frame's top edge, one bar tall.
         let band = ui::kurbo::Rect::new(
             window.x0,
             window.y0,
@@ -832,9 +817,8 @@ fn a_window_bar_keeps_one_overflow_menu() {
     }
 }
 
-/// A window is a window: it fills its strip's whole room, and every window of the desk
-/// shares that height, as the chrome's groups do. A card is a few hundred pixels tall with
-/// a sliver of its app under it.
+/// A window is a window: it fills its strip's whole room, and every window of the desk shares that
+/// height, as the chrome's groups do.
 fn windows_fill_their_strips(frames: &[&dyn Widget]) {
     // The desk's own windows: the overlays the shell stages beside them are frames too.
     let frames: Vec<&dyn Widget> = frames
@@ -856,8 +840,8 @@ fn windows_fill_their_strips(frames: &[&dyn Widget]) {
             (window.height() - height).abs() < 1.0,
             "every window of the desk is as tall as the desk: {window:?} beside {height}"
         );
-        // Its share of the row, never narrower than the chrome's own floor: a row of more
-        // windows than the desk holds pans to them whole.
+        // Its share of the row, never narrower than the chrome's own floor: a row of more windows
+        // than the desk holds pans to them whole.
         assert!(
             window.width() >= 160.0,
             "a window keeps its share of the row: {window:?}"
@@ -866,8 +850,8 @@ fn windows_fill_their_strips(frames: &[&dyn Widget]) {
     }
 }
 
-/// One bar per window, whichever state it is in — the tabs of a window of several places,
-/// or the app's own header row — and its app's content under that, filling the rest.
+/// One bar per window, whichever state it is in — the tabs of a window of several places, or the
+/// app's own header row — and its app's content under that, filling the rest.
 fn bar_and_content_in(frame: &dyn Widget, window: Rect) {
     let strips = tab_strips(frame);
     let shells = named(frame, "NavShell");
@@ -902,8 +886,8 @@ fn bar_and_content_in(frame: &dyn Widget, window: Rect) {
     }
 }
 
-/// A strip of several places shows them as one window's tabs, the place in front under
-/// them; the strip of one shows its app from the window's own edge.
+/// A strip of several places shows them as one window's tabs, the place in front under them; the
+/// strip of one shows its app from the window's own edge.
 fn the_places_of_a_strip_are_its_tabs(group: &[&dyn Widget]) {
     for frame in group {
         let window = frame.get_rect();
@@ -960,7 +944,6 @@ fn shell_controls(root: &dyn Widget, out: &mut Vec<(String, Rect)>) {
     if matches!(root.name(), "Button" | "MenuButton" | "Badge" | "Avatar") {
         out.push((root.name().to_owned(), root.get_rect()));
     }
-    // A count a control carries on its icon, and that icon.
     for (part, rect) in root.test_rects() {
         if part == "count" || part == "icon" {
             out.push((format!("{} {part}", root.name()), rect));
@@ -1010,7 +993,6 @@ fn its_top_bar_is_one_row_whose_parts_never_press_into_each_other() {
                 r.x0 >= 0.0 && r.x1 <= f64::from(width),
                 "{r:?} stays on the output at {at}"
             );
-            // One row: every part shares the system menu's band.
             assert!(
                 (r.center().y - menu.center().y).abs() < 2.0,
                 "{r:?} stands in the one row at {at}: {bar:?}"
@@ -1062,20 +1044,18 @@ fn a_count_stands_on_its_icons_corner_and_over_no_other_control() {
                 _ => None,
             })
             .collect();
-        // The bell's and the mail's in the dock.
         assert_eq!(
             counts.len(),
             2,
             "the bell's count and the dock's at {at}: {controls:?}"
         );
         for (count, icon) in counts {
-            // Over its own control alone: never the one beside it.
             let own = pressed
                 .iter()
                 .find(|r| r.contains(icon.center()))
                 .expect("the control the icon is on");
-            // Centred on the icon's top trailing corner, as an app icon's count stands, and
-            // held inside its own face where that corner would take it past the face's edge.
+            // Centred on the icon's top trailing corner, as an app icon's count stands, and held
+            // inside its own face where that corner would take it past the face's edge.
             let corner = ui::kurbo::Point::new(icon.x1, icon.y0);
             let wanted = Rect::from_center_size(corner, count.size());
             let left = wanted
@@ -1160,8 +1140,9 @@ fn on_a_phone_the_window_in_front_fills_the_room_between_the_bar_and_the_dock() 
     );
 }
 
-/// What assistive technology reads under `node` (names and values), each with whether it
-/// stands in a window.
+/// What assistive technology reads under `node` (names
+/// and values), each with whether it stands in a
+/// window.
 fn read_out(node: &ui::headless::InspectionNode, in_window: bool, out: &mut Vec<(bool, String)>) {
     let in_window = in_window || node.widget == "WindowFrame";
     if let Some(access) = &node.semantics {
@@ -1174,8 +1155,8 @@ fn read_out(node: &ui::headless::InspectionNode, in_window: bool, out: &mut Vec<
     }
 }
 
-/// What the traditional desktop reads out at `size`, laid out for a finger on a phone's
-/// width (its controls a finger's target), as the layout check lays a phone out.
+/// What the traditional desktop reads out at `size`, laid out for a finger on a phone's width (its
+/// controls a finger's target), as the layout check lays a phone out.
 fn desktop_read_out(size: (u32, u32)) -> Vec<(bool, String)> {
     tilo_ui_host::i18n::ensure();
     let (app, packages) = packages();
@@ -1204,9 +1185,8 @@ fn desktop_read_out(size: (u32, u32)) -> Vec<(bool, String)> {
 
 #[test]
 fn a_windows_header_holds_the_rest_of_its_actions_in_one_menu() {
-    // A window draws its main actions as buttons and keeps the rest behind one menu: never
-    // every action as a button of its own, and one door to what does not fit in one row. The
-    // column's header row is where they stand, at a desk's width and in a hand's.
+    // A window draws its main actions as buttons and keeps the rest behind one menu: never every
+    // action as a button of its own, and one door to what does not fit in one row.
     for size in [(1280, 800), (390, 844)] {
         tilo_ui_host::i18n::ensure();
         let packages = tasks_packages();
@@ -1255,9 +1235,9 @@ fn a_windows_header_holds_the_rest_of_its_actions_in_one_menu() {
 
 #[test]
 fn an_action_without_an_icon_is_reachable_from_the_row_that_offers_it() {
-    // A window that is a tree of notes keeps a note's actions in the menu of the row it
-    // stands for, where a person right-clicks it: the notes app's icon-less Untag is there,
-    // at a desk's width and in a hand's.
+    // A window that is a tree of notes keeps a note's actions in the menu
+    // of the row it stands for, where a person right-clicks it: the notes
+    // app's icon-less Untag is there, at a desk's width and in a hand's.
     tilo_ui_host::i18n::ensure();
     let packages = app_packages("notes");
     let app = packages.0.last().expect("the app").meta.app.clone();
@@ -1281,8 +1261,8 @@ fn an_action_without_an_icon_is_reachable_from_the_row_that_offers_it() {
             .lay_out(size, ui::Theme::light(), input, 1.0)
             .expect("the notes lay out");
         let tree = staged.composed().expect("the window composes");
-        // A tree's rows are built as the window shows them, so a note's menu stands in the row
-        // the window built for it rather than in the tree the app sent.
+        // A tree's rows are built as the window shows them, so a note's menu stands in the row the
+        // window built for it rather than in the tree the app sent.
         let mut labels = menu_labels(&tree);
         for (_, row) in &staged.rows() {
             labels.extend(menu_labels(row));
@@ -1295,9 +1275,8 @@ fn an_action_without_an_icon_is_reachable_from_the_row_that_offers_it() {
 }
 
 /// A notebook is a tree in its sidebar and the note it opens beside it: a note stands indented
-/// under the one it is of, to any depth, and the "+" that starts one stands in the sidebar's
-/// header — once, where what it makes will stand.
-/// The rows of a window's tree, each by what it says and how deep it stands.
+/// under the one it is of, to any depth, and the "+" that starts one stands in the sidebar's header
+/// — once, where what it makes will stand.
 fn rows_with_depth(
     node: &ui::headless::InspectionNode,
     out: &mut Vec<(String, ui::widget::RowLayout)>,
@@ -1435,8 +1414,8 @@ fn its_people_are_called_by_their_names_never_their_ids() {
 
 #[test]
 fn a_scenario_on_two_layers_is_named_apart() {
-    // The shots of the window's own layer and of the shell's settings layer must not land
-    // in one file, or the desk's shot is the settings page.
+    // The shots of the window's own layer and of the shell's settings layer must not land in one
+    // file, or the desk's shot is the settings page.
     assert_eq!(
         super::on_layer("the traditional desktop", None),
         "the traditional desktop"
@@ -1447,10 +1426,10 @@ fn a_scenario_on_two_layers_is_named_apart() {
     );
 }
 
-/// Lay `body` out on a thread with a window's stack: a window's tree is as deep as the
-/// documents it shows, and a rich-text editor inside a row standing open needs more room than
-/// a test thread's two megabytes. A window in the app lays out on the thread running the app,
-/// which is the main thread's; a test gets the room to match.
+/// Lay `body` out on a thread with a window's stack: a window's tree is
+/// as deep as the documents it shows, and a rich-text editor inside a
+/// row standing open needs more room than a test thread's two
+/// megabytes.
 fn on_a_windows_stack(body: impl FnOnce() + Send + 'static) {
     std::thread::Builder::new()
         .stack_size(super::WORKER_STACK)
@@ -1478,8 +1457,7 @@ fn away_at(packages: &Rc<stage::Packages>, size: (u32, u32)) -> stage::Staged {
     staged
 }
 
-/// What a person holds a window with at `size`: a pointer at a desk's width, a finger on
-/// one.
+/// What a person holds a window with at `size`: a pointer at a desk's width, a finger on one.
 fn input_at(size: (u32, u32)) -> ui::interaction::InteractionEnvironment {
     if size.0 < 600 {
         ui::interaction::InteractionEnvironment::TOUCH
@@ -1498,8 +1476,8 @@ fn input_at(size: (u32, u32)) -> ui::interaction::InteractionEnvironment {
 fn a_capture_writes_the_scenarios_steps_down_so_what_changed_shows() {
     on_a_windows_stack(|| {
         // The marks a row and a window carry are read from the record's steps, which are the
-        // store's versions and the person's seen marks: a scenario staged for a capture is
-        // written down as a session writes it, or the capture shows nothing of what it staged.
+        // store's versions and the person's seen marks: a scenario staged for a capture is written
+        // down as a session writes it, or the capture shows nothing of what it staged.
         tilo_ui_host::i18n::ensure();
         ui::clock::freeze_for_capture();
         let packages = tasks_packages();
@@ -1521,8 +1499,8 @@ fn a_capture_writes_the_scenarios_steps_down_so_what_changed_shows() {
                 .any(|(_, _, said)| said.contains("assigned") && said.contains("you")),
             "the mail Bo gave her says it was given to her: {changed:?}"
         );
-        // The task that is still a row of the list says so under the row's title, where a person
-        // reads it.
+        // The task that is still a row of the list says so
+        // under the row's title, where a person reads it.
         let rows = row_changes(&away);
         assert_eq!(
             rows.len(),
@@ -1561,8 +1539,8 @@ fn a_capture_writes_the_scenarios_steps_down_so_what_changed_shows() {
         );
         // Three: Bo's assign, and the agent's two, one of them the task that is in Done now.
         the_windows_header_mark(&mut away, 3);
-        // A node in the tree is not a pixel: the mark stands in the window's own header row,
-        // over the rows it counts, and the frame has its ink there.
+        // A node in the tree is not a pixel: the mark stands in the window's own header row, over
+        // the rows it counts, and the frame has its ink there.
         let mark = floating_rect(&away, "ChangeMark").expect("the window's mark is laid out");
         assert!(
             mark.width() > 40.0 && mark.height() > 20.0,
@@ -1605,8 +1583,8 @@ fn a_capture_writes_the_scenarios_steps_down_so_what_changed_shows() {
 #[test]
 fn a_catch_up_hangs_inside_the_window_it_belongs_to() {
     on_a_windows_stack(|| {
-        // A mark's catch-up is a panel under the mark where the window is wide, a sheet at its
-        // foot where it is narrow, and neither reaches past the window it belongs to.
+        // A mark's catch-up is a panel under the mark where the window is wide, a sheet at its foot
+        // where it is narrow, and neither reaches past the window it belongs to.
         tilo_ui_host::i18n::ensure();
         ui::clock::freeze_for_capture();
         let packages = tasks_packages();
@@ -1638,9 +1616,7 @@ fn a_catch_up_hangs_inside_the_window_it_belongs_to() {
             "nothing reaches past the window: {wrong:?}"
         );
 
-        // A window held in the hand is staged at its own size, as a capture stages it. It stands on
-        // the place the task it answers with belongs to, over the places behind it; the mark in its
-        // header is the window's own either way.
+        // A window held in the hand is staged at its own size, as a capture stages it.
         let mut narrow = away_at(&packages, (390, 844));
         let mark = shown_floating_rect(&narrow, "ChangeMark")
             .expect("the narrow window's header shows its mark");
@@ -1726,10 +1702,7 @@ fn a_task_that_changed_since_you_looked_says_so_on_its_page() {
 
 #[test]
 fn a_channels_messages_the_person_has_not_seen_take_no_mark_of_their_own() {
-    // Marks are every resource's, for every type: a channel declares nothing about them. What
-    // the person has not seen of a conversation stands under the divider where its unseen part
-    // starts, and the rows there say nothing further: a face on each of Mia's and Leo's lines
-    // would read as who read them, and the divider already says they are new.
+    // Marks are every resource's, for every type: a channel declares nothing about them.
     tilo_ui_host::i18n::ensure();
     ui::clock::freeze_for_capture();
     let packages = app_packages("chat");
@@ -1762,9 +1735,9 @@ fn a_channels_messages_the_person_has_not_seen_take_no_mark_of_their_own() {
         unseen.is_some(),
         "the conversation says where its unseen part starts: {lists:?}"
     );
-    // The toolkit draws the conversation's one band there, over the row where that part
-    // begins: where that row also opens a day, the day and the place reading starts again are
-    // one band saying both, in the accent, never a day's band stacked over the unread one.
+    // The toolkit draws the conversation's one band there, over the row where that part begins:
+    // where that row also opens a day, the day and the place reading starts again are one band
+    // saying both, in the accent, never a day's band stacked over the unread one.
     let dividers = dividers_of(&channels);
     let merged = ui::widget::conversation::band::day_with_unread("");
     let unseen: Vec<&(String, Rect)> = dividers
@@ -1796,9 +1769,8 @@ fn a_channels_messages_the_person_has_not_seen_take_no_mark_of_their_own() {
             "the dividers rule the one column: {words:?} is {rect:?}, the first {dividers:?}"
         );
     }
-    // Nothing marks a message of its own: a face over each line under the divider would read as
-    // who read it, and the divider already says those rows are new. The one mark left counts
-    // what is new in the window's header.
+    // Nothing marks a message of its own: a face over each line under the divider would read as who
+    // read it, and the divider already says those rows are new.
     let marks = rects(&channels, "ChangeMark");
     assert_eq!(
         marks.len(),
@@ -1815,9 +1787,8 @@ fn a_channels_messages_the_person_has_not_seen_take_no_mark_of_their_own() {
         said.is_empty(),
         "the rows carry no mark of their own: {said:?}"
     );
-    // And every band of the conversation stands in the frame as a band: a rule on each side of
-    // its words, painted in ink the ground it lands on shows. The accent's rule derived as the
-    // edge of the accent itself is nothing on this ground, and the divider reads as bare text.
+    // And every band of the conversation stands in the frame as a band: a rule on each side of its
+    // words, painted in ink the ground it lands on shows.
     let wrong = wrong_in(&channels, (1280, 800));
     assert!(
         wrong.is_empty(),
@@ -1827,9 +1798,10 @@ fn a_channels_messages_the_person_has_not_seen_take_no_mark_of_their_own() {
 
 #[test]
 fn a_channels_header_says_what_the_person_has_not_seen_of_it_by_whom() {
-    // A catch-up says what happened while the person was away, in the terms of what the window
-    // shows: a channel of items Mia, Leo and Ada put in says how many are new, never that three
-    // people changed one message.
+    // A catch-up says what happened while the person was away, in the
+    // terms of what the window shows: a channel of items Mia, Leo and Ada
+    // put in says how many are new, never that three people changed one
+    // message.
     tilo_ui_host::i18n::ensure();
     ui::clock::freeze_for_capture();
     let packages = app_packages("chat");
@@ -1904,8 +1876,8 @@ fn a_scenario_that_fails_is_said_rather_than_shown_empty() {
 }
 
 /// The one main action an app declares for its window stands in its column's header row as the
-/// primary button, at a desk's width and in a hand's: a person sees at once what the window is
-/// for, and the action narrows to its icon before it ever leaves the row.
+/// primary button, at a desk's width and in a hand's: a person sees at once what the window is for,
+/// and the action narrows to its icon before it ever leaves the row.
 #[test]
 fn the_windows_main_action_stands_in_its_row_as_the_primary_button() {
     tilo_ui_host::i18n::ensure();
@@ -1978,8 +1950,8 @@ fn the_main_action_of(app: &str, packages: &Rc<stage::Packages>, scenario: &str,
             );
         }
         if size.0 <= 320 {
-            // The narrowest row says the words where it has room for them and stands as its
-            // icon alone where it has not: either way it is the primary button still.
+            // The narrowest row says the words where it has room for them and stands as its icon
+            // alone where it has not: either way it is the primary button still.
             assert!(
                 control.labelled || control.rect[2] <= control.rect[3] * 1.5,
                 "the narrowest row keeps the main action to its icon alone, still on the \
@@ -1989,12 +1961,9 @@ fn the_main_action_of(app: &str, packages: &Rc<stage::Packages>, scenario: &str,
     }
 }
 
-/// What one layout shows of `staged`'s window bar, and what is wrong with it: whether the
-/// window draws the band above its frame, whether the app's header row is the bar itself, and
-/// each problem added to `problems`, named by `what` and the layout. One bar is the window's
-/// band or the app's row, never both — two header rows to the person reading the window. A row
-/// that holds the bar keeps the window's furniture inside the window, and a title is cut only
-/// where its row has no room for it.
+/// What one layout shows of `staged`'s window bar, and what is wrong with it: whether the window
+/// draws the band above its frame, whether the app's header row is the bar itself, and each problem
+/// added to `problems`, named by `what` and the layout.
 fn the_window_bar_at(
     staged: &mut stage::Staged,
     layout: &super::Layout,
@@ -2047,10 +2016,8 @@ fn the_window_bar_at(
 }
 
 /// The Tasks app at the sizes a person holds a window in the hand shows one bar each time: the
-/// week's list at phone width with the page it opens in front of it, and a project in a
-/// tablet's window. The window draws the band above its frame or its app's row is the bar; a
-/// row that holds the bar keeps the window's own controls in it; and a project's title is cut
-/// only where the row has no room for it.
+/// week's list at phone width with the page it opens in front of it, and a project in a tablet's
+/// window.
 #[test]
 fn the_tasks_window_shows_one_bar_and_keeps_its_title_at_every_hand_held_size() {
     tilo_ui_host::i18n::ensure();
@@ -2122,11 +2089,8 @@ fn row_title(node: &tilo_ui_host::UiNode) -> Option<String> {
     node.children.iter().find_map(row_title)
 }
 
-/// A page the check stages over a list opens a row the list itself shows first, and the same
-/// row in every run: the list's own order, never the order a hash of the row keys happens to
-/// give. The check stages a scenario once at the smallest window and reads every size off that
-/// one window, so one row serves every size: shots of two runs are the same picture, and a
-/// finding that comes and goes is a finding about the app.
+/// A page the check stages over a list opens a row the list itself shows first, and the same row in
+/// every run: the list's own order, never the order a hash of the row keys happens to give.
 #[test]
 fn a_list_opens_the_page_of_its_first_row_in_every_run() {
     tilo_ui_host::i18n::ensure();
@@ -2152,9 +2116,8 @@ fn a_list_opens_the_page_of_its_first_row_in_every_run() {
             &[],
         )
         .expect("the scenario stages");
-        // The rows as the window lists them, and the page the run opens off them: the row it
-        // opens is the first one, by the title the row shows rather than by the id a staging
-        // gives its records.
+        // The rows as the window lists them, and the page the run opens off them: the row it opens is
+        // the first one, by the title the row shows rather than by the id a staging gives its records.
         let rows = staged.rows();
         let named = staged.resources();
         let picked = super::listed_of(&mut staged, &task).expect("a task to open a page of");

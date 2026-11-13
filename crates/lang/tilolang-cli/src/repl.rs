@@ -21,28 +21,22 @@ use door::Door;
 use editor::{Complete, Editor, Read};
 use style::{Role, paint};
 
-/// Where the REPL's session is, and how it looks.
 #[derive(Clone, Debug, Default)]
 pub struct ReplOptions {
-    /// A running nested session: its --ready file, runtime directory or control socket.
     pub session: Option<PathBuf>,
-    /// The agent door's socket itself (another session's, the person's real one).
     pub door: Option<PathBuf>,
-    /// The person's own session: its door at the well-known path.
     pub real: bool,
     /// Colour: `None` for when the output is a terminal.
     pub color: Option<bool>,
 }
 
-/// What the REPL knows of the session's code, for completion: every app's declarations by
-/// their names, and the fields of each type.
+/// What the REPL knows of the session's code, for completion: every app's declarations by their
+/// names, and the fields of each type.
 #[derive(Default)]
 struct Catalogue {
-    /// The apps programs may name.
     apps: Vec<String>,
     /// `notes.pin`, `notes.Note`, ...
     members: Vec<String>,
-    /// Every field name of every type.
     fields: Vec<String>,
 }
 
@@ -84,30 +78,25 @@ fn fields_of(signature: &str) -> Vec<String> {
         .collect()
 }
 
-/// The methods a value's completion offers beside its fields.
 const METHODS: &[&str] = &[
     "filter", "map", "sort_by", "count", "first", "last", "len", "any", "all", "find", "matching",
 ];
 
-/// The REPL's state between entries.
 struct Session {
     door: Door,
     catalogue: Catalogue,
-    /// The names entries bound, and the references answers showed: what completes a word.
     names: Vec<String>,
     /// The program the last answer was a preview of: what `confirm` sends again.
     previewed: Option<String>,
 }
 
-/// What an entry asks for.
 #[derive(Debug, PartialEq, Eq)]
 enum Entry {
     Nothing,
     Command(String, String),
-    /// Apply the program the last preview was of.
     Confirm,
-    /// One of the door's one-call tools, with its arguments: `ls [path]` (`tilo_ls`) and
-    /// `find text` (`tilo_find`).
+    /// One of the door's one-call tools, with its arguments:
+    /// `ls [path]` (`tilo_ls`) and `find text` (`tilo_find`).
     Tool(&'static str, Json),
     Program(String),
 }
@@ -154,10 +143,9 @@ impl Session {
         println!("{line}");
     }
 
-    /// Learn the session's apps and their declarations, for completion.
     fn survey(&mut self) -> Result<(), String> {
-        // Every installed app, from the packages the task's host holds: whether a window of it
-        // is open does not matter.
+        // Every installed app, from the packages the task's host
+        // holds: whether a window of it is open does not matter.
         let listed = self.door.call("tilo", &json!({"program": "catalogue"}))?;
         if listed.failed {
             return Err(format!("the door did not list its apps: {}", listed.text));
@@ -338,7 +326,6 @@ fn nested_runtime(named: &Path) -> Result<PathBuf, String> {
         .ok_or_else(|| format!("{}: names no runtime directory", named.display()))
 }
 
-/// The nested session started last whose door is up.
 fn newest_nested(runtime: Option<&Path>) -> Result<PathBuf, String> {
     let runtime = runtime.ok_or("XDG_RUNTIME_DIR is unset")?;
     let mut found: Vec<(std::time::SystemTime, PathBuf)> = std::fs::read_dir(runtime)
@@ -361,7 +348,6 @@ fn newest_nested(runtime: Option<&Path>) -> Result<PathBuf, String> {
     })
 }
 
-/// Run the REPL until its input ends.
 pub fn repl(options: &ReplOptions) -> Result<(), String> {
     let mut editor = Editor::new(Some(crate::state_dir().join("repl-history")));
     style::set(options.color.unwrap_or_else(|| editor.is_terminal()));

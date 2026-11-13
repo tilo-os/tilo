@@ -20,7 +20,6 @@ use support::{copy_package, packages, with_used};
 #[test]
 fn each_package_is_a_signed_app_that_runs_on_the_tilolang_runtime() {
     let scratch = tempfile::tempdir().unwrap();
-    // The packages are copied: a build writes new ids into their locks.
     let source = scratch.path().join("tl");
     for name in with_used(&["today"]) {
         copy_package(&packages().join(&name), &source.join(&name));
@@ -64,8 +63,8 @@ fn each_package_is_a_signed_app_that_runs_on_the_tilolang_runtime() {
         assert_eq!(manifest.package.icon.as_deref(), Some("icon.svg"));
         assert!(app.payload.join("icon.svg").is_file());
         assert!(app.payload.join("app.wasm").is_file());
-        // The shell tells the window where it is shown and whether its room has synced, as it
-        // tells a native app's: until the room has, its empty states say it is connecting.
+        // The shell tells the window where it is shown and whether its room has synced, as it tells
+        // a native app's: until the room has, its empty states say it is connecting.
         let shell_ui = manifest
             .sandbox
             .services
@@ -76,8 +75,8 @@ fn each_package_is_a_signed_app_that_runs_on_the_tilolang_runtime() {
             u32::from(ui::floating_surface::FLOATING_SURFACE_PROTOCOL_VERSION),
             "at the version the shell speaks"
         );
-        // Collaboration and the filesystem at the version the runtime serves them, or the
-        // install is refused.
+        // Collaboration and the filesystem at the version the runtime serves them, or the install
+        // is refused.
         for service in ["collab", "tilo-fs"] {
             let requirement = manifest
                 .sandbox
@@ -149,9 +148,9 @@ fn today_reads_notes(
 }
 
 /// The action door each package's manifest declares: Today's morning cleanup calls Tasks' and
-/// Notes' actions, so Today declares that it invokes another app's actions, which the broker
-/// reads as the ceiling on what it may ask of their doors; a package that calls only its own
-/// actions declares nothing beyond them.
+/// Notes' actions, so Today declares that it invokes another app's actions, which the broker reads
+/// as the ceiling on what it may ask of their doors; a package that calls only its own actions
+/// declares nothing beyond them.
 fn declared_actions(apps: &[package::BuiltApp], today: &Manifest) {
     let declared = |app: &package::BuiltApp| {
         Manifest::from_toml_str(&std::fs::read_to_string(&app.manifest).unwrap())
@@ -178,9 +177,8 @@ fn declared_actions(apps: &[package::BuiltApp], today: &Manifest) {
     );
 }
 
-/// Every app compiles with the standard library and carries it: the package its declarations
-/// belong to is loaded wherever its code runs. Its views are no views of its own (they expand
-/// into the app's), so its module is the small one every payload holds.
+/// Every app compiles with the standard library and carries it: the package its declarations belong
+/// to is loaded wherever its code runs.
 fn every_payload_carries_the_standard_library(
     apps: &[package::BuiltApp],
     installed: &tilolang_tilo::bundle::Bundle,
@@ -209,13 +207,12 @@ fn every_payload_carries_the_standard_library(
 }
 
 /// A package that reads the platform's published resources (the shell's quick settings read the
-/// device's) builds: the platform's apps are described from their surfaces, not looked for
-/// among the packages.
+/// device's) builds: the platform's apps are described from their surfaces, not looked for among
+/// the packages.
 #[test]
 fn a_package_that_uses_the_platforms_apps_builds() {
     let scratch = tempfile::tempdir().unwrap();
     let source = scratch.path().join("tl");
-    // With the session's description, a native app's directory beside it.
     for name in with_used(&["shell"]) {
         copy_package(&packages().join(&name), &source.join(&name));
     }
@@ -249,8 +246,8 @@ fn setenv<'a>(argv: &'a [String], key: &str) -> Option<&'a str> {
         .map(|window| window[2].as_str())
 }
 
-/// The launcher runs a built app as the tilolang runtime's binary over the app's payload, under
-/// the app's own id, with its icon and its surface.
+/// The launcher runs a built app as the tilolang runtime's binary over the app's payload, under the
+/// app's own id, with its icon and its surface.
 #[test]
 fn the_launcher_runs_a_built_app_on_the_runtime_binary_over_its_payload() {
     let scratch = tempfile::tempdir().unwrap();

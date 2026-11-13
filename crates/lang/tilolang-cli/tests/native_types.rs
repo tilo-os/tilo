@@ -75,13 +75,11 @@ fn native_chat_describes_as_tilolang_types() {
         "{text}"
     );
     assert_eq!(text.matches("type Emoji {").count(), 1, "{text}");
-    // Reactions are the platform's and not read by tilolang code.
     assert!(!message.contains("reactions"), "{message}");
     assert!(
         text.contains("action create_category(workspace: Workspace, name: Text)"),
         "{text}"
     );
-    // A verb's parameters are typed as the code declares them.
     assert!(
         text.contains(
             "action create_channel(workspace: Workspace, name: Text, category: Option<Text>, \
@@ -156,12 +154,9 @@ fn a_call_of_a_chat_action_is_checked_against_its_parameters() {
     );
 }
 
-/// Every package of `apps/tl` builds from its directory, after the packages it uses: tilolang
-/// ones among its siblings, and native apps by their committed descriptions (the shell `use`s
-/// `so.tilo.session`) and the platform's packages (`so.tilo.device`, `so.tilo.settings`). The
-/// ids lock and the source catalogue it writes from them are the ones committed beside it: this
-/// is the only place the shell's are checked, since only with the native apps compiled does it
-/// write them at all.
+/// Every package of `apps/tl` builds from its directory, after the packages it uses: tilolang ones
+/// among its siblings, and native apps by their committed descriptions (the shell `use`s
+/// `so.tilo.session`) and the platform's packages (`so.tilo.device`, `so.tilo.settings`).
 #[test]
 fn every_example_package_builds_from_its_directory_with_the_files_it_writes() {
     let apps = repo().join("apps/tl");

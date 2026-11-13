@@ -12,9 +12,10 @@ use tilolang::meta::PackageMeta;
 
 use tilolang_tilo::catalogue;
 
-/// The catalogue's package of the app in `dir`: a native app's committed surface, or the
-/// metadata of the tilolang package there, compiled with the packages it uses (found in
-/// `search`, else among its siblings).
+/// The catalogue's package of the app in `dir`: a native app's
+/// committed surface, or the metadata of the tilolang package there,
+/// compiled with the packages it uses (found in `search`, else among
+/// its siblings).
 pub fn published(dir: &Path, search: &[PathBuf]) -> Result<PackageMeta, String> {
     if let Some(meta) = catalogue::native_app(dir)? {
         return Ok(meta);
@@ -26,16 +27,12 @@ pub fn published(dir: &Path, search: &[PathBuf]) -> Result<PackageMeta, String> 
         .ok_or_else(|| format!("{}: no package", dir.display()))?
         .compiled
         .meta;
-    // The package's own declarations, as a package that `use`s it compiles against them: its
-    // generated surface names each action by the id a change of it names, which is no word an
-    // author reads here.
+    // The package's own declarations, as a package that `use`s it compiles against them: its generated
+    // surface names each action by the id a change of it names, which is no word an author reads here.
     Ok(meta.clone())
 }
 
-/// What `tilolang describe` prints for the app in `dir`.
-///
-/// # Errors
-/// As [`published`].
+/// What `tilolang describe` prints for the app in `dir`. # Errors As [`published`].
 pub fn describe(dir: &Path, search: &[PathBuf]) -> Result<String, String> {
     published(dir, search).map(|meta| tilolang::describe::declarations(&meta))
 }

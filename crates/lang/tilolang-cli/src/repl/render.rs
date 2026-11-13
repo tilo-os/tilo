@@ -3,7 +3,6 @@
 
 use super::style::{Role, highlight, pad, paint};
 
-/// How wide the column of references is.
 const REF_COLUMN: usize = 5;
 
 /// Whether `word` is written as a reference is (`n3`, `t91`).

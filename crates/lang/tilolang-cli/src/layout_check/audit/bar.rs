@@ -5,20 +5,14 @@
 
 use super::{EPSILON, Kind, Problem, SHELL};
 
-/// The window's bar, as a finding names the widget it is about: the bar is the window's, not
-/// the app's.
+/// The window's bar, as a finding names the widget it
+/// is about: the bar is the window's, not the app's.
 const BAR: &str = "WindowBar";
 
-/// What is wrong with the window's columns as they stand at rest: a column whose header the app
-/// declares — the words that name what it shows and the buttons that act on it — that draws no
-/// header row at its top. A column's header is the app's own and stands at every time; a window
-/// that draws it only while its bar is out starts the column straight with its rows, and nothing
-/// names it or adds to it until the person reaches for the window's top edge.
-///
-/// `declared` names the columns (`sidebar`, `overview`, `content`) whose header the app declares;
-/// `frames` are the columns the window lays out. A column standing off the window (a pushed screen
-/// behind the one in front) is not on it, and a sidebar narrow enough to read as a rail of icons
-/// says what it holds by them: neither is judged.
+/// What is wrong with the window's columns as they stand at rest: a
+/// column whose header the app declares — the words that name what it
+/// shows and the buttons that act on it — that draws no header row at
+/// its top.
 pub fn column_headers_at_rest(
     declared: &[&str],
     frames: &[ui::widget::ColumnFrame],
@@ -47,11 +41,7 @@ pub fn column_headers_at_rest(
 }
 
 /// What is wrong with the window's bar against the window's own header rows: an action the bar
-/// offers that a button standing in the window offers too, by the same name. A column's header
-/// row is where its actions stand, and the bar holds only what is the window's, so a person
-/// finds each action once.
-///
-/// `buttons` are the names of the buttons the window draws where the person reaches them.
+/// offers that a button standing in the window offers too, by the same name.
 pub fn offered_twice(layout: &ui::window_toolbar::BarLayout, buttons: &[String]) -> Vec<Problem> {
     layout
         .controls
@@ -78,10 +68,10 @@ pub fn offered_twice(layout: &ui::window_toolbar::BarLayout, buttons: &[String])
         .collect()
 }
 
-/// What is wrong with one window's bar as it lays itself out across the window: a control it
-/// shows twice, and an action that asks for its words standing as its icon alone while the bar
-/// has room for those words. Both read the app's actions: the window's own furniture wears a glyph
-/// everyone reads without words, so neither judges it.
+/// What is wrong with one window's bar as it lays itself out across the
+/// window: a control it shows twice, and an action that asks for its
+/// words standing as its icon alone while the bar has room for those
+/// words.
 pub fn bar(layout: &ui::window_toolbar::BarLayout) -> Vec<Problem> {
     let mut out = Vec::new();
     for (index, control) in layout.controls.iter().enumerate() {
@@ -124,9 +114,10 @@ pub fn bar(layout: &ui::window_toolbar::BarLayout) -> Vec<Problem> {
         });
     }
     for control in &layout.controls {
-        // Drawn as its icon alone, narrower than the words it has, while the room stood empty
-        // beside it — the room the window's place leaves over, which a label may take: a person
-        // cannot read what it does. The row's own "…" is a glyph by design.
+        // Drawn as its icon alone, narrower than the words it has, while
+        // the room stood empty beside it — the room the window's place
+        // leaves over, which a label may take: a person cannot read what it
+        // does.
         if control.furniture
             || control.slot == "overflow"
             || control.icon.is_none()
@@ -154,9 +145,9 @@ pub fn bar(layout: &ui::window_toolbar::BarLayout) -> Vec<Problem> {
     out
 }
 
-/// What is wrong with a window that shows its bar and, under it, a second header row of its
-/// own: one bar per window, the app's title, navigation, actions and catch-up standing in it and
-/// the window's controls at its end.
+/// What is wrong with a window that shows its bar and, under it, a second header row of its own:
+/// one bar per window, the app's title, navigation, actions and catch-up standing in it and the
+/// window's controls at its end.
 pub fn stacked_header_rows(bar_height: f64, header_row: f64) -> Vec<Problem> {
     if bar_height <= EPSILON || header_row <= EPSILON {
         return Vec::new();
@@ -175,8 +166,7 @@ pub fn stacked_header_rows(bar_height: f64, header_row: f64) -> Vec<Problem> {
 }
 
 /// Whether one bar shows `a` and `b` as the same control: the same action under two ids, or two
-/// controls one glyph or one name apart, which a person cannot tell from each other. One bar
-/// shows each control once, and keeps one "…" for what does not fit in it.
+/// controls one glyph or one name apart, which a person cannot tell from each other.
 fn same_control(a: &ui::window_toolbar::BarControl, b: &ui::window_toolbar::BarControl) -> bool {
     if !a.id.is_empty() && a.id == b.id {
         return true;
@@ -187,9 +177,9 @@ fn same_control(a: &ui::window_toolbar::BarControl, b: &ui::window_toolbar::BarC
     !a.name.is_empty() && a.name == b.name
 }
 
-/// What is wrong with the window's bar against what its app declared: the one main action a
-/// view declares stands in the row as the primary button, so a person sees at once what the
-/// window is for, rather than as one more action or behind the bar's door.
+/// What is wrong with the window's bar against what its app declared: the one main action a view
+/// declares stands in the row as the primary button, so a person sees at once what the window is
+/// for, rather than as one more action or behind the bar's door.
 pub fn bar_primary(
     toolbar: Option<&ui::window_toolbar::WindowToolbar>,
     layout: &ui::window_toolbar::BarLayout,

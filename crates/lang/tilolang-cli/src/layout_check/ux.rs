@@ -20,33 +20,30 @@ use ui::widget::{LayoutInfo, RowLayout};
 
 use super::audit::{Kind, Problem};
 
-/// How far out of line two edges may stand, in logical pixels: layout places them on fractions of
-/// a pixel, which a person does not see.
+/// How far out of line two edges may stand, in logical pixels: layout places them on fractions of a
+/// pixel, which a person does not see.
 const SLACK: f64 = 1.0;
 
 /// The nesting step the stock theme indents a row by, for the tests that lay rows out by hand.
 #[cfg(test)]
 const TOOLKIT_STEP: f64 = 22.0;
 
-/// The room a screen keeps between its content and the window's edge on the narrowest window it is
-/// made for.
+/// The room a screen keeps between its content and the
+/// window's edge on the narrowest window it is made
+/// for.
 pub const COMPACT_GUTTER: f64 = 16.0;
 
-/// The window width under which a screen has no room for a page's own gutters and must keep the one
-/// gutter itself.
+/// The window width under which a screen has no room for a
+/// page's own gutters and must keep the one gutter itself.
 const COMPACT_WIDTH: f64 = 600.0;
 
-/// The words a screen's copy starts an add control with.
 const ADD_VERBS: [&str; 3] = ["add ", "new ", "create "];
 
 /// The words a screen's copy destroys with, other than the one verb every screen destroys with.
-/// `clear` is among them only on a control the view declares destructive: a field's own clear
-/// takes back what was typed, and keeps its word.
 const OTHER_DELETE_VERBS: [&str; 7] = [
     "remove", "erase", "discard", "purge", "wipe", "drop", "clear",
 ];
 
-/// The one verb a destructive control says its action with.
 pub const DELETE_VERB: &str = "Delete";
 
 /// What a view declares its controls do, where the inspection cannot tell: the controls it sends
@@ -74,9 +71,8 @@ impl Declared {
     }
 }
 
-/// Whether `node` is a control its view declared destructive: an action's control
-/// (`ui.MenuItem`, `ui.SwipeAction`) says so in a flag, a button in its role. A control that
-/// clears a field's value declares no role and destroys nothing.
+/// Whether `node` is a control its view declared destructive: an action's control (`ui.MenuItem`,
+/// `ui.SwipeAction`) says so in a flag, a button in its role.
 fn destroys(node: &UiNode) -> bool {
     let flagged = match node.props.get("destructive") {
         Some(Value::Bool(flag)) => *flag,
@@ -86,9 +82,8 @@ fn destroys(node: &UiNode) -> bool {
     flagged || node.props.get("role") == Some(&Value::text("destructive"))
 }
 
-/// What this screen holds that a person would see wrong though its geometry is sound, as the
-/// views that drew it declared what their controls do. `step` is the toolkit's nesting step: how
-/// far one depth indents its content, and so the one step a first level may stand in by.
+/// What this screen holds that a person would see wrong though its geometry is sound, as the views
+/// that drew it declared what their controls do.
 pub fn inspect(
     root: &InspectionNode,
     viewport: (u32, u32),
@@ -111,7 +106,6 @@ pub fn inspect(
     let mut titled = Vec::new();
     headings(root, &mut titled);
     if let Some(title) = title.map(one_line).filter(|title| !title.is_empty()) {
-        // The bar paints its title where no box stands for it.
         titled.push((title, None));
     }
     listed_detail(&titled, root, &mut Vec::new(), &mut out);
@@ -163,9 +157,6 @@ fn grid(node: &InspectionNode) -> Option<RowLayout> {
     }
 }
 
-// --- the rows of a box -------------------------------------------------------------------------
-
-/// One row of a box, as it stands.
 struct Site<'a> {
     node: &'a InspectionNode,
     grid: RowLayout,
@@ -180,10 +171,6 @@ struct Grid<'a> {
 
 /// The rows of one box stand on one grid: their titles on one x for each depth, their content on
 /// one right edge, and every nesting step indenting by the same gutter.
-///
-/// A section's header is not compared with them: a section may hold a panel of its own (a demo, a
-/// reading), whose rows are inset by the panel, and the inspection cannot tell that list from the
-/// section's own.
 fn columns(root: &InspectionNode, out: &mut Vec<Problem>) {
     let mut found = Grid::default();
     collect_grid(root, &mut Vec::new(), &mut found);
@@ -254,7 +241,6 @@ fn check_box(rows: &[Site<'_>], out: &mut Vec<Problem>) {
             }
         }
     }
-    // A nesting step indents by one gutter, whatever the depth.
     let Some((&base_depth, &base_x)) = by_depth.iter().next() else {
         return;
     };
@@ -300,21 +286,16 @@ fn check_box(rows: &[Site<'_>], out: &mut Vec<Problem>) {
     }
 }
 
-// --- a first level on its section's column ----------------------------------------------------
-
-/// The title a box of rows stands under, as the nearest heading before it: where the title's
-/// words start, and what they say.
+/// The title a box of rows stands under, as the nearest heading before it: where the title's words
+/// start, and what they say.
 #[derive(Clone, Debug)]
 struct Heading {
     x: f64,
     words: String,
 }
 
-/// A list or tree whose first level stands more than one nesting step right of the title its
-/// section goes by. A section's title starts on the column its content does, and a tree's first
-/// level keeps the one step in front of it that its folding chevron hangs in; a second step on
-/// top of that leaves the section's rows adrift from its own words, and a step kept by every
-/// level leaves a deep row with no column left.
+/// A list or tree whose first level stands more than one
+/// nesting step right of the title its section goes by.
 fn first_level(
     node: &InspectionNode,
     above: Option<&Heading>,
@@ -326,13 +307,15 @@ fn first_level(
         level_of_box(node, heading, step, keys.as_slice(), out);
     }
     let pushed = node.test_id.clone().map(|id| keys.push(id)).is_some();
-    // The heading a child stands under: the nearest one before it among its siblings, or the one
-    // its box stood under.
+    // The heading a child stands under: the nearest one
+    // before it among its siblings, or the one its box stood
+    // under.
     let mut running = above.cloned();
     let mut handed = heading_of(node);
-    // One thing holds one title: a header box (`Section` over its `SectionHeader`) hands the
-    // title it holds to the rows after it, and a page holding more than its title — a column of
-    // its own — keeps its titles to itself.
+    // One thing holds one title: a header box (`Section` over its
+    // `SectionHeader`) hands the title it holds to the rows after it, and a
+    // page holding more than its title — a column of its own — keeps its
+    // titles to itself.
     let one = node.children.len() == 1;
     for child in &node.children {
         if let Some(found) = first_level(child, running.as_ref(), step, keys, out) {
@@ -373,8 +356,7 @@ fn level_of_box(
         return;
     };
     // The title has to stand over the box's own column: a title in another column (a page's, a
-    // sidebar's beside it) says nothing of where this box's rows start. One step to the left of
-    // the box is still its column's, where a tree's folding chevron hangs.
+    // sidebar's beside it) says nothing of where this box's rows start.
     let boxed = rect(node);
     if heading.x < boxed.x0 - step - SLACK || heading.x > boxed.x1 + SLACK {
         return;
@@ -408,8 +390,6 @@ fn level_of_box(
     );
 }
 
-// --- a group opens on the level its list starts at ---------------------------------------------
-
 /// The target a group's heading is named by: the list's own disclosure of it
 /// ([`ui::widget::VirtualList`]).
 const GROUP_TARGET: &str = "group:";
@@ -417,8 +397,7 @@ const GROUP_TARGET: &str = "group:";
 /// A heading heads a run of rows, and the depth a row says it stands at is which row it stands
 /// under: the first row under a heading stands on the level its list starts at, never one step in
 /// from it, because a row indented stands under the row over it and no row of its group stands
-/// there. An item whose row the grouping put elsewhere — a step of a task due another day — stands
-/// on the group's first level too, naming the item it belongs to in its own words.
+/// there.
 fn group_first_rows(node: &InspectionNode, keys: &mut Vec<String>, out: &mut Vec<Problem>) {
     if let Some(semantics) = &node.semantics {
         let rows = &semantics.children;
@@ -464,10 +443,9 @@ fn group_first_rows(node: &InspectionNode, keys: &mut Vec<String>, out: &mut Vec
     }
 }
 
-// --- one choice, filled once -------------------------------------------------------------------
-
-/// A choice is filled where the person chose it: a selected box inside another selected one draws
-/// the same row twice lit.
+/// A choice is filled where the person chose it: a selected
+/// box inside another selected one draws the same row twice
+/// lit.
 fn selections(
     node: &InspectionNode,
     keys: &mut Vec<String>,
@@ -509,10 +487,8 @@ fn selections(
     }
 }
 
-// --- the place the window shows stands chosen -------------------------------------------------
-
-/// The shell of a window and the list of its places: what it is made of
-/// ([`ui::widget::NavShell`], [`ui::widget::NavList`]).
+/// The shell of a window and the list of its places: what it is made of ([`ui::widget::NavShell`],
+/// [`ui::widget::NavList`]).
 const NAV_SHELL: &str = "NavShell";
 const NAV_TITLE: &str = "NavShellTitle";
 const NAV_LIST: &str = "NavList";
@@ -588,14 +564,12 @@ fn places(list: &InspectionNode) -> Vec<(String, bool)> {
     out
 }
 
-// --- one way to add ----------------------------------------------------------------------------
-
-/// A control that offers to add something: what it says, and whether it is a press or an entry to
-/// type in.
+/// A control that offers to add something: what it
+/// says, and whether it is a press or an entry to type
+/// in.
 struct Adder<'a> {
     node: &'a InspectionNode,
     label: String,
-    /// The box it stands in holds rows as a list.
     in_list: bool,
     box_path: String,
     keys: Vec<String>,
@@ -606,7 +580,6 @@ struct Adder<'a> {
 fn adds(node: &InspectionNode, keys: &mut Vec<String>, in_row: bool, out: &mut Vec<Problem>) {
     let mut adders: Vec<Adder<'_>> = Vec::new();
     collect_adders(node, keys, in_row, node.path.as_str(), false, &mut adders);
-    // Two add affordances in one list.
     let mut boxes: BTreeMap<&str, Vec<&Adder<'_>>> = BTreeMap::new();
     for adder in &adders {
         boxes
@@ -698,10 +671,8 @@ pub(super) fn is_list(node: &InspectionNode) -> bool {
         || node.widget.to_ascii_lowercase().ends_with("lane")
 }
 
-// --- the row a page beside a list shows --------------------------------------------------------
-
-/// A heading over a page: its words, and where it stands; none for the title a window's bar
-/// paints, which stands over the page whatever column it is drawn in.
+/// A heading over a page: its words, and where it stands; none for the title a window's bar paints,
+/// which stands over the page whatever column it is drawn in.
 type Titled = (String, Option<Rect>);
 
 /// The heading a box over a list is titled with: the words of the page the list stands beside.
@@ -717,21 +688,15 @@ fn headings(node: &InspectionNode, out: &mut Vec<Titled>) {
     }
 }
 
-/// A list standing beside the page it opens highlights the row that page shows. The page's title
-/// is the heading standing to the right of the list, over it; where it names a row of the list,
-/// that row is the chosen one, and a list that highlights another says the person is somewhere
-/// else than where they are. A list of several chosen rows says a choice of its own, and one
-/// whose page is titled with words none of its rows carry (a title the rows do not say) names no
-/// row to highlight; neither is held to the rule.
+/// A list standing beside the page it opens highlights the row that page shows.
 fn listed_detail(
     titled: &[Titled],
     node: &InspectionNode,
     keys: &mut Vec<String>,
     out: &mut Vec<Problem>,
 ) {
-    // A navigation list offers places, not the items a page is of: its chosen place says where
-    // the person is, and a page may name a place inside the one chosen (`Inbox` under `All
-    // inboxes`). That is `UnchosenPlace`'s rule, not this one.
+    // A navigation list offers places, not the items a page is of: its chosen place says where the
+    // person is, and a page may name a place inside the one chosen (`Inbox` under `All inboxes`).
     if is_list(node)
         && node.widget != NAV_LIST
         && let Some(semantics) = &node.semantics
@@ -748,9 +713,8 @@ fn listed_detail(
         let selected: Vec<&(String, bool)> = rows.iter().filter(|(_, chosen)| *chosen).collect();
         if let [chosen] = selected.as_slice() {
             let boxed = rect(node);
-            // The page's title is the heading over it, the topmost one naming a row of the list:
-            // a heading further down its page is a section's, and says nothing of which row is
-            // open.
+            // The page's title is the heading over it, the topmost one naming a row of the list: a
+            // heading further down its page is a section's, and says nothing of which row is open.
             let beside = titled
                 .iter()
                 .filter(|(words, at)| {
@@ -792,10 +756,8 @@ fn starts_with_any(name: &str, verbs: &[&str]) -> bool {
     verbs.iter().any(|verb| lower.starts_with(verb))
 }
 
-// --- names a screen reader reads ---------------------------------------------------------------
-
-/// A name a screen reader announces is words, not the code an identifier is written as: the
-/// same rule the compiler holds a package's words to as it writes its catalogue
+/// A name a screen reader announces is words, not the code an identifier is written as: the same
+/// rule the compiler holds a package's words to as it writes its catalogue
 /// ([`tilolang::messages::reads_as_code`]).
 fn names(node: &InspectionNode, keys: &mut Vec<String>, out: &mut Vec<Problem>) {
     if let Some(name) = semantics_name(node)
@@ -833,11 +795,7 @@ fn names(node: &InspectionNode, keys: &mut Vec<String>, out: &mut Vec<Problem>) 
     }
 }
 
-// --- destructive verbs -------------------------------------------------------------------------
-
-/// A control that destroys something says so with the one verb every screen uses for it. Only
-/// what the view declared destroys is held to the verb: a button that clears a field's value
-/// says "Remove" and destroys nothing.
+/// A control that destroys something says so with the one verb every screen uses for it.
 fn verbs(
     node: &InspectionNode,
     declared: &Declared,
@@ -871,9 +829,8 @@ fn verbs(
     }
 }
 
-/// The word `name` destroys with, where it is one of [`OTHER_DELETE_VERBS`]: read as a whole
-/// word, so a control that says only "Discard" is held to the verb as one that says "Discard
-/// view" is.
+/// The word `name` destroys with, where it is one of [`OTHER_DELETE_VERBS`]: read as a whole word,
+/// so a control that says only "Discard" is held to the verb as one that says "Discard view" is.
 fn other_delete_verb(name: &str) -> Option<&'static str> {
     let lower = name.to_lowercase();
     let first = lower
@@ -887,10 +844,9 @@ fn other_delete_verb(name: &str) -> Option<&'static str> {
         .find(|verb| *verb == first)
 }
 
-// --- a surface inside a surface ------------------------------------------------------------------
-
-/// A card in a card: a surface drawn on a surface raised above the page, twice over, is one
-/// bound too many.
+/// A card in a card: a surface drawn on a surface
+/// raised above the page, twice over, is one bound too
+/// many.
 fn cards(node: &InspectionNode, keys: &mut Vec<String>, in_card: bool, out: &mut Vec<Problem>) {
     let card = node.widget == "Card";
     if card && in_card {
@@ -913,13 +869,9 @@ fn cards(node: &InspectionNode, keys: &mut Vec<String>, in_card: bool, out: &mut
     }
 }
 
-// --- an item open where it stands ---------------------------------------------------------------
-
-/// An item open where it stands is a row of the list the person sees: the row that opened it
-/// stands in a list, within the columns the list's own box spans, and one list shows one item
-/// open at a time. An item shown beside the list, or over the part of it on screen, is not the
-/// item where it stands in the list they are reading. Its box may reach below the list's, or be
-/// scrolled part way above its top: a document longer than the list is read by scrolling it.
+/// An item open where it stands is a row of the list the person sees: the row that opened it stands
+/// in a list, within the columns the list's own box spans, and one list shows one item open at a
+/// time.
 fn opens(
     node: &InspectionNode,
     list: Option<&InspectionNode>,
@@ -929,10 +881,7 @@ fn opens(
 ) {
     let list = if is_list(node) { Some(node) } else { list };
     // A list gives each row a node of its own in the tree a reader is handed, standing under the
-    // list rather than as a widget of its own: that node is where the row's box is read. A
-    // heading the list publishes says it is expanded too, and a tree's branch stays expanded
-    // while its subtasks show, so only an item's own node is read, and only a list's row is
-    // counted as an item standing open.
+    // list rather than as a widget of its own: that node is where the row's box is read.
     if let Some(semantics) = &node.semantics {
         for item in &semantics.children {
             let is_item = matches!(item.role, Role::ListItem | Role::TreeItem);
@@ -956,8 +905,8 @@ fn opens(
             }
         }
     }
-    // A row drawn as a widget of its own, outside a list's own nodes: the same rule, read from
-    // the widget's box.
+    // A row drawn as a widget of its own, outside a list's
+    // own nodes: the same rule, read from the widget's box.
     let open = role(node) == Some(Role::ListItem)
         && node
             .semantics
@@ -989,11 +938,8 @@ fn opens(
     }
 }
 
-/// What standing open says of an item whose box is `row`: the list it belongs to shows it where
-/// it stands, or it stands outside the list the person is reading. A box reaching below the list
-/// is fine — a document longer than the list is read by scrolling it — and so is one scrolled
-/// part way above its top, which still reaches into it; a row lying wholly above the list stands
-/// beside it, over the part of the list on screen.
+/// What standing open says of an item whose box is `row`: the list it belongs to shows it where it
+/// stands, or it stands outside the list the person is reading.
 fn outside_list(list: Option<&InspectionNode>, row: Rect) -> Option<String> {
     let Some(list) = list else {
         return Some(
@@ -1018,14 +964,8 @@ fn second_open(list: Option<&InspectionNode>, shown: &mut BTreeSet<String>) -> b
     !shown.insert(list.map_or_else(String::new, |list| list.path.clone()))
 }
 
-// --- a row's title, written once ----------------------------------------------------------------
-
 /// A row that opened into its item is the item: its title stands once, in the field that edits it,
-/// and what the item holds follows under it. The row's title left standing over the document says
-/// the same words twice in one place.
-///
-/// The words counted are the ones a person reads ([`writes`]), never the name a box is announced
-/// by: the item is its own row and is announced by its title, which is written once.
+/// and what the item holds follows under it.
 fn repeated_row_titles(node: &InspectionNode, keys: &mut Vec<String>, out: &mut Vec<Problem>) {
     if is_list(node) {
         let open: Vec<(String, Rect)> = node
@@ -1073,8 +1013,8 @@ fn repeated_row_titles(node: &InspectionNode, keys: &mut Vec<String>, out: &mut 
     }
 }
 
-/// How many widgets standing within `at` write `title` where a person reads it: a label, a
-/// heading, the value of the field that edits it.
+/// How many widgets standing within `at` write `title` where a person reads it: a label, a heading,
+/// the value of the field that edits it.
 fn titled_within(node: &InspectionNode, title: &str, at: Rect) -> usize {
     let own = rect(node);
     let mut count = usize::from(
@@ -1091,9 +1031,7 @@ fn titled_within(node: &InspectionNode, title: &str, at: Rect) -> usize {
 }
 
 /// Whether this node writes `title` on the screen: the words of a label, a heading or a link, or
-/// the value of the field it is. A box's accessible name is not written anywhere: the row standing
-/// open into its item is named by the title that item states (`Role::ListItem` and its like), and a
-/// box that names what it holds says those words once, in what it holds.
+/// the value of the field it is.
 fn writes(semantics: &ui::a11y::AccessNode, title: &str) -> bool {
     let drawn = matches!(
         semantics.role,
@@ -1115,15 +1053,11 @@ fn one_line(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-// --- the line a field stands in ------------------------------------------------------------------
-
-/// A field whose one line of text stands toward the top of the control it is typed into: the
-/// band around the line grew — a phone's target, a row stretching the field to the face of the
-/// button beside it — while the line stayed where a field with no room over it puts it, so a
-/// person reads the placeholder or the words floating over empty room, and the caret away from
-/// the middle of the box their finger pressed. A field holding one line stands it in the middle
-/// of the band; one whose text wraps, and one given lines of its own (a note's box), starts at
-/// its inset and grows down, and is no line off centre.
+/// A field whose one line of text stands toward the top of the control it is typed into: the band
+/// around the line grew — a phone's target, a row stretching the field to the face of the button
+/// beside it — while the line stayed where a field with no room over it puts it, so a person reads
+/// the placeholder or the words floating over empty room, and the caret away from the middle of the
+/// box their finger pressed.
 fn fields(node: &InspectionNode, keys: &mut Vec<String>, out: &mut Vec<Problem>) {
     if let Some(LayoutInfo::Text(text)) = node.layout
         && matches!(role(node), Some(Role::TextInput | Role::MultilineTextInput))
@@ -1161,10 +1095,8 @@ fn fields(node: &InspectionNode, keys: &mut Vec<String>, out: &mut Vec<Problem>)
     }
 }
 
-// --- the gutter a narrow window keeps -----------------------------------------------------------
-
-/// A window too narrow for a page's own gutters keeps one gutter at its edge, so content never
-/// touches the glass.
+/// A window too narrow for a page's own gutters keeps one
+/// gutter at its edge, so content never touches the glass.
 fn gutter(node: &InspectionNode, width: f64, keys: &mut Vec<String>, out: &mut Vec<Problem>) {
     if width > COMPACT_WIDTH {
         return;
@@ -1340,9 +1272,9 @@ mod tests {
         declared
     }
 
-    /// Rows of one box stand their titles on one x at each depth, and every nesting step indents
-    /// by the same gutter: a row whose leading control or nesting walks off that line is caught,
-    /// and one that stands on it is not.
+    /// Rows of one box stand their titles on one x at each depth, and every nesting step indents by
+    /// the same gutter: a row whose leading control or nesting walks off that line is caught, and
+    /// one that stands on it is not.
     #[test]
     fn rows_of_one_box_must_share_their_columns() {
         let shared = holding(
@@ -1390,8 +1322,8 @@ mod tests {
         assert!(problems[0].detail.contains("nesting steps"), "{problems:?}");
     }
 
-    /// A list or tree keeps its first level within one nesting step of the title its section
-    /// goes by: a step for the title's column and no second step for the first level.
+    /// A list or tree keeps its first level within one nesting step of the title its section goes
+    /// by: a step for the title's column and no second step for the first level.
     #[test]
     fn a_first_level_stands_within_one_step_of_its_sections_title() {
         let section = |first: f64, nested: f64| {
@@ -1419,12 +1351,12 @@ mod tests {
         // The title's column, and the one step a folding chevron hangs in front of the rows.
         let standing = section(46.0, 68.0);
         assert!(found(Kind::FirstLevelIndent, &standing, (390, 844)).is_empty());
-        // A plain list stands on the title's own column.
         let flush = section(24.0, 46.0);
         assert!(found(Kind::FirstLevelIndent, &flush, (390, 844)).is_empty());
 
-        // A step for the chevron and another for the first level: the section's rows stand
-        // adrift of the words that name them.
+        // A step for the chevron and another for the first level:
+        // the section's rows stand adrift of the words that name
+        // them.
         let adrift = section(68.0, 90.0);
         let problems = found(Kind::FirstLevelIndent, &adrift, (390, 844));
         assert_eq!(problems.len(), 1, "{problems:?}");
@@ -1441,8 +1373,8 @@ mod tests {
     /// under no row of its group, so it says what it belongs to in its own words instead.
     #[test]
     fn a_group_does_not_open_on_an_indented_row() {
-        /// One child of a list, as the check reads it: the heading over a group, or a row and
-        /// how deep it says it stands.
+        /// One child of a list, as the check reads it: the heading
+        /// over a group, or a row and how deep it says it stands.
         enum Line {
             Heading(&'static str),
             Row(usize),
@@ -1479,8 +1411,9 @@ mod tests {
             list
         };
 
-        // A step of a task due the same day stands under it, and one due another day opens its
-        // group on the list's own level.
+        // A step of a task due the same day stands under it, and
+        // one due another day opens its group on the list's own
+        // level.
         let nested = grouped(vec![
             Line::Heading("Monday"),
             Line::Row(1),
@@ -1513,8 +1446,8 @@ mod tests {
         assert!(found(Kind::OrphanedRow, &even, (390, 844)).is_empty());
     }
 
-    /// A column keeps its titles to itself: the heading deep in the page behind a drawer names
-    /// no row of the drawer, whose box stands in a column of its own.
+    /// A column keeps its titles to itself: the heading deep in the page behind a drawer names no
+    /// row of the drawer, whose box stands in a column of its own.
     #[test]
     fn a_column_hands_no_title_to_the_column_after_it() {
         // The page in front of a narrow window: a section headed "History" over what it lists,
@@ -1576,8 +1509,8 @@ mod tests {
         );
     }
 
-    /// One choice is filled once: a selected row inside a selected box draws the same choice
-    /// twice, where a selected row in a plain box draws it once.
+    /// One choice is filled once: a selected row inside a selected box draws the same choice twice,
+    /// where a selected row in a plain box draws it once.
     #[test]
     fn one_choice_is_filled_once() {
         let shape = || {
@@ -1597,7 +1530,6 @@ mod tests {
         once.widget = "Stack".to_owned();
         assert!(found(Kind::DoubleSelection, &once, (1280, 800)).is_empty());
 
-        // The box draws a shape of its own.
         let mut boxed = shape();
         boxed.semantics = Some(
             AccessNode::new(Role::List).with_state(ui::a11y::AccessState::new().selected(true)),
@@ -1607,7 +1539,6 @@ mod tests {
         assert_eq!(problems[0].widget, "ListRow");
     }
 
-    /// A place in a list is lit while it stands chosen.
     fn lit(widget: &str, id: &str, rect: [f64; 4], name: &str) -> InspectionNode {
         let mut node = named(widget, id, rect, Role::TreeItem, name);
         node.semantics = Some(
@@ -1618,9 +1549,10 @@ mod tests {
         node
     }
 
-    /// The place a window shows is lit in its sidebar: the header naming a place the sidebar
-    /// offers while no place there stands chosen leaves the person unable to see where they are,
-    /// and a chosen place says it.
+    /// The place a window shows is lit in its sidebar: the header naming a
+    /// place the sidebar offers while no place there stands chosen leaves
+    /// the person unable to see where they are, and a chosen place says
+    /// it.
     #[test]
     fn the_place_a_window_shows_stands_chosen() {
         let shell = |chosen: bool| {
@@ -1718,16 +1650,16 @@ mod tests {
             }
             field
         }
-        // A composer in a phone's window: the band grew to the target a finger needs, and its one
-        // line stands in the middle of it.
+        // A composer in a phone's window: the band grew to the target
+        // a finger needs, and its one line stands in the middle of it.
         let centred = field("comment", [100.0, 20.0, 240.0, 48.0], 34.9, 18.2, 1, 0);
         assert!(
             found(Kind::LineOffCentre, &centred, (390, 844)).is_empty(),
             "{:?}",
             found(Kind::LineOffCentre, &centred, (390, 844))
         );
-        // The same field with its line at the top: the words float over empty room, and the
-        // caret stands away from the middle of the box a finger pressed.
+        // The same field with its line at the top: the words float over empty room, and the caret
+        // stands away from the middle of the box a finger pressed.
         let pinned = field("comment", [100.0, 20.0, 240.0, 48.0], 28.0, 18.2, 1, 0);
         let problems = found(Kind::LineOffCentre, &pinned, (390, 844));
         assert_eq!(problems.len(), 1, "{problems:?}");
@@ -1752,7 +1684,6 @@ mod tests {
             text.document = true;
         }
         assert!(found(Kind::LineOffCentre, &page, (1280, 800)).is_empty());
-        // A single-line field centres its band already, and stands one line tall.
         let single = field("search", [0.0, 0.0, 240.0, 32.0], 6.9, 18.2, 1, 0);
         assert!(found(Kind::LineOffCentre, &single, (1280, 800)).is_empty());
     }
@@ -1819,8 +1750,9 @@ mod tests {
         assert_eq!(problems.len(), 1, "{problems:?}");
         assert!(problems[0].detail.contains("one list"), "{problems:?}");
 
-        // The screen's chrome offers the actions of the screen, one per thing: a header with two
-        // of them is not a list.
+        // The screen's chrome offers the actions of the screen,
+        // one per thing: a header with two of them is not a
+        // list.
         let chrome = holding(
             "NavShell",
             "shell",
@@ -1868,7 +1800,6 @@ mod tests {
         );
         assert!(found(Kind::SeveralAdds, &lanes, (1280, 800)).is_empty());
 
-        // A row's own name is content, not the screen's offer to add.
         let mut row_called_new = named(
             "ListRow",
             "row",
@@ -1910,8 +1841,8 @@ mod tests {
             let problems = found(Kind::CodedName, &say(code), (1280, 800));
             assert_eq!(problems.len(), 1, "{code}: {problems:?}");
         }
-        // A name built from a view and a binding names the binding, which a screen reader reads
-        // out as one letter; a one-letter name of its own is a letter ("X" on an axis).
+        // A name built from a view and a binding names the binding, which a screen reader reads out
+        // as one letter; a one-letter name of its own is a letter ("X" on an axis).
         for code in ["Note editor for t", "Note editor for c"] {
             let problems = found(Kind::CodedName, &say(code), (1280, 800));
             assert_eq!(problems.len(), 1, "{code}: {problems:?}");
@@ -1959,8 +1890,8 @@ mod tests {
         assert_eq!(problems.len(), 1, "{problems:?}");
         assert!(problems[0].detail.contains("Delete"), "{problems:?}");
 
-        // One word is the whole label: a control that says only "Discard" destroys with as
-        // plain a verb as one that says "Discard view".
+        // One word is the whole label: a control that says only "Discard" destroys with as plain a
+        // verb as one that says "Discard view".
         for bare in [
             "Remove",
             "Discard",
@@ -1976,8 +1907,9 @@ mod tests {
             let problems = found_as(Kind::UnsharedVerb, &say(bare), (1280, 800), &destroys);
             assert_eq!(problems.len(), 1, "{bare}: {problems:?}");
         }
-        // A control that deletes the records it names says "Delete", whatever the noun it takes
-        // away is called.
+        // A control that deletes the records it names says
+        // "Delete", whatever the noun it takes away is
+        // called.
         let problems = found_as(
             Kind::UnsharedVerb,
             &say("Delete finished tasks"),
@@ -1996,8 +1928,9 @@ mod tests {
             "a word that only starts with a verb does not destroy with it"
         );
 
-        // A field's own button clears the value the field holds: the view declares nothing of
-        // it, so the word it says is its own.
+        // A field's own button clears the value the field holds: the
+        // view declares nothing of it, so the word it says is its
+        // own.
         for cleared in ["Remove time", "Clear time"] {
             assert!(
                 found(Kind::UnsharedVerb, &say(cleared), (1280, 800)).is_empty(),
@@ -2084,8 +2017,8 @@ mod tests {
         ]);
         assert_eq!(found(Kind::OpenOutsideList, &twice, (1280, 800)).len(), 1);
 
-        // A tree's branches open and fold their items, which is not an item showing where it
-        // stands.
+        // A tree's branches open and fold their items,
+        // which is not an item showing where it stands.
         let folded = list_of(vec![opened(
             "branch",
             [16.0, 120.0, 584.0, 156.0],
@@ -2146,8 +2079,9 @@ mod tests {
             "two rows of one list standing open"
         );
 
-        // A tree's branch says it is expanded while its subtasks show, which is not an item
-        // standing open where it stands.
+        // A tree's branch says it is expanded while its subtasks
+        // show, which is not an item standing open where it
+        // stands.
         let branch = published(vec![
             row(Role::TreeItem, [16.0, 120.0, 584.0, 36.0]),
             row(Role::TreeItem, [16.0, 160.0, 584.0, 36.0]),
@@ -2156,8 +2090,8 @@ mod tests {
     }
 
     /// The row a list highlights is the one the page beside it shows: a tree that says "Q3 plan"
-    /// while the page reads "Groceries" puts the person somewhere else than where they are, and
-    /// one that highlights nothing leaves the page beside it unattached to its rows.
+    /// while the page reads "Groceries" puts the person somewhere else than where they are, and one
+    /// that highlights nothing leaves the page beside it unattached to its rows.
     #[test]
     fn a_list_beside_its_page_highlights_the_row_the_page_shows() {
         fn title(words: &str) -> InspectionNode {
@@ -2249,8 +2183,8 @@ mod tests {
         );
     }
 
-    /// A row that opened into its item writes its title once: in the field that edits it, not
-    /// again over the document the row became.
+    /// A row that opened into its item writes its title once: in the field that edits it, not again
+    /// over the document the row became.
     #[test]
     fn an_open_item_writes_its_title_once() {
         fn field() -> InspectionNode {
@@ -2293,7 +2227,6 @@ mod tests {
             "the row's name is the item's title, written once in the field that edits it"
         );
 
-        // The row's label left standing over the document: the same words twice.
         let label = named(
             "Text",
             "label",
