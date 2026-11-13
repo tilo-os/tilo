@@ -63,6 +63,14 @@ pub(super) fn reading_with_windows() -> DeskReading {
     }
 }
 
+/// The shell package compiled, as every part of these tests loads it. A test that stands more
+/// than one part compiles it once and hands each part a copy of its own ([`part_of`]): compiling
+/// it again is the same work with the same result, and a part shares nothing of the packages it
+/// is handed with another.
+pub(super) fn compiled() -> Vec<Compiled> {
+    crate::shell_part::compile_shell().unwrap_or_else(|why| panic!("{why}"))
+}
+
 /// A part over `reading`, its outputs set.
 pub(super) fn part_with(reading: DeskReading) -> (ShellPart, Rc<SessionLink>) {
     part_on(reading, (1280, 800))
@@ -70,7 +78,17 @@ pub(super) fn part_with(reading: DeskReading) -> (ShellPart, Rc<SessionLink>) {
 
 /// A part over `reading` on one output `size` logical pixels big.
 pub(super) fn part_on(reading: DeskReading, size: (u32, u32)) -> (ShellPart, Rc<SessionLink>) {
-    part_at(reading, None, size)
+    part_at(compiled(), reading, None, size)
+}
+
+/// A part of its own over `reading` on one output `size` logical pixels big, running a copy of
+/// `packages` ([`compiled`]): its link, its record and its instance are made for it alone.
+pub(super) fn part_of(
+    packages: &[Compiled],
+    reading: DeskReading,
+    size: (u32, u32),
+) -> (ShellPart, Rc<SessionLink>) {
+    part_at(packages.to_vec(), reading, None, size)
 }
 
 /// A part over `reading`, its outputs set, its wells reporting to `wells`.
@@ -78,17 +96,17 @@ pub(super) fn part_as(
     reading: DeskReading,
     wells: Option<ui::widget::Wells>,
 ) -> (ShellPart, Rc<SessionLink>) {
-    part_at(reading, wells, (1280, 800))
+    part_at(compiled(), reading, wells, (1280, 800))
 }
 
-/// A part over `reading` on one output `size` logical pixels big, its wells reporting to
-/// `wells`.
+/// A part running `packages` over `reading` on one output `size` logical pixels big, its wells
+/// reporting to `wells`.
 fn part_at(
+    packages: Vec<Compiled>,
     reading: DeskReading,
     wells: Option<ui::widget::Wells>,
     size: (u32, u32),
 ) -> (ShellPart, Rc<SessionLink>) {
-    let packages = crate::shell_part::compile_shell().unwrap_or_else(|why| panic!("{why}"));
     let app = packages
         .last()
         .expect("the shell compiles last")

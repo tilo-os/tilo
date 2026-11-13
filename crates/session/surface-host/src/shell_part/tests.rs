@@ -33,7 +33,7 @@ fn reading() -> DeskReading {
     }
 }
 
-use crate::shell_part::tests_support::{part_on, part_with};
+use crate::shell_part::tests_support::{compiled, part_of, part_with};
 
 fn part() -> (ShellPart, Rc<SessionLink>) {
     part_with(reading())
@@ -898,8 +898,9 @@ fn overview_with(strips: &[&str]) -> DeskReading {
 #[test]
 fn a_press_on_a_window_menus_item_runs_it_wherever_the_menu_hangs() {
     let _settled = ui::motion::testing::settled();
+    let packages = compiled();
     for strips in [&["Main"][..], &["Main", "Research"][..]] {
-        let (mut part, link) = part_with(overview_with(strips));
+        let (mut part, link) = part_of(&packages, overview_with(strips), (1280, 800));
         for _ in 0..6 {
             part.prepare_frame();
             part.draw();
@@ -1114,8 +1115,10 @@ fn a_part_told_its_display_after_it_settled_lays_out_at_the_displays_width() {
 /// phone and on a desktop, never right under what the surface holds.
 #[test]
 fn with_a_short_surface_up_the_dock_rides_the_outputs_bottom_edge() {
+    let packages = compiled();
     for (width, height) in [(390, 844), (1280, 800)] {
-        let (mut part, _link) = crate::shell_part::tests_support::part_on(
+        let (mut part, _link) = part_of(
+            &packages,
             DeskReading {
                 here: "centre".to_owned(),
                 ..reading()
@@ -1374,7 +1377,8 @@ fn the_overview_pictures_every_window_of_a_strip_at_its_share() {
 /// everything on a `HiDPI` panel grainy).
 #[test]
 fn a_part_on_a_scaled_output_paints_at_that_scale() {
-    let (mut plain, _link) = part_on(reading(), (1280, 800));
+    let packages = compiled();
+    let (mut plain, _link) = part_of(&packages, reading(), (1280, 800));
     plain.outputs_changed(&[tilo_session_core::surface::HostedOutput {
         rect: (0, 0, 1280, 800),
         scale: 1.0,
@@ -1383,7 +1387,7 @@ fn a_part_on_a_scaled_output_paints_at_that_scale() {
     plain.prepare_frame();
     let one = plain.widgets_mut().placement();
 
-    let (mut twice, _link) = part_on(reading(), (1280, 800));
+    let (mut twice, _link) = part_of(&packages, reading(), (1280, 800));
     twice.outputs_changed(&[tilo_session_core::surface::HostedOutput {
         rect: (0, 0, 1280, 800),
         scale: 2.0,
