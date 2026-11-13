@@ -209,10 +209,8 @@ type Person {
     assert_eq!(keys, ["n"]);
 }
 
-/// What a type is called is its name in words, one of it and several as English writes them: a
-/// name that already names several is one of them and all of them, and an irregular plural is
-/// English's. A search block says nothing about it, and no resource is singled out by a
-/// declaration: a query naming an app means its root, drawn as its app's default view.
+/// What a type is called is its name in words, one of it and several as English writes them: an irregular
+/// plural is English's. A search block says nothing about it, and a query naming an app means its root.
 #[test]
 fn a_type_is_called_by_its_name() {
     let src = r"/// A mailbox.
@@ -548,8 +546,8 @@ fn a_query_that_does_not_fit_the_types_filters_is_an_error() {
             "{q}: expected {code} saying {says:?}, got:\n{got}"
         );
     }
-    // A length of time is a value of its own, so `7d` is no Int; a stored number of seconds is
-    // read as one with `Duration(n)`.
+    // A length of time is a value of its own, so `7d` is no Int; a stored number of seconds is read as one
+    // with `Duration(n)`.
     let compile_at = |body: &str| compile_with(&format!("app t.x \"X\"\n{body}\n"), &[]);
     let got = first_message("fn f() -> Int {\n    return 7d\n}");
     assert!(
@@ -798,8 +796,8 @@ type Task {
     );
 }
 
-/// A field naming who an item belongs to is a filter of its own: `assignee:me` reads the same
-/// in every app that has one.
+/// A field naming who an item belongs to is a filter of its own: `assignee:me` reads the same in every app
+/// that has one.
 const MEMBERS: &str = r"
 /// A task someone does.
 type Task {

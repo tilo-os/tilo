@@ -18,16 +18,13 @@ use crate::resolve::{CKind, Env, ParamInfo, default_alias, resolve};
 use crate::source::PackageSource;
 use crate::types::Ty;
 
-/// A compiled app package.
 #[derive(Clone, Debug)]
 pub struct Compiled {
     pub wasm: Vec<u8>,
     pub meta: PackageMeta,
-    /// The ids lock with every declaration assigned and gone ones retired; write it back.
     pub ids: IdsLock,
 }
 
-/// What an agent block evaluates to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BlockKind {
     View,
@@ -35,19 +32,15 @@ pub enum BlockKind {
     Data,
 }
 
-/// A compiled agent block: a module with the export `b_main`.
 #[derive(Clone, Debug)]
 pub struct CompiledBlock {
     pub wasm: Vec<u8>,
-    /// The type of the block's value, as written in source.
     pub value_type: String,
     pub kind: BlockKind,
     pub meta: PackageMeta,
-    /// Whether the block's action is a proposal to record, not an application to make.
     pub suggested: bool,
 }
 
-/// Parses a module.
 pub fn parse(source: &str) -> Result<ast::Module, Vec<Diagnostic>> {
     let (module, diags) = parse_module(source);
     match module {
@@ -61,8 +54,8 @@ struct Analysis {
     env: Env,
     ir: ir::Module,
     ids: IdsLock,
-    /// The package's templates as the source they were written in, by the module's own span
-    /// space: what a package that imports this one expands where it calls them.
+    /// The package's templates as the source they were written in, by the module's own span space: what
+    /// a package that imports this one expands where it calls them.
     templates: Vec<crate::meta::TemplateMeta>,
 }
 
@@ -127,7 +120,6 @@ fn placed(source: &PackageSource) -> Vec<Placed<'_>> {
         .collect()
 }
 
-/// Parses every file of a package, in path order, with spans in the shared span space.
 fn parse_placed(files: &[Placed<'_>]) -> (Vec<ParsedFile>, Vec<Diagnostic>) {
     let mut out = Vec::new();
     let mut diags = Vec::new();
@@ -187,8 +179,8 @@ pub fn parse_package(source: &PackageSource) -> Result<ast::Module, Vec<Diagnost
     }
 }
 
-/// One file of a package, parsed on its own, for printing it back: `path`, its header when it
-/// has one, its items, and the plain `//` comments printed among them.
+/// One file of a package, parsed on its own, for printing it back: `path`, its header, its items, and
+/// the plain `//` comments printed among them.
 #[derive(Clone, Debug)]
 pub struct FileSyntax {
     pub path: String,
@@ -197,8 +189,8 @@ pub struct FileSyntax {
     pub comments: Vec<crate::lexer::Comment>,
 }
 
-/// Parses each file of a package for the canonical printer (`tilolang fmt`). Syntax errors in
-/// any file fail the whole package, as the printer would otherwise drop what it could not read.
+/// Parses each file of a package for the canonical printer (`tilolang fmt`). A syntax error in any
+/// file fails the whole package.
 pub fn parse_package_files(source: &PackageSource) -> Result<Vec<FileSyntax>, Vec<Diagnostic>> {
     let files = placed(source);
     let (parsed, diags) = parse_placed(&files);
@@ -228,8 +220,7 @@ fn analyze_package(
     analyze_module(module, ids, imports, rng, &files).map_err(|diags| finish_files(diags, &files))
 }
 
-/// Compiles a package of one or more files with ids drawn from the operating system's
-/// randomness. Every `.tl` file is part of the one module; diagnostics name their file.
+/// Compiles a package of one or more files with ids drawn from the operating system's randomness.
 pub fn compile_package_source(
     source: &PackageSource,
     ids: &IdsLock,
@@ -253,8 +244,8 @@ pub fn compile_package_source_with(
     Ok(compiled)
 }
 
-/// Where each of `ir`'s functions is written, in the package source `files` placed in the shared
-/// span space; the functions no declaration is written for (a block) have no line.
+/// Where each of `ir`'s functions is written, in the package source `files` placed in the shared span
+/// space; a function no declaration is written for has no line.
 fn lines_of(ir: &ir::Module, files: &[Placed<'_>]) -> Vec<Line> {
     ir.funcs
         .iter()
@@ -273,14 +264,12 @@ fn lines_of(ir: &ir::Module, files: &[Placed<'_>]) -> Vec<Line> {
         .collect()
 }
 
-/// The line `offset` in `text` stands on, counted from 1.
 fn line_number(text: &str) -> u32 {
     u32::try_from(text.bytes().filter(|b| *b == b'\n').count() + 1).unwrap_or(u32::MAX)
 }
 
-/// The catalogues a module built from `source` carries: the source language's written from the
-/// compiled sources, so the words a module shows are never older than the code that shows them,
-/// and every other language as its catalogue beside the sources says.
+/// The catalogues a module built from `source` carries: the source language's written from the compiled
+/// sources, and every other language as its catalogue beside the sources says.
 fn locales_of(source: &PackageSource, meta: &PackageMeta) -> Vec<(String, String)> {
     let mut locales = source.locales.clone();
     if let Some((_, text)) = locales
@@ -292,7 +281,6 @@ fn locales_of(source: &PackageSource, meta: &PackageMeta) -> Vec<(String, String
     locales
 }
 
-/// Reports every error of a package of one or more files, or an empty list when it is fine.
 pub fn check_package(
     source: &PackageSource,
     ids: &IdsLock,
@@ -310,9 +298,8 @@ fn emit_package(a: Analysis) -> Compiled {
         .extend(row_views(&a.ir, &a.env.app, &fx, &a.ir.states));
     meta.words.clone_from(&a.ir.words);
     meta.at_event = at_event_fns(&a.ir, &a.env.app);
-    // A template's body is carried in the metadata JSON, which is how a `PackageMeta` handed to
-    // another compiler reaches it; the module hash is taken over the code alone, so the body
-    // never reaches it.
+    // A template's body travels in the metadata JSON, which is how a `PackageMeta` handed to another
+    // compiler reaches it; the module hash is taken over the code alone.
     meta.templates = a.templates;
     let bare = codegen::emit(&a.ir, None);
     meta.module_hash = sha256_hex(&bare);
@@ -324,17 +311,14 @@ fn emit_package(a: Analysis) -> Compiled {
     }
 }
 
-/// The package's `template view`s as the source they were written in: another package that
-/// imports this one expands them where it calls them, so their body is carried as text (a
-/// template is never a module function, and a caller elsewhere cannot reach the AST this
-/// compilation parsed without it).
+/// The package's `template view`s as the source they were written in: a caller elsewhere expands them
+/// where it calls them, so their body is carried as text.
 fn template_meta(module: &ast::Module, files: &[Placed<'_>]) -> Vec<crate::meta::TemplateMeta> {
     let mut out = Vec::new();
     for view in module.items.iter().filter_map(|item| match item {
         ast::Item::View(v) if crate::checker::is_template(v) => Some(v),
         _ => None,
     }) {
-        // The file the declaration is written in, by the span the parser gave it.
         let Some(file) = files.iter().rev().find(|file| {
             view.span.start >= file.base
                 && view.span.start < file.base.saturating_add(file.text.len() + 1)
@@ -355,7 +339,6 @@ fn template_meta(module: &ast::Module, files: &[Placed<'_>]) -> Vec<crate::meta:
     out
 }
 
-/// Compiles a package with ids drawn from the operating system's randomness.
 pub fn compile_package(
     source: &str,
     ids: &IdsLock,
@@ -364,7 +347,6 @@ pub fn compile_package(
     compile_package_with(source, ids, imports, &mut OsEntropy::default())
 }
 
-/// Compiles a package; new ids come from `rng`.
 pub fn compile_package_with(
     source: &str,
     ids: &IdsLock,
@@ -388,7 +370,6 @@ pub fn compile_package_with(
     Ok(compiled)
 }
 
-/// Reports every error of a package, or an empty list when it is fine.
 pub fn check(source: &str, ids: &IdsLock, imports: &[PackageMeta]) -> Vec<Diagnostic> {
     analyze(source, ids, imports, &mut SeededEntropy(0))
         .err()
@@ -420,7 +401,6 @@ fn result_meta(ty: &Ty, app: &str) -> Option<String> {
     (!matches!(ty, Ty::Unit)).then(|| ty.meta_text(app))
 }
 
-/// The effects a declaration uses, as its metadata spells them.
 fn uses_meta(uses: &std::collections::BTreeSet<crate::effects::Effect>) -> Vec<String> {
     uses.iter().map(|e| e.word().to_string()).collect()
 }
@@ -464,8 +444,7 @@ fn state_meta<'a>(
         .collect()
 }
 
-/// The views the checker made of UI loop bodies: the host calls them like declared views, with
-/// the state the templates their bodies expand declare (`<row view id>:<template>.<state>`).
+/// The views the checker made of UI loop bodies: the host calls them like declared views.
 fn row_views(
     ir: &crate::ir::Module,
     app: &str,
@@ -495,7 +474,7 @@ fn row_views(
         .collect()
 }
 
-/// What the view `name` (id `id`) answers a request to show an item with, when it declares one.
+/// What the view `name` answers a request to show an item with, when it declares one.
 fn show_of(shows: &[crate::ir::ViewShow], id: &str, name: &str, app: &str) -> Option<ShowMeta> {
     let show = shows.iter().find(|s| s.view == id)?;
     Some(ShowMeta {
@@ -546,8 +525,8 @@ fn build_meta(
             _ => None,
         })
         .collect();
-    // Every module is compiled with the standard library, so its code may call into it: a
-    // bundle is handed the library as the package it uses, like any it `use`s.
+    // Every module is compiled with the standard library, so its code may call into it: a bundle is
+    // handed the library as the package it uses.
     if env.app != crate::stdlib::APP {
         meta.uses.push(crate::stdlib::APP.to_string());
     }
@@ -854,9 +833,6 @@ fn build_meta(
     meta
 }
 
-// ---- blocks -------------------------------------------------------------------------------
-
-/// Compiles an agent block with the run id `main`. See [`compile_block_for`].
 pub fn compile_block(
     source: &str,
     visible: &[PackageMeta],
@@ -864,8 +840,8 @@ pub fn compile_block(
     compile_block_for("main", source, visible)
 }
 
-/// Compiles a block: an expression, or a piece of view body, evaluated in the ad-hoc module
-/// `app agent.block.<run id>` that implicitly imports every visible app.
+/// Compiles a block: an expression, or a piece of view body, in the ad-hoc module `app agent.block.<run
+/// id>` that implicitly imports every visible app.
 pub fn compile_block_for(
     run_id: &str,
     source: &str,
@@ -915,8 +891,8 @@ pub fn compile_block_for(
     })
 }
 
-/// The names an agent's code sees: the host as `host`, the toolkit, and every visible app by
-/// the last part of its id (by its whole id when two share that part).
+/// The names an agent's code sees: the host as `host`, the toolkit, and every visible app by the last
+/// part of its id (by its whole id when two share that part).
 fn agent_env(app: &str, host: &PackageMeta, visible: &[PackageMeta]) -> Env {
     let mut env = Env {
         app: app.to_owned(),
@@ -936,8 +912,6 @@ fn agent_env(app: &str, host: &PackageMeta, visible: &[PackageMeta]) -> Env {
     env
 }
 
-// ---- programs -----------------------------------------------------------------------------
-
 /// What an agent's program is compiled into: `app agent.program.<hash>`.
 pub const PROGRAM_APP_PREFIX: &str = "agent.program.";
 
@@ -953,9 +927,7 @@ pub struct Binding {
 pub struct CompiledProgram {
     pub wasm: Vec<u8>,
     pub meta: PackageMeta,
-    /// The id of its action.
     pub action: String,
-    /// What its top-level `let`s bound, to keep for the next program of the session.
     pub lets: Vec<Binding>,
 }
 
@@ -969,10 +941,9 @@ pub fn compile_program(
     compile_program_reading(source, visible, bound, &[])
 }
 
-/// [`compile_program`] for a program that may also read the apps `sources` (each by the name
-/// programs call it and its id) that its host does not hold: `grep(re, in: chat)`,
-/// `describe(chat)` and a reference to one of their resources are read through the platform
-/// (agents.md, "Querying").
+/// [`compile_program`] for a program that may also read the apps `sources` (each by the name programs
+/// call it and its id): `grep(re, in: chat)`, `describe(chat)` and a reference to one of their
+/// resources are read through the platform (agents.md, "Querying").
 pub fn compile_program_reading(
     source: &str,
     visible: &[PackageMeta],
@@ -995,7 +966,6 @@ pub fn compile_program_reading(
     let action = format!("program-{short}");
     let host = crate::host::host_meta();
     let mut env = agent_env(&app, &host, visible);
-    // A session's code has the agent library's words in scope, as every package has `std`.
     env.add_agent();
     env.session = true;
     for (alias, source) in sources {
@@ -1006,8 +976,8 @@ pub fn compile_program_reading(
     let mut diags = Vec::new();
     let mut params = Vec::new();
     for b in bound {
-        // A binding whose type no visible app declares any more (an app went away) cannot be
-        // seen; the program reads as if it was never bound.
+        // A binding whose type no visible app declares any more (an app went away) cannot be seen:
+        // the program reads as if it was never bound.
         if let Some(ty) = Ty::parse_meta(&b.ty, &app).filter(|ty| declared(&env, ty)) {
             params.push(ParamInfo {
                 name: b.name.clone(),
@@ -1075,7 +1045,6 @@ pub fn compile_program_reading(
     })
 }
 
-/// Whether every record and enum type `ty` names is one `env` sees.
 fn declared(env: &Env, ty: &Ty) -> bool {
     match ty {
         Ty::Record(key) => env.type_info(key).is_some(),
@@ -1089,8 +1058,8 @@ fn declared(env: &Env, ty: &Ty) -> bool {
     }
 }
 
-/// Whether an expression is a UI primitive or a view applied, which the block treats as a
-/// piece of view body.
+/// Whether an expression is a UI primitive or a view applied, which the block treats as a piece of view
+/// body.
 fn is_ui_head(env: &Env, e: &ast::Expr) -> bool {
     let ast::ExprKind::Call { callee, .. } = &e.kind else {
         return matches!(&e.kind, ast::ExprKind::Ident(n) if prims::prim(n).is_some());
@@ -1112,7 +1081,7 @@ fn is_ui_head(env: &Env, e: &ast::Expr) -> bool {
 }
 
 /// The id of the subject's `Bool` field an action's `on:` names (`on: n.pinned`, `n` its first
-/// parameter): the state it toggles. `None` for any other `on:`, or none.
+/// parameter): the state it toggles.
 fn toggled_field(env: &Env, action: &ast::ActionDecl, params: &[ParamInfo]) -> Option<String> {
     let on = action.opts.iter().find(|opt| opt.name.name == "on")?;
     let ast::ExprKind::Field { base, name } = &on.value.kind else {
@@ -1133,8 +1102,6 @@ fn toggled_field(env: &Env, action: &ast::ActionDecl, params: &[ParamInfo]) -> O
 mod template_export_tests {
     use super::*;
 
-    /// A package's `template view`s travel in its metadata, through the JSON a compiled module
-    /// carries, so a package that imports it expands them where it calls them with a block.
     #[test]
     fn a_template_travels_in_the_packages_metadata() {
         let src = "app probe.lib \"Lib\"\n\n/// Chrome\ntemplate view wrap(body: View) {\n    stack {\n        body\n    }\n}\n";

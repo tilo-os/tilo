@@ -1,38 +1,30 @@
 //! Package metadata, the JSON in the module's `tilolang.meta` section: the package's types,
-//! enums, actions (with their effect class and what they reach), views and fns, by id
-//! and name, with their doc comments. Tools, the runtime, the platform and agents read it;
-//! compiled packages are imported through it. The platform derives the agent's catalogue, the
-//! published actions and the app's surface from it.
+//! enums, actions with their effect class and what they reach, views and fns, by id and name, with
+//! their doc comments. Tools, the runtime, the platform and agents read it.
 
 use crate::types::{EffectClass, MergeKind};
 use serde::{Deserialize, Serialize};
 
-/// Name of the wasm custom section that carries the metadata as JSON.
 pub const META_SECTION: &str = "tilolang.meta";
 
-/// The custom section a package's catalogues travel in: JSON `[[locale, Fluent text], …]`
-/// (i18n.md). Outside the module hash, as the metadata is.
+/// The custom section a package's catalogues travel in: JSON `[[locale, Fluent text], …]`. Outside
+/// the module hash.
 pub const LOCALES_SECTION: &str = "tilolang.locales";
 
 /// The custom section naming where each function's declaration is written: JSON
-/// `[{export, file, line}, …]`. Outside the module hash, as the metadata is: what a profile
-/// reads a unit's line from, not what the module runs.
+/// `[{export, file, line}, …]`. Outside the module hash.
 pub const LINES_SECTION: &str = "tilolang.lines";
 
-/// Where a function is written: the file of the package its declaration is in, and the line in
-/// it, counted from 1. A block, or a function made without a declaration, is written nowhere and
-/// has no entry.
+/// Where a function is declared: 1-based, and no entry for a block or a function written without a
+/// declaration.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Line {
-    /// The function's export (`a_<id>`, `v_<id>`, `q_<id>`, …).
     pub export: String,
-    /// The file's path within the package (`/` when it was compiled from one source string).
+    /// The file's path in the package; `/` when it was compiled from one source string.
     pub file: String,
     pub line: u32,
 }
 
-/// Appends `lines` to the compiled module `wasm` as its [`LINES_SECTION`]; nothing when there
-/// are none.
 pub fn append_lines(wasm: &mut Vec<u8>, lines: &[Line]) {
     if lines.is_empty() {
         return;
@@ -40,8 +32,6 @@ pub fn append_lines(wasm: &mut Vec<u8>, lines: &[Line]) {
     append_json_section(wasm, LINES_SECTION, lines);
 }
 
-/// Where the functions `wasm` was compiled from are written; none for a module compiled without
-/// them.
 #[must_use]
 pub fn lines_from_wasm(wasm: &[u8]) -> Vec<Line> {
     custom_section(wasm, LINES_SECTION)
@@ -49,8 +39,8 @@ pub fn lines_from_wasm(wasm: &[u8]) -> Vec<Line> {
         .unwrap_or_default()
 }
 
-/// Appends `value` as JSON in the custom section `name`. A custom section may follow every other
-/// section, so the module stays valid.
+/// Appends `value` as JSON in the custom section `name`; a custom section may follow every other,
+/// so the module stays valid.
 fn append_json_section<T: Serialize + ?Sized>(wasm: &mut Vec<u8>, name: &str, value: &T) {
     let data = serde_json::to_vec(value).unwrap_or_default();
     let mut payload = Vec::new();
@@ -62,8 +52,6 @@ fn append_json_section<T: Serialize + ?Sized>(wasm: &mut Vec<u8>, name: &str, va
     wasm.extend_from_slice(&payload);
 }
 
-/// Appends `locales` to the compiled module `wasm` as its [`LOCALES_SECTION`]; nothing when
-/// there are none. A custom section may follow every other section, so the module stays valid.
 pub fn append_locales(wasm: &mut Vec<u8>, locales: &[(String, String)]) {
     if locales.is_empty() {
         return;
@@ -71,7 +59,6 @@ pub fn append_locales(wasm: &mut Vec<u8>, locales: &[(String, String)]) {
     append_json_section(wasm, LOCALES_SECTION, locales);
 }
 
-/// The catalogues a compiled module carries, `(locale, Fluent text)`; none when it has none.
 #[must_use]
 pub fn locales_from_wasm(wasm: &[u8]) -> Vec<(String, String)> {
     custom_section(wasm, LOCALES_SECTION)
@@ -91,127 +78,100 @@ fn write_leb(out: &mut Vec<u8>, mut value: usize) {
     }
 }
 
-/// The record kind of each person's own state of an app's workspace: the view state
-/// they set in views and what they have seen, kept in the workspace's record of the kind
-/// (`tilo.host`'s, `$personal/<person>`), on every device of theirs and readable by every
-/// member.
+/// The record kind of each person's own state of an app: the view state they set and what they have
+/// seen, on every device of theirs and readable by every member.
 pub const PERSONAL_RECORD_KIND: &str = "tilolang.personal";
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct PackageMeta {
     pub app: String,
     pub title: String,
-    /// The platform icon the app is shown with (`app ... (icon: .note)`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub icon: Option<String>,
-    /// The launcher category (`app ... (category: .office)`), lower case.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub category: Option<String>,
-    /// The ids the app was published under before (`app ... (previously: so.tilo.old)`): the
-    /// platform reads its records, grants and windows under them as the app's.
+    /// The ids the app was published under before (`previously: so.tilo.old`): the platform reads
+    /// its records, grants and windows under them as the app's.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub previously: Vec<String>,
-    /// Each member keeps the app's records in their own record of the workspace
-    /// (`app ... (records: .own)`), which only that person's devices read.
+    /// Each member keeps the app's records in their own record (`records: .own`), which only that
+    /// person's devices read.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub own_records: bool,
-    /// The hosts the app's `uses web` requests may reach, as its header declares them
-    /// (`app ... (web: ["example.com", "*.rss.org"])`). A request to any other host is refused
-    /// as a value, and recorded with the invocation.
+    /// The hosts the app's `uses web` requests may reach (`web: ["example.com"]`). A request to any
+    /// other host is refused as a value.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub web: Vec<String>,
     /// SHA-256 (hex) of the wasm module without the metadata section.
     pub module_hash: String,
     pub types: Vec<TypeMeta>,
-    /// Declared enums. Types that name one are written `enum Name` in metadata.
     #[serde(default)]
     pub enums: Vec<EnumMeta>,
-    /// The words the package's views show as written.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub words: Vec<WordMeta>,
     pub actions: Vec<ActionMeta>,
     pub views: Vec<ViewMeta>,
     pub fns: Vec<FnMeta>,
-    /// Ids of the root types (`root T`): one resource each per workspace, which the launcher
-    /// lists and opens.
+    /// Ids of the root types (`root T`): one resource each per workspace, listed and opened by the
+    /// launcher.
     #[serde(default)]
     pub roots: Vec<String>,
-    /// The packages it uses (`use app.id`), by their app ids now (a `use` of an id one had
-    /// before names it by its current one), and the standard library every module compiles
-    /// with (`tilo.std`).
+    /// The packages it uses (`use app.id`), by their current app ids, and `tilo.std`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub uses: Vec<String>,
-    /// The named roots (`root notes: Notes`): what other packages reach as `alias.notes`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub named_roots: Vec<NamedRootMeta>,
-    /// `type Name = T` of a type that is not a container: another name for `T`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub aliases: Vec<AliasMeta>,
-    /// The view a window of each type uses unless changed (`default view v for T`).
     #[serde(default)]
     pub default_views: Vec<DefaultViewMeta>,
-    /// The row a list of each type shows per item (`row view v for T`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub row_views: Vec<DefaultViewMeta>,
-    /// The views a window of each type switches between (`views a, b for T`), in order. A type
-    /// not named here has no switch: its views are helpers the app places itself.
+    /// The views a window of each type switches between (`views a, b for T`), in order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub views_of: Vec<ViewsMeta>,
     /// Named seed data (`scenario "name" { ... }`), each run by its hidden action.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub scenarios: Vec<ScenarioMeta>,
-    /// The actions the package runs by itself (`trigger due(t: Task) at t.at: notify_due(t)`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub triggers: Vec<TriggerMeta>,
-    /// The arguments of actions views apply that compute from view state (`set(open, not
-    /// open)`): functions the runtime runs when the control's event fires, on the view state
-    /// as it is then. Each is exported as `e_<id>`.
+    /// The arguments views apply that compute from view state (`set(open, not open)`): functions the
+    /// runtime runs when the control's event fires. Each is exported as `e_<id>`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub at_event: Vec<FnMeta>,
-    /// The package's `template view`s, as source: a template is expanded where a caller writes
-    /// the call, its body the caller's UI, so another package that imports this one expands it
-    /// too (`shell.desk_style(a, false) { ... }`). Its body names this package's helpers, so it
-    /// is carried as the source the importer parses, and expanded in this package's namespace.
-    ///
-    /// It travels in the metadata JSON, because a `PackageMeta` handed to a compiler is the only
-    /// way an importer learns of another package's templates. [`Module hash`](Self::module_hash)
-    /// is computed over the module without this section, so a template's text never reaches it.
+    /// The package's `template view`s, as source: a template is expanded where a caller writes the
+    /// call, in this package's namespace, so an importer needs its text. It travels in the metadata
+    /// JSON; the module hash leaves this section out.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub templates: Vec<TemplateMeta>,
 }
 
-/// One of a package's `template view`s, as the source it was written in.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TemplateMeta {
-    /// The template's name: what a caller writes after the package's alias
-    /// (`shell.desk_style`).
+    /// The name a caller writes after the package's alias (`shell.desk_style`).
     pub name: String,
     /// The file it is declared in, for a diagnostic that names it.
     pub file: String,
-    /// The declaration, from `template view` to its closing brace, as its author wrote it.
+    /// The declaration, from `template view` to its closing brace.
     pub source: String,
 }
 
-/// The views a window of a type switches between: the type's id and the views' ids, in the
-/// order the declaration names them.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ViewsMeta {
-    /// The type id.
     #[serde(rename = "type")]
     pub ty: String,
-    /// The views' ids.
+    /// The views' ids, in the order the declaration names them.
     pub views: Vec<String>,
-    /// The views whose declaration says how a window's switch offers them, by id: the rest are
-    /// offered by their names, with the type's name left off.
+    /// The views whose declaration says how the switch offers them, by id; the rest are offered by
+    /// name.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub shown: Vec<ViewShownMeta>,
 }
 
-/// How a view of a type is offered in a window's switch, when its declaration says
-/// (`views project_list (label: "List", icon: .list), project_board for Project`).
+/// How a view is offered in a window's switch (`views project_list (label: "List", icon:
+/// .list), project_board for Project`).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ViewShownMeta {
-    /// The view's id.
     pub view: String,
     /// The short label the switch shows, in the words the app wrote it in.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -221,31 +181,27 @@ pub struct ViewShownMeta {
     pub icon: Option<String>,
 }
 
-/// A named root: its name and its type's id.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NamedRootMeta {
     pub name: String,
     pub ty: String,
-    /// The resource the session publishes it as, for a root of an app this runtime does not
-    /// run (`sound`, `settings:settings.appearance`): what `device.sound` names.
+    /// The resource the session publishes it as, for a root of an app this runtime does not run
+    /// (`sound`): what `device.sound` names.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub published: Option<String>,
 }
 
-/// `type Name = T`: the name and the type it names, as metadata writes types.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AliasMeta {
     pub name: String,
     pub ty: String,
 }
 
-/// A `scenario`: its name and the hidden action (listed in `actions` with `scenario: true`)
-/// that fills a workspace with its data.
+/// A `scenario`: its name and the hidden action that fills a workspace with its data.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScenarioMeta {
     pub id: String,
     pub name: String,
-    /// The id of the scenario's action.
     pub action: String,
 }
 
@@ -256,14 +212,11 @@ pub struct TriggerMeta {
     pub name: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub doc: String,
-    /// The id of the action it runs.
     pub action: String,
-    /// The id of the type of the resources it runs for.
     #[serde(rename = "type")]
     pub ty: String,
     /// The action's arguments, in the order the call passes them.
     pub args: Vec<TriggerArgMeta>,
-    /// When it runs.
     pub when: TriggerWhenMeta,
 }
 
@@ -271,40 +224,34 @@ pub struct TriggerMeta {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TriggerArgMeta {
-    /// The resource the trigger runs for.
     Subject,
-    /// A root record, by its type's id (the records the platform keeps as `root-<type id>`).
+    /// A root record, by its type's id (the platform keeps it as `root-<type id>`).
     Root(String),
 }
 
-/// When a trigger runs.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TriggerWhenMeta {
     /// At each multiple of these seconds, counted from the epoch.
     Every(i64),
-    /// At the instant the field (by id) of the resource holds.
+    /// At the instant the resource's field (by id) holds.
     At(String),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DefaultViewMeta {
-    /// The type id.
     #[serde(rename = "type")]
     pub ty: String,
-    /// The view id.
     pub view: String,
 }
 
-/// Words a view shows as it wrote them (`"{n} new"` given to a label), or an action tells as
-/// it wrote them (`notify`'s title and body): a message of the package's catalogue, an
-/// attribute of that declaration's own message.
+/// Words a view shows as written, or an action tells as written: a message of the package's
+/// catalogue, with an attribute of the declaration's message.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WordMeta {
-    /// The id of the declaration whose message the words are an attribute of: the view that
-    /// shows them, or the action whose notification says them.
+    /// The id of the declaration whose message the words belong to.
     pub view: String,
-    /// The attribute naming it under the view's message: `w-` and a slug of its words.
+    /// The attribute naming it: `w-` and a slug of its words.
     pub key: String,
     /// The words with each interpolation as its variable: `{n} new`.
     pub text: String,
@@ -323,23 +270,20 @@ pub struct VariantMeta {
     pub id: String,
     pub name: String,
     pub doc: String,
-    /// What a control shows for the variant: its doc's first line, or its name in sentence
-    /// case.
+    /// What a control shows for the variant: its doc's first line, or its name in sentence case.
     #[serde(default)]
     pub label: String,
-    /// `(icon: .x)`: what a control shows beside the label, a kebab-case name of the
-    /// platform's icon set.
+    /// `(icon: .x)`: a kebab-case name of the platform's icon set.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub icon: Option<String>,
-    /// `(tone: .x)`: the tone the case reads in, one of `ui.Tone`'s cases, a theme role rather
-    /// than a colour.
+    /// `(tone: .x)`: a theme role, one of `ui.Tone`'s cases.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tone: Option<String>,
     /// The payload fields, in order. Their merge is always `register`.
     pub fields: Vec<FieldMeta>,
 }
 
-/// A `state` declaration of a view: what its person picks there, kept as theirs.
+/// A view's `state` declaration: what its person picks there, kept as theirs.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StateMeta {
     pub id: String,
@@ -354,28 +298,26 @@ pub struct TypeMeta {
     pub name: String,
     pub doc: String,
     pub fields: Vec<FieldMeta>,
-    /// What search, a list's filters and agents offer of the type: its `search` block, or the
-    /// defaults when it has none.
+    /// What search, a list's filters and agents offer of the type; the defaults when it declares no
+    /// `search` block.
     #[serde(default, skip_serializing_if = "SearchMeta::is_empty")]
     pub search: SearchMeta,
-    /// `(origin: imap.message)`: the kind of an outside service's resource the type holds,
-    /// which the system keeps in step with the service (`crate::origin`).
+    /// `(origin: imap.message)`: the outside service kind of the resource, which the system keeps in
+    /// step with the service (`crate::origin`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin: Option<String>,
-    /// `(title: subject)`: the field a record of the type is named by, as the field's name. A
-    /// type that says none is named by its first text field.
+    /// `(title: subject)`: the field a record is named by. A type that says none is named by its
+    /// first text field.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
-    /// `(untitled: "Untitled")`: what one of its records is called while its title is empty,
-    /// as the app wrote it. Surfaces that name a record fall back to it, and the control that
-    /// edits the record's title shows it while the title holds nothing.
+    /// `(untitled: "Untitled")`: what a record is called while its title is empty, as the app wrote
+    /// it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub untitled: Option<String>,
 }
 
-/// What search, a list's filters and agents offer of a type (search.md, "What a type declares"):
-/// its filters in order (the first are the visible chips), its default order and the fields kept
-/// out of filters.
+/// What search, a list's filters and agents offer of a type: its filters in order (the first are the
+/// visible chips), the default order and the fields kept out of filters.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct SearchMeta {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -385,7 +327,7 @@ pub struct SearchMeta {
     /// The fields kept out of filters, by id.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub hidden: Vec<String>,
-    /// Whether the type declares these (a `search` block) rather than having the defaults.
+    /// Whether the type declares these with a `search` block rather than taking the defaults.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub declared: bool,
 }
@@ -395,7 +337,6 @@ impl SearchMeta {
         self.filters.is_empty() && self.sort.is_none() && self.hidden.is_empty() && !self.declared
     }
 
-    /// The filter a query names `key`.
     pub fn filter(&self, key: &str) -> Option<&FilterMeta> {
         self.filters.iter().find(|f| f.key == key)
     }
@@ -404,12 +345,11 @@ impl SearchMeta {
 /// One filter of a type.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct FilterMeta {
-    /// What a query names it by: the field's name (`done`), or a named filter's label in snake
-    /// case (`has_attachment`).
+    /// What a query names it by: the field's name, or a named filter's label in snake case.
     pub key: String,
-    /// What a control shows: the label written, or the field's name in sentence case.
+    /// What a control shows: the label as written, or the field's name in sentence case.
     pub label: String,
-    /// What it is, for agents: the field's doc comment's first line.
+    /// For agents: the field's doc comment's first line.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub doc: String,
     pub kind: FilterKind,
@@ -419,17 +359,16 @@ pub struct FilterMeta {
     /// The field's type as metadata writes it (`Option<Date>`, `Set<Text>`, `enum Status`).
     #[serde(rename = "type", default, skip_serializing_if = "String::is_empty")]
     pub ty: String,
-    /// A named filter's predicate over the resource's own fields, by field id.
+    /// A named filter's predicate over the resource's fields, by field id.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pred: Option<crate::pred::Pred<String>>,
-    /// Whether it may hold no value, an option or a set: `none` and `any` apply.
+    /// Whether it may hold no value: `none` and `any` apply.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub optional: bool,
-    /// Whether it holds several values, a set: a value asks whether it holds that one.
+    /// Whether it holds a set: a value asks whether the set holds that one.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub many: bool,
-    /// What its control shows beside its label: the icon its declaration names
-    /// (`filter done (icon: .circle_check)`).
+    /// The icon its declaration names (`filter done (icon: .circle_check)`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub icon: Option<String>,
 }
@@ -461,24 +400,18 @@ pub enum FilterKind {
 }
 
 impl FilterKind {
-    /// Whether the filter is a toggle, on or off, as a list's places and the palette's chips
-    /// show it.
     pub const fn is_toggle(self) -> bool {
         matches!(self, Self::Bool | Self::Predicate)
     }
 }
 
-/// A type's default order.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SortMeta {
-    /// The field's name.
     pub key: String,
-    /// The field, by id.
     pub field: String,
     pub order: SortOrder,
 }
 
-/// Which way an order runs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SortOrder {
@@ -508,7 +441,6 @@ impl SortOrder {
         Self::ALL.into_iter().find(|o| o.word() == word)
     }
 
-    /// Whether the order runs from the largest, the latest or the last in the alphabet.
     pub const fn descending(self) -> bool {
         matches!(self, Self::Newest | Self::ZA)
     }
@@ -527,8 +459,8 @@ pub struct FieldMeta {
 }
 
 impl FieldMeta {
-    /// Whether the field holds text as it is written: a `Text`, or a `RichText`, which the
-    /// store reads as the text it is written as (search.md, "What a type declares").
+    /// Whether the field holds text as written: a `Text` or a `RichText`, which the store reads as
+    /// its text.
     #[must_use]
     pub fn holds_text(&self) -> bool {
         matches!(self.ty.trim(), "Text" | "RichText" | "std.RichText")
@@ -540,30 +472,25 @@ pub struct ParamMeta {
     pub name: String,
     #[serde(rename = "type")]
     pub ty: String,
-    /// An action parameter's invocation-time default: an invocation that leaves the argument
-    /// out gets it, computed then over the arguments before it and recorded as the argument.
+    /// An invocation-time default: an invocation that leaves the argument out gets it, computed then
+    /// over the arguments before it and recorded as the argument.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default: Option<DefaultMeta>,
-    /// Whether the view offering the action supplies it (`above: Option<Task> (above)`): the
-    /// place the item stands in, which no invocation gives. A surface offering the action with
-    /// no such view (a palette over the item alone) supplies `.none`.
+    /// Whether the view offering the action supplies the place (`above: Option<Task> (above)`). A
+    /// surface with no such view supplies `.none`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub place: bool,
-    /// Whether the text of an entry fills it: an action's one `Text` parameter is what the
-    /// words before the entry type say into its other parameters, the rest titles the item
-    /// (`crate::entry`).
+    /// Whether the text of an entry fills it: what the words before the entry type say into this
+    /// parameter, while the rest titles the item (`crate::entry`).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub entry: bool,
-    /// What the parameter is called where a person gives it, when the name in words does not
-    /// say what it holds (`saved: Bool (label: "On the Watch later list")`). It is the words the
-    /// catalogue's message for it carries (`d-<action>-<name>`), which a translation replaces.
+    /// What the parameter is called where a person gives it (`saved: Bool (label: "On the Watch
+    /// later list")`): the catalogue's message `d-<action>-<name>`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
 }
 
 impl ParamMeta {
-    /// What the parameter is called where a person gives it: its `label:` in the words the app
-    /// wrote, else its name in words.
     #[must_use]
     pub fn words(&self) -> String {
         self.label
@@ -572,22 +499,18 @@ impl ParamMeta {
     }
 }
 
-/// How an action parameter's default is computed.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DefaultMeta {
     /// The module export computing it, which takes the parameters before this one.
     pub export: String,
-    /// The default as written (`not item.done`), for descriptions.
     pub text: String,
 }
 
 impl DefaultMeta {
-    /// The default `.none` as written.
     pub const NONE: &str = ".none";
 
-    /// `= .none`, the default of an optional parameter of an app that publishes its actions
-    /// without a module (a native app's, the session's): no code computes it, so it has no
-    /// export.
+    /// The default `.none` of an optional parameter of an app that publishes its actions without a
+    /// module: no code computes it, so it has no export.
     #[must_use]
     pub fn none() -> Self {
         Self {
@@ -596,16 +519,16 @@ impl DefaultMeta {
         }
     }
 
-    /// Whether the default is `.none`: a constant, which needs no code to compute. A call that
-    /// leaves the parameter out passes `.none`, wherever the parameter stands.
+    /// Whether the default is the constant `.none`: a call that leaves the parameter out passes
+    /// `.none`, wherever the parameter stands.
     #[must_use]
     pub fn is_none(&self) -> bool {
         self.text == Self::NONE
     }
 }
 
-/// An action that code can reach, with its effect class. `own` is relative to the
-/// package whose metadata lists it.
+/// An action that code can reach, with its effect class. `own` is relative to the package whose
+/// metadata lists it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Reach {
     pub app: String,
@@ -637,11 +560,10 @@ pub struct ActionMeta {
     pub class: EffectClass,
     pub proposal: Option<ProposalMeta>,
     pub reaches: Vec<Reach>,
-    /// What the platform calls the action: `label:`, else its doc's first line when that is
-    /// shorter than its name in sentence case, else that.
+    /// What the platform calls the action: `label:`, else its doc's first line when shorter than its
+    /// name in sentence case, else that.
     #[serde(default)]
     pub label: String,
-    /// `icon:`, a kebab-case name of the platform's icon set.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub icon: Option<String>,
     /// `primary` or `destructive`.
@@ -650,85 +572,68 @@ pub struct ActionMeta {
     /// The hidden action of a scenario: never offered, run only to seed a workspace.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub scenario: bool,
-    /// `did: "moved this"`: what the action did to its subject, as a history entry reads it
-    /// after who did it. An attribute of the action's message in the app's catalogue
-    /// (`d-<id>.did`), so a translation says it in the reader's language.
+    /// `did: "moved this"`: what the action did, as a history entry reads it after who did it; an
+    /// attribute of the action's message (`d-<id>.did`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub did: Option<String>,
-    /// The id of the view that presents the action's state for a subject, when its `label:` or
-    /// `icon:` follows the subject or it declares `on:`. The view takes the action's first
-    /// parameter and builds one node of kind `present` with the props given dynamically:
-    /// `label` (Text), `icon` (Text, a kebab-case icon name) and `on` (Bool). `label` and `icon`
-    /// above are what shows without evaluating it.
+    /// The id of the view that presents the action's state for a subject, when its label or icon
+    /// follows the subject or it declares `on:`. `label` and `icon` above are what shows without
+    /// evaluating it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub present: Option<String>,
-    /// The id of the subject's `Bool` field whose state the action toggles, when its `on:` is
-    /// that field (`on: n.pinned`). A control bound to the field stands for the action where
-    /// both would show.
+    /// The id of the subject's `Bool` field whose state the action toggles (`on: n.pinned`). A
+    /// control bound to the field stands for the action.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub toggles: Option<String>,
-    /// `key: "Ctrl+Enter"`: the shortcut that runs the action while its window has the keyboard,
-    /// and (on an item's action) while that item is selected or its view shows. One spelling —
-    /// the modifiers in one order, then the key's token (`Ctrl+Shift+enter`) — that the toolkit
-    /// matches a press against, with the platform's own command modifier.
+    /// `key: "Ctrl+Enter"`: the shortcut that runs the action while its window has the keyboard, and
+    /// while its item is selected. One spelling: the modifiers in one order, then the key's token.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key: Option<String>,
-    /// `group: "Reply"`: the run of the resource's actions this one stands in, as the app names
-    /// it. A surface showing the resource's actions draws the runs in the order the app
-    /// declared them.
+    /// `group: "Reply"`: the run of the resource's actions this one stands in. A surface draws the
+    /// runs in the order the app declared them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group: Option<String>,
-    /// `uses web, random, time`: the effects the action's body reads, each of which its
-    /// invocation records and a replay answers from the record ([`crate::effects::Effect`]).
+    /// `uses web, random, time`: the effects the body reads, which its invocation records and a
+    /// replay answers from ([`crate::effects::Effect`]).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub uses: Vec<String>,
-    /// Whether the action keeps a requirement its subject alone decides, exported
-    /// as [`crate::ir::guard_export`]: the first reason it cannot run on the subject now, or empty
-    /// while it can. What a surface offering the action reads its availability from.
+    /// Whether the action keeps a requirement its subject decides, exported as
+    /// [`crate::ir::guard_export`]: the first reason it cannot run, or empty while it can.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub guard: bool,
-    /// Whether the action keeps an `applies` condition, exported
-    /// as [`crate::ir::applies_export`]: the first reason it cannot apply to the item where it is
-    /// offered, or empty while it can. A menu leaves such an action out; a palette lists it,
-    /// disabled with the reason.
+    /// Whether the action keeps an `applies` condition, exported as [`crate::ir::applies_export`]:
+    /// a menu leaves such an action out, a palette lists it disabled with the reason.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub applies: bool,
-    /// Whether the action's body invokes another action, itself included. A run that does is
-    /// run again from its start whenever a call waits for a person, so it journals its reads and
-    /// its writes; one that does not is one change and is never replayed.
+    /// Whether the body invokes another action, itself included: a run that does is run again from
+    /// its start whenever a call waits for a person, so it journals its reads and writes.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub invokes: bool,
-    /// The outside capabilities its body's `outside(...)` calls name, as written
-    /// (`youtube.search`, `smtp.send`), in order: what the platform tags the action with
-    /// (`outside:youtube.search`), so a query naming a kind of an outside service finds the
-    /// action of that service's app that asks it.
+    /// The outside capabilities the body's `outside(...)` calls name, as written (`youtube.search`):
+    /// what the platform tags the action with.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub outside: Vec<String>,
 }
 
 impl ActionMeta {
-    /// Whether it is a `migration action`: never offered, run by the platform once on each
-    /// resource of its subject's type that an earlier version wrote.
+    /// Whether it is a `migration action`: never offered, run once by the platform on each resource
+    /// an earlier version wrote.
     #[must_use]
     pub fn is_migration(&self) -> bool {
         self.role.as_deref() == Some("migration")
     }
 
-    /// Whether the action takes a `File` — the person's own file, which the chooser a control
-    /// runs fills ([`Self::unbound`]'s exception): it is then no command, only a control's.
+    /// Whether it takes a `File`, the person's own: then no command, only a control's
+    /// ([`Self::unbound`]'s exception).
     #[must_use]
     pub fn takes_a_file(&self) -> bool {
         self.params.iter().any(|param| param.ty.trim() == "File")
     }
 
-    /// The parameters an invocation that has given `bound` arguments still lacks: those after
-    /// them that have no default, each with its place, which its form asks the person for
-    /// before the action runs. Empty when it runs at once on what it was given.
+    /// The parameters an invocation that has given `bound` arguments still lacks: those after them
+    /// with no default, which its form asks the person for. Empty when it runs at once.
     ///
-    /// What an offer binds — the subject, the places its view supplies, the resource holding
-    /// the subject — is what `bound` counts, so this is the one rule for what a command still
-    /// asks: the form an invocation opens on (`missing_arguments`) and the "…" its label says
-    /// so with ([`crate::host::Action`]'s label) both read it.
+    /// [`missing_arguments`] and the "…" in [`crate::host::Action`]'s label both read it.
     pub fn unbound(&self, bound: usize) -> impl Iterator<Item = (usize, &ParamMeta)> {
         self.params
             .iter()
@@ -747,9 +652,8 @@ pub struct AnchorMeta {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ViewMeta {
     pub id: String,
-    /// The view's name, as it is declared: what its window is called and what a screen reader
-    /// says. A loop body is a part of the view it stands in and takes that view's name, never a
-    /// binding's.
+    /// The view's name as declared: what its window is called and what a screen reader says. A loop
+    /// body takes its view's name, never a binding's.
     pub name: String,
     pub doc: String,
     pub params: Vec<ParamMeta>,
@@ -793,26 +697,23 @@ pub struct FnMeta {
 
 impl TypeMeta {
     /// What one is called in a sentence: its name in words, lower case, in the singular (`TodoList`
-    /// is a `todo list`, `Tasks` a `task`).
+    /// is a `todo list`).
     #[must_use]
     pub fn noun(&self) -> String {
         singular(&in_words(&self.name))
     }
 
-    /// What several are called in a sentence: [`plural`] of its [`noun`](Self::noun), which a name
-    /// that already names several leaves as it is.
+    /// What several are called in a sentence, which a name that already names several leaves as it
+    /// is.
     #[must_use]
     pub fn plural(&self) -> String {
         plural(&in_words(&self.name))
     }
 }
 
-/// A declared name in words, lower case: `TodoList` and `todo_list` are `todo list`; and what one
-/// of them and several are, as English writes it (`todo list`, `todo lists`, `task` for `Tasks`).
-///
-/// The rules are [`tilo_words`]: the compiler writes a package's catalogue from them and the
-/// action model reads a Rust type's noun from them, so an app's words agree whichever it is
-/// written in.
+/// A declared name in words, lower case (`TodoList` and `todo_list` are `todo list`), and what one of
+/// them and several are. The rules are [`tilo_words`]': a package's catalogue and the action model's
+/// nouns agree whichever language an app is written in.
 pub use tilo_words::{in_words, plural, singular};
 
 impl PackageMeta {
@@ -832,14 +733,12 @@ impl PackageMeta {
         self.types.iter().find(|ty| ty.name == last)
     }
 
-    /// The type an action is on: that of its first parameter, when it is a declared record.
     #[must_use]
     pub fn subject_of(&self, params: &[ParamMeta]) -> Option<&TypeMeta> {
         params.first().and_then(|param| self.type_named(&param.ty))
     }
 
-    /// The parameters of an action beyond its subject, which the address carries: what an
-    /// invocation gives.
+    /// The parameters beyond the subject that the address carries: what an invocation gives.
     #[must_use]
     pub fn arguments<'a>(&self, params: &'a [ParamMeta]) -> &'a [ParamMeta] {
         match (self.subject_of(params), params.split_first()) {
@@ -848,7 +747,6 @@ impl PackageMeta {
         }
     }
 
-    /// The id of the default view of the type `ty` (an id), when the package declares one.
     pub fn default_view(&self, ty: &str) -> Option<&str> {
         self.default_views
             .iter()
@@ -856,8 +754,7 @@ impl PackageMeta {
             .map(|d| d.view.as_str())
     }
 
-    /// The views a window of the type `ty` (an id) switches between, in the order declared;
-    /// empty when the type declares none.
+    /// The views a window of `ty` (an id) switches between, in the order declared.
     #[must_use]
     pub fn views_of(&self, ty: &str) -> Vec<&str> {
         self.views_of
@@ -867,8 +764,8 @@ impl PackageMeta {
             .unwrap_or_default()
     }
 
-    /// How the switch offers the view `view` (an id) of the type `ty` (an id): the short label
-    /// and the icon its declaration names, `None` for each it does not.
+    /// How the switch offers the view `view` of the type `ty`: its label and icon, `None` for each it
+    /// does not name.
     #[must_use]
     pub fn view_shown(&self, ty: &str, view: &str) -> (Option<&str>, Option<&str>) {
         self.views_of
@@ -878,7 +775,6 @@ impl PackageMeta {
             .map_or((None, None), |s| (s.label.as_deref(), s.icon.as_deref()))
     }
 
-    /// The id of the row view of the type `ty` (an id), when the package declares one.
     pub fn row_view(&self, ty: &str) -> Option<&str> {
         self.row_views
             .iter()
@@ -886,21 +782,16 @@ impl PackageMeta {
             .map(|d| d.view.as_str())
     }
 
-    /// The actions the platform offers: every action but the hidden ones of scenarios and the
-    /// migrations, which the platform runs itself, and but the ones that take a `File` — a file
-    /// is the person's own, and the chooser a control runs fills that parameter
-    /// (`file.choose(a)`), so it is no command a menu, a palette, an agent or a program runs.
-    /// This is the one list every surface draws from — the header's buttons and menu, an item's
-    /// menu, the palette — so an action is always somewhere a person, an agent or a program can
-    /// reach it.
+    /// The actions the platform offers: not the hidden ones of scenarios, the migrations or the ones
+    /// that take a `File`. This is the one list every surface draws from — the header's buttons and
+    /// menu, an item's menu, the palette.
     pub fn offered_actions(&self) -> impl Iterator<Item = &ActionMeta> {
         self.actions
             .iter()
             .filter(|a| !a.scenario && !a.is_migration() && !a.takes_a_file())
     }
 
-    /// The actions code may call by name: every action but the hidden ones of scenarios and the
-    /// migrations, which the platform runs itself.
+    /// The actions code may call by name: not the hidden ones of scenarios and the migrations.
     pub fn callable_actions(&self) -> impl Iterator<Item = &ActionMeta> {
         self.actions
             .iter()
@@ -912,17 +803,16 @@ impl PackageMeta {
         self.actions.iter().filter(|a| a.is_migration())
     }
 
-    /// The views a person or an agent can open or apply: every view but the hidden ones that
-    /// present an action's state or are the rows of a loop.
+    /// The views a person or an agent can open or apply: not the hidden ones that present an
+    /// action's state or are rows of a loop.
     pub fn offered_views(&self) -> impl Iterator<Item = &ViewMeta> {
         self.views
             .iter()
             .filter(|v| v.presents.is_none() && v.row_of.is_none())
     }
 
-    /// The views a person or an agent can open a resource of the type `ty` (an id) through: the
-    /// declared views that take such a resource and nothing else. An app's helpers are not among
-    /// them: they belong to the views that place them.
+    /// The views a person or an agent can open a resource of the type `ty` through: the declared
+    /// views that take such a resource and nothing else.
     #[must_use]
     pub fn views_showing(&self, ty: &str) -> Vec<&ViewMeta> {
         let of_type = |param: &ParamMeta| {
@@ -936,12 +826,10 @@ impl PackageMeta {
             .collect()
     }
 
-    /// The JSON bytes embedded in the `tilolang.meta` section.
     pub fn to_json_bytes(&self) -> Vec<u8> {
         serde_json::to_vec(self).unwrap_or_default()
     }
 
-    /// Reads the metadata back out of a compiled module.
     pub fn from_wasm(wasm: &[u8]) -> Option<Self> {
         let data = custom_section(wasm, META_SECTION)?;
         serde_json::from_slice(data).ok()
@@ -965,8 +853,7 @@ fn read_leb(bytes: &[u8], pos: &mut usize) -> Option<usize> {
     }
 }
 
-/// The module `wasm` without the custom section `name`: the module apart from what the
-/// compiler writes beside its code for tools, which the same code written in one file and in
+/// The module `wasm` without the custom section `name`: what the same code written in one file and in
 /// several does not share (the lines each declaration is on).
 #[must_use]
 pub fn without_section(wasm: &[u8], name: &str) -> Vec<u8> {
@@ -1002,7 +889,6 @@ pub fn without_section(wasm: &[u8], name: &str) -> Vec<u8> {
     out
 }
 
-/// The payload of the named custom section of a wasm module.
 pub fn custom_section<'a>(wasm: &'a [u8], name: &str) -> Option<&'a [u8]> {
     let mut pos = 8usize;
     while pos < wasm.len() {

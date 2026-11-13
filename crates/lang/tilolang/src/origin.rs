@@ -1,48 +1,38 @@
-//! Outside origins: the services whose resources a type can hold (convergence.md, "Origins"
-//! and "Outside services").
+//! Outside origins: the services whose resources a type can hold (convergence.md, "Origins" and
+//! "Outside services").
 //!
-//! A type names the kind of an outside service's resource it holds with
-//! `type Message (origin: imap.message) { ... }`. The system keeps such resources in step with
-//! the service: it gets and searches them through the service's capabilities, which the
-//! platform implements, and writes what the service says into the fields the kind defines.
-//! The type declares the fields of the kind it shows, with the kind's types, and may add
-//! fields of its own, which the service never touches.
+//! A type names the kind of an outside service's resource it holds with `type Message (origin:
+//! imap.message) { ... }`. The system keeps such resources in step with the service: it gets and
+//! searches them through the service's capabilities and writes what the service says into the fields
+//! the kind defines.
 //!
 //! A kind's fields are written by the service alone, except those people change (a message's
-//! `unread`, `flagged` and `mailbox`): a change of one applies at once and becomes final when
-//! the service accepts it. Code writing any other field of the kind is refused (E113), except
-//! in a scenario, whose seed data stands in for the service.
+//! `unread`, `flagged` and `mailbox`): a change of one applies at once and becomes final when the
+//! service accepts it. Code writing any other field of the kind is refused (E113), except in a
+//! scenario, whose seed data stands in for the service.
 //!
-//! Some kinds are the origin's to derive rather than to save: the time, the desk, who is here,
-//! the workspaces on the device. The origin makes them again from nothing at every start, so
-//! they are never put in a collaborative record: [their resources live in the store's unsaved
-//! layer](OriginKind::derived), where a change reaches the views at once and leaves no change
-//! behind to be committed, synced or replayed.
+//! Some kinds are the origin's to derive rather than to save: the time, the desk, who is here, the
+//! workspaces on the device. They live in the store's unsaved layer, so a change reaches the views at
+//! once and leaves no change behind to be committed, synced or replayed.
 
-/// A field of an origin's kind.
 #[derive(Clone, Copy, Debug)]
 pub struct OriginField {
     pub name: &'static str,
-    /// Its type as the checker shows types: `Text`, `Bool`, `Int`, `Time`, `Set<Text>`, or
-    /// `Collection<kind>` for the resources of another kind of the same origin.
     pub ty: &'static str,
     /// Whether people change it (the service is told), or only the service writes it.
     pub people: bool,
     pub doc: &'static str,
 }
 
-/// A kind of resource an origin holds.
 #[derive(Clone, Copy, Debug)]
 pub struct OriginKind {
     /// The dotted name a type declares: `imap.message`.
     pub name: &'static str,
     pub doc: &'static str,
     pub fields: &'static [OriginField],
-    /// The origin derives these resources from what it holds: it makes them again from
-    /// nothing each time it starts, so they are never saved to a collaborative record. They
-    /// live in the store's unsaved layer, where a change reaches the views without being
-    /// committed: written, remembered, and gone at the next start, when the origin writes them
-    /// again.
+    /// The origin derives these resources from what it holds: it makes them again from nothing each
+    /// time it starts, so they are never saved to a collaborative record. They live in the store's
+    /// unsaved layer, where a change reaches the views without being committed.
     pub derived: bool,
 }
 
@@ -64,9 +54,8 @@ const fn people(name: &'static str, ty: &'static str, doc: &'static str) -> Orig
     }
 }
 
-/// The capabilities an action may hand an outside effect to with `outside(capability, ...)`:
-/// `post`, the development log, and each origin's own. The session takes none: a shell calls
-/// its actions as an app's (`use so.tilo.session as session`).
+/// The capabilities an action may hand an outside effect to with `outside(capability, ...)`: `post`, the
+/// development log, and each origin's own.
 pub const CAPABILITIES: &[(&str, &str)] = &[
     ("post", "Posts a payload; the development sink logs it."),
     (
@@ -105,7 +94,6 @@ pub const CAPABILITIES: &[(&str, &str)] = &[
     ),
 ];
 
-/// Every kind of every origin the platform has.
 pub const KINDS: &[OriginKind] = &[
     OriginKind {
         name: "session.desk",
@@ -996,19 +984,16 @@ pub const KINDS: &[OriginKind] = &[
     },
 ];
 
-/// The kind named `name`.
 #[must_use]
 pub fn kind(name: &str) -> Option<&'static OriginKind> {
     KINDS.iter().find(|k| k.name == name)
 }
 
-/// The names of every kind, for messages.
 #[must_use]
 pub fn kind_names() -> String {
     KINDS.iter().map(|k| k.name).collect::<Vec<_>>().join(", ")
 }
 
-/// Whether `capability` is one an outside effect can be handed to.
 #[must_use]
 pub fn is_capability(capability: &str) -> bool {
     CAPABILITIES.iter().any(|(name, _)| *name == capability)
@@ -1028,8 +1013,7 @@ impl OriginKind {
     }
 }
 
-/// Whether the kind named `name` is one its origin derives, and so never saved to a
-/// collaborative record ([`OriginKind::derived`]).
+/// Whether the kind named `name` is one its origin derives, and so never saved to a collaborative record.
 #[must_use]
 pub fn is_derived(name: &str) -> bool {
     kind(name).is_some_and(|kind| kind.derived)

@@ -1,6 +1,5 @@
-//! The declarations that attach views to a type: the row a list shows for each item of it,
-//! and the views a window of it switches between. A view neither names is the app's own
-//! helper, which no window offers.
+//! The declarations that attach views to a type: the row a list shows for each item of it, and the views a
+//! window of it switches between. A view neither names is the app's own helper, which no window offers.
 
 use crate::ast;
 use crate::types::Ty;
@@ -44,9 +43,8 @@ impl Resolver<'_> {
         }
     }
 
-    /// `views a, b for T`: the views a window of the type switches between, in the order
-    /// written. Each is a view of one `T` and nothing else; a view not named stays the app's own
-    /// helper, which no window offers.
+    /// `views a, b for T`: the views a window of the type switches between, in the order written. Each is a
+    /// view of one `T` and nothing else; a view not named stays the app's own helper.
     pub(super) fn views_decl(&mut self, d: &ast::ViewsDecl) {
         let Some(key) = self.own_record(&d.ty, "views") else {
             return;
@@ -105,8 +103,8 @@ impl Resolver<'_> {
         self.env.views_of.push((key, kept, d.span));
     }
 
-    /// How a view of a window's switch is offered: `(label: "Board")` and `(icon: .columns)`.
-    /// Without a label the switch derives one from the view's, leaving the type's name off.
+    /// How a view of a window's switch is offered: `(label: "Board")` and `(icon: .columns)`. Without a label
+    /// the switch derives one from the view's, leaving the type's name off.
     fn view_options(&mut self, opts: &[ast::ActionOpt]) -> (Option<String>, Option<String>) {
         let mut label = None;
         let mut icon = None;

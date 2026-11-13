@@ -1,14 +1,13 @@
-//! A package's published declarations, printed as tilolang: its types, enums and action
-//! signatures, as another package that `use`s it sees them. `tilolang describe` prints any
-//! app's catalogue entry this way, native or tilolang.
+//! A package's published declarations, printed as tilolang: its types, enums and action signatures, as
+//! another package that `use`s it sees them. `tilolang describe` prints any app's catalogue entry this way.
 
 use std::fmt::Write as _;
 
 use crate::meta::{FieldMeta, PackageMeta, ParamMeta};
 use crate::types::Ty;
 
-/// The declarations of `meta`, as tilolang source: the app header, then each type, enum and
-/// action signature with its doc comment.
+/// The declarations of `meta`, as tilolang source: the app header, then each type, enum and action signature
+/// with its doc comment.
 #[must_use]
 pub fn declarations(meta: &PackageMeta) -> String {
     let app = meta.app.as_str();

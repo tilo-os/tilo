@@ -1,14 +1,12 @@
-//! `sort_by` over a collection, answered by the store: by a field of the items (`.due`,
-//! `x -> x.title`), by their versions (`x -> updated(x)`, `x -> created(x)`, ordered by their
-//! time), or by when one of their fields last changed (`x -> changed(x, .done)?.at`), oldest or
-//! smallest first, or with `desc` the latest or largest first.
+//! `sort_by` over a collection, answered by the store: by a field of the items (`.due`, `x -> x.title`), by
+//! their versions (`x -> updated(x)`), or by when one of their fields last changed
+//! (`x -> changed(x, .done)?.at`), oldest or smallest first, or with `desc` the latest or largest first.
 //!
-//! A store with an index keeps a column per such field and per version in each collection, so
-//! a list in that order opens by reading one page. The order is handed to the host beside the
-//! loop that sorts the items itself, which runs where the host cannot answer (a collection
-//! read whole in an action, a union's items). A field an item may have no value of orders with
-//! those items last, and an order over a list already in one keeps that order where this one
-//! holds two items equal.
+//! A store with an index keeps a column per such field and per version in each collection, so a list in
+//! that order opens by reading one page. The order is handed to the host beside the loop that sorts the
+//! items itself, which runs where the host cannot answer. A field an item may have no value of orders with
+//! those items last, and an order over a list already in one keeps that order where this one holds two
+//! items equal.
 
 use super::{Checker, Ex};
 use crate::abi::Imp;
@@ -22,16 +20,20 @@ pub(super) const UPDATED: &str = "$updated";
 /// What the pseudo-field holding when a field last changed begins with.
 pub(super) const CHANGED: &str = "$changed";
 
-/// What a `sort_by` key reads of an item.
 pub(super) enum SortKey {
     /// A field, by id, and whether an item may have no value of it.
-    Field { id: String, optional: bool },
-    /// Its first (`created`) or last (`updated`) version.
-    Version { last: bool },
-    /// When a field of it last changed (`changed(x, .field)?.at`), under the pseudo-field the
-    /// index keeps it at. An item that never changed it has no moment of one, which stands
-    /// before every moment.
-    Changed { id: String },
+    Field {
+        id: String,
+        optional: bool,
+    },
+    Version {
+        last: bool,
+    },
+    /// When a field of it last changed (`changed(x, .field)?.at`), under the pseudo-field the index keeps it
+    /// at. An item that never changed it has no moment of one, which stands before every moment.
+    Changed {
+        id: String,
+    },
 }
 
 impl SortKey {
@@ -43,18 +45,18 @@ impl SortKey {
         }
     }
 
-    /// Whether the items without a value of the field stand after those with one, in both
-    /// directions: a task nobody gave a day is no day's work, not the first one's.
+    /// Whether the items without a value of the field stand after those with one, in both directions: a task
+    /// nobody gave a day is no day's work, not the first one's.
     pub(super) fn absent_last(&self) -> bool {
         matches!(self, Self::Field { optional: true, .. })
     }
 }
 
 impl Checker<'_> {
-    /// What the key `param -> body` reads of an item of the type `elem`, when the store can
-    /// order by it: a field of the item that holds a value (a register or a counter, a day or a
-    /// time, though one it may not have), or `created(param)` / `updated(param)`. A key that
-    /// names a function a template was given (`x -> closed(x)`) reads what that function reads.
+    /// What the key `param -> body` reads of an item of the type `elem`, when the store can order by it: a
+    /// field of the item that holds a value (a register or a counter, a day or a time, though one it may not
+    /// have), or `created(param)` / `updated(param)`. A key that names a function a template was given
+    /// (`x -> closed(x)`) reads what that function reads.
     pub(super) fn sort_key(&self, elem: &Ty, param: &str, body: &ast::Expr) -> Option<SortKey> {
         let is_param = |e: &ast::Expr| matches!(&e.kind, ExprKind::Ident(p) if p == param);
         match &body.kind {
@@ -71,8 +73,8 @@ impl Checker<'_> {
                             last: name.as_str() == "updated",
                         });
                     }
-                    // The function the template was given for this name: its own parameter
-                    // stands where the item does, so its body is the key.
+                    // The function the template was given for this name: its own parameter stands where the item
+                    // does, so its body is the key.
                     let closure = self.lambda_named(name)?;
                     let [(inner, _)] = closure.params.as_slice() else {
                         return None;
@@ -136,8 +138,8 @@ impl Checker<'_> {
         }
     }
 
-    /// The lambda the name `name` holds where the code being checked sees it: a parameter of
-    /// the template being expanded, given a function or nothing.
+    /// The lambda the name `name` holds where the code being checked sees it: a parameter of the template being
+    /// expanded, given a function or nothing.
     fn lambda_named(&self, name: &str) -> Option<std::rc::Rc<super::template::Closure>> {
         use super::template::Macro;
         match self.st.macros.get(name)? {
@@ -150,8 +152,8 @@ impl Checker<'_> {
         }
     }
 
-    /// The key of the loop that sorts by a version itself: its time, the empty text for none
-    /// (first, as the store orders an absent version).
+    /// The key of the loop that sorts by a version itself: its time, the empty text for none (first, as the
+    /// store orders an absent version).
     pub(super) fn version_time(&mut self, item: Ex, last: bool) -> Ex {
         let version = super::platform::host_ty("Version");
         let opt_ty = Ty::Option(Box::new(version.clone()));
@@ -183,10 +185,9 @@ impl Checker<'_> {
         Ex::new(Ek::Seq(vec![set], Box::new(chosen)), Ty::Text)
     }
 
-    /// `looped`, the loop of a `sort_by` over the collection `held` (kept in the local `list`,
-    /// which the loop reads), behind the store's answer to the order `key`: `coll_ordered`
-    /// hands back the collection in that order when the host can list it so, and the loop runs
-    /// when it cannot.
+    /// `looped`, the loop of a `sort_by` over the collection `held` (kept in the local `list`, which the loop
+    /// reads), behind the store's answer to the order `key`: `coll_ordered` hands back the collection in that
+    /// order when the host can list it so, and the loop runs when it cannot.
     pub(super) fn ordered_or_loop(
         &mut self,
         list: u32,

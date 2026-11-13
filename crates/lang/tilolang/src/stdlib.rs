@@ -1,13 +1,9 @@
-//! The standard library: the frames every tilolang window gets, written in tilolang over the
-//! toolkit's components (`std/app.tl`).
+//! The standard library: the frames every tilolang window gets, written in tilolang over the toolkit's
+//! components (`std/app.tl`).
 //!
-//! It is a package like any other, compiled from its source and locked by its `app.ids`: the
-//! types, functions, actions and resource types it declares are its own module's, under its own
-//! package id, and a package sees them as `std.X` exactly as it sees a package it `use`s. Every
-//! package compiles with it. Its views are templates, expanded where a package calls them
-//! (`std.list(...)`), so what they build is the caller's UI, under the caller's authority. An
-//! app that wants something else composes `ui.*` itself, with the same language features the
-//! library uses.
+//! It is a package like any other, compiled from its source and locked by its `app.ids`; every package
+//! compiles with it. Its views are templates, expanded where a package calls them (`std.list(...)`), so
+//! what they build is the caller's UI, under the caller's authority.
 
 use std::sync::OnceLock;
 
@@ -17,16 +13,12 @@ use crate::meta::PackageMeta;
 use crate::package::Compiled;
 use crate::source::PackageSource;
 
-/// The library's package id: its declarations and its resource types are this app's.
 pub const APP: &str = "tilo.std";
 
-/// The name a package calls it by: `std.list`.
 pub const NS: &str = "std";
 
-/// The library's source.
 pub const SOURCE: &str = include_str!("../std/app.tl");
 
-/// The library's ids: every declaration it makes, assigned once and kept.
 pub const IDS: &str = include_str!("../std/app.ids");
 
 /// The library's module.
@@ -83,8 +75,6 @@ impl Library {
                 .collect();
             panic!("the standard library compiles: {}", errors.join("\n"));
         });
-        // Its views are the templates packages expand where they call them: what it builds
-        // there is the caller's, not the library's.
         let templates = module()
             .items
             .iter()
@@ -106,14 +96,13 @@ fn library() -> &'static Library {
     LIBRARY.get_or_init(Library::compiled)
 }
 
-/// The library's metadata: its package id, and the declarations a package sees as `std.X`.
 #[must_use]
 pub fn meta() -> &'static PackageMeta {
     &library().compiled.meta
 }
 
-/// The library's compiled module: what a bundle carries so the package id its declarations
-/// belong to can run its actions.
+/// The library's compiled module: what a bundle carries so the package id its declarations belong to can
+/// run its actions.
 #[must_use]
 pub fn compiled() -> &'static Compiled {
     &library().compiled
@@ -129,8 +118,6 @@ pub fn templates() -> &'static [ViewDecl] {
 mod tests {
     use super::{APP, IDS};
 
-    /// The library is a package: it names its app, its ids are current, and every view it
-    /// declares is a template the calling package expands.
     #[test]
     fn the_library_is_a_package_of_templates() {
         let module = super::module();
@@ -152,8 +139,8 @@ mod tests {
             IDS,
             "write the ids the library takes back to `std/app.ids`"
         );
-        // Every bundle carries the library's module: it holds no view code, since its views
-        // expand into their callers, so it stays small.
+        // Every bundle carries the library's module: it holds no view code, since its views expand into
+        // their callers, so it stays small.
         assert!(
             super::compiled().wasm.len() < 1024,
             "the library's module is {} bytes",

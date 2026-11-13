@@ -1,30 +1,24 @@
-//! Rewriting an imported package's `template view` bodies so their names resolve in the package
-//! that defines them, not the one that calls them (`shell.md` §6: a template's body is its
-//! package's, a caller's block is the caller's).
+//! Rewriting an imported package's `template view` bodies so their names resolve in the package that
+//! defines them, not the one that calls them.
 //!
-//! A template's body is source in the defining package's namespace: it calls that package's
-//! helpers (`desk_lists`), reads its roots (`shell`) and names its types (`Arrangement`). When
-//! another package registers the template at import, every such unqualified reference is
-//! rewritten to the qualified `alias.item` the importer's resolver reads, marked
-//! [`ast::Ident::from_template_of`] so the resolver still admits the package's unoffered helpers.
-//! Names bound inside the template — its parameters, a lambda's, `let`s, loop variables, `if
-//! let`/`match` patterns, view state — stand as they are, and so do `std`'s and the built-ins: the
-//! caller's block is not in this AST (it is inserted at the slot when the template expands), so it
-//! keeps the caller's own scope.
+//! A template's body is source in the defining package's namespace: it calls that package's helpers
+//! (`desk_lists`), reads its roots (`shell`) and names its types (`Arrangement`). When another package
+//! registers the template at import, every such unqualified reference is rewritten to the qualified
+//! `alias.item` the importer's resolver reads, marked [`ast::Ident::from_template_of`] so the resolver
+//! still admits the package's unoffered helpers. Names bound inside the template stand as they are, and
+//! so do `std`'s and the built-ins: the caller's block is not in this AST, so it keeps its own scope.
 
 use std::collections::HashSet;
 
 use crate::ast::{self, Expr, ExprKind, TypeExpr, TypeExprKind, UiKind, UiStmt};
 
-/// The names of a package's top-level items a template's body may write by their plain name: its
-/// views, fns, actions, types, enums, named roots and aliases. What a qualified reference may
-/// reach.
+/// The names of a package's top-level items a template's body may write by their plain name: its views,
+/// fns, actions, types, enums, named roots and aliases.
 pub struct PackageNames {
     pub items: HashSet<String>,
 }
 
 impl PackageNames {
-    /// The names `meta` declares by their plain names.
     #[must_use]
     pub fn of(meta: &crate::meta::PackageMeta) -> Self {
         let mut items = HashSet::new();
@@ -57,19 +51,17 @@ impl PackageNames {
     }
 }
 
-/// Rewrite `view`'s body so every unqualified reference to one of `names` — a top-level item of
-/// the package it came from — is qualified with `alias`, marked [`ast::Ident::from_template_of`]
-/// with `package`. A name bound inside the template (a parameter, a lambda's, a `let`, a loop
-/// variable, a pattern, a `state`) is left as written, as are built-ins and `std`'s names
-/// (`names` holds none of them).
+/// Rewrite `view`'s body so every unqualified reference to one of `names` — a top-level item of the
+/// package it came from — is qualified with `alias`, marked [`ast::Ident::from_template_of`] with
+/// `package`. A name bound inside the template is left as written, as are built-ins and `std`'s names.
 pub fn qualify(view: &mut ast::ViewDecl, alias: &str, package: &str, names: &PackageNames) {
     let mut scope = Scope::new();
     // The parameters are the template's own names, before its body reads any of them.
     for p in &view.params {
         scope.bind(p.name.name.clone());
     }
-    // The parameters' types name the package's types too (`a: Arrangement`), and their defaults
-    // read the parameters before them, which are bound already.
+    // The parameters' types name the package's types too (`a: Arrangement`), and their defaults read the
+    // parameters before them, which are bound already.
     for p in &mut view.params {
         qualify_type(&mut p.ty, alias, package, names);
         if let Some(default) = &mut p.default {
@@ -79,8 +71,8 @@ pub fn qualify(view: &mut ast::ViewDecl, alias: &str, package: &str, names: &Pac
     qualify_ui(&mut view.body, alias, package, names, &mut scope);
 }
 
-/// The names bound so far, innermost last: a plain name found here is the template's own and is
-/// never qualified. It always holds at least one frame, so a binding always lands somewhere.
+/// The names bound so far, innermost last: a plain name found here is the template's own and is never
+/// qualified. It always holds at least one frame, so a binding always lands somewhere.
 struct Scope {
     bound: Vec<HashSet<String>>,
 }
@@ -125,8 +117,8 @@ fn qualify_ui(
     for stmt in body.iter_mut() {
         match &mut stmt.kind {
             UiKind::Call(call) => {
-                // The call's own expression is read with the names around it; the block's opening
-                // names (`list(xs) { x -> ... }`) are bound only inside the block.
+                // The call's own expression is read with the names around it; the block's opening names are
+                // bound only inside the block.
                 qualify_expr(&mut call.call, alias, package, names, scope);
                 let opens = !call.params.is_empty();
                 if opens {
@@ -280,7 +272,6 @@ fn qualify_expr(
         }
         ExprKind::Field { base, .. } => {
             qualify_expr(base, alias, package, names, scope);
-            // `a.field` of a template value: the field is not the package's item to qualify.
         }
         ExprKind::OptChain { base, .. } => qualify_expr(base, alias, package, names, scope),
         ExprKind::Call { callee, args, .. } => {

@@ -1,34 +1,27 @@
-//! The package the toolkit provides: its described components, read as the package `ui`.
-//!
-//! Every module sees it as `ui`, the way it sees the host's package as `host`. The descriptions
-//! are the toolkit's own (`tilo_ui_graph::component`), generated from each widget's Rust
-//! definition, so `ui.ListRow(title: ...)` is checked against the widget as it is.
+//! The package the toolkit provides: its described components, read as the package `ui`. Every module sees
+//! it as `ui`, the way it sees the host's package as `host`; the descriptions are the toolkit's own,
+//! generated from each widget's Rust definition.
 
 pub use tilo_ui_graph::component::{Accepts, Catalogue, Description, OPENS_PROP, Offered, Type};
 
-/// The app id of the toolkit's package.
 pub const UI_APP: &str = "tilo.ui";
-/// The name every module reaches it by.
 pub const UI_ALIAS: &str = "ui";
 
 /// The prefix of a component node's kind: `ui.ListRow`.
 pub const KIND_PREFIX: &str = "ui.";
 
-/// The toolkit's component descriptions.
 #[must_use]
 pub fn catalogue() -> &'static Catalogue {
     tilo_ui_graph::component::catalogue()
 }
 
-/// The node kind of the component `name`.
 #[must_use]
 pub fn kind(name: &str) -> String {
     format!("{KIND_PREFIX}{name}")
 }
 
-/// The language's enums the toolkit declares: each closed set whose cases carry fields
-/// (`ui.Shape`), and each set of roles or tokens one of their fields names (`ui.Ink`), as the
-/// package `ui`'s enums. A value of one is written `.arc(cx: 0.5, ...)` like any enum's.
+/// The language's enums the toolkit declares: each closed set whose cases carry fields (`ui.Shape`), and
+/// each set of roles or tokens one of their fields names (`ui.Ink`).
 #[must_use]
 pub fn enums() -> Vec<crate::resolve::EnumInfo> {
     use crate::resolve::{EnumInfo, FieldInfo, VariantInfo};
@@ -100,7 +93,6 @@ pub fn key(name: &str) -> crate::types::TypeKey {
     }
 }
 
-/// The language's type of a field of one of the toolkit's enums.
 fn lang_type(ty: &Type) -> crate::types::Ty {
     use crate::types::Ty;
     match ty {
@@ -120,7 +112,6 @@ fn lang_type(ty: &Type) -> crate::types::Ty {
     }
 }
 
-/// The sets of roles or tokens `ty` names, once each.
 fn collect_choices(ty: &Type, into: &mut Vec<(String, Vec<String>)>) {
     match ty {
         Type::Choice { name, cases } if !into.iter().any(|(n, _)| n == name) => {
@@ -132,7 +123,6 @@ fn collect_choices(ty: &Type, into: &mut Vec<(String, Vec<String>)>) {
     }
 }
 
-/// A field's default as the language's metadata holds one.
 fn default_json(ty: &Type, value: &tilo_ui_graph::component::Value) -> serde_json::Value {
     use tilo_ui_graph::component::Value;
     match value {

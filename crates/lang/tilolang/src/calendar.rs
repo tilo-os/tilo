@@ -1,10 +1,8 @@
-//! The proleptic Gregorian calendar of the language's ISO dates and times: the days since
-//! 1970-01-01 of a day, the seconds of an instant, and back (Howard Hinnant's algorithms).
+//! The proleptic Gregorian calendar of the language's ISO dates and times: the days since 1970-01-01 of a
+//! day, the seconds of an instant, and back (Howard Hinnant's algorithms).
 
-/// The seconds of a day.
 pub const DAY: i64 = 86_400;
 
-/// The days (from 1970-01-01) a day, a month or a year starts on and the day after it ends.
 #[must_use]
 pub fn calendar_span(text: &str) -> Option<(i64, i64)> {
     let parts: Vec<&str> = text.split('-').collect();
@@ -34,7 +32,6 @@ pub fn calendar_span(text: &str) -> Option<(i64, i64)> {
     }
 }
 
-/// The seconds since 1970 of an ISO-8601 UTC instant `YYYY-MM-DDTHH:MM:SSZ`.
 #[must_use]
 pub fn instant(text: &str) -> Option<i64> {
     crate::types::check_time(text).ok()?;
@@ -43,7 +40,6 @@ pub fn instant(text: &str) -> Option<i64> {
     Some(days * 86_400 + num(11..13)? * 3600 + num(14..16)? * 60 + num(17..19)?)
 }
 
-/// The days since 1970-01-01 of a day of the proleptic Gregorian calendar.
 #[must_use]
 pub fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
     let y = if m <= 2 { y - 1 } else { y };
@@ -55,7 +51,6 @@ pub fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
     era * 146_097 + doe - 719_468
 }
 
-/// The day of the proleptic Gregorian calendar `days` after 1970-01-01.
 #[must_use]
 pub fn civil_from_days(days: i64) -> (i64, i64, i64) {
     let z = days + 719_468;

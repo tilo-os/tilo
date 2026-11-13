@@ -1,36 +1,29 @@
-//! Dates and times as people type them into a quick add: "Call the landlord tomorrow 9am",
-//! "Pay rent on the 1st", "Standup mon 9:30", "Ship it in 2 weeks". [`dated`] finds the phrase
-//! that says when, reads it against the time it is typed at in the zone of who typed it, and
-//! gives the rest of the text, the day and the moment.
+//! Dates and times as people type them into a quick add: "Call the landlord tomorrow 9am", "Pay rent
+//! on the 1st", "Standup mon 9:30", "Ship it in 2 weeks". [`dated`] finds the phrase that says when,
+//! reads it against the time it is typed at in the zone of who typed it, and gives the rest of the
+//! text, the day and the moment.
 //!
-//! The phrases (any case; "on", "at", "by" and "due" before one are part of it, and in German
-//! "am" and "um" with "uhr" after a time):
-//! `today`, `tonight`, `tomorrow`; a weekday (`mon`, `friday`), optionally `next`; `next week`
-//! (its Monday), `this weekend` or `weekend` (its Saturday); `in 3 days`, `in a week`,
-//! `in 2 weeks`; a day of a month (`nov 2`, `2 november`, `the 1st`), the next one that has
-//! not passed; an ISO day (`2026-11-02`); a time (`9am`, `9:30`, `5:15pm`, `17:00`, `at 9`,
-//! `noon`, `midnight`). A time alone is today's when it is still to come, else tomorrow's.
+//! The phrases (any case; "on", "at", "by" and "due" before one are part of it, and in German "am"
+//! and "um" with "uhr" after a time): `today`, `tonight`, `tomorrow`; a weekday (`mon`, `friday`),
+//! optionally `next`; `next week`, `this weekend`; `in 3 days`, `in a week`; a day of a month (`nov
+//! 2`, `the 1st`), the next one that has not passed; an ISO day (`2026-11-02`); a time (`9am`,
+//! `17:00`, `noon`, `midnight`). A time alone is today's when it is still to come, else tomorrow's.
 //!
-//! [`scan`] gives the phrases of a text and where they are, which is what an entry reads it
-//! for: the words it takes as when leave the title and show as a part of what will be added
+//! [`scan`] gives the phrases of a text and where they are, which an entry reads it for
 //! ([`crate::entry`]).
 
 use crate::calendar::{DAY, civil_from_days, day_text, days_from_civil, time_text};
 
-/// The language a text is typed in, as the person reads the workspace: the words a day, a month
-/// and a time are said in.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Language {
-    /// `tomorrow`, `fri`, `next week`.
     #[default]
     English,
-    /// `morgen`, `am Fr`, `nächste woche`.
     German,
 }
 
 impl Language {
-    /// The language of `locale` (`de`, `de-DE`, `de_DE.UTF-8`): German for a German locale,
-    /// English otherwise.
+    /// The language of `locale` (`de`, `de-DE`, `de_DE.UTF-8`): German for a German locale, English
+    /// otherwise.
     #[must_use]
     pub fn of(locale: &str) -> Self {
         if tilo_paths::language_of(locale) == "de" {
@@ -70,8 +63,8 @@ impl Language {
         }
     }
 
-    /// Weekday names that are also words ("sat down", "sun cream"), so a day only after a lead
-    /// word or `next`. The short German names are all words too ("fr", "so").
+    /// Weekday names that are also words ("sat down", "sun cream"), so a day only after a lead word or
+    /// `next`.
     fn wordlike(self) -> &'static [&'static str] {
         match self {
             Self::English => &["sat", "sun", "wed"],
@@ -79,7 +72,6 @@ impl Language {
         }
     }
 
-    /// The short weekday names a day is labelled with, Monday first.
     fn weekdays_short(self) -> &'static [&'static str; 7] {
         match self {
             Self::English => &["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
@@ -87,7 +79,6 @@ impl Language {
         }
     }
 
-    /// The short month names a day is labelled with.
     fn months_short(self) -> &'static [&'static str; 12] {
         match self {
             Self::English => &[
@@ -101,19 +92,17 @@ impl Language {
     }
 }
 
-/// What [`dated`] read from a text.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Dated {
     /// The text without the phrase that said when, its spaces tidied.
     pub text: String,
-    /// The day it named, in the zone it was typed in: ISO `YYYY-MM-DD`.
+    /// The day it named, ISO `YYYY-MM-DD` in the zone it was typed in.
     pub day: Option<String>,
-    /// The moment it named, when it named a time: ISO-8601 UTC.
+    /// The moment it named, ISO-8601 UTC, when it named a time.
     pub at: Option<String>,
 }
 
-/// One word of a typed text: what it says, lowered and without the punctuation that ends it,
-/// and where it stands in the text.
+/// One word of a typed text: what it says, and where it stands in the text.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Word {
     /// The word as it was typed.
@@ -125,7 +114,6 @@ pub struct Word {
     pub end: usize,
 }
 
-/// The words of `text`, in order.
 #[must_use]
 pub fn words(text: &str) -> Vec<Word> {
     let mut out = Vec::new();
@@ -145,7 +133,6 @@ pub fn words(text: &str) -> Vec<Word> {
     out
 }
 
-/// The word `text` holds from `start` to `end`.
 fn push_word(out: &mut Vec<Word>, text: &str, start: usize, end: usize) {
     let Some(raw) = text.get(start..end) else {
         return;
@@ -158,19 +145,16 @@ fn push_word(out: &mut Vec<Word>, text: &str, start: usize, end: usize) {
     });
 }
 
-/// A phrase that says when: the day it names, the time it names, and the words it is.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Phrase {
     /// The day, in days since 1970-01-01.
     pub day: Option<i64>,
     /// The time of day, in minutes after midnight.
     pub minutes: Option<i64>,
-    /// How long after the moment it is read at, in minutes: "later today", "in a bit", which
-    /// name no time of day by themselves.
+    /// How long after the moment it is read at, in minutes: "later today", "in a bit", which name no
+    /// time of day by themselves.
     pub after: Option<i64>,
-    /// The word it starts at.
     pub from: usize,
-    /// How many words it is, a lead word included.
     pub words: usize,
 }
 
@@ -255,8 +239,8 @@ fn day_of_month(word: &str) -> Option<i64> {
     (1..=31).contains(&n).then_some(n)
 }
 
-/// `9am`, `9:30`, `5:15pm`, `17:00`, `noon`, `midnight`: minutes after midnight. A bare number
-/// is a time only after a lead (`at 9`, `um 9`), which `bare` says.
+/// `9am`, `9:30`, `5:15pm`, `17:00`, `noon`, `midnight`: minutes after midnight. A bare number is a
+/// time only after a lead (`at 9`), which `bare` says.
 fn time_of(word: &str, next: Option<&str>, bare: bool) -> Option<(i64, usize)> {
     match word {
         "noon" | "midday" | "mittag" => return Some((12 * 60, 1)),
@@ -297,7 +281,6 @@ fn time_of(word: &str, next: Option<&str>, bare: bool) -> Option<(i64, usize)> {
     Some((h * 60 + m, used))
 }
 
-/// What one phrase starting at a word names: a day, a time, or both, and how many words it is.
 #[derive(Default)]
 struct Found {
     day: Option<i64>,
@@ -306,8 +289,8 @@ struct Found {
     words: usize,
 }
 
-/// The phrase starting at `texts[i]`, read on the day `today` (days since 1970); `led` when a
-/// lead word stands before it.
+/// The phrase starting at `texts[i]`, read on the day `today` (days since 1970); `led` when a lead
+/// word stands before it.
 fn phrase_at(texts: &[&str], i: usize, today: i64, led: bool, lang: Language) -> Option<Found> {
     let w = |k: usize| texts.get(i + k).copied();
     let first = w(0)?;
@@ -397,7 +380,6 @@ fn phrase_at(texts: &[&str], i: usize, today: i64, led: bool, lang: Language) ->
         };
         return day(today + n * per, 3);
     }
-    // `2026-11-02`.
     if first.len() == 10 && crate::types::check_date(first).is_ok() {
         let mut parts = first.split('-').map(str::parse::<i64>);
         let (Some(Ok(y)), Some(Ok(m)), Some(Ok(d))) = (parts.next(), parts.next(), parts.next())
@@ -449,7 +431,7 @@ fn phrase_at(texts: &[&str], i: usize, today: i64, led: bool, lang: Language) ->
     None
 }
 
-/// The time phrase starting at `texts[i]`: `9am`, `9 am`, `at 9`, `noon`, `um 9 uhr`.
+/// The time phrase starting at `texts[i]`: `9am`, `at 9`, `noon`, `um 9 uhr`.
 fn time_at(texts: &[&str], i: usize, lang: Language) -> Option<(i64, usize)> {
     let first = texts.get(i)?;
     let next = texts.get(i + 1).copied();
@@ -478,8 +460,8 @@ pub fn scan(words: &[Word], today: i64, lang: Language) -> Vec<Phrase> {
     let mut out = Vec::new();
     let mut i = 0;
     while i < texts.len() {
-        // A lead word belongs to the phrase after it ("on friday"), except the one a time takes
-        // itself ("at 9"), which the time reader reads with the word after it.
+        // A lead word belongs to the phrase after it ("on friday"), except the one a time takes itself
+        // ("at 9").
         let lead =
             usize::from(lang.leads().contains(&texts[i]) && !lang.time_leads().contains(&texts[i]));
         if let Some(found) = phrase_at(&texts, i + lead, today, lead == 1, lang) {
@@ -509,16 +491,10 @@ pub fn scan(words: &[Word], today: i64, lang: Language) -> Vec<Phrase> {
     out
 }
 
-/// What a text says about when, before it is a value: the words no phrase took, the day it
-/// named and the time of day it named — a day as days since 1970-01-01, and a time of day as
-/// minutes after midnight, in the zone it was read in.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct When {
-    /// The text without the phrase that said when, its spaces tidied.
     pub text: String,
-    /// The day it named, when it named one.
     pub day: Option<i64>,
-    /// The time of day it named, when it named one.
     pub minutes: Option<i64>,
 }
 
@@ -575,8 +551,8 @@ pub fn when(text: &str, today: i64, second_of_day: i64, lang: Language) -> When 
     When { text, day, minutes }
 }
 
-/// Reads when `text` says something is due, typed at `now` (seconds since 1970, UTC) by
-/// someone whose clock is `offset` seconds ahead of UTC, typing in `lang`.
+/// Reads when `text` says something is due, typed at `now` (seconds since 1970, UTC) by someone whose
+/// clock is `offset` seconds ahead of UTC, typing in `lang`.
 #[must_use]
 pub fn dated_lang(text: &str, now: i64, offset: i64, lang: Language) -> Dated {
     let local = now.saturating_add(offset);
@@ -598,8 +574,8 @@ pub fn dated(text: &str, now: i64, offset: i64) -> Dated {
     dated_lang(text, now, offset, Language::English)
 }
 
-/// The day `days` as a person reads it in `lang`, standing at `today`: "Today", "Tomorrow",
-/// else the weekday and the day ("Fri 30 Oct", "Fr 30. Okt").
+/// The day `days` as a person reads it in `lang`, standing at `today`: "Today", "Tomorrow", else the
+/// weekday and the day ("Fri 30 Oct", "Fr 30. Okt").
 #[must_use]
 pub fn day_label(days: i64, today: i64, lang: Language) -> String {
     match days - today {
@@ -628,7 +604,6 @@ pub fn day_label(days: i64, today: i64, lang: Language) -> String {
 mod tests {
     use super::{Dated, Language, dated, dated_lang};
 
-    /// Thursday 2026-10-29, 08:00 in Berlin (UTC+1).
     const NOW: i64 = 1_793_257_200;
     const BERLIN: i64 = 3600;
 
@@ -737,7 +712,6 @@ mod tests {
 
     #[test]
     fn later_is_a_couple_of_hours_on_the_quarter_hour() {
-        // It is 08:00 in Berlin: two hours on is 10:00 there.
         assert_eq!(
             dated("later today", NOW, BERLIN),
             Dated {
@@ -773,7 +747,6 @@ mod tests {
         );
     }
 
-    /// A German workspace reads the days and times it wrote.
     #[test]
     fn german_says_the_same_days_in_its_own_words() {
         let de = |text: &str| {

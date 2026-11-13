@@ -1,6 +1,6 @@
-//! Unions of resource types (`type Channel = TextChannel | Thread`): a value is a reference to a
-//! resource of one of the types, and `match c { t: TextChannel => ..., x: Thread => ... }` takes
-//! it apart by its type, naming every case once, as any `match` does.
+//! Unions of resource types (`type Channel = TextChannel | Thread`): a value is a reference to a resource of
+//! one of the types, and `match c { t: TextChannel => ..., x: Thread => ... }` takes it apart by its type,
+//! naming every case once, as any `match` does.
 
 use super::{Checker, Ex};
 use crate::abi::Imp;
@@ -17,13 +17,12 @@ pub(super) struct UnionArm {
 }
 
 impl Checker<'_> {
-    /// Whether a match is over a union: its scrutinee is one, or its patterns name types.
     pub(super) fn is_union_match(ty: &Ty, patterns: &[&Pattern]) -> bool {
         matches!(ty, Ty::Union(_)) || patterns.iter().any(|p| p.ty.is_some())
     }
 
-    /// Checks the type patterns of a match over a value of the union `ty`: each names one of its
-    /// types once, and every type has an arm.
+    /// Checks the type patterns of a match over a value of the union `ty`: each names one of its types once,
+    /// and every type has an arm.
     pub(super) fn plan_union(
         &mut self,
         ty: &Ty,
@@ -118,7 +117,6 @@ impl Checker<'_> {
         ok.then_some(arms)
     }
 
-    /// Whether the resource in `tmp` is of the arm's type.
     fn union_test(tmp: LocalId, ty: &Ty, arm: &UnionArm) -> Ex {
         Ex::host(
             Imp::RefIs,
@@ -127,7 +125,6 @@ impl Checker<'_> {
         )
     }
 
-    /// Binds the arm's name to the value in `tmp`, as its type.
     fn union_bind(&mut self, tmp: LocalId, ty: &Ty, arm: &UnionArm) {
         if arm.bind == "_" {
             return;
@@ -174,7 +171,6 @@ impl Checker<'_> {
         acc.unwrap_or_default()
     }
 
-    /// The value of a match over a union.
     pub(super) fn union_value(
         tmp: LocalId,
         ty: &Ty,

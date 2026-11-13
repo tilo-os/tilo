@@ -1,17 +1,12 @@
-//! The agent library, `tilo.agent`: the words a person talks with a workspace through —
-//! `grep` over the text of the apps and resources it names, `find` by a type and its filters,
-//! `read` of a resource, `describe` of what an app declares, `print` of what the session says
-//! back, and `me`, the person the session acts for (agents.md).
+//! The agent library, `tilo.agent`: the words a person talks with a workspace through — `grep` over
+//! the text of the apps and resources it names, `find` by a type and its filters, `read` of a
+//! resource, `describe` of what an app declares, `print` of what the session says back, and `me`,
+//! the person the session acts for (agents.md).
 //!
-//! It is a library like any other, and `std` is what it sits beside: `std` holds the frames of
-//! a window, this holds the words of a session. Its words are typed tilolang declarations whose
-//! implementation is the host imports of [`crate::abi::Imp`], which the checker lowers where a
-//! word is called; this module is the one place they are named, typed and described, so that a
-//! session, a package that `use`s it and the messages about them all read the same table.
-//!
-//! A session — the agent door and the REPL — has the words in scope without a `use`, the way
-//! every package has `std`. A package that wants them writes `use tilo.agent as agent` and
-//! calls `agent.grep(...)`; `agent.me` is the person there.
+//! Its words are typed tilolang declarations whose implementation is the host imports of
+//! [`crate::abi::Imp`], which the checker lowers where a word is called; this module is the one
+//! place they are named, typed and described. A session has the words in scope without a `use`, the
+//! way every package has `std`; a package that wants them writes `use tilo.agent as agent`.
 
 use std::sync::OnceLock;
 
@@ -20,38 +15,32 @@ use crate::meta::{FnMeta, PackageMeta, ParamMeta};
 /// The library's package id: what a package `use`s.
 pub const APP: &str = "tilo.agent";
 
-/// The name a package calls it by: `agent.grep`.
 pub const NS: &str = "agent";
 
 /// The person the session acts for: a `Principal`, a value rather than a word.
 pub const ME: &str = "me";
 
-/// The kinds of block `grep(not: .kind)` leaves out: the text parsers' kinds, the same words
-/// `grep`'s matches carry as `host.Match.kind`.
+/// The kinds of block `grep(not: .kind)` leaves out: the text parsers' kinds, the same words `grep`'s
+/// matches carry as `host.Match.kind`.
 pub const BLOCK_KINDS: &[&str] = &["paragraph", "heading", "quote", "list", "code", "field"];
 
-/// One word of the library.
 pub struct Function {
-    /// The word: `grep`.
     pub name: &'static str,
     /// What it means, and the forms it is written in, for `describe` and the metadata.
     pub doc: &'static str,
-    /// Its arguments in the order written, and each one's type as metadata spells it. A word
-    /// that also takes the forms its doc names declares the type of the common one.
+    /// Its arguments in the order written, and each one's type as metadata spells it. A word that also
+    /// takes the forms its doc names declares the type of the common one.
     pub params: &'static [(&'static str, &'static str)],
-    /// Its result, as metadata spells it.
     pub result: &'static str,
 }
 
 impl Function {
-    /// The id the word is published under: `tilo.agent-grep`.
     #[must_use]
     pub fn id(&self) -> String {
         format!("{APP}-{}", self.name)
     }
 }
 
-/// The library's words, in the order a message lists them.
 pub const FUNCTIONS: &[Function] = &[
     Function {
         name: "grep",
@@ -105,14 +94,13 @@ pub const FUNCTIONS: &[Function] = &[
     },
 ];
 
-/// The word `name`, when it is one of the library's.
 #[must_use]
 pub fn function(name: &str) -> Option<&'static Function> {
     FUNCTIONS.iter().find(|f| f.name == name)
 }
 
-/// The library as a package: what `use tilo.agent` imports, `agent.grep` calls and `describe`
-/// reads. Its words are lowered to host imports, so it carries no module of its own.
+/// The library as a package: what `use tilo.agent` imports, `agent.grep` calls and `describe` reads. Its
+/// words are lowered to host imports, so it carries no module of its own.
 #[must_use]
 pub fn meta() -> &'static PackageMeta {
     static META: OnceLock<PackageMeta> = OnceLock::new();
@@ -170,7 +158,6 @@ mod tests {
         assert_eq!(super::meta().fns.len(), FUNCTIONS.len());
     }
 
-    /// A type as metadata writes it, `()` for a word that says nothing back.
     fn tilolang_ty(text: &str) -> bool {
         text == "()" || crate::types::Ty::parse_meta(text, APP).is_some()
     }

@@ -3,7 +3,6 @@
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
-/// How a field merges concurrent edits.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum MergeKind {
@@ -25,7 +24,6 @@ impl MergeKind {
     }
 }
 
-/// The effect class of an action, derived by the compiler (`effects`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum EffectClass {
@@ -34,7 +32,6 @@ pub enum EffectClass {
     Outside,
 }
 
-/// A unit of a length literal such as `11rem` (layout.md, "Units and sizes").
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum LengthUnit {
     Rem,
@@ -52,59 +49,48 @@ impl LengthUnit {
     }
 }
 
-/// Identity of a record type: the app that declares it and its name.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct TypeKey {
     pub app: String,
     pub name: String,
 }
 
-/// A value type of the language.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub enum Ty {
     Int,
     Float,
     Bool,
     Text,
-    /// Who did something: a person or an agent task. Values come only from the host, never
-    /// from `Text`.
+    /// Who did something: a person or an agent task. Values come only from the host, never from
+    /// `Text`.
     Principal,
     /// A calendar day, held as ISO text `YYYY-MM-DD`; not a `Text`.
     Date,
-    /// An instant, held as ISO-8601 UTC text `YYYY-MM-DDTHH:MM:SSZ`; not a `Text`. ISO text
-    /// orders chronologically, so both compare as text.
+    /// An instant, held as ISO-8601 UTC text; ISO text orders chronologically, so both compare as
+    /// text.
     Time,
-    /// A length of time, held as its number of seconds (an `i64`, like an `Int`, and not one):
-    /// a literal writes it as `5m`, `2h`, `3d` or `1w`, and a moment or a day moves by it
-    /// (`now + 2h`, `today + 3d`), while two days or two moments apart are one
-    /// (`end - start`). A day moves by whole days only. Not a field's type: a stored span of
-    /// time is a number the app reads in its own unit.
+    /// A length of time, held as seconds (an `i64`, not an `Int`): a literal writes it `5m`, and a
+    /// moment or a day moves by it. Not a field's type: a stored span of time is a number the app
+    /// reads in its own unit.
     Duration,
-    /// `std.Identifier`: an account of some service, held as its URI `scheme:value`
-    /// (`mailto:jane@x.com`, `tel:+4930123456`); not a `Text` (see [`crate::identifier`]).
+    /// An account of some service, held as its URI `scheme:value` (`mailto:jane@x.com`); not a
+    /// `Text` (see [`crate::identifier`]).
     Identifier,
-    /// `RichText`: formatted text in which resources are referenced (a person, a channel, a
-    /// task), held as tilo-doc's rich text, the one rich-text model of the platform. A field of
-    /// it merges by splices and marks.
+    /// Formatted text with references to resources, held as tilo-doc's rich text. A field of it
+    /// merges by splices and marks.
     RichText,
-    /// `Bytes`: the answer of a service, as it came; `.text()` reads it as text. A value code
-    /// holds while an invocation runs, not a stored field's type.
+    /// The answer of a service as it came; `.text()` reads it as text. A value a run holds, not a
+    /// field's type.
     Bytes,
-    /// `Response`: what `web.get` and `web.post` answer: `ok`, `status`, `status_text`,
-    /// `headers`, `body: Bytes`, and `.text()`. A value code holds while an invocation runs,
-    /// not a stored field's type.
+    /// What `web.get` and `web.post` answer: `ok`, `status`, `status_text`, `headers`, `body:
+    /// Bytes`, and `.text()`. A value a run holds, not a field's type.
     Response,
-    /// `json.Value`: a JSON document as it was read, before code says what its shape is
-    /// (`json.parse`). Its cases are the six kinds JSON has (`.object`, `.array`, `.string`,
-    /// `.number`, `.bool`, `.null`). A value code holds while an invocation runs, not a
-    /// stored field's type.
+    /// `json.Value`: a JSON document before code says what its shape is, with JSON's six cases. A
+    /// value a run holds, not a field's type.
     Json,
-    /// `File`: a file the device's content store holds, named by the address of its bytes:
-    /// what a person picked (`file.choose`), or what a program was handed. Its name, media
-    /// type and size read on it, and `.text()` reads a text file's content
-    /// ([`crate::value::FileValue`]).
+    /// A file the device's content store holds, named by the address of its bytes: what a person
+    /// picked (`file.choose`) or what a program was handed.
     File,
-    /// No value.
     #[default]
     Unit,
     Record(TypeKey),
@@ -112,35 +98,27 @@ pub enum Ty {
     Set(Box<Ty>),
     Map(Box<Ty>),
     Collection(Box<Ty>),
-    /// The built-in enum `.none | .some(value)`.
     Option(Box<Ty>),
-    /// The built-in enum `.ok(value) | .err(error)`.
     Result(Box<Ty>, Box<Ty>),
-    /// `Filter<T>`: one filter a type declares, as a value: what `T.today` names, what
-    /// `filters(T)` lists, and what a query takes. Held as its catalogue entry, the
-    /// `host.Filter` the list's places and search's chips read.
+    /// `Filter<T>`: one filter a type declares, as a value: what `T.today` names, what `filters(T)`
+    /// lists and what a query takes.
     Filter(TypeKey),
-    /// `Sort<T>`: the order by one field of `T`, as a value: what `T.title` names where a
-    /// window's sorts are asked (`sorts: [Note.title]`). Held as the `host.Sort` its menu
-    /// entry reads: what it is called, and the order it asks as search writes it.
+    /// `Sort<T>`: the order by one field of `T`, as a value (`sorts: [Note.title]`), held as the
+    /// `host.Sort` its menu entry reads.
     Sort(TypeKey),
-    /// A declared `enum`: a host handle holding the variant and its payload.
     Enum(TypeKey),
-    /// `A | B`: a reference to a resource of any of these types, in order, at least two.
+    /// `A | B`: a reference to a resource of any of these types, at least two.
     Union(Vec<TypeKey>),
     Tuple(Vec<Ty>),
     Action,
     View,
-    /// A length literal; the unit is part of the type.
     Length(LengthUnit),
-    /// A built-in enum of the platform, held as its variant's index: the `space` enums and
-    /// the options of UI primitives (`gap: .section`). See `prims::choice`.
+    /// A built-in enum of the platform, held as its variant's index; see `prims::choice`.
     Choice(&'static str),
     /// A type that already produced an error; compatible with everything.
     Error,
 }
 
-/// A wasm value type of the host ABI.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Vt {
     I32,
@@ -149,16 +127,12 @@ pub enum Vt {
 }
 
 impl Vt {
-    /// A handle into the host's value table.
     pub const H: Self = Self::I32;
 }
 
 impl Ty {
-    /// Whether an action's form can ask the person for a value of this type when nobody gave
-    /// it: text, a number, a flag, a day, a moment, a length of time, an account of a service,
-    /// a person, a resource, a case of an enum, or none of one of those. Each has its control.
-    /// A `File` is no form's: it comes from the person's own chooser (`file.choose(a)`), which
-    /// fills the parameter it stands for.
+    /// Whether a form can ask the person for a value of this type when nobody gave it. A `File` is
+    /// no form's: it comes from the person's own chooser (`file.choose(a)`).
     #[must_use]
     pub fn asked_by_form(&self) -> bool {
         match self {
@@ -179,8 +153,6 @@ impl Ty {
         }
     }
 
-    /// The wasm representation: `i64`, `f64`, or an `i32` (a bool or a handle); `None` for no
-    /// value.
     pub const fn repr(&self) -> Option<Vt> {
         match self {
             Self::Float | Self::Length(_) => Some(Vt::F64),
@@ -232,14 +204,14 @@ impl Ty {
         }
     }
 
-    /// The type as metadata records it: like [`Ty::display`], except that a declared enum is
-    /// written `enum Name`, so a reader of the metadata tells it from a record.
+    /// The type as metadata records it: [`Ty::display`], but a declared enum is written `enum
+    /// Name`, so a reader tells it from a record.
     pub fn meta_text(&self, own_app: &str) -> String {
         match self {
             Self::Enum(k) if k.app == own_app => format!("enum {}", k.name),
             Self::Enum(k) => format!("enum {}.{}", k.app, k.name),
-            // A type named as one the language provides is written with its app: the bare name
-            // reads as the language's one wherever a package's declaration shadows it.
+            // A language type is written with its app's name, which no package's declaration
+            // shadows.
             Self::Record(k) if k.app == own_app && language_type(&k.name).is_some() => {
                 format!("{}.{}", k.app, k.name)
             }
@@ -261,8 +233,8 @@ impl Ty {
         }
     }
 
-    /// Whether a value of this type is JSON's to make: a scalar, Text (and the types that hold
-    /// text), a list, an option, a map, an enum, or a record.
+    /// Whether JSON can make a value of this type: a scalar, Text, a list, an option, a map, an
+    /// enum or a record.
     #[must_use]
     pub fn reads_json(&self) -> bool {
         match self {
@@ -281,14 +253,14 @@ impl Ty {
         }
     }
 
-    /// Whether `json.encode` writes a value of this type: everything JSON can make, and a
-    /// `json.Value`, which is a document already.
+    /// Whether `json.encode` writes a value of this type: what JSON can make, and a `json.Value`,
+    /// which is a document already.
     pub fn writes_json(&self) -> bool {
         self.reads_json() || matches!(self, Self::Json)
     }
 
-    /// The type as written in source: local records and enums by name, foreign ones qualified
-    /// by their app id.
+    /// The type as source writes it: local records and enums by name, foreign ones qualified by
+    /// their app id.
     pub fn display(&self, own_app: &str) -> String {
         match self {
             Self::Int => "Int".into(),
@@ -335,13 +307,9 @@ impl Ty {
         }
     }
 
-    /// Whether a value of this type may stand where `want` is expected: itself, a case of a
-    /// union, or — where `host.Resource` is expected — any resource at all, since that type is
-    /// what the language has for "a resource of whichever app" (a place a shell holds, a hit
-    /// `find` answers), and every resource is one. A list whose items fit `want`'s items fits
-    /// it too (`List<TextChannel>` where `List<TextChannel | Direct>` is expected): a list's
-    /// items are read, and an item written back goes through the collection that holds it,
-    /// never through a list value.
+    /// Whether a value of this type may stand where `want` is expected: itself, a case of a union,
+    /// or any resource where `host.Resource` is expected, since that is what the language has for
+    /// "a resource of whichever app". A list whose items fit fits too.
     #[must_use]
     pub fn fits(&self, want: &Self) -> bool {
         match (self, want) {
@@ -353,7 +321,6 @@ impl Ty {
         }
     }
 
-    /// The resource types a value of this type may be: one for a record, each case of a union.
     #[must_use]
     pub fn records(&self) -> Vec<TypeKey> {
         match self {
@@ -363,8 +330,6 @@ impl Ty {
         }
     }
 
-    /// Parses the metadata form produced by [`Ty::meta_text`]; `app` is the app the metadata
-    /// belongs to, which unqualified record and enum names refer to.
     pub fn parse_meta(text: &str, app: &str) -> Option<Self> {
         let mut p = MetaTy {
             chars: text.chars().collect(),
@@ -377,9 +342,8 @@ impl Ty {
     }
 }
 
-/// The type the language provides under the bare name `name`, by the names source writes it.
-/// A package's own type, enum or alias of one of these names shadows it within the package
-/// (README, "Type names"); `std.` names the language's one there.
+/// The type the language provides under the bare name `name`. A package's own type of one of these
+/// names shadows it (README, "Type names"); `std.` names the language's one there.
 #[must_use]
 pub fn language_type(name: &str) -> Option<Ty> {
     Some(match name {
@@ -401,7 +365,6 @@ pub fn language_type(name: &str) -> Option<Ty> {
     })
 }
 
-/// The names [`language_type`] takes, in the order source lists them.
 pub const LANGUAGE_TYPE_NAMES: &[&str] = &[
     "Int",
     "Float",
@@ -419,9 +382,8 @@ pub const LANGUAGE_TYPE_NAMES: &[&str] = &[
     "View",
 ];
 
-/// The type a path names that the language itself declares, with no package behind it: `std`'s
-/// text-held types, `std.RichText`, and a `json.Value` as `json.parse` reads one. `std.` names
-/// the language's own type wherever a package's declaration shadows its bare name.
+/// The type a path names that the language itself declares: `std`'s text-held types and a
+/// `json.Value` as `json.parse` reads one.
 #[must_use]
 pub fn named(dotted: &[&str]) -> Option<Ty> {
     match dotted {
@@ -432,8 +394,8 @@ pub fn named(dotted: &[&str]) -> Option<Ty> {
     }
 }
 
-/// Whether a value of this type is one only a run holds, or a part of a package: never stored
-/// state, so never what a field holds.
+/// Whether a value of this type is one only a run holds: never stored state, so never what a field
+/// holds.
 #[must_use]
 pub fn is_transient(ty: &Ty) -> bool {
     matches!(
@@ -442,15 +404,14 @@ pub fn is_transient(ty: &Ty) -> bool {
     )
 }
 
-/// Whether `key` is the host's `Resource`: the type that stands for any resource, of whichever
-/// app (`host.Resource`; `find` and `grep` answer these across apps).
+/// Whether `key` is the host's `Resource`: the type that stands for any resource, of whichever app.
 #[must_use]
 pub fn is_any_resource(key: &TypeKey) -> bool {
     key.app == crate::host::HOST_APP && key.name == crate::host::RESOURCE_TYPE_NAME
 }
 
-// A calendar literal is checked where the lexer reads it, so a date the language refuses is a
-// diagnostic on the literal rather than a type error.
+// A calendar literal is checked where the lexer reads it: a date the language refuses is a
+// diagnostic on the literal, not a type error.
 pub use tilolang_lex::calendar::{check_date, check_time, check_wall_clock};
 
 impl fmt::Display for Ty {
@@ -500,7 +461,6 @@ impl MetaTy<'_> {
         out
     }
 
-    /// A type, or several joined by `|`: a union of resource types.
     fn ty(&mut self) -> Option<Ty> {
         let first = self.one()?;
         if !self.eat('|') {
@@ -616,9 +576,6 @@ impl MetaTy<'_> {
 mod tests {
     use super::Ty;
 
-    /// A package's own type named as one the language provides is written with its app, so
-    /// metadata reads back as that type and not as the language's one; each language type is
-    /// written and read bare, and `std.` names it.
     #[test]
     fn a_type_named_as_a_language_type_reads_back_as_itself() {
         for name in super::LANGUAGE_TYPE_NAMES {
@@ -637,8 +594,6 @@ mod tests {
         }
     }
 
-    /// Every type a form has a control for is asked by it; the rest are reached only by an
-    /// argument given where the action runs or by a default.
     #[test]
     fn every_type_is_asked_by_a_form_or_is_not() {
         let asked = [

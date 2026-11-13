@@ -1,5 +1,3 @@
-//! The module's own types: what each declares, and what its fields mean to the platform.
-
 use super::{
     FieldInfo, Resolver, TypeInfo, id_of, is_type_former, name_case_ok, type_former_error,
 };
@@ -92,8 +90,8 @@ impl Resolver<'_> {
                 );
                 continue;
             }
-            // A name names a type: a container is not a resource named so, and a `root` takes a
-            // record type with fields.
+            // A name names a type: a container is not a resource named so, and a `root` takes a record type with
+            // fields.
             if let TypeExprKind::Generic(g, _) = &a.ty.kind
                 && matches!(g.name.as_str(), "Collection" | "Set" | "Map")
             {

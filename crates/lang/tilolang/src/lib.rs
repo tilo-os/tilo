@@ -1,20 +1,15 @@
 //! tilolang: the compiler for the Tilo app language.
 //!
-//! Source text goes in; a wasm module, its metadata and the updated ids lock come out. The
-//! compiler knows nothing of Tilo: the runtime (`tilolang-runtime`) runs what it emits, and the
-//! platform crate (`tilolang-tilo`) connects that to Tilo. The design is
-//! `docs/designs/app-language`; the grammar is `grammar.md` next to this crate's README.
+//! Source text goes in; a wasm module, its metadata and the updated ids lock come out. The compiler knows
+//! nothing of Tilo: the runtime (`tilolang-runtime`) runs what it emits, and the platform crate
+//! (`tilolang-tilo`) connects that to Tilo. The design is `docs/designs/app-language`; the grammar is
+//! `grammar.md` next to this crate's README.
 //!
-//! The steps, in order:
-//!
-//! * [`lexer`] and [`parser`]: text to the syntax tree ([`ast`]); [`print`](mod@print) writes it
-//!   back in its one canonical form.
-//! * [`ids`]: the ids lock, which gives every declaration a stable id.
-//! * `resolve` and `checker`: names, types, merge rules and what each kind of declaration may
-//!   do, lowered to the IR ([`ir`]) in the same walk.
-//! * `effects`: each action's effect class and what every declaration can reach.
-//! * `codegen`: the IR to a wasm module that imports the host functions of [`abi`].
-//! * [`meta`]: the metadata the module carries, which the runtime, the platform and agents read.
+//! The steps, in order: [`lexer`] and [`parser`] (text to the syntax tree, [`ast`]);
+//! [`print`](mod@print) (the one canonical form back out); [`ids`] (a stable id per declaration);
+//! `resolve` and `checker` (names, types, merge rules, lowered to the IR, [`ir`]); `effects` (each
+//! action's class and what every declaration can reach); `codegen` (the wasm module, importing the host
+//! functions of [`abi`]); [`meta`] (the metadata the runtime, the platform and agents read).
 
 #![allow(
     clippy::arithmetic_side_effects,
@@ -53,8 +48,7 @@ pub mod host;
 pub mod identifier;
 pub mod ids;
 pub mod ir;
-// The lexer lives in `tilolang-lex`, where the toolkit's editor reads it too; the tokens, their
-// spans and the reference literal a token holds are the same ones the parser here reads.
+// The lexer lives in `tilolang-lex`, where the toolkit's editor reads it too.
 pub use tilolang_lex::lexer;
 pub mod messages;
 pub mod meta;

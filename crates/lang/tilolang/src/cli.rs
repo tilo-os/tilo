@@ -1,9 +1,7 @@
 //! The compiler's command line (`tilolangc`): `check`, `build`, `fmt` and `ids`.
 //!
-//! `tilolangc build` writes the compiled module next to the sources. The language's tool,
-//! `tilolang` (`crates/lang/tilolang-cli`), runs these commands too, and builds and runs packages
-//! as Tilo apps: `tilolang build` emits a signed `.tapp` per package, `tilolang run` installs
-//! and launches them in a nested Tilo session.
+//! `tilolangc build` writes the compiled module next to the sources. The language's tool, `tilolang`
+//! (`crates/lang/tilolang-cli`), runs these commands too, and builds and runs packages as Tilo apps.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -19,9 +17,9 @@ use crate::source::{
     dependency_order_with, ids_current, read_ids, search_of, write_catalogue, write_ids,
 };
 
-/// Finds the published packages that are no tilolang package directory among the directories
-/// imports are looked for in: native apps, by the catalogue entries they publish. The language's
-/// tool passes one ([`main_with`]); the compiler alone knows tilolang packages only.
+/// Finds the published packages that are no tilolang package directory among the directories imports
+/// are looked for in: native apps, by the catalogue entries they publish. The language's tool passes
+/// one ([`main_with`]); the compiler alone knows tilolang packages only.
 pub type Published = fn(&[PathBuf]) -> Result<Vec<PackageMeta>, String>;
 
 pub const USAGE: &str = "usage:
@@ -36,8 +34,8 @@ the package. `use` imports are found among the package's sibling directories and
 package's ids lock (app.ids) is out of date and says what changed; --write-ids writes it.
 `build` writes the lock and the module, <app id>.wasm, to --out (default target/tilolang).";
 
-/// The commands this module handles: a host binary dispatches to [`main`] when its first
-/// argument is one of them.
+/// The commands this module handles: a host binary dispatches to [`main`] when its first argument is one
+/// of them.
 pub const COMMANDS: &[&str] = &["check", "build", "fmt", "ids"];
 
 #[derive(Debug, Default)]
@@ -116,8 +114,8 @@ fn report(diags: &[Diagnostic], json: bool) {
     }
 }
 
-/// The metadata `dir`'s imports may name besides package directories: already built modules
-/// (`--import`) and what the tool's `published` finds.
+/// The metadata `dir`'s imports may name besides package directories: already built modules (`--import`)
+/// and what the tool's `published` finds.
 fn published(dir: &Path, o: &Options) -> Result<Vec<PackageMeta>, String> {
     let mut extra = read_imports(&o.imports)?;
     if let Some(published) = o.published {
@@ -126,7 +124,6 @@ fn published(dir: &Path, o: &Options) -> Result<Vec<PackageMeta>, String> {
     Ok(extra)
 }
 
-/// Compiles the package in `dir` and its imports ([`compile_package`]).
 fn build_all(
     dir: &Path,
     o: &Options,
@@ -147,8 +144,8 @@ fn failed(error: BuildError, json: bool) -> Result<bool, String> {
 }
 
 fn check_once(dir: &Path, o: &Options) -> Result<bool, String> {
-    // Ids written to a lock are drawn at random, so two packages never share one; a check that
-    // writes nothing draws them reproducibly.
+    // Ids written to a lock are drawn at random, so two packages never share one; a check that writes
+    // nothing draws them reproducibly.
     let built = if o.write_ids {
         build_all(dir, o, &mut OsEntropy::default())
     } else {
@@ -173,8 +170,8 @@ fn check_once(dir: &Path, o: &Options) -> Result<bool, String> {
                         current = false;
                     }
                 }
-                // What the compiler writes into the catalogue is what a screen reader says: a
-                // name written as an identifier is read out one letter at a time.
+                // What the compiler writes into the catalogue is what a screen reader says: a name written as
+                // an identifier is read out one letter at a time.
                 for (name, words) in crate::messages::views_named_as_code(&b.compiled.meta) {
                     eprintln!(
                         "{}: `{name}` is called \"{words}\", which reads as code rather than as words; name it in words",
@@ -182,7 +179,6 @@ fn check_once(dir: &Path, o: &Options) -> Result<bool, String> {
                     );
                     current = false;
                 }
-                // A translation of words the source has no message for is never shown.
                 let source = crate::source::catalogue(b);
                 for (locale, text) in crate::source::read_locales(&b.dir)? {
                     if locale == crate::messages::SOURCE_LOCALE {
@@ -216,8 +212,8 @@ fn check_once(dir: &Path, o: &Options) -> Result<bool, String> {
                     continue;
                 }
                 if changes.is_empty() {
-                    // The same entries, written another way (out of the tool's order): a build
-                    // would rewrite the file, so the lock is not what the sources say it is.
+                    // The same entries, written another way (out of the tool's order): a build would rewrite the
+                    // file, so the lock is not what the sources say it is.
                     eprintln!(
                         "{}: the ids lock is not what the tool writes (its entries in another order); write it with `tilolangc check --write-ids` (or `build`), and commit it with the sources",
                         b.dir.display()
@@ -236,7 +232,6 @@ fn check_once(dir: &Path, o: &Options) -> Result<bool, String> {
     }
 }
 
-/// What compiling a package changed in its ids lock: `(+ or -, entry)`.
 fn lock_changes(b: &BuiltPackage) -> Vec<(char, String)> {
     let old = crate::source::read_ids(&b.dir).unwrap_or_default();
     let new = &b.compiled.ids;
@@ -254,7 +249,6 @@ fn lock_changes(b: &BuiltPackage) -> Vec<(char, String)> {
     out
 }
 
-/// Says what changed in a package's ids lock and why each new entry is there.
 fn explain(b: &BuiltPackage, changes: &[(char, String)], what: &str) {
     eprintln!("{}: the ids lock {what}:", b.dir.display());
     for (sign, name) in changes {
@@ -312,7 +306,6 @@ fn build(dir: &Path, o: &Options) -> Result<bool, String> {
         }
     }
     if let Some(root) = built.last() {
-        // Outside the package: a package directory holds sources and its lock only.
         let out = o
             .out
             .clone()
@@ -326,14 +319,12 @@ fn build(dir: &Path, o: &Options) -> Result<bool, String> {
     Ok(true)
 }
 
-/// The canonical text of every file of the package in `dir`, with the files whose plain `//`
-/// comments it would drop.
+/// The canonical text of every file of the package in `dir`, with the files whose plain `//` comments it
+/// would drop.
 pub struct Formatted {
-    /// `(path, old text, canonical text)` for each file.
     pub files: Vec<(String, String, String)>,
 }
 
-/// Formats a package's sources without writing anything.
 pub fn format_package(source: &PackageSource) -> Result<Formatted, Vec<Diagnostic>> {
     let parsed = parse_package_files(source)?;
     let mut out = Formatted { files: Vec::new() };
@@ -390,7 +381,6 @@ fn ids(dir: &Path, o: &Options) -> Result<bool, String> {
     Ok(true)
 }
 
-/// Runs the command line `args` (without the program name).
 pub fn main(args: &[String]) -> ExitCode {
     run(args, None)
 }

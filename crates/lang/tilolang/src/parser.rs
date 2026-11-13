@@ -15,7 +15,6 @@ use crate::diag::{Diagnostic, Span};
 use crate::lexer::{Comment, StrPiece, Tok, Token, lex, lex_at};
 use crate::types::MergeKind;
 
-/// Whether call arguments name only a filter's options: `(icon: .circle)`.
 fn only_opts(args: &[Arg]) -> bool {
     !args.is_empty()
         && args
@@ -23,7 +22,6 @@ fn only_opts(args: &[Arg]) -> bool {
             .all(|a| a.name.as_ref().is_some_and(|n| n.name == "icon"))
 }
 
-/// The arguments as a filter's options.
 fn opts_of(args: Vec<Arg>) -> Vec<ActionOpt> {
     args.into_iter()
         .filter_map(|a| {
@@ -35,8 +33,8 @@ fn opts_of(args: Vec<Arg>) -> Vec<ActionOpt> {
         .collect()
 }
 
-/// Whether the expression so far can take type arguments: a name (`json.decode`) or a dotted
-/// path to one (`ui.Chart`).
+/// Whether the expression so far can take type arguments: a name (`json.decode`) or a dotted path
+/// to one (`ui.Chart`).
 fn names_a_call(e: &Expr) -> bool {
     match &e.kind {
         ExprKind::Ident(_) => true,
@@ -45,9 +43,8 @@ fn names_a_call(e: &Expr) -> bool {
     }
 }
 
-/// A named filter's predicate and the options written after it: `not done (icon: .circle)`
-/// parses as a call of `done`, and `project == .none (icon: .inbox)` as a case with fields,
-/// each told from what it reads like by naming only options.
+/// A named filter's predicate and the options written after it: `not done (icon: .circle)` parses as
+/// a call of `done`, each told from what it reads like by naming only options.
 fn split_opts(e: Expr) -> (Expr, Vec<ActionOpt>) {
     let span = e.span;
     match e.kind {
@@ -88,7 +85,6 @@ struct Abort;
 
 type PResult<T> = Result<T, Abort>;
 
-/// Parses a whole `app.tl` file.
 pub fn parse_module(src: &str) -> (Option<Module>, Vec<Diagnostic>) {
     let (toks, mut diags) = lex(src);
     let mut p = Parser::new(toks, src);
@@ -97,21 +93,19 @@ pub fn parse_module(src: &str) -> (Option<Module>, Vec<Diagnostic>) {
     (module, diags)
 }
 
-/// One file of a package, parsed: its `app` header when it has one, and its items.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ParsedFile {
     pub header: Option<AppHeader>,
     pub items: Vec<Item>,
-    /// The file's plain `//` comments, in the package's span space: the canonical printer keeps
-    /// them where they were written.
+    /// The file's plain `//` comments, in the package's span space: the canonical printer keeps them
+    /// where they were written.
     pub comments: Vec<Comment>,
     /// The first node id after this file's: the next file of the package starts there.
     pub next_node: NodeId,
 }
 
-/// Parses one file of a package whose first byte sits at `base` in the package's span space
-/// and whose first node id is `first_node`. The `app` header is optional here; the package
-/// decides which file must hold it.
+/// Parses one file of a package whose first byte sits at `base` and whose first node id is
+/// `first_node`. The `app` header is optional here; the package decides which file must hold it.
 pub fn parse_file_at(src: &str, base: usize, first_node: NodeId) -> (ParsedFile, Vec<Diagnostic>) {
     let (toks, mut diags) = lex_at(src, base);
     let mut p = Parser::new_at(toks, src, base);
@@ -127,8 +121,8 @@ pub fn parse_file_at(src: &str, base: usize, first_node: NodeId) -> (ParsedFile,
     (parsed, diags)
 }
 
-/// Parses one expression (a block of an agent answer). Returns the expression, or `None` when
-/// the text is not a single expression; the second value tells whether errors were reported.
+/// Parses one expression (a block of an agent answer); `None` when the text is not a single
+/// expression.
 pub fn parse_expr_source(src: &str) -> (Option<Expr>, Vec<Diagnostic>) {
     let (toks, mut diags) = lex(src);
     let mut p = Parser::new(toks, src);
@@ -162,7 +156,6 @@ pub fn parse_program_source(src: &str) -> (Vec<Stmt>, Vec<Diagnostic>) {
     (out, diags)
 }
 
-/// Parses the text as the statements of a view body.
 pub fn parse_ui_source(src: &str) -> (Vec<UiStmt>, Vec<Diagnostic>) {
     let (toks, mut diags) = lex(src);
     let mut p = Parser::new(toks, src);
@@ -201,7 +194,6 @@ struct Parser<'a> {
     next_node: NodeId,
 }
 
-/// What the options after an app's title declare.
 #[derive(Default)]
 struct AppOptions {
     icon: Option<String>,
@@ -211,8 +203,7 @@ struct AppOptions {
     web: Vec<String>,
 }
 
-/// The launcher categories an app declares (`category: .office`), as the platform's menu
-/// categories name them in lower case.
+/// The launcher categories an app declares (`category: .office`), in lower case.
 pub const APP_CATEGORIES: &[&str] = &[
     "office",
     "development",
@@ -276,8 +267,8 @@ impl<'a> Parser<'a> {
         self.toks.get(self.pos + n).map_or(&Tok::Eof, |t| &t.tok)
     }
 
-    /// How many doc comments stand before the next token: a declaration is documented by them,
-    /// and reads them itself.
+    /// How many doc comments stand before the next token: a declaration is documented by them, and
+    /// reads them itself.
     fn docs_ahead(&self) -> usize {
         let mut at = 0;
         while matches!(self.peek_at(at), Tok::Doc(_) | Tok::Newline) {
@@ -341,7 +332,6 @@ impl<'a> Parser<'a> {
         self.params_arrow_at(0)
     }
 
-    /// Whether the `(` `at` tokens ahead opens the parameters of a lambda.
     fn params_arrow_at(&self, at: usize) -> bool {
         if !matches!(self.peek_at(at), Tok::LParen) {
             return false;
@@ -426,9 +416,8 @@ impl<'a> Parser<'a> {
         Ok(out)
     }
 
-    /// The options after the app's title: `(icon: .note, category: .office, previously:
-    /// so.tilo.old, records: .own)`, each at most once. `previously:` takes an app id, or several
-    /// in brackets.
+    /// The options after the app's title, each at most once. `previously:` takes an app id, or
+    /// several in brackets.
     fn app_options(&mut self) -> PResult<AppOptions> {
         let mut out = AppOptions::default();
         let mut seen_previously = false;
@@ -577,8 +566,6 @@ impl<'a> Parser<'a> {
         }
     }
 
-    // ---- recovery -------------------------------------------------------------------------
-
     fn recover_stmt(&mut self) {
         let mut depth = 0usize;
         loop {
@@ -609,39 +596,33 @@ impl<'a> Parser<'a> {
             || self.at_action_role().is_some()
     }
 
-    /// `row view v for T` at the start of an item.
     fn at_row_view(&self) -> bool {
         matches!(self.peek(), Tok::Ident(n) if n == "row")
             && matches!(self.peek_at(1), Tok::Kw("view"))
     }
 
     /// `template view v(...) { ... }` at the start of an item: a view that expands where it is
-    /// called whatever its parameters are.
+    /// called.
     fn at_template_view(&self) -> bool {
         matches!(self.peek(), Tok::Ident(n) if n == "template")
             && matches!(self.peek_at(1), Tok::Kw("view"))
     }
 
-    /// `views a, b for T` at the start of an item: the views a window of the type switches
-    /// between.
     fn at_views(&self) -> bool {
         matches!(self.peek(), Tok::Ident(n) if n == "views")
             && matches!(self.peek_at(1), Tok::Ident(_) | Tok::Kw("view"))
     }
 
-    /// `scenario "name" { ... }` at the start of an item.
     fn at_scenario(&self) -> bool {
         matches!(self.peek(), Tok::Ident(n) if n == "scenario")
             && matches!(self.peek_at(1), Tok::Str(_))
     }
 
-    /// `trigger name(r: T) every 30m: act(r)` at the start of an item.
     fn at_trigger(&self) -> bool {
         matches!(self.peek(), Tok::Ident(n) if n == "trigger")
             && matches!(self.peek_at(1), Tok::Ident(_))
     }
 
-    /// `trigger name(r: T) every 30m: act(r)`, or `... at r.at: act(r)`.
     fn trigger_decl(&mut self, doc: Vec<String>, start: Span) -> PResult<crate::ast::TriggerDecl> {
         use crate::ast::{TriggerDecl, TriggerWhen};
         self.bump();
@@ -689,7 +670,6 @@ impl<'a> Parser<'a> {
         })
     }
 
-    /// `primary` or `destructive` before an action, or before another such word.
     fn at_action_role(&self) -> Option<ActionRole> {
         let role = match self.peek() {
             Tok::Ident(n) if n == "primary" => ActionRole::Primary,
@@ -701,19 +681,17 @@ impl<'a> Parser<'a> {
         (matches!(self.peek_at(1), Tok::Kw("action" | "flow")) || next_is_role).then_some(role)
     }
 
-    /// `root T` at the start of an item.
     fn at_root_decl(&self) -> bool {
         matches!(self.peek(), Tok::Ident(n) if n == "root")
             && matches!(self.peek_at(1), Tok::Ident(_))
     }
 
-    /// `default view v for T` at the start of an item.
     fn at_default_view(&self) -> bool {
         matches!(self.peek(), Tok::Ident(n) if n == "default")
             && matches!(self.peek_at(1), Tok::Kw("view"))
     }
 
-    /// `x` or `x: T`: a value an event carries, named, with its type when written.
+    /// `x` or `x: T`: a value an event carries, with its type when written.
     fn event_param(&mut self, what: &str) -> Result<crate::ast::EventParam, Abort> {
         let name = self.ident(what)?;
         let ty = if self.eat(&Tok::Colon) {
@@ -749,8 +727,6 @@ impl<'a> Parser<'a> {
             self.bump();
         }
     }
-
-    // ---- items ----------------------------------------------------------------------------
 
     fn module(&mut self) -> Option<Module> {
         self.skip_nl();
@@ -792,7 +768,6 @@ impl<'a> Parser<'a> {
         Some(Module { app: header, items })
     }
 
-    /// A file of a multi-file package: an optional header, then items.
     fn file(&mut self) -> (Option<AppHeader>, Vec<Item>) {
         self.skip_nl();
         let start = self.span();
@@ -852,8 +827,8 @@ impl<'a> Parser<'a> {
         let mut prev_end = None;
         while let Tok::Doc(text) = self.peek().clone() {
             let span = self.span();
-            // A blank line between two `///` lines is a paragraph break: the canonical form
-            // writes it as a `///` line of its own, since a doc comment is prose.
+            // A blank line between two `///` lines is a paragraph break: the canonical form writes it
+            // as a `///` line of its own, since a doc comment is prose.
             if let Some(end) = prev_end {
                 let between = self
                     .src
@@ -881,7 +856,6 @@ impl<'a> Parser<'a> {
         if self.at_root_decl() {
             self.bump();
             let node = self.node();
-            // `root notes: Notes` names it; `root Notebook` does not.
             let name = if matches!(self.peek_at(1), Tok::Colon) {
                 let name = self.ident("the root's name")?;
                 self.bump();
@@ -1065,8 +1039,8 @@ impl<'a> Parser<'a> {
         })
     }
 
-    /// `(icon: .pin)` after a variant: options, told from a payload `(x: T)` by what follows
-    /// the colon, which for a payload field is a type.
+    /// `(icon: .pin)` after a variant: options, told from a payload `(x: T)` by what follows the
+    /// colon.
     fn at_variant_opts(&self) -> bool {
         self.is(&Tok::LParen)
             && matches!(self.peek_at(1), Tok::Ident(_))
@@ -1074,8 +1048,7 @@ impl<'a> Parser<'a> {
             && !matches!(self.peek_at(3), Tok::Ident(_) | Tok::LParen)
     }
 
-    /// One view of a `views` declaration: its name, and the options it is offered by
-    /// (`views list_, board (icon: .columns) for Project`).
+    /// One view of a `views` declaration: its name, and the options it is offered by.
     fn views_entry(&mut self) -> PResult<crate::ast::ViewsEntry> {
         let view = self.ident("the name of a view")?;
         let opts = if self.at_variant_opts() {
@@ -1103,7 +1076,6 @@ impl<'a> Parser<'a> {
         })
     }
 
-    /// `type Name = T`.
     fn alias_decl(&mut self, doc: Vec<String>, start: Span) -> PResult<AliasDecl> {
         self.expect_kw("type")?;
         let node = self.node();
@@ -1172,8 +1144,8 @@ impl<'a> Parser<'a> {
             if matches!(self.peek(), Tok::Eof) {
                 return self.unexpected("`}` to close the type");
             }
-            // What is declared is behind the comment it is documented with, which the
-            // declaration reads.
+            // What is declared is behind the comment it is documented with, which the declaration
+            // reads.
             let at = self.docs_ahead();
             if matches!(self.peek_at(at), Tok::Ident(w) if w == "search")
                 && matches!(self.peek_at(at + 1), Tok::LBrace)
@@ -1227,8 +1199,6 @@ impl<'a> Parser<'a> {
         })
     }
 
-    /// `origin: imap.message` in a type's options: the kind of an outside service's resource,
-    /// one dotted name.
     fn type_origin(&mut self) -> PResult<Ident> {
         let first = self.ident("the origin's kind, such as `imap.message`")?;
         let mut name = first.name.clone();
@@ -1246,8 +1216,7 @@ impl<'a> Parser<'a> {
         })
     }
 
-    /// `search { ... }`: one `filter`, `sort` or `hide` per line (search.md, "What a type
-    /// declares").
+    /// `search { ... }`: one `filter`, `sort` or `hide` per line (search.md, "What a type declares").
     fn search_block(&mut self) -> PResult<SearchBlock> {
         let start = self.bump().span;
         self.expect(&Tok::LBrace)?;
@@ -1385,7 +1354,6 @@ impl<'a> Parser<'a> {
         })
     }
 
-    /// A type, or several joined by `|`: a union.
     fn type_expr(&mut self) -> PResult<TypeExpr> {
         let start = self.span();
         let first = self.one_type()?;
@@ -1407,7 +1375,6 @@ impl<'a> Parser<'a> {
         let start = self.span();
         if self.eat(&Tok::LParen) {
             if self.is(&Tok::RParen) {
-                // `()`: no value, as in `Result<(), Text>`.
                 let close = self.bump().span;
                 return Ok(TypeExpr {
                     kind: TypeExprKind::Tuple(Vec::new()),
@@ -1468,10 +1435,10 @@ impl<'a> Parser<'a> {
             let name = self.ident("a parameter name")?;
             self.expect(&Tok::Colon)?;
             let ty = self.type_expr()?;
-            // What a parameter says of itself, written in one place: `above: Option<Task>
-            // (above)`, the place the view offering the action supplies it in, which no caller
-            // gives and so takes no default; `saved: Bool (label: "On the Watch later list")`,
-            // what it is called where a person gives it.
+            // What a parameter says of itself, written in one place: `above: Option<Task> (above)`, the
+            // place the view offering the action supplies it in, which no caller gives and so takes no
+            // default; `saved: Bool (label: "On the Watch later list")`, what it is called where a
+            // person gives it.
             let (place, label) = if self.is(&Tok::LParen) && matches!(self.peek_at(2), Tok::Colon) {
                 (None, Some(self.param_label()?))
             } else if self.is(&Tok::LParen) {
@@ -1490,17 +1457,17 @@ impl<'a> Parser<'a> {
             };
             let default = if self.eat(&Tok::Assign) {
                 let default = self.expr()?;
-                // `above: Option<Task> = .none (above)` reads as the variant `.none` given
-                // `above`; it is a place written after a default instead, which no place takes.
+                // `above: Option<Task> = .none (above)` reads as the variant `.none` given `above`; it
+                // is a place written after a default instead.
                 let written_as_a_place = matches!(
                     &default.kind,
                     ExprKind::Variant { args: Some(args), .. }
                         if args.len() == 1
                             && matches!(&args[0].value.kind, ExprKind::Ident(read) if *read == name.name)
                 );
-                // `done: Bool = true (label: "On the done list")` reads as the literal called
-                // with `label:`, which nothing can call: it is the parameter's label written
-                // after the default instead, where no parameter takes it.
+                // `done: Bool = true (label: "On the done list")` reads as the literal called with
+                // `label:`, which nothing can call: it is the parameter's label written after the
+                // default instead.
                 let written_as_a_label = matches!(
                     &default.kind,
                     ExprKind::Call { callee, args, .. }
@@ -1545,8 +1512,6 @@ impl<'a> Parser<'a> {
         Ok(out)
     }
 
-    /// `saved: Bool (label: "On the Watch later list")`: what the parameter is called where a
-    /// person gives it, written as one option of it.
     fn param_label(&mut self) -> PResult<String> {
         self.expect(&Tok::LParen)?;
         let option = self.ident("the option a parameter takes: `label`")?;
@@ -1645,7 +1610,6 @@ impl<'a> Parser<'a> {
         Ok(out)
     }
 
-    /// `(icon: .plus, label: "New")` before an action's body.
     fn action_opts(&mut self) -> PResult<Vec<ActionOpt>> {
         let mut out = Vec::new();
         if !self.eat(&Tok::LParen) {
@@ -1714,8 +1678,6 @@ impl<'a> Parser<'a> {
         })
     }
 
-    // ---- statements -----------------------------------------------------------------------
-
     /// An action's body: the `require` lines heading it, then its statements.
     fn action_body(
         &mut self,
@@ -1726,7 +1688,7 @@ impl<'a> Parser<'a> {
         loop {
             self.skip_nl();
             // `require` and `applies` are words of their own only where they head a line of an
-            // action's body and a condition follows; elsewhere they are ordinary names.
+            // action's body and a condition follows.
             let head = match self.peek() {
                 Tok::Ident(word) if word == "require" || word == "applies" => (!matches!(
                     self.peek_at(1),
@@ -1764,7 +1726,6 @@ impl<'a> Parser<'a> {
         self.block_after(start)
     }
 
-    /// The rest of a block whose `{` is at `start`.
     fn block_after(&mut self, start: Span) -> PResult<Block> {
         let mut stmts = Vec::new();
         loop {
@@ -1880,8 +1841,6 @@ impl<'a> Parser<'a> {
         }
     }
 
-    // ---- expressions ----------------------------------------------------------------------
-
     fn expr(&mut self) -> PResult<Expr> {
         if matches!(self.peek(), Tok::Ident(_)) && matches!(self.peek_at(1), Tok::Arrow) {
             let param = self.ident("a lambda parameter")?;
@@ -1897,9 +1856,8 @@ impl<'a> Parser<'a> {
                 span,
             });
         }
-        // `(a, b) -> ...`: a lambda applied to several values, where a function takes that
-        // many. A parenthesised expression is never a list of names, so the lookahead is
-        // exact.
+        // `(a, b) -> ...`: a lambda applied to several values. A parenthesised expression is never a
+        // list of names, so the lookahead is exact.
         if self.is(&Tok::LParen) && self.params_arrow() {
             let start = self.bump().span;
             let mut params = vec![self.ident("a lambda parameter")?];
@@ -2078,8 +2036,6 @@ impl<'a> Parser<'a> {
 
     fn postfix(&mut self) -> PResult<Expr> {
         let mut e = self.primary()?;
-        // The type arguments a call writes before its arguments (`json.decode<Item>(text)`),
-        // read at the call and kept for it.
         let mut types: Vec<TypeExpr> = Vec::new();
         loop {
             if self.is(&Tok::Dot) {
@@ -2115,8 +2071,8 @@ impl<'a> Parser<'a> {
                     span,
                 };
             } else if self.is(&Tok::Lt) && types.is_empty() && names_a_call(&e) {
-                // `<Item>`: the types a call takes, when the call follows them. Otherwise the
-                // `<` is a comparison, and the expression parser reads it as one.
+                // `<Item>`: the types a call takes, when the call follows them. Otherwise the `<` is a
+                // comparison.
                 let (pos, diags) = (self.pos, self.diags.len());
                 match self.type_args() {
                     Some(given) if self.is(&Tok::LParen) => types = given,
@@ -2145,8 +2101,8 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// `<A, B>` after a callee: the types a call takes. `None` when what follows the `<` is no
-    /// type list, so the caller reads the `<` as a comparison instead.
+    /// `<A, B>` after a callee: the types a call takes; `None` when what follows the `<` is no type
+    /// list, so the caller reads a comparison.
     fn type_args(&mut self) -> Option<Vec<TypeExpr>> {
         if !self.eat(&Tok::Lt) {
             return None;
@@ -2181,7 +2137,6 @@ impl<'a> Parser<'a> {
                     self.bump();
                     Some(n)
                 }
-                // A keyword names an argument too: `open(r, view: v)`.
                 (Tok::Kw(k), Tok::Colon) => {
                     let span = self.bump().span;
                     self.bump();
@@ -2332,7 +2287,6 @@ impl<'a> Parser<'a> {
         })
     }
 
-    /// `if cond { ... } [else (if ... | { ... })]`.
     fn if_expr(&mut self) -> PResult<Expr> {
         let start = self.expect_kw("if")?;
         if self.is_kw("let") {
@@ -2374,7 +2328,6 @@ impl<'a> Parser<'a> {
         })
     }
 
-    /// `let a = x, b = y` after `if`.
     fn let_binds(&mut self) -> PResult<Vec<LetBind>> {
         self.expect_kw("let")?;
         let mut binds = Vec::new();
@@ -2393,12 +2346,10 @@ impl<'a> Parser<'a> {
             if !self.eat(&Tok::Comma) {
                 return Ok(binds);
             }
-            // `if let a = x, let b = y` reads as well; the second `let` is optional.
             self.eat_kw("let");
         }
     }
 
-    /// An `else` branch: another `if`, or a block.
     fn else_expr(&mut self) -> PResult<Option<Box<Expr>>> {
         if !self.eat_kw("else") {
             return Ok(None);
@@ -2414,10 +2365,8 @@ impl<'a> Parser<'a> {
         })))
     }
 
-    /// `.name` or `.name(a, b)` before the `=>` of a match arm.
     fn pattern(&mut self) -> PResult<Pattern> {
         let start = self.span();
-        // `t: TextChannel`: a case of a union, by its type.
         if matches!(self.peek(), Tok::Ident(_)) && matches!(self.peek_at(1), Tok::Colon) {
             let variant = self.ident("a name for the value")?;
             self.bump();
@@ -2451,7 +2400,6 @@ impl<'a> Parser<'a> {
         })
     }
 
-    /// After a match arm: a `,`, a new line, or the closing `}`.
     fn arm_end(&mut self) -> PResult<()> {
         if self.eat(&Tok::Comma) || matches!(self.peek(), Tok::Newline | Tok::RBrace) {
             return Ok(());
@@ -2521,14 +2469,11 @@ impl<'a> Parser<'a> {
         Ok(out)
     }
 
-    // ---- views ----------------------------------------------------------------------------
-
     fn ui_block(&mut self) -> PResult<Vec<UiStmt>> {
         self.expect(&Tok::LBrace)?;
         self.ui_block_rest()
     }
 
-    /// The statements of a view block after its `{` (and a list's `x ->`), and the `}`.
     fn ui_block_rest(&mut self) -> PResult<Vec<UiStmt>> {
         let mut out = Vec::new();
         loop {
@@ -2640,8 +2585,8 @@ impl<'a> Parser<'a> {
             {
                 self.bump();
                 let event = self.ident("an event name")?;
-                // `on select(x: Note): ...`: the value the event carries, named; and where it
-                // lands, when the event says (`on drop(moved: Task, at: Int): ...`).
+                // `on select(x: Note): ...`: the value the event carries, named; and where it lands
+                // (`on drop(moved: Task, at: Int)`).
                 let (mut param, mut at) = (None, None);
                 if self.eat(&Tok::LParen) {
                     param = Some(self.event_param("the name of the value the event carries")?);
@@ -2684,7 +2629,6 @@ impl<'a> Parser<'a> {
         })
     }
 
-    /// `if cond { ui } [else (if ... | { ui })]` in a view body.
     fn ui_if(&mut self) -> PResult<UiStmt> {
         let start = self.expect_kw("if")?;
         if self.is_kw("let") {
@@ -2734,8 +2678,7 @@ impl<'a> Parser<'a> {
                 || self.params_arrow_at(1);
             if arrow {
                 // `list(items) { x -> ... }`, or a view that takes a view of an item:
-                // `std.list(shown) { (x, at) -> ... }`. A block of a template's
-                // function may take several values: `rows(xs) { (x, parent) -> ... }`.
+                // `std.list(shown) { (x, at) -> ... }`.
                 self.bump();
                 if self.is(&Tok::LParen) {
                     self.bump();

@@ -1,5 +1,5 @@
-//! `filter` and `count` over a collection with a lambda the store can answer: the lambda as a
-//! [`Pred`], handed to the host beside the loop (see [`crate::pred`]).
+//! `filter` and `count` over a collection with a lambda the store can answer: the lambda as a [`Pred`],
+//! handed to the host beside the loop (see [`crate::pred`]).
 
 use super::{Checker, Ex};
 use crate::abi::Imp;
@@ -9,12 +9,11 @@ use crate::pred::Pred;
 use crate::types::Ty;
 
 impl Checker<'_> {
-    /// The predicate `param -> body` is over items of the type `elem`, when it reads nothing
-    /// but fields of the item and literals ([`crate::search::lambda_pred`]).
+    /// The predicate `param -> body` is over items of the type `elem`, when it reads nothing but fields of the
+    /// item and literals ([`crate::search::lambda_pred`]).
     ///
-    /// It may compare a field with a local or parameter the code holds (`c -> c.column ==
-    /// col`): those names come back beside it, in the order of its `Arg`s, and their values are
-    /// handed to the host with it.
+    /// It may compare a field with a local or parameter the code holds (`c -> c.column == col`): those names
+    /// come back beside it, in the order of its `Arg`s, and their values are handed to the host with it.
     pub(super) fn native_pred(
         &self,
         elem: &Ty,
@@ -29,10 +28,9 @@ impl Checker<'_> {
         crate::search::lambda_pred_with(info, self.env, param, body, &outer)
     }
 
-    /// `looped`, the loop of a `filter` or `count` over the collection `held` (kept in the local
-    /// `list`, which the loop reads), behind the store's answer to `pred`: `coll_where` hands
-    /// back the collection's matching items when the host can list them (a collection read in a
-    /// view, or a list read of one), and the loop runs when it cannot.
+    /// `looped`, the loop of a `filter` or `count` over the collection `held` (kept in the local `list`, which
+    /// the loop reads), behind the store's answer to `pred`: `coll_where` hands back the collection's matching
+    /// items when the host can list them, and the loop runs when it cannot.
     pub(super) fn where_or_loop(
         &mut self,
         list: u32,
@@ -89,8 +87,8 @@ impl Checker<'_> {
             vec![Ex::local(answer, answer_ty)],
             filtered_ty,
         );
-        // A count says how many the filter keeps, reading the run where the store cannot say:
-        // a filtered collection's length is only the most it can hold.
+        // A count says how many the filter keeps, reading the run where the store cannot say: a filtered
+        // collection's length is only the most it can hold.
         let native = if m == "count" {
             Ex::host(Imp::CollCount, vec![items], Ty::Int)
         } else {

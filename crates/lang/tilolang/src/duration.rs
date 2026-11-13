@@ -1,21 +1,20 @@
-//! Lengths of time, as literals write them: `7d`, `-30d`, `5m` (search.md, "Types, references and
-//! paths"). A duration is a value of its own: a moment or a day moves by it, two moments or two
-//! days apart are one, and a filter resolves it against the time it is asked at.
+//! Lengths of time, as literals write them: `7d`, `-30d`, `5m` (search.md, "Types, references and paths"). A
+//! duration is a value of its own: a moment or a day moves by it, two moments or two days apart are one, and
+//! a filter resolves it against the time it is asked at.
 
-// The units are the lexer's: which suffix makes a number a duration is what it reads, and the
-// seconds each is worth is what turns the literal into a value.
+// The units are the lexer's: which suffix makes a number a duration is what it reads, and the seconds each is
+// worth is what turns the literal into a value.
 pub use tilolang_lex::duration::UNITS;
 
-/// The seconds `amount` of `unit` make; `None` for a unit that is none of [`UNITS`] or an
-/// amount too large.
+/// The seconds `amount` of `unit` make; `None` for a unit that is none of [`UNITS`] or an amount too large.
 #[must_use]
 pub fn seconds(amount: i64, unit: &str) -> Option<i64> {
     let (_, each) = UNITS.iter().find(|(u, _)| *u == unit)?;
     amount.checked_mul(*each)
 }
 
-/// The seconds `secs` reads as, in the largest unit that divides it: `90s`, `30m`, `2h`, `3d`,
-/// `1w`; `0s` for none.
+/// The seconds `secs` reads as, in the largest unit that divides it: `90s`, `30m`, `2h`, `3d`, `1w`; `0s` for
+/// none.
 #[must_use]
 pub fn text(secs: i64) -> String {
     if secs == 0 {
@@ -33,8 +32,8 @@ pub fn text(secs: i64) -> String {
     format!("{sign}{amount}{unit}")
 }
 
-/// The seconds `text` reads as, one part or several: `90m`, `2h 30m`, `1d 2h`; `None` when a
-/// part is not an amount of a unit. The parts add up, and a leading `-` or `+` signs them all.
+/// The seconds `text` reads as, one part or several: `90m`, `2h 30m`, `1d 2h`; `None` when a part is not an
+/// amount of a unit. A leading `-` or `+` signs them all.
 #[must_use]
 pub fn secs(text: &str) -> Option<i64> {
     let text = text.trim();
@@ -55,7 +54,6 @@ pub fn secs(text: &str) -> Option<i64> {
     total.checked_mul(sign)
 }
 
-/// `-7d` as `(-7, "d")`; `None` when `text` is not a duration.
 #[must_use]
 pub fn parse(text: &str) -> Option<(i64, &'static str)> {
     let digits = text.strip_prefix(['-', '+']).unwrap_or(text);

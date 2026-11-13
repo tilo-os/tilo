@@ -14,8 +14,8 @@ fn counter_takes_plus_equals_and_register_does_not() {
     assert_eq!(codes(bad), vec!["E030"]);
 }
 
-// A register written from itself recomputes wherever the change is applied, so the read and the
-// write written out are refused as `+=` is (convergence design 1.1); `outcomes.rs` has the rest.
+// A register written from itself recomputes wherever the change is applied, so the read and the write
+// written out are refused as `+=` is.
 #[test]
 fn writing_the_read_and_write_out_is_refused_on_a_register() {
     assert_eq!(
@@ -219,8 +219,7 @@ fn options_are_taken_apart_only_by_match() {
 
 const SHAPES: &str = "enum Shape {\n    dot\n    line\n    box\n}\n";
 
-// An enum's cases are plain names (cases that hold data are types of their own, joined in a
-// union: `unions.rs`). Values are dot literals resolved from the expected type, or `Shape.dot`.
+// An enum's cases are plain names; values are dot literals resolved from the expected type.
 #[test]
 fn enums_build_from_dot_literals_and_match_takes_them_apart() {
     let src = format!(
@@ -327,9 +326,8 @@ fn view_state_is_declared_read_bound_and_set() {
     );
 }
 
-/// A template's text parameter is words the view shows, as a component's prop of words is: the
-/// literal a caller gives it is the caller's message, in its catalogue under the view that
-/// writes it, its interpolation an argument (i18n.md §2).
+/// A template's text parameter is words the view shows, as a component's prop of words is: the literal a
+/// caller gives it is the caller's message.
 #[test]
 fn a_templates_text_parameter_carries_its_callers_message() {
     let c = compile(
@@ -343,9 +341,8 @@ fn a_templates_text_parameter_carries_its_callers_message() {
     );
 }
 
-/// Every word a person reads is a message: an action's label that follows its subject, why it
-/// cannot run, and the words its body writes with `say` into a record, each under the action's
-/// own message, its interpolation an argument (i18n.md §2).
+/// Every word a person reads is a message: an action's label that follows its subject, why it cannot run,
+/// and the words its body writes with `say` into a record.
 #[test]
 fn an_actions_label_its_reasons_and_what_it_says_are_messages() {
     let c = compile(
@@ -372,9 +369,8 @@ fn an_actions_label_its_reasons_and_what_it_says_are_messages() {
     );
 }
 
-/// An app's own `say` action keeps its name. The words marker is the library's `std.say`, so the
-/// bare name is the package's to declare, a chat app's `say` posts a line, and the same package
-/// still writes messages a person reads in their own language (i18n.md §2).
+/// An app's own `say` action keeps its name: the words marker is the library's `std.say`, so the bare name
+/// is the package's to declare.
 #[test]
 fn an_apps_own_say_action_and_the_words_marker_stand_side_by_side() {
     let c = compile(
@@ -401,9 +397,8 @@ fn an_apps_own_say_action_and_the_words_marker_stand_side_by_side() {
     );
 }
 
-/// What a parameter is called where a person gives it is the message its key holds: its
-/// `label:` when its name in words would read as something else beside the value, and its name
-/// in words otherwise. Its name is still the name its argument is recorded by (i18n.md §2).
+/// What a parameter is called where a person gives it is the message its key holds: its `label:` when its
+/// name in words would read as something else beside the value.
 #[test]
 fn a_parameters_label_is_what_a_person_reads_and_its_name_records_the_argument() {
     let c = compile(
@@ -432,9 +427,8 @@ fn a_parameters_label_is_what_a_person_reads_and_its_name_records_the_argument()
     assert_eq!(params[2].words(), "At");
 }
 
-// A list's rows are a view of their own (`<view>~row<n>`), and a component called in a row that
-// declares `state` keeps it there: the host binds the state by the id the row's
-// body reads (`<row view id>:<component>.<state>`), so the row's view meta carries it.
+// A list's rows are a view of their own (`<view>~row<n>`), and a component called in a row that declares
+// `state` keeps it there.
 #[test]
 fn view_state_of_a_component_called_in_a_lists_row_is_the_rows() {
     let c = compile(
@@ -453,10 +447,8 @@ fn view_state_of_a_component_called_in_a_lists_row_is_the_rows() {
     assert_eq!(row.state[0].name, "typed");
 }
 
-// A view answers a request to show an item of a type it lists (`on show(x: T): ...`): the action
-// it makes in its own state, run with the item. Anything else it answers is not a show, so a
-// staging that asks a window to show a task reads the window's declaration, never a shape guessed
-// from the data.
+// A view answers a request to show an item of a type it lists (`on show(x: T): ...`): the action it makes
+// in its own state, run with the item.
 #[test]
 fn a_view_answers_a_request_to_show_an_item_of_a_type_it_lists() {
     let c = compile(
@@ -478,8 +470,8 @@ fn a_view_answers_a_request_to_show_an_item_of_a_type_it_lists() {
     let unnamed = "type Note {\n    title: Text\n}\naction ping(n: Note) {\n    n.title = \"p\"\n}\n\
                     view v(n: Note) {\n    on show: ping(n)\n    text(\"the list\")\n}";
     assert_eq!(codes(unnamed), vec!["E063"]);
-    // The view's state is the live view's to start: a default that reads the view's own
-    // parameter is no part of the frame that answers with the item.
+    // The view's state is the live view's to start: a default that reads the view's own parameter is no part
+    // of the frame that answers with the item.
     let held = compile(
         "type Note {\n    title: Text\n}\ntype Book {\n    notes: Collection<Note>\n}\n\
          root Book\ndefault view book for Book\n\

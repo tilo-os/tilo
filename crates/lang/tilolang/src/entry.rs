@@ -1,25 +1,20 @@
-//! What the text of an entry will make, read from the create action it runs: the action's
-//! declared parameters say what it takes out of the text, and their types say how.
+//! What the text of an entry will make, read from the create action it runs: the action's declared
+//! parameters say what it takes out of the text, and their types say how.
 //!
 //! An entry ([`std.add_entry`]) is handed the action it commits — a call of an action with one
-//! `Text` parameter, which the call left for the text (`new_task(tasks, p: project)`). The
-//! words before the entry type say what the parameters take:
+//! `Text` parameter, which the call left for the text (`new_task(tasks, p: project)`). The words
+//! before the entry type say what the parameters take:
 //!
-//! - a `Date` or `Time` parameter takes a day or a moment, as people say it
-//!   ([`crate::natural`]): "tomorrow", "fri 10am", "in 2 weeks", "3 nov";
-//! - a `Principal` parameter takes `@name`, matched against the workspace's members (and
-//!   agents) by the name they go by;
-//! - a parameter of a record type takes `#title`, matched against the records the workspace's
-//!   collection of that type holds, by the type's title field.
+//! - a `Date` or `Time` parameter takes a day or a moment, as people say it ([`crate::natural`]):
+//!   "tomorrow", "fri 10am", "in 2 weeks", "3 nov";
+//! - a `Principal` parameter takes `@name`, matched against the workspace's members by the name they
+//!   go by;
+//! - a parameter of a record type takes `#title`, matched against the records of that type by its
+//!   title field.
 //!
-//! A parameter the call already gave is a default: the words say what the item is, so what they
-//! name fills it. A view whose place starts an item one way and whose words may say otherwise
-//! gives the parameter the place's value (`new_task(tasks, due: if in_today { today } else
-//! { .none })`), and a person typing "fri" there gets Friday. Where the words say nothing of it,
-//! the value the call gave stands.
-//!
-//! Everything the parse is not sure of stays in the title: two members of one name, a title two
-//! records share, a word that only looks like a date. Nothing is guessed.
+//! A parameter the call already gave is a default: what the words name fills it. Where the words say
+//! nothing of it, the value the call gave stands. Everything the parse is not sure of stays in the
+//! title: two members of one name, a title two records share, a word that only looks like a date.
 
 use crate::calendar::{DAY, day_text, time_text};
 use crate::natural::{Language, day_label, scan, words};
@@ -27,48 +22,37 @@ use crate::natural::{Language, day_label, scan, words};
 /// What a create action's parameter takes out of the text an entry is typed into.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Takes {
-    /// The words nothing else took: the item's title.
     Entry,
-    /// The day it is due, from "tomorrow", "fri", "3 nov".
     Day,
-    /// The moment: a day with a time, or a time alone ("9am").
     Time,
-    /// Who it is for, from "@name".
     Who,
-    /// A record this workspace holds, from "#title": the type it is, named by the app that
-    /// declares it.
-    What { app: String, ty: String },
-    /// A parameter the entry says nothing about: it keeps what it was given, or its default.
+    /// A record this workspace holds, from "#title".
+    What {
+        app: String,
+        ty: String,
+    },
     Other,
 }
 
-/// One parameter of the create action, as the entry reads it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Param {
-    /// What the parameter takes out of the text.
     pub takes: Takes,
 }
 
-/// A value the text gives a parameter.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Filled {
-    /// A day, ISO `YYYY-MM-DD`.
     Day(String),
-    /// A moment, ISO-8601 UTC.
     Time(String),
-    /// A member, by principal id.
     Who(String),
-    /// A record, by its reference id.
     Record(String),
 }
 
-/// One thing the entry takes out of the text: shown as a chip while it is typed, and removed
-/// from the text when the chip is.
+/// One thing the entry takes out of the text: shown as a chip while it is typed, and removed from the
+/// text when the chip is.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Part {
     /// What it says: "Fri 30 Oct", "10:00", "@Bo", "#Move flat".
     pub label: String,
-    /// Its icon, a kebab-case name of the platform's icon set.
     pub icon: &'static str,
     /// What is typed once it is removed: the text without its words.
     pub without: String,
@@ -77,31 +61,27 @@ pub struct Part {
 /// What the text says the action will make.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Parsed {
-    /// The title: the words no other parameter took, and empty when the text was nothing but
-    /// parts and space: then the entry makes nothing.
+    /// The title: the words no other parameter took, and empty when the text was nothing but parts and
+    /// space: then the entry makes nothing.
     pub title: String,
-    /// What the parameters take, by their place in the action's parameters.
     pub fills: Vec<(usize, Filled)>,
     /// What the entry shows as parts of what will be made, in the order they stand in it.
     pub parts: Vec<Part>,
 }
 
 /// What the text's names can be matched against: who is in the workspace and the records its
-/// collections hold. The runtime answers it from the workspace; a test from a fixture.
+/// collections hold.
 pub trait Look {
-    /// The members, as the name they go by and their principal id.
     fn people(&self) -> Vec<(String, String)>;
-    /// The records of the type `ty` (declared by `app`) that the action's workspace holds, as
-    /// its title and its id.
     fn records(&self, app: &str, ty: &str) -> Vec<(String, String)>;
 }
 
-/// The longest run of words after a `#` that names a record: a title of several words
-/// ("#Move flat") is read whole before the shorter read is tried.
+/// The longest run of words after a `#` that names a record: a title of several words ("#Move flat") is
+/// read whole before the shorter read is tried.
 const LONGEST_TITLE: usize = 5;
 
-/// Reads what `text` says the action of `params` will make, typed at `now` (seconds since 1970,
-/// UTC) by someone whose clock is `offset` seconds ahead of UTC, typing in `lang`.
+/// Reads what `text` says the action of `params` will make, typed at `now` (seconds since 1970, UTC) by
+/// someone whose clock is `offset` seconds ahead of UTC, typing in `lang`.
 #[must_use]
 pub fn read(
     text: &str,
@@ -119,8 +99,8 @@ pub fn read(
     // The parts, with the word each starts at, so they stand in the text's order.
     let mut parts: Vec<(usize, Part)> = Vec::new();
 
-    // When: a day to the day parameter, a time to the time one; a time alone fills the day too
-    // when the action has one, as "at 9" means the next nine.
+    // When: a day to the day parameter, a time to the time one; a time alone fills the day too when the
+    // action has one, as "at 9" means the next nine.
     let mut day_slot = params.iter().position(|p| p.takes == Takes::Day);
     let mut time_slot = params.iter().position(|p| p.takes == Takes::Time);
     // The day the text said last: a time after it ("fri 10am") is at that day.
@@ -160,8 +140,6 @@ pub fn read(
                 };
                 filled = true;
             } else if let (Some(slot), false) = (day_slot, filled) {
-                // A day parameter and no time one: the time says which day ("at 9" is today
-                // when nine is to come, else tomorrow).
                 fills.push((slot, Filled::Day(day_text(day))));
                 day_slot = None;
                 icon = "clock";
@@ -226,8 +204,8 @@ pub fn read(
         }
     }
 
-    // What: "#title" against the records of each record parameter's collection, the longest run
-    // of words that names exactly one of them.
+    // What: "#title" against the records of each record parameter's collection, the longest run of
+    // words that names exactly one of them.
     let record_params: Vec<usize> = params
         .iter()
         .enumerate()
@@ -278,7 +256,6 @@ pub fn read(
                     .collect::<Vec<_>>();
                 found.dedup();
                 match found.as_slice() {
-                    // Two records (or two parameters) say the same: no guess.
                     [_, _, ..] => {
                         best = None;
                         break;
@@ -308,8 +285,8 @@ pub fn read(
         }
     }
 
-    // The title: the words no parameter took. An entry that is only parts names nothing, and
-    // [`Parsed::title`] is empty: there is nothing to make of it.
+    // The title: the words no parameter took. An entry that is only parts names nothing: there is
+    // nothing to make of it.
     let title = words
         .iter()
         .zip(&used)
@@ -325,7 +302,6 @@ pub fn read(
     }
 }
 
-/// The text without the words at `taken`.
 fn without(words: &[crate::natural::Word], taken: &[usize]) -> String {
     words
         .iter()
@@ -341,7 +317,6 @@ mod tests {
     use super::{Filled, Look, Param, Takes, read};
     use crate::natural::Language;
 
-    /// The same now the natural tests read at: Thursday 2026-10-29, 08:00 in Berlin.
     const NOW: i64 = 1_793_257_200;
     const BERLIN: i64 = 3600;
 
@@ -426,29 +401,23 @@ mod tests {
             let parsed = story(text, &tasks(), &look());
             assert_eq!(parsed.title, "", "`{text}` names nothing");
         }
-        // The parts are still read: the entry shows what it took out, and makes nothing.
         assert_eq!(story("fri 10am @bo", &tasks(), &look()).parts.len(), 3);
-        // Words nothing took are the title, around the parts.
         assert_eq!(story(" @bo ", &tasks(), &look()).title, "");
         assert_eq!(story(" milk @bo ", &tasks(), &look()).title, "milk");
     }
 
     #[test]
     fn what_is_not_sure_stays_in_the_title() {
-        // Nobody named that.
         let parsed = story("call landlord @zoe", &tasks(), &look());
         assert_eq!(parsed.title, "call landlord @zoe");
         assert!(parsed.parts.is_empty());
-        // Two members of one name: no guess.
         let mut two = look();
         two.people.push(("Bo".into(), "bo-2".into()));
         let parsed = story("call @bo", &tasks(), &two);
         assert_eq!(parsed.title, "call @bo");
         assert!(parsed.parts.is_empty());
-        // A # that names no record.
         let parsed = story("call #nowhere", &tasks(), &look());
         assert_eq!(parsed.title, "call #nowhere");
-        // A word that only looks like a date.
         let parsed = story("read 3 chapters", &tasks(), &look());
         assert_eq!(parsed.title, "read 3 chapters");
         assert!(parsed.parts.is_empty());

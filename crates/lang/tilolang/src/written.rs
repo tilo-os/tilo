@@ -1,16 +1,13 @@
 //! Written views: a `view` a person or an agent writes, kept as that person's own code
 //! (`docs/designs/app-language/agent-ux.md`, "Answers as views").
 //!
-//! A written view is a real `view` declaration, as an app declares one, with the functions it
-//! calls: `view open_threads(m: mail.Mail) { ... }`. It names no app with `use`: every package
-//! the workspace has installed is in scope by the last part of its id (`mail`, `tasks`), resolved
-//! when the view is checked, so a view reads whatever types the workspace has, and one over an
-//! app the workspace lacks says so. It is compiled into a package of its own,
-//! `agent.written.<hash>`, whose one view is the written one; the runtime draws it with its author
-//! as its code author.
+//! A written view is a real `view` declaration, as an app declares one, with the functions it calls. It
+//! names no app with `use`: every package the workspace has installed is in scope by the last part of its
+//! id (`mail`, `tasks`). It is compiled into a package of its own, `agent.written.<hash>`, whose one view
+//! is the written one; the runtime draws it with its author as its code author.
 //!
-//! A bare view body (`list(tasks.tasks) { t -> row(t.title) }`), which answers were before
-//! they were declarations, reads as the body of a view that takes nothing.
+//! A bare view body (`list(tasks.tasks) { t -> row(t.title) }`), which answers were before they were
+//! declarations, reads as the body of a view that takes nothing.
 
 use crate::diag::{Diagnostic, Span};
 use crate::hash::sha256_hex;
@@ -19,11 +16,10 @@ use crate::meta::{PackageMeta, ParamMeta};
 use crate::resolve::default_alias;
 use crate::source::PackageSource;
 
-/// The app prefix of a written view's package: never visible to other code.
 pub const WRITTEN_VIEW_APP_PREFIX: &str = "agent.written.";
 
-/// The path the definition has in its package, which nothing shows: diagnostics are located in
-/// the definition itself.
+/// The path the definition has in its package, which nothing shows: diagnostics are located in the
+/// definition itself.
 const DEFINITION: &str = "view.tl";
 /// The path of the package's header and its imports.
 const HEADER: &str = "package.tl";
@@ -31,22 +27,19 @@ const HEADER: &str = "package.tl";
 /// What a bare view body is wrapped in, on its first line, so its lines stay where they were.
 const BARE_OPEN: &str = "view shown() { ";
 
-/// A compiled written view.
 #[derive(Clone, Debug)]
 pub struct CompiledView {
     pub wasm: Vec<u8>,
     pub meta: PackageMeta,
-    /// The view's id in [`Self::meta`]: its export is `v_<id>`.
     pub view: String,
-    /// Its name, as written.
     pub name: String,
     /// What it takes, each type as metadata writes it (`so.tilo.lang.mail.Thread`).
     pub params: Vec<ParamMeta>,
 }
 
 impl CompiledView {
-    /// The type of resource it shows, when it takes exactly one resource: what a person can make
-    /// it the default view of. `None` for a view that stands alone or takes several.
+    /// The type of resource it shows, when it takes exactly one resource: what a person can make it the
+    /// default view of. `None` for a view that stands alone or takes several.
     #[must_use]
     pub fn shows(&self) -> Option<&str> {
         match self.params.as_slice() {
@@ -56,8 +49,8 @@ impl CompiledView {
     }
 }
 
-/// Whether `source` is a declaration (`view …`, `fn …`, led by comments) rather than a bare
-/// view body. A view's body never starts with a word that starts a declaration.
+/// Whether `source` is a declaration (`view …`, `fn …`, led by comments) rather than a bare view body. A
+/// view's body never starts with a word that starts a declaration.
 #[must_use]
 pub fn is_declaration(source: &str) -> bool {
     let first = source
@@ -65,8 +58,8 @@ pub fn is_declaration(source: &str) -> bool {
         .map(str::trim_start)
         .find(|line| !line.is_empty() && !line.starts_with("//"))
         .unwrap_or_default();
-    // Every word a declaration starts with: a written view holds only `view` and `fn`, and the
-    // others are refused as such rather than read as a view's body.
+    // Every word a declaration starts with: a written view holds only `view` and `fn`, and the others are
+    // refused as such rather than read as a view's body.
     [
         "view ",
         "fn ",
@@ -86,10 +79,9 @@ pub fn is_declaration(source: &str) -> bool {
     .any(|lead| first.starts_with(lead))
 }
 
-/// Compile the written view `source` by `author` against the packages `visible` (every
-/// installed app; the host's own package and other written code are left out). Its writer is
-/// part of its package's identity: the same text two people wrote is two packages, each
-/// bounded by its own writer.
+/// Compile the written view `source` by `author` against the packages `visible` (every installed app). Its
+/// writer is part of its package's identity: the same text two people wrote is two packages, each bounded
+/// by its own writer.
 pub fn compile_view_definition(
     source: &str,
     author: &str,
@@ -117,8 +109,8 @@ pub fn compile_view_definition(
     let short = key.get(..16).unwrap_or(&key);
     // A segment of an app id starts with a letter.
     let app = format!("{WRITTEN_VIEW_APP_PREFIX}v{short}");
-    // Every app by the last part of its id; when two share it, the first keeps the name and
-    // the other is not in scope, as no `use` can name it twice.
+    // Every app by the last part of its id; when two share it, the first keeps the name and the other is
+    // not in scope.
     let mut header = format!("app {app} \"View\"\n");
     let mut aliases: Vec<String> = Vec::new();
     for m in &apps {
@@ -153,8 +145,7 @@ pub fn compile_view_definition(
     if !uses.is_empty() {
         return Err(unbare(uses));
     }
-    // Only views and the functions they call: a written view declares no types, actions or
-    // roots, and names no app with `use`.
+    // Only views and the functions they call: a written view declares no types, actions or roots.
     let files = crate::package::parse_package_files(&package).map_err(unbare)?;
     let items: Vec<&crate::ast::Item> = files
         .iter()
@@ -251,8 +242,8 @@ fn item_span(item: &crate::ast::Item) -> Span {
     }
 }
 
-/// Diagnostics as the person reads them: in the definition they wrote (no file), and for a
-/// bare body without the wrapping its first line got.
+/// Diagnostics as the person reads them: in the definition they wrote (no file), and for a bare body
+/// without the wrapping its first line got.
 fn relocate(mut diags: Vec<Diagnostic>, bare: bool) -> Vec<Diagnostic> {
     let shift = if bare { BARE_OPEN.len() } else { 0 };
     for d in &mut diags {

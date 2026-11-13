@@ -1,9 +1,7 @@
-//! An agent's program (agents.md, "One language, one tool"): statements run as an action the agent
-//! wrote, over every mounted app. It reads, finds, loops and calls actions, and its top-level
-//! `let`s are kept for the next program of the session ([`ProgramResult::lets`]).
-//! The words a session adds to the language are the agent library's ([`crate::agent`]), in scope
-//! without a `use`; this module lowers what only a program does: kept `let`s, the last line's
-//! value, and a field set on a resource at the app that holds it.
+//! An agent's program (agents.md, "One language, one tool"): statements run as an action the agent wrote,
+//! over every mounted app. It reads, finds, loops and calls actions, and its top-level `let`s are kept for
+//! the next program of the session ([`ProgramResult::lets`]). This module lowers what only a program does:
+//! kept `let`s, the last line's value, and a field set on a resource at the app that holds it.
 
 use super::{Checker, Ctx, Ex, FnState, Written, conv, store_op};
 use crate::abi::Imp;
@@ -15,7 +13,6 @@ use crate::types::{Ty, TypeKey};
 
 pub use crate::host::RESOURCE_TYPE_NAME;
 
-/// The type key of [`RESOURCE_TYPE_NAME`].
 #[must_use]
 pub fn resource_key() -> TypeKey {
     TypeKey {
@@ -24,7 +21,6 @@ pub fn resource_key() -> TypeKey {
     }
 }
 
-/// A checked program.
 pub struct ProgramResult {
     pub module: ir::Module,
     /// The names its top-level `let`s bound, with their types, in the order last bound.
@@ -76,8 +72,8 @@ pub fn check_program(
                     lets.push((name.name.clone(), ty));
                 }
             }
-            // The last line of a program says its value, as a REPL does, unless it is a
-            // statement (an `if`, a `match`, a block) or has none.
+            // The last line of a program says its value, as a REPL does, unless it is a statement (an `if`, a
+            // `match`, a block) or has none.
             StmtKind::Expr(e) if last && echoes(e) => {
                 let ex = c.expr(e, None);
                 if matches!(ex.ty, Ty::Unit | Ty::Error) {
@@ -117,10 +113,9 @@ fn echoes(e: &ast::Expr) -> bool {
 }
 
 impl Checker<'_> {
-    /// `r.f = v` in a program: the resource's field edit, which the host invokes at the app
-    /// that holds `r` as the program's change (agents.md, "How a program runs"). Only a whole
-    /// value is set: a collection changes through the app's actions, a counter by what an
-    /// action adds.
+    /// `r.f = v` in a program: the resource's field edit, which the host invokes at the app that holds `r` as
+    /// the program's change (agents.md, "How a program runs"). Only a whole value is set: a collection changes
+    /// through the app's actions, a counter by what an action adds.
     pub(super) fn program_edit(
         &mut self,
         base: Ex,
@@ -163,7 +158,6 @@ impl Checker<'_> {
         )));
     }
 
-    /// A tuple of values already checked, as `print` hands them to the host.
     pub(super) fn tuple_of(&mut self, items: Vec<Ex>) -> Ex {
         let tmp = self.fresh(Ty::Error);
         let count = i32::try_from(items.len()).unwrap_or(i32::MAX);
@@ -193,8 +187,8 @@ impl Checker<'_> {
         Ex::new(Ek::Seq(stmts, Box::new(Ex::local(tmp, ty.clone()))), ty)
     }
 
-    /// Print `values` on one line, separated by spaces, each as its type shows; a list of a
-    /// type's resources alone prints a row per resource with the type's filter fields.
+    /// Print `values` on one line, separated by spaces, each as its type shows; a list of a type's resources
+    /// alone prints a row per resource with the type's filter fields.
     pub(super) fn print_values(&mut self, mut values: Vec<Ex>) -> Ex {
         if values.len() == 1
             && let Some(list) = values.pop()
@@ -217,8 +211,8 @@ impl Checker<'_> {
         )
     }
 
-    /// `print(a, b, ...)`: one line of output, its values separated by spaces; `print(xs,
-    /// fields: [.a, .b])` a row per item.
+    /// `print(a, b, ...)`: one line of output, its values separated by spaces; `print(xs, fields: [.a, .b])` a
+    /// row per item.
     pub(super) fn builtin_print(&mut self, args: &[ast::Arg]) -> Ex {
         let fields = args
             .iter()
@@ -264,9 +258,9 @@ impl Checker<'_> {
         self.print_values(values)
     }
 
-    /// `find("Note launch video")`: the resources the palette's query finds. A query that
-    /// starts with a type's name finds resources of that type, a `List<T>`; any other finds
-    /// resources of every app, a `List<host.Resource>` that `.of(T)` narrows.
+    /// `find("Note launch video")`: the resources the palette's query finds. A query that starts with a type's
+    /// name finds resources of that type, a `List<T>`; any other finds resources of every app, a
+    /// `List<host.Resource>` that `.of(T)` narrows.
     pub(super) fn builtin_find(&mut self, args: &[ast::Arg], span: Span) -> Ex {
         // `find(Note, pinned: true)`: typed, its arguments the type's filters, as a query's.
         if args
@@ -305,8 +299,8 @@ impl Checker<'_> {
         )
     }
 
-    /// The type a query's first word names (`Note`, `notes.Note`), when it names one. A first
-    /// word written like a type's name that names none is an error that lists the types.
+    /// The type a query's first word names (`Note`, `notes.Note`), when it names one. A first word written like
+    /// a type's name that names none is an error that lists the types.
     pub(super) fn query_type(&mut self, text: &str, span: Span) -> Result<Option<TypeInfo>, ()> {
         let Some(first) = text.split_whitespace().next() else {
             return Ok(None);
@@ -398,7 +392,6 @@ impl Checker<'_> {
         self.read_with(r, options)
     }
 
-    /// `list.of(Note)`: the resources of the list that are of that type, as that type.
     pub(super) fn list_of(&mut self, list: Ex, args: &[ast::Arg], span: Span) -> Ex {
         let named = match args {
             [a] if a.name.is_none() => self.type_named(&a.value).or_else(|| {

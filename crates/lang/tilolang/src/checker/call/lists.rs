@@ -1,5 +1,5 @@
-//! The methods of a list: a lambda's inline loop, sorting, the ends, an index, and the items
-//! under a node by a field of theirs.
+//! The methods of a list: a lambda's inline loop, sorting, the ends, an index, and the items under a node by
+//! a field of theirs.
 
 use super::super::{Checker, Ex};
 use crate::abi::Imp;
@@ -9,9 +9,9 @@ use crate::ir::{self, Ek, Stmt};
 use crate::types::Ty;
 
 impl Checker<'_> {
-    /// `map`, `flat_map`, `filter`, `any`, `all`, `find` and `count` with a lambda, inlined as a
-    /// loop: a lambda is only ever a direct argument of these, so there are no closures at run
-    /// time. `flat_map` gives the lists its lambda finds, joined in the order they come.
+    /// `map`, `flat_map`, `filter`, `any`, `all`, `find` and `count` with a lambda, inlined as a loop: a lambda
+    /// is only ever a direct argument of these, so there are no closures at run time. `flat_map` gives the
+    /// lists its lambda finds, joined in the order they come.
     pub(in crate::checker) fn higher_order(
         &mut self,
         list: Ex,
@@ -21,9 +21,8 @@ impl Checker<'_> {
         span: Span,
     ) -> Ex {
         let m = name.name.as_str();
-        // A count says how many items there are: a collection the store lists as it reads it
-        // is read to its end where the store cannot say otherwise, which is what counting it
-        // costs ([`Imp::CollCount`]). Length is what the store knows without that
+        // A count says how many items there are: a collection the store lists as it reads it is read to its end
+        // where the store cannot say otherwise ([`Imp::CollCount`]). Length is what the store knows without that
         // ([`Imp::ListLen`]); a list holds a collection too, so the host tells them apart.
         if m == "count" && args.is_empty() {
             return Ex::host(Imp::CollCount, vec![list], Ty::Int);
@@ -45,10 +44,9 @@ impl Checker<'_> {
             }
             return Ex::error();
         };
-        // Over a collection, a lambda the store can answer is asked of it first: over a
-        // collection, and over a list that may be one (a parameter taking either keeps the
-        // collection it is given). The list is held in a local for the asking, which the loop
-        // reads too.
+        // Over a collection, a lambda the store can answer is asked of it first, and over a list that may be
+        // one (a parameter taking either keeps the collection it is given). The list is held in a local for
+        // the asking, which the loop reads too.
         let pred = match (&list.ty, m) {
             (Ty::Collection(_) | Ty::List(_), "filter" | "count") => {
                 self.native_pred(elem, &param.name, &body)
@@ -77,8 +75,8 @@ impl Checker<'_> {
             )));
             (out, out_ty)
         } else if m == "flat_map" {
-            // What the lambda gives for each item, joined in the order the items and their own
-            // lists keep: one loop inside the other, pushing what it holds.
+            // What the lambda gives for each item, joined in the order the items and their own lists keep: one
+            // loop inside the other, pushing what it holds.
             let v = self.expr(&body, None);
             let each = match v.ty.clone() {
                 Ty::List(each) => *each,
@@ -109,7 +107,6 @@ impl Checker<'_> {
             self.filter_like(m, &body, &item, elem)
         };
         let mut inner = self.pop_sink();
-        // Hoisted `Set` of the accumulator is emitted before the loop by the caller below.
         let init = match m {
             "map" | "flat_map" | "filter" => {
                 Some(Ex::host(Imp::ListNew, Vec::new(), result_ty.clone()))
@@ -135,15 +132,13 @@ impl Checker<'_> {
         }
     }
 
-    /// `items.descendants(t, x -> x.parent)` and `items.ancestors(t, x -> x.parent)`: the items
-    /// under `t`, and the ones it is under, following the parent each item names. The items
-    /// under it come in the order the list keeps them, the ones above it from the nearest;
-    /// `t` itself is neither.
+    /// `items.descendants(t, x -> x.parent)` and `items.ancestors(t, x -> x.parent)`: the items under `t`, and
+    /// the ones it is under, following the parent each item names. The items under it come in the order the
+    /// list keeps them, the ones above it from the nearest; `t` itself is neither.
     ///
-    /// `collection`, when the list is a collection field of a resource, is that resource and the
-    /// field's id: the store answers the walk from the index's column of the parent field, and
-    /// only where it cannot the walk runs, reading the parent one item at a time and stopping at
-    /// the first item without one, so a chain that loops still ends there.
+    /// `collection`, when the list is a collection field of a resource, is that resource and the field's id:
+    /// the store answers the walk from the index's column of the parent field, and only where it cannot the
+    /// walk runs, stopping at the first item without a parent, so a chain that loops still ends there.
     pub(super) fn relatives(
         &mut self,
         list: Ex,
@@ -175,8 +170,8 @@ impl Checker<'_> {
             }
             return Ex::error();
         };
-        // The field the walk follows, when the lambda only reads one: a column of the
-        // collection answers a walk over it, and a parent read another way is the walk's alone.
+        // The field the walk follows, when the lambda only reads one: a column of the collection answers a walk
+        // over it.
         let parent_field = match &body.kind {
             ExprKind::Field { base, name } if matches!(&base.kind, ExprKind::Ident(at) if at == &param.name) => {
                 Some(name.name.clone())
@@ -186,7 +181,6 @@ impl Checker<'_> {
         let opt = Ty::Option(Box::new(elem.clone()));
         let out_ty = Ty::List(Box::new(elem.clone()));
         let target = self.expr_as(&target.value, elem);
-        // The parent of `at`, with the lambda's parameter bound to it.
         let at = self.fresh(elem.clone());
         self.push_sink();
         self.bind_local(&param.name, at);
@@ -205,7 +199,6 @@ impl Checker<'_> {
             Stmt::Set(held, list),
             Stmt::Set(out, Ex::host(Imp::ListNew, Vec::new(), out_ty.clone())),
         ];
-        // What the parent of the item held in `at` is, left in `cur`.
         let parent_step = {
             let mut s = step;
             s.push(Stmt::Set(cur, parent));
@@ -316,18 +309,17 @@ impl Checker<'_> {
         Ex::new(asked, out_ty)
     }
 
-    /// `first()` or `last()`: the host reads the end of the list (`list_end`), so a view over a
-    /// collection depends on that item alone, not on its length or the items before it.
+    /// `first()` or `last()`: the host reads the end of the list (`list_end`), so a view over a collection
+    /// depends on that item alone, not on its length or the items before it.
     pub(super) fn end_item(list: Ex, elem: &Ty, last: bool) -> Ex {
         let out = Ty::Option(Box::new(elem.clone()));
         let which = Ex::new(Ek::I32(i32::from(last)), Ty::Bool);
         Ex::host(Imp::ListEnd, vec![list, which], out)
     }
 
-    /// `xs.at(i)`: the item at the place `i` counts from the start, the place `index_of` answers
-    /// for it, and none where the list ends before that place — so a copy can be read where the
-    /// item it copies stands. It is the first `i + 1` items' last, asked only where the list is
-    /// that long.
+    /// `xs.at(i)`: the item at the place `i` counts from the start, the place `index_of` answers for it, and
+    /// none where the list ends before that place. It is the first `i + 1` items' last, asked only where the
+    /// list is that long.
     pub(super) fn item_at(&mut self, list: Ex, elem: &Ty, place: &ast::Arg) -> Ex {
         let list_ty = list.ty.clone();
         let held = self.fresh(list_ty.clone());
@@ -381,9 +373,9 @@ impl Checker<'_> {
         Ex::new(Ek::Seq(stmts, Box::new(Ex::local(found, out.clone()))), out)
     }
 
-    /// `sort_by(x -> key)`: collects the keys in a parallel list, then asks the host for the
-    /// items ordered by them (ascending, stable). Keys are Int, Float, Text or Bool; a Date or
-    /// a Time sorts in time order, and one that may be absent after every item that has one.
+    /// `sort_by(x -> key)`: collects the keys in a parallel list, then asks the host for the items ordered by
+    /// them (ascending, stable). Keys are Int, Float, Text or Bool; a Date or a Time sorts in time order, and
+    /// one that may be absent after every item that has one.
     pub(super) fn sort_by(
         &mut self,
         list: Ex,
@@ -415,9 +407,8 @@ impl Checker<'_> {
             );
             return Ex::error();
         };
-        // A key the store can order by is asked of it first: over a collection, and over a list
-        // that may be one (a parameter taking either keeps the collection it is given), which
-        // is held in a local for the asking, and that the loop reads too.
+        // A key the store can order by is asked of it first, over a collection and over a list that may be one,
+        // which is held in a local for the asking, and that the loop reads too.
         let native = match &list.ty {
             Ty::Collection(_) | Ty::List(_) => self.sort_key(elem, &param.name, &body),
             _ => None,
@@ -434,17 +425,15 @@ impl Checker<'_> {
         self.push_sink();
         self.bind_local(&param.name, fl.item_local);
         let key = match &native {
-            // A version sorts by its time; none comes first.
             Some(super::super::order::SortKey::Version { last }) => {
                 self.version_time(Ex::local(fl.item_local, elem.clone()), *last)
             }
             _ => self.expr(&body, None),
         };
-        // A Date or a Time is ISO text, which sorts in time order; one that may be absent is
-        // read once, its presence and its value telling where the item stands: the items
-        // without one stand after those with one, whatever the direction. When a field last
-        // changed and one never did, it stands where no moment does: first, and last with
-        // `desc`, as the index keeps it.
+        // A Date or a Time is ISO text, which sorts in time order; one that may be absent is read once, its
+        // presence and its value telling where the item stands: the items without one stand after those with
+        // one, whatever the direction. When a field last changed and one never did, it stands where no moment
+        // does: first, and last with `desc`, as the index keeps it.
         let changed = matches!(&native, Some(super::super::order::SortKey::Changed { .. }));
         let (key, present) = match key.ty.clone() {
             Ty::Date | Ty::Time => (key.typed(Ty::Text), None),
@@ -482,9 +471,8 @@ impl Checker<'_> {
         let out_ty = Ty::List(Box::new(elem.clone()));
         let keys_ty = Ty::List(Box::new(key.ty.clone()));
         let keys = self.fresh(keys_ty.clone());
-        // The items that have a value go to a list of their own, sorted there, and those
-        // without one follow them in the order the list holds them, whichever direction: a task
-        // nobody gave a day is no day's work, not the first one's.
+        // The items that have a value go to a list of their own, sorted there, and those without one follow them
+        // in the order the list holds them, whichever direction.
         let kept = self.fresh(out_ty.clone());
         let missing = self.fresh(out_ty.clone());
         if let Some(present) = &present {

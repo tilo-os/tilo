@@ -1,20 +1,17 @@
 //! Identifiers of every service, written as URIs (search.md, "Types, references and paths"):
-//! `mailto:jane@x.com`, `tel:+4930123456`, `discord:janedoe`, `matrix:@jane:matrix.org`,
-//! `tilo:jane`. A `std.Identifier` is held as that text, its scheme and its value. Search knows no
-//! service: a new one is a new scheme.
+//! `mailto:jane@x.com`, `tel:+4930123456`, `discord:janedoe`. A `std.Identifier` is held as that text, its
+//! scheme and its value. Search knows no service: a new one is a new scheme.
 //!
-//! Bare forms are accepted where they are unambiguous: `jane@x.com` is a `mailto:`, `+4930…` a
-//! `tel:`. `*` is the one pattern: `*@x.com`, `tel:+49*`, `discord:*`. Identifiers compare
-//! without regard to case.
+//! Bare forms are accepted where they are unambiguous: `jane@x.com` is a `mailto:`, `+4930…` a `tel:`. `*`
+//! is the one pattern. Identifiers compare without regard to case.
 
-/// The identifier `text` as it is held, `scheme:value`, from a URI or a bare form.
 pub fn normalize(text: &str) -> Result<String, String> {
     let held = written(text, false)?;
     Ok(held)
 }
 
-/// The pattern `text` as it is matched: an identifier that may hold `*`, a bare form taken as
-/// its scheme's, and `@x.com` as `mailto:*@x.com`.
+/// The pattern `text` as it is matched: an identifier that may hold `*`, a bare form taken as its scheme's,
+/// and `@x.com` as `mailto:*@x.com`.
 pub fn normalize_pattern(text: &str) -> Result<String, String> {
     written(text, true)
 }
@@ -84,27 +81,23 @@ fn phone(text: &str) -> String {
         .collect()
 }
 
-/// The scheme and the value of a held identifier.
 #[must_use]
 pub fn parts(held: &str) -> (&str, &str) {
     held.split_once(':').unwrap_or(("", held))
 }
 
-/// Whether the held identifier `id` matches the normalized pattern `pattern`, in which each `*`
-/// stands for any text. Identifiers compare without regard to case.
+/// Whether the held identifier `id` matches the normalized pattern `pattern`, in which each `*` stands for
+/// any text. Identifiers compare without regard to case.
 #[must_use]
 pub fn matches(pattern: &str, id: &str) -> bool {
     crate::text::matches(&pattern.to_lowercase(), &id.to_lowercase())
 }
 
-/// What every identifier a pattern matches starts with: its text before the first `*`.
 #[must_use]
 pub fn prefix(pattern: &str) -> &str {
     pattern.split('*').next().unwrap_or(pattern)
 }
 
-/// What every identifier a pattern matches ends with: its text after the last `*` (all of it
-/// for a pattern with no `*`).
 #[must_use]
 pub fn suffix(pattern: &str) -> &str {
     pattern.rsplit('*').next().unwrap_or(pattern)

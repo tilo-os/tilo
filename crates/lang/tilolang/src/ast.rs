@@ -4,22 +4,19 @@
 use crate::diag::Span;
 use crate::types::MergeKind;
 
-/// Identity of a syntax node within one parsed module.
 pub type NodeId = u32;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Ident {
     pub name: String,
     pub span: Span,
-    /// The package a `template view` came from, when this name was rewritten at import to be
-    /// qualified with it (`shell.desk_style`): the resolver admits a plain name it qualified
-    /// this way even when it is not one the package offers, since the template's own body is
+    /// The package a `template view` came from, when import qualified this name with it
+    /// (`shell.desk_style`): the resolver admits such a plain name, since the template's body is
     /// the one place that may call the package's unoffered helpers.
     pub from_template_of: Option<String>,
 }
 
 impl Ident {
-    /// A name as written: no package marks it.
     #[must_use]
     pub fn plain(name: impl Into<String>, span: Span) -> Self {
         Self {
@@ -40,21 +37,16 @@ pub struct Module {
 pub struct AppHeader {
     pub id: String,
     pub title: String,
-    /// `(icon: .note)`: the platform icon the app is shown with.
     pub icon: Option<String>,
-    /// `(category: .office)`: the launcher category the app is listed under.
     pub category: Option<String>,
-    /// `(previously: so.tilo.old)`: the ids the app was published under before. Its records,
-    /// grants and windows under them are the app's (the platform checks that the same publisher
-    /// signed both).
+    /// `(previously: so.tilo.old)`: the ids the app was published under before; its records,
+    /// grants and windows under them are the app's, when the same publisher signed both.
     pub previously: Vec<String>,
-    /// `(records: .own)`: each member of a workspace keeps the app's records in their own
-    /// record there, which only that person's devices read; `false` (`.shared`, the default)
-    /// keeps them in the workspace's record of the app, which every member reads.
+    /// `(records: .own)`: each member keeps the app's records in their own record there, which only
+    /// that person's devices read; the default `.shared` keeps them where every member reads.
     pub own_records: bool,
-    /// `(web: ["example.com", "*.rss.org"])`: the hosts the app's `uses web` requests may
-    /// reach. A request to any other host is refused as a value, and recorded. `*.rss.org`
-    /// covers its subdomains, not `rss.org` itself.
+    /// `(web: ["example.com", "*.rss.org"])`: the hosts `uses web` requests may reach; any other is
+    /// refused. `*.rss.org` covers subdomains, not `rss.org`.
     pub web: Vec<String>,
     pub span: Span,
 }
@@ -63,21 +55,16 @@ pub struct AppHeader {
 pub enum Item {
     Use(UseDecl),
     Type(TypeDecl),
-    /// `type Name = T`: a name for a type. A container (`Collection<Note>`) named so is a
-    /// resource holding it; any other type is another name for it.
+    /// `type Name = T`: a name for a type. A container (`Collection<Note>`) named so is a resource
+    /// holding it.
     Alias(AliasDecl),
     Enum(EnumDecl),
-    /// `root T`: a type with one resource per workspace, which the launcher opens.
+    /// `root T`: one resource per workspace, which the launcher opens.
     Root(RootDecl),
-    /// `default view v for T`: the view a window of a `T` uses unless changed.
     DefaultView(DefaultViewDecl),
-    /// `row view v for T`: the row a list of `T`s shows for each item.
     RowView(DefaultViewDecl),
-    /// `views a, b for T`: the views a window of a `T` switches between, in the order written.
     Views(ViewsDecl),
-    /// `scenario "name" { ... }`: named seed data, run as a hidden action.
     Scenario(ScenarioDecl),
-    /// `trigger due(t: Task) at t.at: notify_due(t)`: when an action runs by itself.
     Trigger(TriggerDecl),
     Action(ActionDecl),
     View(ViewDecl),
@@ -85,8 +72,6 @@ pub enum Item {
 }
 
 impl Item {
-    /// The `///` lines a declaration is written with, in order; an item that takes none has
-    /// none.
     pub fn doc(&self) -> &[String] {
         match self {
             Self::Type(d) => &d.doc,
@@ -102,7 +87,6 @@ impl Item {
         }
     }
 
-    /// Where the item is written.
     pub fn span(&self) -> Span {
         match self {
             Self::Use(d) => d.span,
@@ -134,33 +118,28 @@ pub struct TypeDecl {
     pub node: NodeId,
     pub doc: Vec<String>,
     pub name: Ident,
-    /// `(origin: mail.message)`: the outside service whose resources the type holds
-    /// (convergence.md, "Outside services"), as the dotted name of one of its kinds.
+    /// `(origin: mail.message)`: the outside service kind whose resources the type holds
+    /// (convergence.md, "Outside services").
     pub origin: Option<Ident>,
-    /// `(title: subject)`: the field a record of the type is named by
-    /// ([`crate::resolve::TypeInfo::name_field`]).
+    /// `(title: subject)`: the field a record is named by ([`crate::resolve::TypeInfo::name_field`]).
     pub title: Option<TitleDecl>,
-    /// `(untitled: "Untitled")`: what a record of the type is called while its title is empty
-    /// ([`crate::resolve::TypeInfo::name_field`]).
+    /// `(untitled: "Untitled")`: what a record is called while its title is empty.
     pub untitled: Option<UntitledDecl>,
     pub fields: Vec<FieldDecl>,
-    /// `search { ... }`: what search, a list's filters and agents offer of the type.
     pub search: Option<SearchBlock>,
     pub span: Span,
 }
 
-/// The field a record of a type is named by, as the app writes it: a field of the type that
-/// holds text, which every surface that names one of its records reads (a row, a window's title,
-/// a reference, history).
+/// The field a record is named by: a text field of the type, read wherever one is named (a row, a
+/// window's title, a reference, history).
 #[derive(Clone, Debug, PartialEq)]
 pub struct TitleDecl {
     pub field: Ident,
     pub span: Span,
 }
 
-/// What a type is called while its title is empty, as the app writes it: the words every surface
-/// that names one of its records falls back to (a row, a window's title, a reference, history),
-/// and the placeholder its title field edits with.
+/// What a type is called while its title is empty: what surfaces fall back to, and the placeholder
+/// its title field edits with.
 #[derive(Clone, Debug, PartialEq)]
 pub struct UntitledDecl {
     pub words: String,
@@ -168,8 +147,7 @@ pub struct UntitledDecl {
 }
 
 /// `search { filter done; sort due oldest; hide notes }` in a type (search.md, "What a type
-/// declares"): the filters people and agents find its resources by, in order, its default order,
-/// and fields kept out of filters.
+/// declares"): its filters in order, its default order and fields kept out of filters.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SearchBlock {
     pub entries: Vec<SearchEntry>,
@@ -184,15 +162,15 @@ pub struct SearchEntry {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum SearchEntryKind {
-    /// `filter unread "Unread" (icon: .mail)`: a filter on a field, its control derived from
-    /// the field's type.
+    /// `filter unread "Unread" (icon: .mail)`: a filter on a field, its control derived from the
+    /// field's type.
     Field {
         field: Ident,
         label: Option<String>,
         opts: Vec<ActionOpt>,
     },
-    /// `filter "Open" = not done (icon: .circle)`: a named predicate over the resource's own
-    /// fields, shown as a toggle.
+    /// `filter "Open" = not done (icon: .circle)`: a named predicate over the resource's fields,
+    /// shown as a toggle.
     Named {
         label: String,
         label_span: Span,
@@ -205,7 +183,7 @@ pub enum SearchEntryKind {
     Hide { field: Ident },
 }
 
-/// `enum Name { a, b(x: T, y: U), c }`: a sum type. Values are written `.a`, `.b(x: 1, y: 2)`.
+/// `enum Name { a, b(x: T, y: U), c }`: values are written `.a`, `.b(x: 1, y: 2)`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct EnumDecl {
     pub node: NodeId,
@@ -220,9 +198,7 @@ pub struct VariantDecl {
     pub node: NodeId,
     pub doc: Vec<String>,
     pub name: Ident,
-    /// The payload fields, in order; empty for a variant without payload.
     pub fields: Vec<Param>,
-    /// `(icon: .pin)` after the name and payload, as written.
     pub opts: Vec<ActionOpt>,
     pub span: Span,
 }
@@ -254,8 +230,8 @@ pub struct DefaultViewDecl {
     pub span: Span,
 }
 
-/// `views project_list, project_board for Project`: what a window of the type switches between.
-/// Only views named here are a window's; any other view of the type is the app's own helper.
+/// `views project_list, project_board for Project`: what a window of the type switches between. Any
+/// other view of the type is the app's own helper.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ViewsDecl {
     pub node: NodeId,
@@ -265,8 +241,8 @@ pub struct ViewsDecl {
     pub span: Span,
 }
 
-/// One view of a `views` declaration, with the short label and icon it is offered by:
-/// `project_board (icon: .columns)`.
+/// One view of a `views` declaration, with the label and icon it is offered by: `project_board
+/// (icon: .columns)`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ViewsEntry {
     pub view: Ident,
@@ -281,16 +257,15 @@ pub struct ScenarioDecl {
     pub doc: Vec<String>,
     pub name: String,
     pub name_span: Span,
-    /// `scenario "editing a note" -> Note { ... }`: what the scenario returns, which the window
-    /// shows once it is staged, as it shows what a primary action made.
+    /// `scenario "editing a note" -> Note { ... }`: what the scenario returns, which the window shows
+    /// once staged.
     pub result: Option<TypeExpr>,
     pub body: Block,
     pub span: Span,
 }
 
-/// `trigger due(t: Task) at t.at: notify_due(t)`: when one of the package's actions runs by
-/// itself. The host runs it for each resource of the parameter's type, as the app's own
-/// invocation: once at the instant the resource's field holds, or at each period.
+/// `trigger due(t: Task) at t.at: notify_due(t)`: when one of the package's actions runs by itself,
+/// run for each resource of the parameter's type as the app's own invocation.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TriggerDecl {
     pub node: NodeId,
@@ -304,11 +279,9 @@ pub struct TriggerDecl {
     pub span: Span,
 }
 
-/// When a trigger runs.
 #[derive(Clone, Debug, PartialEq)]
 pub enum TriggerWhen {
-    /// `every 30m`: at each multiple of the length, counted from the epoch, so every device
-    /// agrees on when one comes.
+    /// `every 30m`: at each multiple of the length, counted from the epoch, so every device agrees.
     Every {
         amount: i64,
         unit: &'static str,
@@ -343,13 +316,11 @@ pub struct TypeExpr {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum TypeExprKind {
-    /// `Int`, `Album`, `todo.Item`.
     Named(Vec<Ident>),
-    /// `List<T>`, `Collection<T>`, ...
     Generic(Ident, Vec<TypeExpr>),
     Tuple(Vec<TypeExpr>),
-    /// `(T) -> View`: what a parameter of a view takes when it is given a lambda or a block
-    /// with an item.
+    /// `(T) -> View`: what a parameter of a view takes when it is given a lambda or a block with an
+    /// item.
     Fn(Vec<TypeExpr>, Box<TypeExpr>),
     /// `TextChannel | Thread`: a resource of any of these types.
     Union(Vec<TypeExpr>),
@@ -360,34 +331,26 @@ pub struct Param {
     pub node: NodeId,
     pub name: Ident,
     pub ty: TypeExpr,
-    /// `done: Bool = not item.done`: an action parameter's default, evaluated when the action is
-    /// invoked without it, over the parameters before it, and recorded as the argument. Boxed:
-    /// most parameters have none, and a parameter stays small enough to pass by value.
+    /// `done: Bool = not item.done`: a default evaluated when the action is invoked without it, over
+    /// the parameters before it, and recorded as the argument. Boxed: most parameters have none.
     pub default: Option<Box<Expr>>,
-    /// `above: Option<Task> (above)`: the place the view offers the action in supplies it, and
-    /// no invocation does: a row of a list gives the row above it in its own visible group.
+    /// `above: Option<Task> (above)`: the place the view offers the action in supplies it, not an
+    /// invocation.
     pub place: Option<Ident>,
-    /// `saved: Bool (label: "On the Watch later list")`: what the parameter is called where a
-    /// person gives it, when its name in words does not say what it holds.
+    /// `saved: Bool (label: "On the Watch later list")`: what the parameter is called where a person
+    /// gives it.
     pub label: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Proposal {
     pub view: Ident,
-    /// The action parameters passed to the view, when written out.
     pub args: Option<Vec<Ident>>,
 }
 
-/// `primary`, `destructive` or `migration` before `action`: how the action is, not where a
-/// surface shows it.
-///
-/// A surface decides placement from what the action offers a person: one that toggles a state
-/// (`on:`) stands as a control of the header where the person sees whether it is on, every other
-/// offered action goes in an item's menu, the header's menu or the palette, and a view that
-/// places the actions of what it shows says their order and which one leads
-/// (`actions: [check(primary: true), …]`). A role never moves an action between those lists —
-/// only a migration, which the platform runs itself, is left out of them.
+/// `primary`, `destructive` or `migration` before `action`: how the action is, not where a surface
+/// shows it. A surface decides placement from what the action offers a person, never from its role;
+/// only a migration is left out.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ActionRole {
     /// The one main action on its subject: the header's Primary button and the empty state's
@@ -395,9 +358,8 @@ pub enum ActionRole {
     Primary,
     /// Drawn as destructive; undone rather than confirmed.
     Destructive,
-    /// `migration action`: never offered; the platform runs it once on each resource of its
-    /// subject's type that a version before it wrote, as an ordinary action, to bring what that
-    /// version stored to where this one keeps it.
+    /// `migration action`: never offered; the platform runs it once on each resource an earlier
+    /// version wrote.
     Migration,
 }
 
@@ -426,29 +388,24 @@ pub struct ActionDecl {
     pub name: Ident,
     pub params: Vec<Param>,
     pub result: Option<TypeExpr>,
-    /// `uses web, time`: the effects the action's body has, which it records and replays
-    /// ([`crate::effects::Effect`]). A body that reads one it does not declare is refused.
+    /// `uses web, time`: the effects the body has, which it records and replays. A body that reads
+    /// one it does not declare is refused.
     pub uses: Vec<Ident>,
     pub proposal: Option<Proposal>,
-    /// `(icon: .plus, label: "New")`, as written.
     pub opts: Vec<ActionOpt>,
     /// The `require` lines heading the body: when the action is available on its subject.
     pub requires: Vec<Require>,
-    /// The `applies` lines heading the body: when the action can apply to its subject at all,
-    /// as the item it is offered on stands in the view offering it (`applies above != .none`).
-    /// A surface offering it says so, and leaves it out of an item's menu rather than showing
-    /// a row that can never work there.
+    /// The `applies` lines heading the body: when the action can apply where it is offered (`applies
+    /// above != .none`). A surface then leaves it out of an item's menu rather than showing a row
+    /// that can never work.
     pub applies: Vec<Require>,
     pub body: Block,
     pub span: Span,
 }
 
-/// `require not d.sent "{d.subject} went already"`, heading an action's body: a condition on the
-/// action's subject (its first parameter) the action needs, and why it is unavailable when the
-/// condition does not hold. Where the action would be offered on the subject (its window's
-/// header, a menu, an agent's choices) it is not offered then; invoked anyway, it is refused
-/// with the reason before it changes anything. The condition is pure: it reads only the
-/// subject, as the action's presentation does.
+/// `require not d.sent "{d.subject} went already"`: a condition on the subject the action needs, and
+/// why it is unavailable without it. Not offered where it would be; invoked anyway, it is refused
+/// with the reason before it changes anything. The condition reads only the subject.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Require {
     pub cond: Expr,
@@ -458,9 +415,8 @@ pub struct Require {
 }
 
 impl ActionDecl {
-    /// Whether the action's presentation follows its subject: a `label:` or `icon:` written
-    /// as an `if`, an `on:` state, or a `require` on it. It is then lowered to a hidden view of
-    /// the subject.
+    /// Whether the presentation follows the subject: a `label:` or `icon:` written as an `if`, an
+    /// `on:` state, or a `require` on it. It is then lowered to a hidden view of the subject.
     pub fn presents_state(&self) -> bool {
         !self.requires.is_empty()
             || self.opts.iter().any(|o| match o.name.name.as_str() {
@@ -474,8 +430,8 @@ impl ActionDecl {
             })
     }
 
-    /// Whether `label` is text that interpolates the subject, and nothing else: it follows the
-    /// subject wherever the action is offered on it.
+    /// Whether `label` is text interpolating the subject and nothing else: it then follows the
+    /// subject wherever the action is offered.
     pub fn label_reads_subject(&self, label: &Expr) -> bool {
         let ExprKind::Str(parts) = &label.kind else {
             return false;
@@ -507,12 +463,12 @@ pub struct ViewDecl {
     pub node: NodeId,
     pub doc: Vec<String>,
     pub name: Ident,
-    /// `template view body(content: View)`: a view that expands where it is called, its nodes
-    /// the caller's, whatever its parameters are. A view whose parameters are written over types,
-    /// state, functions or views is one anyway.
+    /// `template view body(content: View)`: a view that expands where it is called, its nodes the
+    /// caller's, whatever its parameters are. A view whose parameters are over types, state,
+    /// functions or views is one anyway.
     pub template: bool,
-    /// `view list<T>(...)`: the types its parameters are written over, each taken from what a
-    /// call passes.
+    /// `view list<T>(...)`: the types its parameters are written over, each taken from what a call
+    /// passes.
     pub type_params: Vec<Ident>,
     pub params: Vec<Param>,
     pub body: Vec<UiStmt>,
@@ -608,7 +564,6 @@ pub enum BinOp {
     Mul,
     Div,
     Rem,
-    /// `??`: the Option's value, or the fallback.
     Coalesce,
 }
 
@@ -650,8 +605,7 @@ pub enum UnOp {
     Not,
 }
 
-// The reference literal is the lexer's: it reads `@app.Type:id` as one token, and the tree keeps
-// the same value a token held.
+// The reference literal is the lexer's: it reads `@app.Type:id` as one token.
 pub use tilolang_lex::RefLit;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -670,14 +624,10 @@ pub struct Arg {
 pub enum ExprKind {
     Int(i64),
     Float(f64),
-    /// `11rem`, `4dp`, `1fr`.
     Length(f64, crate::types::LengthUnit),
-    /// `7d`, `5m`: a length of time, the value of a filter (`received: -7d`).
     Duration(i64, &'static str),
-    /// `2026-06-29` (a Date), `2026-06-29T07:02:00Z` (a Time) or `2026-08` (a month, the value
-    /// of a filter), in canonical ISO text.
+    /// `2026-06-29`, `2026-06-29T07:02:00Z` or `2026-08`, in canonical ISO text.
     Calendar(String),
-    /// `a..b`, `a..`, `..b`: a range, the value of a filter (`due: today()..today() + 7d`).
     Range {
         lo: Option<Box<Expr>>,
         hi: Option<Box<Expr>>,
@@ -688,32 +638,25 @@ pub enum ExprKind {
     Ident(String),
     Tuple(Vec<Expr>),
     List(Vec<Expr>),
-    /// `if cond { ... } else { ... }`: the value of the branch taken, or a statement.
     If {
         cond: Box<Expr>,
         then: Block,
         els: Option<Box<Expr>>,
     },
-    /// `if let a = x, b = y { ... } else { ... }`: the first block with each Option's value
-    /// bound, when every one has one; else the `else` branch.
     IfLet {
         binds: Vec<LetBind>,
         then: Block,
         els: Option<Box<Expr>>,
     },
-    /// `{ stmts; expr }`: the value of the last expression.
     Block(Block),
-    /// `match e { .a => x, .b(p, q) => y }`.
     Match {
         scrutinee: Box<Expr>,
         arms: Vec<MatchArm>,
     },
-    /// `.name` or `.name(field: value, ...)`: a variant of the enum the context expects.
     Variant {
         name: Ident,
         args: Option<Vec<Arg>>,
     },
-    /// `x -> ...`, or `(x, y) -> ...` for the values a function parameter of several takes.
     Lambda {
         params: Vec<Ident>,
         body: Box<Expr>,
@@ -731,44 +674,34 @@ pub enum ExprKind {
         base: Box<Expr>,
         name: Ident,
     },
-    /// `x?.name` or `x?.name(args)`: the field or method of the Option `x`'s value, as an
-    /// Option; `.none` when `x` is.
     OptChain {
         base: Box<Expr>,
         name: Ident,
         args: Option<Vec<Arg>>,
     },
-    /// `f(args)`, or `json.decode<Item>(text)` with the type arguments its callee takes.
     Call {
         callee: Box<Expr>,
-        /// The types written between `<` and `>` before the arguments, in order.
         types: Vec<TypeExpr>,
         args: Vec<Arg>,
     },
-    /// `try act(args)`: invokes in an action; a `Result` of the action's result and the reason
-    /// it failed.
+    /// `try act(args)`: invokes in an action; a `Result` of the action's result and the reason it
+    /// failed.
     Try(Box<Expr>),
-    /// `suggest act(args)`: proposes the action instead of applying it, as a suggestion that
-    /// waits on the resource it is about; an agent block's value.
+    /// `suggest act(args)`: proposes the action instead of applying it; an agent block's value.
     Suggest(Box<Expr>),
-    /// `root T`: the workspace's resource of the root type `T`.
     Root(TypeExpr),
 }
 
-/// `name = value` of an `if let`: `value` is an Option, `name` its value.
 #[derive(Clone, Debug, PartialEq)]
 pub struct LetBind {
     pub name: Ident,
     pub value: Expr,
 }
 
-/// `.b(x, y)`: a variant and names for its payload fields, in order (`_` ignores one).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Pattern {
-    /// The variant (`.some`), or for a type pattern the name the value is bound to.
     pub variant: Ident,
     pub binds: Vec<Ident>,
-    /// `t: TextChannel`: the case of a union, by its type.
     pub ty: Option<TypeExpr>,
     pub span: Span,
 }
@@ -805,35 +738,29 @@ pub enum UiKind {
     },
     Let {
         name: Ident,
-        /// The type the value is read as, when it is written: `let shown: Option<Date> = ...`.
         ty: Option<TypeExpr>,
         value: Expr,
     },
-    /// `if let a = x, b = y { ... } else { ... }` in a view body.
     IfLet {
         binds: Vec<LetBind>,
         then: Vec<UiStmt>,
         els: Option<Vec<UiStmt>>,
     },
-    /// `state name: T = default`.
     State(StateDecl),
-    /// `"Due": d.due`: a labelled fact, which E098 rejects — a fact is a chip derived from
-    /// the field it shows (`facts(of)`), never a label and a value.
+    /// `"Due": d.due`: a labelled fact, which E098 rejects: a fact is a chip derived from the field
+    /// it shows (`facts(of)`).
     Fact {
         node: NodeId,
         label: Expr,
         value: Expr,
     },
-    /// `trailing: { ... }`: the content of the slot `trailing` of a `ui.*` component.
     Slot {
         node: NodeId,
         name: Ident,
         body: Vec<UiStmt>,
     },
-    /// `on activate: open(c)`: what the event `activate` of a `ui.*` component does. An event
-    /// that carries a value names it, `on select(x: Note): open(x)`, and passes it on as an
-    /// argument of the action; one that also says where it lands names that second,
-    /// `on drop(moved: Task, at: Int): place(moved, at)`.
+    /// `on activate: open(c)`: what the component's event does. An event that carries a value names
+    /// it (`on select(x: Note): open(x)`); one that also says where it lands names that second.
     On {
         event: Ident,
         param: Option<EventParam>,
@@ -842,11 +769,10 @@ pub enum UiKind {
     },
 }
 
-/// The value an event carries, as `on select(x: Note): ...` names it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct EventParam {
     pub name: Ident,
-    /// Its type, when written; else the type the component's description gives.
+    /// Its type when written; else the type the component's description gives.
     pub ty: Option<TypeExpr>,
 }
 
@@ -870,10 +796,9 @@ pub struct StateDecl {
 #[derive(Clone, Debug, PartialEq)]
 pub struct UiCall {
     pub node: NodeId,
-    /// A call of a UI primitive or of a view, or a bare name.
     pub call: Expr,
-    /// The names a block opens with: `list(xs) { x -> ... }`, or a template's function of
-    /// several values, `rows(xs) { (x, under) -> ... }`. Empty for a plain block.
+    /// The names a block opens with: `list(xs) { x -> ... }`, or `(x, under)` for a template's
+    /// function of several values.
     pub params: Vec<Ident>,
     pub block: Option<Vec<UiStmt>>,
     pub anchor: Option<Ident>,

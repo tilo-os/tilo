@@ -1,29 +1,21 @@
 //! A package's words as a Fluent catalogue (docs/designs/app-language/i18n.md).
 //!
-//! Every word a package shows about what it declares (a type's name and noun, a field's, an
-//! action's label, an enum case's, each description) is a message keyed by the declaration's
-//! stable id, so renaming a declaration keeps its translations as it keeps its data. The
-//! compiler writes the package's source catalogue from its source, `locales/en-US.ftl`, the way
-//! it writes `app.ids`; translations sit beside it and may refine any message with Fluent's
-//! selectors (a gender, a noun the app words its own way, another word order). The source
-//! catalogue may be refined the same way: a message under a `# refined` comment is the author's,
-//! and writing the catalogue again keeps it as written.
+//! Every word a package shows about what it declares is a message keyed by the declaration's stable
+//! id, so renaming a declaration keeps its translations as it keeps its data. The compiler writes
+//! the package's source catalogue, `locales/en-US.ftl`, the way it writes `app.ids`; translations
+//! sit beside it.
 
 use std::fmt::Write as _;
 
 use crate::meta::{PackageMeta, TypeMeta, in_words, plural};
 
-/// The language a package's source is written in, and the name of its source catalogue.
 pub const SOURCE_LOCALE: &str = "en-US";
 
-/// The directory a package keeps its catalogues in.
 pub const LOCALES_DIR: &str = "locales";
 
-/// The key of the message of the declaration with the stable id `id`.
-///
-/// A key is a Fluent message id, which takes letters, digits, `_` and `-` only; a written view's
-/// id carries the `~` of the loop it was made in, so anything else becomes `-`. A catalogue with
-/// one invalid key parses as nothing at all, so no app's words would read.
+/// The key of the message of the declaration with the stable id `id`. A key is a Fluent message id:
+/// letters, digits, `_` and `-` only, so the `~` of a written view's id becomes `-`. A catalogue
+/// with one invalid key parses as nothing at all, so no app's words would read.
 #[must_use]
 pub fn key_of(id: &str) -> String {
     let mut key = String::from("d-");
@@ -37,18 +29,14 @@ pub fn key_of(id: &str) -> String {
     key
 }
 
-/// The key of the message of the filter `key` a type with the stable id `ty` declares: a
-/// filter's own words, which a translation replaces (`d-<ty>-filter-<key>`). It is the filter's
-/// own even where it shows a field's label, since `filter watch_later "Watch later"` says
-/// something else than the field is called.
+/// The key of the message of the filter `key` a type with the stable id `ty` declares
+/// (`d-<ty>-filter-<key>`), which a translation replaces.
 #[must_use]
 pub fn filter_key(ty: &str, key: &str) -> String {
     key_of(&format!("{ty}-filter-{key}"))
 }
 
-/// The key of the message of the parameter `param` of the action with the stable id `action`:
-/// what the parameter is called where a person gives it (`d-<action>-<param>`). It is keyed by
-/// its name, which an invocation names it by.
+/// The key of the message of the parameter `param` of the action `action` (`d-<action>-<param>`).
 #[must_use]
 pub fn param_key(action: &str, param: &str) -> String {
     key_of(&format!("{action}-{param}"))
@@ -57,8 +45,8 @@ pub fn param_key(action: &str, param: &str) -> String {
 /// The comment that marks a message of the source catalogue as the author's own.
 pub const REFINED: &str = "# refined";
 
-/// The package's source catalogue as its source says it reads, keeping every message of
-/// `committed` (the catalogue on disk) that its author marked refined.
+/// The package's source catalogue as its source says it reads, keeping every message of `committed`
+/// that its author marked refined.
 #[must_use]
 pub fn source_catalogue_keeping(meta: &PackageMeta, committed: &str) -> String {
     let refined = refined_blocks(committed);
@@ -77,8 +65,8 @@ pub fn source_catalogue_keeping(meta: &PackageMeta, committed: &str) -> String {
     joined(&blocks)
 }
 
-/// `blocks` as one catalogue: a blank line between them, one newline at the end, nothing when no
-/// block is left.
+/// `blocks` as one catalogue: a blank line between them, one newline at the end, nothing when no block
+/// is left.
 fn joined<S: AsRef<str>>(blocks: &[S]) -> String {
     let mut out = String::new();
     for block in blocks {
@@ -92,7 +80,6 @@ fn joined<S: AsRef<str>>(blocks: &[S]) -> String {
     out
 }
 
-/// The message key `block` of a catalogue holds: the id of its first line that is a message.
 fn message_key(block: &str) -> Option<&str> {
     block
         .lines()
@@ -100,7 +87,6 @@ fn message_key(block: &str) -> Option<&str> {
         .and_then(|line| line.split(" = ").next())
 }
 
-/// The messages of `catalogue` under a [`REFINED`] comment, by key, each with its comment.
 fn refined_blocks(catalogue: &str) -> Vec<(String, String)> {
     catalogue
         .split("\n\n")
@@ -114,9 +100,7 @@ fn refined_blocks(catalogue: &str) -> Vec<(String, String)> {
         .collect()
 }
 
-/// A declared name as a label: in words, its first letter upper case (`NoteOrder` is
-/// `Note order`). It is the words a declaration is called by when nothing names it otherwise,
-/// and the message catalogue's source for it, which a translation replaces.
+/// A declared name as a label: in words, its first letter upper case (`NoteOrder` is `Note order`).
 #[must_use]
 pub fn label(name: &str) -> String {
     let words = in_words(name);
@@ -152,8 +136,8 @@ pub fn keys(catalogue: &str) -> Vec<String> {
     out
 }
 
-/// The one-line word `catalogue` gives `key`, when it has one (`d-so-tilo-lang-today = Heute`): a
-/// name a package gives itself, which a manifest carries so every surface reads it.
+/// The one-line word `catalogue` gives `key`, when it has one (`d-so-tilo-lang-today = Heute`): a name
+/// a package gives itself.
 #[must_use]
 pub fn word(catalogue: &str, key: &str) -> Option<String> {
     for line in catalogue.lines() {
@@ -176,7 +160,6 @@ pub fn word(catalogue: &str, key: &str) -> Option<String> {
     None
 }
 
-/// The keys `one` has that `two` does not.
 fn keys_only_in(one: &str, two: &str) -> Vec<String> {
     let other = keys(two);
     keys(one)
@@ -185,24 +168,20 @@ fn keys_only_in(one: &str, two: &str) -> Vec<String> {
         .collect()
 }
 
-/// The keys `translation` has that `source` does not: words the source has no message for (its
-/// key changed or went), so their translation is never shown.
+/// The keys `translation` has that `source` does not, so their translation is never shown.
 #[must_use]
 pub fn stale_keys(source: &str, translation: &str) -> Vec<String> {
     keys_only_in(translation, source)
 }
 
-/// The keys `before` has that `after` does not: the words a package stopped saying, which its
-/// translations drop when the source catalogue is written.
+/// The keys `before` has that `after` does not: the words a package stopped saying.
 #[must_use]
 pub fn gone_keys(before: &str, after: &str) -> Vec<String> {
     keys_only_in(before, after)
 }
 
-/// `translation` without the words `gone` names: a message the source stopped saying goes whole,
-/// with its comments; an attribute it stopped saying goes from the message that keeps the rest,
-/// the lines its selector continues on with it. Every other word stays as its translator wrote it,
-/// and so does every key `gone` does not name.
+/// `translation` without the words `gone` names: a message goes whole, with its comments; an attribute
+/// goes from the message that keeps the rest. Every other word stays as its translator wrote it.
 #[must_use]
 pub fn pruned(translation: &str, gone: &[String]) -> String {
     let mut blocks: Vec<String> = Vec::new();
@@ -212,7 +191,6 @@ pub fn pruned(translation: &str, gone: &[String]) -> String {
             continue;
         }
         let mut kept: Vec<&str> = Vec::new();
-        // Inside a dropped attribute: how many braces its value still holds open.
         let mut open = 0;
         for line in block.lines() {
             if open > 0 {
@@ -247,10 +225,9 @@ fn braces(line: &str) -> i32 {
     })
 }
 
-/// Why `words` read as code rather than as the words a person says, if they do: a name keeps
-/// what it was written with (`save_draft`, `notes.save()`, `store::notes`), and a word of one
-/// letter inside a phrase is the binding a name was built from (`Note editor for t`). A name of
-/// one word may be a letter of its own (an axis `x`).
+/// Why `words` read as code rather than as words a person says, if they do: a name keeps what it was
+/// written with (`save_draft`, `notes.save()`, `store::notes`), and a one-letter word inside a phrase
+/// is the binding a name was built from.
 #[must_use]
 pub fn reads_as_code(words: &str) -> Option<&'static str> {
     if words.contains('_') && !words.contains(' ') {
@@ -272,18 +249,14 @@ pub fn reads_as_code(words: &str) -> Option<&'static str> {
     None
 }
 
-/// Whether `word` is one letter: a binding a name was built from, or the words English writes
-/// with one letter (`a`, `I`).
 fn one_letter(word: &str) -> bool {
     let mut chars = word.chars();
     matches!((chars.next(), chars.next()), (Some(c), None) if c.is_alphabetic())
         && !matches!(word, "a" | "A" | "I")
 }
 
-/// The views of `meta` whose name reads as code ([`reads_as_code`]), each with the words it is
-/// called by: a view's name is one a person hears (its window's, its bar's), and a part the
+/// The views of `meta` whose name reads as code, each with the words it is called by. A part the
 /// compiler makes of a loop body is named after the view it stands in, never after its binding.
-/// A field's name in words is data (`canvas_x` is "Canvas x", a place), not a name to say.
 #[must_use]
 pub fn views_named_as_code(meta: &PackageMeta) -> Vec<(String, String)> {
     meta.views
@@ -306,8 +279,8 @@ pub fn source_catalogue(meta: &PackageMeta) -> String {
     for ty in &meta.types {
         message(&mut out, &ty.id, &label(&ty.name), &ty.doc);
         attribute(&mut out, "noun", &noun(ty));
-        // What a record of it is called while its title is empty, which every surface that
-        // names one shows: a type's own words, translated with the rest.
+        // What a record of it is called while its title is empty, which every surface that names one
+        // shows.
         if let Some(untitled) = &ty.untitled {
             attribute(&mut out, "untitled", &pattern(untitled));
         }
@@ -315,7 +288,6 @@ pub fn source_catalogue(meta: &PackageMeta) -> String {
             message(&mut out, &field.id, &label(&field.name), &field.doc);
         }
         for filter in &ty.search.filters {
-            // What a filter is, for agents, is its field's doc: the field's message says it.
             named(
                 &mut out,
                 &filter_key(&ty.id, &filter.key),
@@ -336,12 +308,11 @@ pub fn source_catalogue(meta: &PackageMeta) -> String {
         if let Some(did) = &action.did {
             attribute(&mut out, "did", &pattern(did));
         }
-        // What it tells a person, as a notification shows it (`notify`'s title and body).
+        // What it tells a person, as a notification shows it.
         for word in meta.words.iter().filter(|word| word.view == action.id) {
             attribute(&mut out, &word.key, &pattern(&word.text));
         }
-        // What each argument is called where a person gives it; the subject is the record it
-        // runs on, which nobody gives.
+        // What each argument is called where a person gives it; the subject is the record it runs on.
         for param in meta.arguments(&action.params) {
             named(
                 &mut out,
@@ -351,8 +322,7 @@ pub fn source_catalogue(meta: &PackageMeta) -> String {
             );
         }
     }
-    // The words a `fn` says (`std.say("...")`) are its attributes; a fn that says none is no word
-    // a person reads.
+    // The words a `fn` says (`std.say("...")`) are its attributes.
     for function in &meta.fns {
         let mut said = meta
             .words
@@ -367,11 +337,9 @@ pub fn source_catalogue(meta: &PackageMeta) -> String {
             attribute(&mut out, &word.key, &pattern(&word.text));
         }
     }
-    // A view's doc comment says how it draws, for its author; a person sees its label.
-    // The words it shows as written are its attributes (i18n.md §2).
-    // A view the compiler made of a loop body is a part of the view it stands in, not a
-    // declaration: it takes that view's name and shows its item's own words, so it has no
-    // message of its own.
+    // A view's doc comment says how it draws, for its author; a person sees its label. The words it
+    // shows as written are its attributes (i18n.md §2). A view the compiler made of a loop body takes
+    // that view's name, so it has no message of its own.
     for view in meta.views.iter().filter(|view| view.row_of.is_none()) {
         message(&mut out, &view.id, &label(&view.name), "");
         for word in meta.words.iter().filter(|word| word.view == view.id) {
@@ -392,7 +360,6 @@ fn noun(ty: &TypeMeta) -> String {
     )
 }
 
-/// One message: its words, and its description as an attribute when it has one.
 fn message(out: &mut String, id: &str, words: &str, doc: &str) {
     named(out, &key_of(id), words, doc);
 }
@@ -435,8 +402,8 @@ fn attribute(out: &mut String, name: &str, value: &str) {
     let _ = writeln!(out, "    .{name} = {value}");
 }
 
-/// Words as a Fluent pattern: `{expr}` interpolation becomes a variable named after what it
-/// reads (`{t.count}` is `{ $count }`), every other brace a literal.
+/// Words as a Fluent pattern: `{expr}` becomes a variable named after what it reads (`{t.count}` is
+/// `{ $count }`), every other brace a literal.
 fn pattern(words: &str) -> String {
     let mut out = String::new();
     let mut rest = words;
@@ -447,9 +414,8 @@ fn pattern(words: &str) -> String {
                 let _ = write!(out, "{{ ${} }}", variable(expr));
                 rest = next;
             }
-            // Braces that do not hold a value are text: a description quotes code as its author
-            // wrote it (`{ ... }`), and Fluent would fail the catalogue's whole message on a
-            // variable the code sample was read as.
+            // Braces that do not hold a value are text: a description quotes code as its author wrote
+            // it.
             _ => {
                 out.push_str(&escape("{"));
                 rest = after;
@@ -463,8 +429,7 @@ fn pattern(words: &str) -> String {
     out
 }
 
-/// Whether what is between braces reads a value: a path, a call, a name, written without any
-/// space (`{t.count}`, `{count()}`, `{n}`).
+/// Whether what is between braces reads a value: a path, a call, a name, written without any space.
 fn interpolation(expr: &str) -> bool {
     !expr.is_empty()
         && expr
@@ -472,7 +437,6 @@ fn interpolation(expr: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '(' | ')'))
 }
 
-/// What a variable is called: the last name the interpolated expression reads.
 fn variable(expr: &str) -> String {
     expr.rsplit(|c: char| !(c.is_alphanumeric() || c == '_'))
         .find(|part| part.chars().next().is_some_and(char::is_alphabetic))
@@ -480,8 +444,8 @@ fn variable(expr: &str) -> String {
         .to_owned()
 }
 
-/// Text Fluent takes literally: braces as quoted literals, one line. One pass over the text:
-/// replacing in two passes would escape the `}` of the `{` it just wrote.
+/// Text Fluent takes literally: braces as quoted literals, one line. One pass over the text: replacing
+/// in two passes would escape the `}` of the `{` it just wrote.
 fn escape(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     for c in text.chars() {
@@ -503,8 +467,6 @@ mod tests {
     };
     use crate::meta::{PackageMeta, ViewMeta};
 
-    /// A word a screen reader announces is words; a name that keeps an identifier is not, and a
-    /// binding a name was built from is one letter read on its own.
     #[test]
     fn words_that_read_as_code_are_not_names() {
         for words in [
@@ -521,8 +483,6 @@ mod tests {
         }
     }
 
-    /// What an action tells a person is words a person reads: `notify`'s title and body are
-    /// messages of the action, so a catalogue translates them as it translates a view's.
     #[test]
     fn what_an_action_notifies_is_a_message_of_the_action() {
         let mut meta = PackageMeta::default();
@@ -547,9 +507,6 @@ mod tests {
         assert!(catalogue.contains(".w-due = Due { $d }"), "{catalogue}");
     }
 
-    /// A type's noun in the catalogue says what one of it is called and what several are: a name
-    /// that already names several is one of them and all of them, an irregular plural is
-    /// English's, and a word English counts no number of keeps one form.
     #[test]
     fn a_types_noun_is_one_of_it_and_several() {
         let mut meta = PackageMeta::default();
@@ -574,8 +531,6 @@ mod tests {
         }
     }
 
-    /// A view the compiler makes of a loop body is a part of the view it stands in: it has no
-    /// words of its own, so the catalogue never names its binding.
     #[test]
     fn a_part_a_view_composes_has_no_words_of_its_own() {
         let mut meta = alone("Note editor");
@@ -588,7 +543,6 @@ mod tests {
         assert!(catalogue.contains("= Note editor"), "{catalogue}");
         assert!(!catalogue.contains("editor-row0"), "{catalogue}");
         assert!(!catalogue.contains(" for "), "{catalogue}");
-        // A part named after its binding is a name the compiler must never write.
         meta.views[1].name = "Note editor for t".to_owned();
         assert_eq!(
             views_named_as_code(&meta).len(),
@@ -598,7 +552,6 @@ mod tests {
         );
     }
 
-    /// A package whose one view is called `name`.
     fn alone(name: &str) -> PackageMeta {
         let mut meta = PackageMeta::default();
         meta.views.push(ViewMeta {
@@ -616,8 +569,6 @@ mod tests {
         meta
     }
 
-    /// A translation of words the source no longer has is reported by its key; a current one
-    /// is not.
     #[test]
     fn a_translation_of_words_gone_from_the_source_is_stale() {
         let source = "d-a = Inbox\n    .w-new = { $n } new\n\nd-b = Notes\n";
@@ -627,10 +578,6 @@ mod tests {
         assert!(stale_keys(source, "# a comment\nd-b = Notizen\n").is_empty());
     }
 
-    /// A translation has every word of its source and no more: writing the source catalogue
-    /// drops the words it stopped saying — a message whole, with its comments and attributes, an
-    /// attribute alone with the lines its selector continues on — and keeps every word it still
-    /// says, and every word the source never had, which is its translator's to fix.
     #[test]
     fn pruning_a_translation_drops_the_words_its_source_stopped_saying() {
         let before = "d-a = Inbox\n    .doc = Mail.\n    .w-new = { $n } new\n\nd-b = Notes\n    .noun = { $count ->\n        [one] notebook\n       *[other] notebooks\n    }\n\nd-c = Title\n    .doc = A title.\n";

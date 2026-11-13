@@ -1,12 +1,10 @@
 //! The wasm backend: IR to one wasm module per package.
 //!
-//! The module imports from `"tl"` only the [`Imp`]s it calls, in the order of that table. It
-//! exports `memory`, which holds the string literals and nothing else, and one function per
-//! declaration, named by its id: `a_<id>` for actions, `v_<id>` for views, `n_<id>` for fns,
-//! `d_<action>_<param>` for parameter defaults and `b_main` for a block. The metadata goes in the
-//! custom section `tilolang.meta`. An action's call of another package's action is a plain call
-//! of the `invoke` import; suspending and replaying a run is the host's job, so the guest keeps
-//! no state between calls.
+//! The module imports from `"tl"` only the [`Imp`]s it calls, in the order of that table. It exports
+//! `memory`, which holds the string literals and nothing else, and one function per declaration, named by
+//! its id: `a_<id>` for actions, `v_<id>` for views, `n_<id>` for fns, `d_<action>_<param>` for parameter
+//! defaults and `b_main` for a block. The metadata goes in the custom section `tilolang.meta`. Suspending
+//! and replaying a run is the host's job, so the guest keeps no state between calls.
 
 use crate::abi::Imp;
 use crate::ir::{BinOp, Conv, Ek, Expr, ForList, Func, Module as IrModule, Stmt};
@@ -206,10 +204,9 @@ impl Gen<'_> {
         self.i(Instruction::LocalSet(fl.list_local));
         self.i(Instruction::I64Const(0));
         self.i(Instruction::LocalSet(fl.idx_local));
-        // A loop reads every item, so it takes the count, not the length the store knows
-        // without reading it: a collection that checks its items as it reads them knows only
-        // how many it can hold at most until it has read them, and a loop bounded by that
-        // reads past the end ([`Imp::CollCount`]).
+        // A loop reads every item, so it takes the count, not the length the store knows without reading it:
+        // a collection that checks its items as it reads them knows only how many it can hold at most until it
+        // has read them, and a loop bounded by that reads past the end ([`Imp::CollCount`]).
         self.i(Instruction::LocalGet(fl.list_local));
         self.ops.push(Op::Imp(Imp::CollCount));
         self.i(Instruction::LocalSet(fl.len_local));
@@ -282,7 +279,6 @@ fn func_sig(f: &Func) -> (Vec<ValType>, Vec<ValType>) {
     (params, results)
 }
 
-/// Emits the module. `meta_json`, when given, becomes the `tilolang.meta` custom section.
 pub fn emit(m: &IrModule, meta_json: Option<&[u8]>) -> Vec<u8> {
     let mut pool = Pool::default();
     let bodies: Vec<Vec<Op>> = m
