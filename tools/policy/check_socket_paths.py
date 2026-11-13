@@ -59,10 +59,13 @@ def audit(root: Path = ROOT) -> tuple[Counter[str], int]:
             scanned += 1
             text = source.read_text(encoding="utf-8")
             code = rust_source.code_only(rust_source.production_source(text))
+            # The comment that allows a call sits on its own line, read from the
+            # source as written: `code` has comments removed, so its offsets do
+            # not address `text`.
+            lines = text.splitlines()
             for match in CALL.finditer(code):
-                start = text.rfind("\n", 0, match.start()) + 1
-                end = text.find("\n", match.end())
-                if ALLOW.search(text[start : end if end != -1 else len(text)]):
+                line = rust_source.line_number(code, match.start()) - 1
+                if line < len(lines) and ALLOW.search(lines[line]):
                     continue
                 found[str(relative)] += 1
     return found, scanned
