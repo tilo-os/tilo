@@ -515,6 +515,12 @@ impl RecordService {
                     })
                     .map_err(DoorError::Failed);
             }
+            if encoded.type_id == tilo_resource::read::TYPE {
+                return self
+                    .read_asked(&encoded.payload, resource)
+                    .map(Started::Done)
+                    .map_err(DoorError::Failed);
+            }
             if encoded.type_id == VIEW_TYPE {
                 return verbs::answer(&self.record, &encoded.payload, &self.words)
                     .map(Started::Done)
@@ -540,6 +546,44 @@ impl RecordService {
             value: None,
             resources: made.into_iter().collect(),
         }))
+    }
+}
+
+/// `resource` with the `read` every app's resource publishes (`tilo_resource::read`), unless it
+/// offers one itself.
+fn with_read(resource: ResourceSpec) -> ResourceSpec {
+    let read = tilo_resource::read::spec(None);
+    if resource.actions.iter().any(|action| action.id == read.id) {
+        return resource;
+    }
+    resource.with_action(read)
+}
+
+impl RecordService {
+    /// Answer `read` asked as `payload` of `resource`: what the `item` it names holds, or the
+    /// resource itself when it names none, as the host reads it now. A past version is read in
+    /// the app's own instance, which keeps the record's history.
+    fn read_asked(&self, payload: &[u8], resource: &str) -> Result<ActionOutput, String> {
+        let args: Json = if payload.is_empty() {
+            Json::Null
+        } else {
+            tilo_actions::decode_json(payload).map_err(|error| error.to_string())?
+        };
+        if args
+            .get("version")
+            .is_some_and(|version| !version.is_null())
+        {
+            return Err("a past version is read in the app's own window".to_owned());
+        }
+        let item = args
+            .get("item")
+            .and_then(Json::as_str)
+            .filter(|item| !item.is_empty())
+            .unwrap_or(resource);
+        Ok(ActionOutput {
+            value: Some(self.host.read_content(Some(item))?),
+            resources: Vec::new(),
+        })
     }
 }
 
@@ -838,9 +882,10 @@ impl Service for RecordService {
             .map(|tree| {
                 let mut tree = (**tree).clone();
                 kept_by_its_app(&mut tree);
-                // The record's root offers the record's history, as an app's own resource does
-                // in its instance.
-                crate::history::with_verbs(tree)
+                // The record's root offers the record's history and its `read`, as an app's own
+                // resource does in its instance: what the record holds is readable as typed data
+                // without a window of the app (`tilo_resource::read`).
+                with_read(crate::history::with_verbs(tree))
             })
             .collect();
         let words = self.host.runtime().words();

@@ -164,6 +164,14 @@ pub(super) fn surfaces() -> Vec<BrokerActionSurface> {
             vec![],
         ),
         on(
+            TASKS,
+            "tl.so.tilo.lang.tasks.Tasks",
+            "Tasks",
+            "read",
+            "Read the content",
+            vec![text("item")],
+        ),
+        on(
             &format!("{TASKS}/i1"),
             "tl.so.tilo.lang.tasks.Task",
             "Pay rent",
@@ -230,13 +238,6 @@ fn canvas_invoke(
         input[tools::INVOKE_REPLY] = reply.into();
     }
     (tools::INVOKE, input)
-}
-
-fn tilo(program: &str) -> (&'static str, Value) {
-    (
-        crate::programs::TILO,
-        serde_json::json!({ "program": program }),
-    )
 }
 
 /// The steps the session ran, by action, with their arguments.
@@ -319,11 +320,18 @@ fn the_first_turn_leads_with_the_canvas_and_leaves_host_programs_out() {
     assert!(first.contains("Inbox — Mail — shell:place:3"), "{first}");
     assert!(
         first.contains(&format!(
-            "{TASKS} — Tasks (tl.so.tilo.lang.tasks.Tasks); 1 of its items"
+            "{TASKS} — Tasks (tl.so.tilo.lang.tasks.Tasks); 1 items"
         )),
         "what there is to show names Tasks' root and counts its items: {first}"
     );
     assert!(first.contains(&format!("{MAIL} — Mail")), "{first}");
+    assert!(
+        first.contains(&format!(
+            "read: `{}`",
+            session_op(RECORDS_PEER, TASKS, "read")
+        )),
+        "what there is to show says how to read it: {first}"
+    );
     for host in ["Alacritty", "org.gnome.Calculator", "chromium-browser"] {
         assert!(
             !first.contains(host),
@@ -338,9 +346,10 @@ fn the_first_turn_leads_with_the_canvas_and_leaves_host_programs_out() {
     );
 }
 
-/// "Which of my tasks are due this week?" asked on the canvas: one program reads them, and the
-/// next turn places Tasks beside the conversation with the answer in words — two model calls,
-/// no app opened in a window, and the run succeeds with the words.
+/// "Which of my tasks are due this week?" asked on the canvas: the Tasks root's `read`, shown with
+/// it in the first turn, reads them, and the next turn places Tasks beside the conversation with
+/// the answer in words — two model calls, no app opened in a window, and the run succeeds with
+/// the words.
 #[test]
 fn a_question_is_answered_in_words_and_its_view_placed_beside_the_conversation() {
     let reply = "Two tasks are due this week: Pay rent on Tuesday and Call Ana on Thursday.";
@@ -348,8 +357,12 @@ fn a_question_is_answered_in_words_and_its_view_placed_beside_the_conversation()
         "which of my tasks are due this week?",
         vec![
             turn(
-                &[tilo(
-                    "find(tasks.Task).filter(t -> t.due <= date(\"2026-11-22\"))",
+                &[canvas_invoke(
+                    RECORDS_PEER,
+                    TASKS,
+                    "read",
+                    &serde_json::json!({}),
+                    None,
                 )],
                 64,
             ),
