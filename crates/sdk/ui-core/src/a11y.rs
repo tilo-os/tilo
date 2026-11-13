@@ -463,6 +463,18 @@ impl SharedAccessNode {
 }
 
 impl AccessNode {
+    /// This node and every node under it, in tree order.
+    #[must_use]
+    pub fn nodes(&self) -> Vec<&Self> {
+        let mut out = Vec::new();
+        let mut next = vec![self];
+        while let Some(node) = next.pop() {
+            out.push(node);
+            next.extend(node.children.iter().rev());
+        }
+        out
+    }
+
     pub fn new(role: Role) -> Self {
         Self {
             role,

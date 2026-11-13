@@ -504,26 +504,14 @@ fn shows(app: &mut TestApp<TlApp>, text: &str) -> bool {
         .any(|node| node.name.as_deref().is_some_and(|name| name.contains(text)))
 }
 
-fn access_walk<'a>(node: &'a ui::a11y::AccessNode, out: &mut Vec<&'a ui::a11y::AccessNode>) {
-    out.push(node);
-    for child in &node.children {
-        access_walk(child, out);
-    }
-}
-
 /// Every accessible node of the window.
 fn accessible(app: &mut TestApp<TlApp>) -> Vec<ui::a11y::AccessNode> {
     let snapshot = app.harness().inspection();
-    let all = snapshot.root.nodes();
-    let mut out = Vec::new();
-    for node in all {
-        if let Some(access) = &node.semantics {
-            let mut nodes = Vec::new();
-            access_walk(access, &mut nodes);
-            out.extend(nodes.into_iter().cloned());
-        }
-    }
-    out
+    (snapshot.root.nodes().into_iter())
+        .filter_map(|node| node.semantics.as_ref())
+        .flat_map(ui::a11y::AccessNode::nodes)
+        .cloned()
+        .collect()
 }
 
 /// Click the sidebar's item whose accessible name begins with `label` (its count after). A

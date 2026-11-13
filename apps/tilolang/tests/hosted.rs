@@ -2062,26 +2062,12 @@ fn a_checked_row_box(session: &mut Session) -> bool {
 
 /// The accessible nodes of the window, each with the widget that draws it.
 fn accessible(session: &mut Session) -> Vec<ui::a11y::AccessNode> {
-    fn nodes<'a>(node: &'a ui::a11y::AccessNode, out: &mut Vec<&'a ui::a11y::AccessNode>) {
-        out.push(node);
-        for child in &node.children {
-            nodes(child, out);
-        }
-    }
-    fn walk(session_node: &ui::headless::InspectionNode, out: &mut Vec<ui::a11y::AccessNode>) {
-        if let Some(access) = &session_node.semantics {
-            let mut found = Vec::new();
-            nodes(access, &mut found);
-            out.extend(found.into_iter().cloned());
-        }
-        for child in &session_node.children {
-            walk(child, out);
-        }
-    }
     let snapshot = session.window.harness().inspection();
-    let mut out = Vec::new();
-    walk(&snapshot.root, &mut out);
-    out
+    (snapshot.root.nodes().into_iter())
+        .filter_map(|node| node.semantics.as_ref())
+        .flat_map(ui::a11y::AccessNode::nodes)
+        .cloned()
+        .collect()
 }
 
 /// Where a person clicks to go to the sidebar's place `label`: the rail draws its rows itself, so
