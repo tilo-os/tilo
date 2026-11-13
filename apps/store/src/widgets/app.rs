@@ -200,8 +200,11 @@ mod tests {
         vlc.source = StoreSource::Flathub;
         vlc.icon_url = Some("https://dl.flathub.org/media/vlc.png".into());
         assert!(has_artwork(&vlc));
+        // The row is lent a store and names the URL; it reads no image here,
+        // so the store needs none.
+        let (images, _loader) = ui::ImageStore::host_driven();
         assert!(matches!(
-            row_art(&vlc, Some(&crate::fixture::artwork_store())),
+            row_art(&vlc, Some(&images)),
             MediaSource::Url { .. }
         ));
         assert!(matches!(row_art(&notes, None), MediaSource::Kind(_)));
