@@ -370,14 +370,16 @@ impl Session {
                     "query".to_owned(),
                     serde_json::Value::String(query),
                 )]);
-                if let Err(error) = services
+                // The invocation's own result: refused (`DoorError`) or failed (`DoorError::Failed`)
+                // is what the query stands `.failed` with; a run that was taken answers later into
+                // the app's records (shell.md §8).
+                let outcome = services
                     .borrow_mut()
                     .invoke(&resource_id, &action_id, &arguments)
                     .unwrap_or(Ok(tilo_service::Started::Accepted))
-                {
-                    tracing::warn!(%error, resource = %resource_id, "the app's search did not run");
-                }
-                Some((app, kind, held))
+                    .map(|_started| ())
+                    .map_err(|error| error.to_string());
+                Some((app, kind, held, outcome))
             })
         };
         // What text that asks does (shell.md §8.1, "Asking from the canvas"):

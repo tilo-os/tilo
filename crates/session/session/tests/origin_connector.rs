@@ -122,6 +122,16 @@ fn scripted() -> tilolang_youtube::Scripted {
                     videos: Vec::new(),
                 },
             ),
+            // The origin answers an empty page: a search that finishes and finds nothing.
+            (
+                "empty".to_owned(),
+                tilolang_youtube::SearchPage {
+                    query: "empty".to_owned(),
+                    channels: Vec::new(),
+                    playlists: Vec::new(),
+                    videos: Vec::new(),
+                },
+            ),
             // "broken" is scripted to fail: the scripted service answers nothing for it, and the
             // origin settles the search as `failed` with its reason.
         ]
@@ -493,10 +503,11 @@ fn a_live_canvas_query_that_matches_several_shows_the_rows_it_found() {
     });
 }
 
-/// A search the origin cannot answer leaves the query `failed`, with the app's own reason, and no
-/// channel placed: nothing is guessed and the person is told why (search.md §7; shell.md §8).
+/// The origin answers an empty page: the search finishes and no channel of the kind it named came
+/// in, so the query settles `.none` — "Nothing matched", with Retry — and nothing is placed
+/// (shell.md §8, search.md §7).
 #[test]
-fn a_live_canvas_query_the_origin_cannot_answer_fails_with_its_reason() {
+fn a_live_canvas_query_the_origin_answers_empty_settles_matched_nothing() {
     let _settled = ui::motion::testing::settled();
     let mut home = tilo_test_env::TestHome::new().expect("a home");
     let store = home.data().join("tilo-apps");
@@ -506,19 +517,15 @@ fn a_live_canvas_query_the_origin_cannot_answer_fails_with_its_reason() {
     let root = private_home();
     let mut session = live_session(&home, root.path(), &launcher);
 
-    type_on_canvas(&mut session, "youtube videos of broken");
+    type_on_canvas(&mut session, "youtube videos of empty");
 
-    common::until(&mut session, "the query fails", |session| {
-        query_shown(session).is_some_and(|query| query.state == "failed")
+    common::until(&mut session, "the query matches nothing", |session| {
+        query_shown(session).is_some_and(|query| query.state == "none")
     });
     let query = query_shown(&session).expect("the place shows its query");
     assert!(
-        !query.reason.is_empty(),
-        "the app's own reason is kept: {query:?}"
-    );
-    assert!(
         query.matches.is_empty(),
-        "a failed search found nothing: {:?}",
+        "it found nothing to list: {:?}",
         query.matches
     );
     assert!(

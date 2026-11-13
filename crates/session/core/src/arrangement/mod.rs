@@ -31,6 +31,8 @@ use crate::desk::Desk;
 
 mod readings;
 pub use readings::*;
+mod queries;
+use queries::{query_resource, query_state_from_outcome, query_target, settle};
 
 /// The size a place made from a resource takes on the canvas when the caller names none: the framed
 /// canvas's window, in canvas pixels.
@@ -278,15 +280,28 @@ pub struct AnswerRef {
 /// What a text typed on the canvas does when no resource it names is held: ask the app whose type
 /// it names for what it says, through that app's own search action
 /// (`outside:<origin>.search`, shell.md §8, "Finding what to place", search.md §7, "Who
-/// indexes"). The app's own action runs the text, and its origin answers into the app's records;
-/// the session watches the app's own search state and settles the query when it leaves
-/// `searching` ([`Arrangement::settle_queries`]). `None` for a text that names no app's type the
-/// platform can ask, so the text fails to place as it always did.
+/// indexes"). The app's own action runs the text, and its result is read here: a refusal, a
+/// failure, or the run itself is the answer's outcome (shell.md §8). `None` for a text that names
+/// no app's type the platform can ask, so the text fails to place as it always did; `Some(Err)` is
+/// the invocation's own failure, which the query stands as `.failed` with.
 ///
-/// Answers the app asked, by its id, and the kind of resource the query names as the app
-/// publishes it (`tube.channel`) — what makes exactly one match of that kind the place.
-pub type AskOrigin =
-    Rc<dyn Fn(&str) -> Option<(String, String, std::collections::BTreeSet<String>)>>;
+/// Answers the app asked, its kind as the app publishes it (`tube.channel`), what it held of that
+/// kind before the search (so what it holds afterwards that it did not then is the answer), and
+/// how the invocation went.
+pub type AskOrigin = Rc<
+    dyn Fn(
+        &str,
+    ) -> Option<(
+        String,
+        String,
+        std::collections::BTreeSet<String>,
+        Result<(), String>,
+    )>,
+>;
+
+/// The outcome of the invocation of an app's search action: what the query is told when the app
+/// refused to search or the run failed before it could.
+pub type SearchOutcome = Result<(), String>;
 
 /// What a text typed on the canvas found, and where it stands: the inputs of
 /// [`Arrangement::place_found`] besides the arrangement itself.
@@ -308,8 +323,14 @@ pub struct Found<'a> {
     pub ask: &'a dyn Fn(&str) -> Option<String>,
     /// The ask of an app whose type the text names, when nothing it names is held, [`AskOrigin`]:
     /// `None` when the platform can ask no app for the text.
-    pub ask_origin:
-        &'a dyn Fn(&str) -> Option<(String, String, std::collections::BTreeSet<String>)>,
+    pub ask_origin: &'a dyn Fn(
+        &str,
+    ) -> Option<(
+        String,
+        String,
+        std::collections::BTreeSet<String>,
+        SearchOutcome,
+    )>,
     /// Whether anyone else's change is still in flight.
     pub busy: Busy,
 }
@@ -696,17 +717,21 @@ impl Arrangement {
         // person's agent instead (shell.md §8.1), never both.
         if found_resource.is_none()
             && !tilo_desktop_search::answers::question::asks(text)
-            && let Some((app, kind, held)) = ask_origin(text)
+            && let Some((app, kind, held, outcome)) = ask_origin(text)
         {
             let surface = self.surface_at_strip(strip)?;
             let key = surface.place.to_string();
+            // The app's own search either ran (and its answer settles the query as it lands) or
+            // refused / failed, which is this invocation's own result: the query stands `.failed`
+            // with the reason it gave (shell.md §8).
+            let (state, reason) = query_state_from_outcome(outcome);
             let query = ArrangementQueryReading {
                 key: key.clone(),
                 text: text.to_owned(),
                 app,
                 kind,
-                state: "searching".to_owned(),
-                reason: String::new(),
+                state,
+                reason,
                 matches: Vec::new(),
             };
             let query_resource = Item::Query.resource(&key);
@@ -840,20 +865,32 @@ impl Arrangement {
         &mut self,
         _asked: &str,
         place: u64,
-        ask_origin: &dyn Fn(&str) -> Option<(String, String, std::collections::BTreeSet<String>)>,
+        ask_origin: &dyn Fn(
+            &str,
+        ) -> Option<(
+            String,
+            String,
+            std::collections::BTreeSet<String>,
+            SearchOutcome,
+        )>,
         _busy: Busy,
     ) -> Result<(), String> {
         let Some(mut query) = self.queries.borrow().get(&place.to_string()).cloned() else {
             return Err("that place shows no search to look for again".to_owned());
         };
-        let Some((app, kind, held)) = ask_origin(&query.text) else {
+        let Some((app, kind, held, outcome)) = ask_origin(&query.text) else {
             return Err("the platform can ask no app for it".to_owned());
         };
-        query.state = "searching".to_owned();
-        query.reason.clear();
+        // The retried invocation's own result: running again, or the reason it failed.
+        let (state, reason) = match outcome {
+            Ok(()) => ("searching".to_owned(), String::new()),
+            Err(reason) => ("failed".to_owned(), reason),
+        };
+        query.reason = reason;
         query.matches.clear();
         query.app = app;
         query.kind = kind;
+        query.state = state;
         self.queries.borrow_mut().insert(place.to_string(), query);
         self.query_held.borrow_mut().insert(place.to_string(), held);
         Ok(())
@@ -2184,7 +2221,7 @@ fn named(args: &ActionArgs, name: &str, item: Item) -> Option<u64> {
 
 /// The record key of a place, a strip or a row, as its actions take it. `0` for the keyless
 /// resource a package describes the kind with, which no door publishes.
-fn count_of(key: &str) -> u64 {
+pub(super) fn count_of(key: &str) -> u64 {
     // ignored-failure: a keyless resource has no count, and 0 is its count
     key.parse().unwrap_or_default()
 }
@@ -2217,83 +2254,10 @@ fn place_label(place: &PlaceReading) -> String {
 /// more, `none` for none — and `searching` while a state is still being waited for (the caller
 /// passes `""` for `state` only once the app answered). `kind` is the one every match shares, or
 /// the first's, as the app publishes it.
-fn settle(state: String, matches: &[ArrangementRefReading]) -> (String, String) {
-    let kind = matches
-        .first()
-        .map(|one| one.kind.clone())
-        .unwrap_or_default();
-    // A failure keeps its own state whatever it found (nothing, by definition): the app said it
-    // could not answer, which is not the same as a search that matched nothing.
-    if state == "failed" {
-        return ("failed".to_owned(), kind);
-    }
-    let state = match matches.len() {
-        0 => "none",
-        1 => "one",
-        _ => "several",
-    };
-    (state.to_owned(), kind)
-}
-
-/// The query `query` publishes as a resource of its own, through the view a place shows it by
-/// (`query_view`): what a place stands as until its app answers, and what several or no matches
-/// leave standing (shell.md §8).
-fn query_resource(query: &ArrangementQueryReading) -> ResourceSpec {
-    query_actions(&query.key).into_iter().fold(
-        ResourceSpec::new(
-            Item::Query.resource(&query.key),
-            QUERY_KIND,
-            query.text.clone(),
-        )
-        .with_view(ResourceViewSpec::new("page", query.text.clone(), "open"))
-        .with_type(ResourceType {
-            noun: Noun::new("search", "searches"),
-            app: Noun::new("Shell", "Shell"),
-            root: false,
-        }),
-        ResourceSpec::with_action,
-    )
-}
-
-/// What a place showing a query reads it as, in the catalogue: the app the shell draws it with,
-/// its one `page` view, and the words a search goes by.
-fn query_target(query: &ArrangementQueryReading) -> Target {
-    Target {
-        app: "so.tilo.shell".to_owned(),
-        views: vec!["page".to_owned()],
-        title: query.text.clone(),
-        kind: QUERY_KIND.to_owned(),
-    }
-}
-
-/// A query's own actions, its place's id bound into each: a press on a row shows that match in the
-/// same place (`Show`), and Retry asks the app again.
-fn query_actions(key: &str) -> Vec<ActionSpec> {
-    let shown = key.to_owned();
-    vec![
-        action(
-            "show-match",
-            "Show a match of the search in this place",
-            vec![required(
-                "resource",
-                ParamType::Resource,
-                "The resource the row names",
-            )],
-            move |args| ArrangementAction::Show {
-                place: count_of(&shown),
-                resource: text(args, "resource"),
-                view: String::new(),
-            },
-        ),
-        action("retry", "Look for it again", Vec::new(), {
-            let retried = key.to_owned();
-            move |_| ArrangementAction::RetryQuery {
-                place: count_of(&retried),
-            }
-        }),
-    ]
-}
-
+/// The state and reason a query starts in, from the app's own search invocation's result: a
+/// refusal or failure is the query `.failed` with the action's own reason; a run that was taken is
+/// `searching`, answered later into the app's records (shell.md §8). The invocation itself says,
+/// never a guess from the app's records.
 /// Feed what `specs` publish into `hasher` : each resource's id, kind and label, and its
 /// children's, so two revisions are equal exactly when the door publishes the same.
 fn hash_resources(specs: &[ResourceSpec], hasher: &mut std::hash::DefaultHasher) {
@@ -2522,7 +2486,7 @@ fn step_action(id: &'static str, label: &str) -> ActionSpec {
     clippy::expect_used,
     reason = "an arranging action always serializes to JSON"
 )]
-fn action(
+pub(super) fn action(
     id: &'static str,
     label: &str,
     params: Vec<ActionParam>,
@@ -2548,7 +2512,7 @@ fn action(
     spec
 }
 
-fn required(name: &'static str, ty: ParamType, help: &str) -> ActionParam {
+pub(super) fn required(name: &'static str, ty: ParamType, help: &str) -> ActionParam {
     ActionParam::required_owned(name, ty, help.to_owned())
 }
 
@@ -2572,7 +2536,7 @@ fn id_text(args: &ActionArgs, name: &str) -> u64 {
         .unwrap_or_default()
 }
 
-fn text(args: &ActionArgs, name: &str) -> String {
+pub(super) fn text(args: &ActionArgs, name: &str) -> String {
     args.text(name).unwrap_or_default().to_owned()
 }
 
@@ -2862,8 +2826,26 @@ impl Door {
 
 #[cfg(test)]
 mod tests {
-    use super::{found, most_specific, placed};
+    use super::{found, most_specific, placed, query_state_from_outcome};
     use tilo_desktop_search::{Hit, InvokeTarget, ResourceKind, Target};
+
+    /// The query's starting state is the app's own search invocation result: a run that was taken
+    /// keeps searching; a refusal or failure is the query `.failed` with the action's own reason —
+    /// never a guess read from the app's records.
+    #[test]
+    fn a_refused_search_starts_the_query_failed_with_its_own_reason() {
+        assert_eq!(
+            query_state_from_outcome(Ok(())),
+            ("searching".to_owned(), String::new()),
+            "a search the app took is still searching"
+        );
+        let (state, reason) = query_state_from_outcome(Err("Type something to search for".into()));
+        assert_eq!(state, "failed", "a refused search is failed");
+        assert_eq!(
+            reason, "Type something to search for",
+            "with the action's own reason"
+        );
+    }
 
     /// A row text typed on the canvas would stand for: what it opens, and what it is.
     fn opening(resource: &str, title: &str, kind: ResourceKind) -> Hit {

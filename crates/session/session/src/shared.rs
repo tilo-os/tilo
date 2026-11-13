@@ -61,10 +61,12 @@ impl Shared {
         {
             tracing::warn!(why, "an arranging action that waited could not be made");
         }
-        // A query the canvas stands asks its app for what it names; once the app's own records
-        // hold resources of that kind the app did not hold when it asked, the app has answered
-        // and the query settles (one match becomes the place; several, none or a failure stay
-        // with the query; shell.md §8).
+        // A query the canvas stands asks its app for what it names. When the app's records hold
+        // resources of that kind it did not hold when it asked, that is what it found (one
+        // becomes the place; several show their rows). When the app's own search has finished —
+        // its state left `searching` — and nothing new of the kind came in, it matched nothing.
+        // A failure is never read from the app's records: it comes from the search's own
+        // invocation result, at `place_found` and Retry (shell.md §8).
         let app_resources = self.services.borrow().resources();
         let running: Vec<(
             String,
@@ -95,11 +97,9 @@ impl Shared {
                 arrangement.answer_query_of(&key, Ok(fresh), underway);
                 continue;
             }
-            // The app says its search failed: its root's reading holds `failed` and the reason the
-            // origin gave, and nothing of the query's kind came in — the query fails with it
-            // rather than searching forever (shell.md §8).
-            if let Some(reason) = search_failure(&self.services, &app_resources, &query.app) {
-                arrangement.answer_query_of(&key, Err(reason), underway);
+            // The search finished and nothing new of the kind came in: it matched nothing.
+            if search_finished(&self.services, &app_resources, &query.app) {
+                arrangement.answer_query_of(&key, Ok(Vec::new()), underway);
             }
         }
     }
@@ -383,42 +383,34 @@ fn leaves(resource: &tilo_actions::ResourceSpec) -> Vec<&tilo_actions::ResourceS
     out
 }
 
-/// Why the app `app` says its search failed, from its root reading: the app keeps the state of a
-/// search it ran and, on a failure, the reason its origin gave, and says `failed` in one field
-/// beside the other (`search_state` and `search_trouble` in the client that ships, but the fields
-/// a type names are its own). `None` while it still searches, or once it found something.
-fn search_failure(
+/// Whether the search the app `app` ran has finished: its own search state left `searching`. The
+/// state a search passes through is the app's words, not the system's, so this reads only whether
+/// a state word is still `searching` (the client that ships keeps `search_state`, but the fields a
+/// type names are its own, and the app is asked through its action for its result, never its
+/// records, when it fails). `None` while it still searches, or when the app keeps no such state.
+fn search_finished(
     services: &std::rc::Rc<std::cell::RefCell<tilo_service::Services>>,
     resources: &[tilo_actions::ResourceSpec],
     app: &str,
-) -> Option<String> {
+) -> bool {
     let belongs = |resource: &tilo_actions::ResourceSpec| {
         resource.id.as_str().starts_with(&format!("tl:{app}:"))
     };
     // The app's root: its one resource of the type a query naming the app means.
-    let root = resources.iter().flat_map(leaves).find(|resource| {
+    let Some(root) = resources.iter().flat_map(leaves).find(|resource| {
         belongs(resource) && resource.resource_type.as_ref().is_some_and(|ty| ty.root)
-    })?;
-    let reading = services.borrow().read(root.id.as_str())?;
-    // Every text the root's reading holds at its top level: the state of the fetch and the reason
-    // its origin gave sit beside the query it ran.
-    let texts: Vec<&str> = reading
+    }) else {
+        return false;
+    };
+    let Some(reading) = services.borrow().read(root.id.as_str()) else {
+        return false;
+    };
+    // A search has finished when no text of the root's reading is still the word it uses for
+    // searching. That is the one state every search keeps while it runs.
+    !reading
         .as_object()
         .into_iter()
         .flatten()
         .filter_map(|(_, value)| value.as_str())
-        .collect();
-    if !texts.iter().any(|text| *text == "failed") {
-        return None;
-    }
-    // The reason is a text that is not a state word the search passes through; the longest such is
-    // the origin's own words rather than the query kept beside them.
-    texts
-        .into_iter()
-        .filter(|text| {
-            !text.is_empty() && !matches!(text, &"searching" | &"done" | &"failed" | &"loading")
-        })
-        .max_by_key(|text| text.len())
-        .map(str::to_owned)
-        .or_else(|| Some("the search failed".to_owned()))
+        .any(|text| text == "searching")
 }
