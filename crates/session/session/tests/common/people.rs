@@ -56,6 +56,18 @@ use tilo_user_identity::{DeviceCert, IdentityPaths};
 /// carries it.
 pub type Invitation = String;
 
+/// The log filter the sessions of this process's devices start under, when a test asked for more
+/// than the fixture's own `info`. Each test runs in a process of its own, so the filter is that
+/// test's.
+static SESSION_LOG: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// Start every session this test starts from here on under the log filter `filter`, a `RUST_LOG`:
+/// what a test asks for before it makes its devices, when a step that fails has to say what a
+/// session only says below `info`.
+pub fn log_sessions_at(filter: &str) {
+    let _ = SESSION_LOG.set(filter.to_owned());
+}
+
 /// How long a device is given to hold the workspace it joined and to show it in front: the join is
 /// the product's own, which gives it [`tilo_session::sync::JOIN_PATIENCE`] before the person is told
 /// it did not happen, and the suite's hang bound after that.
@@ -1335,8 +1347,9 @@ impl Device {
             // people through.
             .env(tilo_secrets::SECRETS_DIR_ENV, root.join("secrets"))
             .env(FILE_SECRETS_ENV, "1")
-            // The session says at info why a join did not land: what a failed step reads.
-            .env("RUST_LOG", "info")
+            // The session says at info why a join did not land: what a failed step reads. A test
+            // that needs more of it asked first ([`log_sessions_at`]).
+            .env("RUST_LOG", SESSION_LOG.get().map_or("info", String::as_str))
             .env("TILO_APP_STDERR_DIR", &logs)
             // The tests of this process mount the trees this device's session serves, so the
             // session records this process as the Files endpoint the login's unit would be.

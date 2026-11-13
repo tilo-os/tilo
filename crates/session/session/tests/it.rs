@@ -257,6 +257,8 @@ mod window_bar_actions;
 mod window_menu;
 #[path = "window_menu_probe.rs"]
 mod window_menu_probe;
+#[path = "window_share_live.rs"]
+mod window_share_live;
 #[path = "window_switcher.rs"]
 mod window_switcher;
 #[path = "workspace_agents.rs"]
