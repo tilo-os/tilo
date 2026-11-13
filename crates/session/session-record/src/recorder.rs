@@ -458,6 +458,10 @@ mod tests {
         b"[app com.onepassword.OnePassword stderr] INFO  2026-10-11T02:22:33.1+00:00 started\n";
 
     tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "in a test these are the assertion, not a hazard"
+        )]
         fn the_event_filter_keeps_whole_tracing_records_and_nothing_else;
 
         phase tracing_records_are_events_and_stream_output_is_not;
