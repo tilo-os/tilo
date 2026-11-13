@@ -5954,3 +5954,28 @@ pointers = { api = "/target/publish/api/receipt.json" }
 id_token = ["registry.tilo.so"]
 requires = ["arch=any"]
 on = ["dispatch"]
+
+# The upgrade a tilo.sh release makes: this checkout's relay started on the Lounge the release the
+# live relay runs kept, and everything in it still there and working (tools/relay-upgrade/run.sh).
+# `relay-upgrade-release` builds that release and has its own relay and test harness keep a Lounge:
+# the source is fetched from the forge by its commit and checked against the SHA-256
+# tools/relay-upgrade/<release>/source pins, so the network it reaches is pinned, and its result is
+# kept until that directory changes. `relay-upgrade` opens a copy of that state with this
+# checkout's relay, and says whether the release could still run on what it left. Moving the live
+# relay to a new release is a new directory there and these two lines.
+[[check]]
+name = "relay-upgrade-release"
+egress = { to = ["code.tilo.so:443"], pinned = true }
+run = "bash tools/relay-upgrade/run.sh release v0.1.5 /target/relay-upgrade/v0.1.5/kept"
+env = { RUST_BACKTRACE = "1" }
+requires = ["arch=x86_64"]
+outputs = ["/target/relay-upgrade/v0.1.5/kept/**"]
+timeout_secs = 5400
+
+[[check]]
+name = "relay-upgrade"
+run = "bash tools/relay-upgrade/run.sh upgrade v0.1.5 /target/relay-upgrade/v0.1.5/kept"
+needs = ["relay-upgrade-release"]
+env = { RUST_BACKTRACE = "1" }
+requires = ["arch=x86_64"]
+timeout_secs = 3600
