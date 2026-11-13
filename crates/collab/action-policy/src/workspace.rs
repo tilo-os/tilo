@@ -329,6 +329,17 @@ impl WorkspacePolicy {
             .or_else(|| self.is_owner(person).then_some(0))
     }
 
+    /// Everyone the workspace holds who it recorded a time for, by person id
+    /// ([`Self::joined_at`]): the order people who share a name are numbered
+    /// in. A member admitted unrecorded is not yielded, and is numbered last.
+    pub fn admitted(&self) -> impl Iterator<Item = (&str, u64)> + '_ {
+        self.members
+            .keys()
+            .map(String::as_str)
+            .chain(self.owner.as_deref())
+            .filter_map(|person| Some((person, self.joined_at(person)?)))
+    }
+
     /// Whether `person` is blocked: their own grants deny every kind on the
     /// whole workspace. A blocked member stays on record (history keeps naming
     /// them) but holds nothing; the owner is never blocked.

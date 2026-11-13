@@ -272,6 +272,13 @@ impl Task {
                     None => _ = status.room_devices.remove(&workspace),
                 });
             }
+            let joined = self.replicas.member_joined(workspace_id);
+            if self.reports.status().room_joined.get(&workspace) != joined.as_ref() {
+                self.reports.change(|status| match joined {
+                    Some(joined) => _ = status.room_joined.insert(workspace.clone(), joined),
+                    None => _ = status.room_joined.remove(&workspace),
+                });
+            }
         }
         self.pump_channels(true);
         // A record opened before the governance admitted it waits with its

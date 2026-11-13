@@ -174,6 +174,9 @@ pub(crate) struct Joined {
     /// The workspace's members as its governance lists them, once heard: what
     /// someone no longer among them made on the desktop is released.
     members: Option<std::collections::BTreeSet<String>>,
+    /// When the workspace admitted each of its people, once heard, by their person (root key,
+    /// hex): who shares a name is numbered in this order.
+    joined: std::collections::BTreeMap<String, u64>,
     /// Record routes whose commits this page published the workspace answered all of, since
     /// the last frame: what the record's windows said they did is said
     /// (`RecordStore::workspace_settled`).
@@ -239,6 +242,7 @@ pub(crate) fn open(
         permitted: BTreeMap::new(),
         permit_answers: Arc::default(),
         members: None,
+        joined: BTreeMap::new(),
         settled: Arc::default(),
         content: ContentWants::default(),
         changes: changes(),
@@ -1573,17 +1577,26 @@ impl Joined {
         wanted
     }
 
-    /// The workspace's members as the peer last heard its governance list them:
-    /// the attached desktops release what someone who left made.
+    /// The workspace's members and when it admitted each of them, as the peer last heard its
+    /// governance say: the attached desktops release what someone who left made, and number
+    /// people who share a name in the workspace's own order.
     fn follow_members(&mut self, woken: &mut HashSet<u64>) {
-        let members = self.peer.status().room_members.get(&self.uuid).cloned();
-        if members == self.members {
+        let status = self.peer.status();
+        let members = status.room_members.get(&self.uuid).cloned();
+        let joined = status
+            .room_joined
+            .get(&self.uuid)
+            .cloned()
+            .unwrap_or_default();
+        if members == self.members && joined == self.joined {
             return;
         }
         self.members = members;
+        self.joined = joined;
         for (&id, mounted) in &self.mounts {
             if let Some((_, shared)) = &mounted.attachment.desktop {
                 shared.members.replace(self.members.clone());
+                shared.joined.replace(self.joined.clone());
                 woken.insert(id);
             }
         }

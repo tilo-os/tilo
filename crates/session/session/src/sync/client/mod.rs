@@ -933,7 +933,8 @@ impl Roster {
     #[cfg(target_os = "linux")]
     /// Who is here, as the desktop lists them: `tree` places them where their focused record is
     /// shown — `records` (what each window shows, by tab) names the window each person works in —
-    /// and `app_name` names an app.
+    /// and `app_name` names an app. The workspace's own record of when it admitted each of its
+    /// people numbers namesakes here, as it numbers them in the roster.
     #[must_use]
     pub(crate) fn people(
         &self,
@@ -941,6 +942,16 @@ impl Roster {
         notes: &crate::continuations::Continuations,
         app_name: &dyn Fn(&str) -> Option<String>,
     ) -> Vec<Person> {
+        let joined =
+            tree.active_workspace()
+                .map_or_else(std::collections::BTreeMap::new, |workspace| {
+                    workspace
+                        .policy
+                        .admitted()
+                        .map(|(person, at)| (person.to_owned(), at))
+                        .collect()
+                });
+        self.here.borrow_mut().set_joined(&joined);
         self.here.borrow().people(
             tree,
             &crate::sync::layout::bindings_of(tree, &notes.windows()),

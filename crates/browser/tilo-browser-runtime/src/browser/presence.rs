@@ -41,12 +41,18 @@ impl Mount {
     /// Remote carets clear a member's registrations as they move, so this
     /// runs in each frame after one arrived. The frame lays the change out.
     pub(super) fn place_here(&mut self) {
-        if !std::mem::take(&mut self.here_stale) {
-            return;
-        }
         let Some(desktop) = &self.desktop else {
             return;
         };
+        // When the workspace admitted each of its people numbers the namesakes among them: the
+        // same numbers the workspace's roster gives, never the order their ids sort in.
+        let numbered = desktop
+            .here
+            .borrow_mut()
+            .set_joined(&desktop.shared.joined.borrow());
+        if !std::mem::take(&mut self.here_stale) && !numbered {
+            return;
+        }
         let tree = desktop.handle.read(Clone::clone);
         let people = crate::shell::here_people(&desktop.here, &desktop.shared, &tree);
         let mut here = desktop.here.borrow_mut();

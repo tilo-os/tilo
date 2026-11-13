@@ -288,6 +288,19 @@ impl Replicas {
         .ok()
     }
 
+    /// When `workspace_id`'s governance admitted each of its people, by person (root key, hex),
+    /// Unix milliseconds: the order people who share a name are numbered in on every surface.
+    pub(crate) fn member_joined(&self, workspace_id: WorkspaceId) -> Option<BTreeMap<String, u64>> {
+        self.with_workspace(workspace_id, |view| {
+            let policy = view.peer().governance().governed_policy()?;
+            Ok(policy
+                .admitted()
+                .map(|(person, at)| (person.to_owned(), at))
+                .collect())
+        })?
+        .ok()
+    }
+
     /// Whose each of `workspace_id`'s member devices is, as its governance admitted them: device
     /// (hex) to person (root key, hex), for every device a current member is here from. What
     /// shows a device by its person (who is here, a call's roster) reads it off this.

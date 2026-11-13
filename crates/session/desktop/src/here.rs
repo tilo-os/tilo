@@ -10,7 +10,7 @@
 //! A person may be here from several devices at once (each browser tab is a device of its own).
 //! They are one person here: each device's certificate names its person, devices of one person
 //! show once, and this page's person's other devices are this page's person, never someone else.
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use tilo_sort::CompactSort as _;
 
 use collab_types::presence::Shown;
@@ -241,6 +241,10 @@ pub struct HereState {
     /// Every agent present, by publisher: its name and when it was last here (Unix milliseconds),
     /// so one gone for good is said to have finished ([`HereState::take_agents_finished`]).
     working_agents: HashMap<String, (String, u64)>,
+    /// When the workspace admitted each of its people, by their root key (hex), Unix milliseconds,
+    /// as its governance records it ([`HereState::set_joined`]): the order people who share a name
+    /// are numbered in, here as in the roster.
+    joined: BTreeMap<String, u64>,
 }
 
 /// An agent that left the workspace: its work is over.
@@ -434,6 +438,18 @@ impl HereState {
         }
         let members = self.members.clone().unwrap_or_default();
         self.hear_waves(&members);
+        self.revision = self.revision.wrapping_add(1);
+        true
+    }
+
+    /// When the workspace admitted each of its people, by their root key (hex), Unix
+    /// milliseconds, as its governance records it: who shares a name is numbered in this order,
+    /// so this page numbers namesakes as the workspace's roster does. Whether it changed.
+    pub fn set_joined(&mut self, joined: &BTreeMap<String, u64>) -> bool {
+        if self.joined == *joined {
+            return false;
+        }
+        self.joined.clone_from(joined);
         self.revision = self.revision.wrapping_add(1);
         true
     }
@@ -1116,7 +1132,8 @@ impl HereState {
     }
 
     /// The numbers the people here are told apart by, this page's own person included. Keyed by
-    /// person, so two devices of one person are one name to number.
+    /// person, so two devices of one person are one name to number, and numbered in the order the
+    /// workspace admitted them, as its roster numbers them.
     fn labels<'a>(&'a self) -> ui::presence::ParticipantLabels {
         let mut named: Vec<(&'a str, String)> = Vec::new();
         // One name per person, whoever of theirs spoke first: a device that has not said whose it
@@ -1137,7 +1154,15 @@ impl HereState {
             let label = member_name(member).map_or_else(guest_label, str::to_owned);
             add(&mut named, self.person_of(&member.publisher), label);
         }
-        ui::presence::ParticipantLabels::new(named.iter().map(|(id, name)| (*id, name.as_str())))
+        ui::presence::ParticipantLabels::by_joining(named.iter().map(|(id, name)| {
+            // A person is spelled by their root key, or by `person:<root>` in a grant.
+            let admitted = self
+                .joined
+                .get(*id)
+                .or_else(|| self.joined.get(tilo_action_policy::person_root(id)))
+                .copied();
+            (*id, name.as_str(), admitted)
+        }))
     }
 
     /// Show `people` on the windows they are in: each one's colour, name and kind, registered on
@@ -2485,47 +2510,80 @@ mod tests {
         assert_eq!(ann.place.as_deref(), Some("Notes"));
     }
 
-    /// Two pages going by one name are numbered, this page included, by their publishers — the same
-    /// numbers on every page in the workspace.
+    /// Two people going by one name are numbered, this page included, by when the workspace
+    /// admitted them: the numbers its roster gives them, on every page, never the order their ids
+    /// sort in.
     #[test]
-    fn people_sharing_a_name_are_numbered_alike_on_every_page() {
-        let tree = DesktopTree::default();
-        let everyone = vec![
-            member("pub-b", "person", "Ada"),
-            member("pub-a", "person", "ada "),
-            member("pub-c", "person", "Ben"),
-            member("bot", "agent", "Ada"),
-        ];
-        let mut mine = HereState::default();
-        mine.set_members(
-            Some(member("pub-b", "person", "Ada")),
-            Some(everyone.clone()),
-        );
-        let labels: Vec<String> = mine
-            .people(&tree, &[], &|_| None)
-            .into_iter()
-            .map(|person| person.label)
+    fn people_sharing_a_name_take_the_rosters_numbers_on_every_page() {
+        // The workspace admitted z before a, though a's id sorts first.
+        let mut workspace = Workspace::new(tilo_desktop_model::WorkspaceSlot(1), "Studio");
+        for (person, admitted) in [("person-z", 10_u64), ("person-a", 20)] {
+            workspace
+                .policy
+                .members
+                .insert(person.into(), tilo_action_policy::Role::Editor);
+            workspace.policy.joined.insert(person.into(), admitted);
+            workspace
+                .collaborators
+                .push(Collaborator::new(person, "Alex"));
+        }
+        let tree = DesktopTree {
+            active: workspace.slot,
+            workspaces: vec![workspace],
+            ..DesktopTree::default()
+        };
+        // When the workspace admitted each of its people, as the host hands it over.
+        let joined: BTreeMap<String, u64> = tree
+            .active_workspace()
+            .expect("the workspace is in front")
+            .policy
+            .admitted()
+            .map(|(person, admitted)| (person.to_owned(), admitted))
             .collect();
-        assert_eq!(labels, ["ada (1)", "Ben", "Ada"]);
-        assert_eq!(mine.own_shown().as_deref(), Some("Ada (2)"));
+        let alex = |publisher: &str, person: &str| LiveMember {
+            user: Some(person.into()),
+            ..member(publisher, "person", "Alex")
+        };
+        let page = |own: (&str, &str), others: Vec<LiveMember>| {
+            let mut here = HereState::default();
+            here.set_joined(&joined);
+            here.set_members(Some(alex(own.0, own.1)), Some(others));
+            here
+        };
+        let roster: HashMap<String, String> =
+            crate::collaborators::collaborator_roster_rows(&tree, "me-root")
+                .into_iter()
+                .map(|row| (row.id, row.label))
+                .collect();
+        assert_eq!(roster["person-z"], "Alex (1)", "who joined first is (1)");
+        assert_eq!(roster["person-a"], "Alex (2)");
 
-        let mut theirs = HereState::default();
-        let mut reordered = everyone;
-        reordered.reverse();
-        theirs.set_members(Some(member("pub-a", "person", "ada ")), Some(reordered));
-        assert_eq!(theirs.own_shown().as_deref(), Some("ada (1)"));
-        assert!(
-            theirs
-                .people(&tree, &[], &|_| None)
-                .iter()
-                .any(|person| person.label == "Ada (2)")
+        let mut mine = page(("dev-a", "person-a"), vec![alex("dev-z", "person-z")]);
+        let listed = |here: &HereState| -> HashMap<String, String> {
+            here.people(&tree, &[], &|_| None)
+                .into_iter()
+                .map(|person| (person.user.expect("certified"), person.label))
+                .collect()
+        };
+        let seen = listed(&mine);
+        assert_eq!(
+            seen["person-z"], roster["person-z"],
+            "as the roster has them"
         );
+        assert_eq!(mine.own_shown().as_deref(), Some("Alex (2)"));
 
-        mine.set_members(
-            Some(member("pub-b", "person", "Ada")),
-            Some(vec![member("pub-c", "person", "Ben")]),
+        // Another page, hearing of them in the other order, numbers them alike.
+        let theirs = page(("dev-z", "person-z"), vec![alex("dev-a", "person-a")]);
+        assert_eq!(
+            listed(&theirs)["person-a"],
+            roster["person-a"],
+            "the same numbers on another page"
         );
-        assert_eq!(mine.own_shown().as_deref(), Some("Ada"), "alone, no number");
+        assert_eq!(theirs.own_shown().as_deref(), Some("Alex (1)"));
+
+        // Alone, nobody needs a number.
+        mine.set_members(Some(alex("dev-a", "person-a")), Some(Vec::new()));
+        assert_eq!(mine.own_shown().as_deref(), Some("Alex"));
     }
 
     /// Two tabs of one person are two devices of theirs: listed once to everyone else, and to
