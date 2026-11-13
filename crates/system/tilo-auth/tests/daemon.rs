@@ -412,6 +412,17 @@ fn verify(daemon: &Daemon, peer: Peer, user: &str, typed: &str) -> Reply {
     ))
 }
 
+/// The explicit request to move `user` off their old password.
+fn enroll(daemon: &Daemon, peer: Peer, user: &str, typed: &str) -> Reply {
+    reply(daemon.handle(
+        peer,
+        Request::Enroll {
+            user: user.into(),
+            secret: secret(typed),
+        },
+    ))
+}
+
 fn pending(daemon: &Daemon, peer: Peer) -> Option<String> {
     match daemon.handle(peer, Request::PendingSignIn) {
         Answer::Pending(p) => p.map(|p| p.name),
@@ -573,6 +584,13 @@ fn without_a_tpm_only_a_strong_password_stands_alone() {
         m.old.locked().is_empty(),
         "a weak password stays in the old database"
     );
+    assert_eq!(enroll(&daemon, BOB, "bob", "1234"), Reply::success());
+    assert_eq!(
+        m.record(BOB.uid),
+        Some(record),
+        "asked for by name, it is as weak"
+    );
+    assert!(m.old.locked().is_empty());
 
     assert_eq!(
         verify(&daemon, ADA, "ada", "correct horse battery staple"),
@@ -583,11 +601,53 @@ fn without_a_tpm_only_a_strong_password_stands_alone() {
     assert_eq!(record.secret, Some(SecretKind::Password));
     assert_eq!(m.old.locked(), ["ada"]);
     assert_eq!(
+        enroll(&daemon, ADA, "ada", "correct horse battery staple"),
+        Reply::success()
+    );
+    assert_eq!(
+        m.record(ADA.uid),
+        Some(record),
+        "someone already moved stays as they are"
+    );
+    assert_eq!(
         verify(&daemon, ADA, "ada", "correct horse battery stable").error,
         Some(Refusal::Wrong)
     );
     assert_eq!(
         verify(&daemon, ADA, "ada", "correct horse battery staple"),
+        Reply::success()
+    );
+
+    // With no TPM to throttle guesses, a secret changes only to one that
+    // stands alone.
+    let change = |new: &str| {
+        reply(daemon.handle(
+            ADA,
+            Request::SetSecret {
+                user: "ada".into(),
+                current: Some(secret("correct horse battery staple")),
+                recovery: None,
+                new: secret(new),
+            },
+        ))
+    };
+    let record = m.record(ADA.uid);
+    assert_eq!(change("1234"), refused(Refusal::WeakSecret));
+    assert_eq!(
+        m.record(ADA.uid),
+        record,
+        "a refused change changes nothing"
+    );
+    assert_eq!(change("violet ladder orbit pancake"), Reply::success());
+    let record = m.record(ADA.uid).unwrap();
+    assert!(record.has(Kind::Passphrase));
+    assert_eq!(record.secret, Some(SecretKind::Password));
+    assert_eq!(
+        verify(&daemon, ADA, "ada", "correct horse battery staple").error,
+        Some(Refusal::Wrong)
+    );
+    assert_eq!(
+        verify(&daemon, ADA, "ada", "violet ladder orbit pancake"),
         Reply::success()
     );
 }
@@ -664,6 +724,50 @@ fn people_may_only_ask_about_themselves() {
         refused(Refusal::NotEnrolled)
     );
     assert_eq!(verify(&daemon, ADA, "ada", ""), refused(Refusal::Wrong));
+    let strong = "correct horse battery staple";
+    for (peer, user, typed, refusal) in [
+        (BOB, "ada", strong, Refusal::NotPermitted),
+        (BOB, "eve", "x", Refusal::NotPermitted),
+        (ROOT, "eve", "x", Refusal::NotEnrolled),
+        (ADA, "ada", "", Refusal::Wrong),
+        (ADA, "ada", "incorrect horse", Refusal::Wrong),
+    ] {
+        assert_eq!(
+            enroll(&daemon, peer, user, typed),
+            refused(refusal),
+            "{user} enrolled by uid {} with {typed:?}",
+            peer.uid
+        );
+    }
+    assert_eq!(
+        m.record(ADA.uid),
+        None,
+        "a refused request leaves no record"
+    );
+    assert_eq!(
+        reply(daemon.handle(
+            ADA,
+            Request::SetSecret {
+                user: "ada".into(),
+                current: Some(secret(strong)),
+                recovery: None,
+                new: secret("violet ladder orbit pancake"),
+            }
+        )),
+        refused(Refusal::NotEnrolled),
+        "there is no secret here to change yet"
+    );
+    assert_eq!(
+        reply(daemon.handle(
+            ROOT,
+            Request::AddRecovery {
+                user: "ada".into(),
+                secret: secret(strong),
+                recovery: secret(&m.recovery.formatted()),
+            }
+        )),
+        refused(Refusal::NotEnrolled)
+    );
     assert_eq!(
         reply(daemon.handle(BOB, Request::ClaimBootSignIn { user: "bob".into() })),
         refused(Refusal::NotPermitted)
@@ -680,8 +784,16 @@ fn people_may_only_ask_about_themselves() {
         refused(Refusal::NotPermitted)
     );
     assert_eq!(pending(&daemon, BOB), None);
-    let status = reply(daemon.handle(ADA, Request::Status { user: "ada".into() }));
-    assert_eq!(status.enrolled, Some(false));
+    let status = || reply(daemon.handle(ADA, Request::Status { user: "ada".into() }));
+    assert_eq!(status().enrolled, Some(false));
+    assert!(status().factors.is_empty());
+
+    // Asked for herself with her old password, the explicit request moves
+    // her as her first sign-in would.
+    assert_eq!(enroll(&daemon, ADA, "ada", strong), Reply::success());
+    assert_eq!(status().enrolled, Some(true));
+    assert_eq!(status().factors, ["password"]);
+    assert_eq!(m.old.locked(), ["ada"]);
 }
 
 #[test]
@@ -772,6 +884,8 @@ fn the_admins_recovery_key_must_be_the_machines_and_the_login_screen_sets_a_new_
             },
         ))
     };
+    let factors = || reply(daemon.handle(ADA, Request::Status { user: "ada".into() })).factors;
+    assert_eq!(factors(), ["password"]);
     let enrolled = m.record(ADA.uid).unwrap();
     assert_eq!(add_recovery(&other), refused(Refusal::Wrong));
     assert!(!m.record(ADA.uid).unwrap().has(Kind::Recovery));
@@ -786,6 +900,7 @@ fn the_admins_recovery_key_must_be_the_machines_and_the_login_screen_sets_a_new_
     );
 
     assert_eq!(add_recovery(&recovery), Reply::success());
+    assert_eq!(factors(), ["password", "recovery"]);
     let change = |current: Option<&str>, recovery: Option<&str>, new: &str| {
         reply(daemon.handle(
             GREETER,
