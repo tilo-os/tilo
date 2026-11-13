@@ -1174,3 +1174,32 @@ fn a_sessions_workspace_hosts_say_who_hosts_them_and_whether_they_wait() {
         Some((4000 * 16384) >> 20)
     );
 }
+
+/// The machine record is read by one shell line, as SSH hands it to the guest's login shell (the
+/// words joined by spaces): the script runs whole, in the record's directory. Split into words, it
+/// ran `sh -c cd` and the rest elsewhere, so no branch ever read as re-keyed (`vm branch` timed
+/// out on real VMs, e2e-branch r9eaa24ce06).
+#[test]
+fn the_machine_record_is_read_by_one_shell_line_that_runs_the_whole_script() {
+    let line = branch_admit::machine_line();
+    assert_eq!(line.len(), 1, "{line:?}");
+    let dir = tempfile::tempdir().unwrap();
+    let private = dir.path().join("var/lib/tilo/device-private");
+    std::fs::create_dir_all(&private).unwrap();
+    std::fs::write(private.join("keypair.bin"), b"key").unwrap();
+    // The script as the guest runs it, with its paths moved under the test's directory.
+    let joined = line.join(" ").replace(
+        "/var/lib/tilo/device-private",
+        &private.display().to_string(),
+    );
+    let out = std::process::Command::new("sh")
+        .args(["-c", &joined])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    let said = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        said.contains("KEY="),
+        "the whole script ran where the record is: {said:?}"
+    );
+}

@@ -414,7 +414,7 @@ pub(super) struct LiveGuests {
 
 /// What a guest's machine record says, as root: a digest of its device key, and whether the
 /// record names this machine's UUID with no re-key journal left.
-const MACHINE: &str = r#"cd /var/lib/tilo/device-private 2>/dev/null || exit 0
+pub(super) const MACHINE: &str = r#"cd /var/lib/tilo/device-private 2>/dev/null || exit 0
 [ -f keypair.bin ] && echo "KEY=$(sha256sum < keypair.bin | cut -c1-16)"
 u=$(tr -d '-' < /sys/class/dmi/id/product_uuid | tr 'A-F' 'a-f')
 r=$([ -f machine.bin ] && od -An -tx1 -v machine.bin | tr -d ' \n')
@@ -494,15 +494,18 @@ impl Guests for LiveGuests {
 impl LiveGuests {
     fn machine(&mut self, vm: &Resolved) -> Result<String, CliError> {
         let endpoint = self.app.endpoint(vm)?;
-        let command = remote::ssh_command(
-            &endpoint,
-            vm.entry.key.as_deref(),
-            &["sh".into(), "-c".into(), MACHINE.into()],
-            false,
-        );
+        let command =
+            remote::ssh_command(&endpoint, vm.entry.key.as_deref(), &machine_line(), false);
         let mut runner = SystemRunner { cwd: None };
         Ok(runner.output(&command)?.stdout)
     }
+}
+
+/// [`MACHINE`] as the one shell line SSH hands the guest's login shell: ssh joins the remote
+/// words with spaces, so `sh`, `-c` and the script as three words ran `sh -c cd` and the rest of
+/// the script in the login shell's own directory, where it found no record and said nothing.
+pub(super) fn machine_line() -> Vec<String> {
+    vec![format!("sh -c {}", crate::vmbuild::sh_quote(MACHINE))]
 }
 
 /// What a session is asked of the workspaces it holds: who hosts each, and whether its host took
