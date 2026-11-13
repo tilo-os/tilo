@@ -486,6 +486,34 @@ pub fn headless_on(outputs: &[OutputConfig], options: Options) -> Session {
     .expect("session")
 }
 
+/// [`headless_on`] on a device that holds its workspaces: a home of its own, the throwaway identity
+/// `dist/dev/nested-session.sh` mints, a secret store and the state directory the session keeps
+/// them in, so the desk it shows is one the engine holds and its changes can be written. `options`
+/// is made from the state directory. The home lives as long as the test does.
+///
+/// # Panics
+/// The home, the identity or the session cannot be made.
+#[track_caller]
+pub fn seated_on(
+    outputs: &[OutputConfig],
+    options: impl FnOnce(&std::path::Path) -> Options,
+) -> Session {
+    let home = Box::leak(Box::new(tilo_test_env::TestHome::new().expect("a home")));
+    let identity = home.config().join("tilo/identity");
+    std::fs::create_dir_all(&identity).expect("the identity's directory");
+    let root = home.root().join("system");
+    home.env().set("TILO_IDENTITY_ROOT", &root);
+    let secrets = home.state().join("secrets");
+    home.env().set("TILO_SECRETS_DIR", &secrets);
+    tilo_identity_host::provisioning::ensure_throwaway_test_identity(
+        &identity,
+        &tilo_identity_host::provisioning::collaboration_identity_paths(),
+        tilo_identity_host::provisioning::IdentityStorage::Files,
+    )
+    .expect("the throwaway identity");
+    headless_on(outputs, options(home.state()))
+}
+
 /// The headless session with the shell as the whole screen and the seeded apps published (notes,
 /// tasks, chat and mail), its agent door and test-control socket at `root`, admitting this
 /// test's program to act as the person, and the framed canvas in front. The apps are the ones

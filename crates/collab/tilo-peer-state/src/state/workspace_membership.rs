@@ -248,6 +248,17 @@ impl StatePeer {
     }
 }
 impl PeerWorkspace<'_> {
+    /// The workspace's own document as this device holds it: its governance, and the layout the
+    /// workspace keeps at its root, whole.
+    #[must_use]
+    pub fn document(self) -> Option<Vec<u8>> {
+        self.peer
+            .core
+            .workspace_doc
+            .as_ref()
+            .map(crate::cached_document::CachedDocument::saved)
+    }
+
     /// Check that this admitted device may grant in the workspace now.
     pub fn check_workspace_administration(
         self,

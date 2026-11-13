@@ -47,8 +47,6 @@ impl Shared {
         // Every workspace this device holds has had its record read, and
         // nothing of the workspaces moved since: there is nothing to read,
         // lay out or write.
-        // An undo or redo the person asked for while a layout was being written is taken now.
-        self.desktops.retry_step(&self.person, &self.handle);
         if self
             .desktops
             .settled(engine.owner().revision(), &self.handle.read(Clone::clone))

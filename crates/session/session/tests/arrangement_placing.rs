@@ -105,16 +105,17 @@ impl Published for Mailbox {
     }
 }
 
+/// A session on a device that holds its workspaces, as a person's own device does: the desk it
+/// shows is a workspace's, and what the arrangement does to it is that workspace's layout.
 fn session() -> Session {
-    crate::common::headless_on(
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
+    crate::common::seated_on(&[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)], |state| {
         Options {
             person: ADA.to_owned(),
-            state: None,
+            state: Some(state.to_path_buf()),
             collab: false,
             ..Options::default()
-        },
-    )
+        }
+    })
 }
 
 fn step(session: &mut Session) {

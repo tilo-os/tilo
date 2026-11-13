@@ -393,6 +393,9 @@ pub struct WorkspaceActivityPane {
     /// [`Self::history_log`]'s rows revision at the last rebuild: while it holds, the changes since
     /// were all passed over (a workspace switch) and the rows are as derived.
     last_rows: u64,
+    /// The heads of the workspace's own document at the last rebuild: what it governed since is
+    /// read even while the desk's own document stands still.
+    last_governing: Vec<ChangeHash>,
     period: Period,
     /// Every row the document yielded, with the workspace each belongs to (`None` for no single
     /// workspace). [`Self::scope`] selects the subset handed to the timeline.
@@ -463,6 +466,12 @@ pub struct WorkspaceActivityPane {
     /// refresh reads only the changes appended since the last one
     /// ([`HistorySource::entries_since`]).
     pub(super) history_log: ui::history_source::HistoryLog,
+    /// What [`Self::source`] has read of the workspace's own document, kept across refreshes: the
+    /// rows of its governance come from there ([`ActivityTree::governance_document`]).
+    governance_log: ui::history_source::HistoryLog,
+    /// The rows read from the workspace's own document: they address changes in it, not in the
+    /// document the desk is read from, so nothing here diffs or reverts them.
+    governance_rows: HashSet<HistoryEntryId>,
     /// Each workspace change's reading, kept across refreshes; see [`describe_workspace_changes`].
     workspace_changes: HashMap<ChangeHash, WorkspaceChange>,
     /// Each replayed entry's desktop, kept across rebuilds; see [`Self::rebuild_replay_frames`].
@@ -573,6 +582,7 @@ impl WorkspaceActivityPane {
             named: Vec::new(),
             last_heads: Vec::new(),
             last_rows: 0,
+            last_governing: Vec::new(),
             period: Period::default(),
             derived: Vec::new(),
             scoped_tree_rows: Vec::new(),
@@ -618,6 +628,8 @@ impl WorkspaceActivityPane {
             replay_presentation_note: None,
             replay_frames: Vec::new(),
             history_log: ui::history_source::HistoryLog::default(),
+            governance_log: ui::history_source::HistoryLog::default(),
+            governance_rows: HashSet::new(),
             workspace_changes: HashMap::new(),
             replay_checkpoints: HashMap::new(),
             replay_index: 0,
@@ -865,6 +877,16 @@ impl WorkspaceActivityPane {
                 detail.can_undo = false;
             }
             origin.get_or_insert(next);
+        }
+        // A row read from the workspace's own document addresses a change the desk's document does
+        // not hold: there is nothing here to compare it with or to take back.
+        if detail
+            .entry_ids
+            .iter()
+            .any(|id| self.governance_rows.contains(id))
+        {
+            detail.can_compare = false;
+            detail.can_undo = false;
         }
         if !app_origins.is_empty() {
             let titles = std::mem::take(&mut detail.resources);
@@ -1545,22 +1567,29 @@ impl WorkspaceActivityPane {
         self.poll_undo();
 
         let heads = tree.document_mut().get_heads();
+        let governing = self.governing_heads(tree);
         let active = tree.active.raw();
         // A switch writes the document but no row: read just the changes since and, when all of
         // them were passed over, only show the rows of the workspace now active.
-        let only_passed_over = heads != self.last_heads && !self.last_heads.is_empty() && {
-            self.source
-                .follow(tree.document_mut(), &mut self.history_log);
-            self.history_log.rows_revision() == self.last_rows
-        };
-        if only_passed_over || (heads == self.last_heads && !self.timeline.entries().is_empty()) {
+        let only_passed_over = heads != self.last_heads
+            && governing == self.last_governing
+            && !self.last_heads.is_empty()
+            && {
+                self.source
+                    .follow(tree.document_mut(), &mut self.history_log);
+                self.history_log.rows_revision() == self.last_rows
+            };
+        let stayed = heads == self.last_heads && governing == self.last_governing;
+        if only_passed_over || (stayed && !self.timeline.entries().is_empty()) {
             self.last_heads = heads;
+            self.last_governing = governing;
             if self.last_active != Some(active) {
                 self.apply_scope(tree);
             }
             return;
         }
         self.last_heads = heads;
+        self.last_governing = governing;
         seed_roster_colours(self.source.authors_mut(), tree);
         // A change an agent's own key signed reads as the agent's, for its person, once the host
         // verified its delegation for that device.
@@ -1611,6 +1640,9 @@ impl WorkspaceActivityPane {
             &mut entries,
             &mut self.workspace_changes,
         );
+        // What the workspace governs — who owns it, who it is shared with, what it grants — is
+        // written in the workspace's own document, which the layout is one record of.
+        self.read_governance(tree, &mut entries, &mut tags);
         // A receipt is committed by the workspace host, but its authenticated `actor` is the person
         // (or agent) who performed the semantic action. Attribute the projected CRDT row to that
         // actor rather than to the host's Automerge key; otherwise every collaborative work session
@@ -1695,6 +1727,41 @@ impl WorkspaceActivityPane {
         // edits.
         self.named = ui::history_groups::read_named_ranges(tree.document(), self.source.authors());
         self.apply_scope(tree);
+    }
+
+    /// The heads of the workspace's own document, where one is read.
+    fn governing_heads(&self, tree: &impl ActivityTree) -> Vec<ChangeHash> {
+        tree.governance_document()
+            .map(automerge::AutoCommit::committed_heads)
+            .unwrap_or_default()
+    }
+
+    /// Append what the workspace's own document says it governed — who owns it, who it is shared
+    /// with, what it grants — to `entries`, each row tagged with the workspace it governs.
+    fn read_governance(
+        &mut self,
+        tree: &impl ActivityTree,
+        entries: &mut Vec<HistoryEntry>,
+        tags: &mut Vec<Option<u64>>,
+    ) {
+        let Some(document) = tree.governance_document().cloned() else {
+            self.governance_rows.clear();
+            return;
+        };
+        let mut document = document;
+        let mut rows = self
+            .source
+            .entries_since(&mut document, &mut self.governance_log);
+        let row_tags = describe_workspace_changes(
+            &mut document,
+            &self.governance_log,
+            &mut rows,
+            &mut self.workspace_changes,
+        );
+        self.governance_rows = rows.iter().map(|row| row.id).collect();
+        let workspace = Some(tree.active.raw());
+        tags.extend(row_tags.into_iter().map(|tag| tag.or(workspace)));
+        entries.append(&mut rows);
     }
 
     /// Hand the timeline the rows [`Self::scope`] selects and re-derive everything that depends on

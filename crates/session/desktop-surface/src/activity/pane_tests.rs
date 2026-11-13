@@ -274,6 +274,7 @@ mod tests {
         let mut restored = WorkspaceTree {
             desktop: serde_json::from_slice(&persisted).expect("restore workspace tree"),
             doc: automerge::AutoCommit::new(),
+            governance: HashMap::new(),
         };
         restored.seed_doc_from_cache();
 
@@ -1243,7 +1244,8 @@ mod tests {
         );
     }
 
-    /// A second workspace with its own governance, interleaved in one document.
+    /// A second workspace with its own governance: each workspace governs itself in a document of
+    /// its own.
     fn two_workspace_tree() -> (WorkspaceTree, WorkspaceSlot, WorkspaceSlot) {
         let (mut tree, first, user) = busy_workspace();
         let second = tree.append_empty_workspace("Research");
@@ -1263,8 +1265,8 @@ mod tests {
     }
 
     #[test]
-    fn this_workspaces_scope_excludes_another_workspaces_governance() {
-        let (mut tree, _first, _second) = two_workspace_tree();
+    fn this_workspaces_own_document_is_the_only_governance_it_reads() {
+        let (mut tree, _first, second) = two_workspace_tree();
         let mut pane = pane_over(&mut tree);
         assert_eq!(
             pane.scope,
@@ -1282,32 +1284,47 @@ mod tests {
             "this workspace's own grant is present: {scoped:?}"
         );
 
-        let all_tree = { tree.desktop.workspaces.clone() };
-        let _ = all_tree;
-        pane.set_scope(WorkspaceScope::AllWorkspaces, &tree);
-        let widened: Vec<String> = pane.entries().iter().map(|e| e.summary.clone()).collect();
+        // The other workspace's own document is read when it is the one in front.
+        tree.set_active(second);
+        pane.refresh(&mut tree);
+        let there: Vec<String> = pane.entries().iter().map(|e| e.summary.clone()).collect();
         assert!(
-            widened.iter().any(|s| s.contains("research.example")),
-            "widening the scope must reveal the other workspace: {widened:?}"
+            there.iter().any(|s| s.contains("research.example")),
+            "the other workspace's grant is its own: {there:?}"
         );
         assert!(
-            widened.len() > scoped.len(),
-            "the whole tree is strictly more than one workspace: {} vs {}",
-            widened.len(),
-            scoped.len()
+            !there.iter().any(|s| s.contains("/home/user/notes")),
+            "the first workspace's grant is not the second's: {there:?}"
         );
     }
 
     #[test]
     fn a_widened_row_names_the_workspace_it_happened_in() {
-        let (mut tree, _first, _second) = two_workspace_tree();
+        let (mut tree, first, second) = two_workspace_tree();
+        // A window opened in each workspace, and a grant made in the one in front.
+        tree.set_active(first);
+        assert!(tree.doc_append_tab_to_first_group_of_active_workspace(
+            next_id(),
+            "Brief".into(),
+            Vec::new()
+        ));
+        tree.set_active(second);
+        assert!(tree.doc_append_tab_to_first_group_of_active_workspace(
+            next_id(),
+            "Survey".into(),
+            Vec::new()
+        ));
+        tree.set_active(first);
         let mut pane = pane_over(&mut tree);
         pane.set_scope(WorkspaceScope::AllWorkspaces, &tree);
         let named_rows: Vec<String> = pane
             .entries()
             .iter()
             .filter(|e| {
-                e.summary.contains("research.example") || e.summary.contains("/home/user/notes")
+                e.summary.contains("research.example")
+                    || e.summary.contains("/home/user/notes")
+                    || e.summary.contains("Brief")
+                    || e.summary.contains("Survey")
             })
             .map(|e| e.summary.clone())
             .collect();
@@ -1405,45 +1422,65 @@ mod tests {
         // One change stamped a week back via `commit_stamped_at` , the rest at now: "Today" drops
         // the old one, "30 days" keeps everything.
         let mut tree = WorkspaceTree::bootstrap_demo();
+        let user: String = "test-owner".to_string();
+        tree.adopt_ownerless_workspaces(&user);
+        let slot = tree.desktop.active;
+
         let week_ago_secs = i64::try_from(ui::time::try_unix_now().unwrap() - 604_800).unwrap();
-        // A window opened last week, and one today: each is one change of the layout record.
-        assert!(
-            tree.doc_append_tab_to_first_group_of_active_workspace(
-                next_id(),
-                "Last week".into(),
-                Vec::new()
+        tree.grant_uncommitted(
+            slot,
+            &user,
+            CapOverride::grant(
+                Subject::app("files"),
+                Scope::FsPath("/home/user/last-week".to_string()),
+                Access::Read,
             ),
-            "the record takes the window"
-        );
-        tilo_resource::history::commit_stamped_at(&mut tree.doc, week_ago_secs)
-            .expect("the window left a transaction to stamp");
-        assert!(
-            tree.doc_append_tab_to_first_group_of_active_workspace(
-                next_id(),
-                "Today".into(),
-                Vec::new()
-            ),
-            "the record takes the window"
-        );
-        tilo_resource::history::commit_stamped_at(
-            &mut tree.doc,
-            i64::try_from(ui::time::try_unix_now().unwrap()).unwrap(),
         )
-        .expect("the window left a transaction to stamp");
+        .expect("owner may grant");
+        tilo_resource::history::commit_stamped_at(tree.governance_of(slot), week_ago_secs)
+            .expect("the grant left a transaction to stamp");
+
+        tree.grant_in_workspace(
+            slot,
+            &user,
+            CapOverride::grant(
+                Subject::app("files"),
+                Scope::FsPath("/home/user/today".to_string()),
+                Access::Read,
+            ),
+        )
+        .expect("owner may grant");
 
         let mut pane = pane_over(&mut tree);
         let all = pane.timeline.visible_len();
         assert!(
             all >= 2,
-            "expected last week's window and today's, got {all}"
+            "expected last week's grant and today's, got {all}"
         );
 
         pane.period = Period::Today;
         pane.reinstall_filter();
         let today = pane.timeline.visible_len();
+        assert!(today > 0, "today's changes must survive the day filter");
         assert!(
             today < all,
-            "Today drops the window opened last week: {today} of {all}"
+            "the week-old change must be filtered out: {today} of {all} survived"
+        );
+        for i in 0..pane.timeline.visible_len() {
+            let e = pane.timeline.visible_entry(i).unwrap();
+            assert!(
+                !e.summary.contains("last-week"),
+                "the week-old row leaked through the day filter: {}",
+                e.summary
+            );
+        }
+
+        pane.period = Period::Month;
+        pane.reinstall_filter();
+        assert_eq!(
+            pane.timeline.visible_len(),
+            all,
+            "a 30-day window covers a change from seven days ago"
         );
     }
 

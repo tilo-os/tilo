@@ -1186,6 +1186,17 @@ impl Engine {
             .with_current(workspace, |view| view.peer().governance().governed_policy())
     }
 
+    /// The workspace's own document as this device holds it, whole: its governance, and the layout
+    /// it keeps at its root. `None` when this device holds no workspace by that id.
+    #[must_use]
+    pub fn workspace_document(&self, workspace: &str) -> Option<Vec<u8>> {
+        let workspace = WorkspaceId::parse(workspace)?;
+        self.owner
+            .with_current(workspace, |view| Ok(view.peer().workspace().document()))
+            .ok()
+            .flatten()
+    }
+
     /// Whether this device's person may administer `workspace` here: the governance gives their
     /// person the grant action. A workspace decided by another device's governance says no,
     /// whatever this device holds of it.

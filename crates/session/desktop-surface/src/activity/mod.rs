@@ -39,6 +39,11 @@ pub trait ActivityTree: Clone + Deref<Target = DesktopTree> + DerefMut {
         Vec::new()
     }
     fn commit_activity_change(&mut self) {}
+    /// The workspace's own document — its governance, and the layout it keeps at its root — where
+    /// the document [`Self::document`] reads is another record of the same workspace.
+    fn governance_document(&self) -> Option<&AutoCommit> {
+        None
+    }
 }
 
 /// What takes the desk a committing snapshot wrote back to where it is kept.
@@ -55,6 +60,9 @@ pub struct ActivitySnapshot {
     workspace: Option<tilo_desktop_model::WorkspaceId>,
     /// What the document holds the desk as.
     shape: Shape,
+    /// The workspace's own document, where this document is one of its records: what it governs —
+    /// who owns it, who it is shared with, what it grants — is read from there.
+    governance: Option<AutoCommit>,
     /// What takes a change the model wrote back to the desk it came from: a host that keeps the
     /// workspace's own layout applies it here, and a host whose history is read only keeps none.
     commit: Option<Commit>,
@@ -81,6 +89,7 @@ impl ActivitySnapshot {
             doc,
             workspace: Some(workspace),
             shape: Shape::Devices,
+            governance: None,
             commit: None,
         };
         tilo_desktop_model::projection::apply_admitted_workspace(
@@ -100,6 +109,7 @@ impl ActivitySnapshot {
             doc,
             workspace: None,
             shape: Shape::Devices,
+            governance: None,
             commit: None,
         };
         let _ = snapshot.resync_activity_cache();
@@ -115,6 +125,7 @@ impl ActivitySnapshot {
             doc,
             workspace: None,
             shape: Shape::Layout,
+            governance: None,
             commit: None,
         };
         let _ = snapshot.resync_activity_cache();
@@ -127,6 +138,14 @@ impl ActivitySnapshot {
     #[must_use]
     pub fn committing(mut self, commit: std::rc::Rc<dyn Fn(&DesktopTree)>) -> Self {
         self.commit = Some(commit);
+        self
+    }
+
+    /// Read the workspace's governance from `document` , the workspace's own: this document is one
+    /// of its records, and what the workspace governs is not written there.
+    #[must_use]
+    pub fn governing(mut self, document: AutoCommit) -> Self {
+        self.governance = Some(document);
         self
     }
 }
@@ -147,6 +166,9 @@ impl ActivityTree for ActivitySnapshot {
     }
     fn document_mut(&mut self) -> &mut AutoCommit {
         &mut self.doc
+    }
+    fn governance_document(&self) -> Option<&AutoCommit> {
+        self.governance.as_ref()
     }
     fn replay_presentation_note(&self) -> Option<String> {
         // A workspace document records which windows the workspace holds and how they are arranged,
