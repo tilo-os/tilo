@@ -176,7 +176,7 @@ pub(crate) struct Joined {
     members: Option<std::collections::BTreeSet<String>>,
     /// When the workspace admitted each of its people, once heard, by their person (root key,
     /// hex): who shares a name is numbered in this order.
-    joined: std::collections::BTreeMap<String, u64>,
+    admitted_at: std::collections::BTreeMap<String, u64>,
     /// Record routes whose commits this page published the workspace answered all of, since
     /// the last frame: what the record's windows said they did is said
     /// (`RecordStore::workspace_settled`).
@@ -242,7 +242,7 @@ pub(crate) fn open(
         permitted: BTreeMap::new(),
         permit_answers: Arc::default(),
         members: None,
-        joined: BTreeMap::new(),
+        admitted_at: BTreeMap::new(),
         settled: Arc::default(),
         content: ContentWants::default(),
         changes: changes(),
@@ -1588,15 +1588,15 @@ impl Joined {
             .get(&self.uuid)
             .cloned()
             .unwrap_or_default();
-        if members == self.members && joined == self.joined {
+        if members == self.members && joined == self.admitted_at {
             return;
         }
         self.members = members;
-        self.joined = joined;
+        self.admitted_at = joined;
         for (&id, mounted) in &self.mounts {
             if let Some((_, shared)) = &mounted.attachment.desktop {
                 shared.members.replace(self.members.clone());
-                shared.joined.replace(self.joined.clone());
+                shared.joined.replace(self.admitted_at.clone());
                 woken.insert(id);
             }
         }

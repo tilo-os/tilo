@@ -339,6 +339,24 @@ pub fn take_deferred_failures() -> Vec<DeferredFailure> {
 /// other test sees.
 pub fn install_source(source: Option<Arc<dyn SettingsSource>>) {
     *SOURCE.write_recover() = source;
+    INSTALLED.fetch_add(1, Ordering::AcqRel);
+}
+
+/// How many settings documents this process has installed in place of others.
+static INSTALLED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The version of `source` as this process reads it: the document's own revision, told apart
+/// from every document installed in another's place before it, so a reader that caches what it
+/// read by version reads a replaced document again even where the two number alike. A reader
+/// told only the document's own revision takes a document put in place of another for the one
+/// it replaced, and keeps reading what the old one said.
+#[must_use]
+pub fn installed_version(source: &dyn SettingsSource) -> u64 {
+    let mut folded = 0xcbf2_9ce4_8422_2325u64 ^ INSTALLED.load(Ordering::Acquire);
+    for byte in source.revision().to_le_bytes() {
+        folded = (folded ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3);
+    }
+    folded
 }
 
 pub fn installed_source() -> Option<Arc<dyn SettingsSource>> {
@@ -356,6 +374,9 @@ thread_local! {
 #[must_use = "the scope ends when it is dropped"]
 pub fn scoped_source(source: Option<Arc<dyn SettingsSource>>) -> SourceScope {
     SCOPED.with(|scoped| scoped.borrow_mut().push(source));
+    // A document put in front of the one this thread read is a new version of it, as
+    // [`install_source`]'s is.
+    INSTALLED.fetch_add(1, Ordering::AcqRel);
     SourceScope {
         _not_send: std::marker::PhantomData,
     }
@@ -370,6 +391,7 @@ impl Drop for SourceScope {
         SCOPED.with(|scoped| {
             scoped.borrow_mut().pop();
         });
+        INSTALLED.fetch_add(1, Ordering::AcqRel);
     }
 }
 
