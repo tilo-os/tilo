@@ -65,6 +65,7 @@ impl HoverToolbar {
             crate::widget::arrange::Slot::new(row),
             controls,
             Stands::Straddling,
+            None,
         )
     }
 
@@ -78,11 +79,33 @@ impl HoverToolbar {
     pub fn above(row: Element, controls: Vec<Element>, band: f64) -> Self {
         let mut slot = crate::widget::arrange::Slot::new(row);
         slot.fit = crate::widget::arrange::Fit::fill(1.0);
-        Self::around(slot, controls, Stands::Above(band))
+        Self::around(slot, controls, Stands::Above(band), None)
     }
 
-    /// The row in `row`, with `controls` shown on hover and focus where `stands` says.
-    fn around(row: crate::widget::arrange::Slot, controls: Vec<Element>, stands: Stands) -> Self {
+    /// [`Self::above`], with `caption` standing at the band's leading end at rest as well as on
+    /// hover: what the content is, said quietly while its controls are away (a place on a canvas
+    /// names what it shows). The band is as tall either way, so nothing moves when the controls
+    /// come.
+    #[must_use]
+    pub fn above_captioned(
+        row: Element,
+        controls: Vec<Element>,
+        band: f64,
+        caption: Element,
+    ) -> Self {
+        let mut slot = crate::widget::arrange::Slot::new(row);
+        slot.fit = crate::widget::arrange::Fit::fill(1.0);
+        Self::around(slot, controls, Stands::Above(band), Some(caption))
+    }
+
+    /// The row in `row`, with `controls` shown on hover and focus where `stands` says, and
+    /// `caption` at rest in a band over it.
+    fn around(
+        row: crate::widget::arrange::Slot,
+        controls: Vec<Element>,
+        stands: Stands,
+        caption: Option<Element>,
+    ) -> Self {
         let shown = Rc::new(Shown::default());
         let mut bar = Row::row().gap(Rhythm::Tight);
         for control in controls {
@@ -108,12 +131,20 @@ impl HoverToolbar {
                 // The band is as tall as it is told whatever the controls are, so the content
                 // under it stands where its pin says; the controls sit at its trailing end, on
                 // its foot.
-                let bar = Stack::row()
+                let mut bar = Stack::row()
                     .fill_width()
                     .fill_height()
+                    .gap(Rhythm::Related)
                     .distribute(crate::widget::arrange::Distribute::End)
-                    .align(Align::End)
-                    .push(Box::new(face));
+                    .align(Align::End);
+                // The caption takes the band's room up to the controls, at its leading end,
+                // a tight step above the content's edge as the controls stand.
+                if let Some(caption) = caption {
+                    let mut said = crate::widget::arrange::Slot::new(caption);
+                    said.fit = crate::widget::arrange::Fit::fill(1.0);
+                    bar = bar.push_slot(said);
+                }
+                let bar = bar.push(Box::new(face));
                 #[expect(
                     clippy::cast_possible_truncation,
                     reason = "a band a few dozen pixels tall"

@@ -489,6 +489,9 @@ d-m67g5cso = Canvas width
 
 d-4n7jst3f = Canvas height
 
+d-nyhuwvbj = Canvas hugs
+    .doc = Whether `canvas_height` is the most it takes: what it shows is as tall as what it holds up to it (a thing found where the person clicked).
+
 d-n2pmgnow = Shell
 
 d-vn23musu-filter-width = Width
@@ -504,6 +507,8 @@ d-vn23musu-filter-canvas_y = Canvas y
 d-vn23musu-filter-canvas_width = Canvas width
 
 d-vn23musu-filter-canvas_height = Canvas height
+
+d-vn23musu-filter-canvas_hugs = Canvas hugs
 
 d-gpmk4o3r = Arrangement place
     .doc = A place: one window, showing a resource through a view.

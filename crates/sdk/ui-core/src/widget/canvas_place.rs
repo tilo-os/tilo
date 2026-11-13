@@ -94,24 +94,27 @@ impl Described for CanvasPlace {
         let props_name = name.clone();
         let props_carries = carries.clone().unwrap_or_default();
         let title = title_of(name.as_deref());
-        let mut label = Text::new(&title).with_role(TextRole::Label).dimmed();
-        label = label.with_truncate(true);
+        // What the place shows, said quietly at rest in its band: the caption's size, in the
+        // theme's secondary ink, cut short rather than wrapped. It is what a person picks the
+        // place up by: a press on it that travels carries the place's resource.
+        let caption = Text::new(&title)
+            .with_role(TextRole::Caption)
+            .dimmed()
+            .with_truncate(true);
+        let caption: Element = match carries {
+            Some(resource) if !resource.is_empty() => Box::new(DragSource::new(
+                format!("{key}\u{1f}handle"),
+                Box::new(caption),
+                resource,
+                title.clone(),
+            )),
+            _ => Box::new(caption),
+        };
+        // The handle: the resource's actions, pin and close, on hover and focus only.
         let handle = Stack::row()
             .align(Align::Center)
             .gap(Rhythm::Tight)
-            .push(Box::new(label))
             .push(controls.unwrap_or_else(empty));
-        // The handle is what a person picks the place up by: a press on it that travels carries
-        // the place's resource; one that does not is the control's under it.
-        let handle: Element = match carries {
-            Some(resource) if !resource.is_empty() => Box::new(DragSource::new(
-                format!("{key}\u{1f}handle"),
-                Box::new(handle),
-                resource,
-                title,
-            )),
-            _ => Box::new(handle),
-        };
         let mut slot = Slot::new(body.unwrap_or_else(empty));
         slot.fit = Fit::fill(1.0);
         let ground = PlaceGround {
@@ -126,7 +129,12 @@ impl Described for CanvasPlace {
         // is true then. It stands around the view and the handle both, so a right-click on the
         // handle — or on a part of the view that has no menu of its own — opens it.
         let offered = Rc::clone(&items);
-        let toolbar = HoverToolbar::above(Box::new(ground), vec![handle], PLACE_BAND);
+        let toolbar = HoverToolbar::above_captioned(
+            Box::new(ground),
+            vec![Box::new(handle)],
+            PLACE_BAND,
+            caption,
+        );
         let menu = ContextMenuArea::new(Box::new(toolbar), move |_| {
             offered
                 .borrow()

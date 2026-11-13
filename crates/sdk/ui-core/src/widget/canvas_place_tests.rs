@@ -125,3 +125,62 @@ fn a_right_click_on_a_place_opens_its_actions() {
         "the right-click opened the place's menu of its actions"
     );
 }
+
+/// A place says what it is at rest, quietly: its title stands at the leading end of the band over
+/// its surface whether or not its handle shows, so nothing moves when the controls come on hover.
+#[test]
+fn a_place_says_what_it_is_at_rest() {
+    let place = CanvasPlace::from_props(
+        "p",
+        PlaceProps {
+            name: Some("Inbox".into()),
+            carries: Some("tl:mail:root".into()),
+            ..PlaceProps::default()
+        },
+    );
+    let mut map = Map::new().pin(
+        "p",
+        PinPlace {
+            x: 40.0,
+            y: 60.0,
+            width: 400.0,
+            height: Some(300.0),
+            band: PLACE_BAND,
+            hug: false,
+            grows: false,
+        },
+        Box::new(place),
+    );
+    let mut text = crate::font_catalog::fixture_renderer();
+    crate::widget::layout::lay_out_detached(
+        &mut map,
+        Rect::new(0.0, 0.0, 800.0, 600.0),
+        &crate::Theme::dark(),
+        &mut text,
+    )
+    .expect("the map lays out");
+    let caption = text_rect(&map, "Inbox").expect("the place's caption");
+    assert!(
+        caption.height() > 0.0
+            && caption.y0 >= 60.0 - PLACE_BAND - 0.5
+            && caption.y1 <= 60.0 + 0.5
+            && caption.x0 < 60.0,
+        "the caption stands at the band's leading end, over the surface: {caption:?}"
+    );
+}
+
+/// The box of the first text under `widget` that says `said`.
+fn text_rect(widget: &dyn Widget, said: &str) -> Option<Rect> {
+    if widget.name() == "Text"
+        && widget
+            .accessibility()
+            .and_then(|node| node.name)
+            .is_some_and(|name| name == said)
+    {
+        return Some(widget.get_rect());
+    }
+    widget
+        .children()
+        .into_iter()
+        .find_map(|child| text_rect(child, said))
+}

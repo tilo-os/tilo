@@ -298,18 +298,23 @@ fn wide_session(root: &std::path::Path) -> Session {
 /// drawn there: its frame as far right of where it was drawn as 1600 is of the strip's point
 /// before, and at the canvas' top.
 fn moved_and_drawn(session: &mut Session, key: &str) {
-    let name = crate::common::wait_for(session, "the place's name", |session| {
+    let (name, title) = crate::common::wait_for(session, "the place's name", |session| {
         crate::common::place(session, crate::common::number(key))
-            .map(|place| place.name)
-            .filter(|name| !name.is_empty())
+            .map(|place| (place.name, place.title))
+            .filter(|(name, _)| !name.is_empty())
     });
-    // The place's frame, by the name every surface calls it: the one on the canvas, above the
-    // dock that lists it by the same name.
+    // The place on the canvas: a window's frame by the name every surface calls it, a place of
+    // content by its own title on its handle; the one on the canvas, above the dock that lists it.
     let shown = |session: &Session| {
-        session.shell_controls(&name).into_iter().find(|&rect| {
-            crate::common::on_display(rect, WIDE, crate::common::HEIGHT)
-                && rect.1 < f64::from(crate::common::HEIGHT) - 120.0
-        })
+        [&title, &name]
+            .into_iter()
+            .filter(|said| !said.is_empty())
+            .flat_map(|said| session.shell_controls(said))
+            .filter(|&rect| {
+                crate::common::on_display(rect, WIDE, crate::common::HEIGHT)
+                    && rect.1 < f64::from(crate::common::HEIGHT) - 120.0
+            })
+            .max_by(|a, b| (a.2 * a.3).total_cmp(&(b.2 * b.3)))
     };
     let (x0, y0, _, _) =
         crate::common::wait_for(session, "the place drawn", |session| shown(session));

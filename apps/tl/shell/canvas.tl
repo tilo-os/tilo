@@ -68,7 +68,7 @@ view canvas(a: Arrangement, name: Text, framed: Bool, lists: Bool) {
                         width: pin_width(s),
                         height: pin_height(s),
                         band: framed and composed(p),
-                        hug: hugs(p),
+                        hug: hugs(s, p),
                         grows: true,
                     ) {
                         // A place's handle shows in a band over its view: the pin stands that
@@ -116,11 +116,12 @@ view canvas(a: Arrangement, name: Text, framed: Bool, lists: Bool) {
     }
 }
 
-/// Whether the place `p` hugs what it holds up to its box rather than filling it: a turn, whose
-/// answer is as long as its words (`canvas.md` §7, "The card hugs what it holds"). What a find
-/// placed in a rectangle fills it.
-fn hugs(p: ArrangementPlace) -> Bool {
-    p.shown_as == "turn"
+/// Whether the place `p` of the strip `s` hugs what it holds up to its box rather than filling
+/// it (`canvas.md` §7, "The card hugs what it holds"): a turn, whose answer is as long as its
+/// words, and a thing found where the person clicked, which named no size (`canvas_hugs`). What
+/// a find placed in a rectangle the person dragged fills it.
+fn hugs(s: ArrangementStrip, p: ArrangementPlace) -> Bool {
+    p.shown_as == "turn" or s.canvas_hugs
 }
 
 /// The person asked on the canvas: the hint the empty canvas says until then has been said

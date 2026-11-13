@@ -92,7 +92,8 @@ impl ViewResource for Turn {
 }
 
 /// A turn, as it stands on the canvas where it was asked (canvas.md §3, §7 "An answer reads like
-/// an answer"): the person's words as a quiet line, the agent's reply under it as prose at body
+/// an answer"): the person's words as a quiet line (the caption its place shows over it, the
+/// turn's title, so the card does not say them twice), the agent's reply as prose at body
 /// size with its Markdown set as text (never as its source), and what the agent did as one quiet
 /// line that unfolds. While the agent works, one live line says what it is doing now, from the
 /// step it took last, in place of a count. No byline, no avatars, no composer and no button: it
@@ -101,12 +102,9 @@ impl ViewResource for Turn {
 /// The turn holds its words and nothing else, so its place hugs them (`canvas.tl`'s `hugs`).
 #[view(default)]
 pub(super) fn turn(t: &Turn, cx: &ViewCx) -> Node {
-    let mut column: Vec<Node> = vec![
-        ui::TextBuilder::new(&cx.key("asked"), t.question.text.trim())
-            .role(ui::TextRole::Label)
-            .secondary(true)
-            .into(),
-    ];
+    // The person's words are the place's own quiet line, over the card (its caption, the turn's
+    // title): the card holds the answer.
+    let mut column: Vec<Node> = Vec::new();
     let mut steps: Vec<String> = Vec::new();
     // What the agent is doing now, while it works: the line under the words it has so far.
     let mut working: Option<String> = None;
@@ -193,7 +191,10 @@ pub(super) fn prose(key: &str, markdown: &str) -> Node {
         .iter()
         .map(sdk::widget::Block::content)
         .collect();
-    let rich = sdk::widget::rich_doc::rich_of_blocks(&blocks, &Default::default());
+    let rich = sdk::widget::rich_doc::rich_of_blocks(
+        &blocks,
+        &tilo_view::patch::rich::RichText::default(),
+    );
     ui::BlockEditorBuilder::new(key).value(rich).into()
 }
 

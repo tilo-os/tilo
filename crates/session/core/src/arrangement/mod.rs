@@ -896,9 +896,10 @@ impl Arrangement {
             return Err(format!("nothing matches {text:?}"));
         };
         // What the text finds stands where the person pointed: at the point at its own size, or
-        // laid out to the rectangle they dragged (canvas.md §1). A second place of a note is the
-        // person's to make.
-        let (width, height) = size.unwrap_or((DEFAULT_WIDTH, DEFAULT_HEIGHT));
+        // laid out to the rectangle they dragged (canvas.md §1). A click names no height: the
+        // place is as tall as what it shows, up to a window's (`place_at`). A second place of a
+        // note is the person's to make.
+        let (width, height) = size.unwrap_or((DEFAULT_WIDTH, 0));
         let surface = self.surface_at_strip(strip)?;
         let action = ArrangementAction::Place {
             workspace: surface.workspace,
@@ -2005,16 +2006,27 @@ fn place_at(
     // closer together than a frame is wide, stand clear of each other. The
     // frame it stands in is the size it asks for, so the free space is that
     // size.
-    let (width, height) = (clamp_side(asked.width), clamp_side(asked.height));
+    let (width, height, hugs) = canvas_size(asked.width, asked.height);
     let place = workspace.arrangement.free_place_near(
         (clamp_coord(asked.x), clamp_coord(asked.y)),
         width,
         height,
         None,
     );
+    let place = if hugs { place.hugging() } else { place };
     workspace.arrangement.places.insert(asked.strip, place);
     workspace.arrangement.kind = ArrangementKind::Canvas;
     Ok(true)
+}
+
+/// The size a place asked for at `width` by `height` takes on the canvas, and whether it hugs what
+/// it shows. A place asked for with no height (a thing found where the person clicked) takes a
+/// window's height as the most it takes, and what it shows hugs what it holds up to it
+/// (`CanvasPlace::hugs`, canvas.md §7): the free space it is given is that most.
+fn canvas_size(width: i64, height: i64) -> (u32, u32, bool) {
+    let hugs = height <= 0;
+    let height = if hugs { DEFAULT_HEIGHT } else { height };
+    (clamp_side(width), clamp_side(height), hugs)
 }
 
 /// The place `place` shows the resource `resource` through `view` (empty for its primary one),

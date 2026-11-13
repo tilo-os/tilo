@@ -1,27 +1,10 @@
 //! A turn as it reads on the canvas (canvas.md §7, "An answer reads like an answer"): its reply
 //! set as text, what the agent is doing now, and its steps folded into one quiet line.
 
-use super::super::tests::{has_kind, keyed, passes, texts, view_cx};
+use super::super::tests::{keyed, passes, rich_texts, texts, view_cx};
 use super::super::{Channel, Message, Person, Work};
 use super::*;
 use tilo_view::Value;
-
-/// The paragraphs a tree's rich text shows, as read: what a reader sees of a reply.
-fn rich_texts(node: &Node) -> Vec<String> {
-    let mut out: Vec<String> = node
-        .props
-        .values()
-        .filter_map(|value| match value {
-            Value::Rich(rich) => Some(rich.blocks.iter().map(|block| block.text.clone())),
-            _ => None,
-        })
-        .flatten()
-        .collect();
-    for child in &node.children {
-        out.extend(rich_texts(child));
-    }
-    out
-}
 
 /// The marks over a tree's rich text, by name and the words they cover.
 fn rich_marks(node: &Node) -> Vec<(String, String)> {

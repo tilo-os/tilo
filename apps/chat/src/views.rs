@@ -1401,6 +1401,23 @@ mod tests {
         out
     }
 
+    /// The paragraphs a tree's rich text shows, as read: what a reader sees of a reply.
+    pub(super) fn rich_texts(node: &Node) -> Vec<String> {
+        let mut out: Vec<String> = node
+            .props
+            .values()
+            .filter_map(|value| match value {
+                Value::Rich(rich) => Some(rich.blocks.iter().map(|block| block.text.clone())),
+                _ => None,
+            })
+            .flatten()
+            .collect();
+        for child in &node.children {
+            out.extend(rich_texts(child));
+        }
+        out
+    }
+
     /// Every node of the tree, in order.
     pub(super) fn walk(node: &Node) -> Vec<&Node> {
         let mut out = vec![node];
@@ -2818,10 +2835,11 @@ mod tests {
         );
         let said = texts(&tree);
         assert!(
-            said.iter().any(|text| text == "what is due?")
+            !said.iter().any(|text| text == "what is due?")
                 && rich_texts(&tree) == ["Two tasks are due."]
                 && said.iter().any(|text| text == "Open Tasks"),
-            "the turn says the question, the reply and its one folded step: {said:?}"
+            "the card says the reply and its one folded step; the question is its place's caption, \
+             never said twice: {said:?}"
         );
         assert!(
             !said.iter().any(|text| text == "Whole conversation") && !has_kind(&tree, "ui.Button"),

@@ -318,6 +318,10 @@ impl EdgeDrag {
 const EDGE_GRAB: f64 = 6.0;
 /// The least side a resized place keeps, in logical pixels.
 const LEAST_SIDE: f64 = 120.0;
+/// The least height a hugging view's own measure must come to, in canvas pixels, for the map to
+/// take it as the view's height: under it, the view said no height of its own (a list that
+/// scrolls measures as nothing), and it fills its most instead.
+const LEAST_NATURAL: f64 = 8.0;
 
 /// See the module docs.
 pub struct Map {
@@ -769,14 +773,15 @@ impl Map {
             return;
         };
         let canvas = |place: &PinPlace| {
-            Rect::from_origin_size(
-                Point::new(place.x, place.y),
-                // A place whose height its view says is as tall as a window is wide over tall.
-                (
-                    place.width.max(1.0),
-                    place.height.unwrap_or(place.width.max(1.0) / 1.6),
-                ),
-            )
+            // A place whose height its view says is as tall as a window is wide over tall; one
+            // that hugs what it holds is shown by its top, so a short answer in a tall room
+            // does not carry the camera to the room's foot.
+            let height = match place.height {
+                Some(height) if place.hug => height.min(LEAST_SIDE),
+                Some(height) => height,
+                None => place.width.max(1.0) / 1.6,
+            };
+            Rect::from_origin_size(Point::new(place.x, place.y), (place.width.max(1.0), height))
         };
         let area = canvas(place);
         // What the person was looking at: every other place standing wholly in the viewport.
@@ -935,8 +940,11 @@ impl Map {
                 let natural = f64::from(size.height);
                 let height = place.height.map_or(natural, |height| {
                     let most = (height * camera.zoom).max(1.0) + place.band;
-                    if place.hug {
-                        natural.clamp(place.band + 1.0, most)
+                    // A view that says no height of its own (a list that scrolls is as tall as
+                    // the room it is given) fills its most: it cannot hug what it holds.
+                    let says = natural - place.band >= LEAST_NATURAL * camera.zoom;
+                    if place.hug && says {
+                        natural.min(most)
                     } else {
                         most
                     }
@@ -1232,10 +1240,12 @@ impl Map {
         let viewport = self.rect;
         let camera = self.shown.get();
         let zoom = camera.zoom.max(f64::EPSILON);
-        let mut pitch = GRAIN_PITCH;
-        while pitch * zoom < GRAIN_LEAST {
-            pitch *= 2.0;
-        }
+        // Doubled as often as it takes to stand the least apart on screen.
+        let doublings = (GRAIN_LEAST / (GRAIN_PITCH * zoom))
+            .log2()
+            .ceil()
+            .clamp(0.0, 16.0);
+        let pitch = GRAIN_PITCH * doublings.exp2();
         let corner = viewport.origin();
         let from = camera.to_canvas(corner, corner);
         let to = camera.to_canvas(corner, Point::new(viewport.x1, viewport.y1));

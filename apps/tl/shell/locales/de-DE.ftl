@@ -1542,3 +1542,8 @@ d-dgtjjxex = Menü der Person
     .w-join-a-workspace = Einem Arbeitsbereich beitreten
     .w-workspace-settings = Einstellungen des Arbeitsbereichs
     .w-overview = Übersicht
+
+d-nyhuwvbj = Fläche schmiegt sich an
+    .doc = Ob `canvas_height` das Höchste ist, was er nimmt: was er zeigt, ist so hoch wie das, was es hält, bis dahin (etwas, das gefunden wurde, wo die Person geklickt hat).
+
+d-vn23musu-filter-canvas_hugs = Fläche schmiegt sich an

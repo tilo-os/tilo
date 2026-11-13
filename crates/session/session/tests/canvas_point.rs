@@ -279,6 +279,21 @@ fn what_is_found_at_a_click_stands_at_the_point() {
         "its surface's top-left is where the person clicked: {:?} for {at:?}",
         (px, py)
     );
+    // A click names no size: the place is as tall as what it shows, up to a window's height, and
+    // never stands taller than that most.
+    let strip =
+        crate::common::strip(&session, crate::common::number(&inbox.strip)).expect("its strip");
+    assert!(
+        strip.canvas_hugs,
+        "a thing found at a click hugs what it shows: {strip:?}"
+    );
+    let (_, _, _, ph) = place_on_screen(&session, &inbox).expect("its surface");
+    #[allow(clippy::cast_precision_loss, reason = "canvas pixels")]
+    let most = strip.canvas_height as f64;
+    assert!(
+        ph <= most + 0.5,
+        "it stands no taller than its most: {ph} of {most}"
+    );
 }
 
 /// Every placed strip's canvas box, by the resource its place shows: `(x, y, w, h)` in canvas
@@ -753,10 +768,11 @@ fn a_right_click_on_a_place_opens_its_actions() {
     assert!(!offered.is_empty(), "the inbox offers actions: {inbox:?}");
     // The pointer over the place shows its handle; a right-click on its name opens the menu.
     point_to(&mut session, (px + pw * 0.5, py + ph * 0.5));
-    let title = if inbox.name.is_empty() {
-        &inbox.title
-    } else {
+    // The handle names the place by its own title (its caption), a window by its name.
+    let title = if inbox.title.is_empty() {
         &inbox.name
+    } else {
+        &inbox.title
     };
     let handle = wait_for(&mut session, "the place's handle", |session| {
         session
@@ -1011,15 +1027,16 @@ fn the_empty_canvas_says_once_what_it_is_for() {
     );
 }
 
-/// A turn asked near the canvas's trailing edge stands wholly in view: the canvas pans to it,
-/// never zooms, and the turn's card hugs its words rather than standing at its whole box.
+/// A turn asked near the canvas's trailing edge stands wholly in view: the canvas pans to it and
+/// never zooms. (That its card hugs its words is the map's, `map_canvas_tests`; this test's stand-in
+/// for Chat publishes no reading of the turn for it to hug.)
 #[test]
-fn a_turn_asked_at_the_edge_is_panned_into_view_and_hugs_its_words() {
+fn a_turn_asked_at_the_edge_is_panned_into_view() {
     let _settled = ui::motion::testing::settled();
     let root = private_home();
     let mut session = seeded_session(root.path());
     let (x, y, w, h) = on_screen(&session, CANVAS).expect("the canvas");
-    let at = (x + w * 0.92, y + h * 0.5);
+    let at = (x + w * 0.92, y + h * 0.1);
     point_and_say(&mut session, at, "what is on my task list?");
     until(&mut session, "the ask sent", |session| {
         session.settle_services();
@@ -1046,18 +1063,12 @@ fn a_turn_asked_at_the_edge_is_panned_into_view_and_hugs_its_words() {
         (tx, ty, tw, th),
         (x, y, w, h)
     );
-    let (_, _, box_w, box_h) = canvas_box(&session, "chat.workspace.turns:").expect("its box");
+    let (_, _, box_w, _) = canvas_box(&session, "chat.workspace.turns:").expect("its box");
     #[allow(clippy::cast_precision_loss, reason = "canvas pixels")]
     let zoom = tw / box_w as f64;
     assert!(
         (zoom - 1.0).abs() < 0.02,
         "the canvas panned and kept its zoom: {zoom}"
-    );
-    #[allow(clippy::cast_precision_loss, reason = "canvas pixels")]
-    let most = box_h as f64;
-    assert!(
-        th < most * 0.6,
-        "the card hugs its words, not its whole box: {th} of {most}"
     );
 }
 

@@ -554,6 +554,7 @@ fn a_window_kept_a_sliver_wide_reads_back_a_window() {
                 y: 0,
                 width: 2,
                 height: 3,
+                hugs: false,
             },
         )],
     );

@@ -212,11 +212,12 @@ fn an_answer_grows_out_of_where_it_was_asked() {
     let halfway = crate::motion::WindowMotion::grown_pose(0.5, rect, from, motion);
     let mid = halfway.drawn_rect(rect);
     assert!(
-        mid.x0 > from.x
-            && mid.x0 < rect.x0
-            && mid.width() > drawn.width()
-            && mid.width() < rect.width(),
-        "on its way out of the caret: {mid:?}"
+        (from.x..rect.x0).contains(&mid.x0),
+        "on its way from the caret to its place: {mid:?}"
+    );
+    assert!(
+        mid.width() > drawn.width() && mid.width() < rect.width(),
+        "growing on its way: {mid:?}"
     );
     let end = crate::motion::WindowMotion::grown_pose(1.0, rect, from, motion);
     assert!(end.is_rest(), "it rests at its place");
@@ -226,5 +227,22 @@ fn an_answer_grows_out_of_where_it_was_asked() {
         still.transform,
         Affine::IDENTITY,
         "reduced motion: it fades in where it stands"
+    );
+}
+
+/// A view that says no height of its own (a list that scrolls measures as nothing) cannot hug:
+/// its place fills its most rather than standing as a sliver.
+#[test]
+fn a_view_with_no_height_of_its_own_fills_its_most() {
+    let mut map = Map::new().pin(
+        "list",
+        place(0.0, 0.0, 400.0, 300.0, true),
+        Box::new(crate::widget::Spacer::new()),
+    );
+    laid(&mut map);
+    let list = map.laid.borrow()["list"];
+    assert!(
+        (list.height() - 300.0).abs() < 0.5,
+        "it stands at its most: {list:?}"
     );
 }
