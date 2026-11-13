@@ -472,13 +472,25 @@ fn refresh_runs_off_thread_and_lands_through_the_store() {
         a.core_mut().refresh_all();
         let feed_ids: Vec<Id> = a.core().store.feeds.ids().cloned().collect();
         let now = a.core().now;
+        // What each feed brings in: a hundred articles, then every size
+        // around what one frame persists.
+        let sizes: [usize; 7] = [
+            100,
+            3 * FLUSH_BUDGET + 1,
+            2 * FLUSH_BUDGET,
+            FLUSH_BUDGET + 1,
+            FLUSH_BUDGET,
+            FLUSH_BUDGET - 1,
+            1,
+        ];
+        assert_eq!(feed_ids.len(), sizes.len(), "one size for each feed");
         let mut total = 0usize;
-        for fid in &feed_ids {
-            let articles: Vec<Fetched> = (0..100)
+        for (fid, size) in feed_ids.iter().zip(sizes) {
+            let articles: Vec<Fetched> = (0..size)
                 .map(|i| {
                     fetched(
                         &format!("Article {fid} {i}"),
-                        now - i64::from(i) * 60,
+                        now - i64::try_from(i).unwrap() * 60,
                         vec![ContentBlock::new(BlockKind::Paragraph, "Body.")],
                     )
                 })
@@ -511,10 +523,20 @@ fn refresh_runs_off_thread_and_lands_through_the_store() {
         assert!(loaded(&doc).articles.len() - articles <= FLUSH_BUDGET);
         let mut frames = 0;
         while !a.core().pending_landings.is_empty() && frames < 5000 {
+            let waiting = queued(&a);
             a.core_mut()
                 .flush_doc_writes(&mut ui::widget::Edits::lend(&mut doc));
             frames += 1;
+            let landed = waiting - queued(&a);
+            assert!(
+                (1..=FLUSH_BUDGET).contains(&landed),
+                "frame {frames} persisted {landed} articles"
+            );
         }
+        // A feed's articles land a frame's budget at a time and the rest in
+        // one more frame; the first frame ran before the loop.
+        let steps: usize = sizes.iter().map(|size| size.div_ceil(FLUSH_BUDGET)).sum();
+        assert_eq!(frames + 1, steps, "frames to persist {sizes:?}");
         assert!(loaded(&doc).articles.len() >= total);
     }
 
