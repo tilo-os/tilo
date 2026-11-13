@@ -223,6 +223,8 @@ mod sheets_placement;
 mod shell;
 #[path = "shell_displays.rs"]
 mod shell_displays;
+#[path = "shell_record_persists.rs"]
+mod shell_record_persists;
 #[path = "shell_screen.rs"]
 mod shell_screen;
 #[path = "shell_themes.rs"]

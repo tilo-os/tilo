@@ -448,6 +448,11 @@ impl Session {
             self.step(timeout)?;
         }
         self.shared.keep_desk_now();
+        // The shell's own record, written out whole and waited on: the next session starts from
+        // exactly the desk choices this one left.
+        if let Some(shell) = &self.shell {
+            shell.flush_record();
+        }
         // Nothing of this session outlives it: an ordered end publishes the lock state the next one
         // recovers, and one that ends any other way keeps the armed record, which recovers locked.
         if let Some(recovery) = self.recovery.take()

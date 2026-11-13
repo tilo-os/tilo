@@ -112,6 +112,9 @@ pub(crate) struct Shell {
     /// The shell's record, shared by every part: one display draws what another wrote, so a change
     /// any part commits is the whole shell's.
     record: Rc<RefCell<tilo_resource::Doc>>,
+    /// The same record as it is kept: where its document lives on this device and how it reaches
+    /// the person's other devices ([`crate::shell_record`]).
+    record_kept: crate::shell_record::ShellRecord,
     /// One part per output, in the order the outputs are known: each stands on its own display, and
     /// a display added (or taken away) has its part made (or dropped) to follow.
     parts: Vec<(String, Rc<RefCell<ShellPart>>)>,
@@ -127,6 +130,10 @@ pub(crate) struct Shell {
     /// The services' revision the platform readings were last read at: they are read again only
     /// when it moved.
     services_seen: Option<u64>,
+    /// The person's store's revision the shell's record was last published at, and the record's own
+    /// heads then: an unchanged pair is neither read from their store nor published to it, which is
+    /// what every pass runs.
+    record_synced: std::cell::RefCell<Option<(u64, Vec<automerge::ChangeHash>)>>,
     /// The theme the person's appearance settings make: every part draws in it, and a part made for
     /// a display plugged in later starts in it.
     theme: ui::Theme,
@@ -142,6 +149,7 @@ impl Shell {
         desk: Desk,
         wells: Option<ui::widget::Wells>,
         theme: ui::Theme,
+        state: Option<&std::path::Path>,
     ) -> Result<Self, String> {
         let packages = compile()?;
         let app = packages
@@ -149,6 +157,11 @@ impl Shell {
             .map(|compiled| compiled.meta.app.clone())
             .ok_or("the shell package did not compile")?;
         let link = Rc::new(SessionLink::default());
+        // The shell's own record is the person's, kept where every app's own record of theirs is
+        // kept and carried to their other devices as one: read back from what an earlier session
+        // kept, or the shell's defaults on a device that never showed the shell.
+        let record = crate::shell_record::ShellRecord::open(state, &desk.person);
+        let shared = record.record();
         let mut shell = Self {
             desk,
             announced: std::cell::RefCell::new(std::collections::BTreeSet::new()),
@@ -160,7 +173,8 @@ impl Shell {
             needed: std::collections::BTreeSet::new(),
             republish: false,
             rounds: 0,
-            record: Rc::new(RefCell::new(tilo_resource::Doc::new())),
+            record: shared,
+            record_kept: record,
             parts: Vec::new(),
             lent_content: None,
             packages,
@@ -169,6 +183,7 @@ impl Shell {
             band: band(),
             wells,
             services_seen: None,
+            record_synced: std::cell::RefCell::new(None),
             theme,
         };
         shell.person = shell.desk.person.clone();
@@ -702,6 +717,140 @@ impl Shell {
     /// display's part is made.
     pub(crate) fn records(&self) -> Rc<RefCell<tilo_resource::Doc>> {
         Rc::clone(&self.record)
+    }
+
+    /// Keep what the shell's parts committed into the record's copy on this device, appending only
+    /// what changed. What every pass runs: cheap when nothing changed.
+    pub(crate) fn follow_record(&self) {
+        self.record_kept.follow();
+    }
+
+    /// Write the record's copy out and wait for it to land: what ends the session, so the next one
+    /// starts from the desk this one left.
+    pub(crate) fn flush_record(&self) {
+        self.record_kept.flush();
+    }
+
+    /// Take in what another of the person's devices holds of the record. Whether it changed.
+    pub(crate) fn take_record(&self, other: &mut tilo_resource::Doc) -> bool {
+        self.record_kept.take_in(other)
+    }
+
+    /// Why the record this device kept was not opened, once: the person is told, and not again.
+    pub(crate) fn take_record_refusal(&self) -> Option<String> {
+        self.record_kept.take_refusal()
+    }
+
+    /// Where the shell's record is kept on this device: the document a test reads back to prove a
+    /// desk choice was persisted. `None` on a session that keeps no copy.
+    #[must_use]
+    pub fn record_path(&self) -> Option<&std::path::Path> {
+        self.record_kept.path()
+    }
+
+    /// The shell's own record's field `field` (a field of one of its roots: `dock_edge` and
+    /// `frames_snap` of the `Shell` root, `style` of the `Viewing` one) as its own record holds it
+    /// now: what a test proves a desk choice survived a session by, read the way the shell's views
+    /// read it.
+    pub(crate) fn record_setting(&self, field: &str) -> Option<Value> {
+        use tilo_resource::Model as _;
+        let compiled = self.packages.last()?;
+        let meta = &compiled.meta;
+        let doc = self.record.try_borrow().ok()?.clone();
+        let chunks = tilolang_tilo::chunk::Chunks::of(doc);
+        // The root that declares the field, as the shell's named roots name them.
+        let (root, held) = meta.named_roots.iter().find_map(|root| {
+            let field = meta
+                .types
+                .iter()
+                .find(|ty| ty.id == root.ty)?
+                .fields
+                .iter()
+                .find(|held| held.name == field)?;
+            Some((root, field))
+        })?;
+        let id = format!("root-{}", root.ty);
+        let record = tilolang_tilo::action::read_resource(&chunks, &meta.app, &id).ok()?;
+        record.to_json().get(&held.id).cloned()
+    }
+
+    /// Carry the shell's record to the person's other devices and take in what theirs holds: the
+    /// record is the person's, on the cluster their own store derives from their root, so their
+    /// store (`personal`) carries it exactly as it carries every app's own record of theirs. What
+    /// this device arranged since the last pass is published there; what another of their devices
+    /// arranged is merged here, so the desk this session draws is the one they have everywhere.
+    ///
+    /// Cheap when nothing moved, which is what every pass runs. `None` on a session that takes part
+    /// in no plane of the person's.
+    pub(crate) fn sync_record(&self, personal: &tilo_peer_state::PersonalSync) {
+        let id = self.record_kept.id().to_owned();
+        let app = self.app.as_str();
+        // The store's revision, which moves when it takes a write from any of the person's devices,
+        // and the record's own heads: an unchanged pair means neither this device's record nor their
+        // store moved since the last look, so nothing is read or published.
+        let revision = *personal.changes().borrow();
+        let own = self.record_kept.heads();
+        if self
+            .record_synced
+            .borrow()
+            .as_ref()
+            .is_some_and(|(was, heads)| *was == revision && *heads == own)
+        {
+            return;
+        }
+        // What another device of theirs wrote since the last look is taken in first, so what this
+        // device publishes next carries it rather than opening a rival branch. Each part notices
+        // the record's heads moved on its next turn, and draws what the person arranged.
+        if let Some(bytes) = personal.read(|store| store.document(app, &id))
+            && let Ok(mut theirs) = automerge::AutoCommit::load(&bytes)
+        {
+            let heads = theirs.get_heads();
+            if heads != self.record_kept.heads() {
+                self.take_record(&mut theirs);
+            }
+        }
+        let Some((bytes, heads)) = self.record_kept.snapshot() else {
+            return;
+        };
+        // What is published, if anything: the whole document when their store holds none of the
+        // record yet, else only what moved since the copy it holds, so an unchanged record costs
+        // nothing.
+        let founding = personal.read(|store| !store.holds_document(app, &id));
+        let mutation = if founding {
+            Some(collab_types::DocumentMutation::Snapshot(bytes))
+        } else {
+            self.record_base(personal).and_then(|base| {
+                if base == heads {
+                    return None;
+                }
+                let delta = self.record_kept.since(&base)?;
+                (!delta.is_empty()).then_some(collab_types::DocumentMutation::Incremental(delta))
+            })
+        };
+        if let Some(mutation) = mutation
+            && let Err(error) =
+                personal.publish(|store, key, now| store.publish(app, &id, &mutation, key, now))
+        {
+            tracing::warn!(%error, "the shell's record did not reach the person's other devices");
+        }
+        // What was read and published is what the next pass finds unchanged: its own heads, with
+        // the store's revision they were published at.
+        let revision = *personal.changes().borrow();
+        *self.record_synced.borrow_mut() = Some((revision, self.record_kept.heads()));
+    }
+
+    /// The heads the person's store holds of the shell's record, as the base a publish's change is
+    /// made on: what this device last wrote there, merged with what their other devices did. `None`
+    /// for a record the store holds nothing of, which the publish founds whole.
+    fn record_base(
+        &self,
+        personal: &tilo_peer_state::PersonalSync,
+    ) -> Option<Vec<automerge::ChangeHash>> {
+        let id = self.record_kept.id();
+        let bytes = personal.read(|store| store.document(self.app.as_str(), id))?;
+        automerge::AutoCommit::load(&bytes)
+            .ok()
+            .map(|mut doc| doc.get_heads())
     }
 
     /// The shell's package as the session runs it, its compiled module and description: what its
@@ -1363,26 +1512,41 @@ impl crate::Session {
         }
     }
 
-    /// Hand the shell the desk when it changed, and run what it asked through the door, as any
-    /// caller of the action protocol does.
-    pub(crate) fn follow_shell(&mut self) -> Result<(), crate::Error> {
-        let Some(shell) = self.shell.as_ref() else {
-            return Ok(());
-        };
-        // The shell's views draw the centre over the desk, so while it is up the person is looking
-        // at what the notices say: they are read, as they are while the panel's own centre shows
-        // them. The bell's count, the centre's header and its rows read the one set, so they never
-        // disagree. It is the same surface the views read (`d.here`), and the one place that knows
-        // when it closes: however the person left it, the next arrival is a banner on the desk
-        // again rather than a row behind a page that is gone.
-        let centre = shell.surface() == crate::overlays::Overlay::Centre.name();
-        self.shared.notices.set_shell_centre(centre);
-        if centre {
-            self.shared.notices.mark_read();
+    /// Keep the shell's own record: say once if the copy this device kept could not be opened,
+    /// write what the parts committed into the copy on this device, and carry it to the person's
+    /// other devices and take in what theirs holds. Cheap when nothing moved, which every pass runs.
+    fn follow_shell_record(
+        shell: &Shell,
+        notices: &RefCell<crate::notifications::SessionNotifications>,
+        personal: Option<&tilo_peer_state::PersonalSync>,
+    ) {
+        // A record this device kept and this build did not open is said, once: the desk drew the
+        // shell's defaults, and the person is told where their own desk's choices still are rather
+        // than finding them silently reset.
+        if let Some(reason) = shell.take_record_refusal() {
+            notices
+                .borrow()
+                .tell(&crate::notices::record_not_opened_notice(&reason));
         }
-        let Some(shell) = self.shell.as_mut() else {
-            return Ok(());
-        };
+        // What the shell's parts committed into its own record this turn is written to the copy
+        // the person's desk is kept in, appending only what changed: this is what survives the
+        // session ending.
+        shell.follow_record();
+        // The record is the person's on every device of theirs: what they arranged here reaches
+        // their others through their own store, and what they arranged there reaches this desk.
+        if let Some(personal) = personal {
+            shell.sync_record(personal);
+        }
+    }
+
+    /// Keep the notices in step with the shell: a timer Clocks says came due is announced in the
+    /// shell's own words, and the centre the shell draws is read, as the panel's own centre is.
+    /// The shell's views draw the centre over the desk, so while it is up the person is looking at
+    /// what the notices say. The bell's count, the centre's header and its rows read the one set,
+    /// so they never disagree. It is the same surface the views read (`d.here`), and the one place
+    /// that knows when it closes: however the person left it, the next arrival is a banner on the
+    /// desk again rather than a row behind a page that is gone.
+    fn follow_shell_centre(&self, shell: &Shell) {
         if let Some((_, title, body)) = shell.new_due_timer() {
             self.shared
                 .telling()
@@ -1393,6 +1557,23 @@ impl crate::Session {
                     body,
                 ));
         }
+        let centre = shell.surface() == crate::overlays::Overlay::Centre.name();
+        self.shared.notices.set_shell_centre(centre);
+        if centre {
+            self.shared.notices.mark_read();
+        }
+    }
+
+    /// Hand the shell the desk when it changed, and run what it asked through the door, as any
+    /// caller of the action protocol does.
+    pub(crate) fn follow_shell(&mut self) -> Result<(), crate::Error> {
+        let Some(shell) = self.shell.as_ref() else {
+            return Ok(());
+        };
+        self.follow_shell_centre(shell);
+        let Some(shell) = self.shell.as_mut() else {
+            return Ok(());
+        };
         // The desk styles every installed package offers: read when the store moved, so a
         // style a person or their agent installed is offered without a restart (shell.md §6).
         // Read before the desk is published, so the reading carries the list.
@@ -1426,6 +1607,18 @@ impl crate::Session {
         // What the screen says of its edges is what a bar or dock that shows only sometimes
         // follows; it moves without the desk, so it goes every turn.
         shell.publish_edges(&self.compositor);
+        // What the shell's parts committed into its own record this turn is written to the copy
+        // the person's desk is kept in, and carried to their other devices: what survives the
+        // session ending, and what their other devices draw. The person's store is borrowed only
+        // for it, so the parts' displays below borrow the session freely.
+        {
+            let personal = self.shared.sync.as_ref().and_then(|sync| sync.personal());
+            Self::follow_shell_record(
+                shell,
+                &self.shared.notifications,
+                personal.as_deref().map(crate::personal::Personal::sync),
+            );
+        }
         // One part per display: a display plugged in, taken away or taken by a fullscreen window
         // moves its part.
         shell.follow_displays(&mut self.compositor, &mut self.shared.doors);
@@ -1501,6 +1694,23 @@ impl crate::Session {
     #[must_use]
     pub fn shell_link(&self) -> Option<Rc<crate::platform::surfaces::SessionLink>> {
         self.shell.as_ref().map(Shell::link)
+    }
+
+    /// Where the shell's own record is kept on this device: the document a person's desk choices
+    /// are written to, which a test reads back to prove they survive the session. `None` when the
+    /// shell does not run or keeps no copy.
+    #[must_use]
+    pub fn shell_record_path(&self) -> Option<&std::path::Path> {
+        self.shell.as_ref().and_then(Shell::record_path)
+    }
+
+    /// The shell's own record as a setting's value, by the field's name in its type (`dock_edge`,
+    /// `frames_snap`), read through the shell's runtime as its own views read it: what a test
+    /// proves a desk choice survived a restart by. `None` when the shell does not run or the field
+    /// does not read.
+    #[must_use]
+    pub fn shell_setting(&self, field: &str) -> Option<Value> {
+        self.shell.as_ref()?.record_setting(field)
     }
 
     /// The collaboration plane this session takes part in, when it does: what a test hands it is
