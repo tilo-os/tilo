@@ -1388,15 +1388,20 @@ fn the_message_menu_adds_a_first_reaction_and_starts_a_thread() {
 /// A message's hover bar, its menu, its reactions and its deletion.
 /// Each case was a test of its own, on a fixture of its own; a failure
 /// names the cases that failed.
+///
+/// Shift is the thread's, not a fixture's (`ui::widget::note_shift`): the two
+/// cases that never set it run first, on the thread as it starts, and each
+/// case after them says what Shift is before it reads it, so a case that
+/// failed with Shift held cannot hand it to the next.
 #[test]
 fn a_message_is_reached_reacted_to_and_deleted_from_its_bar_and_menu() {
     crate::testing::cases!(
+        a_reaction_pill_says_how_many_reacted,
+        the_message_menu_adds_a_first_reaction_and_starts_a_thread,
         deleting_your_own_message_from_its_menu_asks_first_and_undo_brings_it_back,
         shift_deletes_your_own_message_from_its_menu_at_once,
         hovering_a_message_shows_its_bar_and_shift_its_quick_actions,
         the_bars_more_opens_the_messages_menu,
-        a_reaction_pill_says_how_many_reacted,
-        the_message_menu_adds_a_first_reaction_and_starts_a_thread,
     );
 }
 
