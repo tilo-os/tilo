@@ -41,10 +41,8 @@ use bots::{offer_sign_in, start_bots};
 
 /// The secret store this host keeps workspace roots in.
 pub(crate) const SECRET_APP: &str = "so.tilo.relay";
-const MINUTE_MS: u64 = 60 * 1000;
-/// Guests pruned in one governance change: the workspace is held while it
-/// commits, and each removal costs time in proportion to its members.
-const PRUNE_BATCH: usize = 100;
+/// How often unconfirmed addresses left at the door are let go.
+const WAIT_LIST_SWEEP_SECS: u64 = 60;
 /// `--author-app none`: the workspace authors nothing and is read-only.
 const NO_AUTHORED_APPS: &str = "none";
 
@@ -210,13 +208,6 @@ pub struct PersistentArgs {
     /// members every app; `none` authors none, and the workspace is read-only.
     #[arg(long = "author-app", value_name = "APP_ID")]
     pub author_apps: Vec<String>,
-    /// A member with no session for this many days stops being one; they
-    /// join again through the door as the same person. Membership persists:
-    /// a person stays a member until they leave, the host removes them, or
-    /// they have been away this long. Being offline for an hour removes
-    /// nobody; who is here now is the workspace's presence, not its membership.
-    #[arg(long = "inactive-after-days", default_value_t = 30, value_parser = clap::value_parser!(u64).range(1..=3650))]
-    pub inactive_after_days: u64,
     /// What to install at the workspace's first start, approved by the workspace's
     /// root, with its inputs (`<source> key=value …`); repeatable. The source
     /// is a bot directory entry, or a program file on this host, which the
@@ -455,31 +446,6 @@ fn is_moderator(member: &tilo_peer_state::GovernedMember) -> bool {
     member.role == tilo_peer_state::join::MemberRole::Moderator
 }
 
-/// Guests (not declared, not an administrator) whose last session is older
-/// than `days`. A member with no record yet is
-/// recorded as seen now by the caller and never pruned on the same pass.
-pub(crate) fn idle_guests(
-    members: &[tilo_peer_state::GovernedMember],
-    last_seen: &BTreeMap<[u8; 32], u64>,
-    keep: &BTreeSet<[u8; 32]>,
-    now_ms: u64,
-    minutes: u64,
-) -> Vec<[u8; 32]> {
-    let horizon = now_ms.saturating_sub(minutes.saturating_mul(MINUTE_MS));
-    members
-        .iter()
-        .filter(|member| {
-            !member.removed && !member.administrator && !keep.contains(&member.user_public_key)
-        })
-        .filter(|member| {
-            last_seen
-                .get(&member.user_public_key)
-                .is_some_and(|seen| *seen < horizon)
-        })
-        .map(|member| member.user_public_key)
-        .collect()
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct BotSpec {
     /// The directory entry it is installed from, or the program file.
@@ -655,17 +621,16 @@ async fn governed_room(
 }
 
 /// Whom the workspace has taken in as removed, so each removal is reported
-/// once. Shared by the operator loop, which takes removals in, and the
-/// pruning, which accounts for the guests it prunes itself. Whom the door
-/// keeps out is the workspace's own ([`Workspaces::removed_within_the_day`]).
+/// once. Whom the door keeps out is the workspace's own
+/// ([`Workspaces::removed_within_the_day`]).
 #[derive(Clone)]
 struct Removals {
     state: Arc<std::sync::Mutex<RemovalState>>,
 }
 
 struct RemovalState {
-    /// Every person accounted for as removed, by moderation or pruned after
-    /// an absence, so each removal is reported once.
+    /// Every person accounted for as removed, so each removal is reported
+    /// once.
     seen: BTreeSet<[u8; 32]>,
 }
 
@@ -687,19 +652,6 @@ impl Removals {
         self.state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
-
-    /// Guests about to be pruned: their removal is not moderation's.
-    fn pruning(&self, people: &BTreeSet<[u8; 32]>) {
-        self.lock().seen.extend(people.iter().copied());
-    }
-
-    /// Guests whose pruning failed: still members.
-    fn not_pruned(&self, people: &BTreeSet<[u8; 32]>) {
-        let mut state = self.lock();
-        for person in people {
-            state.seen.remove(person);
-        }
     }
 
     /// The people moderation removed since the last call, noted as removed
@@ -1674,7 +1626,6 @@ pub(crate) async fn run(
             owners,
             moderators,
             roles_file: persistent.roles_file.clone(),
-            inactive_after_mins: persistent.inactive_after_days.saturating_mul(24 * 60),
             state: state.clone(),
             invitation_only: persistent.invitation_only,
             wait_list_max: persistent.wait_list_max,
@@ -1757,7 +1708,6 @@ struct Governance {
     moderators: BTreeSet<[u8; 32]>,
     /// More owners and moderators, read again whenever the file changes.
     roles_file: Option<PathBuf>,
-    inactive_after_mins: u64,
     state: PathBuf,
     /// The door lists the workspace and takes only people invited or
     /// pre-admitted (`--invitation-only`).
@@ -1775,10 +1725,6 @@ struct DeclaredRoles {
 impl Governance {
     fn declared_file(&self) -> PathBuf {
         self.state.join("declared-roles.json")
-    }
-
-    fn last_seen_file(&self) -> PathBuf {
-        self.state.join("last-seen.json")
     }
 
     fn previously_declared(&self) -> anyhow::Result<BTreeSet<[u8; 32]>> {
@@ -1828,22 +1774,6 @@ impl Governance {
             },
         )
     }
-
-    fn read_last_seen(&self) -> anyhow::Result<BTreeMap<[u8; 32], u64>> {
-        let stored: BTreeMap<String, u64> = read_json(&self.last_seen_file())?;
-        Ok(stored
-            .into_iter()
-            .filter_map(|(key, seen)| Some((hex32(&key)?, seen)))
-            .collect())
-    }
-
-    fn write_last_seen(&self, last_seen: &BTreeMap<[u8; 32], u64>) -> anyhow::Result<()> {
-        let stored: BTreeMap<String, u64> = last_seen
-            .iter()
-            .map(|(key, seen)| (hex::encode(key), *seen))
-            .collect();
-        write_json(&self.last_seen_file(), &stored)
-    }
 }
 
 async fn summary(
@@ -1888,88 +1818,34 @@ async fn reconcile_roles(
     Ok(())
 }
 
-/// Removes guests idle past the horizon, in batches. A batch the workspace
-/// refuses stays seated until the next call.
-async fn prune_idle(
-    context: &PersistentRoom,
-    governance: &Governance,
-    removals: &Removals,
-    last_seen: &mut BTreeMap<[u8; 32], u64>,
-) -> anyhow::Result<()> {
-    let members = summary(context).await?.members;
-    let now = tilo_clock::unix_now_ms();
-    for member in members.iter().filter(|member| !member.removed) {
-        last_seen.entry(member.user_public_key).or_insert(now);
+/// Addresses left at the door and not confirmed in time are let go, also
+/// while nobody touches the wait list.
+async fn expire_wait_list(context: &PersistentRoom, governance: &Governance) {
+    if governance.wait_list_max == 0 {
+        return;
     }
-    let (owners, moderators) = governance.current();
-    let keep: BTreeSet<[u8; 32]> = owners.union(&moderators).copied().collect();
-    let idle = idle_guests(
-        &members,
-        last_seen,
-        &keep,
-        now,
-        governance.inactive_after_mins,
-    );
-    for batch in idle.chunks(PRUNE_BATCH) {
-        let batch: BTreeSet<[u8; 32]> = batch.iter().copied().collect();
-        // Into `removed` first: a pruned guest is not a removal the service
-        // should cool their address down for.
-        removals.pruning(&batch);
-        let first = batch.first().copied().unwrap_or_default();
-        if let Err(error) = context
-            .workspaces
-            .prune_members(
-                &context.workspace,
-                &context.host_cert,
-                request_id(b"prune", &first, tilo_clock::unix_now_ns()),
-                &batch,
-            )
-            .await
-        {
-            // They keep their seats until the next tick tries again, and
-            // the workspace goes on serving: ending here dropped every session
-            // and turned each new one away while the workspace service restarted
-            // it.
-            removals.not_pruned(&batch);
-            tracing::warn!("pruning {} idle guests failed: {error}", batch.len());
-            break;
-        }
-        for key in &batch {
-            last_seen.remove(key);
-        }
-    }
-    // Addresses left at the door and not confirmed in time go too, also
-    // while nobody touches the wait list.
-    if governance.wait_list_max > 0
-        && let Err(error) = context
-            .workspaces
-            .expire_wait_list(&context.workspace)
-            .await
+    if let Err(error) = context
+        .workspaces
+        .expire_wait_list(&context.workspace)
+        .await
     {
         tracing::warn!("the wait list kept unconfirmed addresses: {error}");
     }
-    governance.write_last_seen(last_seen)
 }
 
 /// How often the operator's roles file is looked at for a change.
 const ROLES_FILE_EVERY_SECS: u64 = 2;
 
-/// What the workspace last said about who is online, and when it last wrote
-/// down when each member was last seen.
+/// What the workspace last said about who is online.
 struct OnlineWatch {
     last_online: Option<OperatorEvent>,
-    last_seen_written: tokio::time::Instant,
 }
 
 impl OnlineWatch {
-    /// Say who is online when it changed, note everyone online as seen now,
-    /// and write the last-seen times down at most once a minute.
-    async fn observe(
-        &mut self,
-        context: &PersistentRoom,
-        governance: &Governance,
-        last_seen: &mut BTreeMap<[u8; 32], u64>,
-    ) -> anyhow::Result<()> {
+    /// Say who is online when it changed. Who is here now is the workspace's
+    /// presence; membership is the workspace's governance, and no one stops
+    /// being a member by being away.
+    async fn observe(&mut self, context: &PersistentRoom) -> anyhow::Result<()> {
         let sessions = context.web.online_users();
         let people = sessions.len();
         // Who of the members is here, for the site's directory.
@@ -1989,35 +1865,8 @@ impl OnlineWatch {
             println!("{}", online.to_line());
             self.last_online = Some(online);
         }
-        let now = tilo_clock::unix_now_ms();
-        for user in sessions.keys() {
-            last_seen.insert(*user, now);
-        }
-        if self.last_seen_written.elapsed() >= Duration::from_secs(60) {
-            for member in summary(context)
-                .await?
-                .members
-                .iter()
-                .filter(|member| !member.removed)
-            {
-                last_seen.entry(member.user_public_key).or_insert(now);
-            }
-            governance.write_last_seen(last_seen)?;
-            self.last_seen_written = tokio::time::Instant::now();
-        }
         Ok(())
     }
-}
-
-/// How often idle members are looked for: a quarter of the horizon, so
-/// nobody stays much past it, and not more often than a minute.
-fn prune_interval(governance: &Governance) -> tokio::time::Interval {
-    tokio::time::interval(Duration::from_secs(
-        governance
-            .inactive_after_mins
-            .saturating_mul(15)
-            .clamp(60, 3600),
-    ))
 }
 
 async fn serve_operator(
@@ -2030,13 +1879,9 @@ async fn serve_operator(
     let removals = Removals::load(&summary(context).await?.members);
     let mut previously_declared = governance.previously_declared()?;
     reconcile_roles(context, governance, &mut previously_declared).await?;
-    let mut last_seen = governance.read_last_seen()?;
-    let mut presence = OnlineWatch {
-        last_online: None,
-        last_seen_written: tokio::time::Instant::now(),
-    };
+    let mut presence = OnlineWatch { last_online: None };
     let mut online_tick = tokio::time::interval(Duration::from_secs(operator::ONLINE_EVERY_SECS));
-    let mut prune_tick = prune_interval(governance);
+    let mut sweep_tick = tokio::time::interval(Duration::from_secs(WAIT_LIST_SWEEP_SECS));
     // The operator's roles file, looked at every few seconds: a role it
     // grants or takes back reaches the workspace without a restart.
     let mut roles_tick = tokio::time::interval(Duration::from_secs(ROLES_FILE_EVERY_SECS));
@@ -2061,9 +1906,9 @@ async fn serve_operator(
                 }
             }
             _ = online_tick.tick() => {
-                presence.observe(context, governance, &mut last_seen).await?;
+                presence.observe(context).await?;
             }
-            _ = prune_tick.tick() => prune_idle(context, governance, &removals, &mut last_seen).await?,
+            _ = sweep_tick.tick() => expire_wait_list(context, governance).await,
             changed = changes.recv() => {
                 match changed {
                     Ok(workspace) if workspace != context.workspace => continue,
@@ -2112,7 +1957,6 @@ mod tests {
     use super::*;
     use tilo_relay_protocol::workspaces::{JoinReply, WorkspacesReply, WorkspacesRequest};
     use tilo_user_identity::DeviceCapabilities;
-    const DAY_MS: u64 = 24 * 3600 * 1000;
     const NS_PER_SEC: u64 = 1_000_000_000;
 
     #[test]
@@ -2746,61 +2590,6 @@ mod tests {
     }
 
     #[test]
-    fn pruned_guests_are_not_reported_as_removed() {
-        let now = 40 * DAY_MS;
-        let last_seen = BTreeMap::from([
-            ([1; 32], now - 61 * MINUTE_MS),
-            ([2; 32], now - 59 * MINUTE_MS),
-        ]);
-        let keep = BTreeSet::from([[3; 32]]);
-        let members = [member(1, false), member(2, false), member(3, false)];
-        let idle = idle_guests(&members, &last_seen, &keep, now, 60);
-        assert_eq!(idle, vec![[1; 32]]);
-        // The operator loop adds pruned keys to `removed` before the
-        // governance change arrives, so newly_removed never reports them.
-        let mut seen: BTreeSet<[u8; 32]> = idle.iter().copied().collect();
-        let mut gone = member(1, false);
-        gone.removed = true;
-        assert!(newly_removed(&mut seen, &[gone]).is_empty());
-    }
-
-    #[test]
-    fn a_member_away_for_an_hour_or_a_week_stays_one_and_thirty_days_away_does_not() {
-        use clap::Parser as _;
-        #[derive(clap::Parser)]
-        struct Args {
-            #[command(flatten)]
-            persistent: PersistentArgs,
-        }
-        let days = Args::parse_from(["relay"]).persistent.inactive_after_days;
-        assert_eq!(days, 30, "the host's default");
-        let horizon = days * 24 * 60;
-        let now = 400 * DAY_MS;
-        let last_seen = BTreeMap::from([
-            ([1; 32], now - 61 * MINUTE_MS),
-            ([2; 32], now - 7 * DAY_MS),
-            ([3; 32], now - 29 * DAY_MS),
-            ([4; 32], now - 31 * DAY_MS),
-        ]);
-        let members = [
-            member(1, false),
-            member(2, false),
-            member(3, false),
-            member(4, false),
-        ];
-        assert_eq!(
-            idle_guests(&members, &last_seen, &BTreeSet::new(), now, horizon),
-            vec![[4; 32]],
-            "only thirty days away ends a membership"
-        );
-        let shorter = Args::parse_from(["relay", "--inactive-after-days", "7"])
-            .persistent
-            .inactive_after_days;
-        assert_eq!(shorter, 7, "the host configures it");
-        assert!(Args::try_parse_from(["relay", "--inactive-after-days", "0"]).is_err());
-    }
-
-    #[test]
     fn a_host_keeps_ten_gigabytes_per_person_unless_the_operator_says_otherwise() {
         use clap::Parser as _;
         #[derive(clap::Parser)]
@@ -2843,22 +2632,6 @@ mod tests {
         assert!(
             Args::try_parse_from(["relay", "--person-storage-gb", "40"]).is_err(),
             "workspaces of people's own are kept by a persistent host"
-        );
-    }
-
-    #[test]
-    fn a_guest_never_seen_counts_from_now_not_from_the_epoch() {
-        let members = [member(1, false)];
-        let idle = idle_guests(
-            &members,
-            &BTreeMap::new(),
-            &BTreeSet::new(),
-            40 * DAY_MS,
-            60,
-        );
-        assert!(
-            idle.is_empty(),
-            "a member with no record yet gets a record, not a removal"
         );
     }
 

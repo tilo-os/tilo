@@ -59,7 +59,6 @@ Optional, with these defaults:
 | `TILO_ROOMS_SEED_APPS` | `so.tilo.chat` | comma-separated apps authored at the first start |
 | `TILO_ROOMS_AUTHOR_APPS` | every first-party app | comma-separated apps members write through; `none` makes the workspace read-only |
 | `TILO_ROOMS_BOTS` | none | `;`-separated bot specs (`<program or directory entry> key=value …`) |
-| `TILO_ROOMS_INACTIVE_AFTER_DAYS` | `30` | days without a session before a member stops being one |
 | `TILO_ROOMS_PERSON_STORAGE_GB` | `10` | gigabytes per person, shared by the workspaces of their own the host gives anyone who asks |
 | `TILO_ROOMS_STATE` | `/run/tilo-rooms` | the volume the workspace lives on |
 | `TILO_ROOMS_SITE_ORIGINS` | none | comma-separated origins besides the relay's that may join |
