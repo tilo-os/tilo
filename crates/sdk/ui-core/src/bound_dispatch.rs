@@ -4793,20 +4793,20 @@ impl CallbackBinding {
         outer: &mut AutoCommit,
     ) -> Result<bool, BoundDispatchError> {
         // Edits written outside any action carry no context; entering the
-        // document's frame would commit them as they are, unnamed.
-        let nameable = self
+        // document's frame would commit them as they are, unnamed. Only
+        // changes an open action names are the step this closes: an unnamed
+        // change already committed past the boundary is not one, and closing
+        // it would carry it into the history as a step nobody wrote.
+        let pending_named_action = self
             .records
             .with_action_state(&self.checkout.id, |doc, _, state| {
-                doc.pending_ops() == 0 || state.pending.is_some()
+                doc.pending_ops() != 0 && state.pending.is_some()
             })
             .map_err(BoundDispatchError::Record)?;
-        if !nameable {
+        if !pending_named_action {
             return Ok(false);
         }
         self.with_document(outer, |doc, _| {
-            if doc.pending_ops() == 0 {
-                return self.finish_action_boundary(doc).map(|()| true);
-            }
             let named = self.with_active_frame(doc, |frame| frame.step_message().is_some())?;
             if named {
                 self.finish_action_boundary(doc)?;
