@@ -379,71 +379,76 @@ mod tests {
         .url()
     }
 
-    #[test]
-    fn every_provider_asks_for_a_refresh_token_its_own_way() {
-        let google = url(OAuthCloud::GoogleDrive);
-        assert!(google.contains("access_type=offline") && google.contains("prompt=consent"));
-        assert!(google.contains("auth%2Fdrive"));
-        let microsoft = url(OAuthCloud::OneDrive);
-        assert!(microsoft.starts_with("https://login.microsoftonline.com/common/"));
-        assert!(microsoft.contains("offline_access"));
-        let dropbox = url(OAuthCloud::Dropbox);
-        assert!(dropbox.contains("token_access_type=offline"));
-    }
+    tilo_test_env::scenario! {
+        /// The provider table: type ids, refresh tokens, mail settings and uses.
+        fn providers_keep_their_types_scopes_and_mail_settings_apart;
 
-    #[test]
-    fn type_ids_round_trip_and_keys_are_distinct() {
-        for provider in OAuthCloud::ALL {
-            assert_eq!(OAuthCloud::from_type_id(provider.type_id()), Some(provider));
+        phase every_provider_asks_for_a_refresh_token_its_own_way;
+        {
+            let google = url(OAuthCloud::GoogleDrive);
+            assert!(google.contains("access_type=offline") && google.contains("prompt=consent"));
+            assert!(google.contains("auth%2Fdrive"));
+            let microsoft = url(OAuthCloud::OneDrive);
+            assert!(microsoft.starts_with("https://login.microsoftonline.com/common/"));
+            assert!(microsoft.contains("offline_access"));
+            let dropbox = url(OAuthCloud::Dropbox);
+            assert!(dropbox.contains("token_access_type=offline"));
         }
-        let keys: std::collections::BTreeSet<_> = OAuthIssuer::ALL
-            .into_iter()
-            .map(|issuer| issuer.client_id().key)
-            .collect();
-        assert_eq!(keys.len(), OAuthIssuer::ALL.len());
-        assert_eq!(OAuthCloud::from_type_id(WEBDAV_TYPE), None);
-    }
 
-    #[test]
-    fn canonical_mail_settings_support_hosted_domains_without_guessing() {
-        let config = OAuthIssuer::Microsoft
-            .mail_config("ada@hosted.example")
-            .unwrap();
-        assert_eq!(config.imap_host, "outlook.office365.com");
-        assert_eq!(config.imap_port, 993);
-        assert_eq!(config.smtp_host, "smtp.office365.com");
-        assert_eq!(config.smtp_port, 587);
-        assert_eq!(config.username, config.email);
-        assert_eq!(config.auth, accounts::email::AuthMethod::OAuth);
-        assert!(config.imap_tls && config.smtp_tls);
-        assert!(config.validate().is_empty());
-        for email in [
-            "@example.org",
-            "ada@",
-            "ada@@example.org",
-            "ada@example.org\0",
-        ] {
-            assert!(OAuthIssuer::Microsoft.mail_config(email).is_none());
+        phase type_ids_round_trip_and_keys_are_distinct;
+        {
+            for provider in OAuthCloud::ALL {
+                assert_eq!(OAuthCloud::from_type_id(provider.type_id()), Some(provider));
+            }
+            let keys: std::collections::BTreeSet<_> = OAuthIssuer::ALL
+                .into_iter()
+                .map(|issuer| issuer.client_id().key)
+                .collect();
+            assert_eq!(keys.len(), OAuthIssuer::ALL.len());
+            assert_eq!(OAuthCloud::from_type_id(WEBDAV_TYPE), None);
         }
-        assert!(
-            OAuthIssuer::Dropbox
-                .mail_config("ada@example.org")
-                .is_none()
-        );
-    }
 
-    #[test]
-    fn mail_and_files_share_an_issuer_but_not_a_use() {
-        assert_eq!(OAuthCloud::GoogleDrive.issuer(), OAuthIssuer::Google);
-        assert_ne!(
-            OAuthCloud::GoogleDrive.oauth_use(),
-            OAuthUse::mail(OAuthIssuer::Google)
-        );
-        assert_eq!(OAuthUse::mail(OAuthIssuer::Google).label(), "Gmail");
-        assert_eq!(OAuthUse::mail(OAuthIssuer::Microsoft).label(), "Outlook");
-        assert_eq!(
-            OAuthUse::new(OAuthIssuer::Google, Capability::Models).label(),
-            "Google Vertex AI"
-        );
+        phase canonical_mail_settings_support_hosted_domains_without_guessing;
+        {
+            let config = OAuthIssuer::Microsoft
+                .mail_config("ada@hosted.example")
+                .unwrap();
+            assert_eq!(config.imap_host, "outlook.office365.com");
+            assert_eq!(config.imap_port, 993);
+            assert_eq!(config.smtp_host, "smtp.office365.com");
+            assert_eq!(config.smtp_port, 587);
+            assert_eq!(config.username, config.email);
+            assert_eq!(config.auth, accounts::email::AuthMethod::OAuth);
+            assert!(config.imap_tls && config.smtp_tls);
+            assert!(config.validate().is_empty());
+            for email in [
+                "@example.org",
+                "ada@",
+                "ada@@example.org",
+                "ada@example.org\0",
+            ] {
+                assert!(OAuthIssuer::Microsoft.mail_config(email).is_none());
+            }
+            assert!(
+                OAuthIssuer::Dropbox
+                    .mail_config("ada@example.org")
+                    .is_none()
+            );
+        }
+
+        phase mail_and_files_share_an_issuer_but_not_a_use;
+        {
+            assert_eq!(OAuthCloud::GoogleDrive.issuer(), OAuthIssuer::Google);
+            assert_ne!(
+                OAuthCloud::GoogleDrive.oauth_use(),
+                OAuthUse::mail(OAuthIssuer::Google)
+            );
+            assert_eq!(OAuthUse::mail(OAuthIssuer::Google).label(), "Gmail");
+            assert_eq!(OAuthUse::mail(OAuthIssuer::Microsoft).label(), "Outlook");
+            assert_eq!(
+                OAuthUse::new(OAuthIssuer::Google, Capability::Models).label(),
+                "Google Vertex AI"
+            );
+        }
     }
 }

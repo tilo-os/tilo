@@ -119,76 +119,81 @@ mod tests {
     use super::*;
     use test_http::{Reply, Responder};
 
-    #[test]
-    fn a_page_yields_its_usable_projects_and_continuation() {
-        let page = serde_json::json!({
-            "projects": [
-                {"projectId": "alpha-1", "name": "Alpha", "lifecycleState": "ACTIVE"},
-                {"projectId": "", "name": "Broken"},
-                {"name": "No id"},
-                {"projectId": "beta-2"},
-            ],
-            "nextPageToken": "next",
-        });
-        let (projects, next) = parse_page(&page);
-        assert_eq!(
-            projects,
-            [
-                CloudProject {
-                    id: "alpha-1".into(),
-                    name: "Alpha".into()
-                },
-                CloudProject {
-                    id: "beta-2".into(),
-                    name: String::new()
-                },
-            ]
-        );
-        assert_eq!(next.as_deref(), Some("next"));
-        let (none, end) = parse_page(&serde_json::json!({}));
-        assert!(none.is_empty());
-        assert_eq!(end, None);
-    }
+    tilo_test_env::scenario! {
+        /// Listing a person's cloud projects, page by page.
+        fn cloud_project_pages_are_read_and_followed;
 
-    #[test]
-    fn pages_are_followed_and_a_disabled_api_is_an_error() {
-        let server = Responder::start(vec![
-            Reply::status(200).body(
-                serde_json::json!({
-                    "projects": [{"projectId": "zeta", "name": "Z"}],
-                    "nextPageToken": "p2",
-                })
-                .to_string(),
-            ),
-            Reply::status(200).body(
-                serde_json::json!({"projects": [{"projectId": "alpha", "name": "A"}]}).to_string(),
-            ),
-        ]);
-        let projects = google_cloud_projects(&format!("{}/v1/projects", server.url()), "tok")
-            .expect("projects");
-        assert_eq!(
-            projects.iter().map(|p| p.id.as_str()).collect::<Vec<_>>(),
-            ["alpha", "zeta"]
-        );
-        let requests = server.drain_requests();
-        assert_eq!(requests.len(), 2);
-        assert_eq!(requests[0].header("Authorization"), Some("Bearer tok"));
-        assert!(
-            requests[0]
-                .target
-                .contains("filter=lifecycleState%3AACTIVE")
-        );
-        assert!(requests[1].target.contains("pageToken=p2"));
+        phase a_page_yields_its_usable_projects_and_continuation;
+        {
+            let page = serde_json::json!({
+                "projects": [
+                    {"projectId": "alpha-1", "name": "Alpha", "lifecycleState": "ACTIVE"},
+                    {"projectId": "", "name": "Broken"},
+                    {"name": "No id"},
+                    {"projectId": "beta-2"},
+                ],
+                "nextPageToken": "next",
+            });
+            let (projects, next) = parse_page(&page);
+            assert_eq!(
+                projects,
+                [
+                    CloudProject {
+                        id: "alpha-1".into(),
+                        name: "Alpha".into()
+                    },
+                    CloudProject {
+                        id: "beta-2".into(),
+                        name: String::new()
+                    },
+                ]
+            );
+            assert_eq!(next.as_deref(), Some("next"));
+            let (none, end) = parse_page(&serde_json::json!({}));
+            assert!(none.is_empty());
+            assert_eq!(end, None);
+        }
 
-        let disabled = Responder::start(vec![Reply::status(403).body("{}")]);
-        assert!(matches!(
-            google_cloud_projects(&disabled.url(), "tok"),
-            Err(CustodyError::SignIn(_))
-        ));
-        let refused = Responder::start(vec![Reply::status(401).body("{}")]);
-        assert!(matches!(
-            google_cloud_projects(&refused.url(), "tok"),
-            Err(CustodyError::NeedsAuthentication)
-        ));
+        phase pages_are_followed_and_a_disabled_api_is_an_error;
+        {
+            let server = Responder::start(vec![
+                Reply::status(200).body(
+                    serde_json::json!({
+                        "projects": [{"projectId": "zeta", "name": "Z"}],
+                        "nextPageToken": "p2",
+                    })
+                    .to_string(),
+                ),
+                Reply::status(200).body(
+                    serde_json::json!({"projects": [{"projectId": "alpha", "name": "A"}]}).to_string(),
+                ),
+            ]);
+            let projects = google_cloud_projects(&format!("{}/v1/projects", server.url()), "tok")
+                .expect("projects");
+            assert_eq!(
+                projects.iter().map(|p| p.id.as_str()).collect::<Vec<_>>(),
+                ["alpha", "zeta"]
+            );
+            let requests = server.drain_requests();
+            assert_eq!(requests.len(), 2);
+            assert_eq!(requests[0].header("Authorization"), Some("Bearer tok"));
+            assert!(
+                requests[0]
+                    .target
+                    .contains("filter=lifecycleState%3AACTIVE")
+            );
+            assert!(requests[1].target.contains("pageToken=p2"));
+
+            let disabled = Responder::start(vec![Reply::status(403).body("{}")]);
+            assert!(matches!(
+                google_cloud_projects(&disabled.url(), "tok"),
+                Err(CustodyError::SignIn(_))
+            ));
+            let refused = Responder::start(vec![Reply::status(401).body("{}")]);
+            assert!(matches!(
+                google_cloud_projects(&refused.url(), "tok"),
+                Err(CustodyError::NeedsAuthentication)
+            ));
+        }
     }
 }

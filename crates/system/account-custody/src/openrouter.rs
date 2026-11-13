@@ -149,55 +149,60 @@ mod tests {
             .into_owned()
     }
 
-    #[test]
-    fn an_approved_sign_in_comes_back_as_a_key_bound_to_its_verifier() {
-        let keys = Responder::start(vec![
-            Reply::status(200).body(r#"{"key":"sk-or-v1-new","user_id":"u"}"#),
-        ]);
-        let authorization = KeyAuthorization::begin(AUTH_ENDPOINT, &keys.url()).unwrap();
-        let url = authorization.url().to_string();
-        assert!(url.starts_with("https://openrouter.ai/auth?callback_url="));
-        assert!(url.contains("code_challenge_method=S256"));
-        let state = state_of(&url);
-        let browser =
-            std::thread::spawn(move || redirect(&url, &format!("code=C0DE&state={state}")));
-        let key = authorization.finish().unwrap();
-        browser.join().unwrap();
-        assert_eq!(key.as_str(), "sk-or-v1-new");
-        let exchange: serde_json::Value =
-            serde_json::from_str(&keys.next_request().body_text()).unwrap();
-        assert_eq!(exchange["code"], "C0DE");
-        assert_eq!(exchange["code_challenge_method"], "S256");
-        assert!(
-            exchange["code_verifier"]
-                .as_str()
-                .is_some_and(|v| v.len() >= 43)
-        );
-    }
+    tilo_test_env::scenario! {
+        /// OpenRouter's key exchange.
+        fn an_openrouter_sign_in_yields_a_key_only_when_approved;
 
-    #[test]
-    fn a_forged_redirect_or_a_refused_code_gives_no_key() {
-        let keys = Responder::silent();
-        let authorization = KeyAuthorization::begin(AUTH_ENDPOINT, &keys.url()).unwrap();
-        let url = authorization.url().to_string();
-        let browser = std::thread::spawn(move || redirect(&url, "code=C&state=forged"));
-        assert!(authorization.finish().is_err());
-        browser.join().unwrap();
-        keys.assert_untouched();
+        phase an_approved_sign_in_comes_back_as_a_key_bound_to_its_verifier;
+        {
+            let keys = Responder::start(vec![
+                Reply::status(200).body(r#"{"key":"sk-or-v1-new","user_id":"u"}"#),
+            ]);
+            let authorization = KeyAuthorization::begin(AUTH_ENDPOINT, &keys.url()).unwrap();
+            let url = authorization.url().to_string();
+            assert!(url.starts_with("https://openrouter.ai/auth?callback_url="));
+            assert!(url.contains("code_challenge_method=S256"));
+            let state = state_of(&url);
+            let browser =
+                std::thread::spawn(move || redirect(&url, &format!("code=C0DE&state={state}")));
+            let key = authorization.finish().unwrap();
+            browser.join().unwrap();
+            assert_eq!(key.as_str(), "sk-or-v1-new");
+            let exchange: serde_json::Value =
+                serde_json::from_str(&keys.next_request().body_text()).unwrap();
+            assert_eq!(exchange["code"], "C0DE");
+            assert_eq!(exchange["code_challenge_method"], "S256");
+            assert!(
+                exchange["code_verifier"]
+                    .as_str()
+                    .is_some_and(|v| v.len() >= 43)
+            );
+        }
 
-        let refusing = Responder::start(vec![Reply::status(403).body("{}")]);
-        let authorization = KeyAuthorization::begin(AUTH_ENDPOINT, &refusing.url()).unwrap();
-        let url = authorization.url().to_string();
-        let state = state_of(&url);
-        let browser = std::thread::spawn(move || redirect(&url, &format!("code=C&state={state}")));
-        assert!(matches!(
-            authorization.finish(),
-            Err(CustodyError::SignIn(_))
-        ));
-        browser.join().unwrap();
+        phase a_forged_redirect_or_a_refused_code_gives_no_key;
+        {
+            let keys = Responder::silent();
+            let authorization = KeyAuthorization::begin(AUTH_ENDPOINT, &keys.url()).unwrap();
+            let url = authorization.url().to_string();
+            let browser = std::thread::spawn(move || redirect(&url, "code=C&state=forged"));
+            assert!(authorization.finish().is_err());
+            browser.join().unwrap();
+            keys.assert_untouched();
 
-        let cancelled = KeyAuthorization::begin(AUTH_ENDPOINT, &refusing.url()).unwrap();
-        cancelled.canceller().cancel();
-        assert!(cancelled.finish().is_err());
+            let refusing = Responder::start(vec![Reply::status(403).body("{}")]);
+            let authorization = KeyAuthorization::begin(AUTH_ENDPOINT, &refusing.url()).unwrap();
+            let url = authorization.url().to_string();
+            let state = state_of(&url);
+            let browser = std::thread::spawn(move || redirect(&url, &format!("code=C&state={state}")));
+            assert!(matches!(
+                authorization.finish(),
+                Err(CustodyError::SignIn(_))
+            ));
+            browser.join().unwrap();
+
+            let cancelled = KeyAuthorization::begin(AUTH_ENDPOINT, &refusing.url()).unwrap();
+            cancelled.canceller().cancel();
+            assert!(cancelled.finish().is_err());
+        }
     }
 }
