@@ -2168,40 +2168,49 @@ fn a_change_of_any_root_no_window_made_yet_makes_that_root_first() {
 /// answered why: the record is never left holding, building on and keeping a change the workspace
 /// has none of. Here the surface the workspace decides the record's changes by publishes the
 /// counter's record but none of its actions.
+///
+/// The surface a process decides an app's changes by is the process's, and this test names the
+/// counter's app a surface no other test may inherit: it runs in a process of its own.
 #[test]
 fn a_change_the_workspace_refuses_is_never_kept() {
-    let (address, doc) = increment();
-    collaboration::app_surface::register_package(
-        APP,
-        b"[[resources]]\nkind = \"tl.so.tilo.lang.counter.Counter\"\nlabel = \"Counter\"\nversion = 1\n",
-    );
-    let before = doc.clone().get_heads();
-    let (mut applier, connection, sent) = applier("ada", doc);
-    let answer = apply(
-        &mut applier,
-        &connection,
-        &runtime_portal::tilolang_host::Change {
-            resource: address.resource,
-            action: address.action,
-            arguments: serde_json::Map::new(),
-            invoker: task_invoker(),
-            context: None,
-            preview: None,
+    tilo_test_env::in_own_process(
+        module_path!(),
+        "a_change_the_workspace_refuses_is_never_kept",
+        || {
+            let (address, doc) = increment();
+            collaboration::app_surface::register_package(
+                APP,
+                b"[[resources]]\nkind = \"tl.so.tilo.lang.counter.Counter\"\nlabel = \"Counter\"\nversion = 1\n",
+            );
+            let before = doc.clone().get_heads();
+            let (mut applier, connection, sent) = applier("ada", doc);
+            let answer = apply(
+                &mut applier,
+                &connection,
+                &runtime_portal::tilolang_host::Change {
+                    resource: address.resource,
+                    action: address.action,
+                    arguments: serde_json::Map::new(),
+                    invoker: task_invoker(),
+                    context: None,
+                    preview: None,
+                },
+            );
+            let why = answer["failed"]
+                .as_str()
+                .unwrap_or_else(|| panic!("refused, with why: {answer}"));
+            assert!(why.contains("publishes no"), "{why}");
+            assert_eq!(
+                applier.record().doc().clone().get_heads(),
+                before,
+                "the record holds nothing of the refused change"
+            );
+            assert_eq!(
+                documents_sent(&sent),
+                0,
+                "nothing was handed to the workspace"
+            );
         },
-    );
-    let why = answer["failed"]
-        .as_str()
-        .unwrap_or_else(|| panic!("refused, with why: {answer}"));
-    assert!(why.contains("publishes no"), "{why}");
-    assert_eq!(
-        applier.record().doc().clone().get_heads(),
-        before,
-        "the record holds nothing of the refused change"
-    );
-    assert_eq!(
-        documents_sent(&sent),
-        0,
-        "nothing was handed to the workspace"
     );
 }
 
@@ -2625,41 +2634,48 @@ const TASKS: &str = "so.tilo.lang.tasks";
 
 /// A window a German person reads names another app's change by that app's own name: the names of
 /// the apps installed here arrive on the instance's connection with the workspace's people's
-/// names, and are what its history reads.
+/// names, and are what its history reads. The language the names are read in is the process's, so
+/// this test reads them in a process of its own.
 #[test]
 fn a_hosted_window_names_another_app_as_the_names_it_was_sent() {
-    use tilolang_tilo::names::Unnamed;
-    use tilolang_tilo::runtime::{NameHost as _, Principal};
+    tilo_test_env::in_own_process(
+        module_path!(),
+        "a_hosted_window_names_another_app_as_the_names_it_was_sent",
+        || {
+            use tilolang_tilo::names::Unnamed;
+            use tilolang_tilo::runtime::{NameHost as _, Principal};
 
-    let today = Principal::new("app:so.tilo.lang.today".to_owned());
-    let (mut host, mut window, _sent, inbox, _route) = running("ada");
-    settle(&mut host, &mut window);
-    assert_eq!(
-        Unnamed.name(&today),
-        "Today",
-        "the words its id makes, before the session named it"
-    );
-    collaboration::history_source::authors::set_names_language("de-DE");
-    inbox.borrow_mut().push_back(CollabEvent::Context {
-        collaborators: Vec::new(),
-        permissions: Vec::new(),
-        apps: vec![collab_types::history::NamedApp {
-            id: "so.tilo.lang.today".to_owned(),
-            name: "Today".to_owned(),
-            names: [("de-DE".to_owned(), "Heute".to_owned())]
-                .into_iter()
-                .collect(),
-        }],
-    });
-    settle(&mut host, &mut window);
-    assert_eq!(
-        Unnamed.name(&today),
-        "Heute",
-        "the app's own name in the window's language"
-    );
-    assert_eq!(
-        Unnamed.name(&Principal::new("app:org.example.Editor".to_owned())),
-        "Editor",
-        "an app installed nowhere near this device reads as the words its id makes"
+            let today = Principal::new("app:so.tilo.lang.today".to_owned());
+            let (mut host, mut window, _sent, inbox, _route) = running("ada");
+            settle(&mut host, &mut window);
+            assert_eq!(
+                Unnamed.name(&today),
+                "Today",
+                "the words its id makes, before the session named it"
+            );
+            collaboration::history_source::authors::set_names_language("de-DE");
+            inbox.borrow_mut().push_back(CollabEvent::Context {
+                collaborators: Vec::new(),
+                permissions: Vec::new(),
+                apps: vec![collab_types::history::NamedApp {
+                    id: "so.tilo.lang.today".to_owned(),
+                    name: "Today".to_owned(),
+                    names: [("de-DE".to_owned(), "Heute".to_owned())]
+                        .into_iter()
+                        .collect(),
+                }],
+            });
+            settle(&mut host, &mut window);
+            assert_eq!(
+                Unnamed.name(&today),
+                "Heute",
+                "the app's own name in the window's language"
+            );
+            assert_eq!(
+                Unnamed.name(&Principal::new("app:org.example.Editor".to_owned())),
+                "Editor",
+                "an app installed nowhere near this device reads as the words its id makes"
+            );
+        },
     );
 }

@@ -327,7 +327,15 @@ fn the_surface_says_what_the_published_spec_says() {
         .unwrap();
     let native = tilo_resource::surface::surface_of::<Shelf>();
     for name in ["resize", "pin", "remove"] {
-        let verb = shelf.verbs.iter().find(|verb| verb.id == name).unwrap();
+        // The generated surface names each verb by the action's id, as a change's claim does; a
+        // native app's verbs have no other id than the name it publishes them by.
+        let id = &meta
+            .actions
+            .iter()
+            .find(|action| action.name == name)
+            .unwrap()
+            .id;
+        let verb = shelf.verbs.iter().find(|verb| verb.id == *id).unwrap();
         let theirs = native.verbs.iter().find(|verb| verb.id == name).unwrap();
         assert_eq!(verb.destructive, theirs.destructive, "{name}");
         let spec = tilolang_spec(&meta, name);

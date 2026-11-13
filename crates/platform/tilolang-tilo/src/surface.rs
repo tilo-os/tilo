@@ -278,8 +278,10 @@ pub fn is_primary(action: &ActionMeta) -> bool {
 
 fn verb(meta: &Meta, action: &ActionMeta, types: &mut TypeSet) -> VerbSurface {
     VerbSurface {
-        // As the door publishes it ([`crate::publish::action_type`]).
-        id: action.name.clone(),
+        // The action as the record names it, which is what a change's claim names too
+        // ([`crate::action::DynAction::describe`]): its id, the one its words keep
+        // ([`crate::publish::action_type`]'s `label_of`), not the name the door offers it by.
+        id: action.id.clone(),
         label: tilolang_runtime::platform::label_of(action),
         description: (!action.doc.is_empty()).then(|| action.doc.clone()),
         kind: action_kind(action.class),
