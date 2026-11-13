@@ -4,8 +4,8 @@
 //! unreadable on its own. This module is the join.
 //!
 //! Three shapes occur in documents: a raw 32-byte public key (the
-//! only cryptographically meaningful one, joining to a
-//! `collab_types::Identity`); a self-declared handle
+//! only cryptographically meaningful one, joining to a person); a
+//! self-declared handle
 //! (`ActorId::from(app_id.as_bytes())`, the same key `tilo_ui::presence::user_color`
 //! and the per-character `author` marks already use, but **unverified**); and
 //! a random id (`ActorId::random()`, which resolves to nobody).

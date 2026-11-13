@@ -11,8 +11,8 @@
 //! (`peer_edit_converges_...`), a caret round-trips through the real
 //! presence path and paints into the local render
 //! (`remote_caret_presence_...`), and a signed op validates/rejects
-//! through the real `collab_types::validate_inbound_op` pipeline by role
-//! (`signed_edit_is_permission_gated`).
+//! through the real `collab_types::validate_admitted_inbound_op` pipeline by
+//! role (`signed_edit_is_permission_gated`).
 
 #![allow(
     clippy::unwrap_used,
@@ -429,25 +429,17 @@ fn peers_co_edit_converge_share_carets_and_gate_signed_edits() {
     }
 
     {
-        // One channel owner underwrites two members: a writer (Editor) and a
-        // viewer (Viewer, no write capability). Both target the same Note
-        // artifact.
-        let (owner_sk, owner_pub) = generate_keypair();
+        // Two members: a writer (Editor) and a viewer (Viewer, no write
+        // capability). Both target the same Note artifact.
         let (writer_sk, writer_pub) = generate_keypair();
         let (viewer_sk, viewer_pub) = generate_keypair();
-        let channel = ChannelId::new();
         let artifact = ArtifactId::new();
+        let grants = presets();
 
-        let writer_att = make_attestation(&owner_sk, owner_pub, writer_pub, channel, Role::Editor);
-        let viewer_att = make_attestation(&owner_sk, owner_pub, viewer_pub, channel, Role::Viewer);
-        let writer_att_id = writer_att.attestation.id;
-        let viewer_att_id = viewer_att.attestation.id;
-
-        let mut state = ChannelState::default();
-        state.authorised_signers.push(owner_pub);
+        let mut state = InboundState::default();
         state.artifacts.insert(artifact, ArtifactKind::Note);
-        state.register_attestation(writer_att);
-        state.register_attestation(viewer_att);
+        state.artifact_apps.insert(artifact, "so.tilo.notes".into());
+        state.artifact_records.insert(artifact, "shared".into());
 
         let mut peer_doc = AutoCommit::new();
         let t = peer_doc.put_object(&ROOT, "text", ObjType::Text).unwrap();
@@ -461,14 +453,7 @@ fn peers_co_edit_converge_share_carets_and_gate_signed_edits() {
         writer_doc.splice_text(&wt, 4, 0, "-WROTE").unwrap();
         writer_doc.commit_edit("fixture", "text");
         let writer_delta = writer_doc.save_incremental();
-        let writer_op = sign_delta(
-            &writer_sk,
-            writer_pub,
-            writer_att_id,
-            artifact,
-            writer_delta,
-            1,
-        );
+        let writer_op = sign_delta(&writer_sk, writer_pub, artifact, writer_delta, 1);
 
         // The viewer forges the identical intent but has no write capability.
         let mut viewer_doc = AutoCommit::load(&peer_doc.save()).unwrap();
@@ -477,16 +462,19 @@ fn peers_co_edit_converge_share_carets_and_gate_signed_edits() {
         viewer_doc.splice_text(&vt, 4, 0, "-HACKED").unwrap();
         viewer_doc.commit_edit("fixture", "text");
         let viewer_delta = viewer_doc.save_incremental();
-        let viewer_op = sign_delta(
-            &viewer_sk,
-            viewer_pub,
-            viewer_att_id,
-            artifact,
-            viewer_delta,
-            1,
-        );
+        let viewer_op = sign_delta(&viewer_sk, viewer_pub, artifact, viewer_delta, 1);
 
-        match validate_inbound_op(&viewer_op, &mut state) {
+        let now = SystemTime::UNIX_EPOCH
+            .checked_add(StdDuration::from_secs(10))
+            .unwrap();
+        let skew = StdDuration::from_secs(30);
+        match validate_admitted_inbound_op(
+            &viewer_op,
+            &author(&grants, Role::Viewer),
+            &mut state,
+            now,
+            skew,
+        ) {
             Err(ValidationError::NotGranted(_)) => {}
             other => panic!("viewer without write cap must be rejected, got {other:?}"),
         }
@@ -501,7 +489,14 @@ fn peers_co_edit_converge_share_carets_and_gate_signed_edits() {
 
         // The writer's op validates and is applied via the same
         // `load_incremental` path the App uses for incremental document events.
-        validate_inbound_op(&writer_op, &mut state).expect("writer op must validate");
+        validate_admitted_inbound_op(
+            &writer_op,
+            &author(&grants, Role::Editor),
+            &mut state,
+            now,
+            skew,
+        )
+        .expect("writer op must validate");
         peer_doc.load_incremental(&writer_op.payload).unwrap();
 
         assert_eq!(
@@ -524,42 +519,25 @@ fn peers_co_edit_converge_share_carets_and_gate_signed_edits() {
 
 // ---------------------------------------------------------------------
 // Permission-gated signed co-edit: drives the real
-// `collab_types::validate_inbound_op` pipeline, not a re-implementation.
+// `collab_types::validate_admitted_inbound_op` pipeline, not a re-implementation.
 // ---------------------------------------------------------------------
 
 use collab_types::{
-    ArtifactId, ArtifactKind, Attestation, AttestationId, ChannelId, ChannelState, Claim,
-    Ed25519PublicKey, OpKind, Role, RoleAttestation, Signature, SignedOp, ValidationError,
-    generate_keypair, sign_event, sign_op, validate_inbound_op,
+    ArtifactId, ArtifactKind, AttestationId, DEFAULT_WORKSPACE, Ed25519PublicKey, InboundState,
+    OpKind, Role, SignedOp, ValidationError, generate_keypair, sign_op,
+    validate_admitted_inbound_op,
 };
 use ed25519_dalek::SigningKey;
 use std::time::{Duration as StdDuration, SystemTime};
+use tilo_action_policy::{Authority, Grant, Grantee, Party, roles};
 
-fn make_attestation(
-    issuer_sk: &SigningKey,
-    issuer_pub: Ed25519PublicKey,
-    subject: Ed25519PublicKey,
-    channel: ChannelId,
-    role: Role,
-) -> RoleAttestation {
-    let mut att = Attestation {
-        id: AttestationId::new(),
-        issued_by: issuer_pub,
-        subject,
-        claims: Vec::<Claim>::new(),
-        valid_from: SystemTime::UNIX_EPOCH,
-        valid_until: SystemTime::UNIX_EPOCH
-            .checked_add(StdDuration::from_secs(1_000_000))
-            .unwrap(),
-        signature: Signature::from_bytes([0u8; 64]),
-    };
-    let sb = att.signing_bytes().unwrap();
-    att.signature = sign_event(&sb, issuer_sk).unwrap();
-    RoleAttestation {
-        channel,
-        role,
-        attestation: att,
-    }
+/// The role presets an author holding `role` is decided under.
+fn presets() -> Vec<Grant> {
+    roles::workspace_role_grants(DEFAULT_WORKSPACE, &Grantee::role(Role::Owner))
+}
+
+fn author(grants: &[Grant], role: Role) -> Authority<'_> {
+    Authority::person(Party::new(vec![Grantee::role(role)], grants))
 }
 
 /// Sign a Splice op whose payload is a real Automerge incremental delta
@@ -567,7 +545,6 @@ fn make_attestation(
 fn sign_delta(
     author_sk: &SigningKey,
     author_pub: Ed25519PublicKey,
-    attestation_id: AttestationId,
     artifact: ArtifactId,
     delta: Vec<u8>,
     seq: u64,
@@ -576,7 +553,7 @@ fn sign_delta(
         delta,
         artifact,
         author_pub,
-        attestation_id,
+        AttestationId::new(),
         OpKind::Change,
         SystemTime::UNIX_EPOCH
             .checked_add(StdDuration::from_secs(10))

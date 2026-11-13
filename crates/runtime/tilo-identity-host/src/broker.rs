@@ -520,7 +520,7 @@ fn sign_collaboration_op(
     let decided = read_workspace(tree, bound_workspace, |workspace| {
         workspace.role_of(&principal_id)?;
         let record = collab_types::Record {
-            room: &workspace.policy.workspace,
+            workspace: &workspace.policy.workspace,
             app: app_id,
             record: record_id,
         };

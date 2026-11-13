@@ -47,8 +47,8 @@ pub enum Error {
 
     /// `MlsGroup::process_message` returned a non-application variant
     /// (proposal, external join, commit) — this surface only handles
-    /// application payloads; governance commits arrive via the broker's
-    /// `ChannelEvent` log, not in-band.
+    /// application payloads; governance commits arrive through the broker's
+    /// own admission path, not in-band.
     #[error("processed message was not an application message")]
     NotApplicationMessage,
 

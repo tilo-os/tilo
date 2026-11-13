@@ -103,11 +103,7 @@ fn all_collaborator_roles_remain_refreshable_until_removed() {
     peer.governance_mut()
         .admit_invited_member(&redemption, &host_key, now)
         .unwrap();
-    for role in [
-        Role::Viewer,
-        Role::Commenter,
-        Role::Editor,
-    ] {
+    for role in [Role::Viewer, Role::Commenter, Role::Editor] {
         peer.governance_mut()
             .set_member_role(cert.user_public_key, role, &host_key, now)
             .unwrap();

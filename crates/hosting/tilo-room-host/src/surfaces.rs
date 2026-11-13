@@ -303,7 +303,7 @@ pub(crate) fn refusal(
     let (_, _, body) = crate::coedit::retention_view(delta)?;
     let (route, envelope) = payloads.open_document(body)?;
     let record = collab_types::Record {
-        room: &route.cluster_id,
+        workspace: &route.cluster_id,
         app: &route.app_id,
         record: &route.record_id,
     };

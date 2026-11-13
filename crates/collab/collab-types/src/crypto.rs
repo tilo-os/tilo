@@ -16,11 +16,10 @@
 //!
 //! ## Signing API
 //!
-//! [`sign_event`]/[`verify_event`] are generic helpers for `ChannelEvent`
-//! variants, each with its own `signature` field and a `signing_bytes()`
-//! helper (see [`crate::event`]). [`sign_op`]/[`verify_op`] specialise for
-//! [`crate::op::SignedOp`], whose signature covers every other field in
-//! canonical-bytes form.
+//! [`sign_event`]/[`verify_event`] sign and verify any value that names its
+//! own signing view — an event, a governance frame, an import proposal.
+//! [`sign_op`]/[`verify_op`] specialise for [`crate::op::SignedOp`], whose
+//! signature covers every other field in canonical-bytes form.
 //!
 //! Verification returns `Result<(), VerifyError>`; signing is infallible
 //! at this layer.
@@ -213,8 +212,8 @@ fn assert_claimed(op: &SignedOp) {
 }
 
 /// Verify a `SignedOp` against its declared author key — the
-/// cryptographic-only check. Full validation (attestation, role, replay
-/// defence, …) lives in [`crate::validator::validate_inbound_op`].
+/// cryptographic-only check. Full validation (grants, freshness, replay
+/// defence, …) lives in [`crate::validator`].
 ///
 /// # Errors
 ///

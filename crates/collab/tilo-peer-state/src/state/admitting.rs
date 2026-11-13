@@ -2,10 +2,11 @@
 
 use super::{
     AcceptedCheckpoint, ActionKind, AdmissionError, AdmissionReport, ArtifactKind, AutoCommit,
-    BTreeMap, ChannelState, Document, DocumentAdmission, DocumentMutation, DroppedInput, Duration,
-    Ed25519PublicKey, Held, InputDisposition, MemberAuthority, MissingPrerequisite, NeighbourMsg,
-    OpKind, ReceiveOutcome, Route, SignedOp, StatePeer, SystemTime, backend, empty_genesis,
-    empty_genesis_op, err, peer_handle, sealed_compaction, sealed_history, workspace,
+    BTreeMap, Document, DocumentAdmission, DocumentMutation, DroppedInput, Duration,
+    Ed25519PublicKey, Held, InboundState, InputDisposition, MemberAuthority, MissingPrerequisite,
+    NeighbourMsg, OpKind, ReceiveOutcome, Route, SignedOp, StatePeer, SystemTime, backend,
+    empty_genesis, empty_genesis_op, err, peer_handle, sealed_compaction, sealed_history,
+    workspace,
 };
 use crate::document;
 
@@ -225,7 +226,7 @@ impl StatePeer {
         let mut candidate = self.core.documents.get(&route).cloned().unwrap_or_else(|| {
             Document {
                 doc: AutoCommit::new().into(),
-                channel: ChannelState::default(),
+                channel: InboundState::default(),
                 encryption_required: false,
                 covered: BTreeMap::new(),
                 covered_snapshot: None,
@@ -245,7 +246,7 @@ impl StatePeer {
             .channel
             .artifact_records
             .insert(envelope.artifact, route.record.clone());
-        candidate.channel.room.clone_from(&self.core.workspace);
+        candidate.channel.workspace.clone_from(&self.core.workspace);
         let mut validated_channel = candidate.channel.clone();
         validated_channel.grants.clone_from(&member.policy.grants);
         validated_channel.surfaces.clone_from(&self.surfaces);
@@ -661,7 +662,7 @@ impl StatePeer {
         &mut self,
         route: Route,
         mut candidate: backend::StoredDocument,
-        validated: ChannelState,
+        validated: InboundState,
         envelope: SignedOp,
     ) -> Result<AdmissionReport, AdmissionError> {
         let admitted =

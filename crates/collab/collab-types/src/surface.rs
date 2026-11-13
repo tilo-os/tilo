@@ -308,7 +308,7 @@ writes = ["record", "comments.*"]
     fn a_surface_named_by_hash_decides_claims() {
         let (source, hash) = surfaces();
         let record = Record {
-            room: "r",
+            workspace: "r",
             app: "notes",
             record: "p1",
         };

@@ -8,7 +8,7 @@
 //! hold it.
 
 use super::{
-    AcceptedCheckpoint, AutoCommit, ChannelState, Ed25519PublicKey, Route, StatePeer, backend, err,
+    AcceptedCheckpoint, AutoCommit, Ed25519PublicKey, InboundState, Route, StatePeer, backend, err,
 };
 
 /// Hold every record the workspace's governance covers as empty and `peer`
@@ -44,8 +44,8 @@ pub(super) fn hold_covered_empty_records(peer: &mut StatePeer) -> Result<usize, 
         if decoded.heads != coverage.heads || decoded.payload_hash != coverage.payload_hash {
             continue;
         }
-        let mut channel = ChannelState::default();
-        channel.room.clone_from(&peer.core.workspace);
+        let mut channel = InboundState::default();
+        channel.workspace.clone_from(&peer.core.workspace);
         for (author, sequence) in &coverage.watermarks {
             let key: [u8; 32] = hex::decode(author)
                 .map_err(err)?

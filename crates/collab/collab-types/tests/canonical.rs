@@ -13,19 +13,15 @@
 use std::time::{Duration, SystemTime};
 
 use collab_types::canonical::from_canonical_bytes;
-use collab_types::identity::{AvatarBytes, Identity};
+use collab_types::identity::AvatarBytes;
+use collab_types::presence::PresenceHue;
 use collab_types::{
-    ArtifactId, ArtifactKind, Attestation, AttestationId, ChannelEvent, ChannelId, Claim,
-    Clearance, Ed25519PublicKey, OpKind, Role, RoleAttestation, Signature, SignedOp,
-    canonical_bytes, generate_keypair, sign_event, sign_op, verify_event, verify_op,
+    ArtifactId, ArtifactKind, AttestationId, Ed25519PublicKey, OpKind, Person, PersonId, Role,
+    SignedOp, canonical_bytes, generate_keypair, sign_op, verify_op,
 };
 
 fn fake_pk(byte: u8) -> Ed25519PublicKey {
     Ed25519PublicKey::from_bytes([byte; 32])
-}
-
-fn fake_sig(byte: u8) -> Signature {
-    Signature::from_bytes([byte; 64])
 }
 
 fn t(secs: u64) -> SystemTime {
@@ -50,7 +46,6 @@ where
     reason = "one literal fixture per wire type; splitting them apart would only scatter the list"
 )]
 fn every_wire_type_round_trips_deterministically() {
-    assert_round_trips("clearance", &Clearance::CONFIDENTIAL);
     for r in [Role::Owner, Role::Editor, Role::Commenter, Role::Viewer] {
         assert_round_trips(&format!("role {r:?}"), &r);
     }
@@ -66,32 +61,14 @@ fn every_wire_type_round_trips_deterministically() {
     ] {
         assert_round_trips(&format!("artifact kind {k:?}"), &k);
     }
+    assert_round_trips("avatar bytes", &AvatarBytes(vec![0x89, b'P', b'N', b'G']));
     assert_round_trips(
-        "claim custom",
-        &Claim::Custom {
-            kind: "com.example.badge".into(),
-            value: vec![1, 2, 3, 4, 5],
-        },
-    );
-    assert_round_trips(
-        "attestation",
-        &Attestation {
-            id: AttestationId::new(),
-            issued_by: fake_pk(1),
-            subject: fake_pk(2),
-            claims: vec![Claim::ClearedAt(Clearance::INTERNAL)],
-            valid_from: t(0),
-            valid_until: t(86_400),
-            signature: fake_sig(0xab),
-        },
-    );
-    assert_round_trips(
-        "identity with avatar",
-        &Identity {
-            public_key: fake_pk(7),
-            label: "Ada — Personal".into(),
+        "person with avatar",
+        &Person {
+            id: PersonId::new("ada"),
+            name: "Ada".into(),
             avatar: Some(AvatarBytes(vec![0x89, b'P', b'N', b'G'])),
-            attestations: vec![],
+            colour: PresenceHue::Violet,
         },
     );
     assert_round_trips(
@@ -106,44 +83,6 @@ fn every_wire_type_round_trips_deterministically() {
             42,
         ),
     );
-
-    // Every channel event variant.
-    let pk = fake_pk(5);
-    let events = [
-        ChannelEvent::Genesis {
-            channel_id: ChannelId::new(),
-            name: "g".into(),
-            owner: pk,
-            created_at: t(1),
-            signature: fake_sig(0x01),
-        },
-        ChannelEvent::AttestationIssued(RoleAttestation {
-            channel: ChannelId::new(),
-            role: Role::Editor,
-            attestation: Attestation {
-                id: AttestationId::new(),
-                issued_by: pk,
-                subject: fake_pk(6),
-                claims: vec![],
-                valid_from: t(0),
-                valid_until: t(86_400),
-                signature: fake_sig(0x02),
-            },
-        }),
-        ChannelEvent::AttestationRevoked {
-            attestation: AttestationId::new(),
-            signed_by: pk,
-            signature: fake_sig(0x03),
-        },
-        ChannelEvent::Rename {
-            new_name: "renamed".into(),
-            signed_by: pk,
-            signature: fake_sig(0x05),
-        },
-    ];
-    for (i, e) in events.iter().enumerate() {
-        assert_round_trips(&format!("channel event #{i}"), e);
-    }
 
     // Determinism: two encodes of an identical value must produce identical
     // bytes. The signing protocol relies on this property.
@@ -191,21 +130,21 @@ fn decode_rejects_trailing_or_truncated_bytes() {
     bytes.push(0xff);
     assert!(from_canonical_bytes::<SignedOp>(&bytes).is_err());
 
-    // Case: truncated attestation.
-    let a = Attestation {
-        id: AttestationId::new(),
-        issued_by: fake_pk(1),
-        subject: fake_pk(2),
-        claims: vec![Claim::EmployeeOf("ACME".into())],
-        valid_from: t(0),
-        valid_until: t(86_400),
-        signature: fake_sig(0),
-    };
-    let bytes = canonical_bytes(&a).unwrap();
+    // Case: truncated op.
+    let op = SignedOp::new_unsigned(
+        b"payload".to_vec(),
+        ArtifactId::new(),
+        fake_pk(1),
+        AttestationId::new(),
+        OpKind::Change,
+        t(1),
+        1,
+    );
+    let bytes = canonical_bytes(&op).unwrap();
     for n in 1..=bytes.len() {
         let truncated = &bytes[..bytes.len() - n];
         assert!(
-            from_canonical_bytes::<Attestation>(truncated).is_err(),
+            from_canonical_bytes::<SignedOp>(truncated).is_err(),
             "truncation by {n} bytes should fail decode"
         );
         if n > 3 {
@@ -217,50 +156,34 @@ fn decode_rejects_trailing_or_truncated_bytes() {
 /// Tampering with signed bytes breaks decode or signature — never neither.
 #[test]
 fn tampering_breaks_decode_or_signature() {
-    // Case: one-byte flip in an attestation. After we encode + sign + ship
-    // an attestation, an adversary who flips a single byte either breaks the
-    // postcard decode OR the signature check — never neither. We test both
-    // pathways.
+    // Case: one-byte flip in a signed op. After we encode + sign + ship an
+    // op, an adversary who flips a single byte either breaks the postcard
+    // decode OR the signature check — never neither.
     let (sk, pk) = generate_keypair();
-    let mut att = Attestation {
-        id: AttestationId::new(),
-        issued_by: pk,
-        subject: pk,
-        claims: vec![Claim::EmployeeOf("ACME".into())],
-        valid_from: t(0),
-        valid_until: t(86_400),
-        signature: fake_sig(0),
-    };
-    let signing_bytes = att.signing_bytes().unwrap();
-    let sig = sign_event(&signing_bytes, &sk).unwrap();
-    att.signature = sig;
+    let mut op = SignedOp::new_unsigned(
+        b"automerge change blob".to_vec(),
+        ArtifactId::new(),
+        pk,
+        AttestationId::new(),
+        OpKind::Change,
+        t(1),
+        1,
+    );
+    sign_op(&mut op, &sk).unwrap();
+    assert!(verify_op(&op).is_ok());
 
-    // Sanity check: untampered attestation verifies.
-    let sb = att.signing_bytes().unwrap();
-    assert!(verify_event(&sb, &att.signature, &pk).is_ok());
-
-    let bytes = canonical_bytes(&att).unwrap();
-    // Try every single-byte flip on the encoded bytes; either decode
-    // fails or, if it succeeds, the recovered attestation's signature
-    // no longer verifies.
+    let bytes = canonical_bytes(&op).unwrap();
     let mut hit_decode_fail = false;
     let mut hit_signature_fail = false;
     for i in 0..bytes.len() {
         let mut tampered = bytes.clone();
         tampered[i] ^= 0x01;
-        match from_canonical_bytes::<Attestation>(&tampered) {
+        match from_canonical_bytes::<SignedOp>(&tampered) {
             Err(_) => hit_decode_fail = true,
             Ok(decoded) => {
-                let sb2 = decoded.signing_bytes().unwrap();
-                if verify_event(&sb2, &decoded.signature, &decoded.issued_by).is_err() {
+                if verify_op(&decoded).is_err() {
                     hit_signature_fail = true;
                 } else {
-                    // Decoded *and* signature still verifies → the
-                    // tampered byte was in a "free" position. There
-                    // are no such positions in a well-formed signed
-                    // attestation because every byte is either part
-                    // of the signed view or part of the signature
-                    // itself. If this fires, something's wrong.
                     panic!("byte {i} flip survived both decode and signature");
                 }
             }

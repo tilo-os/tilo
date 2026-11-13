@@ -1505,7 +1505,7 @@ impl InstanceRecord {
         let workspace = self.route.cluster_id.to_string();
         let record_id = self.chunk_record(chunk);
         let record = collab_types::Record {
-            room: &workspace,
+            workspace: &workspace,
             app: &self.route.app_id,
             record: &record_id,
         };

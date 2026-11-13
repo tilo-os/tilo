@@ -6,7 +6,7 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 
 use collab_types::{
-    ArtifactId, ChannelId, ChannelState, Ed25519PublicKey, EncryptionMetadata, OpId, SignedOp,
+    ArtifactId, ChannelId, Ed25519PublicKey, EncryptionMetadata, InboundState, OpId, SignedOp,
     ValidationError, parse_redact_payload,
 };
 
@@ -77,7 +77,7 @@ impl RedactionLog {
 
 #[derive(Default)]
 pub struct BrokerChannels {
-    pub states: HashMap<ArtifactId, ChannelState>,
+    pub states: HashMap<ArtifactId, InboundState>,
     pub audit: AuditLog,
     pub redactions: RedactionLog,
     /// Ingress gates of the channels this device's channel encryption service takes part in,
@@ -106,11 +106,11 @@ const PEER_HISTORY_WINDOW: std::time::Duration = std::time::Duration::from_secs(
 const PEER_HISTORY_RETRY: std::time::Duration = std::time::Duration::from_secs(5);
 
 impl BrokerChannels {
-    pub fn state_for(&mut self, artifact: ArtifactId) -> &mut ChannelState {
+    pub fn state_for(&mut self, artifact: ArtifactId) -> &mut InboundState {
         self.states.entry(artifact).or_default()
     }
 
-    pub fn register_channel_state(&mut self, artifact: ArtifactId, state: ChannelState) {
+    pub fn register_inbound_state(&mut self, artifact: ArtifactId, state: InboundState) {
         self.states.insert(artifact, state);
     }
 

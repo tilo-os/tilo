@@ -68,6 +68,8 @@ zeroize.workspace = true
 # Same dep that tilo-collab-types uses for ArtifactId / ChannelId /
 # SpaceId UUIDs; we mint a few in the SignedOp interop test.
 uuid.workspace = true
+# The authority an admitted op is validated under in the interop test.
+tilo-action-policy = { version = "0.1.0", path = "../action-policy" }
 
 [[test]]
 name = "it"

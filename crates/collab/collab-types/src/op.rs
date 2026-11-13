@@ -267,9 +267,9 @@ pub fn next_unordered_document_sequence(now: SystemTime) -> u64 {
     }
 }
 
-/// Deterministic attestation slot used by certified workspace admission.
-/// The admitted validator does not trust this id by itself; it remains stable
-/// so scrollback and audit entries do not mint arbitrary ids per edit.
+/// The route tag of one document: derived from its app, workspace and
+/// record, so it stays stable across edits and scrollback or audit entries
+/// never mint arbitrary ids per op.
 #[must_use]
 pub fn document_attestation_id(app_id: &str, workspace_id: &str, record_id: &str) -> AttestationId {
     AttestationId(derived_document_uuid(
@@ -637,24 +637,21 @@ pub struct SignedOp {
     pub payload: Vec<u8>,
     /// The artifact this op mutates.
     pub artifact: ArtifactId,
-    /// The author's identity public key. Must equal `attestation.subject`
-    /// (validator check 4).
+    /// The author's identity public key. The signature must verify under it.
     pub author: Ed25519PublicKey,
-    /// Id of the attestation underwriting this op, resolved against the
-    /// channel's attestation store by the validator.
+    /// The route tag this op belongs to, derived from its app, workspace and
+    /// record ([`document_attestation_id`]).
     pub attestation_id: AttestationId,
     /// The author's self-declared op class. A lying client doesn't gain
     /// capability: the change claims below decide every change against the
-    /// author's grants, whatever the client declares here (validator check 5).
+    /// author's grants, whatever the client declares here.
     pub kind: OpKind,
-    /// Wall-clock time the op was created, checked to fall inside
-    /// `[attestation.valid_from, attestation.valid_until]` (validator check
-    /// 6). Clock skew tolerance is the validator's responsibility.
+    /// Wall-clock time the op was created. Live traffic must be fresh; clock
+    /// skew tolerance is the validator's responsibility.
     pub timestamp: SystemTime,
-    /// Per-(author, channel) monotonic sequence number. Replay defence: the
+    /// Per-(author, workspace) monotonic sequence number. Replay defence: the
     /// validator rejects an inbound op whose `seq` isn't strictly greater
-    /// than the last seen for that author (validator check 7). Independent
-    /// per author.
+    /// than the last seen for that author. Independent per author.
     pub seq: u64,
     /// Encryption mode. `None` means `payload` is cleartext (the legacy
     /// form); `Some(meta)` names the channel, epoch and versioned scheme.

@@ -8,7 +8,6 @@
 
 #![allow(
     clippy::unwrap_used,
-    clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
@@ -16,8 +15,8 @@ use std::time::{Duration, SystemTime};
 
 use collab_types::crypto::VerifyError;
 use collab_types::{
-    ArtifactId, AttestationId, ChannelEvent, ChannelId, Ed25519PublicKey, OpKind, Signature,
-    SignedOp, generate_keypair, sign_event, sign_op, verify_event, verify_op,
+    ArtifactId, AttestationId, Ed25519PublicKey, OpKind, SignedOp, generate_keypair, sign_event,
+    sign_op, verify_event, verify_op,
 };
 
 fn t(secs: u64) -> SystemTime {
@@ -38,9 +37,8 @@ fn unsigned_op(author: Ed25519PublicKey, payload: &[u8], kind: OpKind) -> Signed
     )
 }
 
-/// An event signature verifies under the signer's key — for raw payloads and
-/// for the genesis and rename channel events' signing views — and not under
-/// another key.
+/// An event signature verifies under the signer's key and not under another
+/// key.
 #[test]
 fn an_event_signature_verifies_under_its_signer_only() {
     // Case: sign_event round trip.
@@ -57,42 +55,6 @@ fn an_event_signature_verifies_under_its_signer_only() {
         verify_event(&payload, &sig, &pk_b).unwrap_err(),
         VerifyError::BadSignature
     );
-
-    // Cases: channel events (genesis, rename) sign and verify over their
-    // signing view, with the signature slot filled in afterwards.
-    let (sk, pk) = generate_keypair();
-    let events = [
-        (
-            "genesis",
-            ChannelEvent::Genesis {
-                channel_id: ChannelId::new(),
-                name: "g".into(),
-                owner: pk,
-                created_at: t(0),
-                signature: Signature::from_bytes([0u8; 64]),
-            },
-        ),
-        (
-            "rename",
-            ChannelEvent::Rename {
-                new_name: "renamed".into(),
-                signed_by: pk,
-                signature: Signature::from_bytes([0u8; 64]),
-            },
-        ),
-    ];
-    for (case, mut e) in events {
-        let view = e.signing_bytes().unwrap();
-        let sig = sign_event(&view, &sk).unwrap();
-        match &mut e {
-            ChannelEvent::Genesis { signature, .. } | ChannelEvent::Rename { signature, .. } => {
-                *signature = sig;
-            }
-            _ => unreachable!(),
-        }
-        let view2 = e.signing_bytes().unwrap();
-        assert!(verify_event(&view2, &sig, &pk).is_ok(), "case {case}");
-    }
 }
 
 /// `sign_op` produces a deterministic signature that verifies only under the

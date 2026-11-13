@@ -786,7 +786,7 @@ fn a_chat_that_lost_a_write_at_a_hard_stop_opens_and_completes_once_it_returns()
         doc: tilo_automerge_isolate::load(base)
             .map(crate::cached_document::CachedDocument::from)
             .unwrap(),
-        channel: ChannelState::default(),
+        channel: InboundState::default(),
         encryption_required: true,
         covered: std::collections::BTreeMap::new(),
         covered_snapshot: None,

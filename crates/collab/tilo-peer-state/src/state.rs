@@ -9,7 +9,7 @@ use crate::{NeighbourMsg, workspace};
 use automerge::{AutoCommit, ROOT, ReadDoc, transaction::Transactable};
 use collab_types::caps::Principal;
 use collab_types::{
-    ArtifactKind, ChannelState, DocumentMutation, Ed25519PublicKey, OpKind, Role, SignedOp,
+    ArtifactKind, DocumentMutation, Ed25519PublicKey, InboundState, OpKind, Role, SignedOp,
 };
 use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};

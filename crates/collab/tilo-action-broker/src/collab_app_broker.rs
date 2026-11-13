@@ -3479,7 +3479,7 @@ impl AppBrokerState {
         }
     }
 
-    /// So tests can register channel state before pushing signed
+    /// So tests can register inbound state before pushing signed
     /// envelopes through the wire.
     pub fn broker_channels(&self) -> Arc<Mutex<BrokerChannels>> {
         Arc::clone(&self.broker_channels)
@@ -6785,7 +6785,7 @@ impl AppBrokerState {
         // The change the op makes must be allowed outright: a signed op
         // carries no answer to a grant that would ask first.
         let record = collab_types::Record {
-            room: &route.cluster_id,
+            workspace: &route.cluster_id,
             app: &route.app_id,
             record: &route.record_id,
         };
@@ -8845,7 +8845,7 @@ fn validate_signed_op(
                 return None;
             };
             let ch_state = ch.state_for(artifact);
-            ch_state.room.clone_from(&route.cluster_id);
+            ch_state.workspace.clone_from(&route.cluster_id);
             ch_state.artifacts.insert(artifact, ArtifactKind::Note);
             ch_state
                 .artifact_apps

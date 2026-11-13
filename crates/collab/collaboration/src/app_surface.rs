@@ -346,7 +346,7 @@ mod tests {
         let file = collab_types::surface::SurfaceFile::parse(FILE).unwrap();
         let receiver = collab_types::surface::KindSurface(file.resource(None).unwrap().clone());
         let record = collab_types::Record {
-            room: "workspace-1",
+            workspace: "workspace-1",
             app: "test.footprints",
             record: "paper-1",
         };

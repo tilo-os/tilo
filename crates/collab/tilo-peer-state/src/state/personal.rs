@@ -8,7 +8,7 @@
 //! signed revocation says who may not.
 //!
 //! The documents are the engine's own — [`CachedDocument`] and
-//! [`ChannelState`] — admitted through the same payload validation, op
+//! [`InboundState`] — admitted through the same payload validation, op
 //! validation, appearance check and merge a document received for a
 //! workspace goes through. An encrypted write has no place here: the key of
 //! the store is the identity itself, and its documents travel only between
@@ -26,7 +26,7 @@ use automerge::AutoCommit;
 use automerge::transaction::Transactable as _;
 use collab_types::signer::DeviceSigner;
 use collab_types::{
-    ArtifactKind, ChannelState, DocumentMutation, Ed25519PublicKey, OpKind, SignedOp,
+    ArtifactKind, DocumentMutation, Ed25519PublicKey, InboundState, OpKind, SignedOp,
     WholeDocumentPayload,
 };
 use neighbour_wire::{RefusalReason, WriteRefusal};
@@ -704,7 +704,7 @@ impl PersonalStore {
             .cloned()
             .unwrap_or_else(|| PeerDocument {
                 doc: AutoCommit::new().into(),
-                channel: ChannelState::default(),
+                channel: InboundState::default(),
                 encryption_required: false,
                 covered: BTreeMap::new(),
                 covered_snapshot: None,
@@ -722,7 +722,7 @@ impl PersonalStore {
             .channel
             .artifact_records
             .insert(envelope.artifact, record.into());
-        candidate.channel.room.clone_from(&store_key);
+        candidate.channel.workspace.clone_from(&store_key);
         let mut validated = candidate.channel.clone();
         validated.surfaces = default_surfaces();
         // The person owns every node of their own store: each write is
@@ -920,11 +920,11 @@ impl PersonalStore {
             let doc = AutoCommit::load(&document.bytes).map_err(err)?;
             let artifact =
                 collab_types::document_artifact_id(&document.app, &store_key, &document.record);
-            let mut channel = ChannelState::default();
+            let mut channel = InboundState::default();
             channel.artifacts.insert(artifact, ArtifactKind::Note);
             channel.artifact_apps.insert(artifact, document.app);
             channel.artifact_records.insert(artifact, document.record);
-            channel.room.clone_from(&store_key);
+            channel.workspace.clone_from(&store_key);
             channel.surfaces = default_surfaces();
             channel.last_seq_per_author = document
                 .watermarks

@@ -1,10 +1,9 @@
 //! Op-log compaction + scrollback integration tests.
 //!
-//! Exercises [`ChannelState::record_validated_op`],
-//! [`ChannelState::apply_compaction`], and
-//! [`ChannelState::scrollback_for`] against the validator tests' fixture
-//! shape. Live in `tests/` (not unit tests) because they cover the
-//! validator's *public* API.
+//! Exercises [`InboundState::record_validated_op`],
+//! [`InboundState::apply_compaction`], and
+//! [`InboundState::scrollback_for`]. Live in `tests/` (not unit tests)
+//! because they cover the validator's *public* API.
 
 #![allow(
     clippy::expect_used,
@@ -14,52 +13,25 @@
 use std::time::SystemTime;
 
 use collab_types::{
-    ArtifactId, ArtifactKind, AttestationId, ChannelState, CompactionCheckpoint, CompactionError,
-    Ed25519PublicKey, OpKind, Role, RoleAttestation, SignedOp, encode_compaction_payload,
-    generate_keypair, hash_op_prefix, sign_event, sign_op,
+    ArtifactId, ArtifactKind, AttestationId, CompactionCheckpoint, CompactionError,
+    Ed25519PublicKey, InboundState, OpKind, SignedOp, encode_compaction_payload, generate_keypair,
+    hash_op_prefix, sign_op,
 };
 use ed25519_dalek::SigningKey;
 
-/// Reuse the validator-test convention: a minimal channel state with one
-/// owner, one Editor author, one Note artifact, pre-registered signer.
+/// A minimal state with one Note artifact and one author.
 fn minimal_state() -> (
-    ChannelState,
+    InboundState,
     SigningKey,
     Ed25519PublicKey,
     ArtifactId,
     AttestationId,
 ) {
-    let (owner_sk, owner_pub) = generate_keypair();
     let (author_sk, author_pub) = generate_keypair();
     let artifact = ArtifactId::new();
-
-    // Mint + sign the Editor attestation against the owner.
-    let mut att = collab_types::Attestation {
-        id: AttestationId::new(),
-        issued_by: owner_pub,
-        subject: author_pub,
-        claims: vec![],
-        valid_from: SystemTime::UNIX_EPOCH,
-        valid_until: SystemTime::UNIX_EPOCH
-            .checked_add(std::time::Duration::from_secs(100_000))
-            .expect("valid_until in range"),
-        signature: collab_types::Signature::from_bytes([0u8; 64]),
-    };
-    let bytes = att.signing_bytes().expect("signing_bytes");
-    att.signature = sign_event(&bytes, &owner_sk).expect("sign attestation");
-    let ra = RoleAttestation {
-        channel: collab_types::ChannelId::new(),
-        role: Role::Editor,
-        attestation: att.clone(),
-    };
-    let att_id = att.id;
-
-    let mut state = ChannelState::default();
-    state.authorised_signers.push(owner_pub);
+    let mut state = InboundState::default();
     state.artifacts.insert(artifact, ArtifactKind::Note);
-    state.register_attestation(ra);
-
-    (state, author_sk, author_pub, artifact, att_id)
+    (state, author_sk, author_pub, artifact, AttestationId::new())
 }
 
 fn make_signed_op(
@@ -88,7 +60,7 @@ fn make_signed_op(
 fn state_with_ops(
     seqs: std::ops::RangeInclusive<u64>,
 ) -> (
-    ChannelState,
+    InboundState,
     SigningKey,
     Ed25519PublicKey,
     ArtifactId,
@@ -108,7 +80,7 @@ fn state_with_ops(
     reason = "test fixture: seq offsets on small fixed values cannot overflow"
 )]
 fn interleave_second_artifact(
-    state: &mut ChannelState,
+    state: &mut InboundState,
     sk: &SigningKey,
     author: Ed25519PublicKey,
     artifact_a: ArtifactId,
@@ -125,7 +97,7 @@ fn interleave_second_artifact(
 
 /// A checkpoint over `artifact`'s logged ops up to `up_to_seq`, with the
 /// correct prefix hash.
-fn checkpoint(state: &ChannelState, artifact: ArtifactId, up_to_seq: u64) -> CompactionCheckpoint {
+fn checkpoint(state: &InboundState, artifact: ArtifactId, up_to_seq: u64) -> CompactionCheckpoint {
     let prefix: Vec<SignedOp> = state
         .op_log
         .iter()
@@ -160,10 +132,10 @@ fn the_op_log_keeps_order_and_evicts_the_oldest_at_its_bound() {
     }
     assert_eq!(seqs_of(&state.op_log), vec![3, 4, 5]);
 
-    // Case: ChannelState::default() must use DEFAULT_MAX_IN_MEMORY_OPS so a
+    // Case: InboundState::default() must use DEFAULT_MAX_IN_MEMORY_OPS so a
     // fresh state has a sensible bound — surfaced as a test so the
     // constant + Default impl stay in sync.
-    let state = ChannelState::default();
+    let state = InboundState::default();
     assert_eq!(
         state.max_in_memory_ops,
         collab_types::validator::DEFAULT_MAX_IN_MEMORY_OPS

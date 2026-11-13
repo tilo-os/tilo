@@ -1,11 +1,11 @@
 //! Signed document ops another device's write carried to this host: each is
-//! validated against local channel state, recorded, and fanned to the local
+//! validated against the local inbound state, recorded, and fanned to the local
 //! apps on its route.
 use crate::collab_broker::FanoutState;
 use crate::collab_core::{AuditEntry, BrokerChannels, apply_redaction_from_envelope};
 use crate::route::CrdtRoute;
 use collab_types::{
-    ArtifactKind, ChannelState, OpKind, RedactedMarker, SignedOp, ValidationError,
+    ArtifactKind, InboundState, OpKind, RedactedMarker, SignedOp, ValidationError,
     validate_admitted_inbound_op, validate_replayed_inbound_op,
 };
 use runtime_collab::event::CollabEvent;
@@ -44,7 +44,7 @@ pub fn validate_document(
     envelope: &SignedOp,
     author: &Standing,
     replayed: bool,
-    state: &mut ChannelState,
+    state: &mut InboundState,
     now: SystemTime,
 ) -> Result<(), ValidationError> {
     let author = author.authority();
@@ -60,7 +60,7 @@ pub fn validate_document(
 pub enum Delivery {
     /// Admitted and fanned out, or refused and audited.
     Done,
-    /// Nothing was decided: the channel state is poisoned.
+    /// Nothing was decided: the inbound state is poisoned.
     Halted,
 }
 
@@ -106,7 +106,7 @@ fn deliver_at(
             let encryption = document.envelope.encryption.as_ref();
             if ch.document_order_allowed(&document.cluster_id, channel, artifact, encryption) {
                 let state = ch.state_for(artifact);
-                state.room.clone_from(&document.cluster_id);
+                state.workspace.clone_from(&document.cluster_id);
                 state.artifacts.insert(artifact, ArtifactKind::Note);
                 state
                     .artifact_apps
@@ -341,9 +341,9 @@ mod tests {
         collab_types::sign_op(&mut op, &key).unwrap();
         let now = tilo_clock::wall();
         let channel = || {
-            let mut state = ChannelState {
-                room: "workspace".into(),
-                ..ChannelState::default()
+            let mut state = InboundState {
+                workspace: "workspace".into(),
+                ..InboundState::default()
             };
             state.artifacts.insert(op.artifact, ArtifactKind::Note);
             state

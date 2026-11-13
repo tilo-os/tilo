@@ -5,14 +5,13 @@
 //! no compositor or UI dependencies. Signed-roles wire enforcement, MLS
 //! encryption, and threshold identity all layer on the primitives here.
 //!
-//! - [`identity`] — `Identity`, `Attestation`, `Claim`, `Clearance`: key
-//!   material and signed claims identities carry.
+//! - [`identity`] — `AttestationId`, the route tag a signed op carries, and
+//!   avatar bytes.
 //! - [`channel`] — `ChannelId`, `ArtifactId`: ids carried by a document's ops.
 //! - [`role`] — `Role`, `OpKind`, `ArtifactKind` of the op envelope; who may
-//!   make which change is decided by `tilo-action-policy` grants (step 5).
+//!   make which change is decided by `tilo-action-policy` grants.
 //! - [`caps`] — the app sandbox: `(subject × scope × access)` capabilities
 //!   over paths, file records, devices and network hosts.
-//! - [`event`] — `ChannelEvent`, the append-only governance log.
 //! - [`op`] — `SignedOp`, the per-op envelope wrapping every CRDT
 //!   mutation crossing a process or network boundary.
 //! - [`commit`] — `WorkspaceCommit`, the one signed record of every unit
@@ -22,9 +21,8 @@
 //!   signed payload bottoms out here so signatures are stable across
 //!   machines and Rust versions.
 //! - [`crypto`] — Ed25519 signing + verification primitives.
-//! - [`validator`] — the eight-step inbound-op validation pipeline, a
-//!   single pure function ([`validator::validate_inbound_op`]) over a
-//!   [`validator::ChannelState`] snapshot.
+//! - [`validator`] — inbound document-op validation: pure functions over an
+//!   [`validator::InboundState`] snapshot.
 //! - [`scope`] — `Scope`: the workspace, channel or record whose keys seal a
 //!   live track, and the id its name carries.
 //!
@@ -32,11 +30,10 @@
 //! first-party app catalogue in `tilo-desktop-model`, and the launcher's collab
 //! preamble in `launcher::services`; none of them is collaboration vocabulary.
 //!
-//! Non-goals: no network code (the validator operates on a snapshot;
-//! lazy-fetch of unknown attestations lives in the broker); no cryptographic
-//! key handling (this crate carries signed MLS metadata and opaque ciphertext,
-//! while `channel-crypto` owns group secrets); no FROST/threshold sharing
-//! (`Identity::public_key` is a single Ed25519 key); no persistence.
+//! Non-goals: no network code (the validator operates on a snapshot); no
+//! cryptographic key handling (this crate carries signed MLS metadata and
+//! opaque ciphertext, while `channel-crypto` owns group secrets); no
+//! FROST/threshold sharing; no persistence.
 //!
 //! Every on-wire struct derives `Serialize`/`Deserialize` and carries
 //! `#[serde(deny_unknown_fields)]` so an extension field can't quietly
@@ -57,7 +54,6 @@ pub mod crypto;
 pub mod direct;
 pub mod document_import;
 pub mod document_transfer;
-pub mod event;
 pub mod handoff;
 pub mod history;
 pub mod identity;
@@ -121,8 +117,7 @@ pub use document_transfer::{
     DocumentFrame, DocumentMutationKind, DocumentReassembler, DocumentSegment,
     MAX_DOCUMENT_TRANSFER_BYTES, ReassembledDocument, ReassemblyError,
 };
-pub use event::{ChannelEvent, RoleAttestation};
-pub use identity::{Attestation, AttestationId, Claim, Clearance, Identity};
+pub use identity::{AttestationId, AvatarBytes};
 pub use key_scope::{WORKSPACE_READERS, workspace_scope};
 pub use member::{Member, Person, PersonId, assigned_colour};
 pub use mls_governance::{
@@ -153,8 +148,8 @@ pub use redaction::{
 pub use role::{ArtifactKind, OpKind, Role};
 pub use tilo_action_policy::{MemberId, member_record, member_record_id};
 pub use validator::{
-    ChannelState, DEFAULT_WORKSPACE, ValidationError, document_node, named_record_of_channel,
-    named_records, validate_admitted_inbound_op, validate_inbound_op, validate_replayed_inbound_op,
+    DEFAULT_WORKSPACE, InboundState, ValidationError, document_node, named_record_of_channel,
+    named_records, validate_admitted_inbound_op, validate_replayed_inbound_op,
 };
 pub use workspace_id::WorkspaceId;
 pub use workspace_record::{

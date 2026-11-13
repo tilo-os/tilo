@@ -4,7 +4,7 @@ pub use crate::collab_core::{
     AuditEntry, BrokerChannels, RedactionRecord, apply_redaction_from_envelope,
 };
 pub use crate::route::CrdtRoute;
-use collab_types::{ArtifactId, ChannelState};
+use collab_types::{ArtifactId, InboundState};
 use runtime_collab::event::CollabEvent;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -989,8 +989,8 @@ impl BrokerHandle {
         &self.app_socket_path
     }
 
-    /// Shared handle to per-channel state + audit log. Tests use this
-    /// to install a [`ChannelState`] before sending signed envelopes.
+    /// Shared handle to the per-artifact state and the audit log. Tests use
+    /// this to install an [`InboundState`] before sending signed envelopes.
     pub fn channels(&self) -> Arc<Mutex<BrokerChannels>> {
         Arc::clone(&self.channels)
     }
@@ -1017,10 +1017,10 @@ impl BrokerHandle {
         })
     }
 
-    /// Install a populated [`ChannelState`] for one artifact id.
-    pub fn register_channel_state(&self, artifact: ArtifactId, state: ChannelState) {
+    /// Install a populated [`InboundState`] for one artifact.
+    pub fn register_inbound_state(&self, artifact: ArtifactId, state: InboundState) {
         if let Ok(mut ch) = self.channels.lock() {
-            ch.register_channel_state(artifact, state);
+            ch.register_inbound_state(artifact, state);
         }
     }
 }

@@ -85,15 +85,7 @@ fn an_administrator_admits_an_owners_invitation_and_an_editor_does_not() {
     let (editor, user) = crate::admission_tests::add_editor(&mut peer, &owner_key, now);
     let editor_key = SigningKey::from_bytes(&[6; 32]);
     let guest = device(70, 71);
-    let invited = redemption(
-        &peer,
-        &owner,
-        &owner_key,
-        &guest,
-        Role::Viewer,
-        72,
-        now,
-    );
+    let invited = redemption(&peer, &owner, &owner_key, &guest, Role::Viewer, 72, now);
 
     let refused = peer
         .clone()
@@ -132,15 +124,7 @@ fn an_administrator_admits_an_owners_invitation_and_an_editor_does_not() {
 
     // Spent: no participant admits another device with it.
     let other = device(73, 74);
-    let replay = redemption(
-        &peer,
-        &owner,
-        &owner_key,
-        &other,
-        Role::Viewer,
-        72,
-        now,
-    );
+    let replay = redemption(&peer, &owner, &owner_key, &other, Role::Viewer, 72, now);
     assert_eq!(replay.join().invite_id(), invited.join().invite_id());
     assert!(
         peer.governance_mut()
@@ -158,15 +142,7 @@ fn an_invitation_admits_only_what_its_issuer_could_invite() {
     let guest = device(75, 76);
     // An editor holds no invite: what they sign admits no one, whoever
     // writes it.
-    let invited = redemption(
-        &peer,
-        &editor,
-        &editor_key,
-        &guest,
-        Role::Viewer,
-        77,
-        now,
-    );
+    let invited = redemption(&peer, &editor, &editor_key, &guest, Role::Viewer, 77, now);
     let refused = peer
         .governance_mut()
         .admit_invited_member(&invited, &owner_key, now)
@@ -193,24 +169,8 @@ fn refusal_of_tampered_admission(
     // the ledger holds in the same batch.
     let guest = device(78, 79);
     let owner = peer.owner_certificates()[0].clone();
-    let invited = redemption(
-        &peer,
-        &owner,
-        &owner_key,
-        &guest,
-        Role::Editor,
-        80,
-        now,
-    );
-    let other = redemption(
-        &peer,
-        &owner,
-        &owner_key,
-        &guest,
-        Role::Editor,
-        81,
-        now,
-    );
+    let invited = redemption(&peer, &owner, &owner_key, &guest, Role::Editor, 80, now);
+    let other = redemption(&peer, &owner, &owner_key, &guest, Role::Editor, 81, now);
     let before = (**peer.core.workspace_doc.as_ref().unwrap())
         .clone()
         .get_heads();
@@ -337,15 +297,7 @@ fn any_participant_admits_a_members_further_device() {
     // writes it in, for its root certifies it as a member's.
     let owner = peer.owner_certificates()[0].clone();
     let guest = device(82, 83);
-    let invited = redemption(
-        &peer,
-        &owner,
-        &owner_key,
-        &guest,
-        Role::Viewer,
-        84,
-        now,
-    );
+    let invited = redemption(&peer, &owner, &owner_key, &guest, Role::Viewer, 84, now);
     peer.governance_mut()
         .admit_invited_member(&invited, &owner_key, now)
         .unwrap();
@@ -395,15 +347,7 @@ fn a_workspace_forgets_an_expired_page_devices_row_and_keeps_admitted_ones() {
     // A visitor's person joins as a member with the Viewer role the host gives
     // visitors; its member device and the page device it certifies for a visit.
     let member = device(80, 81);
-    let invited = redemption(
-        &peer,
-        &owner,
-        &owner_key,
-        &member,
-        Role::Viewer,
-        82,
-        now,
-    );
+    let invited = redemption(&peer, &owner, &owner_key, &member, Role::Viewer, 82, now);
     peer.governance_mut()
         .admit_invited_member(&invited, &owner_key, now)
         .unwrap();

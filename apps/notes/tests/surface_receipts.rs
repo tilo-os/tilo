@@ -54,7 +54,7 @@ fn receipt_of_newest(app: &TestApp<NotesShell>) -> (String, Receipt) {
         .unwrap_or_else(|| panic!("the committed surface does not describe `{kind}`"))
         .clone();
     let record = Record {
-        room: "room",
+        workspace: "workspace",
         app: &app_id,
         record: "record",
     };
@@ -144,7 +144,7 @@ fn receipts_since(
                 );
             };
             let record = Record {
-                room: "room",
+                workspace: "workspace",
                 app: "so.tilo.notes",
                 record: "record",
             };

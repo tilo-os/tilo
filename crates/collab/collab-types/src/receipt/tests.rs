@@ -6,13 +6,13 @@ use tilo_actions::{ActionContext, ActionKey, Did, EditOp, FieldEdit, VerbCall};
 use super::*;
 use crate::claim::{claims_of, parse_changes};
 
-const ROOM: &str = "room-1";
+const WORKSPACE: &str = "workspace-1";
 const APP: &str = "so.tilo.notes";
 const KIND: &str = "notes.page";
 
 fn record() -> Record<'static> {
     Record {
-        room: ROOM,
+        workspace: WORKSPACE,
         app: APP,
         record: "page-1",
     }
@@ -88,7 +88,7 @@ fn grants() -> Vec<Grant> {
         Grant::new(
             "ada-edits",
             Grantee::person("ada"),
-            TreePath::workspace(ROOM),
+            TreePath::workspace(WORKSPACE),
             KindSet::READ_UNDOABLE,
             Answer::Allow,
             room.clone(),
@@ -96,7 +96,7 @@ fn grants() -> Vec<Grant> {
         Grant::new(
             "cleo-comments",
             Grantee::person("cleo"),
-            roles::comments(ROOM),
+            roles::comments(WORKSPACE),
             KindSet::READ_UNDOABLE,
             Answer::Allow,
             room,
@@ -569,9 +569,9 @@ fn each_change_is_decided_against_the_kind_its_action_names() {
         .unwrap();
     let op = crate::op::SignedOp::new_unsigned(
         payload,
-        crate::document_artifact_id(APP, ROOM, "channels"),
+        crate::document_artifact_id(APP, WORKSPACE, "channels"),
         crate::Ed25519PublicKey::from_bytes([7; 32]),
-        crate::document_attestation_id(APP, ROOM, "channels"),
+        crate::document_attestation_id(APP, WORKSPACE, "channels"),
         crate::role::OpKind::Change,
         std::time::SystemTime::UNIX_EPOCH,
         1,

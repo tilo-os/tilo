@@ -4,8 +4,7 @@ use super::facades::{PeerGovernance, PeerGovernanceMut};
 use super::{
     BTreeMap, BTreeSet, DeviceCert, GovernedAccess, GovernedIdentity, GovernedMember, Grant,
     GrantId, Grantee, MembershipError, ROOT, ReadDoc, RecordReaders, RevocationList, Role,
-    SystemTime, Transactable, administrator_grant_id, err, governed_map,
-    now_ns, workspace,
+    SystemTime, Transactable, administrator_grant_id, err, governed_map, now_ns, workspace,
 };
 use crate::join::WorkspaceId;
 use collab_types::signer::DeviceSigner;
@@ -922,8 +921,7 @@ impl PeerGovernanceMut<'_> {
         key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
-        self.peer
-            .set_member(user_public_key, role, false, key, now)
+        self.peer.set_member(user_public_key, role, false, key, now)
     }
     /// Hold the person `user_public_key` as a member of the workspace at
     /// `role`, an administrator or not, before any device of theirs is
@@ -964,13 +962,7 @@ impl PeerGovernanceMut<'_> {
         key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
-        self.declare_member(
-            user_public_key,
-            crate::join::Role::Editor,
-            true,
-            key,
-            now,
-        )
+        self.declare_member(user_public_key, crate::join::Role::Editor, true, key, now)
     }
     /// Name the admitted person `user_public_key` `name` in the workspace: the
     /// name every reader of [`PeerGovernance::governed_members`] shows for

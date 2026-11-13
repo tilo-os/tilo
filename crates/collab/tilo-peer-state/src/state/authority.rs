@@ -659,7 +659,7 @@ impl StatePeer {
         let decided = collab_types::decide_op_pinned(
             envelope,
             &collab_types::Record {
-                room: &self.core.workspace,
+                workspace: &self.core.workspace,
                 app: app_id,
                 record,
             },

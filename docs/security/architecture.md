@@ -486,8 +486,8 @@ Under admission alone a receiver can only ever conclude "the relay sent this" â€
 survive the hop. Since always-on replicas and store-and-forward are core to the product, operations
 must carry their own proof.
 
-Roles are attestations issued by a space's owner, revocable, and themselves replicated as signed
-data. Each operation carries a sequence number so a replayed operation is rejected.
+A role comes from the workspace's member list, which the host keeps and each member's admission
+follows. Each operation carries a sequence number so a replayed operation is rejected.
 
 ### 7.3 Why both
 

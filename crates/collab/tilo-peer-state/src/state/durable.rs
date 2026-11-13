@@ -5,9 +5,9 @@ use std::collections::{BTreeMap, VecDeque};
 use serde::{Deserialize, Serialize};
 
 use super::{
-    AcceptedCheckpoint, CachedDocument, ChannelState, DecodedCheckpoint, DeviceCert, Document,
-    Ed25519PublicKey, ExactAdmissions, PeerCore, RevocationList, Route, Shared, StatePeer,
-    SystemTime, backend, check_governed_snapshot, err, held, now_ns, process_default, workspace,
+    AcceptedCheckpoint, CachedDocument, DecodedCheckpoint, DeviceCert, Document, Ed25519PublicKey,
+    ExactAdmissions, InboundState, PeerCore, RevocationList, Route, Shared, StatePeer, SystemTime,
+    backend, check_governed_snapshot, err, held, now_ns, process_default, workspace,
 };
 use super::{DurableDocument, SealedHistory};
 use crate::NeighbourMsg;
@@ -620,13 +620,13 @@ impl StatePeer {
                 &document.covered,
                 document.covered_snapshot.as_deref(),
             )?;
-            let channel = ChannelState {
+            let channel = InboundState {
                 last_seq_per_author: document
                     .watermarks
                     .into_iter()
                     .map(|(key, seq)| (Ed25519PublicKey::from_bytes(key), seq))
                     .collect(),
-                ..ChannelState::default()
+                ..InboundState::default()
             };
             peer.core.documents.insert(
                 document.route,

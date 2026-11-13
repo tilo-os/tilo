@@ -877,7 +877,7 @@ fn the_workspace_admits_what_a_tasks_window_plans() {
     replica.commit();
     collaboration::app_surface::register_package(&meta.app, &surface_toml(&[&meta]).unwrap());
     let record = collab_types::Record {
-        room: "workspace",
+        workspace: "workspace",
         app: &meta.app,
         record: "r",
     };

@@ -39,7 +39,7 @@ pub const MAX_REDACTION_REASON_BYTES: usize = 512;
 /// of `(author pubkey, seq, op canonical-bytes excluding signature)`, so
 /// two peers running the same code derive the same id.
 ///
-/// Used by `RedactRequest::target_op_id` and `ChannelState::redacted_ops`.
+/// Used by `RedactRequest::target_op_id` and `InboundState::redacted_ops`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct OpId(pub [u8; 16]);

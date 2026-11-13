@@ -15,13 +15,14 @@
 use std::time::SystemTime;
 
 use collab_types::{
-    ArtifactId, ArtifactKind, ChannelEvent, ChannelId, ChannelState, Ed25519PublicKey, Identity,
-    OpKind, Role, Signature, SignedOp, canonical_bytes, verify_event,
+    ArtifactId, ArtifactKind, AttestationId, DEFAULT_WORKSPACE, InboundState, OpKind, Role,
+    Signature, SignedOp, canonical_bytes, validate_admitted_inbound_op, verify_event,
 };
 use threshold_identity::{
     EnrolmentRound2, ThresholdIdentity, signing::SigningRound1, signing::SigningRound1Commitment,
     signing::SigningRound2Partial,
 };
+use tilo_action_policy::{Authority, Grant, Grantee, Party, roles};
 
 use rand_chacha::ChaCha20Rng;
 use rand_core::SeedableRng;
@@ -63,13 +64,12 @@ fn threshold_sign(a: &ThresholdIdentity, b: &ThresholdIdentity, canon: &[u8]) ->
     a.aggregate_signature(&[p_a, p_b]).unwrap()
 }
 
-/// A threshold signature verifies on raw bytes, over a channel genesis event, and through the
-/// full inbound `SignedOp` validator.
+/// A threshold signature verifies on raw bytes and through the inbound
+/// `SignedOp` validator.
 /// Runs each phase below in order; every phase builds its own fixture.
 #[test]
 fn threshold_signatures_pass_every_collab_types_verification_path() {
     threshold_sig_verifies_via_tilo_collab_types_verify_event_on_bytes();
-    threshold_sig_verifies_over_channel_event_genesis();
     threshold_signed_op_passes_inbound_validator();
 }
 
@@ -82,134 +82,42 @@ fn threshold_sig_verifies_via_tilo_collab_types_verify_event_on_bytes() {
         .expect("HEADLINE: threshold sig must verify via verify_event");
 }
 
-fn threshold_sig_verifies_over_channel_event_genesis() {
-    // A more realistic test: sign a `ChannelEvent::Genesis` with the
-    // threshold identity and verify through the broker's own path, via
-    // the variant's `signing_bytes()` helper.
-    let (a, b) = dkg_two();
-    let mut genesis = ChannelEvent::Genesis {
-        channel_id: ChannelId::new(),
-        name: "engineering".into(),
-        owner: a.group_public_key,
-        created_at: SystemTime::UNIX_EPOCH,
-        signature: Signature::from_bytes([0u8; 64]),
-    };
-    // collab_types verifies an event as bytes = event.signing_bytes();
-    // verify_event(&bytes, &signature, &public_key) — and verify_event
-    // canonicalises its argument again, so the pre-image is
-    // canonical_bytes(&bytes). Threshold-sign over that.
-    let signing_bytes = genesis.signing_bytes().unwrap();
-    let double_canon = canonical_bytes(&signing_bytes).unwrap();
-    let sig = threshold_sign(&a, &b, &double_canon);
-    // Splice the signature into the event.
-    if let ChannelEvent::Genesis {
-        signature: ref mut s,
-        ..
-    } = genesis
-    {
-        *s = sig;
-    }
-    // Re-verify via verify_event, the way the validator would — it
-    // consumes the signing-bytes view, not the full enum, since the
-    // signature doesn't cover its own field.
-    if let ChannelEvent::Genesis { ref signature, .. } = genesis {
-        let bytes = genesis.signing_bytes().unwrap();
-        verify_event(&bytes, signature, &a.group_public_key)
-            .expect("threshold-signed Genesis must verify via verify_event");
-    }
-}
-
-// `owner_sk`/`owner_pk` follows this crate's established signing-key /
-// public-key naming convention; see the reason on `dkg_two`.
-#[allow(
-    clippy::similar_names,
-    reason = "the _sk/_pk keypair naming convention is deliberate and used throughout this crate's tests"
-)]
+/// A `SignedOp` the threshold identity authored passes the inbound validator
+/// the production document path runs.
 #[allow(
     clippy::arithmetic_side_effects,
     reason = "a phase of a test: clock offsets are fixed small durations"
 )]
 fn threshold_signed_op_passes_inbound_validator() {
-    // The grand-finale test: build a SignedOp signed via threshold, run
-    // it through the full eight-step validator, and confirm it passes —
-    // proving threshold signatures are treated as regular Ed25519 by
-    // every production path.
-    use std::collections::HashMap;
-
-    use collab_types::{Attestation, AttestationId, Claim, RoleAttestation, generate_keypair};
-
     let (a, b) = dkg_two();
-
-    // The SignedOp's author is the *group* threshold identity, but its
-    // attestation must be signed by an authorised signer (the channel
-    // owner) — a separate single-device key, the typical case where the
-    // channel creator differs from the identity whose ops are validated.
-    let (owner_sk, owner_pk) = generate_keypair();
-    let channel_id = ChannelId::new();
-
-    // Build a RoleAttestation: the channel owner attests that
-    // the threshold identity (`a.group_public_key`) has the
-    // Editor role on this channel.
     let now = SystemTime::UNIX_EPOCH;
-    let later = now + std::time::Duration::from_secs(31_536_000);
-    let attestation_id = AttestationId::new();
-    let mut attestation = Attestation {
-        id: attestation_id,
-        issued_by: owner_pk,
-        subject: a.group_public_key,
-        claims: vec![Claim::EmployeeOf("Tilo".into())],
-        valid_from: now,
-        valid_until: later,
-        signature: Signature::from_bytes([0u8; 64]),
-    };
-    // Sign the attestation with the owner's key.
-    let sig_bytes = attestation.signing_bytes().unwrap();
-    let att_sig = collab_types::sign_event(&sig_bytes, &owner_sk).unwrap();
-    attestation.signature = att_sig;
-
     let artifact = ArtifactId::new();
     let mut op = SignedOp::new_unsigned(
         b"some-automerge-change".to_vec(),
         artifact,
         a.group_public_key,
-        attestation_id,
+        AttestationId::new(),
         OpKind::Change,
         now + std::time::Duration::from_secs(60),
         1,
     );
     // Sign the op via threshold.
     let op_signing_bytes = op.signing_bytes().unwrap();
-    let sig = threshold_sign(&a, &b, &op_signing_bytes);
-    op.signature = sig;
+    op.signature = threshold_sign(&a, &b, &op_signing_bytes);
 
-    // Assemble a ChannelState and run the validator.
-    let mut state = ChannelState::default();
-    state.attestations.insert(
-        attestation_id,
-        RoleAttestation {
-            channel: channel_id,
-            role: Role::Editor,
-            attestation,
-        },
-    );
-    state.authorised_signers.push(owner_pk);
+    // The admitted path: a certified device join under the workspace's live
+    // roster, and a Note artifact the validator knows.
+    let mut state = InboundState::default();
     state.artifacts.insert(artifact, ArtifactKind::Note);
-
-    // channel_min_clearance stays None — the validator should pass all
-    // 8 steps including the threshold signature check.
-    collab_types::validate_inbound_op(&op, &mut state)
-        .expect("HEADLINE: threshold-signed SignedOp must pass validate_inbound_op");
-
-    // Suppress unused warning for `b` — already consumed by
-    // threshold_sign.
-    let _ = &b;
-    // `Identity` import is for symmetry with the spec example.
-    let _ = Identity {
-        public_key: a.group_public_key,
-        label: "threshold-identity".into(),
-        avatar: None,
-        attestations: vec![],
-    };
-    // Suppress unused warning on the helpers map.
-    let _: HashMap<Ed25519PublicKey, Vec<Attestation>> = state.identity_attestations.clone();
+    let grants: Vec<Grant> =
+        roles::workspace_role_grants(DEFAULT_WORKSPACE, &Grantee::role(Role::Owner));
+    let author = Authority::person(Party::new(vec![Grantee::role(Role::Editor)], &grants));
+    validate_admitted_inbound_op(
+        &op,
+        &author,
+        &mut state,
+        op.timestamp,
+        std::time::Duration::from_secs(300),
+    )
+    .expect("HEADLINE: a threshold-signed SignedOp must pass the inbound validator");
 }

@@ -156,7 +156,7 @@ impl StatePeer {
             .map(|claims| {
                 self.surfaces.with_footprints(
                     &collab_types::Record {
-                        room: &self.core.workspace,
+                        workspace: &self.core.workspace,
                         app,
                         record,
                     },
