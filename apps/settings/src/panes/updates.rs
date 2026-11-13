@@ -1402,13 +1402,9 @@ impl UpdatesModel {
                 self.operation_succeeded(operation, "codec pack changed");
             }
             Err(error) => {
-                self.notice = Some(t_args(
-                    "upd-notice-codecs",
-                    &[("error", error.as_str().into())],
-                ));
-                self.operation_failed(
+                self.failed(
                     operation,
-                    format!("The codec pack could not be changed: {error}"),
+                    t_args("upd-notice-codecs", &[("error", error.as_str().into())]),
                 );
             }
         }
@@ -1962,13 +1958,9 @@ impl UpdatesModel {
                     }
                     os_actions::FirmwareEvent::Failed(error) => {
                         self.firmware_state = FirmwareUiState::Idle;
-                        self.notice = Some(t_args(
-                            "upd-notice-fw-failed",
-                            &[("error", error.as_str().into())],
-                        ));
-                        self.operation_failed(
+                        self.failed(
                             UpdatesEffect::INSTALL_FIRMWARE.id,
-                            format!("Firmware installation failed: {error}"),
+                            t_args("upd-notice-fw-failed", &[("error", error.as_str().into())]),
                         );
                         finished = true;
                     }
@@ -1991,10 +1983,9 @@ impl UpdatesModel {
             Landed::Lost => {
                 self.check_events = None;
                 self.check_pending = false;
-                self.notice = Some(t("upd-notice-check-stopped"));
-                self.operation_failed(
+                self.failed(
                     UpdatesEffect::CHECK_FOR_UPDATES.id,
-                    "update check worker stopped",
+                    t("upd-notice-check-stopped"),
                 );
                 self.changed = true;
                 return;
@@ -2017,13 +2008,9 @@ impl UpdatesModel {
                 );
             }
             Err(error) => {
-                self.notice = Some(t_args(
-                    "upd-notice-check",
-                    &[("error", error.as_str().into())],
-                ));
-                self.operation_failed(
+                self.failed(
                     UpdatesEffect::CHECK_FOR_UPDATES.id,
-                    format!("Updates could not be checked: {error}"),
+                    t_args("upd-notice-check", &[("error", error.as_str().into())]),
                 );
             }
         }
@@ -2043,13 +2030,9 @@ impl UpdatesModel {
                 let error = t("upd-error-firmware-worker-stopped");
                 self.firmware_updates = Err(error.clone());
                 self.firmware_history = Err(error.clone());
-                self.notice = Some(t_args(
-                    "upd-notice-fw-refresh",
-                    &[("error", error.as_str().into())],
-                ));
-                self.operation_failed(
+                self.failed(
                     UpdatesEffect::REFRESH_FIRMWARE.id,
-                    format!("Firmware updates could not be checked: {error}"),
+                    t_args("upd-notice-fw-refresh", &[("error", error.as_str().into())]),
                 );
                 self.changed = true;
                 return;
@@ -2070,13 +2053,9 @@ impl UpdatesModel {
             Err(error) => {
                 self.firmware_updates = Err(error.clone());
                 self.firmware_history = Err(error.clone());
-                self.notice = Some(t_args(
-                    "upd-notice-fw-refresh",
-                    &[("error", error.as_str().into())],
-                ));
-                self.operation_failed(
+                self.failed(
                     UpdatesEffect::REFRESH_FIRMWARE.id,
-                    format!("Firmware updates could not be checked: {error}"),
+                    t_args("upd-notice-fw-refresh", &[("error", error.as_str().into())]),
                 );
             }
         }
@@ -2127,11 +2106,7 @@ impl UpdatesModel {
 
     fn install_firmware(&mut self) {
         if self.firmware_refresh_pending || self.firmware_events.is_some() {
-            self.notice = Some(t("upd-notice-fw-busy"));
-            self.operation_failed(
-                UpdatesEffect::INSTALL_FIRMWARE.id,
-                "firmware work is already in progress",
-            );
+            self.failed(UpdatesEffect::INSTALL_FIRMWARE.id, t("upd-notice-fw-busy"));
             self.changed = true;
             return;
         }
@@ -2150,13 +2125,9 @@ impl UpdatesModel {
                 self.notice = None;
             }
             Err(e) => {
-                self.notice = Some(t_args(
-                    "upd-notice-fw-install",
-                    &[("error", e.as_str().into())],
-                ));
-                self.operation_failed(
+                self.failed(
                     UpdatesEffect::INSTALL_FIRMWARE.id,
-                    format!("Firmware upgrades could not be installed: {e}"),
+                    t_args("upd-notice-fw-install", &[("error", e.as_str().into())]),
                 );
             }
         }
@@ -2185,8 +2156,7 @@ impl UpdatesModel {
                 Landed::Lost => {
                     let job = self.jobs.remove(index);
                     warn!(target: "tilo::settings", op = job.operation, "update worker stopped");
-                    self.notice = Some(WORKER_STOPPED.into());
-                    self.operation_failed(job.operation, WORKER_STOPPED);
+                    self.failed(job.operation, WORKER_STOPPED.to_string());
                     self.changed = true;
                 }
             }
@@ -2226,13 +2196,9 @@ impl UpdatesModel {
     fn restarted(&mut self, result: Result<(), String>) {
         if let Err(e) = result {
             warn!(target: "tilo::settings", op = "reboot", error = %e, "restart & update failed");
-            self.notice = Some(t_args(
-                "upd-notice-restart",
-                &[("error", e.as_str().into())],
-            ));
-            self.operation_failed(
+            self.failed(
                 UpdatesEffect::RESTART_TO_UPDATE.id,
-                format!("Restarting into the staged update failed: {e}"),
+                t_args("upd-notice-restart", &[("error", e.as_str().into())]),
             );
             self.changed = true;
         } else {
@@ -2292,14 +2258,13 @@ impl UpdatesModel {
             }
             Err(e) => {
                 warn!(target: "tilo::settings", op = "set_update_timer", error = %e, "automatic updates could not be changed");
-                self.notice = Some(t_args("upd-notice-auto", &[("error", e.as_str().into())]));
                 // Put the switch back where the machine actually is.
                 let effective = self.timer_enabled.unwrap_or(self.prefs.auto);
                 self.prefs.auto = effective;
                 self.last_prefs.auto = effective;
-                self.operation_failed(
+                self.failed(
                     operation,
-                    format!("Automatic updates could not be changed: {e}"),
+                    t_args("upd-notice-auto", &[("error", e.as_str().into())]),
                 );
             }
         }
@@ -2346,13 +2311,9 @@ impl UpdatesModel {
                 self.operation_succeeded(operation, "update schedule changed");
             }
             Err(error) => {
-                self.notice = Some(t_args(
-                    "upd-notice-schedule",
-                    &[("error", error.as_str().into())],
-                ));
-                self.operation_failed(
+                self.failed(
                     operation,
-                    format!("Download schedule could not be changed: {error}"),
+                    t_args("upd-notice-schedule", &[("error", error.as_str().into())]),
                 );
             }
         }
@@ -2393,13 +2354,9 @@ impl UpdatesModel {
                 );
             }
             Err(error) => {
-                self.notice = Some(t_args(
-                    "upd-notice-metered",
-                    &[("error", error.as_str().into())],
-                ));
-                self.operation_failed(
+                self.failed(
                     UpdatesEffect::SET_METERED_UPDATES.id,
-                    format!("Metered-network policy could not be changed: {error}"),
+                    t_args("upd-notice-metered", &[("error", error.as_str().into())]),
                 );
             }
         }
@@ -2446,13 +2403,9 @@ impl UpdatesModel {
             }
             Err(e) => {
                 warn!(target: "tilo::settings", op = "rollback", error = %e, "rollback failed");
-                self.notice = Some(t_args(
-                    "upd-notice-rollback",
-                    &[("error", e.as_str().into())],
-                ));
-                self.operation_failed(
+                self.failed(
                     UpdatesEffect::ROLL_BACK.id,
-                    format!("Rolling back failed: {e}"),
+                    t_args("upd-notice-rollback", &[("error", e.as_str().into())]),
                 );
             }
         }
@@ -2601,6 +2554,14 @@ impl UpdatesModel {
     /// Tell the caller of `operation` why it failed.
     fn operation_failed(&mut self, operation: &'static str, message: impl Into<String>) {
         self.replies.fail(operation, message);
+    }
+
+    /// Show the person `notice` and tell the caller of `operation` the same
+    /// sentence: one failure has one wording, so nothing can drift apart and
+    /// a test that reads the notice reads what the caller was told.
+    fn failed(&mut self, operation: &'static str, notice: String) {
+        self.notice = Some(notice.clone());
+        self.operation_failed(operation, notice);
     }
 }
 

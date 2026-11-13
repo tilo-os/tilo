@@ -598,11 +598,13 @@ fn update_checks_run_promptly_and_stamp_only_on_completion() {
         release.send(()).unwrap();
         settle(&mut pane, |pane| pane.firmware_refresh_pending);
         assert!(pane.firmware_updates.is_err());
-        assert!(
-            pane.notice().is_some_and(|message| {
-                message.contains("Firmware updates could not be checked")
-            })
+        // The pane's own failure sentence, with the reason: the copy comes
+        // from the catalogue, so a reworded notice still reads here.
+        let expected = t_args(
+            "upd-notice-fw-refresh",
+            &[("error", "firmware refresh failed".into())],
         );
+        assert_eq!(pane.notice(), Some(expected.as_str()), "with the reason");
     }
 
     // Case `duplicate_update_checks_are_cleared_while_one_is_pending`.
