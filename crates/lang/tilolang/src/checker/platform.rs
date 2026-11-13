@@ -749,7 +749,11 @@ impl Checker<'_> {
                     super::expr::dotted(base).and_then(|path| {
                         let import = self.env.find_import(&path.join("."))?;
                         self.env
-                            .foreign_callable(&import.app, &name.name)
+                            .foreign_callable_marked(
+                                &import.app,
+                                &name.name,
+                                name.from_template_of.as_deref(),
+                            )
                             .filter(|c| matches!(c.kind, CKind::Action))
                             .map(|c| c.id.clone())
                     })

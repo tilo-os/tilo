@@ -740,6 +740,40 @@ kind = "undoable"
 params = []
 
 [[resources]]
+id = "session-authoring"
+kind = "session.authoring"
+label = ""
+version = 0
+fields = []
+
+[[resources.verbs]]
+id = "make-it-mine"
+kind = "outside"
+
+[[resources.verbs.params]]
+name = "style"
+required = true
+type = "text"
+
+[[resources.verbs]]
+id = "check"
+kind = "outside"
+
+[[resources.verbs.params]]
+name = "package"
+required = true
+type = "text"
+
+[[resources.verbs]]
+id = "install"
+kind = "outside"
+
+[[resources.verbs.params]]
+name = "package"
+required = true
+type = "text"
+
+[[resources]]
 instances = true
 kind = "desktop.window"
 label = ""

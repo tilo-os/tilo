@@ -364,6 +364,8 @@ mod sockets;
 pub mod startup;
 pub mod status;
 #[cfg(target_os = "linux")]
+pub mod style_packages;
+#[cfg(target_os = "linux")]
 pub mod surfaces;
 pub mod switcher;
 pub mod sync;

@@ -235,6 +235,8 @@ mod shortcut_guide;
 mod slot_view;
 #[path = "strips_tabs.rs"]
 mod strips_tabs;
+#[path = "style_packages.rs"]
+mod style_packages;
 #[path = "test_control.rs"]
 mod test_control;
 #[path = "tools.rs"]

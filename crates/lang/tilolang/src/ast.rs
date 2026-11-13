@@ -11,6 +11,23 @@ pub type NodeId = u32;
 pub struct Ident {
     pub name: String,
     pub span: Span,
+    /// The package a `template view` came from, when this name was rewritten at import to be
+    /// qualified with it (`shell.desk_style`): the resolver admits a plain name it qualified
+    /// this way even when it is not one the package offers, since the template's own body is
+    /// the one place that may call the package's unoffered helpers.
+    pub from_template_of: Option<String>,
+}
+
+impl Ident {
+    /// A name as written: no package marks it.
+    #[must_use]
+    pub fn plain(name: impl Into<String>, span: Span) -> Self {
+        Self {
+            name: name.into(),
+            span,
+            from_template_of: None,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]

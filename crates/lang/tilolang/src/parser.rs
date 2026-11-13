@@ -397,7 +397,11 @@ impl<'a> Parser<'a> {
         match self.peek().clone() {
             Tok::Ident(name) => {
                 let span = self.bump().span;
-                Ok(Ident { name, span })
+                Ok(Ident {
+                    name,
+                    span,
+                    from_template_of: None,
+                })
             }
             Tok::Kw(k) => {
                 let span = self.span();
@@ -1235,7 +1239,11 @@ impl<'a> Parser<'a> {
             name.push_str(&part.name);
             span = span.to(part.span);
         }
-        Ok(Ident { name, span })
+        Ok(Ident {
+            name,
+            span,
+            from_template_of: None,
+        })
     }
 
     /// `search { ... }`: one `filter`, `sort` or `hide` per line (search.md, "What a type
@@ -1849,6 +1857,7 @@ impl<'a> Parser<'a> {
                     out.push(Ident {
                         name: name.clone(),
                         span: e.span,
+                        from_template_of: None,
                     });
                     true
                 }
@@ -2179,6 +2188,7 @@ impl<'a> Parser<'a> {
                     Some(Ident {
                         name: k.to_string(),
                         span,
+                        from_template_of: None,
                     })
                 }
                 _ => None,

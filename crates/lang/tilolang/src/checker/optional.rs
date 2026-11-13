@@ -39,6 +39,7 @@ pub(super) fn lambda_of(e: &ast::Expr) -> Option<(ast::Ident, ast::Expr)> {
             let item = ast::Ident {
                 name: KEY_ITEM.to_owned(),
                 span: e.span,
+                from_template_of: None,
             };
             let body = ast::Expr {
                 kind: ExprKind::Field {
