@@ -126,38 +126,42 @@ mod tests {
         while !holds(&tilo_test_env::recv(what, seen)) {}
     }
 
-    #[test]
-    fn identity_switch_and_selected_record_removal_wake_consumers() {
-        let root = crate::tests::tmpdir();
-        let looking = root.clone();
-        let (_watch, seen) = watch_seeing(
-            |on_change| watch_identity_at(&root, on_change),
-            move || {
-                (
-                    std::fs::read_to_string(looking.join("active")).ok(),
-                    looking.join("work.json").exists(),
-                )
-            },
-        );
-        std::fs::write(root.join("active"), "work").unwrap();
-        notified_after("the identity switch", &seen, |(active, _)| {
-            active.as_deref() == Some("work")
-        });
-        std::fs::write(root.join("work.json"), "{}").unwrap();
-        notified_after("the new record", &seen, |(_, record)| *record);
-        std::fs::remove_file(root.join("work.json")).unwrap();
-        notified_after("the record's removal", &seen, |(_, record)| !*record);
-        std::fs::remove_dir_all(root).unwrap();
-    }
+    tilo_test_env::scenario! {
+        fn the_identity_watch_wakes_for_its_own_entries;
 
-    #[test]
-    fn only_the_selector_and_records_in_the_identity_directory_are_its_entries() {
-        let root = std::path::PathBuf::from("/identities");
-        let entry = identity_entry(root.clone());
-        assert!(entry(&root.join("active")));
-        assert!(entry(&root.join("work.json")));
-        assert!(!entry(&root.join("unrelated.txt")));
-        assert!(!entry(&root.join("nested").join("work.json")));
+        phase identity_switch_and_selected_record_removal_wake_consumers;
+        {
+            let root = crate::tests::tmpdir();
+            let looking = root.clone();
+            let (_watch, seen) = watch_seeing(
+                |on_change| watch_identity_at(&root, on_change),
+                move || {
+                    (
+                        std::fs::read_to_string(looking.join("active")).ok(),
+                        looking.join("work.json").exists(),
+                    )
+                },
+            );
+            std::fs::write(root.join("active"), "work").unwrap();
+            notified_after("the identity switch", &seen, |(active, _)| {
+                active.as_deref() == Some("work")
+            });
+            std::fs::write(root.join("work.json"), "{}").unwrap();
+            notified_after("the new record", &seen, |(_, record)| *record);
+            std::fs::remove_file(root.join("work.json")).unwrap();
+            notified_after("the record's removal", &seen, |(_, record)| !*record);
+            std::fs::remove_dir_all(root).unwrap();
+        }
+
+        phase only_the_selector_and_records_in_the_identity_directory_are_its_entries;
+        {
+            let root = std::path::PathBuf::from("/identities");
+            let entry = identity_entry(root.clone());
+            assert!(entry(&root.join("active")));
+            assert!(entry(&root.join("work.json")));
+            assert!(!entry(&root.join("unrelated.txt")));
+            assert!(!entry(&root.join("nested").join("work.json")));
+        }
     }
 
     #[cfg(target_os = "linux")]

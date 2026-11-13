@@ -298,136 +298,144 @@ pub fn plan_active_source(
 mod tests {
     use super::*;
 
-    #[test]
-    fn keyboard_assignments_keep_defaults_and_disconnected_profiles() {
-        let mut input = RichInputConfig {
-            keyboard_layouts: vec!["us".into(), "fr".into()],
-            ..Default::default()
-        };
-        input.keyboard_assignments.insert(
-            "external".into(),
-            KeyboardProfile {
-                sources: vec!["de".into(), "us".into()],
-                active: "de".into(),
-                options: BTreeMap::from([(
-                    "de".into(),
-                    SourceOptions {
-                        model: Some("pc104".into()),
-                        compose_key: Some("ralt".into()),
-                        caps_lock: Some("escape".into()),
-                        customised: true,
-                    },
-                )]),
-            },
-        );
-        let default = effective(&input, ALL);
-        assert_eq!(default.keyboard_layouts, ["us", "fr"]);
-        let assigned = effective(&input, "external");
-        assert_eq!(assigned.keyboard_layouts, ["de", "us"]);
-        assert_eq!(assigned.keyboard_layout, "de");
-        assert_eq!(assigned.keyboard_model, "pc104");
-        assert_eq!(assigned.compose_key.as_deref(), Some("ralt"));
-        assert_eq!(effective(&input, "unassigned"), default);
-        let restored: RichInputConfig =
-            serde_json::from_value(serde_json::to_value(&input).unwrap()).unwrap();
-        assert_eq!(restored.keyboard_assignments, input.keyboard_assignments);
-    }
+    tilo_test_env::scenario! {
+        fn the_machines_sources_come_from_the_session_localed_and_the_console;
 
-    #[test]
-    fn the_machine_layout_is_read_from_xkb_names_localed_and_the_console() {
-        assert_eq!(sources_from_names("de", ""), ["de"]);
-        assert_eq!(
-            sources_from_names("de,us", "nodeadkeys,"),
-            ["de:nodeadkeys", "us"]
-        );
-        assert_eq!(
-            sources_from_names(" de , ../evil, de", ""),
-            ["de"],
-            "invalid and repeated names are dropped"
-        );
-        assert!(sources_from_names("", "nodeadkeys").is_empty());
-        assert_eq!(sources_from_names("a,b,c,d,e", "").len(), 4);
+        phase the_machine_layout_is_read_from_xkb_names_localed_and_the_console;
+        {
+            assert_eq!(sources_from_names("de", ""), ["de"]);
+            assert_eq!(
+                sources_from_names("de,us", "nodeadkeys,"),
+                ["de:nodeadkeys", "us"]
+            );
+            assert_eq!(
+                sources_from_names(" de , ../evil, de", ""),
+                ["de"],
+                "invalid and repeated names are dropped"
+            );
+            assert!(sources_from_names("", "nodeadkeys").is_empty());
+            assert_eq!(sources_from_names("a,b,c,d,e", "").len(), 4);
 
-        let vconsole =
-            "# Written by systemd-localed(8)\nKEYMAP=de\nXKBLAYOUT=\"de\"\nXKBVARIANT=nodeadkeys\n";
-        assert_eq!(vconsole_sources(vconsole), ["de:nodeadkeys"]);
-        assert!(
-            vconsole_sources("KEYMAP=de-latin1\n").is_empty(),
-            "a console keymap alone is not an XKB layout"
-        );
+            let vconsole =
+                "# Written by systemd-localed(8)\nKEYMAP=de\nXKBLAYOUT=\"de\"\nXKBVARIANT=nodeadkeys\n";
+            assert_eq!(vconsole_sources(vconsole), ["de:nodeadkeys"]);
+            assert!(
+                vconsole_sources("KEYMAP=de-latin1\n").is_empty(),
+                "a console keymap alone is not an XKB layout"
+            );
 
-        let xorg = r#"Section "InputClass"
+            let xorg = r#"Section "InputClass"
         Identifier "system-keyboard"
         MatchIsKeyboard "on"
         Option "XkbLayout" "de,us"
         Option "XkbVariant" ","
 EndSection
 "#;
-        assert_eq!(xorg_keyboard_sources(xorg), ["de", "us"]);
-        assert!(xorg_keyboard_sources("Section \"InputClass\"\nEndSection\n").is_empty());
-    }
+            assert_eq!(xorg_keyboard_sources(xorg), ["de", "us"]);
+            assert!(xorg_keyboard_sources("Section \"InputClass\"\nEndSection\n").is_empty());
+        }
 
-    #[test]
-    fn the_session_environment_wins_over_localed_and_the_console() {
-        let environment = |layout: &'static str| {
-            move |name: &str| match name {
-                "XKB_DEFAULT_LAYOUT" => Some(layout.to_owned()),
-                "XKB_DEFAULT_VARIANT" => Some("nodeadkeys".to_owned()),
+        phase the_session_environment_wins_over_localed_and_the_console;
+        {
+            let environment = |layout: &'static str| {
+                move |name: &str| match name {
+                    "XKB_DEFAULT_LAYOUT" => Some(layout.to_owned()),
+                    "XKB_DEFAULT_VARIANT" => Some("nodeadkeys".to_owned()),
+                    _ => None,
+                }
+            };
+            let files = |path: &str| match path {
+                LOCALED_X11_CONFIG => Some("Option \"XkbLayout\" \"fr\"\n".to_owned()),
+                VCONSOLE_CONFIG => Some("XKBLAYOUT=es\n".to_owned()),
                 _ => None,
-            }
-        };
-        let files = |path: &str| match path {
-            LOCALED_X11_CONFIG => Some("Option \"XkbLayout\" \"fr\"\n".to_owned()),
-            VCONSOLE_CONFIG => Some("XKBLAYOUT=es\n".to_owned()),
-            _ => None,
-        };
-        let nothing = |_: &str| None;
-        assert_eq!(
-            system_sources_from(&environment("de"), &files),
-            ["de:nodeadkeys"]
-        );
-        assert_eq!(system_sources_from(&environment(""), &files), ["fr"]);
-        assert_eq!(
-            system_sources_from(&nothing, &|path: &str| {
-                (path == VCONSOLE_CONFIG).then(|| "XKBLAYOUT=es\n".to_owned())
-            }),
-            ["es"]
-        );
-        assert!(system_sources_from(&nothing, &nothing).is_empty());
+            };
+            let nothing = |_: &str| None;
+            assert_eq!(
+                system_sources_from(&environment("de"), &files),
+                ["de:nodeadkeys"]
+            );
+            assert_eq!(system_sources_from(&environment(""), &files), ["fr"]);
+            assert_eq!(
+                system_sources_from(&nothing, &|path: &str| {
+                    (path == VCONSOLE_CONFIG).then(|| "XKBLAYOUT=es\n".to_owned())
+                }),
+                ["es"]
+            );
+            assert!(system_sources_from(&nothing, &nothing).is_empty());
+        }
     }
 
-    #[test]
-    fn keyboard_assignments_decode_valid_siblings_and_stable_identities() {
-        let section = serde_json::json!({"keyboard_assignments": {
-            "broken": {"sources": 9}, "usb": {"sources": ["de"], "active": "de"}
-        }});
-        let input = RichInputConfig::from_section(section.as_object().unwrap());
-        assert!(!input.keyboard_assignments.contains_key("broken"));
-        assert_eq!(effective(&input, "usb").keyboard_layout, "de");
-        assert_eq!(
-            device_key("keyboard", "serial", "usb1"),
-            device_key("keyboard", "serial", "usb2")
-        );
-        assert_ne!(
-            device_key("keyboard", "", "usb1"),
-            device_key("keyboard", "", "usb2")
-        );
-    }
+    tilo_test_env::scenario! {
+        fn keyboard_assignments_and_source_choices_keep_valid_layouts;
 
-    #[test]
-    fn choosing_a_source_switches_to_a_listed_one_and_adds_a_new_one() {
-        let input = RichInputConfig {
-            keyboard_layouts: vec!["us".into(), "de".into()],
-            keyboard_layout: "us".into(),
-            ..RichInputConfig::default()
-        };
-        let switched = plan_active_source(&input, "de").unwrap();
-        assert_eq!(switched.keyboard_layout, "de");
-        assert_eq!(switched.keyboard_layouts, vec!["us", "de"]);
-        let added = plan_active_source(&input, "fr:azerty").unwrap();
-        assert_eq!(added.keyboard_layout, "fr:azerty");
-        assert_eq!(added.keyboard_layouts, vec!["us", "de", "fr:azerty"]);
-        assert!(plan_active_source(&input, "../etc").is_err());
-        assert!(plan_active_source(&input, "").is_err());
+        phase keyboard_assignments_keep_defaults_and_disconnected_profiles;
+        {
+            let mut input = RichInputConfig {
+                keyboard_layouts: vec!["us".into(), "fr".into()],
+                ..Default::default()
+            };
+            input.keyboard_assignments.insert(
+                "external".into(),
+                KeyboardProfile {
+                    sources: vec!["de".into(), "us".into()],
+                    active: "de".into(),
+                    options: BTreeMap::from([(
+                        "de".into(),
+                        SourceOptions {
+                            model: Some("pc104".into()),
+                            compose_key: Some("ralt".into()),
+                            caps_lock: Some("escape".into()),
+                            customised: true,
+                        },
+                    )]),
+                },
+            );
+            let default = effective(&input, ALL);
+            assert_eq!(default.keyboard_layouts, ["us", "fr"]);
+            let assigned = effective(&input, "external");
+            assert_eq!(assigned.keyboard_layouts, ["de", "us"]);
+            assert_eq!(assigned.keyboard_layout, "de");
+            assert_eq!(assigned.keyboard_model, "pc104");
+            assert_eq!(assigned.compose_key.as_deref(), Some("ralt"));
+            assert_eq!(effective(&input, "unassigned"), default);
+            let restored: RichInputConfig =
+                serde_json::from_value(serde_json::to_value(&input).unwrap()).unwrap();
+            assert_eq!(restored.keyboard_assignments, input.keyboard_assignments);
+        }
+
+        phase keyboard_assignments_decode_valid_siblings_and_stable_identities;
+        {
+            let section = serde_json::json!({"keyboard_assignments": {
+                "broken": {"sources": 9}, "usb": {"sources": ["de"], "active": "de"}
+            }});
+            let input = RichInputConfig::from_section(section.as_object().unwrap());
+            assert!(!input.keyboard_assignments.contains_key("broken"));
+            assert_eq!(effective(&input, "usb").keyboard_layout, "de");
+            assert_eq!(
+                device_key("keyboard", "serial", "usb1"),
+                device_key("keyboard", "serial", "usb2")
+            );
+            assert_ne!(
+                device_key("keyboard", "", "usb1"),
+                device_key("keyboard", "", "usb2")
+            );
+        }
+
+        phase choosing_a_source_switches_to_a_listed_one_and_adds_a_new_one;
+        {
+            let input = RichInputConfig {
+                keyboard_layouts: vec!["us".into(), "de".into()],
+                keyboard_layout: "us".into(),
+                ..RichInputConfig::default()
+            };
+            let switched = plan_active_source(&input, "de").unwrap();
+            assert_eq!(switched.keyboard_layout, "de");
+            assert_eq!(switched.keyboard_layouts, vec!["us", "de"]);
+            let added = plan_active_source(&input, "fr:azerty").unwrap();
+            assert_eq!(added.keyboard_layout, "fr:azerty");
+            assert_eq!(added.keyboard_layouts, vec!["us", "de", "fr:azerty"]);
+            assert!(plan_active_source(&input, "../etc").is_err());
+            assert!(plan_active_source(&input, "").is_err());
+        }
     }
 }

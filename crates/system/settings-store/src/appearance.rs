@@ -81,63 +81,67 @@ mod tests {
         }
     }
 
-    #[test]
-    fn appearance_keys_read_the_leaves_the_theme_reads() {
-        let document = object(json!({
-            "appearance": {
-                "mode": "dark",
-                "high_contrast": true,
-                "language": "de-DE",
-                "wallpaper": "custom",
-                "ui_face": "Hyperlegible",
-                "accent": "violet",
-                "translucency": 0.4,
-            },
-        }));
-        assert_eq!(MODE.from_document(&document).as_deref(), Some("dark"));
-        assert!(HIGH_CONTRAST.from_document(&document));
-        assert_eq!(LANGUAGE.from_document(&document).as_deref(), Some("de-DE"));
-        assert_eq!(
-            WALLPAPER.from_document(&document).as_deref(),
-            Some("custom")
-        );
-        assert_eq!(
-            UI_FACE.from_document(&document).as_deref(),
-            Some("Hyperlegible")
-        );
-        assert_eq!(ACCENT.from_document(&document).as_deref(), Some("violet"));
-        assert_eq!(TRANSLUCENCY.from_document(&document), Some(0.4));
-        let empty = Map::new();
-        assert_eq!(MODE.from_document(&empty), None);
-        assert!(!HIGH_CONTRAST.from_document(&empty));
-        assert_eq!(WALLPAPER.from_document(&empty), None);
-        assert_eq!(UI_FACE.from_document(&empty), None);
-        assert_eq!(ACCENT.from_document(&empty), None);
-        assert_eq!(TRANSLUCENCY.from_document(&empty), None);
-    }
+    tilo_test_env::scenario! {
+        fn appearance_reads_its_keys_and_the_preferred_language;
 
-    #[test]
-    fn the_chosen_language_wins_and_the_system_locale_is_only_the_default() {
-        assert_eq!(
-            preferred_language_from(Some("en-US"), Some("de_DE.UTF-8")).as_deref(),
-            Some("en-US")
-        );
-        assert_eq!(
-            preferred_language_from(Some("de_DE.UTF-8"), None).as_deref(),
-            Some("de-DE")
-        );
-        assert_eq!(
-            preferred_language_from(None, Some("de_DE.UTF-8")).as_deref(),
-            Some("de-DE"),
-            "with no choice the device's locale is the default"
-        );
-        assert_eq!(
-            preferred_language_from(Some("C"), Some("fr_FR.UTF-8")).as_deref(),
-            Some("fr-FR"),
-            "an explicit C names no language, so the default decides"
-        );
-        assert_eq!(preferred_language_from(Some("C"), Some("C.UTF-8")), None);
-        assert_eq!(preferred_language_from(Some("not a locale!"), None), None);
-        assert_eq!(preferred_language_from(None, None), None);
+        phase appearance_keys_read_the_leaves_the_theme_reads;
+        {
+            let document = object(json!({
+                "appearance": {
+                    "mode": "dark",
+                    "high_contrast": true,
+                    "language": "de-DE",
+                    "wallpaper": "custom",
+                    "ui_face": "Hyperlegible",
+                    "accent": "violet",
+                    "translucency": 0.4,
+                },
+            }));
+            assert_eq!(MODE.from_document(&document).as_deref(), Some("dark"));
+            assert!(HIGH_CONTRAST.from_document(&document));
+            assert_eq!(LANGUAGE.from_document(&document).as_deref(), Some("de-DE"));
+            assert_eq!(
+                WALLPAPER.from_document(&document).as_deref(),
+                Some("custom")
+            );
+            assert_eq!(
+                UI_FACE.from_document(&document).as_deref(),
+                Some("Hyperlegible")
+            );
+            assert_eq!(ACCENT.from_document(&document).as_deref(), Some("violet"));
+            assert_eq!(TRANSLUCENCY.from_document(&document), Some(0.4));
+            let empty = Map::new();
+            assert_eq!(MODE.from_document(&empty), None);
+            assert!(!HIGH_CONTRAST.from_document(&empty));
+            assert_eq!(WALLPAPER.from_document(&empty), None);
+            assert_eq!(UI_FACE.from_document(&empty), None);
+            assert_eq!(ACCENT.from_document(&empty), None);
+            assert_eq!(TRANSLUCENCY.from_document(&empty), None);
+        }
+
+        phase the_chosen_language_wins_and_the_system_locale_is_only_the_default;
+        {
+            assert_eq!(
+                preferred_language_from(Some("en-US"), Some("de_DE.UTF-8")).as_deref(),
+                Some("en-US")
+            );
+            assert_eq!(
+                preferred_language_from(Some("de_DE.UTF-8"), None).as_deref(),
+                Some("de-DE")
+            );
+            assert_eq!(
+                preferred_language_from(None, Some("de_DE.UTF-8")).as_deref(),
+                Some("de-DE"),
+                "with no choice the device's locale is the default"
+            );
+            assert_eq!(
+                preferred_language_from(Some("C"), Some("fr_FR.UTF-8")).as_deref(),
+                Some("fr-FR"),
+                "an explicit C names no language, so the default decides"
+            );
+            assert_eq!(preferred_language_from(Some("C"), Some("C.UTF-8")), None);
+            assert_eq!(preferred_language_from(Some("not a locale!"), None), None);
+            assert_eq!(preferred_language_from(None, None), None);
+        }
     }
 }

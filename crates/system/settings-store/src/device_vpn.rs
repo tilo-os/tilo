@@ -329,125 +329,133 @@ pub fn status_path() -> Option<std::path::PathBuf> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn the_exit_is_off_and_nothing_is_routed_until_the_person_chooses() {
-        let document = serde_json::Map::new();
-        assert!(!EXIT.from_document(&document));
-        assert_eq!(THROUGH.from_document(&document), None);
-        assert_eq!(STOP.from_document(&document), None);
+    tilo_test_env::scenario! {
+        fn the_device_vpn_section_is_off_until_chosen_and_reads_back;
+
+        phase the_exit_is_off_and_nothing_is_routed_until_the_person_chooses;
+        {
+            let document = serde_json::Map::new();
+            assert!(!EXIT.from_document(&document));
+            assert_eq!(THROUGH.from_document(&document), None);
+            assert_eq!(STOP.from_document(&document), None);
+        }
+
+        phase routing_through_a_device_reads_back_with_its_choices;
+        {
+            let through = Through {
+                routes: Routes::HomeNetwork,
+                kill_switch: true,
+                ..Through::device("ab12")
+            };
+            let mut section = serde_json::Map::new();
+            section.insert("through".into(), serde_json::to_value(&through).unwrap());
+            assert_eq!(THROUGH.from_section(&section), Some(through));
+            let partial = serde_json::json!({ "device": "cd34" });
+            section.insert("through".into(), partial);
+            assert_eq!(
+                THROUGH.from_section(&section),
+                Some(Through::device("cd34"))
+            );
+        }
+
+        phase every_profiles_kill_switch_is_off_until_the_person_turns_it_on;
+        {
+            let document = serde_json::Map::new();
+            assert!(PROFILE_KILL_SWITCHES.from_document(&document).is_empty());
+            assert_eq!(PROFILE_RELEASE.from_document(&document), None);
+            assert_eq!(
+                PROFILE_INTENT.from_document(&document),
+                ProfileIntent::default()
+            );
+            let mut section = serde_json::Map::new();
+            section.insert(
+                "profile_kill_switches".into(),
+                serde_json::json!({ "work": { "allow_local": true }, "home": {} }),
+            );
+            let switches = PROFILE_KILL_SWITCHES.from_section(&section);
+            assert_eq!(
+                switches.get("work"),
+                Some(&ProfileKillSwitch { allow_local: true })
+            );
+            assert_eq!(switches.get("home"), Some(&ProfileKillSwitch::default()));
+            section.insert(
+                "profile_intent".into(),
+                serde_json::json!({"connecting": {"work": ["198.51.100.7"]}, "release_seen": 3}),
+            );
+            assert_eq!(
+                PROFILE_INTENT.from_section(&section),
+                ProfileIntent {
+                    connecting: BTreeMap::from([(
+                        "work".to_owned(),
+                        vec!["198.51.100.7".parse().unwrap()]
+                    )]),
+                    release_seen: Some(3),
+                }
+            );
+            let first = ProfileRelease::after(None, "work");
+            assert_ne!(ProfileRelease::after(Some(&first), "work").id, first.id);
+        }
+
+        phase each_stop_request_has_a_new_id;
+        {
+            let first = StopRequest::after(None, "ab");
+            let second = StopRequest::after(Some(&first), "ab");
+            assert_ne!(first.id, second.id);
+        }
     }
 
-    #[test]
-    fn routing_through_a_device_reads_back_with_its_choices() {
-        let through = Through {
-            routes: Routes::HomeNetwork,
-            kill_switch: true,
-            ..Through::device("ab12")
-        };
-        let mut section = serde_json::Map::new();
-        section.insert("through".into(), serde_json::to_value(&through).unwrap());
-        assert_eq!(THROUGH.from_section(&section), Some(through));
-        let partial = serde_json::json!({ "device": "cd34" });
-        section.insert("through".into(), partial);
-        assert_eq!(
-            THROUGH.from_section(&section),
-            Some(Through::device("cd34"))
-        );
-    }
+    tilo_test_env::scenario! {
+        fn the_device_vpn_status_lists_routes_from_a_live_publisher;
 
-    #[test]
-    fn every_profiles_kill_switch_is_off_until_the_person_turns_it_on() {
-        let document = serde_json::Map::new();
-        assert!(PROFILE_KILL_SWITCHES.from_document(&document).is_empty());
-        assert_eq!(PROFILE_RELEASE.from_document(&document), None);
-        assert_eq!(
-            PROFILE_INTENT.from_document(&document),
-            ProfileIntent::default()
-        );
-        let mut section = serde_json::Map::new();
-        section.insert(
-            "profile_kill_switches".into(),
-            serde_json::json!({ "work": { "allow_local": true }, "home": {} }),
-        );
-        let switches = PROFILE_KILL_SWITCHES.from_section(&section);
-        assert_eq!(
-            switches.get("work"),
-            Some(&ProfileKillSwitch { allow_local: true })
-        );
-        assert_eq!(switches.get("home"), Some(&ProfileKillSwitch::default()));
-        section.insert(
-            "profile_intent".into(),
-            serde_json::json!({"connecting": {"work": ["198.51.100.7"]}, "release_seen": 3}),
-        );
-        assert_eq!(
-            PROFILE_INTENT.from_section(&section),
-            ProfileIntent {
-                connecting: BTreeMap::from([(
-                    "work".to_owned(),
-                    vec!["198.51.100.7".parse().unwrap()]
-                )]),
-                release_seen: Some(3),
-            }
-        );
-        let first = ProfileRelease::after(None, "work");
-        assert_ne!(ProfileRelease::after(Some(&first), "work").id, first.id);
-    }
-
-    #[test]
-    fn each_stop_request_has_a_new_id() {
-        let first = StopRequest::after(None, "ab");
-        let second = StopRequest::after(Some(&first), "ab");
-        assert_ne!(first.id, second.id);
-    }
-
-    #[test]
-    fn rows_list_the_current_route_first_and_each_device_once() {
-        let status = DeviceVpnStatus {
-            offered: vec![
-                OfferedExit {
-                    device: "a".into(),
-                    label: "Desk".into(),
-                },
-                OfferedExit {
+        phase rows_list_the_current_route_first_and_each_device_once;
+        {
+            let status = DeviceVpnStatus {
+                offered: vec![
+                    OfferedExit {
+                        device: "a".into(),
+                        label: "Desk".into(),
+                    },
+                    OfferedExit {
+                        device: "b".into(),
+                        label: "Home server".into(),
+                    },
+                ],
+                client: Some(ClientStatus {
                     device: "b".into(),
                     label: "Home server".into(),
-                },
-            ],
-            client: Some(ClientStatus {
-                device: "b".into(),
-                label: "Home server".into(),
-                state: ClientState::Connected { since_unix_ms: 5 },
-                ..ClientStatus::default()
-            }),
-            ..DeviceVpnStatus::default()
-        };
-        let rows = status.rows();
-        assert_eq!(rows.len(), 2);
-        assert_eq!(rows[0].device, "b");
-        assert!(rows[0].is_on());
-        assert_eq!(rows[1].device, "a");
-        assert!(!rows[1].is_on());
-    }
+                    state: ClientState::Connected { since_unix_ms: 5 },
+                    ..ClientStatus::default()
+                }),
+                ..DeviceVpnStatus::default()
+            };
+            let rows = status.rows();
+            assert_eq!(rows.len(), 2);
+            assert_eq!(rows[0].device, "b");
+            assert!(rows[0].is_on());
+            assert_eq!(rows[1].device, "a");
+            assert!(!rows[1].is_on());
+        }
 
-    #[test]
-    fn a_status_without_a_live_publisher_is_not_shown() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("device-vpn.json");
-        let status = DeviceVpnStatus {
-            publisher_pid: std::process::id(),
-            publisher_start_ticks: 1,
-            exit_on: true,
-            ..DeviceVpnStatus::default()
-        };
-        status.save_at(&path).unwrap();
-        assert_eq!(DeviceVpnStatus::load_at(&path), None);
-        let (pid, ticks) = crate::hardware::publisher_identity_in(dir.path()).unwrap();
-        let live = DeviceVpnStatus {
-            publisher_pid: pid,
-            publisher_start_ticks: ticks,
-            ..status
-        };
-        live.save_at(&path).unwrap();
-        assert_eq!(DeviceVpnStatus::load_at(&path), Some(live));
+        phase a_status_without_a_live_publisher_is_not_shown;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("device-vpn.json");
+            let status = DeviceVpnStatus {
+                publisher_pid: std::process::id(),
+                publisher_start_ticks: 1,
+                exit_on: true,
+                ..DeviceVpnStatus::default()
+            };
+            status.save_at(&path).unwrap();
+            assert_eq!(DeviceVpnStatus::load_at(&path), None);
+            let (pid, ticks) = crate::hardware::publisher_identity_in(dir.path()).unwrap();
+            let live = DeviceVpnStatus {
+                publisher_pid: pid,
+                publisher_start_ticks: ticks,
+                ..status
+            };
+            live.save_at(&path).unwrap();
+            assert_eq!(DeviceVpnStatus::load_at(&path), Some(live));
+        }
     }
 }

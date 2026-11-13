@@ -102,52 +102,56 @@ mod tests {
         )
     }
 
-    #[test]
-    fn a_copy_survives_the_document_and_pinned_ones_are_marked() {
-        let sealed = StoredHistory {
-            copies: vec![copy("hello", true), copy("bye", false)],
-        };
-        let document = serde_json::to_value(&sealed).expect("stored");
-        let back: StoredHistory = serde_json::from_value(document).expect("read");
-        assert_eq!(back, sealed);
-        assert_eq!(back.kept()[0].payload(), b"hello");
-        assert!(back.kept()[0].pinned);
-        assert_eq!(back.kept()[1].payload(), b"bye");
-    }
+    tilo_test_env::scenario! {
+        fn the_stored_clipboard_history_keeps_what_it_can;
 
-    #[test]
-    fn what_cannot_be_kept_is_dropped_and_the_rest_stays_in_order() {
-        let huge = StoredCopy::of("image/png", &vec![b'x'; MAX_COPY_BYTES + 1], 1, false, None);
-        let empty = StoredCopy::of("text/plain", b"", 2, false, None);
-        let nameless = StoredCopy::of("", b"x", 3, false, None);
-        let not_base64 = StoredCopy {
-            mime: "text/plain".into(),
-            bytes: "not base64!".into(),
-            created_ms: 4,
-            pinned: false,
-            from: None,
-        };
-        let history = StoredHistory {
-            copies: vec![
-                copy("first", true),
-                huge,
-                empty,
-                nameless,
-                not_base64,
-                copy("last", false),
-            ],
-        };
-        let kept = history.kept();
-        let texts: Vec<String> = kept
-            .iter()
-            .map(|copy| String::from_utf8_lossy(&copy.payload()).into_owned())
-            .collect();
-        assert_eq!(texts, ["first", "last"]);
-    }
+        phase a_copy_survives_the_document_and_pinned_ones_are_marked;
+        {
+            let sealed = StoredHistory {
+                copies: vec![copy("hello", true), copy("bye", false)],
+            };
+            let document = serde_json::to_value(&sealed).expect("stored");
+            let back: StoredHistory = serde_json::from_value(document).expect("read");
+            assert_eq!(back, sealed);
+            assert_eq!(back.kept()[0].payload(), b"hello");
+            assert!(back.kept()[0].pinned);
+            assert_eq!(back.kept()[1].payload(), b"bye");
+        }
 
-    #[test]
-    fn the_history_is_this_devices() {
-        assert_eq!(HISTORY.section(), SECTION);
-        assert!(HISTORY.default_value().copies.is_empty());
+        phase what_cannot_be_kept_is_dropped_and_the_rest_stays_in_order;
+        {
+            let huge = StoredCopy::of("image/png", &vec![b'x'; MAX_COPY_BYTES + 1], 1, false, None);
+            let empty = StoredCopy::of("text/plain", b"", 2, false, None);
+            let nameless = StoredCopy::of("", b"x", 3, false, None);
+            let not_base64 = StoredCopy {
+                mime: "text/plain".into(),
+                bytes: "not base64!".into(),
+                created_ms: 4,
+                pinned: false,
+                from: None,
+            };
+            let history = StoredHistory {
+                copies: vec![
+                    copy("first", true),
+                    huge,
+                    empty,
+                    nameless,
+                    not_base64,
+                    copy("last", false),
+                ],
+            };
+            let kept = history.kept();
+            let texts: Vec<String> = kept
+                .iter()
+                .map(|copy| String::from_utf8_lossy(&copy.payload()).into_owned())
+                .collect();
+            assert_eq!(texts, ["first", "last"]);
+        }
+
+        phase the_history_is_this_devices;
+        {
+            assert_eq!(HISTORY.section(), SECTION);
+            assert!(HISTORY.default_value().copies.is_empty());
+        }
     }
 }

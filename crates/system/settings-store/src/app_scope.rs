@@ -243,196 +243,200 @@ mod tests {
         crate::profile(dir)
     }
 
-    #[test]
-    fn the_system_settings_app_reaches_every_section_and_no_other_app_does() {
-        let dir = tempfile::tempdir().unwrap();
-        let session = session(dir.path());
-        let asks = [SYSTEM_SETTINGS_CAPABILITY];
-        assert_eq!(Reach::of("so.tilo.settings", &asks), Reach::System);
-        assert_eq!(Reach::of("so.tilo.settings", &[] as &[&str]), Reach::App);
-        assert_eq!(Reach::of("so.tilo.notes", &asks), Reach::App);
-        update_at(
-            &session,
-            "so.tilo.settings",
-            Reach::System,
-            "appearance",
-            object(json!({"text_scale": 1.3})),
-            &ChangeOrigin::default(),
-        )
-        .unwrap();
-        update_at(
-            &session,
-            "so.tilo.settings",
-            Reach::System,
-            "input",
-            object(json!({"keyboard_layout": "de"})),
-            &ChangeOrigin::default(),
-        )
-        .unwrap();
-        let document = session.load();
-        assert_eq!(document["appearance"]["text_scale"], 1.3);
-        assert_eq!(
-            view_at(&document, "so.tilo.settings", Reach::System),
-            document
-        );
-        assert_eq!(
+    tilo_test_env::scenario! {
+        fn an_app_reaches_only_the_settings_it_may;
+
+        phase the_system_settings_app_reaches_every_section_and_no_other_app_does;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let session = session(dir.path());
+            let asks = [SYSTEM_SETTINGS_CAPABILITY];
+            assert_eq!(Reach::of("so.tilo.settings", &asks), Reach::System);
+            assert_eq!(Reach::of("so.tilo.settings", &[] as &[&str]), Reach::App);
+            assert_eq!(Reach::of("so.tilo.notes", &asks), Reach::App);
             update_at(
                 &session,
-                "so.tilo.notes",
-                Reach::App,
+                "so.tilo.settings",
+                Reach::System,
                 "appearance",
-                object(json!({"text_scale": 2.0})),
+                object(json!({"text_scale": 1.3})),
                 &ChangeOrigin::default(),
             )
-            .unwrap_err()
-            .kind(),
-            ErrorKind::PermissionDenied
-        );
-        assert!(!view_at(&document, "so.tilo.notes", Reach::App).contains_key("input"));
-    }
-
-    #[test]
-    fn an_apps_writes_keep_each_others_keys() {
-        let dir = crate::test_dir();
-        let session = session(dir.path());
-        update_for_app(
-            &session,
-            "so.tilo.monitor",
-            APP_PERSONAL_SECTION,
-            object(json!({"so.tilo.monitor": {"confirm_kill": false}})),
-        )
-        .unwrap();
-        update_for_app(
-            &session,
-            "so.tilo.monitor",
-            APP_PERSONAL_SECTION,
-            object(json!({"so.tilo.monitor": {"interval_ms": 2000}})),
-        )
-        .unwrap();
-        update_for_app(
-            &session,
-            "so.tilo.monitor",
-            APP_DEVICE_LOCAL_SECTION,
-            object(json!({"so.tilo.monitor": {"column": "cpu"}})),
-        )
-        .unwrap();
-
-        let document = session.load();
-        assert_eq!(
-            document["app_personal"],
-            json!({"so.tilo.monitor": {"confirm_kill": false, "interval_ms": 2000}}),
-            "both writes' keys are kept"
-        );
-        assert_eq!(
-            document["app_device_local"],
-            json!({"so.tilo.monitor": {"column": "cpu"}})
-        );
-    }
-
-    #[test]
-    fn an_app_cannot_write_another_apps_entry_or_a_shared_section() {
-        let dir = crate::test_dir();
-        let session = session(dir.path());
-        session
-            .update_section(
-                APP_PERSONAL_SECTION,
-                object(json!({"so.tilo.notes": {"font": "serif"}})),
+            .unwrap();
+            update_at(
+                &session,
+                "so.tilo.settings",
+                Reach::System,
+                "input",
+                object(json!({"keyboard_layout": "de"})),
+                &ChangeOrigin::default(),
             )
             .unwrap();
-        let before = session.load();
+            let document = session.load();
+            assert_eq!(document["appearance"]["text_scale"], 1.3);
+            assert_eq!(
+                view_at(&document, "so.tilo.settings", Reach::System),
+                document
+            );
+            assert_eq!(
+                update_at(
+                    &session,
+                    "so.tilo.notes",
+                    Reach::App,
+                    "appearance",
+                    object(json!({"text_scale": 2.0})),
+                    &ChangeOrigin::default(),
+                )
+                .unwrap_err()
+                .kind(),
+                ErrorKind::PermissionDenied
+            );
+            assert!(!view_at(&document, "so.tilo.notes", Reach::App).contains_key("input"));
+        }
 
-        let other = update_for_app(
-            &session,
-            "so.tilo.monitor",
-            APP_PERSONAL_SECTION,
-            object(json!({"so.tilo.notes": {"font": "mono"}})),
-        )
-        .unwrap_err();
-        assert_eq!(other.kind(), ErrorKind::PermissionDenied);
-        let smuggled = update_for_app(
-            &session,
-            "so.tilo.monitor",
-            APP_PERSONAL_SECTION,
-            object(json!({"so.tilo.monitor": {}, "so.tilo.notes": {"font": "mono"}})),
-        )
-        .unwrap_err();
-        assert_eq!(smuggled.kind(), ErrorKind::InvalidInput);
-        for shared in ["locale", "appearance", "input"] {
+        phase an_apps_writes_keep_each_others_keys;
+        {
+            let dir = crate::test_dir();
+            let session = session(dir.path());
+            update_for_app(
+                &session,
+                "so.tilo.monitor",
+                APP_PERSONAL_SECTION,
+                object(json!({"so.tilo.monitor": {"confirm_kill": false}})),
+            )
+            .unwrap();
+            update_for_app(
+                &session,
+                "so.tilo.monitor",
+                APP_PERSONAL_SECTION,
+                object(json!({"so.tilo.monitor": {"interval_ms": 2000}})),
+            )
+            .unwrap();
+            update_for_app(
+                &session,
+                "so.tilo.monitor",
+                APP_DEVICE_LOCAL_SECTION,
+                object(json!({"so.tilo.monitor": {"column": "cpu"}})),
+            )
+            .unwrap();
+
+            let document = session.load();
+            assert_eq!(
+                document["app_personal"],
+                json!({"so.tilo.monitor": {"confirm_kill": false, "interval_ms": 2000}}),
+                "both writes' keys are kept"
+            );
+            assert_eq!(
+                document["app_device_local"],
+                json!({"so.tilo.monitor": {"column": "cpu"}})
+            );
+        }
+
+        phase an_app_cannot_write_another_apps_entry_or_a_shared_section;
+        {
+            let dir = crate::test_dir();
+            let session = session(dir.path());
+            session
+                .update_section(
+                    APP_PERSONAL_SECTION,
+                    object(json!({"so.tilo.notes": {"font": "serif"}})),
+                )
+                .unwrap();
+            let before = session.load();
+
+            let other = update_for_app(
+                &session,
+                "so.tilo.monitor",
+                APP_PERSONAL_SECTION,
+                object(json!({"so.tilo.notes": {"font": "mono"}})),
+            )
+            .unwrap_err();
+            assert_eq!(other.kind(), ErrorKind::PermissionDenied);
+            let smuggled = update_for_app(
+                &session,
+                "so.tilo.monitor",
+                APP_PERSONAL_SECTION,
+                object(json!({"so.tilo.monitor": {}, "so.tilo.notes": {"font": "mono"}})),
+            )
+            .unwrap_err();
+            assert_eq!(smuggled.kind(), ErrorKind::InvalidInput);
+            for shared in ["locale", "appearance", "input"] {
+                let error = update_for_app(
+                    &session,
+                    "so.tilo.monitor",
+                    shared,
+                    object(json!({"so.tilo.monitor": {"x": 1}})),
+                )
+                .unwrap_err();
+                assert_eq!(error.kind(), ErrorKind::PermissionDenied, "{shared}");
+            }
+            assert_eq!(session.load(), before, "nothing was written");
+        }
+
+        phase theme_studio_writes_the_active_theme_and_nothing_else_of_the_look;
+        {
+            let dir = crate::test_dir();
+            let session = session(dir.path());
+            session
+                .update_section("appearance", object(json!({"high_contrast": true})))
+                .unwrap();
+
+            update_for_app(
+                &session,
+                "so.tilo.themes",
+                "appearance",
+                object(json!({"theme": "Dracula", "studio": {"id": "dracula"}})),
+            )
+            .unwrap();
+            assert_eq!(
+                session.load()["appearance"],
+                json!({"high_contrast": true, "theme": "Dracula", "studio": {"id": "dracula"}}),
+                "the owned keys land beside the Settings app's"
+            );
+
+            let before = session.load();
+            let settings_key = update_for_app(
+                &session,
+                "so.tilo.themes",
+                "appearance",
+                object(json!({"theme": "Nord", "high_contrast": false})),
+            )
+            .unwrap_err();
+            assert_eq!(settings_key.kind(), ErrorKind::PermissionDenied);
+            let other_app = update_for_app(
+                &session,
+                "so.tilo.notes",
+                "appearance",
+                object(json!({"theme": "Nord"})),
+            )
+            .unwrap_err();
+            assert_eq!(other_app.kind(), ErrorKind::PermissionDenied);
+            let other_section = update_for_app(
+                &session,
+                "so.tilo.themes",
+                "locale",
+                object(json!({"theme": "Nord"})),
+            )
+            .unwrap_err();
+            assert_eq!(other_section.kind(), ErrorKind::PermissionDenied);
+            assert_eq!(session.load(), before, "nothing was written");
+        }
+
+        phase a_personal_entry_too_large_to_roam_is_refused;
+        {
+            let dir = crate::test_dir();
+            let session = session(dir.path());
+            let words = vec!["x".repeat(1024); 80];
             let error = update_for_app(
                 &session,
                 "so.tilo.monitor",
-                shared,
-                object(json!({"so.tilo.monitor": {"x": 1}})),
+                APP_PERSONAL_SECTION,
+                object(json!({"so.tilo.monitor": {"words": words}})),
             )
             .unwrap_err();
-            assert_eq!(error.kind(), ErrorKind::PermissionDenied, "{shared}");
+            assert_eq!(error.kind(), ErrorKind::InvalidInput);
+            assert!(session.load().is_empty());
         }
-        assert_eq!(session.load(), before, "nothing was written");
-    }
-
-    #[test]
-    fn theme_studio_writes_the_active_theme_and_nothing_else_of_the_look() {
-        let dir = crate::test_dir();
-        let session = session(dir.path());
-        session
-            .update_section("appearance", object(json!({"high_contrast": true})))
-            .unwrap();
-
-        update_for_app(
-            &session,
-            "so.tilo.themes",
-            "appearance",
-            object(json!({"theme": "Dracula", "studio": {"id": "dracula"}})),
-        )
-        .unwrap();
-        assert_eq!(
-            session.load()["appearance"],
-            json!({"high_contrast": true, "theme": "Dracula", "studio": {"id": "dracula"}}),
-            "the owned keys land beside the Settings app's"
-        );
-
-        let before = session.load();
-        let settings_key = update_for_app(
-            &session,
-            "so.tilo.themes",
-            "appearance",
-            object(json!({"theme": "Nord", "high_contrast": false})),
-        )
-        .unwrap_err();
-        assert_eq!(settings_key.kind(), ErrorKind::PermissionDenied);
-        let other_app = update_for_app(
-            &session,
-            "so.tilo.notes",
-            "appearance",
-            object(json!({"theme": "Nord"})),
-        )
-        .unwrap_err();
-        assert_eq!(other_app.kind(), ErrorKind::PermissionDenied);
-        let other_section = update_for_app(
-            &session,
-            "so.tilo.themes",
-            "locale",
-            object(json!({"theme": "Nord"})),
-        )
-        .unwrap_err();
-        assert_eq!(other_section.kind(), ErrorKind::PermissionDenied);
-        assert_eq!(session.load(), before, "nothing was written");
-    }
-
-    #[test]
-    fn a_personal_entry_too_large_to_roam_is_refused() {
-        let dir = crate::test_dir();
-        let session = session(dir.path());
-        let words = vec!["x".repeat(1024); 80];
-        let error = update_for_app(
-            &session,
-            "so.tilo.monitor",
-            APP_PERSONAL_SECTION,
-            object(json!({"so.tilo.monitor": {"words": words}})),
-        )
-        .unwrap_err();
-        assert_eq!(error.kind(), ErrorKind::InvalidInput);
-        assert!(session.load().is_empty());
     }
 
     #[test]

@@ -282,37 +282,41 @@ mod tests {
         }
     }
 
-    #[test]
-    fn the_key_names_the_monitors_not_the_ports_they_use() {
-        let panel = monitor("BOE", "NE135FBM-N41", "");
-        let office = monitor("Dell", "DELL U2720Q", "7XK2P13");
-        let docked_on_dp2 = DisplaySet::of([
-            attached("eDP-1", Some(&panel)),
-            attached("DP-2", Some(&office)),
-        ]);
-        let docked_on_dp5 = DisplaySet::of([
-            attached("DP-5", Some(&office)),
-            attached("eDP-1", Some(&panel)),
-        ]);
-        assert_eq!(docked_on_dp2.key, docked_on_dp5.key);
+    tilo_test_env::scenario! {
+        fn a_display_set_is_keyed_by_its_monitors;
 
-        let other = monitor("LG", "LG HDR 4K", "104NTAB1C123");
-        let at_home = DisplaySet::of([
-            attached("eDP-1", Some(&panel)),
-            attached("DP-2", Some(&other)),
-        ]);
-        assert_ne!(
-            docked_on_dp2.key, at_home.key,
-            "another monitor on the same port is another set"
-        );
-    }
+        phase the_key_names_the_monitors_not_the_ports_they_use;
+        {
+            let panel = monitor("BOE", "NE135FBM-N41", "");
+            let office = monitor("Dell", "DELL U2720Q", "7XK2P13");
+            let docked_on_dp2 = DisplaySet::of([
+                attached("eDP-1", Some(&panel)),
+                attached("DP-2", Some(&office)),
+            ]);
+            let docked_on_dp5 = DisplaySet::of([
+                attached("DP-5", Some(&office)),
+                attached("eDP-1", Some(&panel)),
+            ]);
+            assert_eq!(docked_on_dp2.key, docked_on_dp5.key);
 
-    #[test]
-    fn identical_monitors_are_told_apart_by_connector() {
-        let twin = monitor("Dell", "DELL P2419H", "");
-        let set = DisplaySet::of([attached("DP-1", Some(&twin)), attached("DP-2", Some(&twin))]);
-        assert_ne!(set.members["DP-1"], set.members["DP-2"]);
-        assert_eq!(set.key.matches('+').count(), 1);
+            let other = monitor("LG", "LG HDR 4K", "104NTAB1C123");
+            let at_home = DisplaySet::of([
+                attached("eDP-1", Some(&panel)),
+                attached("DP-2", Some(&other)),
+            ]);
+            assert_ne!(
+                docked_on_dp2.key, at_home.key,
+                "another monitor on the same port is another set"
+            );
+        }
+
+        phase identical_monitors_are_told_apart_by_connector;
+        {
+            let twin = monitor("Dell", "DELL P2419H", "");
+            let set = DisplaySet::of([attached("DP-1", Some(&twin)), attached("DP-2", Some(&twin))]);
+            assert_ne!(set.members["DP-1"], set.members["DP-2"]);
+            assert_eq!(set.key.matches('+').count(), 1);
+        }
     }
 
     #[test]
@@ -325,176 +329,180 @@ mod tests {
         assert_eq!(set.key, "connector:HDMI-A-1+connector:Virtual-1");
     }
 
-    #[test]
-    fn plugging_the_office_dock_restores_the_office_layout_on_new_ports() {
-        let panel = monitor("BOE", "NE135FBM-N41", "");
-        let left = monitor("Dell", "DELL U2720Q", "AAA");
-        let right = monitor("Dell", "DELL U2720Q", "BBB");
-        let saved_set = DisplaySet::of([
-            attached("eDP-1", Some(&panel)),
-            attached("DP-5", Some(&left)),
-            attached("DP-6", Some(&right)),
-        ]);
-        let mut config = DisplayConfig::default();
-        config.outputs.insert("eDP-1".into(), at(2560));
-        config.outputs.insert("DP-5".into(), at(0));
-        config.outputs.insert(
-            "DP-6".into(),
-            OutputConfig {
-                mirror_of: Some("DP-5".into()),
-                ..at(0)
-            },
-        );
-        config.outputs.insert("HDMI-A-1".into(), at(9999));
-        let mut profiles = DisplayProfiles::default();
-        profiles.remember(&saved_set, &config);
+    tilo_test_env::scenario! {
+        fn display_profiles_remember_layouts_and_what_each_monitor_showed;
 
-        let replugged = DisplaySet::of([
-            attached("eDP-1", Some(&panel)),
-            attached("DP-7", Some(&right)),
-            attached("DP-8", Some(&left)),
-        ]);
-        let restored = profiles.layout_for(&replugged).expect("office layout");
-        assert_eq!(restored.outputs["eDP-1"].x, 2560);
-        assert_eq!(restored.outputs["DP-8"].x, 0);
-        assert_eq!(restored.outputs["DP-7"].mirror_of.as_deref(), Some("DP-8"));
-        assert_eq!(restored.outputs.len(), 3, "a stray entry never follows");
-    }
+        phase plugging_the_office_dock_restores_the_office_layout_on_new_ports;
+        {
+            let panel = monitor("BOE", "NE135FBM-N41", "");
+            let left = monitor("Dell", "DELL U2720Q", "AAA");
+            let right = monitor("Dell", "DELL U2720Q", "BBB");
+            let saved_set = DisplaySet::of([
+                attached("eDP-1", Some(&panel)),
+                attached("DP-5", Some(&left)),
+                attached("DP-6", Some(&right)),
+            ]);
+            let mut config = DisplayConfig::default();
+            config.outputs.insert("eDP-1".into(), at(2560));
+            config.outputs.insert("DP-5".into(), at(0));
+            config.outputs.insert(
+                "DP-6".into(),
+                OutputConfig {
+                    mirror_of: Some("DP-5".into()),
+                    ..at(0)
+                },
+            );
+            config.outputs.insert("HDMI-A-1".into(), at(9999));
+            let mut profiles = DisplayProfiles::default();
+            profiles.remember(&saved_set, &config);
 
-    #[test]
-    fn a_kept_layout_remembers_what_each_monitor_showed_wherever_it_is_plugged() {
-        let office = monitor("Dell", "DELL U2720Q", "7XK2P13");
-        let panel = monitor("BOE", "NE135FBM-N41", "");
-        let uhd = OutputMode {
-            width: 3840,
-            height: 2160,
-            refresh_mhz: 60_000,
-        };
-        let docked = DisplaySet::of([
-            attached("eDP-1", Some(&panel)),
-            attached("DP-2", Some(&office)),
-        ]);
-        let mut config = DisplayConfig::default();
-        config.outputs.insert(
-            "DP-2".into(),
-            OutputConfig {
-                mode: Some(uhd),
-                scale: 1.5,
-                ..OutputConfig::default()
-            },
-        );
-        config.outputs.insert(
-            "eDP-1".into(),
-            OutputConfig {
-                enabled: false,
-                scale: 2.0,
-                ..OutputConfig::default()
-            },
-        );
-        let mut profiles = DisplayProfiles::default();
-        profiles.remember(&docked, &config);
+            let replugged = DisplaySet::of([
+                attached("eDP-1", Some(&panel)),
+                attached("DP-7", Some(&right)),
+                attached("DP-8", Some(&left)),
+            ]);
+            let restored = profiles.layout_for(&replugged).expect("office layout");
+            assert_eq!(restored.outputs["eDP-1"].x, 2560);
+            assert_eq!(restored.outputs["DP-8"].x, 0);
+            assert_eq!(restored.outputs["DP-7"].mirror_of.as_deref(), Some("DP-8"));
+            assert_eq!(restored.outputs.len(), 3, "a stray entry never follows");
+        }
 
-        let alone = DisplaySet::of([attached("HDMI-A-1", Some(&office))]);
-        let history = profiles.history_for(&alone, "HDMI-A-1").expect("known");
-        assert!(history.has_mode(uhd));
-        assert!(history.has_scale(1.5));
-        assert!(!history.has_scale(2.0));
-        assert!(
-            profiles.history_for(&docked, "eDP-1").is_none(),
-            "a screen that was off showed nothing"
-        );
-    }
+        phase a_kept_layout_remembers_what_each_monitor_showed_wherever_it_is_plugged;
+        {
+            let office = monitor("Dell", "DELL U2720Q", "7XK2P13");
+            let panel = monitor("BOE", "NE135FBM-N41", "");
+            let uhd = OutputMode {
+                width: 3840,
+                height: 2160,
+                refresh_mhz: 60_000,
+            };
+            let docked = DisplaySet::of([
+                attached("eDP-1", Some(&panel)),
+                attached("DP-2", Some(&office)),
+            ]);
+            let mut config = DisplayConfig::default();
+            config.outputs.insert(
+                "DP-2".into(),
+                OutputConfig {
+                    mode: Some(uhd),
+                    scale: 1.5,
+                    ..OutputConfig::default()
+                },
+            );
+            config.outputs.insert(
+                "eDP-1".into(),
+                OutputConfig {
+                    enabled: false,
+                    scale: 2.0,
+                    ..OutputConfig::default()
+                },
+            );
+            let mut profiles = DisplayProfiles::default();
+            profiles.remember(&docked, &config);
 
-    #[test]
-    fn a_monitor_keeps_its_scale_in_a_set_never_arranged() {
-        let panel = monitor("BOE", "NE135FBM-N41", "");
-        let office = monitor("Dell", "DELL U2720Q", "7XK2P13");
-        let stranger = monitor("Samsung", "LS27A600U", "H4ZR");
-        let mut config = DisplayConfig::default();
-        config.outputs.insert(
-            "eDP-1".into(),
-            OutputConfig {
+            let alone = DisplaySet::of([attached("HDMI-A-1", Some(&office))]);
+            let history = profiles.history_for(&alone, "HDMI-A-1").expect("known");
+            assert!(history.has_mode(uhd));
+            assert!(history.has_scale(1.5));
+            assert!(!history.has_scale(2.0));
+            assert!(
+                profiles.history_for(&docked, "eDP-1").is_none(),
+                "a screen that was off showed nothing"
+            );
+        }
+
+        phase a_monitor_keeps_its_scale_in_a_set_never_arranged;
+        {
+            let panel = monitor("BOE", "NE135FBM-N41", "");
+            let office = monitor("Dell", "DELL U2720Q", "7XK2P13");
+            let stranger = monitor("Samsung", "LS27A600U", "H4ZR");
+            let mut config = DisplayConfig::default();
+            config.outputs.insert(
+                "eDP-1".into(),
+                OutputConfig {
+                    scale: 1.25,
+                    transform: OutputTransform::Rotate90,
+                    ..OutputConfig::default()
+                },
+            );
+            config.outputs.insert("DP-2".into(), at(1024));
+            let mut profiles = DisplayProfiles::default();
+            profiles.remember(
+                &DisplaySet::of([
+                    attached("eDP-1", Some(&panel)),
+                    attached("DP-2", Some(&office)),
+                ]),
+                &config,
+            );
+            let panel_at_125 = MonitorLast {
                 scale: 1.25,
                 transform: OutputTransform::Rotate90,
-                ..OutputConfig::default()
-            },
-        );
-        config.outputs.insert("DP-2".into(), at(1024));
-        let mut profiles = DisplayProfiles::default();
-        profiles.remember(
-            &DisplaySet::of([
+            };
+
+            let undocked = DisplaySet::of([attached("eDP-1", Some(&panel))]);
+            assert_eq!(profiles.layout_for(&undocked), None, "never arranged");
+            assert_eq!(
+                profiles.last_shown_in(&undocked),
+                BTreeMap::from([("eDP-1".to_owned(), panel_at_125)])
+            );
+
+            let elsewhere = DisplaySet::of([
                 attached("eDP-1", Some(&panel)),
-                attached("DP-2", Some(&office)),
-            ]),
-            &config,
-        );
-        let panel_at_125 = MonitorLast {
-            scale: 1.25,
-            transform: OutputTransform::Rotate90,
-        };
+                attached("HDMI-A-1", Some(&stranger)),
+            ]);
+            assert_eq!(
+                profiles.last_shown_in(&elsewhere),
+                BTreeMap::from([("eDP-1".to_owned(), panel_at_125)]),
+                "a monitor never shown in a kept layout has nothing to keep"
+            );
 
-        let undocked = DisplaySet::of([attached("eDP-1", Some(&panel))]);
-        assert_eq!(profiles.layout_for(&undocked), None, "never arranged");
-        assert_eq!(
-            profiles.last_shown_in(&undocked),
-            BTreeMap::from([("eDP-1".to_owned(), panel_at_125)])
-        );
+            let mut alone = DisplayConfig::default();
+            alone
+                .outputs
+                .insert("eDP-1".into(), OutputConfig::at_scale(1.5));
+            profiles.remember(&undocked, &alone);
+            assert_eq!(
+                profiles.last_shown_in(&elsewhere)["eDP-1"],
+                MonitorLast {
+                    scale: 1.5,
+                    transform: OutputTransform::Normal,
+                }
+            );
+        }
 
-        let elsewhere = DisplaySet::of([
-            attached("eDP-1", Some(&panel)),
-            attached("HDMI-A-1", Some(&stranger)),
-        ]);
-        assert_eq!(
-            profiles.last_shown_in(&elsewhere),
-            BTreeMap::from([("eDP-1".to_owned(), panel_at_125)]),
-            "a monitor never shown in a kept layout has nothing to keep"
-        );
+        phase a_settings_file_from_before_the_last_scale_was_recorded_still_loads;
+        {
+            let old: DisplayProfiles = serde_json::from_value(serde_json::json!({
+                "profiles": {},
+                "monitors": { "connector:Virtual-4": { "modes": [], "scales": [1.25] } }
+            }))
+            .expect("an old file loads");
+            let history = &old.monitors["connector:Virtual-4"];
+            assert!(history.has_scale(1.25));
+            assert_eq!(history.last, None);
+        }
 
-        let mut alone = DisplayConfig::default();
-        alone
-            .outputs
-            .insert("eDP-1".into(), OutputConfig::at_scale(1.5));
-        profiles.remember(&undocked, &alone);
-        assert_eq!(
-            profiles.last_shown_in(&elsewhere)["eDP-1"],
-            MonitorLast {
-                scale: 1.5,
-                transform: OutputTransform::Normal,
-            }
-        );
-    }
-
-    #[test]
-    fn a_settings_file_from_before_the_last_scale_was_recorded_still_loads() {
-        let old: DisplayProfiles = serde_json::from_value(serde_json::json!({
-            "profiles": {},
-            "monitors": { "connector:Virtual-4": { "modes": [], "scales": [1.25] } }
-        }))
-        .expect("an old file loads");
-        let history = &old.monitors["connector:Virtual-4"];
-        assert!(history.has_scale(1.25));
-        assert_eq!(history.last, None);
-    }
-
-    #[test]
-    fn an_unknown_set_has_no_saved_layout() {
-        let panel = monitor("BOE", "NE135FBM-N41", "");
-        let office = monitor("Dell", "DELL U2720Q", "7XK2P13");
-        let stranger = monitor("Samsung", "LS27A600U", "H4ZR");
-        let mut profiles = DisplayProfiles::default();
-        let mut config = DisplayConfig::default();
-        config.outputs.insert("DP-2".into(), at(-3840));
-        profiles.remember(
-            &DisplaySet::of([
+        phase an_unknown_set_has_no_saved_layout;
+        {
+            let panel = monitor("BOE", "NE135FBM-N41", "");
+            let office = monitor("Dell", "DELL U2720Q", "7XK2P13");
+            let stranger = monitor("Samsung", "LS27A600U", "H4ZR");
+            let mut profiles = DisplayProfiles::default();
+            let mut config = DisplayConfig::default();
+            config.outputs.insert("DP-2".into(), at(-3840));
+            profiles.remember(
+                &DisplaySet::of([
+                    attached("eDP-1", Some(&panel)),
+                    attached("DP-2", Some(&office)),
+                ]),
+                &config,
+            );
+            let visitor = DisplaySet::of([
                 attached("eDP-1", Some(&panel)),
-                attached("DP-2", Some(&office)),
-            ]),
-            &config,
-        );
-        let visitor = DisplaySet::of([
-            attached("eDP-1", Some(&panel)),
-            attached("DP-2", Some(&stranger)),
-        ]);
-        assert_eq!(profiles.layout_for(&visitor), None);
+                attached("DP-2", Some(&stranger)),
+            ]);
+            assert_eq!(profiles.layout_for(&visitor), None);
+        }
     }
 }

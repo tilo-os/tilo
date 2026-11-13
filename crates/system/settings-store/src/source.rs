@@ -531,63 +531,71 @@ mod tests {
         }
     }
 
-    #[test]
-    fn host_document_merges_persists_then_publishes() {
-        let persisted = Arc::new(Mutex::new(Vec::new()));
-        let sink = Arc::clone(&persisted);
-        let doc = HostDocument::new(
-            object(json!({"region": {"locale": "de-DE"}, "power": 3})),
-            move |doc| {
-                sink.lock().unwrap().push(Value::Object(doc.clone()));
-                Ok(())
-            },
-        );
-        let before = doc.revision();
-        doc.update_section("power", object(json!({"idle": 5})))
-            .unwrap();
-        doc.update_section("region", object(json!({"units": "metric"})))
-            .unwrap();
-        let expected =
-            json!({"region": {"locale": "de-DE", "units": "metric"}, "power": {"idle": 5}});
-        assert_eq!(Value::Object(doc.load()), expected);
-        assert_eq!(persisted.lock().unwrap().last(), Some(&expected));
-        assert_eq!(doc.revision(), before + 2);
-    }
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+        )]
+        fn a_host_document_stores_what_its_persist_accepts;
 
-    #[test]
-    fn a_conditional_section_update_stores_only_over_what_it_read() {
-        let doc = HostDocument::new(object(json!({"a": {"x": 1}})), |_| Ok(()));
-        let read = object(json!({"x": 1}));
-        assert!(matches!(
-            doc.compare_update_section("a", &read, object(json!({"x": 2})))
-                .unwrap(),
-            ConditionalUpdate::Stored
-        ));
-        assert!(matches!(
-            doc.compare_update_section("a", &read, object(json!({"x": 3})))
-                .unwrap(),
-            ConditionalUpdate::Superseded
-        ));
-        assert!(matches!(
-            doc.compare_update_section("new", &Map::new(), object(json!({"y": 1})))
-                .unwrap(),
-            ConditionalUpdate::Stored
-        ));
-        assert_eq!(
-            Value::Object(doc.load()),
-            json!({"a": {"x": 2}, "new": {"y": 1}})
-        );
-    }
+        phase host_document_merges_persists_then_publishes;
+        {
+            let persisted = Arc::new(Mutex::new(Vec::new()));
+            let sink = Arc::clone(&persisted);
+            let doc = HostDocument::new(
+                object(json!({"region": {"locale": "de-DE"}, "power": 3})),
+                move |doc| {
+                    sink.lock().unwrap().push(Value::Object(doc.clone()));
+                    Ok(())
+                },
+            );
+            let before = doc.revision();
+            doc.update_section("power", object(json!({"idle": 5})))
+                .unwrap();
+            doc.update_section("region", object(json!({"units": "metric"})))
+                .unwrap();
+            let expected =
+                json!({"region": {"locale": "de-DE", "units": "metric"}, "power": {"idle": 5}});
+            assert_eq!(Value::Object(doc.load()), expected);
+            assert_eq!(persisted.lock().unwrap().last(), Some(&expected));
+            assert_eq!(doc.revision(), before + 2);
+        }
 
-    #[test]
-    fn a_refused_persist_leaves_the_document_unchanged() {
-        let doc = HostDocument::new(object(json!({"a": {"x": 1}})), |_| {
-            Err(std::io::Error::other("quota"))
-        });
-        let before = doc.revision();
-        assert!(doc.update_section("a", object(json!({"x": 2}))).is_err());
-        assert_eq!(Value::Object(doc.load()), json!({"a": {"x": 1}}));
-        assert_eq!(doc.revision(), before);
+        phase a_conditional_section_update_stores_only_over_what_it_read;
+        {
+            let doc = HostDocument::new(object(json!({"a": {"x": 1}})), |_| Ok(()));
+            let read = object(json!({"x": 1}));
+            assert!(matches!(
+                doc.compare_update_section("a", &read, object(json!({"x": 2})))
+                    .unwrap(),
+                ConditionalUpdate::Stored
+            ));
+            assert!(matches!(
+                doc.compare_update_section("a", &read, object(json!({"x": 3})))
+                    .unwrap(),
+                ConditionalUpdate::Superseded
+            ));
+            assert!(matches!(
+                doc.compare_update_section("new", &Map::new(), object(json!({"y": 1})))
+                    .unwrap(),
+                ConditionalUpdate::Stored
+            ));
+            assert_eq!(
+                Value::Object(doc.load()),
+                json!({"a": {"x": 2}, "new": {"y": 1}})
+            );
+        }
+
+        phase a_refused_persist_leaves_the_document_unchanged;
+        {
+            let doc = HostDocument::new(object(json!({"a": {"x": 1}})), |_| {
+                Err(std::io::Error::other("quota"))
+            });
+            let before = doc.revision();
+            assert!(doc.update_section("a", object(json!({"x": 2}))).is_err());
+            assert_eq!(Value::Object(doc.load()), json!({"a": {"x": 1}}));
+            assert_eq!(doc.revision(), before);
+        }
     }
 
     #[test]

@@ -84,34 +84,38 @@ pub fn holder_of_key(key: &str) -> Option<Holder> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn each_section_is_declared_once() {
-        let mut names: Vec<_> = SECTIONS.iter().map(|(name, _)| *name).collect();
-        names.sort_unstable();
-        let count = names.len();
-        names.dedup();
-        assert_eq!(names.len(), count);
-    }
+    tilo_test_env::scenario! {
+        fn every_section_has_one_holder;
 
-    #[test]
-    fn an_undeclared_section_stays_on_the_device() {
-        assert_eq!(holder("appearance"), Holder::Person);
-        assert_eq!(holder(APP_PERSONAL_SECTION), Holder::Person);
-        assert_eq!(holder(APP_DEVICE_LOCAL_SECTION), Holder::Device);
-        assert_eq!(holder("so.tilo.monitor"), Holder::Device);
-        assert_eq!(
-            holder_of_key("tilo.input.tap_to_click"),
-            Some(Holder::Person)
-        );
-        assert_eq!(
-            holder_of_key("tilo.app_personal.so.tilo.monitor"),
-            Some(Holder::Person)
-        );
-        assert_eq!(
-            holder_of_key("tilo.input_device.tablets"),
-            Some(Holder::Device)
-        );
-        assert_eq!(holder_of_key("tilo.input"), None);
-        assert_eq!(holder_of_key("input.tap_to_click"), None);
+        phase each_section_is_declared_once;
+        {
+            let mut names: Vec<_> = SECTIONS.iter().map(|(name, _)| *name).collect();
+            names.sort_unstable();
+            let count = names.len();
+            names.dedup();
+            assert_eq!(names.len(), count);
+        }
+
+        phase an_undeclared_section_stays_on_the_device;
+        {
+            assert_eq!(holder("appearance"), Holder::Person);
+            assert_eq!(holder(APP_PERSONAL_SECTION), Holder::Person);
+            assert_eq!(holder(APP_DEVICE_LOCAL_SECTION), Holder::Device);
+            assert_eq!(holder("so.tilo.monitor"), Holder::Device);
+            assert_eq!(
+                holder_of_key("tilo.input.tap_to_click"),
+                Some(Holder::Person)
+            );
+            assert_eq!(
+                holder_of_key("tilo.app_personal.so.tilo.monitor"),
+                Some(Holder::Person)
+            );
+            assert_eq!(
+                holder_of_key("tilo.input_device.tablets"),
+                Some(Holder::Device)
+            );
+            assert_eq!(holder_of_key("tilo.input"), None);
+            assert_eq!(holder_of_key("input.tap_to_click"), None);
+        }
     }
 }

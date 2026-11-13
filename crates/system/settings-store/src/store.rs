@@ -1048,117 +1048,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn writes_show_at_once_and_survive_a_reopen() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = Store::open(dir.path()).unwrap();
-        store
-            .update_section(
-                "power",
-                object(json!({"blank_minutes": 5, "nested": {"a": [1, 2.5, "x"]}})),
-            )
-            .unwrap();
-        store
-            .update_section("appearance", object(json!({"text_scale": 1.25})))
-            .unwrap();
-        assert_eq!(store.load_section_value("power")["blank_minutes"], 5);
-        store.flush_pending();
-        drop(store);
-        let store = Store::open(dir.path()).unwrap();
-        assert_eq!(
-            Value::Object(store.load()),
-            json!({
-                "power": {"blank_minutes": 5, "nested": {"a": [1, 2.5, "x"]}},
-                "appearance": {"text_scale": 1.25},
-            })
-        );
-    }
-
-    #[test]
-    fn the_persons_and_the_devices_sections_go_to_their_documents() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = Store::open(dir.path()).unwrap();
-        store
-            .update_section("appearance", object(json!({"text_scale": 1.5})))
-            .unwrap();
-        store
-            .update_section("so.tilo.unknown", object(json!({"x": true})))
-            .unwrap();
-        let (person, device) = {
-            let docs = store.docs.lock_recover();
-            (read_root(&docs.person), read_root(&docs.device))
-        };
-        assert_eq!(
-            Value::Object(person),
-            json!({"appearance": {"text_scale": 1.5}})
-        );
-        assert_eq!(
-            Value::Object(device),
-            json!({"so.tilo.unknown": {"x": true}})
-        );
-    }
-
-    #[test]
-    fn a_nested_value_loses_the_keys_it_no_longer_has() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = Store::open(dir.path()).unwrap();
-        store
-            .update_section("s", object(json!({"m": {"a": 1, "b": 2}})))
-            .unwrap();
-        store
-            .update_section("s", object(json!({"m": {"b": 3}})))
-            .unwrap();
-        assert_eq!(store.load_section_value("s"), json!({"m": {"b": 3}}));
-    }
-
-    #[test]
-    fn a_second_opener_follows_and_its_writes_go_through_the_holder() {
-        let dir = tempfile::tempdir().unwrap();
-        let holder = Store::open(dir.path()).unwrap();
-        holder.update_section("s", object(json!({"x": 1}))).unwrap();
-        holder.flush_pending();
-        let follower = Store::open(dir.path()).unwrap();
-        assert!(!follower.is_holder());
-        assert_eq!(follower.load_section_value("s"), json!({"x": 1}));
-        follower
-            .update_section("s", object(json!({"x": 2})))
-            .unwrap();
-        assert_eq!(
-            follower.load_section_value("s"),
-            json!({"x": 2}),
-            "read back at once"
-        );
-        assert_eq!(
-            holder.load_section_value("s"),
-            json!({"x": 2}),
-            "made by the holder"
-        );
-        holder.update_section("s", object(json!({"x": 3}))).unwrap();
-        holder.flush_pending();
-        assert_eq!(follower.load_section_value("s"), json!({"x": 3}));
-    }
-
-    #[test]
-    fn a_follower_opened_to_hold_takes_over_when_the_holder_is_gone() {
-        let dir = tempfile::tempdir().unwrap();
-        let holder = Store::open(dir.path()).unwrap();
-        holder.update_section("s", object(json!({"x": 1}))).unwrap();
-        holder.flush_pending();
-        let follower = Store::open(dir.path()).unwrap();
-        let reader = Store::follow(dir.path()).unwrap();
-        drop(holder);
-        follower
-            .update_section("s", object(json!({"y": 2})))
-            .unwrap();
-        assert!(follower.is_holder());
-        assert_eq!(follower.load_section_value("s"), json!({"x": 1, "y": 2}));
-        follower.flush_pending();
-        assert_eq!(reader.load_section_value("s"), json!({"x": 1, "y": 2}));
-        reader.update_section("s", object(json!({"z": 3}))).unwrap();
-        assert!(!reader.is_holder(), "a reader never holds");
-        assert_eq!(follower.load_section_value("s")["z"], 3);
-    }
-
     fn promptly<T: Send + 'static>(write: impl FnOnce() -> T + Send + 'static) -> T {
         let (done, result) = std::sync::mpsc::channel();
         std::thread::spawn(move || done.send(write()));
@@ -1173,33 +1062,6 @@ mod tests {
         let [_, door] = Records::of(&root).runtime_files();
         assert!(door.as_os_str().len() > 108, "{}", door.display());
         (dir, root)
-    }
-
-    #[test]
-    fn a_profile_deeper_than_a_socket_path_still_takes_followers_writes() {
-        let (_dir, root) = deep_profile();
-        let holder = Store::open(&root).unwrap();
-        holder.update_section("s", object(json!({"x": 1}))).unwrap();
-        holder.flush_pending();
-        let follower = Store::open(&root).unwrap();
-        assert!(!follower.is_holder());
-        let writer = Arc::clone(&follower);
-        promptly(move || writer.update_section("s", object(json!({"x": 2})))).unwrap();
-        assert_eq!(holder.load_section_value("s"), json!({"x": 2}));
-        let writer = Arc::clone(&follower);
-        promptly(move || {
-            writer.edit_document(
-                "power",
-                &ChangeOrigin::local("settings.power/undo"),
-                |doc| {
-                    put_leaf(doc, "power", "x", 2);
-                    Ok(())
-                },
-            )
-        })
-        .unwrap();
-        assert_eq!(holder.load_section_value("power"), json!({"x": 2}));
-        assert!(!follower.is_holder(), "the holder is still there");
     }
 
     #[cfg(unix)]
@@ -1229,43 +1091,91 @@ mod tests {
         assert_eq!(holder.load_section_value("s"), json!({"x": 1}));
     }
 
-    #[test]
-    fn the_change_log_names_what_made_each_change() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = Store::open(dir.path()).unwrap();
-        store
-            .update_section_by(
-                "power",
-                object(json!({"blank_minutes": 3})),
-                &ChangeOrigin::local("settings.power/field-edit"),
-            )
-            .unwrap();
-        let log = store.change_log();
-        assert_eq!(log.len(), 1);
-        assert_eq!(log[0]["section"], "power");
-        assert_eq!(log[0]["leaf"], "blank_minutes");
-        assert_eq!(log[0]["action"], "settings.power/field-edit");
-        assert_eq!(log[0]["principal"], ChangeOrigin::LOCAL_USER);
-    }
+    tilo_test_env::scenario! {
+        fn a_store_keeps_each_section_in_its_document;
 
-    #[test]
-    fn a_compare_update_stores_only_over_what_it_read() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = Store::open(dir.path()).unwrap();
-        let read = Map::new();
-        assert!(matches!(
+        phase writes_show_at_once_and_survive_a_reopen;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let store = Store::open(dir.path()).unwrap();
             store
-                .compare_update_section("a", &read, object(json!({"x": 1})))
-                .unwrap(),
-            ConditionalUpdate::Stored
-        ));
-        assert!(matches!(
+                .update_section(
+                    "power",
+                    object(json!({"blank_minutes": 5, "nested": {"a": [1, 2.5, "x"]}})),
+                )
+                .unwrap();
             store
-                .compare_update_section("a", &read, object(json!({"x": 2})))
-                .unwrap(),
-            ConditionalUpdate::Superseded
-        ));
-        assert_eq!(store.load_section_value("a"), json!({"x": 1}));
+                .update_section("appearance", object(json!({"text_scale": 1.25})))
+                .unwrap();
+            assert_eq!(store.load_section_value("power")["blank_minutes"], 5);
+            store.flush_pending();
+            drop(store);
+            let store = Store::open(dir.path()).unwrap();
+            assert_eq!(
+                Value::Object(store.load()),
+                json!({
+                    "power": {"blank_minutes": 5, "nested": {"a": [1, 2.5, "x"]}},
+                    "appearance": {"text_scale": 1.25},
+                })
+            );
+        }
+
+        phase the_persons_and_the_devices_sections_go_to_their_documents;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let store = Store::open(dir.path()).unwrap();
+            store
+                .update_section("appearance", object(json!({"text_scale": 1.5})))
+                .unwrap();
+            store
+                .update_section("so.tilo.unknown", object(json!({"x": true})))
+                .unwrap();
+            let (person, device) = {
+                let docs = store.docs.lock_recover();
+                (read_root(&docs.person), read_root(&docs.device))
+            };
+            assert_eq!(
+                Value::Object(person),
+                json!({"appearance": {"text_scale": 1.5}})
+            );
+            assert_eq!(
+                Value::Object(device),
+                json!({"so.tilo.unknown": {"x": true}})
+            );
+        }
+
+        phase a_nested_value_loses_the_keys_it_no_longer_has;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let store = Store::open(dir.path()).unwrap();
+            store
+                .update_section("s", object(json!({"m": {"a": 1, "b": 2}})))
+                .unwrap();
+            store
+                .update_section("s", object(json!({"m": {"b": 3}})))
+                .unwrap();
+            assert_eq!(store.load_section_value("s"), json!({"m": {"b": 3}}));
+        }
+
+        phase a_compare_update_stores_only_over_what_it_read;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let store = Store::open(dir.path()).unwrap();
+            let read = Map::new();
+            assert!(matches!(
+                store
+                    .compare_update_section("a", &read, object(json!({"x": 1})))
+                    .unwrap(),
+                ConditionalUpdate::Stored
+            ));
+            assert!(matches!(
+                store
+                    .compare_update_section("a", &read, object(json!({"x": 2})))
+                    .unwrap(),
+                ConditionalUpdate::Superseded
+            ));
+            assert_eq!(store.load_section_value("a"), json!({"x": 1}));
+        }
     }
 
     fn put_leaf(doc: &mut AutoCommit, section: &str, leaf: &str, value: i64) {
@@ -1274,93 +1184,195 @@ mod tests {
         doc.put(&ROOT, format!("{BOOKKEEPING}mark"), true).unwrap();
     }
 
-    #[test]
-    fn a_document_edit_is_one_change_by_its_origin_and_its_bookkeeping_is_no_section() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = Store::open(dir.path()).unwrap();
-        store
-            .edit_document(
-                "appearance",
-                &ChangeOrigin::local("settings.appearance/undo"),
-                |doc| {
-                    put_leaf(doc, "appearance", "text_scale", 2);
-                    Ok(())
-                },
-            )
-            .unwrap();
-        assert_eq!(
-            Value::Object(store.load()),
-            json!({"appearance": {"text_scale": 2}})
-        );
-        let log = store.change_log();
-        assert_eq!(log.len(), 1);
-        assert_eq!(log[0]["action"], "settings.appearance/undo");
-        assert_eq!(log[0]["leaf"], "text_scale");
-        let docs = store.docs.lock_recover();
-        assert!(
-            docs.person.get(&ROOT, "tilo:mark").unwrap().is_some(),
-            "in the person's document"
-        );
-        drop(docs);
+    tilo_test_env::scenario! {
+        fn a_followers_writes_are_made_by_the_holder;
 
-        let refused = store.edit_document("appearance", &ChangeOrigin::default(), |doc| {
-            put_leaf(doc, "appearance", "text_scale", 3);
-            Err("no".into())
-        });
-        assert!(refused.is_err());
-        assert_eq!(store.load_section_value("appearance")["text_scale"], 2);
-    }
+        phase a_second_opener_follows_and_its_writes_go_through_the_holder;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let holder = Store::open(dir.path()).unwrap();
+            holder.update_section("s", object(json!({"x": 1}))).unwrap();
+            holder.flush_pending();
+            let follower = Store::open(dir.path()).unwrap();
+            assert!(!follower.is_holder());
+            assert_eq!(follower.load_section_value("s"), json!({"x": 1}));
+            follower
+                .update_section("s", object(json!({"x": 2})))
+                .unwrap();
+            assert_eq!(
+                follower.load_section_value("s"),
+                json!({"x": 2}),
+                "read back at once"
+            );
+            assert_eq!(
+                holder.load_section_value("s"),
+                json!({"x": 2}),
+                "made by the holder"
+            );
+            holder.update_section("s", object(json!({"x": 3}))).unwrap();
+            holder.flush_pending();
+            assert_eq!(follower.load_section_value("s"), json!({"x": 3}));
+        }
 
-    #[test]
-    fn a_followers_document_edit_is_made_by_the_holder() {
-        let dir = tempfile::tempdir().unwrap();
-        let holder = Store::open(dir.path()).unwrap();
-        holder
-            .update_section("power", object(json!({"x": 1})))
+        phase a_follower_opened_to_hold_takes_over_when_the_holder_is_gone;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let holder = Store::open(dir.path()).unwrap();
+            holder.update_section("s", object(json!({"x": 1}))).unwrap();
+            holder.flush_pending();
+            let follower = Store::open(dir.path()).unwrap();
+            let reader = Store::follow(dir.path()).unwrap();
+            drop(holder);
+            follower
+                .update_section("s", object(json!({"y": 2})))
+                .unwrap();
+            assert!(follower.is_holder());
+            assert_eq!(follower.load_section_value("s"), json!({"x": 1, "y": 2}));
+            follower.flush_pending();
+            assert_eq!(reader.load_section_value("s"), json!({"x": 1, "y": 2}));
+            reader.update_section("s", object(json!({"z": 3}))).unwrap();
+            assert!(!reader.is_holder(), "a reader never holds");
+            assert_eq!(follower.load_section_value("s")["z"], 3);
+        }
+
+        phase a_profile_deeper_than_a_socket_path_still_takes_followers_writes;
+        {
+            let (_dir, root) = deep_profile();
+            let holder = Store::open(&root).unwrap();
+            holder.update_section("s", object(json!({"x": 1}))).unwrap();
+            holder.flush_pending();
+            let follower = Store::open(&root).unwrap();
+            assert!(!follower.is_holder());
+            let writer = Arc::clone(&follower);
+            promptly(move || writer.update_section("s", object(json!({"x": 2})))).unwrap();
+            assert_eq!(holder.load_section_value("s"), json!({"x": 2}));
+            let writer = Arc::clone(&follower);
+            promptly(move || {
+                writer.edit_document(
+                    "power",
+                    &ChangeOrigin::local("settings.power/undo"),
+                    |doc| {
+                        put_leaf(doc, "power", "x", 2);
+                        Ok(())
+                    },
+                )
+            })
             .unwrap();
-        holder.flush_pending();
-        let follower = Store::open(dir.path()).unwrap();
-        assert!(!follower.is_holder());
-        follower
-            .edit_document(
-                "power",
-                &ChangeOrigin::local("settings.power/undo"),
-                |doc| {
-                    put_leaf(doc, "power", "x", 2);
-                    Ok(())
-                },
-            )
-            .unwrap();
-        assert_eq!(holder.load_section_value("power"), json!({"x": 2}));
-        assert_eq!(follower.load_section_value("power"), json!({"x": 2}));
-        assert_eq!(
+            assert_eq!(holder.load_section_value("power"), json!({"x": 2}));
+            assert!(!follower.is_holder(), "the holder is still there");
+        }
+
+        phase a_followers_document_edit_is_made_by_the_holder;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let holder = Store::open(dir.path()).unwrap();
             holder
-                .change_log()
-                .last()
-                .map(|change| change["action"].clone()),
-            Some(json!("settings.power/undo"))
-        );
+                .update_section("power", object(json!({"x": 1})))
+                .unwrap();
+            holder.flush_pending();
+            let follower = Store::open(dir.path()).unwrap();
+            assert!(!follower.is_holder());
+            follower
+                .edit_document(
+                    "power",
+                    &ChangeOrigin::local("settings.power/undo"),
+                    |doc| {
+                        put_leaf(doc, "power", "x", 2);
+                        Ok(())
+                    },
+                )
+                .unwrap();
+            assert_eq!(holder.load_section_value("power"), json!({"x": 2}));
+            assert_eq!(follower.load_section_value("power"), json!({"x": 2}));
+            assert_eq!(
+                holder
+                    .change_log()
+                    .last()
+                    .map(|change| change["action"].clone()),
+                Some(json!("settings.power/undo"))
+            );
+        }
     }
 
-    #[test]
-    fn a_change_names_the_section_action_and_who_made_it() {
-        let message = change_message(&ChangeOrigin::local("settings.power/field-edit"), &[], 0);
-        assert!(made_by(
-            &message,
-            "settings.power/",
-            ChangeOrigin::LOCAL_USER
-        ));
-        assert!(!made_by(
-            &message,
-            "settings.appearance/",
-            ChangeOrigin::LOCAL_USER
-        ));
-        assert!(!made_by(&message, "settings.power/", "someone-else"));
-        assert!(!made_by(
-            "tilo.entry/3 x",
-            "settings.power/",
-            ChangeOrigin::LOCAL_USER
-        ));
+    tilo_test_env::scenario! {
+        fn every_change_is_logged_with_what_made_it;
+
+        phase the_change_log_names_what_made_each_change;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let store = Store::open(dir.path()).unwrap();
+            store
+                .update_section_by(
+                    "power",
+                    object(json!({"blank_minutes": 3})),
+                    &ChangeOrigin::local("settings.power/field-edit"),
+                )
+                .unwrap();
+            let log = store.change_log();
+            assert_eq!(log.len(), 1);
+            assert_eq!(log[0]["section"], "power");
+            assert_eq!(log[0]["leaf"], "blank_minutes");
+            assert_eq!(log[0]["action"], "settings.power/field-edit");
+            assert_eq!(log[0]["principal"], ChangeOrigin::LOCAL_USER);
+        }
+
+        phase a_document_edit_is_one_change_by_its_origin_and_its_bookkeeping_is_no_section;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let store = Store::open(dir.path()).unwrap();
+            store
+                .edit_document(
+                    "appearance",
+                    &ChangeOrigin::local("settings.appearance/undo"),
+                    |doc| {
+                        put_leaf(doc, "appearance", "text_scale", 2);
+                        Ok(())
+                    },
+                )
+                .unwrap();
+            assert_eq!(
+                Value::Object(store.load()),
+                json!({"appearance": {"text_scale": 2}})
+            );
+            let log = store.change_log();
+            assert_eq!(log.len(), 1);
+            assert_eq!(log[0]["action"], "settings.appearance/undo");
+            assert_eq!(log[0]["leaf"], "text_scale");
+            let docs = store.docs.lock_recover();
+            assert!(
+                docs.person.get(&ROOT, "tilo:mark").unwrap().is_some(),
+                "in the person's document"
+            );
+            drop(docs);
+
+            let refused = store.edit_document("appearance", &ChangeOrigin::default(), |doc| {
+                put_leaf(doc, "appearance", "text_scale", 3);
+                Err("no".into())
+            });
+            assert!(refused.is_err());
+            assert_eq!(store.load_section_value("appearance")["text_scale"], 2);
+        }
+
+        phase a_change_names_the_section_action_and_who_made_it;
+        {
+            let message = change_message(&ChangeOrigin::local("settings.power/field-edit"), &[], 0);
+            assert!(made_by(
+                &message,
+                "settings.power/",
+                ChangeOrigin::LOCAL_USER
+            ));
+            assert!(!made_by(
+                &message,
+                "settings.appearance/",
+                ChangeOrigin::LOCAL_USER
+            ));
+            assert!(!made_by(&message, "settings.power/", "someone-else"));
+            assert!(!made_by(
+                "tilo.entry/3 x",
+                "settings.power/",
+                ChangeOrigin::LOCAL_USER
+            ));
+        }
     }
 
     impl Store {

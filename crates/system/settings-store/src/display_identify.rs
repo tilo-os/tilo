@@ -186,76 +186,80 @@ mod tests {
         }
     }
 
-    #[test]
-    fn the_builtin_panel_is_display_one_then_connectors_in_order() {
-        let outputs = [
-            output("HDMI-A-1", false),
-            output("DP-2", false),
-            output("eDP-1", true),
-        ];
-        assert_eq!(display_numbers(&outputs), vec![3, 2, 1]);
-    }
+    tilo_test_env::scenario! {
+        fn displays_are_numbered_named_and_identified_for_three_seconds;
 
-    #[test]
-    fn displays_are_named_by_model_and_numbered_only_when_two_share_one() {
-        let monitor = |connector: &str, model: &str| {
-            let mut output = output(connector, false);
-            output.descriptor.monitor = Some(MonitorIdentity {
-                make: "Dell".into(),
-                model: model.into(),
-                ..MonitorIdentity::default()
-            });
-            output
-        };
-        let outputs = [
-            output("eDP-1", true),
-            monitor("DP-1", "DELL U2724DE"),
-            output("HDMI-A-1", false),
-        ];
-        assert_eq!(
-            display_names(&outputs),
-            ["Built-in display", "Dell U2724DE", "External display"]
-        );
-        let mut twins = [
-            output("eDP-1", true),
-            monitor("DP-2", "DELL U2724DE"),
-            monitor("DP-1", "DELL U2724DE"),
-        ];
-        assert_eq!(
-            display_names(&twins),
-            ["Built-in display", "Dell U2724DE (3)", "Dell U2724DE (2)"],
-            "the same numbers Identify shows"
-        );
-        twins[1].descriptor.connector = "pci:0000:03:00.0/DP-1".into();
-        twins[1].descriptor.connector_label = "DP-1".into();
-        twins[2].descriptor.connector = "pci:0000:01:00.0/DP-1".into();
-        let names = display_names(&twins);
-        assert!(
-            names
-                .iter()
-                .all(|name| !name.contains("DP") && !name.contains("pci"))
-        );
-        assert_ne!(names[1], names[2]);
-    }
+        phase the_builtin_panel_is_display_one_then_connectors_in_order;
+        {
+            let outputs = [
+                output("HDMI-A-1", false),
+                output("DP-2", false),
+                output("eDP-1", true),
+            ];
+            assert_eq!(display_numbers(&outputs), vec![3, 2, 1]);
+        }
 
-    #[test]
-    fn a_request_lasts_three_seconds() {
-        let request = IdentifyRequest {
-            requested_unix_ms: 10_000,
-        };
-        assert_eq!(request.remaining_ms(9_999), None);
-        assert_eq!(request.remaining_ms(10_000), Some(IDENTIFY_MS));
-        assert_eq!(request.remaining_ms(12_500), Some(500));
-        assert_eq!(request.remaining_ms(13_000), None);
-        assert!(
-            request.is_fresh(13_000),
-            "a request whose write was slow is still answered"
-        );
-        assert!(request.is_fresh(10_000 + IDENTIFY_FRESH_MS));
-        assert!(
-            !request.is_fresh(10_001 + IDENTIFY_FRESH_MS),
-            "nor replayed after a restart"
-        );
-        assert!(!request.is_fresh(9_999));
+        phase displays_are_named_by_model_and_numbered_only_when_two_share_one;
+        {
+            let monitor = |connector: &str, model: &str| {
+                let mut output = output(connector, false);
+                output.descriptor.monitor = Some(MonitorIdentity {
+                    make: "Dell".into(),
+                    model: model.into(),
+                    ..MonitorIdentity::default()
+                });
+                output
+            };
+            let outputs = [
+                output("eDP-1", true),
+                monitor("DP-1", "DELL U2724DE"),
+                output("HDMI-A-1", false),
+            ];
+            assert_eq!(
+                display_names(&outputs),
+                ["Built-in display", "Dell U2724DE", "External display"]
+            );
+            let mut twins = [
+                output("eDP-1", true),
+                monitor("DP-2", "DELL U2724DE"),
+                monitor("DP-1", "DELL U2724DE"),
+            ];
+            assert_eq!(
+                display_names(&twins),
+                ["Built-in display", "Dell U2724DE (3)", "Dell U2724DE (2)"],
+                "the same numbers Identify shows"
+            );
+            twins[1].descriptor.connector = "pci:0000:03:00.0/DP-1".into();
+            twins[1].descriptor.connector_label = "DP-1".into();
+            twins[2].descriptor.connector = "pci:0000:01:00.0/DP-1".into();
+            let names = display_names(&twins);
+            assert!(
+                names
+                    .iter()
+                    .all(|name| !name.contains("DP") && !name.contains("pci"))
+            );
+            assert_ne!(names[1], names[2]);
+        }
+
+        phase a_request_lasts_three_seconds;
+        {
+            let request = IdentifyRequest {
+                requested_unix_ms: 10_000,
+            };
+            assert_eq!(request.remaining_ms(9_999), None);
+            assert_eq!(request.remaining_ms(10_000), Some(IDENTIFY_MS));
+            assert_eq!(request.remaining_ms(12_500), Some(500));
+            assert_eq!(request.remaining_ms(13_000), None);
+            assert!(
+                request.is_fresh(13_000),
+                "a request whose write was slow is still answered"
+            );
+            assert!(request.is_fresh(10_000 + IDENTIFY_FRESH_MS));
+            assert!(
+                !request.is_fresh(10_001 + IDENTIFY_FRESH_MS),
+                "nor replayed after a restart"
+            );
+            assert!(!request.is_fresh(9_999));
+        }
     }
 }

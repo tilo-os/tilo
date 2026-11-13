@@ -187,53 +187,57 @@ pub fn step(zoom: u8, remembered: u8, step: MagnifierStep) -> (u8, u8) {
 mod tests {
     use super::*;
 
-    #[test]
-    fn toggling_returns_to_the_last_zoom_in_use() {
-        let (on, remembered) = step(OFF, OFF, MagnifierStep::Toggle);
-        assert_eq!(on, DEFAULT_ZOOM, "a first toggle turns on at 2×");
-        let (zoomed, remembered) = step(on, remembered, MagnifierStep::ZoomIn);
-        assert_eq!(zoomed, 3);
-        let (off, remembered) = step(zoomed, remembered, MagnifierStep::Toggle);
-        assert_eq!(off, OFF);
-        assert_eq!(step(off, remembered, MagnifierStep::Toggle).0, 3);
-    }
+    tilo_test_env::scenario! {
+        fn the_magnifier_steps_labels_and_reads_its_zoom;
 
-    #[test]
-    fn zoom_steps_stop_at_off_and_at_the_strongest_level() {
-        assert_eq!(step(OFF, OFF, MagnifierStep::ZoomIn).0, 2);
-        assert_eq!(step(2, 2, MagnifierStep::ZoomOut).0, OFF);
-        assert_eq!(step(OFF, 4, MagnifierStep::ZoomOut), (OFF, 4));
-        assert_eq!(step(MAX_ZOOM, MAX_ZOOM, MagnifierStep::ZoomIn).0, MAX_ZOOM);
-    }
-
-    #[test]
-    fn labels_round_trip_every_level() {
-        for zoom in zoom_levels() {
-            assert_eq!(zoom_from_label(zoom_label(zoom)), Some(zoom));
+        phase toggling_returns_to_the_last_zoom_in_use;
+        {
+            let (on, remembered) = step(OFF, OFF, MagnifierStep::Toggle);
+            assert_eq!(on, DEFAULT_ZOOM, "a first toggle turns on at 2×");
+            let (zoomed, remembered) = step(on, remembered, MagnifierStep::ZoomIn);
+            assert_eq!(zoomed, 3);
+            let (off, remembered) = step(zoomed, remembered, MagnifierStep::Toggle);
+            assert_eq!(off, OFF);
+            assert_eq!(step(off, remembered, MagnifierStep::Toggle).0, 3);
         }
-        assert_eq!(ZOOM_LABELS.len(), zoom_levels().count());
-        assert_eq!(zoom_label(OFF), "Off");
-        assert_eq!(zoom_label(3), "3×");
-        assert_eq!(zoom_from_label("nope"), None);
-        for view in MagnifierView::ALL {
-            assert_eq!(MagnifierView::from_label(view.label()), Some(view));
-            assert_eq!(MagnifierView::parse(view.as_str()), view);
-        }
-    }
 
-    #[test]
-    fn malformed_state_reads_as_off_in_a_lens() {
-        let mut section = Map::new();
-        section.insert(ZOOM_KEY.into(), Value::from("big"));
-        section.insert(VIEW_KEY.into(), Value::from(7));
-        assert_eq!(
-            MagnifierState::from_section(&section),
-            MagnifierState {
-                zoom: OFF,
-                view: MagnifierView::Lens
+        phase zoom_steps_stop_at_off_and_at_the_strongest_level;
+        {
+            assert_eq!(step(OFF, OFF, MagnifierStep::ZoomIn).0, 2);
+            assert_eq!(step(2, 2, MagnifierStep::ZoomOut).0, OFF);
+            assert_eq!(step(OFF, 4, MagnifierStep::ZoomOut), (OFF, 4));
+            assert_eq!(step(MAX_ZOOM, MAX_ZOOM, MagnifierStep::ZoomIn).0, MAX_ZOOM);
+        }
+
+        phase labels_round_trip_every_level;
+        {
+            for zoom in zoom_levels() {
+                assert_eq!(zoom_from_label(zoom_label(zoom)), Some(zoom));
             }
-        );
-        section.insert(ZOOM_KEY.into(), Value::from(40));
-        assert_eq!(MagnifierState::from_section(&section).zoom, MAX_ZOOM);
+            assert_eq!(ZOOM_LABELS.len(), zoom_levels().count());
+            assert_eq!(zoom_label(OFF), "Off");
+            assert_eq!(zoom_label(3), "3×");
+            assert_eq!(zoom_from_label("nope"), None);
+            for view in MagnifierView::ALL {
+                assert_eq!(MagnifierView::from_label(view.label()), Some(view));
+                assert_eq!(MagnifierView::parse(view.as_str()), view);
+            }
+        }
+
+        phase malformed_state_reads_as_off_in_a_lens;
+        {
+            let mut section = Map::new();
+            section.insert(ZOOM_KEY.into(), Value::from("big"));
+            section.insert(VIEW_KEY.into(), Value::from(7));
+            assert_eq!(
+                MagnifierState::from_section(&section),
+                MagnifierState {
+                    zoom: OFF,
+                    view: MagnifierView::Lens
+                }
+            );
+            section.insert(ZOOM_KEY.into(), Value::from(40));
+            assert_eq!(MagnifierState::from_section(&section).zoom, MAX_ZOOM);
+        }
     }
 }

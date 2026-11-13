@@ -90,56 +90,60 @@ mod tests {
         names.iter().map(|name| (*name).to_string()).collect()
     }
 
-    #[test]
-    fn section_digest_reports_only_changed_sections() {
-        let before = SectionDigest::of(&doc(&json!({
-            "notifications": {"do_not_disturb": false},
-            "display": {"scale": 1.5},
-            "input": {"tap_to_click": true, "mouse_natural_scroll": false},
-        })));
+    tilo_test_env::scenario! {
+        fn a_section_digest_changes_with_a_sections_content_alone;
 
-        let dnd = SectionDigest::of(&doc(&json!({
-            "notifications": {"do_not_disturb": true},
-            "display": {"scale": 1.5},
-            "input": {"tap_to_click": true, "mouse_natural_scroll": false},
-        })));
-        assert_eq!(dnd.changed_since(&before), names(&["notifications"]));
+        phase section_digest_reports_only_changed_sections;
+        {
+            let before = SectionDigest::of(&doc(&json!({
+                "notifications": {"do_not_disturb": false},
+                "display": {"scale": 1.5},
+                "input": {"tap_to_click": true, "mouse_natural_scroll": false},
+            })));
 
-        let reshaped = SectionDigest::of(&doc(&json!({
-            "notifications": {"do_not_disturb": false},
-            "input": {"tap_to_click": true, "mouse_natural_scroll": false},
-            "appearance": {"theme": "dark"},
-        })));
-        assert_eq!(
-            reshaped.changed_since(&before),
-            names(&["appearance", "display"])
-        );
+            let dnd = SectionDigest::of(&doc(&json!({
+                "notifications": {"do_not_disturb": true},
+                "display": {"scale": 1.5},
+                "input": {"tap_to_click": true, "mouse_natural_scroll": false},
+            })));
+            assert_eq!(dnd.changed_since(&before), names(&["notifications"]));
 
-        let reordered = SectionDigest::of(&doc(&json!({
-            "input": {"mouse_natural_scroll": false, "tap_to_click": true},
-            "display": {"scale": 1.5},
-            "notifications": {"do_not_disturb": false},
-        })));
-        assert!(reordered.changed_since(&before).is_empty());
-        let nested_a = SectionDigest::of(&doc(&json!({"display": {"o": {"a": 1, "b": [1, 2]}}})));
-        let nested_b = SectionDigest::of(&doc(&json!({"display": {"o": {"b": [1, 2], "a": 1}}})));
-        assert!(nested_b.changed_since(&nested_a).is_empty());
+            let reshaped = SectionDigest::of(&doc(&json!({
+                "notifications": {"do_not_disturb": false},
+                "input": {"tap_to_click": true, "mouse_natural_scroll": false},
+                "appearance": {"theme": "dark"},
+            })));
+            assert_eq!(
+                reshaped.changed_since(&before),
+                names(&["appearance", "display"])
+            );
 
-        let swapped = SectionDigest::of(&doc(&json!({"display": {"o": {"a": 1, "b": [2, 1]}}})));
-        assert_eq!(swapped.changed_since(&nested_a), names(&["display"]));
+            let reordered = SectionDigest::of(&doc(&json!({
+                "input": {"mouse_natural_scroll": false, "tap_to_click": true},
+                "display": {"scale": 1.5},
+                "notifications": {"do_not_disturb": false},
+            })));
+            assert!(reordered.changed_since(&before).is_empty());
+            let nested_a = SectionDigest::of(&doc(&json!({"display": {"o": {"a": 1, "b": [1, 2]}}})));
+            let nested_b = SectionDigest::of(&doc(&json!({"display": {"o": {"b": [1, 2], "a": 1}}})));
+            assert!(nested_b.changed_since(&nested_a).is_empty());
 
-        assert_eq!(
-            before.changed_since(&SectionDigest::default()),
-            names(&["display", "input", "notifications"])
-        );
-    }
+            let swapped = SectionDigest::of(&doc(&json!({"display": {"o": {"a": 1, "b": [2, 1]}}})));
+            assert_eq!(swapped.changed_since(&nested_a), names(&["display"]));
 
-    #[test]
-    fn section_digest_tells_value_kinds_apart() {
-        let as_string = SectionDigest::of(&doc(&json!({"power": {"v": "1"}})));
-        let as_number = SectionDigest::of(&doc(&json!({"power": {"v": 1}})));
-        let as_array = SectionDigest::of(&doc(&json!({"power": {"v": [1]}})));
-        assert_eq!(as_number.changed_since(&as_string), names(&["power"]));
-        assert_eq!(as_array.changed_since(&as_number), names(&["power"]));
+            assert_eq!(
+                before.changed_since(&SectionDigest::default()),
+                names(&["display", "input", "notifications"])
+            );
+        }
+
+        phase section_digest_tells_value_kinds_apart;
+        {
+            let as_string = SectionDigest::of(&doc(&json!({"power": {"v": "1"}})));
+            let as_number = SectionDigest::of(&doc(&json!({"power": {"v": 1}})));
+            let as_array = SectionDigest::of(&doc(&json!({"power": {"v": [1]}})));
+            assert_eq!(as_number.changed_since(&as_string), names(&["power"]));
+            assert_eq!(as_array.changed_since(&as_number), names(&["power"]));
+        }
     }
 }

@@ -155,69 +155,73 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    #[test]
-    fn only_offered_minutes_are_accepted_and_never_is_a_stored_value() {
-        assert_eq!(check_minutes("lock timeout", LOCK_CHOICES, 0), Ok(0));
-        assert!(check_minutes("lock timeout", LOCK_CHOICES, 7).is_err());
-        let never = json!({"lock_minutes": 0});
-        assert_eq!(LOCK_MINUTES.from_section(never.as_object().unwrap()), 0);
-        assert_eq!(
-            LOCK_MINUTES.from_section(&serde_json::Map::new()),
-            DEFAULT_LOCK_MINUTES
-        );
-    }
-
     fn timers(section: &serde_json::Value) -> SuspendTimers {
         SuspendTimers::from_section(section.as_object().unwrap())
     }
 
-    #[test]
-    fn one_suspend_timer_per_power_source_unless_the_profiles_truly_differ() {
-        let fresh = timers(&json!({}));
-        assert!(!fresh.profiles_differ());
-        assert_eq!(
-            fresh.applying(Some("balanced"), true),
-            DEFAULT_SUSPEND_MINUTES
-        );
-        assert_eq!(
-            fresh.applying(Some("performance"), false),
-            DEFAULT_SUSPEND_MINUTES
-        );
+    tilo_test_env::scenario! {
+        fn power_timers_accept_offered_minutes_per_source_and_profile;
 
-        let split = timers(&json!({"suspend_minutes": 30, "battery_suspend_minutes": 10}));
-        assert!(!split.profiles_differ());
-        for profile in [
-            None,
-            Some("power-saver"),
-            Some("balanced"),
-            Some("performance"),
-        ] {
-            assert_eq!(split.applying(profile, true), 10);
-            assert_eq!(split.applying(profile, false), 30);
+        phase only_offered_minutes_are_accepted_and_never_is_a_stored_value;
+        {
+            assert_eq!(check_minutes("lock timeout", LOCK_CHOICES, 0), Ok(0));
+            assert!(check_minutes("lock timeout", LOCK_CHOICES, 7).is_err());
+            let never = json!({"lock_minutes": 0});
+            assert_eq!(LOCK_MINUTES.from_section(never.as_object().unwrap()), 0);
+            assert_eq!(
+                LOCK_MINUTES.from_section(&serde_json::Map::new()),
+                DEFAULT_LOCK_MINUTES
+            );
         }
 
-        let same = timers(&json!({
-            "suspend_minutes": 15,
-            "saver_suspend_minutes": 45,
-            "balanced_suspend_minutes": 45,
-            "performance_suspend_minutes": 45,
-        }));
-        assert!(!same.profiles_differ());
-        assert_eq!(same.plugged_in(), 45);
-        assert_eq!(same.applying(Some("balanced"), true), 45);
+        phase one_suspend_timer_per_power_source_unless_the_profiles_truly_differ;
+        {
+            let fresh = timers(&json!({}));
+            assert!(!fresh.profiles_differ());
+            assert_eq!(
+                fresh.applying(Some("balanced"), true),
+                DEFAULT_SUSPEND_MINUTES
+            );
+            assert_eq!(
+                fresh.applying(Some("performance"), false),
+                DEFAULT_SUSPEND_MINUTES
+            );
 
-        let differ = timers(&json!({
-            "suspend_minutes": 15,
-            "battery_suspend_minutes": 5,
-            "saver_suspend_minutes": 10,
-        }));
-        assert!(differ.profiles_differ());
-        assert_eq!(differ.applying(Some("power-saver"), false), 10);
-        assert_eq!(differ.applying(Some("balanced"), true), 15);
-        assert_eq!(
-            differ.applying(None, true),
-            5,
-            "no profile known: the source's"
-        );
+            let split = timers(&json!({"suspend_minutes": 30, "battery_suspend_minutes": 10}));
+            assert!(!split.profiles_differ());
+            for profile in [
+                None,
+                Some("power-saver"),
+                Some("balanced"),
+                Some("performance"),
+            ] {
+                assert_eq!(split.applying(profile, true), 10);
+                assert_eq!(split.applying(profile, false), 30);
+            }
+
+            let same = timers(&json!({
+                "suspend_minutes": 15,
+                "saver_suspend_minutes": 45,
+                "balanced_suspend_minutes": 45,
+                "performance_suspend_minutes": 45,
+            }));
+            assert!(!same.profiles_differ());
+            assert_eq!(same.plugged_in(), 45);
+            assert_eq!(same.applying(Some("balanced"), true), 45);
+
+            let differ = timers(&json!({
+                "suspend_minutes": 15,
+                "battery_suspend_minutes": 5,
+                "saver_suspend_minutes": 10,
+            }));
+            assert!(differ.profiles_differ());
+            assert_eq!(differ.applying(Some("power-saver"), false), 10);
+            assert_eq!(differ.applying(Some("balanced"), true), 15);
+            assert_eq!(
+                differ.applying(None, true),
+                5,
+                "no profile known: the source's"
+            );
+        }
     }
 }

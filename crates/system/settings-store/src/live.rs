@@ -317,41 +317,45 @@ mod tests {
         assert_eq!(snapshot.section("display"), display(3.0));
     }
 
-    #[test]
-    fn installed_source_changes_are_seen_without_a_file() {
-        let source = Arc::new(HostDocument::new(Map::new(), |_| Ok(())));
-        let (woken, wakes) = mpsc::channel();
-        let woken = Mutex::new(woken);
-        let live = LiveSettings::start_from(source.clone(), move || {
-            let _ = woken.lock().unwrap().send(());
-        });
-        assert!(live.section("display").is_empty());
+    tilo_test_env::scenario! {
+        fn a_live_reader_sees_its_sources_changes_by_section;
 
-        source.update_section("display", display(2.0)).unwrap();
-        wakes.recv_timeout(tilo_test_env::hang_bound()).unwrap();
-        assert_eq!(live.generation(), 1);
-        assert_eq!(live.section("display"), display(2.0));
-    }
+        phase installed_source_changes_are_seen_without_a_file;
+        {
+            let source = Arc::new(HostDocument::new(Map::new(), |_| Ok(())));
+            let (woken, wakes) = mpsc::channel();
+            let woken = Mutex::new(woken);
+            let live = LiveSettings::start_from(source.clone(), move || {
+                let _ = woken.lock().unwrap().send(());
+            });
+            assert!(live.section("display").is_empty());
 
-    #[test]
-    fn a_section_follower_reports_only_the_sections_a_change_touched() {
-        let source = Arc::new(HostDocument::new(Map::new(), |_| Ok(())));
-        source.update_section("display", display(1.0)).unwrap();
-        let live = LiveSettings::start_from(source.clone(), || {});
-        let mut follower = SectionFollower::new(&live);
-        assert!(
-            follower.changed_sections(&live).is_empty(),
-            "the document at start is the baseline"
-        );
+            source.update_section("display", display(2.0)).unwrap();
+            wakes.recv_timeout(tilo_test_env::hang_bound()).unwrap();
+            assert_eq!(live.generation(), 1);
+            assert_eq!(live.section("display"), display(2.0));
+        }
 
-        let mut input = Map::new();
-        input.insert("mouse_natural_scroll".into(), Value::Bool(true));
-        source.update_section("input", input).unwrap();
-        let _ = live.wait_for_change(0, tilo_test_env::hang_bound());
-        assert_eq!(
-            follower.changed_sections(&live),
-            BTreeSet::from(["input".to_string()])
-        );
-        assert!(follower.changed_sections(&live).is_empty());
+        phase a_section_follower_reports_only_the_sections_a_change_touched;
+        {
+            let source = Arc::new(HostDocument::new(Map::new(), |_| Ok(())));
+            source.update_section("display", display(1.0)).unwrap();
+            let live = LiveSettings::start_from(source.clone(), || {});
+            let mut follower = SectionFollower::new(&live);
+            assert!(
+                follower.changed_sections(&live).is_empty(),
+                "the document at start is the baseline"
+            );
+
+            let mut input = Map::new();
+            input.insert("mouse_natural_scroll".into(), Value::Bool(true));
+            source.update_section("input", input).unwrap();
+            let _ = live.wait_for_change(0, tilo_test_env::hang_bound());
+            assert_eq!(
+                follower.changed_sections(&live),
+                BTreeSet::from(["input".to_string()])
+            );
+            assert!(follower.changed_sections(&live).is_empty());
+        }
     }
 }

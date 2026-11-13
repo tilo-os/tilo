@@ -184,122 +184,126 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    #[test]
-    fn every_value_is_clamped_and_a_malformed_one_keeps_its_default() {
-        let comforts = SignInComforts::from_value(&json!({
-            "screen_reader": true,
-            "screen_reader_rate": 60000,
-            "screen_reader_voice": "klingon",
-            "language": "../../etc/passwd",
-            "xkb_layout": "de",
-            "xkb_variant": "nodeadkeys,us",
-            "text_scale": 1e30,
-            "high_contrast": "yes",
-        }));
-        assert_eq!(
-            comforts,
-            SignInComforts {
+    tilo_test_env::scenario! {
+        fn sign_in_comforts_are_clamped_carried_over_and_round_trip;
+
+        phase every_value_is_clamped_and_a_malformed_one_keeps_its_default;
+        {
+            let comforts = SignInComforts::from_value(&json!({
+                "screen_reader": true,
+                "screen_reader_rate": 60000,
+                "screen_reader_voice": "klingon",
+                "language": "../../etc/passwd",
+                "xkb_layout": "de",
+                "xkb_variant": "nodeadkeys,us",
+                "text_scale": 1e30,
+                "high_contrast": "yes",
+            }));
+            assert_eq!(
+                comforts,
+                SignInComforts {
+                    screen_reader: true,
+                    screen_reader_rate: 200,
+                    screen_reader_voice: ScreenReaderVoice::System,
+                    language: None,
+                    xkb_layout: None,
+                    xkb_variant: None,
+                    text_scale: TEXT_SCALE_MAX,
+                    high_contrast: false,
+                }
+            );
+            assert_eq!(
+                SignInComforts::from_value(&json!({"text_scale": -3.0, "screen_reader_rate": 1})),
+                SignInComforts {
+                    text_scale: TEXT_SCALE_MIN,
+                    screen_reader_rate: 50,
+                    ..SignInComforts::default()
+                }
+            );
+            assert_eq!(
+                SignInComforts::from_value(&json!("not an object")),
+                SignInComforts::default()
+            );
+        }
+
+        phase only_what_changed_is_carried_over;
+        {
+            let at_login_screen = SignInComforts {
                 screen_reader: true,
-                screen_reader_rate: 200,
-                screen_reader_voice: ScreenReaderVoice::System,
-                language: None,
-                xkb_layout: None,
-                xkb_variant: None,
-                text_scale: TEXT_SCALE_MAX,
-                high_contrast: false,
-            }
-        );
-        assert_eq!(
-            SignInComforts::from_value(&json!({"text_scale": -3.0, "screen_reader_rate": 1})),
-            SignInComforts {
-                text_scale: TEXT_SCALE_MIN,
-                screen_reader_rate: 50,
                 ..SignInComforts::default()
             }
-        );
-        assert_eq!(
-            SignInComforts::from_value(&json!("not an object")),
-            SignInComforts::default()
-        );
-    }
-
-    #[test]
-    fn only_what_changed_is_carried_over() {
-        let at_login_screen = SignInComforts {
-            screen_reader: true,
-            ..SignInComforts::default()
-        }
-        .with_keyboard_source("fr");
-        let before = SignInComforts::default().with_keyboard_source("de:nodeadkeys");
-        let larger = SignInComforts {
-            text_scale: 1.5,
-            ..before.clone()
-        };
-        let changes = SignInComforts::changes(&before, &larger);
-        assert_eq!(
-            changes,
-            json!({"text_scale": 1.5}).as_object().cloned().unwrap()
-        );
-        assert_eq!(
-            at_login_screen.with_changes(&changes),
-            SignInComforts {
+            .with_keyboard_source("fr");
+            let before = SignInComforts::default().with_keyboard_source("de:nodeadkeys");
+            let larger = SignInComforts {
                 text_scale: 1.5,
-                ..at_login_screen.clone()
-            }
-        );
-        let us = before.clone().with_keyboard_source("us");
-        let changes = SignInComforts::changes(&before, &us);
-        assert_eq!(
-            changes,
-            json!({"xkb_layout": "us", "xkb_variant": null})
-                .as_object()
-                .cloned()
-                .unwrap()
-        );
-        assert_eq!(
-            at_login_screen.with_changes(&changes),
-            SignInComforts {
-                screen_reader: true,
-                ..us.clone()
-            }
-        );
-        assert!(SignInComforts::changes(&us, &us).is_empty());
-    }
-
-    #[test]
-    fn plain_values_round_trip_in_the_token_shape() {
-        let comforts = SignInComforts {
-            screen_reader: true,
-            screen_reader_rate: 140,
-            screen_reader_voice: ScreenReaderVoice::German,
-            language: Some("de-DE".into()),
-            ..SignInComforts::default()
+                ..before.clone()
+            };
+            let changes = SignInComforts::changes(&before, &larger);
+            assert_eq!(
+                changes,
+                json!({"text_scale": 1.5}).as_object().cloned().unwrap()
+            );
+            assert_eq!(
+                at_login_screen.with_changes(&changes),
+                SignInComforts {
+                    text_scale: 1.5,
+                    ..at_login_screen.clone()
+                }
+            );
+            let us = before.clone().with_keyboard_source("us");
+            let changes = SignInComforts::changes(&before, &us);
+            assert_eq!(
+                changes,
+                json!({"xkb_layout": "us", "xkb_variant": null})
+                    .as_object()
+                    .cloned()
+                    .unwrap()
+            );
+            assert_eq!(
+                at_login_screen.with_changes(&changes),
+                SignInComforts {
+                    screen_reader: true,
+                    ..us.clone()
+                }
+            );
+            assert!(SignInComforts::changes(&us, &us).is_empty());
         }
-        .with_keyboard_source("de:nodeadkeys");
-        let value = serde_json::to_value(&comforts).unwrap();
-        assert_eq!(
-            value,
-            json!({
-                "screen_reader": true,
-                "screen_reader_rate": 140,
-                "screen_reader_voice": "german",
-                "language": "de-DE",
-                "xkb_layout": "de",
-                "xkb_variant": "nodeadkeys",
-                "text_scale": 1.0,
-                "high_contrast": false,
-            })
-        );
-        assert_eq!(SignInComforts::from_value(&value), comforts);
-        assert_eq!(
-            comforts.screen_reader_settings().voice.engine_voice(),
-            Some("de")
-        );
-        assert_eq!(
-            SignInComforts::default()
-                .with_keyboard_source("ime/rime")
-                .xkb_layout,
-            None
-        );
+
+        phase plain_values_round_trip_in_the_token_shape;
+        {
+            let comforts = SignInComforts {
+                screen_reader: true,
+                screen_reader_rate: 140,
+                screen_reader_voice: ScreenReaderVoice::German,
+                language: Some("de-DE".into()),
+                ..SignInComforts::default()
+            }
+            .with_keyboard_source("de:nodeadkeys");
+            let value = serde_json::to_value(&comforts).unwrap();
+            assert_eq!(
+                value,
+                json!({
+                    "screen_reader": true,
+                    "screen_reader_rate": 140,
+                    "screen_reader_voice": "german",
+                    "language": "de-DE",
+                    "xkb_layout": "de",
+                    "xkb_variant": "nodeadkeys",
+                    "text_scale": 1.0,
+                    "high_contrast": false,
+                })
+            );
+            assert_eq!(SignInComforts::from_value(&value), comforts);
+            assert_eq!(
+                comforts.screen_reader_settings().voice.engine_voice(),
+                Some("de")
+            );
+            assert_eq!(
+                SignInComforts::default()
+                    .with_keyboard_source("ime/rime")
+                    .xkb_layout,
+                None
+            );
+        }
     }
 }

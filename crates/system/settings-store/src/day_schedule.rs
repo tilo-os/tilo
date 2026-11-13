@@ -311,86 +311,94 @@ mod tests {
         );
     }
 
-    #[test]
-    fn berlin_sunrise_and_sunset_match_the_almanac() {
-        let summer = sun_times(BERLIN, 172, 120).unwrap();
-        near(summer.sunrise, "04:43");
-        near(summer.sunset, "21:33");
-        let winter = sun_times(BERLIN, 355, 60).unwrap();
-        near(winter.sunrise, "08:15");
-        near(winter.sunset, "15:54");
+    tilo_test_env::scenario! {
+        fn a_schedule_resolves_fixed_custom_and_malformed_settings;
+
+        phase without_a_location_the_fixed_seven_to_seven_applies;
+        {
+            let config = ScheduleConfig::default();
+            let schedule = config.resolve(None, at(100, "12:00", 0));
+            assert_eq!(format_hhmm(schedule.sunrise), "07:00");
+            assert_eq!(format_hhmm(schedule.sunset), "19:00");
+            assert!(schedule.is_night(parse_hhmm("06:59").unwrap()));
+            assert!(!schedule.is_night(parse_hhmm("07:00").unwrap()));
+            assert!(!schedule.is_night(parse_hhmm("18:59").unwrap()));
+            assert!(schedule.is_night(parse_hhmm("19:00").unwrap()));
+        }
+
+        phase custom_times_win_over_the_sun_and_may_wrap_midnight;
+        {
+            let mut section = Map::new();
+            section.insert(SCHEDULE_KEY.into(), "custom".into());
+            section.insert(SUNRISE_KEY.into(), "08:30".into());
+            section.insert(SUNSET_KEY.into(), "21:15".into());
+            let config = ScheduleConfig::from_section(&section);
+            let schedule = config.resolve(Some(BERLIN), at(172, "12:00", 120));
+            assert_eq!(schedule.sunrise, parse_hhmm("08:30").unwrap());
+            assert_eq!(schedule.sunset, parse_hhmm("21:15").unwrap());
+
+            let inverted = DaySchedule {
+                sunrise: parse_hhmm("22:00").unwrap(),
+                sunset: parse_hhmm("06:00").unwrap(),
+            };
+            assert!(!inverted.is_night(parse_hhmm("23:00").unwrap()));
+            assert!(inverted.is_night(parse_hhmm("12:00").unwrap()));
+        }
+
+        phase malformed_settings_take_the_defaults;
+        {
+            let mut section = Map::new();
+            section.insert(SUNRISE_KEY.into(), "7am".into());
+            section.insert(SUNSET_KEY.into(), Value::from(19));
+            assert_eq!(
+                ScheduleConfig::from_section(&section),
+                ScheduleConfig::default()
+            );
+            assert_eq!(parse_hhmm("24:00"), None);
+            assert_eq!(parse_hhmm("07:60"), None);
+            assert_eq!(format_hhmm(parse_hhmm("7:05").unwrap()), "07:05");
+        }
     }
 
-    #[test]
-    fn polar_day_has_no_sunset_and_falls_back_to_fixed_times() {
-        let tromso = Location {
-            latitude: 69.65,
-            longitude: 18.96,
-        };
-        assert_eq!(sun_times(tromso, 172, 120), None);
-        let schedule = ScheduleConfig::default().resolve(Some(tromso), at(172, "12:00", 120));
-        assert_eq!(schedule, DaySchedule::FIXED);
-    }
+    tilo_test_env::scenario! {
+        fn sun_times_come_from_the_location_and_the_time_zone;
 
-    #[test]
-    fn without_a_location_the_fixed_seven_to_seven_applies() {
-        let config = ScheduleConfig::default();
-        let schedule = config.resolve(None, at(100, "12:00", 0));
-        assert_eq!(format_hhmm(schedule.sunrise), "07:00");
-        assert_eq!(format_hhmm(schedule.sunset), "19:00");
-        assert!(schedule.is_night(parse_hhmm("06:59").unwrap()));
-        assert!(!schedule.is_night(parse_hhmm("07:00").unwrap()));
-        assert!(!schedule.is_night(parse_hhmm("18:59").unwrap()));
-        assert!(schedule.is_night(parse_hhmm("19:00").unwrap()));
-    }
+        phase berlin_sunrise_and_sunset_match_the_almanac;
+        {
+            let summer = sun_times(BERLIN, 172, 120).unwrap();
+            near(summer.sunrise, "04:43");
+            near(summer.sunset, "21:33");
+            let winter = sun_times(BERLIN, 355, 60).unwrap();
+            near(winter.sunrise, "08:15");
+            near(winter.sunset, "15:54");
+        }
 
-    #[test]
-    fn custom_times_win_over_the_sun_and_may_wrap_midnight() {
-        let mut section = Map::new();
-        section.insert(SCHEDULE_KEY.into(), "custom".into());
-        section.insert(SUNRISE_KEY.into(), "08:30".into());
-        section.insert(SUNSET_KEY.into(), "21:15".into());
-        let config = ScheduleConfig::from_section(&section);
-        let schedule = config.resolve(Some(BERLIN), at(172, "12:00", 120));
-        assert_eq!(schedule.sunrise, parse_hhmm("08:30").unwrap());
-        assert_eq!(schedule.sunset, parse_hhmm("21:15").unwrap());
+        phase polar_day_has_no_sunset_and_falls_back_to_fixed_times;
+        {
+            let tromso = Location {
+                latitude: 69.65,
+                longitude: 18.96,
+            };
+            assert_eq!(sun_times(tromso, 172, 120), None);
+            let schedule = ScheduleConfig::default().resolve(Some(tromso), at(172, "12:00", 120));
+            assert_eq!(schedule, DaySchedule::FIXED);
+        }
 
-        let inverted = DaySchedule {
-            sunrise: parse_hhmm("22:00").unwrap(),
-            sunset: parse_hhmm("06:00").unwrap(),
-        };
-        assert!(!inverted.is_night(parse_hhmm("23:00").unwrap()));
-        assert!(inverted.is_night(parse_hhmm("12:00").unwrap()));
-    }
-
-    #[test]
-    fn malformed_settings_take_the_defaults() {
-        let mut section = Map::new();
-        section.insert(SUNRISE_KEY.into(), "7am".into());
-        section.insert(SUNSET_KEY.into(), Value::from(19));
-        assert_eq!(
-            ScheduleConfig::from_section(&section),
-            ScheduleConfig::default()
-        );
-        assert_eq!(parse_hhmm("24:00"), None);
-        assert_eq!(parse_hhmm("07:60"), None);
-        assert_eq!(format_hhmm(parse_hhmm("7:05").unwrap()), "07:05");
-    }
-
-    #[test]
-    fn the_time_zone_names_a_location_in_tzdata() {
-        let table = "# comment\nDE,DK,NO,SE,SJ\t+5230+01322\tEurope/Berlin\n\
+        phase the_time_zone_names_a_location_in_tzdata;
+        {
+            let table = "# comment\nDE,DK,NO,SE,SJ\t+5230+01322\tEurope/Berlin\n\
                      AU\t-3352+15113\tAustralia/Sydney\tNew South Wales\n";
-        let berlin = timezone_location_in("Europe/Berlin", table).unwrap();
-        assert!((berlin.latitude - 52.5).abs() < 1e-9);
-        assert!((berlin.longitude - 13.366_666).abs() < 1e-3);
-        let sydney = timezone_location_in("Australia/Sydney", table).unwrap();
-        assert!(sydney.latitude < 0.0);
-        assert_eq!(timezone_location_in("Mars/Olympus", table), None);
-        assert_eq!(
-            zone_from_link(Path::new("../usr/share/zoneinfo/Europe/Berlin")).as_deref(),
-            Some("Europe/Berlin")
-        );
+            let berlin = timezone_location_in("Europe/Berlin", table).unwrap();
+            assert!((berlin.latitude - 52.5).abs() < 1e-9);
+            assert!((berlin.longitude - 13.366_666).abs() < 1e-3);
+            let sydney = timezone_location_in("Australia/Sydney", table).unwrap();
+            assert!(sydney.latitude < 0.0);
+            assert_eq!(timezone_location_in("Mars/Olympus", table), None);
+            assert_eq!(
+                zone_from_link(Path::new("../usr/share/zoneinfo/Europe/Berlin")).as_deref(),
+                Some("Europe/Berlin")
+            );
+        }
     }
 
     #[test]

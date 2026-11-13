@@ -410,15 +410,6 @@ mod tests {
     }
 
     #[test]
-    fn an_unchanged_settings_stamp_does_not_read_again() {
-        let stamp = SettingsStamp(1);
-        assert!(document_changed(false, None, None));
-        assert!(!document_changed(true, None, None));
-        assert!(!document_changed(true, Some(stamp), Some(stamp)));
-        assert!(document_changed(true, Some(stamp), Some(SettingsStamp(2))));
-    }
-
-    #[test]
     fn a_hand_started_test_harness_never_writes_the_callers_settings() {
         // This test binary is itself a harness under `deps/`: with the test environment's
         // marker and XDG_CONFIG_HOME gone, the local profile is the fake caller's own
@@ -455,15 +446,28 @@ mod tests {
         assert_eq!(unisolated_test_write(harness, true, false), None);
     }
 
-    #[test]
-    fn reads_forgive_missing_and_mistyped_sections() {
-        let root = crate::test_dir();
-        let store = profile(root.path());
-        assert!(load_section_in(&*store, "display").is_empty());
-        store.update_section("display", Map::new()).unwrap();
-        assert!(parse("[1]").is_empty());
-        assert!(parse("{").is_empty());
-        let read = f64_in(&parse(r#"{"d":{"s":"x"}}"#), "d", "s", 0.0..=1.0, 0.5);
-        assert!((read - 0.5).abs() < f64::EPSILON);
+    tilo_test_env::scenario! {
+        fn a_document_is_read_only_when_changed_and_forgivingly;
+
+        phase an_unchanged_settings_stamp_does_not_read_again;
+        {
+            let stamp = SettingsStamp(1);
+            assert!(document_changed(false, None, None));
+            assert!(!document_changed(true, None, None));
+            assert!(!document_changed(true, Some(stamp), Some(stamp)));
+            assert!(document_changed(true, Some(stamp), Some(SettingsStamp(2))));
+        }
+
+        phase reads_forgive_missing_and_mistyped_sections;
+        {
+            let root = crate::test_dir();
+            let store = profile(root.path());
+            assert!(load_section_in(&*store, "display").is_empty());
+            store.update_section("display", Map::new()).unwrap();
+            assert!(parse("[1]").is_empty());
+            assert!(parse("{").is_empty());
+            let read = f64_in(&parse(r#"{"d":{"s":"x"}}"#), "d", "s", 0.0..=1.0, 0.5);
+            assert!((read - 0.5).abs() < f64::EPSILON);
+        }
     }
 }

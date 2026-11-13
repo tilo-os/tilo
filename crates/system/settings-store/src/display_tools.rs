@@ -92,28 +92,32 @@ impl TrustedDisplayTools {
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_tool_is_named_after_its_executable() {
-        assert_eq!(DisplayTool::new("/usr/bin/kanshi").name(), "kanshi");
-        assert_eq!(DisplayTool::new("kanshi").name(), "kanshi");
-    }
+    tilo_test_env::scenario! {
+        fn display_tools_are_named_and_trusted_per_executable;
 
-    #[test]
-    fn trust_is_per_executable_and_revocable() {
-        let mut trusted = TrustedDisplayTools::default();
-        assert!(trusted.insert(DisplayTool::new("/usr/bin/kanshi")));
-        assert!(!trusted.insert(DisplayTool::new("/usr/bin/kanshi")));
-        assert!(trusted.contains(&DisplayTool::new("/usr/bin/kanshi")));
-        assert!(!trusted.contains(&DisplayTool::new("/home/me/bin/kanshi")));
-        assert!(trusted.remove("/usr/bin/kanshi"));
-        assert!(!trusted.remove("/usr/bin/kanshi"));
-        assert!(trusted.tools.is_empty());
-    }
+        phase a_tool_is_named_after_its_executable;
+        {
+            assert_eq!(DisplayTool::new("/usr/bin/kanshi").name(), "kanshi");
+            assert_eq!(DisplayTool::new("kanshi").name(), "kanshi");
+        }
 
-    #[test]
-    fn an_unreadable_section_trusts_nothing() {
-        let parsed: TrustedDisplayTools =
-            serde_json::from_value(serde_json::json!({ "tools": "kanshi" })).unwrap_or_default();
-        assert!(parsed.tools.is_empty());
+        phase trust_is_per_executable_and_revocable;
+        {
+            let mut trusted = TrustedDisplayTools::default();
+            assert!(trusted.insert(DisplayTool::new("/usr/bin/kanshi")));
+            assert!(!trusted.insert(DisplayTool::new("/usr/bin/kanshi")));
+            assert!(trusted.contains(&DisplayTool::new("/usr/bin/kanshi")));
+            assert!(!trusted.contains(&DisplayTool::new("/home/me/bin/kanshi")));
+            assert!(trusted.remove("/usr/bin/kanshi"));
+            assert!(!trusted.remove("/usr/bin/kanshi"));
+            assert!(trusted.tools.is_empty());
+        }
+
+        phase an_unreadable_section_trusts_nothing;
+        {
+            let parsed: TrustedDisplayTools =
+                serde_json::from_value(serde_json::json!({ "tools": "kanshi" })).unwrap_or_default();
+            assert!(parsed.tools.is_empty());
+        }
     }
 }

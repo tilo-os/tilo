@@ -111,44 +111,48 @@ impl StopRequest {
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_snapshot_counts_only_while_its_publisher_lives() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("desktop-control-state.json");
-        let (pid, start) = crate::hardware::publisher_identity_in(dir.path()).expect("lease");
-        let snapshot = DesktopControlSnapshot {
-            publisher_pid: pid,
-            publisher_start_ticks: start,
-            tabs: vec![TabGrantEntry {
-                id: "41:9".into(),
-                app: "so.tilo.terminal".into(),
-                app_label: "Terminal".into(),
-                tab: "claude".into(),
-                workspace: "Home".into(),
-            }],
-        };
-        snapshot.save_at(&path).expect("save");
-        assert_eq!(
-            DesktopControlSnapshot::load_at(&path),
-            Some(snapshot.clone())
-        );
-        let stale = DesktopControlSnapshot {
-            publisher_start_ticks: start.wrapping_add(1),
-            ..snapshot
-        };
-        stale.save_at(&path).expect("save");
-        assert_eq!(DesktopControlSnapshot::load_at(&path), None);
-    }
+    tilo_test_env::scenario! {
+        fn desktop_control_state_counts_only_while_live_and_fresh;
 
-    #[test]
-    fn a_stop_request_is_answered_only_while_fresh() {
-        let request = StopRequest {
-            requested_unix_ms: 1_000,
-            grant: "41:9".into(),
-        };
-        assert!(request.is_fresh(1_000));
-        assert!(request.is_fresh(1_000 + STOP_FRESH_MS));
-        assert!(!request.is_fresh(1_001 + STOP_FRESH_MS));
-        assert!(!request.is_fresh(999), "from the future");
+        phase a_snapshot_counts_only_while_its_publisher_lives;
+        {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let path = dir.path().join("desktop-control-state.json");
+            let (pid, start) = crate::hardware::publisher_identity_in(dir.path()).expect("lease");
+            let snapshot = DesktopControlSnapshot {
+                publisher_pid: pid,
+                publisher_start_ticks: start,
+                tabs: vec![TabGrantEntry {
+                    id: "41:9".into(),
+                    app: "so.tilo.terminal".into(),
+                    app_label: "Terminal".into(),
+                    tab: "claude".into(),
+                    workspace: "Home".into(),
+                }],
+            };
+            snapshot.save_at(&path).expect("save");
+            assert_eq!(
+                DesktopControlSnapshot::load_at(&path),
+                Some(snapshot.clone())
+            );
+            let stale = DesktopControlSnapshot {
+                publisher_start_ticks: start.wrapping_add(1),
+                ..snapshot
+            };
+            stale.save_at(&path).expect("save");
+            assert_eq!(DesktopControlSnapshot::load_at(&path), None);
+        }
+
+        phase a_stop_request_is_answered_only_while_fresh;
+        {
+            let request = StopRequest {
+                requested_unix_ms: 1_000,
+                grant: "41:9".into(),
+            };
+            assert!(request.is_fresh(1_000));
+            assert!(request.is_fresh(1_000 + STOP_FRESH_MS));
+            assert!(!request.is_fresh(1_001 + STOP_FRESH_MS));
+            assert!(!request.is_fresh(999), "from the future");
+        }
     }
 }
