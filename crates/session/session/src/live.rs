@@ -11,7 +11,10 @@
 //! it: a device only when the certificate it presents is the roster's own and the handshake proved
 //! the key. It cuts a session when the workspace's membership or keys move.
 //! A device joins the first of those relays it reaches, so an elected relay that is offline costs a
-//! member the one above it and not the workspace's live plane. Whichever relay a member reaches,
+//! member the one above it and not the workspace's live plane. While none of them takes it in — the
+//! relay is away, or does not know this device yet — it asks them again, waiting longer each time,
+//! since a relay that comes back says nothing to the devices that missed it. Whichever relay a
+//! member reaches,
 //! every relay bridges the other relays into its own: members split across two relays of one
 //! workspace still hear each other.
 //! Every other member dials that relay over iroh ([`tilo_live::native`]) with its device
@@ -81,6 +84,21 @@ pub(crate) fn relays_of(members: &[Member], host: Option<[u8; 32]>, now_ns: u64)
 const BRIDGE_JOINT: Duration = Duration::from_secs(3);
 /// How long one relay of a workspace has to carry the plane before the next one is tried.
 const ATTEMPT: Duration = Duration::from_secs(4);
+/// How long a workspace whose relays did not take this device in waits before it asks them again:
+/// [`RETRY_FIRST`] after the first miss, twice as long after each further one, and never longer
+/// than [`RETRY_LONGEST`]. A relay that is away costs one dial of [`ATTEMPT`] each time, so a
+/// device whose workspace's host is off for a week asks four times a minute and no more.
+const RETRY_FIRST: Duration = Duration::from_secs(1);
+const RETRY_LONGEST: Duration = Duration::from_secs(15);
+
+/// The wait before a workspace's relays are asked again after `missed` attempts in a row that none
+/// of them answered with a plane.
+fn retry_wait(missed: u32) -> Duration {
+    let doublings = missed.saturating_sub(1).min(8);
+    RETRY_FIRST
+        .saturating_mul(1_u32 << doublings)
+        .min(RETRY_LONGEST)
+}
 
 /// Now, in Unix nanoseconds.
 fn now_ns() -> u64 {
@@ -233,9 +251,16 @@ struct Shared {
     planes: Mutex<BTreeMap<WorkspaceId, Joined>>,
     /// The other relays of each workspace this device relays, by device.
     bridged: Mutex<BTreeMap<(WorkspaceId, [u8; 32]), Bridged>>,
-    /// Told when a plane ended, so the workspace is settled again through whichever relay it
-    /// reaches next.
-    rejoin: tokio::sync::mpsc::UnboundedSender<WorkspaceId>,
+    /// What wakes each workspace's reconciler beside the workspace's own changes: a plane of it
+    /// ended, so the workspace is settled again through whichever relay it reaches next, or this
+    /// session was given a lender of media keys ([`Live::lend_media_keys`]).
+    nudges: Mutex<BTreeMap<WorkspaceId, Arc<tokio::sync::Notify>>>,
+    /// Told when the session's workspaces are to be read again for ones no reconciler runs for
+    /// yet, beside the keys that announce a workspace joined later.
+    readopt: tokio::sync::Notify,
+    /// The workspaces that name a relay none of which took this device in when they were last
+    /// settled: the ones whose relays are asked again ([`reconcile`]).
+    unreached: Mutex<BTreeSet<WorkspaceId>>,
     wake: Arc<dyn Fn() + Send + Sync>,
     /// The runtime the planes run on, once the plane's thread started it: what a plane's readers
     /// are started on, whichever thread asks the plane to show a track.
@@ -374,6 +399,7 @@ impl Shared {
     /// this device reaches, move the plane's keys and roster when they changed,
     /// or leave when the workspace names no relay any more.
     async fn settle(self: &Arc<Self>, workspace: WorkspaceId, endpoint: &Endpoint, relay: &Relay) {
+        self.unreached.lock_recover().remove(&workspace);
         let Some((members, candidates)) = self.relay_candidates(workspace) else {
             return;
         };
@@ -460,6 +486,7 @@ impl Shared {
         .await;
         let Some((chosen, plane)) = reached else {
             tracing::debug!(%workspace, "no relay of this workspace was reached");
+            self.unreached.lock_recover().insert(workspace);
             return;
         };
         plane.set_wake(Arc::clone(&self.wake));
@@ -525,6 +552,16 @@ impl Shared {
         }
     }
 
+    /// What wakes `workspace` 's reconciler when a plane of it ended.
+    fn nudge(&self, workspace: WorkspaceId) -> Arc<tokio::sync::Notify> {
+        Arc::clone(self.nudges.lock_recover().entry(workspace).or_default())
+    }
+
+    /// Whether `workspace` names a relay and none took this device in when it was last settled.
+    fn awaits_relay(&self, workspace: WorkspaceId) -> bool {
+        self.unreached.lock_recover().contains(&workspace)
+    }
+
     /// Stop carrying `workspace` : the plane is closed and its sessions cut.
     fn withdraw(&self, workspace: WorkspaceId) {
         self.rosters.lock_recover().remove(&workspace);
@@ -541,7 +578,7 @@ impl Shared {
     /// now.
     fn ended(&self, workspace: WorkspaceId) {
         self.planes.lock_recover().remove(&workspace);
-        let _ = self.rejoin.send(workspace);
+        self.nudge(workspace).notify_one();
     }
 
     /// Keep every other relay of `workspace` bridged into this device's own,
@@ -624,8 +661,6 @@ pub struct Live {
     /// The ALPN handler this session serves, handed over before the endpoint binds
     /// ([`Self::protocols`]): which workspaces it relays is read per connection, from their state.
     protocols: Protocols,
-    /// A workspace whose plane ended, to be settled again.
-    rejoin: tokio::sync::mpsc::UnboundedReceiver<WorkspaceId>,
 }
 
 impl std::fmt::Debug for Live {
@@ -647,7 +682,6 @@ impl Live {
     pub(crate) fn new(engine: Arc<Engine>, wake: Arc<dyn Fn() + Send + Sync>) -> Self {
         let device = engine.identity().device_cert.device_public_key;
         let (changed, _) = tokio::sync::watch::channel(0);
-        let (rejoin, rejoined) = tokio::sync::mpsc::unbounded_channel();
         let shared = Arc::new(Shared {
             engine,
             device,
@@ -656,7 +690,9 @@ impl Live {
             changed,
             planes: Mutex::new(BTreeMap::new()),
             bridged: Mutex::new(BTreeMap::new()),
-            rejoin,
+            nudges: Mutex::new(BTreeMap::new()),
+            readopt: tokio::sync::Notify::new(),
+            unreached: Mutex::new(BTreeSet::new()),
             wake,
             runtime: std::sync::OnceLock::new(),
             lender: std::sync::OnceLock::new(),
@@ -682,7 +718,6 @@ impl Live {
             stopped: None,
             thread: None,
             protocols,
-            rejoin: rejoined,
         }
     }
 
@@ -693,10 +728,12 @@ impl Live {
         if self.shared.lender.set(lender).is_err() {
             return;
         }
+        // Each workspace's own reconciler settles it again, and a workspace none runs for yet is
+        // given one, which settles it at once.
         for workspace in self.shared.engine.workspaces() {
-            // A plane thread that ended settles nothing again.
-            let _ = self.shared.rejoin.send(workspace);
+            self.shared.nudge(workspace).notify_one();
         }
+        self.shared.readopt.notify_one();
     }
 
     /// Run for the rest of the session on `endpoint` : this device's relay role, for the workspaces
@@ -705,10 +742,9 @@ impl Live {
         let (stop, stopped) = tokio::sync::mpsc::unbounded_channel();
         let shared = Arc::clone(&self.shared);
         let relayed = self.relayed.clone();
-        let rejoin = std::mem::replace(&mut self.rejoin, tokio::sync::mpsc::unbounded_channel().1);
         match std::thread::Builder::new()
             .name("tilo-live".into())
-            .spawn(move || run(shared, endpoint, relayed, rejoin, stopped))
+            .spawn(move || run(shared, endpoint, relayed, stopped))
         {
             Ok(thread) => {
                 self.thread = Some(thread);
@@ -818,7 +854,6 @@ fn run(
     shared: Arc<Shared>,
     endpoint: Endpoint,
     relayed: tokio::sync::watch::Sender<Option<Arc<Relay>>>,
-    mut rejoined: tokio::sync::mpsc::UnboundedReceiver<WorkspaceId>,
     mut stopped: tokio::sync::mpsc::UnboundedReceiver<()>,
 ) {
     let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
@@ -841,8 +876,8 @@ fn run(
         adopt(&shared, &endpoint, &serving, &mut known);
         // A workspace this session joins later opens its plane the same way: its channel keys
         // arriving is announced by the channel service, and the workspace list is read again then.
-        // A plane whose relay went away is settled again on the event that it ended, through the
-        // first relay the workspace names that this device reaches now.
+        // Each workspace's own reconciler settles it again when a plane of it ended, or when no
+        // relay took this device in ([`reconcile`]).
         loop {
             tokio::select! {
                 _ = stopped.recv() => break,
@@ -850,10 +885,8 @@ fn run(
                     keyed = changed;
                     adopt(&shared, &endpoint, &serving, &mut known);
                 }
-                Some(workspace) = rejoined.recv() => {
-                    Arc::clone(&shared)
-                        .settle(workspace, &endpoint, &serving)
-                        .await;
+                () = shared.readopt.notified() => {
+                    adopt(&shared, &endpoint, &serving, &mut known);
                 }
             }
         }
@@ -879,8 +912,16 @@ fn adopt(
     }
 }
 
-/// Keep one workspace's plane in step with its membership and keys, on the event that moved them
-/// and never on a timer.
+/// Keep one workspace's plane in step with its membership and keys, on the event that moved them:
+/// the workspace's media channel changed, or a plane of the workspace ended.
+///
+/// One thing has no event. A relay that was away when this device asked, or that did not know this
+/// device yet, says nothing when that changes, and the keys this device already holds do not move
+/// because of it. So while the workspace names a relay and none took this device in, its relays
+/// are asked again after [`retry_wait`], until the plane opens. Without that a device whose session
+/// started before the device relaying the workspace was reachable stayed out of the workspace's
+/// live plane for as long as both ran: no presence, no call and no shared window crossed, and
+/// nothing said so.
 async fn reconcile(
     shared: Arc<Shared>,
     workspace: WorkspaceId,
@@ -888,12 +929,30 @@ async fn reconcile(
     relay: Arc<Relay>,
 ) {
     let channel = scope_of(workspace).channel_id();
+    let keys = shared.engine.keys();
+    let nudge = shared.nudge(workspace);
     let mut after = 0;
+    let mut missed: u32 = 0;
     loop {
         Arc::clone(&shared)
             .settle(workspace, &endpoint, &relay)
             .await;
-        after = shared.engine.keys().channel_changed(channel, after).await;
+        missed = if shared.awaits_relay(workspace) {
+            missed.saturating_add(1)
+        } else {
+            0
+        };
+        let again = async {
+            if missed == 0 {
+                std::future::pending::<()>().await;
+            }
+            tokio::time::sleep(retry_wait(missed)).await;
+        };
+        tokio::select! {
+            changed = keys.channel_changed(channel, after) => after = changed,
+            () = nudge.notified() => {}
+            () = again => {}
+        }
     }
 }
 
@@ -964,6 +1023,20 @@ mod tests {
         })
         .await;
         assert_eq!(reached, None);
+    }
+
+    /// A workspace whose relays did not take this device in asks them again soon, then ever less
+    /// often, and never stops asking: the relay it waits for may come back at any time.
+    #[test]
+    fn a_relay_that_was_missed_is_asked_again_ever_less_often_and_always() {
+        assert_eq!(retry_wait(1), RETRY_FIRST);
+        assert_eq!(retry_wait(2), RETRY_FIRST * 2);
+        assert_eq!(retry_wait(3), RETRY_FIRST * 4);
+        let waits: Vec<Duration> = (1..40).map(retry_wait).collect();
+        assert!(waits.windows(2).all(|pair| pair[0] <= pair[1]), "{waits:?}");
+        assert_eq!(waits.last(), Some(&RETRY_LONGEST));
+        assert_eq!(retry_wait(u32::MAX), RETRY_LONGEST);
+        assert_eq!(retry_wait(0), RETRY_FIRST);
     }
 
     #[test]
