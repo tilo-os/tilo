@@ -1363,11 +1363,17 @@ fn offline_downloads_and_media_cache_are_honest_and_device_local() {
                 "{track}"
             );
         }
+        // Retry asks the streaming worker for the track again. This build has
+        // no live backend, so that attempt fails in its own words: what the
+        // person sees is the new verdict, never the one they retried from.
+        app.use_worker(crate::stream::StreamWorker::spawn_offline());
         let retry = track_control(&mut app, &mut doc, "tk_g3", "offline", draw_once);
         hosted_click(&mut app, &mut doc, retry.center());
-        assert!(
-            !app.offline_errors.contains_key("tk_g3"),
-            "Retry clears the failure"
+        assert_ne!(
+            app.offline_errors.get("tk_g3").map(String::as_str),
+            Some("network ended"),
+            "Retry does not keep the failure it retried: {:?}",
+            app.offline_errors
         );
     }
 
