@@ -1,7 +1,6 @@
-//! Video Player as a resource: the shared library ([`Library`]: playlists,
-//! timestamp annotations, playback watched together) is the document; the
-//! player on this device is the window over it, and the view answers its
-//! effects and publishes the live rows of what it shows.
+//! Video Player as a resource: the shared [`Library`] is the document, the player on this
+//! device is the window over it, and the view answers the player's effects and publishes
+//! the live rows of what it shows.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -13,11 +12,8 @@ use ui::widget::Element;
 use crate::app::PlayerApp;
 use crate::shared::{Library, library};
 
-/// The screenshot scenarios: the first run before a video is chosen, a
-/// video loading, failing to open (fixture copy, or the decoder's own error
-/// for a bad file), playing and paused, the settings and track menus, the
-/// device's queue and recent videos (and the queue with keyboard focus), the
-/// shared library, and fullscreen.
+/// The screenshots: the first run, loading, a failure to open, playing and paused, the
+/// menus, the queue and recent videos, the shared library, and fullscreen.
 pub(crate) const SCENARIOS: &[&str] = &[
     "empty",
     "loading",
@@ -44,7 +40,6 @@ impl ResourceApp for VideoPlayerShell {
     const TITLE: &'static str = "Video Player";
     const TITLE_KEY: &'static str = "video-player-app-title";
     const ICON: Option<&'static str> = Some("video-player");
-    /// The video to play: a path or a stream's URL.
     const ARGUMENTS: usize = 1;
 
     fn view(cx: &mut ViewCx<Library>) -> Element {
@@ -55,8 +50,6 @@ impl ResourceApp for VideoPlayerShell {
         SCENARIOS
     }
 
-    /// The shared library scenario's playlist and the review notes on the
-    /// demo clip.
     fn scenario(name: Option<&str>) -> Vec<Invoke<Library>> {
         if name != Some("shared") {
             return Vec::new();
@@ -90,9 +83,8 @@ impl ResourceApp for VideoPlayerShell {
     }
 }
 
-/// What the view publishes of the player's playhead: the shared library's
-/// verbs bound to the video open and the moment shown, which the player
-/// keeps current and the view reads when the published tree is read.
+/// The shared library's verbs bound to the open video and the moment shown, which the
+/// player keeps current and the view reads when the published tree is read.
 pub(crate) type Playhead = Rc<RefCell<Vec<ActionDecl<Library>>>>;
 
 #[cfg(test)]
@@ -143,8 +135,8 @@ mod tests {
         }
     }
 
-    /// Invoke `effect` on the library by its address, as a headless
-    /// drive's `invoke` step does: no coordinates, no click.
+    /// Invoke `effect` on the library by its address, as a headless drive's `invoke` step
+    /// does.
     fn drive_invoke(
         app: &mut TestApp<VideoPlayerShell>,
         effect: &VideoEffect,
@@ -172,13 +164,9 @@ mod tests {
             surface(&mut app, |player| player.library_tab_name()),
             "shared"
         );
-        // Seek reaches the player: it moves the open clip, or, on a machine
-        // without the system decoder, says a video must be open first. The
-        // test puts the playhead at two seconds itself and seeks back from
-        // there: a seek that did nothing would leave it at or past where it
-        // was. The scenario's own park at two seconds is no starting point:
-        // it comes before the decoder knows how long the clip is, so it can
-        // land at the start, and the clip then plays on from there.
+        // Seek moves the open clip, or, without a system decoder, says a video must be
+        // open first. The scenario's own park at two seconds can land at the start, since
+        // it comes before the decoder knows the clip's length.
         let parked = drive_invoke(&mut app, &VideoEffect::Seek { seconds: 2.0 });
         let before = surface(&mut app, |player| player.player().position_ms());
         match parked.and_then(|()| drive_invoke(&mut app, &VideoEffect::Seek { seconds: 0.5 })) {
@@ -193,7 +181,6 @@ mod tests {
         }
     }
 
-    /// Press the window bar's sidebar toggle, as the desktop hands it over.
     fn toggle_sidebar(app: &mut TestApp<VideoPlayerShell>) {
         ui::window_toolbar::deliver(ui::window_toolbar::ToolbarEvent::ToggleSidebar);
         app.settle();
@@ -285,8 +272,7 @@ mod tests {
         }
     }
 
-    /// Deleting a playlist runs at once, since Undo takes it back: the host
-    /// asks nothing, and one Undo brings the playlist back with its videos.
+    /// Deleting a playlist runs at once, since one Undo takes it back.
     #[test]
     fn deleting_a_playlist_runs_at_once_and_one_undo_brings_it_back() {
         let mut app = TestApp::<VideoPlayerShell>::new().unwrap();
@@ -367,8 +353,8 @@ mod tests {
         );
     }
 
-    /// An agent bookmarks the moment the player shows, adds the open video
-    /// to Watch later and edits the shared library, one call each.
+    /// An agent bookmarks the moment the player shows, adds the open video to Watch later
+    /// and edits the library, one call each.
     #[test]
     fn an_agent_works_the_shared_library_one_call_each() {
         let sample = std::path::Path::new(env!("OUT_DIR")).join("h264-aac.mp4");
@@ -409,8 +395,6 @@ mod tests {
         assert_eq!(app.state().annotations.len(), 1);
     }
 
-    /// What an agent does in the shared library reads as the player's
-    /// sentences, in English and German.
     #[test]
     fn history_entries_render_as_the_apps_sentences() {
         use ui::tilo_actions::{ActionInvoker, ActorKind};

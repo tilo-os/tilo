@@ -1,7 +1,6 @@
-//! What the player can open, and how each kind arrives: a file given on the
-//! command line, a path the person picked, the demo clip a capture or a first
-//! run shows, and the token that keeps one source distinct from another, so a
-//! resume position belongs to the clip it was left in.
+//! What the player can open and how each kind arrives: a file named on the command line, a
+//! picked path, a capture's demo clip, and the token that keeps one source distinct from
+//! another so a resume position stays with its clip.
 
 use std::path::{Path, PathBuf};
 
@@ -25,9 +24,8 @@ pub(super) fn video_open_request() -> PickRequest {
         .all_files()
 }
 
-/// Build a [`media::Source`] for a filesystem path: a path under the FUSE
-/// workspace mount becomes a [`media::Source::Workspace`] (read-through,
-/// hydrate-on-demand); anything else is a [`media::Source::LocalFile`].
+/// A [`media::Source`] for a path: one under the FUSE workspace mount reads through and
+/// hydrates on demand; anything else is a local file.
 pub fn source_for_path(path: &Path) -> media::Source {
     let root = media::Source::workspace_root();
     if path.starts_with(&root) {
@@ -37,8 +35,7 @@ pub fn source_for_path(path: &Path) -> media::Source {
     }
 }
 
-/// The source a launch argument names: a stream's `http(s)` URL, else a
-/// path.
+/// The source a launch argument names: an `http(s)` URL, else a path.
 pub fn source_for_argument(argument: &str) -> media::Source {
     if argument.starts_with("http://") || argument.starts_with("https://") {
         media::Source::Remote {
@@ -49,8 +46,7 @@ pub fn source_for_argument(argument: &str) -> media::Source {
     }
 }
 
-/// What a source is called before anyone names it: a file's name, or a
-/// stream's.
+/// What a source is called before anyone names it.
 pub(super) fn source_title(source: &media::Source) -> String {
     match source {
         media::Source::LocalFile(path) | media::Source::Workspace(path) => path

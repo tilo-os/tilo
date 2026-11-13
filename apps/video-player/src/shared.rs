@@ -1,26 +1,19 @@
-//! The shared library: playlists, timestamp annotations and where playback
-//! stands for everyone watching a video together.
-//!
-//! Media capabilities stay device-private: shared rows hold only an opaque
-//! media reference and human metadata, never a path. Renaming a playlist,
-//! editing or moving an annotation and reordering or removing a playlist
-//! item are field edits at their paths; the methods below are the
-//! operations that are more than setting a field.
+//! The shared library: playlists, timestamp annotations and where playback stands for
+//! everyone watching a video together. Shared rows hold an opaque media reference and
+//! human metadata, never a path.
 
 use std::collections::BTreeMap;
 
 use ui::tilo_resource::{self, ActionCx, Collection, Id, Model, NonBlank, Refusal, resource};
 
-/// How many videos' playback the library remembers; the one left longest
-/// ago makes room.
+/// How many videos' playback the library remembers; the one left longest ago makes room.
 pub const MAX_TRANSPORTS: usize = 32;
 /// How much text a name, a title or a note may hold.
 const MAX_TEXT_BYTES: usize = 8 * 1024;
-/// The id of the shared Watch later playlist, the same on every replica so
-/// two people adding to it at once add to one playlist.
+/// Watch later's id, the same on every replica so two people adding at once add to one
+/// playlist.
 pub const WATCH_LATER: &str = "watch-later";
 
-/// One video in a playlist.
 #[derive(Model, Clone, Debug, PartialEq, Eq)]
 #[model(check = PlaylistItem::valid)]
 pub struct PlaylistItem {
@@ -28,8 +21,6 @@ pub struct PlaylistItem {
     #[model(readonly)]
     pub playlist: Id,
     /// Video
-    ///
-    /// The opaque, shareable identity of the video; never a device path.
     #[model(readonly)]
     pub media_ref: String,
     /// Title
@@ -49,8 +40,7 @@ impl PlaylistItem {
     }
 }
 
-/// A playlist everyone in the workspace sees. Its videos are the library's
-/// playlist items that name it, in their order.
+/// A playlist everyone in the workspace sees; its videos are the items that name it.
 #[derive(Model, Clone, Debug, Default, PartialEq, Eq)]
 #[model(check = Playlist::valid)]
 pub struct Playlist {
@@ -73,13 +63,9 @@ impl Playlist {
 #[model(check = TimestampAnnotation::valid)]
 pub struct TimestampAnnotation {
     /// Video
-    ///
-    /// The opaque, shareable identity of the video; never a device path.
     #[model(readonly)]
     pub media_ref: String,
     /// Time
-    ///
-    /// Milliseconds from the start of the video.
     pub time_ms: u64,
     /// Note
     #[model(label)]
@@ -96,7 +82,6 @@ impl TimestampAnnotation {
         Ok(())
     }
 
-    /// What its row says: the note, or "Bookmark".
     pub fn title(&self) -> &str {
         if self.text.is_empty() {
             "Bookmark"
@@ -106,9 +91,9 @@ impl TimestampAnnotation {
     }
 }
 
-/// Where playback of one video stands for everyone watching it together:
-/// the play state and the playhead at a wall-clock moment, which every
-/// participant projects to its own now.
+/// Where playback of one video stands for everyone watching it together: the play state
+/// and the playhead at a wall-clock moment, which each participant projects to its own
+/// now.
 #[derive(Model, Clone, Debug, Default, PartialEq)]
 pub struct SharedTransport {
     /// Playing
@@ -118,8 +103,6 @@ pub struct SharedTransport {
     /// Speed
     pub rate: f64,
     /// Said at
-    ///
-    /// Unix milliseconds at which `position_ms` held.
     pub epoch_ms: u64,
 }
 
@@ -135,16 +118,11 @@ impl SharedTransport {
     }
 }
 
-/// The library everyone in the workspace shares.
 #[derive(Model, Clone, Debug, Default, PartialEq)]
 pub struct Library {
     /// Playlists
     pub playlists: Collection<Playlist>,
     /// Playlist items
-    ///
-    /// Every playlist's videos, in order. Kept beside the playlists rather
-    /// than inside them, so two people adding to one playlist they both
-    /// just made (Watch later) keep both videos.
     pub items: Collection<PlaylistItem>,
     /// Annotations
     pub annotations: Collection<TimestampAnnotation>,
@@ -160,13 +138,8 @@ fn valid_ref(media_ref: &str) -> bool {
 }
 
 impl Library {
-    /// What the record holds: the playlists, the timestamp annotations and where playback
-    /// stands for everyone watching a video together.
-    ///
-    /// It answers through [`fields`](tilo_resource::read::fields): a caller
-    /// with no window open reads the record as it reads any app's record, and
-    /// a named item is read from the record's table or by the read its own
-    /// type gives it.
+    /// What the record holds: the playlists, the annotations and where playback stands for
+    /// everyone watching together.
     pub fn read_document(
         &self,
         item: Option<&tilo_resource::Id>,
@@ -181,8 +154,6 @@ impl Library {
 )]
 impl Library {
     /// Create shared playlist.
-    ///
-    /// A playlist everyone in the workspace sees.
     #[action]
     pub fn create_playlist(&mut self, cx: &mut ActionCx, #[param("Playlist name")] name: NonBlank) {
         self.playlists.push(
@@ -194,8 +165,6 @@ impl Library {
     }
 
     /// Delete playlist.
-    ///
-    /// Its videos go with it.
     #[action(destructive, item = playlists)]
     pub fn delete_playlist(&mut self, playlist: &Id) -> Result<(), Refusal> {
         self.playlists
@@ -205,7 +174,6 @@ impl Library {
         Ok(())
     }
 
-    /// Add media to playlist.
     #[action(item = playlists)]
     pub fn add_to_playlist(
         &mut self,
@@ -229,9 +197,6 @@ impl Library {
     }
 
     /// Add to Watch later.
-    ///
-    /// Adds a video to the shared Watch later playlist, making the playlist
-    /// when there is none; a video already on it stays where it is.
     #[action]
     pub fn add_to_watch_later(
         &mut self,
@@ -261,9 +226,6 @@ impl Library {
     }
 
     /// Add timestamp annotation.
-    ///
-    /// A review note at a time in a shared video; without a note it is a
-    /// bookmark.
     #[action]
     pub fn add_annotation(
         &mut self,
@@ -282,7 +244,6 @@ impl Library {
         );
     }
 
-    /// Delete annotation.
     #[action(destructive, item = annotations)]
     pub fn delete_annotation(&mut self, annotation: &Id) -> Result<(), Refusal> {
         self.annotations
@@ -292,10 +253,6 @@ impl Library {
     }
 
     /// Say where playback stands.
-    ///
-    /// Everyone watching the video follows. Not an undo step: playing,
-    /// pausing and seeking are not edits. The library remembers the
-    /// playback of the last few videos.
     #[action(housekeeping)]
     pub fn set_transport(
         &mut self,
@@ -335,7 +292,6 @@ impl Library {
 }
 
 impl Library {
-    /// Where playback of the video `media_ref` stands, if anyone played it.
     pub fn transport_for(&self, media_ref: &str) -> Option<&SharedTransport> {
         self.transports.get(media_ref)
     }

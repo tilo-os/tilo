@@ -1,18 +1,7 @@
-//! The local video-player app: an edge-to-edge reusable
-//! [`ui::widget::VideoPlayer`] driven by a shared [`media::MediaEngine`].
-//!
-//! `PlayerApp` is the window, over the [`PlayerState`] the view shares with
-//! its effect handler. The video fills the whole surface — there is
-//! **no persistent app chrome bar** (the OS owns window chrome; HIG §1e wants
-//! video immersive). The library's toggle, the media title and Open are slots
-//! in the window's bar (`window_bar`), which steps aside with the rest of the
-//! desktop's chrome while the video plays full screen, and the library
-//! itself is a sheet over a scrim (`library`). With no picture the area says
-//! why (`status`): nothing is open, a first frame is coming, or the open
-//! failed. It opens files through the XDG
-//! `FileChooser` portal (or `--open PATH`), and — when a collab session is
-//! attached — keeps playback in sync across peers via the shared [`media`]
-//! transport.
+//! The player window: an edge-to-edge [`ui::widget::VideoPlayer`] over a shared
+//! [`media::MediaEngine`], with the library's toggle, the title and Open as slots in the
+//! window's bar and the library a sheet over the video. With no picture the area says
+//! why. Playback stays in step with peers through the shared transport.
 
 mod decoder;
 mod effects;
@@ -72,7 +61,6 @@ use crate::preferences::{PLAYBACK_RATES, PlayerSettings, RecentMedia, RecentVide
 use crate::shared::{Library as PlayerResource, library as verbs};
 use ui::widget::DrawChild;
 
-/// The playback preferences the player follows.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct PlaybackPreferences {
     autoplay: bool,
@@ -91,7 +79,6 @@ impl Default for PlaybackPreferences {
 }
 
 impl PlaybackPreferences {
-    /// What this device stored, as the player follows it.
     fn from_settings(stored: &PlayerSettings) -> Self {
         Self {
             autoplay: stored.autoplay,
@@ -102,14 +89,14 @@ impl PlaybackPreferences {
     }
 }
 
-/// A decoder open is asynchronous. Do not turn portal/direct admission into a
-/// false successful history entry until a first picture has actually arrived.
+/// A decoder open is asynchronous: no history entry claims success until a first picture
+/// has arrived.
 const OPEN_FRAME_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(12);
 mod opening;
 
 use opening::{PendingMediaOpen, PendingPortalOpen, Picked, PickerChannel, PortalOpenOutcome};
-/// A file-backed local record. The source is deliberately kept only in this
-/// process; public resources expose the opaque `id` and friendly basename.
+/// A file-backed local record. The source stays in this process; published rows expose an
+/// opaque `id` and the basename.
 #[derive(Clone)]
 struct LocalMediaEntry {
     id: String,
@@ -144,17 +131,14 @@ enum LibraryTab {
     Shared,
 }
 
-/// What the picture area says when the decoder cannot play a video.
 const DECODER_FAILURE: &str = "The decoder could not play this video.";
 
-/// What the authored capture library lists beside its demo clip.
 const DEMO_QUEUE: &[(&str, &str)] = &[
     ("https://demo.local/market.mp4", "Market morning"),
     ("https://demo.local/night-train.mp4", "Night train"),
 ];
 
 impl LibraryTab {
-    /// The tab's name in the show-library effect.
     fn name(self) -> &'static str {
         match self {
             Self::Queue => "queue",
@@ -170,9 +154,8 @@ impl LibraryTab {
     }
 }
 
-/// A player for a window built in `mode`: only a window someone uses
-/// decodes with the system's engine and announces itself to the session's
-/// media controls. A capture or a past version gets the deterministic
+/// A player for a window built in `mode`: only a live window decodes with the system's
+/// engine and announces itself to the session's media controls. A capture gets the
 /// synthesized engine and reaches nothing outside the process.
 fn configured_player(mode: RunMode, preferences: PlaybackPreferences) -> VideoPlayer {
     let engine = if mode.is_live() {
@@ -190,23 +173,20 @@ fn configured_player(mode: RunMode, preferences: PlaybackPreferences) -> VideoPl
     player
 }
 
-/// The test id of the picture and its controls.
 const VIDEO_SURFACE: &str = "video_surface";
 
-/// How often a playing video's resume point is written while it plays.
+/// How often a playing video's resume point is written.
 const RESUME_WRITE_INTERVAL_MS: u64 = 3_000;
-/// Within this of the end, a video counts as finished: replaying it starts at
-/// the beginning rather than in its last moments.
+/// Within this of the end a video counts as finished, so replaying it starts at the
+/// beginning.
 const RESUME_END_MARGIN_MS: u64 = 2_000;
-/// A volume change is kept once it settles: a slider drag writes one value
-/// instead of one per step, and the value it comes to rest at is never
-/// dropped.
+/// A volume change is kept once it settles, so a slider drag writes one value and the
+/// value it rests at is never dropped.
 const VOLUME_SETTLE_MS: u64 = 400;
 
-/// Put this device's own volume and speed on `player`: what the person last
-/// chose here, whatever video it plays next. The volume is only set when it
-/// differs, so an unrelated preference change does not unmute a player the
-/// person muted.
+/// Put this device's volume and speed on `player`. The volume is set only when it
+/// differs, so an unrelated preference change does not unmute a player the person
+/// muted.
 fn apply_playback_levels(player: &mut VideoPlayer, preferences: PlaybackPreferences) {
     if (player.volume() - preferences.volume).abs() > f32::EPSILON {
         player.set_volume(preferences.volume);
@@ -218,8 +198,8 @@ fn apply_playback_levels(player: &mut VideoPlayer, preferences: PlaybackPreferen
 
 fn configure_player_settings(player: &mut VideoPlayer, preferences: PlaybackPreferences) {
     apply_playback_levels(player, preferences);
-    // These settings are implemented by this app, so the shared settings
-    // popover is never decorative.
+    // This app implements these settings, so the settings popover is never
+    // decorative.
     player.set_setting(PlayerSetting::toggle(
         "autoplay",
         Icon::Play,
@@ -279,39 +259,31 @@ fn parent_node(taffy: &mut TaffyTree<()>, style: Style, children: &[NodeId]) -> 
     clippy::struct_excessive_bools,
     reason = "overlay, local library, portal, and frame-dirty flags are independent widget state"
 )]
-/// The player and everything the window shows of it: what the window lays
-/// out and the view's effect handler, effect statuses and live rows answer
-/// with.
+/// The player and everything the window shows of it: what it lays out, and what the
+/// view's effect handler, statuses and live rows answer with.
 pub(crate) struct PlayerState {
     player: VideoPlayer,
     title: String,
     rect: Rect,
-    /// The action of the idle or error state over the picture.
     status_action_rect: Rect,
-    /// A video dropped anywhere on the window opens like one chosen. Only a
-    /// device with a pointer can drag one in, so a phone is never told to.
+    /// A dropped video opens like a chosen one; only a device with a pointer can drag one
+    /// in, so a phone is never told to.
     file_open: ui::widget::FileOpenSurface,
-    /// How the person reaches the window, as the host reports it: what the
-    /// drop hint reads.
+    /// How the person reaches the window, as the host reports it: what the drop hint
+    /// reads.
     pub(crate) interaction: ui::interaction::InteractionEnvironment,
-    /// How far the docked library pushes the picture in from the leading
-    /// edge, as the last layout laid the player out.
     content_inset: f64,
-    /// The docked library's width changed since the player was laid out.
     content_inset_stale: bool,
-    /// The top of the player's transport, shown or not: a floating library
-    /// stops above it.
+    /// The top of the player's transport: a floating library stops above it.
     transport_top: f64,
-    /// The library sheet: a leading drawer over the video, on the side of
-    /// the Library button that opens it.
+    /// The library sheet, on the side of the button that opens it.
     drawer: SidebarDrawer,
     /// Where the sheet's lists scroll to, and how far they can.
     library_scroll: f64,
     library_max_scroll: f64,
     /// The area of the sheet its rows live in; rows outside it do not act.
     library_list_rect: Rect,
-    /// The way back to the picture while the library fills a narrow window's
-    /// content area ([`Self::library_takes_the_window`]).
+    /// The way back to the picture while the library fills a narrow window.
     library_back_rect: Rect,
     library_queue_tab_rect: Rect,
     library_recent_tab_rect: Rect,
@@ -327,9 +299,8 @@ pub(crate) struct PlayerState {
     recent: RecentEntries,
     current_queue_id: Option<String>,
     last_cursor: Point,
-    /// A file-open portal request in flight, drained each `sync`. Requests are
-    /// never replaced: doing so would let an old chooser response unexpectedly
-    /// open a file after the user chose a newer source.
+    /// A file-open request in flight, drained each sync. A request is never replaced: an
+    /// old chooser's answer could otherwise open a file after a newer choice.
     portal_open: Option<PendingPortalOpen>,
     media_open: Option<PendingMediaOpen>,
     portal_generation: u64,
@@ -337,79 +308,60 @@ pub(crate) struct PlayerState {
     /// Playback watched together with everyone who has the same video open.
     together: Together,
     preferences: PlaybackPreferences,
-    /// This device's settings, where a live window keeps its preferences;
-    /// `None` for a capture or a past version.
+    /// This device's settings; `None` for a capture or a past version.
     setting: Option<Setting<PlayerSettings>>,
-    /// The recent videos record and this device's id, where a live window
-    /// keeps its recent videos; `None` for a capture or a past version.
+    /// The recent videos record and this device's id; `None` for a capture or a past
+    /// version.
     recents: Option<(PersonRecord<RecentVideos>, String)>,
-    /// Where each video left off on this device, by its opaque identity, so
-    /// opening it again resumes: see [`ResumePoints`].
+    /// Where each video left off on this device, by its opaque identity.
     resume: ResumePoints,
-    /// The resume point last written for the open video, so a playing video
-    /// writes every few seconds and a still one only when it moves.
+    /// The resume point last written, so a playing video writes every few seconds and a
+    /// still one only when it moves.
     resume_write: Option<ResumeWrite>,
-    /// Where the open video is to be moved once its length is known: the
-    /// decoder answers that asynchronously, and a seek before then would be
-    /// clamped to the unknown length.
+    /// Where the open video is to be moved once its length is known: a seek before then
+    /// would be clamped to the unknown length.
     pending_resume: Option<PendingResume>,
-    /// When the volume last changed, while it is still settling.
     volume_settling_since: Option<u64>,
-    /// Deterministic decoder metadata used only by the explicit headless
-    /// `metadata` screenshot fixture. Live runs always read the active engine.
+    /// Decoder metadata for the headless `metadata` capture; a live run reads the engine.
     shot_metadata: Option<DecoderMetadata>,
-    /// Deterministically holds the production no-frame/loading presentation
-    /// for visual regression capture while the synthesized engine stays
-    /// hermetic. Live runs always derive loading from decoder frame state.
+    /// Holds the production loading presentation for a capture while the synthesized engine
+    /// stays hermetic; a live run derives loading from the decoder's frame state.
     shot_loading: bool,
     pending_pip: Option<ui::floating_surface::FloatingSurfaceRequest>,
-    /// Where the shared library's edits and the player's own controls go:
-    /// the framework's door, handed over when the view attaches the window.
+    /// Where the library's edits and the player's controls go, handed over when the view
+    /// attaches the window.
     dispatcher: Option<Dispatcher<PlayerResource>>,
-    /// The window bar's entries, carrying the effects they request.
     bar: ui::framework::BarCommands<crate::actions::VideoEffect>,
-    /// The shared library's verbs bound to what the player shows, published
-    /// for the view that hosts it: the view reads it, so it does not hold
-    /// the player.
+    /// The library's verbs bound to what the player shows, which the hosting view reads.
     playhead: Option<crate::resource::Playhead>,
-    /// The shared library as last presented.
     shared_library: crate::shared::Library,
-    /// What the window is built for: only a live one starts a decoder
-    /// service, media controls or collaboration.
+    /// What the window is built for: only a live one starts a decoder service, media
+    /// controls or collaboration.
     mode: RunMode,
-    /// What a capture waits for before its frame is taken.
     capture_awaits: CaptureAwaits,
-    /// The video a capture's launch named, played once the scenario stages.
     pub(crate) capture_launched: Option<String>,
-    /// Opaque source identity for durable shared playlists and markers. It
-    /// survives reopening the same local media, unlike the per-open source ID.
+    /// Opaque source identity for durable shared playlists and markers, which survives
+    /// reopening the same media.
     current_media_ref: Option<String>,
     current_source_id: Option<String>,
     source_generation: u64,
-    /// The decoder metadata the settings menu shows.
     shown_metadata: DecoderMetadata,
-    /// A human-readable failure from the latest open request. It is only
-    /// painted in the no-frame state, preserving a successfully playing video
-    /// when a later picker request fails.
+    /// Why the latest open failed, painted only in the no-frame state, so a later failure
+    /// does not disturb a playing video.
     open_error: Option<String>,
     missing_codec: Option<String>,
-    /// The empty state's action holds the keyboard.
     status_focused: bool,
     formats_label: String,
-    /// Where files have no path: the kept copy (`crate::kept`) of each
-    /// queue or recent entry opened by contents, by entry id.
+    /// Where files have no path: the kept copy of each entry opened by contents, by entry
+    /// id.
     kept: HashMap<String, String>,
-    /// Kept copies still on disk, newest first.
     kept_retained: Vec<String>,
-    /// A kept copy being read back, and the entry it reopens.
     kept_recall: Option<KeptRecall>,
     kept_wake: ui::wake::WakeHandle,
     dirty: bool,
 }
 
-/// What a capture of the player waits for before it is taken: a decoded
-/// picture of what it plays, or what became of opening it (a picture or the
-/// decoder's error).
+/// What a capture waits for: a decoded picture, or what became of opening the video.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum CaptureAwaits {
     Nothing,
@@ -417,28 +369,22 @@ enum CaptureAwaits {
     Outcome,
 }
 
-/// How far the playhead here may stray from where it stands for everyone
-/// before this player says it moved it: past the drift a follower corrects
-/// on its own, so following never echoes back as a move.
+/// How far the playhead may stray from where it stands for everyone before this player
+/// says it moved it: past the drift a follower corrects, so following never echoes back.
 const TOGETHER_MOVE_MS: u64 = 1_500;
-/// How long after following a peer's move this player waits before it says
-/// anything itself, while its engine catches up.
+/// How long after following a peer's move this player waits before it says anything
+/// itself, while its engine catches up.
 const TOGETHER_SETTLE_MS: u64 = 1_500;
-/// How long a paused shared transport stays something to follow: a video
-/// left paused long ago starts on its own when it is opened again.
+/// How long a paused shared transport stays something to follow.
 const TOGETHER_PAUSE_LIVES_MS: u64 = 10 * 60 * 1000;
 
-/// What watching together does this frame.
 #[derive(Debug, PartialEq)]
 enum TogetherStep {
-    /// Bring the engine to where playback stands for everyone.
     Follow(media::TransportState),
-    /// Say where playback stands here: this player moved it.
     Publish(media::TransportState),
     Stay,
 }
 
-/// The resume point of the open video as it was last written.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct ResumeWrite {
     media_ref: String,
@@ -447,39 +393,32 @@ struct ResumeWrite {
     at_ms: u64,
 }
 
-/// Where a just-opened video is to be moved, for its identity: applied once
-/// the decoder knows how long the video is.
+/// Where a just-opened video is to be moved, once the decoder knows its length.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct PendingResume {
     media_ref: String,
     position_ms: u64,
 }
 
-/// What this player last knew of playback watched together.
 #[derive(Default)]
 struct Together {
     /// The video it concerns.
     media_ref: Option<String>,
-    /// The shared transport last seen, to tell a new one from an old one.
+    /// The shared transport last seen, to tell a new one from an old.
     seen: Option<crate::shared::SharedTransport>,
-    /// What this player itself said last, to know its own change when it
-    /// comes back.
+    /// What this player said last, to know its own change when it comes back.
     said: Option<media::TransportState>,
-    /// Until when this player only follows, after it followed a move.
     settling_until: u64,
-    /// Whether what was seen is over (left paused long ago, run past the
-    /// end): nothing to follow or to compare with.
+    /// Whether what was seen is over: nothing to follow or compare with.
     over: bool,
-    /// Whether what was seen is this player's own: it leads, so there is
-    /// nothing to ride along with. Correcting its engine toward its own
-    /// announcement would seek it back every frame while it starts playing
-    /// or resumes, before its playhead moves.
+    /// Whether what was seen is this player's own: correcting its engine toward its own
+    /// announcement would seek it back every frame while it starts.
     leading: bool,
 }
 
 impl Together {
-    /// Decide this frame's step for the video `media_ref`, given where
-    /// playback stands for everyone (`shared`) and here (`local`), at `now`.
+    /// This frame's step for the video `media_ref`, given where playback stands for
+    /// everyone and here.
     fn step(
         &mut self,
         media_ref: &str,
@@ -489,8 +428,8 @@ impl Together {
         duration_ms: u64,
     ) -> TogetherStep {
         if self.media_ref.as_deref() != Some(media_ref) {
-            // A video just opened: what stood before is the past unless it
-            // is still running, or was paused a moment ago.
+            // A video just opened: what stood before is the past unless it is still
+            // running, or was paused a moment ago.
             let over = shared.filter(|shared| !Self::current(shared, now, duration_ms));
             *self = Self {
                 media_ref: Some(media_ref.to_owned()),
@@ -511,10 +450,8 @@ impl Together {
                     return TogetherStep::Stay;
                 }
                 if !Self::current(shared, now, duration_ms) {
-                    // A playback that already ran past the end (such as an
-                    // older one the workspace put back when it undid this
-                    // player's move) is over: following it would seek here
-                    // to the end again and swallow every seek and replay.
+                    // A playback that already ran past the end is over: following it would
+                    // seek here to the end again and swallow every replay.
                     self.over = true;
                     return TogetherStep::Stay;
                 }
@@ -542,8 +479,8 @@ impl Together {
             return TogetherStep::Publish(local);
         }
         match joined {
-            // Ride along with a peer's playback: small drift rides, the
-            // engine corrects larger drift.
+            // Ride along with a peer's playback: small drift rides, the engine corrects
+            // larger drift.
             Some(shared)
                 if shared.playing && !self.leading && Self::current(shared, now, duration_ms) =>
             {
@@ -553,8 +490,8 @@ impl Together {
         }
     }
 
-    /// Whether `shared` is still something to join: running inside the
-    /// video, or paused a moment ago.
+    /// Whether `shared` is still something to join: running inside the video, or paused a
+    /// moment ago.
     fn current(shared: &crate::shared::SharedTransport, now: u64, duration_ms: u64) -> bool {
         if shared.playing {
             duration_ms == 0 || shared.state().projected_position(now) < duration_ms
@@ -587,12 +524,10 @@ struct DecoderMetadata {
 }
 
 impl PlayerState {
-    /// A player with a fresh engine and no media loaded, for a window built
-    /// in `mode`, on the default preferences until a live window reads this
-    /// device's settings when it is attached.
+    /// A player with a fresh engine and no media loaded, on the default preferences.
     pub(crate) fn new(mode: RunMode) -> Self {
-        // Tests exercise the real request and completion paths; a recording
-        // host answers every picker so no desktop file chooser ever opens.
+        // Tests exercise the real request and completion paths; a recording host answers
+        // every picker so no desktop chooser opens.
         #[cfg(test)]
         ui::host::install_default(ui::host::HostServices::recording().0);
         let preferences = PlaybackPreferences::default();
@@ -681,10 +616,9 @@ impl PlayerState {
         }
     }
 
-    /// Open what the launch named: a path or a stream's URL, continuing the
-    /// playback another device handed over when it says where that stood.
-    /// The handoff's position and play state land after the open, so local
-    /// autoplay preferences cannot override them.
+    /// Open what the launch named: a path or a stream's URL, continuing the playback a
+    /// handoff says where it stood. The handoff lands after the open, so local autoplay
+    /// cannot override it.
     pub(crate) fn open_launch(&mut self, launch: &LaunchInput<'_>) {
         let Some(argument) = launch.argument() else {
             return;
@@ -700,8 +634,8 @@ impl PlayerState {
             return;
         }
         if let Some(handoff) = handoff {
-            // The handoff says where playback stood a moment ago, which is
-            // newer than anything this device stored: it wins.
+            // The handoff says where playback stood a moment ago, which is newer than
+            // anything stored here.
             self.pending_resume = None;
             self.player.seek_to_ms(handoff.position_ms);
             if handoff.resume_playing {
@@ -712,15 +646,13 @@ impl PlayerState {
         }
     }
 
-    /// Publish what the playhead is on into `playhead`, which the view that
-    /// hosts this player reads.
+    /// Publish what the playhead is on into `playhead`, which the hosting view reads.
     pub(crate) fn share_playhead(&mut self, playhead: &crate::resource::Playhead) {
         self.playhead = Some(playhead.clone());
         self.publish_playhead();
     }
 
-    /// Tell the view what the playhead is on now. Nothing happens before the
-    /// view hands over where to say it.
+    /// Tell the view what the playhead is on now.
     fn publish_playhead(&self) {
         let Some(playhead) = &self.playhead else {
             return;
@@ -728,9 +660,9 @@ impl PlayerState {
         *playhead.borrow_mut() = self.playhead_declarations();
     }
 
-    /// Take part in the framework: its door for edits and controls, and in
-    /// a live window this device's settings and what the launch named. A
-    /// capture keeps what its launch named for the scenario to stage.
+    /// Take part in the framework: its door for edits and controls, and in a live window
+    /// this device's settings and what the launch named; a capture keeps that for its
+    /// scenario to stage.
     pub(crate) fn attach_framework(&mut self, cx: &ViewCx<PlayerResource>) {
         self.dispatcher = Some(cx.dispatcher());
         match cx.mode() {
@@ -754,14 +686,12 @@ impl PlayerState {
         }
     }
 
-    /// Follow this device's stored preferences, the levels it plays at.
     fn adopt_settings(&mut self, stored: &PlayerSettings) {
         self.preferences = PlaybackPreferences::from_settings(stored);
         configure_player_settings(&mut self.player, self.preferences);
         self.dirty = true;
     }
 
-    /// Follow this device's recent videos and where each of them left off.
     fn adopt_recent(&mut self, rows: &crate::preferences::RecentHistory) {
         self.recent = rows
             .iter()
@@ -771,12 +701,12 @@ impl PlayerState {
                 source: entry.source.clone(),
             })
             .collect();
-        // Rows are newest first; the map is oldest first, so it drops the
-        // same row a bounded recent history would.
+        // Rows are newest first and the map oldest first, so it drops the row a bounded
+        // history would.
         self.resume.clear();
         for entry in rows.iter().rev() {
-            // A row read back from a launch is a place to resume from, never
-            // an instruction to start playing: a restart never autoplays.
+            // A row read back from a launch is a place to resume from, never an
+            // instruction to play.
             self.resume
                 .record(&resume_key(&entry.source), entry.position_ms, false);
         }
@@ -795,8 +725,7 @@ impl PlayerState {
         self.open_local_source(source, title, Some(queue_id))
     }
 
-    /// Open a video dropped on the window, saying over the picture why it
-    /// cannot be when it cannot.
+    /// Open a dropped video, saying over the picture why it cannot be when it cannot.
     fn open_dropped(&mut self, path: &Path) {
         self.open_error = None;
         self.missing_codec = None;
@@ -805,8 +734,6 @@ impl PlayerState {
         }
     }
 
-    /// Open a video the host handed over as bytes (a browser page has no
-    /// paths to give).
     fn open_contents(&mut self, file: &PickedContents) -> Result<(), String> {
         let source = media::Source::from_contents(&file.name, &file.bytes)
             .map_err(|e| format!("could not stage {}: {e}", file.name))?;
@@ -823,7 +750,6 @@ impl PlayerState {
         Ok(())
     }
 
-    /// Keep a video opened by contents for Recent, or say why it is not.
     fn keep_contents(&mut self, queue_id: &str, file: &PickedContents) {
         if file.bytes.len() > crate::kept::KEEP_LIMIT {
             if let Some(entry) = self.queue.iter_mut().find(|entry| entry.id == queue_id) {
@@ -851,7 +777,6 @@ impl PlayerState {
         ));
     }
 
-    /// Start reading a kept copy back; the entry opens once it is here.
     fn recall_kept(&mut self, token: &str, title: String, queue_id: Option<String>) {
         let wake = self.kept_wake.clone();
         self.kept_recall = Some(KeptRecall {
@@ -939,8 +864,8 @@ impl PlayerState {
             self.recall_kept(&token, title, queue_id);
             return Ok(());
         }
-        // This open leaves the video that was open: keep where it stood
-        // before its decoder is replaced.
+        // This open leaves the video that was open: keep where it stood before its
+        // decoder is replaced.
         self.remember_position(true);
         if let Err(error) = self.set_current_source(&source) {
             self.open_error = Some(error.clone());
@@ -954,12 +879,11 @@ impl PlayerState {
         self.title = title;
         self.current_queue_id = queue_id;
         self.player.open(source);
-        // Every open plays at this device's own levels, loudly enough and at
-        // the speed this person chose here.
+        // Every open plays at this device's own levels.
         apply_playback_levels(&mut self.player, self.preferences);
         self.resume_write = None;
-        // Where this video left off, if it did: the seek lands once the
-        // decoder reports the length (see `apply_pending_resume`).
+        // Where the video left off, if it did: the seek lands once the decoder reports the
+        // length.
         let resume = self
             .current_media_ref
             .as_deref()
@@ -977,9 +901,8 @@ impl PlayerState {
         self.player.reveal_controls();
         self.player
             .set_now_playing(ui::widget::video_player::NowPlaying {
-                // MPRIS/session metadata must not disclose a portal-granted
-                // absolute path. The title above is just the user-facing file
-                // name; this stable opaque ID is the machine identity.
+                // Session metadata must not disclose a portal-granted path: the title is
+                // the file name, the opaque id is the machine identity.
                 track_id: self.current_source_id.clone().unwrap_or_default(),
                 title: self.title.clone(),
                 artist: String::new(),
@@ -989,8 +912,7 @@ impl PlayerState {
         Ok(())
     }
 
-    /// The decoder's audio (`audio`) or subtitle track a row id names, for
-    /// the open source.
+    /// The decoder track a row id names, for the open source.
     fn track_named(&self, row: &str, audio: bool) -> Option<&crate::actions::TrackState> {
         let source_id = self.current_source_id.as_deref()?;
         let tracks = if audio {
@@ -1009,8 +931,6 @@ impl PlayerState {
     }
 }
 
-/// The window passes the player and its library take part in; the window
-/// runs them over the state it shares.
 impl PlayerState {
     fn has_pending_visual_work(&self) -> bool {
         self.capture_pending() || self.player.has_pending_visual_work()
@@ -1037,16 +957,14 @@ impl PlayerState {
         self.run_window_toolbar();
     }
 
-    /// The window's root node with the player stretched over what the
-    /// docked library leaves, and the player's node. The window maps both.
+    /// The window's root node with the player stretched over what the docked library
+    /// leaves, and the player's node.
     fn build_layout(&mut self, taffy: &mut TaffyTree<()>, theme: &Theme) -> (NodeId, NodeId) {
         self.drawer.scale_for(theme);
         self.content_inset_stale = false;
-        // Edge-to-edge: the player fills the whole surface beside the docked
-        // library. The window keeps itself in the node map (so it can
-        // intercept the floating Open pill) by owning a single-child root
-        // that stretches the player over what the library leaves; the
-        // player's node is mapped to the window's host of it.
+        // Edge-to-edge: the player fills the surface beside the docked library. The window
+        // keeps itself in the node map, to intercept the floating Open pill, by owning a
+        // single-child root that stretches the player over what the library leaves.
         let player_node = self.player.build_layout(taffy, theme, &mut HashMap::new());
         let root = parent_node(
             taffy,
@@ -1068,8 +986,8 @@ impl PlayerState {
         (root, player_node)
     }
 
-    /// The docked library's width, as the leading padding the player is
-    /// laid out beside, on a retained tree as on a rebuilt one.
+    /// The docked library's width as leading padding of the player, on a retained tree as
+    /// on a rebuilt one.
     fn adjust_layout_style(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -1095,7 +1013,6 @@ impl PlayerState {
         let Ok(children) = taffy.children(node) else {
             return;
         };
-        // children[0] = player, filling the whole surface (edge-to-edge).
         let Some(&player_node) = children.first() else {
             return;
         };
@@ -1111,8 +1028,8 @@ impl PlayerState {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        // A key (L, Ctrl+O) or an arriving picture changes what the bar
-        // shows without a sync.
+        // A key (L, Ctrl+O) or an arriving picture changes what the bar shows without a
+        // sync.
         ui::window_toolbar::declare(Some(self.window_toolbar()));
         self.sync_library_sheet();
         self.drawer.tick(theme);
@@ -1128,8 +1045,6 @@ impl PlayerState {
         self.paint_library_panel(scene, transform, text_renderer, theme);
     }
 
-    /// Take `event` where the window answers it itself; whether it is the
-    /// player's.
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) -> bool {
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.last_cursor =
@@ -1143,9 +1058,8 @@ impl PlayerState {
             *ctx.handled = true;
             return false;
         }
-        // The library drawer reads its own dismissals (a press on the scrim,
-        // Escape); the library's hide action is what closes it, so the
-        // drawer stays open until that action lands.
+        // The drawer reads its own dismissals; the hide action is what closes it, so it
+        // stays open until that action lands.
         self.resolve_library();
         let drawer_open = self.drawer.is_open();
         if self.drawer.handle_event(event, ctx) {
@@ -1188,7 +1102,6 @@ impl PlayerState {
             *ctx.handled = true;
             return false;
         }
-        // Everything else is the player's (its controls + shortcuts).
         true
     }
 
@@ -1466,8 +1379,8 @@ impl PlayerState {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        // Playback and the portal are the only frame-rate work; a paused
-        // player wakes for a peer's change when the document presents it.
+        // Playback and the portal are the only frame-rate work; a paused player wakes for
+        // a peer's change when the document presents it.
         self.player.needs_animation_frame()
             || self.drawer.is_animating()
             || self.portal_open.is_some()

@@ -1,40 +1,30 @@
-//! What Video Player offers the palette, agents and scripts beyond the
-//! shared library's own verbs and field edits: the effects of the player on
-//! this device, and the live rows of what the player shows (the open
-//! video's tracks and chapters, this device's queue and recent videos).
+//! What Video Player offers beyond the library's own verbs and field edits: the player's
+//! effects on this device, and the live rows of what it shows.
 
 use ui::framework::LiveRow;
 // `#[derive(Effect)]` names the crate as `tilo_resource`.
 use ui::tilo_resource;
 use ui::tilo_resource::Effect;
 
-/// The player's effect `id`, referenced as a control is bound to it: the
-/// kind is the one its vocabulary publishes under.
+/// The player's effect `id`, while the kind is the one its vocabulary publishes under.
 pub fn reference(id: &'static str) -> tilo_resource::ActionRef<VideoEffect, ()> {
     tilo_resource::ActionRef::new(id, &[], VideoEffect::kind())
 }
 
-/// The published tree stays responsive even for containers with an unusually
-/// large number of streams or chapters, or a long library. Stable ids still
-/// let a caller reach an omitted row.
+/// The published tree stays responsive however many streams, chapters or library rows
+/// there are; a caller still reaches an omitted row by its stable id.
 pub const CONTEXTUAL_CHILD_LIMIT: usize = 32;
 
-/// What Video Player does on this device: work with no document delta,
-/// invoked from its own controls, the palette, an agent or a script alike.
-/// A `track`, `chapter` or `item` is the id of the live row that offers it,
-/// which names one stream of one opened source, so a delayed invocation
-/// never reaches a later video's streams.
+/// What Video Player does on this device: work with no document delta, from its own
+/// controls, the palette, an agent or a script. A `track`, `chapter` or `item` names one
+/// stream of one opened source, so a delayed call never reaches a later video's.
 #[derive(Clone, Debug, PartialEq, Effect)]
 #[effect(operation = "video-player.effect")]
 pub enum VideoEffect {
-    /// Play more video and audio formats.
-    /// Opens Settings at Updates, where this device's owner can install formats.
+    /// Play more video and audio formats: opens Settings at Updates.
     #[effect(view)]
     OpenFormats,
     /// Open video.
-    ///
-    /// Opens a video file or stream on this device and answers once its
-    /// first picture has decoded.
     #[effect(job, kind = "read")]
     #[effect(label = "video-open-video")]
     OpenVideo {
@@ -44,17 +34,12 @@ pub enum VideoEffect {
         path: Option<String>,
     },
     /// Play this video.
-    ///
-    /// Opens a video of this device's queue or recent videos and answers
-    /// once its first picture has decoded.
     #[effect(row, job, kind = "read")]
     PlayQueued {
         #[param("The queue or recent video's item id")]
         item: String,
     },
     /// Remove from queue.
-    ///
-    /// Removes the entry from this device's queue; the video file stays.
     #[effect(row, kind = "read")]
     #[effect(label = "video-remove-from-queue")]
     RemoveQueued {
@@ -62,113 +47,88 @@ pub enum VideoEffect {
         item: String,
     },
     /// Clear recent videos.
-    ///
-    /// Forgets the videos played on this device; no file is deleted.
     #[effect(destructive, kind = "read")]
     #[effect(label = "video-clear-recent")]
     ClearRecent,
-    /// Show library.
     #[effect(view)]
     ShowLibrary {
         #[param("queue | recent | shared")]
         tab: String,
     },
-    /// Close library.
     #[effect(view)]
     HideLibrary,
-    /// Close video.
     #[effect(view)]
     Close,
-    /// Play or pause.
     #[effect(view)]
     TogglePlayback,
-    /// Mute or unmute.
     #[effect(view)]
     ToggleMute,
-    /// Show player controls.
     #[effect(view)]
     Reveal,
-    /// Seek to seconds.
     #[effect(view)]
     Seek {
         #[param("Non-negative playback position in seconds")]
         seconds: f64,
     },
-    /// Seek by seconds.
     #[effect(view)]
     SeekBy {
         #[param("Signed offset from the current position (at most one hour)")]
         seconds: f64,
     },
-    /// Restart.
     #[effect(view)]
     Restart,
-    /// Jump to end.
     #[effect(view)]
     JumpToEnd,
-    /// Set volume.
     #[effect(view)]
     SetVolume {
         #[param("Volume from 0 (silent) to 1 (full)")]
         volume: f64,
     },
-    /// Set autoplay.
     #[effect(view)]
     SetAutoplay {
         #[param("Whether newly opened videos begin playing")]
         enabled: bool,
     },
-    /// Set repeat current video.
     #[effect(view)]
     SetLoop {
         #[param("Whether the current video repeats after it finishes")]
         enabled: bool,
     },
-    /// Set playback speed.
     #[effect(view)]
     SetPlaybackRate {
         #[param("Playback speed from 0.25 to 4")]
         rate: f64,
     },
-    /// Use this audio track.
     #[effect(view, row)]
     SelectAudioTrack {
         #[param("The audio track row's id")]
         track: String,
     },
-    /// Show these subtitles.
     #[effect(view, row)]
     SelectSubtitles {
         #[param("The subtitle track row's id")]
         track: String,
     },
-    /// Turn subtitles off.
     #[effect(view)]
     SubtitlesOff,
-    /// Go to chapter.
     #[effect(view, row)]
     JumpToChapter {
         #[param("The chapter row's id")]
         chapter: String,
     },
-    /// Jump to timestamp.
-    ///
-    /// Seeks the matching video on this device to a shared review note.
     #[effect(view, row)]
     JumpToAnnotation {
         #[param("The annotation's id")]
         annotation: String,
     },
-    /// Open Picture in Picture.
     #[effect(view)]
     PictureInPicture,
-    /// Enter or exit fullscreen.
     #[effect(view)]
     ToggleFullscreen,
 }
 
 impl VideoEffect {
-    /// Whether this effect is meaningful only while a video is open.
+    /// Whether this effect means anything only while a video is open.
     pub fn requires_media(&self) -> bool {
         matches!(
             self,
@@ -192,7 +152,6 @@ impl VideoEffect {
     }
 }
 
-/// Stream metadata the decoder actually reported.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TrackState {
     pub stream_id: String,
@@ -201,7 +160,6 @@ pub struct TrackState {
     pub selected: bool,
 }
 
-/// A stable chapter address and its playback target.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ChapterState {
     pub id: String,
@@ -209,8 +167,8 @@ pub struct ChapterState {
     pub seconds: f64,
 }
 
-/// A queue or recent row. `id` is an opaque per-device token; neither it nor
-/// a label contains a filesystem path.
+/// A queue or recent row. `id` is an opaque per-device token; neither it nor a label holds
+/// a path.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LocalMediaItemState {
     pub id: String,
@@ -218,12 +176,9 @@ pub struct LocalMediaItemState {
     pub current: bool,
 }
 
-/// What the player shows that the document does not hold, for its live rows.
 pub struct PlayerRows<'a> {
-    /// The open video's title, when one is open.
     pub title: Option<&'a str>,
-    /// Exact identity of the open source; stream and chapter rows are named
-    /// by it.
+    /// Exact identity of the open source, which names the stream and chapter rows.
     pub source_id: Option<&'a str>,
     pub audio_tracks: &'a [TrackState],
     pub subtitle_tracks: &'a [TrackState],
@@ -234,8 +189,8 @@ pub struct PlayerRows<'a> {
     pub playing: bool,
 }
 
-/// A compact, deterministic token for a row id. The raw identity is resolved
-/// against the player's state before anything acts on it.
+/// A compact, deterministic token for a row id; the raw identity is resolved against the
+/// player's state before anything acts on it.
 pub fn identity_token_for_action(value: &str) -> String {
     let mut encoded = String::with_capacity(value.len().saturating_mul(2));
     for byte in value.bytes() {
@@ -283,9 +238,8 @@ pub fn recent_item_resource_id(item_id: &str) -> String {
     )
 }
 
-/// The live rows of what the player shows: the open video with its audio
-/// and subtitle tracks and chapters, this device's queue and its recent
-/// videos, each bounded to `limit` rows.
+/// The live rows of what the player shows: the open video's tracks and chapters, this
+/// device's queue and recent videos, each bounded to `limit` rows.
 pub(crate) fn live_rows(rows: &PlayerRows<'_>, limit: usize) -> Vec<LiveRow> {
     let mut published = Vec::new();
     if let Some(title) = rows.title {
@@ -319,10 +273,9 @@ pub(crate) fn live_rows(rows: &PlayerRows<'_>, limit: usize) -> Vec<LiveRow> {
         }
         published.push(media);
     }
-    // Showing the queue or the recent videos is the player's own view
-    // (`show-library`, with its tab), not these rows': a view here would be
-    // the row's disclosure, a private one that keeps removing a queued video
-    // and clearing the recent ones from agents.
+    // Showing the queue or the recents is the player's own view, not these rows': a view
+    // here would be a private disclosure that keeps removing a queued video and clearing
+    // the recents from agents.
     let queue = LiveRow::new(
         "video-player.queue.local",
         "media.queue",
@@ -345,8 +298,7 @@ pub(crate) fn live_rows(rows: &PlayerRows<'_>, limit: usize) -> Vec<LiveRow> {
     published
 }
 
-/// The live row `id`: a collection, or any of its rows, also one the
-/// bounded tree leaves out.
+/// The live row `id`: a collection, or a row the bounded tree leaves out.
 pub(crate) fn live_row(rows: &PlayerRows<'_>, id: &str) -> Option<LiveRow> {
     audio_rows(rows)
         .chain(subtitle_rows(rows))
