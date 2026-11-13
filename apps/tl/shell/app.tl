@@ -58,6 +58,8 @@ type Desk (origin: session.desk) {
     windows: Collection<Win>
     /// The running applications' tray items, in the order they registered.
     tray: Collection<TrayItem>
+    /// The applications installed on this device: what the launcher lists and opens.
+    apps: Collection<App>
     /// The desk styles every installed package offers, as the session publishes them: each
     /// a view of the arrangement (`shell.md` §6), listed by its own words. The person's choice
     /// names one of them in `Viewing.style`.
@@ -85,6 +87,21 @@ type DeskStyle (origin: session.desk_style) {
     /// Why the style does not load, in the runtime's words, when it does not; empty when it
     /// does.
     reason: Text
+}
+
+/// An application installed on this device, as the launcher lists it: its package id, its name in
+/// the person's language, the glyph it shows, and how it opens.
+type App (origin: session.application) {
+    /// Its package id, which `open_app` names it by.
+    key: Text merge register
+    /// Its name in the person's interface language.
+    name: Text merge register
+    /// The glyph it shows, by the platform icon's kebab-case name.
+    icon: Text merge register
+    /// Its category (`work`, `media`, `play`, `system`), empty when it named none.
+    category: Text merge register
+    /// What it is for, in a few words; empty when it offers none.
+    description: Text merge register
 }
 
 /// A workspace on this device.
@@ -219,10 +236,21 @@ default view shell_settings for Shell
 view desk_view(a: Arrangement) {
     let d = root Desk
     let chosen = style_of(viewing)
-    if loads_style(d, chosen) {
-        show(a, view: chosen, fill)
-    } else {
-        show(a, view: "so.tilo.shell:strips", fill)
+    layers {
+        if loads_style(d, chosen) {
+            show(a, view: chosen, fill)
+        } else {
+            show(a, view: "so.tilo.shell:strips", fill)
+        }
+        // The chosen style's own settings, over whatever the style drew: the system's one
+        // settings place for a desk style, opened from the bar's style menu (`style_menu`,
+        // `strips.tl`) and drawn here rather than by each style, so every style — the shipped
+        // four and any a person or agent wrote — gets settings at the same place and by the
+        // same actions (`shell.md` §6, "Two ways to change a desk"). A style that draws no bar
+        // is reached by Settings, which shows the same panel.
+        if shell.settings_open {
+            style_panel(d)
+        }
     }
 }
 

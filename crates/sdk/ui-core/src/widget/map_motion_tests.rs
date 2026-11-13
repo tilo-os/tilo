@@ -280,13 +280,14 @@ fn middle_drag(
     ));
 }
 
-/// A pin's rectangle on the screen as the region placed it and the camera drew it: what the
-/// person sees move.
+/// A pin's rectangle on the screen as the region laid it out: what the person sees move.
 fn laid(harness: &crate::headless::FrameHarness, key: &str) -> Rect {
     harness
         .root::<Map>()
-        .host_of(key)
-        .map(|host| host.screen)
+        .laid
+        .borrow()
+        .get(key)
+        .copied()
         .unwrap_or_else(|| panic!("the pin {key:?} is laid out"))
 }
 
