@@ -8,7 +8,16 @@ still brings up, and one step per version in between. A machine that missed
 updates still holds a file of an older version, so the chain only grows:
 
 ``check`` (the repository policy suite) fails when a declaration's
-``oldest`` is not a plain number, which the comparison below needs.
+``oldest`` is not a plain number, which the comparison below needs, and when
+no loader brings the format's stored versions up: a declared chain of steps
+only keeps data if the code that opens the file runs it. Each format's crate
+must call ``<FORMAT>.bring_up(path, bytes, stored)`` (or ``bring_up_moved``
+for a version that lived in a file of its own) with the version it read from
+the file, not a number it assumed, so every stored version goes through the
+steps and leaves its old file beside the new one; and no loader calls
+``migrate``, which brings bytes up but keeps no copy of what the file held.
+A loader that brought up only the first version's file and read a later one
+as it was refused a whole relay's state at start.
 
 ``against BASE`` (run against main before landing) fails when a format
 declared at BASE now brings up fewer versions: its ``oldest`` rose, or the
@@ -41,6 +50,95 @@ def declarations(texts: dict[str, str]) -> dict[str, tuple[str, str]]:
         for match in DECLARATION.finditer(text):
             found[match.group("name")] = (path, match.group("oldest").strip())
     return found
+
+
+BINDING = re.compile(
+    r"\bconst\s+(?P<binding>[A-Z][A-Z0-9_]*)\s*:\s*(?:[\w:]+::)?Format\s*=\s*"
+    r"(?:[\w:]+::)?Format\s*\{\s*name:\s*\"(?P<name>[^\"]+)\"",
+    re.S,
+)
+CALL = r"\s*\.\s*(?P<call>bring_up_moved|bring_up|migrate)\s*\("
+
+
+def without_tests(path: str, text: str) -> str:
+    """`text` without its tests: nothing for a test file, else everything
+    before its first inline `#[cfg(test)] mod … {`, where this tree keeps a
+    file's tests."""
+    name = path.rsplit("/", 1)[-1]
+    if "/tests/" in path or "/benches/" in path or "/examples/" in path:
+        return ""
+    if name.endswith("tests.rs") or name in ("test_support.rs", "fixtures.rs"):
+        return ""
+    inline = re.search(r"#\[cfg\(test\)\]\s*(?:pub(?:\([\w:]+\))?\s+)?mod\s+\w+\s*\{", text)
+    return text[: inline.start()] if inline else text
+
+
+def arguments(text: str, start: int) -> list[str]:
+    """The top-level, comma-separated arguments of the call whose opening
+    parenthesis is just before `start`."""
+    depth, current, found = 0, [], []
+    for char in text[start:]:
+        if char in "([{":
+            depth += 1
+        elif char in ")]}":
+            if depth == 0:
+                found.append("".join(current).strip())
+                return [argument for argument in found if argument]
+            depth -= 1
+        elif char == "," and depth == 0:
+            found.append("".join(current).strip())
+            current = []
+            continue
+        current.append(char)
+    return found
+
+
+def crate_of(root: Path, path: str) -> Path:
+    """The directory of the crate `path` (relative to `root`) belongs to, or
+    the file's own directory when no manifest is above it."""
+    directory = (root / path).parent
+    while directory != root and not (directory / "Cargo.toml").is_file():
+        directory = directory.parent
+    return directory if directory != root else (root / path).parent
+
+
+def loaders(root: Path, texts: dict[str, str]) -> list[str]:
+    """Each declared format whose crate opens its file without bringing every
+    stored version up through `bring_up`, or brings one up with `migrate`."""
+    problems = []
+    crates: dict[Path, dict[str, str]] = {}
+    for path, text in texts.items():
+        for match in BINDING.finditer(text):
+            binding, name = match.group("binding"), match.group("name")
+            crate = crate_of(root, path)
+            if crate not in crates:
+                crates[crate] = {
+                    file.relative_to(root).as_posix(): file.read_text(errors="replace")
+                    for file in crate.glob("**/*.rs")
+                }
+            stem = path.rsplit("/", 1)[-1].removesuffix(".rs")
+            named = []
+            for other, other_text in crates[crate].items():
+                code = without_tests(other, other_text)
+                bare = other == path or re.search(rf"\buse\b[^;]*\b{stem}::{binding}\b", code)
+                prefix = rf"(?<![\w:]){binding}" if bare else rf"\b{stem}::{binding}"
+                for call in re.finditer(prefix + CALL, code):
+                    named.append((other, call.group("call"), arguments(code, call.end())))
+            for other, call, args in named:
+                if call == "migrate":
+                    problems.append(
+                        f"{other}: format {name!r} is brought up with `migrate`, which keeps no "
+                        "copy of what the file held; a loader calls `bring_up` (or "
+                        "`bring_up_moved` for a version kept in a file of its own)"
+                    )
+            if not any(call != "migrate" and args and not args[-1].isdigit() for _, call, args in named):
+                problems.append(
+                    f"{path}: format {name!r} declares the versions it brings up, but no code "
+                    f"of its crate passes the version it read from the file to "
+                    f"`{binding}.bring_up`: a file an older build wrote would be read as it is, or "
+                    "refused. Its loader reads the stored version and brings it up before it reads."
+                )
+    return problems
 
 
 def sources(root: Path) -> dict[str, str]:
@@ -101,12 +199,14 @@ def sources_since(root: Path, base: str, before: dict[str, str]) -> dict[str, st
 
 def check(root: Path = ROOT) -> list[str]:
     problems = []
-    for name, (path, oldest) in declarations(sources(root)).items():
+    texts = sources(root)
+    for name, (path, oldest) in declarations(texts).items():
         if not oldest.isdigit():
             problems.append(
                 f"{path}: format {name!r} declares `oldest: {oldest}`; write the number, so "
                 "that it can only ever fall"
             )
+    problems.extend(loaders(root, texts))
     return problems
 
 

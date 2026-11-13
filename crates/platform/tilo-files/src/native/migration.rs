@@ -7,6 +7,14 @@
 //! bytes it wrote ([`assert_golden_bytes`]): a persisted type's layout is its field
 //! order, so changing one bumps the version and adds the step that reads what devices
 //! have.
+//!
+//! The steps keep data only when the code that opens the file runs them: its loader
+//! reads the version the file names and hands it to [`Format::bring_up`] before it
+//! reads the bytes, whatever version that is. A version that lived in a file of its
+//! own comes up into the new one through [`Format::bring_up_moved`]. [`Format::migrate`]
+//! alone keeps no copy of the old file and is for testing the steps.
+//! `tools/policy/check_format_migrations.py` fails a format whose crate opens its file
+//! any other way.
 
 use std::path::{Path, PathBuf};
 
@@ -153,6 +161,38 @@ impl Format {
         super::atomic::write(path, &migrated).map_err(io)?;
         Ok(migrated)
     }
+
+    /// [`Self::bring_up`] for a format whose older version lived in a file of
+    /// its own: the file at `from`, whose contents `bytes` are of version
+    /// `stored`, brought up to [`Self::version`] at `to`. The migrated bytes
+    /// are written to `to` first, then the old file moves beside it as its
+    /// snapshot ([`Self::snapshot_path`] of `to`), so a crash between the two
+    /// leaves both and the next open finds `to` current. An old file another
+    /// opener already moved is no error.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::migrate`], or [`MigrationError::Io`]; `from` is unchanged
+    /// on every error.
+    pub fn bring_up_moved(
+        &self,
+        from: &Path,
+        to: &Path,
+        bytes: Vec<u8>,
+        stored: u32,
+    ) -> Result<Vec<u8>, MigrationError> {
+        let migrated = self.migrate(bytes, stored)?;
+        let io = |source| MigrationError::Io {
+            name: self.name,
+            source,
+        };
+        super::atomic::write(to, &migrated).map_err(io)?;
+        match std::fs::rename(from, Self::snapshot_path(to, stored)) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            result => result.map_err(io)?,
+        }
+        Ok(migrated)
+    }
 }
 
 /// The step from the previous version, applied to a file that version wrote (`previous`), gives bytes
@@ -257,6 +297,43 @@ mod tests {
 
         assert_eq!(NOTES.bring_up(&path, b"v3".to_vec(), 3).unwrap(), b"v3");
         assert_eq!(std::fs::read(&path).unwrap(), b"v1++");
+    }
+
+    #[test]
+    fn an_older_file_of_its_own_comes_up_in_the_new_place_and_is_kept_beside_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let old = dir.path().join("notes-v1.json");
+        let path = dir.path().join("notes.log");
+        std::fs::write(&old, b"v1").unwrap();
+
+        let migrated = NOTES
+            .bring_up_moved(&old, &path, b"v1".to_vec(), 1)
+            .unwrap();
+        assert_eq!(migrated, b"v1++");
+        assert_eq!(std::fs::read(&path).unwrap(), b"v1++");
+        assert!(!old.exists(), "the old file moved");
+        assert_eq!(
+            std::fs::read(Format::snapshot_path(&path, 1)).unwrap(),
+            b"v1",
+            "rollback loses nothing"
+        );
+
+        let refusing = Format {
+            steps: &[add_tail, refuse],
+            ..NOTES
+        };
+        std::fs::write(&old, b"v1").unwrap();
+        std::fs::remove_file(&path).unwrap();
+        assert!(matches!(
+            refusing.bring_up_moved(&old, &path, b"v1".to_vec(), 1),
+            Err(MigrationError::Step { from: 2, .. })
+        ));
+        assert_eq!(
+            std::fs::read(&old).unwrap(),
+            b"v1",
+            "a refusal moves nothing"
+        );
+        assert!(!path.exists());
     }
 
     #[test]

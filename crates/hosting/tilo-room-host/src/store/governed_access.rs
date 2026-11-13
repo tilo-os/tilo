@@ -290,12 +290,9 @@ impl WorkspaceStore {
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
             Err(error) => return Err(error.into()),
         };
-        let log = FORMAT
-            .migrate(bytes, 1)
+        FORMAT
+            .bring_up_moved(&old, &self.root.join(GOVERNED_ACCESS_FILE), bytes, 1)
             .map_err(|error| StoreError::Json(error.to_string()))?;
-        let path = self.root.join(GOVERNED_ACCESS_FILE);
-        atomic_write(&path, &log)?;
-        fs::rename(&old, Format::snapshot_path(&path, 1))?;
         Ok(())
     }
 
