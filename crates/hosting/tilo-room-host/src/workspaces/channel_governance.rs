@@ -153,11 +153,18 @@ impl Workspaces {
         {
             self.channel_notice(workspace, message.clone())?;
         }
-        if carried == Carried::Kept {
-            return Ok(());
+        let genesis = matches!(&message, neighbour_wire::NeighbourMsg::MlsGovernance { .. })
+            .then(|| message.clone());
+        if carried != Carried::Kept {
+            self.retain_channel_governance(workspace_id, vec![message])
+                .await?;
         }
-        self.retain_channel_governance(workspace_id, vec![message])
-            .await
+        if let Some(genesis) = genesis
+            && let Some(link) = self.inner.direct.link(workspace_id)
+        {
+            link.remember_genesis(author, &genesis);
+        }
+        Ok(())
     }
 
     /// Start handing `workspace`'s queued channel governance over. A crowd

@@ -721,6 +721,21 @@ impl DirectSync {
         let _ = self.0.outgoing.send(authored);
     }
 
+    /// Take `message`, `from`'s channel governance another carrier admitted
+    /// for this workspace, as a genesis this host carries: one that reaches it
+    /// over a member's relay session is not one it sends its links, and a
+    /// device asking after it must be answered with it rather than told the
+    /// channel has none.
+    pub fn remember_genesis(&self, from: [u8; 32], message: &NeighbourMsg) {
+        if self.fans_out() {
+            self.note_genesis(&Authored {
+                from,
+                message: message.clone(),
+                published: false,
+            });
+        }
+    }
+
     /// Note `authored` when it is a channel's genesis this host carries.
     fn note_genesis(&self, authored: &Authored) {
         let NeighbourMsg::MlsGovernance { frame, .. } = &authored.message else {
