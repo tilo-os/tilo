@@ -566,51 +566,52 @@ mod tests {
         }
     }
 
-    #[test]
-    fn orbit_and_resize_reproject_without_resampling_equations() {
-        let mut screen = screen();
-        let mut model = CalcModel::seeded();
-        screen.ensure_surfaces(&model);
-        let first = screen.surface_cache.cells.first().unwrap().path.clone();
-        model.view3d.yaw += 0.4;
-        model.view3d.pitch += 0.2;
-        screen.ensure_surfaces(&model);
-        assert_eq!(screen.surface_cache.sample_rebuilds, 1);
-        assert_ne!(screen.surface_cache.cells.first().unwrap().path, first);
-        screen.canvas.x1 += 100.0;
-        model.view3d.zoom *= 1.2;
-        screen.ensure_surfaces(&model);
-        assert_eq!(screen.surface_cache.sample_rebuilds, 1);
-        model.surfaces.first_mut().unwrap().expr = "x*y".into();
-        screen.ensure_surfaces(&model);
-        assert_eq!(screen.surface_cache.sample_rebuilds, 2);
-        // The angle unit is for calculations; a plot's axes stay numbers.
-        model.deg = true;
-        screen.ensure_surfaces(&model);
-        assert_eq!(screen.surface_cache.sample_rebuilds, 2);
-    }
+    tilo_test_env::scenario! {
+        /// A theme switch does not rebuild; editing, orbiting or zooming does;
+        /// hiding a surface drops its cells.
+        fn surface_cache_rebuilds_only_when_geometry_changes;
 
-    /// A surface reads x and y as plain numbers whatever the angle unit, so
-    /// `sin(x)` waves through its range instead of lying flat.
-    #[test]
-    fn surfaces_plot_in_radians_whatever_the_angle_unit() {
-        let mut model = CalcModel::seeded();
-        for surface in &mut model.surfaces {
-            surface.visible = false;
+        phase orbit_and_resize_reproject_without_resampling_equations;
+        {
+            let mut screen = screen();
+            let mut model = CalcModel::seeded();
+            screen.ensure_surfaces(&model);
+            let first = screen.surface_cache.cells.first().unwrap().path.clone();
+            model.view3d.yaw += 0.4;
+            model.view3d.pitch += 0.2;
+            screen.ensure_surfaces(&model);
+            assert_eq!(screen.surface_cache.sample_rebuilds, 1);
+            assert_ne!(screen.surface_cache.cells.first().unwrap().path, first);
+            screen.canvas.x1 += 100.0;
+            model.view3d.zoom *= 1.2;
+            screen.ensure_surfaces(&model);
+            assert_eq!(screen.surface_cache.sample_rebuilds, 1);
+            model.surfaces.first_mut().unwrap().expr = "x*y".into();
+            screen.ensure_surfaces(&model);
+            assert_eq!(screen.surface_cache.sample_rebuilds, 2);
+            // The angle unit is for calculations; a plot's axes stay numbers.
+            model.deg = true;
+            screen.ensure_surfaces(&model);
+            assert_eq!(screen.surface_cache.sample_rebuilds, 2);
         }
-        let first = model.surfaces.first_mut().unwrap();
-        first.expr = "sin(x)".into();
-        first.visible = true;
-        model.deg = true;
-        let (_, zmin, zmax) = Graph3dScreen::sample_surfaces(&model);
-        assert!(zmin < -0.9 && zmax > 0.9, "sin(x) spans {zmin}..{zmax}");
-    }
 
-    /// A theme switch does not rebuild; editing, orbiting or zooming does;
-    /// hiding a surface drops its cells.
-    #[test]
-    fn surface_cache_rebuilds_only_when_geometry_changes() {
-        // phase first_draw_samples_every_visible_surface
+        phase surfaces_plot_in_radians_whatever_the_angle_unit;
+        // A surface reads x and y as plain numbers whatever the angle unit, so
+        // `sin(x)` waves through its range instead of lying flat.
+        {
+            let mut model = CalcModel::seeded();
+            for surface in &mut model.surfaces {
+                surface.visible = false;
+            }
+            let first = model.surfaces.first_mut().unwrap();
+            first.expr = "sin(x)".into();
+            first.visible = true;
+            model.deg = true;
+            let (_, zmin, zmax) = Graph3dScreen::sample_surfaces(&model);
+            assert!(zmin < -0.9 && zmax > 0.9, "sin(x) spans {zmin}..{zmax}");
+        }
+
+        phase first_draw_samples_every_visible_surface;
         {
             let mut s = screen();
             let m = CalcModel::seeded(); // 3 visible surfaces
@@ -625,7 +626,7 @@ mod tests {
             );
         }
 
-        // phase theme_or_tab_switch_does_not_rebuild_surface
+        phase theme_or_tab_switch_does_not_rebuild_surface;
         {
             let mut s = screen();
             let mut m = CalcModel::seeded();
@@ -647,7 +648,7 @@ mod tests {
             );
         }
 
-        // phase editing_a_surface_or_orbiting_rebuilds
+        phase editing_a_surface_or_orbiting_rebuilds;
         {
             let mut s = screen();
             let mut m = CalcModel::seeded();
@@ -664,7 +665,7 @@ mod tests {
             assert_eq!(s.surface_cache.rebuilds, 4);
         }
 
-        // phase hiding_a_surface_drops_its_cells
+        phase hiding_a_surface_drops_its_cells;
         {
             let mut s = screen();
             let mut m = CalcModel::seeded();
@@ -682,7 +683,7 @@ mod tests {
             );
         }
 
-        // phase cached_cells_carry_theme_independent_shading
+        phase cached_cells_carry_theme_independent_shading;
         {
             let mut s = screen();
             let m = CalcModel::seeded();

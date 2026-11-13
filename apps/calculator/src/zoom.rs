@@ -223,11 +223,12 @@ mod tests {
         }
     }
 
-    /// The scale eases monotonically without overshoot, the point under the
-    /// cursor stays pinned, and reduced motion snaps.
-    #[test]
-    fn zoom_2d_eases_to_target_anchored_at_cursor_or_snaps_under_reduced_motion() {
-        // phase tick_eases_scale_toward_target_over_frames_without_overshoot
+    tilo_test_env::scenario! {
+        /// The scale eases monotonically without overshoot, the point under the
+        /// cursor stays pinned, and reduced motion snaps.
+        fn zoom_2d_eases_to_target_anchored_at_cursor_or_snaps_under_reduced_motion;
+
+        phase tick_eases_scale_toward_target_over_frames_without_overshoot;
         {
             let start = v(64.0, 0.0, 0.0);
             let mut z = ZoomAnim2d::new(start);
@@ -270,7 +271,7 @@ mod tests {
             assert!(!z.active(), "the animation clears when settled");
         }
 
-        // phase zoom_stays_anchored_around_the_cursor
+        phase zoom_stays_anchored_around_the_cursor;
         {
             let canvas_center = Point::new(400.0, 300.0);
             let cursor = Point::new(560.0, 220.0);
@@ -313,7 +314,7 @@ mod tests {
             assert!((w.x - anchor.x).abs() < 1e-9 && (w.y - anchor.y).abs() < 1e-9);
         }
 
-        // phase reduce_motion_snaps_zoom_immediately
+        phase reduce_motion_snaps_zoom_immediately;
         {
             let mut z = ZoomAnim2d::new(v(64.0, 0.0, 0.0));
             z.begin(
@@ -327,11 +328,12 @@ mod tests {
         }
     }
 
-    /// The 2D affine is the identity before any ease and scales by
-    /// display/sampled; the 3D scale factor tracks the same ratio.
-    #[test]
-    fn sampled_geometry_transform_tracks_display_to_sampled_ratio() {
-        // phase curve_affine_is_identity_before_any_ease
+    tilo_test_env::scenario! {
+        /// The 2D affine is the identity before any ease and scales by
+        /// display/sampled; the 3D scale factor tracks the same ratio.
+        fn sampled_geometry_transform_tracks_display_to_sampled_ratio;
+
+        phase curve_affine_is_identity_before_any_ease;
         {
             let start = v(64.0, 1.0, -2.0);
             let mut z = ZoomAnim2d::new(start);
@@ -343,7 +345,7 @@ mod tests {
             assert!(c[4].abs() < 1e-9 && c[5].abs() < 1e-9);
         }
 
-        // phase curve_affine_scales_about_the_cursor_anchor
+        phase curve_affine_scales_about_the_cursor_anchor;
         {
             let center = Point::new(400.0, 300.0);
             let sampled = v(64.0, 0.0, 0.0);
@@ -360,7 +362,7 @@ mod tests {
             assert!((mapped.x - center.x).abs() < 1e-6 && (mapped.y - center.y).abs() < 1e-6);
         }
 
-        // phase three_d_zoom_eases_and_scale_factor_tracks_ratio
+        phase three_d_zoom_eases_and_scale_factor_tracks_ratio;
         {
             let mut z = ZoomAnim3d::new(1.0);
             z.mark_sampled(1.0);

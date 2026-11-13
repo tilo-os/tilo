@@ -492,15 +492,16 @@ mod tests {
         (s, canvas)
     }
 
-    /// Docks when wide, floats as a drawer when narrow, re-docks when widened,
-    /// and keeps its row buttons apart.
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario, one labelled phase per merged case"
-    )]
-    fn functions_panel_docks_wide_floats_narrow_and_keeps_row_targets() {
-        // phase wide_docks_the_functions_panel
+    tilo_test_env::scenario! {
+        /// Docks when wide, floats as a drawer when narrow, re-docks when widened,
+        /// and keeps its row buttons apart.
+        #[allow(
+            clippy::too_many_lines,
+            reason = "one scenario, one labelled phase per merged case"
+        )]
+        fn functions_panel_docks_wide_floats_narrow_and_keeps_row_targets;
+
+        phase wide_docks_the_functions_panel;
         {
             let mut s = Graph2dScreen::default();
             let m = CalcModel::seeded();
@@ -523,7 +524,7 @@ mod tests {
             );
         }
 
-        // phase narrow_floats_the_panel_as_a_drawer
+        phase narrow_floats_the_panel_as_a_drawer;
         {
             let mut s = Graph2dScreen::default();
             let m = CalcModel::seeded();
@@ -548,7 +549,7 @@ mod tests {
             );
         }
 
-        // phase narrow_drawer_opens_with_scrim_and_dismisses
+        phase narrow_drawer_opens_with_scrim_and_dismisses;
         {
             let mut s = Graph2dScreen::default();
             let m = CalcModel::seeded();
@@ -571,7 +572,7 @@ mod tests {
             assert!(!s.panel.side().is_open());
         }
 
-        // phase panel_reflows_back_to_docked_when_widened
+        phase panel_reflows_back_to_docked_when_widened;
         {
             // Re-derived from the width each pass: no first-frame cache.
             let mut s = Graph2dScreen::default();
@@ -585,7 +586,7 @@ mod tests {
             );
         }
 
-        // phase row_buttons_have_pointer_targets_that_stay_apart
+        phase row_buttons_have_pointer_targets_that_stay_apart;
         {
             let mut s = Graph2dScreen::default();
             let m = CalcModel::seeded();
@@ -624,11 +625,12 @@ mod tests {
         }
     }
 
-    /// A theme switch does not resample; editing, panning or zooming does;
-    /// hiding a function drops its curve.
-    #[test]
-    fn curve_cache_resamples_only_when_geometry_changes() {
-        // phase first_draw_samples_visible_functions
+    tilo_test_env::scenario! {
+        /// A theme switch does not resample; editing, panning or zooming does;
+        /// hiding a function drops its curve.
+        fn curve_cache_resamples_only_when_geometry_changes;
+
+        phase first_draw_samples_visible_functions;
         {
             let (mut s, _) = screen_with_canvas();
             let m = CalcModel::seeded();
@@ -639,7 +641,7 @@ mod tests {
             assert_eq!(s.curve_cache.rebuilds, 1);
         }
 
-        // phase theme_or_tab_switch_does_not_resample
+        phase theme_or_tab_switch_does_not_resample;
         {
             let (mut s, _) = screen_with_canvas();
             let mut m = CalcModel::seeded();
@@ -660,7 +662,7 @@ mod tests {
             assert_eq!(s.curve_cache.rebuilds, 1, "tab switch triggered a resample");
         }
 
-        // phase editing_a_function_resamples
+        phase editing_a_function_resamples;
         {
             let (mut s, _) = screen_with_canvas();
             let mut m = CalcModel::seeded();
@@ -671,7 +673,7 @@ mod tests {
             assert_eq!(s.curve_cache.rebuilds, 2);
         }
 
-        // phase panning_the_view_resamples
+        phase panning_the_view_resamples;
         {
             let (mut s, _) = screen_with_canvas();
             let mut m = CalcModel::seeded();
@@ -684,7 +686,7 @@ mod tests {
             assert_eq!(s.curve_cache.rebuilds, 3);
         }
 
-        // phase toggling_visibility_off_drops_the_curve
+        phase toggling_visibility_off_drops_the_curve;
         {
             let (mut s, _) = screen_with_canvas();
             let mut m = CalcModel::seeded();
@@ -693,6 +695,83 @@ mod tests {
             m.funcs[0].visible = false;
             s.ensure_curves(&m);
             assert_eq!(s.curve_cache.paths.len(), before - 1);
+        }
+
+        phase the_same_view_samples_the_same_curve_bits;
+        // Sampling is a pure function of the functions, the view and the canvas:
+        // the same inputs give the same bits in the same order. A pixel can still
+        // differ between runs through the rasteriser's segment order, not through an
+        // unstable sample.
+        {
+            let model = CalcModel::seeded();
+            // The tablet preset's plot, with the functions panel docked at 1×.
+            let canvas = Rect::new(432.0, 0.0, 768.0, 1024.0);
+            let sample = |screen: &mut Graph2dScreen| {
+                screen.canvas = canvas;
+                screen.ensure_curves(&model);
+                sampled_bits(screen)
+            };
+
+            let mut first = Graph2dScreen::default();
+            let once = sample(&mut first);
+            assert!(
+                !once.is_empty() && once[0].1.len() > 100,
+                "the plot samples"
+            );
+
+            let mut second = Graph2dScreen::default();
+            assert_eq!(once, sample(&mut second), "a fresh screen samples one way");
+
+            // A cache hit replays the paths untouched; a rebuild reproduces them.
+            first.ensure_curves(&model);
+            assert_eq!(
+                first.curve_cache.rebuilds, 1,
+                "the second call reused the cache"
+            );
+            assert_eq!(once, sampled_bits(&first), "the cache replay kept the bits");
+            first.curve_cache.key = None;
+            first.ensure_curves(&model);
+            assert_eq!(
+                once,
+                sampled_bits(&first),
+                "re-sampling reproduced the bits"
+            );
+        }
+
+        phase a_line_samples_at_exact_columns_and_lands_on_the_line;
+        // An integer step from the canvas edge, so `y = x` lands on itself exactly
+        // and the last column is reachable. Accumulating `sx += 1.5` would drift.
+        {
+            let mut screen = Graph2dScreen {
+                canvas: Rect::new(0.0, 0.0, 300.0, 200.0),
+                ..Graph2dScreen::default()
+            };
+            let model = CalcModel {
+                funcs: vec![crate::model::PlotFn {
+                    expr: "x".into(),
+                    visible: true,
+                }],
+                ..CalcModel::default()
+            };
+            screen.ensure_curves(&model);
+            let curve = &screen.curve_cache.paths[0].path;
+            let points: Vec<Point> = curve
+                .elements()
+                .iter()
+                .filter_map(|element| match element {
+                    vello::kurbo::PathEl::MoveTo(p) | vello::kurbo::PathEl::LineTo(p) => Some(*p),
+                    _ => None,
+                })
+                .collect();
+            // 300 / 1.5 = 200 steps, and the step at the right edge is sampled too.
+            assert_eq!(points.len(), 201);
+            for (step, point) in points.iter().enumerate() {
+                let column = step as f64 * 1.5;
+                // The plot's centre is (150, 100) and the view is `scale` 64 about
+                // the origin, so screen y = 100 - (column - 150) = 250 - column.
+                assert_eq!(point.x.to_bits(), column.to_bits(), "column {step}");
+                assert_eq!(point.y.to_bits(), (250.0 - column).to_bits(), "row {step}");
+            }
         }
     }
 
@@ -717,83 +796,6 @@ mod tests {
                 (curve.series, points)
             })
             .collect()
-    }
-
-    /// Sampling is a pure function of the functions, the view and the canvas:
-    /// the same inputs give the same bits in the same order. A pixel can still
-    /// differ between runs through the rasteriser's segment order, not through an
-    /// unstable sample.
-    #[test]
-    fn the_same_view_samples_the_same_curve_bits() {
-        let model = CalcModel::seeded();
-        // The tablet preset's plot, with the functions panel docked at 1×.
-        let canvas = Rect::new(432.0, 0.0, 768.0, 1024.0);
-        let sample = |screen: &mut Graph2dScreen| {
-            screen.canvas = canvas;
-            screen.ensure_curves(&model);
-            sampled_bits(screen)
-        };
-
-        let mut first = Graph2dScreen::default();
-        let once = sample(&mut first);
-        assert!(
-            !once.is_empty() && once[0].1.len() > 100,
-            "the plot samples"
-        );
-
-        let mut second = Graph2dScreen::default();
-        assert_eq!(once, sample(&mut second), "a fresh screen samples one way");
-
-        // A cache hit replays the paths untouched; a rebuild reproduces them.
-        first.ensure_curves(&model);
-        assert_eq!(
-            first.curve_cache.rebuilds, 1,
-            "the second call reused the cache"
-        );
-        assert_eq!(once, sampled_bits(&first), "the cache replay kept the bits");
-        first.curve_cache.key = None;
-        first.ensure_curves(&model);
-        assert_eq!(
-            once,
-            sampled_bits(&first),
-            "re-sampling reproduced the bits"
-        );
-    }
-
-    /// An integer step from the canvas edge, so `y = x` lands on itself exactly
-    /// and the last column is reachable. Accumulating `sx += 1.5` would drift.
-    #[test]
-    fn a_line_samples_at_exact_columns_and_lands_on_the_line() {
-        let mut screen = Graph2dScreen {
-            canvas: Rect::new(0.0, 0.0, 300.0, 200.0),
-            ..Graph2dScreen::default()
-        };
-        let model = CalcModel {
-            funcs: vec![crate::model::PlotFn {
-                expr: "x".into(),
-                visible: true,
-            }],
-            ..CalcModel::default()
-        };
-        screen.ensure_curves(&model);
-        let curve = &screen.curve_cache.paths[0].path;
-        let points: Vec<Point> = curve
-            .elements()
-            .iter()
-            .filter_map(|element| match element {
-                vello::kurbo::PathEl::MoveTo(p) | vello::kurbo::PathEl::LineTo(p) => Some(*p),
-                _ => None,
-            })
-            .collect();
-        // 300 / 1.5 = 200 steps, and the step at the right edge is sampled too.
-        assert_eq!(points.len(), 201);
-        for (step, point) in points.iter().enumerate() {
-            let column = step as f64 * 1.5;
-            // The plot's centre is (150, 100) and the view is `scale` 64 about
-            // the origin, so screen y = 100 - (column - 150) = 250 - column.
-            assert_eq!(point.x.to_bits(), column.to_bits(), "column {step}");
-            assert_eq!(point.y.to_bits(), (250.0 - column).to_bits(), "row {step}");
-        }
     }
 
     /// No two of the first four series repeat a colour.

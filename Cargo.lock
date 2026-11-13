@@ -1820,6 +1820,7 @@ dependencies = [
  "taffy",
  "tilo-app",
  "tilo-automerge-fork",
+ "tilo-test-env",
  "tilo-vello",
  "tilo-winit",
  "workspace-hack",

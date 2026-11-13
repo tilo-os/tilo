@@ -886,441 +886,449 @@ mod tests {
         }
     }
 
-    #[test]
-    fn evaluation_and_compiled_sampling_produce_expected_values() {
-        use Cmp::{Exact, Near};
-        // (group, source, degrees?, expected, comparison)
-        let cases: &[(&str, &str, bool, f64, Cmp)] = &[
-            ("arithmetic_precedence", "1+2*3", false, 7.0, Exact),
-            ("arithmetic_precedence", "(1+2)*3", false, 9.0, Exact),
-            ("arithmetic_precedence", "2^3^2", false, 512.0, Exact), // right assoc
-            ("arithmetic_precedence", "-2^2", false, -4.0, Exact),   // unary looser than power
-            ("arithmetic_precedence", "10/4", false, 2.5, Near(1e-12)),
-            (
-                "implicit_multiplication",
-                "2pi",
-                false,
-                2.0 * PI,
-                Near(1e-9),
-            ),
-            ("implicit_multiplication", "3(1+1)", false, 6.0, Exact),
-            // functions_and_constants
-            (
-                "functions_and_constants",
-                "sqrt(16)",
-                false,
-                4.0,
-                Near(1e-12),
-            ),
-            ("functions_and_constants", "ln(e)", false, 1.0, Near(1e-12)),
-            (
-                "functions_and_constants",
-                "log(2,8)",
-                false,
-                3.0,
-                Near(1e-12),
-            ),
-            (
-                "functions_and_constants",
-                "max(1,7,3)",
-                false,
-                7.0,
-                Near(1e-12),
-            ),
-            (
-                "functions_and_constants",
-                "mod(7,3)",
-                false,
-                1.0,
-                Near(1e-12),
-            ),
-            ("degrees_vs_radians", "sin(90)", true, 1.0, Near(1e-9)),
-            ("exact_right_angles", "sin(pi)", false, 0.0, Exact),
-            ("exact_right_angles", "cos(pi/2)", false, 0.0, Exact),
-            ("exact_right_angles", "sin(3*pi/2)", false, -1.0, Exact),
-            ("exact_right_angles", "tan(pi)", false, 0.0, Exact),
-            ("exact_right_angles", "sin(-2*pi)", false, 0.0, Exact),
-            ("exact_right_angles", "sin(180)", true, 0.0, Exact),
-            ("exact_right_angles", "cos(90)", true, 0.0, Exact),
-            ("exact_right_angles", "sin(30)", true, 0.5, Near(1e-12)),
-            (
-                "exact_right_angles",
-                "sin(1e-13)",
-                false,
-                1e-13,
-                Near(1e-20),
-            ),
-            ("degrees_vs_radians", "sin(pi/2)", false, 1.0, Near(1e-9)),
-            ("degrees_vs_radians", "asin(1)", true, 90.0, Near(1e-9)),
-            ("factorial_and_percent", "5!", false, 120.0, Exact),
-            ("factorial_and_percent", "50%", false, 0.5, Near(1e-12)),
-            (
-                "factorial_and_percent",
-                "200*50%",
-                false,
-                100.0,
-                Near(1e-12),
-            ),
-        ];
-        for &(group, src, deg, want, cmp) in cases {
-            let got = if deg { evd(src) } else { ev(src) };
-            check(&format!("{group}: {src} (deg={deg})"), got, want, cmp);
-        }
+    tilo_test_env::scenario! {
+        fn expressions_evaluate_to_their_values;
 
-        let c = compile("x^2", false, false).unwrap();
-        check("compiled_sampling: x^2 at 3", c.eval1(3.0), 9.0, Exact);
-        let s = compile("sin(sqrt(x^2+y^2))", false, true).unwrap();
-        assert!(
-            s.eval2(0.0, 0.0).abs() < 1e-12,
-            "compiled_sampling: surface at origin"
-        );
-    }
+        phase evaluation_and_compiled_sampling_produce_expected_values;
+        {
+            use Cmp::{Exact, Near};
+            // (group, source, degrees?, expected, comparison)
+            let cases: &[(&str, &str, bool, f64, Cmp)] = &[
+                ("arithmetic_precedence", "1+2*3", false, 7.0, Exact),
+                ("arithmetic_precedence", "(1+2)*3", false, 9.0, Exact),
+                ("arithmetic_precedence", "2^3^2", false, 512.0, Exact), // right assoc
+                ("arithmetic_precedence", "-2^2", false, -4.0, Exact),   // unary looser than power
+                ("arithmetic_precedence", "10/4", false, 2.5, Near(1e-12)),
+                (
+                    "implicit_multiplication",
+                    "2pi",
+                    false,
+                    2.0 * PI,
+                    Near(1e-9),
+                ),
+                ("implicit_multiplication", "3(1+1)", false, 6.0, Exact),
+                // functions_and_constants
+                (
+                    "functions_and_constants",
+                    "sqrt(16)",
+                    false,
+                    4.0,
+                    Near(1e-12),
+                ),
+                ("functions_and_constants", "ln(e)", false, 1.0, Near(1e-12)),
+                (
+                    "functions_and_constants",
+                    "log(2,8)",
+                    false,
+                    3.0,
+                    Near(1e-12),
+                ),
+                (
+                    "functions_and_constants",
+                    "max(1,7,3)",
+                    false,
+                    7.0,
+                    Near(1e-12),
+                ),
+                (
+                    "functions_and_constants",
+                    "mod(7,3)",
+                    false,
+                    1.0,
+                    Near(1e-12),
+                ),
+                ("degrees_vs_radians", "sin(90)", true, 1.0, Near(1e-9)),
+                ("exact_right_angles", "sin(pi)", false, 0.0, Exact),
+                ("exact_right_angles", "cos(pi/2)", false, 0.0, Exact),
+                ("exact_right_angles", "sin(3*pi/2)", false, -1.0, Exact),
+                ("exact_right_angles", "tan(pi)", false, 0.0, Exact),
+                ("exact_right_angles", "sin(-2*pi)", false, 0.0, Exact),
+                ("exact_right_angles", "sin(180)", true, 0.0, Exact),
+                ("exact_right_angles", "cos(90)", true, 0.0, Exact),
+                ("exact_right_angles", "sin(30)", true, 0.5, Near(1e-12)),
+                (
+                    "exact_right_angles",
+                    "sin(1e-13)",
+                    false,
+                    1e-13,
+                    Near(1e-20),
+                ),
+                ("degrees_vs_radians", "sin(pi/2)", false, 1.0, Near(1e-9)),
+                ("degrees_vs_radians", "asin(1)", true, 90.0, Near(1e-9)),
+                ("factorial_and_percent", "5!", false, 120.0, Exact),
+                ("factorial_and_percent", "50%", false, 0.5, Near(1e-12)),
+                (
+                    "factorial_and_percent",
+                    "200*50%",
+                    false,
+                    100.0,
+                    Near(1e-12),
+                ),
+            ];
+            for &(group, src, deg, want, cmp) in cases {
+                let got = if deg { evd(src) } else { ev(src) };
+                check(&format!("{group}: {src} (deg={deg})"), got, want, cmp);
+            }
 
-    #[test]
-    fn values_followed_by_parentheses_use_implicit_multiplication() {
-        let ctx = Ctx {
-            x: 2.0,
-            y: 3.0,
-            ans: 4.0,
-            mem: 5.0,
-            ..Default::default()
-        };
-        for (source, expected, cmp) in [
-            ("pi(2)", 2.0 * PI, Cmp::Near(1e-12)),
-            ("π(2)", 2.0 * PI, Cmp::Near(1e-12)),
-            ("tau(2)", 2.0 * TAU, Cmp::Near(1e-12)),
-            ("e(2)", 2.0 * E, Cmp::Near(1e-12)),
-            ("x(x+1)", 6.0, Cmp::Exact),
-            ("y(2)", 6.0, Cmp::Exact),
-            ("ans(2)", 8.0, Cmp::Exact),
-            ("m(2)", 10.0, Cmp::Exact),
-            ("mem(2)", 10.0, Cmp::Exact),
-        ] {
-            check(source, evaluate(source, &ctx).unwrap(), expected, cmp);
-        }
-        assert!(ev("inf(2)").is_infinite());
-        assert!(ev("nan(2)").is_nan());
-        let curve = compile("x(x+1)", false, false).unwrap();
-        check("parenthetic curve", curve.eval1(2.0), 6.0, Cmp::Exact);
-        let surface = compile("x(y+1)", false, true).unwrap();
-        check(
-            "parenthetic surface",
-            surface.eval2(2.0, 3.0),
-            8.0,
-            Cmp::Exact,
-        );
-        assert!(compile("y(x+1)", false, false).is_err());
-    }
-
-    #[test]
-    fn negative_radicands_have_real_odd_integer_roots() {
-        for (source, expected) in [
-            ("root(3,-8)", -2.0),
-            ("root(5,-32)", -2.0),
-            ("root(-3,-8)", -0.5),
-            ("root(1,-8)", -8.0),
-        ] {
-            check(source, ev(source), expected, Cmp::Near(1e-12));
-        }
-        for source in ["root(2,-8)", "root(2.5,-8)"] {
-            assert!(ev(source).is_nan(), "{source} has no real root");
-        }
-        let curve = compile("root(3,x)", false, false).unwrap();
-        check("odd-root graph", curve.eval1(-8.0), -2.0, Cmp::Near(1e-12));
-        let surface = compile("root(3,x+y)", false, true).unwrap();
-        check(
-            "odd-root surface",
-            surface.eval2(-3.0, -5.0),
-            -2.0,
-            Cmp::Near(1e-12),
-        );
-    }
-
-    #[test]
-    fn gamma_preserves_representable_large_results() {
-        for n in [140u32, 150, 170, 171] {
-            let source = format!("gamma({n})");
-            let expected = factorial(f64::from(n - 1));
-            let got = ev(&source);
-            assert!(got.is_finite(), "{source} overflowed: {got}");
+            let c = compile("x^2", false, false).unwrap();
+            check("compiled_sampling: x^2 at 3", c.eval1(3.0), 9.0, Exact);
+            let s = compile("sin(sqrt(x^2+y^2))", false, true).unwrap();
             assert!(
-                (got / expected - 1.0).abs() < 1e-12,
-                "{source}: got {got}, expected {expected}",
+                s.eval2(0.0, 0.0).abs() < 1e-12,
+                "compiled_sampling: surface at origin"
             );
         }
-        // The recurrence is independent of the Lanczos formula and exercises
-        // non-integer inputs.
-        let expected = (0..150u32).fold(PI.sqrt(), |value, n| value * (f64::from(n) + 0.5));
-        for source in ["gamma(150.5)", "149.5!", "fact(149.5)"] {
-            let got = ev(source);
-            assert!(
-                (got / expected - 1.0).abs() < 1e-12,
-                "{source}: got {got}, expected {expected}",
-            );
-        }
-        check("gamma(0.5)", ev("gamma(0.5)"), PI.sqrt(), Cmp::Near(1e-12));
-        check(
-            "gamma(-0.5)",
-            ev("gamma(-0.5)"),
-            -2.0 * PI.sqrt(),
-            Cmp::Near(1e-12),
-        );
-        let curve = compile("gamma(x)", false, false).unwrap();
-        assert!(curve.eval1(150.0).is_finite());
-        assert!(ev("gamma(172)").is_infinite());
-        assert!(ev("171!").is_infinite());
-    }
 
-    #[test]
-    fn definite_integrals_cover_orientation_alias_and_adaptive_sampling() {
-        for (source, expected) in [
-            ("int(x^2,x,0,3)", 9.0),
-            ("int(x^2,x,3,0)", -9.0),
-            ("int(x,x,-2,2)", 0.0),
-            ("int(1/x,x,0,0)", 0.0),
-            ("int(x,x,2,2)", 0.0),
-            ("∫(x^2,x,0,1)", 1.0 / 3.0),
-            ("2int(x,x,0,1)+1", 2.0),
-            ("int(sin(x),x,0,pi)", 2.0),
-            ("int(exp(x),x,0,1)", E - 1.0),
-            (
-                "int(1/(1+10000*(x-0.3)^2),x,0,1)",
-                (70.0f64.atan() + 30.0f64.atan()) / 100.0,
-            ),
-        ] {
-            check(source, ev(source), expected, Cmp::Near(1e-8));
-        }
-        check(
-            "degree-mode integral",
-            evd("int(sin(x),x,0,180)"),
-            360.0 / PI,
-            Cmp::Near(1e-8),
-        );
-    }
-
-    #[test]
-    fn integral_initial_samples_do_not_alias_periodic_functions() {
-        // One Simpson panel and its first refinement sample only maxima of these
-        // cosines, reporting the integral as one.
-        for frequency in [8, 16, 32, 64] {
-            for (source, expected) in [
-                (format!("int(cos({frequency}*pi*x),x,0,1)"), 0.0),
-                (format!("int(1+cos({frequency}*pi*x),x,1,0)"), -1.0),
-                (format!("int(sin({frequency}*pi*x)^2,x,0,1)"), 0.5),
+        phase values_followed_by_parentheses_use_implicit_multiplication;
+        {
+            let ctx = Ctx {
+                x: 2.0,
+                y: 3.0,
+                ans: 4.0,
+                mem: 5.0,
+                ..Default::default()
+            };
+            for (source, expected, cmp) in [
+                ("pi(2)", 2.0 * PI, Cmp::Near(1e-12)),
+                ("π(2)", 2.0 * PI, Cmp::Near(1e-12)),
+                ("tau(2)", 2.0 * TAU, Cmp::Near(1e-12)),
+                ("e(2)", 2.0 * E, Cmp::Near(1e-12)),
+                ("x(x+1)", 6.0, Cmp::Exact),
+                ("y(2)", 6.0, Cmp::Exact),
+                ("ans(2)", 8.0, Cmp::Exact),
+                ("m(2)", 10.0, Cmp::Exact),
+                ("mem(2)", 10.0, Cmp::Exact),
             ] {
-                check(&source, ev(&source), expected, Cmp::Near(1e-8));
+                check(source, evaluate(source, &ctx).unwrap(), expected, cmp);
+            }
+            assert!(ev("inf(2)").is_infinite());
+            assert!(ev("nan(2)").is_nan());
+            let curve = compile("x(x+1)", false, false).unwrap();
+            check("parenthetic curve", curve.eval1(2.0), 6.0, Cmp::Exact);
+            let surface = compile("x(y+1)", false, true).unwrap();
+            check(
+                "parenthetic surface",
+                surface.eval2(2.0, 3.0),
+                8.0,
+                Cmp::Exact,
+            );
+            assert!(compile("y(x+1)", false, false).is_err());
+        }
+
+        phase negative_radicands_have_real_odd_integer_roots;
+        {
+            for (source, expected) in [
+                ("root(3,-8)", -2.0),
+                ("root(5,-32)", -2.0),
+                ("root(-3,-8)", -0.5),
+                ("root(1,-8)", -8.0),
+            ] {
+                check(source, ev(source), expected, Cmp::Near(1e-12));
+            }
+            for source in ["root(2,-8)", "root(2.5,-8)"] {
+                assert!(ev(source).is_nan(), "{source} has no real root");
+            }
+            let curve = compile("root(3,x)", false, false).unwrap();
+            check("odd-root graph", curve.eval1(-8.0), -2.0, Cmp::Near(1e-12));
+            let surface = compile("root(3,x+y)", false, true).unwrap();
+            check(
+                "odd-root surface",
+                surface.eval2(-3.0, -5.0),
+                -2.0,
+                Cmp::Near(1e-12),
+            );
+        }
+
+        phase gamma_preserves_representable_large_results;
+        {
+            for n in [140u32, 150, 170, 171] {
+                let source = format!("gamma({n})");
+                let expected = factorial(f64::from(n - 1));
+                let got = ev(&source);
+                assert!(got.is_finite(), "{source} overflowed: {got}");
+                assert!(
+                    (got / expected - 1.0).abs() < 1e-12,
+                    "{source}: got {got}, expected {expected}",
+                );
+            }
+            // The recurrence is independent of the Lanczos formula and exercises
+            // non-integer inputs.
+            let expected = (0..150u32).fold(PI.sqrt(), |value, n| value * (f64::from(n) + 0.5));
+            for source in ["gamma(150.5)", "149.5!", "fact(149.5)"] {
+                let got = ev(source);
+                assert!(
+                    (got / expected - 1.0).abs() < 1e-12,
+                    "{source}: got {got}, expected {expected}",
+                );
+            }
+            check("gamma(0.5)", ev("gamma(0.5)"), PI.sqrt(), Cmp::Near(1e-12));
+            check(
+                "gamma(-0.5)",
+                ev("gamma(-0.5)"),
+                -2.0 * PI.sqrt(),
+                Cmp::Near(1e-12),
+            );
+            let curve = compile("gamma(x)", false, false).unwrap();
+            assert!(curve.eval1(150.0).is_finite());
+            assert!(ev("gamma(172)").is_infinite());
+            assert!(ev("171!").is_infinite());
+        }
+
+        phase errors_and_number_formatting_render_user_facing_results;
+        {
+            assert_eq!(
+                evaluate("sqrt(", &Ctx::default()),
+                Err("enter a value".into()),
+                "the live result line tells a person what to do next"
+            );
+            assert_eq!(
+                evaluate("/", &Ctx::default()),
+                Err("enter a value before `÷`".into()),
+                "an operator with nothing before it names the key a person pressed"
+            );
+            assert!(
+                evaluate("1+", &Ctx::default()).is_err(),
+                "errors: dangling operator"
+            );
+            assert!(
+                evaluate("frobnicate(2)", &Ctx::default()).is_err(),
+                "errors: unknown function"
+            );
+            assert!(
+                compile("z+1", false, false).is_err(),
+                "errors: unknown variable in compile"
+            );
+
+            for (x, want) in [
+                (2.0, "2"),
+                (0.5, "0.5"),
+                (0.1 + 0.2, "0.3"),
+                (f64::NAN, "Error"),
+            ] {
+                assert_eq!(format_number(x), want, "formatting case {x}");
             }
         }
-        check(
-            "degree-mode periodic alias",
-            evd("int(cos(1440*x),x,0,1)"),
-            0.0,
-            Cmp::Near(1e-8),
-        );
     }
 
-    #[test]
-    fn integral_bindings_are_scoped_and_bounds_use_the_outer_context() {
-        let ctx = Ctx {
-            x: 4.0,
-            y: 3.0,
-            ans: 2.0,
-            mem: 5.0,
-            ..Default::default()
-        };
-        for (source, expected) in [
-            ("int(x+y+ans+m,x,0,2)+x+y", 29.0),
-            ("int(x,x,0,x)+x", 12.0),
-            ("int(y,y,0,y)+y", 7.5),
-            ("int(int(x+y,y,0,x),x,0,1)", 0.5),
-            ("int(int(x,x,0,x)+x,x,0,1)", 2.0 / 3.0),
-            ("int(int(y,y,0,y)+y,y,0,1)", 2.0 / 3.0),
-            ("int(int(x*y,x,0,y),y,0,1)", 0.125),
-            ("int(int(x,x,0,1)+x,x,0,1)", 1.0),
-        ] {
+    tilo_test_env::scenario! {
+        fn integrals_evaluate_scope_validate_and_stay_bounded;
+
+        phase definite_integrals_cover_orientation_alias_and_adaptive_sampling;
+        {
+            for (source, expected) in [
+                ("int(x^2,x,0,3)", 9.0),
+                ("int(x^2,x,3,0)", -9.0),
+                ("int(x,x,-2,2)", 0.0),
+                ("int(1/x,x,0,0)", 0.0),
+                ("int(x,x,2,2)", 0.0),
+                ("∫(x^2,x,0,1)", 1.0 / 3.0),
+                ("2int(x,x,0,1)+1", 2.0),
+                ("int(sin(x),x,0,pi)", 2.0),
+                ("int(exp(x),x,0,1)", E - 1.0),
+                (
+                    "int(1/(1+10000*(x-0.3)^2),x,0,1)",
+                    (70.0f64.atan() + 30.0f64.atan()) / 100.0,
+                ),
+            ] {
+                check(source, ev(source), expected, Cmp::Near(1e-8));
+            }
             check(
-                source,
-                evaluate(source, &ctx).unwrap(),
-                expected,
+                "degree-mode integral",
+                evd("int(sin(x),x,0,180)"),
+                360.0 / PI,
+                Cmp::Near(1e-8),
+            );
+        }
+
+        phase integral_initial_samples_do_not_alias_periodic_functions;
+        {
+            // One Simpson panel and its first refinement sample only maxima of these
+            // cosines, reporting the integral as one.
+            for frequency in [8, 16, 32, 64] {
+                for (source, expected) in [
+                    (format!("int(cos({frequency}*pi*x),x,0,1)"), 0.0),
+                    (format!("int(1+cos({frequency}*pi*x),x,1,0)"), -1.0),
+                    (format!("int(sin({frequency}*pi*x)^2,x,0,1)"), 0.5),
+                ] {
+                    check(&source, ev(&source), expected, Cmp::Near(1e-8));
+                }
+            }
+            check(
+                "degree-mode periodic alias",
+                evd("int(cos(1440*x),x,0,1)"),
+                0.0,
+                Cmp::Near(1e-8),
+            );
+        }
+
+        phase integral_bindings_are_scoped_and_bounds_use_the_outer_context;
+        {
+            let ctx = Ctx {
+                x: 4.0,
+                y: 3.0,
+                ans: 2.0,
+                mem: 5.0,
+                ..Default::default()
+            };
+            for (source, expected) in [
+                ("int(x+y+ans+m,x,0,2)+x+y", 29.0),
+                ("int(x,x,0,x)+x", 12.0),
+                ("int(y,y,0,y)+y", 7.5),
+                ("int(int(x+y,y,0,x),x,0,1)", 0.5),
+                ("int(int(x,x,0,x)+x,x,0,1)", 2.0 / 3.0),
+                ("int(int(y,y,0,y)+y,y,0,1)", 2.0 / 3.0),
+                ("int(int(x*y,x,0,y),y,0,1)", 0.125),
+                ("int(int(x,x,0,1)+x,x,0,1)", 1.0),
+            ] {
+                check(
+                    source,
+                    evaluate(source, &ctx).unwrap(),
+                    expected,
+                    Cmp::Near(1e-9),
+                );
+            }
+            check(
+                "nested degree context",
+                evd("int(int(sin(x)+cos(y),y,0,90),x,0,90)"),
+                32_400.0 / PI,
+                Cmp::Near(1e-6),
+            );
+        }
+
+        phase compiled_integrals_distinguish_bound_and_free_variables;
+        {
+            let curve = compile("int(y^2,y,0,x)", false, false).unwrap();
+            check(
+                "bound y in curve",
+                curve.eval1(2.0),
+                8.0 / 3.0,
                 Cmp::Near(1e-9),
             );
-        }
-        check(
-            "nested degree context",
-            evd("int(int(sin(x)+cos(y),y,0,90),x,0,90)"),
-            32_400.0 / PI,
-            Cmp::Near(1e-6),
-        );
-    }
-
-    #[test]
-    fn compiled_integrals_distinguish_bound_and_free_variables() {
-        let curve = compile("int(y^2,y,0,x)", false, false).unwrap();
-        check(
-            "bound y in curve",
-            curve.eval1(2.0),
-            8.0 / 3.0,
-            Cmp::Near(1e-9),
-        );
-        let nested = compile("int(int(x*y,x,0,y),y,0,x)", false, false).unwrap();
-        check(
-            "nested bindings in curve",
-            nested.eval1(2.0),
-            2.0,
-            Cmp::Near(1e-9),
-        );
-        let surface = compile("int(x*y,x,0,1)+x", false, true).unwrap();
-        check(
-            "integral in surface",
-            surface.eval2(2.0, 3.0),
-            3.5,
-            Cmp::Near(1e-9),
-        );
-        for source in [
-            "int(y,y,0,y)",
-            "int(y,y,0,1)+y",
-            "int(int(y,y,0,1)+y,x,0,1)",
-            "int(z,x,0,1)",
-        ] {
-            assert!(compile(source, false, false).is_err(), "{source}");
-        }
-    }
-
-    #[test]
-    fn compiled_integrals_allow_sample_dependent_domain_failures() {
-        let curve = compile("int(sqrt(x-y),y,0,1)", false, false).unwrap();
-        assert!(curve.eval1(0.7).is_nan());
-        check(
-            "integral valid away from the former compile probe",
-            curve.eval1(2.0),
-            (2.0f64.powf(1.5) - 1.0) * 2.0 / 3.0,
-            Cmp::Near(1e-9),
-        );
-        let bounds = compile("int(y,y,0,1/x)", false, false).unwrap();
-        assert!(bounds.eval1(0.0).is_nan());
-        check(
-            "finite sample bounds",
-            bounds.eval1(2.0),
-            0.125,
-            Cmp::Near(1e-9),
-        );
-        let surface = compile("int(sqrt(x-y),x,0,1)", false, true).unwrap();
-        assert!(surface.eval2(0.0, 0.3).is_nan());
-        assert!(surface.eval2(0.0, -1.0).is_finite());
-    }
-
-    #[test]
-    fn compiled_calls_are_validated_without_evaluating_integrals() {
-        // A zero-width integral never samples its body, so unknown functions in
-        // it must still fail at compile time.
-        for source in [
-            "int(typo(x),x,0,0)",
-            "int(sqrt(),x,0,0)",
-            "int(pow(x),x,0,0)",
-            "int(log(1,2,3),x,0,0)",
-            "int(min(),x,0,0)",
-            "int(max(),x,0,0)",
-            "int(int(x,x,0),x,0,0)",
-            "int(int(x,z,0,1),x,0,0)",
-            "typo(int(sqrt(x-y),y,0,1))",
-            "sqrt(int(sqrt(x-y),y,0,1),2)",
-        ] {
-            assert!(compile(source, false, false).is_err(), "{source}");
-        }
-        for source in [
-            "int(log(2),x,0,0)",
-            "int(log(2,8),x,0,0)",
-            "int(min(x,1,2),x,0,0)",
-            "int(max(x),x,0,0)",
-        ] {
-            assert!(compile(source, false, false).is_ok(), "{source}");
-        }
-    }
-
-    #[test]
-    fn integrals_report_malformed_calls_and_nonfinite_values() {
-        for source in [
-            "int()",
-            "int(x)",
-            "int(x,x,0)",
-            "int(x,x,0,1,2)",
-            "int(x,x,0,)",
-            "int(x,x,0,1",
-            "∫(x,x,,1)",
-        ] {
-            assert!(evaluate(source, &Ctx::default()).is_err(), "{source}");
-        }
-        for variable in ["z", "pi", "ans", "1", "x+0", "sin(x)"] {
-            let source = format!("int(x,{variable},0,1)");
-            assert_eq!(
-                evaluate(&source, &Ctx::default()),
-                Err("integration variable must be x or y".into()),
-                "{source}",
+            let nested = compile("int(int(x*y,x,0,y),y,0,x)", false, false).unwrap();
+            check(
+                "nested bindings in curve",
+                nested.eval1(2.0),
+                2.0,
+                Cmp::Near(1e-9),
             );
-        }
-        for source in [
-            "int(x,x,0,inf)",
-            "int(x,x,nan,1)",
-            "int(x,x,0,1/0)",
-            "int(x,x,sqrt(-1),1)",
-            "int(x,x,inf,inf)",
-        ] {
-            assert_eq!(
-                evaluate(source, &Ctx::default()),
-                Err("integration bounds must be finite".into()),
-                "{source}",
+            let surface = compile("int(x*y,x,0,1)+x", false, true).unwrap();
+            check(
+                "integral in surface",
+                surface.eval2(2.0, 3.0),
+                3.5,
+                Cmp::Near(1e-9),
             );
+            for source in [
+                "int(y,y,0,y)",
+                "int(y,y,0,1)+y",
+                "int(int(y,y,0,1)+y,x,0,1)",
+                "int(z,x,0,1)",
+            ] {
+                assert!(compile(source, false, false).is_err(), "{source}");
+            }
         }
-        for source in ["int(1/x,x,0,1)", "int(sqrt(x),x,-1,1)", "int(nan,y,0,1)"] {
-            let error = evaluate(source, &Ctx::default()).unwrap_err();
-            assert!(error.contains("nonfinite integrand"), "{source}: {error}");
+
+        phase compiled_integrals_allow_sample_dependent_domain_failures;
+        {
+            let curve = compile("int(sqrt(x-y),y,0,1)", false, false).unwrap();
+            assert!(curve.eval1(0.7).is_nan());
+            check(
+                "integral valid away from the former compile probe",
+                curve.eval1(2.0),
+                (2.0f64.powf(1.5) - 1.0) * 2.0 / 3.0,
+                Cmp::Near(1e-9),
+            );
+            let bounds = compile("int(y,y,0,1/x)", false, false).unwrap();
+            assert!(bounds.eval1(0.0).is_nan());
+            check(
+                "finite sample bounds",
+                bounds.eval1(2.0),
+                0.125,
+                Cmp::Near(1e-9),
+            );
+            let surface = compile("int(sqrt(x-y),x,0,1)", false, true).unwrap();
+            assert!(surface.eval2(0.0, 0.3).is_nan());
+            assert!(surface.eval2(0.0, -1.0).is_finite());
         }
-    }
 
-    #[test]
-    fn integration_work_is_bounded_including_nested_calls() {
-        let error = evaluate("int(floor(x),x,0,1)", &Ctx::default()).unwrap_err();
-        assert!(error.contains("did not converge"), "{error}");
-        let mut nested = "1".to_string();
-        for _ in 0..7 {
-            nested = format!("int({nested},x,0,1)");
+        phase compiled_calls_are_validated_without_evaluating_integrals;
+        {
+            // A zero-width integral never samples its body, so unknown functions in
+            // it must still fail at compile time.
+            for source in [
+                "int(typo(x),x,0,0)",
+                "int(sqrt(),x,0,0)",
+                "int(pow(x),x,0,0)",
+                "int(log(1,2,3),x,0,0)",
+                "int(min(),x,0,0)",
+                "int(max(),x,0,0)",
+                "int(int(x,x,0),x,0,0)",
+                "int(int(x,z,0,1),x,0,0)",
+                "typo(int(sqrt(x-y),y,0,1))",
+                "sqrt(int(sqrt(x-y),y,0,1),2)",
+            ] {
+                assert!(compile(source, false, false).is_err(), "{source}");
+            }
+            for source in [
+                "int(log(2),x,0,0)",
+                "int(log(2,8),x,0,0)",
+                "int(min(x,1,2),x,0,0)",
+                "int(max(x),x,0,0)",
+            ] {
+                assert!(compile(source, false, false).is_ok(), "{source}");
+            }
         }
-        let error = evaluate(&nested, &Ctx::default()).unwrap_err();
-        assert!(error.contains("sampling limit reached"), "{error}");
-    }
 
-    #[test]
-    fn errors_and_number_formatting_render_user_facing_results() {
-        assert_eq!(
-            evaluate("sqrt(", &Ctx::default()),
-            Err("enter a value".into()),
-            "the live result line tells a person what to do next"
-        );
-        assert_eq!(
-            evaluate("/", &Ctx::default()),
-            Err("enter a value before `÷`".into()),
-            "an operator with nothing before it names the key a person pressed"
-        );
-        assert!(
-            evaluate("1+", &Ctx::default()).is_err(),
-            "errors: dangling operator"
-        );
-        assert!(
-            evaluate("frobnicate(2)", &Ctx::default()).is_err(),
-            "errors: unknown function"
-        );
-        assert!(
-            compile("z+1", false, false).is_err(),
-            "errors: unknown variable in compile"
-        );
+        phase integrals_report_malformed_calls_and_nonfinite_values;
+        {
+            for source in [
+                "int()",
+                "int(x)",
+                "int(x,x,0)",
+                "int(x,x,0,1,2)",
+                "int(x,x,0,)",
+                "int(x,x,0,1",
+                "∫(x,x,,1)",
+            ] {
+                assert!(evaluate(source, &Ctx::default()).is_err(), "{source}");
+            }
+            for variable in ["z", "pi", "ans", "1", "x+0", "sin(x)"] {
+                let source = format!("int(x,{variable},0,1)");
+                assert_eq!(
+                    evaluate(&source, &Ctx::default()),
+                    Err("integration variable must be x or y".into()),
+                    "{source}",
+                );
+            }
+            for source in [
+                "int(x,x,0,inf)",
+                "int(x,x,nan,1)",
+                "int(x,x,0,1/0)",
+                "int(x,x,sqrt(-1),1)",
+                "int(x,x,inf,inf)",
+            ] {
+                assert_eq!(
+                    evaluate(source, &Ctx::default()),
+                    Err("integration bounds must be finite".into()),
+                    "{source}",
+                );
+            }
+            for source in ["int(1/x,x,0,1)", "int(sqrt(x),x,-1,1)", "int(nan,y,0,1)"] {
+                let error = evaluate(source, &Ctx::default()).unwrap_err();
+                assert!(error.contains("nonfinite integrand"), "{source}: {error}");
+            }
+        }
 
-        for (x, want) in [
-            (2.0, "2"),
-            (0.5, "0.5"),
-            (0.1 + 0.2, "0.3"),
-            (f64::NAN, "Error"),
-        ] {
-            assert_eq!(format_number(x), want, "formatting case {x}");
+        phase integration_work_is_bounded_including_nested_calls;
+        {
+            let error = evaluate("int(floor(x),x,0,1)", &Ctx::default()).unwrap_err();
+            assert!(error.contains("did not converge"), "{error}");
+            let mut nested = "1".to_string();
+            for _ in 0..7 {
+                nested = format!("int({nested},x,0,1)");
+            }
+            let error = evaluate(&nested, &Ctx::default()).unwrap_err();
+            assert!(error.contains("sampling limit reached"), "{error}");
         }
     }
 }
@@ -1329,22 +1337,26 @@ mod tests {
 mod prettify_tests {
     use super::prettify;
 
-    /// A plain integer exponent reads as a superscript; a bracketed or symbolic
-    /// one keeps its caret.
-    #[test]
-    fn integer_powers_become_superscripts() {
-        assert_eq!(prettify("2^10"), "2¹⁰");
-        assert_eq!(prettify("x^2+1"), "x²+1");
-        assert_eq!(prettify("2^-3"), "2⁻³");
-        assert_eq!(prettify("2^(1/2)"), "2^(1÷2)");
-        assert_eq!(prettify("2^x"), "2^x");
-        assert_eq!(prettify("5^"), "5^");
-        assert_eq!(prettify("2^-x"), "2^-x");
-    }
+    tilo_test_env::scenario! {
+        fn expressions_take_their_pretty_forms;
 
-    #[test]
-    fn operators_and_functions_take_their_pretty_forms() {
-        assert_eq!(prettify("12*(4+3)"), "12×(4+3)");
-        assert_eq!(prettify("sqrt(2)/pi"), "√(2)÷π");
+        phase integer_powers_become_superscripts;
+        // A plain integer exponent reads as a superscript; a bracketed or symbolic
+        // one keeps its caret.
+        {
+            assert_eq!(prettify("2^10"), "2¹⁰");
+            assert_eq!(prettify("x^2+1"), "x²+1");
+            assert_eq!(prettify("2^-3"), "2⁻³");
+            assert_eq!(prettify("2^(1/2)"), "2^(1÷2)");
+            assert_eq!(prettify("2^x"), "2^x");
+            assert_eq!(prettify("5^"), "5^");
+            assert_eq!(prettify("2^-x"), "2^-x");
+        }
+
+        phase operators_and_functions_take_their_pretty_forms;
+        {
+            assert_eq!(prettify("12*(4+3)"), "12×(4+3)");
+            assert_eq!(prettify("sqrt(2)/pi"), "√(2)÷π");
+        }
     }
 }

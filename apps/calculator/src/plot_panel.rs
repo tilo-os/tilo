@@ -642,47 +642,51 @@ mod tests {
         assert_eq!(panel.hover(), Hover::default());
     }
 
-    #[test]
-    fn editors_grow_with_the_text_scale() {
-        let theme = Theme::dark().with_text_scale(2.0);
-        let mut tr = TextRenderer::new();
-        let mut panel = PlotPanel::new(CURVES);
-        let rows = plots(&["(x^2+1)/(x-3)"]);
-        panel.fit(&rows, &mut tr, &theme);
-        panel.layout(Rect::new(0.0, 0.0, 2200.0, 900.0), rows.len());
-        let edit = panel.field_rect(0).expect("editor");
-        let content = panel.fields[0].content_height(&mut tr);
-        assert!(
-            content <= edit.height() + 0.5,
-            "the stacked formula must fit its editor in full: content {content} vs {}",
-            edit.height()
-        );
-    }
+    tilo_test_env::scenario! {
+        fn editors_hold_their_formula_at_every_text_scale;
 
-    /// A renderer that carries the text scale itself paints at the theme's size,
-    /// which already includes it, so the editor holds the grown glyphs exactly.
-    #[test]
-    fn a_scaled_renderer_gets_an_editor_that_holds_exactly_the_grown_glyphs() {
-        let theme = Theme::dark().with_text_scale(1.5);
-        let mut tr = TextRenderer::new();
-        tr.set_text_scale(1.5);
-        let mut panel = PlotPanel::new(CURVES);
-        let rows = plots(&["(x^2+1)/(x-3)"]);
-        panel.fit(&rows, &mut tr, &theme);
-        panel.layout(Rect::new(0.0, 0.0, 2200.0, 900.0), rows.len());
-        let edit = panel.field_rect(0).expect("editor");
-        let content = panel.fields[0].content_height(&mut tr);
-        assert!(
-            content <= edit.height() + 0.5,
-            "the stacked formula must fit its editor in full: content {content} vs {}",
-            edit.height()
-        );
-        // Set at the theme's resolved size, so it grows with the text scale.
-        let one = Theme::dark();
-        assert!(
-            panel.formula_size > mathfield::formula_size(&one) * 1.4,
-            "a 1.5× text scale sets a larger formula: {}",
-            panel.formula_size
-        );
+        phase editors_grow_with_the_text_scale;
+        {
+            let theme = Theme::dark().with_text_scale(2.0);
+            let mut tr = TextRenderer::new();
+            let mut panel = PlotPanel::new(CURVES);
+            let rows = plots(&["(x^2+1)/(x-3)"]);
+            panel.fit(&rows, &mut tr, &theme);
+            panel.layout(Rect::new(0.0, 0.0, 2200.0, 900.0), rows.len());
+            let edit = panel.field_rect(0).expect("editor");
+            let content = panel.fields[0].content_height(&mut tr);
+            assert!(
+                content <= edit.height() + 0.5,
+                "the stacked formula must fit its editor in full: content {content} vs {}",
+                edit.height()
+            );
+        }
+
+        phase a_scaled_renderer_gets_an_editor_that_holds_exactly_the_grown_glyphs;
+        // A renderer that carries the text scale itself paints at the theme's size,
+        // which already includes it, so the editor holds the grown glyphs exactly.
+        {
+            let theme = Theme::dark().with_text_scale(1.5);
+            let mut tr = TextRenderer::new();
+            tr.set_text_scale(1.5);
+            let mut panel = PlotPanel::new(CURVES);
+            let rows = plots(&["(x^2+1)/(x-3)"]);
+            panel.fit(&rows, &mut tr, &theme);
+            panel.layout(Rect::new(0.0, 0.0, 2200.0, 900.0), rows.len());
+            let edit = panel.field_rect(0).expect("editor");
+            let content = panel.fields[0].content_height(&mut tr);
+            assert!(
+                content <= edit.height() + 0.5,
+                "the stacked formula must fit its editor in full: content {content} vs {}",
+                edit.height()
+            );
+            // Set at the theme's resolved size, so it grows with the text scale.
+            let one = Theme::dark();
+            assert!(
+                panel.formula_size > mathfield::formula_size(&one) * 1.4,
+                "a 1.5× text scale sets a larger formula: {}",
+                panel.formula_size
+            );
+        }
     }
 }

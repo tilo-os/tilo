@@ -844,56 +844,171 @@ mod tests {
     use crate::chrome::Header;
     use crate::model::CalcModel;
 
-    #[test]
-    fn enlarged_calculator_keeps_a_stacked_display_and_usable_keypad() {
-        let dark: fn() -> Theme = Theme::dark;
-        let light: fn() -> Theme = Theme::light;
-        for (base, ui_scale, text_scale) in [
-            (dark, 1.0, 1.0),
-            (dark, 1.5, 1.0),
-            (light, 1.5, 1.0),
-            (dark, 1.5, 1.5),
-            (dark, 1.0, 2.0),
-        ] {
-            let theme = base().with_ui_scale(ui_scale).with_text_scale(text_scale);
+    tilo_test_env::scenario! {
+        fn the_calculator_screen_keeps_its_display_and_keys_usable_at_every_size;
+
+        phase enlarged_calculator_keeps_a_stacked_display_and_usable_keypad;
+        {
+            let dark: fn() -> Theme = Theme::dark;
+            let light: fn() -> Theme = Theme::light;
+            for (base, ui_scale, text_scale) in [
+                (dark, 1.0, 1.0),
+                (dark, 1.5, 1.0),
+                (light, 1.5, 1.0),
+                (dark, 1.5, 1.5),
+                (dark, 1.0, 2.0),
+            ] {
+                let theme = base().with_ui_scale(ui_scale).with_text_scale(text_scale);
+                let mut screen = CalcScreen::default();
+                let mut text = TextRenderer::new();
+                // The live desktop carries the reader's text scale.
+                text.set_text_scale(theme.text_scale);
+                let model = CalcModel {
+                    expr: "sqrt(2)/3".into(),
+                    ..CalcModel::seeded()
+                };
+                let area = Rect::new(0.0, 0.0, 1440.0, 810.0);
+                screen.prepare(&mut text, &theme, &model, area);
+                // Re-place the field as the draw pass does, then measure it.
+                let band = screen.expression_rect;
+                screen.field.set_rect(band, &mut text);
+                let content = screen.field.content_height(&mut text);
+                assert!(area.contains_rect(screen.display_rect));
+                assert!(
+                    band.height() >= content || screen.field.overflows(),
+                    "a formula that fits its display must not scroll: band {} vs content {content}",
+                    band.height()
+                );
+                // Grow for a larger text scale instead of clipping.
+                let plain = CalcScreen::default().m.display_tall;
+                assert!(
+                    screen.m.display_tall > plain,
+                    "the display must grow with the text scale ({} vs {plain})",
+                    screen.m.display_tall
+                );
+                for key in &screen.key_rects {
+                    assert!(area.contains_rect(*key));
+                    assert!(key.height() > 0.0 && key.width() > 0.0);
+                    assert!(!key.overlaps(screen.display_rect));
+                }
+                if theme.text_scale <= 1.0 {
+                    let key = screen.key_rects.first().unwrap();
+                    assert!(key.y0 >= screen.display_rect.y1);
+                    assert!(key.width() / key.height() < 3.0);
+                    assert!(key.height() >= f64::from(theme.tokens.metrics.min_pointer_target));
+                }
+            }
+        }
+
+        phase short_windows_keep_every_control_apart_and_inside_the_body;
+        {
+            let overlaps = |a: Rect, b: Rect| a.intersect(b).area() > 0.01;
+            let sizes = [
+                // (width, height, keys keep their minimum height)
+                (1200.0, 800.0, true),
+                (440.0, 800.0, true),
+                (914.0, 270.0, true),
+                (825.0, 274.0, true),
+                (600.0, 280.0, true),
+                (360.0, 300.0, false),
+            ];
+            for (w, h, roomy) in sizes {
+                let area = window(w, h);
+                let mut s = CalcScreen::default();
+                s.layout(area);
+                let context = format!("{w}x{h}");
+                let chrome = [s.display_rect]
+                    .into_iter()
+                    .chain(s.mem_rects.iter().copied())
+                    .collect::<Vec<_>>();
+                for (i, a) in chrome.iter().enumerate() {
+                    assert!(
+                        area.contains_rect(*a),
+                        "{context}: chrome {a:?} leaves the window"
+                    );
+                    for b in &chrome[i + 1..] {
+                        assert!(!overlaps(*a, *b), "{context}: chrome {a:?} overlaps {b:?}");
+                    }
+                }
+                for (i, key) in s.key_rects.iter().enumerate() {
+                    assert!(
+                        area.contains_rect(*key),
+                        "{context}: key {i} {key:?} leaves the window"
+                    );
+                    if roomy {
+                        assert!(
+                            key.height() >= s.m.key_min_h - 0.01,
+                            "{context}: key {i} is {key:?}"
+                        );
+                    }
+                    for c in &chrome {
+                        assert!(
+                            !overlaps(*key, *c),
+                            "{context}: key {i} {key:?} overlaps {c:?}"
+                        );
+                    }
+                    for (j, other) in s.key_rects.iter().enumerate().skip(i + 1) {
+                        assert!(
+                            !overlaps(*key, *other),
+                            "{context}: keys {i} and {j} overlap"
+                        );
+                    }
+                }
+                assert!(
+                    s.display_rect.contains_rect(s.expression_rect),
+                    "{context}: the expression line leaves the display"
+                );
+            }
+        }
+
+        phase keypad_layout_follows_width;
+        {
+            let mut s = CalcScreen::default();
+            s.layout(window(440.0, 800.0));
+            assert_eq!(s.cols, KeypadLayout::Compact.cols());
+            s.layout(window(1400.0, 800.0));
+            assert!(s.cols >= KeypadLayout::Standard.cols());
+            assert_eq!(s.key_rects.len(), s.keys.len());
+            let area = window(1700.0, 1400.0);
+            s.layout(area);
+            let m = s.m;
+            for key in &s.key_rects {
+                assert!(key.width() <= m.key_max_w + 0.5, "{key:?}");
+                assert!(key.height() <= m.key_max_h + 0.5, "{key:?}");
+            }
+            let left = s
+                .key_rects
+                .iter()
+                .map(|r| r.x0)
+                .fold(f64::INFINITY, f64::min);
+            let right = s.key_rects.iter().map(|r| r.x1).fold(0.0, f64::max);
+            assert!((s.display_rect.x0 - left).abs() < 0.5 && (s.display_rect.x1 - right).abs() < 0.5);
+            let content = s.content;
+            let centre = f64::midpoint(content.x0, content.x1);
+            assert!(
+                (f64::midpoint(left, right) - centre).abs() < m.pad + 0.5,
+                "the pad is centred"
+            );
+            let bottom = s.key_rects.iter().map(|r| r.y1).fold(0.0, f64::max);
+            let above = s.display_rect.y0 - content.y0;
+            let below = content.y1 - bottom;
+            assert!(above > m.pad + 1.0, "the pad moved down: {above}");
+            assert!((above - below).abs() < 2.0, "{above} above, {below} below");
+        }
+
+        phase a_narrow_pad_pages_between_numbers_and_functions;
+        {
             let mut screen = CalcScreen::default();
-            let mut text = TextRenderer::new();
-            // The live desktop carries the reader's text scale.
-            text.set_text_scale(theme.text_scale);
-            let model = CalcModel {
-                expr: "sqrt(2)/3".into(),
-                ..CalcModel::seeded()
-            };
-            let area = Rect::new(0.0, 0.0, 1440.0, 810.0);
-            screen.prepare(&mut text, &theme, &model, area);
-            // Re-place the field as the draw pass does, then measure it.
-            let band = screen.expression_rect;
-            screen.field.set_rect(band, &mut text);
-            let content = screen.field.content_height(&mut text);
-            assert!(area.contains_rect(screen.display_rect));
-            assert!(
-                band.height() >= content || screen.field.overflows(),
-                "a formula that fits its display must not scroll: band {} vs content {content}",
-                band.height()
-            );
-            // Grow for a larger text scale instead of clipping.
-            let plain = CalcScreen::default().m.display_tall;
-            assert!(
-                screen.m.display_tall > plain,
-                "the display must grow with the text scale ({} vs {plain})",
-                screen.m.display_tall
-            );
-            for key in &screen.key_rects {
-                assert!(area.contains_rect(*key));
-                assert!(key.height() > 0.0 && key.width() > 0.0);
-                assert!(!key.overlaps(screen.display_rect));
-            }
-            if theme.text_scale <= 1.0 {
-                let key = screen.key_rects.first().unwrap();
-                assert!(key.y0 >= screen.display_rect.y1);
-                assert!(key.width() / key.height() < 3.0);
-                assert!(key.height() >= f64::from(theme.tokens.metrics.min_pointer_target));
-            }
+            screen.layout(Rect::new(0.0, 0.0, 390.0, 844.0));
+            assert_eq!(screen.page(), KeypadPage::Primary);
+            assert!(screen.keys().iter().any(|key| matches!(key, Key::Page(_))));
+            let primary = screen.keys().len();
+            screen.toggle_page();
+            assert_eq!(screen.page(), KeypadPage::Functions);
+            assert_eq!(screen.keys().len(), 28);
+            screen.toggle_page();
+            assert_eq!(screen.page(), KeypadPage::Primary);
+            assert_eq!(screen.keys().len(), primary);
         }
     }
 
@@ -901,186 +1016,80 @@ mod tests {
         Rect::new(0.0, 0.0, w, Header::default().height + h)
     }
 
-    #[test]
-    fn short_windows_keep_every_control_apart_and_inside_the_body() {
-        let overlaps = |a: Rect, b: Rect| a.intersect(b).area() > 0.01;
-        let sizes = [
-            // (width, height, keys keep their minimum height)
-            (1200.0, 800.0, true),
-            (440.0, 800.0, true),
-            (914.0, 270.0, true),
-            (825.0, 274.0, true),
-            (600.0, 280.0, true),
-            (360.0, 300.0, false),
-        ];
-        for (w, h, roomy) in sizes {
-            let area = window(w, h);
-            let mut s = CalcScreen::default();
-            s.layout(area);
-            let context = format!("{w}x{h}");
-            let chrome = [s.display_rect]
-                .into_iter()
-                .chain(s.mem_rects.iter().copied())
-                .collect::<Vec<_>>();
-            for (i, a) in chrome.iter().enumerate() {
-                assert!(
-                    area.contains_rect(*a),
-                    "{context}: chrome {a:?} leaves the window"
-                );
-                for b in &chrome[i + 1..] {
-                    assert!(!overlaps(*a, *b), "{context}: chrome {a:?} overlaps {b:?}");
-                }
-            }
-            for (i, key) in s.key_rects.iter().enumerate() {
-                assert!(
-                    area.contains_rect(*key),
-                    "{context}: key {i} {key:?} leaves the window"
-                );
-                if roomy {
-                    assert!(
-                        key.height() >= s.m.key_min_h - 0.01,
-                        "{context}: key {i} is {key:?}"
-                    );
-                }
-                for c in &chrome {
-                    assert!(
-                        !overlaps(*key, *c),
-                        "{context}: key {i} {key:?} overlaps {c:?}"
-                    );
-                }
-                for (j, other) in s.key_rects.iter().enumerate().skip(i + 1) {
-                    assert!(
-                        !overlaps(*key, *other),
-                        "{context}: keys {i} and {j} overlap"
-                    );
-                }
-            }
-            assert!(
-                s.display_rect.contains_rect(s.expression_rect),
-                "{context}: the expression line leaves the display"
-            );
-        }
-    }
+    tilo_test_env::scenario! {
+        fn keys_keep_their_column_surface_and_role;
 
-    #[test]
-    fn keypad_layout_follows_width() {
-        let mut s = CalcScreen::default();
-        s.layout(window(440.0, 800.0));
-        assert_eq!(s.cols, KeypadLayout::Compact.cols());
-        s.layout(window(1400.0, 800.0));
-        assert!(s.cols >= KeypadLayout::Standard.cols());
-        assert_eq!(s.key_rects.len(), s.keys.len());
-        let area = window(1700.0, 1400.0);
-        s.layout(area);
-        let m = s.m;
-        for key in &s.key_rects {
-            assert!(key.width() <= m.key_max_w + 0.5, "{key:?}");
-            assert!(key.height() <= m.key_max_h + 0.5, "{key:?}");
-        }
-        let left = s
-            .key_rects
-            .iter()
-            .map(|r| r.x0)
-            .fold(f64::INFINITY, f64::min);
-        let right = s.key_rects.iter().map(|r| r.x1).fold(0.0, f64::max);
-        assert!((s.display_rect.x0 - left).abs() < 0.5 && (s.display_rect.x1 - right).abs() < 0.5);
-        let content = s.content;
-        let centre = f64::midpoint(content.x0, content.x1);
-        assert!(
-            (f64::midpoint(left, right) - centre).abs() < m.pad + 0.5,
-            "the pad is centred"
-        );
-        let bottom = s.key_rects.iter().map(|r| r.y1).fold(0.0, f64::max);
-        let above = s.display_rect.y0 - content.y0;
-        let below = content.y1 - bottom;
-        assert!(above > m.pad + 1.0, "the pad moved down: {above}");
-        assert!((above - below).abs() < 2.0, "{above} above, {below} below");
-    }
-
-    /// The four operators sit in one column in every layout.
-    #[test]
-    fn operators_stay_in_one_column_in_every_layout() {
-        for layout in [
-            KeypadLayout::Compact,
-            KeypadLayout::Standard,
-            KeypadLayout::Scientific,
-        ] {
-            let keys = layout.keys();
-            let column = |op: &str| {
-                keys.iter()
-                    .position(|k| matches!(k, Key::Ins(s) if *s == op))
-                    .map(|i| i % layout.cols())
-            };
-            let first = column("/");
-            for op in ["*", "-", "+"] {
+        phase operators_stay_in_one_column_in_every_layout;
+        // The four operators sit in one column in every layout.
+        {
+            for layout in [
+                KeypadLayout::Compact,
+                KeypadLayout::Standard,
+                KeypadLayout::Scientific,
+            ] {
+                let keys = layout.keys();
+                let column = |op: &str| {
+                    keys.iter()
+                        .position(|k| matches!(k, Key::Ins(s) if *s == op))
+                        .map(|i| i % layout.cols())
+                };
+                let first = column("/");
+                for op in ["*", "-", "+"] {
+                    assert_eq!(
+                        column(op),
+                        first,
+                        "{layout:?}: {op} leaves the operator column"
+                    );
+                }
                 assert_eq!(
-                    column(op),
                     first,
-                    "{layout:?}: {op} leaves the operator column"
+                    Some(layout.cols() - 1),
+                    "{layout:?}: operators trail the pad"
                 );
             }
+        }
+
+        phase every_key_has_a_surface_and_digits_stand_apart;
+        // Every key has a face, and the roles keep their hierarchy.
+        {
+            for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+                for key in KeypadLayout::Scientific
+                    .keys()
+                    .iter()
+                    .chain(MEM_KEYS.iter())
+                {
+                    let role = key.role();
+                    let local = key_theme(role, &theme);
+                    let (fill, _, _) = ButtonFace::new(Rect::ZERO, "")
+                        .role(key_button_role(role))
+                        .colors(&local);
+                    assert!(fill.components[3] > 0.99, "bare key: {}", key.label());
+                }
+                let fill = |role| {
+                    ButtonFace::new(Rect::ZERO, "")
+                        .role(key_button_role(role))
+                        .colors(&key_theme(role, &theme))
+                        .0
+                };
+                assert_ne!(fill(KeyRole::Digit), fill(KeyRole::Function));
+            }
+        }
+
+        phase keycap_roles_follow_what_the_key_is;
+        {
+            assert_eq!(key_button_role(Key::Digit('7').role()), ButtonRole::Key);
+            assert_eq!(key_button_role(Key::Ins("+").role()), ButtonRole::Key);
+            assert_eq!(key_button_role(Key::Backspace.role()), ButtonRole::Key);
             assert_eq!(
-                first,
-                Some(layout.cols() - 1),
-                "{layout:?}: operators trail the pad"
+                key_button_role(Key::Ins("sin(").role()),
+                ButtonRole::Secondary
+            );
+            assert_eq!(key_button_role(Key::Equals.role()), ButtonRole::Primary);
+            assert_eq!(key_button_role(Key::Clear.role()), ButtonRole::Destructive);
+            assert!(
+                Key::Backspace.icon().is_some(),
+                "backspace is an icon, not a glyph"
             );
         }
-    }
-
-    /// Every key has a face, and the roles keep their hierarchy.
-    #[test]
-    fn every_key_has_a_surface_and_digits_stand_apart() {
-        for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
-            for key in KeypadLayout::Scientific
-                .keys()
-                .iter()
-                .chain(MEM_KEYS.iter())
-            {
-                let role = key.role();
-                let local = key_theme(role, &theme);
-                let (fill, _, _) = ButtonFace::new(Rect::ZERO, "")
-                    .role(key_button_role(role))
-                    .colors(&local);
-                assert!(fill.components[3] > 0.99, "bare key: {}", key.label());
-            }
-            let fill = |role| {
-                ButtonFace::new(Rect::ZERO, "")
-                    .role(key_button_role(role))
-                    .colors(&key_theme(role, &theme))
-                    .0
-            };
-            assert_ne!(fill(KeyRole::Digit), fill(KeyRole::Function));
-        }
-    }
-
-    #[test]
-    fn keycap_roles_follow_what_the_key_is() {
-        assert_eq!(key_button_role(Key::Digit('7').role()), ButtonRole::Key);
-        assert_eq!(key_button_role(Key::Ins("+").role()), ButtonRole::Key);
-        assert_eq!(key_button_role(Key::Backspace.role()), ButtonRole::Key);
-        assert_eq!(
-            key_button_role(Key::Ins("sin(").role()),
-            ButtonRole::Secondary
-        );
-        assert_eq!(key_button_role(Key::Equals.role()), ButtonRole::Primary);
-        assert_eq!(key_button_role(Key::Clear.role()), ButtonRole::Destructive);
-        assert!(
-            Key::Backspace.icon().is_some(),
-            "backspace is an icon, not a glyph"
-        );
-    }
-    #[test]
-    fn a_narrow_pad_pages_between_numbers_and_functions() {
-        let mut screen = CalcScreen::default();
-        screen.layout(Rect::new(0.0, 0.0, 390.0, 844.0));
-        assert_eq!(screen.page(), KeypadPage::Primary);
-        assert!(screen.keys().iter().any(|key| matches!(key, Key::Page(_))));
-        let primary = screen.keys().len();
-        screen.toggle_page();
-        assert_eq!(screen.page(), KeypadPage::Functions);
-        assert_eq!(screen.keys().len(), 28);
-        screen.toggle_page();
-        assert_eq!(screen.page(), KeypadPage::Primary);
-        assert_eq!(screen.keys().len(), primary);
     }
 }

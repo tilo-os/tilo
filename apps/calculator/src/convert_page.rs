@@ -693,90 +693,94 @@ mod tests {
         page
     }
 
-    #[test]
-    fn a_quantity_chip_chooses_its_own_units() {
-        let mut page = laid_out();
-        let temperature = page
-            .control_rect(&ConvertAction::Quantity(Dimension::Temperature))
-            .expect("the temperature chip is laid out");
-        let press = page.action_at(temperature.center());
-        assert_eq!(press, Some(ConvertAction::Quantity(Dimension::Temperature)));
-        page.apply(&press.unwrap());
-        assert_eq!(page.dimension(), Dimension::Temperature);
-        assert_eq!(page.from().symbol, "°C");
-        assert_eq!(page.to().symbol, "°F");
-    }
+    tilo_test_env::scenario! {
+        fn the_conversion_page_chooses_its_units_and_answers;
 
-    #[test]
-    fn pressing_a_unit_steps_it_and_swapping_exchanges_the_pair() {
-        let mut page = laid_out();
-        let from = page.from().symbol;
-        let to = page.to().symbol;
-        let press = page.action_at(page.control_rect(&ConvertAction::From(1)).unwrap().center());
-        assert_eq!(press, Some(ConvertAction::From(1)));
-        page.apply(&press.unwrap());
-        assert_ne!(page.from().symbol, from, "the unit stepped on");
-        assert_ne!(page.from().symbol, to, "and never onto the other one");
+        phase a_quantity_chip_chooses_its_own_units;
+        {
+            let mut page = laid_out();
+            let temperature = page
+                .control_rect(&ConvertAction::Quantity(Dimension::Temperature))
+                .expect("the temperature chip is laid out");
+            let press = page.action_at(temperature.center());
+            assert_eq!(press, Some(ConvertAction::Quantity(Dimension::Temperature)));
+            page.apply(&press.unwrap());
+            assert_eq!(page.dimension(), Dimension::Temperature);
+            assert_eq!(page.from().symbol, "°C");
+            assert_eq!(page.to().symbol, "°F");
+        }
 
-        let (before_from, before_to) = (page.from().symbol, page.to().symbol);
-        page.apply(&ConvertAction::Swap);
-        assert_eq!(
-            (page.to().symbol, page.from().symbol),
-            (before_from, before_to)
-        );
-    }
+        phase pressing_a_unit_steps_it_and_swapping_exchanges_the_pair;
+        {
+            let mut page = laid_out();
+            let from = page.from().symbol;
+            let to = page.to().symbol;
+            let press = page.action_at(page.control_rect(&ConvertAction::From(1)).unwrap().center());
+            assert_eq!(press, Some(ConvertAction::From(1)));
+            page.apply(&press.unwrap());
+            assert_ne!(page.from().symbol, from, "the unit stepped on");
+            assert_ne!(page.from().symbol, to, "and never onto the other one");
 
-    #[test]
-    fn the_amount_reads_as_a_number_and_answers_in_the_target_unit() {
-        let mut page = laid_out();
-        page.apply(&ConvertAction::Quantity(Dimension::Temperature));
-        assert_eq!(page.result_text(), None, "no amount yet");
-        page.set_field_text("40");
-        assert_eq!(page.result_text(), Some("104 °F".to_owned()));
-        page.apply(&ConvertAction::Swap);
-        assert_eq!(page.result_text(), Some("4.44444 °C".to_owned()));
-        page.set_field_text("not a number");
-        assert_eq!(
-            page.result_text(),
-            None,
-            "what is not a number has no answer"
-        );
-    }
-
-    #[test]
-    fn every_published_target_names_its_action_and_back() {
-        let actions = [
-            ConvertAction::Quantity(Dimension::Data),
-            ConvertAction::Currency,
-            ConvertAction::From(1),
-            ConvertAction::From(-1),
-            ConvertAction::To(1),
-            ConvertAction::Swap,
-            ConvertAction::Copy,
-            ConvertAction::Focus,
-        ];
-        for action in actions {
-            let target = ConvertPage::semantic_target(&action);
+            let (before_from, before_to) = (page.from().symbol, page.to().symbol);
+            page.apply(&ConvertAction::Swap);
             assert_eq!(
-                ConvertPage::action_for_target(&target),
-                Some(action.clone()),
-                "{target}"
+                (page.to().symbol, page.from().symbol),
+                (before_from, before_to)
             );
         }
-        assert_eq!(
-            ConvertPage::action_for_target("calculator.convert:nope"),
-            None
-        );
-    }
 
-    #[test]
-    fn money_says_what_it_needs_instead_of_converting() {
-        let mut page = laid_out();
-        page.apply(&ConvertAction::Currency);
-        assert!(page.currency_note_shown());
-        // The units stay for when the person comes back.
-        assert_eq!(page.dimension(), Dimension::Length);
-        page.apply(&ConvertAction::Quantity(Dimension::Mass));
-        assert!(!page.currency_note_shown(), "a quantity leaves the note");
+        phase the_amount_reads_as_a_number_and_answers_in_the_target_unit;
+        {
+            let mut page = laid_out();
+            page.apply(&ConvertAction::Quantity(Dimension::Temperature));
+            assert_eq!(page.result_text(), None, "no amount yet");
+            page.set_field_text("40");
+            assert_eq!(page.result_text(), Some("104 °F".to_owned()));
+            page.apply(&ConvertAction::Swap);
+            assert_eq!(page.result_text(), Some("4.44444 °C".to_owned()));
+            page.set_field_text("not a number");
+            assert_eq!(
+                page.result_text(),
+                None,
+                "what is not a number has no answer"
+            );
+        }
+
+        phase every_published_target_names_its_action_and_back;
+        {
+            let actions = [
+                ConvertAction::Quantity(Dimension::Data),
+                ConvertAction::Currency,
+                ConvertAction::From(1),
+                ConvertAction::From(-1),
+                ConvertAction::To(1),
+                ConvertAction::Swap,
+                ConvertAction::Copy,
+                ConvertAction::Focus,
+            ];
+            for action in actions {
+                let target = ConvertPage::semantic_target(&action);
+                assert_eq!(
+                    ConvertPage::action_for_target(&target),
+                    Some(action.clone()),
+                    "{target}"
+                );
+            }
+            assert_eq!(
+                ConvertPage::action_for_target("calculator.convert:nope"),
+                None
+            );
+        }
+
+        phase money_says_what_it_needs_instead_of_converting;
+        {
+            let mut page = laid_out();
+            page.apply(&ConvertAction::Currency);
+            assert!(page.currency_note_shown());
+            // The units stay for when the person comes back.
+            assert_eq!(page.dimension(), Dimension::Length);
+            page.apply(&ConvertAction::Quantity(Dimension::Mass));
+            assert!(!page.currency_note_shown(), "a quantity leaves the note");
+        }
     }
 }

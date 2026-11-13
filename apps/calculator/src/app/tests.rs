@@ -990,11 +990,12 @@ fn wide(mut app: CalculatorApp) -> CalculatorApp {
     app
 }
 
-/// Keycaps append, a history row recalls, Clear empties history, and the
-/// memory keys accumulate and clear.
-#[test]
-fn calc_pointer_clicks_drive_keypad_history_and_memory() {
-    // phase calc_keypad_click_appends_to_expression
+tilo_test_env::scenario! {
+    /// Keycaps append, a history row recalls, Clear empties history, and the
+    /// memory keys accumulate and clear.
+    fn calc_pointer_clicks_drive_keypad_history_and_memory;
+
+    phase calc_keypad_click_appends_to_expression;
     {
         let mut app = wide(CalculatorApp::new()); // Calc mode, empty
         let mut st = ui::State::new();
@@ -1009,7 +1010,7 @@ fn calc_pointer_clicks_drive_keypad_history_and_memory() {
         );
     }
 
-    // phase memory_button_click_accumulates_via_pointer
+    phase memory_button_click_accumulates_via_pointer;
     {
         let mut app = CalculatorApp::new();
         let mut st = ui::State::new();
@@ -1055,15 +1056,16 @@ fn the_bars_angle_unit_changes_trig_output() {
     );
 }
 
-/// Drag pans or orbits and the wheel zooms, the narrow Functions drawer opens
-/// from its toggle, and a row's visibility and delete buttons act on its row.
-#[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario, one labelled phase per merged case"
-)]
-fn graph_pointer_path_drives_views_drawer_and_row_controls() {
-    // phase graph2d_drag_pans_the_view
+tilo_test_env::scenario! {
+    /// Drag pans or orbits and the wheel zooms, the narrow Functions drawer opens
+    /// from its toggle, and a row's visibility and delete buttons act on its row.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario, one labelled phase per merged case"
+    )]
+    fn graph_pointer_path_drives_views_drawer_and_row_controls;
+
+    phase graph2d_drag_pans_the_view;
     {
         let mut app = CalculatorApp::new();
         app.set_mode(Mode::Graph2d);
@@ -1077,7 +1079,7 @@ fn graph_pointer_path_drives_views_drawer_and_row_controls() {
         assert!(app.model.view2d.cy != 0.0, "vertical drag must pan cy");
     }
 
-    // phase graph2d_wheel_zooms_the_view
+    phase graph2d_wheel_zooms_the_view;
     {
         let mut app = CalculatorApp::new();
         app.set_mode(Mode::Graph2d);
@@ -1094,7 +1096,7 @@ fn graph_pointer_path_drives_views_drawer_and_row_controls() {
         );
     }
 
-    // phase graph3d_drag_orbits_the_view
+    phase graph3d_drag_orbits_the_view;
     {
         let mut app = CalculatorApp::new();
         app.set_mode(Mode::Graph3d);
@@ -1113,7 +1115,7 @@ fn graph_pointer_path_drives_views_drawer_and_row_controls() {
         );
     }
 
-    // phase graph3d_wheel_zooms_the_view
+    phase graph3d_wheel_zooms_the_view;
     {
         let mut app = CalculatorApp::new();
         app.set_mode(Mode::Graph3d);
@@ -1129,7 +1131,7 @@ fn graph_pointer_path_drives_views_drawer_and_row_controls() {
         );
     }
 
-    // phase narrow_graph2d_bar_toggle_opens_the_drawer
+    phase narrow_graph2d_bar_toggle_opens_the_drawer;
     {
         let mut app = hosted();
         app.harness().resize((560, 720)).unwrap();
@@ -1146,7 +1148,7 @@ fn graph_pointer_path_drives_views_drawer_and_row_controls() {
         );
     }
 
-    // phase vis_dot_click_toggles_function_visibility
+    phase vis_dot_click_toggles_function_visibility;
     {
         let mut app = CalculatorApp::seeded(); // Graph2d, 4 visible funcs
         app.set_mode(Mode::Graph2d);
@@ -1167,7 +1169,7 @@ fn graph_pointer_path_drives_views_drawer_and_row_controls() {
         assert!(app.model.funcs[0].visible, "tapping again must show it");
     }
 
-    // phase graph_row_delete_button_tombstones_the_stable_resource
+    phase graph_row_delete_button_tombstones_the_stable_resource;
     {
         // The delete button runs the same keyed action as the palette, so a
         // peer changing the list order cannot rebind it.

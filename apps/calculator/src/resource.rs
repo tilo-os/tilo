@@ -344,136 +344,158 @@ mod tests {
             .unwrap()
     }
 
-    #[test]
-    fn history_commits_capped_deletes_and_clears() {
-        let mut calculator = Replica::<Calculator>::new();
-        commit(&mut calculator, "2+3", "5");
-        commit(&mut calculator, "sqrt(2)", "1.41");
-        assert_eq!(
-            history(&calculator),
-            [
-                ("sqrt(2)".to_owned(), "1.41".to_owned()),
-                ("2+3".to_owned(), "5".to_owned())
-            ],
-            "newest is at the front"
-        );
-        for i in 0..(HISTORY_CAP + 10) {
-            commit(&mut calculator, &i.to_string(), &i.to_string());
-        }
-        let capped = history(&calculator);
-        assert_eq!(capped.len(), HISTORY_CAP, "history is capped");
-        assert_eq!(capped[0].0, (HISTORY_CAP + 10 - 1).to_string());
-        assert!(
-            calculator
-                .apply(
-                    Invoke::edit(
-                        &Calculator::paths()
-                            .history
-                            .remove(calculator.state().unwrap().history.ids().next().unwrap())
-                    )
-                    .unwrap()
-                )
-                .is_err(),
-            "only the verbs change the history"
-        );
+    tilo_test_env::scenario! {
+        fn the_record_keeps_history_and_graph_rows_through_its_verbs_and_edits;
 
-        let mut calculator = Replica::<Calculator>::new();
-        for i in 0..4 {
-            commit(&mut calculator, &format!("e{i}"), &i.to_string());
-        }
-        let e2 = calculator
-            .state()
-            .unwrap()
-            .history
-            .ids()
-            .nth(1)
-            .cloned()
-            .unwrap();
-        let delete = || Calculator::DELETE_HISTORY_ENTRY.with(e2.clone());
-        calculator
-            .apply(delete())
-            .expect("Undo takes a deleted entry back, so deleting asks nothing");
-        assert_eq!(
-            history(&calculator)
-                .into_iter()
-                .map(|(expr, _)| expr)
-                .collect::<Vec<_>>(),
-            ["e3", "e1", "e0"]
-        );
-        assert!(calculator.apply_confirmed(delete()).is_err(), "it is gone");
-        calculator
-            .apply_confirmed(Calculator::CLEAR_HISTORY.with(()))
-            .unwrap();
-        assert!(history(&calculator).is_empty());
-        assert!(
+        phase history_commits_capped_deletes_and_clears;
+        {
+            let mut calculator = Replica::<Calculator>::new();
+            commit(&mut calculator, "2+3", "5");
+            commit(&mut calculator, "sqrt(2)", "1.41");
+            assert_eq!(
+                history(&calculator),
+                [
+                    ("sqrt(2)".to_owned(), "1.41".to_owned()),
+                    ("2+3".to_owned(), "5".to_owned())
+                ],
+                "newest is at the front"
+            );
+            for i in 0..(HISTORY_CAP + 10) {
+                commit(&mut calculator, &i.to_string(), &i.to_string());
+            }
+            let capped = history(&calculator);
+            assert_eq!(capped.len(), HISTORY_CAP, "history is capped");
+            assert_eq!(capped[0].0, (HISTORY_CAP + 10 - 1).to_string());
+            assert!(
+                calculator
+                    .apply(
+                        Invoke::edit(
+                            &Calculator::paths()
+                                .history
+                                .remove(calculator.state().unwrap().history.ids().next().unwrap())
+                        )
+                        .unwrap()
+                    )
+                    .is_err(),
+                "only the verbs change the history"
+            );
+
+            let mut calculator = Replica::<Calculator>::new();
+            for i in 0..4 {
+                commit(&mut calculator, &format!("e{i}"), &i.to_string());
+            }
+            let e2 = calculator
+                .state()
+                .unwrap()
+                .history
+                .ids()
+                .nth(1)
+                .cloned()
+                .unwrap();
+            let delete = || Calculator::DELETE_HISTORY_ENTRY.with(e2.clone());
+            calculator
+                .apply(delete())
+                .expect("Undo takes a deleted entry back, so deleting asks nothing");
+            assert_eq!(
+                history(&calculator)
+                    .into_iter()
+                    .map(|(expr, _)| expr)
+                    .collect::<Vec<_>>(),
+                ["e3", "e1", "e0"]
+            );
+            assert!(calculator.apply_confirmed(delete()).is_err(), "it is gone");
             calculator
                 .apply_confirmed(Calculator::CLEAR_HISTORY.with(()))
-                .is_err(),
-            "an empty history has nothing to clear"
-        );
-    }
-
-    #[test]
-    fn graph_rows_add_edit_toggle_and_delete() {
-        for kind in [GraphKind::Curve2d, GraphKind::Surface3d] {
-            let mut calculator = Replica::<Calculator>::new();
-            add(&mut calculator, kind, "");
-            add(&mut calculator, kind, "sin(x)");
-            assert_eq!(
-                graph(&calculator, kind),
-                [(String::new(), true), ("sin(x)".to_owned(), true)],
-                "{kind:?}: add"
-            );
-            let (first, second) = (nth(&calculator, kind, 0), nth(&calculator, kind, 1));
-            edit(
-                &mut calculator,
-                &kind.rows().item(&first).expr.replace("x^2"),
-            );
-            edit(
-                &mut calculator,
-                &kind.rows().item(&second).visible.set(false),
-            );
-            assert_eq!(
-                graph(&calculator, kind),
-                [("x^2".to_owned(), true), ("sin(x)".to_owned(), false)],
-                "{kind:?}: edit and toggle"
-            );
-            let delete = match kind {
-                GraphKind::Curve2d => Calculator::DELETE_FUNCTION.with(first),
-                GraphKind::Surface3d => Calculator::DELETE_SURFACE.with(first),
-            };
-            calculator.apply_confirmed(delete).unwrap();
-            assert_eq!(
-                graph(&calculator, kind),
-                [("sin(x)".to_owned(), false)],
-                "{kind:?}: delete"
+                .unwrap();
+            assert!(history(&calculator).is_empty());
+            assert!(
+                calculator
+                    .apply_confirmed(Calculator::CLEAR_HISTORY.with(()))
+                    .is_err(),
+                "an empty history has nothing to clear"
             );
         }
-    }
 
-    #[test]
-    fn concurrent_edits_converge_and_delete_wins() {
-        let mut ours = Replica::<Calculator>::new();
-        add(&mut ours, GraphKind::Curve2d, "x");
-        add(&mut ours, GraphKind::Curve2d, "sin(x)");
-        let (first, second) = (
-            nth(&ours, GraphKind::Curve2d, 0),
-            nth(&ours, GraphKind::Curve2d, 1),
-        );
-        let mut theirs = ours.fork();
-        let rows = GraphKind::Curve2d.rows();
-        edit(&mut ours, &rows.item(&second).expr.splice(0, 0, "2*"));
-        edit(&mut theirs, &rows.item(&second).expr.splice(6, 0, "+1"));
-        ours.apply_confirmed(Calculator::DELETE_FUNCTION.with(first.clone()))
-            .unwrap();
-        edit(&mut theirs, &rows.item(&first).expr.replace("x^2"));
-        ours.sync_with(&mut theirs).unwrap();
-        assert_eq!(ours.state().unwrap(), theirs.state().unwrap());
-        assert_eq!(
-            graph(&ours, GraphKind::Curve2d),
-            [("2*sin(x)+1".to_owned(), true)],
-            "the deleted row is not resurrected by a late edit"
-        );
+        phase graph_rows_add_edit_toggle_and_delete;
+        {
+            for kind in [GraphKind::Curve2d, GraphKind::Surface3d] {
+                let mut calculator = Replica::<Calculator>::new();
+                add(&mut calculator, kind, "");
+                add(&mut calculator, kind, "sin(x)");
+                assert_eq!(
+                    graph(&calculator, kind),
+                    [(String::new(), true), ("sin(x)".to_owned(), true)],
+                    "{kind:?}: add"
+                );
+                let (first, second) = (nth(&calculator, kind, 0), nth(&calculator, kind, 1));
+                edit(
+                    &mut calculator,
+                    &kind.rows().item(&first).expr.replace("x^2"),
+                );
+                edit(
+                    &mut calculator,
+                    &kind.rows().item(&second).visible.set(false),
+                );
+                assert_eq!(
+                    graph(&calculator, kind),
+                    [("x^2".to_owned(), true), ("sin(x)".to_owned(), false)],
+                    "{kind:?}: edit and toggle"
+                );
+                let delete = match kind {
+                    GraphKind::Curve2d => Calculator::DELETE_FUNCTION.with(first),
+                    GraphKind::Surface3d => Calculator::DELETE_SURFACE.with(first),
+                };
+                calculator.apply_confirmed(delete).unwrap();
+                assert_eq!(
+                    graph(&calculator, kind),
+                    [("sin(x)".to_owned(), false)],
+                    "{kind:?}: delete"
+                );
+            }
+        }
+
+        phase concurrent_edits_converge_and_delete_wins;
+        {
+            let mut ours = Replica::<Calculator>::new();
+            add(&mut ours, GraphKind::Curve2d, "x");
+            add(&mut ours, GraphKind::Curve2d, "sin(x)");
+            let (first, second) = (
+                nth(&ours, GraphKind::Curve2d, 0),
+                nth(&ours, GraphKind::Curve2d, 1),
+            );
+            let mut theirs = ours.fork();
+            let rows = GraphKind::Curve2d.rows();
+            edit(&mut ours, &rows.item(&second).expr.splice(0, 0, "2*"));
+            edit(&mut theirs, &rows.item(&second).expr.splice(6, 0, "+1"));
+            ours.apply_confirmed(Calculator::DELETE_FUNCTION.with(first.clone()))
+                .unwrap();
+            edit(&mut theirs, &rows.item(&first).expr.replace("x^2"));
+            ours.sync_with(&mut theirs).unwrap();
+            assert_eq!(ours.state().unwrap(), theirs.state().unwrap());
+            assert_eq!(
+                graph(&ours, GraphKind::Curve2d),
+                [("2*sin(x)+1".to_owned(), true)],
+                "the deleted row is not resurrected by a late edit"
+            );
+        }
+
+        phase formula_keystrokes_coalesce_per_row;
+        {
+            let rows = GraphKind::Curve2d.rows();
+            let action = |edit: &Edit<Calculator>| Invoke::edit(edit).unwrap().build(0).unwrap();
+            let (a, b) = (Id::from_raw("a"), Id::from_raw("b"));
+            let set = |row: &Id, expr: &str| action(&rows.item(row).expr.replace(expr));
+            assert!(Calculator::coalesces(&set(&a, "x"), &set(&a, "x+")));
+            assert!(!Calculator::coalesces(&set(&a, "x"), &set(&b, "x+")));
+            assert!(!Calculator::coalesces(
+                &set(&a, "x"),
+                &action(&GraphKind::Surface3d.rows().item(&a).expr.replace("x+"))
+            ));
+            assert!(!Calculator::coalesces(
+                &set(&a, "x"),
+                &action(&rows.item(&a).visible.set(false))
+            ));
+        }
     }
 
     #[test]
@@ -529,24 +551,6 @@ mod tests {
                 .iter()
                 .any(|action| action.id == "delete-surface")
         );
-    }
-
-    #[test]
-    fn formula_keystrokes_coalesce_per_row() {
-        let rows = GraphKind::Curve2d.rows();
-        let action = |edit: &Edit<Calculator>| Invoke::edit(edit).unwrap().build(0).unwrap();
-        let (a, b) = (Id::from_raw("a"), Id::from_raw("b"));
-        let set = |row: &Id, expr: &str| action(&rows.item(row).expr.replace(expr));
-        assert!(Calculator::coalesces(&set(&a, "x"), &set(&a, "x+")));
-        assert!(!Calculator::coalesces(&set(&a, "x"), &set(&b, "x+")));
-        assert!(!Calculator::coalesces(
-            &set(&a, "x"),
-            &action(&GraphKind::Surface3d.rows().item(&a).expr.replace("x+"))
-        ));
-        assert!(!Calculator::coalesces(
-            &set(&a, "x"),
-            &action(&rows.item(&a).visible.set(false))
-        ));
     }
 
     #[test]
