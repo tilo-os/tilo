@@ -1,5 +1,6 @@
 //! Borrowed-view model operations over a `&mut AutoCommit`, so a document can live
-//! in any host's automerge doc (e.g. `ui::State.doc`), not only an owned [`crate::Document`].
+//! in any host's automerge doc (e.g. `ui::State.doc`), not only an owned
+//! [`crate::Document`].
 
 use crate::document::{DocError, MarkSpan};
 use crate::schema::{
@@ -43,15 +44,16 @@ thread_local! { static MARK_READS: std::cell::Cell<usize> = const { std::cell::C
 /// Resolved object ids for the canonical container maps under a document root.
 #[derive(Clone, Debug)]
 pub struct Containers {
-    /// The document root these containers live under (not always `automerge::ROOT` — a host may nest the model).
+    /// The document root these containers live under (not always `automerge::ROOT` — a host may
+    /// nest the model).
     pub root: ObjId,
     pub blocks: ObjId,
     pub styles: ObjId,
     pub preserved: ObjId,
     pub meta: ObjId,
-    /// Content-addressed binary descriptors (blake3 hex → descriptor). The bytes are binary inputs kept
-    /// outside the document, in the caller's content store (see [`tilo_content`]). The map only grows, so it
-    /// names every input any version of the document refers to.
+    /// Content-addressed binary descriptors (blake3 hex → descriptor). The bytes live in the
+    /// caller's content store ([`tilo_content`]); the map only grows, so it names every input any
+    /// version of the document refers to.
     pub blobs: ObjId,
     /// Page-header block container (same shape as `blocks`).
     pub header: ObjId,
@@ -74,8 +76,7 @@ pub enum Region {
     Footer,
 }
 
-/// Which kind of note: a footnote (bottom of page) or an endnote (end of document).
-/// Stored as the note's `kind` scalar and round-tripped through the codecs.
+/// A footnote (bottom of page) or an endnote (end of document). Stored as the note's `kind` scalar.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NoteKind {
     Footnote,
@@ -90,8 +91,8 @@ impl NoteKind {
             NoteKind::Endnote => NOTE_KIND_ENDNOTE,
         }
     }
-    /// Parse a schema string back into a [`NoteKind`] (`endnote` → `Endnote`,
-    /// anything else → `Footnote`, the default).
+    /// Parse a schema string back into a [`NoteKind`] (`endnote` → `Endnote`, anything else →
+    /// `Footnote`, the default).
     #[allow(
         clippy::should_implement_trait,
         reason = "returns Self infallibly by design, not std::str::FromStr's fallible contract; renaming would ripple into sibling codec files outside this pass's scope"
@@ -105,9 +106,9 @@ impl NoteKind {
     }
 }
 
-/// A block's `(order_key, id)` pair, ordered exactly as [`ordered_keys`] orders blocks
-/// (fractional key via [`tilo_resource::order::bytes::cmp`], then id as a tiebreak). Used as the in-memory order index's key type.
-/// Key and id are shared with the `id → key` map, so the index holds each only once.
+/// A block's `(order_key, id)` pair, ordered as [`ordered_keys`] orders blocks: fractional key
+/// first, id as a tiebreak. Key and id are shared with the `id → key` map, so the index holds each
+/// only once.
 #[derive(Clone, PartialEq, Eq)]
 struct OrderKey {
     key: Arc<[u8]>,
@@ -125,8 +126,8 @@ impl PartialOrd for OrderKey {
     }
 }
 
-/// One container's block order held in memory: the ordered `(key, id)` set (O(log n) successor lookup)
-/// plus an `id → key` map (O(1) predecessor lookup). Mirrors one block container's automerge order.
+/// One container's block order in memory: the ordered `(key, id)` set (successor lookup) plus an
+/// `id → key` map (predecessor lookup).
 #[derive(Default)]
 struct ContainerOrder {
     entries: BTreeSet<OrderKey>,
@@ -147,12 +148,9 @@ impl ContainerOrder {
     }
 }
 
-/// A lazily-built, incrementally-maintained index of every touched block container's order.
-/// Makes block insertion sub-linear: the naive rescan-and-resort on every insert was O(n log n)
-/// each (O(n² log n) to build/import n blocks); with this index a neighbour lookup is O(log n).
-///
-/// It is a per-[`IdGen`] mirror kept in sync by every order-mutating [`DocMut`] method; a fresh
-/// `IdGen` starts empty and rebuilds from the live document on first use, so it can't outlive what it mirrors.
+/// A lazily built index of every touched block container's order, kept in sync by every
+/// order-mutating [`DocMut`] method, so a neighbour lookup is O(log n) instead of a rescan. A fresh
+/// [`IdGen`] starts empty and rebuilds from the live document on first use.
 #[derive(Default)]
 struct OrderIndex {
     by_container: HashMap<ObjId, ContainerOrder>,
@@ -168,14 +166,9 @@ struct InsertRun {
     hi: Option<Vec<u8>>,
 }
 
-/// Collision-free block id generator.
-///
-/// Inside an action it mints from the action's deterministic context
-/// ([`Self::for_action`]): ids are then a function of the action and the
-/// document it applies to, identical on the origin and on every replica
-/// replaying it, and minting costs nothing however large the document.
-/// Writers outside an action (an importer, an owned [`crate::Document`])
-/// count per replica: `{actor_hex}.{counter}`.
+/// Collision-free block id generator. Inside an action it mints from the action's deterministic
+/// context ([`Self::for_action`]), so ids are identical on the origin and on every replica
+/// replaying it. Writers outside an action count per replica: `{actor_hex}.{counter}`.
 pub struct IdGen {
     actor_hex: String,
     next: Option<u64>,
@@ -187,24 +180,22 @@ pub struct IdGen {
     /// The last block inserted without the order index, so the next insert
     /// after it (a paste, a table's cells) needs no scan.
     run: Option<InsertRun>,
-    /// In-memory block-order index (see [`OrderIndex`]); private bookkeeping carried on `IdGen` since it threads through every `DocMut`.
+    /// In-memory block-order index (see [`OrderIndex`]); private bookkeeping carried on `IdGen`
+    /// since it threads through every `DocMut`.
     order: OrderIndex,
     /// Blocks and marks buffered by an open [`DocMut::bulk`] scope.
     bulk: bulk::Bulk,
-    /// Bulk writes may commit (see [`Self::allow_commits`]).
     commits_allowed: bool,
     /// Made by [`Self::new`] rather than seeded from a document: its caller is creating content,
     /// not editing a document it read ids from. See [`DocMut::bulk`].
     unseeded: bool,
 }
 
-/// Clone for transactional staging against a cloned document, with a fresh
-/// derived ordering cache. On success the candidate document and generator must
-/// replace their originals together; on failure discard both candidates.
-///
-/// The original and clone share an actor and next counter. They must never be
-/// used as two concurrently allocating live generators: that would reuse durable
-/// identifiers. Independent replicas require distinct actor identities.
+/// Clone for transactional staging against a cloned document, with a fresh ordering cache. On
+/// success the candidate document and generator replace their originals together; on failure
+/// discard both. The original and clone share an actor and counter, so they must never allocate as
+/// two live generators: that would reuse durable identifiers. Independent replicas need distinct
+/// actor identities.
 impl Clone for IdGen {
     fn clone(&self) -> Self {
         Self {
@@ -223,11 +214,8 @@ impl Clone for IdGen {
     }
 }
 
-/// The finite per-actor block-id namespace has been consumed.
-///
-/// tilo-doc identifiers are durable collaboration keys, so reusing the final
-/// counter (or wrapping to zero) would alias existing content. Callers must
-/// create a new replica/document instead of continuing this namespace.
+/// The finite per-actor block-id namespace has been consumed. Identifiers are durable collaboration
+/// keys, so reusing the final counter (or wrapping to zero) would alias existing content.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum IdGenError {
     #[error("tilo-doc id namespace for actor {actor_hex} is exhausted")]
@@ -264,10 +252,8 @@ impl IdGen {
         }
     }
 
-    /// Mint ids from an applying action's context: deterministic under
-    /// replay, and independent of the document's size (no scan of existing
-    /// ids — an action's context is unique to the action and the version it
-    /// applies to, so its ids cannot collide with ids minted elsewhere).
+    /// Mint ids from an applying action's context: deterministic under replay, and no scan of
+    /// existing ids.
     pub fn for_action(cx: tilo_resource::ActionCx) -> Self {
         Self {
             actor_hex: String::new(),
@@ -282,12 +268,10 @@ impl IdGen {
         }
     }
 
-    /// Declare that the document this generator serves may be committed by bulk writes: a
-    /// [`DocMut::bulk`] scope then commits whatever is pending and writes its blocks and marks as
-    /// new changes, which is several times faster for mark-heavy imports. [`crate::Document`]
-    /// sets this. A document being created — nothing but the schema in it, written through a
-    /// generator from [`Self::new`] — gets the same treatment without it (see [`DocMut::bulk`]),
-    /// so a host opening a file into a fresh document need not set it.
+    /// Declare that bulk writes may commit the document: a [`DocMut::bulk`] scope then commits what
+    /// is pending and writes its blocks and marks as new changes, which is several times faster for
+    /// mark-heavy imports. [`crate::Document`] sets this; a document being created gets the same
+    /// treatment without it.
     pub fn allow_commits(&mut self) {
         self.commits_allowed = true;
     }
@@ -310,11 +294,8 @@ impl IdGen {
         Ok(id)
     }
 
-    /// Compatibility helper for infallible document mutators.
-    ///
-    /// New code that can surface an error should use [`Self::try_mint`]. The
-    /// legacy mutator APIs return raw identifiers, so exhaustion aborts rather
-    /// than silently colliding with a durable block id.
+    /// Compatibility helper for infallible document mutators; use [`Self::try_mint`] where an error
+    /// can surface. Exhaustion aborts rather than silently colliding with a durable block id.
     #[allow(
         clippy::expect_used,
         reason = "the legacy API cannot return an error; panic is the explicit fail-closed behavior"
@@ -367,7 +348,6 @@ pub fn next_counter_for(
             bump(&bid);
         }
     }
-    // Comment ids + comment-body block ids draw from the same generator too, for the same reason.
     let mut replies = comment_replies_by_parent(doc, c);
     for cid in comment_ids(doc, c) {
         bump(&cid);
@@ -381,7 +361,6 @@ pub fn next_counter_for(
             }
         }
     }
-    // Tracked-change ids draw from the same generator too, for the same reason.
     for chid in change_ids(doc, c) {
         bump(&chid);
     }
@@ -411,16 +390,13 @@ pub fn try_seeded_id_gen(doc: &AutoCommit, c: &Containers) -> Result<IdGen, IdGe
     Ok(IdGen::with_counter(actor, next))
 }
 
-/// An [`IdGen`] for `doc`'s current actor, seeded past existing block ids.
-///
-/// Compatibility helper for existing infallible host paths. New load and
-/// persistence boundaries should call [`try_seeded_id_gen`] to return the
-/// exhaustion error to their caller.
+/// An [`IdGen`] for `doc`'s current actor, seeded past existing block ids. New load and persistence
+/// boundaries should call [`try_seeded_id_gen`] to report exhaustion.
 ///
 /// # Panics
 ///
-/// Panics when the persisted document already used this actor's final
-/// possible identifier; continuing would otherwise reuse durable state.
+/// Panics when the persisted document already used this actor's final identifier; continuing would
+/// reuse durable state.
 #[allow(
     clippy::expect_used,
     reason = "the established compatibility API cannot return an error; panic is explicit fail-closed behavior"
@@ -430,24 +406,14 @@ pub fn seeded_id_gen(doc: &AutoCommit, c: &Containers) -> IdGen {
         .expect("tilo-doc id namespace exhausted; refusing to seed a colliding identifier")
 }
 
-/// The actor that writes every document's schema.
-///
-/// Nobody edits as this actor; it is not a replica. It exists so the ops that
-/// create the container maps are *the same ops* on every machine — same actor,
-/// same counters, therefore the same `ObjId`s and the same change hash.
-///
-/// Minting the schema per replica cannot work. `put_object(root, "blocks", Map)`
-/// creates a new object and points the key at it, so two replicas that each run
-/// it have written the same key concurrently with no ancestor between them.
-/// After a merge `root.blocks` has two candidates and automerge keeps exactly
-/// one — the op with the greater `(counter, actor)`. The counters are equal
-/// (both ran the identical sequence), so the winner is decided by comparing two
-/// random actor ids, and the loser's whole block tree stays in the change graph
-/// unreachable from the root, which reads exactly like it was never written.
-/// Deriving the schema from one genesis removes the conflict rather than
-/// resolving it: both replicas hold the *same change*, automerge deduplicates
-/// it, and `root.blocks` has one candidate however many participants there are
-/// and whoever imported first.
+/// The actor that writes every document's schema. Nobody edits as this actor; it is not a replica.
+/// It exists so the ops that create the container maps are the same ops on every machine — same
+/// actor, same counters, therefore the same `ObjId`s and change hash. Minting the schema per
+/// replica cannot work: `put_object(root, "blocks", Map)` on two replicas writes the same key
+/// concurrently with no ancestor between them, and after a merge automerge keeps one candidate (the
+/// greater `(counter, actor)`). With equal counters the winner comes down to comparing random actor
+/// ids, and the loser's block tree stays in the change graph, unreachable. Deriving the schema from
+/// one genesis removes the conflict rather than resolving it.
 const GENESIS_ACTOR: &[u8] = b"qdoc.schema.genesis.v1";
 
 /// Whether `doc` has no committed history beyond the schema [`init`] adopts: nothing written to it
@@ -465,10 +431,8 @@ pub(crate) fn holds_only_schema(doc: &AutoCommit) -> bool {
             })
 }
 
-/// The canonical schema change, built once per process.
-///
-/// A fixed actor replaying a fixed op sequence over an empty document, so every
-/// machine produces byte-identical output. The bytes are only a carrier for a
+/// The canonical schema change, built once per process: a fixed actor replaying a fixed op sequence
+/// over an empty document, so every machine produces byte-identical output. The bytes only carry a
 /// change hash that has to agree across the room.
 fn genesis() -> &'static [u8] {
     static GENESIS: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
@@ -481,19 +445,11 @@ fn genesis() -> &'static [u8] {
     })
 }
 
-/// Give `doc` the canonical schema under `root`, and resolve the containers.
-///
-/// At the document root the schema is *adopted* from the shared `genesis`
-/// rather than minted, so two replicas that each open the same file are editing
-/// one document and not two that merge lossily (see `GENESIS_ACTOR`).
-/// Idempotent: a document that already carries the schema is returned as it
-/// stands, because minting a second set of containers is the same conflict
-/// arrived at from one process instead of two.
-///
-/// A **nested** root (the FS layer embeds a document inside a namespace node)
-/// cannot use the genesis: its parent object id is minted by whichever replica
-/// created the node, so no pre-baked change can name it. Those documents are
-/// created once and then synced rather than created twice and merged, so the
+/// Give `doc` the canonical schema under `root`, and resolve the containers. At the document root
+/// the schema is adopted from the shared `genesis` rather than minted (see `GENESIS_ACTOR`).
+/// Idempotent: a document that already carries the schema is returned as it stands. A nested root
+/// (the FS layer embeds a document inside a namespace node) cannot use the genesis, since its
+/// parent object id is minted per replica; such documents are created once and synced, so the
 /// schema is written in place.
 pub fn init(doc: &mut AutoCommit, root: &ObjId) -> Containers {
     if let Ok(existing) = open(doc, root) {
@@ -507,8 +463,8 @@ pub fn init(doc: &mut AutoCommit, root: &ObjId) -> Containers {
         {
             return adopted;
         }
-        // Falling back to a private schema would reintroduce exactly the
-        // silent-loss conflict the genesis exists to prevent, so say so.
+        // Falling back to a private schema would reintroduce the silent-loss conflict the genesis
+        // exists to prevent, so say so.
         tracing::error!(
             "tilo-doc: could not adopt the shared schema genesis; this document's \
              containers are private to this replica and merging it with another \
@@ -518,18 +474,14 @@ pub fn init(doc: &mut AutoCommit, root: &ObjId) -> Containers {
     write_schema(doc, root)
 }
 
-/// Write schema scalars + create the container maps under `root`, in place.
-///
-/// This op sequence *is* the schema, and [`genesis`] replays it under a fixed
-/// actor. Adding, removing or reordering an op changes the genesis hash, which
-/// is a schema migration for every document in the world, not a local edit.
+/// Write the schema scalars and create the container maps under `root`, in place. This op sequence
+/// is the schema, and [`genesis`] replays it under a fixed actor: adding, removing or reordering an
+/// op changes the genesis hash, which is a schema migration for every document in the world.
 ///
 /// # Panics
-/// Panics if `root` names an object that doesn't exist in `doc`. Every caller resolves
-/// `root` (`automerge::ROOT`, or a namespace node it just created) immediately before
-/// calling this, so the object is always live; [`init`]'s own callers across the
-/// workspace depend on its infallible `Containers` return, so surfacing this as a
-/// `Result` here would be a public-API break out of scope for a lint-only pass.
+///
+/// Panics if `root` names an object that does not exist in `doc`. Every caller resolves `root`
+/// immediately before calling this.
 #[allow(
     clippy::unwrap_used,
     reason = "root is always a live object at every call site (see the panics note above); init()'s widely-depended-upon infallible signature rules out propagating a Result"
@@ -542,13 +494,12 @@ fn write_schema(doc: &mut AutoCommit, root: &ObjId) -> Containers {
     let preserved = doc.put_object(root, KEY_PRESERVED, ObjType::Map).unwrap();
     let meta = doc.put_object(root, KEY_META, ObjType::Map).unwrap();
     let blobs = doc.put_object(root, KEY_BLOBS, ObjType::Map).unwrap();
-    // Every container is created here rather than on first write. A lazily
-    // created map is a per-replica object, so two people who concurrently add a
-    // footnote — or a comment, a tracked change, a page header — would create
-    // two containers and a merge would keep one, which is the same silent loss
-    // the genesis exists to prevent. Present-and-empty is indistinguishable from absent to every reader, and
-    // both office codecs decide a document *has* a header from whether the
-    // region materializes blocks, so an empty one exports nothing.
+    // Every container is created here rather than on first write. A lazily created map is a
+    // per-replica object, so two people who concurrently add a footnote — or a comment, a tracked
+    // change, a page header — would create two containers and a merge would keep one.
+    // Present-and-empty is indistinguishable from absent to every reader, and both office codecs
+    // decide a document has a header from whether the region materializes blocks, so an empty one
+    // exports nothing.
     let notes = doc.put_object(root, KEY_NOTES, ObjType::Map).unwrap();
     let comments = doc.put_object(root, KEY_COMMENTS, ObjType::Map).unwrap();
     let changes = doc.put_object(root, KEY_CHANGES, ObjType::Map).unwrap();
@@ -569,16 +520,14 @@ fn write_schema(doc: &mut AutoCommit, root: &ObjId) -> Containers {
     }
 }
 
-/// Whether `actor` wrote the schema rather than any of the document's content.
-///
-/// Nobody edits as the genesis actor, so a change it authored is not a revision:
-/// a version history that lists it attributes one to a person who does not exist.
+/// Whether `actor` wrote the schema rather than the document's content: a change it authored is not
+/// a revision, and version history must not attribute one to a person.
 pub fn is_schema_genesis_actor(actor: &automerge::ActorId) -> bool {
     actor.to_bytes() == GENESIS_ACTOR
 }
 
-/// Whether `version` is the schema genesis rather than something a person
-/// wrote. See [`is_schema_genesis_actor`].
+/// Whether `version` is the schema genesis rather than something a person wrote (see
+/// [`is_schema_genesis_actor`]).
 pub fn is_schema_genesis(version: &tilo_resource::history::Version) -> bool {
     version.actor == schema_genesis_actor_hex()
 }
@@ -603,15 +552,11 @@ const CONTAINER_KEYS: &[&str] = &[
     KEY_CHANGES,
 ];
 
-/// Container keys under `root` that resolve to **more than one** object.
-///
-/// A non-empty result means content sits in the change graph that no read of
-/// this document will ever return: automerge picked one candidate and everything
-/// under the others is unreachable. It is the signature of two replicas having
-/// minted their own schema — a document written before the genesis existed
-/// meeting one written after it. One `get_all` per key, so a caller that merges
-/// foreign documents can afford to check and then refuse, or warn, instead of
-/// showing someone a document that quietly lost half of itself.
+/// Container keys under `root` that resolve to more than one object. A non-empty result means
+/// content sits in the change graph that no read will ever return: automerge picked one candidate
+/// and everything under the others is unreachable, the signature of two replicas having minted
+/// their own schema. One `get_all` per key, so a caller that merges foreign documents can afford to
+/// check and refuse.
 pub fn shadowed_containers(doc: &AutoCommit, root: &ObjId) -> Vec<String> {
     CONTAINER_KEYS
         .iter()
@@ -622,9 +567,8 @@ pub fn shadowed_containers(doc: &AutoCommit, root: &ObjId) -> Vec<String> {
 
 /// Resolve existing containers under `root`.
 pub fn open(doc: &AutoCommit, root: &ObjId) -> Result<Containers, DocError> {
-    // One walk over `root` finds every container: a record holding rich text
-    // in each of its items opens one per item, and a lookup per key seeks
-    // into the operations again each time.
+    // One walk over `root` finds every container: a lookup per key seeks into the operations again
+    // each time.
     let mut maps: HashMap<&'static str, ObjId> = HashMap::with_capacity(CONTAINER_KEYS.len());
     for item in doc.map_range(root, ..) {
         if matches!(item.value, ValueRef::Object(ObjType::Map))
@@ -690,10 +634,9 @@ pub fn region_block_obj(
     region_block(doc, c, region, id).map(|(_, obj)| obj)
 }
 
-/// The length in characters of block `id`'s text in `region`, or `None` when `id` is not a block
-/// of that region as a snapshot would show it (a map carrying a byte order key). A block without a
-/// text object has length 0. A point lookup: nothing else in the document is read, so an editor can
-/// validate a keystroke against it without materializing the region.
+/// The length in characters of block `id`'s text in `region`, or `None` when `id` is not a block of
+/// that region (a map carrying a byte order key). A block without a text object has length 0. A
+/// point lookup, so an editor can validate a keystroke without materializing the region.
 pub fn region_block_len(
     doc: &AutoCommit,
     c: &Containers,
@@ -736,8 +679,8 @@ fn note_blocks_obj(doc: &AutoCommit, c: &Containers, id: &str) -> Option<ObjId> 
     map_at(doc, &note, NOTE_BLOCKS)
 }
 
-/// The note ids present in the document, in a stable (sorted) order so two replicas converge
-/// byte-identically; citation order in the body text is recovered separately from `note-ref` marks.
+/// The note ids present, sorted so two replicas converge byte-identically; citation order is
+/// recovered from `note-ref` marks.
 pub fn note_ids(doc: &AutoCommit, c: &Containers) -> Vec<String> {
     let notes = &c.notes;
     let mut ids: Vec<String> = doc
@@ -792,9 +735,8 @@ pub fn materialize_notes(doc: &AutoCommit, c: &Containers) -> Vec<crate::snapsho
         .collect()
 }
 
-/// A grow-only resolution marker. Unlike deleting the comment map entry alone,
-/// this remains observable when a divergent replica concurrently authors a
-/// reply against its still-live copy of the thread.
+/// A grow-only resolution marker: it stays observable when a divergent replica concurrently authors
+/// a reply against its still-live copy of the thread.
 pub fn comment_is_tombstoned(doc: &AutoCommit, c: &Containers, id: &str) -> bool {
     let comments = &c.comments;
     let key = format!("{COMMENT_TOMBSTONE_PREFIX}{id}");
@@ -844,8 +786,8 @@ fn comment_reply_blocks_obj(
     map_at(doc, &reply, COMMENT_REPLY_BLOCKS)
 }
 
-/// The comment ids present in the document, in a stable (sorted) order so two replicas that merged
-/// in different orders materialize byte-identically; anchored ranges are recovered from the `comment` marks.
+/// The comment ids present, sorted so two replicas converge byte-identically; anchored ranges are
+/// recovered from the `comment` marks.
 pub fn comment_ids(doc: &AutoCommit, c: &Containers) -> Vec<String> {
     let comments = &c.comments;
     let mut ids: Vec<String> = doc
@@ -887,19 +829,16 @@ pub fn materialize_comment_blocks(doc: &AutoCommit, c: &Containers, id: &str) ->
     }
 }
 
-/// Stable ids of every reply belonging to a comment. Missing thread maps are
-/// treated as empty to keep old documents readable without migration writes.
-///
-/// Replies are records in the shared comments map, so this reads the whole map; to list the
-/// replies of every comment, use [`comment_replies_by_parent`] once instead.
+/// Stable ids of every reply belonging to a comment. Missing thread maps read as empty, so old
+/// documents need no migration write. To list every comment's replies, use
+/// [`comment_replies_by_parent`] once instead.
 pub fn comment_reply_ids(doc: &AutoCommit, c: &Containers, comment_id: &str) -> Vec<String> {
     comment_replies_by_parent(doc, c)
         .remove(comment_id)
         .unwrap_or_default()
 }
 
-/// Every reply id in the comments map, grouped by the comment it answers, each group sorted: the
-/// answer [`comment_reply_ids`] gives for every comment, from one pass over the map.
+/// Every reply id in the comments map, grouped by the comment it answers, each group sorted.
 pub fn comment_replies_by_parent(doc: &AutoCommit, c: &Containers) -> HashMap<String, Vec<String>> {
     let mut by_parent: HashMap<String, Vec<String>> = HashMap::new();
     let comments = &c.comments;
@@ -989,8 +928,8 @@ fn reply_views(
         .collect()
 }
 
-/// The anchored body range `(block_id, start, end)` of a comment, recovered from the `comment` mark
-/// covering text valued with the comment id. `None` if absent (e.g. the commented text was deleted).
+/// The anchored body range `(block_id, start, end)` of a comment, from the `comment` mark valued
+/// with its id. `None` if absent (e.g. the commented text was deleted).
 pub fn comment_range(doc: &AutoCommit, c: &Containers, id: &str) -> Option<(String, usize, usize)> {
     for bid in blocks_in_order(doc, c) {
         for m in marks(doc, c, &bid) {
@@ -1003,7 +942,8 @@ pub fn comment_range(doc: &AutoCommit, c: &Containers, id: &str) -> Option<(Stri
     None
 }
 
-/// Materialize every comment into a [`crate::snapshot::CommentView`] (sorted by id), recovering each comment's anchored body range.
+/// Materialize every comment into a [`crate::snapshot::CommentView`] (sorted by id), recovering
+/// each comment's anchored body range.
 pub fn materialize_comments(doc: &AutoCommit, c: &Containers) -> Vec<crate::snapshot::CommentView> {
     let ids = comment_ids(doc, c);
     if ids.is_empty() {
@@ -1032,9 +972,8 @@ fn comments_with_ranges(
         .collect()
 }
 
-/// The first body range each comment / tracked-change anchor mark covers, keyed by `(mark name, id)`:
-/// "first" in block order, then in canonical mark order — what [`comment_range`] / [`change_range`]
-/// find, but for every id from one pass over already-materialized body blocks.
+/// The first body range each comment / tracked-change anchor mark covers, keyed by `(mark name,
+/// id)`: "first" in block order, then in canonical mark order.
 struct AnchorRanges(HashMap<(&'static str, String), (String, usize, usize)>);
 
 impl AnchorRanges {
@@ -1084,14 +1023,14 @@ fn bookmarks_in(blocks: &[BlockView]) -> Vec<crate::snapshot::BookmarkView> {
     out
 }
 
-/// Every bookmark in the body, recovered from the `bookmark` marks. Sorted by `(name, block, start)`
-/// so replicas that merged in different orders materialize byte-identically; a name may repeat if the source document duplicated it.
+/// Every bookmark in the body, from the `bookmark` marks, sorted by `(name, block, start)` so
+/// replicas materialize byte-identically. A name may repeat if the source document duplicated it.
 pub fn bookmarks(doc: &AutoCommit, c: &Containers) -> Vec<crate::snapshot::BookmarkView> {
     bookmarks_in(&ordered_views(doc, &c.blocks))
 }
 
-/// The auto/derived reference id of a heading block (so a cross-reference can target a heading with no
-/// explicit bookmark): [`HEADING_REF_PREFIX`] + the block id. Stable across save/load, distinct from any user bookmark name.
+/// The derived reference id of a heading block: [`HEADING_REF_PREFIX`] + the block id, so a
+/// cross-reference can target a heading with no explicit bookmark.
 pub fn heading_ref_id(block_id: &str) -> String {
     format!("{HEADING_REF_PREFIX}{block_id}")
 }
@@ -1102,8 +1041,8 @@ fn change_obj(doc: &AutoCommit, c: &Containers, id: &str) -> Option<ObjId> {
     map_at(doc, changes, id)
 }
 
-/// The change ids present in the document, in a stable (sorted) order so replicas converge byte-identically;
-/// anchored ranges are recovered separately from the body `ins`/`del` marks.
+/// The change ids present, sorted so replicas converge byte-identically; anchored ranges are
+/// recovered from the body `ins`/`del` marks.
 pub fn change_ids(doc: &AutoCommit, c: &Containers) -> Vec<String> {
     let changes = &c.changes;
     let mut ids: Vec<String> = doc
@@ -1151,8 +1090,8 @@ fn change_mark_name(kind: crate::snapshot::ChangeKind) -> &'static str {
     }
 }
 
-/// The anchored body range `(block_id, start, end)` of a change, recovered from the `ins`/`del` mark
-/// (matching the change's kind) valued with the change id. `None` if absent (e.g. accepted/rejected already).
+/// The anchored body range `(block_id, start, end)` of a change, from the `ins`/`del` mark matching
+/// its kind. `None` if absent (e.g. accepted or rejected already).
 pub fn change_range(doc: &AutoCommit, c: &Containers, id: &str) -> Option<(String, usize, usize)> {
     let kind = change_kind(doc, c, id)?;
     let name = change_mark_name(kind);
@@ -1166,7 +1105,8 @@ pub fn change_range(doc: &AutoCommit, c: &Containers, id: &str) -> Option<(Strin
     None
 }
 
-/// Materialize every tracked change into a [`crate::snapshot::ChangeView`] (sorted by id), recovering each change's anchored body range.
+/// Materialize every tracked change into a [`crate::snapshot::ChangeView`] (sorted by id),
+/// recovering each change's anchored body range.
 pub fn materialize_changes(doc: &AutoCommit, c: &Containers) -> Vec<crate::snapshot::ChangeView> {
     let ids = change_ids(doc, c);
     if ids.is_empty() {
@@ -1190,7 +1130,6 @@ fn changes_with_ranges(
                 kind,
                 author: change_author(doc, c, &id).unwrap_or_default(),
                 date: change_date(doc, c, &id).unwrap_or_default(),
-                // `change_range` has no range for a change without a recorded kind.
                 range: recorded.and_then(|k| ranges.get(change_mark_name(k), &id)),
                 id,
             }
@@ -1198,8 +1137,9 @@ fn changes_with_ranges(
         .collect()
 }
 
-/// A blob's descriptor — what the document holds *instead of* its bytes.
-/// `None` when the document doesn't reference that hash at all, distinct from referencing it without having the content yet.
+/// A blob's descriptor — what the document holds instead of its bytes. `None` when the document
+/// does not reference that hash at all, distinct from referencing it without having the content
+/// yet.
 pub fn blob_meta(doc: &AutoCommit, c: &Containers, hash: &str) -> Option<ContentMeta> {
     let blobs = &c.blobs;
     match doc.get(blobs, hash) {
@@ -1236,8 +1176,7 @@ pub fn blob_hashes(doc: &AutoCommit, c: &Containers) -> Vec<String> {
 }
 
 /// Every content address the document refers to, in any of its versions: image descriptors and
-/// preserved package parts alike (both are recorded in the grow-only blobs map). The set a
-/// content store must retain for this document.
+/// preserved package parts alike. The set a content store must retain for this document.
 pub fn referenced_content(doc: &AutoCommit, c: &Containers) -> BTreeSet<String> {
     blob_hashes(doc, c).into_iter().collect()
 }
@@ -1247,22 +1186,19 @@ fn block_obj(doc: &AutoCommit, container: &ObjId, id: &str) -> Option<ObjId> {
 }
 
 thread_local! {
-    /// Per-thread count of full [`ordered_keys`] container scans (each an O(n) read-and-sort). The in-memory
-    /// order index means a *bulk* insert (build/import of n blocks) triggers only O(1) of these — one per
-    /// container to seed the index — instead of one per insert. The perf test asserts on this delta directly,
-    /// so a regression back to per-insert scanning is caught mode-independently (no wall-clock dependence).
+    /// Per-thread count of full [`ordered_keys`] container scans (each an O(n) read-and-sort). The
+    /// order index means a bulk insert triggers O(1) of these instead of one per insert.
     static ORDERED_KEYS_SCANS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
-/// The number of full container scans this thread has performed (see `ORDERED_KEYS_SCANS`). Sample it
-/// around a bulk insert to prove the order index kept work near-constant rather than O(n).
+/// The number of full container scans this thread has performed (see `ORDERED_KEYS_SCANS`). Sample
+/// it around a bulk insert to prove the order index kept work near-constant rather than O(n).
 pub fn ordered_keys_scan_count() -> u64 {
     ORDERED_KEYS_SCANS.with(std::cell::Cell::get)
 }
 
-/// A block map's fields, read in one pass over its entries. Automerge answers each `get` with a fresh
-/// seek into the op set, so reading a block field by field cost one seek per field; a single
-/// `map_range` walk visits every field in order for the price of one.
+/// A block map's fields, read in one pass: automerge answers each `get` with a fresh seek into the
+/// op set, while one `map_range` walk visits every field for the price of one.
 #[derive(Default)]
 struct BlockFields {
     order: Option<Vec<u8>>,
@@ -1300,8 +1236,8 @@ struct OrderedBlock {
     fields: BlockFields,
 }
 
-/// Every block of `container` that carries an order key, sorted into document order (fractional key via
-/// [`tilo_resource::order::bytes::cmp`], then id as a tiebreak). One walk over the container and one over each block.
+/// Every block of `container` that carries an order key, in document order (fractional key, then
+/// id), from one walk over the container.
 fn ordered_blocks(doc: &AutoCommit, container: &ObjId) -> Vec<OrderedBlock> {
     ORDERED_KEYS_SCANS.with(|c| c.set(c.get().saturating_add(1)));
     let mut v: Vec<OrderedBlock> = doc
@@ -1371,10 +1307,8 @@ pub struct BodyBlock {
     pub view: Option<BlockView>,
 }
 
-/// The body's spine, materialising the blocks whose kind `view` picks, in
-/// one walk over the body: each block's fields are read once, whether it
-/// becomes a spine entry, a view or both, so no picked block is read twice
-/// or looked up by id again.
+/// The body's spine, materializing the blocks whose kind `view` picks, in one walk: each block's
+/// fields are read once whether it becomes a spine entry, a view or both.
 pub fn read_body(
     doc: &AutoCommit,
     c: &Containers,
@@ -1403,8 +1337,7 @@ pub fn read_body(
         .collect()
 }
 
-/// One body block's spine entry; `None` when the block is gone or has no
-/// order key (and so is not part of the document).
+/// One body block's spine entry; `None` when the block is gone or has no order key.
 pub fn body_spine_entry(doc: &AutoCommit, c: &Containers, id: &str) -> Option<SpineEntry> {
     let obj = block_obj(doc, &c.blocks, id)?;
     let fields = block_fields(doc, &obj);
@@ -1415,14 +1348,11 @@ pub fn body_spine_entry(doc: &AutoCommit, c: &Containers, id: &str) -> Option<Sp
     })
 }
 
-/// Materialize exactly the requested body blocks, in the supplied order.
-///
-/// This is deliberately unlike [`materialize`] and [`materialize_region`]: it
-/// does not enumerate the body container first. Callers that already maintain a
-/// canonical order index (for example a viewport renderer) can therefore fetch
-/// a bounded visible window without allocating views for an entire imported
-/// document. Missing ids are ignored; that makes a window assembled immediately
-/// before a concurrent deletion safe to consume without fabricating a block.
+/// Materialize exactly the requested body blocks, in the supplied order. Unlike [`materialize`] and
+/// [`materialize_region`] this does not enumerate the body first, so a caller that keeps its own
+/// order index (a viewport renderer) fetches a bounded window without allocating views for the
+/// whole document. Missing ids are ignored, so a window assembled before a concurrent deletion is
+/// safe to consume.
 pub fn materialize_blocks(doc: &AutoCommit, c: &Containers, ids: &[String]) -> Vec<BlockView> {
     ids.iter()
         .filter_map(|id| {
@@ -1432,9 +1362,9 @@ pub fn materialize_blocks(doc: &AutoCommit, c: &Containers, ids: &[String]) -> V
         .collect()
 }
 
-/// The byte length of every body block's fractional order key. [`tilo_resource::order::bytes::between`] keeps these
-/// logarithmic in a run of sequential appends; a scheme that grows keys linearly makes every comparison O(n).
-/// The perf test asserts the max stays small — a direct, mode-independent guard on key growth.
+/// The byte length of every body block's fractional order key:
+/// [`tilo_resource::order::bytes::between`] keeps these logarithmic in a run of appends, and a
+/// scheme that grows them linearly makes every comparison O(n).
 pub fn block_order_key_lengths(doc: &AutoCommit, c: &Containers) -> Vec<usize> {
     ordered_blocks(doc, &c.blocks)
         .into_iter()
@@ -1447,8 +1377,7 @@ pub fn meta_str(doc: &AutoCommit, c: &Containers, key: &str) -> Option<String> {
     str_at(doc, &c.meta, key)
 }
 
-/// Read a document-level meta flag; a key that was never set reads `false`,
-/// so a document from before the flag existed reads as the flag's default.
+/// Read a document-level meta flag; a key that was never set reads `false`.
 pub fn meta_flag(doc: &AutoCommit, c: &Containers, key: &str) -> bool {
     matches!(
         doc.get(&c.meta, key),
@@ -1456,9 +1385,8 @@ pub fn meta_flag(doc: &AutoCommit, c: &Containers, key: &str) -> bool {
     )
 }
 
-/// The document-wide multi-column layout: `(column_count, optional_gap_px)`. Reads the `meta.columns` /
-/// `meta.column_gap` registers, defaulting to a single column ([`DEFAULT_COLUMNS`]) with no gap when unset
-/// so documents predating this setting read as single-column. A stored count of zero is clamped up to one.
+/// The document-wide multi-column layout: `(column_count, optional_gap_px)`, one column with no gap
+/// when unset. A stored count of zero is clamped up to one.
 pub fn columns(doc: &AutoCommit, c: &Containers) -> (u32, Option<f64>) {
     let count = match doc.get(&c.meta, META_COLUMNS) {
         Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
@@ -1485,19 +1413,20 @@ pub fn columns(doc: &AutoCommit, c: &Containers) -> (u32, Option<f64>) {
     (count, gap)
 }
 
-/// The document default language as a BCP-47 tag (`en-US`, `de-DE`, `fr`), read from `meta.language`.
-/// `None` for documents that declare no default language; the consumer then falls back to its own locale.
-/// Round-trips through the `.odt` default-paragraph-style `fo:language`/`fo:country` and `.docx` `docDefaults` `w:lang`.
+/// The document default language as a BCP-47 tag (`en-US`, `de-DE`), or `None` when it declares
+/// none. Round-trips through `.odt` `fo:language`/`fo:country` and `.docx` `docDefaults` `w:lang`.
 pub fn language(doc: &AutoCommit, c: &Containers) -> Option<String> {
     str_at(doc, &c.meta, META_LANGUAGE).filter(|s| !s.is_empty())
 }
 
-/// Resolve the document-properties sub-map under `meta` (`meta.props`), if it exists (created lazily on first [`DocMut::set_doc_prop`]).
+/// The document-properties sub-map under `meta`, created lazily on first [`DocMut::set_doc_prop`].
 fn props_obj(doc: &AutoCommit, c: &Containers) -> Option<ObjId> {
     map_at(doc, &c.meta, KEY_PROPS)
 }
 
-/// Read a single document property (`title`/`author`/… — see [`DOC_PROP_KEYS`](crate::schema::DOC_PROP_KEYS)), or any other string property name a codec stashed. `None` if unset.
+/// Read one document property (`title`/`author`/…, see
+/// [`DOC_PROP_KEYS`](crate::schema::DOC_PROP_KEYS)) or any other string a codec stashed; `None` if
+/// unset.
 pub fn doc_prop(doc: &AutoCommit, c: &Containers, name: &str) -> Option<String> {
     let props = props_obj(doc, c)?;
     str_at(doc, &props, name)
@@ -1518,12 +1447,9 @@ pub fn block_text(doc: &AutoCommit, c: &Containers, id: &str) -> Option<String> 
     block_text_on(doc, &obj)
 }
 
-// ---- paragraph text storage ------------------------------------------------
-//
-// A block's `text` is one Automerge `Text` object: a character-level sequence
-// CRDT whose inline formatting lives as marks on it, so concurrent edits in one
-// paragraph merge per character. Every block constructor below creates that
-// object in the same change as the block itself.
+// A block's `text` is one Automerge `Text` object: a character-level CRDT whose inline formatting
+// lives as marks on it, so concurrent edits in one paragraph merge per character. Every block
+// constructor creates that object in the same change as the block itself.
 
 fn canonical_text(doc: &AutoCommit, block_obj: &ObjId) -> Option<ObjId> {
     match doc.get(block_obj, BLOCK_TEXT) {
@@ -1545,19 +1471,15 @@ pub fn ensure_block_text(doc: &mut AutoCommit, block_obj: &ObjId) -> Option<ObjI
     doc.put_object(block_obj, BLOCK_TEXT, ObjType::Text).ok()
 }
 
-/// Create a new block's (empty) Text object in the same change as the block,
-/// so concurrent first edits on other replicas address one shared sequence.
+/// Create a new block's (empty) Text object in the same change as the block, so concurrent first
+/// edits on other replicas address one shared sequence.
 fn create_block_text(doc: &mut AutoCommit, block_obj: &ObjId) {
     let _ = doc.put_object(block_obj, BLOCK_TEXT, ObjType::Text);
 }
 
-/// The paragraph the block map `block` holds as of `heads`, read in place: its kind and the
-/// marks over its text, with the text left empty (a caller reading a change has the text of
-/// both sides already, and reading it here again would cost the paragraph twice). `None`
-/// when the block holds no text object: a divider, an image.
-///
-/// One block, never the region: a change that typed into one paragraph of a long note reads
-/// that paragraph's block, and nothing of the others.
+/// The paragraph `block` holds as of `heads`, read in place: its kind and the marks over its text,
+/// with the text left empty (a caller reading a change already has the text of both sides). `None`
+/// when the block holds no text object: a divider, an image. One block, never the region.
 pub fn block_at(
     doc: &automerge::Automerge,
     block: &ObjId,
@@ -1604,12 +1526,9 @@ fn marks_on(doc: &AutoCommit, block_obj: &ObjId) -> Vec<MarkSpan> {
     text_and_marks(doc, &tid).1
 }
 
-/// A text object's content and its marks, from one walk over its spans (`text` and `marks` would each
-/// walk every character). Runs are merged exactly as automerge's own `marks` merges them — a run
-/// extends the previous run of the same name when it carries the same value and starts where that
-/// one ended — and removed (null-valued) marks are dropped. Marks come back in canonical order so
-/// replicas that merged in different orders produce byte-identical materializations (the mark *set*
-/// is order-independent); value is part of the key so concurrent valued marks sort deterministically.
+/// A text object's content and its marks, from one walk over its spans. Runs merge as automerge's
+/// own `marks` merges them, and removed marks are dropped. Marks come back in canonical order, so
+/// replicas that merged in different orders materialize identical bytes.
 fn text_and_marks(doc: &AutoCommit, tid: &ObjId) -> (String, Vec<MarkSpan>) {
     #[cfg(test)]
     MARK_READS.with(|count| count.set(count.get().saturating_add(1)));
@@ -1683,12 +1602,10 @@ pub fn has_mark_over(
         .any(|m| m.name == name && m.start <= start && m.end >= end)
 }
 
-/// All preserved parts (the lossless preservation layer — verbatim bytes a codec stashed for content it
-/// doesn't model), as `(key, bytes)`, each reconstructed exactly by concatenating its per-atom segments
-/// in stored order.
-///
-/// A part preserved as a content reference is read from `content`; one whose content is missing there
-/// is left out (and logged), since there are no bytes to re-emit.
+/// All preserved parts (verbatim bytes a codec stashed for content it does not model) as `(key,
+/// bytes)`, each reassembled by concatenating its per-atom segments in stored order. A part
+/// preserved as a content reference is read from `content`; one whose content is missing there is
+/// left out and logged.
 pub fn preserved_parts(
     doc: &AutoCommit,
     c: &Containers,
@@ -1743,15 +1660,14 @@ fn preserved_inline(doc: &AutoCommit, c: &Containers, key: &str) -> Option<Vec<u
     preserved_segments(doc, c, key).map(|segs| segs.into_iter().flat_map(|(_, b)| b).collect())
 }
 
-/// The per-atom segment ids of a preserved part, in source order, paired with each atom's verbatim bytes.
-/// Empty for a part that is not stored inline. Lets a codec or test address an individual atom by its stable id.
+/// The per-atom segment ids of a preserved part, in source order, with each atom's bytes; empty for
+/// a part not stored inline.
 pub fn preserved_atoms(doc: &AutoCommit, c: &Containers, key: &str) -> Vec<(String, Vec<u8>)> {
     preserved_segments(doc, c, key).unwrap_or_default()
 }
 
-/// A part's `Map<segment_id, {ord: Bytes, bytes: Bytes}>`, sorted by `ord` (segment id breaks ties), or
-/// `None` when `key` is not an inline part. Each segment is its own automerge object, so edits to
-/// different atoms of one part merge rather than clobber each other.
+/// A part's `Map<segment_id, {ord, bytes}>`, sorted by `ord`, or `None` when `key` is not an inline
+/// part. Each segment is its own automerge object, so edits to different atoms merge.
 fn preserved_segments(
     doc: &AutoCommit,
     c: &Containers,
@@ -1776,12 +1692,12 @@ fn preserved_segments(
     Some(segs.into_iter().map(|(_, sid, b)| (sid, b)).collect())
 }
 
-/// A stable, replica-independent id for a preserved atom: its source-order index plus a short content hash.
-/// The index disambiguates repeated identical atoms; the content hash keeps the id meaningful across re-imports.
-/// The same source bytes split into the same ids on every replica, so the same atom converges to one automerge object.
+/// A stable, replica-independent id for a preserved atom: its source-order index plus a short
+/// content hash, so repeated identical atoms differ and the id stays meaningful across re-imports.
 fn preserved_atom_id(idx: usize, atom: &[u8]) -> String {
     let h = blake3::hash(atom).to_hex();
-    // blake3's hex digest is always 64 ASCII hex chars, so a 16-byte prefix is always a char boundary.
+    // blake3's hex digest is always 64 ASCII hex chars, so a 16-byte prefix is always a char
+    // boundary.
     let prefix = h.as_str().get(..16).unwrap_or(h.as_str());
     format!("{idx:06}-{prefix}")
 }
@@ -1847,10 +1763,8 @@ pub fn materialize(doc: &AutoCommit, c: &Containers) -> DocSnapshot {
     snap
 }
 
-/// Copy each referenced blob's descriptor onto the image blocks that reference it, as `blob_mime` / `blob_bytes` /
-/// `blob_w` / `blob_h`. The descriptor is stored once per hash (deduplicated with the content) but read per block,
-/// since a renderer already reads the `blob` attr off the block — so an image's intrinsic size is available even
-/// before its bytes arrive. See [`ATTR_BLOB_W`] for why that's not the existing `width`/`height`.
+/// Copy each referenced blob's descriptor onto the image blocks that reference it, so an image's
+/// intrinsic size is available even before its bytes arrive.
 fn project_blob_meta(doc: &AutoCommit, c: &Containers, snap: &mut DocSnapshot) {
     fn walk(
         doc: &AutoCommit,
@@ -1902,7 +1816,8 @@ fn project_blob_meta(doc: &AutoCommit, c: &Containers, snap: &mut DocSnapshot) {
     }
 }
 
-/// Style ids defined in the document's styles container (e.g. `body`, `heading1`, or an imported ODF named-style name).
+/// Style ids defined in the document's styles container (e.g. `body`, `heading1`, or an imported
+/// ODF named-style name).
 pub fn style_ids(doc: &AutoCommit, c: &Containers) -> Vec<String> {
     doc.keys(&c.styles)
         .filter(|id| {
@@ -1920,7 +1835,8 @@ pub fn style_is_tombstoned(doc: &AutoCommit, c: &Containers, id: &str) -> bool {
     matches!(doc.get(&c.styles, key), Ok(Some((value, _))) if value.as_bool() == Some(true))
 }
 
-/// The scalar properties of a single style (`name`/`font`/`size`/… → value), or an empty map if the style id is unknown.
+/// The scalar properties of a single style (`name`/`font`/`size`/… → value), or an empty map if the
+/// style id is unknown.
 pub fn style_props(doc: &AutoCommit, c: &Containers, id: &str) -> BTreeMap<String, AttrVal> {
     match doc.get(&c.styles, id) {
         Ok(Some((Value::Object(ObjType::Map), obj))) => scalar_props(doc, &obj),
@@ -1947,7 +1863,7 @@ fn materialize_block(doc: &AutoCommit, container: &ObjId, id: &str) -> BlockView
     block_view(doc, id.to_string(), fields)
 }
 
-/// Build a block's view from its already-read fields (see [`block_fields`]).
+/// Build a block's view from its already-read fields.
 fn block_view(doc: &AutoCommit, id: String, fields: BlockFields) -> BlockView {
     let (text, marks) = match &fields.text {
         Some(tid) => text_and_marks(doc, tid),
@@ -1969,7 +1885,8 @@ fn block_view(doc: &AutoCommit, id: String, fields: BlockFields) -> BlockView {
     }
 }
 
-/// A mutable view of a canonical document living in a borrowed `AutoCommit`; used by the editor (over `ui::State.doc`) and by codecs.
+/// A mutable view of a canonical document living in a borrowed `AutoCommit`; used by the editor
+/// (over `ui::State.doc`) and by codecs.
 pub struct DocMut<'a> {
     pub doc: &'a mut AutoCommit,
     pub c: &'a Containers,
@@ -2001,10 +1918,9 @@ impl DocRef<'_> {
     reason = "every put/put_object here targets a container id this API itself resolved or just created; see the note above for why threading Result through is out of scope"
 )]
 impl DocMut<'_> {
-    /// A fractional key ordered strictly after block `after` (or at the front when `after` is `None`) within
-    /// `container`, for block `id`. Uses the in-memory order index so the lookup is O(log n), not an O(n log n)
-    /// rescan. The key is salted by `id`, so two replicas placing blocks in one gap at once give them distinct
-    /// keys, and a later block still fits between them.
+    /// A fractional key ordered strictly after block `after` (or at the front) within `container`.
+    /// The key is salted by `id`, so two replicas placing blocks in one gap at once give them
+    /// distinct keys.
     fn order_after_in(&mut self, container: &ObjId, after: Option<&str>, id: &str) -> Vec<u8> {
         let salt = order_salt(id);
         // An action's insert after a known block needs only that block's
@@ -2051,11 +1967,9 @@ impl DocMut<'_> {
         tilo_resource::order::bytes::between_salted(lo.as_deref(), hi.as_deref(), salt)
     }
 
-    /// The key for a block inserted after `after` in `container`, and the
-    /// key of the block that follows it, without building the order index:
-    /// from the run of inserts this generator is making, or one pass over
-    /// the container's order keys. `None` when `after` has no order key (the
-    /// caller then appends via the index).
+    /// The key for a block inserted after `after` in `container`, and the key of the block that
+    /// follows it, without building the order index: from the run of inserts this generator is
+    /// making, or one pass over the container's order keys. `None` when `after` has no order key.
     fn order_after_scanning(
         &self,
         container: &ObjId,
@@ -2101,7 +2015,7 @@ impl DocMut<'_> {
         self.order_after_in(&container, after, id)
     }
 
-    /// Build the order index for `container` on first use (one O(n log n) scan), then keep it incrementally.
+    /// Build the order index for `container` on first use, then keep it incrementally.
     fn ensure_order_cache(&mut self, container: &ObjId) {
         if self.ids.order.by_container.contains_key(container) {
             return;
@@ -2113,8 +2027,7 @@ impl DocMut<'_> {
         self.ids.order.by_container.insert(container.clone(), co);
     }
 
-    /// Record (or re-key) a block's order in the index. Called right after the block is written to the
-    /// document, so the index stays in lock-step with it.
+    /// Record (or re-key) a block's order in the index, right after it is written to the document.
     fn record_order(&mut self, container: &ObjId, id: &str, key: &[u8]) {
         if let Some(co) = self.ids.order.by_container.get_mut(container) {
             co.insert(id.into(), key.into());
@@ -2132,27 +2045,31 @@ impl DocMut<'_> {
         };
     }
 
-    /// Drop a block from the order index (on delete). A no-op if the container's index hasn't been built
-    /// yet — it will rebuild from the (already-updated) document on next use.
+    /// Drop a block from the order index on delete. A no-op when the index is not built: it
+    /// rebuilds from the updated document on next use.
     fn forget_order(&mut self, container: &ObjId, id: &str) {
         if let Some(co) = self.ids.order.by_container.get_mut(container) {
             co.remove(id);
         }
     }
 
-    // NOTE: DocMut does NOT commit the automerge transaction — the host owns the transaction boundary.
-    // The owned `Document` commits per op (for fine-grained history); a host like `ui::State` commits once
-    // per user action (so its snapshot-based undo records each action). Reads always observe pending ops.
+    // NOTE: DocMut does NOT commit the automerge transaction — the host owns the transaction
+    // boundary. The owned `Document` commits per op (for fine-grained history); a host like
+    // `ui::State` commits once per user action (so its snapshot-based undo records each action).
+    // Reads always observe pending ops.
 
     pub fn insert_block(&mut self, after: Option<&str>, kind: &str) -> String {
         self.insert_block_in(Region::Body, after, kind)
     }
 
-    /// Insert a block into a page region (`Body`/`Header`/`Footer`). Header/footer containers are created
-    /// lazily on first insert. Block ids are minted from the same per-replica generator as the body, so they never collide across regions.
+    /// Insert a block into a page region. Header/footer containers are created lazily on first
+    /// insert, and block ids come from the same generator as the body, so they never collide across
+    /// regions.
     ///
     /// # Panics
-    /// Panics if `self.c`'s cached container ids no longer resolve in `self.doc` — see the note on `impl DocMut` above.
+    ///
+    /// Panics if the cached container ids no longer resolve in `self.doc` (see the note on `impl
+    /// DocMut`).
     pub fn insert_block_in(&mut self, region: Region, after: Option<&str>, kind: &str) -> String {
         let container = region_obj(self.c, region).clone();
         if self.bulk_active() {
@@ -2176,14 +2093,8 @@ impl DocMut<'_> {
         id
     }
 
-    /// Insert a block after `after` and before `next` — the block known to
-    /// follow it — reading only those two blocks' order keys. Falls back to
-    /// [`Self::insert_block_in`] when `next` is unknown, gone, or not after
-    /// `after`.
-    ///
-    /// # Panics
-    /// As [`Self::insert_block_in`]: when the region's container cannot be
-    /// written, which the containers this view resolved rule out.
+    /// Insert a block after `after` and before `next`, reading only those two blocks' order keys.
+    /// Falls back to [`Self::insert_block_in`] when `next` is unknown, gone, or not after `after`.
     pub fn insert_block_before_in(
         &mut self,
         region: Region,
@@ -2261,15 +2172,11 @@ impl DocMut<'_> {
         }
     }
 
-    /// Mark `[start, end)` of a block living in `region` as written by `author`
-    /// ([`MARK_AUTHOR`](crate::schema::MARK_AUTHOR)), as
-    /// [`tilo_automerge::mark_text_author`] marks plain text: the mark covers exactly that text
-    /// and does not expand, so nothing inserted beside it later — by anyone — is taken in. Every
-    /// write names its own author.
-    ///
-    /// That also keeps typing cheap. An expanding end takes in the next key, so a mark per key
-    /// nests inside the one before and every earlier mark stays open at the caret: each key
-    /// would pay for all the keys typed before it.
+    /// Mark `[start, end)` of a block as written by `author`
+    /// ([`MARK_AUTHOR`](crate::schema::MARK_AUTHOR)): the mark covers exactly that text and does
+    /// not expand, so nothing inserted beside it later is taken in. Every write names its own
+    /// author. That also keeps typing cheap: an expanding end takes in the next key, so every
+    /// earlier mark stays open at the caret and each key pays for all those before it.
     pub fn mark_author_in(
         &mut self,
         region: Region,
@@ -2322,9 +2229,8 @@ impl DocMut<'_> {
         let _ = self.doc.put(&attrs, key, value);
     }
 
-    /// Remove a block attribute in `region` (a list item that stops being a
-    /// task, a code line that becomes prose). Absent is the attribute's
-    /// default, so readers need no tombstone value.
+    /// Remove a block attribute in `region` (a list item that stops being a task, a code line that
+    /// becomes prose). Absent is the attribute's default, so readers need no tombstone value.
     pub fn remove_attr_in(&mut self, region: Region, block_id: &str, key: &str) {
         let container = region_obj(self.c, region).clone();
         if self.unstage_attr(&container, block_id, key) {
@@ -2341,10 +2247,9 @@ impl DocMut<'_> {
         }
     }
 
-    /// Insert a page-number field at `idx` in a region block: splices the
-    /// placeholder character and covers it with a `field` mark valued
-    /// `page-number`. The field then merges with concurrent text edits and
-    /// round-trips through the codecs.
+    /// Insert a page-number field at `idx`: splice the placeholder character and cover it with a
+    /// `field` mark valued `page-number`, so it merges with concurrent text edits and round-trips
+    /// through the codecs.
     pub fn insert_page_number_field(&mut self, region: Region, block_id: &str, idx: usize) {
         self.splice_text_in(region, block_id, idx, 0, &FIELD_PLACEHOLDER.to_string());
         self.add_mark_in(
@@ -2357,11 +2262,12 @@ impl DocMut<'_> {
         );
     }
 
-    /// Create a new note (footnote/endnote) with an empty block sequence and return its freshly-minted id
-    /// (filled in via [`Self::insert_note_block`] + [`Self::splice_note_text`]); id shares the body's generator so it never collides.
+    /// Create a note (footnote or endnote) with an empty block sequence and return its id, filled
+    /// in via [`Self::insert_note_block`] and [`Self::splice_note_text`].
     ///
     /// # Panics
-    /// Panics if `self.c`'s cached container ids no longer resolve in `self.doc` — see the note on `impl DocMut` above.
+    ///
+    /// Panics if the cached container ids no longer resolve in `self.doc`.
     pub fn insert_note(&mut self, kind: NoteKind) -> String {
         let notes = self.c.notes.clone();
         let id = self.ids.mint();
@@ -2376,21 +2282,23 @@ impl DocMut<'_> {
         id
     }
 
-    /// Place a note reference marker at `idx` in a body block: splice the placeholder character and cover it
-    /// with a `note-ref` mark valued with the note id (inverse of import, which re-creates both the note and its marker).
+    /// Place a note reference marker at `idx` in a body block: splice the placeholder character and
+    /// cover it with a `note-ref` mark valued with the note id.
     pub fn insert_note_ref(&mut self, block_id: &str, idx: usize, note_id: &str) {
         self.splice_text(block_id, idx, 0, &FIELD_PLACEHOLDER.to_string());
         self.add_mark(block_id, idx, idx.saturating_add(1), MARK_NOTE_REF, note_id);
     }
 
-    /// Convenience: create a footnote, place its reference marker at `idx` in `block_id`, and return the new note id.
+    /// Convenience: create a footnote, place its reference marker at `idx` in `block_id`, and
+    /// return the new note id.
     pub fn insert_footnote(&mut self, block_id: &str, idx: usize) -> String {
         let id = self.insert_note(NoteKind::Footnote);
         self.insert_note_ref(block_id, idx, &id);
         id
     }
 
-    /// Convenience: create an endnote, place its reference marker at `idx` in `block_id`, and return the new note id.
+    /// Convenience: create an endnote, place its reference marker at `idx` in `block_id`, and
+    /// return the new note id.
     pub fn insert_endnote(&mut self, block_id: &str, idx: usize) -> String {
         let id = self.insert_note(NoteKind::Endnote);
         self.insert_note_ref(block_id, idx, &id);
@@ -2406,10 +2314,13 @@ impl DocMut<'_> {
         }
     }
 
-    /// Insert a block into a note's content (created lazily); returns its id, or `None` if the note id is unknown.
+    /// Insert a block into a note's content (created lazily); returns its id, or `None` if the note
+    /// id is unknown.
     ///
     /// # Panics
-    /// Panics if `self.c`'s cached container ids no longer resolve in `self.doc` — see the note on `impl DocMut` above.
+    ///
+    /// Panics if `self.c`'s cached container ids no longer resolve in `self.doc` — see the note on
+    /// `impl DocMut` above.
     pub fn insert_note_block(
         &mut self,
         note_id: &str,
@@ -2483,21 +2394,20 @@ impl DocMut<'_> {
         }
     }
 
-    /// Permanently resolve a comment id. The grow-only marker gives delete-wins
-    /// semantics when a reply is authored against a divergent copy of the
-    /// thread and merged later.
+    /// Permanently resolve a comment id: the grow-only marker gives delete-wins semantics when a
+    /// reply is authored against a divergent copy of the thread and merged later.
     pub fn tombstone_comment(&mut self, comment_id: &str) {
         let comments = self.c.comments.clone();
         let key = format!("{COMMENT_TOMBSTONE_PREFIX}{comment_id}");
         let _ = self.doc.put(&comments, key, true);
     }
 
-    /// Create a new comment with an `author`, a `date` string, and an empty block sequence; returns its
-    /// freshly-minted id (shares the body's generator so it never collides). Content is filled via
-    /// [`Self::insert_comment_block`] + [`Self::splice_comment_text`]; the body anchor via [`Self::add_comment_mark`].
+    /// Create a comment with an `author`, a `date` and an empty block sequence; content comes via
+    /// [`Self::insert_comment_block`], the body anchor via [`Self::add_comment_mark`].
     ///
     /// # Panics
-    /// Panics if `self.c`'s cached container ids no longer resolve in `self.doc` — see the note on `impl DocMut` above.
+    ///
+    /// Panics if the cached container ids no longer resolve in `self.doc`.
     pub fn insert_comment(&mut self, author: &str, date: &str) -> String {
         let comments = self.c.comments.clone();
         let id = self.ids.mint();
@@ -2513,14 +2423,16 @@ impl DocMut<'_> {
         id
     }
 
-    /// Anchor a comment to the body range `[start, end)` of `block_id`: cover it with a `comment` mark
-    /// valued with the comment id. The mark merges with concurrent text edits and round-trips through the codecs.
+    /// Anchor a comment to the body range `[start, end)` of `block_id` with a `comment` mark valued
+    /// with the comment id, so it merges with concurrent text edits and round-trips through the
+    /// codecs.
     pub fn add_comment_mark(&mut self, block_id: &str, start: usize, end: usize, comment_id: &str) {
         self.add_mark(block_id, start, end, MARK_COMMENT, comment_id);
     }
 
-    /// Convenience: create a comment authored by `author` with body `text` (a single paragraph), anchor it to
-    /// `[start, end)` of `block_id`, and return the new comment id. For multi-paragraph content, use [`Self::insert_comment`] directly.
+    /// Convenience: create a comment authored by `author` with body `text` (a single paragraph),
+    /// anchor it to `[start, end)` of `block_id`, and return the new comment id. For
+    /// multi-paragraph content, use [`Self::insert_comment`] directly.
     pub fn add_comment(
         &mut self,
         block_id: &str,
@@ -2537,19 +2449,16 @@ impl DocMut<'_> {
         id
     }
 
-    /// Create one durable reply below `comment_id`. The reply and its blocks
-    /// live in the already-eager comments root, making ids stable under action
-    /// replay and collision-free under concurrent authors (including legacy
-    /// comments that predate threaded replies).
+    /// Create one durable reply below `comment_id`, in the comments root that exists from schema
+    /// creation on, so ids stay stable under action replay and collision-free under concurrent
+    /// authors.
     pub fn insert_comment_reply(
         &mut self,
         comment_id: &str,
         author: &str,
         date: &str,
     ) -> Option<String> {
-        // Refuse a stale/deleted parent before minting an id. The comments root
-        // is shared from schema creation onward, so concurrent reply inserts
-        // never contend on a lazily-created nested object.
+        // Refuse a stale or deleted parent before minting an id.
         comment_obj(self.doc, self.c, comment_id)?;
         let replies = self.c.comments.clone();
         let id = self.ids.mint();
@@ -2701,10 +2610,13 @@ impl DocMut<'_> {
         }
     }
 
-    /// Insert a block into a comment's content (created lazily); returns its id, or `None` if the comment id is unknown.
+    /// Insert a block into a comment's content (created lazily); returns its id, or `None` if the
+    /// comment id is unknown.
     ///
     /// # Panics
-    /// Panics if `self.c`'s cached container ids no longer resolve in `self.doc` — see the note on `impl DocMut` above.
+    ///
+    /// Panics if `self.c`'s cached container ids no longer resolve in `self.doc` — see the note on
+    /// `impl DocMut` above.
     pub fn insert_comment_block(
         &mut self,
         comment_id: &str,
@@ -2750,11 +2662,15 @@ impl DocMut<'_> {
         }
     }
 
-    /// Create a tracked-change record of `kind` with an `author` + `date`; returns its freshly-minted id (shares
-    /// the body's generator). The body anchor is placed separately via [`Self::add_change_mark`] — callers usually go through [`Self::track_insert`]/[`Self::track_delete`].
+    /// Create a tracked-change record of `kind` with an `author` + `date`; returns its
+    /// freshly-minted id (shares the body's generator). The body anchor is placed separately via
+    /// [`Self::add_change_mark`] — callers usually go through
+    /// [`Self::track_insert`]/[`Self::track_delete`].
     ///
     /// # Panics
-    /// Panics if `self.c`'s cached container ids no longer resolve in `self.doc` — see the note on `impl DocMut` above.
+    ///
+    /// Panics if `self.c`'s cached container ids no longer resolve in `self.doc` — see the note on
+    /// `impl DocMut` above.
     pub fn insert_change(
         &mut self,
         kind: crate::snapshot::ChangeKind,
@@ -2773,8 +2689,8 @@ impl DocMut<'_> {
         id
     }
 
-    /// Anchor a tracked change to the body range `[start, end)` of `block_id`: cover it with the `ins`/`del`
-    /// mark matching the change's kind, valued with the change id.
+    /// Anchor a tracked change to the body range `[start, end)` of `block_id`: cover it with the
+    /// `ins`/`del` mark matching the change's kind, valued with the change id.
     pub fn add_change_mark(
         &mut self,
         kind: crate::snapshot::ChangeKind,
@@ -2786,8 +2702,9 @@ impl DocMut<'_> {
         self.add_mark(block_id, start, end, change_mark_name(kind), change_id);
     }
 
-    /// Track an **insertion**: splice `text` into `block_id` at `char_idx`, then flag it with an `ins` mark
-    /// valued with a fresh change id. The text is real content — accept keeps it, reject removes it.
+    /// Track an **insertion**: splice `text` into `block_id` at `char_idx`, then flag it with an
+    /// `ins` mark valued with a fresh change id. The text is real content — accept keeps it, reject
+    /// removes it.
     pub fn track_insert(
         &mut self,
         block_id: &str,
@@ -2811,8 +2728,9 @@ impl DocMut<'_> {
         id
     }
 
-    /// Track a **deletion**: flag the existing body range `[start, end)` with a `del` mark valued with a fresh
-    /// change id. The text is *retained* (struck, not removed) so reviewers can see it; accept removes it, reject keeps it.
+    /// Track a **deletion**: flag the existing body range `[start, end)` with a `del` mark valued
+    /// with a fresh change id. The text is *retained* (struck, not removed) so reviewers can see
+    /// it; accept removes it, reject keeps it.
     pub fn track_delete(
         &mut self,
         block_id: &str,
@@ -2828,9 +2746,9 @@ impl DocMut<'_> {
         id
     }
 
-    /// Accept a tracked change, applying it permanently: an **insertion** keeps the text and drops its `ins`
-    /// mark; a **deletion** removes the struck text (and its `del` mark). The change record is removed from
-    /// the `changes` container either way. A no-op for an unknown id.
+    /// Accept a tracked change, applying it permanently: an **insertion** keeps the text and drops
+    /// its `ins` mark; a **deletion** removes the struck text (and its `del` mark). The change
+    /// record is removed from the `changes` container either way. A no-op for an unknown id.
     pub fn accept_change(&mut self, change_id: &str) {
         self.flush_bulk();
         let Some(kind) = change_kind(self.doc, self.c, change_id) else {
@@ -2859,9 +2777,10 @@ impl DocMut<'_> {
         self.remove_change_record(change_id);
     }
 
-    /// Reject a tracked change, reverting it (inverse of [`Self::accept_change`]): an **insertion** removes the
-    /// inserted text (and its `ins` mark); a **deletion** keeps the struck text and drops its `del` mark. The
-    /// change record is removed from the `changes` container either way. A no-op for an unknown id.
+    /// Reject a tracked change, reverting it (inverse of [`Self::accept_change`]): an **insertion**
+    /// removes the inserted text (and its `ins` mark); a **deletion** keeps the struck text and
+    /// drops its `del` mark. The change record is removed from the `changes` container either way.
+    /// A no-op for an unknown id.
     pub fn reject_change(&mut self, change_id: &str) {
         self.flush_bulk();
         let Some(kind) = change_kind(self.doc, self.c, change_id) else {
@@ -2895,9 +2814,9 @@ impl DocMut<'_> {
         let _ = self.doc.delete(&self.c.changes, change_id);
     }
 
-    /// Anchor a **bookmark** (named anchor) over `[start, end)` of `block_id`: cover it with a `bookmark` mark
-    /// valued with `name`. A zero-width (point) bookmark is widened to one character when the block has text
-    /// after the anchor (a mark needs a non-empty range to live on); an end-of-block point sits over the last character.
+    /// Anchor a bookmark over `[start, end)` of `block_id` with a `bookmark` mark valued with
+    /// `name`. A zero-width bookmark is widened to one character, since a mark needs a non-empty
+    /// range.
     pub fn add_bookmark(&mut self, block_id: &str, start: usize, end: usize, name: &str) {
         let (mut s, mut e) = (start, end);
         if e <= s {
@@ -2916,9 +2835,9 @@ impl DocMut<'_> {
         }
     }
 
-    /// Anchor a **cross-reference** (internal link) over `[start, end)` of `block_id`: cover it with a `link`
-    /// mark valued `#<target>`, where `target` is a bookmark name or a heading's derived id (see [`heading_ref_id`]).
-    /// The leading `#` distinguishes an internal reference from an external URL; a target already starting with `#` is used verbatim.
+    /// Anchor a cross-reference over `[start, end)` of `block_id` with a `link` mark valued
+    /// `#<target>`, where `target` is a bookmark name or [`heading_ref_id`]. A target already
+    /// starting with `#` is used verbatim.
     pub fn add_cross_ref(&mut self, block_id: &str, start: usize, end: usize, target: &str) {
         if end <= start {
             return;
@@ -2986,9 +2905,8 @@ impl DocMut<'_> {
         self.forget_order(&container, id);
     }
 
-    /// Remove one structural block and leave a grow-only semantic tombstone in
-    /// the same region container. Action replay uses this for delete-wins
-    /// behavior against divergent edits of the removed object.
+    /// Remove one structural block and leave a grow-only tombstone in the same region container,
+    /// which gives action replay delete-wins against divergent edits of the removed object.
     pub fn tombstone_block_in(&mut self, region: Region, id: &str) {
         self.flush_bulk();
         let container = region_obj(self.c, region).clone();
@@ -2998,13 +2916,17 @@ impl DocMut<'_> {
         self.forget_order(&container, id);
     }
 
-    /// Move block `id` to a new position, ordered directly after `after` (or first, when `after` is `None`).
+    /// Move block `id` to a new position, ordered directly after `after` (or first, when `after` is
+    /// `None`).
     ///
     /// # Panics
-    /// Panics if `self.c.blocks` no longer resolves in `self.doc` — see the note on `impl DocMut` above.
+    ///
+    /// Panics if `self.c.blocks` no longer resolves in `self.doc` — see the note on `impl DocMut`
+    /// above.
     pub fn move_block(&mut self, id: &str, after: Option<&str>) {
         self.flush_bulk();
-        // Compute the target key with the block still at its old position (mirrors the pre-index behaviour).
+        // Compute the target key with the block still at its old position (mirrors the pre-index
+        // behaviour).
         let key = self.order_after(after, id);
         if let Some(obj) = block_obj(self.doc, &self.c.blocks, id) {
             self.doc
@@ -3068,9 +2990,8 @@ impl DocMut<'_> {
         let _ = self.doc.put(&self.c.meta, key, value);
     }
 
-    /// Set a document-level meta flag. Setting it to what it already reads
-    /// writes nothing: a flag set on every edit costs one register, not a
-    /// change per keystroke.
+    /// Set a document-level meta flag. Setting it to what it already reads writes nothing, so a
+    /// flag set on every edit costs no change per keystroke.
     pub fn set_meta_flag(&mut self, key: &str, value: bool) {
         if meta_flag(self.doc, self.c, key) == value {
             return;
@@ -3078,9 +2999,9 @@ impl DocMut<'_> {
         let _ = self.doc.put(&self.c.meta, key, value);
     }
 
-    /// Set the document-wide multi-column layout: `count` newspaper-style columns for the body, with an
-    /// optional `gap` (px). Each is its own scalar register under `meta`, so replicas changing different
-    /// aspects field-level merge. A `count` of one with no gap clears the setting. Round-trips through `.odt`/`.docx`.
+    /// Set the document-wide multi-column layout: `count` columns for the body, with an optional
+    /// `gap` in px. Each is its own scalar register under `meta`, so replicas changing different
+    /// aspects field-level merge; one column with no gap clears the setting.
     pub fn set_columns(&mut self, count: u32, gap: Option<f64>) {
         let count = count.max(1);
         if count <= 1 {
@@ -3098,9 +3019,8 @@ impl DocMut<'_> {
         }
     }
 
-    /// Set the document default language as a BCP-47 tag (`en-US`, `de-DE`, `fr`), stored as a single `Str`
-    /// register under `meta` so replicas changing the language field-level merge rather than clobber. An empty
-    /// `code` clears the setting. Round-trips through `.odt`/`.docx`; supports spell-check locale and a11y language.
+    /// Set the document default language as a BCP-47 tag, as a single `Str` register so replicas
+    /// changing it field-level merge. An empty `code` clears the setting.
     pub fn set_language(&mut self, code: &str) {
         if code.is_empty() {
             let _ = self.doc.delete(&self.c.meta, META_LANGUAGE);
@@ -3109,7 +3029,8 @@ impl DocMut<'_> {
         }
     }
 
-    /// Resolve-or-create the `meta.props` document-properties sub-map (created lazily so old documents migrate transparently).
+    /// The `meta.props` document-properties sub-map, created lazily so old documents migrate
+    /// transparently.
     fn props_map(&mut self) -> ObjId {
         match self.doc.get(&self.c.meta, KEY_PROPS) {
             Ok(Some((Value::Object(ObjType::Map), id))) => id,
@@ -3120,18 +3041,17 @@ impl DocMut<'_> {
         }
     }
 
-    /// Set a document property (`title`/`author`/`subject`/`keywords`/`created`/`modified`/`generator` — see
-    /// [`DOC_PROP_KEYS`](crate::schema::DOC_PROP_KEYS)). Each is its own scalar register in `meta.props`, so replicas editing different properties field-level merge.
+    /// Set a document property
+    /// (`title`/`author`/`subject`/`keywords`/`created`/`modified`/`generator`, see
+    /// [`DOC_PROP_KEYS`](crate::schema::DOC_PROP_KEYS)), each its own scalar register in
+    /// `meta.props` so replicas editing different properties merge.
     pub fn set_doc_prop(&mut self, name: &str, value: &str) {
         let props = self.props_map();
         let _ = self.doc.put(&props, name, value);
     }
 
-    /// Upsert a named style into the styles container. Each property is written as its own scalar register
-    /// *into the existing sub-map*, so replicas editing different properties of the same style field-level merge.
-    ///
-    /// # Panics
-    /// Panics if `self.c.styles` no longer resolves in `self.doc` — see the note on `impl DocMut` above.
+    /// Upsert a named style. Each property is written as its own scalar register into the existing
+    /// sub-map, so replicas editing different properties of one style merge.
     pub fn set_style(&mut self, id: &str, props: &BTreeMap<String, AttrVal>) {
         let obj = match self.doc.get(&self.c.styles, id) {
             Ok(Some((Value::Object(ObjType::Map), o))) => o,
@@ -3267,12 +3187,10 @@ impl DocMut<'_> {
         }
     }
 
-    /// Stash a verbatim part in the preservation layer (e.g. an unmodeled ODF part), keyed by `key` and already
-    /// split into ordered atoms (verbatim byte slices that concatenate back to the whole part); re-emitted unchanged
-    /// on export. How a part splits is the format's business (the codecs split XML at its first branching element). Each atom becomes an independent automerge object keyed by a stable id, so distinct atoms merge across replicas. Replaces any existing part under `key`.
-    ///
-    /// # Panics
-    /// Panics if `self.c.preserved` no longer resolves in `self.doc` — see the note on `impl DocMut` above.
+    /// Stash a verbatim part in the preservation layer, keyed by `key` and already split into
+    /// ordered atoms that concatenate back to the whole part. How a part splits is the format's
+    /// business; each atom becomes an independent automerge object keyed by a stable id, so
+    /// distinct atoms merge across replicas. Replaces any existing part under `key`.
     pub fn set_preserved_atoms(&mut self, key: &str, atoms: &[Vec<u8>]) {
         // Replace the part wholesale: a fresh map keyed by per-atom stable ids.
         let part = self
@@ -3285,8 +3203,9 @@ impl DocMut<'_> {
                 .doc
                 .put_object(&part, id.as_str(), ObjType::Map)
                 .unwrap();
-            // Order key: the atom's source position, big-endian, so segments sort back into source order deterministically.
-            // A document has nowhere near u32::MAX top-level XML atoms; clamping is a formality, not a real limit.
+            // Order key: the atom's source position, big-endian, so segments sort back into source
+            // order deterministically. A document has nowhere near u32::MAX top-level XML atoms;
+            // clamping is a formality, not a real limit.
             let ord = u32::try_from(idx)
                 .unwrap_or(u32::MAX)
                 .to_be_bytes()
@@ -3300,8 +3219,8 @@ impl DocMut<'_> {
         }
     }
 
-    /// Overwrite a single preserved atom's verbatim bytes in place, by its stable segment id, without disturbing
-    /// the part's other atoms. No-op if the part isn't segmented or the segment id is absent.
+    /// Overwrite one preserved atom's bytes by its segment id, leaving the part's other atoms
+    /// alone.
     pub fn set_preserved_atom_bytes(&mut self, key: &str, segment_id: &str, bytes: &[u8]) {
         let Ok(Some((Value::Object(ObjType::Map), part))) = self.doc.get(&self.c.preserved, key)
         else {
@@ -3316,9 +3235,9 @@ impl DocMut<'_> {
         }
     }
 
-    /// Take `bytes` as a binary input of this document: add them to `inputs` (which the caller persists
-    /// in its content store) and record their descriptor. Returns the content address an `image` block's
-    /// `blob` attr names.
+    /// Take `bytes` as a binary input of this document: add them to `inputs` (which the caller
+    /// persists) and record their descriptor. Returns the content address an `image` block's `blob`
+    /// attr names.
     pub fn attach(&mut self, bytes: &[u8], inputs: &mut ContentInputs) -> String {
         let meta = tilo_content::sniff(bytes);
         let hash = inputs.add(bytes);
@@ -3327,15 +3246,12 @@ impl DocMut<'_> {
     }
 
     /// Record that this document refers to the content at `hash`, described by `meta` (what a
-    /// renderer needs to reserve space before the bytes arrive). The bytes themselves are the
-    /// caller's to keep in its content store. Idempotent. The descriptor is never removed, so the map names every input any version refers to.
-    ///
-    /// # Panics
-    /// Panics if `self.c.root` no longer resolves in `self.doc` — see the note on `impl DocMut` above.
+    /// renderer needs to reserve space before the bytes arrive). The bytes stay in the caller's
+    /// content store, and the descriptor is never removed.
     pub fn reference_content(&mut self, hash: &str, meta: &ContentMeta) {
         let blobs = self.c.blobs.clone();
-        // Idempotent by construction: the key is the content hash, so identical bytes address the same descriptor
-        // and re-putting it would be pure tombstone churn for no change in meaning.
+        // Idempotent by construction: the key is the content hash, so identical bytes address the
+        // same descriptor and re-putting it would be pure tombstone churn for no change in meaning.
         if matches!(
             self.doc.get(&blobs, hash),
             Ok(Some((Value::Object(ObjType::Map), _)))
@@ -3361,12 +3277,8 @@ impl DocMut<'_> {
     }
 
     /// Preserve the part `key` as a reference to content the caller keeps in its content store (a
-    /// binary package part: an image, a font, an embedded object) rather than as bytes in the
-    /// document. Replaces any existing part under `key`; the address is also recorded with
-    /// [`Self::reference_content`], so it stays among the document's [`referenced_content`].
-    ///
-    /// # Panics
-    /// Panics if `self.c.preserved` no longer resolves in `self.doc` — see the note on `impl DocMut` above.
+    /// binary package part: an image, a font, an embedded object). The address is also recorded
+    /// with [`Self::reference_content`], so it stays among [`referenced_content`].
     pub fn set_preserved_content(&mut self, key: &str, hash: &str, meta: &ContentMeta) {
         self.reference_content(hash, meta);
         self.doc
@@ -3645,7 +3557,8 @@ mod style_tests {
             );
         }
         {
-            // A document whose meta map predates the props sub-map must open + read as having no properties.
+            // A document whose meta map predates the props sub-map must open + read as having no
+            // properties.
             let mut doc = AutoCommit::new();
             let c = init(&mut doc, &ROOT);
             // `init` does not create meta.props; confirm reads degrade gracefully.
@@ -3709,9 +3622,10 @@ mod genesis_detection_tests {
 
     #[test]
     fn genesis_changes_are_told_apart_from_authored_and_shadowed_ones() {
-        // Phase `the_genesis_change_is_told_apart_from_an_authored_one`.
-        // The two helpers a caller uses to tell a schema change from a person's edit have no consumer in this
-        // crate — the version view that filters on them lives elsewhere — so without these tests they can drift unnoticed.
+        // Phase `the_genesis_change_is_told_apart_from_an_authored_one`. The two helpers a caller
+        // uses to tell a schema change from a person's edit have no consumer in this crate — the
+        // version view that filters on them lives elsewhere — so without these tests they can drift
+        // unnoticed.
         {
             let mut doc = AutoCommit::new();
             let c = init(&mut doc, &ROOT);
@@ -3742,9 +3656,10 @@ mod genesis_detection_tests {
                 "the hex form must match what a recorded actor_hex is compared against"
             );
         }
-        // Phase `a_second_minting_of_the_schema_is_reported_as_shadowed`.
-        // A document created before the genesis existed, merged with one created after it, is the case the genesis
-        // was introduced to prevent: two candidates per container key, one of them unreachable for good.
+        // Phase `a_second_minting_of_the_schema_is_reported_as_shadowed`. A document created before
+        // the genesis existed, merged with one created after it, is the case the genesis was
+        // introduced to prevent: two candidates per container key, one of them unreachable for
+        // good.
         {
             let mut shared = AutoCommit::new();
             init(&mut shared, &ROOT);
@@ -3931,7 +3846,8 @@ mod region_tests {
             assert_eq!(snap.notes[0].blocks[0].text, "the note");
         }
         {
-            // A generator seeded over a reloaded doc must skip past note + note-block ids, otherwise it would re-mint an existing note.
+            // A generator seeded over a reloaded doc must skip past note + note-block ids,
+            // otherwise it would re-mint an existing note.
             let mut doc = AutoCommit::new();
             let c = init(&mut doc, &ROOT);
             let mut ids = IdGen::new(doc.get_actor().to_hex_string());
@@ -3979,7 +3895,8 @@ mod region_tests {
     )]
     fn comments_anchor_their_content_and_threads_and_never_remint_ids() {
         {
-            // A fresh doc has an (empty) comments container — eager, so concurrent comment adds converge on one shared object.
+            // A fresh doc has an (empty) comments container — eager, so concurrent comment adds
+            // converge on one shared object.
             let mut doc = AutoCommit::new();
             let c = init(&mut doc, &ROOT);
             assert!(comment_ids(&doc, &c).is_empty(), "but empty");
@@ -4019,7 +3936,8 @@ mod region_tests {
             assert_eq!(snap.comments[0].range, Some((pid, 11, 20)));
         }
         {
-            // A generator seeded over a reloaded doc must skip past comment ids, otherwise it would re-mint an existing comment.
+            // A generator seeded over a reloaded doc must skip past comment ids, otherwise it would
+            // re-mint an existing comment.
             let mut doc = AutoCommit::new();
             let c = init(&mut doc, &ROOT);
             let mut ids = IdGen::new(doc.get_actor().to_hex_string());
@@ -4187,7 +4105,8 @@ mod region_tests {
     )]
     fn tracked_changes_anchor_accept_reject_and_never_remint_ids() {
         {
-            // A fresh doc has an (empty) changes container — eager, for the same convergence reason as comments/notes.
+            // A fresh doc has an (empty) changes container — eager, for the same convergence reason
+            // as comments/notes.
             let mut doc = AutoCommit::new();
             let c = init(&mut doc, &ROOT);
             assert!(change_ids(&doc, &c).is_empty(), "but empty");
@@ -4343,7 +4262,8 @@ mod region_tests {
             );
         }
         {
-            // A generator seeded over a reloaded doc must skip past change ids, otherwise it would re-mint an existing change.
+            // A generator seeded over a reloaded doc must skip past change ids, otherwise it would
+            // re-mint an existing change.
             let mut doc = AutoCommit::new();
             let c = init(&mut doc, &ROOT);
             let mut ids = IdGen::new(doc.get_actor().to_hex_string());
@@ -4474,7 +4394,8 @@ mod region_tests {
             );
         }
         {
-            // Two replicas each add a bookmark to the same document; after merge both converge with both bookmarks present.
+            // Two replicas each add a bookmark to the same document; after merge both converge with
+            // both bookmarks present.
             let mut a = crate::Document::new();
             let p = a.insert_block(None, "paragraph");
             a.splice_text(&p, 0, 0, "shared base text");
@@ -4573,8 +4494,8 @@ mod preserved_tests {
         (doc, c, ids)
     }
 
-    /// A `styles.xml`-shaped part with two independent top-level style atoms — the
-    /// canonical "two unmodeled regions in one part" shape that used to clobber.
+    /// A `styles.xml`-shaped part with two independent top-level style atoms: the canonical shape
+    /// of two unmodeled regions in one part.
     const TWO_STYLE_PART: &[u8] = br#"<?xml version="1.0"?>
 <office:styles xmlns:office="o" xmlns:style="s">
 <style:style style:name="A">alpha</style:style>
@@ -4618,11 +4539,8 @@ mod preserved_tests {
             assert_eq!(p.1, TWO_STYLE_PART);
             assert!(preserved_atoms(&doc, &c, "odt/part/styles.xml").len() >= 2);
         }
-        // Phase `different_atom_edits_merge_not_clobber`.
-        // THE core win: two replicas import the same part, each rewrites a DIFFERENT
-        // unmodeled atom of it, then merge — and BOTH edits survive. Under the old
-        // whole-part `Bytes` scalar this was last-writer-wins (one edit clobbered the
-        // other); per-atom storage makes the two edits independent automerge objects.
+        // The core win: two replicas import the same part, each rewrites a different unmodeled
+        // atom, then merge, and both edits survive as independent automerge objects.
         {
             let (mut doc, c, mut ids) = new_doc();
             {
@@ -4635,7 +4553,8 @@ mod preserved_tests {
             }
             doc.commit();
 
-            // Fork into replica B (distinct actor); A and B share the same per-atom object ids from the common ancestor.
+            // Fork into replica B (distinct actor); A and B share the same per-atom object ids from
+            // the common ancestor.
             let mut doc_b = AutoCommit::load(&doc.save()).unwrap();
             doc_b.set_actor(automerge::ActorId::random());
             let c_b = open(&doc_b, &ROOT).unwrap();
@@ -4693,7 +4612,8 @@ mod preserved_tests {
                     txt.contains("BRAVO-EDITED"),
                     "replica {who} kept B's edit: {txt}"
                 );
-                // Source order is preserved (alpha before bravo) and the leading declaration/root-open atom survives untouched.
+                // Source order is preserved (alpha before bravo) and the leading
+                // declaration/root-open atom survives untouched.
                 let ai = txt.find("ALPHA-EDITED").unwrap();
                 let bi = txt.find("BRAVO-EDITED").unwrap();
                 assert!(ai < bi, "replica {who} kept atom order");
@@ -4758,7 +4678,8 @@ mod preserved_tests {
     }
 
     /// Merge `src` into `dst` via the low-level Automerge (mirroring `Document::merge`, which
-    /// sidesteps an automerge-0.8 `AutoCommit::merge` patch-log panic), reloaded from the merged bytes.
+    /// sidesteps an automerge-0.8 `AutoCommit::merge` patch-log panic), reloaded from the merged
+    /// bytes.
     fn merge_into(dst: &mut AutoCommit, src: &mut AutoCommit) -> AutoCommit {
         let mut a = automerge::Automerge::load(&dst.save()).unwrap();
         let mut b = automerge::Automerge::load(&src.save()).unwrap();

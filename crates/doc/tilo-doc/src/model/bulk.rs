@@ -1,22 +1,11 @@
 //! Buffered block writes for whole-document imports (see [`DocMut::bulk`]).
-//!
 //! Automerge applies every local operation to its op set on the spot, and each
-//! application pays for a seek plus an update of every op-set column and index.
-//! Built op by op, an imported block costs a dozen of those (the block map, its
-//! order, kind, attrs map, text object, each attribute, each text run) and every
-//! inline mark costs two more of the most expensive kind: the mark index is
-//! rebuilt around each anchor. Inside a bulk scope new blocks and all marks live
-//! in memory until the scope ends and are then written together, in one of two
-//! ways:
-//!
-//! - A document whose owner commits freely, or one being created, receives them
-//!   as the ops of new changes. Automerge integrates a change's ops
-//!   on objects it has not seen as a single run at the end of its op set, marks
-//!   included.
-//! - A host-owned document with history keeps the host's transaction: each block goes in as
-//!   one [`Transactable::batch_create_object`] call (one op-set splice for the
-//!   whole block tree), and marks follow as local operations once all text is in
-//!   place.
+//! costs a seek plus an update of every column and index; an inline mark rebuilds
+//! the mark index around its anchor. Inside a bulk scope new blocks and marks live
+//! in memory until the scope ends, then go in either as the ops of new changes
+//! (integrate as one run, marks included) or, for a host-owned document with
+//! history, as one batch object per block with marks applied as local operations
+//! afterwards.
 
 use super::{BLOCK_ATTRS, BLOCK_KIND, BLOCK_ORDER, BLOCK_TEXT, DocMut, ObjType, Value, block_obj};
 use automerge::marks::{ExpandMark, Mark};
@@ -33,7 +22,6 @@ thread_local! {
     static CHANGE_WRITES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
-/// How many bulk flushes on this thread wrote their blocks as changes (not as local ops).
 #[cfg(any(test, feature = "bulk-instrumentation"))]
 pub fn change_writes() -> usize {
     CHANGE_WRITES.with(std::cell::Cell::get)
@@ -48,7 +36,6 @@ pub fn op_by_op<R>(f: impl FnOnce() -> R) -> R {
     out
 }
 
-/// A block created inside a bulk scope, held in memory until the scope ends.
 struct StagedBlock {
     container: ObjId,
     id: String,
@@ -83,7 +70,6 @@ impl StagedBlock {
     }
 }
 
-/// A mark added inside a bulk scope, applied when the scope ends.
 struct StagedMark {
     container: ObjId,
     block: String,
@@ -93,8 +79,8 @@ struct StagedMark {
     value: ScalarValue,
 }
 
-/// The staging area of an open bulk scope. It rides on [`super::IdGen`], which already
-/// threads through every [`DocMut`] over the same document.
+/// The staging area of an open bulk scope. It rides on [`super::IdGen`], which already threads
+/// through every [`DocMut`] over the same document.
 #[derive(Default)]
 pub(super) struct Bulk {
     depth: usize,
@@ -110,30 +96,16 @@ pub(super) struct Bulk {
 }
 
 impl DocMut<'_> {
-    /// Run `f` with block creation buffered: blocks inserted inside the scope — with their kind,
-    /// attributes and appended text — are written together when the outermost scope ends, and
-    /// marks added inside the scope are applied after all text is in place.
-    ///
-    /// The resulting document content is the same as without the scope. Operations that read or
-    /// restructure existing blocks flush the buffer first, so they observe every staged block.
-    /// Reads that bypass `DocMut` (the free functions over `doc`) do not see staged blocks until
-    /// the scope ends; use [`Self::block_text_len`] for the one read an importer needs.
-    ///
-    /// When bulk writes may commit, the scope ends by committing and writing the staged blocks and
-    /// their marks as new changes. They may for an owned [`crate::Document`] (see
-    /// [`super::IdGen::allow_commits`]), and for a document being created: when the scope opens it
-    /// holds nothing but the schema, and the generator came from [`super::IdGen::new`] rather than
-    /// from the document (a host that just made a document to open a file into). Nothing can refer
-    /// to such a document's history yet: no peer has seen it, and an undo log bracketing actions
-    /// by heads spans every change up to its next boundary whether the import committed or not.
-    /// Code editing an existing document seeds its generator from it
-    /// ([`super::seeded_id_gen`]), so an action replayed on a new, empty document still writes
-    /// within its own transaction. A host's document written this way keeps its last block in the
-    /// host's open transaction, so the host's next commit still carries the import and brackets
-    /// all of it as one undoable action.
-    ///
-    /// Otherwise a host-owned document keeps the host's transaction boundary: blocks go in as
-    /// batch objects and marks as ordinary local operations.
+    /// Run `f` with block creation buffered: blocks inserted inside the scope, with their kind,
+    /// attributes and text, are written together when the outermost scope ends, and marks are
+    /// applied after all text is in place. The resulting content is the same as without the scope.
+    /// Operations that read or restructure existing blocks flush the buffer first; reads that
+    /// bypass [`DocMut`] do not see staged blocks until the scope ends (use
+    /// [`Self::block_text_len`] for the one read an importer needs). When bulk writes may commit,
+    /// the scope ends by committing and writing the staged blocks and marks as new changes; that is
+    /// decided at [`super::IdGen::allow_commits`] or for a document being created. Otherwise the
+    /// last block stays in the host's open transaction, so the host's next commit carries the
+    /// import and brackets it as one undoable action.
     pub fn bulk<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
         #[cfg(any(test, feature = "bulk-instrumentation"))]
         if OP_BY_OP.with(std::cell::Cell::get) {
@@ -157,7 +129,6 @@ impl DocMut<'_> {
         self.ids.bulk.depth > 0
     }
 
-    /// Stage a new block in `container`, ordered after `after`; returns its id.
     pub(super) fn stage_block(
         &mut self,
         container: ObjId,
@@ -187,7 +158,6 @@ impl DocMut<'_> {
         bulk.blocks.get_mut(idx)?.as_mut()
     }
 
-    /// Whether `id` is a staged block living in `container`.
     pub(super) fn is_staged_in(&self, container: &ObjId, id: &str) -> bool {
         let bulk = &self.ids.bulk;
         bulk.by_id
@@ -197,8 +167,8 @@ impl DocMut<'_> {
             .is_some_and(|b| &b.container == container)
     }
 
-    /// Handle a text splice inside a bulk scope. Returns `false` when the caller must perform the
-    /// splice on the document itself (after this has flushed whatever the splice depends on).
+    /// Handle a text splice inside a bulk scope; `false` when the caller must perform it on the
+    /// document itself.
     pub(super) fn bulk_splice(
         &mut self,
         block_id: &str,
@@ -233,7 +203,6 @@ impl DocMut<'_> {
         true
     }
 
-    /// Stage a mark on a block of `container` (staged or already written).
     pub(super) fn stage_mark(
         &mut self,
         container: ObjId,
@@ -261,7 +230,6 @@ impl DocMut<'_> {
         });
     }
 
-    /// Set an attribute on a staged block of `container`, or hand `value` back if it isn't one.
     pub(super) fn stage_attr(
         &mut self,
         container: &ObjId,
@@ -278,7 +246,6 @@ impl DocMut<'_> {
         }
     }
 
-    /// Remove an attribute from a staged block of `container`; `false` if it isn't one.
     pub(super) fn unstage_attr(&mut self, container: &ObjId, block_id: &str, key: &str) -> bool {
         match self.staged_mut(block_id) {
             Some(block) if &block.container == container => {
@@ -289,7 +256,6 @@ impl DocMut<'_> {
         }
     }
 
-    /// Set the kind of a staged block of `container`; `false` if it isn't one.
     pub(super) fn stage_kind(&mut self, container: &ObjId, block_id: &str, kind: &str) -> bool {
         match self.staged_mut(block_id) {
             Some(block) if &block.container == container => {
@@ -300,7 +266,6 @@ impl DocMut<'_> {
         }
     }
 
-    /// Drop a staged block of `container`; `false` if it isn't one.
     pub(super) fn unstage_block(&mut self, container: &ObjId, block_id: &str) -> bool {
         if !self.is_staged_in(container, block_id) {
             return false;
@@ -330,7 +295,6 @@ impl DocMut<'_> {
         super::block_text(self.doc, self.c, block_id).map_or(0, |t| t.chars().count())
     }
 
-    /// Write every staged block and apply every staged mark.
     pub(super) fn flush_bulk(&mut self) {
         let bulk = &mut self.ids.bulk;
         if bulk.blocks.is_empty() && bulk.marks.is_empty() {
@@ -348,9 +312,8 @@ impl DocMut<'_> {
             return;
         }
         // A host still owns a commit boundary after the import, and decides from its transaction
-        // whether the action it brackets changed anything (an undo log records nothing for an empty
-        // commit). So the last block stays in the host's transaction, as local ops, and the host
-        // commits it; everything before it goes in as changes.
+        // whether the action it brackets changed anything, so the last block stays in the host's
+        // transaction as local ops.
         let tail = if self.ids.commits_allowed {
             None
         } else {
@@ -381,8 +344,9 @@ impl DocMut<'_> {
 /// Write staged blocks as one batch object each, then apply the marks as local operations.
 ///
 /// # Panics
+///
 /// Panics if a staged block's container no longer resolves — containers are resolved by this API
-/// itself when a block is staged, see the note on `impl DocMut`.
+/// when a block is staged.
 #[allow(
     clippy::expect_used,
     reason = "the container ids were resolved by this API when the block was staged"
@@ -463,12 +427,6 @@ fn write_block(
     }
 }
 
-/// Apply the change being built.
-///
-/// # Panics
-/// Panics if automerge rejects it. The change continues this document's own history — built on
-/// its heads, as its actor's next sequence number, over objects the previous changes created — so
-/// a rejection means those invariants broke; carrying on would leave block maps without content.
 #[allow(
     clippy::expect_used,
     reason = "a change built on this document's own heads and objects must apply; see above"
@@ -479,15 +437,9 @@ fn apply_sealed(doc: &mut AutoCommit, writer: &mut ChangeWriter) {
         .expect("a change continuing this document's history applies");
 }
 
-/// Commit, then write every staged block — with its text and the marks on it — as the ops of new
-/// changes, applied in one go. Automerge integrates the ops a change makes on objects it has not
-/// seen as one run at the end of its op set; written op by op, or even one batch object per block,
-/// every block and every mark endpoint pays for its own op-set update, and marks pay the most.
-///
-/// Returns `false` (having changed nothing but the commit) when the changes can't be built or
-/// applied, so the caller writes the ops locally instead. Marks a change can't state exactly — on
-/// blocks created before the scope, zero-width, or out of range — are applied locally afterwards;
-/// they share no text with a mark in the changes, or cover no character.
+/// Commit, then write every staged block, with its text and marks, as the ops of new changes
+/// applied in one go. Returns `false` (having changed nothing but the commit) when the changes
+/// cannot be built or applied, so the caller writes the ops locally instead.
 fn write_as_changes(doc: &mut AutoCommit, blocks: &[StagedBlock], marks: &[StagedMark]) -> bool {
     let Some(mut writer) = ChangeWriter::continuing(doc) else {
         return false;
@@ -500,7 +452,6 @@ fn write_as_changes(doc: &mut AutoCommit, blocks: &[StagedBlock], marks: &[Stage
     let mut local: Vec<&StagedMark> = Vec::new();
     for m in marks {
         match staged.get(&(&m.container, m.block.as_str())) {
-            // Non-empty and within the text.
             Some(b) if (m.start.saturating_add(1)..=b.text_len).contains(&m.end) => {
                 in_change.entry(m.block.as_str()).or_default().push(m);
             }
@@ -508,9 +459,9 @@ fn write_as_changes(doc: &mut AutoCommit, blocks: &[StagedBlock], marks: &[Stage
         }
     }
 
-    // Every block map first, in a change of their own: the maps are entries of containers that
-    // already hold blocks, sorted by key, so they integrate as one run only if one change carries
-    // them all. What follows lives in objects new to the document and appends in order.
+    // Every block map first, in a change of their own: they are entries of containers that already
+    // hold blocks, so they integrate as one run only if one change carries them all. What follows
+    // lives in objects new to the document and appends in order.
     let roots: Vec<batch::Created> = blocks
         .iter()
         .map(|b| writer.make_in(&b.container, b.id.as_str(), ObjType::Map))
@@ -519,8 +470,7 @@ fn write_as_changes(doc: &mut AutoCommit, blocks: &[StagedBlock], marks: &[Stage
         return false;
     }
     // Each further change is applied as soon as it is sealed: automerge expands a change's ops in
-    // memory while integrating it, so one change for everything would hold the whole document
-    // expanded at once.
+    // memory while integrating it.
     for (block, root) in blocks.iter().zip(&roots) {
         let on_block = in_change
             .get(block.id.as_str())

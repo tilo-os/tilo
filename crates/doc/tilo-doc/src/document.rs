@@ -1,6 +1,7 @@
-//! `Document`: an owned handle over an automerge `AutoCommit` holding the canonical rich-text
-//! model. Thin wrapper delegating to [`crate::model`]; the borrowed [`crate::model::DocMut`] view
-//! drives the same operations over a host's doc (e.g. `ui::State.doc`).
+//! `Document`: an owned handle over an automerge `AutoCommit` holding the canonical
+//! rich-text model. Thin wrapper delegating to [`crate::model`]; the borrowed
+//! [`crate::model::DocMut`] view drives the same operations over a host's doc (e.g.
+//! `ui::State.doc`).
 
 use crate::model::{Containers, DocMut, DocRef, IdGen, IdGenError};
 use automerge::{AutoCommit, ROOT};
@@ -18,11 +19,9 @@ pub enum DocError {
     IdNamespaceExhausted(#[from] IdGenError),
 }
 
-// `Ord` is derived so materialization can canonicalise mark order *including the value*, so
-// replicas that merged concurrent valued marks in different internal orders converge to a
-// byte-identical span list.
-/// The value carried by a mark. Boolean marks (`strong`/`em`/`underline`) carry `Bool(true)`;
-/// valued marks (`fontSize`/`fontFamily`/`link`/`color`) carry `Int`/`Str`.
+// `Ord` is derived so materialization can canonicalise mark order including the value, so replicas
+// that merged concurrent valued marks in different orders converge to identical spans. Boolean
+// marks carry `Bool(true)`; valued marks carry `Int`/`Str`.
 #[derive(
     Debug,
     Clone,
@@ -69,7 +68,6 @@ impl From<&automerge::ScalarValue> for MarkValue {
     }
 }
 
-/// One inline formatting span as seen from the read side.
 #[derive(
     Debug,
     Clone,
@@ -88,10 +86,9 @@ pub struct MarkSpan {
     pub value: MarkValue,
 }
 
-/// The authored runs `marks` records, as `(start, end, author)` merged where adjacent runs name
-/// the same author. One reader for the durable half of authorship, so renderer and test can't
-/// drift. Spans merge because a run typed in several sittings is one person's paragraph, not
-/// three — automerge splits a mark wherever a concurrent edit landed inside it.
+/// The authored runs `marks` records as `(start, end, author)`, merged where adjacent runs name the
+/// same author: a run typed in several sittings is one person's paragraph, and automerge splits a
+/// mark wherever a concurrent edit landed inside it.
 pub fn author_runs(marks: &[MarkSpan]) -> Vec<(usize, usize, String)> {
     let mut runs: Vec<(usize, usize, String)> = marks
         .iter()
@@ -129,27 +126,20 @@ impl Document {
     }
 
     /// # Errors
-    /// Returns [`DocError`] if `bytes` is not a valid automerge document, or if it does not
-    /// carry a tilo-doc schema `open` recognises.
+    ///
+    /// Returns [`DocError`] if `bytes` is not a valid automerge document, or does not carry a
+    /// tilo-doc schema `open` recognises.
     pub fn load(bytes: &[u8]) -> Result<Self, DocError> {
         let doc = AutoCommit::load(bytes).map_err(|e| DocError::Load(e.to_string()))?;
         Self::from_automerge(doc)
     }
 
-    /// Open an Automerge document that is already loaded, as [`Self::load`] does: for bytes
-    /// from peers, which are decoded in `tilo_automerge_isolate` rather than here.
-    ///
-    /// # Errors
-    /// Returns [`DocError`] if `doc` does not carry a tilo-doc schema `open` recognises.
     pub fn from_automerge(doc: AutoCommit) -> Result<Self, DocError> {
         Self::from_automerge_under(doc, &ROOT)
     }
 
-    /// [`Self::from_automerge`] for a document whose rich text is stored
-    /// under `root`, the map of a field of a larger record.
-    ///
-    /// # Errors
-    /// Returns [`DocError`] if `root` does not hold a tilo-doc schema `open` recognises.
+    /// [`Self::from_automerge`] for a document whose rich text is stored under `root`, the map of a
+    /// field of a larger record.
     pub fn from_automerge_under(
         doc: AutoCommit,
         root: &automerge::ObjId,
@@ -168,7 +158,6 @@ impl Document {
         self.doc.get_actor().to_hex_string()
     }
 
-    /// Borrowed mutable view (for codecs / shared editing paths).
     pub fn as_mut(&mut self) -> DocMut<'_> {
         DocMut {
             doc: &mut self.doc,
@@ -177,7 +166,6 @@ impl Document {
         }
     }
 
-    /// Borrowed read-only view (for codec export).
     pub fn as_ref(&self) -> DocRef<'_> {
         DocRef {
             doc: &self.doc,
@@ -185,7 +173,8 @@ impl Document {
         }
     }
 
-    // The owned `Document` commits per op so its change history (timeline) stays fine-grained (borrowed `DocMut` does not — see model.rs).
+    // The owned `Document` commits per op so its change history (timeline) stays fine-grained
+    // (borrowed `DocMut` does not — see model.rs).
     pub fn insert_block(&mut self, after: Option<&str>, kind: &str) -> String {
         let id = self.as_mut().insert_block(after, kind);
         self.doc.commit();
@@ -228,26 +217,20 @@ impl Document {
         hash
     }
 
-    /// Record that the document refers to content the caller already keeps (see
-    /// [`crate::model::DocMut::reference_content`]).
     pub fn reference_content(&mut self, hash: &str, meta: &tilo_content::ContentMeta) {
         self.as_mut().reference_content(hash, meta);
         self.doc.commit();
     }
 
-    /// Every content address the document refers to, in any version; see
-    /// [`crate::model::referenced_content`].
     pub fn referenced_content(&self) -> std::collections::BTreeSet<String> {
         crate::model::referenced_content(&self.doc, &self.c)
     }
 
-    /// Set a document property (`title`/`author`/`subject`/`keywords`/`created`/`modified`/`generator`). Round-trips through `.odt`/`.docx`.
     pub fn set_doc_prop(&mut self, name: &str, value: &str) {
         self.as_mut().set_doc_prop(name, value);
         self.doc.commit();
     }
 
-    /// Read a single document property, or `None` if unset.
     pub fn doc_prop(&self, name: &str) -> Option<String> {
         crate::model::doc_prop(&self.doc, &self.c, name)
     }
@@ -256,18 +239,15 @@ impl Document {
         crate::model::doc_props(&self.doc, &self.c)
     }
 
-    /// Set the document-wide multi-column layout: `count` columns for the body, optional `gap` (px). `count <= 1` clears the setting.
     pub fn set_columns(&mut self, count: u32, gap: Option<f64>) {
         self.as_mut().set_columns(count, gap);
         self.doc.commit();
     }
 
-    /// The document-wide multi-column layout: `(column_count, optional_gap_px)`, defaulting to `(1, None)`.
     pub fn columns(&self) -> (u32, Option<f64>) {
         crate::model::columns(&self.doc, &self.c)
     }
 
-    /// Set the document default language as a BCP-47 tag (`en-US`, `de-DE`, `fr`); an empty `code` clears it.
     pub fn set_language(&mut self, code: &str) {
         self.as_mut().set_language(code);
         self.doc.commit();
@@ -281,8 +261,8 @@ impl Document {
         crate::model::blocks_in_order(&self.doc, &self.c)
     }
 
-    /// The byte length of every body block's fractional order key — a direct probe of the truncating
-    /// order-key scheme; the perf test asserts it stays bounded rather than growing O(n) per append.
+    /// The byte length of every body block's fractional order key: a direct probe of the truncating
+    /// order-key scheme, so a test can assert it stays bounded rather than growing O(n) per append.
     pub fn block_order_key_lengths(&self) -> Vec<usize> {
         crate::model::block_order_key_lengths(&self.doc, &self.c)
     }
@@ -353,12 +333,10 @@ impl Document {
         self.doc.commit();
     }
 
-    /// The note ids present in the document (sorted, canonical order).
     pub fn note_ids(&self) -> Vec<String> {
         crate::model::note_ids(&self.doc, &self.c)
     }
 
-    /// A note's kind (`Footnote`/`Endnote`), or `None` if the id is unknown.
     pub fn note_kind(&self, id: &str) -> Option<crate::model::NoteKind> {
         crate::model::note_kind(&self.doc, &self.c, id)
     }
@@ -375,8 +353,6 @@ impl Document {
         crate::model::materialize_notes(&self.doc, &self.c)
     }
 
-    /// Create a footnote, place its reference marker at `char_idx` in `block_id`, and return the new
-    /// note id (content filled via [`Self::insert_note_block`] + [`Self::splice_note_text`]).
     pub fn insert_footnote(&mut self, block_id: &str, char_idx: usize) -> String {
         let id = self.as_mut().insert_footnote(block_id, char_idx);
         self.doc.commit();
@@ -427,7 +403,6 @@ impl Document {
         self.doc.commit();
     }
 
-    /// The comment ids present in the document (sorted, canonical order).
     pub fn comment_ids(&self) -> Vec<String> {
         crate::model::comment_ids(&self.doc, &self.c)
     }
@@ -456,8 +431,8 @@ impl Document {
         crate::model::materialize_comments(&self.doc, &self.c)
     }
 
-    /// Materialize the durable replies below one comment, in canonical id
-    /// order. An old comment without a reply map simply has no replies.
+    /// Materialize the durable replies below one comment. An old comment without a reply map simply
+    /// has no replies.
     pub fn comment_replies(&self, comment_id: &str) -> Vec<crate::snapshot::CommentReplyView> {
         crate::model::materialize_comment_replies(&self.doc, &self.c, comment_id)
     }
@@ -477,8 +452,6 @@ impl Document {
         id
     }
 
-    /// Create an empty comment (author + date) with no anchor; fill its content via
-    /// [`Self::insert_comment_block`] + [`Self::splice_comment_text`] and anchor via [`Self::add_comment_mark`].
     pub fn insert_comment(&mut self, author: &str, date: &str) -> String {
         let id = self.as_mut().insert_comment(author, date);
         self.doc.commit();
@@ -491,8 +464,8 @@ impl Document {
         self.doc.commit();
     }
 
-    /// Add a one-paragraph reply to an existing comment thread. Returns `None`
-    /// when a concurrent deletion removed the parent comment before this write.
+    /// Add a one-paragraph reply to an existing thread. `None` when a concurrent deletion removed
+    /// the parent before this write.
     pub fn add_comment_reply(
         &mut self,
         comment_id: &str,
@@ -533,7 +506,6 @@ impl Document {
         self.doc.commit();
     }
 
-    /// The tracked-change ids present in the document (sorted, canonical order).
     pub fn change_ids(&self) -> Vec<String> {
         crate::model::change_ids(&self.doc, &self.c)
     }
@@ -588,13 +560,11 @@ impl Document {
         id
     }
 
-    /// Accept a tracked change (insertion: keep text, drop mark; deletion: remove text).
     pub fn accept_change(&mut self, change_id: &str) {
         self.as_mut().accept_change(change_id);
         self.doc.commit();
     }
 
-    /// Reject a tracked change (insertion: remove text; deletion: keep text, drop mark).
     pub fn reject_change(&mut self, change_id: &str) {
         self.as_mut().reject_change(change_id);
         self.doc.commit();
@@ -604,27 +574,24 @@ impl Document {
         crate::model::bookmarks(&self.doc, &self.c)
     }
 
-    /// Anchor a bookmark named `name` over `[start, end)`; a point bookmark (`start == end`) widens to one character so the mark has a non-empty range.
     pub fn add_bookmark(&mut self, block_id: &str, start: usize, end: usize, name: &str) {
         self.as_mut().add_bookmark(block_id, start, end, name);
         self.doc.commit();
     }
 
-    /// Anchor a cross-reference over `[start, end)`, pointing at `target` (a bookmark name or a
-    /// heading's derived id); stored as a `link` mark valued `#<target>`.
     pub fn add_cross_ref(&mut self, block_id: &str, start: usize, end: usize, target: &str) {
         self.as_mut().add_cross_ref(block_id, start, end, target);
         self.doc.commit();
     }
 
-    /// Timeline of authored changes (oldest first).
     pub fn versions(&mut self) -> Vec<tilo_resource::history::Version> {
         tilo_resource::history::versions(&mut self.doc)
     }
 
-    /// Reconstruct the document as of `version` (time-travel).
+    /// Reconstruct the document as of `version` (time travel).
     ///
     /// # Errors
+    ///
     /// Returns [`DocError`] if `version` is out of range or the historical state cannot be
     /// replayed.
     pub fn materialize_at(
@@ -634,11 +601,12 @@ impl Document {
         crate::snapshot::at(&mut self.doc, version)
     }
 
-    /// Structural diff between two points on this document's own timeline (`from` → `to`, indices
-    /// into [`Self::versions`]); block ids are stable across history, so the diff aligns by identity.
+    /// Structural diff between two points of this document's own timeline; block ids are stable
+    /// across history, so the diff aligns by identity.
     ///
     /// # Errors
-    /// Returns [`DocError`] if either `from` or `to` is out of range.
+    ///
+    /// Returns [`DocError`] if either index is out of range.
     pub fn diff_versions(
         &mut self,
         from: usize,
@@ -649,15 +617,13 @@ impl Document {
         Ok(crate::diff::diff_snapshots(&a, &b))
     }
 
-    /// Independent replica with a fresh actor id (distinct edit lineage).
+    /// Independent replica with a fresh actor id.
     ///
     /// # Panics
-    /// Panics if reloading this document's own just-saved bytes fails. `bytes` is this
-    /// process's own valid in-memory document round-tripped through `save`/`load`, not
-    /// anything read from disk or a peer, so automerge failing to parse it back would mean
-    /// `save`/`load` themselves are broken — a library invariant, not bad input. `fork`'s
-    /// only real external caller (`fs::docstore`) depends on this infallible signature, so
-    /// surfacing a `Result` here is a public-API change out of scope for a lint-only pass.
+    ///
+    /// Panics if reloading this document's own just-saved bytes fails: that would mean
+    /// `save`/`load` are broken, not bad input, and `fork`'s caller (`fs::docstore`) depends on the
+    /// infallible signature.
     #[must_use]
     #[allow(
         clippy::expect_used,
@@ -673,17 +639,14 @@ impl Document {
         Document { doc, c, ids }
     }
 
-    /// Merge another replica's changes into this one. Done via the low-level `Automerge` (no patch
-    /// log) to sidestep an automerge-0.8 `AutoCommit::merge` panic (`PatchLogMismatch`) that can fire
-    /// when concurrent **mark** ops are reconciled; the merged result is reloaded and containers/ids re-resolved.
+    /// Merge another replica's changes into this one through the low-level `Automerge`, which
+    /// sidesteps an automerge-0.8 `AutoCommit::merge` panic when concurrent mark ops are
+    /// reconciled.
     ///
     /// # Panics
-    /// Panics if reloading either side's own just-saved bytes, or the merged result, fails.
-    /// Both `self` and `other` are already-valid in-memory documents (never raw peer bytes —
-    /// those go through the fallible `Document::load`), so a failure here means `save`/`load`
-    /// disagree with each other, a library invariant rather than untrusted input. `merge`'s
-    /// only real external caller (`fs::docstore`) depends on this infallible signature, so
-    /// surfacing a `Result` here is a public-API change out of scope for a lint-only pass.
+    ///
+    /// Panics if reloading either side's own just-saved bytes, or the merged result, fails: both
+    /// are valid in-memory documents, so that would mean `save`/`load` disagree with each other.
     #[allow(
         clippy::expect_used,
         reason = "reloads this process's own just-saved/merged bytes; see the panics note above"
@@ -767,7 +730,6 @@ mod tests {
             let d2 = Document::load(&bytes).unwrap();
             assert_eq!(d2.columns(), (2, Some(18.0)), "columns survive save/load");
 
-            // Setting back to one column clears the setting (single-column default).
             let mut d3 = Document::load(&bytes).unwrap();
             d3.set_columns(1, None);
             assert_eq!(d3.columns(), (1, None));
@@ -775,12 +737,10 @@ mod tests {
         }
         {
             let mut d = Document::new();
-            // A zero count is meaningless; the reader clamps to a single column.
             d.set_columns(0, None);
             assert_eq!(d.columns(), (1, None));
         }
         {
-            // The hand-rolled `Default` must yield one column, not the integer default 0.
             assert_eq!(crate::snapshot::DocSnapshot::default().columns, 1);
         }
         {
@@ -806,7 +766,6 @@ mod tests {
             assert_eq!(d3.materialize().language, None);
         }
         {
-            // A document saved with no language must still open and read `None` (the `meta.language` register simply doesn't exist).
             let mut d = Document::new();
             let bytes = d.save();
             let d2 = Document::load(&bytes).unwrap();
@@ -895,8 +854,6 @@ mod tests {
             let mut d = Document::new();
             let a = d.insert_block(None, "paragraph");
             d.splice_text(&a, 0, 0, "first");
-            // Re-create a generator over the same doc + actor (as the editor does when binding to a loaded
-            // document): a fresh IdGen at 0 would re-mint `a`'s id and overwrite it; the seeded one must not.
             let c = d.c.clone();
             let mut ids = crate::model::seeded_id_gen(&d.doc, &c);
             {
@@ -1014,7 +971,6 @@ mod tests {
         (a, b, p)
     }
 
-    /// Merge both ways and require the replicas to converge.
     fn converge(a: &mut Document, b: &mut Document, what: &str) {
         a.merge(b);
         b.merge(a);
@@ -1091,7 +1047,6 @@ mod tests {
             "both comments present after merge"
         );
 
-        // Concurrent replies to one comment do not replace each other.
         let mut a = Document::new();
         let p = a.insert_block(None, "paragraph");
         a.splice_text(&p, 0, 0, "shared text");

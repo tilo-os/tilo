@@ -1,5 +1,5 @@
-//! Mechanical projection source over a committed document. It is not a caller/record
-//! authority witness.
+//! Mechanical projection source over a committed document. It is not a
+//! caller/record authority witness.
 use super::{
     AutoCommit, Basis, Limits, ObjId, ObjType, ReadDoc, ReadError, ScalarValueRef, TextPosition,
     Transactable, ValueRef, Work, escaped_bytes, field, object_fingerprint, validate_limits,
@@ -39,7 +39,6 @@ fn value<'v>(value: &'v ValueRef<'_>, object: ObjId) -> Value<'v> {
         ValueRef::Scalar(scalar) => Value::Scalar(scalar),
     }
 }
-/// Lowercase hexadecimal digit of a nibble (`0..16`).
 fn hex_digit(nibble: u8) -> char {
     char::from_digit(u32::from(nibble), 16).unwrap_or('0')
 }
@@ -97,17 +96,13 @@ impl<'a> Source<'a> {
         ))
     }
     /// Canonical cursor scope of `object` (see [`object_fingerprint`]).
-    ///
     /// # Errors
-    ///
     /// [`ReadError::Limit`] for an actor id over 256 bytes.
     pub fn fingerprint(&self, object: &ObjId) -> Result<[u8; 32], ReadError> {
         object_fingerprint(object)
     }
     /// Visit the winning value under `key`, if any.
-    ///
     /// # Errors
-    ///
     /// [`ReadError::Limit`] when `key` exceeds 256 bytes, or any error returned by `visitor`.
     pub fn field(
         &self,
@@ -120,11 +115,6 @@ impl<'a> Source<'a> {
         }
         Ok(())
     }
-    /// The winning object of `kind` under `key`, if any.
-    ///
-    /// # Errors
-    ///
-    /// As [`Source::field`].
     pub fn object(
         &self,
         object: &ObjId,
@@ -138,20 +128,12 @@ impl<'a> Source<'a> {
         })?;
         Ok(result)
     }
-    /// The attribute map of `block` (heading level, list numbering, a cell's
-    /// place), if it has one.
-    ///
-    /// # Errors
-    ///
-    /// As [`Source::field`].
+    /// The attribute map of `block` (heading level, list numbering, a cell's place), if it has one.
     pub fn block_attrs(&self, block: &ObjId) -> Result<Option<ObjId>, ReadError> {
         self.object(block, crate::schema::BLOCK_ATTRS, ObjType::Map)
     }
-    /// The winning string under `key`, or empty when it is absent or not a string.
-    ///
-    /// # Errors
-    ///
-    /// As [`Source::field`], and [`ReadError::Limit`] when the string exceeds `maximum` bytes.
+    /// The winning string under `key`, empty when it is absent or not a string;
+    /// [`ReadError::Limit`] when it exceeds `maximum` bytes.
     pub fn string(&self, object: &ObjId, key: &str, maximum: usize) -> Result<String, ReadError> {
         let mut result = String::new();
         self.field(object, key, |value| {
@@ -165,11 +147,6 @@ impl<'a> Source<'a> {
         })?;
         Ok(result)
     }
-    /// Visit the winning byte payload under `key`, if any.
-    ///
-    /// # Errors
-    ///
-    /// As [`Source::field`].
     pub fn bytes(
         &self,
         object: &ObjId,
@@ -183,11 +160,8 @@ impl<'a> Source<'a> {
             Ok(())
         })
     }
-    /// Visit every visible map entry until `visitor` breaks.
-    ///
-    /// # Errors
-    ///
-    /// [`ReadError::Limit`] when the scan budget is exhausted, or any error returned by `visitor`.
+    /// Visit every visible map entry until `visitor` breaks; [`ReadError::Limit`] when the scan
+    /// budget is exhausted.
     pub fn map(
         &self,
         object: &ObjId,
@@ -225,10 +199,8 @@ impl<'a> Source<'a> {
         }
         Ok(())
     }
-    /// A bounded text fragment from `position`.
-    ///
-    /// Elements are addressed by their text index, so the read seeks straight to the cursor and
-    /// never visits mark boundaries, which occupy no text index.
+    /// A bounded text fragment from `position`. Elements are addressed by their text index, so the
+    /// read seeks straight to the cursor and never visits mark boundaries, which occupy no index.
     ///
     /// # Errors
     ///
@@ -317,13 +289,8 @@ impl<'a> Source<'a> {
             true,
         ))
     }
-    /// The inline marks over `fragment`, what [`Source::text_fragment`] read from `position`,
-    /// clipped to it, with `start`/`end` in characters of `fragment`.
-    ///
-    /// # Errors
-    ///
-    /// [`ReadError::Limit`] when the scan budget is exhausted, and [`ReadError::Malformed`] for a
-    /// grapheme-indexed document or an unreadable text object.
+    /// The inline marks over `fragment`, clipped to it, with `start`/`end` in characters of
+    /// `fragment`.
     pub fn fragment_marks(
         &self,
         text: Option<&ObjId>,

@@ -16,14 +16,13 @@ enum At<'k> {
 }
 
 impl DocMut<'_> {
-    /// Write every entry of `from`'s containers (its blocks, regions, notes,
-    /// comments, styles, package parts, content descriptors and meta) into
-    /// this document's, each under its own key, in place of any entry there
-    /// under that key. `rename` maps a string `from` holds, a content address
-    /// it names its images by, to the one this document names it by instead:
-    /// in a key, a value or a mark alike.
+    /// Write every entry of `from`'s containers (blocks, regions, notes, comments, styles, package
+    /// parts, content descriptors and meta) into this document's, each under its own key, in place
+    /// of any entry there. `rename` maps a string `from` holds, a content address it names its
+    /// images by, to the one this document names it by instead: in a key, a value or a mark alike.
     ///
     /// # Errors
+    ///
     /// The write automerge refused; what was written before it stays.
     pub fn graft(
         &mut self,
@@ -67,7 +66,6 @@ fn renamed_scalar(scalar: ScalarValue, rename: &BTreeMap<String, String>) -> Sca
     }
 }
 
-/// Copy everything `source` (of type `kind`) holds into `target`.
 fn copy_entries(
     to: &mut AutoCommit,
     target: &ObjId,
