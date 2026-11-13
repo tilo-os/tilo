@@ -627,32 +627,55 @@ type Field = (String, String);
 
 /// What the updates since a revision changed, as a reader of an action's availability needs it.
 pub enum Moved {
-    /// These fields changed, by published resource id and field: a record's own, and every
-    /// item's under it.
-    These(Vec<Field>),
+    /// These fields changed, by published resource id: a record's own, and every item's under
+    /// it.
+    These(std::collections::BTreeMap<String, std::collections::BTreeSet<String>>),
     /// Every resource: an update since read them all again, and what it changed is every one.
     Everything,
 }
 
-/// Whether a change to `changed` moves what a read of `read` saw.
-///
-/// The same resource and field, either read or changed whole, is the same thing read and changed
-/// again. A requirement that read a resource whole sees everything published under it, so a
-/// change to one of its items reads it again. A change to a resource above what was read does
-/// not: what an item's own fields are is what a requirement of the item reads, and a collection
-/// changing around it is a change to the collection.
-#[must_use]
-pub fn reached(changed: &Field, read: &Field) -> bool {
-    const WHOLE: &str = tilolang_runtime::ANY_FIELD;
-    let above = |outer: &str, inner: &str| {
-        inner
-            .strip_prefix(outer)
-            .is_some_and(|rest| rest.starts_with('/'))
-    };
-    if changed.0 == read.0 {
-        return changed.1 == read.1 || changed.1 == WHOLE || read.1 == WHOLE;
+impl Moved {
+    /// Whether what changed moves what a read of `read` saw, found by the resources read rather
+    /// than by comparing every change with every read.
+    ///
+    /// The same resource and field, either read or changed whole, is the same thing read and
+    /// changed again. A requirement that read a resource whole sees everything published under
+    /// it, so a change to one of its items reads it again. A change to a resource above what was
+    /// read does not, unless it changed whole: what an item's own fields are is what a
+    /// requirement of the item reads, and a collection changing around it is a change to the
+    /// collection.
+    #[must_use]
+    pub fn reaches(&self, (resource, field): &Field) -> bool {
+        const WHOLE: &str = tilolang_runtime::ANY_FIELD;
+        let changed = match self {
+            Self::Everything => return true,
+            Self::These(changed) => changed,
+        };
+        if changed.get(resource).is_some_and(|fields| {
+            fields.contains(field) || fields.contains(WHOLE) || field == WHOLE
+        }) {
+            return true;
+        }
+        let under = format!("{resource}/");
+        if changed
+            .range(under.clone()..)
+            .next()
+            .is_some_and(|(inner, _)| inner.starts_with(&under))
+        {
+            return true;
+        }
+        let mut at = resource.as_str();
+        while let Some((outer, _)) = at.rsplit_once('/') {
+            if changed
+                .get(outer)
+                .is_some_and(|fields| fields.contains(WHOLE))
+            {
+                return true;
+            }
+            at = outer;
+        }
+        false
     }
-    above(&read.0, &changed.0) || (changed.1 == WHOLE && above(&changed.0, &read.0))
 }
 
 /// What the updates since a revision moved of the records' text, as a reader that keeps one
@@ -1260,7 +1283,7 @@ impl Publications {
     #[must_use]
     pub fn changed_since(&self, since: u64) -> Option<Moved> {
         if since == self.moved {
-            return Some(Moved::These(Vec::new()));
+            return Some(Moved::These(std::collections::BTreeMap::new()));
         }
         if since > self.moved {
             return None;
@@ -1278,11 +1301,19 @@ impl Publications {
         {
             return Some(Moved::Everything);
         }
-        let mut out: std::collections::BTreeSet<Field> = std::collections::BTreeSet::new();
-        for (_, moved) in self.motions.iter().skip(first) {
-            out.extend(moved.iter().flatten().cloned());
+        let mut out: std::collections::BTreeMap<String, std::collections::BTreeSet<String>> =
+            std::collections::BTreeMap::new();
+        for (resource, field) in self
+            .motions
+            .iter()
+            .skip(first)
+            .flat_map(|(_, moved)| moved.iter().flatten())
+        {
+            out.entry(resource.clone())
+                .or_default()
+                .insert(field.clone());
         }
-        Some(Moved::These(out.into_iter().collect()))
+        Some(Moved::These(out))
     }
 
     /// What the updates since `since` moved of the records' text, each once: the entries a

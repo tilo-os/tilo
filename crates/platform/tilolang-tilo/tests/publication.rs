@@ -17,7 +17,7 @@ use tilolang_tilo::action::DynAction;
 use tilolang_tilo::host::argument_json;
 use tilolang_tilo::meta::MetaExt as _;
 use tilolang_tilo::publish::{
-    ActionTypes, PlanRequest, Planner, action_type, open_with_id, publish_record, reached,
+    ActionTypes, Moved, PlanRequest, Planner, action_type, open_with_id, publish_record,
 };
 use tilolang_tilo::surface::package_surfaces;
 
@@ -467,18 +467,34 @@ fn a_command_that_asks_for_an_argument_says_so_before_it_opens() {
 #[test]
 fn a_change_reaches_what_read_it() {
     let field = |resource: &str, field: &str| (resource.to_owned(), field.to_owned());
+    let reached = |(resource, changed): (String, String), read: &(String, String)| {
+        Moved::These(std::collections::BTreeMap::from([(
+            resource,
+            std::collections::BTreeSet::from([changed]),
+        )]))
+        .reaches(read)
+    };
     let list = "tl:tasks:task";
     let task = "tl:tasks:task/1";
     // A requirement that read a task's own field is read again when that field moves, or when the
     // task is replaced whole; another field of the same task leaves the answer standing.
-    assert!(reached(&field(task, "done"), &field(task, "done")));
-    assert!(reached(&field(task, "*"), &field(task, "done")));
-    assert!(reached(&field(task, "done"), &field(task, "*")));
-    assert!(!reached(&field(task, "title"), &field(task, "done")));
+    assert!(reached(field(task, "done"), &field(task, "done")));
+    assert!(reached(field(task, "*"), &field(task, "done")));
+    assert!(reached(field(task, "done"), &field(task, "*")));
+    assert!(!reached(field(task, "title"), &field(task, "done")));
     // A requirement that read the list of tasks read every task in it: a change to one task is
     // read again, while a change to one of the list's own fields is not a change to its tasks.
-    assert!(reached(&field(task, "done"), &field(list, "done")));
-    assert!(!reached(&field(list, "order"), &field(task, "title")));
+    assert!(reached(field(task, "done"), &field(list, "done")));
+    assert!(!reached(field(list, "order"), &field(task, "title")));
     // The list replaced whole is every task in it changed.
-    assert!(reached(&field(list, "*"), &field(task, "title")));
+    assert!(reached(field(list, "*"), &field(task, "title")));
+    // Another task, or a resource whose id only starts like the list's, is not under it.
+    assert!(!reached(
+        field("tl:tasks:task/2", "done"),
+        &field(task, "done")
+    ));
+    assert!(!reached(
+        field("tl:tasks:tasks/1", "done"),
+        &field(list, "done")
+    ));
 }

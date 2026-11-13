@@ -47,7 +47,7 @@ use tilolang_tilo::meta::MetaExt as _;
 use tilolang_tilo::publish::HOST_RESOURCE;
 use tilolang_tilo::publish::package_resource_id;
 use tilolang_tilo::publish::{
-    Caller, Committer, Moved, Planner, Publications, host_resource, publish_package, reached,
+    Caller, Committer, Moved, Planner, Publications, host_resource, publish_package,
 };
 use tilolang_tilo::used::UsedApp;
 use tilolang_tilo::{HostEffect, OpenEffect};
@@ -653,15 +653,11 @@ impl Answers {
             let Some(reads) = &answered.reads else {
                 return false;
             };
-            let reached_now = match since
+            let reached_now = since
                 .entry(answered.at)
                 .or_insert_with(|| publications.changed_since(answered.at))
-            {
-                None | Some(Moved::Everything) => true,
-                Some(Moved::These(changed)) => changed
-                    .iter()
-                    .any(|changed| reads.iter().any(|read| reached(changed, read))),
-            };
+                .as_ref()
+                .is_none_or(|moved| reads.iter().any(|read| moved.reaches(read)));
             moved |= reached_now;
             !reached_now
         });
