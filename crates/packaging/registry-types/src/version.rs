@@ -29,22 +29,48 @@ fn numeric_key(version: &str) -> Option<Vec<u64>> {
 mod tests {
     use super::*;
 
+    /// `compare` over two versions: `(row, left, right, the ordering)`. Each row was a test of its
+    /// own, and a failure names its row and the two versions.
     #[test]
-    fn development_sequence_is_numeric_and_hash_does_not_rank_updates() {
-        assert_eq!(
-            compare("0.1.1-dev.10+ga", "0.1.1-dev.9+gz"),
-            Ordering::Greater
-        );
-        assert_eq!(
-            compare("0.1.1-dev.10+ga", "0.1.1-dev.10+gz"),
-            Ordering::Equal
-        );
-        assert_eq!(compare("0.1.1", "0.1.1-dev.999"), Ordering::Greater);
-    }
-
-    #[test]
-    fn legacy_calver_and_opaque_ordering_is_retained() {
-        assert_eq!(compare("2026.10", "2026.9"), Ordering::Greater);
-        assert_eq!(compare("beta", "alpha"), Ordering::Greater);
+    fn versions_compare_by_development_sequence_and_by_field() {
+        let rows = [
+            (
+                "development_sequence_is_numeric_and_hash_does_not_rank_updates",
+                "0.1.1-dev.10+ga",
+                "0.1.1-dev.9+gz",
+                Ordering::Greater,
+            ),
+            (
+                "development_sequence_is_numeric_and_hash_does_not_rank_updates",
+                "0.1.1-dev.10+ga",
+                "0.1.1-dev.10+gz",
+                Ordering::Equal,
+            ),
+            (
+                "development_sequence_is_numeric_and_hash_does_not_rank_updates",
+                "0.1.1",
+                "0.1.1-dev.999",
+                Ordering::Greater,
+            ),
+            (
+                "legacy_calver_and_opaque_ordering_is_retained",
+                "2026.10",
+                "2026.9",
+                Ordering::Greater,
+            ),
+            (
+                "legacy_calver_and_opaque_ordering_is_retained",
+                "beta",
+                "alpha",
+                Ordering::Greater,
+            ),
+        ];
+        for (row, left, right, expected) in rows {
+            assert_eq!(
+                compare(left, right),
+                expected,
+                "{row}: {left} against {right}"
+            );
+        }
     }
 }
