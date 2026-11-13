@@ -842,9 +842,26 @@ pub fn entries_after(
     tilo_resource::history::committed_versions(doc)
         .iter()
         .filter(|version| since.contains(&version.hash))
-        .filter(|version| !steps::is_schema_genesis(version))
+        .filter(|version| !steps::is_schema_genesis(version) && !is_record_making(version))
         .map(|version| entry(version, &undone, &checkpoints, words))
         .collect()
+}
+
+/// Whether `version` is the framework making the record (its genesis, or the
+/// structure every member derives the same way): nobody's change, which a
+/// feed of what people and agents changed leaves out.
+fn is_record_making(version: &Version) -> bool {
+    version
+        .message
+        .as_deref()
+        .and_then(tilo_actions::framework::FrameworkChange::from_change_message)
+        .is_some_and(|change| {
+            matches!(
+                change,
+                tilo_actions::framework::FrameworkChange::Genesis
+                    | tilo_actions::framework::FrameworkChange::Structure
+            )
+        })
 }
 
 /// Answer a history view.
@@ -1156,6 +1173,27 @@ mod tests {
     use super::*;
     use crate::history_source::TestWords;
     use automerge::{ROOT, ReadDoc};
+
+    #[test]
+    fn a_feed_leaves_out_the_framework_making_the_record() {
+        let mut doc = AutoCommit::new();
+        doc.put(ROOT, "made", true).unwrap();
+        doc.commit_with(
+            automerge::transaction::CommitOptions::default()
+                .with_message(tilo_actions::framework::FrameworkChange::Genesis.change_message()),
+        );
+        doc.put(ROOT, "saved", 1_i64).unwrap();
+        doc.commit().unwrap();
+
+        let entries = entries_after(&doc, &[], &TestWords);
+        assert_eq!(entries.len(), 1, "{entries:?}");
+        assert!(
+            !entries[0]["sentence"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("tilo.framework")
+        );
+    }
 
     #[test]
     fn history_and_diff_leave_the_callers_open_edit_uncommitted() {
