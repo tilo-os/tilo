@@ -49,7 +49,7 @@
 // also keeps what the person reads there, in both appearances: the sign-in
 // card they allow, the door's grants page, and the key that page makes.
 import {spawn} from 'node:child_process';
-import {mkdirSync, writeFileSync} from 'node:fs';
+import {existsSync, mkdirSync, writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {inflateSync} from 'node:zlib';
 import {launch, sleep} from '../../../../tools/web/chrome.mjs';
@@ -452,7 +452,7 @@ if (pageName) {
     else await sleep(250);
   }
   if (!drawn) await finish(1, `the page on the desk is still the arriving card after 120 s (it reads: ${await text()})`);
-  writeFileSync(join(out, 'page-desk.png'), await shot());
+  writeFileSync(join(out, 'page-desk.png'), Buffer.from(await shot(), 'base64'));
   const said = {name: report.window.name, appearedMs: report.window.appearedMs,
     drawnMs: Date.now() - lookFrom, content: Number(contentShare(drawn).toFixed(4))};
   report.desk = said;
@@ -468,6 +468,9 @@ if (pageName) {
   let changed = 0;
   let at = watching;
   while (changed < changes && Date.now() - watching < 600_000) {
+    // The check says when it has seen what it asked them to look at: the
+    // browser goes with the page, as any closed one does.
+    if (existsSync(join(out, 'stop'))) break;
     const picture = await look().catch(() => null);
     if (!picture) { await sleep(200); continue; }
     const moved = differingPixels(previous, picture);
@@ -485,7 +488,9 @@ if (pageName) {
     }
     await sleep(150);
   }
-  if (changed < changes) await finish(1, `the page on the desk changed ${changed} times of the ${changes} the check waits for`);
+  if (changed < changes && !existsSync(join(out, 'stop'))) {
+    await finish(1, `the page on the desk changed ${changed} times of the ${changes} the check waits for`);
+  }
 }
 
 if (keyName) {

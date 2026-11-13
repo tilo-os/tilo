@@ -281,12 +281,21 @@ class Desk:
         raise AssertionError(f"the person's desk said no {kind} in {within:.0f} s (see {self.log})")
 
     def stop(self) -> None:
-        if self.ran.poll() is None:
-            self.ran.terminate()
-            try:
-                self.ran.wait(timeout=30)
-            except subprocess.TimeoutExpired:
-                self.ran.kill()
+        """Their browser goes, as one a person closes does: the watcher is
+        told to finish, and is stopped only if it does not."""
+        try:
+            (Path(OUT) / "stop").write_text("")
+        except OSError:
+            pass
+        try:
+            self.ran.wait(timeout=45)
+        except subprocess.TimeoutExpired:
+            if self.ran.poll() is None:
+                self.ran.terminate()
+                try:
+                    self.ran.wait(timeout=30)
+                except subprocess.TimeoutExpired:
+                    self.ran.kill()
         self.out.close()
         self.err.close()
 
@@ -411,7 +420,7 @@ async def fill_phase(report: dict[str, object]) -> int:
 
         say("b2. a person invited into the workspace sees the agent's page on their desk")
         desk = Desk((await aws.members.invite(role="editor", email=DESK_EMAIL)).link)
-        on_desk = desk.wait("desk", within=240)
+        on_desk = await asyncio.to_thread(desk.wait, "desk", 240)
         check(
             on_desk.get("content", 0) >= 0.02,
             f"the hosted Browser's page is drawn on the person's desk, not a card waiting for one ({on_desk})",
@@ -422,14 +431,14 @@ async def fill_phase(report: dict[str, object]) -> int:
         # the submit sees happen on the page before they are asked about it.
         element = await page.find("textbox", "Given names")
         await outcome(page.do("fill-page", element=element, text=f"{FILLED['Given names']} Wilhelmine"))
-        seen = desk.wait("change", within=60)
+        seen = await asyncio.to_thread(desk.wait, "change", 60)
         check(int(seen.get("moved", 0)) > 150, f"the agent's fill reached the person's desk ({seen})")
         say("   seen", f"the fill changed {seen['moved']} pixels of the page on their desk, {seen['ms']} ms after the change before")
         report["desk_fill"] = seen
         # What the rest of the flow asserts, back in its field.
         element = await page.find("textbox", "Given names")
         await outcome(page.do("fill-page", element=element, text=FILLED["Given names"]))
-        desk.wait("change", within=60)
+        await asyncio.to_thread(desk.wait, "change", 60)
 
         say("c. the agent captures the filled form")
         captured = await outcome(page.do("capture-page"))
@@ -476,7 +485,7 @@ async def fill_phase(report: dict[str, object]) -> int:
         report["receipt"] = True
         # The page the person allowed the submission of shows its receipt,
         # and so does the page on their desk.
-        seen = desk.wait("change", within=60)
+        seen = await asyncio.to_thread(desk.wait, "change", 60)
         check(int(seen.get("moved", 0)) > 500, f"the receipt reached the person's desk ({seen})")
         say("   seen", f"the receipt changed {seen['moved']} pixels of the page on their desk")
         report["desk_receipt"] = seen
