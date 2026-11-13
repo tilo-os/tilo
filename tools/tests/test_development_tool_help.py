@@ -24,7 +24,6 @@ class DevelopmentToolHelp(unittest.TestCase):
             bash = shutil.which("bash")
             commands = [
                 [sys.executable, str(ROOT / "tools/dev/install-git-hooks.py"), "--help"],
-                [bash, str(ROOT / "scripts/test-local.sh"), "--help"],
                 [bash, str(ROOT / "dist/rpm/build-rpm.sh"), "--help"],
                 [bash, str(ROOT / "dist/rpm/build-rpm.sh"), "--no-cargo", "--help"],
             ]

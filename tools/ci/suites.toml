@@ -2043,10 +2043,6 @@ suite = "os/verify-test.sh"
 reason = "boots the test image in a VM"
 
 [[unrequired]]
-suite = "scripts/test-local.sh"
-reason = "developer entry point for the Rust suite, which CI runs with nextest's ci profile"
-
-[[unrequired]]
 suite = "scripts/two-host-sync-test.sh"
 reason = "manual smoke test across two hosts on a LAN"
 
