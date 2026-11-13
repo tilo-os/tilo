@@ -831,38 +831,42 @@ pub(crate) mod tests {
         at
     }
 
-    #[test]
-    fn files_symlinks_and_subdirectories_read_back() {
-        let big: Vec<u8> = (0..10_000u32).map(|i| (i % 251) as u8).collect();
-        let image = Writer::new()
-            .file("app.desktop", b"[Desktop Entry]\nName=Thing\n")
-            .file("usr/share/icon.png", &big)
-            .symlink(".DirIcon", "usr/share/icon.png")
-            .build();
-        let mut image = Image::open(std::io::Cursor::new(image), 0).unwrap();
-        let mut names = image.root_names().unwrap();
-        names.sort();
-        assert_eq!(names, [".DirIcon", "app.desktop", "usr"]);
-        assert_eq!(
-            image.read_file("app.desktop", 1024).unwrap().unwrap(),
-            b"[Desktop Entry]\nName=Thing\n"
-        );
-        assert_eq!(image.read_file(".DirIcon", 1 << 20).unwrap().unwrap(), big);
-        assert!(image.read_file("missing", 1024).unwrap().is_none());
-        assert!(
-            image.read_file("usr/share/icon.png", 100).is_err(),
-            "a file over the limit is refused, never read"
-        );
-    }
+    tilo_test_env::scenario! {
+        fn a_squashfs_image_reads_back_or_is_refused;
 
-    #[test]
-    fn garbage_is_an_error_not_a_panic() {
-        assert!(Image::open(std::io::Cursor::new(vec![0u8; 200]), 0).is_err());
-        let mut image = Writer::new().file("a", b"x").build();
-        // Corrupt the inode table pointer.
-        image[64..72].copy_from_slice(&u64::MAX.to_le_bytes());
-        if let Ok(mut opened) = Image::open(std::io::Cursor::new(image), 0) {
-            assert!(opened.root_names().is_err());
+        phase files_symlinks_and_subdirectories_read_back;
+        {
+            let big: Vec<u8> = (0..10_000u32).map(|i| (i % 251) as u8).collect();
+            let image = Writer::new()
+                .file("app.desktop", b"[Desktop Entry]\nName=Thing\n")
+                .file("usr/share/icon.png", &big)
+                .symlink(".DirIcon", "usr/share/icon.png")
+                .build();
+            let mut image = Image::open(std::io::Cursor::new(image), 0).unwrap();
+            let mut names = image.root_names().unwrap();
+            names.sort();
+            assert_eq!(names, [".DirIcon", "app.desktop", "usr"]);
+            assert_eq!(
+                image.read_file("app.desktop", 1024).unwrap().unwrap(),
+                b"[Desktop Entry]\nName=Thing\n"
+            );
+            assert_eq!(image.read_file(".DirIcon", 1 << 20).unwrap().unwrap(), big);
+            assert!(image.read_file("missing", 1024).unwrap().is_none());
+            assert!(
+                image.read_file("usr/share/icon.png", 100).is_err(),
+                "a file over the limit is refused, never read"
+            );
+        }
+
+        phase garbage_is_an_error_not_a_panic;
+        {
+            assert!(Image::open(std::io::Cursor::new(vec![0u8; 200]), 0).is_err());
+            let mut image = Writer::new().file("a", b"x").build();
+            // Corrupt the inode table pointer.
+            image[64..72].copy_from_slice(&u64::MAX.to_le_bytes());
+            if let Ok(mut opened) = Image::open(std::io::Cursor::new(image), 0) {
+                assert!(opened.root_names().is_err());
+            }
         }
     }
 }

@@ -470,169 +470,173 @@ X-Flatpak=com.spotify.Client
         parse(s, id, Path::new("/tmp/x.desktop"), &[]).expect("parses")
     }
 
-    #[test]
-    fn an_entry_is_a_flatpak_an_appimage_a_program_or_the_systems() {
-        let mine = Path::new("/home/ana/.local/share/applications");
-        let at = |path: &str, contents: &str| {
-            parse(contents, "x", Path::new(path), &[]).expect("parses")
-        };
-        let plain = "[Desktop Entry]\nType=Application\nName=Editor\nExec=editor\n";
-        assert_eq!(
-            at("/usr/share/applications/x.desktop", SPOTIFY).kind(Some(mine)),
-            EntryKind::Flatpak
-        );
-        assert_eq!(
-            at("/usr/share/applications/x.desktop", plain).kind(Some(mine)),
-            EntryKind::System
-        );
-        assert_eq!(
-            at("/home/ana/.local/share/applications/x.desktop", plain).kind(Some(mine)),
-            EntryKind::Program
-        );
-        let appimage = format!(
-            "{plain}X-Tilo-Downloaded-Program=/home/ana/Downloads/Editor.AppImage\nX-Tilo-Downloaded-Kind=AppImage\n"
-        );
-        assert_eq!(
-            at(
-                "/home/ana/.local/share/applications/tilo-downloaded/x.desktop",
-                &appimage
-            )
-            .kind(Some(mine)),
-            EntryKind::AppImage
-        );
-    }
+    tilo_test_env::scenario! {
+        fn an_entry_parses_its_source_identities_visibility_and_fields;
 
-    #[test]
-    fn flatpak_and_host_entries_expose_their_launch_identities() {
+        phase an_entry_is_a_flatpak_an_appimage_a_program_or_the_systems;
         {
-            let e = parse_str(SPOTIFY, "com.spotify.Client");
-            assert_eq!(e.name, "Spotify");
-            assert_eq!(e.entry_type, EntryType::Application);
+            let mine = Path::new("/home/ana/.local/share/applications");
+            let at = |path: &str, contents: &str| {
+                parse(contents, "x", Path::new(path), &[]).expect("parses")
+            };
+            let plain = "[Desktop Entry]\nType=Application\nName=Editor\nExec=editor\n";
             assert_eq!(
-                e.source,
-                EntrySource::Flatpak {
-                    app_id: "com.spotify.Client".into()
-                }
+                at("/usr/share/applications/x.desktop", SPOTIFY).kind(Some(mine)),
+                EntryKind::Flatpak
             );
-            assert_eq!(e.startup_wm_class.as_deref(), Some("spotify"));
-            assert_eq!(e.categories, vec!["Audio", "Music", "Player", "AudioVideo"]);
-            assert_eq!(e.mime_types, vec!["x-scheme-handler/spotify"]);
-            assert!(!e.terminal);
-            assert!(!e.no_display);
-        }
-        {
-            let e = parse_str(SPOTIFY, "com.spotify.Client");
-            let ids = e.window_identities();
-            assert_eq!(ids, vec!["spotify", "com.spotify.Client"]);
-            assert!(!ids.iter().any(|i| i == "flatpak"));
-        }
-        {
-            let e = parse_str(
-                "[Desktop Entry]\nType=Application\nName=Files\nExec=/usr/bin/nautilus %U\n",
-                "org.gnome.Nautilus",
-            );
-            assert_eq!(e.source, EntrySource::Host);
             assert_eq!(
-                e.window_identities(),
-                vec!["org.gnome.Nautilus", "nautilus"]
+                at("/usr/share/applications/x.desktop", plain).kind(Some(mine)),
+                EntryKind::System
             );
-        }
-        {
-            let e = parse(
-                "[Desktop Entry]\nType=Application\nName=Old\nExec=x\n",
-                "org.old.App",
-                Path::new("/var/lib/flatpak/exports/share/applications/org.old.App.desktop"),
-                &[],
-            )
-            .unwrap();
             assert_eq!(
-                e.source,
-                EntrySource::Flatpak {
-                    app_id: "org.old.App".into()
-                }
+                at("/home/ana/.local/share/applications/x.desktop", plain).kind(Some(mine)),
+                EntryKind::Program
+            );
+            let appimage = format!(
+                "{plain}X-Tilo-Downloaded-Program=/home/ana/Downloads/Editor.AppImage\nX-Tilo-Downloaded-Kind=AppImage\n"
+            );
+            assert_eq!(
+                at(
+                    "/home/ana/.local/share/applications/tilo-downloaded/x.desktop",
+                    &appimage
+                )
+                .kind(Some(mine)),
+                EntryKind::AppImage
             );
         }
-    }
 
-    #[test]
-    fn visibility_keys_filter_entries_on_the_current_desktop() {
+        phase flatpak_and_host_entries_expose_their_launch_identities;
         {
-            let hidden = parse_str(
-                "[Desktop Entry]\nType=Application\nName=X\nExec=x\nHidden=true\n",
-                "x",
-            );
-            let nodisplay = parse_str(
-                "[Desktop Entry]\nType=Application\nName=X\nExec=x\nNoDisplay=true\n",
-                "x",
-            );
-            assert!(hidden.hidden && !hidden.no_display);
-            assert!(nodisplay.no_display && !nodisplay.hidden);
-            assert!(!hidden.is_visible_in(&["tilo".into()]));
-            assert!(!nodisplay.is_visible_in(&["tilo".into()]));
+            {
+                let e = parse_str(SPOTIFY, "com.spotify.Client");
+                assert_eq!(e.name, "Spotify");
+                assert_eq!(e.entry_type, EntryType::Application);
+                assert_eq!(
+                    e.source,
+                    EntrySource::Flatpak {
+                        app_id: "com.spotify.Client".into()
+                    }
+                );
+                assert_eq!(e.startup_wm_class.as_deref(), Some("spotify"));
+                assert_eq!(e.categories, vec!["Audio", "Music", "Player", "AudioVideo"]);
+                assert_eq!(e.mime_types, vec!["x-scheme-handler/spotify"]);
+                assert!(!e.terminal);
+                assert!(!e.no_display);
+            }
+            {
+                let e = parse_str(SPOTIFY, "com.spotify.Client");
+                let ids = e.window_identities();
+                assert_eq!(ids, vec!["spotify", "com.spotify.Client"]);
+                assert!(!ids.iter().any(|i| i == "flatpak"));
+            }
+            {
+                let e = parse_str(
+                    "[Desktop Entry]\nType=Application\nName=Files\nExec=/usr/bin/nautilus %U\n",
+                    "org.gnome.Nautilus",
+                );
+                assert_eq!(e.source, EntrySource::Host);
+                assert_eq!(
+                    e.window_identities(),
+                    vec!["org.gnome.Nautilus", "nautilus"]
+                );
+            }
+            {
+                let e = parse(
+                    "[Desktop Entry]\nType=Application\nName=Old\nExec=x\n",
+                    "org.old.App",
+                    Path::new("/var/lib/flatpak/exports/share/applications/org.old.App.desktop"),
+                    &[],
+                )
+                .unwrap();
+                assert_eq!(
+                    e.source,
+                    EntrySource::Flatpak {
+                        app_id: "org.old.App".into()
+                    }
+                );
+            }
         }
-        {
-            let gnome_only = parse_str(
-                "[Desktop Entry]\nType=Application\nName=X\nExec=x\nOnlyShowIn=GNOME;\n",
-                "x",
-            );
-            assert!(!gnome_only.is_visible_in(&["tilo".into()]));
-            assert!(gnome_only.is_visible_in(&["GNOME".into()]));
-            assert!(
-                gnome_only.is_visible_in(&crate::scan::current_desktops()),
-                "Tilo offers GNOME-only applications rather than hiding them"
-            );
-            let kde_only = parse_str(
-                "[Desktop Entry]\nType=Application\nName=X\nExec=x\nOnlyShowIn=KDE;\n",
-                "x",
-            );
-            assert!(!kde_only.is_visible_in(&crate::scan::current_desktops()));
 
-            let not_tilo = parse_str(
-                "[Desktop Entry]\nType=Application\nName=X\nExec=x\nNotShowIn=tilo;KDE;\n",
-                "x",
-            );
-            assert!(!not_tilo.is_visible_in(&["tilo".into()]));
-            assert!(not_tilo.is_visible_in(&["GNOME".into()]));
+        phase visibility_keys_filter_entries_on_the_current_desktop;
+        {
+            {
+                let hidden = parse_str(
+                    "[Desktop Entry]\nType=Application\nName=X\nExec=x\nHidden=true\n",
+                    "x",
+                );
+                let nodisplay = parse_str(
+                    "[Desktop Entry]\nType=Application\nName=X\nExec=x\nNoDisplay=true\n",
+                    "x",
+                );
+                assert!(hidden.hidden && !hidden.no_display);
+                assert!(nodisplay.no_display && !nodisplay.hidden);
+                assert!(!hidden.is_visible_in(&["tilo".into()]));
+                assert!(!nodisplay.is_visible_in(&["tilo".into()]));
+            }
+            {
+                let gnome_only = parse_str(
+                    "[Desktop Entry]\nType=Application\nName=X\nExec=x\nOnlyShowIn=GNOME;\n",
+                    "x",
+                );
+                assert!(!gnome_only.is_visible_in(&["tilo".into()]));
+                assert!(gnome_only.is_visible_in(&["GNOME".into()]));
+                assert!(
+                    gnome_only.is_visible_in(&crate::scan::current_desktops()),
+                    "Tilo offers GNOME-only applications rather than hiding them"
+                );
+                let kde_only = parse_str(
+                    "[Desktop Entry]\nType=Application\nName=X\nExec=x\nOnlyShowIn=KDE;\n",
+                    "x",
+                );
+                assert!(!kde_only.is_visible_in(&crate::scan::current_desktops()));
+
+                let not_tilo = parse_str(
+                    "[Desktop Entry]\nType=Application\nName=X\nExec=x\nNotShowIn=tilo;KDE;\n",
+                    "x",
+                );
+                assert!(!not_tilo.is_visible_in(&["tilo".into()]));
+                assert!(not_tilo.is_visible_in(&["GNOME".into()]));
+            }
         }
-    }
 
-    #[test]
-    fn entry_fields_parse_locales_lists_actions_and_fallbacks() {
+        phase entry_fields_parse_locales_lists_actions_and_fallbacks;
         {
-            let src = "[Desktop Entry]\nType=Application\nName=Text Editor\n\
+            {
+                let src = "[Desktop Entry]\nType=Application\nName=Text Editor\n\
                        Name[de]=Texteditor\nName[de_AT]=Texteditor (AT)\nExec=x\n";
-            let path = Path::new("/tmp/x.desktop");
-            let de_at = parse(src, "x", path, &["de_AT".into(), "de".into()]).unwrap();
-            assert_eq!(de_at.name, "Texteditor (AT)");
-            let de = parse(src, "x", path, &["de".into()]).unwrap();
-            assert_eq!(de.name, "Texteditor");
-            let c = parse(src, "x", path, &[]).unwrap();
-            assert_eq!(c.name, "Text Editor");
-        }
-        {
-            let e = parse_str(
-                "[Desktop Entry]\nType=Application\nName=X\nExec=x\nCategories=A\\;B;C;\n",
-                "x",
-            );
-            assert_eq!(e.categories, vec!["A;B", "C"]);
-        }
-        {
-            assert!(parse("[Desktop Action foo]\nName=x\n", "x", Path::new("/x"), &[]).is_none());
-        }
-        {
-            let e = parse_str(
-                "[Desktop Entry]\nType=Application\nName=X\nExec=x\nActions=new;\n\
+                let path = Path::new("/tmp/x.desktop");
+                let de_at = parse(src, "x", path, &["de_AT".into(), "de".into()]).unwrap();
+                assert_eq!(de_at.name, "Texteditor (AT)");
+                let de = parse(src, "x", path, &["de".into()]).unwrap();
+                assert_eq!(de.name, "Texteditor");
+                let c = parse(src, "x", path, &[]).unwrap();
+                assert_eq!(c.name, "Text Editor");
+            }
+            {
+                let e = parse_str(
+                    "[Desktop Entry]\nType=Application\nName=X\nExec=x\nCategories=A\\;B;C;\n",
+                    "x",
+                );
+                assert_eq!(e.categories, vec!["A;B", "C"]);
+            }
+            {
+                assert!(parse("[Desktop Action foo]\nName=x\n", "x", Path::new("/x"), &[]).is_none());
+            }
+            {
+                let e = parse_str(
+                    "[Desktop Entry]\nType=Application\nName=X\nExec=x\nActions=new;\n\
                  [Desktop Action new]\nName=New Window\nExec=x --new\n",
-                "x",
-            );
-            assert_eq!(e.actions.len(), 1);
-            assert_eq!(e.actions[0].id, "new");
-            assert_eq!(e.actions[0].name, "New Window");
-            assert_eq!(e.actions[0].exec.as_deref(), Some("x --new"));
-        }
-        {
-            let e = parse_str("[Desktop Entry]\nType=Application\nExec=x\n", "org.x.Thing");
-            assert_eq!(e.name, "org.x.Thing");
+                    "x",
+                );
+                assert_eq!(e.actions.len(), 1);
+                assert_eq!(e.actions[0].id, "new");
+                assert_eq!(e.actions[0].name, "New Window");
+                assert_eq!(e.actions[0].exec.as_deref(), Some("x --new"));
+            }
+            {
+                let e = parse_str("[Desktop Entry]\nType=Application\nExec=x\n", "org.x.Thing");
+                assert_eq!(e.name, "org.x.Thing");
+            }
         }
     }
 }

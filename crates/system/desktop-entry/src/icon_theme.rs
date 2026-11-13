@@ -578,133 +578,141 @@ mod tests {
         path[at..].to_string()
     }
 
-    #[test]
-    fn the_directory_serving_the_requested_size_wins() {
-        let (_dir, search) = fixture();
-        let lookup = IconLookup::new(search, "Fixture");
-        assert_eq!(
-            found(&lookup, "editor", 16, 1),
-            "icons/Fixture/16x16/apps/editor.png"
-        );
-        assert_eq!(
-            found(&lookup, "editor", 48, 1),
-            "icons/Fixture/48x48/apps/editor.png"
-        );
-        assert_eq!(
-            found(&lookup, "editor", 50, 1),
-            "icons/Fixture/48x48/apps/editor.png"
-        );
-        assert_eq!(
-            found(&lookup, "editor", 24, 2),
-            "icons/Fixture/24x24@2/apps/editor.png"
-        );
+    tilo_test_env::scenario! {
+        fn an_icon_is_served_at_the_size_asked_for;
+
+        phase the_directory_serving_the_requested_size_wins;
+        {
+            let (_dir, search) = fixture();
+            let lookup = IconLookup::new(search, "Fixture");
+            assert_eq!(
+                found(&lookup, "editor", 16, 1),
+                "icons/Fixture/16x16/apps/editor.png"
+            );
+            assert_eq!(
+                found(&lookup, "editor", 48, 1),
+                "icons/Fixture/48x48/apps/editor.png"
+            );
+            assert_eq!(
+                found(&lookup, "editor", 50, 1),
+                "icons/Fixture/48x48/apps/editor.png"
+            );
+            assert_eq!(
+                found(&lookup, "editor", 24, 2),
+                "icons/Fixture/24x24@2/apps/editor.png"
+            );
+        }
+
+        phase a_scalable_directory_serves_its_range_as_svg;
+        {
+            let (_dir, search) = fixture();
+            let lookup = IconLookup::new(search, "Fixture");
+            let file = lookup.find("editor", 32, 1).unwrap();
+            assert_eq!(file.format, IconFormat::Svg);
+            assert!(file.path.ends_with("Fixture/scalable/apps/editor.svg"));
+        }
+
+        phase with_no_exact_match_the_nearest_size_is_used_preferring_larger;
+        {
+            let (_dir, search) = fixture();
+            let lookup = IconLookup::new(search, "Fixture");
+            assert_eq!(
+                found(&lookup, "tiny", 32, 1),
+                "icons/Fixture/48x48/apps/tiny.png"
+            );
+            assert_eq!(
+                found(&lookup, "tiny", 8, 1),
+                "icons/Fixture/16x16/apps/tiny.png"
+            );
+            assert_eq!(
+                found(&lookup, "tie", 32, 1),
+                "icons/Fixture/24x24@2/apps/tie.png"
+            );
+        }
     }
 
-    #[test]
-    fn a_scalable_directory_serves_its_range_as_svg() {
-        let (_dir, search) = fixture();
-        let lookup = IconLookup::new(search, "Fixture");
-        let file = lookup.find("editor", 32, 1).unwrap();
-        assert_eq!(file.format, IconFormat::Svg);
-        assert!(file.path.ends_with("Fixture/scalable/apps/editor.svg"));
-    }
+    tilo_test_env::scenario! {
+        fn icons_are_searched_through_themes_exports_pixmaps_and_app_directories;
 
-    #[test]
-    fn with_no_exact_match_the_nearest_size_is_used_preferring_larger() {
-        let (_dir, search) = fixture();
-        let lookup = IconLookup::new(search, "Fixture");
-        assert_eq!(
-            found(&lookup, "tiny", 32, 1),
-            "icons/Fixture/48x48/apps/tiny.png"
-        );
-        assert_eq!(
-            found(&lookup, "tiny", 8, 1),
-            "icons/Fixture/16x16/apps/tiny.png"
-        );
-        assert_eq!(
-            found(&lookup, "tie", 32, 1),
-            "icons/Fixture/24x24@2/apps/tie.png"
-        );
-    }
+        phase inherited_themes_and_hicolor_are_searched_even_through_a_loop;
+        {
+            let (_dir, search) = fixture();
+            let lookup = IconLookup::new(search, "Fixture");
+            assert_eq!(
+                found(&lookup, "inherited", 32, 1),
+                "icons/Parent/32x32/apps/inherited.png"
+            );
+            assert_eq!(lookup.find("absent-everywhere", 32, 1), None);
+        }
 
-    #[test]
-    fn inherited_themes_and_hicolor_are_searched_even_through_a_loop() {
-        let (_dir, search) = fixture();
-        let lookup = IconLookup::new(search, "Fixture");
-        assert_eq!(
-            found(&lookup, "inherited", 32, 1),
-            "icons/Parent/32x32/apps/inherited.png"
-        );
-        assert_eq!(lookup.find("absent-everywhere", 32, 1), None);
-    }
+        phase flatpak_exports_resolve_without_a_hicolor_index;
+        {
+            let (_dir, search) = fixture();
+            let lookup = IconLookup::new(search, "Fixture");
+            assert_eq!(
+                found(&lookup, "org.mozilla.firefox", 32, 1),
+                "icons/hicolor/128x128/apps/org.mozilla.firefox.png"
+            );
+            let steam = lookup.find("com.valvesoftware.Steam", 32, 2).unwrap();
+            assert_eq!(steam.format, IconFormat::Svg);
+        }
 
-    #[test]
-    fn flatpak_exports_resolve_without_a_hicolor_index() {
-        let (_dir, search) = fixture();
-        let lookup = IconLookup::new(search, "Fixture");
-        assert_eq!(
-            found(&lookup, "org.mozilla.firefox", 32, 1),
-            "icons/hicolor/128x128/apps/org.mozilla.firefox.png"
-        );
-        let steam = lookup.find("com.valvesoftware.Steam", 32, 2).unwrap();
-        assert_eq!(steam.format, IconFormat::Svg);
-    }
+        phase a_missing_user_theme_still_falls_back_to_hicolor;
+        {
+            let (_dir, search) = fixture();
+            let lookup = IconLookup::new(search, "NotInstalled");
+            assert_eq!(
+                found(&lookup, "org.mozilla.firefox", 48, 1),
+                "icons/hicolor/128x128/apps/org.mozilla.firefox.png"
+            );
+        }
 
-    #[test]
-    fn a_missing_user_theme_still_falls_back_to_hicolor() {
-        let (_dir, search) = fixture();
-        let lookup = IconLookup::new(search, "NotInstalled");
-        assert_eq!(
-            found(&lookup, "org.mozilla.firefox", 48, 1),
-            "icons/hicolor/128x128/apps/org.mozilla.firefox.png"
-        );
-    }
+        phase pixmaps_absolute_paths_and_extensions_are_honoured;
+        {
+            let (dir, search) = fixture();
+            let lookup = IconLookup::new(search, "Fixture");
+            assert_eq!(found(&lookup, "legacy", 32, 1), "pixmaps/legacy.png");
+            assert_eq!(found(&lookup, "legacy.png", 32, 1), "pixmaps/legacy.png");
+            let absolute = dir.path().join("share/pixmaps/legacy.png");
+            assert_eq!(
+                lookup
+                    .find(absolute.to_str().unwrap(), 32, 1)
+                    .map(|f| f.path),
+                Some(absolute)
+            );
+            assert_eq!(lookup.find("/etc/passwd", 32, 1), None);
+            assert_eq!(lookup.find("../share/pixmaps/legacy", 32, 1), None);
+            assert_eq!(lookup.find("apps/editor", 32, 1), None);
+            assert_eq!(lookup.find("", 32, 1), None);
+        }
 
-    #[test]
-    fn pixmaps_absolute_paths_and_extensions_are_honoured() {
-        let (dir, search) = fixture();
-        let lookup = IconLookup::new(search, "Fixture");
-        assert_eq!(found(&lookup, "legacy", 32, 1), "pixmaps/legacy.png");
-        assert_eq!(found(&lookup, "legacy.png", 32, 1), "pixmaps/legacy.png");
-        let absolute = dir.path().join("share/pixmaps/legacy.png");
-        assert_eq!(
-            lookup
-                .find(absolute.to_str().unwrap(), 32, 1)
-                .map(|f| f.path),
-            Some(absolute)
-        );
-        assert_eq!(lookup.find("/etc/passwd", 32, 1), None);
-        assert_eq!(lookup.find("../share/pixmaps/legacy", 32, 1), None);
-        assert_eq!(lookup.find("apps/editor", 32, 1), None);
-        assert_eq!(lookup.find("", 32, 1), None);
-    }
+        phase an_application_icon_directory_is_searched_first;
+        {
+            let (dir, search) = fixture();
+            let own = dir.path().join("opt/app/icons");
+            touch(&own.join("legacy.svg"));
+            let lookup = IconLookup::new(search.with_first_base(own.clone()), "Fixture");
+            assert_eq!(
+                lookup.find("legacy", 22, 1).map(|f| f.path),
+                Some(own.join("legacy.svg"))
+            );
+        }
 
-    #[test]
-    fn an_application_icon_directory_is_searched_first() {
-        let (dir, search) = fixture();
-        let own = dir.path().join("opt/app/icons");
-        touch(&own.join("legacy.svg"));
-        let lookup = IconLookup::new(search.with_first_base(own.clone()), "Fixture");
-        assert_eq!(
-            lookup.find("legacy", 22, 1).map(|f| f.path),
-            Some(own.join("legacy.svg"))
-        );
-    }
-
-    #[test]
-    fn the_system_path_includes_both_flatpak_exports() {
-        let bases = IconSearchPath::system().bases;
-        assert!(
-            bases
-                .iter()
-                .any(|b| b.ends_with("var/lib/flatpak/exports/share/icons")),
-            "{bases:?}"
-        );
-        assert!(
-            bases
-                .iter()
-                .any(|b| b.ends_with("flatpak/exports/share/icons") && !b.starts_with("/var/lib")),
-            "{bases:?}"
-        );
+        phase the_system_path_includes_both_flatpak_exports;
+        {
+            let bases = IconSearchPath::system().bases;
+            assert!(
+                bases
+                    .iter()
+                    .any(|b| b.ends_with("var/lib/flatpak/exports/share/icons")),
+                "{bases:?}"
+            );
+            assert!(
+                bases
+                    .iter()
+                    .any(|b| b.ends_with("flatpak/exports/share/icons") && !b.starts_with("/var/lib")),
+                "{bases:?}"
+            );
+        }
     }
 }

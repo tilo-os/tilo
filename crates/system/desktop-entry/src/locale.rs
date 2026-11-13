@@ -65,71 +65,75 @@ pub fn candidates_for(locale: &str) -> Vec<String> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_locale_name_expands_to_the_spec_fallback_order() {
-        for (case, locale, want) in [
-            (
-                "the_spec_fallback_order_is_followed",
-                "de_DE.UTF-8@euro",
-                &["de_DE@euro", "de_DE", "de@euro", "de"][..],
-            ),
-            (
-                "the_spec_fallback_order_is_followed",
-                "de_AT",
-                &["de_AT", "de"],
-            ),
-            ("the_spec_fallback_order_is_followed", "de.UTF-8", &["de"]),
-            ("the_spec_fallback_order_is_followed", "de", &["de"]),
-            // The C locale means take the unlocalised value.
-            ("the_c_locale_means_take_the_unlocalised_value", "C", &[]),
-            (
-                "the_c_locale_means_take_the_unlocalised_value",
-                "POSIX",
-                &[],
-            ),
-            ("the_c_locale_means_take_the_unlocalised_value", "", &[]),
-            (
-                "the_c_locale_means_take_the_unlocalised_value",
-                "C.UTF-8",
-                &[],
-            ),
-            // The settings store keeps BCP 47; the same language must expand to
-            // the keys the file has.
-            (
-                "a_bcp_47_tag_expands_to_the_same_keys_as_its_posix_locale",
-                "de-DE",
-                &["de_DE", "de"],
-            ),
-            (
-                "a_bcp_47_tag_expands_to_the_same_keys_as_its_posix_locale",
-                "de",
-                &["de"],
-            ),
-            (
-                "a_bcp_47_tag_expands_to_the_same_keys_as_its_posix_locale",
-                "es-419",
-                &["es_419", "es"],
-            ),
-            // A script subtag names no key the format has, so the region after
-            // it is the one tried.
-            (
-                "a_bcp_47_tag_expands_to_the_same_keys_as_its_posix_locale",
-                "zh-Hant-TW",
-                &["zh_TW", "zh"],
-            ),
-        ] {
-            assert_eq!(candidates_for(locale), want, "case {case}: {locale:?}");
-        }
-    }
+    tilo_test_env::scenario! {
+        fn locale_candidates_follow_the_spec_order_and_the_interface_language;
 
-    /// The person's choice is the interface language; the machine's locale is
-    /// never consulted when there is one, and a choice that names no language
-    /// leaves the unlocalised keys.
-    #[test]
-    fn the_interface_language_decides_the_candidates() {
-        assert_eq!(language_candidates(Some("en-US")), ["en_US", "en"]);
-        assert_eq!(language_candidates(Some("de-DE")), ["de_DE", "de"]);
-        assert_eq!(language_candidates(Some("C")), Vec::<String>::new());
-        assert_eq!(language_candidates(None), Vec::<String>::new());
+        phase a_locale_name_expands_to_the_spec_fallback_order;
+        {
+            for (case, locale, want) in [
+                (
+                    "the_spec_fallback_order_is_followed",
+                    "de_DE.UTF-8@euro",
+                    &["de_DE@euro", "de_DE", "de@euro", "de"][..],
+                ),
+                (
+                    "the_spec_fallback_order_is_followed",
+                    "de_AT",
+                    &["de_AT", "de"],
+                ),
+                ("the_spec_fallback_order_is_followed", "de.UTF-8", &["de"]),
+                ("the_spec_fallback_order_is_followed", "de", &["de"]),
+                // The C locale means take the unlocalised value.
+                ("the_c_locale_means_take_the_unlocalised_value", "C", &[]),
+                (
+                    "the_c_locale_means_take_the_unlocalised_value",
+                    "POSIX",
+                    &[],
+                ),
+                ("the_c_locale_means_take_the_unlocalised_value", "", &[]),
+                (
+                    "the_c_locale_means_take_the_unlocalised_value",
+                    "C.UTF-8",
+                    &[],
+                ),
+                // The settings store keeps BCP 47; the same language must expand to
+                // the keys the file has.
+                (
+                    "a_bcp_47_tag_expands_to_the_same_keys_as_its_posix_locale",
+                    "de-DE",
+                    &["de_DE", "de"],
+                ),
+                (
+                    "a_bcp_47_tag_expands_to_the_same_keys_as_its_posix_locale",
+                    "de",
+                    &["de"],
+                ),
+                (
+                    "a_bcp_47_tag_expands_to_the_same_keys_as_its_posix_locale",
+                    "es-419",
+                    &["es_419", "es"],
+                ),
+                // A script subtag names no key the format has, so the region after
+                // it is the one tried.
+                (
+                    "a_bcp_47_tag_expands_to_the_same_keys_as_its_posix_locale",
+                    "zh-Hant-TW",
+                    &["zh_TW", "zh"],
+                ),
+            ] {
+                assert_eq!(candidates_for(locale), want, "case {case}: {locale:?}");
+            }
+        }
+
+        phase the_interface_language_decides_the_candidates;
+        // The person's choice is the interface language; the machine's locale is
+        // never consulted when there is one, and a choice that names no language
+        // leaves the unlocalised keys.
+        {
+            assert_eq!(language_candidates(Some("en-US")), ["en_US", "en"]);
+            assert_eq!(language_candidates(Some("de-DE")), ["de_DE", "de"]);
+            assert_eq!(language_candidates(Some("C")), Vec::<String>::new());
+            assert_eq!(language_candidates(None), Vec::<String>::new());
+        }
     }
 }
