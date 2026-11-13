@@ -16,20 +16,16 @@ use crate::{
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PendingWrite {
     pub key: StorageKey,
-    /// Acknowledge with this revision; it is the newest write folded in.
     pub revision: Revision,
     pub op: WriteOp,
     pub writer: Option<Vec<u8>>,
 }
 
-/// A [`crate::DurableStore`] held entirely in memory.
-///
-/// [`MemoryStore::new`] treats every accepted write as durable at once.
-/// [`MemoryStore::queued`] instead acts as a hydrate-then-run cache for a
-/// host with its own persistence: the host loads existing values with
-/// [`MemoryStore::hydrate`], collects accepted writes with
-/// [`MemoryStore::drain`], commits them, and reports each outcome with
-/// [`MemoryStore::acknowledge`]. A write is durable only once acknowledged.
+/// A [`crate::DurableStore`] held entirely in memory. [`MemoryStore::new`] treats every
+/// accepted write as durable at once; [`MemoryStore::queued`] is a cache for a host with
+/// its own persistence: it hydrates values ([`MemoryStore::hydrate`]), drains writes
+/// ([`MemoryStore::drain`]), commits them and acknowledges each outcome
+/// ([`MemoryStore::acknowledge`]). A write is durable only once acknowledged.
 pub struct MemoryStore {
     namespace: String,
     queued: bool,
@@ -37,11 +33,9 @@ pub struct MemoryStore {
     leases: Rc<RefCell<BTreeMap<StorageKey, Held>>>,
     claims: RefCell<BTreeMap<StorageKey, String>>,
     write_hook: RefCell<Option<Rc<dyn Fn()>>>,
-    /// Wakes to call once a key's writes are all acknowledged.
     settle_wakes: RefCell<BTreeMap<StorageKey, Vec<ReadyWake>>>,
 }
 
-/// Who holds one key: an exclusive owner, or shared writers.
 #[derive(Default)]
 struct Held {
     exclusive: bool,
@@ -58,11 +52,8 @@ struct State {
 #[derive(Default)]
 struct Slot {
     current: Option<Stored>,
-    /// Accepted but not yet handed to the host.
     queued: Option<Batch>,
-    /// Handed to the host, awaiting acknowledgement.
     in_flight: Vec<Batch>,
-    /// Newest acknowledged revision.
     durable: u64,
     /// Failed revision ranges not yet superseded by a durable replacement.
     failed: Vec<(u64, u64, String)>,
@@ -126,18 +117,15 @@ fn fresh_namespace(kind: &str) -> String {
 }
 
 impl MemoryStore {
-    /// A store whose writes are durable as soon as they are accepted.
     pub fn new() -> Self {
         Self::with_mode(fresh_namespace("memory"), false)
     }
 
-    /// A cache whose writes are durable only once its host acknowledges them.
     pub fn queued() -> Self {
         Self::with_mode(fresh_namespace("queued"), true)
     }
 
-    /// Name the profile this store holds, replacing the process-unique
-    /// default. Two stores given the same namespace claim the same data.
+    /// Name the profile this store holds, replacing the process-unique default.
     #[must_use]
     pub fn named(mut self, namespace: impl Into<String>) -> Self {
         self.namespace = namespace.into();
@@ -156,20 +144,17 @@ impl MemoryStore {
         }
     }
 
-    /// Call `hook` after each write a [`queued`](Self::queued) store accepts,
-    /// so its host can schedule a [`drain`](Self::drain) instead of polling.
-    /// The hook runs with no borrow of the store held; it may drain at once,
-    /// but a host that commits asynchronously should coalesce.
+    /// Call `hook` after each write a [`queued`](Self::queued) store accepts, so its
+    /// host can schedule a [`drain`](Self::drain) instead of polling. The hook runs
+    /// with no borrow of the store held.
     pub fn set_write_hook(&self, hook: Option<Rc<dyn Fn()>>) {
         *self.write_hook.borrow_mut() = hook;
     }
 
-    /// Load a value the host already holds durably, before any owner writes
-    /// to it.
+    /// Load a value the host already holds durably, before any owner writes to it.
     ///
     /// # Errors
-    /// Refuses to replace a key with accepted writes the host has not yet
-    /// committed: hydration would silently discard them.
+    /// Refuses to replace a key with accepted writes the host has not yet committed.
     pub fn hydrate(&self, key: StorageKey, stored: Stored) -> Result<(), StoreError> {
         let mut state = self.state.borrow_mut();
         if state.slots.get(&key).is_some_and(Slot::pending) {
@@ -199,9 +184,8 @@ impl MemoryStore {
         out
     }
 
-    /// Queue each key whose commit failed, and that has nothing queued, for a
-    /// full replacement with its current value, so the host can retry without
-    /// waiting for the owner's next write. Returns how many were queued.
+    /// Queue each failed key that has nothing queued for a full replacement with its
+    /// current value. Returns how many were queued.
     pub fn retry_failed(&self) -> usize {
         let mut state = self.state.borrow_mut();
         let State { issued, slots } = &mut *state;
@@ -226,7 +210,6 @@ impl MemoryStore {
         queued
     }
 
-    /// Report the host's outcome for a drained write.
     pub fn acknowledge(
         &self,
         revision: Revision,
