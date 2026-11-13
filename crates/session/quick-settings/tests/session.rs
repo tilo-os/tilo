@@ -92,6 +92,10 @@ fn the_session_starts_the_panel_as_a_trusted_client_on_its_layer() {
     );
 }
 
+/// What the panel offers is what the session's services publish, and nothing
+/// they do not: a session that dims nothing publishes no brightness, and the
+/// panel offers none, rather than a slider standing at a level nothing
+/// measured.
 #[test]
 fn the_panel_opened_from_the_bar_shows_what_the_services_publish() {
     let mut laptop = session_of_device(&[panel()], Machine::Owned);
@@ -109,6 +113,15 @@ fn the_panel_opened_from_the_bar_shows_what_the_services_publish() {
         "Wi-Fi",
         "the network's radio is the panel's Wi-Fi control"
     );
+    // The panel has followed the session's readings once its network tile
+    // is one the network makes: its displays came with them.
+    if let Some(brightness) = offered(session, "set-brightness") {
+        assert!(
+            !brightness.contract.availability.is_available(),
+            "the panel offers brightness this machine has not read: {:?}",
+            brightness.contract.availability
+        );
+    }
     assert_eq!(
         until_ready(session, "set-volume"),
         "Volume",
@@ -123,26 +136,6 @@ fn the_panel_opened_from_the_bar_shows_what_the_services_publish() {
     let at_84 = changed(session, &at_42);
     save(&at_84, "session-quick-settings-battery-84");
 
-    session.stop_surface("quick-settings");
-}
-
-/// A session that dims nothing publishes no brightness: the panel offers
-/// none, rather than a slider standing at a level nothing measured.
-#[test]
-fn the_panel_offers_no_brightness_the_session_did_not_publish() {
-    let mut laptop = session_of_device(&[panel()], Machine::Owned);
-    let session = &mut laptop.session;
-    open_the_panel(session);
-    // The panel has followed the session's readings once its network tile
-    // is one the network makes: its displays came with them.
-    until_ready(session, "toggle-wifi");
-    if let Some(brightness) = offered(session, "set-brightness") {
-        assert!(
-            !brightness.contract.availability.is_available(),
-            "the panel offers brightness this machine has not read: {:?}",
-            brightness.contract.availability
-        );
-    }
     session.stop_surface("quick-settings");
 }
 
