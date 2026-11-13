@@ -89,6 +89,10 @@ tilo_test_env::scenario! {
         clippy::too_many_lines,
         reason = "scenario test: each labelled phase keeps one former test's fixture and assertions"
     )]
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+    )]
     fn native_manifest_scopes_metadata_and_completions_over_the_real_image;
 
     phase metadata_manifest_and_twelve_native_chunks_preserve_real_image;
