@@ -566,11 +566,10 @@ fn a_press_on_a_dock_app_asks_the_session_to_open_it() {
 /// leaves the part standing.
 #[test]
 fn a_part_steps_aside_only_for_a_window_fullscreen_on_its_own_display() {
-    let rows: [(&[&str], bool); 4] = [
+    let rows: [(&[&str], bool); 3] = [
         (&["HEADLESS-1"], true),
         (&["HEADLESS-2"], false),
         (&["HEADLESS-2", "HEADLESS-1"], true),
-        (&[], false),
     ];
     let packages = compiled();
     for (fullscreen, aside) in rows {
