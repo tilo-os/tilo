@@ -214,13 +214,26 @@ impl TextInput {
         }
     }
 
-    pub(super) fn text_room(&self, padding_x: f64, caret_width: f64) -> f64 {
-        (self.rect.width()
-            - padding_x
-            - self.trailing_text_inset(padding_x)
-            - self.accessory_room()
-            - caret_width * 2.0)
-            .max(0.0)
+    /// The room a one-line field's chrome keeps beside its text: its own inset on each edge,
+    /// whatever its trailing edge carries, and the caret that stands at either end. A field laid
+    /// out at its text's width plus this shows all of its text, unscrolled.
+    #[must_use]
+    pub fn field_room(&self, theme: &Theme) -> f64 {
+        let padding = self.text_padding_x(theme);
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "sums of a few on-screen insets, far inside f64's range"
+        )]
+        {
+            padding
+                + self.trailing_text_inset(padding)
+                + self.accessory_room()
+                + theme.caret_width * 2.0
+        }
+    }
+
+    pub(super) fn text_room(&self, theme: &Theme) -> f64 {
+        (self.rect.width() - self.field_room(theme)).max(0.0)
     }
 
     /// Keep the caret in view, scrolled no further than the text needs: a
@@ -229,10 +242,9 @@ impl TextInput {
         &mut self,
         cursor_x_offset: f64,
         content_w: f64,
-        padding_x: f64,
-        caret_width: f64,
+        theme: &Theme,
     ) {
-        let visible_width = self.text_room(padding_x, caret_width);
+        let visible_width = self.text_room(theme);
         if self.is_focused {
             if cursor_x_offset - self.scroll_x < 0.0 {
                 self.scroll_x = cursor_x_offset;
@@ -323,15 +335,10 @@ impl TextInput {
     }
 
     /// Paint the placeholder and the field's text from `single_origin`, as laid out by `draw`
-    /// with its text inset by `padding_x`; `display` is the masked text of a secret field. A
-    /// prompt wider than the line it prompts for is elided, as any single line of text is: a
-    /// field cut its prompt off mid-word at whatever the clip fell on otherwise.
-    pub(super) fn draw_single_line_text(
-        &mut self,
-        ctx: &mut PaintCtx<'_>,
-        display: &str,
-        padding_x: f64,
-    ) {
+    /// with its text inset by the field's own chrome; `display` is the masked text of a secret
+    /// field. A prompt wider than the line it prompts for is elided, as any single line of text
+    /// is: a field cut its prompt off mid-word at whatever the clip fell on otherwise.
+    pub(super) fn draw_single_line_text(&mut self, ctx: &mut PaintCtx<'_>, display: &str) {
         let PaintCtx {
             scene,
             transform,
@@ -349,7 +356,7 @@ impl TextInput {
         if self.shows_placeholder() {
             let placeholder = widget_text(&self.placeholder);
             let style = self.placeholder_style(text_size);
-            let room = self.text_room(padding_x, theme.caret_width);
+            let room = self.text_room(theme);
             let shown = text_renderer.elide_to_width_style(&placeholder, room as f32, &style);
             let (width, _) = text_renderer.measure_style(&shown, None, &style);
             #[allow(

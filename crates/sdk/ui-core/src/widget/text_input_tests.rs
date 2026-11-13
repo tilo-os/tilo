@@ -234,3 +234,41 @@ fn a_large_title_field_shows_its_pages_title_and_a_body_field_does_not() {
         "a blank title names nothing"
     );
 }
+
+/// A one-line field is as wide as its text plus [`TextInput::field_room`] before it scrolls: at
+/// that width the whole value shows, from its first letter; anything narrower scrolls to the
+/// caret and cuts the start off.
+#[test]
+fn a_field_given_its_text_and_its_room_shows_all_of_it() {
+    let _settled = crate::motion::testing::settled();
+    let theme = Theme::dark();
+    let mut input = TextInput::local().with_initial_value("Meeting notes");
+    input.set_focus(true);
+    input.apply_layout_external(Rect::new(0.0, 0.0, 600.0, 40.0));
+    draw_with_theme(&mut input, &theme);
+    let text_w = *input
+        .char_x_positions()
+        .last()
+        .expect("the value is measured");
+    assert!(text_w > 20.0, "fixture: the name is measured: {text_w}");
+    let room = input.field_room(&theme);
+    assert!(
+        room > 4.0,
+        "a field keeps its inset on both edges and its carets: {room}"
+    );
+
+    input.apply_layout_external(Rect::new(0.0, 0.0, text_w + room, 40.0));
+    draw_with_theme(&mut input, &theme);
+    assert_eq!(
+        input.scroll_x(),
+        0.0,
+        "the field's own room shows the name whole, from its first letter"
+    );
+
+    input.apply_layout_external(Rect::new(0.0, 0.0, text_w + 4.0, 40.0));
+    draw_with_theme(&mut input, &theme);
+    assert!(
+        input.scroll_x() > 0.0,
+        "narrower than its room, the field scrolls to the caret"
+    );
+}

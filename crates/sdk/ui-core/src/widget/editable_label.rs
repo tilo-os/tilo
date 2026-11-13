@@ -139,6 +139,23 @@ impl EditableLabel {
         self.grow
     }
 
+    /// The field takes no chrome of its own while it is edited: the surface the label stands in is
+    /// the field's, so its value starts where the label's text did. A name renamed inside a pill
+    /// it already stands in uses this, as an in-place rename in a list does.
+    #[must_use]
+    pub fn with_plain_field(mut self) -> Self {
+        self.input.set_plain_chrome(true);
+        self
+    }
+
+    /// The room the editing field keeps beside its value: its own insets and the carets at its
+    /// ends. A surface as wide as the value plus this shows the whole value while it is typed,
+    /// which is what a label sizing the surface it stands in has to give it.
+    #[must_use]
+    pub fn field_room(&self, theme: &Theme) -> f64 {
+        self.input.field_room(theme)
+    }
+
     /// Begin an edit when `request` is set, as a rename offered elsewhere (a context menu)
     /// asks; the label clears it once the edit is open.
     #[must_use]

@@ -36,6 +36,9 @@ impl TabBar {
         let mut label = EditableLabel::new(&tab.title)
             .with_text_role(TextRole::Body)
             .clears_on_blank()
+            // The pill is the field's chrome: its text starts exactly where the title's did, and
+            // the pill is sized by the name rather than a field standing inside it.
+            .with_plain_field()
             .with_accessible_name(name)
             .with_id("tab-rename");
         label.begin_edit();
@@ -192,10 +195,10 @@ impl TabBar {
         }
     }
 
-    /// Size the pill by the name the person is typing, so the field shows all of it: the text in
-    /// the field at the bar's role, measured, is the tab's own width until the person commits. A
-    /// name longer than the row has room for is a pill the row's own fit squeezes, and the field
-    /// scrolls to its caret inside it.
+    /// Size the pill by the field the name is typed into, so the field shows all of it: the text at
+    /// the bar's role, measured, plus the room the field's own chrome keeps beside it, is the tab's
+    /// own width until the person commits. A name longer than the row has room for is a pill the
+    /// row's own fit squeezes, and the field scrolls to its caret inside it.
     pub(super) fn measure_rename(&mut self, text_renderer: &mut TextRenderer, theme: &Theme) {
         self.touch();
         let Some(rename) = self.rename.as_ref() else {
@@ -204,8 +207,9 @@ impl TabBar {
         let style = theme.text(rename.label.text_role());
         let text = rename.label.current_text().to_owned();
         let (width, _) = text_renderer.measure_style(&text, None, &style);
-        // The caret and the field's own breathing room past the last glyph.
-        let measured = f64::from(width) + 4.0;
+        // The field's insets and the carets at its ends: a name that fits shows whole, from its
+        // first letter, rather than scrolled to its caret.
+        let measured = f64::from(width) + rename.label.field_room(theme);
         let previous = self
             .title_advance
             .insert(rename.tab, (text, style, measured));
@@ -300,6 +304,35 @@ mod tests {
             bar.shaped_title_width(0),
             at_last,
             "and the tab is laid out by that measure, not by the title it had"
+        );
+    }
+
+    /// The pill is the field: it takes no inset of its own, so the title's glyphs do not move when
+    /// it turns into a field, and the room it needs past the text is the carets at its ends. Sizing
+    /// the pill by the text alone scrolled the field and cut the name's first letter off.
+    #[test]
+    fn the_pill_is_the_field_and_leaves_it_its_own_room() {
+        let mut bar = bar();
+        let theme = Theme::dark();
+        let mut text = crate::TextRenderer::new();
+        assert!(bar.begin_rename(1, "Tab name"));
+        type_text(&mut bar, "Meeting notes");
+        bar.measure_rename(&mut text, &theme);
+        let (name, _, advance) = bar.title_advance[&1].clone();
+        let (glyphs, _) = text.measure_style(&name, None, &theme.text(TextRole::Body));
+        let room = bar
+            .rename
+            .as_ref()
+            .expect("still naming")
+            .label
+            .field_room(&theme);
+        assert!(
+            (room - theme.caret_width * 2.0).abs() < 0.5,
+            "the pill is the field's chrome, so it keeps only the carets at its ends: {room}"
+        );
+        assert!(
+            (advance - f64::from(glyphs) - room).abs() < 0.5,
+            "{advance} is the name's {glyphs} and the field's own {room}"
         );
     }
 

@@ -5308,11 +5308,7 @@ impl Widget for TextInput {
         let text_size = self.effective_font_size();
         let line_height =
             f64::from(text_size * self.scale_for(theme.text_scale) * LINE_HEIGHT_RATIO);
-        let padding_x = if self.plain {
-            0.0
-        } else {
-            f64::from(theme.padding_standard)
-        };
+        let padding_x = self.text_padding_x(theme);
         let text_y = self.rect.y0 + (self.rect.height() - line_height) / 2.0;
 
         // `char_x_positions` remains as a compatibility/readback surface, but
@@ -5335,7 +5331,7 @@ impl Widget for TextInput {
 
         let cursor_x_offset = self.single_line_cursor_x_offset(total_w);
         let content_w = f64::from(total_w).max(cursor_x_offset);
-        self.update_single_line_scroll(cursor_x_offset, content_w, padding_x, theme.caret_width);
+        self.update_single_line_scroll(cursor_x_offset, content_w, theme);
         self.hand_line_to_host(
             text_renderer,
             transform,
@@ -5388,7 +5384,6 @@ impl Widget for TextInput {
         self.draw_single_line_text(
             &mut PaintCtx::new(scene, transform, text_renderer, theme),
             &display,
-            padding_x,
         );
         #[cfg(test)]
         drop(glyph_probe);
