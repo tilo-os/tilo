@@ -478,6 +478,93 @@ fn session_arguments(
     }
 }
 
+/// The fields of a canvas query, as it is written into the shell's record. Its refs are the
+/// `refs` collection's, each naming its query by key.
+pub(super) fn query_fields(q: &ArrangementQueryReading) -> Vec<(&'static str, Value)> {
+    vec![
+        ("key", Value::Text(q.key.clone())),
+        ("text", Value::Text(q.text.clone())),
+        ("in_app", Value::Text(q.app.clone())),
+        ("kind", Value::Text(q.kind.clone())),
+        ("state", Value::Text(q.state.clone())),
+        ("reason", Value::Text(q.reason.clone())),
+    ]
+}
+
+/// The fields of a resource a query found, as it is written into the shell's record: its query by
+/// key, its address, its title and its kind.
+pub(super) fn ref_fields(r: &ArrangementRefReading) -> Vec<(&'static str, Value)> {
+    vec![
+        ("key", Value::Text(r.key.clone())),
+        ("query", Value::Text(query_of_ref_key(&r.key))),
+        ("address", Value::Text(r.address.clone())),
+        ("title", Value::Text(r.title.clone())),
+        ("kind", Value::Text(r.kind.clone())),
+    ]
+}
+
+/// The query a ref belongs to, from its key (`<query>/<number>`).
+fn query_of_ref_key(key: &str) -> String {
+    key.split('/').next().unwrap_or_default().to_owned()
+}
+
+/// The field value a text is, in the shell's record.
+fn text(s: &str) -> Value {
+    Value::Text(s.to_owned())
+}
+
+/// The fields of an arrangement workspace, as it is written into the shell's record.
+pub(super) fn workspace_fields(w: &ArrangementWorkspaceReading) -> Vec<(&'static str, Value)> {
+    vec![
+        ("key", text(&w.key)),
+        ("name", text(&w.name)),
+        ("current", Value::Bool(w.current)),
+    ]
+}
+
+/// The fields of a row, as it is written into the shell's record.
+pub(super) fn row_fields(r: &ArrangementRowReading) -> Vec<(&'static str, Value)> {
+    vec![
+        ("key", text(&r.key)),
+        ("workspace", text(&r.workspace)),
+        ("name", text(&r.name)),
+        ("shell", text(&r.shell)),
+    ]
+}
+
+/// The fields of a strip, as it is written into the shell's record.
+pub(super) fn strip_fields(s: &ArrangementStripReading) -> Vec<(&'static str, Value)> {
+    vec![
+        ("key", text(&s.key)),
+        ("workspace", text(&s.workspace)),
+        ("row", text(&s.row)),
+        ("width", Value::Int(s.width)),
+        ("maximized", Value::Bool(s.maximized)),
+        ("active", text(&s.active)),
+        ("placed", Value::Bool(s.placed)),
+        ("canvas_x", Value::Int(s.canvas_x)),
+        ("canvas_y", Value::Int(s.canvas_y)),
+        ("canvas_width", Value::Int(s.canvas_width)),
+        ("canvas_height", Value::Int(s.canvas_height)),
+        ("shell", text(&s.shell)),
+    ]
+}
+
+/// The fields of a place, as it is written into the shell's record.
+pub(super) fn place_fields(p: &ArrangementPlaceReading) -> Vec<(&'static str, Value)> {
+    vec![
+        ("key", text(&p.key)),
+        ("strip", text(&p.strip)),
+        ("shows", text(&p.shows)),
+        ("shown_as", text(&p.shown_as)),
+        ("record", text(&p.record)),
+        ("title", text(&p.title)),
+        ("name", text(&p.name)),
+        ("pinned", Value::Bool(p.pinned)),
+        ("shell", text(&p.shell)),
+    ]
+}
+
 #[cfg(test)]
 mod with_uses_tests {
     use std::sync::Arc;
@@ -598,91 +685,4 @@ mod with_uses_tests {
             "the device's package is not even looked up: the runtime holds it"
         );
     }
-}
-
-/// The fields of a canvas query, as it is written into the shell's record. Its refs are the
-/// `refs` collection's, each naming its query by key.
-pub(super) fn query_fields(q: &ArrangementQueryReading) -> Vec<(&'static str, Value)> {
-    vec![
-        ("key", Value::Text(q.key.clone())),
-        ("text", Value::Text(q.text.clone())),
-        ("in_app", Value::Text(q.app.clone())),
-        ("kind", Value::Text(q.kind.clone())),
-        ("state", Value::Text(q.state.clone())),
-        ("reason", Value::Text(q.reason.clone())),
-    ]
-}
-
-/// The fields of a resource a query found, as it is written into the shell's record: its query by
-/// key, its address, its title and its kind.
-pub(super) fn ref_fields(r: &ArrangementRefReading) -> Vec<(&'static str, Value)> {
-    vec![
-        ("key", Value::Text(r.key.clone())),
-        ("query", Value::Text(query_of_ref_key(&r.key))),
-        ("address", Value::Text(r.address.clone())),
-        ("title", Value::Text(r.title.clone())),
-        ("kind", Value::Text(r.kind.clone())),
-    ]
-}
-
-/// The query a ref belongs to, from its key (`<query>/<number>`).
-fn query_of_ref_key(key: &str) -> String {
-    key.split('/').next().unwrap_or_default().to_owned()
-}
-
-/// The field value a text is, in the shell's record.
-fn text(s: &str) -> Value {
-    Value::Text(s.to_owned())
-}
-
-/// The fields of an arrangement workspace, as it is written into the shell's record.
-pub(super) fn workspace_fields(w: &ArrangementWorkspaceReading) -> Vec<(&'static str, Value)> {
-    vec![
-        ("key", text(&w.key)),
-        ("name", text(&w.name)),
-        ("current", Value::Bool(w.current)),
-    ]
-}
-
-/// The fields of a row, as it is written into the shell's record.
-pub(super) fn row_fields(r: &ArrangementRowReading) -> Vec<(&'static str, Value)> {
-    vec![
-        ("key", text(&r.key)),
-        ("workspace", text(&r.workspace)),
-        ("name", text(&r.name)),
-        ("shell", text(&r.shell)),
-    ]
-}
-
-/// The fields of a strip, as it is written into the shell's record.
-pub(super) fn strip_fields(s: &ArrangementStripReading) -> Vec<(&'static str, Value)> {
-    vec![
-        ("key", text(&s.key)),
-        ("workspace", text(&s.workspace)),
-        ("row", text(&s.row)),
-        ("width", Value::Int(s.width)),
-        ("maximized", Value::Bool(s.maximized)),
-        ("active", text(&s.active)),
-        ("placed", Value::Bool(s.placed)),
-        ("canvas_x", Value::Int(s.canvas_x)),
-        ("canvas_y", Value::Int(s.canvas_y)),
-        ("canvas_width", Value::Int(s.canvas_width)),
-        ("canvas_height", Value::Int(s.canvas_height)),
-        ("shell", text(&s.shell)),
-    ]
-}
-
-/// The fields of a place, as it is written into the shell's record.
-pub(super) fn place_fields(p: &ArrangementPlaceReading) -> Vec<(&'static str, Value)> {
-    vec![
-        ("key", text(&p.key)),
-        ("strip", text(&p.strip)),
-        ("shows", text(&p.shows)),
-        ("shown_as", text(&p.shown_as)),
-        ("record", text(&p.record)),
-        ("title", text(&p.title)),
-        ("name", text(&p.name)),
-        ("pinned", Value::Bool(p.pinned)),
-        ("shell", text(&p.shell)),
-    ]
 }
