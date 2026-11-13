@@ -238,6 +238,7 @@ notes-notebook-place-image = Place image
 notes-notebook-create-page = Create note from Markdown
 notes-notebook-import-markdown = Import Markdown
 notes-notebook-append-to-note = Append to note
+notes-notebook-import-pages = Import pages
 
 ## What the app is called in a window and in the launcher
 notes-app-title = Notes
