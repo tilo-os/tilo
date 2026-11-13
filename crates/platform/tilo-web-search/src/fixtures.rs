@@ -95,15 +95,14 @@ fn decode(encoded: &str) -> String {
     String::from_utf8_lossy(&decoded).into_owned()
 }
 
-/// A server on this machine, listening on a free port, answering `routes`
-/// until it is dropped.
+/// A server on this machine, listening on a free port, answering `routes` (404 otherwise).
 pub struct FixtureServer {
     responder: test_http::Responder,
     seen: Arc<Mutex<Vec<Request>>>,
 }
 
 impl FixtureServer {
-    /// Answer `routes` on a free port of this machine from now on.
+    /// Answer `routes` on a free port of this machine from now on, 404 otherwise.
     ///
     /// # Panics
     ///
@@ -131,7 +130,10 @@ impl FixtureServer {
                     query: query.to_owned(),
                     body: request.body_text(),
                 });
-            let found = routes.iter().find(|route| route.path == path)?;
+            let Some(found) = routes.iter().find(|route| route.path == path) else {
+                // A path no route names is not there, as a server says.
+                return Some(test_http::Reply::status(404));
+            };
             let reply = test_http::Reply::status(200).body(found.body.clone());
             Some(if found.content_type.is_empty() {
                 reply
