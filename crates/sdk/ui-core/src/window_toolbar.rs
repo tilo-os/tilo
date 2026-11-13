@@ -1651,319 +1651,323 @@ mod tests {
         }
     }
 
-    #[test]
-    fn menu_actions_follow_the_rows_and_leading_and_views_are_bounded() {
-        let toolbar = WindowToolbar {
-            actions: vec![
-                ToolbarAction::new("import", "download", "Import").in_menu(),
-                ToolbarAction::new("new", "plus", "New event"),
-                ToolbarAction::new("settings", "settings", "Settings").in_menu(),
-                ToolbarAction::new("share", "upload", "Share"),
-            ],
-            leading: (0..5)
-                .map(|n| ToolbarAction::new(format!("l{n}"), "chevron-left", "Previous").in_menu())
-                .collect(),
-            views: Some(ToolbarViews {
-                name: "View".into(),
-                choices: (0..12)
-                    .map(|n| ToolbarView {
-                        id: format!("v{n}"),
-                        label: format!("View {n}"),
-                    })
+    tilo_test_env::scenario! {
+        fn a_windows_bar_is_declared_bounded_and_its_events_reach_their_owner;
+
+        phase menu_actions_follow_the_rows_and_leading_and_views_are_bounded;
+        {
+            let toolbar = WindowToolbar {
+                actions: vec![
+                    ToolbarAction::new("import", "download", "Import").in_menu(),
+                    ToolbarAction::new("new", "plus", "New event"),
+                    ToolbarAction::new("settings", "settings", "Settings").in_menu(),
+                    ToolbarAction::new("share", "upload", "Share"),
+                ],
+                leading: (0..5)
+                    .map(|n| ToolbarAction::new(format!("l{n}"), "chevron-left", "Previous").in_menu())
                     .collect(),
-                chosen: "v2".into(),
-            }),
-            ..WindowToolbar::default()
-        }
-        .bounded();
-        let ids: Vec<&str> = toolbar.actions.iter().map(|a| a.id.as_str()).collect();
-        assert_eq!(
-            ids,
-            ["new", "share", "import", "settings"],
-            "the row's first, in order"
-        );
-        assert_eq!(toolbar.row_actions(), 2);
-        assert_eq!(toolbar.leading.len(), MAX_LEADING);
-        assert!(
-            toolbar.leading.iter().all(|a| !a.menu),
-            "leading stands in the row"
-        );
-        let views = toolbar.views.as_ref().unwrap();
-        assert_eq!(views.choices.len(), MAX_VIEWS);
-        assert_eq!(views.chosen_index(), Some(2));
-        let wire = serde_json::to_string(&toolbar).unwrap();
-        assert_eq!(
-            serde_json::from_str::<WindowToolbar>(&wire).unwrap(),
-            toolbar
-        );
-        let empty_views = WindowToolbar {
-            views: Some(ToolbarViews::default()),
-            ..WindowToolbar::default()
-        };
-        assert!(
-            empty_views.is_empty(),
-            "a switcher with no choices is nothing"
-        );
-        assert_eq!(
-            serde_json::from_str::<ToolbarAction>(r#"{"id":"a","icon":"plus","name":"Add"}"#)
-                .unwrap(),
-            ToolbarAction::new("a", "plus", "Add"),
-            "an older app's action is enabled and in the row"
-        );
-    }
-
-    #[test]
-    fn a_declaration_is_bounded_and_sent_once_per_change() {
-        let mut many = browser();
-        for n in 0..6 {
-            many.actions.push(ToolbarAction {
-                id: format!("a{n}"),
-                icon: "star".into(),
-                name: "Bookmark".into(),
-                enabled: true,
-                on: false,
-                menu: false,
-                items: Vec::new(),
-                navigates: false,
-                toggles: false,
-                destructive: false,
-                labelled: false,
-                primary: false,
-            });
-        }
-        many.actions.push(ToolbarAction {
-            id: "glyph".into(),
-            icon: "not-an-icon".into(),
-            name: "Nothing".into(),
-            enabled: true,
-            on: false,
-            menu: false,
-            items: Vec::new(),
-            navigates: false,
-            toggles: false,
-            destructive: false,
-            labelled: false,
-            primary: false,
-        });
-        for n in 6..20 {
-            many.actions.push(ToolbarAction {
-                id: format!("a{n}"),
-                icon: "star".into(),
-                name: "Bookmark".into(),
-                enabled: true,
-                on: false,
-                menu: false,
-                items: Vec::new(),
-                navigates: false,
-                toggles: false,
-                destructive: false,
-                labelled: false,
-                primary: false,
-            });
-        }
-        let bounded = many.clone().bounded();
-        assert_eq!(bounded.actions.len(), MAX_DECLARED_ACTIONS);
-        assert!(bounded.actions.iter().all(|a| a.icon != "not-an-icon"));
-
-        let texts = WindowToolbar {
-            actions: vec![
-                ToolbarAction::new("import", "", "Import report").in_menu(),
-                ToolbarAction::new("bare", "", "No icon in the row"),
-                ToolbarAction::new("more", "more-horizontal", "More")
-                    .with_items(vec![ToolbarAction::new("export", "", "Export report")]),
-            ],
-            ..WindowToolbar::default()
-        }
-        .bounded();
-        let ids: Vec<&str> = texts.actions.iter().map(|a| a.id.as_str()).collect();
-        assert_eq!(ids, ["more", "import"]);
-        assert_eq!(
-            texts.actions[0].items.first().map(|item| item.id.as_str()),
-            Some("export")
-        );
-
-        let before = revision();
-        declare(Some(browser()));
-        let once = revision();
-        assert_ne!(before, once);
-        declare(Some(browser()));
-        assert_eq!(revision(), once, "an equal declaration changes nothing");
-        declare(Some(WindowToolbar::default()));
-        assert_eq!(declared(), None, "an empty declaration is none");
-    }
-
-    #[test]
-    fn events_round_trip_the_wire_and_reach_the_app_in_order() {
-        for event in [
-            ToolbarEvent::Back,
-            ToolbarEvent::Forward,
-            ToolbarEvent::Commit {
-                text: "example.org".into(),
-            },
-            ToolbarEvent::Action {
-                id: "reload".into(),
-            },
-            ToolbarEvent::Search {
-                query: "cat".into(),
-            },
-            ToolbarEvent::SearchStep { forward: false },
-            ToolbarEvent::SearchClose,
-            ToolbarEvent::SearchOptions {
-                options: crate::widget::FindOptions {
-                    match_case: true,
-                    whole_word: false,
-                    mode: crate::widget::FindMode::Regex,
-                },
-            },
-            ToolbarEvent::SearchCover {
-                cover: Some(WholeRect {
-                    x0: 120,
-                    y0: 0,
-                    x1: 300,
-                    y1: 168,
+                views: Some(ToolbarViews {
+                    name: "View".into(),
+                    choices: (0..12)
+                        .map(|n| ToolbarView {
+                            id: format!("v{n}"),
+                            label: format!("View {n}"),
+                        })
+                        .collect(),
+                    chosen: "v2".into(),
                 }),
-            },
-            ToolbarEvent::SearchReplace {
-                with: "dog".into(),
-                all: true,
-            },
-            ToolbarEvent::History,
-        ] {
-            let wire = serde_json::to_string(&event).unwrap();
-            assert_eq!(serde_json::from_str::<ToolbarEvent>(&wire).unwrap(), event);
-            deliver(event);
+                ..WindowToolbar::default()
+            }
+            .bounded();
+            let ids: Vec<&str> = toolbar.actions.iter().map(|a| a.id.as_str()).collect();
+            assert_eq!(
+                ids,
+                ["new", "share", "import", "settings"],
+                "the row's first, in order"
+            );
+            assert_eq!(toolbar.row_actions(), 2);
+            assert_eq!(toolbar.leading.len(), MAX_LEADING);
+            assert!(
+                toolbar.leading.iter().all(|a| !a.menu),
+                "leading stands in the row"
+            );
+            let views = toolbar.views.as_ref().unwrap();
+            assert_eq!(views.choices.len(), MAX_VIEWS);
+            assert_eq!(views.chosen_index(), Some(2));
+            let wire = serde_json::to_string(&toolbar).unwrap();
+            assert_eq!(
+                serde_json::from_str::<WindowToolbar>(&wire).unwrap(),
+                toolbar
+            );
+            let empty_views = WindowToolbar {
+                views: Some(ToolbarViews::default()),
+                ..WindowToolbar::default()
+            };
+            assert!(
+                empty_views.is_empty(),
+                "a switcher with no choices is nothing"
+            );
+            assert_eq!(
+                serde_json::from_str::<ToolbarAction>(r#"{"id":"a","icon":"plus","name":"Add"}"#)
+                    .unwrap(),
+                ToolbarAction::new("a", "plus", "Add"),
+                "an older app's action is enabled and in the row"
+            );
         }
-        let taken = take_events();
-        assert_eq!(taken.len(), 11, "every event reaches the app");
-        assert_eq!(taken[0], ToolbarEvent::Back);
-        assert!(take_events().is_empty());
-        let wire = serde_json::to_string(&browser()).unwrap();
-        assert_eq!(
-            serde_json::from_str::<WindowToolbar>(&wire).unwrap(),
-            browser()
-        );
-        assert_eq!(
-            browser().location.unwrap().edit_value(),
-            "https://duckduckgo.com/?q=rust"
-        );
-    }
 
-    #[test]
-    fn the_windows_reactions_are_its_own_and_their_presses_go_to_their_shower() {
-        let pill = |emoji: &str| ToolbarReaction {
-            emoji: emoji.into(),
-            count: 2,
-            mine: true,
-            names: (0..40).map(|n| format!("Person {n}")).collect(),
-        };
-        let mut toolbar = browser();
-        toolbar.reactions = Some(ToolbarReactions {
-            pills: vec![pill("👍")],
-            can_react: true,
-        });
-        declare(Some(toolbar));
-        assert_eq!(
-            declared().and_then(|toolbar| toolbar.reactions),
-            None,
-            "a declaration carries no reactions: they are the window's"
-        );
-        let before = revision();
-        show_reactions(Some(ToolbarReactions {
-            pills: (0..30)
-                .map(|n| pill(&format!("{}", char::from_u32(0x1F600 + n).unwrap())))
-                .collect(),
-            can_react: true,
-        }));
-        assert_ne!(revision(), before, "the bar is told");
-        let shown = shown()
-            .and_then(|toolbar| toolbar.reactions)
-            .expect("shown");
-        assert_eq!(shown.pills.len(), MAX_REACTION_PILLS);
-        assert!(
-            shown
-                .pills
-                .iter()
-                .all(|pill| pill.names.len() == MAX_REACTOR_NAMES)
-        );
-        let wire = serde_json::to_string(&shown).unwrap();
-        assert_eq!(
-            serde_json::from_str::<ToolbarReactions>(&wire).unwrap(),
-            shown
-        );
+        phase a_declaration_is_bounded_and_sent_once_per_change;
+        {
+            let mut many = browser();
+            for n in 0..6 {
+                many.actions.push(ToolbarAction {
+                    id: format!("a{n}"),
+                    icon: "star".into(),
+                    name: "Bookmark".into(),
+                    enabled: true,
+                    on: false,
+                    menu: false,
+                    items: Vec::new(),
+                    navigates: false,
+                    toggles: false,
+                    destructive: false,
+                    labelled: false,
+                    primary: false,
+                });
+            }
+            many.actions.push(ToolbarAction {
+                id: "glyph".into(),
+                icon: "not-an-icon".into(),
+                name: "Nothing".into(),
+                enabled: true,
+                on: false,
+                menu: false,
+                items: Vec::new(),
+                navigates: false,
+                toggles: false,
+                destructive: false,
+                labelled: false,
+                primary: false,
+            });
+            for n in 6..20 {
+                many.actions.push(ToolbarAction {
+                    id: format!("a{n}"),
+                    icon: "star".into(),
+                    name: "Bookmark".into(),
+                    enabled: true,
+                    on: false,
+                    menu: false,
+                    items: Vec::new(),
+                    navigates: false,
+                    toggles: false,
+                    destructive: false,
+                    labelled: false,
+                    primary: false,
+                });
+            }
+            let bounded = many.clone().bounded();
+            assert_eq!(bounded.actions.len(), MAX_DECLARED_ACTIONS);
+            assert!(bounded.actions.iter().all(|a| a.icon != "not-an-icon"));
 
-        let _ = take_events();
-        deliver(ToolbarEvent::Action {
-            id: reaction_action("🎉"),
-        });
-        deliver(ToolbarEvent::Action {
-            id: "reload".into(),
-        });
-        assert_eq!(take_reaction_presses(), vec!["🎉".to_owned()]);
-        assert_eq!(
-            take_events(),
-            vec![ToolbarEvent::Action {
-                id: "reload".into()
-            }],
-            "the app hears its own slots only"
-        );
+            let texts = WindowToolbar {
+                actions: vec![
+                    ToolbarAction::new("import", "", "Import report").in_menu(),
+                    ToolbarAction::new("bare", "", "No icon in the row"),
+                    ToolbarAction::new("more", "more-horizontal", "More")
+                        .with_items(vec![ToolbarAction::new("export", "", "Export report")]),
+                ],
+                ..WindowToolbar::default()
+            }
+            .bounded();
+            let ids: Vec<&str> = texts.actions.iter().map(|a| a.id.as_str()).collect();
+            assert_eq!(ids, ["more", "import"]);
+            assert_eq!(
+                texts.actions[0].items.first().map(|item| item.id.as_str()),
+                Some("export")
+            );
 
-        show_reactions(Some(ToolbarReactions {
-            pills: vec![pill("👍")],
-            can_react: false,
-        }));
-        deliver(ToolbarEvent::Action {
-            id: reaction_action("👍"),
-        });
-        assert!(
-            take_reaction_presses().is_empty(),
-            "someone who may not react presses nothing"
-        );
-        assert!(take_events().is_empty(), "nor does the app hear it");
-        show_reactions(Some(ToolbarReactions::default()));
-        assert_eq!(reactions(), None, "nothing to show is none");
-        declare(None);
-    }
+            let before = revision();
+            declare(Some(browser()));
+            let once = revision();
+            assert_ne!(before, once);
+            declare(Some(browser()));
+            assert_eq!(revision(), once, "an equal declaration changes nothing");
+            declare(Some(WindowToolbar::default()));
+            assert_eq!(declared(), None, "an empty declaration is none");
+        }
 
-    #[test]
-    fn a_window_offer_round_trips_and_an_empty_one_reads_as_nothing() {
-        let offer = WindowOffer {
-            search: SearchOffer::List,
-            count: Some(SearchCount {
-                shown: 12,
-                total: 40,
-            }),
-            history: Some(HistoryOffer::Open),
-            find: crate::widget::FindAbilities {
-                replace: true,
-                regex: true,
-                hex: false,
-            },
-            adopted: Some(AdoptedQuery {
-                serial: 2,
-                query: "relay".into(),
-                options: crate::widget::FindOptions::default(),
-            }),
-        };
-        let wire = serde_json::to_string(&offer).unwrap();
-        assert_eq!(serde_json::from_str::<WindowOffer>(&wire).unwrap(), offer);
-        assert_eq!(
-            serde_json::from_str::<WindowOffer>("{}").unwrap(),
-            WindowOffer::default(),
-            "an app with nothing to offer sends nothing but the frame"
-        );
-        assert_eq!(
-            crate::widget::FilterCount::from(offer.count.unwrap()),
-            crate::widget::FilterCount::new(12, 40)
-        );
-        assert_eq!(take_search_request(), None);
-        open_search(SearchOpening::Find);
-        assert_eq!(take_search_request(), Some(SearchOpening::Find));
-        assert_eq!(take_search_request(), None, "one ask per Ctrl+F");
-        open_search(SearchOpening::Replace);
-        assert_eq!(
-            take_search_request(),
-            Some(SearchOpening::Replace),
-            "Ctrl+H asks for the replacement field"
-        );
+        phase events_round_trip_the_wire_and_reach_the_app_in_order;
+        {
+            for event in [
+                ToolbarEvent::Back,
+                ToolbarEvent::Forward,
+                ToolbarEvent::Commit {
+                    text: "example.org".into(),
+                },
+                ToolbarEvent::Action {
+                    id: "reload".into(),
+                },
+                ToolbarEvent::Search {
+                    query: "cat".into(),
+                },
+                ToolbarEvent::SearchStep { forward: false },
+                ToolbarEvent::SearchClose,
+                ToolbarEvent::SearchOptions {
+                    options: crate::widget::FindOptions {
+                        match_case: true,
+                        whole_word: false,
+                        mode: crate::widget::FindMode::Regex,
+                    },
+                },
+                ToolbarEvent::SearchCover {
+                    cover: Some(WholeRect {
+                        x0: 120,
+                        y0: 0,
+                        x1: 300,
+                        y1: 168,
+                    }),
+                },
+                ToolbarEvent::SearchReplace {
+                    with: "dog".into(),
+                    all: true,
+                },
+                ToolbarEvent::History,
+            ] {
+                let wire = serde_json::to_string(&event).unwrap();
+                assert_eq!(serde_json::from_str::<ToolbarEvent>(&wire).unwrap(), event);
+                deliver(event);
+            }
+            let taken = take_events();
+            assert_eq!(taken.len(), 11, "every event reaches the app");
+            assert_eq!(taken[0], ToolbarEvent::Back);
+            assert!(take_events().is_empty());
+            let wire = serde_json::to_string(&browser()).unwrap();
+            assert_eq!(
+                serde_json::from_str::<WindowToolbar>(&wire).unwrap(),
+                browser()
+            );
+            assert_eq!(
+                browser().location.unwrap().edit_value(),
+                "https://duckduckgo.com/?q=rust"
+            );
+        }
+
+        phase the_windows_reactions_are_its_own_and_their_presses_go_to_their_shower;
+        {
+            let pill = |emoji: &str| ToolbarReaction {
+                emoji: emoji.into(),
+                count: 2,
+                mine: true,
+                names: (0..40).map(|n| format!("Person {n}")).collect(),
+            };
+            let mut toolbar = browser();
+            toolbar.reactions = Some(ToolbarReactions {
+                pills: vec![pill("👍")],
+                can_react: true,
+            });
+            declare(Some(toolbar));
+            assert_eq!(
+                declared().and_then(|toolbar| toolbar.reactions),
+                None,
+                "a declaration carries no reactions: they are the window's"
+            );
+            let before = revision();
+            show_reactions(Some(ToolbarReactions {
+                pills: (0..30)
+                    .map(|n| pill(&format!("{}", char::from_u32(0x1F600 + n).unwrap())))
+                    .collect(),
+                can_react: true,
+            }));
+            assert_ne!(revision(), before, "the bar is told");
+            let shown = shown()
+                .and_then(|toolbar| toolbar.reactions)
+                .expect("shown");
+            assert_eq!(shown.pills.len(), MAX_REACTION_PILLS);
+            assert!(
+                shown
+                    .pills
+                    .iter()
+                    .all(|pill| pill.names.len() == MAX_REACTOR_NAMES)
+            );
+            let wire = serde_json::to_string(&shown).unwrap();
+            assert_eq!(
+                serde_json::from_str::<ToolbarReactions>(&wire).unwrap(),
+                shown
+            );
+
+            let _ = take_events();
+            deliver(ToolbarEvent::Action {
+                id: reaction_action("🎉"),
+            });
+            deliver(ToolbarEvent::Action {
+                id: "reload".into(),
+            });
+            assert_eq!(take_reaction_presses(), vec!["🎉".to_owned()]);
+            assert_eq!(
+                take_events(),
+                vec![ToolbarEvent::Action {
+                    id: "reload".into()
+                }],
+                "the app hears its own slots only"
+            );
+
+            show_reactions(Some(ToolbarReactions {
+                pills: vec![pill("👍")],
+                can_react: false,
+            }));
+            deliver(ToolbarEvent::Action {
+                id: reaction_action("👍"),
+            });
+            assert!(
+                take_reaction_presses().is_empty(),
+                "someone who may not react presses nothing"
+            );
+            assert!(take_events().is_empty(), "nor does the app hear it");
+            show_reactions(Some(ToolbarReactions::default()));
+            assert_eq!(reactions(), None, "nothing to show is none");
+            declare(None);
+        }
+
+        phase a_window_offer_round_trips_and_an_empty_one_reads_as_nothing;
+        {
+            let offer = WindowOffer {
+                search: SearchOffer::List,
+                count: Some(SearchCount {
+                    shown: 12,
+                    total: 40,
+                }),
+                history: Some(HistoryOffer::Open),
+                find: crate::widget::FindAbilities {
+                    replace: true,
+                    regex: true,
+                    hex: false,
+                },
+                adopted: Some(AdoptedQuery {
+                    serial: 2,
+                    query: "relay".into(),
+                    options: crate::widget::FindOptions::default(),
+                }),
+            };
+            let wire = serde_json::to_string(&offer).unwrap();
+            assert_eq!(serde_json::from_str::<WindowOffer>(&wire).unwrap(), offer);
+            assert_eq!(
+                serde_json::from_str::<WindowOffer>("{}").unwrap(),
+                WindowOffer::default(),
+                "an app with nothing to offer sends nothing but the frame"
+            );
+            assert_eq!(
+                crate::widget::FilterCount::from(offer.count.unwrap()),
+                crate::widget::FilterCount::new(12, 40)
+            );
+            assert_eq!(take_search_request(), None);
+            open_search(SearchOpening::Find);
+            assert_eq!(take_search_request(), Some(SearchOpening::Find));
+            assert_eq!(take_search_request(), None, "one ask per Ctrl+F");
+            open_search(SearchOpening::Replace);
+            assert_eq!(
+                take_search_request(),
+                Some(SearchOpening::Replace),
+                "Ctrl+H asks for the replacement field"
+            );
+        }
     }
 }
