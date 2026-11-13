@@ -1007,6 +1007,50 @@ pub(crate) fn desk_spec(label: String) -> ResourceSpec {
     offer::<DeskEffect>(ResourceSpec::new(DESK_RESOURCE, DESK_KIND, label))
 }
 
+impl Desk {
+    /// The notification centre's effects: post a notice, clear the centre, run a notice's
+    /// action or dismiss one. `None` for any other effect.
+    fn notice_effect(&self, effect: &DeskEffect) -> Option<Result<Started, DoorError>> {
+        let id_of = |notice: &str| {
+            notice
+                .parse::<u64>()
+                .map_err(|_| DoorError::InvalidArguments(format!("`{notice}` is no notice's id")))
+        };
+        match effect {
+            DeskEffect::Notify {
+                title,
+                body,
+                from,
+                kind,
+            } => {
+                self.notices.post(notice(
+                    title,
+                    body.as_deref(),
+                    from.as_deref(),
+                    kind.as_deref(),
+                ));
+            }
+            DeskEffect::ClearNotices => {
+                self.notices.clear_all();
+            }
+            DeskEffect::ActOnNotice { notice, action } => match id_of(notice) {
+                Ok(id) => {
+                    self.notices.invoke_action(id, action);
+                }
+                Err(error) => return Some(Err(error)),
+            },
+            DeskEffect::DismissNotice { notice } => match id_of(notice) {
+                Ok(id) => {
+                    self.notices.dismiss_history(id);
+                }
+                Err(error) => return Some(Err(error)),
+            },
+            _ => return None,
+        }
+        Some(Ok(Started::Done(tilo_actions::ActionOutput::default())))
+    }
+}
+
 impl Service for Desk {
     fn resources(&self) -> Vec<ResourceSpec> {
         vec![desk_spec(self.person.clone())]
@@ -1041,6 +1085,9 @@ impl Service for Desk {
         if let Some(answer) = self.invitation(&effect) {
             return answer;
         }
+        if let Some(answer) = self.notice_effect(&effect) {
+            return answer;
+        }
         if let DeskEffect::ShowInvite { workspace } = &effect {
             return self.show_invite(workspace.as_deref());
         }
@@ -1065,35 +1112,6 @@ impl Service for Desk {
             self.surfaces.close(surface);
             return Ok(Started::Done(tilo_actions::ActionOutput::default()));
         }
-        if let DeskEffect::Notify {
-            title,
-            body,
-            from,
-            kind,
-        } = &effect
-        {
-            let severity = match kind.as_deref() {
-                Some("warning") => {
-                    tilo_desktop_surface::notifications::NotificationSeverity::Warning
-                }
-                Some("error") => tilo_desktop_surface::notifications::NotificationSeverity::Error,
-                _ => tilo_desktop_surface::notifications::NotificationSeverity::Info,
-            };
-            let mut notification = tilo_desktop_surface::notifications::Notification::new(
-                title.clone(),
-                body.clone().unwrap_or_default(),
-            )
-            .with_severity(severity);
-            if let Some(from) = from.as_deref().filter(|from| !from.is_empty()) {
-                notification = notification.with_app_name(from);
-            }
-            self.notices.post(notification);
-            return Ok(Started::Done(tilo_actions::ActionOutput::default()));
-        }
-        if matches!(effect, DeskEffect::ClearNotices) {
-            self.notices.clear_all();
-            return Ok(Started::Done(tilo_actions::ActionOutput::default()));
-        }
         if let DeskEffect::WalkSwitcher { steps, scope } = &effect {
             crate::desk_windows::walk_switcher(
                 &self.handle,
@@ -1109,20 +1127,6 @@ impl Service for Desk {
         }
         if matches!(effect, DeskEffect::CommitSwitcher) {
             crate::desk_windows::commit_switcher(&self.handle, &self.surfaces.overlays);
-            return Ok(Started::Done(tilo_actions::ActionOutput::default()));
-        }
-        if let DeskEffect::ActOnNotice { notice, action } = &effect {
-            let id = notice.parse::<u64>().map_err(|_| {
-                DoorError::InvalidArguments(format!("`{notice}` is no notice's id"))
-            })?;
-            self.notices.invoke_action(id, action);
-            return Ok(Started::Done(tilo_actions::ActionOutput::default()));
-        }
-        if let DeskEffect::DismissNotice { notice } = &effect {
-            let id = notice.parse::<u64>().map_err(|_| {
-                DoorError::InvalidArguments(format!("`{notice}` is no notice's id"))
-            })?;
-            self.notices.dismiss_history(id);
             return Ok(Started::Done(tilo_actions::ActionOutput::default()));
         }
         let DeskEffect::SwitchWorkspace { workspace } = effect else {
@@ -1148,6 +1152,28 @@ impl Service for Desk {
             })
             .map_err(DoorError::Failed)?;
         Ok(Started::Done(tilo_actions::ActionOutput::default()))
+    }
+}
+
+/// The notice the desk's `notify` posts: its title and body, its kind as the centre's severity
+/// (`info` unless `warning` or `error`), and who it is from when that is named.
+fn notice(
+    title: &str,
+    body: Option<&str>,
+    from: Option<&str>,
+    kind: Option<&str>,
+) -> tilo_desktop_surface::notifications::Notification {
+    use tilo_desktop_surface::notifications::{Notification, NotificationSeverity};
+    let severity = match kind {
+        Some("warning") => NotificationSeverity::Warning,
+        Some("error") => NotificationSeverity::Error,
+        _ => NotificationSeverity::Info,
+    };
+    let notification = Notification::new(title.to_owned(), body.unwrap_or_default().to_owned())
+        .with_severity(severity);
+    match from.filter(|from| !from.is_empty()) {
+        Some(from) => notification.with_app_name(from),
+        None => notification,
     }
 }
 

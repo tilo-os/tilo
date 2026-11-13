@@ -860,7 +860,7 @@ else
     backend=(--backend nested --size "$TILO_WINIT_SIZE")
     display_env=(-u DISPLAY -u WAYLAND_DISPLAY)
     host_client=(python3 -I "$repo_root/dist/dev/host-wayland.py" "$host_display")
-    say "starting the nested session at ${TILO_WINIT_SIZE} (log: $logs/session.log)"
+    say "starting the nested session at ${size} logical pixels, at the desktop's scale (log: $logs/session.log)"
 fi
 cat >&2 <<EOF
     drive it:  XDG_RUNTIME_DIR=$runtime TILO_TEST_CONTROL=$control $bin/tilo-control $( ((headless)) && echo 'snapshot /tmp/shot.png' || echo windows)

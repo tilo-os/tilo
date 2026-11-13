@@ -59,6 +59,8 @@ mod atspi_bus;
 mod automation;
 #[path = "canvas_ask.rs"]
 mod canvas_ask;
+#[path = "canvas_chrome.rs"]
+mod canvas_chrome;
 #[path = "chat_2x2.rs"]
 mod chat_2x2;
 #[path = "chat_view.rs"]

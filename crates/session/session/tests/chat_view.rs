@@ -487,6 +487,14 @@ fn an_attachment_chip_dragged_out_of_the_transcript_places_its_resource_on_the_c
     const SHARED: &str = "I rewrote my window compositor in Rust and it changed EVERYTHING!!!";
     const DROPPED: &str = "tube.video:vid_rust_async";
     place(&mut session, "chat.workspace.channels:c_general");
+    // The Frames canvas snaps a place let go to the style's grid by default, so it lands on the
+    // cell nearest the pointer rather than exactly where it was let go (`snap_x`/`snap_y`,
+    // `canvas.tl`; `frames_snap`, the style's own setting). This test reads where the drop lands
+    // against the point it was let go at, so it turns the grid off — what the person's own
+    // "Snap places to a grid" toggle does — and the place then stands at that exact point.
+    session
+        .run_shell_setting("set_frames_snap", vec![serde_json::json!(false)])
+        .expect("the Frames grid turns off");
     crate::common::until(&mut session, "the channel's page", |session| {
         session.shell_says(SHARED)
     });
@@ -546,8 +554,7 @@ fn an_attachment_chip_dragged_out_of_the_transcript_places_its_resource_on_the_c
         session.shell_refusals()
     );
     // The video's strip stands where it was dropped, not at the origin: its canvas point is the
-    // map point under the pointer where the drag ended, on the framed canvas's grid (`frames_snap`,
-    // a frame's pitch), so one of its coordinates may snap to the grid's first line.
+    // map point under the pointer where the drag ended.
     let place_key = crate::common::places(&session)
         .into_iter()
         .find(|place| place.record == DROPPED)
@@ -556,7 +563,7 @@ fn an_attachment_chip_dragged_out_of_the_transcript_places_its_resource_on_the_c
     let strip =
         crate::common::strip_of(&session, place_key).expect("the video's place has a strip");
     assert!(
-        (strip.canvas_x, strip.canvas_y) != (0, 0),
+        strip.canvas_x > 0 && strip.canvas_y > 0,
         "the drop places the video at the point it was let go, not the origin: {strip:?}"
     );
     shot(&mut session, root.path(), "dragged-out.png");

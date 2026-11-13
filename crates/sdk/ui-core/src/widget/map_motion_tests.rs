@@ -336,9 +336,10 @@ fn a_map_is_known_by_the_key_its_view_gave_it_not_by_where_it_stands() {
 fn a_place_that_arrives_off_screen_is_panned_into_view() {
     // The conversation stands at the origin and the viewport shows it; a place opened beside it
     // one row down — the row `free_place_next_to` puts below a taken column — arrives outside what
-    // the map shows. The map moves so the person sees what was just placed, and never so far that
-    // the conversation it came from leaves the viewport: it pans the least it can, and zooms out
-    // only where both cannot fit at the person's zoom.
+    // the map shows. The map pans so the person sees what was just placed, and never changes its
+    // zoom: opening a place never resizes the places already there, so the conversation keeps the
+    // size the person was reading it at, even when the pan brings the new place to the front and
+    // the conversation goes partly out of sight (the person pans back to it).
     let _frame = crate::motion::pin_frame();
     let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
     let mut old = map_of(&[("conversation", 0.0)], viewport);
@@ -349,23 +350,33 @@ fn a_place_that_arrives_off_screen_is_panned_into_view() {
     lay_out_again(&mut map, viewport);
     let after = map.camera();
     assert!(
-        after.origin != before.origin || (after.zoom - before.zoom).abs() > f64::EPSILON,
-        "the camera moved to show the place that arrived: {after:?} against {before:?}"
+        after.origin != before.origin,
+        "the camera panned to show the place that arrived: {after:?} against {before:?}"
     );
-    // Both stand wholly in view: what arrived, and the conversation it came from.
-    for (what, at) in [
-        ("the place", (0.0, 544.0)),
-        ("the conversation", (0.0, 0.0)),
-    ] {
-        let shown = Rect::from_origin_size(
-            after.to_screen(viewport.origin(), Point::new(at.0, at.1)),
-            (200.0 * after.zoom, 120.0 * after.zoom),
-        );
-        assert!(
-            shown.y0 >= viewport.y0 && shown.y1 <= viewport.y1,
-            "{what} stands in view: {shown:?} in {viewport:?}"
-        );
-    }
+    assert!(
+        (after.zoom - before.zoom).abs() <= f64::EPSILON,
+        "the camera kept its zoom — opening a place never resizes the places there: {after:?} \
+         against {before:?}"
+    );
+    // What arrived stands wholly in view: the person sees what was just placed.
+    let arrived = Rect::from_origin_size(
+        after.to_screen(viewport.origin(), Point::new(0.0, 544.0)),
+        (200.0 * after.zoom, 120.0 * after.zoom),
+    );
+    assert!(
+        arrived.y0 >= viewport.y0 && arrived.y1 <= viewport.y1,
+        "the place that arrived stands in view: {arrived:?} in {viewport:?}"
+    );
+    // And the conversation keeps the size it had: the camera panned, it never zoomed it.
+    let conversation = Rect::from_origin_size(
+        after.to_screen(viewport.origin(), Point::new(0.0, 0.0)),
+        (200.0 * after.zoom, 120.0 * after.zoom),
+    );
+    assert!(
+        (conversation.width() - 200.0 * before.zoom).abs() < 0.5,
+        "the conversation is drawn at the width it was, never shrunk by what arrived: \
+         {conversation:?}"
+    );
 }
 
 /// `map` mounted as a window's whole root, laid out at `viewport`, so its presses and keys go
@@ -497,12 +508,12 @@ fn ctrl_and_a_wheel_notch_zooms_the_pins() {
 }
 
 #[test]
-fn places_opened_beside_a_conversation_keep_the_conversation_in_view() {
-    // The live run's failure: an agent opened Mail beside its conversation and the pan to the new
-    // place took the conversation out of the viewport, composer and all. A place that arrives
-    // beside another comes into view, and every place that stood in the viewport stays in it —
-    // however many were opened before it. Here three answers arrive one row at a time, down the
-    // canvas, as `free_place_next_to` puts them, each one a map built again around the places.
+fn places_opened_beside_a_conversation_never_shrink_it() {
+    // The live run's failure: an agent opened Mail beside its conversation and the camera zoomed
+    // everything into the viewport, so the conversation and every place were drawn as a narrow
+    // column. A place that arrives beside another comes into view by the camera panning, never by
+    // zooming, so every place keeps the size it was drawn at however many arrive. Here three
+    // answers arrive one row at a time, down the canvas, as `free_place_next_to` puts them.
     let _frame = crate::motion::pin_frame();
     let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
     let mut map = map_of(&[("conversation", 0.0)], viewport);
@@ -533,18 +544,17 @@ fn places_opened_beside_a_conversation_keep_the_conversation_in_view() {
         draw(&mut next);
         map = next;
         let camera = map.camera();
-        // The conversation stays wholly in view, and so does everything that arrived beside it.
-        let conversation = on_screen(camera, (0.0, 0.0));
+        // The zoom is the person's: no place arriving zooms it, so every place keeps its size.
         assert!(
-            conversation.y0 >= viewport.y0 && conversation.y1 <= viewport.y1,
-            "round {round}: the conversation stays in view: {conversation:?} in {viewport:?}"
+            (camera.zoom - 1.0).abs() < f64::EPSILON,
+            "round {round}: the camera kept the person's zoom, never shrinking the places: {}",
+            camera.zoom
         );
-        for answer in 1..=round {
-            let arrived = on_screen(camera, (0.0, 544.0 * f64::from(answer)));
-            assert!(
-                arrived.y0 >= viewport.y0 && arrived.y1 <= viewport.y1,
-                "round {round}: answer {answer} is in view too: {arrived:?} in {viewport:?}"
-            );
-        }
+        // What arrived is brought into view by the pan, whole.
+        let arrived = on_screen(camera, (0.0, 544.0 * f64::from(round)));
+        assert!(
+            arrived.y0 >= viewport.y0 && arrived.y1 <= viewport.y1,
+            "round {round}: answer {round} is in view: {arrived:?} in {viewport:?}"
+        );
     }
 }
