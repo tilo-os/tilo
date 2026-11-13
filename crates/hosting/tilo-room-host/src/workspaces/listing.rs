@@ -382,7 +382,7 @@ impl Workspaces {
         invites_only: bool,
     ) -> Result<(), CollaborationError> {
         self.settle_door(workspace, device, |door| {
-            door.invitation_only = invites_only
+            door.invitation_only = invites_only;
         })
         .await
         .map(drop)

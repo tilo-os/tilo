@@ -12,10 +12,12 @@ use tilo_relay_protocol::certify::{
 };
 use tilo_user_identity::{
     CertificationPolicy, DeviceCapabilities, DeviceCert, DeviceRole, RevocationEntry,
-    RevocationList, RevocationReason, STAND_IN_LIFETIME_NS,
-    certification::MAX_CERTIFICATION_LABEL_BYTES, check_agent_grant, issue_device_cert_async,
-    sign_device_cert_async, sign_revocation_entry_async, verify_device_cert_at,
+    RevocationReason, STAND_IN_LIFETIME_NS, certification::MAX_CERTIFICATION_LABEL_BYTES,
+    check_agent_grant, sign_device_cert_async, sign_revocation_entry_async, verify_device_cert_at,
 };
+// Answering a pairing is the dialer's: a page holds no root and answers none.
+#[cfg(any(feature = "dial", test))]
+use tilo_user_identity::{RevocationList, issue_device_cert_async};
 
 #[cfg(feature = "dial")]
 use crate::certify::MemberHost;
