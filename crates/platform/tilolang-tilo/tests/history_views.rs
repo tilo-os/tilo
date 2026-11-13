@@ -1052,7 +1052,9 @@ impl LongPost {
         assert_eq!(lines.len(), self.paragraphs, "every paragraph is there");
         let line = lines.get_mut(at).unwrap();
         *line = line.replacen(word, with, 1);
-        let value = Value::Rich(tilolang_runtime::rich::RichValue::from_text(&lines.join("\n")));
+        let value = Value::Rich(tilolang_runtime::rich::RichValue::from_text(
+            &lines.join("\n"),
+        ));
         let replica = if bo { &mut self.bo } else { &mut self.ada };
         let page = view_id(replica);
         let editors = replica.host.open_resource(&self.at, Some(&page)).unwrap();
@@ -1089,7 +1091,10 @@ fn entry_work(paragraphs: usize) -> (u64, u64, usize) {
         .field_changed(&at, &spec.id)
         .unwrap()
         .expect("the change that wrote the body");
-    assert_eq!(change.who, "bo", "the body was last changed by Bo's typing: {paragraphs} {change:?} {:?}", ada.host.store().versions(&at).unwrap().iter().map(|v| (v.who.clone(), v.fields.clone(), v.change.clone())).collect::<Vec<_>>());
+    assert_eq!(
+        change.who, "bo",
+        "the body was last changed by Bo's typing: {change:?}"
+    );
     let change = change.change;
     let before = ada.host.store().read_stats().doc;
     let work = automerge::work();
