@@ -158,149 +158,153 @@ mod tests {
         )
     }
 
-    #[test]
-    fn host_launch_is_refused_before_anything_is_built() {
+    tilo_test_env::scenario! {
+        fn a_host_launch_refuses_early_tolerates_its_scope_and_leads_its_session;
+
+        phase host_launch_is_refused_before_anything_is_built;
         {
-            let manifest = example_manifest();
-            let opts = RunOptions {
-                mode: LaunchMode::Host {
-                    desktop_id: "com.spotify.Client".into(),
-                },
-                ..Default::default()
-            };
-            let err = crate::run::run_with(&manifest, std::path::Path::new("/nonexistent"), &opts)
-                .expect_err("a host application is not a package");
-            match err {
-                RunError::HostAppNotAPackage { desktop_id } => {
-                    assert_eq!(desktop_id, "com.spotify.Client");
+            {
+                let manifest = example_manifest();
+                let opts = RunOptions {
+                    mode: LaunchMode::Host {
+                        desktop_id: "com.spotify.Client".into(),
+                    },
+                    ..Default::default()
+                };
+                let err = crate::run::run_with(&manifest, std::path::Path::new("/nonexistent"), &opts)
+                    .expect_err("a host application is not a package");
+                match err {
+                    RunError::HostAppNotAPackage { desktop_id } => {
+                        assert_eq!(desktop_id, "com.spotify.Client");
+                    }
+                    other => panic!("expected HostAppNotAPackage, got {other:?}"),
                 }
-                other => panic!("expected HostAppNotAPackage, got {other:?}"),
+            }
+            {
+                let manifest = example_manifest();
+                let opts = RunOptions {
+                    mode: LaunchMode::Host {
+                        desktop_id: "org.gnome.TextEditor".into(),
+                    },
+                    ..Default::default()
+                };
+                let err = crate::run::run_with_captured(
+                    &manifest,
+                    std::path::Path::new("/nonexistent"),
+                    &opts,
+                )
+                .expect_err("the second door into the sandbox builder is closed too");
+                assert!(matches!(err, RunError::HostAppNotAPackage { .. }));
+            }
+            {
+                let err = run_host(
+                    "so.tilo.definitely-not-installed-anywhere",
+                    &LaunchEnv::default(),
+                )
+                .expect_err("nothing has that id");
+                assert!(
+                    err.to_string()
+                        .contains("so.tilo.definitely-not-installed-anywhere"),
+                    "the error must name what could not be found: {err}"
+                );
             }
         }
-        {
-            let manifest = example_manifest();
-            let opts = RunOptions {
-                mode: LaunchMode::Host {
-                    desktop_id: "org.gnome.TextEditor".into(),
-                },
-                ..Default::default()
-            };
-            let err = crate::run::run_with_captured(
-                &manifest,
-                std::path::Path::new("/nonexistent"),
-                &opts,
-            )
-            .expect_err("the second door into the sandbox builder is closed too");
-            assert!(matches!(err, RunError::HostAppNotAPackage { .. }));
-        }
-        {
-            let err = run_host(
-                "so.tilo.definitely-not-installed-anywhere",
-                &LaunchEnv::default(),
-            )
-            .expect_err("nothing has that id");
-            assert!(
-                err.to_string()
-                    .contains("so.tilo.definitely-not-installed-anywhere"),
-                "the error must name what could not be found: {err}"
-            );
-        }
-    }
 
-    #[test]
-    fn a_refused_or_unjoined_scope_never_costs_the_launch() {
-        use std::os::unix::fs::PermissionsExt as _;
+        phase a_refused_or_unjoined_scope_never_costs_the_launch;
+        {
+            use std::os::unix::fs::PermissionsExt as _;
 
-        let dir = tempfile::tempdir().expect("scratch directory");
-        let entry = dir.path().join("org.example.Probe-x.desktop");
-        std::fs::write(
-            &entry,
-            "[Desktop Entry]\nType=Application\nName=Probe\nExec=sh -c \"exit 7\"\n",
-        )
-        .expect("write the probe entry");
-        let launch = plan_host_file(&entry, &LaunchEnv::default(), &[]).expect("the probe plans");
-        let stand_in = |name: &str, status: u8| {
-            let path = dir.path().join(name);
+            let dir = tempfile::tempdir().expect("scratch directory");
+            let entry = dir.path().join("org.example.Probe-x.desktop");
             std::fs::write(
-                &path,
-                format!(
-                    "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$0.argv\"\n\
-                     echo 'Access denied' >&2\nexit {status}\n"
-                ),
+                &entry,
+                "[Desktop Entry]\nType=Application\nName=Probe\nExec=sh -c \"exit 7\"\n",
             )
-            .expect("write the stand-in busctl");
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
-                .expect("make the stand-in executable");
-            path
-        };
-        {
-            let busctl = stand_in("accepting-busctl", 0);
-            let status = spawn_with(&launch, Some(&busctl), Duration::from_millis(20))
-                .expect("the launch runs");
-            assert_eq!(
-                status.code(),
-                Some(7),
-                "the app's own exit status reaches the caller"
-            );
-            let argv = std::fs::read_to_string(dir.path().join("accepting-busctl.argv"))
-                .expect("the manager was asked");
-            let pid = std::process::id();
-            assert_eq!(
-                argv.lines().map(str::to_string).collect::<Vec<_>>(),
-                scope::request_args(
-                    &format!("app-tilo-org.example.Probe\\x2dx-{pid}.scope"),
-                    pid,
-                    "Probe"
+            .expect("write the probe entry");
+            let launch = plan_host_file(&entry, &LaunchEnv::default(), &[]).expect("the probe plans");
+            let stand_in = |name: &str, status: u8| {
+                let path = dir.path().join(name);
+                std::fs::write(
+                    &path,
+                    format!(
+                        "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$0.argv\"\n\
+                     echo 'Access denied' >&2\nexit {status}\n"
+                    ),
                 )
-            );
-        }
-        {
-            let busctl = stand_in("refusing-busctl", 1);
-            let status = spawn_with(&launch, Some(&busctl), Duration::from_millis(20))
-                .expect("the launch runs");
-            assert_eq!(status.code(), Some(7));
-            assert!(
-                scope::join_with(
-                    &busctl,
-                    &launch.desktop_id,
-                    &launch.display_name,
-                    Duration::from_millis(20)
-                )
-                .expect_err("a refusal is reported")
-                .contains("Access denied"),
-                "the manager's own reason is kept for the log"
-            );
-        }
-        {
-            let status =
-                spawn_with(&launch, None, Duration::from_millis(20)).expect("the launch runs");
-            assert_eq!(status.code(), Some(7));
-        }
-    }
-
-    #[test]
-    fn host_child_becomes_its_own_session_leader() {
-        struct ReapChild(std::process::Child);
-
-        impl Drop for ReapChild {
-            fn drop(&mut self) {
-                let pid = i32::try_from(self.0.id()).unwrap_or(i32::MAX);
-                // SAFETY: this is the bounded child created by this test.
-                let _ = unsafe { libc::kill(pid, libc::SIGTERM) };
-                let _ = self.0.wait();
+                .expect("write the stand-in busctl");
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+                    .expect("make the stand-in executable");
+                path
+            };
+            {
+                let busctl = stand_in("accepting-busctl", 0);
+                let status = spawn_with(&launch, Some(&busctl), Duration::from_millis(20))
+                    .expect("the launch runs");
+                assert_eq!(
+                    status.code(),
+                    Some(7),
+                    "the app's own exit status reaches the caller"
+                );
+                let argv = std::fs::read_to_string(dir.path().join("accepting-busctl.argv"))
+                    .expect("the manager was asked");
+                let pid = std::process::id();
+                assert_eq!(
+                    argv.lines().map(str::to_string).collect::<Vec<_>>(),
+                    scope::request_args(
+                        &format!("app-tilo-org.example.Probe\\x2dx-{pid}.scope"),
+                        pid,
+                        "Probe"
+                    )
+                );
+            }
+            {
+                let busctl = stand_in("refusing-busctl", 1);
+                let status = spawn_with(&launch, Some(&busctl), Duration::from_millis(20))
+                    .expect("the launch runs");
+                assert_eq!(status.code(), Some(7));
+                assert!(
+                    scope::join_with(
+                        &busctl,
+                        &launch.desktop_id,
+                        &launch.display_name,
+                        Duration::from_millis(20)
+                    )
+                    .expect_err("a refusal is reported")
+                    .contains("Access denied"),
+                    "the manager's own reason is kept for the log"
+                );
+            }
+            {
+                let status =
+                    spawn_with(&launch, None, Duration::from_millis(20)).expect("the launch runs");
+                assert_eq!(status.code(), Some(7));
             }
         }
 
-        let mut command = Command::new("/bin/sleep");
-        command.arg("30");
-        configure_host_launch_session(&mut command);
-        let child = ReapChild(command.spawn_locked().expect("spawn grouped host child"));
-        let pid = i32::try_from(child.0.id()).expect("child pid fits i32");
-        // SAFETY: querying the session of our own still-running bounded child is read-only.
-        assert_eq!(
-            unsafe { libc::getsid(pid) },
-            pid,
-            "the production host launch configuration must isolate a fresh session"
-        );
+        phase host_child_becomes_its_own_session_leader;
+        {
+            struct ReapChild(std::process::Child);
+
+            impl Drop for ReapChild {
+                fn drop(&mut self) {
+                    let pid = i32::try_from(self.0.id()).unwrap_or(i32::MAX);
+                    // SAFETY: this is the bounded child created by this test.
+                    let _ = unsafe { libc::kill(pid, libc::SIGTERM) };
+                    let _ = self.0.wait();
+                }
+            }
+
+            let mut command = Command::new("/bin/sleep");
+            command.arg("30");
+            configure_host_launch_session(&mut command);
+            let child = ReapChild(command.spawn_locked().expect("spawn grouped host child"));
+            let pid = i32::try_from(child.0.id()).expect("child pid fits i32");
+            // SAFETY: querying the session of our own still-running bounded child is read-only.
+            assert_eq!(
+                unsafe { libc::getsid(pid) },
+                pid,
+                "the production host launch configuration must isolate a fresh session"
+            );
+        }
     }
 }

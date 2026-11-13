@@ -1024,254 +1024,258 @@ mod tests {
             .collect()
     }
 
-    #[test]
-    fn a_launch_binds_the_view_tops_instead_of_each_profile_path() {
-        let dir = tempfile::tempdir().unwrap();
-        let view = fake_view(dir.path());
-        let mut argv = launch(false, &["--bind", "/srv/workspace", "/run/tilo/app"]);
-        let before = argv.clone();
-        view.compose(&mut argv).unwrap();
+    tilo_test_env::scenario! {
+        fn the_sandbox_view_stands_in_for_per_path_binds_only_while_current;
 
-        let tops = view.tops(Variant::Plain).unwrap();
-        assert!(tops.contains(&"/usr".to_string()) && tops.contains(&"/etc".to_string()));
-        for top in &tops {
-            let source = view
-                .variant_root(Variant::Plain)
-                .join(top.trim_start_matches('/'));
-            assert!(
-                argv.windows(3).any(|w| w[0] == "--ro-bind"
-                    && w[1] == source.display().to_string()
-                    && w[2] == *top),
-                "{top} must come from the view: {argv:?}"
-            );
-        }
-        for path in view_read_paths() {
-            assert!(
-                !argv
-                    .windows(3)
-                    .any(|w| w[0] == "--ro-bind-try" && w[2] == path),
-                "{path} is the view's now, not a bind of its own: {argv:?}"
-            );
-        }
-        // Kept per launch: /sys (live submounts) and the device nodes.
-        let sys = argv
-            .windows(3)
-            .position(|w| w[0] == "--ro-bind-try" && w[1] == "/sys" && w[2] == "/sys")
-            .unwrap();
-        // The cgroup hierarchy is still covered, after /sys.
-        let hidden = argv
-            .windows(4)
-            .position(|w| {
-                w == [
-                    "--tmpfs",
-                    "/sys/fs/cgroup",
-                    "--remount-ro",
-                    "/sys/fs/cgroup",
-                ]
-            })
-            .unwrap();
-        assert!(sys < hidden, "{argv:?}");
-        // No GPU node: the default profile has none, and the view adds none (a `gpu` app's nodes are
-        // bound outside the profile block).
-        for device in GPU_DEVICE_PATHS {
-            assert!(
-                !argv
-                    .windows(3)
-                    .any(|w| w[0] == "--dev-bind-try" && w[2] == *device)
-            );
-        }
-        // The account file goes on top of the view's /etc, not under it.
-        let etc = argv
-            .windows(3)
-            .position(|w| w[0] == "--ro-bind" && w[2] == "/etc")
-            .unwrap();
-        let passwd = argv
-            .windows(3)
-            .position(|w| w[0] == "--ro-bind-data" && w[2] == "/etc/passwd")
-            .unwrap();
-        assert!(passwd > etc, "{argv:?}");
-        // Everything else is untouched, in order.
-        assert_eq!(argv.last(), before.last());
-        assert!(
-            argv.windows(3)
-                .any(|w| w[0] == "--bind" && w[1] == "/srv/workspace" && w[2] == "/run/tilo/app")
-        );
-        assert!(binds(&argv).len() < binds(&before).len());
-    }
-
-    #[test]
-    fn a_network_launch_uses_the_network_view_and_fresh_resolver_binds() {
-        if !NETWORK_READ_PATHS
-            .iter()
-            .all(|path| Path::new(path).exists())
+        phase a_launch_binds_the_view_tops_instead_of_each_profile_path;
         {
-            // The resolver files are this host's; without them the network view must refuse, which the
-            // next assertion block covers.
+            let dir = tempfile::tempdir().unwrap();
+            let view = fake_view(dir.path());
+            let mut argv = launch(false, &["--bind", "/srv/workspace", "/run/tilo/app"]);
+            let before = argv.clone();
+            view.compose(&mut argv).unwrap();
+
+            let tops = view.tops(Variant::Plain).unwrap();
+            assert!(tops.contains(&"/usr".to_string()) && tops.contains(&"/etc".to_string()));
+            for top in &tops {
+                let source = view
+                    .variant_root(Variant::Plain)
+                    .join(top.trim_start_matches('/'));
+                assert!(
+                    argv.windows(3).any(|w| w[0] == "--ro-bind"
+                        && w[1] == source.display().to_string()
+                        && w[2] == *top),
+                    "{top} must come from the view: {argv:?}"
+                );
+            }
+            for path in view_read_paths() {
+                assert!(
+                    !argv
+                        .windows(3)
+                        .any(|w| w[0] == "--ro-bind-try" && w[2] == path),
+                    "{path} is the view's now, not a bind of its own: {argv:?}"
+                );
+            }
+            // Kept per launch: /sys (live submounts) and the device nodes.
+            let sys = argv
+                .windows(3)
+                .position(|w| w[0] == "--ro-bind-try" && w[1] == "/sys" && w[2] == "/sys")
+                .unwrap();
+            // The cgroup hierarchy is still covered, after /sys.
+            let hidden = argv
+                .windows(4)
+                .position(|w| {
+                    w == [
+                        "--tmpfs",
+                        "/sys/fs/cgroup",
+                        "--remount-ro",
+                        "/sys/fs/cgroup",
+                    ]
+                })
+                .unwrap();
+            assert!(sys < hidden, "{argv:?}");
+            // No GPU node: the default profile has none, and the view adds none (a `gpu` app's nodes are
+            // bound outside the profile block).
+            for device in GPU_DEVICE_PATHS {
+                assert!(
+                    !argv
+                        .windows(3)
+                        .any(|w| w[0] == "--dev-bind-try" && w[2] == *device)
+                );
+            }
+            // The account file goes on top of the view's /etc, not under it.
+            let etc = argv
+                .windows(3)
+                .position(|w| w[0] == "--ro-bind" && w[2] == "/etc")
+                .unwrap();
+            let passwd = argv
+                .windows(3)
+                .position(|w| w[0] == "--ro-bind-data" && w[2] == "/etc/passwd")
+                .unwrap();
+            assert!(passwd > etc, "{argv:?}");
+            // Everything else is untouched, in order.
+            assert_eq!(argv.last(), before.last());
+            assert!(
+                argv.windows(3)
+                    .any(|w| w[0] == "--bind" && w[1] == "/srv/workspace" && w[2] == "/run/tilo/app")
+            );
+            assert!(binds(&argv).len() < binds(&before).len());
+        }
+
+        phase a_network_launch_uses_the_network_view_and_fresh_resolver_binds;
+        {
+            if !NETWORK_READ_PATHS
+                .iter()
+                .all(|path| Path::new(path).exists())
+            {
+                // The resolver files are this host's; without them the network view must refuse, which the
+                // next assertion block covers.
+                let dir = tempfile::tempdir().unwrap();
+                let view = fake_view(dir.path());
+                let mut argv = launch(true, &[]);
+                assert!(view.compose(&mut argv).is_err());
+                return;
+            }
             let dir = tempfile::tempdir().unwrap();
             let view = fake_view(dir.path());
             let mut argv = launch(true, &[]);
-            assert!(view.compose(&mut argv).is_err());
-            return;
-        }
-        let dir = tempfile::tempdir().unwrap();
-        let view = fake_view(dir.path());
-        let mut argv = launch(true, &[]);
-        view.compose(&mut argv).unwrap();
-        let net_root = view.variant_root(Variant::Net).display().to_string();
-        assert!(
-            argv.iter().any(|arg| arg.starts_with(&net_root)),
-            "{argv:?}"
-        );
-        for path in NETWORK_READ_PATHS {
-            let bind = argv
-                .windows(3)
-                .position(|w| w[0] == "--ro-bind-try" && w[2] == *path)
-                .unwrap();
-            let etc = argv.windows(3).position(|w| w[2] == "/etc").unwrap();
-            assert!(bind > etc, "{path} must be mounted over the view: {argv:?}");
-        }
-    }
-
-    #[test]
-    fn launches_the_view_cannot_carry_unchanged_keep_per_path_binds() {
-        let dir = tempfile::tempdir().unwrap();
-        let view = fake_view(dir.path());
-        let refused = |argv: &mut Vec<String>| {
-            let before = argv.clone();
-            let result = view.compose(argv);
-            assert_eq!(*argv, before, "a refusal must leave the argv as it was");
-            result.is_err()
-        };
-        // A bind onto a path the view lacks (the system-authority grant).
-        assert!(refused(&mut launch(
-            false,
-            &["--ro-bind", "/usr/bin", "/usr/bin"]
-        )));
-        assert!(refused(&mut launch(false, &["--dir", "/usr/share/extra"])));
-        assert!(refused(&mut launch(false, &["--symlink", "x", "/etc/y"])));
-        // An option this module does not know, or arguments it cannot see.
-        assert!(refused(&mut launch(false, &["--args", "9"])));
-        assert!(refused(&mut launch(false, &["--some-new-option"])));
-        // A mount before the profile that no profile entry hides: per path it stays visible, under the
-        // view it would vanish.
-        let mut argv = launch(false, &[]);
-        argv.splice(
-            0..0,
-            ["--ro-bind", "/srv/x", "/usr/libexec/x"].map(String::from),
-        );
-        assert!(refused(&mut argv));
-        // No account file: the view's empty mount point would show.
-        let mut argv = launch(false, &[]);
-        argv.drain(0..3);
-        assert!(refused(&mut argv));
-        // No profile at all.
-        let mut argv = vec!["--unshare-all".to_string(), "/bin/app".to_string()];
-        assert!(refused(&mut argv));
-    }
-
-    #[test]
-    fn a_stale_view_is_never_used() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut view = fake_view(dir.path());
-        let (_, identity) = view
-            .identities
-            .iter_mut()
-            .find(|(_, identity)| identity.is_some())
-            .unwrap();
-        *identity = Some((0, 0));
-        let mut argv = launch(false, &[]);
-        let before = argv.clone();
-        assert!(view.compose(&mut argv).is_err());
-        assert_eq!(argv, before);
-    }
-
-    #[test]
-    fn a_mount_inside_a_profile_directory_goes_on_top_of_the_view() {
-        // GPU narrowing binds one loader manifest inside a profile directory.
-        let dir = tempfile::tempdir().unwrap();
-        let view = fake_view(dir.path());
-        let inside = view
-            .variant_root(Variant::Plain)
-            .join("usr/share/fonts/one.ttf");
-        if !inside.parent().unwrap().is_dir() {
-            return;
-        }
-        std::fs::write(&inside, b"").unwrap();
-        let mut argv = launch(
-            false,
-            &["--ro-bind", "/srv/one.ttf", "/usr/share/fonts/one.ttf"],
-        );
-        view.compose(&mut argv).unwrap();
-        // A -try bind whose source is missing is skipped by bubblewrap, so it needs no mount point.
-        let mut argv = launch(
-            false,
-            &[
-                "--ro-bind-try",
-                "/nonexistent/x",
-                "/usr/share/fonts/missing",
-            ],
-        );
-        view.compose(&mut argv).unwrap();
-        // A present source onto a missing destination would fail.
-        let mut argv = launch(false, &["--ro-bind", "/srv/two", "/usr/share/fonts/two"]);
-        assert!(view.compose(&mut argv).is_err());
-    }
-
-    #[test]
-    fn the_rebuild_triggers_watch_every_replaceable_view_path() {
-        // The launch-side identity check keeps a stale view from being used; the path unit is what
-        // makes a fresh one again.
-        let unit = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../os/usr/lib/systemd/system/tilo-sandbox-view.path");
-        let text = std::fs::read_to_string(&unit).unwrap();
-        for path in view_read_paths().filter(|path| path.starts_with("/etc/")) {
+            view.compose(&mut argv).unwrap();
+            let net_root = view.variant_root(Variant::Net).display().to_string();
             assert!(
-                text.lines()
-                    .any(|line| line == format!("PathChanged={path}")),
-                "{} must watch {path}",
-                unit.display()
+                argv.iter().any(|arg| arg.starts_with(&net_root)),
+                "{argv:?}"
+            );
+            for path in NETWORK_READ_PATHS {
+                let bind = argv
+                    .windows(3)
+                    .position(|w| w[0] == "--ro-bind-try" && w[2] == *path)
+                    .unwrap();
+                let etc = argv.windows(3).position(|w| w[2] == "/etc").unwrap();
+                assert!(bind > etc, "{path} must be mounted over the view: {argv:?}");
+            }
+        }
+
+        phase launches_the_view_cannot_carry_unchanged_keep_per_path_binds;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let view = fake_view(dir.path());
+            let refused = |argv: &mut Vec<String>| {
+                let before = argv.clone();
+                let result = view.compose(argv);
+                assert_eq!(*argv, before, "a refusal must leave the argv as it was");
+                result.is_err()
+            };
+            // A bind onto a path the view lacks (the system-authority grant).
+            assert!(refused(&mut launch(
+                false,
+                &["--ro-bind", "/usr/bin", "/usr/bin"]
+            )));
+            assert!(refused(&mut launch(false, &["--dir", "/usr/share/extra"])));
+            assert!(refused(&mut launch(false, &["--symlink", "x", "/etc/y"])));
+            // An option this module does not know, or arguments it cannot see.
+            assert!(refused(&mut launch(false, &["--args", "9"])));
+            assert!(refused(&mut launch(false, &["--some-new-option"])));
+            // A mount before the profile that no profile entry hides: per path it stays visible, under the
+            // view it would vanish.
+            let mut argv = launch(false, &[]);
+            argv.splice(
+                0..0,
+                ["--ro-bind", "/srv/x", "/usr/libexec/x"].map(String::from),
+            );
+            assert!(refused(&mut argv));
+            // No account file: the view's empty mount point would show.
+            let mut argv = launch(false, &[]);
+            argv.drain(0..3);
+            assert!(refused(&mut argv));
+            // No profile at all.
+            let mut argv = vec!["--unshare-all".to_string(), "/bin/app".to_string()];
+            assert!(refused(&mut argv));
+        }
+
+        phase a_stale_view_is_never_used;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let mut view = fake_view(dir.path());
+            let (_, identity) = view
+                .identities
+                .iter_mut()
+                .find(|(_, identity)| identity.is_some())
+                .unwrap();
+            *identity = Some((0, 0));
+            let mut argv = launch(false, &[]);
+            let before = argv.clone();
+            assert!(view.compose(&mut argv).is_err());
+            assert_eq!(argv, before);
+        }
+
+        phase a_mount_inside_a_profile_directory_goes_on_top_of_the_view;
+        {
+            // GPU narrowing binds one loader manifest inside a profile directory.
+            let dir = tempfile::tempdir().unwrap();
+            let view = fake_view(dir.path());
+            let inside = view
+                .variant_root(Variant::Plain)
+                .join("usr/share/fonts/one.ttf");
+            if !inside.parent().unwrap().is_dir() {
+                return;
+            }
+            std::fs::write(&inside, b"").unwrap();
+            let mut argv = launch(
+                false,
+                &["--ro-bind", "/srv/one.ttf", "/usr/share/fonts/one.ttf"],
+            );
+            view.compose(&mut argv).unwrap();
+            // A -try bind whose source is missing is skipped by bubblewrap, so it needs no mount point.
+            let mut argv = launch(
+                false,
+                &[
+                    "--ro-bind-try",
+                    "/nonexistent/x",
+                    "/usr/share/fonts/missing",
+                ],
+            );
+            view.compose(&mut argv).unwrap();
+            // A present source onto a missing destination would fail.
+            let mut argv = launch(false, &["--ro-bind", "/srv/two", "/usr/share/fonts/two"]);
+            assert!(view.compose(&mut argv).is_err());
+        }
+
+        phase the_rebuild_triggers_watch_every_replaceable_view_path;
+        {
+            // The launch-side identity check keeps a stale view from being used; the path unit is what
+            // makes a fresh one again.
+            let unit = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../os/usr/lib/systemd/system/tilo-sandbox-view.path");
+            let text = std::fs::read_to_string(&unit).unwrap();
+            for path in view_read_paths().filter(|path| path.starts_with("/etc/")) {
+                assert!(
+                    text.lines()
+                        .any(|line| line == format!("PathChanged={path}")),
+                    "{} must watch {path}",
+                    unit.display()
+                );
+            }
+            let activate = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../os/usr/lib/systemd/system/tilo-extension-activate.service");
+            assert!(
+                std::fs::read_to_string(activate)
+                    .unwrap()
+                    .contains("tilo-sandbox-view.service"),
+                "an extension merge replaces /usr; it must rebuild the view"
             );
         }
-        let activate = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../os/usr/lib/systemd/system/tilo-extension-activate.service");
-        assert!(
-            std::fs::read_to_string(activate)
-                .unwrap()
-                .contains("tilo-sandbox-view.service"),
-            "an extension merge replaces /usr; it must rebuild the view"
-        );
-    }
 
-    #[test]
-    fn the_argv_parser_knows_every_option_the_launcher_emits() {
-        let mut argv = launch(true, &[]);
-        argv.pop();
-        crate::sandbox::push_capability_binds(
-            &mut argv,
-            &crate::capabilities::CapabilityPlan {
-                ro_paths: vec!["/srv/a".into()],
-                rw_paths: vec!["/srv/b".into(), "/dev/video0".into()],
-                masked_dirs: vec!["/srv/b/.private".into()],
-                pinned_dirs: vec!["/srv/b".into()],
-                ..Default::default()
-            },
-        );
-        argv.extend(
-            [
-                "--setenv",
-                "A",
-                "B",
-                "--perms",
-                "0444",
-                "--remount-ro",
-                "/x",
-                "--as-pid-1",
-            ]
-            .map(String::from),
-        );
-        argv.push("/bin/app".into());
-        let (ops, command) = parse_ops(&argv).unwrap();
-        assert_eq!(argv.get(command).map(String::as_str), Some("/bin/app"));
-        assert!(ops.iter().all(|op| op.end <= command));
+        phase the_argv_parser_knows_every_option_the_launcher_emits;
+        {
+            let mut argv = launch(true, &[]);
+            argv.pop();
+            crate::sandbox::push_capability_binds(
+                &mut argv,
+                &crate::capabilities::CapabilityPlan {
+                    ro_paths: vec!["/srv/a".into()],
+                    rw_paths: vec!["/srv/b".into(), "/dev/video0".into()],
+                    masked_dirs: vec!["/srv/b/.private".into()],
+                    pinned_dirs: vec!["/srv/b".into()],
+                    ..Default::default()
+                },
+            );
+            argv.extend(
+                [
+                    "--setenv",
+                    "A",
+                    "B",
+                    "--perms",
+                    "0444",
+                    "--remount-ro",
+                    "/x",
+                    "--as-pid-1",
+                ]
+                .map(String::from),
+            );
+            argv.push("/bin/app".into());
+            let (ops, command) = parse_ops(&argv).unwrap();
+            assert_eq!(argv.get(command).map(String::as_str), Some("/bin/app"));
+            assert!(ops.iter().all(|op| op.end <= command));
+        }
     }
 }

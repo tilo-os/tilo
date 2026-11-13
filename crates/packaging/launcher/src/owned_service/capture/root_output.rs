@@ -223,115 +223,119 @@ mod tests {
     use std::fs::{self, OpenOptions};
     use std::os::unix::fs::OpenOptionsExt;
 
-    // Exercises the same descriptor ancestry boundary used by admission; no fake setup/GPT or
-    // successful output authority is manufactured.
-    #[test]
-    fn original_output_real_held_ancestry_rejects_overlap_and_alias() {
-        let root = tempfile::tempdir().unwrap();
-        let source = root.path().join("source");
-        let nested = source.join("output");
-        fs::create_dir_all(&nested).unwrap();
-        let open = |path: &std::path::Path| {
-            OpenOptions::new()
-                .read(true)
-                .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
-                .open(path)
-                .unwrap()
-        };
-        let source = open(&source);
-        let output = open(&nested);
-        assert!(contains(&source, &output).unwrap());
-        assert!(!contains(&output, &source).unwrap());
-        assert!(contains(&output, &output.try_clone().unwrap()).unwrap());
-        // Holding the descriptor keeps the inode, rather than switching to an application-selected
-        // path replacement during rename.
-        let held = identity(&output).unwrap();
-        fs::rename(&nested, root.path().join("held")).unwrap();
-        fs::create_dir(&nested).unwrap();
-        assert_eq!(identity(&output).unwrap(), held);
-        assert_ne!(identity(&open(&nested)).unwrap(), held);
-        assert!(!contains(&source, &output).unwrap());
-    }
+    tilo_test_env::scenario! {
+        fn original_output_admission_needs_held_native_custody;
 
-    #[test]
-    fn original_output_retired_native_custody_never_requests_files_or_claim() {
-        struct Retired(std::sync::atomic::AtomicUsize);
-        impl ServiceAuthority for Retired {
-            fn check(&self) -> io::Result<()> {
-                Err(refuse("Original transaction retired"))
-            }
-        }
-        impl OriginalOutputCustody for Retired {
-            fn held_files(&self) -> io::Result<OriginalOutputFiles> {
-                self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                Err(refuse(
-                    "Refused authority must not request output descriptors",
-                ))
-            }
-            fn binding(&self) -> io::Result<OriginalOutputBinding> {
-                self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                Err(refuse(
-                    "Refused authority must not request a transaction binding",
-                ))
-            }
-        }
-        let custody = Arc::new(Retired(std::sync::atomic::AtomicUsize::new(0)));
-        let result = OriginalOutputAdmission::admit(custody.clone());
-        assert_eq!(custody.0.load(std::sync::atomic::Ordering::SeqCst), 0);
-        let Err(error) = result else {
-            panic!("Retired authority admitted");
-        };
-        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
-        // Neither principal branch skips this production constructor.
-        let expected = if rustix::process::getuid().as_raw() == 0
-            && rustix::process::geteuid().as_raw() == 0
-            && unsafe { libc::setfsuid(u32::MAX) } == 0
+        phase original_output_real_held_ancestry_rejects_overlap_and_alias;
+        // Exercises the same descriptor ancestry boundary used by admission; no fake setup/GPT or
+        // successful output authority is manufactured.
         {
-            "Original transaction retired"
-        } else {
-            "Original output requires native root custody"
-        };
-        assert_eq!(error.to_string(), expected);
-    }
+            let root = tempfile::tempdir().unwrap();
+            let source = root.path().join("source");
+            let nested = source.join("output");
+            fs::create_dir_all(&nested).unwrap();
+            let open = |path: &std::path::Path| {
+                OpenOptions::new()
+                    .read(true)
+                    .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+                    .open(path)
+                    .unwrap()
+            };
+            let source = open(&source);
+            let output = open(&nested);
+            assert!(contains(&source, &output).unwrap());
+            assert!(!contains(&output, &source).unwrap());
+            assert!(contains(&output, &output.try_clone().unwrap()).unwrap());
+            // Holding the descriptor keeps the inode, rather than switching to an application-selected
+            // path replacement during rename.
+            let held = identity(&output).unwrap();
+            fs::rename(&nested, root.path().join("held")).unwrap();
+            fs::create_dir(&nested).unwrap();
+            assert_eq!(identity(&output).unwrap(), held);
+            assert_ne!(identity(&open(&nested)).unwrap(), held);
+            assert!(!contains(&source, &output).unwrap());
+        }
 
-    #[test]
-    fn original_output_regular_file_cannot_stand_in_for_partition() {
-        let root = tempfile::tempdir().unwrap();
-        let partition_path = root.path().join("partition");
-        let mut bytes = [0u8; 4096];
-        bytes[1024 + 56..1024 + 58].copy_from_slice(&[0x53, 0xef]);
-        bytes[1024 + 104..1024 + 120].copy_from_slice(&[7; 16]);
-        fs::write(&partition_path, bytes).unwrap();
-        let directory = File::open(root.path()).unwrap();
-        let facts = directory.metadata().unwrap();
-        let partition = File::open(&partition_path).unwrap();
-        // A convincing ext4 header does NOT turn a regular file into the held kernel partition
-        // accepted by the actual admission validator.
-        assert_eq!(ext4_uuid(&partition).unwrap(), [7; 16]);
-        let files = OriginalOutputFiles {
-            source: directory.try_clone().unwrap(),
-            output: directory.try_clone().unwrap(),
-            mount_root: directory,
-            disk: partition.try_clone().unwrap(),
-            partition,
-        };
-        let binding = OriginalOutputBinding {
-            read_claim_digest: [1; 32],
-            medium_claim_digest: [2; 32],
-            operation: uuid::Uuid::new_v4().to_string(),
-            attempt: uuid::Uuid::new_v4().to_string(),
-            source: (facts.dev(), facts.ino()),
-            output: (facts.dev(), facts.ino()),
-            original_uid: facts.uid(),
-            disk_rdev: 1,
-            partition_rdev: 2,
-            mount_id: 1,
-            mount_root: (facts.dev(), facts.ino()),
-            filesystem_uuid: [7; 16],
-            reserve_bytes: 1,
-        };
-        let error = validate_files(&files, &binding).unwrap_err();
-        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
-        assert_eq!(error.to_string(), "Original output block custody differs");
+        phase original_output_retired_native_custody_never_requests_files_or_claim;
+        {
+            struct Retired(std::sync::atomic::AtomicUsize);
+            impl ServiceAuthority for Retired {
+                fn check(&self) -> io::Result<()> {
+                    Err(refuse("Original transaction retired"))
+                }
+            }
+            impl OriginalOutputCustody for Retired {
+                fn held_files(&self) -> io::Result<OriginalOutputFiles> {
+                    self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    Err(refuse(
+                        "Refused authority must not request output descriptors",
+                    ))
+                }
+                fn binding(&self) -> io::Result<OriginalOutputBinding> {
+                    self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    Err(refuse(
+                        "Refused authority must not request a transaction binding",
+                    ))
+                }
+            }
+            let custody = Arc::new(Retired(std::sync::atomic::AtomicUsize::new(0)));
+            let result = OriginalOutputAdmission::admit(custody.clone());
+            assert_eq!(custody.0.load(std::sync::atomic::Ordering::SeqCst), 0);
+            let Err(error) = result else {
+                panic!("Retired authority admitted");
+            };
+            assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+            // Neither principal branch skips this production constructor.
+            let expected = if rustix::process::getuid().as_raw() == 0
+                && rustix::process::geteuid().as_raw() == 0
+                && unsafe { libc::setfsuid(u32::MAX) } == 0
+            {
+                "Original transaction retired"
+            } else {
+                "Original output requires native root custody"
+            };
+            assert_eq!(error.to_string(), expected);
+        }
+
+        phase original_output_regular_file_cannot_stand_in_for_partition;
+        {
+            let root = tempfile::tempdir().unwrap();
+            let partition_path = root.path().join("partition");
+            let mut bytes = [0u8; 4096];
+            bytes[1024 + 56..1024 + 58].copy_from_slice(&[0x53, 0xef]);
+            bytes[1024 + 104..1024 + 120].copy_from_slice(&[7; 16]);
+            fs::write(&partition_path, bytes).unwrap();
+            let directory = File::open(root.path()).unwrap();
+            let facts = directory.metadata().unwrap();
+            let partition = File::open(&partition_path).unwrap();
+            // A convincing ext4 header does NOT turn a regular file into the held kernel partition
+            // accepted by the actual admission validator.
+            assert_eq!(ext4_uuid(&partition).unwrap(), [7; 16]);
+            let files = OriginalOutputFiles {
+                source: directory.try_clone().unwrap(),
+                output: directory.try_clone().unwrap(),
+                mount_root: directory,
+                disk: partition.try_clone().unwrap(),
+                partition,
+            };
+            let binding = OriginalOutputBinding {
+                read_claim_digest: [1; 32],
+                medium_claim_digest: [2; 32],
+                operation: uuid::Uuid::new_v4().to_string(),
+                attempt: uuid::Uuid::new_v4().to_string(),
+                source: (facts.dev(), facts.ino()),
+                output: (facts.dev(), facts.ino()),
+                original_uid: facts.uid(),
+                disk_rdev: 1,
+                partition_rdev: 2,
+                mount_id: 1,
+                mount_root: (facts.dev(), facts.ino()),
+                filesystem_uuid: [7; 16],
+                reserve_bytes: 1,
+            };
+            let error = validate_files(&files, &binding).unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+            assert_eq!(error.to_string(), "Original output block custody differs");
+        }
     }
 }

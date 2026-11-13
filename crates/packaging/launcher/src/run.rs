@@ -472,93 +472,97 @@ mod headless_console_launch_tests {
         )
     }
 
-    #[test]
-    fn typed_headless_console_uses_fixed_standard_wire_and_refuses_other_modes() {
-        let mut opts = RunOptions {
-            headless_console: Some(72),
-            ..Default::default()
-        };
-        validate_open_uri(&browser_manifest(), &opts).unwrap();
-        let args = gui_open_args(&opts);
-        assert_eq!(args[0], "--headless-drive");
-        assert_eq!(
-            serde_json::from_str::<serde_json::Value>(&args[1]).unwrap(),
-            serde_json::json!({"serve":"/run/tilo/app/.headless-72/control.sock"})
-        );
-        opts.wayland_socket = Some("/not/a/display".into());
-        assert!(validate_open_uri(&browser_manifest(), &opts).is_err());
-        opts.wayland_socket = None;
-        opts.headless_console = Some(0);
-        assert!(validate_open_uri(&browser_manifest(), &opts).is_err());
-        opts.headless_console = Some(72);
-        opts.mode = LaunchMode::Service {
-            passthrough_argv: Vec::new(),
-        };
-        assert!(validate_open_uri(&browser_manifest(), &opts).is_err());
-    }
+    tilo_test_env::scenario! {
+        fn a_headless_console_launch_follows_its_manifest;
 
-    #[test]
-    fn launch_claims_and_device_hints_follow_the_manifest() {
+        phase typed_headless_console_uses_fixed_standard_wire_and_refuses_other_modes;
         {
-            let manifest = browser_manifest();
-            let accepted = RunOptions {
-                open_uri: Some("https://example.test/a --not-an-argument".into()),
+            let mut opts = RunOptions {
+                headless_console: Some(72),
                 ..Default::default()
             };
-            validate_open_uri(&manifest, &accepted).unwrap();
-            let own_record = RunOptions {
-                open_uri: Some("tilo-record:3f0c9a1e-2b4d-4e8f-9a6b-7c5d1e2f3a4b".into()),
-                ..Default::default()
+            validate_open_uri(&browser_manifest(), &opts).unwrap();
+            let args = gui_open_args(&opts);
+            assert_eq!(args[0], "--headless-drive");
+            assert_eq!(
+                serde_json::from_str::<serde_json::Value>(&args[1]).unwrap(),
+                serde_json::json!({"serve":"/run/tilo/app/.headless-72/control.sock"})
+            );
+            opts.wayland_socket = Some("/not/a/display".into());
+            assert!(validate_open_uri(&browser_manifest(), &opts).is_err());
+            opts.wayland_socket = None;
+            opts.headless_console = Some(0);
+            assert!(validate_open_uri(&browser_manifest(), &opts).is_err());
+            opts.headless_console = Some(72);
+            opts.mode = LaunchMode::Service {
+                passthrough_argv: Vec::new(),
             };
-            validate_open_uri(&manifest, &own_record)
-                .expect("every app opens its own records unclaimed");
+            assert!(validate_open_uri(&browser_manifest(), &opts).is_err());
+        }
 
-            for uri in [
-                "http://example.test",
-                "file:///etc/passwd",
-                "https://x\n--flag",
-                "tilo-record:",
-            ] {
-                let opts = RunOptions {
-                    open_uri: Some(uri.into()),
+        phase launch_claims_and_device_hints_follow_the_manifest;
+        {
+            {
+                let manifest = browser_manifest();
+                let accepted = RunOptions {
+                    open_uri: Some("https://example.test/a --not-an-argument".into()),
                     ..Default::default()
                 };
-                assert!(
-                    validate_open_uri(&manifest, &opts).is_err(),
-                    "accepted {uri:?}"
-                );
-            }
-        }
-        {
-            let game: ManifestView = crate::manifest::test_manifest(
-                "id = \"so.tilo.game\"\nversion = \"1\"\nkind = \"app\"\ncategory = \"Games\"",
-                "[entrypoint]\nbin = \"bin/game\"\n",
-            );
-            assert!(is_native_game_launch(&game, &RunOptions::default()));
-            let service = RunOptions {
-                mode: LaunchMode::Service {
-                    passthrough_argv: Vec::new(),
-                },
-                ..RunOptions::default()
-            };
-            assert!(!is_native_game_launch(&game, &service));
-            assert!(!is_native_game_launch(
-                &browser_manifest(),
-                &RunOptions::default()
-            ));
-        }
-        {
-            let mut game = vec!["/app/game".to_string()];
-            splice_game_ntsync(&mut game, true).unwrap();
-            assert!(
-                game.windows(3)
-                    .any(|window| { window == ["--dev-bind", "/dev/ntsync", "/dev/ntsync"] })
-            );
-            assert_eq!(game.last().map(String::as_str), Some("/app/game"));
+                validate_open_uri(&manifest, &accepted).unwrap();
+                let own_record = RunOptions {
+                    open_uri: Some("tilo-record:3f0c9a1e-2b4d-4e8f-9a6b-7c5d1e2f3a4b".into()),
+                    ..Default::default()
+                };
+                validate_open_uri(&manifest, &own_record)
+                    .expect("every app opens its own records unclaimed");
 
-            let mut ordinary = vec!["/app/browser".to_string()];
-            splice_game_ntsync(&mut ordinary, false).unwrap();
-            assert_eq!(ordinary, ["/app/browser"]);
+                for uri in [
+                    "http://example.test",
+                    "file:///etc/passwd",
+                    "https://x\n--flag",
+                    "tilo-record:",
+                ] {
+                    let opts = RunOptions {
+                        open_uri: Some(uri.into()),
+                        ..Default::default()
+                    };
+                    assert!(
+                        validate_open_uri(&manifest, &opts).is_err(),
+                        "accepted {uri:?}"
+                    );
+                }
+            }
+            {
+                let game: ManifestView = crate::manifest::test_manifest(
+                    "id = \"so.tilo.game\"\nversion = \"1\"\nkind = \"app\"\ncategory = \"Games\"",
+                    "[entrypoint]\nbin = \"bin/game\"\n",
+                );
+                assert!(is_native_game_launch(&game, &RunOptions::default()));
+                let service = RunOptions {
+                    mode: LaunchMode::Service {
+                        passthrough_argv: Vec::new(),
+                    },
+                    ..RunOptions::default()
+                };
+                assert!(!is_native_game_launch(&game, &service));
+                assert!(!is_native_game_launch(
+                    &browser_manifest(),
+                    &RunOptions::default()
+                ));
+            }
+            {
+                let mut game = vec!["/app/game".to_string()];
+                splice_game_ntsync(&mut game, true).unwrap();
+                assert!(
+                    game.windows(3)
+                        .any(|window| { window == ["--dev-bind", "/dev/ntsync", "/dev/ntsync"] })
+                );
+                assert_eq!(game.last().map(String::as_str), Some("/app/game"));
+
+                let mut ordinary = vec!["/app/browser".to_string()];
+                splice_game_ntsync(&mut ordinary, false).unwrap();
+                assert_eq!(ordinary, ["/app/browser"]);
+            }
         }
     }
 }
@@ -2289,81 +2293,85 @@ mod sandbox_account_tests {
     use super::*;
     use tilo_test_env::SpawnUnderEnvLock as _;
 
-    #[test]
-    fn handoff_preserves_a_service_source_in_the_account_child_slot() {
-        let service = stage_seccomp_blob(b"service").expect("service fixture");
-        let filters = SeccompFds {
-            clone3_compat: stage_seccomp_blob(b"clone3").expect("compat fixture"),
-            baseline: stage_seccomp_blob(b"baseline").expect("baseline fixture"),
-        };
-        let account = stage_sandbox_account(&mut Vec::new(), None).expect("account");
-        let expected = format!(
-            "serviceclone3baseline{}",
-            sandbox_account(
-                rustix::process::geteuid().as_raw(),
-                rustix::process::getegid().as_raw()
-            )
-        );
-        let source = service.as_raw_fd();
-        let mut pairs = vec![(ACCOUNT_CHILD_FD, 17)];
-        pairs.extend(filters.child_fds(account.as_raw_fd()));
-        let mut command = Command::new("/bin/cat");
-        command.args([
-            "/proc/self/fd/17",
-            "/proc/self/fd/40",
-            "/proc/self/fd/41",
-            "/proc/self/fd/42",
-        ]);
-        // Move only the child's fixture onto the colliding source slot.
-        unsafe {
-            command.pre_exec(move || {
-                if libc::dup2(source, ACCOUNT_CHILD_FD) < 0 {
-                    return Err(std::io::Error::last_os_error());
-                }
-                place_child_fds(&mut pairs)
-            });
+    tilo_test_env::scenario! {
+        fn the_sandbox_account_is_private_data_in_its_own_slot;
+
+        phase handoff_preserves_a_service_source_in_the_account_child_slot;
+        {
+            let service = stage_seccomp_blob(b"service").expect("service fixture");
+            let filters = SeccompFds {
+                clone3_compat: stage_seccomp_blob(b"clone3").expect("compat fixture"),
+                baseline: stage_seccomp_blob(b"baseline").expect("baseline fixture"),
+            };
+            let account = stage_sandbox_account(&mut Vec::new(), None).expect("account");
+            let expected = format!(
+                "serviceclone3baseline{}",
+                sandbox_account(
+                    rustix::process::geteuid().as_raw(),
+                    rustix::process::getegid().as_raw()
+                )
+            );
+            let source = service.as_raw_fd();
+            let mut pairs = vec![(ACCOUNT_CHILD_FD, 17)];
+            pairs.extend(filters.child_fds(account.as_raw_fd()));
+            let mut command = Command::new("/bin/cat");
+            command.args([
+                "/proc/self/fd/17",
+                "/proc/self/fd/40",
+                "/proc/self/fd/41",
+                "/proc/self/fd/42",
+            ]);
+            // Move only the child's fixture onto the colliding source slot.
+            unsafe {
+                command.pre_exec(move || {
+                    if libc::dup2(source, ACCOUNT_CHILD_FD) < 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    place_child_fds(&mut pairs)
+                });
+            }
+            let output = command.output_locked().expect("fixture child");
+            assert!(output.status.success(), "{:?}", output.stderr);
+            assert_eq!(output.stdout, expected.as_bytes());
         }
-        let output = command.output_locked().expect("fixture child");
-        assert!(output.status.success(), "{:?}", output.stderr);
-        assert_eq!(output.stdout, expected.as_bytes());
-    }
 
-    #[test]
-    fn staged_account_is_private_read_only_data_and_reserves_its_descriptor() {
-        use std::io::Read as _;
-        let mut argv = vec!["--unshare-all".to_string(), "/app/bin".to_string()];
-        let fd = stage_sandbox_account(&mut argv, None).expect("stage account");
-        assert!(fd.as_raw_fd() >= 128);
-        let mut contents = String::new();
-        std::fs::File::from(fd)
-            .read_to_string(&mut contents)
-            .expect("account bytes");
-        assert_eq!(
-            contents,
-            sandbox_account(
-                rustix::process::geteuid().as_raw(),
-                rustix::process::getegid().as_raw()
-            )
-        );
-        assert_eq!(
-            argv,
-            [
-                "--ro-bind-data",
-                "42",
-                "/etc/passwd",
-                "--unshare-all",
-                "/app/bin"
-            ]
-        );
-    }
+        phase staged_account_is_private_read_only_data_and_reserves_its_descriptor;
+        {
+            use std::io::Read as _;
+            let mut argv = vec!["--unshare-all".to_string(), "/app/bin".to_string()];
+            let fd = stage_sandbox_account(&mut argv, None).expect("stage account");
+            assert!(fd.as_raw_fd() >= 128);
+            let mut contents = String::new();
+            std::fs::File::from(fd)
+                .read_to_string(&mut contents)
+                .expect("account bytes");
+            assert_eq!(
+                contents,
+                sandbox_account(
+                    rustix::process::geteuid().as_raw(),
+                    rustix::process::getegid().as_raw()
+                )
+            );
+            assert_eq!(
+                argv,
+                [
+                    "--ro-bind-data",
+                    "42",
+                    "/etc/passwd",
+                    "--unshare-all",
+                    "/app/bin"
+                ]
+            );
+        }
 
-    #[test]
-    fn account_contains_only_the_sandbox_identity_and_home() {
-        assert_eq!(
-            sandbox_account(1000, 1001),
-            "app:x:1000:1001:Sandbox application:/run/tilo/app:/sbin/nologin\n"
-        );
-        assert!(crate::services::RESERVED_CHILD_FDS.contains(&ACCOUNT_CHILD_FD));
+        phase account_contains_only_the_sandbox_identity_and_home;
+        {
+            assert_eq!(
+                sandbox_account(1000, 1001),
+                "app:x:1000:1001:Sandbox application:/run/tilo/app:/sbin/nologin\n"
+            );
+            assert!(crate::services::RESERVED_CHILD_FDS.contains(&ACCOUNT_CHILD_FD));
+        }
     }
 }
 
@@ -4383,34 +4391,37 @@ fn spawn_atspi_proxy(
 mod dbus_resolution_tests {
     use super::*;
 
-    #[test]
-    fn a_missing_filter_proxy_never_falls_back_to_the_raw_session_bus() {
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set(
-            crate::dbus_proxy::PROXY_BIN_ENV,
-            "/definitely/missing/xdg-dbus-proxy",
-        )
-        .set("DBUS_SESSION_BUS_ADDRESS", "unix:path=/run/user/1234/bus");
-        let portals = std::collections::BTreeMap::from([(
-            "notifications".to_string(),
-            PortalPolicy::ViaHost,
-        )]);
+    tilo_test_env::scenario! {
+        fn the_session_bus_reaches_a_launch_only_through_its_proxies;
 
-        let (plan, guards) = resolve_dbus_bind(&portals, true, None);
+        phase a_missing_filter_proxy_never_falls_back_to_the_raw_session_bus;
+        {
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set(
+                crate::dbus_proxy::PROXY_BIN_ENV,
+                "/definitely/missing/xdg-dbus-proxy",
+            )
+            .set("DBUS_SESSION_BUS_ADDRESS", "unix:path=/run/user/1234/bus");
+            let portals = std::collections::BTreeMap::from([(
+                "notifications".to_string(),
+                PortalPolicy::ViaHost,
+            )]);
 
-        assert!(plan.is_none(), "a raw D-Bus bind must never be planned");
-        assert!(guards.is_empty(), "no proxy process should have started");
-    }
+            let (plan, guards) = resolve_dbus_bind(&portals, true, None);
 
-    /// The session and AT-SPI proxies come up side by side.
-    #[test]
-    fn the_session_and_accessibility_proxies_start_side_by_side() {
-        use std::os::unix::fs::PermissionsExt;
-        let tmp = tempfile::tempdir().unwrap();
-        let proxy = tmp.path().join("xdg-dbus-proxy");
-        std::fs::write(
-            &proxy,
-            r#"#!/bin/sh
+            assert!(plan.is_none(), "a raw D-Bus bind must never be planned");
+            assert!(guards.is_empty(), "no proxy process should have started");
+        }
+
+        phase the_session_and_accessibility_proxies_start_side_by_side;
+        // The session and AT-SPI proxies come up side by side.
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let tmp = tempfile::tempdir().unwrap();
+            let proxy = tmp.path().join("xdg-dbus-proxy");
+            std::fs::write(
+                &proxy,
+                r#"#!/bin/sh
 notify=0
 if [ "$1" = --fd=0 ]; then notify=1; shift; fi
 dir=$(dirname "$2")
@@ -4424,35 +4435,36 @@ done
 if [ "$notify" = 1 ]; then printf x >&0; fi
 exec sleep infinity
 "#,
-        )
-        .unwrap();
-        std::fs::set_permissions(&proxy, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set(crate::dbus_proxy::PROXY_BIN_ENV, &proxy)
-            .set("DBUS_SESSION_BUS_ADDRESS", "unix:path=/run/user/1234/bus")
-            .set("AT_SPI_BUS_ADDRESS", "unix:path=/run/user/1234/at-spi/bus")
-            .set(
-                "TILO_MOCK_PROXY_WAIT_SECS",
-                tilo_test_env::hang_bound().as_secs().to_string(),
+            )
+            .unwrap();
+            std::fs::set_permissions(&proxy, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set(crate::dbus_proxy::PROXY_BIN_ENV, &proxy)
+                .set("DBUS_SESSION_BUS_ADDRESS", "unix:path=/run/user/1234/bus")
+                .set("AT_SPI_BUS_ADDRESS", "unix:path=/run/user/1234/at-spi/bus")
+                .set(
+                    "TILO_MOCK_PROXY_WAIT_SECS",
+                    tilo_test_env::hang_bound().as_secs().to_string(),
+                );
+            let sockets = ProxySockets {
+                session: tmp.path().join("sockets/1.sock"),
+                atspi: tmp.path().join("sockets/1-atspi.sock"),
+                ready_within: tilo_test_env::hang_bound(),
+            };
+
+            let (plan, guards) =
+                resolve_dbus_bind_at(&std::collections::BTreeMap::new(), true, None, &sockets);
+
+            let plan = plan.expect("both proxies became ready together");
+            assert_eq!(plan.host_socket, sockets.session);
+            assert_eq!(
+                plan.atspi.map(|atspi| atspi.host_socket),
+                Some(sockets.atspi.clone())
             );
-        let sockets = ProxySockets {
-            session: tmp.path().join("sockets/1.sock"),
-            atspi: tmp.path().join("sockets/1-atspi.sock"),
-            ready_within: tilo_test_env::hang_bound(),
-        };
-
-        let (plan, guards) =
-            resolve_dbus_bind_at(&std::collections::BTreeMap::new(), true, None, &sockets);
-
-        let plan = plan.expect("both proxies became ready together");
-        assert_eq!(plan.host_socket, sockets.session);
-        assert_eq!(
-            plan.atspi.map(|atspi| atspi.host_socket),
-            Some(sockets.atspi.clone())
-        );
-        assert_eq!(guards.len(), 2);
-        drop(guards);
-        assert!(!sockets.session.exists() && !sockets.atspi.exists());
+            assert_eq!(guards.len(), 2);
+            drop(guards);
+            assert!(!sockets.session.exists() && !sockets.atspi.exists());
+        }
     }
 }
 
@@ -4471,114 +4483,6 @@ mod identity_resolution_tests {
         std::fs::create_dir_all(&store).unwrap();
         std::fs::write(store.join("primary.json"), b"{}").unwrap();
         store
-    }
-
-    #[test]
-    fn identity_record_resolution_honours_the_requested_source() {
-        {
-            let opts = RunOptions {
-                identity: IdentitySource::Record(PathBuf::from("/nowhere/does/not/exist.json")),
-                ..RunOptions::default()
-            };
-            assert_eq!(
-                resolve_identity_host_path(&opts),
-                Some(PathBuf::from("/nowhere/does/not/exist.json")),
-                "explicit path is used verbatim, no exists() check"
-            );
-        }
-        {
-            let tmp = tempfile::tempdir().unwrap();
-            let store = store_with_primary(tmp.path());
-            let opts = RunOptions {
-                identity: IdentitySource::Store(store.clone()),
-                ..RunOptions::default()
-            };
-            assert_eq!(
-                resolve_identity_host_path(&opts),
-                Some(store.join("primary.json"))
-            );
-        }
-        {
-            let tmp = tempfile::tempdir().unwrap();
-            let opts = RunOptions {
-                identity: IdentitySource::Store(tmp.path().to_path_buf()),
-                ..RunOptions::default()
-            };
-            assert_eq!(resolve_identity_host_path(&opts), None);
-        }
-        {
-            let home = tilo_test_env::TestHome::new().unwrap();
-            store_with_primary(home.config());
-            let opts = RunOptions {
-                identity: IdentitySource::None,
-                ..RunOptions::default()
-            };
-            assert_eq!(resolve_identity_host_path(&opts), None);
-        }
-        {
-            use std::os::unix::fs::PermissionsExt;
-
-            let store = tempfile::tempdir().unwrap();
-            std::fs::set_permissions(store.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
-            let path = store.path().join("identity-joined.json");
-            let original =
-                runtime_identity::public_member_record("Member", [1, 2, 3], [9; 32]).unwrap();
-            std::fs::write(&path, &original).unwrap();
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
-
-            for _ in 0..2 {
-                let (app, control, thread) =
-                    start_identity_broker(&path, Some(store.path())).unwrap();
-                drop(app);
-                drop(control);
-                thread.join().unwrap();
-            }
-
-            assert_eq!(std::fs::read(&path).unwrap(), original);
-            assert!(!store.path().join("secrets").exists());
-        }
-        {
-            use std::os::unix::fs::PermissionsExt;
-
-            let dir = tempfile::tempdir().unwrap();
-            std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
-            let store = tempfile::tempdir().unwrap();
-            let path = dir.path().join("custom.json");
-            let secret = [31u8; 32];
-            let key = ed25519_dalek::SigningKey::from_bytes(&secret);
-            let original = serde_json::to_vec(&serde_json::json!({
-                "display_name": "Explicit debug identity",
-                "avatar_color": [1, 2, 3],
-                "threshold_identity": {
-                    "single_device": true,
-                    "group_public_key": key.verifying_key().to_bytes(),
-                    "threshold": 1,
-                    "total_shares": 1,
-                    "share_index": 1,
-                    "secret_bytes": secret,
-                },
-                "created_at": "2026-08-30T00:00:00Z",
-                "schema_version": 1,
-            }))
-            .unwrap();
-            std::fs::write(&path, &original).unwrap();
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
-
-            let (app, control, thread) = start_identity_broker(&path, Some(store.path())).unwrap();
-            drop(app);
-            drop(control);
-            thread.join().unwrap();
-
-            assert_eq!(std::fs::read(&path).unwrap(), original);
-            assert_eq!(
-                std::fs::metadata(dir.path()).unwrap().permissions().mode() & 0o777,
-                0o755,
-                "an explicit path must never chmod its parent"
-            );
-            assert!(!dir.path().join("secrets").exists());
-            assert!(!dir.path().join(".identity.lock").exists());
-            assert!(!store.path().join("secrets").exists());
-        }
     }
 
     /// What any write under `dir` would change: every entry's path, mode, inode, size, change and
@@ -4707,67 +4611,6 @@ mod identity_resolution_tests {
         Ok(())
     }
 
-    #[test]
-    fn launching_never_writes_the_identity_store() {
-        // Each record as provisioning leaves it: a local or threshold primary secured into its broker
-        // file, and a joined device's public record.
-        for (name, id, primary) in [
-            ("local", "primary", Some(local_record())),
-            ("threshold", "primary", Some(threshold_record())),
-            ("public member", "identity-joined", None),
-        ] {
-            let root = tempfile::tempdir().unwrap();
-            let store = root.path().join("identity");
-            if let Some(bytes) = primary {
-                runtime_identity::import_identity_with_provider(
-                    &store,
-                    id,
-                    &bytes,
-                    &runtime_identity::BrokerFileProvider::new(&store),
-                )
-                .unwrap();
-            } else {
-                std::fs::create_dir_all(&store).unwrap();
-                std::fs::write(
-                    store.join(format!("{id}.json")),
-                    runtime_identity::public_member_record("Member", [1, 2, 3], [9; 32]).unwrap(),
-                )
-                .unwrap();
-                make_read_only(&store, false);
-            }
-            runtime_identity::set_active_identity(&store, id).unwrap();
-            make_read_only(&store, true);
-            let before = store_snapshot(&store);
-
-            for _ in 0..2 {
-                launch_identity(&store).unwrap_or_else(|error| panic!("{name}: {error}"));
-            }
-
-            assert_eq!(
-                store_snapshot(&store),
-                before,
-                "launching with a {name} record wrote the identity store"
-            );
-            make_read_only(&store, false);
-        }
-
-        // A record whose key was never secured fails the launch, names where to secure it, and stays
-        // exactly as it was.
-        {
-            let root = tempfile::tempdir().unwrap();
-            let store = root.path().join("identity");
-            std::fs::create_dir_all(&store).unwrap();
-            std::fs::write(store.join("primary.json"), local_record()).unwrap();
-            make_read_only(&store, true);
-            let before = store_snapshot(&store);
-
-            let error = launch_identity(&store).expect_err("an unsecured record must not launch");
-            assert!(error.to_string().contains("Settings > Users"), "{error}");
-            assert_eq!(store_snapshot(&store), before);
-            make_read_only(&store, false);
-        }
-    }
-
     /// Ask the app end of a launch's broker for metadata and to sign, over the broker's pinned frames:
     /// an operation or status byte, a big-endian `u32` length, then the payload.
     fn ask_broker(app: &mut UnixStream, op: u8, payload: &[u8]) -> (u8, Vec<u8>) {
@@ -4858,36 +4701,209 @@ mod identity_resolution_tests {
 
     // The user's store is located through the environment; these pin that resolution itself.
 
-    #[test]
-    fn the_user_identity_store_is_located_via_xdg_then_home() {
+    tilo_test_env::scenario! {
+        fn identity_resolution_reads_the_store_it_was_asked_for_and_never_writes_it;
+
+        phase identity_record_resolution_honours_the_requested_source;
         {
-            let mut home = tilo_test_env::TestHome::new().unwrap();
-            // A record under `$HOME/.config` must lose to `$XDG_CONFIG_HOME`.
-            store_with_primary(&home.home().join(".config"));
-            let xdg = home.root().join("xdg-config");
-            let ident = store_with_primary(&xdg).join("primary.json");
-            home.env().set("XDG_CONFIG_HOME", &xdg);
-            assert_eq!(
-                resolve_identity_host_path(&RunOptions::default()),
-                Some(ident)
-            );
+            {
+                let opts = RunOptions {
+                    identity: IdentitySource::Record(PathBuf::from("/nowhere/does/not/exist.json")),
+                    ..RunOptions::default()
+                };
+                assert_eq!(
+                    resolve_identity_host_path(&opts),
+                    Some(PathBuf::from("/nowhere/does/not/exist.json")),
+                    "explicit path is used verbatim, no exists() check"
+                );
+            }
+            {
+                let tmp = tempfile::tempdir().unwrap();
+                let store = store_with_primary(tmp.path());
+                let opts = RunOptions {
+                    identity: IdentitySource::Store(store.clone()),
+                    ..RunOptions::default()
+                };
+                assert_eq!(
+                    resolve_identity_host_path(&opts),
+                    Some(store.join("primary.json"))
+                );
+            }
+            {
+                let tmp = tempfile::tempdir().unwrap();
+                let opts = RunOptions {
+                    identity: IdentitySource::Store(tmp.path().to_path_buf()),
+                    ..RunOptions::default()
+                };
+                assert_eq!(resolve_identity_host_path(&opts), None);
+            }
+            {
+                let home = tilo_test_env::TestHome::new().unwrap();
+                store_with_primary(home.config());
+                let opts = RunOptions {
+                    identity: IdentitySource::None,
+                    ..RunOptions::default()
+                };
+                assert_eq!(resolve_identity_host_path(&opts), None);
+            }
+            {
+                use std::os::unix::fs::PermissionsExt;
+
+                let store = tempfile::tempdir().unwrap();
+                std::fs::set_permissions(store.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+                let path = store.path().join("identity-joined.json");
+                let original =
+                    runtime_identity::public_member_record("Member", [1, 2, 3], [9; 32]).unwrap();
+                std::fs::write(&path, &original).unwrap();
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+                for _ in 0..2 {
+                    let (app, control, thread) =
+                        start_identity_broker(&path, Some(store.path())).unwrap();
+                    drop(app);
+                    drop(control);
+                    thread.join().unwrap();
+                }
+
+                assert_eq!(std::fs::read(&path).unwrap(), original);
+                assert!(!store.path().join("secrets").exists());
+            }
+            {
+                use std::os::unix::fs::PermissionsExt;
+
+                let dir = tempfile::tempdir().unwrap();
+                std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+                let store = tempfile::tempdir().unwrap();
+                let path = dir.path().join("custom.json");
+                let secret = [31u8; 32];
+                let key = ed25519_dalek::SigningKey::from_bytes(&secret);
+                let original = serde_json::to_vec(&serde_json::json!({
+                    "display_name": "Explicit debug identity",
+                    "avatar_color": [1, 2, 3],
+                    "threshold_identity": {
+                        "single_device": true,
+                        "group_public_key": key.verifying_key().to_bytes(),
+                        "threshold": 1,
+                        "total_shares": 1,
+                        "share_index": 1,
+                        "secret_bytes": secret,
+                    },
+                    "created_at": "2026-08-30T00:00:00Z",
+                    "schema_version": 1,
+                }))
+                .unwrap();
+                std::fs::write(&path, &original).unwrap();
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+                let (app, control, thread) = start_identity_broker(&path, Some(store.path())).unwrap();
+                drop(app);
+                drop(control);
+                thread.join().unwrap();
+
+                assert_eq!(std::fs::read(&path).unwrap(), original);
+                assert_eq!(
+                    std::fs::metadata(dir.path()).unwrap().permissions().mode() & 0o777,
+                    0o755,
+                    "an explicit path must never chmod its parent"
+                );
+                assert!(!dir.path().join("secrets").exists());
+                assert!(!dir.path().join(".identity.lock").exists());
+                assert!(!store.path().join("secrets").exists());
+            }
         }
+
+        phase launching_never_writes_the_identity_store;
         {
-            let mut home = tilo_test_env::TestHome::new().unwrap();
-            let ident = store_with_primary(&home.home().join(".config")).join("primary.json");
-            home.env().remove("XDG_CONFIG_HOME");
-            assert_eq!(
-                resolve_identity_host_path(&RunOptions::default()),
-                Some(ident)
-            );
+            // Each record as provisioning leaves it: a local or threshold primary secured into its broker
+            // file, and a joined device's public record.
+            for (name, id, primary) in [
+                ("local", "primary", Some(local_record())),
+                ("threshold", "primary", Some(threshold_record())),
+                ("public member", "identity-joined", None),
+            ] {
+                let root = tempfile::tempdir().unwrap();
+                let store = root.path().join("identity");
+                if let Some(bytes) = primary {
+                    runtime_identity::import_identity_with_provider(
+                        &store,
+                        id,
+                        &bytes,
+                        &runtime_identity::BrokerFileProvider::new(&store),
+                    )
+                    .unwrap();
+                } else {
+                    std::fs::create_dir_all(&store).unwrap();
+                    std::fs::write(
+                        store.join(format!("{id}.json")),
+                        runtime_identity::public_member_record("Member", [1, 2, 3], [9; 32]).unwrap(),
+                    )
+                    .unwrap();
+                    make_read_only(&store, false);
+                }
+                runtime_identity::set_active_identity(&store, id).unwrap();
+                make_read_only(&store, true);
+                let before = store_snapshot(&store);
+
+                for _ in 0..2 {
+                    launch_identity(&store).unwrap_or_else(|error| panic!("{name}: {error}"));
+                }
+
+                assert_eq!(
+                    store_snapshot(&store),
+                    before,
+                    "launching with a {name} record wrote the identity store"
+                );
+                make_read_only(&store, false);
+            }
+
+            // A record whose key was never secured fails the launch, names where to secure it, and stays
+            // exactly as it was.
+            {
+                let root = tempfile::tempdir().unwrap();
+                let store = root.path().join("identity");
+                std::fs::create_dir_all(&store).unwrap();
+                std::fs::write(store.join("primary.json"), local_record()).unwrap();
+                make_read_only(&store, true);
+                let before = store_snapshot(&store);
+
+                let error = launch_identity(&store).expect_err("an unsecured record must not launch");
+                assert!(error.to_string().contains("Settings > Users"), "{error}");
+                assert_eq!(store_snapshot(&store), before);
+                make_read_only(&store, false);
+            }
         }
+
+        phase the_user_identity_store_is_located_via_xdg_then_home;
         {
-            let mut env = tilo_test_env::ScopedEnv::new();
-            env.remove("XDG_CONFIG_HOME").remove("HOME");
-            assert_eq!(
-                identity_store(&IdentitySource::UserStore),
-                std::env::home_dir().map(|home| home.join(".config/tilo/identity"))
-            );
+            {
+                let mut home = tilo_test_env::TestHome::new().unwrap();
+                // A record under `$HOME/.config` must lose to `$XDG_CONFIG_HOME`.
+                store_with_primary(&home.home().join(".config"));
+                let xdg = home.root().join("xdg-config");
+                let ident = store_with_primary(&xdg).join("primary.json");
+                home.env().set("XDG_CONFIG_HOME", &xdg);
+                assert_eq!(
+                    resolve_identity_host_path(&RunOptions::default()),
+                    Some(ident)
+                );
+            }
+            {
+                let mut home = tilo_test_env::TestHome::new().unwrap();
+                let ident = store_with_primary(&home.home().join(".config")).join("primary.json");
+                home.env().remove("XDG_CONFIG_HOME");
+                assert_eq!(
+                    resolve_identity_host_path(&RunOptions::default()),
+                    Some(ident)
+                );
+            }
+            {
+                let mut env = tilo_test_env::ScopedEnv::new();
+                env.remove("XDG_CONFIG_HOME").remove("HOME");
+                assert_eq!(
+                    identity_store(&IdentitySource::UserStore),
+                    std::env::home_dir().map(|home| home.join(".config/tilo/identity"))
+                );
+            }
         }
     }
 }
@@ -4918,151 +4934,155 @@ mod app_dir_tests {
         }
     }
 
-    #[test]
-    fn the_app_directory_is_resolved_per_workspace_and_never_from_the_manifest() {
+    tilo_test_env::scenario! {
+        fn the_app_directory_and_settings_binds_come_from_the_workspace;
+
+        phase the_app_directory_is_resolved_per_workspace_and_never_from_the_manifest;
         {
-            let m = manifest("so.tilo.fixture");
-            let workspace = resolve_capabilities(&m, &opts_in(Some("workspace-a")));
-            assert_eq!(
-                workspace.participation,
-                crate::capabilities::Participation::ReadOnly
-            );
+            {
+                let m = manifest("so.tilo.fixture");
+                let workspace = resolve_capabilities(&m, &opts_in(Some("workspace-a")));
+                assert_eq!(
+                    workspace.participation,
+                    crate::capabilities::Participation::ReadOnly
+                );
 
-            let personal = resolve_capabilities(&m, &opts_in(None));
-            assert_eq!(
-                personal.participation,
-                crate::capabilities::Participation::Unscoped
-            );
+                let personal = resolve_capabilities(&m, &opts_in(None));
+                assert_eq!(
+                    personal.participation,
+                    crate::capabilities::Participation::Unscoped
+                );
 
-            let dir = tempfile::tempdir().expect("tempdir");
-            let file = dir.path().join("grants.json");
-            std::fs::write(
-                &file,
-                serde_json::to_vec(&collab_types::caps::LaunchGrants {
-                    author: true,
-                    sandbox: Vec::new(),
-                })
-                .expect("encodes"),
-            )
-            .expect("written");
-            let authored = resolve_capabilities(
-                &m,
-                &RunOptions {
-                    capabilities_path: Some(file),
-                    ..opts_in(Some("workspace-a"))
-                },
-            );
-            assert_eq!(
-                authored.participation,
-                crate::capabilities::Participation::Author
-            );
-        }
-        {
-            let data = tempfile::tempdir().expect("tempdir");
+                let dir = tempfile::tempdir().expect("tempdir");
+                let file = dir.path().join("grants.json");
+                std::fs::write(
+                    &file,
+                    serde_json::to_vec(&collab_types::caps::LaunchGrants {
+                        author: true,
+                        sandbox: Vec::new(),
+                    })
+                    .expect("encodes"),
+                )
+                .expect("written");
+                let authored = resolve_capabilities(
+                    &m,
+                    &RunOptions {
+                        capabilities_path: Some(file),
+                        ..opts_in(Some("workspace-a"))
+                    },
+                );
+                assert_eq!(
+                    authored.participation,
+                    crate::capabilities::Participation::Author
+                );
+            }
+            {
+                let data = tempfile::tempdir().expect("tempdir");
 
-            let m = manifest("so.tilo.fixture");
-            let a = resolve_app_dir(&m, &opts_at(data.path(), Some("workspace-a")))
-                .expect("workspace a");
-            let b = resolve_app_dir(&m, &opts_at(data.path(), Some("workspace-b")))
-                .expect("workspace b");
-            let personal = resolve_app_dir(&m, &opts_at(data.path(), None)).expect("personal");
+                let m = manifest("so.tilo.fixture");
+                let a = resolve_app_dir(&m, &opts_at(data.path(), Some("workspace-a")))
+                    .expect("workspace a");
+                let b = resolve_app_dir(&m, &opts_at(data.path(), Some("workspace-b")))
+                    .expect("workspace b");
+                let personal = resolve_app_dir(&m, &opts_at(data.path(), None)).expect("personal");
 
-            assert!(a.is_dir() && b.is_dir() && personal.is_dir());
-            assert_ne!(a, b);
-            assert_ne!(a, personal);
-            assert!(
-                !a.starts_with(&b) && !b.starts_with(&a),
-                "neither workspace may contain the other: {a:?} {b:?}"
-            );
-            for dir in [&a, &b, &personal] {
+                assert!(a.is_dir() && b.is_dir() && personal.is_dir());
+                assert_ne!(a, b);
+                assert_ne!(a, personal);
                 assert!(
-                    dir.starts_with(data.path().join("tilo-workspaces")),
-                    "{dir:?} is outside the workspaces tree"
+                    !a.starts_with(&b) && !b.starts_with(&a),
+                    "neither workspace may contain the other: {a:?} {b:?}"
+                );
+                for dir in [&a, &b, &personal] {
+                    assert!(
+                        dir.starts_with(data.path().join("tilo-workspaces")),
+                        "{dir:?} is outside the workspaces tree"
+                    );
+                }
+            }
+            {
+                let data = tempfile::tempdir().expect("tempdir");
+                let m = manifest("so.tilo.fixture");
+                let a = resolve_person_dir(&m, &opts_at(data.path(), Some("workspace-a")))
+                    .expect("workspace a");
+                let personal = resolve_person_dir(&m, &opts_at(data.path(), None)).expect("personal");
+                assert!(a.is_dir());
+                assert_eq!(a, personal);
+                assert!(a.starts_with(data.path().join("tilo-person")));
+                let workspace =
+                    resolve_app_dir(&m, &opts_at(data.path(), Some("workspace-a"))).expect("workspace");
+                assert!(!a.starts_with(&workspace) && !workspace.starts_with(&a));
+                let other = resolve_person_dir(&manifest("so.tilo.other"), &opts_at(data.path(), None))
+                    .expect("another app");
+                assert_ne!(a, other, "an app keeps only its own records of the person");
+            }
+            {
+                let data = tempfile::tempdir().expect("tempdir");
+
+                let mut m = manifest("so.tilo.fixture");
+                let victim = data.path().join("so.tilo.totp");
+                m.sandbox.fs.write.push(victim.display().to_string());
+                let refused = run_with(&m, Path::new("/nonexistent"), &opts_at(data.path(), None));
+
+                let err = refused.expect_err("a manifest naming a write path must be refused");
+                assert!(
+                    matches!(err, RunError::FsPolicy(_)),
+                    "expected a policy refusal, got: {err}"
+                );
+                assert!(
+                    !victim.exists(),
+                    "the launcher must not create a path a package named"
                 );
             }
         }
+
+        phase settings_binds_its_accounts_but_never_the_session_settings_and_other_apps_bind_nothing;
         {
-            let data = tempfile::tempdir().expect("tempdir");
-            let m = manifest("so.tilo.fixture");
-            let a = resolve_person_dir(&m, &opts_at(data.path(), Some("workspace-a")))
-                .expect("workspace a");
-            let personal = resolve_person_dir(&m, &opts_at(data.path(), None)).expect("personal");
-            assert!(a.is_dir());
-            assert_eq!(a, personal);
-            assert!(a.starts_with(data.path().join("tilo-person")));
-            let workspace =
-                resolve_app_dir(&m, &opts_at(data.path(), Some("workspace-a"))).expect("workspace");
-            assert!(!a.starts_with(&workspace) && !workspace.starts_with(&a));
-            let other = resolve_person_dir(&manifest("so.tilo.other"), &opts_at(data.path(), None))
-                .expect("another app");
-            assert_ne!(a, other, "an app keeps only its own records of the person");
-        }
-        {
-            let data = tempfile::tempdir().expect("tempdir");
+            let config = tempfile::tempdir().expect("session config");
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set("XDG_CONFIG_HOME", config.path());
 
-            let mut m = manifest("so.tilo.fixture");
-            let victim = data.path().join("so.tilo.totp");
-            m.sandbox.fs.write.push(victim.display().to_string());
-            let refused = run_with(&m, Path::new("/nonexistent"), &opts_at(data.path(), None));
+            let mut argv = vec!["/entry".to_string()];
+            splice_session_settings(&mut argv, "so.tilo.notes").expect("notes");
+            assert_eq!(argv, vec!["/entry".to_string()]);
 
-            let err = refused.expect_err("a manifest naming a write path must be refused");
+            splice_session_settings(&mut argv, "so.tilo.settings").expect("settings");
+            let host = config.path().join("tilo");
+            let accounts = host.join("accounts");
+            assert!(accounts.is_dir(), "accounts must exist to bind read-write");
             assert!(
-                matches!(err, RunError::FsPolicy(_)),
-                "expected a policy refusal, got: {err}"
+                argv.windows(3).any(|w| w[0] == "--bind"
+                    && w[1] == accounts.to_string_lossy()
+                    && w[2] == "/run/tilo/app/.config/tilo/accounts"),
+                "Settings must bind accounts over remapped XDG: {argv:?}"
             );
             assert!(
-                !victim.exists(),
-                "the launcher must not create a path a package named"
+                !argv.iter().any(|arg| arg == host.to_string_lossy().as_ref()
+                    || arg == crate::appdir::SANDBOX_SESSION_CONFIG),
+                "the whole session configuration root must never be bound: {argv:?}"
             );
-        }
-    }
-
-    #[test]
-    fn settings_binds_its_accounts_but_never_the_session_settings_and_other_apps_bind_nothing() {
-        let config = tempfile::tempdir().expect("session config");
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set("XDG_CONFIG_HOME", config.path());
-
-        let mut argv = vec!["/entry".to_string()];
-        splice_session_settings(&mut argv, "so.tilo.notes").expect("notes");
-        assert_eq!(argv, vec!["/entry".to_string()]);
-
-        splice_session_settings(&mut argv, "so.tilo.settings").expect("settings");
-        let host = config.path().join("tilo");
-        let accounts = host.join("accounts");
-        assert!(accounts.is_dir(), "accounts must exist to bind read-write");
-        assert!(
-            argv.windows(3).any(|w| w[0] == "--bind"
-                && w[1] == accounts.to_string_lossy()
-                && w[2] == "/run/tilo/app/.config/tilo/accounts"),
-            "Settings must bind accounts over remapped XDG: {argv:?}"
-        );
-        assert!(
-            !argv.iter().any(|arg| arg == host.to_string_lossy().as_ref()
-                || arg == crate::appdir::SANDBOX_SESSION_CONFIG),
-            "the whole session configuration root must never be bound: {argv:?}"
-        );
-        for private in [
-            "identity",
-            "trusted-attestors.toml",
-            "revoked-keys.toml",
-            "registries.toml",
-            "records",
-        ] {
+            for private in [
+                "identity",
+                "trusted-attestors.toml",
+                "revoked-keys.toml",
+                "registries.toml",
+                "records",
+            ] {
+                assert!(
+                    !argv.iter().any(|arg| arg.ends_with(private)),
+                    "{private} must stay out of the Settings sandbox: {argv:?}"
+                );
+            }
+            // The settings document is the shell's: Settings reaches it through the settings service on
+            // its channel, like every app, not a bind.
             assert!(
-                !argv.iter().any(|arg| arg.ends_with(private)),
-                "{private} must stay out of the Settings sandbox: {argv:?}"
+                !argv
+                    .iter()
+                    .any(|arg| arg.ends_with("/records") || arg.ends_with("/records/person.automerge")),
+                "Settings must not bind or name the session document: {argv:?}"
             );
+            assert_eq!(argv.last().map(String::as_str), Some("/entry"));
         }
-        // The settings document is the shell's: Settings reaches it through the settings service on
-        // its channel, like every app, not a bind.
-        assert!(
-            !argv
-                .iter()
-                .any(|arg| arg.ends_with("/records") || arg.ends_with("/records/person.automerge")),
-            "Settings must not bind or name the session document: {argv:?}"
-        );
-        assert_eq!(argv.last().map(String::as_str), Some("/entry"));
     }
 }
 
@@ -5122,52 +5142,6 @@ mod managed_spawn_policy_tests {
             child.wait()
         }
     }
-    #[test]
-    fn owned_service_prepared_spawn_rechecks_source_and_hands_over_own_child() {
-        // The real final spawn boundary, not runtime/package qualification.
-        for allowed in [false, true] {
-            let owner = NativeOwner {
-                allowed,
-                checked: AtomicUsize::new(0),
-                supervised: AtomicUsize::new(0),
-                own_group: AtomicBool::new(false),
-            };
-            let result = spawn_and_wait(
-                vec![],
-                vec![],
-                &RunOptions {
-                    bwrap_bin: Some("/usr/bin/true".into()),
-                    ..Default::default()
-                },
-                ChildSetup {
-                    seccomp_fds: SeccompFds {
-                        clone3_compat: tempfile::tempfile().unwrap().into(),
-                        baseline: tempfile::tempfile().unwrap().into(),
-                    },
-                    services: vec![],
-                    identity_broker: (None, None, None),
-                    latency_sensitive: false,
-                    live_module: None,
-                },
-                &crate::netgate::EgressDecision::Blocked,
-                None,
-                Some((&owner, None)),
-            );
-            assert_eq!(owner.checked.load(AtomicOrdering::SeqCst), 1);
-            assert_eq!(
-                owner.supervised.load(AtomicOrdering::SeqCst),
-                usize::from(allowed)
-            );
-            assert_eq!(owner.own_group.load(AtomicOrdering::SeqCst), allowed);
-            if allowed {
-                assert!(result.unwrap().success());
-            } else {
-                assert!(matches!(result, Err(RunError::Spawn(error))
-                    if error.kind() == std::io::ErrorKind::PermissionDenied));
-            }
-        }
-    }
-
     struct OrdinaryPrivateService {
         info: OwnedFd,
         checked: AtomicUsize,
@@ -5188,100 +5162,150 @@ mod managed_spawn_policy_tests {
             child.wait()
         }
     }
-    #[test]
-    fn ordinary_private_service_missing_full_namespace_plan_refuses_before_spawn() {
-        // Exercise the actual final command boundary with no capture token.
-        for flags in [
-            Vec::<String>::new(),
-            [
-                "--unshare-pid",
-                "--unshare-net",
-                "--unshare-ipc",
-                "--unshare-uts",
-            ]
-            .map(String::from)
-            .to_vec(),
-        ] {
-            let owner = OrdinaryPrivateService {
-                info: tempfile::tempfile().unwrap().into(),
-                checked: AtomicUsize::new(0),
-                spawned: AtomicUsize::new(0),
-            };
-            let result = spawn_and_wait(
-                flags,
-                vec![],
-                &RunOptions {
-                    bwrap_bin: Some("/usr/bin/bwrap".into()),
-                    ..Default::default()
-                },
-                ChildSetup {
-                    seccomp_fds: SeccompFds {
-                        clone3_compat: tempfile::tempfile().unwrap().into(),
-                        baseline: tempfile::tempfile().unwrap().into(),
-                    },
-                    services: vec![],
-                    identity_broker: (None, None, None),
-                    latency_sensitive: false,
-                    live_module: None,
-                },
-                &crate::netgate::EgressDecision::Blocked,
-                None,
-                Some((&owner, None)),
-            );
-            assert!(matches!(result, Err(RunError::InvalidServiceLaunch(reason))
-                if reason == "private service namespace missing"));
-            assert_eq!(owner.checked.load(AtomicOrdering::SeqCst), 0);
-            assert_eq!(owner.spawned.load(AtomicOrdering::SeqCst), 0);
-        }
-    }
+    tilo_test_env::scenario! {
+        fn a_prepared_spawn_rechecks_policy_before_any_child;
 
-    #[test]
-    fn managed_prepared_spawn_checks_current_policy_before_child_creation() {
-        // This exercises the real prepared-command spawn boundary, not a package, sandbox or live
-        // managed process proof.
-        for allowed in [false, true] {
-            let policy = CurrentPolicy {
-                allowed,
-                checked: AtomicUsize::new(0),
-                spawned: AtomicUsize::new(0),
-            };
-            let options = RunOptions {
-                bwrap_bin: Some("/usr/bin/true".into()),
-                ..Default::default()
-            };
-            let result = spawn_and_wait(
-                vec![],
-                vec![],
-                &options,
-                ChildSetup {
-                    seccomp_fds: SeccompFds {
-                        clone3_compat: tempfile::tempfile().unwrap().into(),
-                        baseline: tempfile::tempfile().unwrap().into(),
+        phase owned_service_prepared_spawn_rechecks_source_and_hands_over_own_child;
+        {
+            // The real final spawn boundary, not runtime/package qualification.
+            for allowed in [false, true] {
+                let owner = NativeOwner {
+                    allowed,
+                    checked: AtomicUsize::new(0),
+                    supervised: AtomicUsize::new(0),
+                    own_group: AtomicBool::new(false),
+                };
+                let result = spawn_and_wait(
+                    vec![],
+                    vec![],
+                    &RunOptions {
+                        bwrap_bin: Some("/usr/bin/true".into()),
+                        ..Default::default()
                     },
-                    services: vec![],
-                    identity_broker: (None, None, None),
-                    latency_sensitive: false,
-                    live_module: None,
-                },
-                &crate::netgate::EgressDecision::Blocked,
-                None,
-                Some((&policy, None)),
-            );
-            assert_eq!(policy.checked.load(AtomicOrdering::SeqCst), 1);
-            assert_eq!(
-                policy.spawned.load(AtomicOrdering::SeqCst),
-                usize::from(allowed)
-            );
-            if allowed {
-                assert!(
-                    result
-                        .expect("real Linux prepared-command spawn required")
-                        .success()
+                    ChildSetup {
+                        seccomp_fds: SeccompFds {
+                            clone3_compat: tempfile::tempfile().unwrap().into(),
+                            baseline: tempfile::tempfile().unwrap().into(),
+                        },
+                        services: vec![],
+                        identity_broker: (None, None, None),
+                        latency_sensitive: false,
+                        live_module: None,
+                    },
+                    &crate::netgate::EgressDecision::Blocked,
+                    None,
+                    Some((&owner, None)),
                 );
-            } else {
-                assert!(
-                    matches!(result, Err(RunError::Spawn(ref error)) if error.kind() == std::io::ErrorKind::PermissionDenied)
+                assert_eq!(owner.checked.load(AtomicOrdering::SeqCst), 1);
+                assert_eq!(
+                    owner.supervised.load(AtomicOrdering::SeqCst),
+                    usize::from(allowed)
                 );
+                assert_eq!(owner.own_group.load(AtomicOrdering::SeqCst), allowed);
+                if allowed {
+                    assert!(result.unwrap().success());
+                } else {
+                    assert!(matches!(result, Err(RunError::Spawn(error))
+                        if error.kind() == std::io::ErrorKind::PermissionDenied));
+                }
+            }
+        }
+
+        phase ordinary_private_service_missing_full_namespace_plan_refuses_before_spawn;
+        {
+            // Exercise the actual final command boundary with no capture token.
+            for flags in [
+                Vec::<String>::new(),
+                [
+                    "--unshare-pid",
+                    "--unshare-net",
+                    "--unshare-ipc",
+                    "--unshare-uts",
+                ]
+                .map(String::from)
+                .to_vec(),
+            ] {
+                let owner = OrdinaryPrivateService {
+                    info: tempfile::tempfile().unwrap().into(),
+                    checked: AtomicUsize::new(0),
+                    spawned: AtomicUsize::new(0),
+                };
+                let result = spawn_and_wait(
+                    flags,
+                    vec![],
+                    &RunOptions {
+                        bwrap_bin: Some("/usr/bin/bwrap".into()),
+                        ..Default::default()
+                    },
+                    ChildSetup {
+                        seccomp_fds: SeccompFds {
+                            clone3_compat: tempfile::tempfile().unwrap().into(),
+                            baseline: tempfile::tempfile().unwrap().into(),
+                        },
+                        services: vec![],
+                        identity_broker: (None, None, None),
+                        latency_sensitive: false,
+                        live_module: None,
+                    },
+                    &crate::netgate::EgressDecision::Blocked,
+                    None,
+                    Some((&owner, None)),
+                );
+                assert!(matches!(result, Err(RunError::InvalidServiceLaunch(reason))
+                    if reason == "private service namespace missing"));
+                assert_eq!(owner.checked.load(AtomicOrdering::SeqCst), 0);
+                assert_eq!(owner.spawned.load(AtomicOrdering::SeqCst), 0);
+            }
+        }
+
+        phase managed_prepared_spawn_checks_current_policy_before_child_creation;
+        {
+            // This exercises the real prepared-command spawn boundary, not a package, sandbox or live
+            // managed process proof.
+            for allowed in [false, true] {
+                let policy = CurrentPolicy {
+                    allowed,
+                    checked: AtomicUsize::new(0),
+                    spawned: AtomicUsize::new(0),
+                };
+                let options = RunOptions {
+                    bwrap_bin: Some("/usr/bin/true".into()),
+                    ..Default::default()
+                };
+                let result = spawn_and_wait(
+                    vec![],
+                    vec![],
+                    &options,
+                    ChildSetup {
+                        seccomp_fds: SeccompFds {
+                            clone3_compat: tempfile::tempfile().unwrap().into(),
+                            baseline: tempfile::tempfile().unwrap().into(),
+                        },
+                        services: vec![],
+                        identity_broker: (None, None, None),
+                        latency_sensitive: false,
+                        live_module: None,
+                    },
+                    &crate::netgate::EgressDecision::Blocked,
+                    None,
+                    Some((&policy, None)),
+                );
+                assert_eq!(policy.checked.load(AtomicOrdering::SeqCst), 1);
+                assert_eq!(
+                    policy.spawned.load(AtomicOrdering::SeqCst),
+                    usize::from(allowed)
+                );
+                if allowed {
+                    assert!(
+                        result
+                            .expect("real Linux prepared-command spawn required")
+                            .success()
+                    );
+                } else {
+                    assert!(
+                        matches!(result, Err(RunError::Spawn(ref error)) if error.kind() == std::io::ErrorKind::PermissionDenied)
+                    );
+                }
             }
         }
     }
@@ -5291,25 +5315,29 @@ mod managed_spawn_policy_tests {
 mod debug_output_tests {
     use super::*;
 
-    #[test]
-    fn debug_output_copy_is_bounded_and_drains() {
-        let path = tempfile::NamedTempFile::new().unwrap();
-        let file = std::fs::OpenOptions::new()
-            .write(true)
-            .open(path.path())
-            .unwrap();
-        let sink = Arc::new(std::sync::Mutex::new(file));
-        let budget = Arc::new(AtomicUsize::new(10));
-        copy_bounded_output(&b"0123456"[..], &sink, &budget);
-        copy_bounded_output(&b"789abcdef"[..], &sink, &budget);
-        assert_eq!(std::fs::read(path.path()).unwrap(), b"0123456789");
-        assert_eq!(budget.load(AtomicOrdering::SeqCst), 0);
-    }
+    tilo_test_env::scenario! {
+        fn debug_output_is_bounded_and_off_by_default;
 
-    #[test]
-    fn debug_output_is_off_by_default() {
-        if std::env::var_os(DEBUG_STDERR_ENV).is_none() {
-            assert!(debug_output_log(Path::new("/nonexistent")).is_none());
+        phase debug_output_copy_is_bounded_and_drains;
+        {
+            let path = tempfile::NamedTempFile::new().unwrap();
+            let file = std::fs::OpenOptions::new()
+                .write(true)
+                .open(path.path())
+                .unwrap();
+            let sink = Arc::new(std::sync::Mutex::new(file));
+            let budget = Arc::new(AtomicUsize::new(10));
+            copy_bounded_output(&b"0123456"[..], &sink, &budget);
+            copy_bounded_output(&b"789abcdef"[..], &sink, &budget);
+            assert_eq!(std::fs::read(path.path()).unwrap(), b"0123456789");
+            assert_eq!(budget.load(AtomicOrdering::SeqCst), 0);
+        }
+
+        phase debug_output_is_off_by_default;
+        {
+            if std::env::var_os(DEBUG_STDERR_ENV).is_none() {
+                assert!(debug_output_log(Path::new("/nonexistent")).is_none());
+            }
         }
     }
 }
@@ -5384,152 +5412,156 @@ bin = \"store\"
 mod mesa_seed_software_tests {
     use super::*;
 
-    #[test]
-    fn a_launch_without_a_render_node_follows_a_gpu_less_compositor_onto_lavapipe() {
-        let mut home = tilo_test_env::TestHome::new().unwrap();
-        let icds = home.root().join("vulkan/icd.d");
-        std::fs::create_dir_all(&icds).unwrap();
-        let lavapipe = icds.join("lvp_icd.json");
-        std::fs::write(
-            &lavapipe,
-            r#"{"file_format_version":"1.0.1","ICD":{"library_path":"libvulkan_lvp.so"}}"#,
-        )
-        .unwrap();
-        let radeon = icds.join("radeon_icd.json");
-        std::fs::write(
-            &radeon,
-            r#"{"file_format_version":"1.0.1","ICD":{"library_path":"libvulkan_radeon.so"}}"#,
-        )
-        .unwrap();
-        home.env()
-            .set(crate::gpu::VK_DRIVER_FILES_ENV, &lavapipe)
-            .remove(crate::gpu::VK_ICD_FILENAMES_ENV)
-            .remove(crate::gpu::EGL_VENDOR_ENV);
-        let manifest: ManifestView = crate::manifest::test_manifest(
-            "id = \"io.tilo.software-pin\"\nversion = \"0.1.0\"\nkind = \"app\"",
-            "[entrypoint]\nbin = \"bin/probe\"\n\n[capabilities]\noptional = [\"gpu\"]\n",
-        );
-        let opts = RunOptions::default();
-        let mut argv = vec!["/app/probe".to_owned()];
-        let (gpu, _) = splice_gpu(
-            &mut argv,
-            &manifest,
-            &opts,
-            crate::gpu::granted(&manifest, &CapabilityPlan::empty(), true),
-        )
-        .unwrap();
-        assert!(gpu.is_none(), "no render node, no device pin");
-        let path = lavapipe.to_str().unwrap();
-        assert!(
-            argv.windows(3)
-                .any(|args| args == ["--ro-bind-try", path, path])
-        );
-        for key in [
-            crate::gpu::VK_DRIVER_FILES_ENV,
-            crate::gpu::VK_ICD_FILENAMES_ENV,
-        ] {
-            assert!(argv.windows(3).any(|args| args == ["--setenv", key, path]));
-        }
-        assert!(
-            !argv.iter().any(|arg| arg.starts_with("/dev/dri/renderD")),
-            "no render node, no node pin: {argv:?}"
-        );
-        let bound = argv
-            .windows(3)
-            .rposition(|args| args == ["--dev-bind-try", "/dev/dri", "/dev/dri"])
-            .expect("the GPU devices were bound first");
-        let hidden = argv
-            .windows(2)
-            .rposition(|args| args == ["--tmpfs", "/dev/dri"])
-            .expect("and then hidden: the app sees no render node of a machine without a GPU");
-        assert!(hidden > bound, "{argv:?}");
-        assert_eq!(argv.last().map(String::as_str), Some("/app/probe"));
+    tilo_test_env::scenario! {
+        fn a_software_launch_follows_the_compositor_onto_lavapipe;
 
-        // A GPU's driver in the environment is not the software pin.
-        home.env().set(crate::gpu::VK_DRIVER_FILES_ENV, &radeon);
-        let mut argv = vec!["/app/probe".to_owned()];
-        splice_gpu(
-            &mut argv,
-            &manifest,
-            &opts,
-            crate::gpu::granted(&manifest, &CapabilityPlan::empty(), true),
-        )
-        .unwrap();
-        assert!(
-            !argv
-                .iter()
-                .any(|arg| arg == crate::gpu::VK_DRIVER_FILES_ENV)
-        );
-    }
+        phase a_launch_without_a_render_node_follows_a_gpu_less_compositor_onto_lavapipe;
+        {
+            let mut home = tilo_test_env::TestHome::new().unwrap();
+            let icds = home.root().join("vulkan/icd.d");
+            std::fs::create_dir_all(&icds).unwrap();
+            let lavapipe = icds.join("lvp_icd.json");
+            std::fs::write(
+                &lavapipe,
+                r#"{"file_format_version":"1.0.1","ICD":{"library_path":"libvulkan_lvp.so"}}"#,
+            )
+            .unwrap();
+            let radeon = icds.join("radeon_icd.json");
+            std::fs::write(
+                &radeon,
+                r#"{"file_format_version":"1.0.1","ICD":{"library_path":"libvulkan_radeon.so"}}"#,
+            )
+            .unwrap();
+            home.env()
+                .set(crate::gpu::VK_DRIVER_FILES_ENV, &lavapipe)
+                .remove(crate::gpu::VK_ICD_FILENAMES_ENV)
+                .remove(crate::gpu::EGL_VENDOR_ENV);
+            let manifest: ManifestView = crate::manifest::test_manifest(
+                "id = \"io.tilo.software-pin\"\nversion = \"0.1.0\"\nkind = \"app\"",
+                "[entrypoint]\nbin = \"bin/probe\"\n\n[capabilities]\noptional = [\"gpu\"]\n",
+            );
+            let opts = RunOptions::default();
+            let mut argv = vec!["/app/probe".to_owned()];
+            let (gpu, _) = splice_gpu(
+                &mut argv,
+                &manifest,
+                &opts,
+                crate::gpu::granted(&manifest, &CapabilityPlan::empty(), true),
+            )
+            .unwrap();
+            assert!(gpu.is_none(), "no render node, no device pin");
+            let path = lavapipe.to_str().unwrap();
+            assert!(
+                argv.windows(3)
+                    .any(|args| args == ["--ro-bind-try", path, path])
+            );
+            for key in [
+                crate::gpu::VK_DRIVER_FILES_ENV,
+                crate::gpu::VK_ICD_FILENAMES_ENV,
+            ] {
+                assert!(argv.windows(3).any(|args| args == ["--setenv", key, path]));
+            }
+            assert!(
+                !argv.iter().any(|arg| arg.starts_with("/dev/dri/renderD")),
+                "no render node, no node pin: {argv:?}"
+            );
+            let bound = argv
+                .windows(3)
+                .rposition(|args| args == ["--dev-bind-try", "/dev/dri", "/dev/dri"])
+                .expect("the GPU devices were bound first");
+            let hidden = argv
+                .windows(2)
+                .rposition(|args| args == ["--tmpfs", "/dev/dri"])
+                .expect("and then hidden: the app sees no render node of a machine without a GPU");
+            assert!(hidden > bound, "{argv:?}");
+            assert_eq!(argv.last().map(String::as_str), Some("/app/probe"));
 
-    #[test]
-    fn a_software_launch_gets_only_the_read_only_session_seed_without_a_device_pin() {
-        let mut home = tilo_test_env::TestHome::new().unwrap();
-        // A compositor's software pin is its own case below; CI pins lavapipe in the test environment
-        // itself.
-        home.env()
-            .remove(crate::gpu::VK_DRIVER_FILES_ENV)
-            .remove(crate::gpu::VK_ICD_FILENAMES_ENV)
-            .remove(crate::gpu::EGL_VENDOR_ENV);
-        let source = home.runtime().join("tilo/pipeline-seed");
-        std::fs::create_dir_all(&source).unwrap();
-        let manifest: ManifestView = crate::manifest::test_manifest(
-            "id = \"io.tilo.seed-test\"\nversion = \"0.1.0\"\nkind = \"app\"",
-            "[entrypoint]\nbin = \"bin/probe\"\n\n[capabilities]\noptional = [\"gpu\"]\n",
-        );
-        let opts = RunOptions::default();
-        let mut argv = vec!["/app/probe".to_owned()];
-        let (gpu, seed) = splice_gpu(
-            &mut argv,
-            &manifest,
-            &opts,
-            crate::gpu::granted(&manifest, &CapabilityPlan::empty(), true),
-        )
-        .unwrap();
-        assert!(gpu.is_none());
-        assert_eq!(seed.as_deref(), Some(source.as_path()));
-        assert!(argv.windows(3).any(|args| args
-            == [
-                "--ro-bind-try",
-                source.to_str().unwrap(),
-                crate::gpu::SANDBOX_PIPELINE_SEED_DIR
-            ]));
-        assert!(!argv.iter().any(
-            |arg| arg.starts_with("/dev/dri/renderD") || arg == crate::gpu::VK_DRIVER_FILES_ENV
-        ));
-        assert!(
-            argv.windows(3)
-                .any(|args| args == ["--setenv", crate::mesa_seed::CONSUME_ENV, "1"])
-        );
-        for mode in [
-            LaunchMode::Cli {
-                command: "probe".into(),
-                passthrough_argv: Vec::new(),
-            },
-            LaunchMode::Service {
-                passthrough_argv: Vec::new(),
-            },
-        ] {
-            let opts = RunOptions {
-                mode,
-                ..RunOptions::default()
-            };
-            let mut helper = vec!["/app/helper".to_owned()];
+            // A GPU's driver in the environment is not the software pin.
+            home.env().set(crate::gpu::VK_DRIVER_FILES_ENV, &radeon);
+            let mut argv = vec!["/app/probe".to_owned()];
             splice_gpu(
-                &mut helper,
+                &mut argv,
                 &manifest,
                 &opts,
                 crate::gpu::granted(&manifest, &CapabilityPlan::empty(), true),
             )
             .unwrap();
             assert!(
-                !helper
+                !argv
                     .iter()
-                    .any(|arg| arg == crate::mesa_seed::CONSUME_ENV),
-                "non-painting helpers must not initialize graphics caches"
+                    .any(|arg| arg == crate::gpu::VK_DRIVER_FILES_ENV)
             );
         }
-        assert_eq!(argv.last().map(String::as_str), Some("/app/probe"));
+
+        phase a_software_launch_gets_only_the_read_only_session_seed_without_a_device_pin;
+        {
+            let mut home = tilo_test_env::TestHome::new().unwrap();
+            // A compositor's software pin is its own case below; CI pins lavapipe in the test environment
+            // itself.
+            home.env()
+                .remove(crate::gpu::VK_DRIVER_FILES_ENV)
+                .remove(crate::gpu::VK_ICD_FILENAMES_ENV)
+                .remove(crate::gpu::EGL_VENDOR_ENV);
+            let source = home.runtime().join("tilo/pipeline-seed");
+            std::fs::create_dir_all(&source).unwrap();
+            let manifest: ManifestView = crate::manifest::test_manifest(
+                "id = \"io.tilo.seed-test\"\nversion = \"0.1.0\"\nkind = \"app\"",
+                "[entrypoint]\nbin = \"bin/probe\"\n\n[capabilities]\noptional = [\"gpu\"]\n",
+            );
+            let opts = RunOptions::default();
+            let mut argv = vec!["/app/probe".to_owned()];
+            let (gpu, seed) = splice_gpu(
+                &mut argv,
+                &manifest,
+                &opts,
+                crate::gpu::granted(&manifest, &CapabilityPlan::empty(), true),
+            )
+            .unwrap();
+            assert!(gpu.is_none());
+            assert_eq!(seed.as_deref(), Some(source.as_path()));
+            assert!(argv.windows(3).any(|args| args
+                == [
+                    "--ro-bind-try",
+                    source.to_str().unwrap(),
+                    crate::gpu::SANDBOX_PIPELINE_SEED_DIR
+                ]));
+            assert!(!argv.iter().any(
+                |arg| arg.starts_with("/dev/dri/renderD") || arg == crate::gpu::VK_DRIVER_FILES_ENV
+            ));
+            assert!(
+                argv.windows(3)
+                    .any(|args| args == ["--setenv", crate::mesa_seed::CONSUME_ENV, "1"])
+            );
+            for mode in [
+                LaunchMode::Cli {
+                    command: "probe".into(),
+                    passthrough_argv: Vec::new(),
+                },
+                LaunchMode::Service {
+                    passthrough_argv: Vec::new(),
+                },
+            ] {
+                let opts = RunOptions {
+                    mode,
+                    ..RunOptions::default()
+                };
+                let mut helper = vec!["/app/helper".to_owned()];
+                splice_gpu(
+                    &mut helper,
+                    &manifest,
+                    &opts,
+                    crate::gpu::granted(&manifest, &CapabilityPlan::empty(), true),
+                )
+                .unwrap();
+                assert!(
+                    !helper
+                        .iter()
+                        .any(|arg| arg == crate::mesa_seed::CONSUME_ENV),
+                    "non-painting helpers must not initialize graphics caches"
+                );
+            }
+            assert_eq!(argv.last().map(String::as_str), Some("/app/probe"));
+        }
     }
 }
 
@@ -5537,65 +5569,69 @@ mod mesa_seed_software_tests {
 mod render_service_launch_tests {
     use super::*;
 
-    /// An app that draws through its workspace's render service: no GPU node, no loader pin, no
-    /// shader-cache seed, and none of the probing they cost, even with a render node and a session seed
-    /// to hand out.
-    #[test]
-    fn an_app_without_gpu_gets_no_device_and_no_graphics_setup() {
-        let mut home = tilo_test_env::TestHome::new().unwrap();
-        home.env()
-            .set(
-                crate::gpu::VK_DRIVER_FILES_ENV,
-                "/usr/share/vulkan/icd.d/x.json",
-            )
-            .remove(crate::gpu::EGL_VENDOR_ENV);
-        std::fs::create_dir_all(home.runtime().join("tilo/pipeline-seed")).unwrap();
-        let manifest: ManifestView = crate::manifest::test_manifest(
-            "id = \"so.tilo.calculator\"\nversion = \"0.1.0\"\nkind = \"app\"",
-            "[entrypoint]\nbin = \"bin/calculator\"\n",
-        );
-        assert!(!crate::gpu::granted(
-            &manifest,
-            &CapabilityPlan::empty(),
-            true
-        ));
-        let opts = RunOptions {
-            render_node: Some(PathBuf::from("/dev/dri/renderD128")),
-            ..RunOptions::default()
-        };
-        let mut argv = vec!["/app/calculator".to_owned()];
-        let (gpu, seed) = splice_gpu(
-            &mut argv,
-            &manifest,
-            &opts,
-            crate::gpu::granted(&manifest, &CapabilityPlan::empty(), true),
-        )
-        .unwrap();
-        assert!(gpu.is_none() && seed.is_none());
-        assert_eq!(argv, vec!["/app/calculator".to_owned()], "nothing spliced");
-    }
+    tilo_test_env::scenario! {
+        fn an_app_gets_a_gpu_only_when_it_declares_one;
 
-    /// An app that declares `gpu` keeps what every app had before: the device nodes, narrowed to the
-    /// compositor's render node.
-    #[test]
-    fn an_app_declaring_gpu_gets_its_device() {
-        let manifest: ManifestView = crate::manifest::test_manifest(
-            "id = \"so.tilo.browser\"\nversion = \"0.1.0\"\nkind = \"app\"",
-            "[entrypoint]\nbin = \"bin/browser\"\n\n[capabilities]\noptional = [\"gpu\"]\n",
-        );
-        assert!(crate::gpu::granted(
-            &manifest,
-            &CapabilityPlan::empty(),
-            true
-        ));
-        let mut argv = vec!["/app/browser".to_owned()];
-        splice_gpu(&mut argv, &manifest, &RunOptions::default(), true).unwrap();
-        assert!(
-            argv.windows(3)
-                .any(|args| args == ["--dev-bind-try", "/dev/dri", "/dev/dri"]),
-            "{argv:?}"
-        );
-        assert_eq!(argv.last().map(String::as_str), Some("/app/browser"));
+        phase an_app_without_gpu_gets_no_device_and_no_graphics_setup;
+        // An app that draws through its workspace's render service: no GPU node, no loader pin, no
+        // shader-cache seed, and none of the probing they cost, even with a render node and a session seed
+        // to hand out.
+        {
+            let mut home = tilo_test_env::TestHome::new().unwrap();
+            home.env()
+                .set(
+                    crate::gpu::VK_DRIVER_FILES_ENV,
+                    "/usr/share/vulkan/icd.d/x.json",
+                )
+                .remove(crate::gpu::EGL_VENDOR_ENV);
+            std::fs::create_dir_all(home.runtime().join("tilo/pipeline-seed")).unwrap();
+            let manifest: ManifestView = crate::manifest::test_manifest(
+                "id = \"so.tilo.calculator\"\nversion = \"0.1.0\"\nkind = \"app\"",
+                "[entrypoint]\nbin = \"bin/calculator\"\n",
+            );
+            assert!(!crate::gpu::granted(
+                &manifest,
+                &CapabilityPlan::empty(),
+                true
+            ));
+            let opts = RunOptions {
+                render_node: Some(PathBuf::from("/dev/dri/renderD128")),
+                ..RunOptions::default()
+            };
+            let mut argv = vec!["/app/calculator".to_owned()];
+            let (gpu, seed) = splice_gpu(
+                &mut argv,
+                &manifest,
+                &opts,
+                crate::gpu::granted(&manifest, &CapabilityPlan::empty(), true),
+            )
+            .unwrap();
+            assert!(gpu.is_none() && seed.is_none());
+            assert_eq!(argv, vec!["/app/calculator".to_owned()], "nothing spliced");
+        }
+
+        phase an_app_declaring_gpu_gets_its_device;
+        // An app that declares `gpu` keeps what every app had before: the device nodes, narrowed to the
+        // compositor's render node.
+        {
+            let manifest: ManifestView = crate::manifest::test_manifest(
+                "id = \"so.tilo.browser\"\nversion = \"0.1.0\"\nkind = \"app\"",
+                "[entrypoint]\nbin = \"bin/browser\"\n\n[capabilities]\noptional = [\"gpu\"]\n",
+            );
+            assert!(crate::gpu::granted(
+                &manifest,
+                &CapabilityPlan::empty(),
+                true
+            ));
+            let mut argv = vec!["/app/browser".to_owned()];
+            splice_gpu(&mut argv, &manifest, &RunOptions::default(), true).unwrap();
+            assert!(
+                argv.windows(3)
+                    .any(|args| args == ["--dev-bind-try", "/dev/dri", "/dev/dri"]),
+                "{argv:?}"
+            );
+            assert_eq!(argv.last().map(String::as_str), Some("/app/browser"));
+        }
     }
 }
 
@@ -5603,64 +5639,68 @@ mod render_service_launch_tests {
 mod gui_argv_tests {
     use super::*;
 
-    /// A GUI launch carries the app's own arguments after the entrypoint, as a CLI launch carries its
-    /// passthrough, and alongside the one a person opens with rather than instead of it.
-    #[test]
-    fn a_gui_launch_forwards_the_apps_own_arguments() {
-        {
-            let opts = RunOptions {
-                gui_argv: vec!["--index".to_owned()],
-                ..RunOptions::default()
-            };
-            assert_eq!(gui_open_args(&opts), ["--index"]);
-        }
-        {
-            // A document the person opened with comes first, then the app's own arguments; neither
-            // displaces the other.
-            let opts = RunOptions {
-                open_document: Some(PathBuf::from("/workspace/a.note")),
-                gui_argv: vec!["--index".to_owned()],
-                ..RunOptions::default()
-            };
-            assert_eq!(gui_open_args(&opts), ["/workspace/a.note", "--index"]);
-        }
-        {
-            // No argv at all is the ordinary launch, unchanged.
-            let opts = RunOptions::default();
-            assert!(gui_open_args(&opts).is_empty());
-        }
-    }
+    tilo_test_env::scenario! {
+        fn a_gui_launch_passes_the_apps_arguments_through;
 
-    /// The argv a GUI launch builds keeps those arguments after the entrypoint token, where bwrap
-    /// forwards them to the child as `argv[1..]` — the same place a CLI launch's passthrough lands.
-    #[test]
-    fn the_arguments_reach_the_sandboxed_program_after_its_entrypoint() {
-        let manifest: ManifestView = crate::manifest::test_manifest(
-            "id = \"so.tilo.chat\"\nversion = \"0.1.0\"\nkind = \"app\"\nruntime = \"tilo-runtime/2026.07\"",
-            "[entrypoint]\nbin = \"bin/chat\"\n",
-        );
-        let opts = RunOptions {
-            gui_argv: vec!["--index".to_owned()],
-            ..RunOptions::default()
-        };
-        let (argv, _, tail) = build_initial_argv(
-            &manifest,
-            Path::new("/host/pkg"),
-            &opts,
-            None,
-            &[],
-            None,
-            None,
-            &CapabilityPlan::empty(),
-        )
-        .unwrap();
-        assert_eq!(tail, ["--index"], "the app's argument rides the tail");
-        // The last token is the program bwrap execs; everything after it is that program's own argv,
-        // which the spawn appends.
-        assert_eq!(
-            argv.last().map(String::as_str),
-            Some("/var/tilo-apps/so.tilo.chat/bin/chat")
-        );
+        phase a_gui_launch_forwards_the_apps_own_arguments;
+        // A GUI launch carries the app's own arguments after the entrypoint, as a CLI launch carries its
+        // passthrough, and alongside the one a person opens with rather than instead of it.
+        {
+            {
+                let opts = RunOptions {
+                    gui_argv: vec!["--index".to_owned()],
+                    ..RunOptions::default()
+                };
+                assert_eq!(gui_open_args(&opts), ["--index"]);
+            }
+            {
+                // A document the person opened with comes first, then the app's own arguments; neither
+                // displaces the other.
+                let opts = RunOptions {
+                    open_document: Some(PathBuf::from("/workspace/a.note")),
+                    gui_argv: vec!["--index".to_owned()],
+                    ..RunOptions::default()
+                };
+                assert_eq!(gui_open_args(&opts), ["/workspace/a.note", "--index"]);
+            }
+            {
+                // No argv at all is the ordinary launch, unchanged.
+                let opts = RunOptions::default();
+                assert!(gui_open_args(&opts).is_empty());
+            }
+        }
+
+        phase the_arguments_reach_the_sandboxed_program_after_its_entrypoint;
+        // The argv a GUI launch builds keeps those arguments after the entrypoint token, where bwrap
+        // forwards them to the child as `argv[1..]` — the same place a CLI launch's passthrough lands.
+        {
+            let manifest: ManifestView = crate::manifest::test_manifest(
+                "id = \"so.tilo.chat\"\nversion = \"0.1.0\"\nkind = \"app\"\nruntime = \"tilo-runtime/2026.07\"",
+                "[entrypoint]\nbin = \"bin/chat\"\n",
+            );
+            let opts = RunOptions {
+                gui_argv: vec!["--index".to_owned()],
+                ..RunOptions::default()
+            };
+            let (argv, _, tail) = build_initial_argv(
+                &manifest,
+                Path::new("/host/pkg"),
+                &opts,
+                None,
+                &[],
+                None,
+                None,
+                &CapabilityPlan::empty(),
+            )
+            .unwrap();
+            assert_eq!(tail, ["--index"], "the app's argument rides the tail");
+            // The last token is the program bwrap execs; everything after it is that program's own argv,
+            // which the spawn appends.
+            assert_eq!(
+                argv.last().map(String::as_str),
+                Some("/var/tilo-apps/so.tilo.chat/bin/chat")
+            );
+        }
     }
 }
 
@@ -5708,14 +5748,18 @@ collab = "required@1"
         );
     }
 
-    #[test]
-    fn native_runtime_preflight_precedes_service_handoff() {
-        assert_runtime_refusal_precedes_handoff(false);
-    }
+    tilo_test_env::scenario! {
+        fn runtime_preflight_precedes_service_handoff;
 
-    #[test]
-    fn captured_runtime_preflight_precedes_service_handoff() {
-        assert_runtime_refusal_precedes_handoff(true);
+        phase native_runtime_preflight_precedes_service_handoff;
+        {
+            assert_runtime_refusal_precedes_handoff(false);
+        }
+
+        phase captured_runtime_preflight_precedes_service_handoff;
+        {
+            assert_runtime_refusal_precedes_handoff(true);
+        }
     }
 }
 
@@ -5724,141 +5768,57 @@ mod retained_files_tests {
     use super::*;
     use std::os::unix::fs::{PermissionsExt, symlink};
 
-    #[test]
-    fn retained_locations_are_live_readonly_metadata_without_filesystem_authority() {
-        let root = tempfile::tempdir().unwrap();
-        std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
-        let path = root.path().join("locations.json");
-        std::fs::write(&path, br#"{"schema":1,"locations":[]}"#).unwrap();
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
-        let manifest: ManifestView = toml::from_str(
-            "[package]\nkind = \"app\"\nid = \"so.tilo.file-explorer\"\nversion = \"1.0\"\n[entrypoint]\nbin = \"files\"\n[publisher]\nidentity = \"ed25519:0000000000000000000000000000000000000000000000000000000000000000\"\n[sandbox]\nnamespaces = []\nseccomp = \"tilo-default\"\nlandlock = \"strict\"\n[sandbox.net]\nmode = \"off\"\n",
-        ).unwrap();
-        let opts = RunOptions {
-            retained_files_host_path: Some(path),
-            ..RunOptions::default()
-        };
-        let before = resolve_capabilities(&manifest, &RunOptions::default());
-        let after = resolve_capabilities(&manifest, &opts);
-        assert_eq!(before.ro_paths, after.ro_paths);
-        assert_eq!(before.rw_paths, after.rw_paths);
-        let mut argv = vec!["bwrap".into(), "files".into()];
-        splice_retained_files(&mut argv, &manifest, &opts).unwrap();
-        assert_eq!(
-            argv,
-            vec![
-                "bwrap",
-                "--ro-bind",
-                root.path().to_str().unwrap(),
-                crate::sandbox::SANDBOX_RETAINED_FILES_DIR,
-                "--setenv",
-                "TILO_RETAINED_FILES",
-                crate::sandbox::SANDBOX_RETAINED_FILES_PATH,
-                "files",
-            ]
-        );
-        let mut shim = vec!["files".into()];
-        let enforced = RunOptions {
-            landlock_enforce: true,
-            ..opts.clone()
-        };
-        splice_sandbox_shim(
-            &mut shim,
-            &enforced,
-            &ShimSpliceCtx {
-                manifest: &manifest,
-                net_gate: &None,
-                runtime_arg: None,
-                extra_ro_paths: &[],
-                egress: &crate::netgate::EgressDecision::Blocked,
-                capabilities: &after,
-                dbus_plan: &None,
-                system_authority: &None,
-                wayland_bind: &None,
-                gpu: &None,
-                gpu_devices: false,
-                pipeline_seed: &None,
-                keep_fds: &[],
-                documents: false,
-            },
-        )
-        .unwrap();
-        assert!(
-            shim.windows(2)
-                .any(|args| args == ["--ro", crate::sandbox::SANDBOX_RETAINED_FILES_DIR])
-        );
-        assert!(
-            !shim
-                .windows(2)
-                .any(|args| args == ["--rw", crate::sandbox::SANDBOX_RETAINED_FILES_DIR])
-        );
-        let mut other = manifest;
-        other.package_id = "so.tilo.settings".into();
-        let mut argv = vec!["settings".into()];
-        splice_retained_files(&mut argv, &other, &opts).unwrap();
-        assert_eq!(argv, ["settings"]);
-    }
+    tilo_test_env::scenario! {
+        fn retained_files_reach_an_app_as_its_own_read_only_view;
 
-    /// An app launched into a workspace is bound its own view of the documents chosen for it, at the
-    /// one sandbox path, and nothing else of the documents filesystem; Landlock lets it read and write
-    /// there as each choice allows, never execute.
-    #[test]
-    fn an_app_is_bound_only_its_own_view_of_the_documents_chosen_for_it() {
-        let mount = tempfile::tempdir().unwrap();
-        let own = mount.path().join("workspace-7").join("so.tilo.pdf-viewer");
-        std::fs::create_dir_all(&own).unwrap();
-        std::fs::create_dir_all(mount.path().join("workspace-7").join("so.tilo.files")).unwrap();
-        assert_eq!(
-            documents_view(
-                Some(mount.path()),
-                "so.tilo.pdf-viewer",
-                Some("workspace-7")
-            ),
-            Some(own)
-        );
-        for (mountpoint, app, workspace) in [
-            (None, "so.tilo.pdf-viewer", Some("workspace-7")),
-            (Some(mount.path()), "so.tilo.pdf-viewer", None),
-            (
-                Some(mount.path()),
-                "so.tilo.pdf-viewer",
-                Some("workspace-8"),
-            ),
-            (Some(mount.path()), "..", Some("workspace-7")),
-            (
-                Some(mount.path()),
-                "so.tilo.files/../so.tilo.pdf-viewer",
-                Some("workspace-7"),
-            ),
-        ] {
+        phase retained_locations_are_live_readonly_metadata_without_filesystem_authority;
+        {
+            let root = tempfile::tempdir().unwrap();
+            std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+            let path = root.path().join("locations.json");
+            std::fs::write(&path, br#"{"schema":1,"locations":[]}"#).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+            let manifest: ManifestView = toml::from_str(
+                "[package]\nkind = \"app\"\nid = \"so.tilo.file-explorer\"\nversion = \"1.0\"\n[entrypoint]\nbin = \"files\"\n[publisher]\nidentity = \"ed25519:0000000000000000000000000000000000000000000000000000000000000000\"\n[sandbox]\nnamespaces = []\nseccomp = \"tilo-default\"\nlandlock = \"strict\"\n[sandbox.net]\nmode = \"off\"\n",
+            ).unwrap();
+            let opts = RunOptions {
+                retained_files_host_path: Some(path),
+                ..RunOptions::default()
+            };
+            let before = resolve_capabilities(&manifest, &RunOptions::default());
+            let after = resolve_capabilities(&manifest, &opts);
+            assert_eq!(before.ro_paths, after.ro_paths);
+            assert_eq!(before.rw_paths, after.rw_paths);
+            let mut argv = vec!["bwrap".into(), "files".into()];
+            splice_retained_files(&mut argv, &manifest, &opts).unwrap();
             assert_eq!(
-                documents_view(mountpoint, app, workspace),
-                None,
-                "{app} in {workspace:?}"
+                argv,
+                vec![
+                    "bwrap",
+                    "--ro-bind",
+                    root.path().to_str().unwrap(),
+                    crate::sandbox::SANDBOX_RETAINED_FILES_DIR,
+                    "--setenv",
+                    "TILO_RETAINED_FILES",
+                    crate::sandbox::SANDBOX_RETAINED_FILES_PATH,
+                    "files",
+                ]
             );
-        }
-
-        let manifest: ManifestView = toml::from_str(
-            "[package]\nkind = \"app\"\nid = \"so.tilo.pdf-viewer\"\nversion = \"1.0\"\n[entrypoint]\nbin = \"viewer\"\n[publisher]\nidentity = \"ed25519:0000000000000000000000000000000000000000000000000000000000000000\"\n[sandbox]\nnamespaces = []\nseccomp = \"tilo-default\"\nlandlock = \"strict\"\n[sandbox.net]\nmode = \"off\"\n",
-        )
-        .unwrap();
-        let opts = RunOptions {
-            landlock_enforce: true,
-            ..RunOptions::default()
-        };
-        let capabilities = resolve_capabilities(&manifest, &opts);
-        for documents in [true, false] {
-            let mut shim = vec!["viewer".into()];
+            let mut shim = vec!["files".into()];
+            let enforced = RunOptions {
+                landlock_enforce: true,
+                ..opts.clone()
+            };
             splice_sandbox_shim(
                 &mut shim,
-                &opts,
+                &enforced,
                 &ShimSpliceCtx {
                     manifest: &manifest,
                     net_gate: &None,
                     runtime_arg: None,
                     extra_ro_paths: &[],
                     egress: &crate::netgate::EgressDecision::Blocked,
-                    capabilities: &capabilities,
+                    capabilities: &after,
                     dbus_plan: &None,
                     system_authority: &None,
                     wayland_bind: &None,
@@ -5866,48 +5826,136 @@ mod retained_files_tests {
                     gpu_devices: false,
                     pipeline_seed: &None,
                     keep_fds: &[],
-                    documents,
+                    documents: false,
                 },
             )
             .unwrap();
-            assert_eq!(
-                shim.windows(2)
-                    .any(|args| args == ["--rw-noexec", tilo_documents::SANDBOX_DIR]),
-                documents
-            );
             assert!(
-                !shim
-                    .iter()
-                    .any(|arg| arg.starts_with(tilo_documents::SANDBOX_DIR)
-                        && arg != tilo_documents::SANDBOX_DIR),
-                "no rule reaches past the app's own view"
+                shim.windows(2)
+                    .any(|args| args == ["--ro", crate::sandbox::SANDBOX_RETAINED_FILES_DIR])
             );
             assert!(
                 !shim
                     .windows(2)
-                    .any(|args| args == ["--rw", tilo_documents::SANDBOX_DIR]),
-                "documents are never executable"
+                    .any(|args| args == ["--rw", crate::sandbox::SANDBOX_RETAINED_FILES_DIR])
             );
+            let mut other = manifest;
+            other.package_id = "so.tilo.settings".into();
+            let mut argv = vec!["settings".into()];
+            splice_retained_files(&mut argv, &other, &opts).unwrap();
+            assert_eq!(argv, ["settings"]);
         }
-    }
 
-    #[test]
-    fn retained_projection_refuses_redirected_or_nonprivate_custody() {
-        let root = tempfile::tempdir().unwrap();
-        std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
-        let path = root.path().join("locations.json");
-        let other = root.path().join("other");
-        std::fs::write(&other, b"unchanged").unwrap();
-        symlink(&other, &path).unwrap();
-        assert!(validate_retained_files_projection(&path).is_err());
-        assert_eq!(std::fs::read(&other).unwrap(), b"unchanged");
-        std::fs::remove_file(&path).unwrap();
-        std::fs::write(&path, b"{}").unwrap();
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
-        assert!(validate_retained_files_projection(&path).is_err());
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
-        assert!(validate_retained_files_projection(&path).is_ok());
-        std::fs::write(&path, vec![0; 16 * 1024 + 1]).unwrap();
-        assert!(validate_retained_files_projection(&path).is_err());
+        phase an_app_is_bound_only_its_own_view_of_the_documents_chosen_for_it;
+        // An app launched into a workspace is bound its own view of the documents chosen for it, at the
+        // one sandbox path, and nothing else of the documents filesystem; Landlock lets it read and write
+        // there as each choice allows, never execute.
+        {
+            let mount = tempfile::tempdir().unwrap();
+            let own = mount.path().join("workspace-7").join("so.tilo.pdf-viewer");
+            std::fs::create_dir_all(&own).unwrap();
+            std::fs::create_dir_all(mount.path().join("workspace-7").join("so.tilo.files")).unwrap();
+            assert_eq!(
+                documents_view(
+                    Some(mount.path()),
+                    "so.tilo.pdf-viewer",
+                    Some("workspace-7")
+                ),
+                Some(own)
+            );
+            for (mountpoint, app, workspace) in [
+                (None, "so.tilo.pdf-viewer", Some("workspace-7")),
+                (Some(mount.path()), "so.tilo.pdf-viewer", None),
+                (
+                    Some(mount.path()),
+                    "so.tilo.pdf-viewer",
+                    Some("workspace-8"),
+                ),
+                (Some(mount.path()), "..", Some("workspace-7")),
+                (
+                    Some(mount.path()),
+                    "so.tilo.files/../so.tilo.pdf-viewer",
+                    Some("workspace-7"),
+                ),
+            ] {
+                assert_eq!(
+                    documents_view(mountpoint, app, workspace),
+                    None,
+                    "{app} in {workspace:?}"
+                );
+            }
+
+            let manifest: ManifestView = toml::from_str(
+                "[package]\nkind = \"app\"\nid = \"so.tilo.pdf-viewer\"\nversion = \"1.0\"\n[entrypoint]\nbin = \"viewer\"\n[publisher]\nidentity = \"ed25519:0000000000000000000000000000000000000000000000000000000000000000\"\n[sandbox]\nnamespaces = []\nseccomp = \"tilo-default\"\nlandlock = \"strict\"\n[sandbox.net]\nmode = \"off\"\n",
+            )
+            .unwrap();
+            let opts = RunOptions {
+                landlock_enforce: true,
+                ..RunOptions::default()
+            };
+            let capabilities = resolve_capabilities(&manifest, &opts);
+            for documents in [true, false] {
+                let mut shim = vec!["viewer".into()];
+                splice_sandbox_shim(
+                    &mut shim,
+                    &opts,
+                    &ShimSpliceCtx {
+                        manifest: &manifest,
+                        net_gate: &None,
+                        runtime_arg: None,
+                        extra_ro_paths: &[],
+                        egress: &crate::netgate::EgressDecision::Blocked,
+                        capabilities: &capabilities,
+                        dbus_plan: &None,
+                        system_authority: &None,
+                        wayland_bind: &None,
+                        gpu: &None,
+                        gpu_devices: false,
+                        pipeline_seed: &None,
+                        keep_fds: &[],
+                        documents,
+                    },
+                )
+                .unwrap();
+                assert_eq!(
+                    shim.windows(2)
+                        .any(|args| args == ["--rw-noexec", tilo_documents::SANDBOX_DIR]),
+                    documents
+                );
+                assert!(
+                    !shim
+                        .iter()
+                        .any(|arg| arg.starts_with(tilo_documents::SANDBOX_DIR)
+                            && arg != tilo_documents::SANDBOX_DIR),
+                    "no rule reaches past the app's own view"
+                );
+                assert!(
+                    !shim
+                        .windows(2)
+                        .any(|args| args == ["--rw", tilo_documents::SANDBOX_DIR]),
+                    "documents are never executable"
+                );
+            }
+        }
+
+        phase retained_projection_refuses_redirected_or_nonprivate_custody;
+        {
+            let root = tempfile::tempdir().unwrap();
+            std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+            let path = root.path().join("locations.json");
+            let other = root.path().join("other");
+            std::fs::write(&other, b"unchanged").unwrap();
+            symlink(&other, &path).unwrap();
+            assert!(validate_retained_files_projection(&path).is_err());
+            assert_eq!(std::fs::read(&other).unwrap(), b"unchanged");
+            std::fs::remove_file(&path).unwrap();
+            std::fs::write(&path, b"{}").unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+            assert!(validate_retained_files_projection(&path).is_err());
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+            assert!(validate_retained_files_projection(&path).is_ok());
+            std::fs::write(&path, vec![0; 16 * 1024 + 1]).unwrap();
+            assert!(validate_retained_files_projection(&path).is_err());
+        }
     }
 }

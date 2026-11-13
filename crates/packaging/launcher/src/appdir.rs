@@ -337,219 +337,223 @@ pub fn push_session_settings_bind(argv: &mut Vec<String>, host_tilo_config: &Pat
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_symlinked_xdg_component_refuses_the_launch() {
-        let data = tempfile::tempdir().expect("data home");
-        let dir = prepare_host_app_dir(data.path(), Some("workspace"), "so.tilo.notes")
-            .expect("a fresh app directory");
-        let elsewhere = tempfile::tempdir().expect("a directory the app must not reach");
-        std::fs::remove_dir_all(dir.join(".local")).expect("remove");
-        std::os::unix::fs::symlink(elsewhere.path(), dir.join(".local")).expect("plant");
-        let error = prepare_host_app_dir(data.path(), Some("workspace"), "so.tilo.notes")
-            .expect_err("a symlinked component must refuse the launch");
-        assert!(error.to_string().contains("symbolic link"), "{error}");
-        assert!(
-            std::fs::read_dir(elsewhere.path())
-                .expect("read")
-                .next()
-                .is_none(),
-            "nothing may be created through the link"
-        );
-    }
+    tilo_test_env::scenario! {
+        fn an_app_directory_is_confined_and_laid_out_for_its_app;
 
-    #[test]
-    fn app_directory_paths_are_confined_per_workspace_and_package() {
+        phase a_symlinked_xdg_component_refuses_the_launch;
         {
-            let data = Path::new("/data");
-            for hostile in [
-                "..",
-                "../..",
-                "../../../etc",
-                "/etc/shadow",
-                "a/../../b",
-                ".",
-                "\0evil",
-                "workspace\nname",
-            ] {
-                let slug = workspace_slug(Some(hostile));
-                assert!(
-                    !slug.contains('/'),
-                    "{hostile:?} produced a multi-component slug {slug:?}"
-                );
-                assert!(
-                    slug != "." && slug != "..",
-                    "{hostile:?} produced {slug:?}, which names a directory \
+            let data = tempfile::tempdir().expect("data home");
+            let dir = prepare_host_app_dir(data.path(), Some("workspace"), "so.tilo.notes")
+                .expect("a fresh app directory");
+            let elsewhere = tempfile::tempdir().expect("a directory the app must not reach");
+            std::fs::remove_dir_all(dir.join(".local")).expect("remove");
+            std::os::unix::fs::symlink(elsewhere.path(), dir.join(".local")).expect("plant");
+            let error = prepare_host_app_dir(data.path(), Some("workspace"), "so.tilo.notes")
+                .expect_err("a symlinked component must refuse the launch");
+            assert!(error.to_string().contains("symbolic link"), "{error}");
+            assert!(
+                std::fs::read_dir(elsewhere.path())
+                    .expect("read")
+                    .next()
+                    .is_none(),
+                "nothing may be created through the link"
+            );
+        }
+
+        phase app_directory_paths_are_confined_per_workspace_and_package;
+        {
+            {
+                let data = Path::new("/data");
+                for hostile in [
+                    "..",
+                    "../..",
+                    "../../../etc",
+                    "/etc/shadow",
+                    "a/../../b",
+                    ".",
+                    "\0evil",
+                    "workspace\nname",
+                ] {
+                    let slug = workspace_slug(Some(hostile));
+                    assert!(
+                        !slug.contains('/'),
+                        "{hostile:?} produced a multi-component slug {slug:?}"
+                    );
+                    assert!(
+                        slug != "." && slug != "..",
+                        "{hostile:?} produced {slug:?}, which names a directory \
                      instead of creating one"
-                );
-                let dir = host_app_dir(data, &slug, "so.tilo.notes");
-                assert!(
-                    dir.starts_with("/data/tilo-workspaces/"),
-                    "{hostile:?} escaped to {}",
-                    dir.display()
-                );
-                // `..` inside the assembled path would let a later canonicalisation walk out even
-                // though the string looks contained.
-                assert!(
-                    !dir.components().any(|c| c.as_os_str() == ".."),
-                    "{hostile:?} left a parent component in {}",
-                    dir.display()
-                );
+                    );
+                    let dir = host_app_dir(data, &slug, "so.tilo.notes");
+                    assert!(
+                        dir.starts_with("/data/tilo-workspaces/"),
+                        "{hostile:?} escaped to {}",
+                        dir.display()
+                    );
+                    // `..` inside the assembled path would let a later canonicalisation walk out even
+                    // though the string looks contained.
+                    assert!(
+                        !dir.components().any(|c| c.as_os_str() == ".."),
+                        "{hostile:?} left a parent component in {}",
+                        dir.display()
+                    );
+                }
+            }
+            {
+                let data = Path::new("/data");
+                for hostile in ["..", "../../etc", "/", "a/b"] {
+                    let dir = host_app_dir(data, PERSONAL_WORKSPACE, hostile);
+                    assert!(
+                        dir.starts_with("/data/tilo-workspaces/personal/"),
+                        "{hostile:?} escaped to {}",
+                        dir.display()
+                    );
+                    assert_eq!(
+                        dir.components().count(),
+                        Path::new("/data/tilo-workspaces/personal/x")
+                            .components()
+                            .count(),
+                        "{hostile:?} produced more than one component: {}",
+                        dir.display()
+                    );
+                }
+            }
+            {
+                let data = Path::new("/data");
+                let a = host_app_dir(data, &workspace_slug(Some("workspace-a")), "so.tilo.notes");
+                let b = host_app_dir(data, &workspace_slug(Some("workspace-b")), "so.tilo.notes");
+                assert_ne!(a, b);
+                assert!(!a.starts_with(&b) && !b.starts_with(&a));
+            }
+            {
+                assert_eq!(workspace_slug(None), PERSONAL_WORKSPACE);
+                assert_eq!(workspace_slug(Some("")), PERSONAL_WORKSPACE);
+                assert_eq!(workspace_slug(Some("   ")), PERSONAL_WORKSPACE);
             }
         }
-        {
-            let data = Path::new("/data");
-            for hostile in ["..", "../../etc", "/", "a/b"] {
-                let dir = host_app_dir(data, PERSONAL_WORKSPACE, hostile);
-                assert!(
-                    dir.starts_with("/data/tilo-workspaces/personal/"),
-                    "{hostile:?} escaped to {}",
-                    dir.display()
-                );
-                assert_eq!(
-                    dir.components().count(),
-                    Path::new("/data/tilo-workspaces/personal/x")
-                        .components()
-                        .count(),
-                    "{hostile:?} produced more than one component: {}",
-                    dir.display()
-                );
-            }
-        }
-        {
-            let data = Path::new("/data");
-            let a = host_app_dir(data, &workspace_slug(Some("workspace-a")), "so.tilo.notes");
-            let b = host_app_dir(data, &workspace_slug(Some("workspace-b")), "so.tilo.notes");
-            assert_ne!(a, b);
-            assert!(!a.starts_with(&b) && !b.starts_with(&a));
-        }
-        {
-            assert_eq!(workspace_slug(None), PERSONAL_WORKSPACE);
-            assert_eq!(workspace_slug(Some("")), PERSONAL_WORKSPACE);
-            assert_eq!(workspace_slug(Some("   ")), PERSONAL_WORKSPACE);
-        }
-    }
 
-    /// Every app of a build reads and writes one font index, bound where the launcher names it, not in
-    /// its own home.
-    #[test]
-    fn the_font_index_is_one_directory_for_every_app() {
-        let mut argv = Vec::new();
-        push_font_index(
-            &mut argv,
-            Path::new("/home/ada/.local/share/tilo-font-index"),
-        );
-        assert_eq!(
-            argv,
-            vec![
-                "--bind",
-                "/home/ada/.local/share/tilo-font-index",
-                SANDBOX_FONT_INDEX,
-                "--setenv",
-                tilo_process::environment::FONT_INDEX_ENV,
-                SANDBOX_FONT_INDEX,
-            ]
-        );
-        let mut rules = Vec::new();
-        push_font_index_landlock(&mut rules);
-        assert_eq!(
-            rules,
-            vec!["--rw", SANDBOX_FONT_INDEX],
-            "the bind is writable"
-        );
-    }
-
-    #[test]
-    fn app_directory_bind_and_xdg_tree() {
-        {
-            for (key, value) in sandbox_env() {
-                assert!(
-                    value.starts_with(SANDBOX_APP_DIR),
-                    "{key}={value} points outside {SANDBOX_APP_DIR}"
-                );
-            }
-            let env = sandbox_env();
-            let data = env
-                .iter()
-                .find(|(k, _)| k == "XDG_DATA_HOME")
-                .map(|(_, v)| v.clone())
-                .expect("XDG_DATA_HOME is announced");
-            assert_eq!(data, "/run/tilo/app/.local/share");
-        }
+        phase the_font_index_is_one_directory_for_every_app;
+        // Every app of a build reads and writes one font index, bound where the launcher names it, not in
+        // its own home.
         {
             let mut argv = Vec::new();
-            push_app_dir(
+            push_font_index(
                 &mut argv,
-                Path::new("/data/tilo-workspaces/personal/so.tilo.notes"),
+                Path::new("/home/ada/.local/share/tilo-font-index"),
             );
-            assert!(
-                argv.windows(3).any(|w| w[0] == "--bind"
-                    && w[1] == "/data/tilo-workspaces/personal/so.tilo.notes"
-                    && w[2] == SANDBOX_APP_DIR),
-                "app dir must be bound read-write at the fixed path: {argv:?}"
-            );
-            assert!(
-                argv.windows(3)
-                    .any(|w| w[0] == "--setenv" && w[1] == "HOME" && w[2] == SANDBOX_APP_DIR),
-                "HOME must point inside the app dir: {argv:?}"
-            );
-        }
-        {
-            let mut argv = Vec::new();
-            push_session_settings_bind(&mut argv, Path::new("/home/ada/.config/tilo"));
             assert_eq!(
                 argv,
                 vec![
                     "--bind",
-                    "/home/ada/.config/tilo/accounts",
-                    "/run/tilo/app/.config/tilo/accounts",
-                    "--ro-bind-try",
-                    "/home/ada/.config/tilo/state.json",
-                    "/run/tilo/app/.config/tilo/state.json",
-                    "--ro-bind-try",
-                    "/home/ada/.config/tilo/continuity-provenance.json",
-                    "/run/tilo/app/.config/tilo/continuity-provenance.json",
+                    "/home/ada/.local/share/tilo-font-index",
+                    SANDBOX_FONT_INDEX,
+                    "--setenv",
+                    tilo_process::environment::FONT_INDEX_ENV,
+                    SANDBOX_FONT_INDEX,
                 ]
             );
-            assert!(
-                !argv.iter().any(|arg| arg.contains("/records")),
-                "the settings document reaches Settings through the shell's settings service, \
-                 never a bind: {argv:?}"
-            );
-            assert!(
-                !argv.iter().any(|arg| arg == "/home/ada/.config/tilo"),
-                "the configuration root itself is never bound: {argv:?}"
-            );
-            assert!(
-                !argv.iter().any(|arg| arg.contains("/identity")),
-                "the identity store is the host's, never Settings': {argv:?}"
-            );
-        }
-        {
-            let tmp = tempfile::tempdir().unwrap();
-            let dir =
-                prepare_host_app_dir(tmp.path(), Some("workspace-a"), "so.tilo.notes").unwrap();
-            assert!(dir.join(".local/share").is_dir());
-            assert!(dir.join(".config").is_dir());
-            assert!(dir.join(".cache").is_dir());
+            let mut rules = Vec::new();
+            push_font_index_landlock(&mut rules);
             assert_eq!(
-                dir,
-                tmp.path().join("tilo-workspaces/workspace-a/so.tilo.notes")
+                rules,
+                vec!["--rw", SANDBOX_FONT_INDEX],
+                "the bind is writable"
             );
         }
+
+        phase app_directory_bind_and_xdg_tree;
         {
-            let tmp = tempfile::tempdir().unwrap();
-            let dir =
+            {
+                for (key, value) in sandbox_env() {
+                    assert!(
+                        value.starts_with(SANDBOX_APP_DIR),
+                        "{key}={value} points outside {SANDBOX_APP_DIR}"
+                    );
+                }
+                let env = sandbox_env();
+                let data = env
+                    .iter()
+                    .find(|(k, _)| k == "XDG_DATA_HOME")
+                    .map(|(_, v)| v.clone())
+                    .expect("XDG_DATA_HOME is announced");
+                assert_eq!(data, "/run/tilo/app/.local/share");
+            }
+            {
+                let mut argv = Vec::new();
+                push_app_dir(
+                    &mut argv,
+                    Path::new("/data/tilo-workspaces/personal/so.tilo.notes"),
+                );
+                assert!(
+                    argv.windows(3).any(|w| w[0] == "--bind"
+                        && w[1] == "/data/tilo-workspaces/personal/so.tilo.notes"
+                        && w[2] == SANDBOX_APP_DIR),
+                    "app dir must be bound read-write at the fixed path: {argv:?}"
+                );
+                assert!(
+                    argv.windows(3)
+                        .any(|w| w[0] == "--setenv" && w[1] == "HOME" && w[2] == SANDBOX_APP_DIR),
+                    "HOME must point inside the app dir: {argv:?}"
+                );
+            }
+            {
+                let mut argv = Vec::new();
+                push_session_settings_bind(&mut argv, Path::new("/home/ada/.config/tilo"));
+                assert_eq!(
+                    argv,
+                    vec![
+                        "--bind",
+                        "/home/ada/.config/tilo/accounts",
+                        "/run/tilo/app/.config/tilo/accounts",
+                        "--ro-bind-try",
+                        "/home/ada/.config/tilo/state.json",
+                        "/run/tilo/app/.config/tilo/state.json",
+                        "--ro-bind-try",
+                        "/home/ada/.config/tilo/continuity-provenance.json",
+                        "/run/tilo/app/.config/tilo/continuity-provenance.json",
+                    ]
+                );
+                assert!(
+                    !argv.iter().any(|arg| arg.contains("/records")),
+                    "the settings document reaches Settings through the shell's settings service, \
+                 never a bind: {argv:?}"
+                );
+                assert!(
+                    !argv.iter().any(|arg| arg == "/home/ada/.config/tilo"),
+                    "the configuration root itself is never bound: {argv:?}"
+                );
+                assert!(
+                    !argv.iter().any(|arg| arg.contains("/identity")),
+                    "the identity store is the host's, never Settings': {argv:?}"
+                );
+            }
+            {
+                let tmp = tempfile::tempdir().unwrap();
+                let dir =
+                    prepare_host_app_dir(tmp.path(), Some("workspace-a"), "so.tilo.notes").unwrap();
+                assert!(dir.join(".local/share").is_dir());
+                assert!(dir.join(".config").is_dir());
+                assert!(dir.join(".cache").is_dir());
+                assert_eq!(
+                    dir,
+                    tmp.path().join("tilo-workspaces/workspace-a/so.tilo.notes")
+                );
+            }
+            {
+                let tmp = tempfile::tempdir().unwrap();
+                let dir =
+                    prepare_host_app_dir(tmp.path(), Some("workspace-a"), "so.tilo.notes").unwrap();
+                std::fs::write(dir.join("startup-7.json"), "{}").unwrap();
+                std::fs::write(dir.join("startup-notes.txt"), "mine").unwrap();
+                std::fs::create_dir(dir.join("startup-album.json")).unwrap();
                 prepare_host_app_dir(tmp.path(), Some("workspace-a"), "so.tilo.notes").unwrap();
-            std::fs::write(dir.join("startup-7.json"), "{}").unwrap();
-            std::fs::write(dir.join("startup-notes.txt"), "mine").unwrap();
-            std::fs::create_dir(dir.join("startup-album.json")).unwrap();
-            prepare_host_app_dir(tmp.path(), Some("workspace-a"), "so.tilo.notes").unwrap();
-            assert!(!dir.join("startup-7.json").exists());
-            assert!(dir.join("startup-notes.txt").is_file(), "not a trace");
-            assert!(
-                dir.join("startup-album.json").is_dir(),
-                "a directory is the user's"
-            );
+                assert!(!dir.join("startup-7.json").exists());
+                assert!(dir.join("startup-notes.txt").is_file(), "not a trace");
+                assert!(
+                    dir.join("startup-album.json").is_dir(),
+                    "a directory is the user's"
+                );
+            }
         }
     }
 }
@@ -559,62 +563,66 @@ mod private_service_tests {
     use super::*;
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
-    #[test]
-    fn private_service_directory_survives_canonical_launch_preparation() {
-        let working = tempfile::Builder::new()
-            .permissions(std::fs::Permissions::from_mode(0o700))
-            .tempdir()
-            .unwrap();
-        let package = "so.tilo.imager.home-export";
-        let dir = prepare_private_host_app_dir(working.path(), None, package).unwrap();
-        assert_eq!(
-            dir,
-            host_app_dir(working.path(), PERSONAL_WORKSPACE, package)
-        );
-        assert_eq!(std::fs::metadata(&dir).unwrap().mode() & 0o777, 0o700);
-        assert_eq!(
-            std::fs::metadata(&dir).unwrap().uid(),
-            rustix::process::geteuid().as_raw()
-        );
-        std::fs::write(dir.join("provider-state"), b"private state").unwrap();
-        assert_eq!(
-            prepare_host_app_dir(working.path(), None, package).unwrap(),
-            dir
-        );
-        assert_eq!(std::fs::metadata(&dir).unwrap().mode() & 0o777, 0o700);
-        assert_eq!(
-            std::fs::read(dir.join("provider-state")).unwrap(),
-            b"private state"
-        );
-        assert!(dir.join(".local/share").is_dir());
-        assert!(dir.join(".config").is_dir());
-    }
+    tilo_test_env::scenario! {
+        fn a_private_service_directory_stays_private_or_is_refused;
 
-    #[test]
-    fn private_service_directory_refuses_nonprivate_and_redirected_working_leases() {
-        let working = tempfile::tempdir().unwrap();
-        let outside = tempfile::tempdir().unwrap();
-        std::fs::set_permissions(working.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
-        assert_eq!(
-            prepare_private_host_app_dir(working.path(), None, "so.test")
-                .unwrap_err()
-                .kind(),
-            io::ErrorKind::PermissionDenied
-        );
-        assert_eq!(std::fs::read_dir(working.path()).unwrap().count(), 0);
-        std::fs::set_permissions(working.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
-        std::fs::write(outside.path().join("personal"), b"unchanged").unwrap();
-        std::os::unix::fs::symlink(outside.path(), working.path().join(WORKSPACES_DIR)).unwrap();
-        assert_eq!(
-            prepare_private_host_app_dir(working.path(), None, "so.test")
-                .unwrap_err()
-                .kind(),
-            io::ErrorKind::AlreadyExists
-        );
-        assert_eq!(
-            std::fs::read(outside.path().join("personal")).unwrap(),
-            b"unchanged"
-        );
-        assert_eq!(std::fs::read_dir(outside.path()).unwrap().count(), 1);
+        phase private_service_directory_survives_canonical_launch_preparation;
+        {
+            let working = tempfile::Builder::new()
+                .permissions(std::fs::Permissions::from_mode(0o700))
+                .tempdir()
+                .unwrap();
+            let package = "so.tilo.imager.home-export";
+            let dir = prepare_private_host_app_dir(working.path(), None, package).unwrap();
+            assert_eq!(
+                dir,
+                host_app_dir(working.path(), PERSONAL_WORKSPACE, package)
+            );
+            assert_eq!(std::fs::metadata(&dir).unwrap().mode() & 0o777, 0o700);
+            assert_eq!(
+                std::fs::metadata(&dir).unwrap().uid(),
+                rustix::process::geteuid().as_raw()
+            );
+            std::fs::write(dir.join("provider-state"), b"private state").unwrap();
+            assert_eq!(
+                prepare_host_app_dir(working.path(), None, package).unwrap(),
+                dir
+            );
+            assert_eq!(std::fs::metadata(&dir).unwrap().mode() & 0o777, 0o700);
+            assert_eq!(
+                std::fs::read(dir.join("provider-state")).unwrap(),
+                b"private state"
+            );
+            assert!(dir.join(".local/share").is_dir());
+            assert!(dir.join(".config").is_dir());
+        }
+
+        phase private_service_directory_refuses_nonprivate_and_redirected_working_leases;
+        {
+            let working = tempfile::tempdir().unwrap();
+            let outside = tempfile::tempdir().unwrap();
+            std::fs::set_permissions(working.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+            assert_eq!(
+                prepare_private_host_app_dir(working.path(), None, "so.test")
+                    .unwrap_err()
+                    .kind(),
+                io::ErrorKind::PermissionDenied
+            );
+            assert_eq!(std::fs::read_dir(working.path()).unwrap().count(), 0);
+            std::fs::set_permissions(working.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+            std::fs::write(outside.path().join("personal"), b"unchanged").unwrap();
+            std::os::unix::fs::symlink(outside.path(), working.path().join(WORKSPACES_DIR)).unwrap();
+            assert_eq!(
+                prepare_private_host_app_dir(working.path(), None, "so.test")
+                    .unwrap_err()
+                    .kind(),
+                io::ErrorKind::AlreadyExists
+            );
+            assert_eq!(
+                std::fs::read(outside.path().join("personal")).unwrap(),
+                b"unchanged"
+            );
+            assert_eq!(std::fs::read_dir(outside.path()).unwrap().count(), 1);
+        }
     }
 }

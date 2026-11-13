@@ -451,202 +451,206 @@ mod tests {
     const NOTES: &str =
         "/user.slice/user-1000.slice/user@1000.service/app.slice/app-tilo-so.tilo.notes-4126.scope";
 
-    #[test]
-    fn an_app_cgroup_is_found_from_a_process_cgroup() {
-        for text in [
-            format!("0::{NOTES}\n"),
-            // A process in a cgroup an app made below its own is in that app.
-            format!("0::{NOTES}/inner\n"),
-        ] {
-            assert_eq!(scope_of(&text).as_deref(), Some(NOTES), "{text}");
-            assert_eq!(app_cgroup_at(&text).as_deref(), Some(NOTES), "{text}");
-            let dir = fs_path(scope_of(&text).unwrap().as_str());
+    tilo_test_env::scenario! {
+        fn an_app_cgroup_is_found_tiered_and_read;
+
+        phase an_app_cgroup_is_found_from_a_process_cgroup;
+        {
+            for text in [
+                format!("0::{NOTES}\n"),
+                // A process in a cgroup an app made below its own is in that app.
+                format!("0::{NOTES}/inner\n"),
+            ] {
+                assert_eq!(scope_of(&text).as_deref(), Some(NOTES), "{text}");
+                assert_eq!(app_cgroup_at(&text).as_deref(), Some(NOTES), "{text}");
+                let dir = fs_path(scope_of(&text).unwrap().as_str());
+                assert_eq!(
+                    dir,
+                    Path::new(CGROUP_ROOT)
+                        .join(SLICE.trim_start_matches('/'))
+                        .join("app-tilo-so.tilo.notes-4126.scope")
+                );
+            }
+            // The app slice holds more than app scopes: a service, the manager itself, and the session.
+            for other in [
+                "0::/user.slice/user-1000.slice/user@1000.service/app.slice/cc-model-router.service\n",
+                "0::/user.slice/user-1000.slice/user@1000.service/app.slice\n",
+                "0::/user.slice/user-1000.slice/user@1000.service\n",
+                "0::/user.slice/user-1000.slice/session-2.scope\n",
+                "0::/user.slice/user-1000.slice/user@1000.service/app.slice/app-tilo-4126.scope\n",
+                "0::/user.slice/user-1000.slice/user@1000.service/app.slice/app-other-4126.scope\n",
+            ] {
+                assert_eq!(scope_of(other), None, "{other}");
+            }
             assert_eq!(
-                dir,
-                Path::new(CGROUP_ROOT)
-                    .join(SLICE.trim_start_matches('/'))
-                    .join("app-tilo-so.tilo.notes-4126.scope")
+                app_of_scope("app-tilo-so.tilo.notes-4126.scope"),
+                Some(("so.tilo.notes".to_string(), 4126))
+            );
+            assert_eq!(
+                app_of_scope("app-tilo-org.gnome.Text\\x2dEditor-7.scope"),
+                Some(("org.gnome.Text-Editor".to_string(), 7))
+            );
+            assert_eq!(app_of_scope("tilo-apps-41.scope"), None);
+            assert_eq!(app_of_scope("app-tilo-4126.scope"), None);
+        }
+
+        phase putting_an_app_in_a_tier_writes_what_a_launch_is_born_with;
+        {
+            let app = tempfile::tempdir().unwrap();
+            for file in ["cpu.weight", "io.weight", "io.bfq.weight", "memory.low"] {
+                std::fs::write(app.path().join(file), "").unwrap();
+            }
+            set_tier(app.path(), Tier::Background, Some(32 << 30)).unwrap();
+            assert_eq!(tier_of(app.path()), Some(Tier::Background));
+            assert_eq!(
+                std::fs::read_to_string(app.path().join("io.weight")).unwrap(),
+                "default 50"
+            );
+            set_tier(app.path(), Tier::Foreground, Some(32 << 30)).unwrap();
+            assert_eq!(tier_of(app.path()), Some(Tier::Foreground));
+            assert_eq!(
+                std::fs::read_to_string(app.path().join("memory.low")).unwrap(),
+                (4_u64 << 30).to_string()
             );
         }
-        // The app slice holds more than app scopes: a service, the manager itself, and the session.
-        for other in [
-            "0::/user.slice/user-1000.slice/user@1000.service/app.slice/cc-model-router.service\n",
-            "0::/user.slice/user-1000.slice/user@1000.service/app.slice\n",
-            "0::/user.slice/user-1000.slice/user@1000.service\n",
-            "0::/user.slice/user-1000.slice/session-2.scope\n",
-            "0::/user.slice/user-1000.slice/user@1000.service/app.slice/app-tilo-4126.scope\n",
-            "0::/user.slice/user-1000.slice/user@1000.service/app.slice/app-other-4126.scope\n",
-        ] {
-            assert_eq!(scope_of(other), None, "{other}");
+
+        phase a_tier_becomes_the_files_its_scope_properties_set;
+        {
+            // As systemd writes them for IOWeight: the BFQ weight scaled.
+            assert_eq!(bfq_weight(100), 100);
+            assert_eq!(bfq_weight(800), 163);
+            assert_eq!(bfq_weight(50), 50);
+            assert_eq!(bfq_weight(1), 1);
+            assert_eq!(bfq_weight(10_000), 1000);
+            let foreground =
+                crate::priority::tier_properties(crate::priority::Tier::Foreground, Some(32 << 30));
+            assert_eq!(
+                property_writes(&foreground),
+                [
+                    ("cpu.weight", "800".to_string()),
+                    ("io.weight", "default 800".to_string()),
+                    ("io.bfq.weight", "163".to_string()),
+                    ("memory.low", (4_u64 << 30).to_string()),
+                ]
+            );
+            let background =
+                crate::priority::tier_properties(crate::priority::Tier::Background, Some(32 << 30));
+            assert_eq!(
+                property_writes(&background),
+                [
+                    ("cpu.weight", "50".to_string()),
+                    ("io.weight", "default 50".to_string()),
+                    ("io.bfq.weight", "50".to_string()),
+                    ("memory.low", "0".to_string()),
+                ]
+            );
         }
-        assert_eq!(
-            app_of_scope("app-tilo-so.tilo.notes-4126.scope"),
-            Some(("so.tilo.notes".to_string(), 4126))
-        );
-        assert_eq!(
-            app_of_scope("app-tilo-org.gnome.Text\\x2dEditor-7.scope"),
-            Some(("org.gnome.Text-Editor".to_string(), 7))
-        );
-        assert_eq!(app_of_scope("tilo-apps-41.scope"), None);
-        assert_eq!(app_of_scope("app-tilo-4126.scope"), None);
-    }
 
-    #[test]
-    fn putting_an_app_in_a_tier_writes_what_a_launch_is_born_with() {
-        let app = tempfile::tempdir().unwrap();
-        for file in ["cpu.weight", "io.weight", "io.bfq.weight", "memory.low"] {
-            std::fs::write(app.path().join(file), "").unwrap();
+        phase memory_events_footprint_and_pids_are_read_from_the_cgroup;
+        {
+            let app = tempfile::tempdir().unwrap();
+            std::fs::write(
+                app.path().join("memory.events"),
+                "low 0\nhigh 0\nmax 0\noom 2\noom_kill 3\noom_group_kill 1\n",
+            )
+            .unwrap();
+            assert_eq!(
+                memory_events(app.path()),
+                MemoryEvents {
+                    oom: 2,
+                    oom_kill: 3,
+                    oom_group_kill: 1
+                }
+            );
+            std::fs::write(
+                app.path().join("memory.stat"),
+                "anon 1048576\nfile 99999999\n",
+            )
+            .unwrap();
+            std::fs::write(app.path().join("memory.swap.current"), "2048\n").unwrap();
+            assert_eq!(
+                footprint(app.path()),
+                Some(1_048_576 + 2048),
+                "page cache is no footprint"
+            );
+            std::fs::write(app.path().join("memory.events"), "oom_kill 0\n").unwrap();
+            assert_eq!(memory_events(app.path()).oom_kill, 0);
+            std::fs::write(app.path().join("cgroup.procs"), "10\n11\n").unwrap();
+            assert_eq!(processes(app.path()), [10, 11]);
         }
-        set_tier(app.path(), Tier::Background, Some(32 << 30)).unwrap();
-        assert_eq!(tier_of(app.path()), Some(Tier::Background));
-        assert_eq!(
-            std::fs::read_to_string(app.path().join("io.weight")).unwrap(),
-            "default 50"
-        );
-        set_tier(app.path(), Tier::Foreground, Some(32 << 30)).unwrap();
-        assert_eq!(tier_of(app.path()), Some(Tier::Foreground));
-        assert_eq!(
-            std::fs::read_to_string(app.path().join("memory.low")).unwrap(),
-            (4_u64 << 30).to_string()
-        );
-    }
 
-    #[test]
-    fn a_tier_becomes_the_files_its_scope_properties_set() {
-        // As systemd writes them for IOWeight: the BFQ weight scaled.
-        assert_eq!(bfq_weight(100), 100);
-        assert_eq!(bfq_weight(800), 163);
-        assert_eq!(bfq_weight(50), 50);
-        assert_eq!(bfq_weight(1), 1);
-        assert_eq!(bfq_weight(10_000), 1000);
-        let foreground =
-            crate::priority::tier_properties(crate::priority::Tier::Foreground, Some(32 << 30));
-        assert_eq!(
-            property_writes(&foreground),
-            [
-                ("cpu.weight", "800".to_string()),
-                ("io.weight", "default 800".to_string()),
-                ("io.bfq.weight", "163".to_string()),
-                ("memory.low", (4_u64 << 30).to_string()),
-            ]
-        );
-        let background =
-            crate::priority::tier_properties(crate::priority::Tier::Background, Some(32 << 30));
-        assert_eq!(
-            property_writes(&background),
-            [
-                ("cpu.weight", "50".to_string()),
-                ("io.weight", "default 50".to_string()),
-                ("io.bfq.weight", "50".to_string()),
-                ("memory.low", "0".to_string()),
-            ]
-        );
-    }
-
-    #[test]
-    fn memory_events_footprint_and_pids_are_read_from_the_cgroup() {
-        let app = tempfile::tempdir().unwrap();
-        std::fs::write(
-            app.path().join("memory.events"),
-            "low 0\nhigh 0\nmax 0\noom 2\noom_kill 3\noom_group_kill 1\n",
-        )
-        .unwrap();
-        assert_eq!(
-            memory_events(app.path()),
-            MemoryEvents {
-                oom: 2,
-                oom_kill: 3,
-                oom_group_kill: 1
+        phase the_session_raises_its_cgroups_weight_and_never_lowers_it;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            for file in ["cpu.weight", "io.weight", "io.bfq.weight"] {
+                std::fs::write(dir.path().join(file), "").unwrap();
             }
-        );
-        std::fs::write(
-            app.path().join("memory.stat"),
-            "anon 1048576\nfile 99999999\n",
-        )
-        .unwrap();
-        std::fs::write(app.path().join("memory.swap.current"), "2048\n").unwrap();
-        assert_eq!(
-            footprint(app.path()),
-            Some(1_048_576 + 2048),
-            "page cache is no footprint"
-        );
-        std::fs::write(app.path().join("memory.events"), "oom_kill 0\n").unwrap();
-        assert_eq!(memory_events(app.path()).oom_kill, 0);
-        std::fs::write(app.path().join("cgroup.procs"), "10\n11\n").unwrap();
-        assert_eq!(processes(app.path()), [10, 11]);
-    }
-
-    #[test]
-    fn the_session_raises_its_cgroups_weight_and_never_lowers_it() {
-        let dir = tempfile::tempdir().unwrap();
-        for file in ["cpu.weight", "io.weight", "io.bfq.weight"] {
-            std::fs::write(dir.path().join(file), "").unwrap();
-        }
-        std::fs::write(dir.path().join("cpu.weight"), "100").unwrap();
-        raise_session_weight(dir.path()).unwrap();
-        assert_eq!(
-            std::fs::read_to_string(dir.path().join("cpu.weight")).unwrap(),
-            "1000",
-            "a cgroup nothing weighted carries the session's own weight"
-        );
-        assert_eq!(tier_of(dir.path()), Some(Tier::Session));
-        // What the image's units already set is left as it is, and a launch that boosted its cgroup is
-        // never lowered by the session.
-        for weight in ["1000", "10000"] {
-            std::fs::write(dir.path().join("cpu.weight"), weight).unwrap();
+            std::fs::write(dir.path().join("cpu.weight"), "100").unwrap();
             raise_session_weight(dir.path()).unwrap();
             assert_eq!(
                 std::fs::read_to_string(dir.path().join("cpu.weight")).unwrap(),
-                weight
+                "1000",
+                "a cgroup nothing weighted carries the session's own weight"
             );
-        }
-    }
-
-    #[test]
-    fn the_app_list_reads_every_scope_and_skips_what_is_not_an_app() {
-        let slice = tempfile::tempdir().unwrap();
-        let notes = slice.path().join("app-tilo-so.tilo.notes-3.scope");
-        std::fs::create_dir_all(&notes).unwrap();
-        std::fs::create_dir_all(slice.path().join("app-tilo-broken.scope")).unwrap();
-        std::fs::create_dir_all(slice.path().join("cc-model-router.service")).unwrap();
-        std::fs::write(notes.join("pids.current"), "4\n").unwrap();
-        std::fs::write(notes.join("memory.current"), format!("{}\n", 300 << 20)).unwrap();
-        std::fs::write(notes.join("memory.peak"), format!("{}\n", 512 << 20)).unwrap();
-        std::fs::write(notes.join("cpu.weight"), "800\n").unwrap();
-        std::fs::write(notes.join("cpu.stat"), "usage_usec 2500000\nuser_usec 1\n").unwrap();
-        std::fs::write(
-            notes.join("memory.events"),
-            "low 0\nhigh 0\nmax 0\noom 1\noom_kill 1\noom_group_kill 0\n",
-        )
-        .unwrap();
-        let apps = running_apps(slice.path());
-        assert_eq!(apps.len(), 1, "{apps:?}");
-        let app = &apps[0];
-        assert_eq!(app.app_id, "so.tilo.notes");
-        assert_eq!(
-            app.stats,
-            Stats {
-                pids: Some(4),
-                memory_current: Some(300 << 20),
-                memory_peak: Some(512 << 20),
-                memory_low: None,
-                cpu_usec: Some(2_500_000),
-                cpu_weight: Some(800),
-                oom_kills: Some(1),
+            assert_eq!(tier_of(dir.path()), Some(Tier::Session));
+            // What the image's units already set is left as it is, and a launch that boosted its cgroup is
+            // never lowered by the session.
+            for weight in ["1000", "10000"] {
+                std::fs::write(dir.path().join("cpu.weight"), weight).unwrap();
+                raise_session_weight(dir.path()).unwrap();
+                assert_eq!(
+                    std::fs::read_to_string(dir.path().join("cpu.weight")).unwrap(),
+                    weight
+                );
             }
-        );
-        let table = format_table(&apps);
-        let row = table.lines().nth(1).unwrap();
-        for cell in [
-            "so.tilo.notes",
-            "fg",
-            " 4 ",
-            " 300 ",
-            " 512 ",
-            "2.50",
-            " 1 ",
-        ] {
-            assert!(row.contains(cell), "{cell:?} in {row:?}");
+        }
+
+        phase the_app_list_reads_every_scope_and_skips_what_is_not_an_app;
+        {
+            let slice = tempfile::tempdir().unwrap();
+            let notes = slice.path().join("app-tilo-so.tilo.notes-3.scope");
+            std::fs::create_dir_all(&notes).unwrap();
+            std::fs::create_dir_all(slice.path().join("app-tilo-broken.scope")).unwrap();
+            std::fs::create_dir_all(slice.path().join("cc-model-router.service")).unwrap();
+            std::fs::write(notes.join("pids.current"), "4\n").unwrap();
+            std::fs::write(notes.join("memory.current"), format!("{}\n", 300 << 20)).unwrap();
+            std::fs::write(notes.join("memory.peak"), format!("{}\n", 512 << 20)).unwrap();
+            std::fs::write(notes.join("cpu.weight"), "800\n").unwrap();
+            std::fs::write(notes.join("cpu.stat"), "usage_usec 2500000\nuser_usec 1\n").unwrap();
+            std::fs::write(
+                notes.join("memory.events"),
+                "low 0\nhigh 0\nmax 0\noom 1\noom_kill 1\noom_group_kill 0\n",
+            )
+            .unwrap();
+            let apps = running_apps(slice.path());
+            assert_eq!(apps.len(), 1, "{apps:?}");
+            let app = &apps[0];
+            assert_eq!(app.app_id, "so.tilo.notes");
+            assert_eq!(
+                app.stats,
+                Stats {
+                    pids: Some(4),
+                    memory_current: Some(300 << 20),
+                    memory_peak: Some(512 << 20),
+                    memory_low: None,
+                    cpu_usec: Some(2_500_000),
+                    cpu_weight: Some(800),
+                    oom_kills: Some(1),
+                }
+            );
+            let table = format_table(&apps);
+            let row = table.lines().nth(1).unwrap();
+            for cell in [
+                "so.tilo.notes",
+                "fg",
+                " 4 ",
+                " 300 ",
+                " 512 ",
+                "2.50",
+                " 1 ",
+            ] {
+                assert!(row.contains(cell), "{cell:?} in {row:?}");
+            }
         }
     }
 }

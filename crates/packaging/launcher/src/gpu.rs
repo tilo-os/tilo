@@ -1126,166 +1126,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_pinned_vulkan_driver_turns_off_device_selection_and_an_unpinned_one_does_not() {
-        let pinned = GpuSelection {
-            node: PathBuf::from("/dev/dri/renderD128"),
-            driver: None,
-            egl_vendor_json: None,
-            vulkan_icd_json: Some(PathBuf::from("/usr/share/vulkan/icd.d/x.json")),
-            vulkan_device: None,
-            pipeline_seed: None,
-            site_integration: None,
-            unclaimed: false,
-            notes: Vec::new(),
-        };
-        assert!(
-            pinned
-                .env()
-                .contains(&(NO_DEVICE_SELECT_ENV, "1".to_owned()))
-        );
-        let unpinned = GpuSelection {
-            vulkan_icd_json: None,
-            ..pinned
-        };
-        assert!(
-            !unpinned
-                .env()
-                .iter()
-                .any(|(key, _)| *key == NO_DEVICE_SELECT_ENV),
-            "without a pinned driver the layer still picks among the devices"
-        );
-    }
-
-    #[test]
-    fn a_gpu_less_machine_is_pinned_to_lavapipe_and_launches_inherit_only_that() {
-        let tmp = tempfile::tempdir().unwrap();
-        let search = fixture(
-            tmp.path(),
-            &[("50_mesa.json", "libEGL_mesa.so.0")],
-            &[
-                (&host_icd_name("radeon"), "libvulkan_radeon.so"),
-                (&host_icd_name("lvp"), "libvulkan_lvp.so"),
-            ],
-        );
-        let pin = software_pin(&search).expect("lavapipe is installed");
-        assert!(pin.vulkan_icd_json.ends_with(host_icd_name("lvp")));
-        assert!(
-            pin.egl_vendor_json
-                .as_ref()
-                .is_some_and(|path| path.ends_with("50_mesa.json"))
-        );
-        let lavapipe = pin.vulkan_icd_json.display().to_string();
-        assert!(pin.env().contains(&(VK_DRIVER_FILES_ENV, lavapipe.clone())));
-        assert!(
-            pin.env().contains(&(NO_DEVICE_SELECT_ENV, "1".to_owned())),
-            "one pinned driver leaves the device-select layer nothing to choose"
-        );
-        assert!(pin.env().contains(&(VK_ICD_FILENAMES_ENV, lavapipe)));
-        assert_eq!(pin.manifest_files().len(), 2);
-
-        assert_eq!(
-            software_pin_from(
-                Some(pin.vulkan_icd_json.clone().into()),
-                pin.egl_vendor_json.clone().map(Into::into),
-            ),
-            Some(pin)
-        );
-        let radeon = search.vulkan_icd_dirs[0].join(host_icd_name("radeon"));
-        assert_eq!(
-            software_pin_from(Some(radeon.into()), None),
-            None,
-            "a GPU's driver named in the environment is not evidence of a GPU-less machine"
-        );
-        assert_eq!(software_pin_from(None, None), None);
-        assert_eq!(
-            software_pin_from(Some("lvp_icd.json".into()), None),
-            None,
-            "only an absolute path to an existing manifest is inherited"
-        );
-
-        let without = tempfile::tempdir().unwrap();
-        let search = fixture(
-            without.path(),
-            &[],
-            &[(&host_icd_name("radeon"), "libvulkan_radeon.so")],
-        );
-        assert!(software_pin(&search).is_err(), "no lavapipe, no pin");
-    }
-
-    #[test]
-    fn a_node_no_driver_claims_renders_as_the_compositor_does_with_lavapipe() {
-        let tmp = tempfile::tempdir().unwrap();
-        let search = fixture(
-            tmp.path(),
-            &[("50_mesa.json", "libEGL_mesa.so.0")],
-            &[
-                (&host_icd_name("radeon"), "libvulkan_radeon.so"),
-                (&host_icd_name("lvp"), "libvulkan_lvp.so"),
-            ],
-        );
-        let unclaimed = GpuSelection {
-            node: PathBuf::from("/dev/dri/card1"),
-            driver: Some("faux_driver".into()),
-            egl_vendor_json: None,
-            vulkan_icd_json: None,
-            vulkan_device: None,
-            pipeline_seed: None,
-            site_integration: None,
-            unclaimed: true,
-            notes: vec!["no Vulkan driver reports /dev/dri/card1".into()],
-        };
-        let pin = unclaimed_node_pin(&unclaimed, None, &search).expect("lavapipe is installed");
-        assert!(pin.vulkan_icd_json.ends_with(host_icd_name("lvp")));
-        assert!(
-            pin.env().contains(&(NO_DEVICE_SELECT_ENV, "1".to_owned())),
-            "the device-select layer stays out of the app"
-        );
-        let handed_down = SoftwarePin {
-            vulkan_icd_json: tmp.path().join("handed-down.json"),
-            egl_vendor_json: None,
-        };
-        assert_eq!(
-            unclaimed_node_pin(&unclaimed, Some(handed_down.clone()), &search),
-            Some(handed_down),
-            "the compositor's own pin comes first"
-        );
-        let claimed = GpuSelection {
-            vulkan_icd_json: Some(search.vulkan_icd_dirs[0].join(host_icd_name("radeon"))),
-            ..unclaimed.clone()
-        };
-        assert_eq!(
-            unclaimed_node_pin(&claimed, None, &search),
-            None,
-            "a node a driver claims keeps that driver"
-        );
-        let without = tempfile::tempdir().unwrap();
-        let bare = fixture(
-            without.path(),
-            &[],
-            &[(&host_icd_name("radeon"), "libvulkan_radeon.so")],
-        );
-        assert_eq!(unclaimed_node_pin(&unclaimed, None, &bare), None);
-        let gl_only = GpuSelection {
-            node: PathBuf::from("/dev/dri/renderD128"),
-            ..unclaimed.clone()
-        };
-        assert_eq!(
-            unclaimed_node_pin(&gl_only, None, &search),
-            None,
-            "a render node no Vulkan driver claims is a GPU with only an OpenGL driver"
-        );
-        let ambiguous = GpuSelection {
-            unclaimed: false,
-            ..unclaimed
-        };
-        assert_eq!(
-            unclaimed_node_pin(&ambiguous, None, &search),
-            None,
-            "several drivers claiming a node is no machine without a GPU"
-        );
-    }
-
     const RENDER_D128: (u64, u64) = (226, 128);
     const RENDER_D129: (u64, u64) = (226, 129);
 
@@ -1299,250 +1139,414 @@ mod tests {
         )
     }
 
-    #[test]
-    fn the_icd_that_reports_the_node_is_pinned_whatever_sysfs_calls_it() {
-        // A hybrid box: NVIDIA on renderD129, AMD on renderD128, lavapipe with no node.
-        let tmp = tempfile::tempdir().unwrap();
-        let search = fixture(
-            tmp.path(),
-            &[
-                ("10_nvidia.json", "libEGL_nvidia.so.0"),
-                ("50_mesa.json", "libEGL_mesa.so.0"),
-            ],
-            &[
-                (&host_icd_name("nvidia"), "/usr/lib64/libGLX_nvidia.so.0"),
-                (&host_icd_name("radeon"), "/usr/lib64/libvulkan_radeon.so"),
-                (&host_icd_name("lvp"), "/usr/lib64/libvulkan_lvp.so"),
-            ],
-        );
-        let probe = Scripted(HashMap::from([
-            (
-                "libGLX_nvidia.so.0",
-                vec![device("NVIDIA GeForce RTX 4060", Some(RENDER_D129))],
-            ),
-            (
-                "libvulkan_radeon.so",
-                vec![device("AMD Radeon 780M (RADV PHOENIX)", Some(RENDER_D128))],
-            ),
-            ("libvulkan_lvp.so", vec![device("llvmpipe", None)]),
-        ]));
-        let amd = select(&search, RENDER_D128, &probe);
-        assert_eq!(
-            amd.vulkan_icd_json.as_deref().and_then(|p| p.file_name()),
-            Some(host_icd_name("radeon").as_str().as_ref()),
-            "{:?}",
-            amd.notes
-        );
-        assert_eq!(
-            amd.egl_vendor_json.as_deref().and_then(|p| p.file_name()),
-            Some("50_mesa.json".as_ref())
-        );
-        assert_eq!(
-            amd.vulkan_device.as_deref(),
-            Some("AMD Radeon 780M (RADV PHOENIX)")
-        );
-        let env = amd.env();
-        let vk = env
-            .iter()
-            .find(|(k, _)| *k == VK_DRIVER_FILES_ENV)
-            .expect("VK_DRIVER_FILES derived");
-        assert!(
-            env.iter()
-                .any(|(k, v)| *k == VK_ICD_FILENAMES_ENV && *v == vk.1),
-            "the pre-1.3.207 spelling must carry the same choice: {env:?}"
-        );
-        assert!(!env.iter().any(|(_, v)| v.contains("nvidia")), "{env:?}");
-        // Every file the env names is offered for binding; the device-select switch names no file.
-        for (key, value) in env
-            .into_iter()
-            .filter(|(key, _)| *key != NO_DEVICE_SELECT_ENV)
+    tilo_test_env::scenario! {
+        fn the_driver_pinned_for_a_node_is_the_one_its_icd_reports;
+
+        phase a_pinned_vulkan_driver_turns_off_device_selection_and_an_unpinned_one_does_not;
         {
+            let pinned = GpuSelection {
+                node: PathBuf::from("/dev/dri/renderD128"),
+                driver: None,
+                egl_vendor_json: None,
+                vulkan_icd_json: Some(PathBuf::from("/usr/share/vulkan/icd.d/x.json")),
+                vulkan_device: None,
+                pipeline_seed: None,
+                site_integration: None,
+                unclaimed: false,
+                notes: Vec::new(),
+            };
             assert!(
-                amd.manifest_files()
+                pinned
+                    .env()
+                    .contains(&(NO_DEVICE_SELECT_ENV, "1".to_owned()))
+            );
+            let unpinned = GpuSelection {
+                vulkan_icd_json: None,
+                ..pinned
+            };
+            assert!(
+                !unpinned
+                    .env()
                     .iter()
-                    .any(|b| b.display().to_string() == value),
-                "{key} points at {value}, which is not bound into the sandbox"
+                    .any(|(key, _)| *key == NO_DEVICE_SELECT_ENV),
+                "without a pinned driver the layer still picks among the devices"
             );
         }
 
-        // Same tree, the NVIDIA node: NVIDIA's ICD and EGL vendor.
-        let nvidia = select(&search, RENDER_D129, &probe);
-        assert_eq!(
-            nvidia
-                .vulkan_icd_json
-                .as_deref()
-                .and_then(|p| p.file_name()),
-            Some(host_icd_name("nvidia").as_str().as_ref())
-        );
-        assert_eq!(
-            nvidia
-                .egl_vendor_json
-                .as_deref()
-                .and_then(|p| p.file_name()),
-            Some("10_nvidia.json".as_ref())
-        );
-    }
+        phase a_gpu_less_machine_is_pinned_to_lavapipe_and_launches_inherit_only_that;
+        {
+            let tmp = tempfile::tempdir().unwrap();
+            let search = fixture(
+                tmp.path(),
+                &[("50_mesa.json", "libEGL_mesa.so.0")],
+                &[
+                    (&host_icd_name("radeon"), "libvulkan_radeon.so"),
+                    (&host_icd_name("lvp"), "libvulkan_lvp.so"),
+                ],
+            );
+            let pin = software_pin(&search).expect("lavapipe is installed");
+            assert!(pin.vulkan_icd_json.ends_with(host_icd_name("lvp")));
+            assert!(
+                pin.egl_vendor_json
+                    .as_ref()
+                    .is_some_and(|path| path.ends_with("50_mesa.json"))
+            );
+            let lavapipe = pin.vulkan_icd_json.display().to_string();
+            assert!(pin.env().contains(&(VK_DRIVER_FILES_ENV, lavapipe.clone())));
+            assert!(
+                pin.env().contains(&(NO_DEVICE_SELECT_ENV, "1".to_owned())),
+                "one pinned driver leaves the device-select layer nothing to choose"
+            );
+            assert!(pin.env().contains(&(VK_ICD_FILENAMES_ENV, lavapipe)));
+            assert_eq!(pin.manifest_files().len(), 2);
 
-    #[test]
-    fn a_snapdragon_display_node_pins_turnip_over_lavapipe() {
-        // The field failure: sysfs names the node's driver `msm_dpu`, which no table listed.
-        let tmp = tempfile::tempdir().unwrap();
-        let search = fixture(
-            tmp.path(),
-            &[("50_mesa.json", "libEGL_mesa.so.0")],
-            &[
-                (&host_icd_name("freedreno"), "libvulkan_freedreno.so"),
-                (&host_icd_name("lvp"), "libvulkan_lvp.so"),
-                (&host_icd_name("asahi"), "libvulkan_asahi.so"),
-            ],
-        );
-        let probe = Scripted(HashMap::from([
-            (
-                "libvulkan_freedreno.so",
-                vec![device("Turnip Adreno (TM) X1-85", Some(RENDER_D128))],
-            ),
-            ("libvulkan_lvp.so", vec![device("llvmpipe", None)]),
-            ("libvulkan_asahi.so", Vec::new()),
-        ]));
-        let sel = select_for_device(
-            Path::new("/dev/dri/renderD128"),
-            RENDER_D128,
-            Some("msm_dpu".to_owned()),
-            &search,
-            &probe,
-        );
-        assert_eq!(
-            sel.vulkan_icd_json.as_deref().and_then(|p| p.file_name()),
-            Some(host_icd_name("freedreno").as_str().as_ref()),
-            "{:?}",
-            sel.notes
-        );
-        assert_eq!(
-            sel.vulkan_device.as_deref(),
-            Some("Turnip Adreno (TM) X1-85")
-        );
-        assert!(sel.egl_vendor_json.is_some(), "{:?}", sel.notes);
-        assert!(sel.notes.is_empty(), "{:?}", sel.notes);
-    }
-
-    #[test]
-    fn nothing_is_pinned_when_no_icd_or_several_claim_the_node() {
-        let tmp = tempfile::tempdir().unwrap();
-        let search = fixture(
-            tmp.path(),
-            &[("50_mesa.json", "libEGL_mesa.so.0")],
-            &[
-                (&host_icd_name("radeon"), "/usr/lib64/libvulkan_radeon.so"),
-                (&host_icd_name("lvp"), "/usr/lib64/libvulkan_lvp.so"),
-                (&host_icd_name("broken"), "/usr/lib64/libvulkan_broken.so"),
-            ],
-        );
-        // A GL-only GPU: nothing reports the node, so nothing is pinned and every ICD's answer is on
-        // the record.
-        let probe = Scripted(HashMap::from([
-            (
-                "libvulkan_radeon.so",
-                vec![device("AMD Radeon", Some(RENDER_D129))],
-            ),
-            ("libvulkan_lvp.so", vec![device("llvmpipe", None)]),
-        ]));
-        let sel = select(&search, RENDER_D128, &probe);
-        assert!(sel.is_empty());
-        assert!(sel.unclaimed, "every driver answered and none claimed it");
-        assert!(sel.env().is_empty());
-        let notes = sel.notes.join("\n");
-        assert!(notes.contains("AMD Radeon on 226:129"), "{notes}");
-        assert!(notes.contains("llvmpipe without a render node"), "{notes}");
-        assert!(notes.contains("cannot load libvulkan_broken.so"), "{notes}");
-        assert!(notes.contains(EGL_VENDOR_ENV), "{notes}");
-
-        // Two drivers claiming one node is ambiguous, not a choice.
-        let probe = Scripted(HashMap::from([
-            (
-                "libvulkan_radeon.so",
-                vec![device("RADV", Some(RENDER_D128))],
-            ),
-            (
-                "libvulkan_lvp.so",
-                vec![device("also me", Some(RENDER_D128))],
-            ),
-        ]));
-        let sel = select(&search, RENDER_D128, &probe);
-        assert_eq!(sel.vulkan_icd_json, None);
-        assert!(!sel.unclaimed, "claimed twice");
-        assert!(
-            sel.notes.iter().any(|n| n.contains("refusing to guess")),
-            "{:?}",
-            sel.notes
-        );
-    }
-
-    #[test]
-    fn foreign_architecture_manifests_are_never_asked() {
-        let foreign_arch = ARCH_TOKENS
-            .iter()
-            .copied()
-            .find(|arch| *arch != host_arch_token())
-            .expect("a recognized architecture different from this host");
-        let tmp = tempfile::tempdir().unwrap();
-        let search = fixture(
-            tmp.path(),
-            &[("50_mesa.json", "libEGL_mesa.so.0")],
-            &[
-                (
-                    &format!("radeon_icd.{foreign_arch}.json"),
-                    "/usr/lib/libvulkan_radeon32.so",
+            assert_eq!(
+                software_pin_from(
+                    Some(pin.vulkan_icd_json.clone().into()),
+                    pin.egl_vendor_json.clone().map(Into::into),
                 ),
-                (&host_icd_name("radeon"), "/usr/lib64/libvulkan_radeon.so"),
-            ],
-        );
-        // Both would claim the node; only the host's file may be asked, or selection is ambiguous.
-        let probe = Scripted(HashMap::from([
-            (
-                "libvulkan_radeon32.so",
-                vec![device("RADV", Some(RENDER_D128))],
-            ),
-            (
-                "libvulkan_radeon.so",
-                vec![device("RADV", Some(RENDER_D128))],
-            ),
-        ]));
-        let sel = select(&search, RENDER_D128, &probe);
-        assert_eq!(
-            sel.vulkan_icd_json,
-            Some(search.vulkan_icd_dirs[0].join(host_icd_name("radeon"))),
-            "{:?}",
-            sel.notes
-        );
-        assert!(ARCH_TOKENS.contains(&host_arch_token()));
-        assert!(!is_foreign_arch("50_mesa.json"), "no token means eligible");
-    }
+                Some(pin)
+            );
+            let radeon = search.vulkan_icd_dirs[0].join(host_icd_name("radeon"));
+            assert_eq!(
+                software_pin_from(Some(radeon.into()), None),
+                None,
+                "a GPU's driver named in the environment is not evidence of a GPU-less machine"
+            );
+            assert_eq!(software_pin_from(None, None), None);
+            assert_eq!(
+                software_pin_from(Some("lvp_icd.json".into()), None),
+                None,
+                "only an absolute path to an existing manifest is inherited"
+            );
 
-    #[test]
-    fn relative_library_paths_resolve_against_their_manifest() {
-        let tmp = tempfile::tempdir().unwrap();
-        let search = fixture(
-            tmp.path(),
-            &[],
-            &[
-                ("abs.json", "/usr/lib64/libvulkan_radeon.so"),
-                ("bare.json", "libvulkan_radeon.so"),
-                ("rel.json", "../lib/libvulkan_radeon.so"),
-            ],
-        );
-        let dir = &search.vulkan_icd_dirs[0];
-        assert_eq!(
-            manifest_library_path(&dir.join("abs.json")),
-            Some(PathBuf::from("/usr/lib64/libvulkan_radeon.so"))
-        );
-        assert_eq!(
-            manifest_library_path(&dir.join("bare.json")),
-            Some(PathBuf::from("libvulkan_radeon.so"))
-        );
-        assert_eq!(
-            manifest_library_path(&dir.join("rel.json")),
-            Some(dir.join("../lib/libvulkan_radeon.so"))
-        );
+            let without = tempfile::tempdir().unwrap();
+            let search = fixture(
+                without.path(),
+                &[],
+                &[(&host_icd_name("radeon"), "libvulkan_radeon.so")],
+            );
+            assert!(software_pin(&search).is_err(), "no lavapipe, no pin");
+        }
+
+        phase a_node_no_driver_claims_renders_as_the_compositor_does_with_lavapipe;
+        {
+            let tmp = tempfile::tempdir().unwrap();
+            let search = fixture(
+                tmp.path(),
+                &[("50_mesa.json", "libEGL_mesa.so.0")],
+                &[
+                    (&host_icd_name("radeon"), "libvulkan_radeon.so"),
+                    (&host_icd_name("lvp"), "libvulkan_lvp.so"),
+                ],
+            );
+            let unclaimed = GpuSelection {
+                node: PathBuf::from("/dev/dri/card1"),
+                driver: Some("faux_driver".into()),
+                egl_vendor_json: None,
+                vulkan_icd_json: None,
+                vulkan_device: None,
+                pipeline_seed: None,
+                site_integration: None,
+                unclaimed: true,
+                notes: vec!["no Vulkan driver reports /dev/dri/card1".into()],
+            };
+            let pin = unclaimed_node_pin(&unclaimed, None, &search).expect("lavapipe is installed");
+            assert!(pin.vulkan_icd_json.ends_with(host_icd_name("lvp")));
+            assert!(
+                pin.env().contains(&(NO_DEVICE_SELECT_ENV, "1".to_owned())),
+                "the device-select layer stays out of the app"
+            );
+            let handed_down = SoftwarePin {
+                vulkan_icd_json: tmp.path().join("handed-down.json"),
+                egl_vendor_json: None,
+            };
+            assert_eq!(
+                unclaimed_node_pin(&unclaimed, Some(handed_down.clone()), &search),
+                Some(handed_down),
+                "the compositor's own pin comes first"
+            );
+            let claimed = GpuSelection {
+                vulkan_icd_json: Some(search.vulkan_icd_dirs[0].join(host_icd_name("radeon"))),
+                ..unclaimed.clone()
+            };
+            assert_eq!(
+                unclaimed_node_pin(&claimed, None, &search),
+                None,
+                "a node a driver claims keeps that driver"
+            );
+            let without = tempfile::tempdir().unwrap();
+            let bare = fixture(
+                without.path(),
+                &[],
+                &[(&host_icd_name("radeon"), "libvulkan_radeon.so")],
+            );
+            assert_eq!(unclaimed_node_pin(&unclaimed, None, &bare), None);
+            let gl_only = GpuSelection {
+                node: PathBuf::from("/dev/dri/renderD128"),
+                ..unclaimed.clone()
+            };
+            assert_eq!(
+                unclaimed_node_pin(&gl_only, None, &search),
+                None,
+                "a render node no Vulkan driver claims is a GPU with only an OpenGL driver"
+            );
+            let ambiguous = GpuSelection {
+                unclaimed: false,
+                ..unclaimed
+            };
+            assert_eq!(
+                unclaimed_node_pin(&ambiguous, None, &search),
+                None,
+                "several drivers claiming a node is no machine without a GPU"
+            );
+        }
+
+        phase the_icd_that_reports_the_node_is_pinned_whatever_sysfs_calls_it;
+        {
+            // A hybrid box: NVIDIA on renderD129, AMD on renderD128, lavapipe with no node.
+            let tmp = tempfile::tempdir().unwrap();
+            let search = fixture(
+                tmp.path(),
+                &[
+                    ("10_nvidia.json", "libEGL_nvidia.so.0"),
+                    ("50_mesa.json", "libEGL_mesa.so.0"),
+                ],
+                &[
+                    (&host_icd_name("nvidia"), "/usr/lib64/libGLX_nvidia.so.0"),
+                    (&host_icd_name("radeon"), "/usr/lib64/libvulkan_radeon.so"),
+                    (&host_icd_name("lvp"), "/usr/lib64/libvulkan_lvp.so"),
+                ],
+            );
+            let probe = Scripted(HashMap::from([
+                (
+                    "libGLX_nvidia.so.0",
+                    vec![device("NVIDIA GeForce RTX 4060", Some(RENDER_D129))],
+                ),
+                (
+                    "libvulkan_radeon.so",
+                    vec![device("AMD Radeon 780M (RADV PHOENIX)", Some(RENDER_D128))],
+                ),
+                ("libvulkan_lvp.so", vec![device("llvmpipe", None)]),
+            ]));
+            let amd = select(&search, RENDER_D128, &probe);
+            assert_eq!(
+                amd.vulkan_icd_json.as_deref().and_then(|p| p.file_name()),
+                Some(host_icd_name("radeon").as_str().as_ref()),
+                "{:?}",
+                amd.notes
+            );
+            assert_eq!(
+                amd.egl_vendor_json.as_deref().and_then(|p| p.file_name()),
+                Some("50_mesa.json".as_ref())
+            );
+            assert_eq!(
+                amd.vulkan_device.as_deref(),
+                Some("AMD Radeon 780M (RADV PHOENIX)")
+            );
+            let env = amd.env();
+            let vk = env
+                .iter()
+                .find(|(k, _)| *k == VK_DRIVER_FILES_ENV)
+                .expect("VK_DRIVER_FILES derived");
+            assert!(
+                env.iter()
+                    .any(|(k, v)| *k == VK_ICD_FILENAMES_ENV && *v == vk.1),
+                "the pre-1.3.207 spelling must carry the same choice: {env:?}"
+            );
+            assert!(!env.iter().any(|(_, v)| v.contains("nvidia")), "{env:?}");
+            // Every file the env names is offered for binding; the device-select switch names no file.
+            for (key, value) in env
+                .into_iter()
+                .filter(|(key, _)| *key != NO_DEVICE_SELECT_ENV)
+            {
+                assert!(
+                    amd.manifest_files()
+                        .iter()
+                        .any(|b| b.display().to_string() == value),
+                    "{key} points at {value}, which is not bound into the sandbox"
+                );
+            }
+
+            // Same tree, the NVIDIA node: NVIDIA's ICD and EGL vendor.
+            let nvidia = select(&search, RENDER_D129, &probe);
+            assert_eq!(
+                nvidia
+                    .vulkan_icd_json
+                    .as_deref()
+                    .and_then(|p| p.file_name()),
+                Some(host_icd_name("nvidia").as_str().as_ref())
+            );
+            assert_eq!(
+                nvidia
+                    .egl_vendor_json
+                    .as_deref()
+                    .and_then(|p| p.file_name()),
+                Some("10_nvidia.json".as_ref())
+            );
+        }
+
+        phase a_snapdragon_display_node_pins_turnip_over_lavapipe;
+        {
+            // The field failure: sysfs names the node's driver `msm_dpu`, which no table listed.
+            let tmp = tempfile::tempdir().unwrap();
+            let search = fixture(
+                tmp.path(),
+                &[("50_mesa.json", "libEGL_mesa.so.0")],
+                &[
+                    (&host_icd_name("freedreno"), "libvulkan_freedreno.so"),
+                    (&host_icd_name("lvp"), "libvulkan_lvp.so"),
+                    (&host_icd_name("asahi"), "libvulkan_asahi.so"),
+                ],
+            );
+            let probe = Scripted(HashMap::from([
+                (
+                    "libvulkan_freedreno.so",
+                    vec![device("Turnip Adreno (TM) X1-85", Some(RENDER_D128))],
+                ),
+                ("libvulkan_lvp.so", vec![device("llvmpipe", None)]),
+                ("libvulkan_asahi.so", Vec::new()),
+            ]));
+            let sel = select_for_device(
+                Path::new("/dev/dri/renderD128"),
+                RENDER_D128,
+                Some("msm_dpu".to_owned()),
+                &search,
+                &probe,
+            );
+            assert_eq!(
+                sel.vulkan_icd_json.as_deref().and_then(|p| p.file_name()),
+                Some(host_icd_name("freedreno").as_str().as_ref()),
+                "{:?}",
+                sel.notes
+            );
+            assert_eq!(
+                sel.vulkan_device.as_deref(),
+                Some("Turnip Adreno (TM) X1-85")
+            );
+            assert!(sel.egl_vendor_json.is_some(), "{:?}", sel.notes);
+            assert!(sel.notes.is_empty(), "{:?}", sel.notes);
+        }
+
+        phase nothing_is_pinned_when_no_icd_or_several_claim_the_node;
+        {
+            let tmp = tempfile::tempdir().unwrap();
+            let search = fixture(
+                tmp.path(),
+                &[("50_mesa.json", "libEGL_mesa.so.0")],
+                &[
+                    (&host_icd_name("radeon"), "/usr/lib64/libvulkan_radeon.so"),
+                    (&host_icd_name("lvp"), "/usr/lib64/libvulkan_lvp.so"),
+                    (&host_icd_name("broken"), "/usr/lib64/libvulkan_broken.so"),
+                ],
+            );
+            // A GL-only GPU: nothing reports the node, so nothing is pinned and every ICD's answer is on
+            // the record.
+            let probe = Scripted(HashMap::from([
+                (
+                    "libvulkan_radeon.so",
+                    vec![device("AMD Radeon", Some(RENDER_D129))],
+                ),
+                ("libvulkan_lvp.so", vec![device("llvmpipe", None)]),
+            ]));
+            let sel = select(&search, RENDER_D128, &probe);
+            assert!(sel.is_empty());
+            assert!(sel.unclaimed, "every driver answered and none claimed it");
+            assert!(sel.env().is_empty());
+            let notes = sel.notes.join("\n");
+            assert!(notes.contains("AMD Radeon on 226:129"), "{notes}");
+            assert!(notes.contains("llvmpipe without a render node"), "{notes}");
+            assert!(notes.contains("cannot load libvulkan_broken.so"), "{notes}");
+            assert!(notes.contains(EGL_VENDOR_ENV), "{notes}");
+
+            // Two drivers claiming one node is ambiguous, not a choice.
+            let probe = Scripted(HashMap::from([
+                (
+                    "libvulkan_radeon.so",
+                    vec![device("RADV", Some(RENDER_D128))],
+                ),
+                (
+                    "libvulkan_lvp.so",
+                    vec![device("also me", Some(RENDER_D128))],
+                ),
+            ]));
+            let sel = select(&search, RENDER_D128, &probe);
+            assert_eq!(sel.vulkan_icd_json, None);
+            assert!(!sel.unclaimed, "claimed twice");
+            assert!(
+                sel.notes.iter().any(|n| n.contains("refusing to guess")),
+                "{:?}",
+                sel.notes
+            );
+        }
+
+        phase foreign_architecture_manifests_are_never_asked;
+        {
+            let foreign_arch = ARCH_TOKENS
+                .iter()
+                .copied()
+                .find(|arch| *arch != host_arch_token())
+                .expect("a recognized architecture different from this host");
+            let tmp = tempfile::tempdir().unwrap();
+            let search = fixture(
+                tmp.path(),
+                &[("50_mesa.json", "libEGL_mesa.so.0")],
+                &[
+                    (
+                        &format!("radeon_icd.{foreign_arch}.json"),
+                        "/usr/lib/libvulkan_radeon32.so",
+                    ),
+                    (&host_icd_name("radeon"), "/usr/lib64/libvulkan_radeon.so"),
+                ],
+            );
+            // Both would claim the node; only the host's file may be asked, or selection is ambiguous.
+            let probe = Scripted(HashMap::from([
+                (
+                    "libvulkan_radeon32.so",
+                    vec![device("RADV", Some(RENDER_D128))],
+                ),
+                (
+                    "libvulkan_radeon.so",
+                    vec![device("RADV", Some(RENDER_D128))],
+                ),
+            ]));
+            let sel = select(&search, RENDER_D128, &probe);
+            assert_eq!(
+                sel.vulkan_icd_json,
+                Some(search.vulkan_icd_dirs[0].join(host_icd_name("radeon"))),
+                "{:?}",
+                sel.notes
+            );
+            assert!(ARCH_TOKENS.contains(&host_arch_token()));
+            assert!(!is_foreign_arch("50_mesa.json"), "no token means eligible");
+        }
+
+        phase relative_library_paths_resolve_against_their_manifest;
+        {
+            let tmp = tempfile::tempdir().unwrap();
+            let search = fixture(
+                tmp.path(),
+                &[],
+                &[
+                    ("abs.json", "/usr/lib64/libvulkan_radeon.so"),
+                    ("bare.json", "libvulkan_radeon.so"),
+                    ("rel.json", "../lib/libvulkan_radeon.so"),
+                ],
+            );
+            let dir = &search.vulkan_icd_dirs[0];
+            assert_eq!(
+                manifest_library_path(&dir.join("abs.json")),
+                Some(PathBuf::from("/usr/lib64/libvulkan_radeon.so"))
+            );
+            assert_eq!(
+                manifest_library_path(&dir.join("bare.json")),
+                Some(PathBuf::from("libvulkan_radeon.so"))
+            );
+            assert_eq!(
+                manifest_library_path(&dir.join("rel.json")),
+                Some(dir.join("../lib/libvulkan_radeon.so"))
+            );
+        }
     }
 
     /// A tree where a driver reports the node, with `advertised` as the features it answers `VK_TRUE`
@@ -1579,109 +1583,113 @@ mod tests {
         )
     }
 
-    #[test]
-    fn a_driver_that_places_memory_gets_the_site_integration_switch() {
-        let tmp = tempfile::tempdir().unwrap();
-        let (search, probe) = placement_tree(
-            tmp.path(),
-            vec![
-                Feature::BufferDeviceAddress,
-                Feature::MemoryMapPlaced,
-                Feature::MemoryMapRangePlaced,
-                Feature::MemoryUnmapReserve,
-            ],
-        );
-        let sel = selection_for("asahi", &search, &probe);
-        assert_eq!(sel.site_integration, Some(SiteIntegration::TargetBuffers));
-        assert!(
-            sel.env()
-                .contains(&(SITE_INTEGRATION_ENV, "target-buffers".to_owned())),
-            "{:?}",
-            sel.env()
-        );
-    }
+    tilo_test_env::scenario! {
+        fn the_site_integration_switch_follows_what_the_driver_places;
 
-    #[test]
-    fn placement_without_target_buffers_is_reported_as_placement_alone() {
-        let tmp = tempfile::tempdir().unwrap();
-        let (search, probe) = placement_tree(
-            tmp.path(),
-            vec![Feature::MemoryMapPlaced, Feature::MemoryMapRangePlaced],
-        );
-        assert_eq!(
-            selection_for("asahi", &search, &probe).site_integration,
-            Some(SiteIntegration::Placed)
-        );
-    }
+        phase a_driver_that_places_memory_gets_the_site_integration_switch;
+        {
+            let tmp = tempfile::tempdir().unwrap();
+            let (search, probe) = placement_tree(
+                tmp.path(),
+                vec![
+                    Feature::BufferDeviceAddress,
+                    Feature::MemoryMapPlaced,
+                    Feature::MemoryMapRangePlaced,
+                    Feature::MemoryUnmapReserve,
+                ],
+            );
+            let sel = selection_for("asahi", &search, &probe);
+            assert_eq!(sel.site_integration, Some(SiteIntegration::TargetBuffers));
+            assert!(
+                sel.env()
+                    .contains(&(SITE_INTEGRATION_ENV, "target-buffers".to_owned())),
+                "{:?}",
+                sel.env()
+            );
+        }
 
-    #[test]
-    fn a_partial_placement_advertisement_is_not_enough_for_target_buffers() {
-        // `memoryMapPlaced` and a placed range, but no unmap reservation: the range could be handed
-        // out twice, so this is placement only.
-        let tmp = tempfile::tempdir().unwrap();
-        let (search, probe) = placement_tree(
-            tmp.path(),
-            vec![
-                Feature::BufferDeviceAddress,
-                Feature::MemoryMapPlaced,
-                Feature::MemoryMapRangePlaced,
-            ],
-        );
-        assert_eq!(
-            selection_for("asahi", &search, &probe).site_integration,
-            Some(SiteIntegration::Placed)
-        );
-    }
+        phase placement_without_target_buffers_is_reported_as_placement_alone;
+        {
+            let tmp = tempfile::tempdir().unwrap();
+            let (search, probe) = placement_tree(
+                tmp.path(),
+                vec![Feature::MemoryMapPlaced, Feature::MemoryMapRangePlaced],
+            );
+            assert_eq!(
+                selection_for("asahi", &search, &probe).site_integration,
+                Some(SiteIntegration::Placed)
+            );
+        }
 
-    #[test]
-    fn a_driver_that_cannot_place_memory_leaves_the_switch_alone() {
-        // A native GPU: it claims the node and pins its loaders, and the variable a translation layer
-        // reads never appears.
-        let tmp = tempfile::tempdir().unwrap();
-        let (search, probe) = placement_tree(tmp.path(), vec![Feature::BufferDeviceAddress]);
-        let sel = selection_for("asahi", &search, &probe);
-        assert!(sel.vulkan_icd_json.is_some(), "{:?}", sel.notes);
-        assert_eq!(sel.site_integration, None);
-        assert!(
-            !sel.env()
-                .iter()
-                .any(|(key, _)| *key == SITE_INTEGRATION_ENV),
-            "{:?}",
-            sel.env()
-        );
-    }
+        phase a_partial_placement_advertisement_is_not_enough_for_target_buffers;
+        {
+            // `memoryMapPlaced` and a placed range, but no unmap reservation: the range could be handed
+            // out twice, so this is placement only.
+            let tmp = tempfile::tempdir().unwrap();
+            let (search, probe) = placement_tree(
+                tmp.path(),
+                vec![
+                    Feature::BufferDeviceAddress,
+                    Feature::MemoryMapPlaced,
+                    Feature::MemoryMapRangePlaced,
+                ],
+            );
+            assert_eq!(
+                selection_for("asahi", &search, &probe).site_integration,
+                Some(SiteIntegration::Placed)
+            );
+        }
 
-    #[test]
-    fn an_unpinned_session_never_sets_the_site_integration_switch() {
-        // Nothing claims the node, so there is no driver to ask and the environment stays exactly as
-        // the loaders leave it.
-        let tmp = tempfile::tempdir().unwrap();
-        let (search, probe) = placement_tree(
-            tmp.path(),
-            vec![
-                Feature::BufferDeviceAddress,
-                Feature::MemoryMapPlaced,
-                Feature::MemoryMapRangePlaced,
-                Feature::MemoryUnmapReserve,
-            ],
-        );
-        let elsewhere = Advertises(
-            HashMap::from([(
-                "libvulkan_asahi.so",
-                vec![device("Apple M1 (G13G B0)", Some((226, 129)))],
-            )]),
-            probe.1,
-        );
-        let sel = selection_for("asahi", &search, &elsewhere);
-        assert!(sel.is_empty());
-        assert_eq!(sel.site_integration, None);
-        assert!(
-            !sel.env()
-                .iter()
-                .any(|(key, _)| *key == SITE_INTEGRATION_ENV),
-            "{:?}",
-            sel.env()
-        );
+        phase a_driver_that_cannot_place_memory_leaves_the_switch_alone;
+        {
+            // A native GPU: it claims the node and pins its loaders, and the variable a translation layer
+            // reads never appears.
+            let tmp = tempfile::tempdir().unwrap();
+            let (search, probe) = placement_tree(tmp.path(), vec![Feature::BufferDeviceAddress]);
+            let sel = selection_for("asahi", &search, &probe);
+            assert!(sel.vulkan_icd_json.is_some(), "{:?}", sel.notes);
+            assert_eq!(sel.site_integration, None);
+            assert!(
+                !sel.env()
+                    .iter()
+                    .any(|(key, _)| *key == SITE_INTEGRATION_ENV),
+                "{:?}",
+                sel.env()
+            );
+        }
+
+        phase an_unpinned_session_never_sets_the_site_integration_switch;
+        {
+            // Nothing claims the node, so there is no driver to ask and the environment stays exactly as
+            // the loaders leave it.
+            let tmp = tempfile::tempdir().unwrap();
+            let (search, probe) = placement_tree(
+                tmp.path(),
+                vec![
+                    Feature::BufferDeviceAddress,
+                    Feature::MemoryMapPlaced,
+                    Feature::MemoryMapRangePlaced,
+                    Feature::MemoryUnmapReserve,
+                ],
+            );
+            let elsewhere = Advertises(
+                HashMap::from([(
+                    "libvulkan_asahi.so",
+                    vec![device("Apple M1 (G13G B0)", Some((226, 129)))],
+                )]),
+                probe.1,
+            );
+            let sel = selection_for("asahi", &search, &elsewhere);
+            assert!(sel.is_empty());
+            assert_eq!(sel.site_integration, None);
+            assert!(
+                !sel.env()
+                    .iter()
+                    .any(|(key, _)| *key == SITE_INTEGRATION_ENV),
+                "{:?}",
+                sel.env()
+            );
+        }
     }
 
     #[test]

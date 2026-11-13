@@ -134,89 +134,93 @@ mod tests {
         }
     }
 
-    #[test]
-    fn the_image_grants_its_own_apps_and_others_get_what_the_workspace_names() {
-        let monitor = manifest(&["system-info", "processes"]);
-        assert_eq!(
-            grants(&monitor, &plan(&[]), true),
-            Grants::IMAGE_DEFAULT,
-            "an app the image ships: what it declares, never command lines"
-        );
-        assert_eq!(
-            grants(&monitor, &plan(&[]), false),
-            Grants::default(),
-            "a user-installed app starts with nothing"
-        );
-        assert_eq!(
-            grants(&monitor, &plan(&["system-info"]), false),
-            Grants {
-                system_info: true,
-                ..Grants::default()
-            },
-            "what the workspace granted"
-        );
-        assert_eq!(
-            grants(&monitor, &plan(&["process-commands"]), true),
-            Grants::ALL,
-            "command lines only by their own grant"
-        );
+    tilo_test_env::scenario! {
+        fn system_stats_access_is_granted_and_handed_off_by_the_launcher;
 
-        let readings_only = manifest(&["system-info"]);
-        assert_eq!(
-            grants(
-                &readings_only,
-                &plan(&["processes", "process-commands"]),
-                true
-            ),
-            Grants {
-                system_info: true,
-                ..Grants::default()
-            },
-            "the manifest is the ceiling"
-        );
-        let spawner = manifest(&["processes"]);
-        assert_eq!(
-            ceiling(&spawner),
-            Grants::default(),
-            "starting programs opens nothing"
-        );
-        assert!(
-            resolve_bind(&spawner, &plan(&[]), Path::new("/"), None, false)
-                .unwrap()
-                .is_none()
-        );
-    }
+        phase the_image_grants_its_own_apps_and_others_get_what_the_workspace_names;
+        {
+            let monitor = manifest(&["system-info", "processes"]);
+            assert_eq!(
+                grants(&monitor, &plan(&[]), true),
+                Grants::IMAGE_DEFAULT,
+                "an app the image ships: what it declares, never command lines"
+            );
+            assert_eq!(
+                grants(&monitor, &plan(&[]), false),
+                Grants::default(),
+                "a user-installed app starts with nothing"
+            );
+            assert_eq!(
+                grants(&monitor, &plan(&["system-info"]), false),
+                Grants {
+                    system_info: true,
+                    ..Grants::default()
+                },
+                "what the workspace granted"
+            );
+            assert_eq!(
+                grants(&monitor, &plan(&["process-commands"]), true),
+                Grants::ALL,
+                "command lines only by their own grant"
+            );
 
-    #[test]
-    fn the_connection_carries_the_launchers_handoff_before_the_app_holds_it() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("system-stats.sock");
-        let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
-        let handoff = Handoff {
-            protocol: PROTOCOL,
-            app_id: "so.tilo.monitor".into(),
-            workspace_id: Some("workspace".into()),
-            grants: Grants::IMAGE_DEFAULT,
-            ceiling: Grants::ALL,
-        };
-        let resolved = resolve_bind_at(&path, &handoff).unwrap().expect("bound");
-        assert_eq!(resolved.child_fd, CHILD_FD);
-        assert!(crate::services::RESERVED_CHILD_FDS.contains(&CHILD_FD));
-        let (mut service, _) = listener.accept().unwrap();
-        assert_eq!(
-            tilo_system_stats::protocol::read_handoff(&mut service).unwrap(),
-            handoff
-        );
-        drop(resolved);
-        let mut rest = Vec::new();
-        service.read_to_end(&mut rest).unwrap();
-        assert!(rest.is_empty(), "nothing but the handoff");
+            let readings_only = manifest(&["system-info"]);
+            assert_eq!(
+                grants(
+                    &readings_only,
+                    &plan(&["processes", "process-commands"]),
+                    true
+                ),
+                Grants {
+                    system_info: true,
+                    ..Grants::default()
+                },
+                "the manifest is the ceiling"
+            );
+            let spawner = manifest(&["processes"]);
+            assert_eq!(
+                ceiling(&spawner),
+                Grants::default(),
+                "starting programs opens nothing"
+            );
+            assert!(
+                resolve_bind(&spawner, &plan(&[]), Path::new("/"), None, false)
+                    .unwrap()
+                    .is_none()
+            );
+        }
 
-        assert!(
-            resolve_bind_at(&dir.path().join("absent.sock"), &handoff)
-                .unwrap()
-                .is_none(),
-            "no service costs the readings, not the launch"
-        );
+        phase the_connection_carries_the_launchers_handoff_before_the_app_holds_it;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("system-stats.sock");
+            let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+            let handoff = Handoff {
+                protocol: PROTOCOL,
+                app_id: "so.tilo.monitor".into(),
+                workspace_id: Some("workspace".into()),
+                grants: Grants::IMAGE_DEFAULT,
+                ceiling: Grants::ALL,
+            };
+            let resolved = resolve_bind_at(&path, &handoff).unwrap().expect("bound");
+            assert_eq!(resolved.child_fd, CHILD_FD);
+            assert!(crate::services::RESERVED_CHILD_FDS.contains(&CHILD_FD));
+            let (mut service, _) = listener.accept().unwrap();
+            assert_eq!(
+                tilo_system_stats::protocol::read_handoff(&mut service).unwrap(),
+                handoff
+            );
+            drop(resolved);
+            let mut rest = Vec::new();
+            service.read_to_end(&mut rest).unwrap();
+            assert!(rest.is_empty(), "nothing but the handoff");
+
+            assert!(
+                resolve_bind_at(&dir.path().join("absent.sock"), &handoff)
+                    .unwrap()
+                    .is_none(),
+                "no service costs the readings, not the launch"
+            );
+        }
     }
 }

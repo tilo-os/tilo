@@ -295,130 +295,134 @@ mod tests {
             .collect()
     }
 
-    /// An instance runs here only while both runtimes it names are installed: once a newer build
-    /// replaced one, the app is no candidate for a host.
-    #[test]
-    fn an_instance_runs_here_only_on_runtimes_that_are_installed() {
-        let root = tempfile::tempdir().unwrap();
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set(runtime_bundle::RUNTIME_DIR_ENV, root.path());
-        let baked = "2026.07+native.b16b0fa4317d8b7d24aa5b3569d44fa9";
-        for version in [baked, "0.1.0+tilolang"] {
-            let dir = root.path().join(version);
-            std::fs::create_dir_all(&dir).unwrap();
-            std::fs::write(dir.join(runtime_bundle::BUNDLE_MANIFEST_FILENAME), "").unwrap();
-        }
-        let instance = |app_runtime: &str| VerifiedInstance {
-            runtime: "tilolang/0.1.0+tilolang".to_owned(),
-            app_runtime: app_runtime.to_owned(),
-            publisher: [0; 32],
-            module: runtime_portal::tilolang_host::Module::default(),
-        };
-        assert!(instance(&format!("tilo-runtime/{baked}")).runs_here());
-        assert!(
-            !instance("tilo-runtime/2026.07+native.4c4a00000000000000000000000000ff").runs_here(),
-            "the runtime an earlier build named, since replaced"
-        );
-        let mut on_gone_tilolang = instance(&format!("tilo-runtime/{baked}"));
-        on_gone_tilolang.runtime = "tilolang/0.0.9+tilolang".to_owned();
-        assert!(!on_gone_tilolang.runs_here());
-    }
+    tilo_test_env::scenario! {
+        fn a_tilolang_host_runs_installed_runtimes_and_holds_only_its_own;
 
-    /// The host holds the runtime read-only, its storage, its door, and nothing an app would: no
-    /// display, no bus, no service, no network, no home, no app storage.
-    #[test]
-    fn a_tilolang_host_holds_its_runtime_its_storage_and_its_door_only() {
-        let mut zone = tilo_test_env::ScopedEnv::new();
-        zone.set("TZ", "America/Los_Angeles");
-        let argv = bwrap_argv(
-            (
-                Path::new("/usr/lib/tilo/runtimes/tilolang/0.1.0"),
-                "0.1.0+tilolang",
-            ),
-            (
-                Path::new("/usr/lib/tilo/runtimes/tilo/2026.10.1"),
-                "2026.10.1",
-            ),
-            Path::new("/home/ada/.local/share/tilo/tilolang-hosts/workspace/author"),
-            Path::new("/usr/libexec/tilo-launcher"),
-        );
-        assert!(
-            argv.contains(&"--unshare-all".to_owned()),
-            "no network, no ipc"
-        );
-        assert!(argv.contains(&"--clearenv".to_owned()));
-        let binds = pair(&argv, "--bind");
-        assert_eq!(
-            binds,
-            [(
-                "/home/ada/.local/share/tilo/tilolang-hosts/workspace/author".to_owned(),
-                STORAGE_MOUNT.to_owned()
-            )],
-            "its storage is the one thing it writes"
-        );
-        let mounted: Vec<String> = pair(&argv, "--ro-bind")
-            .into_iter()
-            .map(|(_, to)| to)
-            .collect();
-        assert!(mounted.contains(&"/run/tilo-runtime/0.1.0+tilolang".to_owned()));
-        assert!(
-            mounted.contains(&"/run/tilo-runtime/2026.10.1".to_owned()),
-            "the Tilo runtime its binary runs on"
-        );
-        for forbidden in ["wayland", "dbus", "bus", "/home", "tilo-svc", "/run/user"] {
+        phase an_instance_runs_here_only_on_runtimes_that_are_installed;
+        // An instance runs here only while both runtimes it names are installed: once a newer build
+        // replaced one, the app is no candidate for a host.
+        {
+            let root = tempfile::tempdir().unwrap();
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set(runtime_bundle::RUNTIME_DIR_ENV, root.path());
+            let baked = "2026.07+native.b16b0fa4317d8b7d24aa5b3569d44fa9";
+            for version in [baked, "0.1.0+tilolang"] {
+                let dir = root.path().join(version);
+                std::fs::create_dir_all(&dir).unwrap();
+                std::fs::write(dir.join(runtime_bundle::BUNDLE_MANIFEST_FILENAME), "").unwrap();
+            }
+            let instance = |app_runtime: &str| VerifiedInstance {
+                runtime: "tilolang/0.1.0+tilolang".to_owned(),
+                app_runtime: app_runtime.to_owned(),
+                publisher: [0; 32],
+                module: runtime_portal::tilolang_host::Module::default(),
+            };
+            assert!(instance(&format!("tilo-runtime/{baked}")).runs_here());
             assert!(
-                !mounted.iter().any(|to| to.contains(forbidden)),
-                "{forbidden} is not in a host's sandbox: {mounted:?}"
+                !instance("tilo-runtime/2026.07+native.4c4a00000000000000000000000000ff").runs_here(),
+                "the runtime an earlier build named, since replaced"
+            );
+            let mut on_gone_tilolang = instance(&format!("tilo-runtime/{baked}"));
+            on_gone_tilolang.runtime = "tilolang/0.0.9+tilolang".to_owned();
+            assert!(!on_gone_tilolang.runs_here());
+        }
+
+        phase a_tilolang_host_holds_its_runtime_its_storage_and_its_door_only;
+        // The host holds the runtime read-only, its storage, its door, and nothing an app would: no
+        // display, no bus, no service, no network, no home, no app storage.
+        {
+            let mut zone = tilo_test_env::ScopedEnv::new();
+            zone.set("TZ", "America/Los_Angeles");
+            let argv = bwrap_argv(
+                (
+                    Path::new("/usr/lib/tilo/runtimes/tilolang/0.1.0"),
+                    "0.1.0+tilolang",
+                ),
+                (
+                    Path::new("/usr/lib/tilo/runtimes/tilo/2026.10.1"),
+                    "2026.10.1",
+                ),
+                Path::new("/home/ada/.local/share/tilo/tilolang-hosts/workspace/author"),
+                Path::new("/usr/libexec/tilo-launcher"),
+            );
+            assert!(
+                argv.contains(&"--unshare-all".to_owned()),
+                "no network, no ipc"
+            );
+            assert!(argv.contains(&"--clearenv".to_owned()));
+            let binds = pair(&argv, "--bind");
+            assert_eq!(
+                binds,
+                [(
+                    "/home/ada/.local/share/tilo/tilolang-hosts/workspace/author".to_owned(),
+                    STORAGE_MOUNT.to_owned()
+                )],
+                "its storage is the one thing it writes"
+            );
+            let mounted: Vec<String> = pair(&argv, "--ro-bind")
+                .into_iter()
+                .map(|(_, to)| to)
+                .collect();
+            assert!(mounted.contains(&"/run/tilo-runtime/0.1.0+tilolang".to_owned()));
+            assert!(
+                mounted.contains(&"/run/tilo-runtime/2026.10.1".to_owned()),
+                "the Tilo runtime its binary runs on"
+            );
+            for forbidden in ["wayland", "dbus", "bus", "/home", "tilo-svc", "/run/user"] {
+                assert!(
+                    !mounted.iter().any(|to| to.contains(forbidden)),
+                    "{forbidden} is not in a host's sandbox: {mounted:?}"
+                );
+            }
+            let read_only = pair(&argv, "--ro-bind-try");
+            for zone in ZONE_PATHS {
+                assert!(
+                    read_only.contains(&(zone.to_owned(), zone.to_owned())),
+                    "the person's zone is read where an app reads it: {read_only:?}"
+                );
+            }
+            let env = pair(&argv, "--setenv");
+            assert!(
+                env.contains(&("TZ".to_owned(), "America/Los_Angeles".to_owned())),
+                "the zone the person chose for the session: {env:?}"
+            );
+            assert!(env.contains(&(
+                runtime_portal::tilolang_host::DOOR_FD_ENV.to_owned(),
+                "3".to_owned()
+            )));
+            assert!(
+                !env.iter().any(|(name, _)| name.starts_with("TILO_SVC_")
+                    && name != runtime_portal::tilolang_host::DOOR_FD_ENV
+                    || name == "WAYLAND_DISPLAY"
+                    || name == "TILO_WORKSPACE_ID"),
+                "no service, display or app identity: {env:?}"
+            );
+            let shim = argv
+                .iter()
+                .position(|arg| arg == crate::landlock_shim::SANDBOX_EXEC_SUBCOMMAND)
+                .expect("Landlock is applied");
+            let rest = &argv[shim..];
+            assert!(rest.contains(&"--net-restricted".to_owned()));
+            assert_eq!(
+                rest.windows(2)
+                    .filter(|w| w[0] == "--keep-fd")
+                    .map(|w| w[1].clone())
+                    .collect::<Vec<_>>(),
+                ["3"],
+                "only the door is kept"
+            );
+            assert_eq!(
+                rest.windows(2)
+                    .filter(|w| w[0] == "--rw" || w[0] == "--rw-noexec")
+                    .map(|w| w[1].clone())
+                    .collect::<Vec<_>>(),
+                [STORAGE_MOUNT],
+                "it writes only its storage, and runs nothing from it"
+            );
+            assert_eq!(
+                argv.last().map(String::as_str),
+                Some("/run/tilo-runtime/0.1.0+tilolang/bin/tilolang-host")
             );
         }
-        let read_only = pair(&argv, "--ro-bind-try");
-        for zone in ZONE_PATHS {
-            assert!(
-                read_only.contains(&(zone.to_owned(), zone.to_owned())),
-                "the person's zone is read where an app reads it: {read_only:?}"
-            );
-        }
-        let env = pair(&argv, "--setenv");
-        assert!(
-            env.contains(&("TZ".to_owned(), "America/Los_Angeles".to_owned())),
-            "the zone the person chose for the session: {env:?}"
-        );
-        assert!(env.contains(&(
-            runtime_portal::tilolang_host::DOOR_FD_ENV.to_owned(),
-            "3".to_owned()
-        )));
-        assert!(
-            !env.iter().any(|(name, _)| name.starts_with("TILO_SVC_")
-                && name != runtime_portal::tilolang_host::DOOR_FD_ENV
-                || name == "WAYLAND_DISPLAY"
-                || name == "TILO_WORKSPACE_ID"),
-            "no service, display or app identity: {env:?}"
-        );
-        let shim = argv
-            .iter()
-            .position(|arg| arg == crate::landlock_shim::SANDBOX_EXEC_SUBCOMMAND)
-            .expect("Landlock is applied");
-        let rest = &argv[shim..];
-        assert!(rest.contains(&"--net-restricted".to_owned()));
-        assert_eq!(
-            rest.windows(2)
-                .filter(|w| w[0] == "--keep-fd")
-                .map(|w| w[1].clone())
-                .collect::<Vec<_>>(),
-            ["3"],
-            "only the door is kept"
-        );
-        assert_eq!(
-            rest.windows(2)
-                .filter(|w| w[0] == "--rw" || w[0] == "--rw-noexec")
-                .map(|w| w[1].clone())
-                .collect::<Vec<_>>(),
-            [STORAGE_MOUNT],
-            "it writes only its storage, and runs nothing from it"
-        );
-        assert_eq!(
-            argv.last().map(String::as_str),
-            Some("/run/tilo-runtime/0.1.0+tilolang/bin/tilolang-host")
-        );
     }
 }

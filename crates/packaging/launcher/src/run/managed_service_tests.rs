@@ -36,140 +36,144 @@ fn service_options() -> RunOptions {
     }
 }
 
-#[test]
-fn owned_service_refuses_policy_relaxation_before_touching_installation() {
-    let strict = RunOptions {
-        mode: LaunchMode::Service {
-            passthrough_argv: vec![],
-        },
-        expected_package_hash: Some("not-an-installed-package".into()),
-        identity: IdentitySource::None,
-        ..RunOptions::default()
-    };
-    let mut variants = Vec::new();
-    let mut opts = strict.clone();
-    opts.mode = LaunchMode::Gui;
-    variants.push(opts);
-    let mut opts = strict.clone();
-    opts.expected_package_hash = None;
-    variants.push(opts);
-    let mut opts = strict.clone();
-    opts.identity = IdentitySource::UserStore;
-    variants.push(opts);
-    let mut opts = strict.clone();
-    opts.landlock_enforce = false;
-    variants.push(opts);
-    let mut opts = strict.clone();
-    opts.landlock_best_effort = true;
-    variants.push(opts);
-    let mut opts = strict.clone();
-    opts.allow_missing_runtime = true;
-    variants.push(opts);
-    let mut opts = strict;
-    opts.allow_unsigned_runtime = true;
-    variants.push(opts);
-    for opts in variants {
-        let result = validate_owned_service_options(&opts);
+tilo_test_env::scenario! {
+    fn service_launches_are_confined_to_what_was_admitted;
+
+    phase owned_service_refuses_policy_relaxation_before_touching_installation;
+    {
+        let strict = RunOptions {
+            mode: LaunchMode::Service {
+                passthrough_argv: vec![],
+            },
+            expected_package_hash: Some("not-an-installed-package".into()),
+            identity: IdentitySource::None,
+            ..RunOptions::default()
+        };
+        let mut variants = Vec::new();
+        let mut opts = strict.clone();
+        opts.mode = LaunchMode::Gui;
+        variants.push(opts);
+        let mut opts = strict.clone();
+        opts.expected_package_hash = None;
+        variants.push(opts);
+        let mut opts = strict.clone();
+        opts.identity = IdentitySource::UserStore;
+        variants.push(opts);
+        let mut opts = strict.clone();
+        opts.landlock_enforce = false;
+        variants.push(opts);
+        let mut opts = strict.clone();
+        opts.landlock_best_effort = true;
+        variants.push(opts);
+        let mut opts = strict.clone();
+        opts.allow_missing_runtime = true;
+        variants.push(opts);
+        let mut opts = strict;
+        opts.allow_unsigned_runtime = true;
+        variants.push(opts);
+        for opts in variants {
+            let result = validate_owned_service_options(&opts);
+            assert!(
+                matches!(result, Err(RunError::InvalidServiceLaunch(message))
+                    if message == "owned service requires signed, confined, identity-free launch")
+            );
+        }
+    }
+
+    phase owned_service_requires_original_installation;
+    {
+        let opts = RunOptions {
+            mode: LaunchMode::Service {
+                passthrough_argv: vec![],
+            },
+            expected_package_hash: Some("not-an-installed-package".into()),
+            identity: IdentitySource::None,
+            // Omitted app id means no installation lookup can touch user state.
+            app_id: None,
+            ..RunOptions::default()
+        };
+        validate_owned_service_options(&opts).unwrap();
+        let result = verified_original_manifest(
+            Path::new("/missing/owned-service.toml"),
+            Path::new("/missing/payload"),
+            &opts,
+            "not-an-installed-package",
+        );
         assert!(
             matches!(result, Err(RunError::InvalidServiceLaunch(message))
-                if message == "owned service requires signed, confined, identity-free launch")
+                if message == "original signed package launch changed")
         );
     }
-}
 
-#[test]
-fn owned_service_requires_original_installation() {
-    let opts = RunOptions {
-        mode: LaunchMode::Service {
-            passthrough_argv: vec![],
-        },
-        expected_package_hash: Some("not-an-installed-package".into()),
-        identity: IdentitySource::None,
-        // Omitted app id means no installation lookup can touch user state.
-        app_id: None,
-        ..RunOptions::default()
-    };
-    validate_owned_service_options(&opts).unwrap();
-    let result = verified_original_manifest(
-        Path::new("/missing/owned-service.toml"),
-        Path::new("/missing/payload"),
-        &opts,
-        "not-an-installed-package",
-    );
-    assert!(
-        matches!(result, Err(RunError::InvalidServiceLaunch(message))
-            if message == "original signed package launch changed")
-    );
-}
-
-#[test]
-fn signal_source_manifest_is_admitted_as_a_headless_managed_service() {
-    let manifest: ManifestView =
-        toml::from_str(include_str!("../../signal-provider.toml")).unwrap();
-    let options = RunOptions {
-        app_id: Some("so.tilo.signal-provider".into()),
-        mode: LaunchMode::Service {
-            passthrough_argv: vec![],
-        },
-        no_services: true,
-        identity: IdentitySource::None,
-        ..RunOptions::default()
-    };
-    assert_eq!(
-        manifest.entrypoint.cli_bin(),
-        Some("bin/tilo-signal-provider")
-    );
-    validate_launch_mode(&manifest, &options).unwrap();
-}
-
-#[test]
-fn managed_service_launches_are_confined_to_headless_service_packages() {
+    phase signal_source_manifest_is_admitted_as_a_headless_managed_service;
     {
-        let service = manifest("service", "cli");
-        assert!(validate_launch_mode(&service, &service_options()).is_ok());
-        assert!(matches!(
-            validate_launch_mode(&manifest("app", "cli"), &service_options()),
-            Err(RunError::InvalidServiceLaunch(_))
-        ));
-        assert!(matches!(
-            validate_launch_mode(&manifest("service", "gui"), &service_options()),
-            Err(RunError::InvalidServiceLaunch(_))
-        ));
-    }
-    {
-        let manifest = manifest("service", "cli");
-        let display = RunOptions {
-            wayland_socket: Some("/run/user/1000/wayland-0".into()),
-            ..service_options()
-        };
-        assert!(validate_launch_mode(&manifest, &display).is_err());
-        let document = RunOptions {
-            open_document: Some("/tmp/document".into()),
-            ..service_options()
-        };
-        assert!(validate_launch_mode(&manifest, &document).is_err());
-    }
-    {
-        let service = RunOptions {
-            app_id: Some("so.tilo.other".into()),
-            ..service_options()
-        };
-        assert!(matches!(
-            validate_launch_mode(&manifest("service", "cli"), &service),
-            Err(RunError::AppIdMismatch { .. })
-        ));
-        let gui = RunOptions {
-            app_id: Some("so.tilo.other".into()),
+        let manifest: ManifestView =
+            toml::from_str(include_str!("../../signal-provider.toml")).unwrap();
+        let options = RunOptions {
+            app_id: Some("so.tilo.signal-provider".into()),
+            mode: LaunchMode::Service {
+                passthrough_argv: vec![],
+            },
+            no_services: true,
+            identity: IdentitySource::None,
             ..RunOptions::default()
         };
-        assert!(matches!(
-            validate_launch_mode(&manifest("app", "gui"), &gui),
-            Err(RunError::AppIdMismatch { .. })
-        ));
-        let exact = RunOptions {
-            app_id: Some("so.tilo.worker".into()),
-            ..RunOptions::default()
-        };
-        assert!(validate_launch_mode(&manifest("app", "gui"), &exact).is_ok());
+        assert_eq!(
+            manifest.entrypoint.cli_bin(),
+            Some("bin/tilo-signal-provider")
+        );
+        validate_launch_mode(&manifest, &options).unwrap();
+    }
+
+    phase managed_service_launches_are_confined_to_headless_service_packages;
+    {
+        {
+            let service = manifest("service", "cli");
+            assert!(validate_launch_mode(&service, &service_options()).is_ok());
+            assert!(matches!(
+                validate_launch_mode(&manifest("app", "cli"), &service_options()),
+                Err(RunError::InvalidServiceLaunch(_))
+            ));
+            assert!(matches!(
+                validate_launch_mode(&manifest("service", "gui"), &service_options()),
+                Err(RunError::InvalidServiceLaunch(_))
+            ));
+        }
+        {
+            let manifest = manifest("service", "cli");
+            let display = RunOptions {
+                wayland_socket: Some("/run/user/1000/wayland-0".into()),
+                ..service_options()
+            };
+            assert!(validate_launch_mode(&manifest, &display).is_err());
+            let document = RunOptions {
+                open_document: Some("/tmp/document".into()),
+                ..service_options()
+            };
+            assert!(validate_launch_mode(&manifest, &document).is_err());
+        }
+        {
+            let service = RunOptions {
+                app_id: Some("so.tilo.other".into()),
+                ..service_options()
+            };
+            assert!(matches!(
+                validate_launch_mode(&manifest("service", "cli"), &service),
+                Err(RunError::AppIdMismatch { .. })
+            ));
+            let gui = RunOptions {
+                app_id: Some("so.tilo.other".into()),
+                ..RunOptions::default()
+            };
+            assert!(matches!(
+                validate_launch_mode(&manifest("app", "gui"), &gui),
+                Err(RunError::AppIdMismatch { .. })
+            ));
+            let exact = RunOptions {
+                app_id: Some("so.tilo.worker".into()),
+                ..RunOptions::default()
+            };
+            assert!(validate_launch_mode(&manifest("app", "gui"), &exact).is_ok());
+        }
     }
 }

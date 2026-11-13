@@ -529,42 +529,47 @@ pub(crate) fn enter(keep: &mut Vec<i32>) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn original_source_shim_refuses_ambient_namespace_before_credential_change() {
-        let before = (
-            rustix::process::getuid().as_raw(),
-            rustix::process::getgid().as_raw(),
-        );
-        let facts = Facts {
-            schema: 2,
-            read_claim_digest: [7; 32],
-            uid: 1000,
-            gid: 1001,
-            groups: vec![1002],
-            source: (0, 0),
-            namespaces: namespaces().unwrap(),
-            roots: Vec::new(),
-            baseline_filter: None,
-            mounted_table_sha256: None,
-        };
-        assert!(validate_namespace(&facts).is_err());
-        assert_eq!(
-            before,
-            (
+    tilo_test_env::scenario! {
+        fn an_original_source_refuses_ambient_namespaces_and_unsealed_input;
+
+        phase original_source_shim_refuses_ambient_namespace_before_credential_change;
+        {
+            let before = (
                 rustix::process::getuid().as_raw(),
-                rustix::process::getgid().as_raw()
-            )
-        );
-    }
-    #[test]
-    fn original_source_token_refuses_named_or_unsealed_input() {
-        let ordinary = tempfile::tempfile().unwrap();
-        assert!(check_token(&ordinary).is_err());
-        let raw =
-            unsafe { libc::memfd_create(c"invalid-original-source".as_ptr(), libc::MFD_CLOEXEC) };
-        assert!(raw >= 0);
-        let unsealed = unsafe { File::from_raw_fd(raw) };
-        assert!(check_token(&unsealed).is_err());
+                rustix::process::getgid().as_raw(),
+            );
+            let facts = Facts {
+                schema: 2,
+                read_claim_digest: [7; 32],
+                uid: 1000,
+                gid: 1001,
+                groups: vec![1002],
+                source: (0, 0),
+                namespaces: namespaces().unwrap(),
+                roots: Vec::new(),
+                baseline_filter: None,
+                mounted_table_sha256: None,
+            };
+            assert!(validate_namespace(&facts).is_err());
+            assert_eq!(
+                before,
+                (
+                    rustix::process::getuid().as_raw(),
+                    rustix::process::getgid().as_raw()
+                )
+            );
+        }
+
+        phase original_source_token_refuses_named_or_unsealed_input;
+        {
+            let ordinary = tempfile::tempfile().unwrap();
+            assert!(check_token(&ordinary).is_err());
+            let raw =
+                unsafe { libc::memfd_create(c"invalid-original-source".as_ptr(), libc::MFD_CLOEXEC) };
+            assert!(raw >= 0);
+            let unsealed = unsafe { File::from_raw_fd(raw) };
+            assert!(check_token(&unsealed).is_err());
+        }
     }
 }
 

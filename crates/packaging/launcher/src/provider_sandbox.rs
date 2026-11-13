@@ -69,59 +69,63 @@ fn controlled_by(metadata: &fs::Metadata, owner: u32) -> bool {
 mod tests {
     use super::*;
 
-    #[test]
-    fn only_the_explicit_setting_declares_a_provider_sandbox() {
-        assert!(parse("provider_sandboxed = true\n"));
-        assert!(parse(
-            "# hosted guest image\nprovider_sandboxed=true # Maritime\n"
-        ));
-        assert!(!parse("provider_sandboxed = false\n"));
-        assert!(!parse("# provider_sandboxed = true\n"));
-        assert!(!parse("provider_sandboxed = \"true\"\n"));
-        assert!(!parse(""));
-    }
+    tilo_test_env::scenario! {
+        fn a_provider_sandbox_is_declared_explicitly_below_a_root_store;
 
-    #[test]
-    fn a_declaration_others_can_write_declares_nothing() {
-        // Mode bits rather than ownership: the suite may run as root.
-        let dir = tempfile::tempdir().unwrap();
-        let config = dir.path().join("provider-sandbox.toml");
-        fs::write(&config, "provider_sandboxed = true\n").unwrap();
-        fs::set_permissions(&config, fs::Permissions::from_mode(0o666)).unwrap();
-        assert!(!declared(&config), "a writable declaration must not count");
-        assert!(!declared(&dir.path().join("missing.toml")));
-    }
-
-    #[test]
-    fn system_apps_live_below_a_root_controlled_store() {
-        // A store owned by whoever runs the suite stands in for root's: a test job in a user namespace
-        // sees the host's `/usr` owned by the overflow uid, not by root.
-        let dir = tempfile::tempdir().unwrap();
-        let store = dir.path().join("store");
-        let package = store.join("pkg");
-        fs::create_dir_all(&package).unwrap();
-        for path in [&store, &package] {
-            fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+        phase only_the_explicit_setting_declares_a_provider_sandbox;
+        {
+            assert!(parse("provider_sandboxed = true\n"));
+            assert!(parse(
+                "# hosted guest image\nprovider_sandboxed=true # Maritime\n"
+            ));
+            assert!(!parse("provider_sandboxed = false\n"));
+            assert!(!parse("# provider_sandboxed = true\n"));
+            assert!(!parse("provider_sandboxed = \"true\"\n"));
+            assert!(!parse(""));
         }
-        let owner = fs::metadata(&store).unwrap().uid();
-        assert!(store_controlled_by(&package, &store, owner));
-        assert!(!store_controlled_by(&store, &store, owner));
-        assert!(
-            !store_controlled_by(&package, &store, owner.wrapping_add(1)),
-            "a store someone else owns is not the system store"
-        );
-        assert!(!store_controlled_by(dir.path(), &store, owner));
-        fs::set_permissions(&package, fs::Permissions::from_mode(0o775)).unwrap();
-        assert!(
-            !store_controlled_by(&package, &store, owner),
-            "a package others can write is not a system app"
-        );
-        fs::set_permissions(&package, fs::Permissions::from_mode(0o755)).unwrap();
-        fs::set_permissions(&store, fs::Permissions::from_mode(0o777)).unwrap();
-        assert!(
-            !store_controlled_by(&package, &store, owner),
-            "a writable store is not the system store"
-        );
-        assert!(!system_app(&package, Path::new("/usr")));
+
+        phase a_declaration_others_can_write_declares_nothing;
+        {
+            // Mode bits rather than ownership: the suite may run as root.
+            let dir = tempfile::tempdir().unwrap();
+            let config = dir.path().join("provider-sandbox.toml");
+            fs::write(&config, "provider_sandboxed = true\n").unwrap();
+            fs::set_permissions(&config, fs::Permissions::from_mode(0o666)).unwrap();
+            assert!(!declared(&config), "a writable declaration must not count");
+            assert!(!declared(&dir.path().join("missing.toml")));
+        }
+
+        phase system_apps_live_below_a_root_controlled_store;
+        {
+            // A store owned by whoever runs the suite stands in for root's: a test job in a user namespace
+            // sees the host's `/usr` owned by the overflow uid, not by root.
+            let dir = tempfile::tempdir().unwrap();
+            let store = dir.path().join("store");
+            let package = store.join("pkg");
+            fs::create_dir_all(&package).unwrap();
+            for path in [&store, &package] {
+                fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+            }
+            let owner = fs::metadata(&store).unwrap().uid();
+            assert!(store_controlled_by(&package, &store, owner));
+            assert!(!store_controlled_by(&store, &store, owner));
+            assert!(
+                !store_controlled_by(&package, &store, owner.wrapping_add(1)),
+                "a store someone else owns is not the system store"
+            );
+            assert!(!store_controlled_by(dir.path(), &store, owner));
+            fs::set_permissions(&package, fs::Permissions::from_mode(0o775)).unwrap();
+            assert!(
+                !store_controlled_by(&package, &store, owner),
+                "a package others can write is not a system app"
+            );
+            fs::set_permissions(&package, fs::Permissions::from_mode(0o755)).unwrap();
+            fs::set_permissions(&store, fs::Permissions::from_mode(0o777)).unwrap();
+            assert!(
+                !store_controlled_by(&package, &store, owner),
+                "a writable store is not the system store"
+            );
+            assert!(!system_app(&package, Path::new("/usr")));
+        }
     }
 }

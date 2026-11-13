@@ -123,53 +123,57 @@ bin = "bin/app"
         Ok(path)
     }
 
-    #[test]
-    fn desktop_contract_uses_linked_runtime_without_override() {
-        let dir = tempfile::tempdir().unwrap();
-        let path =
-            desktop_fixture(dir.path(), std::env::consts::OS, std::env::consts::ARCH).unwrap();
-        let manifest = read_manifest(&path).unwrap();
-        assert!(manifest.runtime.is_none());
-        assert!(
-            crate::run::resolve_runtime(&manifest, &crate::run::RunOptions::default())
-                .unwrap()
-                .is_none()
-        );
-        let mut canonical =
-            tilo_app_package::Manifest::from_toml_str(&std::fs::read_to_string(&path).unwrap())
-                .unwrap();
-        // A signed target cannot excuse a mismatched linked toolkit release.
-        canonical.package.runtime = Some("tilo-runtime/2099.02".into());
-        std::fs::write(&path, canonical.to_toml_string().unwrap()).unwrap();
-        assert!(read_manifest(&path).is_err());
-        canonical.package.runtime = Some("tilo-runtime/2099.01".into());
-        canonical.target = None;
-        std::fs::write(&path, canonical.to_toml_string().unwrap()).unwrap();
-        let thin = read_manifest(&path).unwrap();
-        assert_eq!(thin.runtime.as_deref(), Some("tilo-runtime/2099.01"));
-        assert!(matches!(
-            crate::run::resolve_runtime(&thin, &crate::run::RunOptions::default()),
-            Err(crate::run::RunError::RuntimeBundleMissing { .. })
-        ));
-    }
+    tilo_test_env::scenario! {
+        fn the_desktop_contract_binds_the_linked_runtime_and_its_host;
 
-    #[test]
-    fn desktop_contract_refuses_foreign_host() {
-        let dir = tempfile::tempdir().unwrap();
-        let platform = if std::env::consts::OS == "linux" {
-            "windows"
-        } else {
-            "linux"
-        };
-        let path = desktop_fixture(dir.path(), platform, std::env::consts::ARCH).unwrap();
-        assert!(read_manifest(&path).is_err());
-        let arch = if std::env::consts::ARCH == "x86_64" {
-            "aarch64"
-        } else {
-            "x86_64"
-        };
-        let path = desktop_fixture(dir.path(), std::env::consts::OS, arch).unwrap();
-        assert!(read_manifest(&path).is_err());
+        phase desktop_contract_uses_linked_runtime_without_override;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let path =
+                desktop_fixture(dir.path(), std::env::consts::OS, std::env::consts::ARCH).unwrap();
+            let manifest = read_manifest(&path).unwrap();
+            assert!(manifest.runtime.is_none());
+            assert!(
+                crate::run::resolve_runtime(&manifest, &crate::run::RunOptions::default())
+                    .unwrap()
+                    .is_none()
+            );
+            let mut canonical =
+                tilo_app_package::Manifest::from_toml_str(&std::fs::read_to_string(&path).unwrap())
+                    .unwrap();
+            // A signed target cannot excuse a mismatched linked toolkit release.
+            canonical.package.runtime = Some("tilo-runtime/2099.02".into());
+            std::fs::write(&path, canonical.to_toml_string().unwrap()).unwrap();
+            assert!(read_manifest(&path).is_err());
+            canonical.package.runtime = Some("tilo-runtime/2099.01".into());
+            canonical.target = None;
+            std::fs::write(&path, canonical.to_toml_string().unwrap()).unwrap();
+            let thin = read_manifest(&path).unwrap();
+            assert_eq!(thin.runtime.as_deref(), Some("tilo-runtime/2099.01"));
+            assert!(matches!(
+                crate::run::resolve_runtime(&thin, &crate::run::RunOptions::default()),
+                Err(crate::run::RunError::RuntimeBundleMissing { .. })
+            ));
+        }
+
+        phase desktop_contract_refuses_foreign_host;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let platform = if std::env::consts::OS == "linux" {
+                "windows"
+            } else {
+                "linux"
+            };
+            let path = desktop_fixture(dir.path(), platform, std::env::consts::ARCH).unwrap();
+            assert!(read_manifest(&path).is_err());
+            let arch = if std::env::consts::ARCH == "x86_64" {
+                "aarch64"
+            } else {
+                "x86_64"
+            };
+            let path = desktop_fixture(dir.path(), std::env::consts::OS, arch).unwrap();
+            assert!(read_manifest(&path).is_err());
+        }
     }
 
     fn repo() -> PathBuf {
@@ -178,35 +182,6 @@ bin = "bin/app"
             .nth(3)
             .expect("workspace root above crates/packaging/launcher")
             .to_path_buf()
-    }
-
-    #[test]
-    fn shipped_manifests_declare_what_they_need_to_open() {
-        {
-            let manifest = read_manifest(&repo().join("apps/browser/tilo-app.toml"))
-                .expect("shipped browser manifest parses through installed-app schema");
-            assert_eq!(
-                manifest.continuity.required,
-                vec![ContinuityFacet::Presentation, ContinuityFacet::Semantic]
-            );
-        }
-        {
-            let manifest = read_manifest(&repo().join("apps/settings/tilo-app.toml"))
-                .expect("shipped Settings manifest parses through installed-app schema");
-
-            for service in ["models", "model-gateway"] {
-                let requirement = manifest
-                    .sandbox
-                    .services
-                    .get(service)
-                    .unwrap_or_else(|| panic!("Settings declares the {service} integration"));
-                assert!(
-                    !requirement.is_required()
-                        && requirement.version == runtime_portal::RUNTIME_INTERFACE_VERSION,
-                    "Settings must open when {service} is not running"
-                );
-            }
-        }
     }
 
     fn manifest_with(block: &str) -> ManifestView {
@@ -221,66 +196,103 @@ bin = "bin/app"
         ManifestView::from_toml_str(&src).expect("a manifest declaring fs paths still decodes")
     }
 
-    #[test]
-    fn manifests_may_name_no_filesystem_path() {
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+        )]
+        fn manifests_declare_what_they_open_and_name_no_path;
+
+        phase shipped_manifests_declare_what_they_need_to_open;
         {
-            for entry in [
-                "~",
-                "/",
-                "~/.ssh",
-                "~/../../etc",
-                "~/.local/share/so.tilo.totp",
-                "$XDG_DATA_HOME/so.tilo.totp",
-            ] {
-                let m = manifest_with(&format!("[sandbox.fs]\nwrite = [{entry:?}]\n"));
-                let Err(err) = enforce_fs_policy(&m) else {
-                    panic!("write = [{entry:?}] must be refused");
-                };
-                let text = err.to_string();
-                assert!(
-                    text.contains("com.example.hostile") && text.contains(entry),
-                    "the refusal must name the package and the entry: {text}"
+            {
+                let manifest = read_manifest(&repo().join("apps/browser/tilo-app.toml"))
+                    .expect("shipped browser manifest parses through installed-app schema");
+                assert_eq!(
+                    manifest.continuity.required,
+                    vec![ContinuityFacet::Presentation, ContinuityFacet::Semantic]
                 );
             }
-        }
-        {
-            for entry in ["/etc/shadow", "/var/workspace", "/usr/share/fonts"] {
-                let m = manifest_with(&format!("[sandbox.fs]\nread = [{entry:?}]\n"));
-                let Err(err) = enforce_fs_policy(&m) else {
-                    panic!("read = [{entry:?}] must be refused");
-                };
-                assert!(
-                    err.to_string().contains(entry),
-                    "the refusal must name the entry: {err}"
-                );
-            }
-        }
-        {
-            let m = manifest_with("");
-            assert!(enforce_fs_policy(&m).is_ok());
-            let empty = manifest_with("[sandbox.fs]\nread = []\nwrite = []\n");
-            assert!(
-                enforce_fs_policy(&empty).is_ok(),
-                "an explicitly empty block declares nothing"
-            );
-        }
-        {
-            let mut checked = 0usize;
-            for entry in std::fs::read_dir(repo().join("apps")).expect("apps/ is readable") {
-                let path = entry.expect("dir entry").path().join("tilo-app.toml");
-                if !path.exists() {
-                    continue;
+            {
+                let manifest = read_manifest(&repo().join("apps/settings/tilo-app.toml"))
+                    .expect("shipped Settings manifest parses through installed-app schema");
+
+                for service in ["models", "model-gateway"] {
+                    let requirement = manifest
+                        .sandbox
+                        .services
+                        .get(service)
+                        .unwrap_or_else(|| panic!("Settings declares the {service} integration"));
+                    assert!(
+                        !requirement.is_required()
+                            && requirement.version == runtime_portal::RUNTIME_INTERFACE_VERSION,
+                        "Settings must open when {service} is not running"
+                    );
                 }
-                let m = read_manifest(&path)
-                    .unwrap_or_else(|e| panic!("parsing {}: {e}", path.display()));
-                enforce_fs_policy(&m)
-                    .unwrap_or_else(|e| panic!("{} is refused by its own OS: {e}", path.display()));
-                checked += 1;
             }
-            assert!(
-                checked >= 40,
-                "expected the shipped app fleet, found {checked} manifests"
-            );
+        }
+
+        phase manifests_may_name_no_filesystem_path;
+        {
+            {
+                for entry in [
+                    "~",
+                    "/",
+                    "~/.ssh",
+                    "~/../../etc",
+                    "~/.local/share/so.tilo.totp",
+                    "$XDG_DATA_HOME/so.tilo.totp",
+                ] {
+                    let m = manifest_with(&format!("[sandbox.fs]\nwrite = [{entry:?}]\n"));
+                    let Err(err) = enforce_fs_policy(&m) else {
+                        panic!("write = [{entry:?}] must be refused");
+                    };
+                    let text = err.to_string();
+                    assert!(
+                        text.contains("com.example.hostile") && text.contains(entry),
+                        "the refusal must name the package and the entry: {text}"
+                    );
+                }
+            }
+            {
+                for entry in ["/etc/shadow", "/var/workspace", "/usr/share/fonts"] {
+                    let m = manifest_with(&format!("[sandbox.fs]\nread = [{entry:?}]\n"));
+                    let Err(err) = enforce_fs_policy(&m) else {
+                        panic!("read = [{entry:?}] must be refused");
+                    };
+                    assert!(
+                        err.to_string().contains(entry),
+                        "the refusal must name the entry: {err}"
+                    );
+                }
+            }
+            {
+                let m = manifest_with("");
+                assert!(enforce_fs_policy(&m).is_ok());
+                let empty = manifest_with("[sandbox.fs]\nread = []\nwrite = []\n");
+                assert!(
+                    enforce_fs_policy(&empty).is_ok(),
+                    "an explicitly empty block declares nothing"
+                );
+            }
+            {
+                let mut checked = 0usize;
+                for entry in std::fs::read_dir(repo().join("apps")).expect("apps/ is readable") {
+                    let path = entry.expect("dir entry").path().join("tilo-app.toml");
+                    if !path.exists() {
+                        continue;
+                    }
+                    let m = read_manifest(&path)
+                        .unwrap_or_else(|e| panic!("parsing {}: {e}", path.display()));
+                    enforce_fs_policy(&m)
+                        .unwrap_or_else(|e| panic!("{} is refused by its own OS: {e}", path.display()));
+                    checked += 1;
+                }
+                assert!(
+                    checked >= 40,
+                    "expected the shipped app fleet, found {checked} manifests"
+                );
+            }
         }
     }
 }

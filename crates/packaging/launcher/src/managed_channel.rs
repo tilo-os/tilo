@@ -595,80 +595,89 @@ mod received_rights_tests {
             "received SCM_RIGHTS descriptor escaped into another exec"
         );
     }
-    #[test]
-    fn managed_received_rights_are_cloexec_while_cleanup_guard_is_alive() {
-        let file = tempfile::NamedTempFile::new().unwrap();
-        let (receiver, sender) = socket_pair(true);
-        let before = descriptor_count(file.as_file());
-        send_rights(&sender, file.as_file(), 1);
-        let mut answer = [0; 32];
-        let chunk = receive_credential_chunk(&receiver, &mut answer).unwrap();
-        assert_eq!(chunk.rights.len(), 1);
-        assert_eq!(descriptor_count(file.as_file()), before + 1);
-        assert!(
-            rustix::io::fcntl_getfd(&chunk.rights[0])
-                .unwrap()
-                .contains(rustix::io::FdFlags::CLOEXEC),
-            "recvmsg must atomically set CLOEXEC"
-        );
-        assert_not_inherited(file.path());
-        drop(chunk);
-        assert_eq!(descriptor_count(file.as_file()), before);
-    }
-    #[test]
-    fn managed_received_rights_are_rejected_and_closed_even_when_truncated() {
-        let file = tempfile::NamedTempFile::new().unwrap();
-        for (count, passcred) in [(1, true), (128, true), (1, false), (128, false)] {
-            let (receiver, sender) = socket_pair(passcred);
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+        )]
+        fn received_rights_are_closed_and_a_cancelled_challenge_is_refused;
+
+        phase managed_received_rights_are_cloexec_while_cleanup_guard_is_alive;
+        {
+            let file = tempfile::NamedTempFile::new().unwrap();
+            let (receiver, sender) = socket_pair(true);
             let before = descriptor_count(file.as_file());
-            send_rights(&sender, file.as_file(), count);
-            let result = receive_credentials(&receiver);
-            let after = descriptor_count(file.as_file());
-            assert_eq!(
-                after, before,
-                "normal/truncated SCM_RIGHTS must close every installed descriptor"
+            send_rights(&sender, file.as_file(), 1);
+            let mut answer = [0; 32];
+            let chunk = receive_credential_chunk(&receiver, &mut answer).unwrap();
+            assert_eq!(chunk.rights.len(), 1);
+            assert_eq!(descriptor_count(file.as_file()), before + 1);
+            assert!(
+                rustix::io::fcntl_getfd(&chunk.rights[0])
+                    .unwrap()
+                    .contains(rustix::io::FdFlags::CLOEXEC),
+                "recvmsg must atomically set CLOEXEC"
             );
             assert_not_inherited(file.path());
-            assert!(
-                result.is_err(),
-                "unexpected ancillary control must reject the challenge"
+            drop(chunk);
+            assert_eq!(descriptor_count(file.as_file()), before);
+        }
+
+        phase managed_received_rights_are_rejected_and_closed_even_when_truncated;
+        {
+            let file = tempfile::NamedTempFile::new().unwrap();
+            for (count, passcred) in [(1, true), (128, true), (1, false), (128, false)] {
+                let (receiver, sender) = socket_pair(passcred);
+                let before = descriptor_count(file.as_file());
+                send_rights(&sender, file.as_file(), count);
+                let result = receive_credentials(&receiver);
+                let after = descriptor_count(file.as_file());
+                assert_eq!(
+                    after, before,
+                    "normal/truncated SCM_RIGHTS must close every installed descriptor"
+                );
+                assert_not_inherited(file.path());
+                assert!(
+                    result.is_err(),
+                    "unexpected ancillary control must reject the challenge"
+                );
+            }
+            let (receiver, mut sender) = socket_pair(true);
+            sender.write_all(&[37; 32]).unwrap();
+            assert_eq!(
+                receive_credentials(&receiver).unwrap(),
+                ([37; 32], std::process::id()),
+                "credential-only challenge remains valid"
             );
         }
-        let (receiver, mut sender) = socket_pair(true);
-        sender.write_all(&[37; 32]).unwrap();
-        assert_eq!(
-            receive_credentials(&receiver).unwrap(),
-            ([37; 32], std::process::id()),
-            "credential-only challenge remains valid"
-        );
-    }
 
-    #[test]
-    fn cancelling_one_descriptor_wakes_its_challenge_without_affecting_another() {
-        let (receiver, mut sender) = socket_pair(true);
-        // No read timeout: only the cancellation can end the receive.
-        receiver.set_read_timeout(None).unwrap();
-        let cancellation = ManagedConnectionCancellation(receiver.try_clone().unwrap());
-        let (ready, waiting) = std::sync::mpsc::channel();
-        let (finished, result) = std::sync::mpsc::channel();
-        let worker = std::thread::spawn(move || {
-            ready.send(()).unwrap();
-            finished.send(receive_credentials(&receiver)).unwrap();
-        });
-        tilo_test_env::recv("the challenge to start", &waiting);
-        cancellation.cancel().unwrap();
-        assert!(
-            tilo_test_env::recv("the cancelled challenge", &result).is_err(),
-            "cancellation must wake and refuse the real credential receive"
-        );
-        worker.join().unwrap();
-        assert!(sender.write_all(&[37; 32]).is_err());
-        let (other_receiver, mut other_sender) = socket_pair(true);
-        other_sender.write_all(&[41; 32]).unwrap();
-        assert_eq!(
-            receive_credentials(&other_receiver).unwrap(),
-            ([41; 32], std::process::id()),
-            "cancelling a prior connection must not affect another agent"
-        );
+        phase cancelling_one_descriptor_wakes_its_challenge_without_affecting_another;
+        {
+            let (receiver, mut sender) = socket_pair(true);
+            // No read timeout: only the cancellation can end the receive.
+            receiver.set_read_timeout(None).unwrap();
+            let cancellation = ManagedConnectionCancellation(receiver.try_clone().unwrap());
+            let (ready, waiting) = std::sync::mpsc::channel();
+            let (finished, result) = std::sync::mpsc::channel();
+            let worker = std::thread::spawn(move || {
+                ready.send(()).unwrap();
+                finished.send(receive_credentials(&receiver)).unwrap();
+            });
+            tilo_test_env::recv("the challenge to start", &waiting);
+            cancellation.cancel().unwrap();
+            assert!(
+                tilo_test_env::recv("the cancelled challenge", &result).is_err(),
+                "cancellation must wake and refuse the real credential receive"
+            );
+            worker.join().unwrap();
+            assert!(sender.write_all(&[37; 32]).is_err());
+            let (other_receiver, mut other_sender) = socket_pair(true);
+            other_sender.write_all(&[41; 32]).unwrap();
+            assert_eq!(
+                receive_credentials(&other_receiver).unwrap(),
+                ([41; 32], std::process::id()),
+                "cancelling a prior connection must not affect another agent"
+            );
+        }
     }
 }

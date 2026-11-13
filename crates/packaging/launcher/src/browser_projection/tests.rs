@@ -65,149 +65,153 @@ fn manifest(id: &str) -> ManifestView {
     .unwrap()
 }
 
-#[test]
-fn ancestor_ownership_and_writability_decide_the_walk() {
-    let own = uid();
-    assert!(ancestor_holds(own, 0o700, false));
-    assert!(ancestor_holds(0, 0o755, false), "root's own");
-    assert!(
-        ancestor_holds(own, 0o1777, false),
-        "a sticky temporary root: another account can neither move nor replace what it holds"
-    );
-    assert!(
-        !ancestor_holds(own, 0o1777, true),
-        "no grant subtree or home ancestor may be writable by others"
-    );
-    assert!(!ancestor_holds(own, 0o777, false), "writable by others");
-    assert!(!ancestor_holds(own, 0o770, false), "group-writable");
-    assert!(
-        !ancestor_holds(own.wrapping_add(1), 0o755, false),
-        "another account's"
-    );
-}
+tilo_test_env::scenario! {
+    fn a_browser_projection_is_bounded_read_only_and_refuses_the_rest;
 
-#[test]
-fn browser_gui_gets_only_bounded_readonly_selected_projection() {
-    let fixture = Fixture::new();
-    let mut environment = tilo_test_env::ScopedEnv::new();
-    environment.set("HOME", &fixture.home);
-    let opts = RunOptions {
-        browser_continuity_host_path: Some(fixture.projection.clone()),
-        ..RunOptions::default()
-    };
-    let mut argv = vec!["bwrap".into(), "/app/browser".into()];
-    let guard = splice(&mut argv, &manifest("so.tilo.browser"), &opts)
-        .unwrap()
-        .unwrap();
-    assert_eq!(
-        argv,
-        [
-            "bwrap",
-            "--ro-bind",
-            guard.path().to_str().unwrap(),
-            browser_continuity::PROJECTION_DIRECTORY,
-            "/app/browser"
-        ]
-    );
-    let copy = guard
-        .path()
-        .join(PROFILES_DIRECTORY)
-        .join("a".repeat(64))
-        .join("Bookmarks");
-    assert_eq!(fs::read(&copy).unwrap(), b"actual selected bookmarks");
-    fs::write(fixture.profile.join("Bookmarks"), b"later original change").unwrap();
-    assert_eq!(fs::read(&copy).unwrap(), b"actual selected bookmarks");
-    let before =
-        crate::run::resolve_capabilities(&manifest("so.tilo.browser"), &RunOptions::default());
-    let after = crate::run::resolve_capabilities(&manifest("so.tilo.browser"), &opts);
-    assert_eq!(before.ro_paths, after.ro_paths);
-    assert_eq!(before.rw_paths, after.rw_paths);
-    let mut rules = Vec::new();
-    crate::run::push_projection_landlock_rules(&mut rules, &opts, &manifest("so.tilo.browser"));
-    assert_eq!(rules, ["--ro", browser_continuity::PROJECTION_DIRECTORY]);
-}
-
-#[test]
-fn other_apps_and_browser_helpers_never_receive_profile_or_home_access() {
-    let opts = RunOptions {
-        browser_continuity_host_path: Some("/not/accessible".into()),
-        ..RunOptions::default()
-    };
-    for id in [
-        "so.tilo.file-explorer",
-        "so.tilo.chat",
-        "so.tilo.browser-engine",
-    ] {
-        let mut argv = vec!["/app/helper".into()];
-        assert!(splice(&mut argv, &manifest(id), &opts).unwrap().is_none());
-        assert_eq!(argv, ["/app/helper"]);
-        let mut rules = Vec::new();
-        crate::run::push_projection_landlock_rules(&mut rules, &opts, &manifest(id));
-        assert!(rules.is_empty());
-    }
-    for mode in [
-        LaunchMode::Service {
-            passthrough_argv: Vec::new(),
-        },
-        LaunchMode::Cli {
-            command: "engine".into(),
-            passthrough_argv: Vec::new(),
-        },
-    ] {
-        let helper = RunOptions {
-            mode,
-            ..opts.clone()
-        };
-        let mut argv = vec!["/app/helper".into()];
+    phase ancestor_ownership_and_writability_decide_the_walk;
+    {
+        let own = uid();
+        assert!(ancestor_holds(own, 0o700, false));
+        assert!(ancestor_holds(0, 0o755, false), "root's own");
         assert!(
-            splice(&mut argv, &manifest("so.tilo.browser"), &helper)
-                .unwrap()
-                .is_none()
+            ancestor_holds(own, 0o1777, false),
+            "a sticky temporary root: another account can neither move nor replace what it holds"
         );
-        assert_eq!(argv, ["/app/helper"]);
-        let mut rules = Vec::new();
-        crate::run::push_projection_landlock_rules(
-            &mut rules,
-            &helper,
-            &manifest("so.tilo.browser"),
+        assert!(
+            !ancestor_holds(own, 0o1777, true),
+            "no grant subtree or home ancestor may be writable by others"
         );
-        assert!(rules.is_empty());
+        assert!(!ancestor_holds(own, 0o777, false), "writable by others");
+        assert!(!ancestor_holds(own, 0o770, false), "group-writable");
+        assert!(
+            !ancestor_holds(own.wrapping_add(1), 0o755, false),
+            "another account's"
+        );
     }
-}
 
-#[test]
-fn outside_paths_extra_credentials_links_and_public_files_are_refused() {
-    let fixture = Fixture::new();
-    assert!(materialize(&fixture.home, &fixture.home).is_err());
-    write_private(&fixture.profile.join("Cookies"), b"private credentials").unwrap();
-    assert!(materialize(&fixture.projection, &fixture.home).is_err());
-    fs::remove_file(fixture.profile.join("Cookies")).unwrap();
-    let bookmark = fixture.profile.join("Bookmarks");
-    fs::set_permissions(&bookmark, fs::Permissions::from_mode(0o644)).unwrap();
-    assert!(materialize(&fixture.projection, &fixture.home).is_err());
-    fs::remove_file(&bookmark).unwrap();
-    symlink("/etc/passwd", &bookmark).unwrap();
-    assert!(materialize(&fixture.projection, &fixture.home).is_err());
-    fs::remove_file(&bookmark).unwrap();
-    write_private(&bookmark, b"bookmarks").unwrap();
-    let profiles = fixture.projection.join(PROFILES_DIRECTORY);
-    let moved = fixture.projection.join("moved");
-    fs::rename(&profiles, &moved).unwrap();
-    symlink(&moved, &profiles).unwrap();
-    assert!(materialize(&fixture.projection, &fixture.home).is_err());
-}
+    phase browser_gui_gets_only_bounded_readonly_selected_projection;
+    {
+        let fixture = Fixture::new();
+        let mut environment = tilo_test_env::ScopedEnv::new();
+        environment.set("HOME", &fixture.home);
+        let opts = RunOptions {
+            browser_continuity_host_path: Some(fixture.projection.clone()),
+            ..RunOptions::default()
+        };
+        let mut argv = vec!["bwrap".into(), "/app/browser".into()];
+        let guard = splice(&mut argv, &manifest("so.tilo.browser"), &opts)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            argv,
+            [
+                "bwrap",
+                "--ro-bind",
+                guard.path().to_str().unwrap(),
+                browser_continuity::PROJECTION_DIRECTORY,
+                "/app/browser"
+            ]
+        );
+        let copy = guard
+            .path()
+            .join(PROFILES_DIRECTORY)
+            .join("a".repeat(64))
+            .join("Bookmarks");
+        assert_eq!(fs::read(&copy).unwrap(), b"actual selected bookmarks");
+        fs::write(fixture.profile.join("Bookmarks"), b"later original change").unwrap();
+        assert_eq!(fs::read(&copy).unwrap(), b"actual selected bookmarks");
+        let before =
+            crate::run::resolve_capabilities(&manifest("so.tilo.browser"), &RunOptions::default());
+        let after = crate::run::resolve_capabilities(&manifest("so.tilo.browser"), &opts);
+        assert_eq!(before.ro_paths, after.ro_paths);
+        assert_eq!(before.rw_paths, after.rw_paths);
+        let mut rules = Vec::new();
+        crate::run::push_projection_landlock_rules(&mut rules, &opts, &manifest("so.tilo.browser"));
+        assert_eq!(rules, ["--ro", browser_continuity::PROJECTION_DIRECTORY]);
+    }
 
-#[test]
-fn ancestor_links_and_unbounded_or_malformed_plan_are_refused() {
-    let fixture = Fixture::new();
-    let plan = fixture.projection.join(PLAN_FILE);
-    fs::write(&plan, vec![b' '; MAX_PLAN_BYTES + 1]).unwrap();
-    assert!(materialize(&fixture.projection, &fixture.home).is_err());
-    fs::write(&plan, b"{}").unwrap();
-    assert!(materialize(&fixture.projection, &fixture.home).is_err());
-    let local = fixture.home.join(".local");
-    let relocated = fixture.home.join("relocated");
-    fs::rename(&local, &relocated).unwrap();
-    symlink(&relocated, &local).unwrap();
-    assert!(held_root(&fixture.projection, &fixture.home).is_err());
+    phase other_apps_and_browser_helpers_never_receive_profile_or_home_access;
+    {
+        let opts = RunOptions {
+            browser_continuity_host_path: Some("/not/accessible".into()),
+            ..RunOptions::default()
+        };
+        for id in [
+            "so.tilo.file-explorer",
+            "so.tilo.chat",
+            "so.tilo.browser-engine",
+        ] {
+            let mut argv = vec!["/app/helper".into()];
+            assert!(splice(&mut argv, &manifest(id), &opts).unwrap().is_none());
+            assert_eq!(argv, ["/app/helper"]);
+            let mut rules = Vec::new();
+            crate::run::push_projection_landlock_rules(&mut rules, &opts, &manifest(id));
+            assert!(rules.is_empty());
+        }
+        for mode in [
+            LaunchMode::Service {
+                passthrough_argv: Vec::new(),
+            },
+            LaunchMode::Cli {
+                command: "engine".into(),
+                passthrough_argv: Vec::new(),
+            },
+        ] {
+            let helper = RunOptions {
+                mode,
+                ..opts.clone()
+            };
+            let mut argv = vec!["/app/helper".into()];
+            assert!(
+                splice(&mut argv, &manifest("so.tilo.browser"), &helper)
+                    .unwrap()
+                    .is_none()
+            );
+            assert_eq!(argv, ["/app/helper"]);
+            let mut rules = Vec::new();
+            crate::run::push_projection_landlock_rules(
+                &mut rules,
+                &helper,
+                &manifest("so.tilo.browser"),
+            );
+            assert!(rules.is_empty());
+        }
+    }
+
+    phase outside_paths_extra_credentials_links_and_public_files_are_refused;
+    {
+        let fixture = Fixture::new();
+        assert!(materialize(&fixture.home, &fixture.home).is_err());
+        write_private(&fixture.profile.join("Cookies"), b"private credentials").unwrap();
+        assert!(materialize(&fixture.projection, &fixture.home).is_err());
+        fs::remove_file(fixture.profile.join("Cookies")).unwrap();
+        let bookmark = fixture.profile.join("Bookmarks");
+        fs::set_permissions(&bookmark, fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(materialize(&fixture.projection, &fixture.home).is_err());
+        fs::remove_file(&bookmark).unwrap();
+        symlink("/etc/passwd", &bookmark).unwrap();
+        assert!(materialize(&fixture.projection, &fixture.home).is_err());
+        fs::remove_file(&bookmark).unwrap();
+        write_private(&bookmark, b"bookmarks").unwrap();
+        let profiles = fixture.projection.join(PROFILES_DIRECTORY);
+        let moved = fixture.projection.join("moved");
+        fs::rename(&profiles, &moved).unwrap();
+        symlink(&moved, &profiles).unwrap();
+        assert!(materialize(&fixture.projection, &fixture.home).is_err());
+    }
+
+    phase ancestor_links_and_unbounded_or_malformed_plan_are_refused;
+    {
+        let fixture = Fixture::new();
+        let plan = fixture.projection.join(PLAN_FILE);
+        fs::write(&plan, vec![b' '; MAX_PLAN_BYTES + 1]).unwrap();
+        assert!(materialize(&fixture.projection, &fixture.home).is_err());
+        fs::write(&plan, b"{}").unwrap();
+        assert!(materialize(&fixture.projection, &fixture.home).is_err());
+        let local = fixture.home.join(".local");
+        let relocated = fixture.home.join("relocated");
+        fs::rename(&local, &relocated).unwrap();
+        symlink(&relocated, &local).unwrap();
+        assert!(held_root(&fixture.projection, &fixture.home).is_err());
+    }
 }

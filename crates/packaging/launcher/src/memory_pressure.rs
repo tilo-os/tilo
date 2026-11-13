@@ -313,162 +313,166 @@ mod tests {
             .collect()
     }
 
-    #[test]
-    fn psi_files_are_read_as_the_kernel_writes_them() {
-        let text = "some avg10=12.50 avg60=3.00 avg300=0.70 total=123456\n\
-                    full avg10=4.25 avg60=1.00 avg300=0.10 total=6543\n";
-        assert_eq!(
-            parse_psi(text),
-            Some(Psi {
-                some_avg10: 12.5,
-                full_avg10: 4.25
-            })
-        );
-        assert_eq!(
-            parse_psi("some avg10=1.00 avg60=0 avg300=0 total=1\n"),
-            Some(Psi {
-                some_avg10: 1.0,
-                full_avg10: 0.0
-            })
-        );
-        assert_eq!(parse_psi("garbage"), None);
-        assert_eq!(Level::of(CALM), Level::Calm);
-        assert_eq!(Level::of(RISING), Level::Rising);
-        assert_eq!(Level::of(CRITICAL), Level::Critical);
-        assert_eq!(
-            Level::of(Psi {
-                some_avg10: 7.0,
-                full_avg10: 0.0
-            }),
-            Level::Elevated
-        );
-    }
+    tilo_test_env::scenario! {
+        fn memory_pressure_reclaims_first_and_ends_only_what_grows;
 
-    #[test]
-    fn rising_pressure_reclaims_from_the_background_and_never_from_a_foreground_app() {
-        let units = vec![
-            unit("mail", Tier::Background, 2 * GIB),
-            unit("notes", Tier::Foreground, 3 * GIB),
-            unit("tiny", Tier::Background, 8 * MIB),
-        ];
-        let source = FakeSource {
-            system: vec![CALM, RISING, RISING, RISING, RISING, RISING, RISING],
-            units: vec![units; 7],
-        };
-        let mut policy = Policy::new();
-        let actions = source.run(&mut policy);
-        assert!(actions[0].is_empty(), "calm: nothing");
-        assert_eq!(
-            actions[1],
-            [Action::Reclaim {
-                dir: PathBuf::from("/apps/app-tilo-mail-1.scope"),
-                bytes: GIB / 2,
-            }],
-            "a quarter of the background app, nothing of a foreground one or of a tiny one"
-        );
-        for later in &actions[2..6] {
-            assert!(later.is_empty(), "not again before it is due: {later:?}");
-        }
-        assert_eq!(actions[6].len(), 1, "again once it is due");
-        assert!(ended(&actions).is_empty(), "rising pressure ends nothing");
-    }
-
-    #[test]
-    fn a_starved_background_app_is_left_alone() {
-        let mut starved = unit("mail", Tier::Background, 2 * GIB);
-        starved.pressure.some_avg10 = 90.0;
-        let mut policy = Policy::new();
-        assert!(policy.tick(RISING, &[starved]).is_empty());
-    }
-
-    #[test]
-    fn critical_pressure_ends_the_unit_growing_fastest_not_the_largest() {
-        // The browser is the largest and steady; the video call grows 200 MiB a sample while the
-        // editor in front grows a little.
-        let samples: Vec<Vec<Unit>> = (0..6_u64)
-            .map(|at| {
-                vec![
-                    unit("browser", Tier::Background, 6 * GIB),
-                    unit("call", Tier::Background, GIB + at * 200 * MIB),
-                    unit("editor", Tier::Foreground, GIB + at * 10 * MIB),
-                ]
-            })
-            .collect();
-        let source = FakeSource {
-            system: vec![CALM, CRITICAL, CRITICAL, CRITICAL, CRITICAL, CRITICAL],
-            units: samples,
-        };
-        let mut policy = Policy::new();
-        let actions = source.run(&mut policy);
-        let ends = ended(&actions);
-        assert_eq!(
-            ends,
-            [(3, "/apps/app-tilo-call-1.scope".to_string(), 600 * MIB)],
-            "after three critical samples the runaway app ends: {actions:?}"
-        );
-        assert!(
-            actions[4]
-                .iter()
-                .chain(&actions[5])
-                .all(|action| !matches!(action, Action::End { .. })),
-            "then the policy waits for the freed memory to show"
-        );
-    }
-
-    #[test]
-    fn a_spike_ends_nothing_and_a_cooldown_follows_every_end() {
-        let growing = |at: u64| vec![unit("build", Tier::Background, at * 300 * MIB)];
-        // Two critical samples, then calm: no end.
-        let mut policy = Policy::new();
-        for (at, system) in [CRITICAL, CRITICAL, CALM, CRITICAL, CRITICAL]
-            .into_iter()
-            .enumerate()
+        phase psi_files_are_read_as_the_kernel_writes_them;
         {
-            let actions = policy.tick(system, &growing(u64::try_from(at).unwrap()));
-            assert!(
-                actions
-                    .iter()
-                    .all(|action| !matches!(action, Action::End { .. })),
-                "sample {at}: {actions:?}"
+            let text = "some avg10=12.50 avg60=3.00 avg300=0.70 total=123456\n\
+                    full avg10=4.25 avg60=1.00 avg300=0.10 total=6543\n";
+            assert_eq!(
+                parse_psi(text),
+                Some(Psi {
+                    some_avg10: 12.5,
+                    full_avg10: 4.25
+                })
+            );
+            assert_eq!(
+                parse_psi("some avg10=1.00 avg60=0 avg300=0 total=1\n"),
+                Some(Psi {
+                    some_avg10: 1.0,
+                    full_avg10: 0.0
+                })
+            );
+            assert_eq!(parse_psi("garbage"), None);
+            assert_eq!(Level::of(CALM), Level::Calm);
+            assert_eq!(Level::of(RISING), Level::Rising);
+            assert_eq!(Level::of(CRITICAL), Level::Critical);
+            assert_eq!(
+                Level::of(Psi {
+                    some_avg10: 7.0,
+                    full_avg10: 0.0
+                }),
+                Level::Elevated
             );
         }
-        // Critical that stays: one end, then nothing for the cooldown (the samples up to the one where
-        // it lapses).
-        let mut policy = Policy::new();
-        let mut ends = Vec::new();
-        for at in 0..(u64::from(CRITICAL_TICKS) - 1 + COOLDOWN_TICKS) {
-            for action in policy.tick(CRITICAL, &growing(at)) {
-                if let Action::End { .. } = action {
-                    ends.push(at);
-                }
-            }
-        }
-        assert_eq!(ends, [u64::from(CRITICAL_TICKS) - 1]);
-    }
 
-    #[test]
-    fn pressure_that_stays_critical_ends_whatever_still_grows() {
-        // Nothing runs away, but the editor keeps creeping up while the machine is stuck: after
-        // STALLED_TICKS it is ended, the steady larger app is not.
-        let mut policy = Policy::new();
-        let mut ends = Vec::new();
-        for at in 0..u64::from(STALLED_TICKS) {
-            let units = [
-                unit("browser", Tier::Background, 6 * GIB),
-                unit("editor", Tier::Foreground, GIB + at * MIB),
+        phase rising_pressure_reclaims_from_the_background_and_never_from_a_foreground_app;
+        {
+            let units = vec![
+                unit("mail", Tier::Background, 2 * GIB),
+                unit("notes", Tier::Foreground, 3 * GIB),
+                unit("tiny", Tier::Background, 8 * MIB),
             ];
-            for action in policy.tick(CRITICAL, &units) {
-                if let Action::End { unit, .. } = action {
-                    ends.push((at, unit.app_id));
+            let source = FakeSource {
+                system: vec![CALM, RISING, RISING, RISING, RISING, RISING, RISING],
+                units: vec![units; 7],
+            };
+            let mut policy = Policy::new();
+            let actions = source.run(&mut policy);
+            assert!(actions[0].is_empty(), "calm: nothing");
+            assert_eq!(
+                actions[1],
+                [Action::Reclaim {
+                    dir: PathBuf::from("/apps/app-tilo-mail-1.scope"),
+                    bytes: GIB / 2,
+                }],
+                "a quarter of the background app, nothing of a foreground one or of a tiny one"
+            );
+            for later in &actions[2..6] {
+                assert!(later.is_empty(), "not again before it is due: {later:?}");
+            }
+            assert_eq!(actions[6].len(), 1, "again once it is due");
+            assert!(ended(&actions).is_empty(), "rising pressure ends nothing");
+        }
+
+        phase a_starved_background_app_is_left_alone;
+        {
+            let mut starved = unit("mail", Tier::Background, 2 * GIB);
+            starved.pressure.some_avg10 = 90.0;
+            let mut policy = Policy::new();
+            assert!(policy.tick(RISING, &[starved]).is_empty());
+        }
+
+        phase critical_pressure_ends_the_unit_growing_fastest_not_the_largest;
+        {
+            // The browser is the largest and steady; the video call grows 200 MiB a sample while the
+            // editor in front grows a little.
+            let samples: Vec<Vec<Unit>> = (0..6_u64)
+                .map(|at| {
+                    vec![
+                        unit("browser", Tier::Background, 6 * GIB),
+                        unit("call", Tier::Background, GIB + at * 200 * MIB),
+                        unit("editor", Tier::Foreground, GIB + at * 10 * MIB),
+                    ]
+                })
+                .collect();
+            let source = FakeSource {
+                system: vec![CALM, CRITICAL, CRITICAL, CRITICAL, CRITICAL, CRITICAL],
+                units: samples,
+            };
+            let mut policy = Policy::new();
+            let actions = source.run(&mut policy);
+            let ends = ended(&actions);
+            assert_eq!(
+                ends,
+                [(3, "/apps/app-tilo-call-1.scope".to_string(), 600 * MIB)],
+                "after three critical samples the runaway app ends: {actions:?}"
+            );
+            assert!(
+                actions[4]
+                    .iter()
+                    .chain(&actions[5])
+                    .all(|action| !matches!(action, Action::End { .. })),
+                "then the policy waits for the freed memory to show"
+            );
+        }
+
+        phase a_spike_ends_nothing_and_a_cooldown_follows_every_end;
+        {
+            let growing = |at: u64| vec![unit("build", Tier::Background, at * 300 * MIB)];
+            // Two critical samples, then calm: no end.
+            let mut policy = Policy::new();
+            for (at, system) in [CRITICAL, CRITICAL, CALM, CRITICAL, CRITICAL]
+                .into_iter()
+                .enumerate()
+            {
+                let actions = policy.tick(system, &growing(u64::try_from(at).unwrap()));
+                assert!(
+                    actions
+                        .iter()
+                        .all(|action| !matches!(action, Action::End { .. })),
+                    "sample {at}: {actions:?}"
+                );
+            }
+            // Critical that stays: one end, then nothing for the cooldown (the samples up to the one where
+            // it lapses).
+            let mut policy = Policy::new();
+            let mut ends = Vec::new();
+            for at in 0..(u64::from(CRITICAL_TICKS) - 1 + COOLDOWN_TICKS) {
+                for action in policy.tick(CRITICAL, &growing(at)) {
+                    if let Action::End { .. } = action {
+                        ends.push(at);
+                    }
                 }
             }
+            assert_eq!(ends, [u64::from(CRITICAL_TICKS) - 1]);
         }
-        assert_eq!(ends, [(u64::from(STALLED_TICKS) - 1, "editor".to_string())]);
-        // Nothing grows at all: nothing is ended by the policy.
-        let mut policy = Policy::new();
-        for _ in 0..(2 * STALLED_TICKS) {
-            let actions = policy.tick(CRITICAL, &[unit("browser", Tier::Background, 6 * GIB)]);
-            assert!(actions.iter().all(|a| !matches!(a, Action::End { .. })));
+
+        phase pressure_that_stays_critical_ends_whatever_still_grows;
+        {
+            // Nothing runs away, but the editor keeps creeping up while the machine is stuck: after
+            // STALLED_TICKS it is ended, the steady larger app is not.
+            let mut policy = Policy::new();
+            let mut ends = Vec::new();
+            for at in 0..u64::from(STALLED_TICKS) {
+                let units = [
+                    unit("browser", Tier::Background, 6 * GIB),
+                    unit("editor", Tier::Foreground, GIB + at * MIB),
+                ];
+                for action in policy.tick(CRITICAL, &units) {
+                    if let Action::End { unit, .. } = action {
+                        ends.push((at, unit.app_id));
+                    }
+                }
+            }
+            assert_eq!(ends, [(u64::from(STALLED_TICKS) - 1, "editor".to_string())]);
+            // Nothing grows at all: nothing is ended by the policy.
+            let mut policy = Policy::new();
+            for _ in 0..(2 * STALLED_TICKS) {
+                let actions = policy.tick(CRITICAL, &[unit("browser", Tier::Background, 6 * GIB)]);
+                assert!(actions.iter().all(|a| !matches!(a, Action::End { .. })));
+            }
         }
     }
 }

@@ -646,223 +646,227 @@ mod tests {
     use crate::landlock::FS_ABI;
     use landlock::CompatLevel;
 
-    #[test]
-    fn a_missing_optional_device_node_is_not_reported_but_other_failures_are() {
-        let missing = landlock::PathFd::new("/dev/nvidia-tilo-test-missing").unwrap_err();
-        assert_eq!(
-            skipped_rule_notice(std::path::Path::new("/dev/nvidia0"), &missing),
-            None,
-            "an absent path is normal and must not flood the session log"
-        );
-        let file = tempfile::NamedTempFile::new().unwrap();
-        let not_a_directory = file.path().join("child");
-        let refused = landlock::PathFd::new(&not_a_directory).unwrap_err();
-        let notice = skipped_rule_notice(&not_a_directory, &refused)
-            .expect("a path that fails for another reason is still reported");
-        assert!(notice.contains("skipping rule for"), "{notice}");
-    }
+    tilo_test_env::scenario! {
+        fn the_shim_parses_strictly_and_pins_what_it_hands_over;
 
-    #[test]
-    fn the_shim_hands_the_app_its_entry_and_exec_marks() {
-        let marks = with_shim_marks(
-            "launcher-start@1,sandbox-argv-ready@2".into(),
-            Some("sandbox-entered@3"),
-        );
-        let names: Vec<_> = marks
-            .split(',')
-            .map(|entry| entry.split_once('@').unwrap().0)
-            .collect();
-        assert_eq!(
-            names,
-            [
-                "launcher-start",
-                "sandbox-argv-ready",
-                "sandbox-entered",
-                "sandbox-exec"
-            ]
-        );
-        let exec: u128 = marks.rsplit_once('@').unwrap().1.parse().unwrap();
-        assert!(exec >= 3);
-    }
+        phase a_missing_optional_device_node_is_not_reported_but_other_failures_are;
+        {
+            let missing = landlock::PathFd::new("/dev/nvidia-tilo-test-missing").unwrap_err();
+            assert_eq!(
+                skipped_rule_notice(std::path::Path::new("/dev/nvidia0"), &missing),
+                None,
+                "an absent path is normal and must not flood the session log"
+            );
+            let file = tempfile::NamedTempFile::new().unwrap();
+            let not_a_directory = file.path().join("child");
+            let refused = landlock::PathFd::new(&not_a_directory).unwrap_err();
+            let notice = skipped_rule_notice(&not_a_directory, &refused)
+                .expect("a path that fails for another reason is still reported");
+            assert!(notice.contains("skipping rule for"), "{notice}");
+        }
 
-    #[test]
-    fn shim_command_line_parses_strictly() {
+        phase the_shim_hands_the_app_its_entry_and_exec_marks;
         {
-            let args = vec!["--".into(), "/bin/echo".into(), "hi".into()];
-            let parsed = ShimArgs::parse(&args).expect("parse");
-            assert!(parsed.ro.is_empty());
-            assert!(parsed.rw.is_empty());
-            assert!(!parsed.net_restricted);
-            assert_eq!(parsed.command, vec!["/bin/echo".to_string(), "hi".into()]);
-        }
-        {
-            let args = vec![
-                "--ro".into(),
-                "/usr".into(),
-                "--rw".into(),
-                "/tmp/data".into(),
-                "--net-restricted".into(),
-                "--keep-fd".into(),
-                "17".into(),
-                "--".into(),
-                "/app".into(),
-            ];
-            let parsed = ShimArgs::parse(&args).expect("parse");
-            assert_eq!(parsed.ro, vec![PathBuf::from("/usr")]);
-            assert_eq!(parsed.rw, vec![PathBuf::from("/tmp/data")]);
-            assert!(parsed.net_restricted);
-            assert_eq!(parsed.keep_fds, vec![17]);
-            assert_eq!(parsed.command, vec!["/app".to_string()]);
-        }
-        {
-            let args = vec!["--ro".into(), "/usr".into()];
-            assert_eq!(
-                ShimArgs::parse(&args),
-                Err(ShimParseError::MissingSeparator)
+            let marks = with_shim_marks(
+                "launcher-start@1,sandbox-argv-ready@2".into(),
+                Some("sandbox-entered@3"),
             );
-        }
-        {
-            let args = vec!["--ro".into()];
-            assert!(matches!(
-                ShimArgs::parse(&args),
-                Err(ShimParseError::DanglingValue(_))
-            ));
-        }
-        {
-            let args = vec!["--future-restriction".into(), "--".into(), "/app".into()];
+            let names: Vec<_> = marks
+                .split(',')
+                .map(|entry| entry.split_once('@').unwrap().0)
+                .collect();
             assert_eq!(
-                ShimArgs::parse(&args),
-                Err(ShimParseError::UnknownFlag("--future-restriction".into()))
+                names,
+                [
+                    "launcher-start",
+                    "sandbox-argv-ready",
+                    "sandbox-entered",
+                    "sandbox-exec"
+                ]
             );
+            let exec: u128 = marks.rsplit_once('@').unwrap().1.parse().unwrap();
+            assert!(exec >= 3);
         }
+
+        phase shim_command_line_parses_strictly;
         {
-            for value in ["no", "-1", "2", "1025"] {
-                let args = vec!["--keep-fd".into(), value.into(), "--".into(), "/app".into()];
+            {
+                let args = vec!["--".into(), "/bin/echo".into(), "hi".into()];
+                let parsed = ShimArgs::parse(&args).expect("parse");
+                assert!(parsed.ro.is_empty());
+                assert!(parsed.rw.is_empty());
+                assert!(!parsed.net_restricted);
+                assert_eq!(parsed.command, vec!["/bin/echo".to_string(), "hi".into()]);
+            }
+            {
+                let args = vec![
+                    "--ro".into(),
+                    "/usr".into(),
+                    "--rw".into(),
+                    "/tmp/data".into(),
+                    "--net-restricted".into(),
+                    "--keep-fd".into(),
+                    "17".into(),
+                    "--".into(),
+                    "/app".into(),
+                ];
+                let parsed = ShimArgs::parse(&args).expect("parse");
+                assert_eq!(parsed.ro, vec![PathBuf::from("/usr")]);
+                assert_eq!(parsed.rw, vec![PathBuf::from("/tmp/data")]);
+                assert!(parsed.net_restricted);
+                assert_eq!(parsed.keep_fds, vec![17]);
+                assert_eq!(parsed.command, vec!["/app".to_string()]);
+            }
+            {
+                let args = vec!["--ro".into(), "/usr".into()];
+                assert_eq!(
+                    ShimArgs::parse(&args),
+                    Err(ShimParseError::MissingSeparator)
+                );
+            }
+            {
+                let args = vec!["--ro".into()];
                 assert!(matches!(
                     ShimArgs::parse(&args),
                     Err(ShimParseError::DanglingValue(_))
                 ));
             }
+            {
+                let args = vec!["--future-restriction".into(), "--".into(), "/app".into()];
+                assert_eq!(
+                    ShimArgs::parse(&args),
+                    Err(ShimParseError::UnknownFlag("--future-restriction".into()))
+                );
+            }
+            {
+                for value in ["no", "-1", "2", "1025"] {
+                    let args = vec!["--keep-fd".into(), value.into(), "--".into(), "/app".into()];
+                    assert!(matches!(
+                        ShimArgs::parse(&args),
+                        Err(ShimParseError::DanglingValue(_))
+                    ));
+                }
+            }
+            {
+                let args = vec!["--".into()];
+                assert_eq!(ShimArgs::parse(&args), Err(ShimParseError::EmptyCommand));
+            }
         }
-        {
-            let args = vec!["--".into()];
-            assert_eq!(ShimArgs::parse(&args), Err(ShimParseError::EmptyCommand));
-        }
-    }
 
-    #[test]
-    fn shim_fd_and_access_plans_are_pinned() {
+        phase shim_fd_and_access_plans_are_pinned;
         {
-            assert_eq!(
-                ambient_fd_close_ranges(&[18, 17, 18]).expect("plan"),
-                vec![(3, 16), (19, u32::MAX)]
-            );
-            assert_eq!(
-                ambient_fd_close_ranges(&[]).expect("plan"),
-                vec![(3, u32::MAX)]
-            );
-        }
-        {
-            let plan = access_plan(
-                &[PathBuf::from("/usr")],
-                &[PathBuf::from("/tmp/data")],
-                FS_ABI,
-            );
-            assert_eq!(plan.len(), 2);
-            assert_eq!(plan[0].path, PathBuf::from("/usr"));
-            assert_eq!(plan[1].path, PathBuf::from("/tmp/data"));
-            assert_ne!(plan[0].access, plan[1].access); // rw has strictly more rights
-        }
-        {
-            let plan = access_plan(
-                &[PathBuf::from("/usr"), PathBuf::from("/lib")],
-                &[PathBuf::from("/app"), PathBuf::from("/dev/dri")],
-                TARGET_ABI,
-            );
-            let pinned: Vec<(PathBuf, u64)> = plan
-                .iter()
-                .map(|rule| (rule.path.clone(), rule.access.bits()))
-                .collect();
-            assert_eq!(
-                pinned,
-                vec![
-                    (PathBuf::from("/usr"), 0b1101),
-                    (PathBuf::from("/lib"), 0b1101),
-                    (PathBuf::from("/app"), 0xffff),
-                    (PathBuf::from("/dev/dri"), 0xffff),
-                ]
-            );
-        }
-        {
-            let base = ShimArgs::parse(&[
-                "--ro".into(),
-                "/usr".into(),
-                "--rw".into(),
-                "/app".into(),
-                "--".into(),
-                "/app/bin".into(),
-            ])
-            .expect("parse");
-            let rules = access_plan(&base.ro, &base.rw, TARGET_ABI);
-
-            let open = ruleset_spec(&base);
-            assert_eq!(open.compat, CompatLevel::HardRequirement);
-            assert_eq!(open.handled_fs.bits(), 0xffff);
-            assert!(open.handled_net.is_empty());
-            assert!(open.connect_ports.is_empty());
-            assert!(open.trim_file_rights);
-            assert_eq!(open.rules, rules);
-            // Every app asks for both ABI 6 scopes; sandbox-core enforces them where the kernel offers
-            // them and keeps ABI 5 elsewhere.
-            assert_eq!(
-                open.scoped,
-                landlock::Scope::AbstractUnixSocket | landlock::Scope::Signal
-            );
-
-            let restricted = ruleset_spec(&ShimArgs {
-                net_restricted: true,
-                ..base.clone()
-            });
-            assert_eq!(restricted.handled_net.bits(), 0b11);
-            assert!(restricted.connect_ports.is_empty());
-            assert_eq!(restricted.rules, rules);
-
-            let gated = ruleset_spec(&ShimArgs {
-                net_gate: Some(PathBuf::from("/run/gate.sock")),
-                net_gate_port: Some(8118),
-                ..base.clone()
-            });
-            assert_eq!(gated.handled_net.bits(), 0b11);
-            assert_eq!(gated.connect_ports, vec![8118]);
-
-            // Restricted and gated together: still only the gate port.
-            let both = ruleset_spec(&ShimArgs {
-                net_restricted: true,
-                net_gate: Some(PathBuf::from("/run/gate.sock")),
-                net_gate_port: Some(8118),
-                ..base.clone()
-            });
-            assert_eq!(both, gated);
-
-            let portless = ruleset_spec(&ShimArgs {
-                net_gate_port: Some(8118),
-                ..base
-            });
-            assert!(portless.handled_net.is_empty());
-            assert!(portless.connect_ports.is_empty());
-        }
-    }
-
-    #[test]
-    fn only_the_internal_relay_mode_runs_without_landlock() {
-        {
-            let parsed = ShimArgs::parse(&["--".into(), "/app".into()]).expect("parse");
-            assert!(!parsed.no_landlock);
-        }
-        {
-            let parsed = ShimArgs::parse(&["--no-landlock".into(), "--".into(), "/app".into()])
+            {
+                assert_eq!(
+                    ambient_fd_close_ranges(&[18, 17, 18]).expect("plan"),
+                    vec![(3, 16), (19, u32::MAX)]
+                );
+                assert_eq!(
+                    ambient_fd_close_ranges(&[]).expect("plan"),
+                    vec![(3, u32::MAX)]
+                );
+            }
+            {
+                let plan = access_plan(
+                    &[PathBuf::from("/usr")],
+                    &[PathBuf::from("/tmp/data")],
+                    FS_ABI,
+                );
+                assert_eq!(plan.len(), 2);
+                assert_eq!(plan[0].path, PathBuf::from("/usr"));
+                assert_eq!(plan[1].path, PathBuf::from("/tmp/data"));
+                assert_ne!(plan[0].access, plan[1].access); // rw has strictly more rights
+            }
+            {
+                let plan = access_plan(
+                    &[PathBuf::from("/usr"), PathBuf::from("/lib")],
+                    &[PathBuf::from("/app"), PathBuf::from("/dev/dri")],
+                    TARGET_ABI,
+                );
+                let pinned: Vec<(PathBuf, u64)> = plan
+                    .iter()
+                    .map(|rule| (rule.path.clone(), rule.access.bits()))
+                    .collect();
+                assert_eq!(
+                    pinned,
+                    vec![
+                        (PathBuf::from("/usr"), 0b1101),
+                        (PathBuf::from("/lib"), 0b1101),
+                        (PathBuf::from("/app"), 0xffff),
+                        (PathBuf::from("/dev/dri"), 0xffff),
+                    ]
+                );
+            }
+            {
+                let base = ShimArgs::parse(&[
+                    "--ro".into(),
+                    "/usr".into(),
+                    "--rw".into(),
+                    "/app".into(),
+                    "--".into(),
+                    "/app/bin".into(),
+                ])
                 .expect("parse");
-            assert!(parsed.no_landlock);
+                let rules = access_plan(&base.ro, &base.rw, TARGET_ABI);
+
+                let open = ruleset_spec(&base);
+                assert_eq!(open.compat, CompatLevel::HardRequirement);
+                assert_eq!(open.handled_fs.bits(), 0xffff);
+                assert!(open.handled_net.is_empty());
+                assert!(open.connect_ports.is_empty());
+                assert!(open.trim_file_rights);
+                assert_eq!(open.rules, rules);
+                // Every app asks for both ABI 6 scopes; sandbox-core enforces them where the kernel offers
+                // them and keeps ABI 5 elsewhere.
+                assert_eq!(
+                    open.scoped,
+                    landlock::Scope::AbstractUnixSocket | landlock::Scope::Signal
+                );
+
+                let restricted = ruleset_spec(&ShimArgs {
+                    net_restricted: true,
+                    ..base.clone()
+                });
+                assert_eq!(restricted.handled_net.bits(), 0b11);
+                assert!(restricted.connect_ports.is_empty());
+                assert_eq!(restricted.rules, rules);
+
+                let gated = ruleset_spec(&ShimArgs {
+                    net_gate: Some(PathBuf::from("/run/gate.sock")),
+                    net_gate_port: Some(8118),
+                    ..base.clone()
+                });
+                assert_eq!(gated.handled_net.bits(), 0b11);
+                assert_eq!(gated.connect_ports, vec![8118]);
+
+                // Restricted and gated together: still only the gate port.
+                let both = ruleset_spec(&ShimArgs {
+                    net_restricted: true,
+                    net_gate: Some(PathBuf::from("/run/gate.sock")),
+                    net_gate_port: Some(8118),
+                    ..base.clone()
+                });
+                assert_eq!(both, gated);
+
+                let portless = ruleset_spec(&ShimArgs {
+                    net_gate_port: Some(8118),
+                    ..base
+                });
+                assert!(portless.handled_net.is_empty());
+                assert!(portless.connect_ports.is_empty());
+            }
+        }
+
+        phase only_the_internal_relay_mode_runs_without_landlock;
+        {
+            {
+                let parsed = ShimArgs::parse(&["--".into(), "/app".into()]).expect("parse");
+                assert!(!parsed.no_landlock);
+            }
+            {
+                let parsed = ShimArgs::parse(&["--no-landlock".into(), "--".into(), "/app".into()])
+                    .expect("parse");
+                assert!(parsed.no_landlock);
+            }
         }
     }
 }
@@ -871,55 +875,59 @@ mod tests {
 mod provider_sandbox_tests {
     use super::*;
 
-    #[test]
-    fn best_effort_accepts_a_missing_or_partial_landlock_but_never_an_error() {
-        use LandlockOutcome::{Errored, FullyEnforced, NotEnforced, PartiallyEnforced};
-        for (outcome, strict, best_effort) in [
-            (FullyEnforced, true, true),
-            (NotEnforced, false, true),
-            (PartiallyEnforced, false, true),
-            (Errored, false, false),
-        ] {
-            assert_eq!(
-                landlock_accepted(outcome, false),
-                strict,
-                "{outcome:?} strict"
-            );
-            assert_eq!(
-                landlock_accepted(outcome, true),
-                best_effort,
-                "{outcome:?} best effort"
-            );
+    tilo_test_env::scenario! {
+        fn a_best_effort_provider_sandbox_tolerates_only_missing_landlock;
+
+        phase best_effort_accepts_a_missing_or_partial_landlock_but_never_an_error;
+        {
+            use LandlockOutcome::{Errored, FullyEnforced, NotEnforced, PartiallyEnforced};
+            for (outcome, strict, best_effort) in [
+                (FullyEnforced, true, true),
+                (NotEnforced, false, true),
+                (PartiallyEnforced, false, true),
+                (Errored, false, false),
+            ] {
+                assert_eq!(
+                    landlock_accepted(outcome, false),
+                    strict,
+                    "{outcome:?} strict"
+                );
+                assert_eq!(
+                    landlock_accepted(outcome, true),
+                    best_effort,
+                    "{outcome:?} best effort"
+                );
+            }
         }
-    }
 
-    #[test]
-    fn best_effort_builds_the_ruleset_best_effort() {
-        let strict = ShimArgs::parse(&["--".into(), "/app".into()]).unwrap();
-        assert_eq!(
-            ruleset_spec(&strict).compat,
-            landlock::CompatLevel::HardRequirement
-        );
-        let lenient =
-            ShimArgs::parse(&["--landlock-best-effort".into(), "--".into(), "/app".into()])
-                .unwrap();
-        assert_eq!(
-            ruleset_spec(&lenient).compat,
-            landlock::CompatLevel::BestEffort
-        );
-        // Best effort never drops the scopes from the request.
-        assert_eq!(ruleset_spec(&lenient).scoped, ruleset_spec(&strict).scoped);
-    }
+        phase best_effort_builds_the_ruleset_best_effort;
+        {
+            let strict = ShimArgs::parse(&["--".into(), "/app".into()]).unwrap();
+            assert_eq!(
+                ruleset_spec(&strict).compat,
+                landlock::CompatLevel::HardRequirement
+            );
+            let lenient =
+                ShimArgs::parse(&["--landlock-best-effort".into(), "--".into(), "/app".into()])
+                    .unwrap();
+            assert_eq!(
+                ruleset_spec(&lenient).compat,
+                landlock::CompatLevel::BestEffort
+            );
+            // Best effort never drops the scopes from the request.
+            assert_eq!(ruleset_spec(&lenient).scoped, ruleset_spec(&strict).scoped);
+        }
 
-    #[test]
-    fn the_best_effort_flag_is_parsed() {
-        let parsed =
-            ShimArgs::parse(&["--landlock-best-effort".into(), "--".into(), "/app".into()])
-                .unwrap();
-        assert!(parsed.landlock_best_effort);
-        assert!(!parsed.no_landlock);
-        let parsed = ShimArgs::parse(&["--".into(), "/app".into()]).unwrap();
-        assert!(!parsed.landlock_best_effort);
+        phase the_best_effort_flag_is_parsed;
+        {
+            let parsed =
+                ShimArgs::parse(&["--landlock-best-effort".into(), "--".into(), "/app".into()])
+                    .unwrap();
+            assert!(parsed.landlock_best_effort);
+            assert!(!parsed.no_landlock);
+            let parsed = ShimArgs::parse(&["--".into(), "/app".into()]).unwrap();
+            assert!(!parsed.landlock_best_effort);
+        }
     }
 }
 

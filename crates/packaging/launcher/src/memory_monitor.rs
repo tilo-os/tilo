@@ -247,25 +247,29 @@ fn wait(triggers: &mut Vec<OwnedFd>, stop: RawFd, timeout: Option<Duration>) -> 
 mod tests {
     use super::*;
 
-    /// The machine's pressure file keeps every byte written but the last, which it replaces with a NUL;
-    /// what it parses must be the trigger.
-    #[test]
-    fn the_written_trigger_survives_the_kernel_dropping_its_last_byte() {
-        let (last, kept) = TRIGGER_WRITTEN.split_last().expect("not empty");
-        assert_eq!(*last, 0);
-        assert_eq!(kept, TRIGGER.as_bytes());
-    }
+    tilo_test_env::scenario! {
+        fn the_pressure_trigger_is_written_as_the_kernel_accepts_it;
 
-    /// Arming the machine-wide file never fails as malformed.
-    #[test]
-    fn the_machine_wide_trigger_is_never_refused_as_malformed() {
-        match arm(Path::new(SYSTEM_PRESSURE)) {
-            Ok(_) => {}
-            Err(error) => assert_ne!(
-                error.raw_os_error(),
-                Some(libc::EINVAL),
-                "the kernel refused the trigger string: {error}"
-            ),
+        phase the_written_trigger_survives_the_kernel_dropping_its_last_byte;
+        // The machine's pressure file keeps every byte written but the last, which it replaces with a NUL;
+        // what it parses must be the trigger.
+        {
+            let (last, kept) = TRIGGER_WRITTEN.split_last().expect("not empty");
+            assert_eq!(*last, 0);
+            assert_eq!(kept, TRIGGER.as_bytes());
+        }
+
+        phase the_machine_wide_trigger_is_never_refused_as_malformed;
+        // Arming the machine-wide file never fails as malformed.
+        {
+            match arm(Path::new(SYSTEM_PRESSURE)) {
+                Ok(_) => {}
+                Err(error) => assert_ne!(
+                    error.raw_os_error(),
+                    Some(libc::EINVAL),
+                    "the kernel refused the trigger string: {error}"
+                ),
+            }
         }
     }
 }

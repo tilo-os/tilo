@@ -586,95 +586,102 @@ impl TargetProjectionAdmission {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn target_bootstrap_refuses_pre_observation_workers() {
-        let mut record = Record {
-            schema: 4,
-            mode: TargetProjectionMode::HomeDirectory,
-            purpose: "retained-target-projection".into(),
-            uid: 1000,
-            gid: 1000,
-            context_sha256: [1; 32],
-            source_view_sha256: [2; 32],
-            name: b"Home".to_vec(),
-            namespaces: namespaces().unwrap(),
-            // Validation of the wire version does not mint or observe a FUSE endpoint.
-            fuse: FuseIdentity {
-                dev: 0,
-                ino: 0,
-                rdev: 0,
-                mode: 0,
-                uid: 0,
-                gid: 0,
-            },
-            baseline: delayed_filter::Binding {
-                sha256: [0; 32],
-                bytes: 0,
-            },
-            mount_id: None,
-            clone_mount_id: None,
-        };
-        record.validate(false).unwrap();
-        record.mode = TargetProjectionMode::RetiredSelectedParent;
-        assert_eq!(
-            record.validate(false).unwrap_err().kind(),
-            io::ErrorKind::PermissionDenied
-        );
-        record.mode = TargetProjectionMode::HomeDirectory;
-        record.schema = 2;
-        assert_eq!(
-            record.validate(false).unwrap_err().kind(),
-            io::ErrorKind::PermissionDenied
-        );
-        record.schema = 3;
-        assert_eq!(
-            record.validate(false).unwrap_err().kind(),
-            io::ErrorKind::PermissionDenied
-        );
-        record.schema = 5;
-        assert_eq!(
-            record.validate(false).unwrap_err().kind(),
-            io::ErrorKind::PermissionDenied
-        );
-        record.schema = 4;
-        record.validate(false).unwrap();
-    }
-    #[test]
-    fn ordinary_and_unsealed_descriptors_cannot_mint_target_admission() {
-        let ordinary = tempfile::tempfile().unwrap();
-        assert!(receive_record(&ordinary).is_err());
-        assert!(FuseIdentity::observe(&ordinary).is_err());
-        let raw = unsafe {
-            libc::memfd_create(
-                c"tilo-target-projection".as_ptr(),
-                libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING,
-            )
-        };
-        assert!(raw >= 0);
-        let mut unsealed = unsafe { File::from_raw_fd(raw) };
-        unsealed.write_all(b"{}").unwrap();
-        assert!(receive_record(&unsealed).is_err());
-        assert!(FuseIdentity::observe(&unsealed).is_err());
-    }
-    #[test]
-    fn presentation_names_preserve_non_utf8_but_refuse_path_and_overlong_input() {
-        validate_name(&[b'f', 0xff]).unwrap();
-        for bad in [
-            &b""[..],
-            &b"."[..],
-            &b".."[..],
-            &b"a/b"[..],
-            &b"a\0b"[..],
-            &[b'a'; 256][..],
-        ] {
-            assert!(validate_name(bad).is_err());
+    tilo_test_env::scenario! {
+        fn target_admission_needs_observed_sealed_and_held_inputs;
+
+        phase target_bootstrap_refuses_pre_observation_workers;
+        {
+            let mut record = Record {
+                schema: 4,
+                mode: TargetProjectionMode::HomeDirectory,
+                purpose: "retained-target-projection".into(),
+                uid: 1000,
+                gid: 1000,
+                context_sha256: [1; 32],
+                source_view_sha256: [2; 32],
+                name: b"Home".to_vec(),
+                namespaces: namespaces().unwrap(),
+                // Validation of the wire version does not mint or observe a FUSE endpoint.
+                fuse: FuseIdentity {
+                    dev: 0,
+                    ino: 0,
+                    rdev: 0,
+                    mode: 0,
+                    uid: 0,
+                    gid: 0,
+                },
+                baseline: delayed_filter::Binding {
+                    sha256: [0; 32],
+                    bytes: 0,
+                },
+                mount_id: None,
+                clone_mount_id: None,
+            };
+            record.validate(false).unwrap();
+            record.mode = TargetProjectionMode::RetiredSelectedParent;
+            assert_eq!(
+                record.validate(false).unwrap_err().kind(),
+                io::ErrorKind::PermissionDenied
+            );
+            record.mode = TargetProjectionMode::HomeDirectory;
+            record.schema = 2;
+            assert_eq!(
+                record.validate(false).unwrap_err().kind(),
+                io::ErrorKind::PermissionDenied
+            );
+            record.schema = 3;
+            assert_eq!(
+                record.validate(false).unwrap_err().kind(),
+                io::ErrorKind::PermissionDenied
+            );
+            record.schema = 5;
+            assert_eq!(
+                record.validate(false).unwrap_err().kind(),
+                io::ErrorKind::PermissionDenied
+            );
+            record.schema = 4;
+            record.validate(false).unwrap();
         }
-    }
-    #[test]
-    fn held_mount_identity_comes_from_actual_descriptor_not_namespace_inode() {
-        let root = File::open("/").unwrap();
-        assert_ne!(mount_id(&root).unwrap(), 0);
-        let ns = File::open("/proc/self/ns/mnt").unwrap();
-        assert!(FuseIdentity::observe(&ns).is_err());
+
+        phase ordinary_and_unsealed_descriptors_cannot_mint_target_admission;
+        {
+            let ordinary = tempfile::tempfile().unwrap();
+            assert!(receive_record(&ordinary).is_err());
+            assert!(FuseIdentity::observe(&ordinary).is_err());
+            let raw = unsafe {
+                libc::memfd_create(
+                    c"tilo-target-projection".as_ptr(),
+                    libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING,
+                )
+            };
+            assert!(raw >= 0);
+            let mut unsealed = unsafe { File::from_raw_fd(raw) };
+            unsealed.write_all(b"{}").unwrap();
+            assert!(receive_record(&unsealed).is_err());
+            assert!(FuseIdentity::observe(&unsealed).is_err());
+        }
+
+        phase presentation_names_preserve_non_utf8_but_refuse_path_and_overlong_input;
+        {
+            validate_name(&[b'f', 0xff]).unwrap();
+            for bad in [
+                &b""[..],
+                &b"."[..],
+                &b".."[..],
+                &b"a/b"[..],
+                &b"a\0b"[..],
+                &[b'a'; 256][..],
+            ] {
+                assert!(validate_name(bad).is_err());
+            }
+        }
+
+        phase held_mount_identity_comes_from_actual_descriptor_not_namespace_inode;
+        {
+            let root = File::open("/").unwrap();
+            assert_ne!(mount_id(&root).unwrap(), 0);
+            let ns = File::open("/proc/self/ns/mnt").unwrap();
+            assert!(FuseIdentity::observe(&ns).is_err());
+        }
     }
 }

@@ -72,308 +72,6 @@ impl DataHome {
 }
 
 #[test]
-fn workspaces_and_apps_cannot_read_each_others_directories() {
-    {
-        let data = DataHome::new();
-
-        let wrote = run_in_workspace(
-            &data,
-            Some("workspace-a"),
-            &["write", "record.txt", "workspace-A-secret"],
-        );
-        assert!(
-            wrote.starts_with("WROTE "),
-            "the app must be able to write in its own directory: {wrote}"
-        );
-
-        let host_file = data
-            .path
-            .join("tilo-workspaces/workspace-a")
-            .join(PACKAGE)
-            .join("record.txt");
-        assert_eq!(
-            std::fs::read_to_string(&host_file).expect("record on the host"),
-            "workspace-A-secret",
-            "the write must have reached workspace A's directory at {}",
-            host_file.display()
-        );
-
-        let from_b = run_in_workspace(
-            &data,
-            Some("workspace-b"),
-            &["read", "/run/tilo/app/record.txt"],
-        );
-        assert_eq!(
-            from_b, "ERR /run/tilo/app/record.txt ENOENT",
-            "an app in workspace B must not find a record it wrote in workspace A"
-        );
-
-        // Nor by naming workspace A's host path — the sandbox has no such path.
-        let by_host_path = run_in_workspace(
-            &data,
-            Some("workspace-b"),
-            &["read", &host_file.display().to_string()],
-        );
-        assert!(
-            by_host_path.starts_with("ERR "),
-            "naming the host path must not reach it either: {by_host_path}"
-        );
-
-        // The workspace-B directory is genuinely empty of the record, rather than holding a copy the
-        // app happened not to open.
-        let listing = run_in_workspace(&data, Some("workspace-b"), &["readdir", "/run/tilo/app"]);
-        assert!(
-            !listing.contains("record.txt"),
-            "workspace B's directory must not contain workspace A's record: {listing}"
-        );
-
-        let from_a = run_in_workspace(
-            &data,
-            Some("workspace-a"),
-            &["read", "/run/tilo/app/record.txt"],
-        );
-        assert_eq!(
-            from_a, "OK /run/tilo/app/record.txt workspace-A-secret",
-            "workspace A must still see its own record — otherwise the failure in \
-             workspace B proves nothing about workspaces"
-        );
-    }
-    {
-        let data = DataHome::new();
-
-        run_in_workspace(&data, None, &["write", "diary.txt", "personal"]);
-        let from_workspace = run_in_workspace(
-            &data,
-            Some("some-workspace"),
-            &["read", "/run/tilo/app/diary.txt"],
-        );
-        assert_eq!(
-            from_workspace, "ERR /run/tilo/app/diary.txt ENOENT",
-            "the personal workspace must be as unreachable from a workspace as any \
-             other workspace"
-        );
-    }
-    {
-        let data = DataHome::new();
-
-        let victim = data
-            .path
-            .join("tilo-workspaces/workspace-a")
-            .join("so.tilo.totp")
-            .join("seeds.bin");
-        std::fs::create_dir_all(victim.parent().unwrap()).unwrap();
-        std::fs::write(&victim, b"totp-seed").unwrap();
-
-        for attempt in [
-            victim.display().to_string(),
-            "/run/tilo/app/../so.tilo.totp/seeds.bin".to_string(),
-            "/run/tilo/../tilo/app/../so.tilo.totp/seeds.bin".to_string(),
-        ] {
-            let line = run_in_workspace(&data, Some("workspace-a"), &["read", &attempt]);
-            assert!(
-                line.starts_with("ERR "),
-                "another package's state must be unreachable via {attempt}: {line}"
-            );
-        }
-
-        // The seed is still there — the reads failed, they did not delete it.
-        assert_eq!(std::fs::read(&victim).unwrap(), b"totp-seed");
-    }
-}
-
-#[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "confinement phases assert production filesystem access in one test"
-)]
-fn the_sandbox_filesystem_is_the_app_directory_plus_the_read_only_profile() {
-    {
-        let data = DataHome::new();
-
-        for var in [
-            "HOME",
-            "XDG_DATA_HOME",
-            "XDG_CONFIG_HOME",
-            "XDG_STATE_HOME",
-            "XDG_CACHE_HOME",
-            "TILO_APP_DIR",
-        ] {
-            let line = run_in_workspace(&data, Some("workspace-a"), &["env", var]);
-            let value = line.split_once('=').expect("ENV k=v").1;
-            assert!(
-                value.starts_with(appdir::SANDBOX_APP_DIR),
-                "{var} is {value:?}, outside {}",
-                appdir::SANDBOX_APP_DIR
-            );
-        }
-
-        // `cli::standalone_state_dir` is `$XDG_DATA_HOME/<package id>`.
-        let wrote = run_in_workspace(
-            &data,
-            Some("workspace-a"),
-            &[
-                "write",
-                &format!(".local/share/{PACKAGE}/state.bin"),
-                "app-state",
-            ],
-        );
-        assert!(wrote.starts_with("WROTE "), "{wrote}");
-        let host = data
-            .path
-            .join("tilo-workspaces/workspace-a")
-            .join(PACKAGE)
-            .join(".local/share")
-            .join(PACKAGE)
-            .join("state.bin");
-        assert_eq!(
-            std::fs::read_to_string(&host).expect("state on the host"),
-            "app-state",
-            "standalone_state_dir must resolve inside the workspace at {}",
-            host.display()
-        );
-    }
-    {
-        let data = DataHome::new();
-
-        // Outside the profile: the user's own files, the shadow file, the collaborative mount, the
-        // host's programs.
-        let real_home = std::env::var("HOME").expect("HOME is set for the test process");
-        let outside_the_profile: Vec<String> = [
-            "/etc/shadow".to_string(),
-            "/var/workspace".to_string(),
-            "/usr/bin/env".to_string(),
-            "/root".to_string(),
-            "/home".to_string(),
-            real_home.clone(),
-            format!("{real_home}/.ssh"),
-            format!("{real_home}/.local/share"),
-        ]
-        .into();
-        for outside in &outside_the_profile {
-            let line = run_in_workspace(&data, Some("workspace-a"), &["read", outside]);
-            assert!(
-                line.starts_with("ERR "),
-                "{outside} must not be readable without a capability: {line}"
-            );
-        }
-
-        // The account file is generated sandbox data, not a bind of the host database.
-        let host_accounts = std::fs::read("/etc/passwd").expect("host account database");
-        let (uid, gid) = (
-            rustix::process::geteuid().as_raw(),
-            rustix::process::getegid().as_raw(),
-        );
-        let expected_account = format!(
-            "OK /etc/passwd app:x:{uid}:{gid}:Sandbox application:/run/tilo/app:/sbin/nologin"
-        );
-        let account = run_in_workspace(&data, Some("workspace-a"), &["read", "/etc/passwd"]);
-        assert_eq!(
-            account, expected_account,
-            "only the synthetic account is visible"
-        );
-        let write = run_in_workspace(
-            &data,
-            Some("workspace-a"),
-            &["writeabs", "/etc/passwd", "owned"],
-        );
-        assert!(
-            write.starts_with("ERR "),
-            "the synthetic account is read-only: {write}"
-        );
-        assert_eq!(
-            run_in_workspace(&data, Some("workspace-a"), &["read", "/etc/passwd"]),
-            expected_account,
-            "the denied write must not change sandbox account bytes"
-        );
-        assert!(
-            std::fs::read("/etc/passwd").expect("host account database after launch")
-                == host_accounts,
-            "sandbox account access must not modify the host database"
-        );
-
-        // Inside the profile: readable.
-        let read = run_in_workspace(&data, Some("workspace-a"), &["readdir", "/usr/share/fonts"]);
-        assert!(
-            read.starts_with("OK "),
-            "the profile must actually deliver fonts: {read}"
-        );
-
-        // And not writable: an app that could rewrite `/etc/ld.so.cache` would choose what every later
-        // launch loads, and one that could drop a font file could do it for every other app on the
-        // machine.
-        for target in [
-            "/usr/share/fonts/tilo-confinement-probe",
-            "/etc/ld.so.cache",
-            "/usr/lib64/tilo-confinement-probe.so",
-        ] {
-            let line = run_in_workspace(&data, Some("workspace-a"), &["writeabs", target, "owned"]);
-            assert!(
-                line.starts_with("ERR "),
-                "{target} must not be writable: {line}"
-            );
-            assert!(
-                !std::path::Path::new(target)
-                    .metadata()
-                    .is_ok_and(|m| m.len() == 5),
-                "{target} was actually modified on the host"
-            );
-        }
-
-        // The app's own directory is writable, so the failures above are the read-only mount, not a
-        // fixture that can't write at all.
-        let ok = run_in_workspace(
-            &data,
-            Some("workspace-a"),
-            &["writeabs", "/run/tilo/app/probe", "owned"],
-        );
-        assert!(
-            ok.starts_with("WROTE "),
-            "the app's own directory must be writable: {ok}"
-        );
-    }
-    {
-        let data = DataHome::new();
-
-        let victim = data.path.join("so.tilo.totp");
-        for (field, entry) in [
-            ("write", "~"),
-            ("write", "/"),
-            ("write", "~/.ssh"),
-            ("write", "~/../../etc"),
-            ("write", &victim.display().to_string() as &str),
-            ("read", "/etc/shadow"),
-        ] {
-            let mut m = manifest(PACKAGE, "bin/workspacetest", "off");
-            match field {
-                "write" => m.sandbox.fs.write.push(entry.to_string()),
-                _ => m.sandbox.fs.read.push(entry.to_string()),
-            }
-            let opts = RunOptions {
-                no_services: true,
-                bwrap_bin: Some(bwrap()),
-                ..isolated_options(&data.path)
-            };
-            let err = run_with_captured(&m, workspacetest_payload(), &opts)
-                .err()
-                .unwrap_or_else(|| panic!("{field} = {entry:?} must be refused"));
-            assert!(
-                matches!(err, RunError::FsPolicy(_)),
-                "{field} = {entry:?} produced {err} rather than a policy refusal"
-            );
-            let text = err.to_string();
-            assert!(
-                text.contains(PACKAGE) && text.contains(entry),
-                "the refusal must name the package and the entry: {text}"
-            );
-        }
-        assert!(
-            !victim.exists(),
-            "a refused launch must not have created the path it named"
-        );
-    }
-}
-
-#[test]
 fn fedora_nss_trust_module_resolves_inside_the_app_sandbox() {
     // NSS loads this module dynamically through Fedora's system alternative, so DT_NEEDED checks
     // cannot observe a broken /etc/alternatives link.
@@ -752,38 +450,340 @@ fn settings_reaches_only_its_own_parts_of_the_session_configuration() {
     drop(home);
 }
 
-/// An app's cgroup is out of its reach: its own place is the root of its cgroup namespace, the
-/// hierarchy (every app's cgroup, named by app, with its counters) is hidden behind an empty read-only
-/// directory, and no other cgroupfs can be mounted to reach it.
-#[test]
-fn an_app_can_neither_see_nor_reach_the_cgroup_hierarchy() {
-    let data = DataHome::new();
-    let run = |argv: &[&str]| run_in_workspace(&data, Some("workspace-a"), argv);
-    assert_eq!(
-        run(&["read", "/proc/self/cgroup"]),
-        "OK /proc/self/cgroup 0::/",
-        "the app sees its own cgroup as the root of its namespace"
-    );
-    assert_eq!(
-        run(&["readdir", "/sys/fs/cgroup"]),
-        "OK /sys/fs/cgroup",
-        "no other app's cgroup, and no tree, is visible"
-    );
-    assert_eq!(
-        run(&["writeabs", "/sys/fs/cgroup/cgroup.procs", "0"]),
-        "ERR /sys/fs/cgroup/cgroup.procs EROFS"
-    );
-    assert_eq!(
-        run(&["mkdir", "/sys/fs/cgroup/escape"]),
-        "ERR /sys/fs/cgroup/escape EROFS"
-    );
-    // Neither a fresh cgroup2 mount nor a remount of the hidden one.
-    assert_eq!(
-        run(&["mount", "cgroup2", "/tmp/cgroup"]),
-        "ERR /tmp/cgroup EPERM"
-    );
-    assert_eq!(
-        run(&["mount", "cgroup2", "/sys/fs/cgroup"]),
-        "ERR /sys/fs/cgroup EPERM"
-    );
+tilo_test_env::scenario! {
+    fn an_app_sees_its_own_directory_the_read_only_profile_and_no_cgroups;
+
+    phase workspaces_and_apps_cannot_read_each_others_directories;
+    {
+        {
+            let data = DataHome::new();
+
+            let wrote = run_in_workspace(
+                &data,
+                Some("workspace-a"),
+                &["write", "record.txt", "workspace-A-secret"],
+            );
+            assert!(
+                wrote.starts_with("WROTE "),
+                "the app must be able to write in its own directory: {wrote}"
+            );
+
+            let host_file = data
+                .path
+                .join("tilo-workspaces/workspace-a")
+                .join(PACKAGE)
+                .join("record.txt");
+            assert_eq!(
+                std::fs::read_to_string(&host_file).expect("record on the host"),
+                "workspace-A-secret",
+                "the write must have reached workspace A's directory at {}",
+                host_file.display()
+            );
+
+            let from_b = run_in_workspace(
+                &data,
+                Some("workspace-b"),
+                &["read", "/run/tilo/app/record.txt"],
+            );
+            assert_eq!(
+                from_b, "ERR /run/tilo/app/record.txt ENOENT",
+                "an app in workspace B must not find a record it wrote in workspace A"
+            );
+
+            // Nor by naming workspace A's host path — the sandbox has no such path.
+            let by_host_path = run_in_workspace(
+                &data,
+                Some("workspace-b"),
+                &["read", &host_file.display().to_string()],
+            );
+            assert!(
+                by_host_path.starts_with("ERR "),
+                "naming the host path must not reach it either: {by_host_path}"
+            );
+
+            // The workspace-B directory is genuinely empty of the record, rather than holding a copy the
+            // app happened not to open.
+            let listing = run_in_workspace(&data, Some("workspace-b"), &["readdir", "/run/tilo/app"]);
+            assert!(
+                !listing.contains("record.txt"),
+                "workspace B's directory must not contain workspace A's record: {listing}"
+            );
+
+            let from_a = run_in_workspace(
+                &data,
+                Some("workspace-a"),
+                &["read", "/run/tilo/app/record.txt"],
+            );
+            assert_eq!(
+                from_a, "OK /run/tilo/app/record.txt workspace-A-secret",
+                "workspace A must still see its own record — otherwise the failure in \
+             workspace B proves nothing about workspaces"
+            );
+        }
+        {
+            let data = DataHome::new();
+
+            run_in_workspace(&data, None, &["write", "diary.txt", "personal"]);
+            let from_workspace = run_in_workspace(
+                &data,
+                Some("some-workspace"),
+                &["read", "/run/tilo/app/diary.txt"],
+            );
+            assert_eq!(
+                from_workspace, "ERR /run/tilo/app/diary.txt ENOENT",
+                "the personal workspace must be as unreachable from a workspace as any \
+             other workspace"
+            );
+        }
+        {
+            let data = DataHome::new();
+
+            let victim = data
+                .path
+                .join("tilo-workspaces/workspace-a")
+                .join("so.tilo.totp")
+                .join("seeds.bin");
+            std::fs::create_dir_all(victim.parent().unwrap()).unwrap();
+            std::fs::write(&victim, b"totp-seed").unwrap();
+
+            for attempt in [
+                victim.display().to_string(),
+                "/run/tilo/app/../so.tilo.totp/seeds.bin".to_string(),
+                "/run/tilo/../tilo/app/../so.tilo.totp/seeds.bin".to_string(),
+            ] {
+                let line = run_in_workspace(&data, Some("workspace-a"), &["read", &attempt]);
+                assert!(
+                    line.starts_with("ERR "),
+                    "another package's state must be unreachable via {attempt}: {line}"
+                );
+            }
+
+            // The seed is still there — the reads failed, they did not delete it.
+            assert_eq!(std::fs::read(&victim).unwrap(), b"totp-seed");
+        }
+    }
+
+    phase the_sandbox_filesystem_is_the_app_directory_plus_the_read_only_profile;
+    {
+        {
+            let data = DataHome::new();
+
+            for var in [
+                "HOME",
+                "XDG_DATA_HOME",
+                "XDG_CONFIG_HOME",
+                "XDG_STATE_HOME",
+                "XDG_CACHE_HOME",
+                "TILO_APP_DIR",
+            ] {
+                let line = run_in_workspace(&data, Some("workspace-a"), &["env", var]);
+                let value = line.split_once('=').expect("ENV k=v").1;
+                assert!(
+                    value.starts_with(appdir::SANDBOX_APP_DIR),
+                    "{var} is {value:?}, outside {}",
+                    appdir::SANDBOX_APP_DIR
+                );
+            }
+
+            // `cli::standalone_state_dir` is `$XDG_DATA_HOME/<package id>`.
+            let wrote = run_in_workspace(
+                &data,
+                Some("workspace-a"),
+                &[
+                    "write",
+                    &format!(".local/share/{PACKAGE}/state.bin"),
+                    "app-state",
+                ],
+            );
+            assert!(wrote.starts_with("WROTE "), "{wrote}");
+            let host = data
+                .path
+                .join("tilo-workspaces/workspace-a")
+                .join(PACKAGE)
+                .join(".local/share")
+                .join(PACKAGE)
+                .join("state.bin");
+            assert_eq!(
+                std::fs::read_to_string(&host).expect("state on the host"),
+                "app-state",
+                "standalone_state_dir must resolve inside the workspace at {}",
+                host.display()
+            );
+        }
+        {
+            let data = DataHome::new();
+
+            // Outside the profile: the user's own files, the shadow file, the collaborative mount, the
+            // host's programs.
+            let real_home = std::env::var("HOME").expect("HOME is set for the test process");
+            let outside_the_profile: Vec<String> = [
+                "/etc/shadow".to_string(),
+                "/var/workspace".to_string(),
+                "/usr/bin/env".to_string(),
+                "/root".to_string(),
+                "/home".to_string(),
+                real_home.clone(),
+                format!("{real_home}/.ssh"),
+                format!("{real_home}/.local/share"),
+            ]
+            .into();
+            for outside in &outside_the_profile {
+                let line = run_in_workspace(&data, Some("workspace-a"), &["read", outside]);
+                assert!(
+                    line.starts_with("ERR "),
+                    "{outside} must not be readable without a capability: {line}"
+                );
+            }
+
+            // The account file is generated sandbox data, not a bind of the host database.
+            let host_accounts = std::fs::read("/etc/passwd").expect("host account database");
+            let (uid, gid) = (
+                rustix::process::geteuid().as_raw(),
+                rustix::process::getegid().as_raw(),
+            );
+            let expected_account = format!(
+                "OK /etc/passwd app:x:{uid}:{gid}:Sandbox application:/run/tilo/app:/sbin/nologin"
+            );
+            let account = run_in_workspace(&data, Some("workspace-a"), &["read", "/etc/passwd"]);
+            assert_eq!(
+                account, expected_account,
+                "only the synthetic account is visible"
+            );
+            let write = run_in_workspace(
+                &data,
+                Some("workspace-a"),
+                &["writeabs", "/etc/passwd", "owned"],
+            );
+            assert!(
+                write.starts_with("ERR "),
+                "the synthetic account is read-only: {write}"
+            );
+            assert_eq!(
+                run_in_workspace(&data, Some("workspace-a"), &["read", "/etc/passwd"]),
+                expected_account,
+                "the denied write must not change sandbox account bytes"
+            );
+            assert!(
+                std::fs::read("/etc/passwd").expect("host account database after launch")
+                    == host_accounts,
+                "sandbox account access must not modify the host database"
+            );
+
+            // Inside the profile: readable.
+            let read = run_in_workspace(&data, Some("workspace-a"), &["readdir", "/usr/share/fonts"]);
+            assert!(
+                read.starts_with("OK "),
+                "the profile must actually deliver fonts: {read}"
+            );
+
+            // And not writable: an app that could rewrite `/etc/ld.so.cache` would choose what every later
+            // launch loads, and one that could drop a font file could do it for every other app on the
+            // machine.
+            for target in [
+                "/usr/share/fonts/tilo-confinement-probe",
+                "/etc/ld.so.cache",
+                "/usr/lib64/tilo-confinement-probe.so",
+            ] {
+                let line = run_in_workspace(&data, Some("workspace-a"), &["writeabs", target, "owned"]);
+                assert!(
+                    line.starts_with("ERR "),
+                    "{target} must not be writable: {line}"
+                );
+                assert!(
+                    !std::path::Path::new(target)
+                        .metadata()
+                        .is_ok_and(|m| m.len() == 5),
+                    "{target} was actually modified on the host"
+                );
+            }
+
+            // The app's own directory is writable, so the failures above are the read-only mount, not a
+            // fixture that can't write at all.
+            let ok = run_in_workspace(
+                &data,
+                Some("workspace-a"),
+                &["writeabs", "/run/tilo/app/probe", "owned"],
+            );
+            assert!(
+                ok.starts_with("WROTE "),
+                "the app's own directory must be writable: {ok}"
+            );
+        }
+        {
+            let data = DataHome::new();
+
+            let victim = data.path.join("so.tilo.totp");
+            for (field, entry) in [
+                ("write", "~"),
+                ("write", "/"),
+                ("write", "~/.ssh"),
+                ("write", "~/../../etc"),
+                ("write", &victim.display().to_string() as &str),
+                ("read", "/etc/shadow"),
+            ] {
+                let mut m = manifest(PACKAGE, "bin/workspacetest", "off");
+                match field {
+                    "write" => m.sandbox.fs.write.push(entry.to_string()),
+                    _ => m.sandbox.fs.read.push(entry.to_string()),
+                }
+                let opts = RunOptions {
+                    no_services: true,
+                    bwrap_bin: Some(bwrap()),
+                    ..isolated_options(&data.path)
+                };
+                let err = run_with_captured(&m, workspacetest_payload(), &opts)
+                    .err()
+                    .unwrap_or_else(|| panic!("{field} = {entry:?} must be refused"));
+                assert!(
+                    matches!(err, RunError::FsPolicy(_)),
+                    "{field} = {entry:?} produced {err} rather than a policy refusal"
+                );
+                let text = err.to_string();
+                assert!(
+                    text.contains(PACKAGE) && text.contains(entry),
+                    "the refusal must name the package and the entry: {text}"
+                );
+            }
+            assert!(
+                !victim.exists(),
+                "a refused launch must not have created the path it named"
+            );
+        }
+    }
+
+    phase an_app_can_neither_see_nor_reach_the_cgroup_hierarchy;
+    // An app's cgroup is out of its reach: its own place is the root of its cgroup namespace, the
+    // hierarchy (every app's cgroup, named by app, with its counters) is hidden behind an empty read-only
+    // directory, and no other cgroupfs can be mounted to reach it.
+    {
+        let data = DataHome::new();
+        let run = |argv: &[&str]| run_in_workspace(&data, Some("workspace-a"), argv);
+        assert_eq!(
+            run(&["read", "/proc/self/cgroup"]),
+            "OK /proc/self/cgroup 0::/",
+            "the app sees its own cgroup as the root of its namespace"
+        );
+        assert_eq!(
+            run(&["readdir", "/sys/fs/cgroup"]),
+            "OK /sys/fs/cgroup",
+            "no other app's cgroup, and no tree, is visible"
+        );
+        assert_eq!(
+            run(&["writeabs", "/sys/fs/cgroup/cgroup.procs", "0"]),
+            "ERR /sys/fs/cgroup/cgroup.procs EROFS"
+        );
+        assert_eq!(
+            run(&["mkdir", "/sys/fs/cgroup/escape"]),
+            "ERR /sys/fs/cgroup/escape EROFS"
+        );
+        // Neither a fresh cgroup2 mount nor a remount of the hidden one.
+        assert_eq!(
+            run(&["mount", "cgroup2", "/tmp/cgroup"]),
+            "ERR /tmp/cgroup EPERM"
+        );
+        assert_eq!(
+            run(&["mount", "cgroup2", "/sys/fs/cgroup"]),
+            "ERR /sys/fs/cgroup EPERM"
+        );
+    }
 }

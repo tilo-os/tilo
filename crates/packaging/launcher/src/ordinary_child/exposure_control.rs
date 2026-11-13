@@ -172,88 +172,94 @@ mod tests {
             readonly: true,
         }
     }
-    #[test]
-    fn actual_scm_preserves_exact_held_object_and_closed_echo() {
-        let held = tempfile::tempfile().unwrap();
-        let identity = (
-            held.metadata().unwrap().dev(),
-            held.metadata().unwrap().ino(),
-        );
-        let (mut root, mut child) = UnixStream::pair().unwrap();
-        let worker = std::thread::spawn(move || {
-            let cancel = ServiceCancellation::default();
-            let mut io = Handoff::new(&mut child, &cancel, Duration::from_secs(1)).unwrap();
-            let (operation, record) = receive_request(&mut io).unwrap();
-            assert_eq!(operation, Operation::Place);
-            let received = receive_file(&mut io, 1).unwrap();
-            assert_eq!(
-                (
-                    received.metadata().unwrap().dev(),
-                    received.metadata().unwrap().ino()
-                ),
-                identity
-            );
-            send_result(
-                &mut io,
-                operation,
-                &record,
-                Err(io::Error::from_raw_os_error(libc::EACCES)),
-            )
-            .unwrap();
-        });
-        let cancel = ServiceCancellation::default();
-        let mut io = Handoff::new(&mut root, &cancel, Duration::from_secs(1)).unwrap();
-        let record = description();
-        send_request(&mut io, Operation::Place, &record).unwrap();
-        send_file(&mut io, 1, &held).unwrap();
-        assert_eq!(
-            receive_result(&mut io, Operation::Place, &record)
-                .unwrap_err()
-                .raw_os_error(),
-            Some(libc::EACCES)
-        );
-        worker.join().unwrap();
-    }
-    #[test]
-    fn response_nonce_substitution_is_refused() {
-        let (mut root, mut child) = UnixStream::pair().unwrap();
-        let mut changed = description();
-        changed.nonce = [9; 32];
-        let worker = std::thread::spawn(move || {
-            let cancel = ServiceCancellation::default();
-            let mut io = Handoff::new(&mut child, &cancel, Duration::from_secs(1)).unwrap();
-            send_result(&mut io, Operation::Retire, &changed, Ok(())).unwrap();
-        });
-        let cancel = ServiceCancellation::default();
-        let mut io = Handoff::new(&mut root, &cancel, Duration::from_secs(1)).unwrap();
-        assert_eq!(
-            receive_result(&mut io, Operation::Retire, &description())
-                .unwrap_err()
-                .kind(),
-            io::ErrorKind::PermissionDenied
-        );
-        worker.join().unwrap();
-    }
-    #[test]
-    fn cancellation_precedes_initial_framing_io() {
-        use std::io::Read;
+    tilo_test_env::scenario! {
+        fn exposure_control_carries_the_held_object_or_is_refused;
 
-        let (mut root, mut child) = UnixStream::pair().unwrap();
-        let cancel = ServiceCancellation::default();
-        cancel.cancel();
-        let mut io = Handoff::new(&mut root, &cancel, Duration::from_secs(1)).unwrap();
-        assert_eq!(
-            send_request(&mut io, Operation::Place, &description())
-                .unwrap_err()
-                .kind(),
-            io::ErrorKind::Interrupted
-        );
-        child.set_nonblocking(true).unwrap();
-        let mut bytes = [0; 1];
-        assert_eq!(
-            child.read(&mut bytes).unwrap_err().kind(),
-            io::ErrorKind::WouldBlock
-        );
+        phase actual_scm_preserves_exact_held_object_and_closed_echo;
+        {
+            let held = tempfile::tempfile().unwrap();
+            let identity = (
+                held.metadata().unwrap().dev(),
+                held.metadata().unwrap().ino(),
+            );
+            let (mut root, mut child) = UnixStream::pair().unwrap();
+            let worker = std::thread::spawn(move || {
+                let cancel = ServiceCancellation::default();
+                let mut io = Handoff::new(&mut child, &cancel, Duration::from_secs(1)).unwrap();
+                let (operation, record) = receive_request(&mut io).unwrap();
+                assert_eq!(operation, Operation::Place);
+                let received = receive_file(&mut io, 1).unwrap();
+                assert_eq!(
+                    (
+                        received.metadata().unwrap().dev(),
+                        received.metadata().unwrap().ino()
+                    ),
+                    identity
+                );
+                send_result(
+                    &mut io,
+                    operation,
+                    &record,
+                    Err(io::Error::from_raw_os_error(libc::EACCES)),
+                )
+                .unwrap();
+            });
+            let cancel = ServiceCancellation::default();
+            let mut io = Handoff::new(&mut root, &cancel, Duration::from_secs(1)).unwrap();
+            let record = description();
+            send_request(&mut io, Operation::Place, &record).unwrap();
+            send_file(&mut io, 1, &held).unwrap();
+            assert_eq!(
+                receive_result(&mut io, Operation::Place, &record)
+                    .unwrap_err()
+                    .raw_os_error(),
+                Some(libc::EACCES)
+            );
+            worker.join().unwrap();
+        }
+
+        phase response_nonce_substitution_is_refused;
+        {
+            let (mut root, mut child) = UnixStream::pair().unwrap();
+            let mut changed = description();
+            changed.nonce = [9; 32];
+            let worker = std::thread::spawn(move || {
+                let cancel = ServiceCancellation::default();
+                let mut io = Handoff::new(&mut child, &cancel, Duration::from_secs(1)).unwrap();
+                send_result(&mut io, Operation::Retire, &changed, Ok(())).unwrap();
+            });
+            let cancel = ServiceCancellation::default();
+            let mut io = Handoff::new(&mut root, &cancel, Duration::from_secs(1)).unwrap();
+            assert_eq!(
+                receive_result(&mut io, Operation::Retire, &description())
+                    .unwrap_err()
+                    .kind(),
+                io::ErrorKind::PermissionDenied
+            );
+            worker.join().unwrap();
+        }
+
+        phase cancellation_precedes_initial_framing_io;
+        {
+            use std::io::Read;
+
+            let (mut root, mut child) = UnixStream::pair().unwrap();
+            let cancel = ServiceCancellation::default();
+            cancel.cancel();
+            let mut io = Handoff::new(&mut root, &cancel, Duration::from_secs(1)).unwrap();
+            assert_eq!(
+                send_request(&mut io, Operation::Place, &description())
+                    .unwrap_err()
+                    .kind(),
+                io::ErrorKind::Interrupted
+            );
+            child.set_nonblocking(true).unwrap();
+            let mut bytes = [0; 1];
+            assert_eq!(
+                child.read(&mut bytes).unwrap_err().kind(),
+                io::ErrorKind::WouldBlock
+            );
+        }
     }
 }
 

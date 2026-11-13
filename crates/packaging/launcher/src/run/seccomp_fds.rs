@@ -40,48 +40,52 @@ impl SeccompFds {
 mod seccomp_fd_tests {
     use super::*;
 
-    #[test]
-    fn both_seccomp_filters_precede_the_sandbox_arguments() {
-        let compat = crate::run::stage_seccomp_blob(&[1, 2, 3]).expect("compat filter fd");
-        let baseline = crate::run::stage_seccomp_blob(&[4, 5, 6]).expect("baseline filter fd");
-        let _fds = SeccompFds {
-            clone3_compat: compat,
-            baseline,
-        };
-        let mut argv = vec!["--unshare-all".to_string(), "/app/bin".to_string()];
+    tilo_test_env::scenario! {
+        fn seccomp_filters_keep_their_descriptors_ahead_of_the_sandbox;
 
-        SeccompFds::prepend_bwrap_args(&mut argv);
+        phase both_seccomp_filters_precede_the_sandbox_arguments;
+        {
+            let compat = crate::run::stage_seccomp_blob(&[1, 2, 3]).expect("compat filter fd");
+            let baseline = crate::run::stage_seccomp_blob(&[4, 5, 6]).expect("baseline filter fd");
+            let _fds = SeccompFds {
+                clone3_compat: compat,
+                baseline,
+            };
+            let mut argv = vec!["--unshare-all".to_string(), "/app/bin".to_string()];
 
-        assert_eq!(
-            argv,
-            [
-                "--add-seccomp-fd",
-                "40",
-                "--add-seccomp-fd",
-                "41",
-                "--unshare-all",
-                "/app/bin",
-            ]
-        );
-    }
+            SeccompFds::prepend_bwrap_args(&mut argv);
 
-    #[test]
-    fn no_handed_over_descriptor_can_replace_a_seccomp_program() {
-        use crate::services::RESERVED_CHILD_FDS;
-        // Declared services are numbered from 17 upwards around the reserved slots; a filter sharing a
-        // slot with one would make bwrap read its program from that service's socket and never start
-        // the app.
-        for fd in [CLONE3_COMPAT_SECCOMP_CHILD_FD, BASELINE_SECCOMP_CHILD_FD] {
-            assert!(RESERVED_CHILD_FDS.contains(&fd), "{fd} must be reserved");
-            assert!(fd > 31, "{fd} must stay above bwrap's own descriptors");
+            assert_eq!(
+                argv,
+                [
+                    "--add-seccomp-fd",
+                    "40",
+                    "--add-seccomp-fd",
+                    "41",
+                    "--unshare-all",
+                    "/app/bin",
+                ]
+            );
         }
-        let mut unique = RESERVED_CHILD_FDS.to_vec();
-        unique.sort_unstable();
-        unique.dedup();
-        assert_eq!(
-            unique.len(),
-            RESERVED_CHILD_FDS.len(),
-            "reserved slots overlap"
-        );
+
+        phase no_handed_over_descriptor_can_replace_a_seccomp_program;
+        {
+            use crate::services::RESERVED_CHILD_FDS;
+            // Declared services are numbered from 17 upwards around the reserved slots; a filter sharing a
+            // slot with one would make bwrap read its program from that service's socket and never start
+            // the app.
+            for fd in [CLONE3_COMPAT_SECCOMP_CHILD_FD, BASELINE_SECCOMP_CHILD_FD] {
+                assert!(RESERVED_CHILD_FDS.contains(&fd), "{fd} must be reserved");
+                assert!(fd > 31, "{fd} must stay above bwrap's own descriptors");
+            }
+            let mut unique = RESERVED_CHILD_FDS.to_vec();
+            unique.sort_unstable();
+            unique.dedup();
+            assert_eq!(
+                unique.len(),
+                RESERVED_CHILD_FDS.len(),
+                "reserved slots overlap"
+            );
+        }
     }
 }

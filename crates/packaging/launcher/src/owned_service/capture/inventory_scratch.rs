@@ -204,127 +204,130 @@ mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
 
-    #[test]
-    fn actual_held_directory_refuses_overlap_wrong_worker_and_changed_permissions() {
-        let root = tempfile::tempdir().unwrap();
-        let path = root.path().join("scratch");
-        std::fs::create_dir(&path).unwrap();
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let held = File::open(&path).unwrap();
-        let uid = held.metadata().unwrap().uid();
-        assert!(
-            Scratch::admit(
-                held.try_clone().unwrap(),
-                1,
-                uid.wrapping_add(1),
-                &File::open(root.path()).unwrap()
-            )
-            .is_err()
-        );
-        assert_eq!(
-            Scratch::admit(held.try_clone().unwrap(), 1, uid, &held)
-                .err()
-                .unwrap()
-                .to_string(),
-            "Inventory scratch overlaps its migration source"
-        );
-        let source = root.path().join("source");
-        std::fs::create_dir(&source).unwrap();
-        let source = File::open(source).unwrap();
-        let scratch = Scratch {
-            identity: identity(&held).unwrap(),
-            directory: held,
-            allocation_bytes: 1,
-        };
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o770)).unwrap();
-        assert!(scratch.check(uid, &source).is_err());
-        assert!(Scratch::admit(File::open(&path).unwrap(), 0, uid, &source).is_err());
-    }
+    tilo_test_env::scenario! {
+        fn inventory_scratch_refuses_overlap_and_foreign_filesystems;
 
-    #[test]
-    fn mounted_scratch_checks_actual_directory_and_file_coordinates_without_refusing_disjoint_siblings()
-     {
-        let root = tempfile::tempdir().unwrap();
-        let scratch_path = root.path().join("scratch");
-        std::fs::create_dir(&scratch_path).unwrap();
-        let directory = File::open(&scratch_path).unwrap();
-        let scratch = Scratch {
-            identity: identity(&directory).unwrap(),
-            directory,
-            allocation_bytes: 1,
-        };
-        let sibling = root.path().join("source");
-        std::fs::create_dir(&sibling).unwrap();
-        let document = sibling.join("document");
-        std::fs::write(&document, b"actual selected source bytes").unwrap();
-        for source in [
-            File::open(&sibling).unwrap(),
-            File::open(&document).unwrap(),
-        ] {
-            scratch.refuse_mounted_overlap(&source).unwrap();
-        }
-        for source in [
-            File::open(root.path()).unwrap(),
-            File::open(&scratch_path).unwrap(),
-        ] {
-            assert!(scratch.refuse_mounted_overlap(&source).is_err());
-        }
-        let inside = scratch_path.join("document");
-        std::fs::write(&inside, b"inside scratch").unwrap();
-        assert!(
-            scratch
-                .refuse_mounted_overlap(&File::open(inside).unwrap())
+        phase actual_held_directory_refuses_overlap_wrong_worker_and_changed_permissions;
+        {
+            let root = tempfile::tempdir().unwrap();
+            let path = root.path().join("scratch");
+            std::fs::create_dir(&path).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+            let held = File::open(&path).unwrap();
+            let uid = held.metadata().unwrap().uid();
+            assert!(
+                Scratch::admit(
+                    held.try_clone().unwrap(),
+                    1,
+                    uid.wrapping_add(1),
+                    &File::open(root.path()).unwrap()
+                )
                 .is_err()
-        );
-        assert_eq!(
-            std::fs::read(document).unwrap(),
-            b"actual selected source bytes"
-        );
-    }
+            );
+            assert_eq!(
+                Scratch::admit(held.try_clone().unwrap(), 1, uid, &held)
+                    .err()
+                    .unwrap()
+                    .to_string(),
+                "Inventory scratch overlaps its migration source"
+            );
+            let source = root.path().join("source");
+            std::fs::create_dir(&source).unwrap();
+            let source = File::open(source).unwrap();
+            let scratch = Scratch {
+                identity: identity(&held).unwrap(),
+                directory: held,
+                allocation_bytes: 1,
+            };
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o770)).unwrap();
+            assert!(scratch.check(uid, &source).is_err());
+            assert!(Scratch::admit(File::open(&path).unwrap(), 0, uid, &source).is_err());
+        }
 
-    #[test]
-    fn held_signed_root_refuses_scratch_ancestors_descendants_and_replaced_projection() {
-        let root = tempfile::tempdir().unwrap();
-        let signed = root.path().join("signed-runtime");
-        std::fs::create_dir(&signed).unwrap();
-        let pin = ReadRoot::pin(&signed).unwrap();
-        let below = signed.join("scratch");
-        std::fs::create_dir(&below).unwrap();
-        for path in [root.path(), signed.as_path(), below.as_path()] {
-            let directory = File::open(path).unwrap();
+        phase mounted_scratch_checks_actual_directory_and_file_coordinates_without_refusing_disjoint_siblings;
+        {
+            let root = tempfile::tempdir().unwrap();
+            let scratch_path = root.path().join("scratch");
+            std::fs::create_dir(&scratch_path).unwrap();
+            let directory = File::open(&scratch_path).unwrap();
             let scratch = Scratch {
                 identity: identity(&directory).unwrap(),
                 directory,
                 allocation_bytes: 1,
             };
-            assert!(pin.refuse_scratch(&scratch).is_err());
+            let sibling = root.path().join("source");
+            std::fs::create_dir(&sibling).unwrap();
+            let document = sibling.join("document");
+            std::fs::write(&document, b"actual selected source bytes").unwrap();
+            for source in [
+                File::open(&sibling).unwrap(),
+                File::open(&document).unwrap(),
+            ] {
+                scratch.refuse_mounted_overlap(&source).unwrap();
+            }
+            for source in [
+                File::open(root.path()).unwrap(),
+                File::open(&scratch_path).unwrap(),
+            ] {
+                assert!(scratch.refuse_mounted_overlap(&source).is_err());
+            }
+            let inside = scratch_path.join("document");
+            std::fs::write(&inside, b"inside scratch").unwrap();
+            assert!(
+                scratch
+                    .refuse_mounted_overlap(&File::open(inside).unwrap())
+                    .is_err()
+            );
+            assert_eq!(
+                std::fs::read(document).unwrap(),
+                b"actual selected source bytes"
+            );
         }
-        let separate = root.path().join("separate");
-        std::fs::create_dir(&separate).unwrap();
-        let directory = File::open(separate).unwrap();
-        let scratch = Scratch {
-            identity: identity(&directory).unwrap(),
-            directory,
-            allocation_bytes: 1,
-        };
-        pin.refuse_scratch(&scratch).unwrap();
-        std::fs::rename(&signed, root.path().join("moved-runtime")).unwrap();
-        std::fs::create_dir(&signed).unwrap();
-        assert!(pin.refuse_scratch(&scratch).is_err());
-        let alias = root.path().join("signed-alias");
-        std::os::unix::fs::symlink(&signed, &alias).unwrap();
-        assert!(ReadRoot::pin(&alias).is_err());
-    }
 
-    #[test]
-    fn ram_network_overlay_and_unknown_filesystems_are_refused() {
-        for kind in [0x0102_1994, 0x8584_58f6, 0x794c_7630, 0x6969, 0, u64::MAX] {
-            assert!(!disk_filesystem(kind));
+        phase held_signed_root_refuses_scratch_ancestors_descendants_and_replaced_projection;
+        {
+            let root = tempfile::tempdir().unwrap();
+            let signed = root.path().join("signed-runtime");
+            std::fs::create_dir(&signed).unwrap();
+            let pin = ReadRoot::pin(&signed).unwrap();
+            let below = signed.join("scratch");
+            std::fs::create_dir(&below).unwrap();
+            for path in [root.path(), signed.as_path(), below.as_path()] {
+                let directory = File::open(path).unwrap();
+                let scratch = Scratch {
+                    identity: identity(&directory).unwrap(),
+                    directory,
+                    allocation_bytes: 1,
+                };
+                assert!(pin.refuse_scratch(&scratch).is_err());
+            }
+            let separate = root.path().join("separate");
+            std::fs::create_dir(&separate).unwrap();
+            let directory = File::open(separate).unwrap();
+            let scratch = Scratch {
+                identity: identity(&directory).unwrap(),
+                directory,
+                allocation_bytes: 1,
+            };
+            pin.refuse_scratch(&scratch).unwrap();
+            std::fs::rename(&signed, root.path().join("moved-runtime")).unwrap();
+            std::fs::create_dir(&signed).unwrap();
+            assert!(pin.refuse_scratch(&scratch).is_err());
+            let alias = root.path().join("signed-alias");
+            std::os::unix::fs::symlink(&signed, &alias).unwrap();
+            assert!(ReadRoot::pin(&alias).is_err());
         }
-        for kind in [0xef53, 0x5846_5342, 0x9123_683e] {
-            assert!(disk_filesystem(kind));
+
+        phase ram_network_overlay_and_unknown_filesystems_are_refused;
+        {
+            for kind in [0x0102_1994, 0x8584_58f6, 0x794c_7630, 0x6969, 0, u64::MAX] {
+                assert!(!disk_filesystem(kind));
+            }
+            for kind in [0xef53, 0x5846_5342, 0x9123_683e] {
+                assert!(disk_filesystem(kind));
+            }
+            assert!(super::super::archive_reserved_fd(INVENTORY_SCRATCH_FD));
+            assert!(!super::super::archive_reserved_fd(INVENTORY_SCRATCH_FD + 1));
         }
-        assert!(super::super::archive_reserved_fd(INVENTORY_SCRATCH_FD));
-        assert!(!super::super::archive_reserved_fd(INVENTORY_SCRATCH_FD + 1));
     }
 }

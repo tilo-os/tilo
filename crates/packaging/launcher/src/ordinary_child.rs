@@ -642,78 +642,82 @@ mod tests {
         )
     }
 
-    #[test]
-    fn live_launcher_witness_uses_immutable_observation_while_owner_serves() {
-        let (child, _remote, observed) = controlled_child();
-        let mut owner = child.start_supervision().unwrap();
-        owner.verify_launcher_pidfd(&observed).unwrap();
-        let unrelated: OwnedFd = tempfile::tempfile().unwrap().into();
-        assert!(owner.verify_launcher_pidfd(&unrelated).is_err());
-        owner.retire_before_exit();
-        assert!(owner.verify_launcher_pidfd(&observed).is_err());
-        assert!(stopped(&observed).unwrap());
-    }
+    tilo_test_env::scenario! {
+        fn a_live_child_is_witnessed_retired_and_reaped_by_its_owner;
 
-    #[test]
-    fn malformed_status_request_retires_actual_child_without_positive_protocol_reply() {
-        let (child, mut remote, observed) = controlled_child();
-        let mut owner = child.start_supervision().unwrap();
-        remote.write_all(b"?").unwrap();
-        tilo_test_env::wait_until("the owner to process the refusal", || {
-            owner.worker.as_ref().unwrap().is_finished()
-        });
-        owner.retire_before_exit();
-        assert!(owner.observed_stopped());
-        assert!(stopped(&observed).unwrap());
-        let mut response = [0];
-        assert_eq!(remote.read(&mut response).unwrap(), 0);
-    }
+        phase live_launcher_witness_uses_immutable_observation_while_owner_serves;
+        {
+            let (child, _remote, observed) = controlled_child();
+            let mut owner = child.start_supervision().unwrap();
+            owner.verify_launcher_pidfd(&observed).unwrap();
+            let unrelated: OwnedFd = tempfile::tempfile().unwrap().into();
+            assert!(owner.verify_launcher_pidfd(&unrelated).is_err());
+            owner.retire_before_exit();
+            assert!(owner.verify_launcher_pidfd(&observed).is_err());
+            assert!(stopped(&observed).unwrap());
+        }
 
-    #[test]
-    fn panicked_worker_retains_real_child_until_owner_recovers_poisoned_custody() {
-        let (child, _remote, observed) = controlled_child();
-        let launcher_pid = child.child.id();
-        let launcher_pidfd = child.pidfd.try_clone().unwrap();
-        let launcher_namespace = child.namespace.try_clone().unwrap();
-        let cancel = child.cancel.clone();
-        let custody = Arc::new(Mutex::new(Some(child)));
-        let worker_custody = custody.clone();
-        let worker = std::thread::spawn(move || {
-            let _held = worker_custody.lock().unwrap();
-            panic!("controlled owner failure before stop observation");
-        });
-        let mut owner = OrdinaryChildSupervisor {
-            launcher_pid,
-            launcher_pidfd,
-            launcher_namespace,
-            custody,
-            cancel,
-            stopped: Arc::new(AtomicBool::new(false)),
-            worker: Some(worker),
-        };
-        assert!(!owner.observed_stopped());
-        assert!(!stopped(&observed).unwrap());
-        owner.retire_before_exit();
-        assert!(owner.observed_stopped());
-        assert!(stopped(&observed).unwrap());
-        assert!(
-            owner
-                .custody
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .is_none()
-        );
-    }
+        phase malformed_status_request_retires_actual_child_without_positive_protocol_reply;
+        {
+            let (child, mut remote, observed) = controlled_child();
+            let mut owner = child.start_supervision().unwrap();
+            remote.write_all(b"?").unwrap();
+            tilo_test_env::wait_until("the owner to process the refusal", || {
+                owner.worker.as_ref().unwrap().is_finished()
+            });
+            owner.retire_before_exit();
+            assert!(owner.observed_stopped());
+            assert!(stopped(&observed).unwrap());
+            let mut response = [0];
+            assert_eq!(remote.read(&mut response).unwrap(), 0);
+        }
 
-    #[test]
-    fn disconnected_control_drop_reaps_actual_process() {
-        let (mut child, remote, observed) = controlled_child();
-        drop(remote);
-        // A dropped transport cannot be treated as an exit observation.
-        assert!(!stopped(&observed).unwrap());
-        assert!(child.serve().is_err());
-        drop(child);
-        assert!(stopped(&observed).unwrap());
+        phase panicked_worker_retains_real_child_until_owner_recovers_poisoned_custody;
+        {
+            let (child, _remote, observed) = controlled_child();
+            let launcher_pid = child.child.id();
+            let launcher_pidfd = child.pidfd.try_clone().unwrap();
+            let launcher_namespace = child.namespace.try_clone().unwrap();
+            let cancel = child.cancel.clone();
+            let custody = Arc::new(Mutex::new(Some(child)));
+            let worker_custody = custody.clone();
+            let worker = std::thread::spawn(move || {
+                let _held = worker_custody.lock().unwrap();
+                panic!("controlled owner failure before stop observation");
+            });
+            let mut owner = OrdinaryChildSupervisor {
+                launcher_pid,
+                launcher_pidfd,
+                launcher_namespace,
+                custody,
+                cancel,
+                stopped: Arc::new(AtomicBool::new(false)),
+                worker: Some(worker),
+            };
+            assert!(!owner.observed_stopped());
+            assert!(!stopped(&observed).unwrap());
+            owner.retire_before_exit();
+            assert!(owner.observed_stopped());
+            assert!(stopped(&observed).unwrap());
+            assert!(
+                owner
+                    .custody
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .is_none()
+            );
+        }
+
+        phase disconnected_control_drop_reaps_actual_process;
+        {
+            let (mut child, remote, observed) = controlled_child();
+            drop(remote);
+            // A dropped transport cannot be treated as an exit observation.
+            assert!(!stopped(&observed).unwrap());
+            assert!(child.serve().is_err());
+            drop(child);
+            assert!(stopped(&observed).unwrap());
+        }
     }
 }
 
@@ -1414,49 +1418,54 @@ mod command_tests {
             env: Vec::new(),
         }
     }
-    #[test]
-    fn actual_factory_command_refuses_loader_and_registration_environment() {
-        let original = command();
-        assert!(digest(&original).is_ok());
-        for key in [
-            WAIT_ENV,
-            "LD_PRELOAD",
-            "LD_LIBRARY_PATH",
-            "GLIBC_TUNABLES",
-            "DYLD_INSERT_LIBRARIES",
-        ] {
-            let mut candidate = original.clone();
-            candidate.env.push((key.into(), "/attacker".into()));
+    tilo_test_env::scenario! {
+        fn the_factory_command_and_routing_codec_refuse_what_is_not_theirs;
+
+        phase actual_factory_command_refuses_loader_and_registration_environment;
+        {
+            let original = command();
+            assert!(digest(&original).is_ok());
+            for key in [
+                WAIT_ENV,
+                "LD_PRELOAD",
+                "LD_LIBRARY_PATH",
+                "GLIBC_TUNABLES",
+                "DYLD_INSERT_LIBRARIES",
+            ] {
+                let mut candidate = original.clone();
+                candidate.env.push((key.into(), "/attacker".into()));
+                assert_eq!(
+                    digest(&candidate).unwrap_err().kind(),
+                    io::ErrorKind::PermissionDenied
+                );
+            }
+            let mut foreign = original;
+            foreign.program = "/usr/bin/bash".into();
             assert_eq!(
-                digest(&candidate).unwrap_err().kind(),
+                digest(&foreign).unwrap_err().kind(),
                 io::ErrorKind::PermissionDenied
             );
         }
-        let mut foreign = original;
-        foreign.program = "/usr/bin/bash".into();
-        assert_eq!(
-            digest(&foreign).unwrap_err().kind(),
-            io::ErrorKind::PermissionDenied
-        );
-    }
-    #[test]
-    fn private_target_routing_codec_refuses_unknown_authority_and_unbounded_groups() {
-        let wire = RoutedCommandWire {
-            command: command(),
-            routing: TargetKernelRouting {
-                pid: 2,
-                start: 1,
-                uid: 1000,
-                gid: 1000,
-                groups: vec![1000],
-            },
-        };
-        let mut encoded = serde_json::to_value(&wire).unwrap();
-        encoded["routing"]["source_groups"] = serde_json::json!([0]);
-        assert!(serde_json::from_value::<RoutedCommandWire>(encoded).is_err());
-        let mut oversized = wire.routing;
-        oversized.groups = vec![1000; 257];
-        assert!(oversized.validate().is_err());
+
+        phase private_target_routing_codec_refuses_unknown_authority_and_unbounded_groups;
+        {
+            let wire = RoutedCommandWire {
+                command: command(),
+                routing: TargetKernelRouting {
+                    pid: 2,
+                    start: 1,
+                    uid: 1000,
+                    gid: 1000,
+                    groups: vec![1000],
+                },
+            };
+            let mut encoded = serde_json::to_value(&wire).unwrap();
+            encoded["routing"]["source_groups"] = serde_json::json!([0]);
+            assert!(serde_json::from_value::<RoutedCommandWire>(encoded).is_err());
+            let mut oversized = wire.routing;
+            oversized.groups = vec![1000; 257];
+            assert!(oversized.validate().is_err());
+        }
     }
 }
 
@@ -1568,54 +1577,60 @@ impl Drop for SocketDeadline {
 #[cfg(test)]
 mod bootstrap_refusal_tests {
     use super::*;
-    #[test]
-    fn closed_refusal_consumes_exact_phase_and_preserves_next_handoff() {
-        let (mut root, mut shell) = UnixStream::pair().unwrap();
-        refuse_consuming_bootstrap(&mut root, tilo_test_env::hang_deadline()).unwrap();
-        root.write_all(BOOTSTRAP_MAGIC).unwrap();
-        assert_eq!(
-            read_bootstrap_kind(&mut shell).unwrap(),
-            BootstrapKind::Refused
-        );
-        assert_eq!(
-            read_bootstrap_kind(&mut shell).unwrap(),
-            BootstrapKind::Delegated
-        );
-        for bytes in [*b"TCB2", *b"TC00", *b"\0\0\0\0"] {
-            assert!(bootstrap_kind(bytes).is_err());
+    tilo_test_env::scenario! {
+        fn a_bootstrap_refusal_is_exact_bounded_and_cancellable;
+
+        phase closed_refusal_consumes_exact_phase_and_preserves_next_handoff;
+        {
+            let (mut root, mut shell) = UnixStream::pair().unwrap();
+            refuse_consuming_bootstrap(&mut root, tilo_test_env::hang_deadline()).unwrap();
+            root.write_all(BOOTSTRAP_MAGIC).unwrap();
+            assert_eq!(
+                read_bootstrap_kind(&mut shell).unwrap(),
+                BootstrapKind::Refused
+            );
+            assert_eq!(
+                read_bootstrap_kind(&mut shell).unwrap(),
+                BootstrapKind::Delegated
+            );
+            for bytes in [*b"TCB2", *b"TC00", *b"\0\0\0\0"] {
+                assert!(bootstrap_kind(bytes).is_err());
+            }
         }
-    }
-    #[test]
-    fn partial_shared_handoff_obeys_original_absolute_deadline() {
-        let (mut root, mut shell) = UnixStream::pair().unwrap();
-        let deadline = Instant::now()
-            .checked_add(Duration::from_millis(60))
-            .unwrap();
-        let fence =
-            SocketDeadline::start(&shell, ServiceCancellation::default(), deadline).unwrap();
-        // The root stays open with a partial frame: only the fence at the deadline ends the read.
-        root.write_all(b"TCB").unwrap();
-        assert!(read_bootstrap_kind(&mut shell).is_err());
-        assert!(fence.check().is_err());
-        drop(fence);
-    }
-    #[test]
-    fn cancellation_interrupts_exact_private_control_without_touching_shared_stream() {
-        let (mut child, mut control) = UnixStream::pair().unwrap();
-        let (mut root, mut shell) = UnixStream::pair().unwrap();
-        let cancel = ServiceCancellation::default();
-        let fence = SocketDeadline::start(&control, cancel.clone(), tilo_test_env::hang_deadline())
-            .unwrap();
-        child.write_all(b"TC").unwrap();
-        cancel.cancel();
-        assert!(read_bootstrap_kind(&mut control).is_err());
-        assert!(fence.check().is_err());
-        drop(fence);
-        refuse_consuming_bootstrap(&mut root, tilo_test_env::hang_deadline()).unwrap();
-        assert_eq!(
-            read_bootstrap_kind(&mut shell).unwrap(),
-            BootstrapKind::Refused
-        );
+
+        phase partial_shared_handoff_obeys_original_absolute_deadline;
+        {
+            let (mut root, mut shell) = UnixStream::pair().unwrap();
+            let deadline = Instant::now()
+                .checked_add(Duration::from_millis(60))
+                .unwrap();
+            let fence =
+                SocketDeadline::start(&shell, ServiceCancellation::default(), deadline).unwrap();
+            // The root stays open with a partial frame: only the fence at the deadline ends the read.
+            root.write_all(b"TCB").unwrap();
+            assert!(read_bootstrap_kind(&mut shell).is_err());
+            assert!(fence.check().is_err());
+            drop(fence);
+        }
+
+        phase cancellation_interrupts_exact_private_control_without_touching_shared_stream;
+        {
+            let (mut child, mut control) = UnixStream::pair().unwrap();
+            let (mut root, mut shell) = UnixStream::pair().unwrap();
+            let cancel = ServiceCancellation::default();
+            let fence = SocketDeadline::start(&control, cancel.clone(), tilo_test_env::hang_deadline())
+                .unwrap();
+            child.write_all(b"TC").unwrap();
+            cancel.cancel();
+            assert!(read_bootstrap_kind(&mut control).is_err());
+            assert!(fence.check().is_err());
+            drop(fence);
+            refuse_consuming_bootstrap(&mut root, tilo_test_env::hang_deadline()).unwrap();
+            assert_eq!(
+                read_bootstrap_kind(&mut shell).unwrap(),
+                BootstrapKind::Refused
+            );
+        }
     }
 }
 

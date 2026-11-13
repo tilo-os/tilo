@@ -449,91 +449,95 @@ mod tests {
         }
     }
 
-    #[test]
-    fn stalled_handoff_uses_one_total_deadline_and_restores_socket_mode() {
-        let (mut stream, _stalled_peer) = UnixStream::pair().unwrap();
-        let cancellation = ServiceCancellation::default();
-        {
-            let mut io =
-                Handoff::new(&mut stream, &cancellation, Duration::from_millis(60)).unwrap();
-            let error = io.read_exact(&mut [0; 4]).unwrap_err();
-            assert_eq!(error.kind(), io::ErrorKind::TimedOut);
-        }
-        let flags = unsafe { libc::fcntl(stream.as_raw_fd(), libc::F_GETFL) };
-        assert!(flags >= 0);
-        assert_eq!(flags & libc::O_NONBLOCK, 0);
-    }
+    tilo_test_env::scenario! {
+        fn a_namespace_handoff_is_bounded_and_refuses_an_unisolated_child;
 
-    #[test]
-    fn receive_refuses_actual_live_unisolated_child_even_with_authentic_launcher_peer() {
-        // Genuine kernel process and pidfd, not a mocked authority or forged ExecutingPeer.
-        let mut child = OwnedChild(
-            std::process::Command::new("/usr/bin/sleep")
-                .arg("30")
-                .spawn_locked()
-                .unwrap(),
-        );
-        let raw = unsafe { libc::syscall(libc::SYS_pidfd_open, child.0.id(), 0) };
-        assert!(
-            raw >= 0,
-            "required actual pidfd_open failed: {}",
-            io::Error::last_os_error()
-        );
-        let init = unsafe { OwnedFd::from_raw_fd(i32::try_from(raw).unwrap()) };
-        let pid_namespace = File::open(format!("/proc/{}/ns/pid", child.0.id())).unwrap();
-        let mount_namespace = File::open(format!("/proc/{}/ns/mnt", child.0.id())).unwrap();
-        let candidate = Arc::new(NamespaceWitness {
-            init,
-            pid_namespace,
-            mount_namespace,
-            pid: child.0.id(),
-            outer: std::process::id(),
-            launcher: std::process::id(),
-        });
-        let (mut receiver, mut sender) = UnixStream::pair().unwrap();
-        for stream in [&receiver, &sender] {
-            stream
-                .set_read_timeout(Some(tilo_test_env::hang_bound()))
-                .unwrap();
-            stream
-                .set_write_timeout(Some(tilo_test_env::hang_bound()))
-                .unwrap();
+        phase stalled_handoff_uses_one_total_deadline_and_restores_socket_mode;
+        {
+            let (mut stream, _stalled_peer) = UnixStream::pair().unwrap();
+            let cancellation = ServiceCancellation::default();
+            {
+                let mut io =
+                    Handoff::new(&mut stream, &cancellation, Duration::from_millis(60)).unwrap();
+                let error = io.read_exact(&mut [0; 4]).unwrap_err();
+                assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+            }
+            let flags = unsafe { libc::fcntl(stream.as_raw_fd(), libc::F_GETFL) };
+            assert!(flags >= 0);
+            assert_eq!(flags & libc::O_NONBLOCK, 0);
         }
-        let sent_candidate = Arc::clone(&candidate);
-        let worker = std::thread::spawn(move || {
-            runtime_portal::process_binding::complete(&mut sender).unwrap();
-            sent_candidate
-                .send(&mut sender, &ServiceCancellation::default())
+
+        phase receive_refuses_actual_live_unisolated_child_even_with_authentic_launcher_peer;
+        {
+            // Genuine kernel process and pidfd, not a mocked authority or forged ExecutingPeer.
+            let mut child = OwnedChild(
+                std::process::Command::new("/usr/bin/sleep")
+                    .arg("30")
+                    .spawn_locked()
+                    .unwrap(),
+            );
+            let raw = unsafe { libc::syscall(libc::SYS_pidfd_open, child.0.id(), 0) };
+            assert!(
+                raw >= 0,
+                "required actual pidfd_open failed: {}",
+                io::Error::last_os_error()
+            );
+            let init = unsafe { OwnedFd::from_raw_fd(i32::try_from(raw).unwrap()) };
+            let pid_namespace = File::open(format!("/proc/{}/ns/pid", child.0.id())).unwrap();
+            let mount_namespace = File::open(format!("/proc/{}/ns/mnt", child.0.id())).unwrap();
+            let candidate = Arc::new(NamespaceWitness {
+                init,
+                pid_namespace,
+                mount_namespace,
+                pid: child.0.id(),
+                outer: std::process::id(),
+                launcher: std::process::id(),
+            });
+            let (mut receiver, mut sender) = UnixStream::pair().unwrap();
+            for stream in [&receiver, &sender] {
+                stream
+                    .set_read_timeout(Some(tilo_test_env::hang_bound()))
+                    .unwrap();
+                stream
+                    .set_write_timeout(Some(tilo_test_env::hang_bound()))
+                    .unwrap();
+            }
+            let sent_candidate = Arc::clone(&candidate);
+            let worker = std::thread::spawn(move || {
+                runtime_portal::process_binding::complete(&mut sender).unwrap();
+                sent_candidate
+                    .send(&mut sender, &ServiceCancellation::default())
+                    .unwrap();
+            });
+            runtime_portal::process_binding::arm(&receiver).unwrap();
+            let challenge = [29; 32];
+            receiver
+                .write_all(&runtime_portal::process_binding::MAGIC)
                 .unwrap();
-        });
-        runtime_portal::process_binding::arm(&receiver).unwrap();
-        let challenge = [29; 32];
-        receiver
-            .write_all(&runtime_portal::process_binding::MAGIC)
+            receiver.write_all(&challenge).unwrap();
+            let peer = runtime_portal::process_binding::receive(
+                &receiver,
+                &challenge,
+                rustix::process::geteuid().as_raw(),
+            )
             .unwrap();
-        receiver.write_all(&challenge).unwrap();
-        let peer = runtime_portal::process_binding::receive(
-            &receiver,
-            &challenge,
-            rustix::process::geteuid().as_raw(),
-        )
-        .unwrap();
-        receiver.write_all(&[1]).unwrap();
-        assert!(peer.current());
-        assert_eq!(
-            candidate.validate_member(&peer, &peer).unwrap_err().kind(),
-            io::ErrorKind::PermissionDenied,
-            "genuine same-UID QPE cannot make a live unisolated child a consuming namespace"
-        );
-        let error =
-            NamespaceWitness::receive(&mut receiver, &peer, &ServiceCancellation::default())
-                .err()
-                .expect("unisolated child must be refused");
-        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
-        worker.join().unwrap();
-        assert!(
-            child.0.try_wait().unwrap().is_none(),
-            "refusing an unowned task must not signal it"
-        );
+            receiver.write_all(&[1]).unwrap();
+            assert!(peer.current());
+            assert_eq!(
+                candidate.validate_member(&peer, &peer).unwrap_err().kind(),
+                io::ErrorKind::PermissionDenied,
+                "genuine same-UID QPE cannot make a live unisolated child a consuming namespace"
+            );
+            let error =
+                NamespaceWitness::receive(&mut receiver, &peer, &ServiceCancellation::default())
+                    .err()
+                    .expect("unisolated child must be refused");
+            assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+            worker.join().unwrap();
+            assert!(
+                child.0.try_wait().unwrap().is_none(),
+                "refusing an unowned task must not signal it"
+            );
+        }
     }
 }

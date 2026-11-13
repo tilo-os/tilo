@@ -642,209 +642,6 @@ mod tests {
         CapOverride::new(Grantee::person("ada"), scope, Effect::Restrict, access).through(app)
     }
 
-    #[test]
-    fn path_capabilities_plan_only_live_grants_for_this_app() {
-        {
-            let plan =
-                CapabilityPlan::for_app_with("so.tilo.books", &[], Some(1000), fake_device_paths);
-            assert_eq!(plan, CapabilityPlan::empty());
-            assert!(plan.is_empty());
-        }
-        {
-            let caps = vec![fs_grant(
-                "so.tilo.books",
-                "/var/workspace/books",
-                Access::Read,
-            )];
-            let plan =
-                CapabilityPlan::for_app_with("so.tilo.books", &caps, Some(1000), fake_device_paths);
-            assert_eq!(plan.ro_paths, vec![PathBuf::from("/var/workspace/books")]);
-            assert!(
-                plan.rw_paths.is_empty(),
-                "a Read grant must never plan a writable bind: {plan:?}"
-            );
-        }
-        {
-            let caps = vec![fs_grant(
-                "so.tilo.books",
-                "/var/workspace/books",
-                Access::Write,
-            )];
-            let plan =
-                CapabilityPlan::for_app_with("so.tilo.books", &caps, Some(1000), fake_device_paths);
-            assert_eq!(plan.rw_paths, vec![PathBuf::from("/var/workspace/books")]);
-            assert!(plan.ro_paths.is_empty());
-        }
-        {
-            let caps = vec![fs_grant(
-                "so.tilo.other",
-                "/var/workspace/secrets",
-                Access::Write,
-            )];
-            let plan =
-                CapabilityPlan::for_app_with("so.tilo.books", &caps, Some(1000), fake_device_paths);
-            assert_eq!(
-                plan,
-                CapabilityPlan::empty(),
-                "a grant addressed to another app id must not reach this app: {plan:?}"
-            );
-        }
-        {
-            let caps = vec![
-                fs_grant("so.tilo.books", "/var/workspace/books", Access::Write)
-                    .expiring(Expiry::AtUnix(500)),
-            ];
-            let plan =
-                CapabilityPlan::for_app_with("so.tilo.books", &caps, Some(1000), fake_device_paths);
-            assert_eq!(plan, CapabilityPlan::empty());
-            // Same capability, evaluated before it expires, does plan a bind — proving the emptiness
-            // above is the expiry and not a typo.
-            let live =
-                CapabilityPlan::for_app_with("so.tilo.books", &caps, Some(499), fake_device_paths);
-            assert_eq!(live.rw_paths, vec![PathBuf::from("/var/workspace/books")]);
-        }
-        {
-            let caps = vec![
-                fs_grant("so.tilo.books", "/var/workspace/books", Access::Write),
-                app_restrict(
-                    "so.tilo.books",
-                    Scope::FsPath("/var/workspace/books".to_string()),
-                    Access::Read,
-                ),
-            ];
-            let plan =
-                CapabilityPlan::for_app_with("so.tilo.books", &caps, Some(1000), fake_device_paths);
-            assert!(
-                plan.rw_paths.is_empty(),
-                "a Restrict capped at Read must remove the writable bind: {plan:?}"
-            );
-            assert_eq!(plan.ro_paths, vec![PathBuf::from("/var/workspace/books")]);
-        }
-    }
-
-    #[test]
-    fn device_and_network_capabilities_plan_their_own_resources() {
-        {
-            let caps = vec![app_grant(
-                "so.tilo.meet",
-                Scope::Device("camera".to_string()),
-                Access::Read,
-            )];
-            let plan =
-                CapabilityPlan::for_app_with("so.tilo.meet", &caps, Some(1), fake_device_paths);
-            assert_eq!(plan.devices, vec!["camera".to_string()]);
-            assert_eq!(plan.rw_paths, vec![PathBuf::from("/dev/video0")]);
-
-            let without =
-                CapabilityPlan::for_app_with("so.tilo.meet", &[], Some(1), fake_device_paths);
-            assert!(
-                without.rw_paths.is_empty() && without.devices.is_empty(),
-                "no camera capability means no device node at all: {without:?}"
-            );
-        }
-        {
-            let caps = vec![app_grant(
-                "so.tilo.meet",
-                Scope::Device("screencast".to_string()),
-                Access::Read,
-            )];
-            let plan =
-                CapabilityPlan::for_app_with("so.tilo.meet", &caps, Some(1), fake_device_paths);
-            assert_eq!(plan.devices, vec!["screencast".to_string()]);
-            assert!(
-                plan.rw_paths.is_empty() && plan.ro_paths.is_empty(),
-                "screencast is portal-brokered, not a mount: {plan:?}"
-            );
-        }
-        {
-            let caps = vec![app_grant(
-                "so.tilo.mail",
-                Scope::NetHost("mail.example.com".to_string()),
-                Access::Write,
-            )];
-            let plan =
-                CapabilityPlan::for_app_with("so.tilo.mail", &caps, Some(1), fake_device_paths);
-            assert!(plan.allow_network);
-            assert_eq!(plan.net_hosts, vec!["mail.example.com".to_string()]);
-
-            let without =
-                CapabilityPlan::for_app_with("so.tilo.mail", &[], Some(1), fake_device_paths);
-            assert!(
-                !without.allow_network,
-                "without a network capability the namespace stays isolated"
-            );
-        }
-        {
-            let grant = |host: &str| {
-                app_grant(
-                    "so.tilo.mail",
-                    Scope::NetHost(host.to_string()),
-                    Access::Write,
-                )
-            };
-            let caps = vec![
-                grant(".fastmail.com"),
-                grant("*.example.com"),
-                grant("10.0.0.5"),
-            ];
-            let plan =
-                CapabilityPlan::for_app_with("so.tilo.mail", &caps, Some(1), fake_device_paths);
-            assert_eq!(
-                plan.net_hosts,
-                vec![".fastmail.com".to_string(), "*.example.com".to_string()],
-                "a domain grant in either spelling stands; an address is not a host"
-            );
-        }
-    }
-
-    #[test]
-    fn capability_files_fail_closed_and_round_trip() {
-        {
-            let caps = vec![
-                fs_grant("so.tilo.books", "relative/path", Access::Write),
-                fs_grant("so.tilo.books", "/", Access::Write),
-                fs_grant("so.tilo.books", "//", Access::Write),
-                fs_grant("so.tilo.books", "/tmp/..", Access::Write),
-                fs_grant("so.tilo.books", "/var/./workspace", Access::Write),
-            ];
-            let plan =
-                CapabilityPlan::for_app_with("so.tilo.books", &caps, Some(1), fake_device_paths);
-            assert_eq!(
-                plan,
-                CapabilityPlan::empty(),
-                "root aliases and traversal must never become bind/Landlock grants: {plan:?}"
-            );
-        }
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let missing = dir.path().join("absent.json");
-            assert!(load_capability_file(&missing).is_empty());
-
-            let malformed = dir.path().join("bad.json");
-            std::fs::write(&malformed, b"{ this is not json ").unwrap();
-            assert!(load_capability_file(&malformed).is_empty());
-
-            let wrong_shape = dir.path().join("wrong.json");
-            std::fs::write(&wrong_shape, br#"{"subject":"nope"}"#).unwrap();
-            assert!(load_capability_file(&wrong_shape).is_empty());
-        }
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let path = dir.path().join("caps.json");
-            let caps = vec![fs_grant(
-                "so.tilo.books",
-                "/var/workspace/books",
-                Access::Read,
-            )];
-            let grants = LaunchGrants {
-                author: true,
-                sandbox: caps,
-            };
-            std::fs::write(&path, serde_json::to_vec(&grants).unwrap()).unwrap();
-            assert_eq!(load_capability_file(&path), grants);
-        }
-    }
-
     /// A person's home with Tilo's store in it, the way `private_store_roots` names it, and plans
     /// confined against it.
     struct Fixture {
@@ -881,151 +678,358 @@ mod tests {
         }
     }
 
-    #[test]
-    fn grants_covering_the_private_store_mask_it_and_pin_the_way_there() {
-        let home = Fixture::new();
-        let config = home.home.join(".config");
+    tilo_test_env::scenario! {
+        fn capabilities_plan_only_what_live_grants_and_files_allow;
+
+        phase path_capabilities_plan_only_live_grants_for_this_app;
         {
-            let plan = home.plan(&[(home.path(""), Access::Write)]);
-            assert_eq!(plan.rw_paths, vec![home.home.clone()]);
-            assert_eq!(plan.masked_dirs, vec![home.store.clone()]);
-            assert_eq!(
-                plan.pinned_dirs,
-                vec![config.clone()],
-                "~/.config must be a mount point, or the app could move the store aside"
-            );
-        }
-        {
-            let plan = home.plan(&[(home.path(""), Access::Read)]);
-            assert_eq!(plan.ro_paths, vec![home.home.clone()]);
-            assert_eq!(plan.masked_dirs, vec![home.store.clone()]);
-            assert!(plan.pinned_dirs.is_empty(), "{plan:?}");
-        }
-        {
-            let caps = vec![
-                fs_grant("so.tilo.files", &home.path(""), Access::Write),
-                fs_grant("so.tilo.files", &home.path(".config"), Access::Read),
-                app_restrict(
-                    "so.tilo.files",
-                    Scope::FsPath(home.path(".config")),
+            {
+                let plan =
+                    CapabilityPlan::for_app_with("so.tilo.books", &[], Some(1000), fake_device_paths);
+                assert_eq!(plan, CapabilityPlan::empty());
+                assert!(plan.is_empty());
+            }
+            {
+                let caps = vec![fs_grant(
+                    "so.tilo.books",
+                    "/var/workspace/books",
                     Access::Read,
-                ),
-            ];
-            let plan =
-                CapabilityPlan::for_app_with("so.tilo.files", &caps, Some(1), fake_device_paths)
-                    .confine_private_stores(std::slice::from_ref(&home.store));
-            assert_eq!(plan.ro_paths, vec![config]);
-            assert_eq!(plan.masked_dirs, vec![home.store.clone()]);
-            assert!(
-                plan.pinned_dirs.is_empty(),
-                "~/.config is a grant mount already; a writable pin would widen it: {plan:?}"
-            );
-        }
-        {
-            let plan = home.plan(&[(home.path("Documents"), Access::Write)]);
-            assert_eq!(plan.rw_paths, vec![home.home.join("Documents")]);
-            assert!(plan.masked_dirs.is_empty() && plan.pinned_dirs.is_empty());
-        }
-        {
-            for inside in [
-                ".config/tilo",
-                ".config/tilo/identity",
-                ".config/tilo/x.toml",
-            ] {
-                let plan = home.plan(&[(home.path(inside), Access::Write)]);
+                )];
+                let plan =
+                    CapabilityPlan::for_app_with("so.tilo.books", &caps, Some(1000), fake_device_paths);
+                assert_eq!(plan.ro_paths, vec![PathBuf::from("/var/workspace/books")]);
                 assert!(
-                    plan.ro_paths.is_empty() && plan.rw_paths.is_empty(),
-                    "a grant on {inside} must bind nothing: {plan:?}"
+                    plan.rw_paths.is_empty(),
+                    "a Read grant must never plan a writable bind: {plan:?}"
                 );
             }
-            std::os::unix::fs::symlink(home.store.join("identity"), home.home.join("keys"))
-                .unwrap();
-            let plan = home.plan(&[(home.path("keys"), Access::Read)]);
-            assert!(
-                plan.ro_paths.is_empty(),
-                "a grant reaching the store through a symlink is refused: {plan:?}"
-            );
+            {
+                let caps = vec![fs_grant(
+                    "so.tilo.books",
+                    "/var/workspace/books",
+                    Access::Write,
+                )];
+                let plan =
+                    CapabilityPlan::for_app_with("so.tilo.books", &caps, Some(1000), fake_device_paths);
+                assert_eq!(plan.rw_paths, vec![PathBuf::from("/var/workspace/books")]);
+                assert!(plan.ro_paths.is_empty());
+            }
+            {
+                let caps = vec![fs_grant(
+                    "so.tilo.other",
+                    "/var/workspace/secrets",
+                    Access::Write,
+                )];
+                let plan =
+                    CapabilityPlan::for_app_with("so.tilo.books", &caps, Some(1000), fake_device_paths);
+                assert_eq!(
+                    plan,
+                    CapabilityPlan::empty(),
+                    "a grant addressed to another app id must not reach this app: {plan:?}"
+                );
+            }
+            {
+                let caps = vec![
+                    fs_grant("so.tilo.books", "/var/workspace/books", Access::Write)
+                        .expiring(Expiry::AtUnix(500)),
+                ];
+                let plan =
+                    CapabilityPlan::for_app_with("so.tilo.books", &caps, Some(1000), fake_device_paths);
+                assert_eq!(plan, CapabilityPlan::empty());
+                // Same capability, evaluated before it expires, does plan a bind — proving the emptiness
+                // above is the expiry and not a typo.
+                let live =
+                    CapabilityPlan::for_app_with("so.tilo.books", &caps, Some(499), fake_device_paths);
+                assert_eq!(live.rw_paths, vec![PathBuf::from("/var/workspace/books")]);
+            }
+            {
+                let caps = vec![
+                    fs_grant("so.tilo.books", "/var/workspace/books", Access::Write),
+                    app_restrict(
+                        "so.tilo.books",
+                        Scope::FsPath("/var/workspace/books".to_string()),
+                        Access::Read,
+                    ),
+                ];
+                let plan =
+                    CapabilityPlan::for_app_with("so.tilo.books", &caps, Some(1000), fake_device_paths);
+                assert!(
+                    plan.rw_paths.is_empty(),
+                    "a Restrict capped at Read must remove the writable bind: {plan:?}"
+                );
+                assert_eq!(plan.ro_paths, vec![PathBuf::from("/var/workspace/books")]);
+            }
         }
-    }
 
-    #[test]
-    fn a_missing_or_symlinked_store_still_cannot_be_reached() {
+        phase device_and_network_capabilities_plan_their_own_resources;
         {
-            use std::os::unix::fs::PermissionsExt as _;
+            {
+                let caps = vec![app_grant(
+                    "so.tilo.meet",
+                    Scope::Device("camera".to_string()),
+                    Access::Read,
+                )];
+                let plan =
+                    CapabilityPlan::for_app_with("so.tilo.meet", &caps, Some(1), fake_device_paths);
+                assert_eq!(plan.devices, vec!["camera".to_string()]);
+                assert_eq!(plan.rw_paths, vec![PathBuf::from("/dev/video0")]);
 
-            let dir = tempfile::tempdir().unwrap();
-            let home = dir.path().join("home");
-            std::fs::create_dir_all(&home).unwrap();
-            let store = home.join(".config/tilo");
-            let caps = vec![fs_grant(
-                "so.tilo.files",
-                &home.display().to_string(),
-                Access::Write,
-            )];
-            let plan =
-                CapabilityPlan::for_app_with("so.tilo.files", &caps, Some(1), fake_device_paths)
-                    .confine_private_stores(std::slice::from_ref(&store));
-            assert!(
-                store.is_dir(),
-                "a writable grant must not be able to create the store itself"
-            );
-            assert_eq!(
-                std::fs::metadata(&store).unwrap().permissions().mode() & 0o777,
-                0o700
-            );
-            assert_eq!(plan.masked_dirs, vec![store]);
-        }
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let store = dir.path().join("home/.config/tilo");
-            let caps = vec![fs_grant(
-                "so.tilo.files",
-                "/var/workspace/books",
-                Access::Write,
-            )];
-            let plan =
-                CapabilityPlan::for_app_with("so.tilo.files", &caps, Some(1), fake_device_paths)
-                    .confine_private_stores(std::slice::from_ref(&store));
-            assert!(!store.exists());
-            assert!(plan.masked_dirs.is_empty());
-        }
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let home = dir.path().join("home");
-            let real = home.join("dotfiles/tilo");
-            std::fs::create_dir_all(&real).unwrap();
-            std::fs::create_dir_all(home.join(".config")).unwrap();
-            std::os::unix::fs::symlink(&real, home.join(".config/tilo")).unwrap();
-            let caps = vec![fs_grant(
-                "so.tilo.files",
-                &home.display().to_string(),
-                Access::Write,
-            )];
-            let plan =
-                CapabilityPlan::for_app_with("so.tilo.files", &caps, Some(1), fake_device_paths)
-                    .confine_private_stores(&[home.join(".config/tilo")]);
-            assert!(plan.rw_paths.is_empty(), "{plan:?}");
-            assert_eq!(plan.ro_paths, vec![home]);
-            assert_eq!(plan.masked_dirs, vec![real]);
-            assert!(plan.pinned_dirs.is_empty());
-        }
-    }
+                let without =
+                    CapabilityPlan::for_app_with("so.tilo.meet", &[], Some(1), fake_device_paths);
+                assert!(
+                    without.rw_paths.is_empty() && without.devices.is_empty(),
+                    "no camera capability means no device node at all: {without:?}"
+                );
+            }
+            {
+                let caps = vec![app_grant(
+                    "so.tilo.meet",
+                    Scope::Device("screencast".to_string()),
+                    Access::Read,
+                )];
+                let plan =
+                    CapabilityPlan::for_app_with("so.tilo.meet", &caps, Some(1), fake_device_paths);
+                assert_eq!(plan.devices, vec!["screencast".to_string()]);
+                assert!(
+                    plan.rw_paths.is_empty() && plan.ro_paths.is_empty(),
+                    "screencast is portal-brokered, not a mount: {plan:?}"
+                );
+            }
+            {
+                let caps = vec![app_grant(
+                    "so.tilo.mail",
+                    Scope::NetHost("mail.example.com".to_string()),
+                    Access::Write,
+                )];
+                let plan =
+                    CapabilityPlan::for_app_with("so.tilo.mail", &caps, Some(1), fake_device_paths);
+                assert!(plan.allow_network);
+                assert_eq!(plan.net_hosts, vec!["mail.example.com".to_string()]);
 
-    /// A launch file tells the app whether it may change the workspace; it
-    /// reads its own caps and nothing of another app's.
-    #[test]
-    fn a_launch_file_tells_the_app_whether_it_may_change_the_workspace() {
-        let grants = LaunchGrants {
-            author: true,
-            sandbox: vec![fs_grant(
-                "so.tilo.viewer",
-                "/var/workspace/shared",
-                Access::Write,
-            )],
-        };
-        let viewer = grants.for_app("so.tilo.viewer");
-        assert!(viewer.author);
-        assert_eq!(viewer.sandbox.len(), 1);
-        assert!(grants.for_app("so.tilo.editor").sandbox.is_empty());
+                let without =
+                    CapabilityPlan::for_app_with("so.tilo.mail", &[], Some(1), fake_device_paths);
+                assert!(
+                    !without.allow_network,
+                    "without a network capability the namespace stays isolated"
+                );
+            }
+            {
+                let grant = |host: &str| {
+                    app_grant(
+                        "so.tilo.mail",
+                        Scope::NetHost(host.to_string()),
+                        Access::Write,
+                    )
+                };
+                let caps = vec![
+                    grant(".fastmail.com"),
+                    grant("*.example.com"),
+                    grant("10.0.0.5"),
+                ];
+                let plan =
+                    CapabilityPlan::for_app_with("so.tilo.mail", &caps, Some(1), fake_device_paths);
+                assert_eq!(
+                    plan.net_hosts,
+                    vec![".fastmail.com".to_string(), "*.example.com".to_string()],
+                    "a domain grant in either spelling stands; an address is not a host"
+                );
+            }
+        }
+
+        phase capability_files_fail_closed_and_round_trip;
+        {
+            {
+                let caps = vec![
+                    fs_grant("so.tilo.books", "relative/path", Access::Write),
+                    fs_grant("so.tilo.books", "/", Access::Write),
+                    fs_grant("so.tilo.books", "//", Access::Write),
+                    fs_grant("so.tilo.books", "/tmp/..", Access::Write),
+                    fs_grant("so.tilo.books", "/var/./workspace", Access::Write),
+                ];
+                let plan =
+                    CapabilityPlan::for_app_with("so.tilo.books", &caps, Some(1), fake_device_paths);
+                assert_eq!(
+                    plan,
+                    CapabilityPlan::empty(),
+                    "root aliases and traversal must never become bind/Landlock grants: {plan:?}"
+                );
+            }
+            {
+                let dir = tempfile::tempdir().unwrap();
+                let missing = dir.path().join("absent.json");
+                assert!(load_capability_file(&missing).is_empty());
+
+                let malformed = dir.path().join("bad.json");
+                std::fs::write(&malformed, b"{ this is not json ").unwrap();
+                assert!(load_capability_file(&malformed).is_empty());
+
+                let wrong_shape = dir.path().join("wrong.json");
+                std::fs::write(&wrong_shape, br#"{"subject":"nope"}"#).unwrap();
+                assert!(load_capability_file(&wrong_shape).is_empty());
+            }
+            {
+                let dir = tempfile::tempdir().unwrap();
+                let path = dir.path().join("caps.json");
+                let caps = vec![fs_grant(
+                    "so.tilo.books",
+                    "/var/workspace/books",
+                    Access::Read,
+                )];
+                let grants = LaunchGrants {
+                    author: true,
+                    sandbox: caps,
+                };
+                std::fs::write(&path, serde_json::to_vec(&grants).unwrap()).unwrap();
+                assert_eq!(load_capability_file(&path), grants);
+            }
+        }
+
+        phase grants_covering_the_private_store_mask_it_and_pin_the_way_there;
+        {
+            let home = Fixture::new();
+            let config = home.home.join(".config");
+            {
+                let plan = home.plan(&[(home.path(""), Access::Write)]);
+                assert_eq!(plan.rw_paths, vec![home.home.clone()]);
+                assert_eq!(plan.masked_dirs, vec![home.store.clone()]);
+                assert_eq!(
+                    plan.pinned_dirs,
+                    vec![config.clone()],
+                    "~/.config must be a mount point, or the app could move the store aside"
+                );
+            }
+            {
+                let plan = home.plan(&[(home.path(""), Access::Read)]);
+                assert_eq!(plan.ro_paths, vec![home.home.clone()]);
+                assert_eq!(plan.masked_dirs, vec![home.store.clone()]);
+                assert!(plan.pinned_dirs.is_empty(), "{plan:?}");
+            }
+            {
+                let caps = vec![
+                    fs_grant("so.tilo.files", &home.path(""), Access::Write),
+                    fs_grant("so.tilo.files", &home.path(".config"), Access::Read),
+                    app_restrict(
+                        "so.tilo.files",
+                        Scope::FsPath(home.path(".config")),
+                        Access::Read,
+                    ),
+                ];
+                let plan =
+                    CapabilityPlan::for_app_with("so.tilo.files", &caps, Some(1), fake_device_paths)
+                        .confine_private_stores(std::slice::from_ref(&home.store));
+                assert_eq!(plan.ro_paths, vec![config]);
+                assert_eq!(plan.masked_dirs, vec![home.store.clone()]);
+                assert!(
+                    plan.pinned_dirs.is_empty(),
+                    "~/.config is a grant mount already; a writable pin would widen it: {plan:?}"
+                );
+            }
+            {
+                let plan = home.plan(&[(home.path("Documents"), Access::Write)]);
+                assert_eq!(plan.rw_paths, vec![home.home.join("Documents")]);
+                assert!(plan.masked_dirs.is_empty() && plan.pinned_dirs.is_empty());
+            }
+            {
+                for inside in [
+                    ".config/tilo",
+                    ".config/tilo/identity",
+                    ".config/tilo/x.toml",
+                ] {
+                    let plan = home.plan(&[(home.path(inside), Access::Write)]);
+                    assert!(
+                        plan.ro_paths.is_empty() && plan.rw_paths.is_empty(),
+                        "a grant on {inside} must bind nothing: {plan:?}"
+                    );
+                }
+                std::os::unix::fs::symlink(home.store.join("identity"), home.home.join("keys"))
+                    .unwrap();
+                let plan = home.plan(&[(home.path("keys"), Access::Read)]);
+                assert!(
+                    plan.ro_paths.is_empty(),
+                    "a grant reaching the store through a symlink is refused: {plan:?}"
+                );
+            }
+        }
+
+        phase a_missing_or_symlinked_store_still_cannot_be_reached;
+        {
+            {
+                use std::os::unix::fs::PermissionsExt as _;
+
+                let dir = tempfile::tempdir().unwrap();
+                let home = dir.path().join("home");
+                std::fs::create_dir_all(&home).unwrap();
+                let store = home.join(".config/tilo");
+                let caps = vec![fs_grant(
+                    "so.tilo.files",
+                    &home.display().to_string(),
+                    Access::Write,
+                )];
+                let plan =
+                    CapabilityPlan::for_app_with("so.tilo.files", &caps, Some(1), fake_device_paths)
+                        .confine_private_stores(std::slice::from_ref(&store));
+                assert!(
+                    store.is_dir(),
+                    "a writable grant must not be able to create the store itself"
+                );
+                assert_eq!(
+                    std::fs::metadata(&store).unwrap().permissions().mode() & 0o777,
+                    0o700
+                );
+                assert_eq!(plan.masked_dirs, vec![store]);
+            }
+            {
+                let dir = tempfile::tempdir().unwrap();
+                let store = dir.path().join("home/.config/tilo");
+                let caps = vec![fs_grant(
+                    "so.tilo.files",
+                    "/var/workspace/books",
+                    Access::Write,
+                )];
+                let plan =
+                    CapabilityPlan::for_app_with("so.tilo.files", &caps, Some(1), fake_device_paths)
+                        .confine_private_stores(std::slice::from_ref(&store));
+                assert!(!store.exists());
+                assert!(plan.masked_dirs.is_empty());
+            }
+            {
+                let dir = tempfile::tempdir().unwrap();
+                let home = dir.path().join("home");
+                let real = home.join("dotfiles/tilo");
+                std::fs::create_dir_all(&real).unwrap();
+                std::fs::create_dir_all(home.join(".config")).unwrap();
+                std::os::unix::fs::symlink(&real, home.join(".config/tilo")).unwrap();
+                let caps = vec![fs_grant(
+                    "so.tilo.files",
+                    &home.display().to_string(),
+                    Access::Write,
+                )];
+                let plan =
+                    CapabilityPlan::for_app_with("so.tilo.files", &caps, Some(1), fake_device_paths)
+                        .confine_private_stores(&[home.join(".config/tilo")]);
+                assert!(plan.rw_paths.is_empty(), "{plan:?}");
+                assert_eq!(plan.ro_paths, vec![home]);
+                assert_eq!(plan.masked_dirs, vec![real]);
+                assert!(plan.pinned_dirs.is_empty());
+            }
+        }
+
+        phase a_launch_file_tells_the_app_whether_it_may_change_the_workspace;
+        // A launch file tells the app whether it may change the workspace; it
+        // reads its own caps and nothing of another app's.
+        {
+            let grants = LaunchGrants {
+                author: true,
+                sandbox: vec![fs_grant(
+                    "so.tilo.viewer",
+                    "/var/workspace/shared",
+                    Access::Write,
+                )],
+            };
+            let viewer = grants.for_app("so.tilo.viewer");
+            assert!(viewer.author);
+            assert_eq!(viewer.sandbox.len(), 1);
+            assert!(grants.for_app("so.tilo.editor").sandbox.is_empty());
+        }
     }
 }

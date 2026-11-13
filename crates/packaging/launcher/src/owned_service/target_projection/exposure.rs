@@ -636,39 +636,44 @@ impl FixtureExposure {
 #[cfg(test)]
 mod custody_tests {
     use super::*;
-    #[test]
-    fn intentional_stop_and_acquisition_are_one_closed_transition() {
-        let custody = Arc::new(ExposureCustody::default());
-        let hold = custody.acquire().unwrap();
-        assert!(!custody.begin_stop());
-        drop(hold);
-        assert!(custody.begin_stop());
-        assert_eq!(
-            custody.acquire().err().unwrap().kind(),
-            io::ErrorKind::Interrupted
-        );
-    }
-    #[test]
-    fn simultaneous_stop_cannot_overlap_a_new_exposure_hold() {
-        for _ in 0..32 {
+    tilo_test_env::scenario! {
+        fn stopping_and_holding_an_exposure_never_overlap;
+
+        phase intentional_stop_and_acquisition_are_one_closed_transition;
+        {
             let custody = Arc::new(ExposureCustody::default());
-            let barrier = Arc::new(std::sync::Barrier::new(2));
-            let worker_custody = Arc::clone(&custody);
-            let worker_barrier = Arc::clone(&barrier);
-            let worker = std::thread::spawn(move || {
-                worker_barrier.wait();
-                worker_custody.acquire()
-            });
-            barrier.wait();
-            let stopping = custody.begin_stop();
-            let acquired = worker.join().unwrap();
-            assert_ne!(stopping, acquired.is_ok());
-            if let Ok(hold) = acquired {
-                assert!(!custody.begin_stop());
-                drop(hold);
-                assert!(custody.begin_stop());
+            let hold = custody.acquire().unwrap();
+            assert!(!custody.begin_stop());
+            drop(hold);
+            assert!(custody.begin_stop());
+            assert_eq!(
+                custody.acquire().err().unwrap().kind(),
+                io::ErrorKind::Interrupted
+            );
+        }
+
+        phase simultaneous_stop_cannot_overlap_a_new_exposure_hold;
+        {
+            for _ in 0..32 {
+                let custody = Arc::new(ExposureCustody::default());
+                let barrier = Arc::new(std::sync::Barrier::new(2));
+                let worker_custody = Arc::clone(&custody);
+                let worker_barrier = Arc::clone(&barrier);
+                let worker = std::thread::spawn(move || {
+                    worker_barrier.wait();
+                    worker_custody.acquire()
+                });
+                barrier.wait();
+                let stopping = custody.begin_stop();
+                let acquired = worker.join().unwrap();
+                assert_ne!(stopping, acquired.is_ok());
+                if let Ok(hold) = acquired {
+                    assert!(!custody.begin_stop());
+                    drop(hold);
+                    assert!(custody.begin_stop());
+                }
+                assert!(custody.acquire().is_err());
             }
-            assert!(custody.acquire().is_err());
         }
     }
 }
