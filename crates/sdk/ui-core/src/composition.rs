@@ -200,6 +200,14 @@ pub struct DocBlock {
     pub selection: Option<[usize; 2]>,
     /// It can be edited.
     pub editable: bool,
+    /// The room above it, logical pixels, as the editor stacks it.
+    pub gap: f32,
+    /// Its type size, logical pixels.
+    pub size: f32,
+    /// Its leading, a multiple of `size`, as CSS's unitless `line-height`.
+    pub line_height: f32,
+    /// CSS weight.
+    pub weight: u16,
 }
 
 /// A mark over part of a block's text.

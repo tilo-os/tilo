@@ -42,6 +42,7 @@ impl BlockEditor {
                         ("callout", 0, false, Some(callout.name().to_owned()))
                     }
                 };
+                let style = crate::tokens::typography::stock().style(block.kind.text_role());
                 let marks = block
                     .line
                     .marks()
@@ -88,6 +89,20 @@ impl BlockEditor {
                         )
                     }),
                     editable: block.kind.is_editable(),
+                    // The gap the editor stacks it at, its role's leading and weight, and the
+                    // document's size for its kind: what the canvas sets it in.
+                    gap: self
+                        .stack_boxes
+                        .get(index)
+                        .map_or(0.0, |stack| stack.margin_top),
+                    size: block.kind.font_size() * self.font_scale,
+                    line_height: style.line_height,
+                    weight: match style.weight {
+                        crate::text_render::TextWeight::Regular => 400,
+                        crate::text_render::TextWeight::Medium => 500,
+                        crate::text_render::TextWeight::Semibold => 600,
+                        crate::text_render::TextWeight::Bold => 700,
+                    },
                 }
             })
             .collect()
