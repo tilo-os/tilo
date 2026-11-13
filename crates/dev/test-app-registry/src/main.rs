@@ -1,27 +1,23 @@
-//! `tilo-test-registry` — a signed app registry on loopback that offers
-//! newer versions of an app this machine already has installed.
+//! `tilo-test-registry`: a signed app registry on loopback that offers newer versions of an app this
+//! machine already has installed.
 //!
 //! ```text
 //! tilo-test-registry --app so.tilo.settings --version 9999.0.0 --version 9998.0.0
 //! ```
 //!
-//! Each version is the installed copy's own payload and manifest, packed
-//! again under that version number and signed by a publisher key made for
-//! this run; the registry snapshot is signed by an owner key made for this
-//! run too. Nothing is a stand-in: `app repo add <name> <url> --owner-key
-//! <key>` pins the owner exactly as for the real registry, and `app update`,
-//! `app rollback` and `tilo-install` verify every signature they would for
-//! it. Only the registry's location and keys are a fixture.
+//! Each version is the installed copy's own payload and manifest, packed again under that version
+//! number and signed by a publisher key made for this run; the registry snapshot is signed by an
+//! owner key made for this run too. Nothing is a stand-in: `app repo add <name> <url> --owner-key
+//! <key>` pins the owner exactly as for the real registry, and `app update`, `app rollback` and
+//! `tilo-install` verify every signature they would for it. Only the registry's location and keys
+//! are a fixture.
 //!
-//! `--incompatible <v>` offers version `v` too, built against a version of
-//! the system interface this device does not serve (`system@N+1`, where `N`
-//! is the newest it declares): the build a device must neither be offered
-//! nor install, and must not run over its image's copy.
+//! `--incompatible <v>` offers version `v` too, built against a version of the system interface this
+//! device does not serve (`system@N+1`, where `N` is the newest it declares): the build a device
+//! must neither be offered nor install, and must not run over its image's copy.
 //!
-//! It prints one JSON line — `{"url", "owner_key", "publisher_key",
-//! "versions"}` — once it is serving, then serves until killed. Dev images
-//! ship it for the booted-image check that the system image's apps update
-//! and roll back through the registry like any other.
+//! It prints one JSON line (`{"url", "owner_key", "publisher_key", "versions"}`) once it is serving,
+//! then serves until killed.
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
@@ -92,7 +88,6 @@ fn random_key() -> Result<SigningKey, String> {
     Ok(SigningKey::from_bytes(&seed))
 }
 
-/// One packed version, ready to serve.
 struct Packed {
     version: String,
     file: String,
@@ -102,8 +97,7 @@ struct Packed {
     interfaces: Vec<String>,
 }
 
-/// A system interface version this device does not serve: one past the
-/// newest it declares.
+/// A system interface version this device does not serve: one past the newest it declares.
 fn unserved_system_version() -> u32 {
     package_store::interfaces::system_interfaces()
         .and_then(|provided| provided.version(tilo_app_package::interfaces::SYSTEM_INTERFACE))
@@ -111,8 +105,7 @@ fn unserved_system_version() -> u32 {
         .saturating_add(1)
 }
 
-/// The installed copy's manifest and payload packed again as `version`,
-/// signed by `publisher`.
+/// The installed copy's manifest and payload packed again as `version`, signed by `publisher`.
 fn repack(
     manifest_path: &Path,
     payload_root: &Path,
@@ -280,8 +273,8 @@ fn signed_entry(
     entry
 }
 
-/// What the registry serves: both snapshot forms signed by `owner`, the
-/// version indexes the compact one names, and the packages.
+/// What the registry serves: both snapshot forms signed by `owner`, the version indexes the compact
+/// one names, and the packages.
 fn routes(
     entry: RegistryEntry,
     packed: &[Packed],
