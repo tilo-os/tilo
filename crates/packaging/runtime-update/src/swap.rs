@@ -5,10 +5,9 @@ use std::{
     path::{Path, PathBuf},
 };
 
-/// Replace the bundle at `current` with the one at `new`, which must be a
-/// sibling so both moves are renames on one filesystem. There is never a
-/// moment without a bundle at `current` longer than two renames, and if the
-/// second rename fails the old bundle is put back.
+/// Replace the bundle at `current` with the one at `new`, which must be a sibling so both moves are
+/// renames on one filesystem. There is never a moment without a bundle at `current` longer than two
+/// renames, and if the second rename fails the old bundle is put back.
 pub fn replace_bundle(current: &Path, new: &Path) -> io::Result<()> {
     if current.parent() != new.parent() {
         return Err(io::Error::new(

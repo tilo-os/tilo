@@ -1,7 +1,6 @@
-//! The macOS side: reading the running bundle, fetching the release,
-//! checking its code signature and restarting the runtime agent. Each step
-//! is the system tool that owns it (`plutil`, `curl`, `ditto`, `codesign`,
-//! `launchctl`), so nothing here reimplements Apple's checks.
+//! The macOS side: reading the running bundle, fetching the release, checking its code signature and
+//! restarting the runtime agent. Each step is the system tool that owns it (`plutil`, `curl`,
+//! `ditto`, `codesign`, `launchctl`), so nothing here reimplements Apple's checks.
 
 use crate::{Release, release, swap};
 use std::{
@@ -11,15 +10,14 @@ use std::{
     process::{Command, Output},
 };
 
-/// `Info.plist` key naming the signed release feed; the signature is at the
-/// same URL with `.sig` appended. A bundle without it never updates itself.
+/// `Info.plist` key naming the signed release feed; the signature is at the same URL with `.sig`
+/// appended. A bundle without it never updates itself.
 pub const FEED_KEY: &str = "TiloUpdateFeedURL";
 /// `Info.plist` key holding the hex Ed25519 key the feed is signed with.
 pub const PUBLIC_KEY_KEY: &str = "TiloUpdatePublicKey";
 /// The launchd agent serving the runtime daemon from this bundle.
 pub const RUNTIME_AGENT: &str = "so.tilo.runtime";
 
-/// What a check or update found.
 #[derive(Debug)]
 pub enum Outcome {
     /// This build names no feed or key, so it updates through its installer.
@@ -63,10 +61,9 @@ impl Bundle {
             .filter(|value| !value.is_empty()))
     }
 
-    /// The requirement a replacement must satisfy: this bundle's own
-    /// designated requirement. For a Developer ID build that is its
-    /// identifier and team; an ad-hoc build's names its exact hash, which no
-    /// other bundle satisfies, so ad-hoc builds never update.
+    /// The requirement a replacement must satisfy: this bundle's own designated requirement. For a
+    /// Developer ID build that is its identifier and team; an ad-hoc build's names its exact hash,
+    /// which no other bundle satisfies, so ad-hoc builds never update.
     pub fn designated_requirement(&self) -> io::Result<String> {
         let output = run(Command::new("/usr/bin/codesign")
             .args(["--display", "--requirements", "-"])
@@ -144,8 +141,8 @@ fn fetch(url: &str, to: &Path) -> io::Result<PathBuf> {
     Ok(to.to_path_buf())
 }
 
-/// Restart the agent so the daemon runs the new bundle. Not loaded is fine:
-/// the next app launch starts the new daemon on demand.
+/// Restart the agent so the daemon runs the new bundle. Not loaded is fine: the next app launch
+/// starts the new daemon on demand.
 fn restart_agent() -> io::Result<()> {
     let uid = rustix::process::getuid().as_raw();
     let status = Command::new("/bin/launchctl")
@@ -177,8 +174,8 @@ fn invalid(message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
 }
 
-/// A private work directory beside the bundle, so the unpacked bundle can be
-/// renamed into place without crossing filesystems. Removed when dropped.
+/// A private work directory beside the bundle, so the unpacked bundle can be renamed into place
+/// without crossing filesystems. Removed when dropped.
 struct TempDir(PathBuf);
 
 impl TempDir {
@@ -195,8 +192,8 @@ impl Drop for TempDir {
     }
 }
 
-/// An unpacked bundle beside the installed one, removed if the update stops
-/// before the swap moves it into place.
+/// An unpacked bundle beside the installed one, removed if the update stops before the swap moves it
+/// into place.
 struct Staged(PathBuf);
 
 impl Drop for Staged {
