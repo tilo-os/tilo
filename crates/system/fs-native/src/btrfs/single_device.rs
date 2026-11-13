@@ -204,38 +204,42 @@ pub fn single_device_identity(directory: BorrowedFd<'_>) -> io::Result<SingleDev
 mod tests {
     use super::*;
 
-    #[test]
-    fn filesystem_name_matches_kernel_uuid_format() {
-        assert_eq!(
-            filesystem_name([0; 16]),
-            "00000000-0000-0000-0000-000000000000"
-        );
-        assert_eq!(
-            filesystem_name([
-                0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0xfe, 0xdc, 0xba, 0x98, 0x76, 0x54,
-                0x32, 0x10,
-            ]),
-            "01234567-89ab-cdef-fedc-ba9876543210"
-        );
-    }
+    tilo_test_env::scenario! {
+        fn kernel_text_of_a_single_device_filesystem_is_written_and_read_strictly;
 
-    #[test]
-    fn kernel_numbers_reject_signs_spaces_overflow_and_anonymous_devices() {
-        for text in ["", "-1", "+1", " 1", "1 ", "1\n", "18446744073709551616"] {
-            assert!(decimal(text).is_err(), "{text:?}");
+        phase filesystem_name_matches_kernel_uuid_format;
+        {
+            assert_eq!(
+                filesystem_name([0; 16]),
+                "00000000-0000-0000-0000-000000000000"
+            );
+            assert_eq!(
+                filesystem_name([
+                    0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0xfe, 0xdc, 0xba, 0x98, 0x76, 0x54,
+                    0x32, 0x10,
+                ]),
+                "01234567-89ab-cdef-fedc-ba9876543210"
+            );
         }
-        for text in [
-            "",
-            "1",
-            "1:2:3",
-            "0:35",
-            "1:-1",
-            "4294967296:0",
-            "1:4294967296",
-        ] {
-            assert!(device_number(text).is_err(), "{text:?}");
+
+        phase kernel_numbers_reject_signs_spaces_overflow_and_anonymous_devices;
+        {
+            for text in ["", "-1", "+1", " 1", "1 ", "1\n", "18446744073709551616"] {
+                assert!(decimal(text).is_err(), "{text:?}");
+            }
+            for text in [
+                "",
+                "1",
+                "1:2:3",
+                "0:35",
+                "1:-1",
+                "4294967296:0",
+                "1:4294967296",
+            ] {
+                assert!(device_number(text).is_err(), "{text:?}");
+            }
+            let actual = device_number("259:7").unwrap();
+            assert_eq!((libc::major(actual), libc::minor(actual)), (259, 7));
         }
-        let actual = device_number("259:7").unwrap();
-        assert_eq!((libc::major(actual), libc::minor(actual)), (259, 7));
     }
 }
