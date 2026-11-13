@@ -517,6 +517,14 @@ impl ContentBackend for DirBackend {
     fn release(&self, hash: &str) -> Result<Collected, ContentError> {
         self.remove_where(|kept| kept == hash)
     }
+
+    fn max_item_bytes(&self) -> usize {
+        self.limits.max_item_bytes
+    }
+
+    fn scratch_dir(&self) -> Option<PathBuf> {
+        Some(self.root.clone())
+    }
 }
 
 impl DirBackend {

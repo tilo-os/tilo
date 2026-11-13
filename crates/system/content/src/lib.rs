@@ -38,10 +38,10 @@
 
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::Read;
-#[cfg(feature = "dir")]
-use std::path::PathBuf;
+use std::io::{Read, Seek as _, Write as _};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 #[cfg(feature = "dir")]
 mod dir;
@@ -106,16 +106,103 @@ pub fn names(reference: &str, bytes: &[u8]) -> bool {
     }
 }
 
-/// The key `plain` is sealed under where the members hold `secret`: BLAKE3 of the bytes, keyed by
-/// a key derived from the secret ([`ContentBackend::content_secret`]).
-fn convergent_key(secret: &tilo_seal::SymmetricKey, plain: &[u8]) -> tilo_seal::SymmetricKey {
-    let keyed = tilo_seal::SymmetricKey::from_bytes(blake3::derive_key(
+/// The hash the members' items are keyed by: BLAKE3, keyed by a key derived from the content
+/// secret ([`ContentBackend::content_secret`]).
+fn convergent_hasher(secret: &tilo_seal::SymmetricKey) -> blake3::Hasher {
+    blake3::Hasher::new_keyed(&blake3::derive_key(
         "tilo record content key v1",
         secret.expose_secret(),
-    ));
-    tilo_seal::SymmetricKey::from_bytes(
-        *blake3::keyed_hash(keyed.expose_secret(), plain).as_bytes(),
-    )
+    ))
+}
+
+/// How much of the plaintext a sealing store hashes stays in memory.
+const KEEP_PLAINTEXT: usize = 1024 * 1024;
+
+static SPILL_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// The plaintext a sealing store hashes before it seals it: in memory while it is small, and
+/// past [`KEEP_PLAINTEXT`] bytes in a file beside the store's own content, so a large item costs
+/// disk while it is sealed rather than the memory to hold it whole. A store with no directory of
+/// its own ([`ContentBackend::scratch_dir`]) keeps all of it in memory.
+struct Gathered {
+    kept: Vec<u8>,
+    spill: Option<Spill>,
+}
+
+impl Gathered {
+    const fn new() -> Self {
+        Self {
+            kept: Vec::new(),
+            spill: None,
+        }
+    }
+
+    /// Keep `chunk`, spilling what is kept so far and the rest to a file in `scratch` once the
+    /// plaintext no longer fits memory.
+    fn keep(&mut self, chunk: &[u8], scratch: Option<&Path>) -> Result<(), ContentError> {
+        if self.spill.is_none()
+            && let Some(dir) = scratch
+            && self.kept.len().saturating_add(chunk.len()) > KEEP_PLAINTEXT
+        {
+            self.spill = Some(Spill::open(dir, &self.kept)?);
+            self.kept = Vec::new();
+        }
+        if let Some(spill) = &mut self.spill {
+            return spill.write(chunk);
+        }
+        self.kept.extend_from_slice(chunk);
+        Ok(())
+    }
+
+    /// Everything kept, from its start.
+    fn source(&mut self) -> Result<Box<dyn Read + '_>, ContentError> {
+        if let Some(spill) = &mut self.spill {
+            return spill.source();
+        }
+        Ok(Box::new(self.kept.as_slice()))
+    }
+}
+
+/// The file the plaintext of an item larger than memory waits in while it is hashed and sealed:
+/// beside the store's own content, never in a system temporary directory, which a device may
+/// hold in RAM. Removed when the write ends, however it ends.
+struct Spill {
+    file: std::fs::File,
+    path: PathBuf,
+}
+
+impl Spill {
+    /// A spill file in `dir`, holding `kept` so far.
+    fn open(dir: &Path, kept: &[u8]) -> Result<Self, ContentError> {
+        std::fs::create_dir_all(dir)?;
+        let serial = SPILL_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let path = dir.join(format!(".sealing-{}-{serial}", std::process::id()));
+        let file = std::fs::File::options()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(&path)?;
+        let mut spill = Self { file, path };
+        spill.write(kept)?;
+        Ok(spill)
+    }
+
+    fn write(&mut self, chunk: &[u8]) -> Result<(), ContentError> {
+        self.file.write_all(chunk)?;
+        Ok(())
+    }
+
+    /// Everything spilled, from its start.
+    fn source(&mut self) -> Result<Box<dyn Read + '_>, ContentError> {
+        self.file.rewind()?;
+        Ok(Box::new(&mut self.file))
+    }
+}
+
+impl Drop for Spill {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
 }
 
 /// True when `bytes` really are the content named by `hash`.
@@ -300,6 +387,19 @@ pub trait ContentBackend: Send + Sync {
     fn content_secret(&self) -> Option<tilo_seal::SymmetricKey> {
         None
     }
+
+    /// The largest item this store accepts: a write that hashes before it seals refuses a larger
+    /// one as it reads it, rather than holding it whole first ([`ContentStore::put_reader`]).
+    fn max_item_bytes(&self) -> usize {
+        ContentLimits::default().max_item_bytes
+    }
+
+    /// A directory beside the content this store keeps, where a sealing write may keep the
+    /// plaintext it hashes in a file rather than in memory. `None` for a store with no directory
+    /// of its own: one that keeps content on a host, or holds it in memory.
+    fn scratch_dir(&self) -> Option<PathBuf> {
+        None
+    }
 }
 
 /// A store a host keeps for one workspace alone
@@ -341,6 +441,14 @@ impl ContentBackend for OneWorkspace {
 
     fn content_secret(&self) -> Option<tilo_seal::SymmetricKey> {
         self.0.content_secret()
+    }
+
+    fn max_item_bytes(&self) -> usize {
+        self.0.max_item_bytes()
+    }
+
+    fn scratch_dir(&self) -> Option<PathBuf> {
+        self.0.scratch_dir()
     }
 }
 
@@ -531,27 +639,38 @@ impl ContentStore {
     /// to the daemon one `runtime_fs::blobs::MAX_PUT_CHUNK` at a time. [`Stored::hash`] is the
     /// reference to keep, sealed when this store seals.
     ///
+    /// A sealing store with the members' secret hashes the plaintext in a first pass and seals it
+    /// in a second, and refuses it once it is past [`ContentBackend::max_item_bytes`]: a large
+    /// item waits in a file beside the store's own content
+    /// ([`ContentBackend::scratch_dir`]) rather than whole in memory, and an oversized one is
+    /// refused without being held at all.
+    ///
     /// # Errors
-    /// See [`ContentBackend::put`].
+    /// See [`ContentBackend::put`], and [`ContentError::ItemTooLarge`] for an item past the
+    /// store's limit.
     pub fn put_reader(&self, reader: &mut dyn Read, mime: &str) -> Result<Stored, ContentError> {
         if !self.seals {
             return self.backend.put(reader, mime);
         }
-        let secret = self.backend.content_secret();
-        // With the members' secret the key is the bytes' keyed hash, so they are read whole
-        // first. Such a key seals the one plaintext it was derived from, as a fresh one does, so
-        // the nonces sealing derives from a chunk's position never repeat under it.
-        let mut plain = Vec::new();
-        let key = match &secret {
+        // With the members' secret the key is the bytes' keyed hash, so they are read once to
+        // hash them, kept in memory while they are small and in a file beside the store's own
+        // content past that, then read again to seal them. Such a key seals the one plaintext it
+        // was derived from, as a fresh one does, so the nonces sealing derives from a chunk's
+        // position never repeat under it.
+        let mut gathered = None;
+        let key = match self.backend.content_secret() {
             Some(secret) => {
-                reader.read_to_end(&mut plain)?;
-                convergent_key(secret, &plain)
+                let mut hasher = convergent_hasher(&secret);
+                gathered = Some(self.gather(reader, &mut hasher)?);
+                tilo_seal::SymmetricKey::from_bytes(*hasher.finalize().as_bytes())
             }
             None => tilo_seal::SymmetricKey::generate()
                 .map_err(|error| ContentError::Io(error.to_string()))?,
         };
-        let mut whole = plain.as_slice();
-        let source: &mut dyn Read = if secret.is_some() { &mut whole } else { reader };
+        let source: Box<dyn Read + '_> = match &mut gathered {
+            Some(gathered) => gathered.source()?,
+            None => Box::new(reader),
+        };
         let mut sealed = tilo_seal::content::SealReader::new(&key, source)
             .map_err(|error| ContentError::Io(error.to_string()))?;
         let stored = self.backend.put(&mut sealed, SEALED_MIME)?;
@@ -559,6 +678,41 @@ impl ContentStore {
             hash: ContentRef::sealed(&stored.hash, key).to_string(),
             len: stored.len,
         })
+    }
+
+    /// Read `reader` to its end, hashing what it yields into `hasher`, and refuse it the moment
+    /// it is past what the store accepts: what it yields waits in memory while it is small, and
+    /// past that in a file beside the store's own content.
+    fn gather(
+        &self,
+        reader: &mut dyn Read,
+        hasher: &mut blake3::Hasher,
+    ) -> Result<Gathered, ContentError> {
+        let limit = self.backend.max_item_bytes();
+        let scratch = self.backend.scratch_dir();
+        let mut gathered = Gathered::new();
+        let mut buf = vec![0_u8; 64 * 1024];
+        let mut read = 0_usize;
+        loop {
+            // Never ask for more than the byte past the limit that refuses the item.
+            let want = limit.saturating_add(1).saturating_sub(read).min(buf.len());
+            let n = match reader.read(buf.get_mut(..want).unwrap_or_default()) {
+                Ok(0) => return Ok(gathered),
+                Ok(n) => n.min(want),
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(error) => return Err(error.into()),
+            };
+            read = read.saturating_add(n);
+            if read > limit {
+                return Err(ContentError::ItemTooLarge {
+                    actual: read,
+                    limit,
+                });
+            }
+            let chunk = buf.get(..n).unwrap_or_default();
+            hasher.update(chunk);
+            gathered.keep(chunk, scratch.as_deref())?;
+        }
     }
 
     /// Store every input `inputs` collected (an import's images, say), answering the reference to
@@ -645,6 +799,12 @@ impl ContentStore {
     /// see [`ContentBackend::workspace_scoped`].
     pub fn workspace_scoped(&self) -> bool {
         self.backend.workspace_scoped()
+    }
+
+    /// A directory beside the content this store keeps, where a sealing write may keep the
+    /// plaintext it hashes in a file rather than in memory; see [`ContentBackend::scratch_dir`].
+    pub fn scratch_dir(&self) -> Option<PathBuf> {
+        self.backend.scratch_dir()
     }
 
     /// This store, declared as one workspace's ([`Self::workspace_scoped`]): for a host that

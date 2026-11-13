@@ -256,6 +256,14 @@ impl ContentBackend for RoomChecked {
     fn release(&self, hash: &str) -> Result<Collected, ContentError> {
         self.inner.release(hash)
     }
+
+    fn max_item_bytes(&self) -> usize {
+        self.inner.max_item_bytes()
+    }
+
+    fn scratch_dir(&self) -> Option<PathBuf> {
+        self.inner.scratch_dir()
+    }
 }
 
 /// `workspace` as the name of its directory: a UUID, lower-case and

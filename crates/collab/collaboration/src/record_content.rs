@@ -453,6 +453,14 @@ impl ContentBackend for RecordContent {
     fn content_secret(&self) -> Option<tilo_seal::SymmetricKey> {
         self.lane.content_secret()
     }
+
+    fn max_item_bytes(&self) -> usize {
+        MAX_RECORD_CONTENT_BYTES
+    }
+
+    fn scratch_dir(&self) -> Option<std::path::PathBuf> {
+        self.local.scratch_dir()
+    }
 }
 
 #[cfg(test)]
