@@ -419,26 +419,41 @@ view deck(d: Deck) {
         );
     }
 
+    /// One item's change re-runs its row and no other: where the loop's body is a view of its
+    /// own, where it stands inline (no view factored out: the body is a row of its own all the
+    /// same), and where the item is the only one.
     #[test]
     fn one_items_change_re_runs_only_its_row() {
-        let rows = Rows::new(50);
-        let mut view = rows.view("eager");
-        let opened = view.stats();
-        assert_eq!(opened.boundaries, 51, "the view and one boundary per row");
-        assert_eq!(opened.renders, 51);
+        for (shown, n, at) in [
+            ("eager", 50, 17),
+            ("inline", 50, 17),
+            ("eager", 1, 0),
+            ("inline", 1, 0),
+        ] {
+            let case = format!("`{shown}` of {n}, item {at}");
+            let rows = Rows::new(n);
+            let mut view = rows.view(shown);
+            let opened = view.stats();
+            assert_eq!(
+                opened.boundaries,
+                n + 1,
+                "{case}: the view and one boundary per row"
+            );
+            assert_eq!(opened.renders, u64::try_from(n + 1).unwrap(), "{case}");
 
-        rows.retitle(17, "seventeen");
-        let patches = view.poll_patches().unwrap();
-        assert_eq!(
-            view.stats().renders - opened.renders,
-            1,
-            "only the retitled item's row ran"
-        );
-        assert!(
-            matches!(patches.as_slice(), [Patch::SetProp { name, .. }] if name == "value"),
-            "{patches:?}"
-        );
-        assert_eq!(texts(view.tree())[17], "seventeen");
+            rows.retitle(at, "seventeen");
+            let patches = view.poll_patches().unwrap();
+            assert_eq!(
+                view.stats().renders - opened.renders,
+                1,
+                "{case}: only the retitled item's row ran"
+            );
+            assert!(
+                matches!(patches.as_slice(), [Patch::SetProp { name, .. }] if name == "value"),
+                "{case}: {patches:?}"
+            );
+            assert_eq!(texts(view.tree())[at], "seventeen", "{case}");
+        }
     }
 
     /// Whatever the collection holds when it is handed over (nothing, one item, hundreds): the
@@ -480,27 +495,6 @@ view deck(d: Deck) {
                 "{n} items"
             );
         }
-    }
-
-    #[test]
-    fn an_inline_loop_body_is_a_boundary_per_item() {
-        // No view factored out: the loop's body is a row of its own all the same.
-        let rows = Rows::new(50);
-        let mut view = rows.view("inline");
-        let opened = view.stats();
-        assert_eq!(opened.boundaries, 51, "the view and one boundary per row");
-        rows.retitle(17, "seventeen");
-        let patches = view.poll_patches().unwrap();
-        assert_eq!(
-            view.stats().renders - opened.renders,
-            1,
-            "only that row ran"
-        );
-        assert!(
-            matches!(patches.as_slice(), [Patch::SetProp { name, .. }] if name == "value"),
-            "{patches:?}"
-        );
-        assert_eq!(texts(view.tree())[17], "seventeen");
     }
 
     #[test]
