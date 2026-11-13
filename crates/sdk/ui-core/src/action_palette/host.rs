@@ -398,6 +398,18 @@ impl ActionPalette {
     pub fn set_rect(&mut self, rect: Rect) {
         self.rect = rect;
         self.sync_list();
+        self.place_field();
+    }
+
+    /// Place the query field, and with it the controls inside it — the scope
+    /// token, the count, "Search everywhere", the clear button — where this
+    /// card puts them. The card draws the field itself, so nothing else would
+    /// place it, and a frame read before the card is painted (assistive
+    /// technology, a press) would find those controls at the window's origin.
+    pub(crate) fn place_field(&mut self) {
+        let theme = self.layout_theme.clone();
+        let row = self.input_row_rect();
+        self.field.apply_layout_external(row, &theme);
     }
 
     /// The size the card asks for, as layout measures it: the rows it holds,
@@ -495,6 +507,7 @@ impl ActionPalette {
     pub(crate) fn host_prepare(&mut self, theme: &Theme) {
         self.text_scale = f64::from(theme.text_scale);
         self.ui_scale = f64::from(theme.ui_scale);
+        self.layout_theme = theme.clone();
         self.results.resolve_metrics(theme);
         self.results
             .set_group_gap(f64::from(theme.tokens.spacing.rhythm.section));
@@ -898,7 +911,6 @@ impl ActionPalette {
             );
         }
         self.sync_field_focus();
-        self.field.apply_layout_external(row_rect);
         self.field
             .draw_child(scene, transform, text_renderer, theme, presence);
         if self.shows_field_only() {

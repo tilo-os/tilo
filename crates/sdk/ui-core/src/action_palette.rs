@@ -527,6 +527,10 @@ pub struct ActionPalette {
     /// The theme's text and interface scales, as last laid out.
     text_scale: f64,
     ui_scale: f64,
+    /// The theme the field's controls are placed in, as last laid out: a field
+    /// a host draws itself has no layout pass of its own, so the card places it
+    /// when it is given its box.
+    layout_theme: Theme,
     /// The card's own composition changed: a host asks for a new frame.
     structure_dirty: bool,
 
@@ -763,6 +767,7 @@ impl ActionPalette {
             platform: crate::platform::PlatformConventions::default(),
             text_scale: 1.0,
             ui_scale: 1.0,
+            layout_theme: Theme::default(),
             structure_dirty: false,
         }
     }

@@ -355,8 +355,9 @@ impl EmojiPanel {
         self.tones = None;
     }
 
-    /// Lay the current face out in `bands`, reading `recents` for the grid.
-    pub fn layout(&mut self, bands: PanelBands, recents: &Recents) {
+    /// Lay the current face out in `bands` in `theme`, reading `recents` for
+    /// the grid.
+    pub fn layout(&mut self, bands: PanelBands, recents: &Recents, theme: &Theme) {
         self.bands = bands;
         self.cells.clear();
         self.headings.clear();
@@ -376,7 +377,7 @@ impl EmojiPanel {
             PanelMode::Browse => self.layout_browse(recents),
             PanelMode::Search => self.layout_search(recents),
         }
-        self.search.apply_layout_external(self.search_rect);
+        self.search.apply_layout_external(self.search_rect, theme);
         self.layout_tones();
     }
 
@@ -978,7 +979,7 @@ mod tests {
         p.start_search();
         p.type_text("pizza");
         assert_eq!(p.results().first().map(String::as_str), Some("🍕"));
-        p.layout(bands(), &Recents::default());
+        p.layout(bands(), &Recents::default(), &Theme::dark());
         assert!(p.emoji_rect("🍕").is_some(), "the match is in the strip");
         let at = p.emoji_rect("🍕").unwrap().center();
         assert_eq!(p.hit(at), Some(PanelHit::Emoji("🍕".into())));
@@ -991,7 +992,7 @@ mod tests {
         p.start_search();
         let mut recents = Recents::default();
         recents.record("🎉");
-        p.layout(bands(), &recents);
+        p.layout(bands(), &recents, &Theme::dark());
         assert!(p.emoji_rect("🎉").is_some());
     }
 
@@ -1006,7 +1007,7 @@ mod tests {
         assert_eq!(options.len(), 6);
         assert_eq!(options[0], "👍");
         assert_eq!(options[3], "👍🏽");
-        p.layout(bands(), &Recents::default());
+        p.layout(bands(), &Recents::default(), &Theme::dark());
         let at = p.tone_cells[3].1.center();
         assert_eq!(p.hit(at), Some(PanelHit::Tone("👍🏽".into())));
         // Anywhere else dismisses rather than acting.
@@ -1017,7 +1018,7 @@ mod tests {
     fn browse_layout_hits_tabs_grid_and_bottom_row() {
         let mut p = panel();
         p.open();
-        p.layout(bands(), &Recents::default());
+        p.layout(bands(), &Recents::default(), &Theme::dark());
         let tab = p.tab_rects[2].center();
         assert_eq!(p.hit(tab), Some(PanelHit::Group(2)));
         let (first, rect) = p.cells[0].clone();
@@ -1031,13 +1032,13 @@ mod tests {
     fn scrolling_stays_within_the_content() {
         let mut p = panel();
         p.open();
-        p.layout(bands(), &Recents::default());
+        p.layout(bands(), &Recents::default(), &Theme::dark());
         let first = p.cells[0].clone();
         p.scroll_by(-50.0);
-        p.layout(bands(), &Recents::default());
+        p.layout(bands(), &Recents::default(), &Theme::dark());
         assert_eq!(p.cells[0], first, "cannot scroll above the top");
         p.scroll_by(1e9);
-        p.layout(bands(), &Recents::default());
+        p.layout(bands(), &Recents::default(), &Theme::dark());
         assert!(
             p.cells.iter().all(|(t, _)| *t != first.0),
             "scrolled to the end"

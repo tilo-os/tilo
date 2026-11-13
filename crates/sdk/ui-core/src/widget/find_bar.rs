@@ -924,7 +924,7 @@ impl FindBar {
             }
         }
         self.field
-            .apply_layout_external(Rect::new(x0, y, right.max(x0), y + row_h));
+            .apply_layout_external(Rect::new(x0, y, right.max(x0), y + row_h), theme);
         if self.replace_row {
             let y = y + row_h + pad;
             let mut right = x1;
@@ -937,7 +937,7 @@ impl FindBar {
                 right -= w + pad;
             }
             self.replace_field
-                .apply_layout_external(Rect::new(x0, y, right.max(x0), y + row_h));
+                .apply_layout_external(Rect::new(x0, y, right.max(x0), y + row_h), theme);
         }
     }
 

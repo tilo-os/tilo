@@ -598,8 +598,9 @@ impl EmojiPicker {
         let grid = self.on_screen(geometry.grid);
         self.scroll.set_viewport(grid, &self.theme);
         self.scroll.set_content_size(grid.width(), height);
-        self.search
-            .apply_layout_external(self.on_screen(geometry.field));
+        let field = self.on_screen(geometry.field);
+        let theme = self.theme.clone();
+        self.search.apply_layout_external(field, &theme);
         self.geometry = geometry;
         self.dirty = true;
     }

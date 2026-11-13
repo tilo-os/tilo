@@ -1897,7 +1897,8 @@ impl FilePicker {
             self.rect.x1 - m.pad,
             toolbar_y0 + m.control_h,
         );
-        self.query.apply_layout_external(self.search_rect);
+        let theme = self.theme.clone();
+        self.query.apply_layout_external(self.search_rect, &theme);
         let inner = self.path_inner();
         match self.location.as_mut() {
             Some(field) => field.apply_layout_external(inner),
