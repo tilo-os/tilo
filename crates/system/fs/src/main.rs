@@ -2583,8 +2583,8 @@ mod tests {
             .collect();
         versions.sort();
         assert!(
-            versions.len() >= 2,
-            "the history must hold the pre-authority list and today's: {versions:?}"
+            !versions.is_empty(),
+            "the history must hold the list the image ships today: {versions:?}"
         );
         let identity: IdentityKey = [0x5A; 32];
         for path in &versions {
@@ -2718,7 +2718,7 @@ mod tests {
 
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("caps.json");
-            std::fs::write(&path, b"[]").unwrap();
+            std::fs::write(&path, br#"{"capabilities":[]}"#).unwrap();
             let args = acl_args_from(&["--acl", path.to_str().unwrap()]);
             let caps = resolve_acl(&args, NODE_KEY)
                 .expect("an empty list is valid")
@@ -2767,7 +2767,7 @@ mod tests {
         {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("caps.json");
-            std::fs::write(&path, b"[]").unwrap();
+            std::fs::write(&path, br#"{"capabilities":[]}"#).unwrap();
             let args = acl_args_from(&["--acl", path.to_str().unwrap(), "--identity", "abcd"]);
             let err = resolve_acl(&args, NODE_KEY).expect_err("a 2-byte identity is not a key");
             assert!(format!("{err:#}").contains("32 bytes"), "got: {err:#}");
