@@ -89,6 +89,8 @@ mod typed_markdown;
 mod typing_damage;
 #[path = "typing_order.rs"]
 mod typing_order;
+#[path = "typing_while_an_agent_edits.rs"]
+mod typing_while_an_agent_edits;
 #[path = "welcome_page_renders_all_block_kinds.rs"]
 mod welcome_page_renders_all_block_kinds;
 #[path = "workspace_notebook.rs"]
