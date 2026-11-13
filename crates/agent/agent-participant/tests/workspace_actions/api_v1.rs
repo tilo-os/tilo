@@ -547,3 +547,123 @@ async fn a_hosted_workspace_streams_changes_finds_and_undoes_runs() {
         }
     }
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_file_larger_than_one_request_goes_up_in_pieces_that_resume() {
+    let on_relay = api_on_relay(ISSUER).await;
+    let api = Arc::clone(&on_relay.api);
+    let (ada, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let page = enrol(&ada, "Ada's browser", DeviceCapabilities::member());
+    let backend = V1 {
+        api: &api,
+        token: approved_key(&on_relay, &ada, &page, "Visa backend").await,
+    };
+    let (_, made) = backend
+        .post("/v1/workspaces", &json!({"name": "Contracts"}), &[])
+        .await;
+    let base = format!(
+        "/v1/workspaces/{}/uploads",
+        made["id"].as_str().expect("a workspace")
+    );
+    // A file of the size one request would not carry, its bytes all
+    // different so a piece lost or doubled shows.
+    let whole: Vec<u8> = (0..5_000_000_u32).map(|at| (at % 251) as u8).collect();
+    let id = "up_0123456789abcdef0123456789abcdef";
+    let upload = format!("{base}/{id}");
+
+    // The upload is opened with its size, and opening it again answers where
+    // it stands rather than opening a second one.
+    let (status, opened) = backend
+        .post(&upload, &json!({"size": whole.len()}), &[])
+        .await;
+    assert_eq!(status, 201, "{opened}");
+    assert_eq!(opened["offset"], json!(0), "{opened}");
+    let (status, again) = backend
+        .post(&upload, &json!({"size": whole.len()}), &[])
+        .await;
+    assert_eq!((status, &again["offset"]), (200, &json!(0)), "{again}");
+
+    // The first piece goes at the offset it stands at, and the answer says
+    // where the next one does.
+    let piece = |from: usize, of: usize| whole[from..(from + of).min(whole.len())].to_vec();
+    let first = piece(0, 1_000_000);
+    let reply = backend
+        .send(
+            hyper::Method::PUT,
+            &format!("{upload}?offset=0"),
+            &first,
+            &[],
+        )
+        .await;
+    let (status, standing) = json_of(reply).await;
+    assert_eq!(status, 200, "{standing}");
+    assert_eq!(standing["offset"], json!(1_000_000), "{standing}");
+
+    // A piece sent again from where it already stands is refused, with the
+    // offset to send from: the workspace never keeps it twice.
+    let reply = backend
+        .send(
+            hyper::Method::PUT,
+            &format!("{upload}?offset=0"),
+            &first,
+            &[],
+        )
+        .await;
+    let (status, refused) = json_of(reply).await;
+    assert_eq!(
+        (status, &refused["error"]["code"]),
+        (409, &json!("offset_mismatch")),
+        "{refused}"
+    );
+    let (status, standing) = backend.get(&upload).await;
+    assert_eq!((status, &standing["offset"]), (200, &json!(1_000_000)));
+
+    // After a connection that stopped, the next piece continues from where
+    // the workspace says the upload stands, and the last one answers the
+    // content the whole file is kept under.
+    let mut at = standing["offset"].as_u64().unwrap() as usize;
+    let mut content = Value::Null;
+    while at < whole.len() {
+        let chunk = piece(at, 1_000_000);
+        let reply = backend
+            .send(
+                hyper::Method::PUT,
+                &format!("{upload}?offset={at}"),
+                &chunk,
+                &[],
+            )
+            .await;
+        let (status, answered) = json_of(reply).await;
+        assert!(status == 200 || status == 201, "{answered}");
+        at += chunk.len();
+        assert_eq!(
+            answered["content"].is_string(),
+            at == whole.len(),
+            "{answered}"
+        );
+        if at == whole.len() {
+            content = answered["content"].clone();
+        }
+    }
+    // Every byte of it, byte for byte, and nothing of the upload left open.
+    let reply = backend
+        .send(
+            hyper::Method::GET,
+            &format!(
+                "/v1/workspaces/{}/content/{}",
+                made["id"].as_str().unwrap(),
+                content.as_str().unwrap()
+            ),
+            b"",
+            &[],
+        )
+        .await;
+    let body = reply.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(body.as_ref(), whole.as_slice());
+    let (status, gone) = backend.get(&upload).await;
+    assert_eq!(
+        (status, &gone["error"]["code"]),
+        (404, &json!("not_found")),
+        "{gone}"
+    );
+}

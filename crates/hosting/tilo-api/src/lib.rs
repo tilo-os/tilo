@@ -168,6 +168,10 @@ pub struct Server {
     /// What the API keeps besides the store: remembered answers, webhook
     /// deliveries.
     v1: v1::State,
+    /// The uploads a key opened and has yet to send every byte of: where
+    /// each stands, so a connection that failed continues instead of
+    /// starting again.
+    uploads: content::Uploads,
     /// Whether the site serves the sign-in page every approval lands on, as
     /// last seen and when ([`Self::sign_in_page`]).
     sign_in_seen: Mutex<Option<(std::time::Instant, Result<(), String>)>>,
@@ -218,6 +222,7 @@ impl Server {
             approved_keys: Mutex::default(),
             sign_in_seen: Mutex::default(),
             v1: v1::State::default(),
+            uploads: content::Uploads::default(),
         }))
     }
 
@@ -259,6 +264,11 @@ impl Server {
     /// Answer one HTTP request.
     pub async fn respond(self: &Arc<Self>, request: Request<Incoming>) -> Reply {
         let (parts, body) = request.into_parts();
+        // A piece of a large upload is read as it arrives, so a file larger
+        // than one body goes up whole.
+        if content::streams(&parts.method, parts.uri.path()) {
+            return self.upload_piece(&parts, body).await;
+        }
         let uploading = v1::uploads(&parts.method, parts.uri.path());
         let limit = if uploading {
             content::MAX_CONTENT_BYTES
@@ -267,7 +277,7 @@ impl Server {
         };
         let body = match Limited::new(body, limit).collect().await {
             Ok(collected) => collected.to_bytes(),
-            Err(_) if uploading => return content::too_large(),
+            Err(_) if uploading => return v1::refusal(&content::too_large()),
             Err(_) => return text(StatusCode::PAYLOAD_TOO_LARGE, "request body exceeds 1 MiB"),
         };
         self.dispatch(
@@ -278,6 +288,91 @@ impl Server {
             &body,
         )
         .await
+    }
+
+    /// `PUT /v1/workspaces/{workspace}/uploads/{upload}`: the upload's next
+    /// bytes, sent on as they arrive rather than held whole.
+    async fn upload_piece(
+        self: &Arc<Self>,
+        parts: &hyper::http::request::Parts,
+        body: Incoming,
+    ) -> Reply {
+        let path = parts.uri.path();
+        let Ok((_, params)) = v1::routing::find(&parts.method, path) else {
+            return text(StatusCode::NOT_FOUND, "not found");
+        };
+        let (workspace, upload) = (
+            params.get("workspace").to_owned(),
+            params.get("upload").to_owned(),
+        );
+        let at = parts
+            .uri
+            .query()
+            .and_then(|query| {
+                url::form_urlencoded::parse(query.as_bytes())
+                    .find(|(name, _)| name == "offset")
+                    .map(|(_, value)| value.into_owned())
+            })
+            .and_then(|at| at.trim().parse().ok());
+        let grant = match self.grant_of(&parts.headers) {
+            Ok(grant) => grant,
+            Err(reply) => return *reply,
+        };
+        if !oauth::scope_reaches(&grant.scope, Some(&workspace)) {
+            return json_reply(
+                StatusCode::FORBIDDEN,
+                &json!({"error": {"code": "beyond_scope",
+                                  "message": "this key does not reach that workspace",
+                                  "next_steps": ["GET /v1/workspaces names the workspaces it reaches"]}}),
+            );
+        }
+        let session = match self.api_session(&grant).await {
+            Ok(session) => session,
+            Err(refused) => return json_reply(refused.status, &refused.json()),
+        };
+        let mut body = Limited::new(body, content::MAX_CONTENT_BYTES);
+        // The caller's offset is a promise about where this request starts;
+        // each piece after the first follows the one before it.
+        let mut at = at;
+        let mut held: Vec<u8> = Vec::with_capacity(content::PIECE);
+        loop {
+            let frame = match body.frame().await {
+                None => break,
+                Some(Ok(frame)) => frame,
+                // Past what one piece carries, or cut short: nothing of it
+                // was stored by this request.
+                Some(Err(_)) => return v1::refusal(&content::too_large()),
+            };
+            if let Some(data) = frame.data_ref() {
+                held.extend_from_slice(data);
+            }
+            if held.len() < content::PIECE {
+                continue;
+            }
+            match self
+                .uploads
+                .append(&session, &grant.id, &workspace, &upload, at, &held)
+                .await
+            {
+                Ok(content::Sent::More(_)) => {
+                    held.clear();
+                    at = None;
+                }
+                Ok(content::Sent::Done(done)) => {
+                    return json_reply(StatusCode::CREATED, &done);
+                }
+                Err(refused) => return v1::refusal(&refused),
+            }
+        }
+        match self
+            .uploads
+            .append(&session, &grant.id, &workspace, &upload, at, &held)
+            .await
+        {
+            Ok(content::Sent::More(placement)) => json_reply(StatusCode::OK, &placement),
+            Ok(content::Sent::Done(done)) => json_reply(StatusCode::CREATED, &done),
+            Err(refused) => v1::refusal(&refused),
+        }
     }
 
     /// Routing, separated from hyper's body type for tests.

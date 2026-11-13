@@ -20,6 +20,7 @@
 //! may change its records (an editor, an agent of one) puts files, and one
 //! who may read it gets them. A viewer only reads.
 
+use std::io::{Read as _, Seek as _, SeekFrom, Write as _};
 use tilo_actions::remote::{
     ActionHostError, CONTENT_GETS_UNAVAILABLE, Caller, ContentGetAnswer, ContentPiece, ContentPut,
     ContentPutStep, ContentPuts, MAX_CONTENT_FRAME_BYTES, Pending, RemoteActionMessage, pending,
@@ -32,9 +33,12 @@ use crate::worker::ConfinedReplica;
 use tilo_relay_protocol::WorkspaceId;
 use ui::permissions::policy::ActionKind;
 
-/// The most bytes one upload into a workspace's store takes: as much as the
-/// host answers a member's request for content with.
-pub const MAX_PUT_BYTES: u64 = 64 * 1024 * 1024;
+/// The most bytes one upload into a workspace's store takes. A file goes up
+/// in pieces whatever its size; this bounds one file so a runaway agent
+/// cannot fill a host's disk with a single upload. The bytes wait on disk,
+/// never in memory ([`StorePut`]), so a file of hundreds of megabytes takes
+/// no more of the host's memory than a small one.
+pub const MAX_PUT_BYTES: u64 = 1024 * 1024 * 1024;
 
 /// One piece of `content` read out of `store`: `length` bytes from `offset`,
 /// or one piece's worth when `length` is zero.
@@ -63,23 +67,33 @@ fn piece(
         tilo_actions::content_hash(content).ok_or_else(|| ActionHostError::InvalidRequest {
             reason: format!("{content} is not a tilo.content:<hash> reference"),
         })?;
-    let bytes = store
-        .read(hash)
-        .ok_or_else(|| ActionHostError::InvalidRequest {
-            reason: format!("this workspace's store holds no {content}"),
-        })?;
-    let size = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+    // Only the piece is read: a caller downloading a file of hundreds of
+    // megabytes asks for it a piece at a time, and reading the whole file
+    // for each piece would read it hundreds of times.
+    let (size, bytes) = if let Ok((size, bytes)) = store.read_range(hash, offset, length) {
+        (size, bytes)
+    } else {
+        // Sealed content keeps its length only in the seal, so it is read
+        // whole and sliced here.
+        let bytes = store
+            .read(hash)
+            .ok_or_else(|| ActionHostError::InvalidRequest {
+                reason: format!("this workspace's store holds no {content}"),
+            })?;
+        let size = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+        let from = usize::try_from(offset).unwrap_or(usize::MAX);
+        let to = usize::try_from(offset.saturating_add(length).min(size)).unwrap_or(usize::MAX);
+        (size, bytes.get(from..to).unwrap_or_default().to_vec())
+    };
     if offset > size {
         return Err(ActionHostError::InvalidRequest {
             reason: format!("the content is {size} bytes: an offset of {offset} is past its end"),
         });
     }
-    let from = usize::try_from(offset).unwrap_or(usize::MAX);
-    let to = usize::try_from(offset.saturating_add(length).min(size)).unwrap_or(usize::MAX);
     Ok(ContentPiece {
         size,
         offset,
-        bytes: bytes.get(from..to).unwrap_or_default().to_vec(),
+        bytes,
     })
 }
 
@@ -91,30 +105,31 @@ impl ContentPuts for StorePuts {
         if size > MAX_PUT_BYTES {
             return Err(ActionHostError::InvalidRequest {
                 reason: format!(
-                    "an upload takes at most {}",
+                    "one file is at most {}: split the archive, or keep the piece the workspace needs",
                     ui::format::memory(MAX_PUT_BYTES)
                 ),
             });
         }
+        let spool = tempfile::tempfile().map_err(|error| ActionHostError::Unavailable {
+            reason: format!("the host has nowhere to keep an upload: {error}"),
+        })?;
         Ok(Box::new(StorePut {
             store: self.0.clone(),
             size,
-            bytes: Vec::new(),
+            spool,
+            written: 0,
         }))
     }
 }
 
-/// One upload, held in memory until it is finished.
+/// One upload: its bytes wait in a file of the host's until the last piece
+/// arrives, so a file of hundreds of megabytes costs no memory. Dropped
+/// unfinished, the file goes with it and nothing is stored.
 struct StorePut {
     store: ContentStore,
     size: u64,
-    bytes: Vec<u8>,
-}
-
-impl StorePut {
-    fn written_len(&self) -> u64 {
-        u64::try_from(self.bytes.len()).unwrap_or(u64::MAX)
-    }
+    spool: std::fs::File,
+    written: u64,
 }
 
 impl ContentPut for StorePut {
@@ -123,37 +138,86 @@ impl ContentPut for StorePut {
     }
 
     fn written(&self) -> u64 {
-        self.written_len()
+        self.written
     }
 
     fn append(&mut self, offset: u64, chunk: &[u8]) -> Result<u64, ActionHostError> {
-        let written = self.written_len();
-        if offset != written {
+        if offset != self.written {
             return Err(ActionHostError::InvalidRequest {
-                reason: format!("the upload has {written} bytes: append at offset {written}"),
+                reason: format!(
+                    "the upload has {} bytes: append at offset {}",
+                    self.written, self.written
+                ),
             });
         }
-        let after = written.saturating_add(u64::try_from(chunk.len()).unwrap_or(u64::MAX));
+        let after = self
+            .written
+            .saturating_add(u64::try_from(chunk.len()).unwrap_or(u64::MAX));
         if after > self.size {
             return Err(ActionHostError::InvalidRequest {
                 reason: format!("the upload began with {} bytes", self.size),
             });
         }
-        self.bytes.extend_from_slice(chunk);
+        self.spool
+            .write_all(chunk)
+            .map_err(|error| ActionHostError::Refused {
+                reason: format!("the host could not keep the upload's bytes: {error}"),
+            })?;
+        self.written = after;
         Ok(after)
     }
 
-    fn finish(self: Box<Self>) -> Result<String, ActionHostError> {
-        let hash = self
+    fn finish(mut self: Box<Self>) -> Result<String, ActionHostError> {
+        if self.written != self.size {
+            return Err(ActionHostError::InvalidRequest {
+                reason: format!(
+                    "the upload has {} of {} bytes: append the rest at offset {}",
+                    self.written, self.size, self.written
+                ),
+            });
+        }
+        let kept = |error: String| ActionHostError::Refused {
+            reason: format!("the workspace could not keep the file: {error}"),
+        };
+        // What the bytes are decides the media type the store keeps them
+        // under: it is read from their first kilobyte, never from a name.
+        let mut head = vec![0_u8; tilo_content_types::HEAD_BYTES];
+        self.spool
+            .seek(SeekFrom::Start(0))
+            .map_err(|error| kept(error.to_string()))?;
+        let read =
+            read_up_to(&mut self.spool, &mut head).map_err(|error| kept(error.to_string()))?;
+        head.truncate(read);
+        let mime = tilo_content_types::sniff(&head).mime;
+        self.spool
+            .seek(SeekFrom::Start(0))
+            .map_err(|error| kept(error.to_string()))?;
+        let stored = self
             .store
-            .put(&self.bytes)
-            .map_err(|error| ActionHostError::Refused {
-                reason: format!("the workspace could not keep the file: {error}"),
-            })?;
-        tilo_actions::content_resource(&hash).ok_or_else(|| ActionHostError::Refused {
+            .put_reader(&mut self.spool, &mime)
+            .map_err(|error| kept(error.to_string()))?;
+        tilo_actions::content_resource(&stored.hash).ok_or_else(|| ActionHostError::Refused {
             reason: "the store named no content".into(),
         })
     }
+}
+
+/// Fill `into` from `file` until it is full or the file ends: how many bytes
+/// were read.
+fn read_up_to(file: &mut std::fs::File, into: &mut [u8]) -> std::io::Result<usize> {
+    let mut read = 0;
+    while let Some(room) = into.get_mut(read..) {
+        if room.is_empty() {
+            break;
+        }
+        match file.read(room) {
+            Ok(0) => break,
+            Ok(bytes) => read = read.saturating_add(bytes),
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(read)
 }
 
 impl WorkspaceActions {

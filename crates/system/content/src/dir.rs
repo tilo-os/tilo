@@ -488,6 +488,11 @@ impl ContentBackend for DirBackend {
             .is_some_and(|path| self.intact(&path, hash, self.limits.max_item_bytes))
     }
 
+    fn size(&self, hash: &str) -> Option<u64> {
+        let path = Self::path_in(&self.root, hash)?;
+        std::fs::metadata(path).ok().map(|metadata| metadata.len())
+    }
+
     fn state(&self, hash: &str) -> ContentState {
         if self.has(hash) {
             ContentState::Resolved
