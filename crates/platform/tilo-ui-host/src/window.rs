@@ -1091,6 +1091,18 @@ impl AppWindow {
             _ => composed,
         };
         let composed = crate::shell::header_rules(composed);
+        // A window that had nothing at all to list and now lists something shows its columns
+        // again, and opens on the screen it would have opened on: the front of a column that was
+        // gone is no screen to keep (a notebook staged after its window opened keeps its tree in
+        // front on a phone, rather than the first note).
+        if !composed.props.contains_key(crate::shell::NOTHING_LISTED)
+            && self
+                .built
+                .as_ref()
+                .is_some_and(|built| built.props.contains_key(crate::shell::NOTHING_LISTED))
+        {
+            self.front = None;
+        }
         let composed = match self.front {
             // A shell built anew opens on the screen a new window opens on: the window hands it
             // the one it shows, so the person stays where they are.
