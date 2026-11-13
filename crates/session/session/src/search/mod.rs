@@ -838,7 +838,7 @@ impl SessionSearch {
             let Some((order, kind)) = own
                 .iter()
                 .position(|action| action.address.resource.as_str() == resource.as_str())
-                .map(|at| (at, own[at].resource_kind.clone()))
+                .and_then(|at| own.get(at).map(|action| (at, action.resource_kind.clone())))
             else {
                 continue;
             };

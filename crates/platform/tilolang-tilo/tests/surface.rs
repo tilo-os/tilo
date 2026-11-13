@@ -163,13 +163,10 @@ fn a_bound_fields_edit_names_a_verb_the_surface_publishes() {
     );
 }
 
-/// A note's `edit-text` lists the type's editable fields by their **names** — `title` and
-/// `body`, never the internal ids a record stores them under — so an agent reads the field to
-/// set from the verb itself. `edit-text` takes `body` and writes the note's body.
-#[test]
-fn an_edit_verb_names_its_fields_the_app_declares_and_takes_one() {
-    // A package with a note's shape — a title, a body and a flag — the same fields the Notes
-    // app declares; it stands alone so it compiles without another app's records.
+/// A package with a note's shape — a title, a body and a flag — the same fields the Notes app
+/// declares; it stands alone so it compiles without another app's records. What it compiles to,
+/// and the planner a surface that only builds its verbs is published with.
+fn note_package() -> (Meta, Arc<dyn Planner>) {
     const NOTE: &str = r#"app so.tilo.lang.note "Note"
 
 type Note {
@@ -192,6 +189,15 @@ view note(n: Note) {
     let meta = packages[0].meta.clone();
     replica.host.root_of(&meta.app).unwrap();
     replica.commit();
+    (meta, Arc::new(NoPlanner))
+}
+
+/// A note's `edit-text` lists the type's editable fields by their **names** — `title` and
+/// `body`, never the internal ids a record stores them under — so an agent reads the field to
+/// set from the verb itself.
+#[test]
+fn an_edit_verb_names_its_fields_the_app_declares() {
+    let (meta, _) = note_package();
     let surfaces = package_surfaces(&meta);
     let note = surfaces
         .iter()
@@ -232,10 +238,15 @@ view note(n: Note) {
         .as_array()
         .expect("the flag names its choices");
     assert_eq!(flag_choices, &[json!("pinned")]);
+}
 
+/// `edit-text` takes `body` and writes the note's body: a name the app declares, a control's own
+/// internal id, and a refusal with a sentence for a field the type lacks.
+#[test]
+fn an_edit_verb_takes_a_field_by_the_name_the_app_declares() {
+    let (meta, planner) = note_package();
     // The verb's own binding takes the name, and the edit reaches the note's body.
     let note_id = tilolang_tilo::publish::resource_id(APP_NOTE, "anote");
-    let planner: Arc<dyn Planner> = Arc::new(NoPlanner);
     let bound = publish_record(
         &ActionTypes::new(&meta, &planner, &SourceWords),
         "Note",
@@ -290,17 +301,17 @@ view note(n: Note) {
 
     // `field: "body"` is accepted: it names a field the verb offers, and the edit is the
     // note's body, not a field id.
-    let planned = tilolang_tilo::publish::edit_action(
+    let by_name = tilolang_tilo::publish::edit_action(
         &meta,
         "Note",
-        &note_id.trim_start_matches(&format!("tl:{APP_NOTE}:")),
+        note_id.trim_start_matches(&format!("tl:{APP_NOTE}:")),
         "body",
         &json!({"rich": [{"id": "", "kind": "paragraph", "text": "milk and eggs",
                           "marks": [], "attrs": {}, "children": []}]}),
     )
     .expect("`body` names the note's body");
     assert_eq!(
-        planned.args["field"],
+        by_name.args["field"],
         json!(crate::fixtures::field_id(&meta, "Note", "body")),
         "the name is mapped to the id the record stores it under"
     );

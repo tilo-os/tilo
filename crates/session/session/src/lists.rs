@@ -829,11 +829,8 @@ mod tests {
     fn fixed_lists_have_their_own_generation() {
         let one = Lists::fixed(AppLists::default());
         let two = Lists::fixed(AppLists::default());
-        assert_eq!(
-            one.snapshot().0,
-            one.clone().snapshot().0,
-            "a clone shares it"
-        );
+        let shared = one.clone();
+        assert_eq!(one.snapshot().0, shared.snapshot().0, "a clone shares it");
         assert_ne!(
             one.snapshot().0,
             two.snapshot().0,

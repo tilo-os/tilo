@@ -735,9 +735,6 @@ fn the_system_open_stands_a_new_place() {
 /// first, then down.
 #[test]
 fn places_opened_beside_one_place_stand_clear_of_it_and_each_other() {
-    let _settled = ui::motion::testing::settled();
-    let mut session = session();
-    step(&mut session);
     // The app: a conversation and three things opened beside it, each a published resource.
     struct Things;
     impl Published for Things {
@@ -775,6 +772,10 @@ fn places_opened_beside_one_place_stand_clear_of_it_and_each_other() {
             Vec::new()
         }
     }
+
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    step(&mut session);
     session.publish(Rc::new(std::cell::RefCell::new(Things)));
     step(&mut session);
     step(&mut session);
@@ -863,9 +864,6 @@ fn places_opened_beside_one_place_stand_clear_of_it_and_each_other() {
 // (`shell.md` §3): one mailbox is open, whether opened by its root or by a message in it.
 #[test]
 fn the_open_brings_a_place_of_the_same_root_forward_rather_than_standing_a_second() {
-    let _settled = ui::motion::testing::settled();
-    let mut session = session();
-    step(&mut session);
     // The app: a mailbox root and a thread inside it, as an app publishes its record.
     struct Mail;
     impl Published for Mail {
@@ -912,6 +910,10 @@ fn the_open_brings_a_place_of_the_same_root_forward_rather_than_standing_a_secon
             Vec::new()
         }
     }
+
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    step(&mut session);
     session.publish(Rc::new(std::cell::RefCell::new(Mail)));
     step(&mut session);
     step(&mut session);

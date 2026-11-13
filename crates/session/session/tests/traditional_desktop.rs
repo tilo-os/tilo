@@ -280,13 +280,7 @@ fn every_pan_gesture_pans_every_time() {
     });
 
     // Where the frame stands on the screen: the camera on the place.
-    let frame_on_screen = |session: &Session| {
-        session
-            .shell_controls(&titled)
-            .into_iter()
-            .next()
-            .map(|(x, y, w, h)| (x, y, w, h))
-    };
+    let frame_on_screen = |session: &Session| session.shell_controls(&titled).into_iter().next();
     let start = frame_on_screen(&session).expect("the frame stands on the canvas");
     let mut seen = start;
 

@@ -363,11 +363,11 @@ mod tests {
         // The name the switch reads off it, as `style_label` reads it: the doc line, else the
         // view's name, else the package — never empty.
         let label = if !reading.line.is_empty() {
-            reading.line.clone()
+            &reading.line
         } else if !reading.name.is_empty() {
-            reading.name.clone()
+            &reading.name
         } else {
-            reading.package.clone()
+            &reading.package
         };
         assert_eq!(
             label, "atest.broken",
