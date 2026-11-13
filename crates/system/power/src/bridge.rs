@@ -227,77 +227,81 @@ impl PowerBridge {
 mod tests {
     use super::*;
 
-    #[test]
-    fn the_bridge_delivers_signals_commands_and_policy_once_to_shared_mailboxes() {
+    tilo_test_env::scenario! {
+        fn the_bridge_delivers_once_and_wakes_the_compositor;
+
+        phase the_bridge_delivers_signals_commands_and_policy_once_to_shared_mailboxes;
         {
-            let b = PowerBridge::new();
-            b.push_signal(PowerSignal::Lock);
-            b.push_signal(PowerSignal::Notify(PowerNotification {
-                percent: 12,
-                critical: false,
-                suspending: false,
-            }));
-            assert_eq!(b.pending_signals(), 2);
-            let drained = b.drain_signals();
-            assert_eq!(drained.len(), 2);
-            assert_eq!(drained[0], PowerSignal::Lock);
-            assert!(b.drain_signals().is_empty());
+            {
+                let b = PowerBridge::new();
+                b.push_signal(PowerSignal::Lock);
+                b.push_signal(PowerSignal::Notify(PowerNotification {
+                    percent: 12,
+                    critical: false,
+                    suspending: false,
+                }));
+                assert_eq!(b.pending_signals(), 2);
+                let drained = b.drain_signals();
+                assert_eq!(drained.len(), 2);
+                assert_eq!(drained[0], PowerSignal::Lock);
+                assert!(b.drain_signals().is_empty());
+            }
+            {
+                let b = PowerBridge::new();
+                b.request_suspend();
+                assert_eq!(b.drain_commands(), vec![PowerCommand::Suspend]);
+                assert!(b.drain_commands().is_empty());
+            }
+            {
+                let a = PowerBridge::new();
+                let b = a.clone();
+                a.request_suspend();
+                assert_eq!(b.drain_commands(), vec![PowerCommand::Suspend]);
+            }
+            {
+                let service = PowerBridge::new();
+                let compositor = service.clone();
+                assert_eq!(compositor.active_profile(), None);
+                service.note_active_profile("power-saver");
+                assert_eq!(compositor.active_profile().as_deref(), Some("power-saver"));
+                service.note_active_profile("performance");
+                assert_eq!(compositor.active_profile().as_deref(), Some("performance"));
+            }
+            {
+                let bridge = PowerBridge::new();
+                let policy = PowerPolicy::default();
+                bridge.update_policy(policy);
+                assert_eq!(
+                    bridge.drain_commands(),
+                    vec![PowerCommand::UpdatePolicy(policy)]
+                );
+            }
         }
+
+        phase every_signal_wakes_the_compositor_loop;
         {
-            let b = PowerBridge::new();
-            b.request_suspend();
-            assert_eq!(b.drain_commands(), vec![PowerCommand::Suspend]);
-            assert!(b.drain_commands().is_empty());
-        }
-        {
-            let a = PowerBridge::new();
-            let b = a.clone();
-            a.request_suspend();
-            assert_eq!(b.drain_commands(), vec![PowerCommand::Suspend]);
-        }
-        {
-            let service = PowerBridge::new();
-            let compositor = service.clone();
-            assert_eq!(compositor.active_profile(), None);
-            service.note_active_profile("power-saver");
-            assert_eq!(compositor.active_profile().as_deref(), Some("power-saver"));
-            service.note_active_profile("performance");
-            assert_eq!(compositor.active_profile().as_deref(), Some("performance"));
-        }
-        {
+            use std::sync::atomic::{AtomicUsize, Ordering};
             let bridge = PowerBridge::new();
-            let policy = PowerPolicy::default();
-            bridge.update_policy(policy);
+            // Before a wake is set a signal still queues.
+            bridge.push_signal(PowerSignal::Lock);
+            let woken = Arc::new(AtomicUsize::new(0));
+            let counter = Arc::clone(&woken);
+            bridge.set_signal_wake(Arc::new(move || {
+                counter.fetch_add(1, Ordering::SeqCst);
+            }));
+            let service = bridge.clone();
+            service.push_signal(PowerSignal::ResumedFromSleep);
+            service.push_signal(PowerSignal::PreparingForSleep);
+            assert_eq!(woken.load(Ordering::SeqCst), 2);
             assert_eq!(
-                bridge.drain_commands(),
-                vec![PowerCommand::UpdatePolicy(policy)]
+                bridge.drain_signals(),
+                vec![
+                    PowerSignal::Lock,
+                    PowerSignal::ResumedFromSleep,
+                    PowerSignal::PreparingForSleep
+                ]
             );
         }
-    }
-
-    #[test]
-    fn every_signal_wakes_the_compositor_loop() {
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        let bridge = PowerBridge::new();
-        // Before a wake is set a signal still queues.
-        bridge.push_signal(PowerSignal::Lock);
-        let woken = Arc::new(AtomicUsize::new(0));
-        let counter = Arc::clone(&woken);
-        bridge.set_signal_wake(Arc::new(move || {
-            counter.fetch_add(1, Ordering::SeqCst);
-        }));
-        let service = bridge.clone();
-        service.push_signal(PowerSignal::ResumedFromSleep);
-        service.push_signal(PowerSignal::PreparingForSleep);
-        assert_eq!(woken.load(Ordering::SeqCst), 2);
-        assert_eq!(
-            bridge.drain_signals(),
-            vec![
-                PowerSignal::Lock,
-                PowerSignal::ResumedFromSleep,
-                PowerSignal::PreparingForSleep
-            ]
-        );
     }
 
     #[tokio::test(start_paused = true)]

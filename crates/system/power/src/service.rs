@@ -885,241 +885,245 @@ async fn next_or_pending<S: futures_util::Stream + Unpin>(
 mod tests {
     use super::*;
 
-    #[test]
-    fn service_reacts_to_lid_sleep_and_signal_edges() {
-        {
-            let now = Instant::now();
-            let retry = stream_retry_after(now);
-            assert!(retry > now);
-            assert_eq!(retry.duration_since(now), SIGNAL_STREAM_RETRY_DELAY);
-        }
-        {
-            assert!(receives_seat_buttons(Some("seat0")));
-            assert!(receives_seat_buttons(None));
-            assert!(receives_seat_buttons(Some("")));
-            assert!(!receives_seat_buttons(Some("seat-pr1307")));
-            assert!(!receives_seat_buttons(Some("seat1")));
-        }
-        {
-            let row = |what: &str, who: &str, mode: &str, pid: u32| -> LogindInhibitorRow {
-                (what.into(), who.into(), "why".into(), mode.into(), 0, pid)
-            };
-            let own = 100;
-            // Nothing held, Tilo's own locks, delay locks and this process's locks are no
-            // hold.
-            assert_eq!(foreign_sleep_hold(&[], own), None);
-            assert_eq!(
-                foreign_sleep_hold(
-                    &[
-                        row("idle:sleep", "Tilo power", "block", 7),
-                        row("sleep", "Tilo compositor", "delay", own),
-                        row("sleep", "NetworkManager", "delay", 3),
-                        row("handle-lid-switch", "Tilo compositor", "block", own),
-                        row("sleep", "anything", "block", own),
-                        row("shutdown", "packagekit", "block", 9),
-                    ],
-                    own,
-                ),
-                None
-            );
-            // A remote admin's `sleep` lock holds suspend only: the screen still blanks and
-            // locks.
-            assert_eq!(
-                foreign_sleep_hold(&[row("sleep", "tilo-vm", "block", 5)], own),
-                Some((vec!["tilo-vm: why".to_string()], INHIBIT_SUSPEND))
-            );
-            // An `idle` lock keeps the whole session awake.
-            assert_eq!(
-                foreign_sleep_hold(
-                    &[
-                        row("idle", "mpv", "block", 6),
-                        row("sleep", "tilo-vm", "block", 5),
-                    ],
-                    own,
-                ),
-                Some((
-                    vec!["mpv: why".to_string(), "tilo-vm: why".to_string()],
-                    INHIBIT_POWER
-                ))
-            );
-        }
-        {
-            let mut p = PowerPolicy {
-                lid_close_action: PowerAction::Suspend,
-                ..Default::default()
-            };
-            // First observation never acts (records only).
-            assert_eq!(lid_edge_effect(None, true, &p), Effect::None);
-            assert_eq!(lid_edge_effect(None, false, &p), Effect::None);
-            // open→closed acts.
-            assert_eq!(lid_edge_effect(Some(false), true, &p), Effect::Suspend);
-            // staying closed does not re-act.
-            assert_eq!(lid_edge_effect(Some(true), true, &p), Effect::None);
-            // closing→opening does not act.
-            assert_eq!(lid_edge_effect(Some(true), false, &p), Effect::None);
-            p.lid_close_action = PowerAction::Lock;
-            assert_eq!(lid_edge_effect(Some(false), true, &p), Effect::Lock);
-            p.lid_close_action = PowerAction::Ignore;
-            assert_eq!(lid_edge_effect(Some(false), true, &p), Effect::None);
-        }
-        {
-            assert_eq!(Effect::from(Some(PowerAction::Suspend)), Effect::Suspend);
-            assert_eq!(Effect::from(Some(PowerAction::Lock)), Effect::Lock);
-            assert_eq!(Effect::from(Some(PowerAction::Ignore)), Effect::None);
-            assert_eq!(Effect::from(None), Effect::None);
-        }
-        {
-            assert_eq!(sleep_reaction(true), PowerSignal::PreparingForSleep);
-            assert_eq!(sleep_reaction(false), PowerSignal::ResumedFromSleep);
-        }
-        {
-            let bridge = crate::bridge::PowerBridge::new();
-            bridge.push_signal(PowerSignal::SuspendFailed);
-            assert_eq!(bridge.drain_signals(), vec![PowerSignal::SuspendFailed]);
-        }
-    }
+    tilo_test_env::scenario! {
+        fn the_service_reacts_to_edges_deadlines_and_battery_events;
 
-    #[test]
-    fn deadlines_follow_the_policy_and_the_history() {
+        phase service_reacts_to_lid_sleep_and_signal_edges;
         {
-            let now = Instant::now();
-            let mut deadlines = Deadlines::default();
-            assert_eq!(deadlines.next(), None, "nothing armed: the loop only waits");
-            deadlines.history = Some(now + HISTORY_SAMPLE_RETRY);
-            deadlines.foreign_inhibitors = Some(now + FOREIGN_INHIBITOR_POLL);
-            assert_eq!(deadlines.next(), Some(now + FOREIGN_INHIBITOR_POLL));
-            assert!(!take_due(&mut deadlines.foreign_inhibitors, now));
-            assert!(take_due(
-                &mut deadlines.foreign_inhibitors,
-                now + FOREIGN_INHIBITOR_POLL
-            ));
-            assert_eq!(
-                deadlines.foreign_inhibitors, None,
-                "a due deadline is spent"
-            );
-            assert_eq!(deadlines.next(), Some(now + HISTORY_SAMPLE_RETRY));
-        }
-        {
-            let never = PowerPolicy {
-                idle_blank: None,
-                idle_lock: None,
-                idle_suspend: None,
-                ..PowerPolicy::default()
-            };
-            assert!(!idle_timeout_armed(&never));
-            for armed in [
-                PowerPolicy {
-                    idle_blank: Some(Duration::from_secs(60)),
-                    ..never
-                },
-                PowerPolicy {
-                    idle_lock: Some(Duration::from_secs(60)),
-                    ..never
-                },
-                PowerPolicy {
-                    idle_suspend: Some(Duration::from_secs(60)),
-                    ..never
-                },
-            ] {
-                assert!(idle_timeout_armed(&armed));
+            {
+                let now = Instant::now();
+                let retry = stream_retry_after(now);
+                assert!(retry > now);
+                assert_eq!(retry.duration_since(now), SIGNAL_STREAM_RETRY_DELAY);
+            }
+            {
+                assert!(receives_seat_buttons(Some("seat0")));
+                assert!(receives_seat_buttons(None));
+                assert!(receives_seat_buttons(Some("")));
+                assert!(!receives_seat_buttons(Some("seat-pr1307")));
+                assert!(!receives_seat_buttons(Some("seat1")));
+            }
+            {
+                let row = |what: &str, who: &str, mode: &str, pid: u32| -> LogindInhibitorRow {
+                    (what.into(), who.into(), "why".into(), mode.into(), 0, pid)
+                };
+                let own = 100;
+                // Nothing held, Tilo's own locks, delay locks and this process's locks are no
+                // hold.
+                assert_eq!(foreign_sleep_hold(&[], own), None);
+                assert_eq!(
+                    foreign_sleep_hold(
+                        &[
+                            row("idle:sleep", "Tilo power", "block", 7),
+                            row("sleep", "Tilo compositor", "delay", own),
+                            row("sleep", "NetworkManager", "delay", 3),
+                            row("handle-lid-switch", "Tilo compositor", "block", own),
+                            row("sleep", "anything", "block", own),
+                            row("shutdown", "packagekit", "block", 9),
+                        ],
+                        own,
+                    ),
+                    None
+                );
+                // A remote admin's `sleep` lock holds suspend only: the screen still blanks and
+                // locks.
+                assert_eq!(
+                    foreign_sleep_hold(&[row("sleep", "tilo-vm", "block", 5)], own),
+                    Some((vec!["tilo-vm: why".to_string()], INHIBIT_SUSPEND))
+                );
+                // An `idle` lock keeps the whole session awake.
+                assert_eq!(
+                    foreign_sleep_hold(
+                        &[
+                            row("idle", "mpv", "block", 6),
+                            row("sleep", "tilo-vm", "block", 5),
+                        ],
+                        own,
+                    ),
+                    Some((
+                        vec!["mpv: why".to_string(), "tilo-vm: why".to_string()],
+                        INHIBIT_POWER
+                    ))
+                );
+            }
+            {
+                let mut p = PowerPolicy {
+                    lid_close_action: PowerAction::Suspend,
+                    ..Default::default()
+                };
+                // First observation never acts (records only).
+                assert_eq!(lid_edge_effect(None, true, &p), Effect::None);
+                assert_eq!(lid_edge_effect(None, false, &p), Effect::None);
+                // open→closed acts.
+                assert_eq!(lid_edge_effect(Some(false), true, &p), Effect::Suspend);
+                // staying closed does not re-act.
+                assert_eq!(lid_edge_effect(Some(true), true, &p), Effect::None);
+                // closing→opening does not act.
+                assert_eq!(lid_edge_effect(Some(true), false, &p), Effect::None);
+                p.lid_close_action = PowerAction::Lock;
+                assert_eq!(lid_edge_effect(Some(false), true, &p), Effect::Lock);
+                p.lid_close_action = PowerAction::Ignore;
+                assert_eq!(lid_edge_effect(Some(false), true, &p), Effect::None);
+            }
+            {
+                assert_eq!(Effect::from(Some(PowerAction::Suspend)), Effect::Suspend);
+                assert_eq!(Effect::from(Some(PowerAction::Lock)), Effect::Lock);
+                assert_eq!(Effect::from(Some(PowerAction::Ignore)), Effect::None);
+                assert_eq!(Effect::from(None), Effect::None);
+            }
+            {
+                assert_eq!(sleep_reaction(true), PowerSignal::PreparingForSleep);
+                assert_eq!(sleep_reaction(false), PowerSignal::ResumedFromSleep);
+            }
+            {
+                let bridge = crate::bridge::PowerBridge::new();
+                bridge.push_signal(PowerSignal::SuspendFailed);
+                assert_eq!(bridge.drain_signals(), vec![PowerSignal::SuspendFailed]);
             }
         }
-        {
-            let now_secs = 1_000 * 60 + 30;
-            assert_eq!(
-                history_wait(Some(1_015), now_secs),
-                Duration::from_secs(14 * 60 + 30),
-                "wakes at the first second the next point lands"
-            );
-            assert_eq!(
-                history_wait(Some(1_000), now_secs),
-                HISTORY_SAMPLE_FLOOR,
-                "an overdue point still waits the floor"
-            );
-            assert_eq!(history_wait(None, now_secs), HISTORY_SAMPLE_RETRY);
-            assert!(HISTORY_SAMPLE_RETRY >= HISTORY_SAMPLE_FLOOR);
-        }
-    }
 
-    #[test]
-    fn battery_events_toast_and_suspend_according_to_policy() {
+        phase deadlines_follow_the_policy_and_the_history;
         {
-            let p = PowerPolicy::default();
-            let (signals, suspend) = battery_reaction(&[BatteryEvent::Low(12)], &p);
-            assert!(!suspend);
-            assert_eq!(signals.len(), 1);
-            match &signals[0] {
-                PowerSignal::Notify(n) => {
-                    assert_eq!(n.percent, 12);
-                    assert!(!n.critical);
-                    assert!(!n.suspending, "the low heads-up sleeps nothing");
+            {
+                let now = Instant::now();
+                let mut deadlines = Deadlines::default();
+                assert_eq!(deadlines.next(), None, "nothing armed: the loop only waits");
+                deadlines.history = Some(now + HISTORY_SAMPLE_RETRY);
+                deadlines.foreign_inhibitors = Some(now + FOREIGN_INHIBITOR_POLL);
+                assert_eq!(deadlines.next(), Some(now + FOREIGN_INHIBITOR_POLL));
+                assert!(!take_due(&mut deadlines.foreign_inhibitors, now));
+                assert!(take_due(
+                    &mut deadlines.foreign_inhibitors,
+                    now + FOREIGN_INHIBITOR_POLL
+                ));
+                assert_eq!(
+                    deadlines.foreign_inhibitors, None,
+                    "a due deadline is spent"
+                );
+                assert_eq!(deadlines.next(), Some(now + HISTORY_SAMPLE_RETRY));
+            }
+            {
+                let never = PowerPolicy {
+                    idle_blank: None,
+                    idle_lock: None,
+                    idle_suspend: None,
+                    ..PowerPolicy::default()
+                };
+                assert!(!idle_timeout_armed(&never));
+                for armed in [
+                    PowerPolicy {
+                        idle_blank: Some(Duration::from_secs(60)),
+                        ..never
+                    },
+                    PowerPolicy {
+                        idle_lock: Some(Duration::from_secs(60)),
+                        ..never
+                    },
+                    PowerPolicy {
+                        idle_suspend: Some(Duration::from_secs(60)),
+                        ..never
+                    },
+                ] {
+                    assert!(idle_timeout_armed(&armed));
                 }
-                other => panic!("expected a notify, got {other:?}"),
+            }
+            {
+                let now_secs = 1_000 * 60 + 30;
+                assert_eq!(
+                    history_wait(Some(1_015), now_secs),
+                    Duration::from_secs(14 * 60 + 30),
+                    "wakes at the first second the next point lands"
+                );
+                assert_eq!(
+                    history_wait(Some(1_000), now_secs),
+                    HISTORY_SAMPLE_FLOOR,
+                    "an overdue point still waits the floor"
+                );
+                assert_eq!(history_wait(None, now_secs), HISTORY_SAMPLE_RETRY);
+                assert!(HISTORY_SAMPLE_RETRY >= HISTORY_SAMPLE_FLOOR);
             }
         }
-        {
-            let p = PowerPolicy {
-                critical_action: PowerAction::Suspend,
-                ..Default::default()
-            };
-            let (signals, suspend) = battery_reaction(&[BatteryEvent::Critical(4)], &p);
-            assert!(suspend, "critical + suspend policy ⇒ auto-suspend");
-            assert!(matches!(
-                signals[0],
-                PowerSignal::Notify(ref n) if n.critical && n.suspending && n.percent == 4
-            ));
-        }
-        {
-            let p = PowerPolicy {
-                critical_action: PowerAction::Ignore,
-                ..Default::default()
-            };
-            let (signals, suspend) = battery_reaction(&[BatteryEvent::Critical(3)], &p);
-            assert!(!suspend, "ignore policy ⇒ warn only, no suspend");
-            // Still warns (critical toast), just doesn't act.
-            assert_eq!(signals.len(), 1);
-            assert!(matches!(
-                signals[0],
-                PowerSignal::Notify(ref n) if n.critical && !n.suspending
-            ));
-        }
-        {
-            let p = PowerPolicy::default();
-            let (signals, suspend) = battery_reaction(&[BatteryEvent::Recovered], &p);
-            assert!(signals.is_empty());
-            assert!(!suspend);
-        }
-        // End-to-end pure path: a discharging battery crossing the low then the
-        // critical threshold produces exactly the toasts and suspend the service would
-        // apply, the same `BatteryMonitor` and `battery_reaction` the async loop uses.
-        {
-            use crate::battery::BatteryState;
-            let p = PowerPolicy {
-                low_battery_percent: 15,
-                critical_battery_percent: 5,
-                ..Default::default()
-            };
-            let mut mon = BatteryMonitor::new();
-            let disch = |pct| BatterySnapshot {
-                present: true,
-                percent: pct,
-                state: BatteryState::Discharging,
-            };
 
-            // Healthy: nothing.
-            let (s, _) = battery_reaction(&mon.evaluate(&disch(40), &p), &p);
-            assert!(s.is_empty());
-            // Low: one non-critical toast.
-            let (s, susp) = battery_reaction(&mon.evaluate(&disch(14), &p), &p);
-            assert_eq!(s.len(), 1);
-            assert!(!susp);
-            // Critical: critical toast and suspend.
-            let (s, susp) = battery_reaction(&mon.evaluate(&disch(4), &p), &p);
-            assert!(susp);
-            assert!(matches!(s[0], PowerSignal::Notify(ref n) if n.critical));
-            // Deeper: silent (latched).
-            let (s, susp) = battery_reaction(&mon.evaluate(&disch(2), &p), &p);
-            assert!(s.is_empty() && !susp);
+        phase battery_events_toast_and_suspend_according_to_policy;
+        {
+            {
+                let p = PowerPolicy::default();
+                let (signals, suspend) = battery_reaction(&[BatteryEvent::Low(12)], &p);
+                assert!(!suspend);
+                assert_eq!(signals.len(), 1);
+                match &signals[0] {
+                    PowerSignal::Notify(n) => {
+                        assert_eq!(n.percent, 12);
+                        assert!(!n.critical);
+                        assert!(!n.suspending, "the low heads-up sleeps nothing");
+                    }
+                    other => panic!("expected a notify, got {other:?}"),
+                }
+            }
+            {
+                let p = PowerPolicy {
+                    critical_action: PowerAction::Suspend,
+                    ..Default::default()
+                };
+                let (signals, suspend) = battery_reaction(&[BatteryEvent::Critical(4)], &p);
+                assert!(suspend, "critical + suspend policy ⇒ auto-suspend");
+                assert!(matches!(
+                    signals[0],
+                    PowerSignal::Notify(ref n) if n.critical && n.suspending && n.percent == 4
+                ));
+            }
+            {
+                let p = PowerPolicy {
+                    critical_action: PowerAction::Ignore,
+                    ..Default::default()
+                };
+                let (signals, suspend) = battery_reaction(&[BatteryEvent::Critical(3)], &p);
+                assert!(!suspend, "ignore policy ⇒ warn only, no suspend");
+                // Still warns (critical toast), just doesn't act.
+                assert_eq!(signals.len(), 1);
+                assert!(matches!(
+                    signals[0],
+                    PowerSignal::Notify(ref n) if n.critical && !n.suspending
+                ));
+            }
+            {
+                let p = PowerPolicy::default();
+                let (signals, suspend) = battery_reaction(&[BatteryEvent::Recovered], &p);
+                assert!(signals.is_empty());
+                assert!(!suspend);
+            }
+            // End-to-end pure path: a discharging battery crossing the low then the
+            // critical threshold produces exactly the toasts and suspend the service would
+            // apply, the same `BatteryMonitor` and `battery_reaction` the async loop uses.
+            {
+                use crate::battery::BatteryState;
+                let p = PowerPolicy {
+                    low_battery_percent: 15,
+                    critical_battery_percent: 5,
+                    ..Default::default()
+                };
+                let mut mon = BatteryMonitor::new();
+                let disch = |pct| BatterySnapshot {
+                    present: true,
+                    percent: pct,
+                    state: BatteryState::Discharging,
+                };
+
+                // Healthy: nothing.
+                let (s, _) = battery_reaction(&mon.evaluate(&disch(40), &p), &p);
+                assert!(s.is_empty());
+                // Low: one non-critical toast.
+                let (s, susp) = battery_reaction(&mon.evaluate(&disch(14), &p), &p);
+                assert_eq!(s.len(), 1);
+                assert!(!susp);
+                // Critical: critical toast and suspend.
+                let (s, susp) = battery_reaction(&mon.evaluate(&disch(4), &p), &p);
+                assert!(susp);
+                assert!(matches!(s[0], PowerSignal::Notify(ref n) if n.critical));
+                // Deeper: silent (latched).
+                let (s, susp) = battery_reaction(&mon.evaluate(&disch(2), &p), &p);
+                assert!(s.is_empty() && !susp);
+            }
         }
     }
 }

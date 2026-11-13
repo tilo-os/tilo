@@ -176,78 +176,82 @@ impl PowerPolicy {
 mod tests {
     use super::*;
 
-    #[test]
-    fn power_actions_round_trip_and_lid_and_key_follow_policy() {
-        {
-            for a in [PowerAction::Suspend, PowerAction::Lock, PowerAction::Ignore] {
-                assert_eq!(PowerAction::from_label(a.label()), Some(a));
-            }
-            assert_eq!(
-                PowerAction::from_label("SUSPEND"),
-                Some(PowerAction::Suspend)
-            );
-            assert_eq!(
-                PowerAction::from_label("nothing"),
-                Some(PowerAction::Ignore)
-            );
-            assert_eq!(PowerAction::from_label("none"), Some(PowerAction::Ignore));
-            assert_eq!(PowerAction::from_label("garbage"), None);
-        }
-        {
-            let p = PowerPolicy::default();
-            assert_eq!(p.on_lid(false), None, "opening the lid does nothing");
-        }
-        {
-            let mut p = PowerPolicy {
-                lid_close_action: PowerAction::Suspend,
-                ..Default::default()
-            };
-            assert_eq!(p.on_lid(true), Some(PowerAction::Suspend));
-            p.lid_close_action = PowerAction::Lock;
-            assert_eq!(p.on_lid(true), Some(PowerAction::Lock));
-            p.lid_close_action = PowerAction::Ignore;
-            assert_eq!(p.on_lid(true), None, "ignore means no action");
-        }
-        {
-            let mut p = PowerPolicy {
-                power_key_action: PowerAction::Lock,
-                ..Default::default()
-            };
-            assert_eq!(p.on_power_key(), Some(PowerAction::Lock));
-            p.power_key_action = PowerAction::Ignore;
-            assert_eq!(p.on_power_key(), None);
-        }
-    }
+    tilo_test_env::scenario! {
+        fn power_policy_follows_the_settings_and_a_host_never_suspends;
 
-    #[test]
-    fn a_host_never_suspends_and_an_endpoint_follows_its_settings() {
+        phase power_actions_round_trip_and_lid_and_key_follow_policy;
         {
-            assert_eq!(duty_from(true, false), MachineDuty::Host);
-            assert_eq!(duty_from(false, true), MachineDuty::Host);
-            assert_eq!(duty_from(false, false), MachineDuty::Endpoint);
+            {
+                for a in [PowerAction::Suspend, PowerAction::Lock, PowerAction::Ignore] {
+                    assert_eq!(PowerAction::from_label(a.label()), Some(a));
+                }
+                assert_eq!(
+                    PowerAction::from_label("SUSPEND"),
+                    Some(PowerAction::Suspend)
+                );
+                assert_eq!(
+                    PowerAction::from_label("nothing"),
+                    Some(PowerAction::Ignore)
+                );
+                assert_eq!(PowerAction::from_label("none"), Some(PowerAction::Ignore));
+                assert_eq!(PowerAction::from_label("garbage"), None);
+            }
+            {
+                let p = PowerPolicy::default();
+                assert_eq!(p.on_lid(false), None, "opening the lid does nothing");
+            }
+            {
+                let mut p = PowerPolicy {
+                    lid_close_action: PowerAction::Suspend,
+                    ..Default::default()
+                };
+                assert_eq!(p.on_lid(true), Some(PowerAction::Suspend));
+                p.lid_close_action = PowerAction::Lock;
+                assert_eq!(p.on_lid(true), Some(PowerAction::Lock));
+                p.lid_close_action = PowerAction::Ignore;
+                assert_eq!(p.on_lid(true), None, "ignore means no action");
+            }
+            {
+                let mut p = PowerPolicy {
+                    power_key_action: PowerAction::Lock,
+                    ..Default::default()
+                };
+                assert_eq!(p.on_power_key(), Some(PowerAction::Lock));
+                p.power_key_action = PowerAction::Ignore;
+                assert_eq!(p.on_power_key(), None);
+            }
         }
-        let configured = PowerPolicy {
-            idle_suspend: Some(Duration::from_secs(900)),
-            lid_close_action: PowerAction::Suspend,
-            power_key_action: PowerAction::Lock,
-            critical_action: PowerAction::Suspend,
-            ..PowerPolicy::default()
-        };
+
+        phase a_host_never_suspends_and_an_endpoint_follows_its_settings;
         {
-            assert_eq!(configured.for_duty(MachineDuty::Endpoint), configured);
-        }
-        {
-            let host = configured.for_duty(MachineDuty::Host);
-            assert_eq!(host.idle_suspend, None);
-            assert_eq!(host.lid_close_action, PowerAction::Ignore);
-            assert_eq!(host.critical_action, PowerAction::Ignore);
-            assert_eq!(host.power_key_action, PowerAction::Lock);
-            assert_eq!(host.idle_blank, configured.idle_blank);
-            assert_eq!(host.idle_lock, configured.idle_lock);
-            assert_eq!(
-                host.critical_battery_percent,
-                configured.critical_battery_percent
-            );
+            {
+                assert_eq!(duty_from(true, false), MachineDuty::Host);
+                assert_eq!(duty_from(false, true), MachineDuty::Host);
+                assert_eq!(duty_from(false, false), MachineDuty::Endpoint);
+            }
+            let configured = PowerPolicy {
+                idle_suspend: Some(Duration::from_secs(900)),
+                lid_close_action: PowerAction::Suspend,
+                power_key_action: PowerAction::Lock,
+                critical_action: PowerAction::Suspend,
+                ..PowerPolicy::default()
+            };
+            {
+                assert_eq!(configured.for_duty(MachineDuty::Endpoint), configured);
+            }
+            {
+                let host = configured.for_duty(MachineDuty::Host);
+                assert_eq!(host.idle_suspend, None);
+                assert_eq!(host.lid_close_action, PowerAction::Ignore);
+                assert_eq!(host.critical_action, PowerAction::Ignore);
+                assert_eq!(host.power_key_action, PowerAction::Lock);
+                assert_eq!(host.idle_blank, configured.idle_blank);
+                assert_eq!(host.idle_lock, configured.idle_lock);
+                assert_eq!(
+                    host.critical_battery_percent,
+                    configured.critical_battery_percent
+                );
+            }
         }
     }
 }

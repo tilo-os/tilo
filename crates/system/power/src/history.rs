@@ -204,122 +204,126 @@ fn write_history_at(path: &Path, history: &BatteryHistory) -> Result<(), String>
 mod tests {
     use super::*;
 
-    #[test]
-    fn history_is_bounded_private_atomic_and_anonymous() {
+    tilo_test_env::scenario! {
+        fn battery_history_is_bounded_private_and_written_only_when_it_changes;
+
+        phase history_is_bounded_private_atomic_and_anonymous;
         {
-            let mut history = BatteryHistory::default();
-            assert!(history.record(BatteryHistoryPoint {
-                unix_minute: 100,
-                capacity: 50,
-                health: Some(90),
-                on_ac: false,
-            }));
-            assert!(!history.record(BatteryHistoryPoint {
-                unix_minute: 105,
-                capacity: 49,
-                health: Some(90),
-                on_ac: false,
-            }));
-            assert_eq!(history.points.len(), 1);
-            for minute in (120..=50_000).step_by(15) {
-                history.record(BatteryHistoryPoint {
-                    unix_minute: minute,
+            {
+                let mut history = BatteryHistory::default();
+                assert!(history.record(BatteryHistoryPoint {
+                    unix_minute: 100,
                     capacity: 50,
-                    health: None,
-                    on_ac: true,
-                });
+                    health: Some(90),
+                    on_ac: false,
+                }));
+                assert!(!history.record(BatteryHistoryPoint {
+                    unix_minute: 105,
+                    capacity: 49,
+                    health: Some(90),
+                    on_ac: false,
+                }));
+                assert_eq!(history.points.len(), 1);
+                for minute in (120..=50_000).step_by(15) {
+                    history.record(BatteryHistoryPoint {
+                        unix_minute: minute,
+                        capacity: 50,
+                        health: None,
+                        on_ac: true,
+                    });
+                }
+                assert!(history.points.len() <= MAX_POINTS);
+                assert!(
+                    history.points.iter().all(|point| {
+                        50_000u64.saturating_sub(point.unix_minute) <= MAX_AGE_MINUTES
+                    })
+                );
             }
-            assert!(history.points.len() <= MAX_POINTS);
-            assert!(
-                history.points.iter().all(|point| {
-                    50_000u64.saturating_sub(point.unix_minute) <= MAX_AGE_MINUTES
-                })
-            );
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let dir = tempfile::tempdir().unwrap();
+                let path = dir.path().join("tilo/history.json");
+                assert!(
+                    record_power_history_at(
+                        &path,
+                        BatteryHistoryPoint {
+                            unix_minute: 100,
+                            capacity: 72,
+                            health: Some(88),
+                            on_ac: false,
+                        }
+                    )
+                    .unwrap()
+                );
+                assert_eq!(
+                    std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                    0o600
+                );
+                let text = std::fs::read_to_string(path).unwrap();
+                assert!(!text.contains("serial"));
+                assert!(!text.contains("application"));
+            }
         }
+
+        phase the_writer_reads_once_and_rewrites_only_when_a_point_lands;
         {
-            use std::os::unix::fs::PermissionsExt;
             let dir = tempfile::tempdir().unwrap();
-            let path = dir.path().join("tilo/history.json");
+            let path = history_path_in(dir.path(), PowerSourceKind::Battery);
+            let point = |unix_minute| BatteryHistoryPoint {
+                unix_minute,
+                capacity: 60,
+                health: None,
+                on_ac: false,
+            };
+            assert!(record_power_history_at(&path, point(1_000)).unwrap());
+
+            let mut writer = PowerHistoryWriter::in_state_home(Some(dir.path().to_path_buf()));
+            assert_eq!(writer.next_due_minute(PowerSourceKind::Battery), None);
             assert!(
-                record_power_history_at(
-                    &path,
-                    BatteryHistoryPoint {
-                        unix_minute: 100,
-                        capacity: 72,
-                        health: Some(88),
-                        on_ac: false,
-                    }
-                )
-                .unwrap()
+                !writer
+                    .record(PowerSourceKind::Battery, point(1_005))
+                    .unwrap(),
+                "the earlier session's point sets the cadence"
             );
             assert_eq!(
-                std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
-                0o600
+                writer.next_due_minute(PowerSourceKind::Battery),
+                Some(1_000 + MIN_INTERVAL_MINUTES)
             );
-            let text = std::fs::read_to_string(path).unwrap();
-            assert!(!text.contains("serial"));
-            assert!(!text.contains("application"));
+
+            // Kept in memory: a file that vanished is not re-read, and a sample that does
+            // not land writes nothing.
+            std::fs::remove_file(&path).unwrap();
+            assert!(
+                !writer
+                    .record(PowerSourceKind::Battery, point(1_010))
+                    .unwrap()
+            );
+            assert!(!path.exists(), "no point landed, so nothing was written");
+
+            assert!(
+                writer
+                    .record(PowerSourceKind::Battery, point(1_015))
+                    .unwrap()
+            );
+            let written: BatteryHistory =
+                serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            assert_eq!(
+                written
+                    .points
+                    .iter()
+                    .map(|p| p.unix_minute)
+                    .collect::<Vec<_>>(),
+                vec![1_000, 1_015],
+                "the rewrite carries the history read at start plus the new point"
+            );
+            assert_eq!(
+                writer.next_due_minute(PowerSourceKind::Battery),
+                Some(1_015 + MIN_INTERVAL_MINUTES)
+            );
+            assert_eq!(writer.next_due_minute(PowerSourceKind::Ups), None);
+
+            let mut nowhere = PowerHistoryWriter::in_state_home(None);
+            assert!(nowhere.record(PowerSourceKind::Ups, point(1)).is_err());
         }
-    }
-
-    #[test]
-    fn the_writer_reads_once_and_rewrites_only_when_a_point_lands() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = history_path_in(dir.path(), PowerSourceKind::Battery);
-        let point = |unix_minute| BatteryHistoryPoint {
-            unix_minute,
-            capacity: 60,
-            health: None,
-            on_ac: false,
-        };
-        assert!(record_power_history_at(&path, point(1_000)).unwrap());
-
-        let mut writer = PowerHistoryWriter::in_state_home(Some(dir.path().to_path_buf()));
-        assert_eq!(writer.next_due_minute(PowerSourceKind::Battery), None);
-        assert!(
-            !writer
-                .record(PowerSourceKind::Battery, point(1_005))
-                .unwrap(),
-            "the earlier session's point sets the cadence"
-        );
-        assert_eq!(
-            writer.next_due_minute(PowerSourceKind::Battery),
-            Some(1_000 + MIN_INTERVAL_MINUTES)
-        );
-
-        // Kept in memory: a file that vanished is not re-read, and a sample that does
-        // not land writes nothing.
-        std::fs::remove_file(&path).unwrap();
-        assert!(
-            !writer
-                .record(PowerSourceKind::Battery, point(1_010))
-                .unwrap()
-        );
-        assert!(!path.exists(), "no point landed, so nothing was written");
-
-        assert!(
-            writer
-                .record(PowerSourceKind::Battery, point(1_015))
-                .unwrap()
-        );
-        let written: BatteryHistory =
-            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        assert_eq!(
-            written
-                .points
-                .iter()
-                .map(|p| p.unix_minute)
-                .collect::<Vec<_>>(),
-            vec![1_000, 1_015],
-            "the rewrite carries the history read at start plus the new point"
-        );
-        assert_eq!(
-            writer.next_due_minute(PowerSourceKind::Battery),
-            Some(1_015 + MIN_INTERVAL_MINUTES)
-        );
-        assert_eq!(writer.next_due_minute(PowerSourceKind::Ups), None);
-
-        let mut nowhere = PowerHistoryWriter::in_state_home(None);
-        assert!(nowhere.record(PowerSourceKind::Ups, point(1)).is_err());
     }
 }
