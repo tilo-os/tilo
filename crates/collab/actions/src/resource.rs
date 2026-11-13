@@ -113,6 +113,10 @@ type Arguments<I> =
 #[derive(Clone)]
 pub struct ActionBinding<I> {
     address: ActionAddress,
+    /// The kind of record the action acts on, as the resource publishes it: what
+    /// the control's identity names instead of the one resource, which the
+    /// window's business is ([`Self::identity`]).
+    kind: String,
     spec: ActionSpec,
     arguments: Arguments<I>,
 }
@@ -159,6 +163,7 @@ impl<I> ActionBinding<I> {
             })?;
         Ok(Self {
             address: ActionAddress::new(resource.id.0.clone(), spec.id.clone()),
+            kind: resource.kind.clone(),
             // Always retain the spec from the resource, even if a caller
             // passed an independently-created spec with the same id.
             spec: exported.clone(),
@@ -185,6 +190,21 @@ impl<I> ActionBinding<I> {
         &self.address
     }
 
+    /// What a control bound to it does, as a window publishes it: the kind of
+    /// record it acts on, the one resource it acts on, and the id the app
+    /// declares the action by ([`ActionAddress::naming`]) — so the row's
+    /// Complete names that row, and what a person presses and what a caller
+    /// names at the door are one thing.
+    #[must_use]
+    pub fn identity(&self) -> ActionAddress {
+        let declared = if self.spec.declared.is_empty() {
+            self.address.action.as_str()
+        } else {
+            self.spec.declared.as_str()
+        };
+        ActionAddress::on(self.kind.as_str(), self.address.resource.as_str(), declared)
+    }
+
     /// The same binding for a control whose value `J` maps to this one's
     /// input: a field that reports each edit for a binding that takes the text.
     #[must_use]
@@ -195,6 +215,7 @@ impl<I> ActionBinding<I> {
         let arguments = self.arguments;
         ActionBinding {
             address: self.address,
+            kind: self.kind,
             spec: self.spec,
             arguments: Arc::new(move |input| arguments(map(input))),
         }

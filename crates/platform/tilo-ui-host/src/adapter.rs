@@ -154,16 +154,67 @@ impl Published {
         bound
     }
 
-    pub(crate) fn holds(&self, resource: &str, action: &str) -> bool {
-        self.holding(resource)
-            .is_some_and(|held| tilo_actions::ActionBinding::unit_for(held, action).is_ok())
+    /// What a control that runs the action `action`, published as `declared` on the resource
+    /// `resource`, does, as the identity anyone looks it up by
+    /// ([`tilo_actions::ActionAddress::naming`]): the kind of record it acts on, the one resource it
+    /// acts on, and the id the app declares the action by.
+    ///
+    /// `resource` is the resource the control's event runs the action on, which is the record the
+    /// control shows — a row's task, a window's notebook. Where this window publishes no such
+    /// record (an action of its own app's on another app's reading, `morning_cleanup` over Tasks),
+    /// the resource that publishes the action answers instead: the door that runs it holds that one.
+    fn naming(&self, resource: &str, action: &str, declared: &str) -> Option<String> {
+        if let Some(spec) = self.holding(resource)
+            && let Some(named) = named_by(spec, action, declared)
+        {
+            return Some(tilo_actions::ActionAddress::naming(spec, named).encode());
+        }
+        if let Some((spec, named)) = self
+            .resources
+            .iter()
+            .find_map(|spec| named_by(spec, action, declared).map(|named| (spec, named)))
+        {
+            return Some(tilo_actions::ActionAddress::naming(spec, named).encode());
+        }
+        // A reading of another app's record: the id the control names is the resource that app
+        // publishes it under, and its own door resolves it there.
+        Some(tilo_actions::ActionAddress::new(resource, declared).encode())
     }
 
-    /// The kind of record `resource` is, as it publishes it (`so.tilo.lang.notes.Notebook`): what
-    /// an identity names instead of the one record, which is the window's business.
-    fn kind(&self, resource: &str) -> Option<&str> {
-        Some(self.holding(resource)?.kind.as_str())
+    /// What the control `node` does, as the identity anyone looks it up by: the kind of record it
+    /// acts on, the one record of that kind it acts on, and the operation, named as the app
+    /// publishes it at its door. A control that runs an app action does that action; one that edits
+    /// a record's field edits that field. Where the composition moves the control, and what the
+    /// person's language renames it by, change none of them: the second task's Complete is not the
+    /// first's.
+    pub(crate) fn identity_of(&self, node: &UiNode) -> Option<String> {
+        // One event per control runs what the person presses it for. A node whose events run
+        // several actions is none of them in particular, so the first the ordered map holds answers
+        // for it, the same one every frame.
+        if let Some(invoked) = node
+            .events
+            .values()
+            .find_map(|event| event.invokes.as_ref())
+        {
+            return self.naming(&invoked.resource, &invoked.action, &invoked.declared);
+        }
+        let binding = node.binding.as_ref()?;
+        let (target, field) = binding.field()?;
+        let kind = binding.kind.as_deref()?;
+        Some(tilo_actions::ActionAddress::on(kind, target, field).encode())
     }
+}
+
+/// The action of `spec` a control runs when it runs `action`, published as `declared`: the one it
+/// names, or the one the app declares under the id a control says it does.
+fn named_by<'a>(
+    spec: &'a tilo_actions::ResourceSpec,
+    action: &str,
+    declared: &str,
+) -> Option<&'a tilo_actions::ActionSpec> {
+    spec.actions
+        .iter()
+        .find(|candidate| candidate.declared == declared || candidate.id == action)
 }
 
 /// Note where each resource of `resources` stands at `path`, and where those it holds under it
@@ -203,30 +254,10 @@ impl Adapter {
         self.published.borrow_mut().binding(resource, action)
     }
 
-    pub(crate) fn holds(&self, resource: &str, action: &str) -> bool {
-        self.published.borrow().holds(resource, action)
-    }
-
-    /// What the control `node` does, as the identity anyone looks it up by: the kind of record it
-    /// acts on and the operation, named as the app publishes it at its door. A control that runs an
-    /// app action does that action; one that edits a record's field edits that field. Where the
-    /// composition moves the control and what the person's language renames it by do not change
-    /// either.
+    /// What the control `node` does, as the identity anyone looks it up by
+    /// ([`Published::identity_of`]).
     pub(crate) fn identity_of(&self, node: &UiNode) -> Option<String> {
-        // One event per control runs what the person presses it for. A node whose events run
-        // several actions is none of them in particular, so the first the ordered map holds answers
-        // for it, the same one every frame.
-        if let Some(invoked) = node
-            .events
-            .values()
-            .find_map(|event| event.invokes.as_ref())
-        {
-            let kind = self.published.borrow().kind(&invoked.resource)?.to_owned();
-            return Some(tilo_actions::ActionAddress::new(kind, &invoked.declared).encode());
-        }
-        let (_, field) = node.binding.as_ref()?.field()?;
-        let kind = node.binding.as_ref()?.kind.as_deref()?;
-        Some(tilo_actions::ActionAddress::new(kind, field).encode())
+        self.published.borrow().identity_of(node)
     }
 
     #[must_use]
@@ -840,6 +871,10 @@ impl Source for NodeSource<'_> {
             return None;
         }
         self.reconciler.rows_of(&self.node.key)
+    }
+
+    fn identity(&mut self) -> Option<String> {
+        self.reconciler.adapter().identity_of(self.node)
     }
 
     fn components(

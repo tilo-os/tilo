@@ -339,12 +339,18 @@ fn holds(spec: &ResourceSpec, address: &str) -> bool {
 
 /// What `spec` publishes of `address`: the action under the name it is published by, on the
 /// resource that carries it. `address` names that resource by its published id, or — as a
-/// window's control says what it does — by the kind of resource it acts on; and the action by
+/// window's control says what it does — by the kind of resource it acts on, with the one
+/// item of that kind it stands for when it stands for one row among many; and the action by
 /// the name it is published under or the id its declaration keeps
 /// ([`tilo_actions::ActionType::declared`]), which no rename of a view and no other language
 /// changes. `None` when `spec` and what it holds offer nothing of it.
 fn carried(spec: &ResourceSpec, address: &ActionAddress) -> Option<ActionAddress> {
-    if spec.id.as_str() == address.resource || spec.kind == address.resource {
+    let names_the_resource = match &address.item {
+        // The item pins the one resource: the kind it is and the id the app publishes it under.
+        Some(item) => spec.kind == address.resource && spec.id.as_str() == item,
+        None => spec.id.as_str() == address.resource || spec.kind == address.resource,
+    };
+    if names_the_resource {
         for action in &spec.actions {
             if action.id == address.action || action.declared == address.action {
                 return Some(ActionAddress::new(spec.id.as_str(), action.id.clone()));
@@ -1745,8 +1751,10 @@ impl Hosted {
         let shown = self.shown();
         // What `address` names as this app publishes it, whichever way a caller named it: the
         // resource and the name a press runs, or — what a window's control says it does — the kind
-        // of resource and the id the app declares the action by.
-        let resources = surface.addressed(&shown, &address.resource);
+        // of resource and the id the app declares the action by, with the one item of that kind it
+        // stands for.
+        let named = address.item.as_deref().unwrap_or(&address.resource);
+        let resources = surface.addressed(&shown, named);
         let (resources, address) = surface.naming(resources, address);
         let by_person = invoker.kind == ActorKind::Person;
         let caller = caller_of(&invoker);
@@ -2673,7 +2681,9 @@ impl Applier {
         // published for one change, and an applier shows nothing. What it names by what a control
         // does — a kind of resource and the id the app declares the action by — is found the same
         // way the window finds it.
-        let resources = self.surface.addressed(&[], &change.resource);
+        let resources = self
+            .surface
+            .addressed(&[], address.item.as_deref().unwrap_or(&address.resource));
         let (resources, address) = self.surface.naming(resources, &address);
         let caller = caller_of(&invoker);
         CALLER.with(|slot| *slot.borrow_mut() = Some(caller));

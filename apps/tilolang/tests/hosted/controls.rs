@@ -220,27 +220,24 @@ impl super::Session {
             .unwrap_or_else(|| panic!("the door answered nothing of {identity}"))
     }
 
-    /// That the window publishes a control doing `identity`, which is what a caller names it by.
-    pub(super) fn offers_doing(&mut self, identity: &str) {
-        assert!(
-            self.controls()
-                .iter()
-                .any(|control| control.doing.as_deref() == Some(identity)),
-            "the window offers no control doing {identity}: {:?}",
-            self.controls()
-                .into_iter()
-                .map(|control| (control.doing, control.name))
-                .collect::<Vec<_>>()
-        );
+    /// What the window's control called `name` says it does: the identity every caller names it
+    /// by, read off the control the person sees, as a tool or an agent reads it.
+    pub(super) fn identity_named(&mut self, name: &str) -> String {
+        self.controls()
+            .into_iter()
+            .find(|control| control.name == name)
+            .unwrap_or_else(|| {
+                panic!(
+                    "the window shows no control called {name:?}: {:?}",
+                    self.controls()
+                        .into_iter()
+                        .map(|control| (control.name, control.doing))
+                        .collect::<Vec<_>>()
+                )
+            })
+            .doing
+            .unwrap_or_else(|| panic!("the control called {name:?} says nothing of what it does"))
     }
-}
-
-/// What a window's control of `ty` that runs the app's `action` says it does: the identity every
-/// caller names it by, whatever the window composes around it and whatever the person's language
-/// calls it.
-fn doing_identity(session: &super::Session, ty: &str, action: &str) -> String {
-    let (kind, declared) = session.doing(ty, action);
-    ui::tilo_actions::ActionAddress::new(kind, declared).encode()
 }
 
 /// A control of a window is invoked by what it does, at the door a tool or another app calls: the
@@ -250,8 +247,7 @@ fn doing_identity(session: &super::Session, ty: &str, action: &str) -> String {
 fn a_new_note_is_invoked_at_the_door_by_what_its_control_does() {
     let _settled = ui::motion::testing::settled();
     let mut session = super::Session::live_notes();
-    let new_note = doing_identity(&session, "Notebook", "new_note");
-    session.offers_doing(&new_note);
+    let new_note = session.identity_named("New note");
     assert!(
         session.titles().is_empty(),
         "the notebook starts with no note"
@@ -278,8 +274,7 @@ fn a_new_note_is_invoked_at_the_door_by_what_its_control_does() {
 fn a_new_task_is_invoked_at_the_door_by_what_its_control_does_and_its_argument() {
     let _settled = ui::motion::testing::settled();
     let mut session = super::Session::live_tasks();
-    let new_task = doing_identity(&session, "Tasks", "new_task");
-    session.offers_doing(&new_task);
+    let new_task = session.identity_named("New task");
     let answered = session.invoke_doing(
         &new_task,
         &serde_json::json!({ "title": "Water the plants" }),
@@ -295,4 +290,112 @@ fn a_new_task_is_invoked_at_the_door_by_what_its_control_does_and_its_argument()
         super::task_in_record(&session, "Water the plants", false),
         "the task named by the argument is in the record"
     );
+}
+
+/// A row's controls name the row they belong to: the second task's Complete, invoked at the door by
+/// what it does, completes that task alone, and the first is left as it was.
+#[test]
+fn a_tasks_complete_completes_the_task_its_row_names() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = super::Session::live_tasks();
+    let new_task = session.identity_named("New task");
+    for title in ["Water the plants", "Call the plumber"] {
+        let answered = session.invoke_doing(
+            &new_task,
+            &serde_json::json!({ "title": title, "due": today() }),
+        );
+        assert!(
+            matches!(
+                answered,
+                ui::tilo_actions::InvocationUpdate::Succeeded { .. }
+            ),
+            "the door made {title:?}: {answered:?}"
+        );
+    }
+    // The second row's menu, opened where the row stands.
+    let (row, _) = super::described(session.window.app(), "Call the plumber").expect("the row");
+    session
+        .window
+        .app()
+        .dispatch_a11y_action(row, &ui::a11y::Action::ShowContextMenu);
+    session.settle();
+    let complete = session.identity_named("Complete");
+    let answered = session.invoke_doing(&complete, &serde_json::json!({}));
+    assert!(
+        matches!(
+            answered,
+            ui::tilo_actions::InvocationUpdate::Succeeded { .. }
+        ),
+        "the door ran what the row's Complete does: {answered:?}"
+    );
+    assert!(
+        super::task_in_record(&session, "Call the plumber", true),
+        "the second task is done: {:?}",
+        session.titles()
+    );
+    assert!(
+        super::task_in_record(&session, "Water the plants", false),
+        "the task nobody named is still to do"
+    );
+}
+
+/// Today's own command acts on another app's records, which Today's window publishes no resource
+/// of: the identity its control publishes resolves at Today's door all the same, and the cleanup
+/// runs.
+#[test]
+fn todays_cleanup_runs_at_the_door_by_what_its_control_does() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = super::Session::today(super::Window::live);
+    let cleanup = session.identity_named("Morning cleanup");
+    // The two places its command acts on, as the window's own cards name them.
+    let list = card_record(&mut session, "Today");
+    let notebook = card_record(&mut session, "Pinned");
+    let answered = session.invoke_doing(
+        &cleanup,
+        &serde_json::json!({ "list": list, "nb": notebook }),
+    );
+    assert!(
+        matches!(
+            answered,
+            ui::tilo_actions::InvocationUpdate::Succeeded { .. }
+        ),
+        "the door ran what the control does: {answered:?}"
+    );
+}
+
+/// Today's date, as the window's own clock reads it: a task due by then stands in the day's list.
+fn today() -> String {
+    ui::clock::today().format("%Y-%m-%d").to_string()
+}
+
+/// The record the card `title` on a window shows, as an argument names a resource: the place of
+/// another app's the card stands for, by the id and type the window publishes it with.
+fn card_record(session: &mut super::Session, title: &str) -> serde_json::Value {
+    fn walk(node: &tilo_ui_host::UiNode, title: &str, found: &mut Option<serde_json::Value>) {
+        if found.is_none()
+            && node.kind == tilo_ui_host::adapter::kind("Card")
+            && node.props.get("title") == Some(&tilo_ui_host::Value::text(title))
+            && let Some(tilo_ui_host::Value::Ref(record)) = node.props.get("item")
+        {
+            // The catalogue's reference to it, as any caller of the app's door gives a record.
+            let (app, ty) = record
+                .ty
+                .split_once('#')
+                .unwrap_or((record.ty.as_str(), ""));
+            *found = Some(serde_json::json!({
+                "app": app,
+                "kind": format!("tl.{app}.{ty}"),
+                "id": record.id,
+                "label": title,
+            }));
+        }
+        for child in &node.children {
+            walk(child, title, found);
+        }
+    }
+    let view = session.hosted().view().expect("the window is connected");
+    let root = view.root_tree().expect("the window's view");
+    let mut found = None;
+    walk(&root, title, &mut found);
+    found.unwrap_or_else(|| panic!("the window shows no card called {title:?}"))
 }

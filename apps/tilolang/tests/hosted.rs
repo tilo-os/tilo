@@ -437,6 +437,21 @@ impl Session {
         Self::open(NOTES, "ada", Window::live)
     }
 
+    /// A person at a Today window the live `App` runs, the workspace having Tasks and Notes
+    /// installed as the apps of their own records it reads.
+    fn today(window: impl FnOnce(HostedWindow) -> Window) -> Self {
+        let route = RouteSpec::app(TODAY, uuid::Uuid::new_v4());
+        let mut spec =
+            Spec::new(TODAY, route.cluster_id.to_string(), 1, "ada").in_language("en-US");
+        for app in [TASKS, NOTES] {
+            spec.installed.insert(app.to_owned(), app.to_owned());
+        }
+        let chunks = tilolang_tilo::chunk::Chunks::of(automerge::AutoCommit::new());
+        let mut session = Self::brokered_as(&route, spec, chunks, None, window);
+        session.settle();
+        session
+    }
+
     /// A person at a Notebook window whose notes' bodies are rich text (`tests/richbody`), the
     /// frame harness making it.
     fn rich() -> Self {
@@ -522,6 +537,19 @@ impl Session {
         storage: Option<std::path::PathBuf>,
         window: impl FnOnce(HostedWindow) -> Window,
     ) -> Self {
+        let spec = Spec::new(app, route.cluster_id.to_string(), 1, person).in_language(language);
+        Self::brokered_as(route, spec, chunks, storage, window)
+    }
+
+    /// [`Self::brokered`] of the instance `spec` names, as the session named it: whose window reads
+    /// the other apps installed here, each read from its own record.
+    fn brokered_as(
+        route: &RouteSpec,
+        spec: Spec,
+        chunks: tilolang_tilo::chunk::Chunks,
+        storage: Option<std::path::PathBuf>,
+        window: impl FnOnce(HostedWindow) -> Window,
+    ) -> Self {
         let (sent, inbox): (Sent, Inbox) = (Rc::default(), Rc::default());
         let manager = CollaborationManager::with_peer_transport(Broker {
             route: route.clone(),
@@ -530,7 +558,6 @@ impl Session {
             joined: None,
         });
         let wire = (Box::new(inbox) as Box<dyn std::any::Any>, sent);
-        let spec = Spec::new(app, route.cluster_id.to_string(), 1, person).in_language(language);
         Self::launch(manager, route, spec, chunks, storage, wire, window)
     }
 

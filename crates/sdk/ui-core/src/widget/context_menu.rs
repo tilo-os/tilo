@@ -288,6 +288,21 @@ impl MenuItem {
         }
     }
 
+    /// What choosing the row does, as the window publishes it for anyone who looks the row up by
+    /// what it does rather than by its words: the action on the one record it acts on
+    /// ([`tilo_actions::ActionBinding::identity`]), or — for a row that names an action it runs
+    /// no press of its own for — the action the view named ([`Self::for_action`]).
+    #[must_use]
+    pub fn identity(&self) -> Option<String> {
+        match self {
+            MenuItem::Action { address, press, .. } => press
+                .identity()
+                .or_else(|| address.clone())
+                .map(|identity| identity.encode()),
+            MenuItem::Separator | MenuItem::Caption(_) | MenuItem::Emoji(_) => None,
+        }
+    }
+
     /// The published action choosing the row runs, if it is one: the action the view bound to
     /// the row's press, else the one it named ([`Self::for_action`]).
     pub fn action_address(&self) -> Option<tilo_actions::ActionAddress> {
@@ -2083,6 +2098,12 @@ impl Widget for ContextMenu {
                         expanded: submenu.as_ref().map(|_| open_here.is_some()),
                         ..Default::default()
                     });
+                // The command names the action it runs, and the one record of the app's that it
+                // runs it on: a row's menu and the row's own box press the one operation, so an
+                // agent that names what the row does runs it on that row.
+                if let Some(identity) = item.identity() {
+                    node.action = Some(identity);
+                }
                 if let Some(description) = description {
                     node.description = Some(description.clone());
                 } else if let Some(trailing) = item.trailing_text(self.platform) {

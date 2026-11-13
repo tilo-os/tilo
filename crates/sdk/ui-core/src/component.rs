@@ -951,6 +951,14 @@ pub trait Source {
         let _ = slot;
         None
     }
+
+    /// What the control built from this source does, as the identity anyone looks it up by
+    /// ([`crate::widget::Identified`]): the app action it runs, or the field it edits, in the
+    /// app's own ids. `None` for a component that runs nothing, and for a host whose components
+    /// answer to nothing but their names.
+    fn identity(&mut self) -> Option<String> {
+        None
+    }
 }
 
 /// Rows its host renders only when the widget shows them: a loop over ten thousand items costs the rows
@@ -1200,7 +1208,13 @@ pub fn get(name: &str) -> Option<&'static Entry> {
 /// Build the component `name` of `source`.
 pub fn build(name: &str, source: &mut dyn Source) -> Result<Element, Error> {
     let entry = get(name).ok_or_else(|| Error::unknown(name))?;
-    (entry.build)(source)
+    let built = (entry.build)(source)?;
+    // What the control does is part of the control: it says so however the window composes around
+    // it, so a person, an assistive technology and an agent that names it reach the one operation.
+    Ok(match source.identity() {
+        Some(identity) => Box::new(crate::widget::Identified::new(built, identity)),
+        None => built,
+    })
 }
 
 /// Bring `widget`, built for an instance of `name`, to `source`'s props in place: `Ok(false)` when it

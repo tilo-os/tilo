@@ -4383,7 +4383,12 @@ impl AppBrokerState {
             cluster_id,
             peer_id,
             revision,
-            address: tilo_actions::ActionAddress { resource, action },
+            address:
+                tilo_actions::ActionAddress {
+                    resource,
+                    item: None,
+                    action,
+                },
         } = target;
         let peer_id = *peer_id;
         if revision.is_empty() {
@@ -5601,6 +5606,7 @@ impl AppBrokerState {
                     invocation,
                     address: tilo_actions::ActionAddress {
                         resource: offered.1.resource.clone(),
+                        item: None,
                         action: offered.1.action.clone(),
                     },
                     argument: argument.map(str::to_string),

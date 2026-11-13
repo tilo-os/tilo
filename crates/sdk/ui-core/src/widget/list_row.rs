@@ -3029,17 +3029,26 @@ impl Widget for ListRow {
         {
             let mut args = fluent::FluentArgs::new();
             args.set("title", node.name.clone().unwrap_or_default());
-            node.children.push(
-                AccessNode::new(Role::Checkbox)
-                    .with_name(crate::i18n::widget_text_with("list-row-check", Some(&args)))
-                    .with_action_target(format!("{id}/check"))
-                    .with_bounds(rect.into())
-                    .with_state(
-                        AccessState::new()
-                            .checked(*checked)
-                            .disabled(self.activation.state.disabled),
-                    ),
-            );
+            let mut box_node = AccessNode::new(Role::Checkbox)
+                .with_name(crate::i18n::widget_text_with("list-row-check", Some(&args)))
+                .with_action_target(format!("{id}/check"))
+                .with_bounds(rect.into())
+                .with_state(
+                    AccessState::new()
+                        .checked(*checked)
+                        .disabled(self.activation.state.disabled),
+                );
+            // What the box does, as the window publishes it: the app's action for a check, on the
+            // item this row shows — so a person pressing the box, a screen reader toggling it and an
+            // agent naming it are the one operation, on that one item.
+            if let Some(identity) = self
+                .check_action
+                .as_ref()
+                .map(|action| action.binding().identity().encode())
+            {
+                box_node.action = Some(identity);
+            }
+            node.children.push(box_node);
         }
         Some(node)
     }

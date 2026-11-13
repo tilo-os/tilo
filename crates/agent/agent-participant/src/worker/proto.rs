@@ -351,6 +351,7 @@ mod tests {
     fn door_errors_survive_the_boundary() {
         let at = tilo_actions::door::ActionAddress {
             resource: "r".into(),
+            item: None,
             action: "a".into(),
         };
         for error in [

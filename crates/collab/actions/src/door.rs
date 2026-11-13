@@ -36,7 +36,16 @@ use serde::{Deserialize, Serialize};
 /// from ids and labels alone.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct ActionAddress {
+    /// The kind of resource the operation acts on, or the id of the one
+    /// resource it names.
     pub resource: String,
+    /// The one item of that kind's resources the operation acts on, by the
+    /// id the app publishes it under: a control that stands for one row among
+    /// many names its row here, so the second task's Complete is not the
+    /// first's. `None` for an operation on whichever resource of the kind
+    /// comes first.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub item: Option<String>,
     pub action: String,
 }
 
@@ -44,8 +53,40 @@ impl ActionAddress {
     pub fn new(resource: impl Into<String>, action: impl Into<String>) -> Self {
         Self {
             resource: resource.into(),
+            item: None,
             action: action.into(),
         }
+    }
+
+    /// The address of `action` on the one resource `item` of `resource`, which
+    /// is the kind of record the app publishes it as: what a window's control
+    /// says it does ([`Self::naming`] names it so).
+    #[must_use]
+    pub fn on(
+        resource: impl Into<String>,
+        item: impl Into<String>,
+        action: impl Into<String>,
+    ) -> Self {
+        Self {
+            resource: resource.into(),
+            item: Some(item.into()),
+            action: action.into(),
+        }
+    }
+
+    /// The address a window's control for `action` on `resource` publishes: the
+    /// kind of record the resource is, the id the app publishes that one
+    /// resource under, and the id the app declares the action by — none of
+    /// which the window's composition moving the control, or the person's
+    /// language renaming it, changes.
+    #[must_use]
+    pub fn naming(resource: &ResourceSpec, action: &ActionSpec) -> Self {
+        let declared = if action.declared.is_empty() {
+            action.id.as_str()
+        } else {
+            action.declared.as_str()
+        };
+        Self::on(resource.kind.as_str(), resource.id.as_str(), declared)
     }
 
     /// The address of `resource` and `action`, or `None` when either half
@@ -64,18 +105,27 @@ impl ActionAddress {
     /// The single-string form, for transports that carry one id. [`KEY_SEP`]
     /// never appears in either half, so [`parse`](Self::parse) is unambiguous.
     pub fn encode(&self) -> String {
-        format!("{}{}{}", self.resource, KEY_SEP, self.action)
+        match &self.item {
+            Some(item) => format!("{}{KEY_SEP}{item}{KEY_SEP}{}", self.resource, self.action),
+            None => format!("{}{KEY_SEP}{}", self.resource, self.action),
+        }
     }
 
     /// Recover an address from [`encode`](Self::encode). `None` when the string
     /// is not one, so a caller that made an address up is refused here rather
     /// than looked up against a half-parsed id.
     pub fn parse(s: &str) -> Option<Self> {
-        let (resource, action) = s.split_once(KEY_SEP)?;
-        if resource.is_empty() || action.is_empty() || action.contains(KEY_SEP) {
-            return None;
+        let parts: Vec<&str> = s.split(KEY_SEP).collect();
+        let named = |part: &&str| !part.is_empty();
+        match parts.as_slice() {
+            [resource, action] if named(resource) && named(action) => {
+                Some(Self::new(*resource, *action))
+            }
+            [resource, item, action] if parts.iter().all(named) => {
+                Some(Self::on(*resource, *item, *action))
+            }
+            _ => None,
         }
-        Some(Self::new(resource, action))
     }
 }
 
@@ -1807,14 +1857,22 @@ mod tests {
 
     /// Resource ids carry colons, so the address separator has to be something
     /// they cannot contain; and a string that is not an address is refused
-    /// rather than half-parsed into a lookup.
+    /// rather than half-parsed into a lookup. An address that names one item of
+    /// a kind keeps its three parts, so the second row's Complete is not the
+    /// first's.
     fn an_address_survives_its_string_form() {
         let address = star();
         assert_eq!(ActionAddress::parse(&address.encode()), Some(address));
+        let one = ActionAddress::on("notes.note", "notes.note:1", "edit");
+        assert_eq!(ActionAddress::parse(&one.encode()), Some(one));
         assert_eq!(ActionAddress::parse("notes.note:1"), None);
         assert_eq!(ActionAddress::parse(&format!("{KEY_SEP}star")), None);
         assert_eq!(
-            ActionAddress::parse(&format!("notes{KEY_SEP}edit{KEY_SEP}title")),
+            ActionAddress::parse(&format!("notes{KEY_SEP}{KEY_SEP}edit")),
+            None
+        );
+        assert_eq!(
+            ActionAddress::parse(&format!("notes{KEY_SEP}note{KEY_SEP}edit{KEY_SEP}title")),
             None
         );
         assert_eq!(

@@ -310,19 +310,31 @@ pub(crate) fn value_of(
 fn value_of_ty(host: &HostInner, meta: &Meta, json: &Json, ty: &Ty) -> Result<Value, String> {
     match (ty, json) {
         (Ty::Record(key), _) => {
-            // A parameter may be a type of another app of the workspace.
-            let owner = if key.app == meta.app {
-                meta.clone()
+            // A parameter may be a type of another app of the workspace: one this host runs, or one
+            // it reads a record of (Today's cleanup over the Tasks list it shows). A record of an
+            // app this host does not run is read through its own description, and its type is the
+            // `<app>#<Type>` a reading is kept under.
+            let (kind, type_id) = if key.app == meta.app {
+                let declared = meta
+                    .type_named(&key.name)
+                    .ok_or_else(|| format!("unknown type `{}`", key.name))?;
+                (meta.kind_of(&declared.name), declared.id.clone())
+            } else if let Some(declared) = host.package_of(&key.app).ok().and_then(|owner| {
+                owner
+                    .meta
+                    .type_named(&key.name)
+                    .map(|named| named.id.clone())
+            }) {
+                (format!("tl.{}.{}", key.app, key.name), declared)
             } else {
-                host.package_of(&key.app)?.meta.clone()
+                (
+                    format!("tl.{}.{}", key.app, key.name),
+                    format!("{}#{}", key.app, key.name),
+                )
             };
-            let declared = owner
-                .type_named(&key.name)
-                .ok_or_else(|| format!("unknown type `{}`", key.name))?;
             let text = match json {
                 Json::String(text) => text.as_str(),
                 Json::Object(reference) => {
-                    let kind = owner.kind_of(&declared.name);
                     if reference.get("kind").and_then(Json::as_str) != Some(kind.as_str()) {
                         return Err(format!("a {} is a resource of kind `{kind}`", key.name));
                     }
@@ -337,7 +349,7 @@ fn value_of_ty(host: &HostInner, meta: &Meta, json: &Json, ty: &Ty) -> Result<Va
             let id = text
                 .strip_prefix(&crate::publish::resource_id(&key.app, ""))
                 .unwrap_or(text);
-            let target = ResourceRef::parse_id(id, declared.id.clone())
+            let target = ResourceRef::parse_id(id, type_id)
                 .ok_or_else(|| format!("`{text}` is not a resource id"))?;
             Ok(Value::resource(&target))
         }
