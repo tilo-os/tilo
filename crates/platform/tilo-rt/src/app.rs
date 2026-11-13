@@ -191,6 +191,10 @@ mod tests {
     use std::time::Duration;
 
     tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "the lint exempts a test function's body, not the closure a phase is"
+        )]
         fn the_app_runtime_drives_tasks_on_its_own_thread_and_blocks_only_callers_off_it;
 
         phase the_app_runtime_runs_on_its_own_thread_and_drives_spawned_tasks;
