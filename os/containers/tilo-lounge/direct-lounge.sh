@@ -6,7 +6,7 @@
 #
 # Sourced, not run: `start_lounge BUNDLE WORK` leaves the Lounge Ready and the
 # site served, and sets `relay_origin`, `site_origin`, `room`, `log` and
-# `roles` (the roles file the operator declares, which the Lounge re-reads).
+# `owner_socket` (the socket the operator declares owners through).
 # `restart_lounge` stops the Lounge alone and starts it again on the volume it
 # kept, the site left serving, as a deployment's restart does. It needs node,
 # chromium, curl, and TILO_RELAY_BIN and TILO_CRYPTO_BIN naming built programs,
@@ -65,7 +65,6 @@ run_lounge() {
     TILO_ROOMS_WEB_ENTRY="$site_origin/" \
     TILO_ROOMS_SITE_ORIGINS="$site_origin" \
     TILO_ROOMS_ROOT_FILE="$lounge_volume/secrets/room-root" \
-    TILO_ROOMS_ROLES_FILE="$roles" \
     TILO_ROOMS_FETCH_PROXY=0 \
     TILO_ROOMS_CHAT_CHANNELS=general \
     TILO_ROOMS_FEEDBACK_CHANNEL=feedback \
@@ -114,7 +113,7 @@ start_lounge() {
   mkdir -p "$volume/secrets" "$work/bin"
   printf 'a%.0s' $(seq 64) > "$volume/secrets/room-root"
   chmod 600 "$volume/secrets/room-root"
-  roles=$volume/roles.json
+  owner_socket=$volume/lounge/operator.sock
   # The relay as the image carries it: the product's font catalog beside the
   # program, which is where a Tilo binary finds it outside the image (its apps
   # lay text out, and a host that seeds them has no system fonts).

@@ -47,9 +47,10 @@ stack.sh: tilo.sh, whole, on this machine, from this checkout.
   stack.sh mail          the mail the door sent (wait-list confirmations,
                          invitations), with the links in each
   stack.sh owner [KEY]   declare the person with user public key KEY an owner
-                         of the Lounge (its roles file): the door, which takes
-                         people by invitation as production's does, lets
-                         them in, and they invite the others. Without KEY,
+                         of the Lounge: the door, which takes people by
+                         invitation as production's does, lets them in, and
+                         the workspace makes them an administrator; they
+                         invite the others. Without KEY,
                          the identity this computer's tilo command holds
                          (tilo login --new-identity makes it, once), whose
                          key it then approves: an export TILO_API_KEY=… line
@@ -318,10 +319,6 @@ relay_env() {
     # its door mails links to such a page (production's is https).
     TILO_ROOMS_LOCAL=1
     "TILO_ROOMS_ROOT_FILE=$secrets_path/room-root-lounge"
-    # The roles the operator declares, which the workspace re-reads when the
-    # file changes: production mounts its own; here it is the operator's to
-    # write in the stack's secrets.
-    "TILO_ROOMS_ROLES_FILE=$secrets_path/roles.json"
     TILO_ROOMS_FEEDBACK_CHANNEL=feedback
     # Its mail goes to this stack's mail sink (stack.sh mail reads it) where
     # production's goes to Resend.
@@ -337,7 +334,7 @@ relay_env() {
     "TILO_ROOMS_LINK=127.0.0.1:$link_port"
     "TILO_ROOMS_LINK_ORIGIN=https://127.0.0.1:$link_port"
   )
-  # Production's door: only people invited, or declared in the roles file
+  # Production's door: only people invited, or declared by the operator
   # (stack.sh owner), join, and a stranger leaves an address on its wait
   # list. TILO_SH_ADMISSION=open lets anyone in as a guest instead, for the
   # checks whose visitors arrive as strangers.
@@ -445,10 +442,10 @@ start_mail() {
 }
 
 # owner KEY: declare the person whose user public key (hex) is KEY an owner of
-# the Lounge, as production's operator does in its roles file: the door lets
-# them in without an invitation, and the workspace makes them an owner once in.
-# On a fresh stack nobody is a member yet, so this is how the first person
-# gets in to invite the others. The relay takes the file in within seconds.
+# the Lounge: the door lets them in without an invitation, and the workspace
+# makes them an administrator once they are a member. On a fresh stack nobody
+# is a member yet, so this is how the first person gets in to invite the
+# others. The workspace answers at once, or says why it did not.
 declare_owner() {
   local key=${1:-}
   local tilo=''
@@ -457,23 +454,14 @@ declare_owner() {
     key=$("$tilo" login --new-identity) || die "the tilo command made no identity ($tilo login --new-identity)"
   fi
   [[ $key =~ ^[0-9a-f]{64}$ ]] || die 'owner KEY: the person'"'"'s user public key, 64 hex characters (a tab that opened the site names it in its localStorage key tilo-own-workspace-named:ORIGIN:KEY)'
-  [[ -f $state/secrets/roles.json ]] || die 'the stack has not run here yet: stack.sh up'
-  python3 -I - "$state/secrets/roles.json" "$key" <<'PY'
-import json, os, sys
-path, key = sys.argv[1:]
-roles = json.load(open(path))
-if key not in roles.setdefault('owners', []):
-    roles['owners'].append(key)
-tmp = path + '.next'
-with open(tmp, 'w') as out:
-    json.dump(roles, out)
-    out.write('\n')
-os.replace(tmp, path)
-PY
-  say "$key is declared an owner of the Lounge ($state/secrets/roles.json)"
+  local socket=$state/relay/lounge/operator.sock
+  [[ -S $socket ]] || die "the Lounge is not running ($socket); stack.sh up first"
+  python3 -I "$repo/os/containers/tilo-lounge/declare-owner" "$socket" "$key" \
+    || die "the Lounge did not make $key an owner"
+  say "$key is an owner of the Lounge: its door lets them in, and it makes them an administrator once they join"
   [[ -n $tilo ]] || return 0
   # The identity approves its own key, as its Tilo on the web would: the
-  # door lets it in once the relay has read the roles file.
+  # door lets it in now that the workspace counts it an owner.
   if [[ ! -s $state/operator.env ]] || ! grep -q "# $key\$" "$state/operator.env"; then
     local made
     made=$(TILO_API_URL=$api_origin "$tilo" keys create 'stack.sh operator') \
@@ -1188,9 +1176,8 @@ restart() {
 }
 
 # The operator's secrets, as the relay's Secret holds them: a throwaway
-# workspace root, made once, and the roles file the operator declares nobody
-# in (the workspace's own owner roots stand; a person added to it is one the
-# workspace lets invite, as production's operator does).
+# workspace root, made once. Who is an owner is the workspace's own governance
+# from then on.
 make_secrets() {
   if [[ ! -s $state/secrets/room-root-lounge ]]; then
     od -An -tx1 -N32 /dev/urandom | tr -d ' \n' > "$state/secrets/room-root-lounge"
@@ -1202,8 +1189,6 @@ make_secrets() {
     printf 're_local_mail_sink' > "$state/secrets/resend-key"
     chmod 0444 "$state/secrets/resend-key"
   fi
-  [[ -s $state/secrets/roles.json ]] \
-    || printf '{"owners":[],"moderators":[]}\n' > "$state/secrets/roles.json"
 }
 
 discord_secrets() {

@@ -15,10 +15,10 @@ use serde::{Deserialize, Serialize};
 
 /// Version of this protocol, announced in [`OperatorEvent::Started`].
 ///
-/// 8 is the deployment's routes listener announced once it serves beside the
-/// browser one: 7 was read by builds that know no such event, so a reader of
-/// that one decodes no line of it.
-pub const VERSION: u16 = 8;
+/// 9 is the operator declaring a workspace's owner
+/// ([`OperatorCommand::DeclareOwner`]): 8 was read by builds that know no such
+/// command, so a reader of that one decodes no line of it.
+pub const VERSION: u16 = 9;
 
 /// The child reports [`OperatorEvent::Online`] at most this often, and only
 /// when the numbers changed, so a busy workspace does not flood the service.
@@ -115,6 +115,15 @@ pub enum OperatorCommand {
     },
     /// Acknowledge durable enqueue of an invitation, not provider delivery.
     InviteMailQueued { request: String, queued: bool },
+    /// Declare the person with user root `user_public_key` an owner of the
+    /// workspace: its door lets them in, and its governance makes them an
+    /// administrator, now if they are a member and as soon as they join if they
+    /// are not. The child answers [`OperatorEvent::OwnerDeclared`] or
+    /// [`OperatorEvent::OwnerRefused`] for the same key.
+    DeclareOwner {
+        /// The person's user root key (hex), not a device.
+        user_public_key: String,
+    },
 }
 
 /// What the workspace relay reports to the workspace service.
@@ -146,6 +155,18 @@ pub enum OperatorEvent {
         /// The device label the browser asked for.
         label: String,
         pairing_code: String,
+    },
+    /// The person `user_public_key` is an owner from here on.
+    OwnerDeclared {
+        /// The person's user root key (hex).
+        user_public_key: String,
+    },
+    /// Nobody became an owner.
+    OwnerRefused {
+        /// The key the operator named, as given.
+        user_public_key: String,
+        /// Why it declared nobody.
+        reason: String,
     },
     /// An admitted pairing code certified nobody.
     AdmitRefused {
@@ -499,12 +520,19 @@ mod tests {
             OperatorEvent::DeploymentRoutes {
                 origin: "http://127.0.0.1:8790".into(),
             },
+            OperatorEvent::OwnerDeclared {
+                user_public_key: "ef".repeat(32),
+            },
+            OperatorEvent::OwnerRefused {
+                user_public_key: "Ada".into(),
+                reason: "a user root key is 64 lowercase hex characters".into(),
+            },
         ]
     }
 
     #[test]
-    fn protocol_eight_round_trips_and_pins_its_wire_form() {
-        assert_eq!(VERSION, 8);
+    fn protocol_nine_round_trips_and_pins_its_wire_form() {
+        assert_eq!(VERSION, 9);
         let wait = OperatorCommand::WaitList {
             request: "12".repeat(32),
             contact: "Ada@example.org".into(),
@@ -550,6 +578,20 @@ mod tests {
             }
             .to_line(),
             "tilo-room-operator {\"event\":\"online\",\"people\":7}"
+        );
+        let declare = OperatorCommand::DeclareOwner {
+            user_public_key: "ef".repeat(32),
+        };
+        assert_eq!(
+            declare.to_line(),
+            format!(
+                "{{\"op\":\"declare_owner\",\"user_public_key\":\"{}\"}}\n",
+                "ef".repeat(32)
+            )
+        );
+        assert_eq!(
+            OperatorCommand::from_line(&declare.to_line()).unwrap(),
+            declare
         );
     }
 

@@ -4,9 +4,9 @@
 # started the way production's manifests start them (os/containers/tilo-sh's
 # stack.sh), so the door a stranger meets here is the one tilo.sh runs — taking
 # people by invitation, keeping a wait list, and mailing through a sink this run
-# reads. The person who runs it is declared an owner in the roles file, as the
-# deployment declares its own people, which is how a fresh invitation-only
-# Lounge gets its first member.
+# reads. The person who runs it is declared an owner through the running
+# workspace's operator socket, as the deployment declares its own people, which
+# is how a fresh invitation-only Lounge gets its first member.
 #
 # The stranger's walk: the wait list and its confirmation mail; the invitation
 # the person who runs the host sends from the workspace's own wait list, and
@@ -65,10 +65,10 @@ bash "$tilo_sh/stack.sh" up --fresh || { echo 'FAIL: the stack did not come up' 
 # the mail sink, all production's own.
 # shellcheck source=../tilo-sh/stack.sh
 . "$tilo_sh/stack.sh"
-role=$state/secrets/roles.json
+owner_socket=$state/relay/lounge/operator.sock
 bash "$tilo_sh/stack.sh" status || true
 
-node "$driver" "$site_origin" "$relay_origin" "$out" "$tilo_bin" "$role" \
+node "$driver" "$site_origin" "$relay_origin" "$out" "$tilo_bin" "$owner_socket" \
   || { echo 'FAIL: a stranger did not get from the wait list to a workspace of their own' >&2
        echo '--- the mails the door sent:' >&2; bash "$tilo_sh/stack.sh" mail >&2 || true
        exit 1; }

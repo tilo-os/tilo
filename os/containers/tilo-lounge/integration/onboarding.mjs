@@ -5,10 +5,10 @@
 //
 // The story this drives, one step per mark below:
 //
-//   0. the person who runs the host arrives, and the deployment declares them
-//      an owner in its roles file — how a fresh invitation-only Lounge gets its
-//      first member; the door lets them in, and the workspace makes them an
-//      owner once they are;
+//   0. the person who runs the host arrives, and the operator declares them an
+//      owner through the workspace's operator socket — how a fresh
+//      invitation-only Lounge gets its first member; the door lets them in,
+//      and the workspace makes them an owner once they are;
 //   1. a stranger arrives: the door's wait list, not the setup screen, and an
 //      address left on it is confirmed through the mail the door sends;
 //   2. the operator hands an invite link over in one press, and invites that
@@ -32,25 +32,26 @@
 // the run reads each one's link out of the file it landed in, so what the flow
 // proves is the mail a person would get.
 //
-// usage: node onboarding.mjs SITE RELAY WORK TILO_BIN SITE_CA DOOR ROLES
+// usage: node onboarding.mjs SITE RELAY WORK TILO_BIN OWNER_SOCKET
 //
 // SITE is the web entry's origin (the site people visit), RELAY the workspace
 // host's, WORK the run's directory (the stack's state, the mail sink's files
 // and every page's screenshots and console live there), TILO_BIN the `tilo`
-// command an agent runs, and ROLES the roles file the deployment mounts: the
-// driver declares the operator an owner in it, as the deployment does. The
-// stack is plain http on this machine, so no certificate stands between the
-// browsers, the agent's command and it.
-import {execFile, spawn} from 'node:child_process';
-import {chmodSync, mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync} from 'node:fs';
+// command an agent runs, and OWNER_SOCKET the running Lounge's operator socket:
+// the driver declares the operator an owner through it, as the deployment
+// does. The stack is plain http on this machine, so no certificate stands
+// between the browsers, the agent's command and it.
+import {execFile, execFileSync, spawn} from 'node:child_process';
+import {chmodSync, mkdirSync, readFileSync, readdirSync, writeFileSync} from 'node:fs';
 import {join} from 'node:path';
+import {fileURLToPath} from 'node:url';
 import {FIRST_RUN_SEEN, launch, sleep} from '../../../../tools/web/chrome.mjs';
 import {clock} from './timing.mjs';
 import {stepLimit, deskMetrics, machine} from './waits.mjs';
 
-const [site, relay, work, tiloBin, rolesFile] = process.argv.slice(2);
-if (!site || !relay || !work || !tiloBin || !rolesFile) {
-  console.error('usage: node onboarding.mjs SITE RELAY WORK TILO_BIN ROLES');
+const [site, relay, work, tiloBin, ownerSocket] = process.argv.slice(2);
+if (!site || !relay || !work || !tiloBin || !ownerSocket) {
+  console.error('usage: node onboarding.mjs SITE RELAY WORK TILO_BIN OWNER_SOCKET');
   process.exit(2);
 }
 // The mail sink the stack points the door at (`stack.sh mail` reads the same).
@@ -327,10 +328,10 @@ const firstScreenShown = `(document.documentElement.dataset.firstRun !== undefin
 
 // -- tilo.sh as a person meets it --------------------------------------------
 /** A person arriving at the site, in a tab that has not been here before.
- * `expected: 'let in'` tries again while the door refuses: the host reads the
- * roles file the deployment mounts again within seconds, so a person declared
- * an owner just now meets the closed door once more before it opens for them,
- * and comes back — as the operator does — instead of landing on the wait list. */
+ * `expected: 'let in'` tries again while the door refuses: the door that let
+ * the declaration in holds it, so a person declared an owner just now may meet
+ * the closed door once more before it opens for them, and comes back — as the
+ * operator does — instead of landing on the wait list. */
 const arrive = async (page, {expected}) => {
   const deadline = Date.now() + stepLimit(6);
   for (;;) {
@@ -346,17 +347,15 @@ const arrive = async (page, {expected}) => {
 
 // -- the deployment's declaration of its people -------------------------------
 /** Declare `user` (hex) an owner of the Lounge, as the deployment does: the
- * roles file it mounts, which the host reads again within seconds. The door
- * lets the people it names in, and the workspace makes them owners once in. */
+ * operator asks the running workspace over its operator socket, and the
+ * workspace's door lets them in and its governance makes them an owner the
+ * moment they are a member. */
 const declareOwner = async user => {
-  let roles = {};
-  try { roles = JSON.parse(readFileSync(rolesFile, 'utf8')); } catch { /* none yet */ }
-  const owners = Array.isArray(roles.owners) ? roles.owners : [];
-  if (!owners.includes(user)) {
-    const next = `${rolesFile}.next`;
-    writeFileSync(next, `${JSON.stringify({...roles, owners: [...owners, user], moderators: roles.moderators ?? []}, null, 2)}\n`);
-    renameSync(next, rolesFile);
-  }
+  execFileSync(
+    'python3',
+    ['-I', fileURLToPath(new URL('../declare-owner', import.meta.url)), ownerSocket, user],
+    {stdio: ['ignore', 'inherit', 'inherit']},
+  );
 };
 
 // The agent's computer: its own home, a `claude` that records what the command
@@ -408,9 +407,9 @@ const commandOf = prompt => {
 
 try {
   // -- 0. the operator, declared by the deployment, is let in --------------
-  // A fresh invitation-only Lounge has nobody in it: the people the deployment
+  // A fresh invitation-only Lounge has nobody in it: the people the operator
   // declares are the ones its door lets in, so the person who runs it arrives
-  // first, and this run writes their key into the roles file the way
+  // first, and this run declares their key through the operator socket the way
   // `stack.sh owner` does.
   const operator = await visit('operator', {setupDone: true});
   await arrive(operator, {expected: 'refused'});

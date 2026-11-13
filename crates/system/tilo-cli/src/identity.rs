@@ -28,8 +28,8 @@ use crate::login;
 /// Names the directory the identity is kept in, instead of
 /// `$XDG_STATE_HOME/tilo/identity`.
 pub const DIR_ENV: &str = "TILO_IDENTITY_DIR";
-/// How long approving waits for the site's door to let the person in: an
-/// operator's roles file reaches the host within seconds.
+/// How long approving waits for the site's door to let the person in: the
+/// operator's declaration reaches the host within seconds.
 const DOOR_WAIT: Duration = Duration::from_secs(60);
 
 /// The person this computer holds the root of.
@@ -236,8 +236,8 @@ pub fn answer(person: &Person, asked: &Asked) -> Result<Vec<(&'static str, Strin
 }
 
 /// The person in the site's home workspace, through its door, as their
-/// page comes in: the host knows them from then on. Waits for an operator's
-/// roles file to reach the host.
+/// page comes in: the host knows them from then on. Waits for the operator's
+/// declaration to reach the host.
 async fn through_door(person: &Person, site: &str) -> Result<()> {
     let http = login::http();
     let (status, body) = Origin::new(&http, site)

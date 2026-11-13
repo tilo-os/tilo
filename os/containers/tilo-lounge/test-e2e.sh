@@ -96,7 +96,7 @@ tilo_sh=$repo/os/containers/tilo-sh
 # hangs is stopped with everything it started.
 if [[ ${1:-} == --flow ]]; then
   flow=$2 out=$E2E_WORK/$2
-  site_origin=$E2E_SITE relay_origin=$E2E_RELAY room=$E2E_ROOM roles=$E2E_ROLES
+  site_origin=$E2E_SITE relay_origin=$E2E_RELAY room=$E2E_ROOM owner_socket=$E2E_OWNER_SOCKET
   case $flow in
     directory)
       page=$(curl -ksS --max-time 5 -X POST "$relay_origin/peer/v1/directory") \
@@ -125,7 +125,7 @@ print("ok: the directory lists the Lounge, joined at its door as an editor")
     boot) exec node "$integration/page-boot.mjs" "$site_origin" "$relay_origin" "$out" ;;
     people-call|people-desk|people-menus|people-invite)
       TILO_PEOPLE_CASE=${flow#people-} exec node "$integration/people.mjs" "$site_origin" "$relay_origin" \
-        "$relay_origin" "$out" "$roles" ;;
+        "$relay_origin" "$out" "$owner_socket" ;;
     share-link) exec node "$integration/share-link.mjs" "$site_origin" "$relay_origin" "$room" "$out" ;;
     reloads) exec node "$integration/reloads.mjs" "$site_origin" "$out" ;;
     agent-setup|setup-resume)
@@ -150,7 +150,7 @@ print("ok: the directory lists the Lounge, joined at its door as an editor")
       [[ $(cat "$TILO_SH_STATE/relay/lounge/room-id") == "$room" ]] \
         || { echo 'FAIL: a restart on the same volume served a different workspace'; exit 1; }
       echo "ok: the Lounge started again on its own volume ($room)"
-      exec node "$integration/people.mjs" "$site_origin" "$relay_origin" "$relay_origin" "$out" "$roles" "$earlier" ;;
+      exec node "$integration/people.mjs" "$site_origin" "$relay_origin" "$relay_origin" "$out" "$owner_socket" "$earlier" ;;
   esac
   exit 2
 fi
@@ -222,13 +222,13 @@ TILO_SH_ADMISSION=${TILO_SH_ADMISSION:-open} bash "$tilo_sh/stack.sh" up --fresh
 # shellcheck source=../tilo-sh/stack.sh
 . "$tilo_sh/stack.sh"
 room=$(cat "$state/relay/lounge/room-id")
-roles=$state/secrets/roles.json
+owner_socket=$state/relay/lounge/operator.sock
 log=$state/logs/relay.log
 bash "$tilo_sh/stack.sh" status || true
 timing 'phase=the stack up'
 
 export E2E_WORK=$work E2E_BUNDLE=$bundle E2E_SITE=$site_origin E2E_RELAY=$relay_origin E2E_ROOM=$room \
-  E2E_ROLES=$roles E2E_API_URL=$api_origin TILO_CLI_BIN=$tilo_bin
+  E2E_OWNER_SOCKET=$owner_socket E2E_API_URL=$api_origin TILO_CLI_BIN=$tilo_bin
 
 # What each of the stack's services complained about while it ran: each error
 # and warning it logged, without its time, with how often. A failing check
