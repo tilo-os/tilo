@@ -363,6 +363,60 @@ mod tests {
     }
 
     #[test]
+    fn a_part_starts_where_asked_and_never_past_the_end() {
+        let path = Path::new("/tmp/book.txt");
+        let full = "\u{e9}".repeat(MAX_READ_CHARS);
+        let over = format!("{full}\u{e9}");
+        for (row, text, from, part, starts, more) in [
+            ("an empty text", "", 0, "", 0, None),
+            ("from the middle", "ab\u{e9}d", 2, "\u{e9}d", 2, None),
+            ("from its end", "ab\u{e9}d", 4, "", 4, None),
+            ("from past its end", "ab\u{e9}d", 9, "", 4, None),
+            (
+                "as much as one part holds",
+                full.as_str(),
+                0,
+                full.as_str(),
+                0,
+                None,
+            ),
+            (
+                "one character more than a part holds",
+                over.as_str(),
+                0,
+                full.as_str(),
+                0,
+                Some(MAX_READ_CHARS),
+            ),
+            (
+                "the character the first part left",
+                over.as_str(),
+                MAX_READ_CHARS,
+                "\u{e9}",
+                MAX_READ_CHARS,
+                None,
+            ),
+        ] {
+            let read = page(path, "text", text, from);
+            assert_eq!(read.text.as_deref(), Some(part), "{row}");
+            assert_eq!(
+                (read.from, read.next, read.total),
+                (Some(starts), more, Some(text.chars().count())),
+                "{row}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_pdf_is_refused_before_it_is_read_and_the_refusal_names_what_reads_it() {
+        let refused = convert_file(Path::new("/nowhere/Scan.PDF"), "docx").unwrap_err();
+        assert!(
+            refused.contains("Scan.PDF is a PDF: Files' `read-text` reads its text"),
+            "{refused}"
+        );
+    }
+
+    #[test]
     fn a_long_text_reads_in_parts_that_join_up() {
         let text: String = "ab\u{e9}".repeat(MAX_READ_CHARS);
         let path = Path::new("/tmp/book.txt");

@@ -272,6 +272,106 @@ mod tests {
     }
 
     #[test]
+    fn a_pattern_that_can_match_nothing_finds_only_what_it_matches_and_ends() {
+        let pattern = FindOptions {
+            mode: ui::widget::FindMode::Regex,
+            ..FindOptions::default()
+        };
+        for (text, query, expected) in [
+            ("baa", "a*", vec![(1, 3)]),
+            ("aXa", "a*", vec![(0, 1), (2, 3)]),
+            ("a\u{e9}\u{e9}", "\u{e9}*", vec![(1, 3)]),
+            ("ab", "x*", vec![]),
+            ("ab", "", vec![]),
+            ("", "a*", vec![]),
+        ] {
+            let blocks = [block("p1", text)];
+            assert_eq!(
+                find_in(&blocks, query, pattern)
+                    .iter()
+                    .map(|(_, s, e)| (*s, *e))
+                    .collect::<Vec<_>>(),
+                expected,
+                "{query:?} in {text:?}"
+            );
+        }
+        assert!(
+            find_in(&[block("p1", "ab")], "", FindOptions::default()).is_empty(),
+            "an empty query finds nothing"
+        );
+    }
+
+    #[test]
+    fn replacements_splice_characters_from_the_back_and_skip_what_is_not_there() {
+        let at = |id: &str, start: usize, end: usize| (id.to_string(), start, end);
+        let cats = "cat and cat";
+        for (row, text, matches, with, expected) in [
+            (
+                "two in one paragraph, the later one given first",
+                cats,
+                vec![at("p1", 8, 11), at("p1", 0, 3)],
+                "horse",
+                "horse and horse",
+            ),
+            (
+                "characters, not bytes",
+                "\u{e9}t\u{e9} cat",
+                vec![at("p1", 4, 7)],
+                "dog",
+                "\u{e9}t\u{e9} dog",
+            ),
+            (
+                "nothing in its place",
+                cats,
+                vec![at("p1", 0, 4)],
+                "",
+                "and cat",
+            ),
+            (
+                "an empty range",
+                cats,
+                vec![at("p1", 3, 3)],
+                "s",
+                "cats and cat",
+            ),
+            ("the whole paragraph", cats, vec![at("p1", 0, 11)], "", ""),
+            (
+                "a range past the end",
+                cats,
+                vec![at("p1", 8, 12)],
+                "dog",
+                cats,
+            ),
+            (
+                "one of two past the end",
+                cats,
+                vec![at("p1", 0, 3), at("p1", 8, 12)],
+                "dog",
+                "dog and cat",
+            ),
+            (
+                "a range that ends before it starts",
+                cats,
+                vec![at("p1", 5, 3)],
+                "dog",
+                cats,
+            ),
+            (
+                "a paragraph that is not there",
+                cats,
+                vec![at("p9", 0, 3)],
+                "dog",
+                cats,
+            ),
+        ] {
+            let mut blocks = [block("p1", text), block("p2", "cat")];
+            splice_blocks(&mut blocks, &matches, with);
+            assert_eq!(blocks[0].text, expected, "{row}");
+            assert_eq!(blocks[1].text, "cat", "{row}: the other paragraph");
+        }
+    }
+
+    #[test]
     fn a_search_finds_reveals_and_closing_forgets() {
         let mut find = DocumentFind::default();
         assert_eq!(find.find("report", FindOptions::default()), 0);
