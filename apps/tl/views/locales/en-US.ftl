@@ -49,11 +49,12 @@ d-uibilwji-filter-device = Device
 
 d-uibilwji-filter-chosen = Chosen
 
+# refined
 d-f6dcaezu = Views
     .doc = The person's views, and the types they show through one of them.
     .noun = { $count ->
-        [one] views
-       *[other] viewses
+        [one] view
+       *[other] views
     }
 
 d-bweal36x = Items

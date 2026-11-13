@@ -18,11 +18,12 @@ d-xttl6aec = Stage
 
 d-44yujnht = Reactions
 
+# refined
 d-5cf5i2l7 = Basics
     .doc = The everyday parts of a window: navigation, text and buttons, chips, a card of facts, an empty state and a page of a stack.
     .noun = { $count ->
-        [one] basics
-       *[other] basicses
+        [one] basic
+       *[other] basics
     }
 
 d-phmalltz = Title
@@ -93,11 +94,12 @@ d-aia654wv = Places
 
 d-t7ydaknu = Chrome
 
+# refined
 d-lhci3noh = Controls
     .doc = The controls a form is made of: boxes and switches, a number, a choice from a short list, a person, a strip of choices, tabs, a day and a time, a colour, a shortcut, a completion, a picture choice, a row of controls, and a link.
     .noun = { $count ->
-        [one] controls
-       *[other] controlses
+        [one] control
+       *[other] controls
     }
 
 d-6as2vdpa = Title
@@ -184,11 +186,12 @@ d-lhci3noh-filter-archived = Archived
 
 d-lhci3noh-filter-text_size = Text size
 
+# refined
 d-pprp6hfn = Data
     .doc = The data views: a table of columns and rows, a tree of nodes, a conversation, a grid of cards and the history of a document, each reading a collection of the app's own.
     .noun = { $count ->
         [one] data
-       *[other] datas
+       *[other] data
     }
 
 d-4ypxqojm = Title
@@ -296,11 +299,12 @@ d-e4daczuq = At
 
 d-4cntcc2v-filter-at = At
 
+# refined
 d-oepvsx65 = Feedback
     .doc = How things are going: badges and banners, progress and gauges, stats, the facts of a thing, a path, a toolbar, rows that open in place, and what is still loading.
     .noun = { $count ->
         [one] feedback
-       *[other] feedbacks
+       *[other] feedback
     }
 
 d-2pxvl4zz = Title
@@ -310,20 +314,22 @@ d-bafspfun = Owner
 
 d-oepvsx65-filter-owner = Owner
 
+# refined
 d-rnok2vxj = Places
     .doc = What the gallery holds of a canvas: places at points on a surface that pans and zooms.
     .noun = { $count ->
-        [one] places
-       *[other] placeses
+        [one] place
+       *[other] places
     }
 
 d-4wbrhgfm = Title
 
+# refined
 d-exu5jg4p = Media
     .doc = What the gallery holds of media and surfaces: pictures, a playing band, a video, a library of cards, a code a scanner reads, a drop zone, a page preview and rail, a code editor, a line of text, the window's own surfaces (a modal, a popover, a floating panel) and a page shown live.
     .noun = { $count ->
         [one] media
-       *[other] medias
+       *[other] media
     }
 
 d-m4bxkjt2 = Title
@@ -342,11 +348,12 @@ d-o2brvdoa = Source
 
 d-exu5jg4p-filter-at = At
 
+# refined
 d-wb23plj7 = Shell parts
     .doc = The parts the shell is made of, as a view places them: a bar or a dock's body, a run of items a person reorders by dragging one, and the divider a conversation marks its first unread line with.
     .noun = { $count ->
-        [one] shell parts
-       *[other] shell partses
+        [one] shell part
+       *[other] shell parts
     }
 
 d-f6btt2yz = Title
@@ -354,11 +361,12 @@ d-f6btt2yz = Title
 d-y2iftasi = Apps
     .doc = What the dock's items stand for: the apps pinned to it.
 
+# refined
 d-uuewf2cr = Pinned
     .doc = One app on a dock: what it stands for and its name.
     .noun = { $count ->
-        [one] pinned
-       *[other] pinneds
+        [one] pinned app
+       *[other] pinned apps
     }
 
 d-ciwf3kva = Title

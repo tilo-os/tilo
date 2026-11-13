@@ -79,8 +79,7 @@ enum Slot {
 enum Layout {
     /// The dock on the bottom with the bar on the top: Tilo's own.
     tilo (icon: .layout_grid)
-    /// A floating, rounded, translucent dock at the bottom that hides while a window covers
-    /// it, and a top bar with the focused app's menus after the system's.
+    /// A floating, rounded, translucent dock at the bottom that hides while a window covers it, and a top bar with the focused app's menus after the system's.
     macos (icon: .monitor)
     /// A full-width taskbar at the bottom, always shown.
     windows (icon: .panel_right)
@@ -88,8 +87,7 @@ enum Layout {
     gnome (icon: .menu)
     /// No chrome at rest; the edges reveal what the person needs.
     minimal (icon: .minus)
-    /// The traditional desktop: frames on a floating desk, the focused window's own commands in the
-    /// top bar, and a floating dock at the foot, the shape macOS and GNOME people know.
+    /// The traditional desktop: frames on a floating desk, the focused window's own commands in the top bar, and a floating dock at the foot, the shape macOS and GNOME people know.
     windows_desktop (icon: .app_window)
 }
 
