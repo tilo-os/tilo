@@ -6,21 +6,14 @@ use std::sync::Arc;
 pub use tilo_fs_client::directory_types::*;
 
 pub trait WorkspaceDirectoryBackend: Send + Sync + 'static {
-    /// # Errors
-    /// Refuses unsupported providers, revoked metadata scope or actual fsync IO.
     fn sync_directory(&self) -> Result<(), String> {
         Err("Held source directory sync unavailable".into())
     }
 
-    /// # Errors
-    /// Refuses unsupported providers or revoked genuine directory metadata scope.
     fn statfs(&self) -> Result<DirectoryFilesystemStats, String> {
         Err("Source filesystem capacity unavailable".into())
     }
-    /// # Errors
-    /// Refuses revoked or unavailable native/root consumption authority.
     fn check(&self) -> Result<(), String>;
-    /// Open one independent native cursor retaining this genuine directory grant.
     fn open_cursor(&self) -> Result<Arc<dyn WorkspaceDirectoryCursorBackend>, String>;
     fn metadata(&self) -> Result<DirectoryStat, String>;
     /// # Errors
@@ -34,8 +27,6 @@ pub trait WorkspaceDirectoryBackend: Send + Sync + 'static {
         name: &EntryName,
         expected: [u64; 2],
     ) -> Result<Arc<dyn WorkspaceMetadataBackend>, String>;
-    /// # Errors
-    /// Refuses stale cursors, revoked scope, snapshot limits or host IO.
     fn list(&self, cursor: u64) -> Result<DirectoryRows, String>;
     fn directory(&self, name: &EntryName) -> Result<Arc<dyn WorkspaceDirectoryBackend>, String>;
     fn open_file(
@@ -46,14 +37,10 @@ pub trait WorkspaceDirectoryBackend: Send + Sync + 'static {
     ) -> Result<Arc<dyn WorkspaceFileBackend>, String>;
     fn create_file(&self, name: EntryName) -> Result<Arc<dyn WorkspaceJobBackend>, String>;
     fn create_directory(&self, name: EntryName) -> Result<Arc<dyn WorkspaceJobBackend>, String>;
-    /// # Errors
-    /// Refuses missing private owner, foreign cursor or revoked parent scope.
     fn recoveries(&self, after: &[u8]) -> Result<RecoveryPage, String> {
         let _ = after;
         Err("Native recovery owner not admitted".into())
     }
-    /// # Errors
-    /// Refuses unrelated recovery, missing genuine grants, collision or revoked scope.
     fn restore_captured(
         &self,
         recovery: [u8; 16],
@@ -62,8 +49,6 @@ pub trait WorkspaceDirectoryBackend: Send + Sync + 'static {
         let _ = (recovery, name);
         Err("Native recovery owner not admitted".into())
     }
-    /// # Errors
-    /// Refuses missing rename authority, destination collisions or native IO.
     fn rename_no_replace(
         &self,
         name: &EntryName,
@@ -90,17 +75,11 @@ pub trait WorkspaceJobBackend: Send + Sync + 'static {
         None
     }
     fn poll(&self) -> Result<JobPoll, String>;
-    /// # Errors
-    /// Refuses revoked scope or native/relay cancellation failures.
     fn cancel(&self) -> Result<(), String>;
 }
 
 /// An independent held-directory cursor, with no byte or mutation rights.
 pub trait WorkspaceDirectoryCursorBackend: Send + Sync + 'static {
-    /// # Errors
-    /// Refuses revoked session/ancestor authority.
     fn check(&self) -> Result<(), String>;
-    /// # Errors
-    /// Refuses sequence mismatch, native enumeration IO or revoked authority.
     fn page(&self, expected_sequence: u64) -> Result<DirectoryStreamPage, String>;
 }

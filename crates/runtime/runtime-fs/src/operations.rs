@@ -412,8 +412,6 @@ impl Context<'_> {
             .checked_add(1)
             .ok_or(FsError::LimitExceeded)?;
         let sequence = results.sequence;
-        // One replaceable update per item/phase, preserving phase ordering and
-        // reserving bounded terminal slots for every admitted item plus Finished.
         results.queue.retain(|update|!matches!(update,FsUpdate::Progress{item,phase:old,..} if *item==self.item&&*old==phase));
         results.queue.push_back(FsUpdate::Progress {
             sequence,

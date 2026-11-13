@@ -58,7 +58,6 @@ pub enum RecoveryResolution {
         parent: DirectoryGrant,
         name: EntryName,
     },
-    /// Restore an actual protected capture without opening its contents.
     RestoreCaptured {
         parent: DirectoryGrant,
         name: EntryName,
@@ -415,7 +414,6 @@ impl OperationOwner {
             #[cfg(test)]
             submissions: std::sync::atomic::AtomicUsize::new(0),
         });
-        // Reconciliation metadata is durable; user files remain untouched.
         for receipt in lock(&result.state)?.receipts.values() {
             result.write(receipt)?;
         }
@@ -503,14 +501,12 @@ impl OperationOwner {
                     &OperationId(record.id),
                     "OriginalSourceAdopted",
                     |receipt| {
-                        // Keep update's newly appended durable checkpoint.
                         receipt.steps = adopted.steps;
                         Ok(())
                     },
                 )?;
             }
         }
-        // Renew actual held scope after publication, before exposing the owner.
         session.check_directory(root)?;
         Ok(this)
     }

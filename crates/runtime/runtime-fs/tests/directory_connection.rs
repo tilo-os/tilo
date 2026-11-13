@@ -89,7 +89,6 @@ fn connected_directory_pins_open_identity_and_observes_real_retirement() {
     let facts = std::fs::metadata(&path).unwrap();
     assert_eq!(replaced.identity, [facts.dev(), facts.ino()]);
     source.release_pin(pin).unwrap();
-    // A stale inode observation is refused before actual Write truncation.
     assert!(
         source
             .open_expected(ROOT_DIRECTORY, &name, OpenMode::Write, observed.identity)
@@ -479,7 +478,6 @@ fn connected_statfs_observes_actual_source_filesystem_under_enumerate_only() {
     let source = DirectoryConnection::connected(stream).unwrap();
     let projected = source.statfs(ROOT_DIRECTORY).unwrap();
     projected.validate().unwrap();
-    // Read again, later: the live totals move with the shared disk.
     assert!(between(projected.blocks, native.blocks, native.blocks));
     assert_eq!(projected.block_size, native.block_size);
     assert_eq!(projected.fragment_size, native.fragment_size);
