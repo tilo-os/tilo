@@ -1005,6 +1005,16 @@ impl TextInput {
         self.authored.clear();
     }
 
+    /// Show no authored runs of the bound text: its owner draws them (a body's line, whose
+    /// [BlockEditor](crate::widget::BlockEditor) paints each run in its writer's colour), so a
+    /// field that is that line's text does not tint them a second time.
+    pub(crate) fn clear_authored(&mut self) {
+        if !self.authored.is_empty() {
+            self.repaint = true;
+            self.authored.clear();
+        }
+    }
+
     /// For `BlockEditor` to match local blocks to doc list elements by object identity.
     pub fn bound_obj(&self) -> Option<&ObjId> {
         self.bound_text.as_ref()
