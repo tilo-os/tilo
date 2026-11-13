@@ -154,37 +154,42 @@ mod tests {
             .expect("a unit that changed travels under its action's commit")
     }
 
-    #[test]
-    fn an_action_is_kept_once_and_reads_with_its_author() {
-        let commit = commit_of("done", "true");
-        let mut log = CommitLog::new();
-        assert!(!log.kept(&commit));
-        log.record(&commit);
-        log.record(&commit);
-        assert!(log.kept(&commit));
-        let history = log.history(WORKSPACE);
-        assert_eq!(history.len(), 1, "one action, one entry");
-        assert_eq!(history[0].principal.as_deref(), Some("ada"));
-        assert_eq!(history[0].device, DEVICE);
-        assert!(log.history("elsewhere").is_empty());
-    }
+    tilo_test_env::scenario! {
+        /// The log of a workspace's actions, each case on a log of its own.
+        fn a_commit_log_keeps_each_action_once_oldest_first;
 
-    #[test]
-    fn the_actions_of_a_workspace_read_oldest_first() {
-        let mut log = CommitLog::new();
-        let mut first = commit_of("done", "true");
-        first.at_ms = 1_700_000_000;
-        let mut second = commit_of("done", "false");
-        second.at_ms = 1_700_000_001;
-        log.record(&second);
-        log.record(&first);
-        let history = log.history(WORKSPACE);
-        assert_eq!(
-            history
-                .iter()
-                .map(|action| action.at_ms)
-                .collect::<Vec<_>>(),
-            [1_700_000_000, 1_700_000_001]
-        );
+        phase an_action_is_kept_once_and_reads_with_its_author;
+        {
+            let commit = commit_of("done", "true");
+            let mut log = CommitLog::new();
+            assert!(!log.kept(&commit));
+            log.record(&commit);
+            log.record(&commit);
+            assert!(log.kept(&commit));
+            let history = log.history(WORKSPACE);
+            assert_eq!(history.len(), 1, "one action, one entry");
+            assert_eq!(history[0].principal.as_deref(), Some("ada"));
+            assert_eq!(history[0].device, DEVICE);
+            assert!(log.history("elsewhere").is_empty());
+        }
+
+        phase the_actions_of_a_workspace_read_oldest_first;
+        {
+            let mut log = CommitLog::new();
+            let mut first = commit_of("done", "true");
+            first.at_ms = 1_700_000_000;
+            let mut second = commit_of("done", "false");
+            second.at_ms = 1_700_000_001;
+            log.record(&second);
+            log.record(&first);
+            let history = log.history(WORKSPACE);
+            assert_eq!(
+                history
+                    .iter()
+                    .map(|action| action.at_ms)
+                    .collect::<Vec<_>>(),
+                [1_700_000_000, 1_700_000_001]
+            );
+        }
     }
 }

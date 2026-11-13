@@ -1452,9 +1452,10 @@ fn inherited_broker_identity_delegates_join_keys_and_signing_refusals() {
     worker.join().unwrap();
 }
 
-#[test]
-fn host_connector_handoff_fails_closed_without_fallback() {
-    // Case `host_connector_failure_is_consumed_once_without_inherited_fallback`.
+tilo_test_env::scenario! {
+    fn host_connector_handoff_fails_closed_without_fallback;
+
+    phase host_connector_failure_is_consumed_once_without_inherited_fallback;
     {
         let calls = Arc::new(AtomicUsize::new(0));
         let seen = calls.clone();
@@ -1497,7 +1498,7 @@ fn host_connector_handoff_fails_closed_without_fallback() {
         assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 
-    // Case `host_connector_without_certificate_cannot_use_harness_identity`.
+    phase host_connector_without_certificate_cannot_use_harness_identity;
     {
         let connector = HostSessionConnector::new(move |_| async move {
             let (identity, _) = host_identity_fixture(None, vec![]);
@@ -1523,7 +1524,7 @@ fn host_connector_handoff_fails_closed_without_fallback() {
         }
     }
 
-    // Case `host_connector_join_proof_refusal_reaches_caller`.
+    phase host_connector_join_proof_refusal_reaches_caller;
     {
         let connector = HostSessionConnector::new(move |_| async move {
             let (identity, _) = host_identity_fixture(
@@ -1551,7 +1552,7 @@ fn host_connector_handoff_fails_closed_without_fallback() {
         }
     }
 
-    // Case `host_connector_uses_certified_presentation_and_broker_document_policy`.
+    phase host_connector_uses_certified_presentation_and_broker_document_policy;
     {
         let captures = Arc::new(std::sync::Mutex::new(Captures::default()));
         let broker_captures = captures.clone();
@@ -1684,7 +1685,7 @@ fn host_connector_handoff_fails_closed_without_fallback() {
         );
     }
 
-    // Case `host_connector_refused_primary_join_is_not_connected_success`.
+    phase host_connector_refused_primary_join_is_not_connected_success;
     {
         let (attempt_tx, attempt_rx) = mpsc::channel();
         let (stop_tx, stop_rx) = mpsc::channel();
@@ -2432,202 +2433,207 @@ fn parking_transport(capacity: usize) -> (BrokerTransport, tokio_mpsc::Receiver<
     (transport, outbound_rx)
 }
 
-/// A barrier submitted while the queue is full goes into the slot held
-/// for it, behind every earlier edit. Parked in the spill, it would move
-/// only when the owner next called the transport, and an owner blocked
-/// on the receipt never does. A second barrier with no edit between
-/// shares the first one's answer.
-#[test]
-fn a_barrier_behind_a_full_queue_is_queued_not_parked() {
-    let (mut transport, mut shovel) = parking_transport(4);
-    let mut edits = 0;
-    let refused = loop {
-        match transport.submit(TransportCommand::Primary(
-            CollabRequest::document_incremental(vec![edits]),
-        )) {
-            Ok(()) => edits += 1,
-            Err(error) => break error,
+tilo_test_env::scenario! {
+    /// The transport's outbound queue when it is full, each case on a transport with no worker behind it.
+    fn a_full_outbound_queue_parks_coalesces_and_refuses_without_closing_the_bridge;
+
+    phase a_barrier_behind_a_full_queue_is_queued_not_parked;
+    // A barrier submitted while the queue is full goes into the slot held
+    // for it, behind every earlier edit. Parked in the spill, it would move
+    // only when the owner next called the transport, and an owner blocked
+    // on the receipt never does. A second barrier with no edit between
+    // shares the first one's answer.
+    {
+        let (mut transport, mut shovel) = parking_transport(4);
+        let mut edits = 0;
+        let refused = loop {
+            match transport.submit(TransportCommand::Primary(
+                CollabRequest::document_incremental(vec![edits]),
+            )) {
+                Ok(()) => edits += 1,
+                Err(error) => break error,
+            }
+        };
+        assert_eq!(refused, TransportError::Busy);
+        assert!(edits > 0);
+
+        let first = transport.publication_barrier().unwrap();
+        let second = transport.publication_barrier().unwrap();
+        assert!(transport.spill.is_empty(), "a barrier is never parked");
+        for n in 0..edits {
+            assert!(
+                matches!(
+                    shovel.try_recv().map(|queued| queued.command),
+                    Ok(SdkCommand::Primary(CollabRequest::Document { .. }))
+                ),
+                "edit {n} precedes the barrier"
+            );
         }
-    };
-    assert_eq!(refused, TransportError::Busy);
-    assert!(edits > 0);
-
-    let first = transport.publication_barrier().unwrap();
-    let second = transport.publication_barrier().unwrap();
-    assert!(transport.spill.is_empty(), "a barrier is never parked");
-    for n in 0..edits {
+        let Ok(QueuedSdkCommand {
+            command: SdkCommand::PublicationBarrier(replies),
+            ..
+        }) = shovel.try_recv()
+        else {
+            panic!("the barrier was queued behind the edits");
+        };
         assert!(
-            matches!(
-                shovel.try_recv().map(|queued| queued.command),
-                Ok(SdkCommand::Primary(CollabRequest::Document { .. }))
-            ),
-            "edit {n} precedes the barrier"
+            shovel.try_recv().is_err(),
+            "both barriers share one command"
         );
+        replies.answer(&Ok(()));
+        assert_eq!(first.wait(None), Ok(()));
+        assert_eq!(second.wait(None), Ok(()));
     }
-    let Ok(QueuedSdkCommand {
-        command: SdkCommand::PublicationBarrier(replies),
-        ..
-    }) = shovel.try_recv()
-    else {
-        panic!("the barrier was queued behind the edits");
-    };
-    assert!(
-        shovel.try_recv().is_err(),
-        "both barriers share one command"
-    );
-    replies.answer(&Ok(()));
-    assert_eq!(first.wait(None), Ok(()));
-    assert_eq!(second.wait(None), Ok(()));
-}
 
-/// A burst of durable commands, more than the queue holds by count and
-/// by bytes, waits for the shovel instead of disabling collaboration,
-/// and reaches it in submission order.
-#[test]
-fn a_durable_burst_waits_for_the_shovel_instead_of_disabling_collaboration() {
-    let (mut transport, mut shovel) = parking_transport(4);
-    let total = 100;
-    for n in 0..total {
-        // One megabyte each: the burst is far past the byte budget too.
-        let command = TransportCommand::Primary(CollabRequest::ReportHandoff {
-            message: vec![u8::try_from(n).unwrap(); 1024 * 1024],
+    phase a_durable_burst_waits_for_the_shovel_instead_of_disabling_collaboration;
+    // A burst of durable commands, more than the queue holds by count and
+    // by bytes, waits for the shovel instead of disabling collaboration,
+    // and reaches it in submission order.
+    {
+        let (mut transport, mut shovel) = parking_transport(4);
+        let total = 100;
+        for n in 0..total {
+            // One megabyte each: the burst is far past the byte budget too.
+            let command = TransportCommand::Primary(CollabRequest::ReportHandoff {
+                message: vec![u8::try_from(n).unwrap(); 1024 * 1024],
+            });
+            assert_eq!(transport.submit(command), Ok(()), "command {n} was refused");
+            assert!(
+                transport.state.is_healthy(),
+                "command {n} disabled the bridge"
+            );
+        }
+        assert!(!transport.spill.is_empty(), "the queue really was full");
+        assert!(matches!(transport.status(), TransportStatus::Connecting));
+
+        let mut seen = Vec::new();
+        let mut events = Vec::new();
+        while seen.len() < total {
+            let mut moved = false;
+            while let Ok(queued) = shovel.try_recv() {
+                let SdkCommand::Primary(CollabRequest::ReportHandoff { message }) = queued.command
+                else {
+                    panic!("unexpected command");
+                };
+                seen.push(message[0]);
+                moved = true;
+            }
+            // The owner's drain is what refills the queue after a wake.
+            transport.drain(&mut events);
+            assert!(moved || !transport.spill.is_empty() || seen.len() == total);
+        }
+        let expected = (0..total)
+            .map(|n| u8::try_from(n).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(seen, expected);
+        assert!(transport.state.is_healthy());
+    }
+
+    phase a_command_larger_than_the_whole_budget_is_refused_without_closing_the_bridge;
+    // A single command larger than the whole outbound byte budget can never
+    // fit, so it is refused to its sender, and the bridge stays up for
+    // everything else.
+    {
+        let (mut transport, mut shovel) = parking_transport(8);
+        let huge = TransportCommand::Primary(CollabRequest::ReportHandoff {
+            message: vec![0; SDK_COMMAND_QUEUE_BYTES + 1024 * 1024],
         });
-        assert_eq!(transport.submit(command), Ok(()), "command {n} was refused");
-        assert!(
-            transport.state.is_healthy(),
-            "command {n} disabled the bridge"
-        );
-    }
-    assert!(!transport.spill.is_empty(), "the queue really was full");
-    assert!(matches!(transport.status(), TransportStatus::Connecting));
-
-    let mut seen = Vec::new();
-    let mut events = Vec::new();
-    while seen.len() < total {
-        let mut moved = false;
-        while let Ok(queued) = shovel.try_recv() {
-            let SdkCommand::Primary(CollabRequest::ReportHandoff { message }) = queued.command
-            else {
-                panic!("unexpected command");
-            };
-            seen.push(message[0]);
-            moved = true;
-        }
-        // The owner's drain is what refills the queue after a wake.
-        transport.drain(&mut events);
-        assert!(moved || !transport.spill.is_empty() || seen.len() == total);
-    }
-    let expected = (0..total)
-        .map(|n| u8::try_from(n).unwrap())
-        .collect::<Vec<_>>();
-    assert_eq!(seen, expected);
-    assert!(transport.state.is_healthy());
-}
-
-/// A single command larger than the whole outbound byte budget can never
-/// fit, so it is refused to its sender, and the bridge stays up for
-/// everything else.
-#[test]
-fn a_command_larger_than_the_whole_budget_is_refused_without_closing_the_bridge() {
-    let (mut transport, mut shovel) = parking_transport(8);
-    let huge = TransportCommand::Primary(CollabRequest::ReportHandoff {
-        message: vec![0; SDK_COMMAND_QUEUE_BYTES + 1024 * 1024],
-    });
-    assert!(matches!(
-        transport.submit(huge),
-        Err(TransportError::TooLarge { .. })
-    ));
-    assert!(transport.state.is_healthy());
-    assert_eq!(
-        transport.submit(TransportCommand::Primary(CollabRequest::ClearContinuation)),
-        Ok(())
-    );
-    assert!(shovel.try_recv().is_ok());
-}
-
-/// Commands behind a parked one stay behind it, and a newer action surface
-/// replaces an older one still waiting: it is level-triggered, so a burst
-/// of republications is one parked surface, not a queue of large ones.
-#[test]
-fn parked_surfaces_coalesce_and_document_changes_wait_behind_parked_commands() {
-    let (mut transport, mut shovel) = parking_transport(1);
-    let surface = |n: usize| {
-        TransportCommand::Primary(CollabRequest::PublishActionSurface {
-            delta: SurfaceDelta {
-                removed: vec![format!("page-{n}")],
-                ..SurfaceDelta::default()
-            },
-        })
-    };
-    assert_eq!(transport.submit(surface(0)), Ok(()));
-    for n in 1..=500 {
-        assert_eq!(transport.submit(surface(n)), Ok(()));
-    }
-    assert_eq!(transport.spill.len(), 1, "surfaces coalesce while parked");
-    let Some(SdkCommand::Primary(CollabRequest::PublishActionSurface { delta, .. })) =
-        transport.spill.front()
-    else {
-        panic!("the parked command is the surface");
-    };
-    assert_eq!(delta.removed.len(), 500, "no change is lost in the merge");
-    assert_eq!(
-        transport.submit(TransportCommand::Primary(
-            CollabRequest::document_incremental(b"edit".to_vec())
-        )),
-        Err(TransportError::Busy),
-        "a document change never overtakes a parked command"
-    );
-    assert!(transport.state.is_healthy());
-    assert!(shovel.try_recv().is_ok());
-    let mut events = Vec::new();
-    transport.drain(&mut events);
-    assert!(transport.spill.is_empty());
-    assert!(shovel.try_recv().is_ok());
-}
-
-/// A caret that moves while typing fills the queue waits for room rather than
-/// being dropped, and only the newest word under its key is said: the last
-/// caret of a burst is the one everyone sees.
-#[test]
-fn the_last_caret_of_a_burst_waits_for_room_and_is_the_one_said() {
-    let (mut transport, mut shovel) = parking_transport(1);
-    let caret = |pos: usize| {
-        TransportCommand::Primary(CollabRequest::Presence {
-            key: PresenceKey::Tab {
-                id: "note".to_owned(),
-            },
-            payload: PresencePayload::Caret { pos },
-        })
-    };
-    assert_eq!(
-        transport.submit(TransportCommand::Primary(
-            CollabRequest::document_incremental(b"typed".to_vec())
-        )),
-        Ok(())
-    );
-    for pos in 1..=50 {
+        assert!(matches!(
+            transport.submit(huge),
+            Err(TransportError::TooLarge { .. })
+        ));
+        assert!(transport.state.is_healthy());
         assert_eq!(
-            transport.submit(caret(pos)),
-            Ok(()),
-            "a caret is never shed"
+            transport.submit(TransportCommand::Primary(CollabRequest::ClearContinuation)),
+            Ok(())
         );
+        assert!(shovel.try_recv().is_ok());
     }
-    assert_eq!(transport.spill.len(), 1, "one caret waits, the newest");
-    let mut said = Vec::new();
-    while let Ok(queued) = shovel.try_recv() {
-        said.push(queued.command);
+
+    phase parked_surfaces_coalesce_and_document_changes_wait_behind_parked_commands;
+    // Commands behind a parked one stay behind it, and a newer action surface
+    // replaces an older one still waiting: it is level-triggered, so a burst
+    // of republications is one parked surface, not a queue of large ones.
+    {
+        let (mut transport, mut shovel) = parking_transport(1);
+        let surface = |n: usize| {
+            TransportCommand::Primary(CollabRequest::PublishActionSurface {
+                delta: SurfaceDelta {
+                    removed: vec![format!("page-{n}")],
+                    ..SurfaceDelta::default()
+                },
+            })
+        };
+        assert_eq!(transport.submit(surface(0)), Ok(()));
+        for n in 1..=500 {
+            assert_eq!(transport.submit(surface(n)), Ok(()));
+        }
+        assert_eq!(transport.spill.len(), 1, "surfaces coalesce while parked");
+        let Some(SdkCommand::Primary(CollabRequest::PublishActionSurface { delta, .. })) =
+            transport.spill.front()
+        else {
+            panic!("the parked command is the surface");
+        };
+        assert_eq!(delta.removed.len(), 500, "no change is lost in the merge");
+        assert_eq!(
+            transport.submit(TransportCommand::Primary(
+                CollabRequest::document_incremental(b"edit".to_vec())
+            )),
+            Err(TransportError::Busy),
+            "a document change never overtakes a parked command"
+        );
+        assert!(transport.state.is_healthy());
+        assert!(shovel.try_recv().is_ok());
         let mut events = Vec::new();
         transport.drain(&mut events);
+        assert!(transport.spill.is_empty());
+        assert!(shovel.try_recv().is_ok());
     }
-    let Some(SdkCommand::Primary(CollabRequest::Presence {
-        payload: PresencePayload::Caret { pos },
-        ..
-    })) = said.last()
-    else {
-        panic!("the caret is said once there is room: {}", said.len());
-    };
-    assert_eq!(*pos, 50, "the caret said is where the burst ended");
-    assert!(transport.spill.is_empty());
+
+    phase the_last_caret_of_a_burst_waits_for_room_and_is_the_one_said;
+    // A caret that moves while typing fills the queue waits for room rather than
+    // being dropped, and only the newest word under its key is said: the last
+    // caret of a burst is the one everyone sees.
+    {
+        let (mut transport, mut shovel) = parking_transport(1);
+        let caret = |pos: usize| {
+            TransportCommand::Primary(CollabRequest::Presence {
+                key: PresenceKey::Tab {
+                    id: "note".to_owned(),
+                },
+                payload: PresencePayload::Caret { pos },
+            })
+        };
+        assert_eq!(
+            transport.submit(TransportCommand::Primary(
+                CollabRequest::document_incremental(b"typed".to_vec())
+            )),
+            Ok(())
+        );
+        for pos in 1..=50 {
+            assert_eq!(
+                transport.submit(caret(pos)),
+                Ok(()),
+                "a caret is never shed"
+            );
+        }
+        assert_eq!(transport.spill.len(), 1, "one caret waits, the newest");
+        let mut said = Vec::new();
+        while let Ok(queued) = shovel.try_recv() {
+            said.push(queued.command);
+            let mut events = Vec::new();
+            transport.drain(&mut events);
+        }
+        let Some(SdkCommand::Primary(CollabRequest::Presence {
+            payload: PresencePayload::Caret { pos },
+            ..
+        })) = said.last()
+        else {
+            panic!("the caret is said once there is room: {}", said.len());
+        };
+        assert_eq!(*pos, 50, "the caret said is where the burst ended");
+        assert!(transport.spill.is_empty());
+    }
 }
 
 #[cfg(unix)]
@@ -3687,64 +3693,98 @@ fn a_refused_document_rpc_fails_the_barrier_without_closing() {
     thread.join().unwrap();
 }
 
-/// A refusal belongs to the record it was about: another record's change
-/// going through leaves it standing, its own record's next change ends it.
-#[test]
-fn a_refused_change_stands_until_its_own_record_takes_a_change() {
-    let route = |record: &str| RouteSpec {
-        app_id: "so.tilo.notes".into(),
-        cluster_id: uuid::Uuid::from_bytes([7; 16]),
-        record: Some(record.into()),
-    };
-    let state = BridgeState::new();
-    state.note_refused_change(&route("full"), "document commit RPC", "history is full");
-    state.change_sent(&route("other"));
-    assert!(state.refused_change().is_some());
-    assert!(state.publication_result().is_err());
-    state.change_sent(&route("full"));
-    assert_eq!(state.refused_change(), None);
-    assert!(state.publication_result().is_ok());
-}
+tilo_test_env::scenario! {
+    /// What a publication barrier's receipt answers, each case on a bridge state of its own.
+    fn a_document_publication_receipt_reports_what_became_of_its_changes;
 
-#[test]
-fn document_publication_unavailable_and_rejected_markers_are_errors() {
-    let mut manager = CollaborationManager::disabled();
-    assert!(matches!(
-        manager.begin_document_publication_barrier(),
-        Err(DocumentPublicationError::Unavailable)
-    ));
-    let (outbound_tx, mut outbound_rx) = tokio_mpsc::channel(1);
-    let (_, inbound_rx) = tokio_mpsc::channel(1);
-    let (action_directory_tx, action_directory_rx) = mpsc::sync_channel(1);
-    let state = BridgeState::new();
-    manager.backend = Backend::Transport(Box::new(BrokerTransport {
-        outbound_tx,
-        media: None,
-        inbound_rx,
-        document_turns: Vec::new(),
-        invocation_owners: std::collections::BTreeMap::new(),
-        state,
-        action_directory_rx,
-        action_directory_tx,
-        pending_primary: None,
-        worker_stopped: false,
-        command_bridge_registered: false,
-        spill: std::collections::VecDeque::new(),
-        barrier_slot: None,
-        queued_barrier: std::sync::Weak::new(),
-        _thread: None,
-    }));
-    let earlier = manager.begin_document_publication_barrier().unwrap();
-    // A full queue is backpressure: the second barrier waits behind the
-    // first rather than failing, and the bridge stays up.
-    let _later = manager
-        .begin_document_publication_barrier()
-        .expect("a barrier waits behind a full queue");
-    drop(outbound_rx.try_recv().unwrap());
-    assert!(
-        earlier.wait(None).is_err(),
-        "a barrier whose command was dropped is never reported as sent"
-    );
+    phase a_refused_change_stands_until_its_own_record_takes_a_change;
+    // A refusal belongs to the record it was about: another record's change
+    // going through leaves it standing, its own record's next change ends it.
+    {
+        let route = |record: &str| RouteSpec {
+            app_id: "so.tilo.notes".into(),
+            cluster_id: uuid::Uuid::from_bytes([7; 16]),
+            record: Some(record.into()),
+        };
+        let state = BridgeState::new();
+        state.note_refused_change(&route("full"), "document commit RPC", "history is full");
+        state.change_sent(&route("other"));
+        assert!(state.refused_change().is_some());
+        assert!(state.publication_result().is_err());
+        state.change_sent(&route("full"));
+        assert_eq!(state.refused_change(), None);
+        assert!(state.publication_result().is_ok());
+    }
+
+    phase document_publication_unavailable_and_rejected_markers_are_errors;
+    {
+        let mut manager = CollaborationManager::disabled();
+        assert!(matches!(
+            manager.begin_document_publication_barrier(),
+            Err(DocumentPublicationError::Unavailable)
+        ));
+        let (outbound_tx, mut outbound_rx) = tokio_mpsc::channel(1);
+        let (_, inbound_rx) = tokio_mpsc::channel(1);
+        let (action_directory_tx, action_directory_rx) = mpsc::sync_channel(1);
+        let state = BridgeState::new();
+        manager.backend = Backend::Transport(Box::new(BrokerTransport {
+            outbound_tx,
+            media: None,
+            inbound_rx,
+            document_turns: Vec::new(),
+            invocation_owners: std::collections::BTreeMap::new(),
+            state,
+            action_directory_rx,
+            action_directory_tx,
+            pending_primary: None,
+            worker_stopped: false,
+            command_bridge_registered: false,
+            spill: std::collections::VecDeque::new(),
+            barrier_slot: None,
+            queued_barrier: std::sync::Weak::new(),
+            _thread: None,
+        }));
+        let earlier = manager.begin_document_publication_barrier().unwrap();
+        // A full queue is backpressure: the second barrier waits behind the
+        // first rather than failing, and the bridge stays up.
+        let _later = manager
+            .begin_document_publication_barrier()
+            .expect("a barrier waits behind a full queue");
+        drop(outbound_rx.try_recv().unwrap());
+        assert!(
+            earlier.wait(None).is_err(),
+            "a barrier whose command was dropped is never reported as sent"
+        );
+    }
+
+    phase document_publication_completed_prefix_is_not_poisoned_by_later_failure;
+    {
+        let state = BridgeState::new();
+        let (reply, receiver) = mpsc::sync_channel(1);
+        let receipt = bridge_receipt(receiver, &state);
+        reply.send(state.publication_result()).unwrap();
+        state.record_publication_failure(DocumentPublicationError::Failed("later".into()));
+        assert_eq!(receipt.wait(Some(Instant::now())), Ok(()));
+    }
+
+    phase document_publication_disconnection_and_pending_deadline_are_errors;
+    {
+        let state = BridgeState::new();
+        let (reply, receiver) = mpsc::sync_channel(1);
+        let receipt = bridge_receipt(receiver, &state);
+        assert_eq!(
+            receipt.wait(Some(Instant::now())),
+            Err(DocumentPublicationError::DeadlineElapsed)
+        );
+        drop(reply);
+        let (reply, receiver) = mpsc::sync_channel(1);
+        let receipt = bridge_receipt(receiver, &state);
+        drop(reply);
+        assert_eq!(
+            receipt.wait(None),
+            Err(DocumentPublicationError::WorkerStopped)
+        );
+    }
 }
 
 /// A receipt wired to the bridge's latched failure, as the transport builds it.
@@ -3755,16 +3795,6 @@ fn bridge_receipt(
     let state = state.clone();
     DocumentPublicationReceipt::new(receiver)
         .with_disconnect_cause(move || state.publication_result().err())
-}
-
-#[test]
-fn document_publication_completed_prefix_is_not_poisoned_by_later_failure() {
-    let state = BridgeState::new();
-    let (reply, receiver) = mpsc::sync_channel(1);
-    let receipt = bridge_receipt(receiver, &state);
-    reply.send(state.publication_result()).unwrap();
-    state.record_publication_failure(DocumentPublicationError::Failed("later".into()));
-    assert_eq!(receipt.wait(Some(Instant::now())), Ok(()));
 }
 
 /// Errors logged while `body` ran on this thread.
@@ -3788,20 +3818,100 @@ fn errors_logged(body: impl FnOnce()) -> usize {
     count.load(Ordering::Relaxed)
 }
 
-#[test]
-fn an_app_that_stopped_reading_ends_collaboration_without_an_overload_error() {
-    let state = BridgeState::new();
-    let (tx, rx) = tokio_mpsc::channel::<QueuedCollabEvent>(1);
-    let inbound = InboundBridge::new(tx, state.clone());
-    // The app closes: its manager, and with it the receiver, is dropped.
-    drop(rx);
-    let mut delivered = true;
-    let errors = errors_logged(|| {
-        delivered = inbound.send_reply(CollabEvent::FollowChanged { peer_id: None });
-    });
-    assert!(!delivered, "nothing reads the event");
-    assert!(!state.is_healthy(), "collaboration ends with its reader");
-    assert_eq!(errors, 0, "a closed app is not an overloaded bridge");
+tilo_test_env::scenario! {
+    /// The inbound bridge when its app reads late or not at all, each case on a bridge and a runtime of its own.
+    fn an_app_that_is_behind_or_gone_never_overloads_the_inbound_bridge;
+
+    phase an_app_that_stopped_reading_ends_collaboration_without_an_overload_error;
+    {
+        let state = BridgeState::new();
+        let (tx, rx) = tokio_mpsc::channel::<QueuedCollabEvent>(1);
+        let inbound = InboundBridge::new(tx, state.clone());
+        // The app closes: its manager, and with it the receiver, is dropped.
+        drop(rx);
+        let mut delivered = true;
+        let errors = errors_logged(|| {
+            delivered = inbound.send_reply(CollabEvent::FollowChanged { peer_id: None });
+        });
+        assert!(!delivered, "nothing reads the event");
+        assert!(!state.is_healthy(), "collaboration ends with its reader");
+        assert_eq!(errors, 0, "a closed app is not an overloaded bridge");
+    }
+
+    phase a_burst_of_events_the_app_is_behind_on_waits_for_it_and_keeps_collaboration;
+    // A thousand durable events arrive while the app reads none: the
+    // stream producing them waits for room, the app then reads every one
+    // in order, and collaboration stays up throughout.
+    {
+        const BURST: u128 = 1_000;
+        let state = BridgeState::new();
+        let (tx, mut rx) = tokio_mpsc::channel::<QueuedCollabEvent>(SDK_EVENT_QUEUE);
+        let inbound = InboundBridge::new(tx, state.clone());
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let mut received = Vec::new();
+        let errors = errors_logged(|| {
+            tokio::task::LocalSet::new().block_on(&runtime, async {
+                let stream = inbound.clone();
+                let producer = tokio::task::spawn_local(async move {
+                    for index in 0..BURST {
+                        assert!(stream.send_durable(remote_update(index)).await);
+                    }
+                });
+                // The app is busy until the stream has filled its queue.
+                while rx.len() < SDK_EVENT_QUEUE {
+                    tokio::task::yield_now().await;
+                }
+                assert!(!producer.is_finished(), "the stream waits for the app");
+                assert!(state.is_healthy(), "a full queue is no failure");
+                while received.len() < usize::try_from(BURST).unwrap() {
+                    let event = rx.recv().await.expect("the stream keeps delivering");
+                    received.push(remote_update_index(&event.event));
+                }
+                producer.await.unwrap();
+            });
+        });
+        assert_eq!(
+            received,
+            (0..BURST).collect::<Vec<_>>(),
+            "every event, in order"
+        );
+        assert!(state.is_healthy(), "collaboration stays enabled");
+        assert_eq!(errors, 0, "a burst is not an overload");
+    }
+
+    phase answers_the_app_is_behind_on_wait_in_order_without_blocking_their_sender;
+    // Answers to the app's own requests never wait on the app (it may be
+    // waiting for the task answering), yet none is lost or reordered when
+    // it is behind: they queue in the reply lane until it reads again.
+    {
+        let state = BridgeState::new();
+        let (tx, mut rx) = tokio_mpsc::channel::<QueuedCollabEvent>(SDK_EVENT_QUEUE);
+        let inbound = InboundBridge::new(tx, state.clone());
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let answers = u128::try_from(SDK_EVENT_QUEUE).unwrap() * 2;
+        let received = tokio::task::LocalSet::new().block_on(&runtime, async {
+            let forwarder = inbound.clone();
+            tokio::task::spawn_local(async move { forwarder.forward_replies().await });
+            for index in 0..answers {
+                assert!(inbound.send_reply(remote_update(index)));
+            }
+            assert!(state.is_healthy());
+            let mut received = Vec::new();
+            while received.len() < usize::try_from(answers).unwrap() {
+                let event = rx.recv().await.expect("every answer arrives");
+                received.push(remote_update_index(&event.event));
+            }
+            received
+        });
+        assert_eq!(received, (0..answers).collect::<Vec<_>>());
+        assert!(state.is_healthy());
+    }
 }
 
 fn remote_update(index: u128) -> CollabEvent {
@@ -3822,168 +3932,79 @@ fn remote_update_index(event: &CollabEvent) -> u128 {
     }
 }
 
-/// A thousand durable events arrive while the app reads none: the
-/// stream producing them waits for room, the app then reads every one
-/// in order, and collaboration stays up throughout.
-#[test]
-fn a_burst_of_events_the_app_is_behind_on_waits_for_it_and_keeps_collaboration() {
-    const BURST: u128 = 1_000;
-    let state = BridgeState::new();
-    let (tx, mut rx) = tokio_mpsc::channel::<QueuedCollabEvent>(SDK_EVENT_QUEUE);
-    let inbound = InboundBridge::new(tx, state.clone());
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap();
-    let mut received = Vec::new();
-    let errors = errors_logged(|| {
-        tokio::task::LocalSet::new().block_on(&runtime, async {
-            let stream = inbound.clone();
-            let producer = tokio::task::spawn_local(async move {
-                for index in 0..BURST {
-                    assert!(stream.send_durable(remote_update(index)).await);
-                }
-            });
-            // The app is busy until the stream has filled its queue.
-            while rx.len() < SDK_EVENT_QUEUE {
-                tokio::task::yield_now().await;
-            }
-            assert!(!producer.is_finished(), "the stream waits for the app");
-            assert!(state.is_healthy(), "a full queue is no failure");
-            while received.len() < usize::try_from(BURST).unwrap() {
-                let event = rx.recv().await.expect("the stream keeps delivering");
-                received.push(remote_update_index(&event.event));
-            }
-            producer.await.unwrap();
-        });
-    });
-    assert_eq!(
-        received,
-        (0..BURST).collect::<Vec<_>>(),
-        "every event, in order"
-    );
-    assert!(state.is_healthy(), "collaboration stays enabled");
-    assert_eq!(errors, 0, "a burst is not an overload");
-}
+tilo_test_env::scenario! {
+    /// How an RPC failure is read and what of it is logged.
+    fn an_rpc_failure_is_a_refusal_only_when_the_peer_said_so_and_is_reported_bounded;
 
-/// Answers to the app's own requests never wait on the app (it may be
-/// waiting for the task answering), yet none is lost or reordered when
-/// it is behind: they queue in the reply lane until it reads again.
-#[test]
-fn answers_the_app_is_behind_on_wait_in_order_without_blocking_their_sender() {
-    let state = BridgeState::new();
-    let (tx, mut rx) = tokio_mpsc::channel::<QueuedCollabEvent>(SDK_EVENT_QUEUE);
-    let inbound = InboundBridge::new(tx, state.clone());
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap();
-    let answers = u128::try_from(SDK_EVENT_QUEUE).unwrap() * 2;
-    let received = tokio::task::LocalSet::new().block_on(&runtime, async {
-        let forwarder = inbound.clone();
-        tokio::task::spawn_local(async move { forwarder.forward_replies().await });
-        for index in 0..answers {
-            assert!(inbound.send_reply(remote_update(index)));
+    phase only_a_peers_answer_counts_as_a_refusal;
+    // Only an answer about the request ends collaboration for one change:
+    // a peer saying it will not take this change is not a lost connection,
+    // while a lost connection — and a missing service — leave the outcome
+    // unknown.
+    {
+        use runtime_portal::NotAvailable;
+        let typed = NotAvailable::Refused("so.tilo.chat named no kind for a new record".into());
+        assert!(refused_by_peer(&typed));
+        for unknown in [
+            NotAvailable::ConnectionFailed(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "the collaboration host closed the connection",
+            )),
+            NotAvailable::ServiceFdMissing,
+            NotAvailable::ConnectionFailed(std::io::Error::other("no service")),
+        ] {
+            assert!(
+                !refused_by_peer(&unknown),
+                "{} is not an answer about the change",
+                unknown
+            );
         }
-        assert!(state.is_healthy());
-        let mut received = Vec::new();
-        while received.len() < usize::try_from(answers).unwrap() {
-            let event = rx.recv().await.expect("every answer arrives");
-            received.push(remote_update_index(&event.event));
-        }
-        received
-    });
-    assert_eq!(received, (0..answers).collect::<Vec<_>>());
-    assert!(state.is_healthy());
-}
+    }
 
-/// Only an answer about the request ends collaboration for one change:
-/// a peer saying it will not take this change is not a lost connection,
-/// while a lost connection — and a missing service — leave the outcome
-/// unknown.
-#[test]
-fn only_a_peers_answer_counts_as_a_refusal() {
-    use runtime_portal::NotAvailable;
-    let typed = NotAvailable::Refused("so.tilo.chat named no kind for a new record".into());
-    assert!(refused_by_peer(&typed));
-    for unknown in [
-        NotAvailable::ConnectionFailed(std::io::Error::new(
-            std::io::ErrorKind::BrokenPipe,
-            "the collaboration host closed the connection",
-        )),
-        NotAvailable::ServiceFdMissing,
-        NotAvailable::ConnectionFailed(std::io::Error::other("no service")),
-    ] {
-        assert!(
-            !refused_by_peer(&unknown),
-            "{} is not an answer about the change",
-            unknown
+    phase invocation_update_rpc_diagnostic_keeps_cause_and_existing_fail_closed_latch;
+    {
+        let state = BridgeState::new();
+        let error = runtime_portal::NotAvailable::Refused("unknown invocation id".into());
+        assert_eq!(
+            bounded_rpc_diagnostic(&error),
+            ("refused", "unknown invocation id".into(), false)
+        );
+        state.fail_closed_with_rpc_error("invocation update outcome unknown", Some((389, &error)));
+        assert!(!state.is_healthy());
+        assert_eq!(
+            state.publication_result(),
+            Err(DocumentPublicationError::Failed(
+                "invocation update outcome unknown".into()
+            ))
+        );
+        state.fail_closed("later failure");
+        assert_eq!(
+            state.publication_result(),
+            Err(DocumentPublicationError::Failed(
+                "invocation update outcome unknown".into()
+            ))
         );
     }
-}
 
-#[test]
-fn invocation_update_rpc_diagnostic_keeps_cause_and_existing_fail_closed_latch() {
-    let state = BridgeState::new();
-    let error = runtime_portal::NotAvailable::Refused("unknown invocation id".into());
-    assert_eq!(
-        bounded_rpc_diagnostic(&error),
-        ("refused", "unknown invocation id".into(), false)
-    );
-    state.fail_closed_with_rpc_error("invocation update outcome unknown", Some((389, &error)));
-    assert!(!state.is_healthy());
-    assert_eq!(
-        state.publication_result(),
-        Err(DocumentPublicationError::Failed(
-            "invocation update outcome unknown".into()
-        ))
-    );
-    state.fail_closed("later failure");
-    assert_eq!(
-        state.publication_result(),
-        Err(DocumentPublicationError::Failed(
-            "invocation update outcome unknown".into()
-        ))
-    );
-}
-
-#[test]
-fn invocation_update_rpc_diagnostic_bounds_untrusted_text_without_logging_io_payload() {
-    let error = runtime_portal::NotAvailable::Refused(format!("refused\n\0{}", "🦀".repeat(1024)));
-    let (kind, detail, truncated) = bounded_rpc_diagnostic(&error);
-    assert_eq!(kind, "refused");
-    assert!(detail.starts_with("refused  "));
-    assert_eq!(detail.chars().count(), 512);
-    assert!(detail.len() <= 2048);
-    assert!(!detail.chars().any(char::is_control));
-    assert!(truncated);
-    let io = runtime_portal::NotAvailable::ConnectionFailed(std::io::Error::new(
-        std::io::ErrorKind::PermissionDenied,
-        "private transport payload",
-    ));
-    assert_eq!(
-        bounded_rpc_diagnostic(&io),
-        ("connection_failed", "PermissionDenied".into(), false)
-    );
-}
-
-#[test]
-fn document_publication_disconnection_and_pending_deadline_are_errors() {
-    let state = BridgeState::new();
-    let (reply, receiver) = mpsc::sync_channel(1);
-    let receipt = bridge_receipt(receiver, &state);
-    assert_eq!(
-        receipt.wait(Some(Instant::now())),
-        Err(DocumentPublicationError::DeadlineElapsed)
-    );
-    drop(reply);
-    let (reply, receiver) = mpsc::sync_channel(1);
-    let receipt = bridge_receipt(receiver, &state);
-    drop(reply);
-    assert_eq!(
-        receipt.wait(None),
-        Err(DocumentPublicationError::WorkerStopped)
-    );
+    phase invocation_update_rpc_diagnostic_bounds_untrusted_text_without_logging_io_payload;
+    {
+        let error = runtime_portal::NotAvailable::Refused(format!("refused\n\0{}", "🦀".repeat(1024)));
+        let (kind, detail, truncated) = bounded_rpc_diagnostic(&error);
+        assert_eq!(kind, "refused");
+        assert!(detail.starts_with("refused  "));
+        assert_eq!(detail.chars().count(), 512);
+        assert!(detail.len() <= 2048);
+        assert!(!detail.chars().any(char::is_control));
+        assert!(truncated);
+        let io = runtime_portal::NotAvailable::ConnectionFailed(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "private transport payload",
+        ));
+        assert_eq!(
+            bounded_rpc_diagnostic(&io),
+            ("connection_failed", "PermissionDenied".into(), false)
+        );
+    }
 }
 
 #[test]
@@ -4174,10 +4195,11 @@ fn an_apps_live_activity_reaches_the_shell_and_its_controls_come_back() {
     );
 }
 
-#[cfg(unix)]
-#[test]
-fn manager_connects_in_the_background_without_holding_the_app() {
-    // Case `a_broker_that_is_not_there_does_not_hold_the_app_up`.
+tilo_test_env::scenario! {
+    #[cfg(unix)]
+    fn manager_connects_in_the_background_without_holding_the_app;
+
+    phase a_broker_that_is_not_there_does_not_hold_the_app_up;
     {
         // A connected socket whose far end is gone — a broker that died
         // between the launcher's connect and the app's first call. `new()`
@@ -4199,7 +4221,7 @@ fn manager_connects_in_the_background_without_holding_the_app() {
         let _ = mgr.poll();
     }
 
-    // Case `construction_returns_at_once_while_the_broker_is_silent`.
+    phase construction_returns_at_once_while_the_broker_is_silent;
     {
         // A broker that accepted the connection but never answers: the
         // primary join cannot complete until the peer goes away. The old
@@ -4260,7 +4282,7 @@ fn manager_connects_in_the_background_without_holding_the_app() {
         assert!(mgr.poll().is_empty());
     }
 
-    // Case `a_background_connection_becomes_ready_and_wakes_the_owner`.
+    phase a_background_connection_becomes_ready_and_wakes_the_owner;
     {
         let broker = FakeBroker::default();
         let (fd, captures, _thread) = stand_up_fake_broker(broker);
@@ -4298,7 +4320,7 @@ fn manager_connects_in_the_background_without_holding_the_app() {
         );
     }
 
-    // Case `explicit_test_join_forwards_its_identity_presentation`.
+    phase explicit_test_join_forwards_its_identity_presentation;
     {
         let broker = FakeBroker::default();
         let (fd, captures, _th) = stand_up_fake_broker(broker);
@@ -4367,9 +4389,10 @@ fn poll_until(
     }
 }
 
-#[test]
-fn bridge_backpressure_sheds_presence_and_defers_results() {
-    // Case `saturated_outbound_bridge_sheds_only_presence_then_fails_closed`.
+tilo_test_env::scenario! {
+    fn bridge_backpressure_sheds_presence_and_defers_results;
+
+    phase saturated_outbound_bridge_sheds_only_presence_then_fails_closed;
     {
         let (tx, mut rx) = tokio_mpsc::channel(1);
         let state = BridgeState::new();
@@ -4432,7 +4455,7 @@ fn bridge_backpressure_sheds_presence_and_defers_results() {
         );
     }
 
-    // Case `inbound_events_wake_the_owner_once_per_queued_burst`.
+    phase inbound_events_wake_the_owner_once_per_queued_burst;
     {
         let mut scope = crate::wake::WakeScope::new();
         let wakes = Arc::new(AtomicUsize::new(0));
@@ -4496,7 +4519,7 @@ fn bridge_backpressure_sheds_presence_and_defers_results() {
         );
     }
 
-    // Case `saturated_inbound_bridge_drops_presence_and_holds_results`.
+    phase saturated_inbound_bridge_drops_presence_and_holds_results;
     {
         let (tx, mut rx) = tokio_mpsc::channel(1);
         let state = BridgeState::new();
@@ -4553,7 +4576,7 @@ fn bridge_backpressure_sheds_presence_and_defers_results() {
         assert!(rx.try_recv().is_err());
     }
 
-    // Case `byte_reservation_releases_when_the_ui_consumes_a_command`.
+    phase byte_reservation_releases_when_the_ui_consumes_a_command;
     {
         let (tx, mut rx) = tokio_mpsc::channel(2);
         let state = BridgeState::new();
@@ -4572,7 +4595,7 @@ fn bridge_backpressure_sheds_presence_and_defers_results() {
         assert!(state.is_healthy());
     }
 
-    // Case `oversized_inbound_action_fails_before_queueing`.
+    phase oversized_inbound_action_fails_before_queueing;
     {
         let (tx, mut rx) = tokio_mpsc::channel(1);
         let state = BridgeState::new();
@@ -4594,9 +4617,10 @@ fn bridge_backpressure_sheds_presence_and_defers_results() {
     }
 }
 
-#[test]
-fn document_budget_defers_or_refuses_without_disconnecting() {
-    // Case `over_limit_document_is_refused_explicitly_without_disconnecting`.
+tilo_test_env::scenario! {
+    fn document_budget_defers_or_refuses_without_disconnecting;
+
+    phase over_limit_document_is_refused_explicitly_without_disconnecting;
     {
         let (tx, mut rx) = tokio_mpsc::channel(1);
         let state = BridgeState::new();
@@ -4620,7 +4644,7 @@ fn document_budget_defers_or_refuses_without_disconnecting() {
         ));
     }
 
-    // Case `document_budget_is_charged_for_bytes_sent_not_spare_capacity`.
+    phase document_budget_is_charged_for_bytes_sent_not_spare_capacity;
     {
         let (tx, mut rx) = tokio_mpsc::channel(1);
         let state = BridgeState::new();
@@ -4640,7 +4664,7 @@ fn document_budget_defers_or_refuses_without_disconnecting() {
         assert!(rx.try_recv().is_ok());
     }
 
-    // Case `document_budget_defers_aggregate_documents_without_disconnecting`.
+    phase document_budget_defers_aggregate_documents_without_disconnecting;
     {
         let (tx, rx) = tokio_mpsc::channel(SDK_COMMAND_QUEUE);
         let state = BridgeState::new();
@@ -4668,7 +4692,7 @@ fn document_budget_defers_or_refuses_without_disconnecting() {
         );
     }
 
-    // Case `a_busy_document_send_wakes_the_owner_once_room_frees`.
+    phase a_busy_document_send_wakes_the_owner_once_room_frees;
     {
         let mut scope = crate::wake::WakeScope::new();
         let wakes = Arc::new(AtomicUsize::new(0));
@@ -4705,7 +4729,7 @@ fn document_budget_defers_or_refuses_without_disconnecting() {
         );
     }
 
-    // Case `a_directory_request_wakes_the_idle_owner`.
+    phase a_directory_request_wakes_the_idle_owner;
     {
         let mut scope = crate::wake::WakeScope::new();
         let wakes = Arc::new(AtomicUsize::new(0));
@@ -4733,7 +4757,7 @@ fn document_budget_defers_or_refuses_without_disconnecting() {
         assert!(pending.try_recv().is_ok());
     }
 
-    // Case `a_lone_document_larger_than_the_budget_still_makes_progress`.
+    phase a_lone_document_larger_than_the_budget_still_makes_progress;
     {
         let budget = ByteBudget::new();
         let big = budget
@@ -4808,10 +4832,11 @@ fn background_manager(fd: RawFd, route: RouteSpec) -> CollaborationManager {
     )
 }
 
-#[cfg(unix)]
-#[test]
-fn sdk_transport_forwards_signed_documents_and_presence() {
-    // Case `hello_joins_channel_and_send_forwards_signed_op`.
+tilo_test_env::scenario! {
+    #[cfg(unix)]
+    fn sdk_transport_forwards_signed_documents_and_presence;
+
+    phase hello_joins_channel_and_send_forwards_signed_op;
     {
         let broker = FakeBroker::default();
         let (fd, captures, _th) = stand_up_fake_broker(broker);
@@ -4851,7 +4876,7 @@ fn sdk_transport_forwards_signed_documents_and_presence() {
         assert_eq!(seen, vec![expected_bytes]);
     }
 
-    // Case `owned_route_raw_documents_use_typed_signed_sdk_transport`.
+    phase owned_route_raw_documents_use_typed_signed_sdk_transport;
     {
         use automerge::transaction::Transactable;
         let broker = FakeBroker::default();
@@ -4918,7 +4943,7 @@ fn sdk_transport_forwards_signed_documents_and_presence() {
         }
     }
 
-    // Case `publication_barrier_resolves_after_every_earlier_document_is_published`:
+    phase publication_barrier_resolves_after_every_earlier_document_is_published;
     // `send` only queues. A publication barrier resolves once every
     // document mutation queued before it has reached the broker, which is
     // what lets an owner end its session without discarding a change still
@@ -4942,7 +4967,7 @@ fn sdk_transport_forwards_signed_documents_and_presence() {
         );
     }
 
-    // Case `presence_variants_map_to_correct_sdk_publishes`:
+    phase presence_variants_map_to_correct_sdk_publishes;
     // Every presence variant reaches the SDK method that keeps its key —
     // a pointer publishes keyed, like a caret, rather than through
     // `publish_cursor(x, y)`, which has nowhere to put one.
@@ -5031,9 +5056,10 @@ fn sdk_transport_forwards_signed_documents_and_presence() {
     }
 }
 
-#[test]
-fn signed_documents_seal_snapshots_and_decrypt_history() {
-    // Case `signed_document_event_preserves_snapshot_kind`.
+tilo_test_env::scenario! {
+    fn signed_documents_seal_snapshots_and_decrypt_history;
+
+    phase signed_document_event_preserves_snapshot_kind;
     {
         let op = SignedOp::new_unsigned(
             collab_types::DocumentMutation::Snapshot(b"whole document".to_vec())
@@ -5066,7 +5092,7 @@ fn signed_documents_seal_snapshots_and_decrypt_history() {
         ));
     }
 
-    // Case `signed_document_event_decrypts_content_keys_for_history_and_late_joiners`.
+    phase signed_document_event_decrypts_content_keys_for_history_and_late_joiners;
     {
         let channel = collab_types::ChannelId::new();
         let artifact = collab_types::ArtifactId::new();
@@ -5238,7 +5264,7 @@ fn signed_documents_seal_snapshots_and_decrypt_history() {
         ));
     }
 
-    // Case `snapshots_are_sealed_as_retained_checkpoints`.
+    phase snapshots_are_sealed_as_retained_checkpoints;
     {
         let snapshot = DocumentMutation::Snapshot(b"whole".to_vec())
             .encode()
@@ -5268,7 +5294,7 @@ fn signed_documents_seal_snapshots_and_decrypt_history() {
         );
     }
 
-    // Case `joiner_decrypts_fetched_history_with_no_other_member_online`:
+    phase joiner_decrypts_fetched_history_with_no_other_member_online;
     // A member added after the history was written fetches it through the
     // real SDK transport and decrypts every page with the key history it
     // received on joining — no other member is running.
@@ -5377,10 +5403,11 @@ fn signed_documents_seal_snapshots_and_decrypt_history() {
     }
 }
 
-#[cfg(unix)]
-#[test]
-fn sdk_streams_translate_to_ui_events() {
-    // Case `signed_op_stream_translates_to_signed_crdt_incremental`.
+tilo_test_env::scenario! {
+    #[cfg(unix)]
+    fn sdk_streams_translate_to_ui_events;
+
+    phase signed_op_stream_translates_to_signed_crdt_incremental;
     {
         let mut op = SignedOp::new_unsigned(
             collab_types::DocumentMutation::Incremental(b"remote-payload".to_vec())
@@ -5432,7 +5459,7 @@ fn sdk_streams_translate_to_ui_events() {
         assert_eq!(signed[0].0.seq, 42);
     }
 
-    // Case `context_stream_translates_to_context_event`.
+    phase context_stream_translates_to_context_event;
     {
         let broker = FakeBroker {
             context_backlog: vec![SeedContext {
@@ -5488,7 +5515,7 @@ fn sdk_streams_translate_to_ui_events() {
         assert!(contexts[1].1.is_empty());
     }
 
-    // Case `presence_stream_translates_every_variant`.
+    phase presence_stream_translates_every_variant;
     {
         let key = PresenceKey::Tab {
             id: "note-1".to_owned(),
@@ -5575,7 +5602,7 @@ fn sdk_streams_translate_to_ui_events() {
         );
     }
 
-    // Case `fetch_scrollback_returns_batch_event`.
+    phase fetch_scrollback_returns_batch_event;
     {
         let payload = collab_types::DocumentMutation::Incremental(b"old-payload".to_vec())
             .encode()
@@ -5637,9 +5664,10 @@ fn sdk_streams_translate_to_ui_events() {
     }
 }
 
-#[test]
-fn wire_translation_is_symmetric_and_fail_closed() {
-    // Case `translate_presence_event_is_symmetric_over_all_payload_variants`.
+tilo_test_env::scenario! {
+    fn wire_translation_is_symmetric_and_fail_closed;
+
+    phase translate_presence_event_is_symmetric_over_all_payload_variants;
     {
         // Straight unit test of `translate_presence_event` — no broker or
         // threading needed. Malformed scopes are deliberately not projected.
@@ -5675,7 +5703,7 @@ fn wire_translation_is_symmetric_and_fail_closed() {
         );
     }
 
-    // Case `invocation_context_json_is_optional_and_fail_closed`.
+    phase invocation_context_json_is_optional_and_fail_closed;
     {
         let context = tilo_actions::ActionContext::default()
             .with_purpose("Review the proposal")

@@ -1174,60 +1174,65 @@ mod tests {
     use crate::history_source::TestWords;
     use automerge::{ROOT, ReadDoc};
 
-    #[test]
-    fn a_feed_leaves_out_the_framework_making_the_record() {
-        let mut doc = AutoCommit::new();
-        doc.put(ROOT, "made", true).unwrap();
-        doc.commit_with(
-            automerge::transaction::CommitOptions::default()
-                .with_message(tilo_actions::framework::FrameworkChange::Genesis.change_message()),
-        );
-        doc.put(ROOT, "saved", 1_i64).unwrap();
-        doc.commit().unwrap();
+    tilo_test_env::scenario! {
+        /// Reading history and a diff, each case on a document of its own.
+        fn history_reads_leave_out_bookkeeping_and_leave_open_edits_alone;
 
-        let entries = entries_after(&doc, &[], &TestWords);
-        assert_eq!(entries.len(), 1, "{entries:?}");
-        assert!(
-            !entries[0]["sentence"]
-                .as_str()
-                .unwrap_or_default()
-                .contains("tilo.framework")
-        );
-    }
+        phase a_feed_leaves_out_the_framework_making_the_record;
+        {
+            let mut doc = AutoCommit::new();
+            doc.put(ROOT, "made", true).unwrap();
+            doc.commit_with(
+                automerge::transaction::CommitOptions::default()
+                    .with_message(tilo_actions::framework::FrameworkChange::Genesis.change_message()),
+            );
+            doc.put(ROOT, "saved", 1_i64).unwrap();
+            doc.commit().unwrap();
 
-    #[test]
-    fn history_and_diff_leave_the_callers_open_edit_uncommitted() {
-        let mut doc = AutoCommit::new();
-        doc.put(ROOT, "saved", 1_i64).unwrap();
-        let first = doc.commit().unwrap();
-        doc.put(ROOT, "saved", 2_i64).unwrap();
-        let second = doc.commit().unwrap();
-        doc.put(ROOT, "draft", true).unwrap();
-        let before = (doc.base_heads(), doc.pending_ops());
-        assert!(before.1 > 0);
+            let entries = entries_after(&doc, &[], &TestWords);
+            assert_eq!(entries.len(), 1, "{entries:?}");
+            assert!(
+                !entries[0]["sentence"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .contains("tilo.framework")
+            );
+        }
 
-        let listed = history(&doc, 50, &TestWords);
-        assert_eq!(listed["total"], json!(2));
-        assert_eq!(listed["now"], json!(version_name(&[second])));
-        assert_eq!((doc.base_heads(), doc.pending_ops()), before);
+        phase history_and_diff_leave_the_callers_open_edit_uncommitted;
+        {
+            let mut doc = AutoCommit::new();
+            doc.put(ROOT, "saved", 1_i64).unwrap();
+            let first = doc.commit().unwrap();
+            doc.put(ROOT, "saved", 2_i64).unwrap();
+            let second = doc.commit().unwrap();
+            doc.put(ROOT, "draft", true).unwrap();
+            let before = (doc.base_heads(), doc.pending_ops());
+            assert!(before.1 > 0);
 
-        let payload = serde_json::to_vec(&HistoryView::Diff {
-            from: first.to_string(),
-            to: Some(second.to_string()),
-        })
-        .unwrap();
-        let diff = answer(&doc, &payload, &TestWords).unwrap().value.unwrap();
-        assert!(
-            diff["items"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|item| item["item"] == "saved")
-        );
-        assert_eq!((doc.base_heads(), doc.pending_ops()), before);
-        assert_eq!(
-            doc.get(ROOT, "draft").unwrap().unwrap().0.as_bool(),
-            Some(true)
-        );
+            let listed = history(&doc, 50, &TestWords);
+            assert_eq!(listed["total"], json!(2));
+            assert_eq!(listed["now"], json!(version_name(&[second])));
+            assert_eq!((doc.base_heads(), doc.pending_ops()), before);
+
+            let payload = serde_json::to_vec(&HistoryView::Diff {
+                from: first.to_string(),
+                to: Some(second.to_string()),
+            })
+            .unwrap();
+            let diff = answer(&doc, &payload, &TestWords).unwrap().value.unwrap();
+            assert!(
+                diff["items"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|item| item["item"] == "saved")
+            );
+            assert_eq!((doc.base_heads(), doc.pending_ops()), before);
+            assert_eq!(
+                doc.get(ROOT, "draft").unwrap().unwrap().0.as_bool(),
+                Some(true)
+            );
+        }
     }
 }

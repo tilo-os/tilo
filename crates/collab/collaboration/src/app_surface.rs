@@ -310,113 +310,118 @@ pub fn parse_hash(hex: &str) -> Option<[u8; 32]> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn only_the_kinds_a_surface_marks_are_the_persons() {
-        static FILE: &[u8] = b"[[resources]]\nkind = \"test.own\"\nlabel = \"Own\"\nversion = 1\n\n[[resources]]\nkind = \"test.history\"\nlabel = \"History\"\nperson = true\nversion = 1\n";
-        register_package("test.person-kinds", FILE);
-        assert_eq!(person_record_kinds("test.person-kinds"), ["test.history"]);
-        assert!(keeps_person_record("test.person-kinds", "test.history"));
-        assert!(!keeps_person_record("test.person-kinds", "test.own"));
-        assert!(!keeps_person_record("test.unknown-app", "test.history"));
-    }
+    tilo_test_env::scenario! {
+        /// The surfaces this process holds, each case under an app id no other case names.
+        fn a_registered_surface_is_held_under_its_app_and_decides_what_it_names;
 
-    /// A change to a part of a record its app keeps apart (a PDF's
-    /// comments) claims only that part: claimed on the whole record, the
-    /// workspace refuses it, since no action of it may write the whole record.
-    #[test]
-    fn a_claim_names_the_units_its_action_may_write() {
-        use collab_types::{ChangeClaim, ClaimedAction, ReceiptRefusal};
-        use tilo_actions::PathStep;
-        static FILE: &[u8] = b"[[resources]]\nkind = \"test.paper\"\nlabel = \"Paper\"\nversion = 1\nfields = [\n  { path = \"title\", type = \"String\" },\n  { path = \"comments\", type = \"Keyed<Note>\", stored = \"keyed\", unit = true },\n  { path = \"comments.*.text\", type = \"String\" },\n  { path = \"comments.*.resolved\", type = \"bool\" },\n]\n";
-        register_package("test.footprints", FILE);
-        let edit = |field: &str| ClaimedAction::Edit {
-            kind: "test.paper".into(),
-            path: vec![
+        phase only_the_kinds_a_surface_marks_are_the_persons;
+        {
+            static FILE: &[u8] = b"[[resources]]\nkind = \"test.own\"\nlabel = \"Own\"\nversion = 1\n\n[[resources]]\nkind = \"test.history\"\nlabel = \"History\"\nperson = true\nversion = 1\n";
+            register_package("test.person-kinds", FILE);
+            assert_eq!(person_record_kinds("test.person-kinds"), ["test.history"]);
+            assert!(keeps_person_record("test.person-kinds", "test.history"));
+            assert!(!keeps_person_record("test.person-kinds", "test.own"));
+            assert!(!keeps_person_record("test.unknown-app", "test.history"));
+        }
+
+        phase a_claim_names_the_units_its_action_may_write;
+        // A change to a part of a record its app keeps apart (a PDF's
+        // comments) claims only that part: claimed on the whole record, the
+        // workspace refuses it, since no action of it may write the whole record.
+        {
+            use collab_types::{ChangeClaim, ClaimedAction, ReceiptRefusal};
+            use tilo_actions::PathStep;
+            static FILE: &[u8] = b"[[resources]]\nkind = \"test.paper\"\nlabel = \"Paper\"\nversion = 1\nfields = [\n  { path = \"title\", type = \"String\" },\n  { path = \"comments\", type = \"Keyed<Note>\", stored = \"keyed\", unit = true },\n  { path = \"comments.*.text\", type = \"String\" },\n  { path = \"comments.*.resolved\", type = \"bool\" },\n]\n";
+            register_package("test.footprints", FILE);
+            let edit = |field: &str| ClaimedAction::Edit {
+                kind: "test.paper".into(),
+                path: vec![
+                    PathStep::Field("comments".into()),
+                    PathStep::Item("c1".into()),
+                    PathStep::Field(field.into()),
+                ],
+            };
+            let group = ClaimedAction::Group(vec![edit("text"), edit("resolved")]);
+            let whole_record = vec![ChangeClaim {
+                change: [7; 32],
+                action: group,
+                units: vec![Vec::new()],
+            }];
+            let file = collab_types::surface::SurfaceFile::parse(FILE).unwrap();
+            let receiver = collab_types::surface::KindSurface(file.resource(None).unwrap().clone());
+            let record = collab_types::Record {
+                workspace: "workspace-1",
+                app: "test.footprints",
+                record: "paper-1",
+            };
+            let decide = |claims: &[ChangeClaim]| {
+                collab_types::check_claims(claims, &record, None, None, Some(&receiver), &|_, _| true)
+            };
+            assert!(matches!(
+                decide(&whole_record),
+                Err(ReceiptRefusal::OutsideFootprint { .. })
+            ));
+            let claimed = with_footprints("test.footprints", whole_record);
+            let comment = vec![
                 PathStep::Field("comments".into()),
                 PathStep::Item("c1".into()),
-                PathStep::Field(field.into()),
-            ],
-        };
-        let group = ClaimedAction::Group(vec![edit("text"), edit("resolved")]);
-        let whole_record = vec![ChangeClaim {
-            change: [7; 32],
-            action: group,
-            units: vec![Vec::new()],
-        }];
-        let file = collab_types::surface::SurfaceFile::parse(FILE).unwrap();
-        let receiver = collab_types::surface::KindSurface(file.resource(None).unwrap().clone());
-        let record = collab_types::Record {
-            workspace: "workspace-1",
-            app: "test.footprints",
-            record: "paper-1",
-        };
-        let decide = |claims: &[ChangeClaim]| {
-            collab_types::check_claims(claims, &record, None, None, Some(&receiver), &|_, _| true)
-        };
-        assert!(matches!(
-            decide(&whole_record),
-            Err(ReceiptRefusal::OutsideFootprint { .. })
-        ));
-        let claimed = with_footprints("test.footprints", whole_record);
-        let comment = vec![
-            PathStep::Field("comments".into()),
-            PathStep::Item("c1".into()),
-        ];
-        assert_eq!(claimed[0].units, [comment.clone(), comment]);
-        assert_eq!(decide(&claimed), Ok(collab_types::Receipt::Admit));
-    }
+            ];
+            assert_eq!(claimed[0].units, [comment.clone(), comment]);
+            assert_eq!(decide(&claimed), Ok(collab_types::Receipt::Admit));
+        }
 
-    #[test]
-    fn a_launched_package_surface_replaces_the_one_held() {
-        register_package(
-            "test.package-surface",
-            b"[[resources]]\nkind = \"test.pkg\"\nlabel = \"Pkg\"\nversion = 1\n",
-        );
-        let package = b"[[resources]]\nkind = \"test.pkg\"\nlabel = \"Pkg\"\nversion = 2\n\n[[resources]]\nkind = \"test.pkg-history\"\nlabel = \"History\"\nperson = true\nversion = 1\n".to_vec();
-        register_package("test.package-surface", &package);
-        assert_eq!(
-            hash_of("test.package-surface"),
-            Some(*blake3::hash(&package).as_bytes())
-        );
-        assert_eq!(bytes_of("test.package-surface"), Some(package.as_slice()));
-        assert_eq!(
-            person_record_kinds("test.package-surface"),
-            ["test.pkg-history"]
-        );
-    }
+        phase a_launched_package_surface_replaces_the_one_held;
+        {
+            register_package(
+                "test.package-surface",
+                b"[[resources]]\nkind = \"test.pkg\"\nlabel = \"Pkg\"\nversion = 1\n",
+            );
+            let package = b"[[resources]]\nkind = \"test.pkg\"\nlabel = \"Pkg\"\nversion = 2\n\n[[resources]]\nkind = \"test.pkg-history\"\nlabel = \"History\"\nperson = true\nversion = 1\n".to_vec();
+            register_package("test.package-surface", &package);
+            assert_eq!(
+                hash_of("test.package-surface"),
+                Some(*blake3::hash(&package).as_bytes())
+            );
+            assert_eq!(bytes_of("test.package-surface"), Some(package.as_slice()));
+            assert_eq!(
+                person_record_kinds("test.package-surface"),
+                ["test.pkg-history"]
+            );
+        }
 
-    #[test]
-    fn a_named_surface_registers_only_when_it_hashes_to_its_name() {
-        let file = b"[[resources]]\n";
-        let hash = blake3::hash(file).to_hex().to_string();
+        phase a_named_surface_registers_only_when_it_hashes_to_its_name;
+        {
+            let file = b"[[resources]]\n";
+            let hash = blake3::hash(file).to_hex().to_string();
 
-        let other = hex::encode([1; 32]);
-        assert!(register_named("test.surface-a", file, &other).is_err());
-        assert!(register_named("test.surface-a", file, "not hex").is_err());
-        assert_eq!(hash_of("test.surface-a"), None, "nothing named");
+            let other = hex::encode([1; 32]);
+            assert!(register_named("test.surface-a", file, &other).is_err());
+            assert!(register_named("test.surface-a", file, "not hex").is_err());
+            assert_eq!(hash_of("test.surface-a"), None, "nothing named");
 
-        register_named("test.surface-a", file, &hash).unwrap();
-        assert_eq!(
-            hash_of("test.surface-a"),
-            Some(*blake3::hash(file).as_bytes())
-        );
-        assert_eq!(bytes_of("test.surface-a"), Some(&file[..]));
-        assert_eq!(parse_hash(&hex::encode([7; 32])), Some([7; 32]));
-    }
+            register_named("test.surface-a", file, &hash).unwrap();
+            assert_eq!(
+                hash_of("test.surface-a"),
+                Some(*blake3::hash(file).as_bytes())
+            );
+            assert_eq!(bytes_of("test.surface-a"), Some(&file[..]));
+            assert_eq!(parse_hash(&hex::encode([7; 32])), Some([7; 32]));
+        }
 
-    #[test]
-    fn a_built_in_surface_never_replaces_a_packages() {
-        static BUILT: &[u8] =
-            b"[[resources]]\nkind = \"test.built\"\nlabel = \"Built\"\nversion = 1\n";
-        register_built_in("test.built-in", BUILT);
-        assert_eq!(bytes_of("test.built-in"), Some(BUILT));
-        let package = b"[[resources]]\n".to_vec();
-        register_package("test.built-in", &package);
-        register_built_in("test.built-in", BUILT);
-        assert_eq!(
-            bytes_of("test.built-in"),
-            Some(package.as_slice()),
-            "the package's stays"
-        );
+        phase a_built_in_surface_never_replaces_a_packages;
+        {
+            static BUILT: &[u8] =
+                b"[[resources]]\nkind = \"test.built\"\nlabel = \"Built\"\nversion = 1\n";
+            register_built_in("test.built-in", BUILT);
+            assert_eq!(bytes_of("test.built-in"), Some(BUILT));
+            let package = b"[[resources]]\n".to_vec();
+            register_package("test.built-in", &package);
+            register_built_in("test.built-in", BUILT);
+            assert_eq!(
+                bytes_of("test.built-in"),
+                Some(package.as_slice()),
+                "the package's stays"
+            );
+        }
     }
 }

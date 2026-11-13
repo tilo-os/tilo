@@ -546,113 +546,118 @@ mod tests {
         assert!(channel.dictionary_snapshot().is_err());
     }
 
-    #[test]
-    fn a_write_shows_at_once_and_an_older_view_cannot_undo_it() {
-        let channel = ChannelSettings::new("so.tilo.monitor");
-        channel.received(1, object(json!({"locale": {"region": "DE"}})));
-        let before = channel.revision();
-        channel
-            .update_section(
-                "app_personal",
-                object(json!({"so.tilo.monitor": {"confirm_kill": false}})),
-            )
-            .unwrap();
-        assert!(channel.revision() > before);
-        assert_eq!(
-            channel.load()["app_personal"]["so.tilo.monitor"]["confirm_kill"],
-            false
-        );
+    tilo_test_env::scenario! {
+        /// An app's settings over the collaboration channel, each case on channel settings of its own.
+        fn channel_settings_show_a_write_at_once_and_follow_the_shells_answer;
 
-        let sent = channel.take_outbox();
-        assert_eq!(sent.len(), 1);
-        // A view the shell took before the write arrives first.
-        assert!(!channel.received(1, object(json!({"locale": {"region": "DE"}}))));
-        assert_eq!(
-            channel.load()["app_personal"]["so.tilo.monitor"]["confirm_kill"],
-            false
-        );
-        let after = object(json!({
-            "app_personal": {"so.tilo.monitor": {"confirm_kill": false}},
-            "locale": {"region": "AT"}
-        }));
-        assert!(channel.answered(Ok((2, after.clone()))));
-        assert_eq!(channel.load(), after);
-    }
+        phase a_write_shows_at_once_and_an_older_view_cannot_undo_it;
+        {
+            let channel = ChannelSettings::new("so.tilo.monitor");
+            channel.received(1, object(json!({"locale": {"region": "DE"}})));
+            let before = channel.revision();
+            channel
+                .update_section(
+                    "app_personal",
+                    object(json!({"so.tilo.monitor": {"confirm_kill": false}})),
+                )
+                .unwrap();
+            assert!(channel.revision() > before);
+            assert_eq!(
+                channel.load()["app_personal"]["so.tilo.monitor"]["confirm_kill"],
+                false
+            );
 
-    #[test]
-    fn a_change_reported_before_the_answer_is_not_undone_by_it() {
-        let channel = ChannelSettings::new("so.tilo.monitor");
-        channel.received(
-            1,
-            object(json!({"app_personal": {"so.tilo.monitor": {"x": 1}}})),
-        );
-        channel
-            .update_section("app_personal", object(json!({"so.tilo.monitor": {"x": 2}})))
-            .unwrap();
-        let _ = channel.take_outbox();
-        // Another device's change, reported while the answer is on its way.
-        let later = object(json!({"app_personal": {"so.tilo.monitor": {"x": 3}}}));
-        assert!(
-            !channel.received(3, later.clone()),
-            "held back for the write"
-        );
-        // The answer, the shell's view right after this write, arrives last.
-        assert!(channel.answered(Ok((
-            2,
-            object(json!({"app_personal": {"so.tilo.monitor": {"x": 2}}}))
-        ))));
-        assert_eq!(channel.load(), later, "the newest view shows");
-    }
-
-    #[test]
-    fn a_refused_write_falls_back_to_the_shells_view() {
-        let channel = ChannelSettings::new("so.tilo.monitor");
-        let shell = object(json!({"app_device_local": {"so.tilo.monitor": {"x": 1}}}));
-        channel.received(1, shell.clone());
-        channel
-            .update_section(
-                "app_device_local",
-                object(json!({"so.tilo.monitor": {"x": 2}})),
-            )
-            .unwrap();
-        let _ = channel.take_outbox();
-        assert!(channel.answered(Err("disk full".into())));
-        assert_eq!(channel.load(), shell);
-    }
-
-    #[test]
-    fn a_write_goes_to_the_shell_with_the_action_that_made_it() {
-        let channel = ChannelSettings::new("so.tilo.monitor");
-        channel
-            .update_section_by(
-                "app_personal",
-                object(json!({"so.tilo.monitor": {"x": 1}})),
-                &settings_store::ChangeOrigin::local("monitor/confirm"),
-            )
-            .unwrap();
-        channel
-            .update_section("app_personal", object(json!({"so.tilo.monitor": {"y": 2}})))
-            .unwrap();
-        let sent: Vec<Option<String>> = channel
-            .take_outbox()
-            .into_iter()
-            .map(|(_, _, action)| action)
-            .collect();
-        assert_eq!(sent, vec![Some("monitor/confirm".to_owned()), None]);
-    }
-
-    #[test]
-    fn writes_the_shell_would_refuse_are_refused_here() {
-        let channel = ChannelSettings::new("so.tilo.monitor");
-        for (section, values) in [
-            ("app_personal", json!({"so.tilo.notes": {"x": 1}})),
-            ("locale", json!({"region": "US"})),
-        ] {
-            let error = channel.update_section(section, object(values)).unwrap_err();
-            assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+            let sent = channel.take_outbox();
+            assert_eq!(sent.len(), 1);
+            // A view the shell took before the write arrives first.
+            assert!(!channel.received(1, object(json!({"locale": {"region": "DE"}}))));
+            assert_eq!(
+                channel.load()["app_personal"]["so.tilo.monitor"]["confirm_kill"],
+                false
+            );
+            let after = object(json!({
+                "app_personal": {"so.tilo.monitor": {"confirm_kill": false}},
+                "locale": {"region": "AT"}
+            }));
+            assert!(channel.answered(Ok((2, after.clone()))));
+            assert_eq!(channel.load(), after);
         }
-        assert!(channel.take_outbox().is_empty());
-        assert!(channel.load().is_empty());
+
+        phase a_change_reported_before_the_answer_is_not_undone_by_it;
+        {
+            let channel = ChannelSettings::new("so.tilo.monitor");
+            channel.received(
+                1,
+                object(json!({"app_personal": {"so.tilo.monitor": {"x": 1}}})),
+            );
+            channel
+                .update_section("app_personal", object(json!({"so.tilo.monitor": {"x": 2}})))
+                .unwrap();
+            let _ = channel.take_outbox();
+            // Another device's change, reported while the answer is on its way.
+            let later = object(json!({"app_personal": {"so.tilo.monitor": {"x": 3}}}));
+            assert!(
+                !channel.received(3, later.clone()),
+                "held back for the write"
+            );
+            // The answer, the shell's view right after this write, arrives last.
+            assert!(channel.answered(Ok((
+                2,
+                object(json!({"app_personal": {"so.tilo.monitor": {"x": 2}}}))
+            ))));
+            assert_eq!(channel.load(), later, "the newest view shows");
+        }
+
+        phase a_refused_write_falls_back_to_the_shells_view;
+        {
+            let channel = ChannelSettings::new("so.tilo.monitor");
+            let shell = object(json!({"app_device_local": {"so.tilo.monitor": {"x": 1}}}));
+            channel.received(1, shell.clone());
+            channel
+                .update_section(
+                    "app_device_local",
+                    object(json!({"so.tilo.monitor": {"x": 2}})),
+                )
+                .unwrap();
+            let _ = channel.take_outbox();
+            assert!(channel.answered(Err("disk full".into())));
+            assert_eq!(channel.load(), shell);
+        }
+
+        phase a_write_goes_to_the_shell_with_the_action_that_made_it;
+        {
+            let channel = ChannelSettings::new("so.tilo.monitor");
+            channel
+                .update_section_by(
+                    "app_personal",
+                    object(json!({"so.tilo.monitor": {"x": 1}})),
+                    &settings_store::ChangeOrigin::local("monitor/confirm"),
+                )
+                .unwrap();
+            channel
+                .update_section("app_personal", object(json!({"so.tilo.monitor": {"y": 2}})))
+                .unwrap();
+            let sent: Vec<Option<String>> = channel
+                .take_outbox()
+                .into_iter()
+                .map(|(_, _, action)| action)
+                .collect();
+            assert_eq!(sent, vec![Some("monitor/confirm".to_owned()), None]);
+        }
+
+        phase writes_the_shell_would_refuse_are_refused_here;
+        {
+            let channel = ChannelSettings::new("so.tilo.monitor");
+            for (section, values) in [
+                ("app_personal", json!({"so.tilo.notes": {"x": 1}})),
+                ("locale", json!({"region": "US"})),
+            ] {
+                let error = channel.update_section(section, object(values)).unwrap_err();
+                assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+            }
+            assert!(channel.take_outbox().is_empty());
+            assert!(channel.load().is_empty());
+        }
     }
 }
 

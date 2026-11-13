@@ -455,37 +455,112 @@ mod tests {
         (group, bytes)
     }
 
-    #[test]
-    fn an_op_history_supplied_while_held_is_not_released_again() {
-        let channel = ChannelId::new();
-        let (group, encoded) = keys(channel);
-        let (metadata, sealed) = group
-            .seal_content(
-                ArtifactId(uuid::Uuid::from_bytes([1; 16])),
-                ContentRetention::Delta,
-                b"from a peer",
-            )
-            .unwrap();
-        let arrived = envelope(sealed, Some(metadata));
-        let mut route = RouteKeys::requested();
-        route.hold_inbound(held(arrived.clone()));
-        route.settle(&arrived);
-        route.update(Wire::Ready, 1, Some(&encoded));
-        assert!(route.take_held_inbound().is_empty());
-    }
+    tilo_test_env::scenario! {
+        /// What a route holds while it waits for keys, each case on a route and a channel of its own.
+        fn a_route_without_its_keys_holds_ops_and_releases_them_once;
 
-    #[test]
-    fn held_ops_are_decided_again_only_when_the_route_changes() {
-        let channel = ChannelId::new();
-        let (_, encoded) = keys(channel);
-        let mut route = RouteKeys::requested();
-        route.hold_inbound(held(envelope(vec![1], None)));
-        let again = route.take_held_inbound();
-        assert_eq!(again.len(), 1);
-        route.hold_inbound(again.into_iter().next().unwrap());
-        assert!(route.take_held_inbound().is_empty());
-        route.update(Wire::Ready, 1, Some(&encoded));
-        assert_eq!(route.take_held_inbound().len(), 1);
+        phase an_op_history_supplied_while_held_is_not_released_again;
+        {
+            let channel = ChannelId::new();
+            let (group, encoded) = keys(channel);
+            let (metadata, sealed) = group
+                .seal_content(
+                    ArtifactId(uuid::Uuid::from_bytes([1; 16])),
+                    ContentRetention::Delta,
+                    b"from a peer",
+                )
+                .unwrap();
+            let arrived = envelope(sealed, Some(metadata));
+            let mut route = RouteKeys::requested();
+            route.hold_inbound(held(arrived.clone()));
+            route.settle(&arrived);
+            route.update(Wire::Ready, 1, Some(&encoded));
+            assert!(route.take_held_inbound().is_empty());
+        }
+
+        phase held_ops_are_decided_again_only_when_the_route_changes;
+        {
+            let channel = ChannelId::new();
+            let (_, encoded) = keys(channel);
+            let mut route = RouteKeys::requested();
+            route.hold_inbound(held(envelope(vec![1], None)));
+            let again = route.take_held_inbound();
+            assert_eq!(again.len(), 1);
+            route.hold_inbound(again.into_iter().next().unwrap());
+            assert!(route.take_held_inbound().is_empty());
+            route.update(Wire::Ready, 1, Some(&encoded));
+            assert_eq!(route.take_held_inbound().len(), 1);
+        }
+
+        phase a_waiting_route_holds_both_directions_and_releases_them_in_order;
+        {
+            let channel = ChannelId::new();
+            let (group, encoded) = keys(channel);
+            let artifact = ArtifactId(uuid::Uuid::from_bytes([1; 16]));
+            let (metadata, sealed) = group
+                .seal_content(artifact, ContentRetention::Delta, b"from a peer")
+                .unwrap();
+            let mut route = RouteKeys::requested();
+            assert_eq!(
+                route.take_state_change(),
+                Some(ChannelAccessState::WaitingForAccess)
+            );
+            assert_eq!(route.take_state_change(), None);
+            assert!(matches!(
+                route.seal(artifact, ContentRetention::Delta, b"mine".to_vec()),
+                Sealed::Hold
+            ));
+            assert!(route.hold_outbound(b"first".to_vec(), Vec::new()));
+            assert!(route.hold_outbound(b"second".to_vec(), Vec::new()));
+            let arrived = envelope(sealed, Some(metadata));
+            assert!(matches!(
+                route.open(&arrived, OpAdmission::EncryptionRequired),
+                Err(Unopened::Later)
+            ));
+            route.hold_inbound(held(arrived));
+            assert!(
+                route.take_held_outbound().is_empty(),
+                "nothing leaves while waiting"
+            );
+
+            route.update(Wire::Ready, 7, Some(&encoded));
+            assert_eq!(
+                route.take_state_change(),
+                Some(ChannelAccessState::Encrypted)
+            );
+            assert_eq!(route.generation(), 7);
+            assert_eq!(
+                route.take_held_outbound(),
+                vec![
+                    (b"first".to_vec(), Vec::new()),
+                    (b"second".to_vec(), Vec::new())
+                ]
+            );
+            let held = route.take_held_inbound();
+            assert_eq!(held.len(), 1);
+            assert_eq!(
+                route
+                    .open(&held[0].envelope, held[0].admission)
+                    .unwrap()
+                    .unwrap()
+                    .as_slice(),
+                b"from a peer"
+            );
+            let Sealed::Ready(ciphertext, Some(metadata)) =
+                route.seal(artifact, ContentRetention::Delta, b"mine".to_vec())
+            else {
+                panic!("an admitted route seals");
+            };
+            assert_ne!(ciphertext, b"mine");
+            let mut group = group;
+            assert_eq!(
+                group
+                    .open_content(artifact, &metadata, &ciphertext)
+                    .unwrap()
+                    .as_slice(),
+                b"mine"
+            );
+        }
     }
 
     fn held(envelope: SignedOp) -> Arrived {
@@ -519,76 +594,6 @@ mod tests {
                 1,
             ),
         }
-    }
-
-    #[test]
-    fn a_waiting_route_holds_both_directions_and_releases_them_in_order() {
-        let channel = ChannelId::new();
-        let (group, encoded) = keys(channel);
-        let artifact = ArtifactId(uuid::Uuid::from_bytes([1; 16]));
-        let (metadata, sealed) = group
-            .seal_content(artifact, ContentRetention::Delta, b"from a peer")
-            .unwrap();
-        let mut route = RouteKeys::requested();
-        assert_eq!(
-            route.take_state_change(),
-            Some(ChannelAccessState::WaitingForAccess)
-        );
-        assert_eq!(route.take_state_change(), None);
-        assert!(matches!(
-            route.seal(artifact, ContentRetention::Delta, b"mine".to_vec()),
-            Sealed::Hold
-        ));
-        assert!(route.hold_outbound(b"first".to_vec(), Vec::new()));
-        assert!(route.hold_outbound(b"second".to_vec(), Vec::new()));
-        let arrived = envelope(sealed, Some(metadata));
-        assert!(matches!(
-            route.open(&arrived, OpAdmission::EncryptionRequired),
-            Err(Unopened::Later)
-        ));
-        route.hold_inbound(held(arrived));
-        assert!(
-            route.take_held_outbound().is_empty(),
-            "nothing leaves while waiting"
-        );
-
-        route.update(Wire::Ready, 7, Some(&encoded));
-        assert_eq!(
-            route.take_state_change(),
-            Some(ChannelAccessState::Encrypted)
-        );
-        assert_eq!(route.generation(), 7);
-        assert_eq!(
-            route.take_held_outbound(),
-            vec![
-                (b"first".to_vec(), Vec::new()),
-                (b"second".to_vec(), Vec::new())
-            ]
-        );
-        let held = route.take_held_inbound();
-        assert_eq!(held.len(), 1);
-        assert_eq!(
-            route
-                .open(&held[0].envelope, held[0].admission)
-                .unwrap()
-                .unwrap()
-                .as_slice(),
-            b"from a peer"
-        );
-        let Sealed::Ready(ciphertext, Some(metadata)) =
-            route.seal(artifact, ContentRetention::Delta, b"mine".to_vec())
-        else {
-            panic!("an admitted route seals");
-        };
-        assert_ne!(ciphertext, b"mine");
-        let mut group = group;
-        assert_eq!(
-            group
-                .open_content(artifact, &metadata, &ciphertext)
-                .unwrap()
-                .as_slice(),
-            b"mine"
-        );
     }
 
     #[test]
@@ -670,79 +675,84 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn cleartext_opens_exactly_when_the_broker_admits_it() {
-        let channel = ChannelId::new();
-        let (_, encoded) = keys(channel);
-        let mut route = RouteKeys::requested();
-        let old = envelope(b"from before encryption".to_vec(), None);
-        assert!(matches!(
-            route.open(&old, OpAdmission::CleartextAdmitted),
-            Ok(None)
-        ));
-        route.update(Wire::Ready, 1, Some(&encoded));
-        assert!(matches!(
-            route.open(&old, OpAdmission::CleartextAdmitted),
-            Ok(None)
-        ));
-        assert!(matches!(
-            route.open(&old, OpAdmission::EncryptionRequired),
-            Err(Unopened::Never(Never::Downgrade))
-        ));
-        assert!(matches!(
-            route.open(&old, OpAdmission::Unstated),
-            Err(Unopened::Later)
-        ));
-        let other = keys(ChannelId::new()).0;
-        let (metadata, sealed) = other
-            .seal_content(old.artifact, ContentRetention::Delta, b"x")
-            .unwrap();
-        assert!(matches!(
-            route.open(
-                &envelope(sealed, Some(metadata)),
-                OpAdmission::EncryptionRequired
-            ),
-            Err(Unopened::Never(Never::WrongChannel))
-        ));
-    }
+    tilo_test_env::scenario! {
+        /// What a route opens, each case on a route and a channel of its own.
+        fn a_route_opens_only_what_its_keys_or_the_broker_admit;
 
-    /// Ciphertext the held keys can't open (sealed under a newer epoch) asks
-    /// for newer keys once per generation, and never while keys are awaited
-    /// (those routes are asked anyway).
-    #[test]
-    fn unopenable_ciphertext_asks_for_newer_keys_once_per_generation() {
-        let channel = ChannelId::new();
-        let (_, encoded) = keys(channel);
-        let artifact = ArtifactId(uuid::Uuid::from_bytes([1; 16]));
-        let mut route = RouteKeys::requested();
-        assert!(route.awaiting_keys());
-        route.hold_inbound(held(envelope(vec![1], None)));
-        assert!(
-            !route.wants_keys_for_held(),
-            "a waiting route is asked anyway"
-        );
+        phase cleartext_opens_exactly_when_the_broker_admits_it;
+        {
+            let channel = ChannelId::new();
+            let (_, encoded) = keys(channel);
+            let mut route = RouteKeys::requested();
+            let old = envelope(b"from before encryption".to_vec(), None);
+            assert!(matches!(
+                route.open(&old, OpAdmission::CleartextAdmitted),
+                Ok(None)
+            ));
+            route.update(Wire::Ready, 1, Some(&encoded));
+            assert!(matches!(
+                route.open(&old, OpAdmission::CleartextAdmitted),
+                Ok(None)
+            ));
+            assert!(matches!(
+                route.open(&old, OpAdmission::EncryptionRequired),
+                Err(Unopened::Never(Never::Downgrade))
+            ));
+            assert!(matches!(
+                route.open(&old, OpAdmission::Unstated),
+                Err(Unopened::Later)
+            ));
+            let other = keys(ChannelId::new()).0;
+            let (metadata, sealed) = other
+                .seal_content(old.artifact, ContentRetention::Delta, b"x")
+                .unwrap();
+            assert!(matches!(
+                route.open(
+                    &envelope(sealed, Some(metadata)),
+                    OpAdmission::EncryptionRequired
+                ),
+                Err(Unopened::Never(Never::WrongChannel))
+            ));
+        }
 
-        route.update(Wire::Ready, 1, Some(&encoded));
-        assert!(!route.awaiting_keys());
-        assert_eq!(route.take_held_inbound().len(), 1, "released with the keys");
-        assert!(
-            !route.wants_keys_for_held(),
-            "nothing held asks for nothing"
-        );
-        let newer = keys(channel).0;
-        let (metadata, sealed) = newer
-            .seal_content(artifact, ContentRetention::Delta, b"from a newer epoch")
-            .unwrap();
-        route.hold_inbound(held(envelope(sealed, Some(metadata))));
-        assert!(route.wants_keys_for_held());
-        assert!(
-            !route.wants_keys_for_held(),
-            "asked once for this generation"
-        );
+        phase unopenable_ciphertext_asks_for_newer_keys_once_per_generation;
+        // Ciphertext the held keys can't open (sealed under a newer epoch) asks
+        // for newer keys once per generation, and never while keys are awaited
+        // (those routes are asked anyway).
+        {
+            let channel = ChannelId::new();
+            let (_, encoded) = keys(channel);
+            let artifact = ArtifactId(uuid::Uuid::from_bytes([1; 16]));
+            let mut route = RouteKeys::requested();
+            assert!(route.awaiting_keys());
+            route.hold_inbound(held(envelope(vec![1], None)));
+            assert!(
+                !route.wants_keys_for_held(),
+                "a waiting route is asked anyway"
+            );
 
-        route.update(Wire::Ready, 2, Some(&encoded));
-        assert!(route.wants_keys_for_held(), "newer keys may still lack it");
-        assert!(!route.wants_keys_for_held());
+            route.update(Wire::Ready, 1, Some(&encoded));
+            assert!(!route.awaiting_keys());
+            assert_eq!(route.take_held_inbound().len(), 1, "released with the keys");
+            assert!(
+                !route.wants_keys_for_held(),
+                "nothing held asks for nothing"
+            );
+            let newer = keys(channel).0;
+            let (metadata, sealed) = newer
+                .seal_content(artifact, ContentRetention::Delta, b"from a newer epoch")
+                .unwrap();
+            route.hold_inbound(held(envelope(sealed, Some(metadata))));
+            assert!(route.wants_keys_for_held());
+            assert!(
+                !route.wants_keys_for_held(),
+                "asked once for this generation"
+            );
+
+            route.update(Wire::Ready, 2, Some(&encoded));
+            assert!(route.wants_keys_for_held(), "newer keys may still lack it");
+            assert!(!route.wants_keys_for_held());
+        }
     }
 
     #[test]

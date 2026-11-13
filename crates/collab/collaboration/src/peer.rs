@@ -284,103 +284,108 @@ mod tests {
         ))
     }
 
-    #[test]
-    fn a_change_the_peer_refuses_leaves_the_connection_open() {
-        let mut adapter = adapter(Err(
-            "the workspace refused the change: named no kind for a new record".into(),
-        ));
-        submit_change(&mut adapter).expect("a refusal is not a queue failure");
-        assert!(
-            adapter.status().is_open(),
-            "the peer answered; the connection is fine"
-        );
-        assert_eq!(
-            adapter.refused_change().as_deref(),
-            Some("the workspace refused the change: named no kind for a new record")
-        );
-    }
+    tilo_test_env::scenario! {
+        /// The adapter over a host peer, each case on a peer of its own.
+        fn the_peer_adapter_tells_a_refusal_from_a_lost_connection;
 
-    #[test]
-    fn a_lost_or_broken_peer_still_closes() {
-        let mut adapter = adapter(Err("peer connection dropped mid-change".into()));
-        assert_eq!(
-            submit_change(&mut adapter),
-            Err(crate::TransportError::Closed)
-        );
-        assert!(matches!(adapter.status(), TransportStatus::Closed(_)));
-        assert_eq!(adapter.refused_change(), None);
-        assert_eq!(
-            submit_change(&mut adapter),
-            Err(crate::TransportError::Closed)
-        );
-    }
-
-    #[test]
-    fn the_next_change_that_goes_through_withdraws_the_refusal() {
-        struct RefuseThenAccept(Option<String>);
-        impl PeerTransport for RefuseThenAccept {
-            fn is_connected(&self) -> bool {
-                true
-            }
-            fn send(&mut self, _: CollabRequest) -> Result<(), String> {
-                self.0.take().map_or(Ok(()), Err)
-            }
-            fn poll(&mut self) -> Vec<CollabEvent> {
-                vec![]
-            }
+        phase a_change_the_peer_refuses_leaves_the_connection_open;
+        {
+            let mut adapter = adapter(Err(
+                "the workspace refused the change: named no kind for a new record".into(),
+            ));
+            submit_change(&mut adapter).expect("a refusal is not a queue failure");
+            assert!(
+                adapter.status().is_open(),
+                "the peer answered; the connection is fine"
+            );
+            assert_eq!(
+                adapter.refused_change().as_deref(),
+                Some("the workspace refused the change: named no kind for a new record")
+            );
         }
-        let mut adapter = PeerTransportAdapter::new(RefuseThenAccept(Some(
-            "the workspace refused the change: named no kind".into(),
-        )));
-        submit_change(&mut adapter).unwrap();
-        assert!(adapter.refused_change().is_some());
-        submit_change(&mut adapter).unwrap();
-        assert_eq!(
-            adapter.refused_change(),
-            None,
-            "a change that goes through answers for the ones before it"
-        );
-        assert!(adapter.status().is_open());
-    }
 
-    #[test]
-    fn a_peer_that_serves_no_directory_keeps_carrying_the_connection() {
-        /// A peer with no action directory, counting what it is asked.
-        struct NoDirectory(std::rc::Rc<std::cell::Cell<(usize, usize)>>);
-        impl PeerTransport for NoDirectory {
-            fn is_connected(&self) -> bool {
-                true
-            }
-            fn send(&mut self, request: CollabRequest) -> Result<(), String> {
-                if matches!(request, CollabRequest::Document { .. }) {
-                    let (changes, offers) = self.0.get();
-                    self.0.set((changes + 1, offers));
+        phase a_lost_or_broken_peer_still_closes;
+        {
+            let mut adapter = adapter(Err("peer connection dropped mid-change".into()));
+            assert_eq!(
+                submit_change(&mut adapter),
+                Err(crate::TransportError::Closed)
+            );
+            assert!(matches!(adapter.status(), TransportStatus::Closed(_)));
+            assert_eq!(adapter.refused_change(), None);
+            assert_eq!(
+                submit_change(&mut adapter),
+                Err(crate::TransportError::Closed)
+            );
+        }
+
+        phase the_next_change_that_goes_through_withdraws_the_refusal;
+        {
+            struct RefuseThenAccept(Option<String>);
+            impl PeerTransport for RefuseThenAccept {
+                fn is_connected(&self) -> bool {
+                    true
                 }
-                Ok(())
+                fn send(&mut self, _: CollabRequest) -> Result<(), String> {
+                    self.0.take().map_or(Ok(()), Err)
+                }
+                fn poll(&mut self) -> Vec<CollabEvent> {
+                    vec![]
+                }
             }
-            fn poll(&mut self) -> Vec<CollabEvent> {
-                vec![]
-            }
-            fn publish_action_directory(&mut self, _: String) -> Result<(), String> {
-                let (changes, offers) = self.0.get();
-                self.0.set((changes, offers + 1));
-                Err("action directory unavailable".into())
-            }
+            let mut adapter = PeerTransportAdapter::new(RefuseThenAccept(Some(
+                "the workspace refused the change: named no kind".into(),
+            )));
+            submit_change(&mut adapter).unwrap();
+            assert!(adapter.refused_change().is_some());
+            submit_change(&mut adapter).unwrap();
+            assert_eq!(
+                adapter.refused_change(),
+                None,
+                "a change that goes through answers for the ones before it"
+            );
+            assert!(adapter.status().is_open());
         }
-        let asked = std::rc::Rc::default();
-        let mut manager = crate::CollaborationManager::with_peer_transport(NoDirectory(
-            std::rc::Rc::clone(&asked),
-        ));
-        assert!(manager.is_connected());
-        manager.publish_action_directory("so.tilo.example");
-        manager.publish_action_directory("so.tilo.example");
-        assert!(manager.is_connected(), "no directory is no lost connection");
-        assert!(!manager.action_directory_observation().0);
-        assert!(manager.send(CollabRequest::document_incremental(b"change".to_vec())));
-        assert_eq!(
-            asked.get(),
-            (1, 1),
-            "the change went through, and the directory was asked for once on the route"
-        );
+
+        phase a_peer_that_serves_no_directory_keeps_carrying_the_connection;
+        {
+            /// A peer with no action directory, counting what it is asked.
+            struct NoDirectory(std::rc::Rc<std::cell::Cell<(usize, usize)>>);
+            impl PeerTransport for NoDirectory {
+                fn is_connected(&self) -> bool {
+                    true
+                }
+                fn send(&mut self, request: CollabRequest) -> Result<(), String> {
+                    if matches!(request, CollabRequest::Document { .. }) {
+                        let (changes, offers) = self.0.get();
+                        self.0.set((changes + 1, offers));
+                    }
+                    Ok(())
+                }
+                fn poll(&mut self) -> Vec<CollabEvent> {
+                    vec![]
+                }
+                fn publish_action_directory(&mut self, _: String) -> Result<(), String> {
+                    let (changes, offers) = self.0.get();
+                    self.0.set((changes, offers + 1));
+                    Err("action directory unavailable".into())
+                }
+            }
+            let asked = std::rc::Rc::default();
+            let mut manager = crate::CollaborationManager::with_peer_transport(NoDirectory(
+                std::rc::Rc::clone(&asked),
+            ));
+            assert!(manager.is_connected());
+            manager.publish_action_directory("so.tilo.example");
+            manager.publish_action_directory("so.tilo.example");
+            assert!(manager.is_connected(), "no directory is no lost connection");
+            assert!(!manager.action_directory_observation().0);
+            assert!(manager.send(CollabRequest::document_incremental(b"change".to_vec())));
+            assert_eq!(
+                asked.get(),
+                (1, 1),
+                "the change went through, and the directory was asked for once on the route"
+            );
+        }
     }
 }
