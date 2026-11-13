@@ -458,6 +458,44 @@ mod tests {
         assert!(on_disk.ends_with("saved\n"), "{on_disk}");
     }
 
+    /// What the capture of one scenario shows.
+    struct Shot {
+        /// The file on screen.
+        shown: &'static str,
+        /// The language that file is recorded with.
+        language: &'static str,
+        /// Text the file's buffer holds in the shared document.
+        holds: &'static [&'static str],
+        /// Whether the scenario stages the hits of a project search.
+        hits: bool,
+    }
+
+    fn shot(scenario: Option<&str>) -> Shot {
+        let sample = Shot {
+            shown: "main.rs",
+            language: "Rust",
+            holds: &["fn main"],
+            hits: false,
+        };
+        match scenario {
+            Some("hardware") => Shot {
+                shown: "signed_mac.sv",
+                language: "SystemVerilog",
+                holds: &["always_ff @(posedge clk)", "{{16{product[15]}}, product}"],
+                hits: false,
+            },
+            Some("search") => Shot {
+                hits: true,
+                ..sample
+            },
+            _ => sample,
+        }
+    }
+
+    /// One capture per scenario, and everything a capture promises is asked
+    /// of that one: the file it shows, as the project records it and as the
+    /// shared document holds it, the search hits it stages, that it has
+    /// finished staging, that no language server runs in it, and its audit.
     #[test]
     fn every_scenario_captures_over_the_sample_project() {
         for scenario in CodeEditorShell::scenarios()
@@ -467,49 +505,49 @@ mod tests {
             .map(Some)
             .chain([None])
         {
+            let expected = shot(scenario);
             let mut app = TestApp::<CodeEditorShell>::capture(scenario)
                 .unwrap_or_else(|error| panic!("{scenario:?}: {error}"));
-            let (name, staging) = editor(&mut app, |app| {
-                (app.active_buffer_name(), app.is_staging_for_test())
+            let state = app.state();
+            let (name, staging, hits, servers) = editor(&mut app, |app| {
+                (
+                    app.active_buffer_name(),
+                    app.is_staging_for_test(),
+                    app.search_hit_count_for_test(),
+                    app.lsp_enabled_for_test(),
+                )
             });
-            let expected = if scenario == Some("hardware") {
-                "signed_mac.sv"
-            } else {
-                "main.rs"
-            };
-            assert_eq!(name.as_deref(), Some(expected), "{scenario:?}");
+            assert_eq!(name.as_deref(), Some(expected.shown), "{scenario:?}");
             assert!(!staging, "{scenario:?} staged");
+            assert!(!servers, "{scenario:?} runs a language server");
+            if expected.hits {
+                assert!(hits > 0, "{scenario:?} shows no search hits");
+            }
+            let (id, file) = state
+                .files
+                .iter()
+                .find(|(_, file)| file.name == expected.shown)
+                .unwrap_or_else(|| panic!("{scenario:?}: {} is no published file", expected.shown));
+            assert_eq!(file.language, expected.language, "{scenario:?}");
+            let id = id.to_string();
+            let body = app
+                .read_document(|doc| EditorDoc::read_buffer_key(doc, &id))
+                .unwrap_or_else(|| {
+                    panic!(
+                        "{scenario:?}: {} is not in the shared document",
+                        expected.shown
+                    )
+                });
+            for fragment in expected.holds {
+                assert!(
+                    body.contains(*fragment),
+                    "{scenario:?}: {} lacks {fragment}",
+                    expected.shown
+                );
+            }
             let audit = app.harness().native_app_audit();
             assert!(audit.is_certified(), "{scenario:?}: {audit:#?}");
         }
-    }
-
-    #[test]
-    fn hardware_scenario_opens_real_rtl_with_the_detected_dialect() {
-        let mut app = TestApp::<CodeEditorShell>::capture(Some("hardware")).unwrap();
-        let state = app.state();
-        let (file_id, file) = state
-            .files
-            .iter()
-            .find(|(_, file)| file.name == "signed_mac.sv")
-            .expect("fixture RTL is a published file");
-        assert_eq!(file.language, "SystemVerilog");
-        let file_id = file_id.to_string();
-        assert_eq!(
-            editor(&mut app, |app| app.active_buffer_name()).as_deref(),
-            Some("signed_mac.sv")
-        );
-        let body = app
-            .read_document(|doc| crate::doc::EditorDoc::read_buffer_key(doc, &file_id))
-            .expect("RTL source lives in the shared document");
-        assert!(body.contains("always_ff @(posedge clk)"));
-        assert!(body.contains("{{16{product[15]}}, product}"));
-    }
-
-    #[test]
-    fn the_search_scenario_shows_real_hits() {
-        let mut search = TestApp::<CodeEditorShell>::capture(Some("search")).unwrap();
-        assert!(editor(&mut search, |app| app.search_hit_count_for_test()) > 0);
     }
 
     #[test]
@@ -527,7 +565,7 @@ mod tests {
     }
 
     #[test]
-    fn language_servers_follow_the_preference_and_never_run_in_a_capture() {
+    fn language_servers_follow_the_preference() {
         let mut sample = sample();
         sample.open("src/main.rs");
         assert!(!editor(&mut sample.app, |app| app.lsp_enabled_for_test()));
@@ -543,9 +581,6 @@ mod tests {
                 .language_servers
         );
         assert!(editor(&mut sample.app, |app| app.lsp_enabled_for_test()));
-
-        let mut capture = TestApp::<CodeEditorShell>::capture(None).unwrap();
-        assert!(!editor(&mut capture, |app| app.lsp_enabled_for_test()));
     }
 
     #[test]
