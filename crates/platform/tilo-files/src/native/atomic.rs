@@ -450,179 +450,7 @@ fn create_temp(
 mod tests {
     use super::*;
 
-    #[test]
-    fn directory_barriers_target_the_containing_directory() {
-        {
-            assert_eq!(parent_or_current(Path::new("/a/b/c")), Path::new("/a/b"));
-            assert_eq!(parent_or_current(Path::new("c")), Path::new("."));
-            assert_eq!(parent_or_current(Path::new("/")), Path::new("."));
-        }
-        {
-            let root = tempfile::tempdir().unwrap();
-            let file = root.path().join("saved.txt");
-            fs::write(&file, b"saved").unwrap();
-            sync_directory(root.path()).unwrap();
-            assert!(sync_directory(&file).is_err());
-            assert!(sync_directory(&root.path().join("missing")).is_err());
-        }
-    }
     use tempfile::TempDir;
-
-    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
-    #[test]
-    fn writes_publish_only_complete_values_and_leave_no_temporary_files() {
-        {
-            let d = TempDir::new().unwrap();
-            let p = d.path().join("a.json");
-            write(&p, b"hello").unwrap();
-            assert_eq!(fs::read(&p).unwrap(), b"hello");
-        }
-        {
-            // Not a truncate-in-place: a shorter write must not leave a tail of the previous contents
-            // behind.
-            let d = TempDir::new().unwrap();
-            let p = d.path().join("a.json");
-            write(&p, b"a very long previous document").unwrap();
-            write(&p, b"short").unwrap();
-            assert_eq!(fs::read(&p).unwrap(), b"short");
-        }
-        {
-            let d = TempDir::new().unwrap();
-            let p = d.path().join("a.idx");
-            write_regenerable(&p, b"a very long previous entry").unwrap();
-            write_regenerable(&p, b"short").unwrap();
-            assert_eq!(fs::read(&p).unwrap(), b"short");
-            assert_eq!(
-                fs::read_dir(d.path()).unwrap().count(),
-                1,
-                "no temp file left"
-            );
-        }
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt as _;
-            let d = TempDir::new().unwrap();
-            let p = d.path().join("workspace-id");
-            write_regenerable_with_mode(&p, b"room-a", 0o600).unwrap();
-            write_regenerable_with_mode(&p, b"room", 0o600).unwrap();
-            assert_eq!(fs::read(&p).unwrap(), b"room");
-            assert_eq!(
-                fs::metadata(&p).unwrap().permissions().mode() & 0o777,
-                0o600
-            );
-            assert_eq!(
-                fs::read_dir(d.path()).unwrap().count(),
-                1,
-                "no temp file left"
-            );
-        }
-        {
-            let d = TempDir::new().unwrap();
-            let p = d.path().join("a.json");
-            write(&p, b"seed").unwrap();
-            write(&p, b"").unwrap();
-            assert_eq!(fs::read(&p).unwrap(), b"");
-        }
-        {
-            let d = TempDir::new().unwrap();
-            write(&d.path().join("a.json"), b"x").unwrap();
-            let left: Vec<String> = fs::read_dir(d.path())
-                .unwrap()
-                .filter_map(std::result::Result::ok)
-                .map(|e| e.file_name().to_string_lossy().into_owned())
-                .filter(|n| Path::new(n).extension().is_some_and(|e| e == "tmp"))
-                .collect();
-            assert!(left.is_empty(), "left {left:?}");
-        }
-        {
-            // A fixed `path.tmp` name opened with `create_new` would fail forever after one crash; a
-            // truncating open would share it between writers.
-            let d = TempDir::new().unwrap();
-            let p = d.path().join("state.json");
-            for sequence in 0..4 {
-                fs::write(temp_path(&p, sequence), b"left by a crash").unwrap();
-            }
-            write(&p, b"saved").unwrap();
-            assert_eq!(fs::read(&p).unwrap(), b"saved");
-        }
-        {
-            use std::sync::{Arc, Barrier};
-
-            let d = TempDir::new().unwrap();
-            let target = Arc::new(d.path().join("state"));
-            let barrier = Arc::new(Barrier::new(8));
-            let mut threads = Vec::new();
-            for byte in 0_u8..8 {
-                let target = Arc::clone(&target);
-                let barrier = Arc::clone(&barrier);
-                threads.push(std::thread::spawn(move || {
-                    let payload = vec![byte; 64 * 1024];
-                    barrier.wait();
-                    write(&target, &payload).unwrap();
-                }));
-            }
-            for thread in threads {
-                thread.join().unwrap();
-            }
-            let final_value = fs::read(&*target).unwrap();
-            assert_eq!(final_value.len(), 64 * 1024);
-            assert!(final_value.iter().all(|byte| *byte == final_value[0]));
-        }
-        {
-            let d = TempDir::new().unwrap();
-            let target = d.path().join("target");
-            fs::create_dir(&target).unwrap();
-            fs::write(target.join("marker"), b"original").unwrap();
-
-            let error = write(&target, b"replacement").unwrap_err();
-            #[cfg(windows)]
-            assert_eq!(
-                publication_state(&error),
-                Some(PublicationState::PublicationUnknown)
-            );
-            #[cfg(not(windows))]
-            let _ = error;
-            assert_eq!(fs::read(target.join("marker")).unwrap(), b"original");
-            let leftovers = fs::read_dir(d.path())
-                .unwrap()
-                .filter_map(Result::ok)
-                .filter(|entry| entry.file_name().to_string_lossy().ends_with(".tmp"))
-                .count();
-            #[cfg(not(windows))]
-            assert_eq!(leftovers, 0, "failed rename must remove its temporary file");
-            #[cfg(windows)]
-            {
-                assert_eq!(leftovers, 1, "ambiguous rename must preserve its stage");
-                let stage = fs::read_dir(d.path())
-                    .unwrap()
-                    .map(Result::unwrap)
-                    .find(|entry| entry.file_name().to_string_lossy().ends_with(".tmp"))
-                    .unwrap();
-                assert_eq!(fs::read(stage.path()).unwrap(), b"replacement");
-                let typed = error
-                    .into_inner()
-                    .unwrap()
-                    .downcast::<PublicationError>()
-                    .unwrap();
-                assert_eq!(
-                    typed.retry_commit().unwrap_err().state(),
-                    PublicationState::PublicationUnknown
-                );
-            }
-        }
-        {
-            let d = TempDir::new().unwrap();
-            let p = d.path().join("nope").join("a.json");
-            assert!(write(&p, b"x").is_err(), "must not pretend to have written");
-            assert!(!p.exists());
-        }
-        {
-            let d = TempDir::new().unwrap();
-            let p = d.path().join("deep").join("er").join("a.json");
-            write_creating_parent(&p, b"x").unwrap();
-            assert_eq!(fs::read(&p).unwrap(), b"x");
-        }
-    }
 
     #[cfg(unix)]
     #[test]
@@ -664,58 +492,235 @@ mod tests {
         }
     }
 
-    #[test]
-    fn custom_temp_openers_retry_taken_names_and_never_clobber() {
-        fn a_custom_opener_sees_hidden_sibling_names_and_retries_taken_ones() {
-            let d = TempDir::new().unwrap();
-            let p = d.path().join("identity");
-            let mut offered = Vec::new();
-            write_with_temp_opener(&p, b"bytes", |tmp| {
-                offered.push(tmp.to_path_buf());
-                if offered.len() == 1 {
-                    return Err(io::Error::from(io::ErrorKind::AlreadyExists));
+    tilo_test_env::scenario! {
+        #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
+        fn atomic_writes_publish_whole_values_beside_their_target;
+
+        phase directory_barriers_target_the_containing_directory;
+        {
+            {
+                assert_eq!(parent_or_current(Path::new("/a/b/c")), Path::new("/a/b"));
+                assert_eq!(parent_or_current(Path::new("c")), Path::new("."));
+                assert_eq!(parent_or_current(Path::new("/")), Path::new("."));
+            }
+            {
+                let root = tempfile::tempdir().unwrap();
+                let file = root.path().join("saved.txt");
+                fs::write(&file, b"saved").unwrap();
+                sync_directory(root.path()).unwrap();
+                assert!(sync_directory(&file).is_err());
+                assert!(sync_directory(&root.path().join("missing")).is_err());
+            }
+        }
+
+        phase writes_publish_only_complete_values_and_leave_no_temporary_files;
+        {
+            {
+                let d = TempDir::new().unwrap();
+                let p = d.path().join("a.json");
+                write(&p, b"hello").unwrap();
+                assert_eq!(fs::read(&p).unwrap(), b"hello");
+            }
+            {
+                // Not a truncate-in-place: a shorter write must not leave a tail of the previous contents
+                // behind.
+                let d = TempDir::new().unwrap();
+                let p = d.path().join("a.json");
+                write(&p, b"a very long previous document").unwrap();
+                write(&p, b"short").unwrap();
+                assert_eq!(fs::read(&p).unwrap(), b"short");
+            }
+            {
+                let d = TempDir::new().unwrap();
+                let p = d.path().join("a.idx");
+                write_regenerable(&p, b"a very long previous entry").unwrap();
+                write_regenerable(&p, b"short").unwrap();
+                assert_eq!(fs::read(&p).unwrap(), b"short");
+                assert_eq!(
+                    fs::read_dir(d.path()).unwrap().count(),
+                    1,
+                    "no temp file left"
+                );
+            }
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt as _;
+                let d = TempDir::new().unwrap();
+                let p = d.path().join("workspace-id");
+                write_regenerable_with_mode(&p, b"room-a", 0o600).unwrap();
+                write_regenerable_with_mode(&p, b"room", 0o600).unwrap();
+                assert_eq!(fs::read(&p).unwrap(), b"room");
+                assert_eq!(
+                    fs::metadata(&p).unwrap().permissions().mode() & 0o777,
+                    0o600
+                );
+                assert_eq!(
+                    fs::read_dir(d.path()).unwrap().count(),
+                    1,
+                    "no temp file left"
+                );
+            }
+            {
+                let d = TempDir::new().unwrap();
+                let p = d.path().join("a.json");
+                write(&p, b"seed").unwrap();
+                write(&p, b"").unwrap();
+                assert_eq!(fs::read(&p).unwrap(), b"");
+            }
+            {
+                let d = TempDir::new().unwrap();
+                write(&d.path().join("a.json"), b"x").unwrap();
+                let left: Vec<String> = fs::read_dir(d.path())
+                    .unwrap()
+                    .filter_map(std::result::Result::ok)
+                    .map(|e| e.file_name().to_string_lossy().into_owned())
+                    .filter(|n| Path::new(n).extension().is_some_and(|e| e == "tmp"))
+                    .collect();
+                assert!(left.is_empty(), "left {left:?}");
+            }
+            {
+                // A fixed `path.tmp` name opened with `create_new` would fail forever after one crash; a
+                // truncating open would share it between writers.
+                let d = TempDir::new().unwrap();
+                let p = d.path().join("state.json");
+                for sequence in 0..4 {
+                    fs::write(temp_path(&p, sequence), b"left by a crash").unwrap();
                 }
-                std::fs::OpenOptions::new()
-                    .write(true)
-                    .create_new(true)
-                    .open(tmp)
-            })
-            .unwrap();
-            assert_eq!(offered.len(), 2);
-            assert_ne!(offered[0], offered[1]);
-            assert!(offered.iter().all(|tmp| tmp.parent() == Some(d.path())));
-            assert_eq!(fs::read(&p).unwrap(), b"bytes");
-            assert_eq!(fs::read_dir(d.path()).unwrap().count(), 1);
+                write(&p, b"saved").unwrap();
+                assert_eq!(fs::read(&p).unwrap(), b"saved");
+            }
+            {
+                use std::sync::{Arc, Barrier};
+
+                let d = TempDir::new().unwrap();
+                let target = Arc::new(d.path().join("state"));
+                let barrier = Arc::new(Barrier::new(8));
+                let mut threads = Vec::new();
+                for byte in 0_u8..8 {
+                    let target = Arc::clone(&target);
+                    let barrier = Arc::clone(&barrier);
+                    threads.push(std::thread::spawn(move || {
+                        let payload = vec![byte; 64 * 1024];
+                        barrier.wait();
+                        write(&target, &payload).unwrap();
+                    }));
+                }
+                for thread in threads {
+                    thread.join().unwrap();
+                }
+                let final_value = fs::read(&*target).unwrap();
+                assert_eq!(final_value.len(), 64 * 1024);
+                assert!(final_value.iter().all(|byte| *byte == final_value[0]));
+            }
+            {
+                let d = TempDir::new().unwrap();
+                let target = d.path().join("target");
+                fs::create_dir(&target).unwrap();
+                fs::write(target.join("marker"), b"original").unwrap();
+
+                let error = write(&target, b"replacement").unwrap_err();
+                #[cfg(windows)]
+                assert_eq!(
+                    publication_state(&error),
+                    Some(PublicationState::PublicationUnknown)
+                );
+                #[cfg(not(windows))]
+                let _ = error;
+                assert_eq!(fs::read(target.join("marker")).unwrap(), b"original");
+                let leftovers = fs::read_dir(d.path())
+                    .unwrap()
+                    .filter_map(Result::ok)
+                    .filter(|entry| entry.file_name().to_string_lossy().ends_with(".tmp"))
+                    .count();
+                #[cfg(not(windows))]
+                assert_eq!(leftovers, 0, "failed rename must remove its temporary file");
+                #[cfg(windows)]
+                {
+                    assert_eq!(leftovers, 1, "ambiguous rename must preserve its stage");
+                    let stage = fs::read_dir(d.path())
+                        .unwrap()
+                        .map(Result::unwrap)
+                        .find(|entry| entry.file_name().to_string_lossy().ends_with(".tmp"))
+                        .unwrap();
+                    assert_eq!(fs::read(stage.path()).unwrap(), b"replacement");
+                    let typed = error
+                        .into_inner()
+                        .unwrap()
+                        .downcast::<PublicationError>()
+                        .unwrap();
+                    assert_eq!(
+                        typed.retry_commit().unwrap_err().state(),
+                        PublicationState::PublicationUnknown
+                    );
+                }
+            }
+            {
+                let d = TempDir::new().unwrap();
+                let p = d.path().join("nope").join("a.json");
+                assert!(write(&p, b"x").is_err(), "must not pretend to have written");
+                assert!(!p.exists());
+            }
+            {
+                let d = TempDir::new().unwrap();
+                let p = d.path().join("deep").join("er").join("a.json");
+                write_creating_parent(&p, b"x").unwrap();
+                assert_eq!(fs::read(&p).unwrap(), b"x");
+            }
         }
-        a_custom_opener_sees_hidden_sibling_names_and_retries_taken_ones();
+
+        phase custom_temp_openers_retry_taken_names_and_never_clobber;
         {
-            let d = TempDir::new().unwrap();
-            let p = d.path().join("identity");
-            fs::write(&p, b"original").unwrap();
-            let error = write_with_temp_opener(&p, b"replacement", |_| {
-                Err(io::Error::from(io::ErrorKind::PermissionDenied))
-            })
-            .unwrap_err();
-            assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
-            assert_eq!(fs::read(&p).unwrap(), b"original");
-        }
-        {
-            let d = TempDir::new().unwrap();
-            let p = d.path().join("broker-identity");
-            let open = |tmp: &Path| {
-                std::fs::OpenOptions::new()
-                    .write(true)
-                    .create_new(true)
-                    .open(tmp)
-            };
-            assert!(create_with_temp_opener(&p, b"first", open).unwrap());
-            assert!(!create_with_temp_opener(&p, b"second", open).unwrap());
-            assert_eq!(fs::read(&p).unwrap(), b"first");
-            assert_eq!(
-                fs::read_dir(d.path()).unwrap().count(),
-                1,
-                "neither the winner's nor the loser's temp file may remain"
-            );
+            fn a_custom_opener_sees_hidden_sibling_names_and_retries_taken_ones() {
+                let d = TempDir::new().unwrap();
+                let p = d.path().join("identity");
+                let mut offered = Vec::new();
+                write_with_temp_opener(&p, b"bytes", |tmp| {
+                    offered.push(tmp.to_path_buf());
+                    if offered.len() == 1 {
+                        return Err(io::Error::from(io::ErrorKind::AlreadyExists));
+                    }
+                    std::fs::OpenOptions::new()
+                        .write(true)
+                        .create_new(true)
+                        .open(tmp)
+                })
+                .unwrap();
+                assert_eq!(offered.len(), 2);
+                assert_ne!(offered[0], offered[1]);
+                assert!(offered.iter().all(|tmp| tmp.parent() == Some(d.path())));
+                assert_eq!(fs::read(&p).unwrap(), b"bytes");
+                assert_eq!(fs::read_dir(d.path()).unwrap().count(), 1);
+            }
+            a_custom_opener_sees_hidden_sibling_names_and_retries_taken_ones();
+            {
+                let d = TempDir::new().unwrap();
+                let p = d.path().join("identity");
+                fs::write(&p, b"original").unwrap();
+                let error = write_with_temp_opener(&p, b"replacement", |_| {
+                    Err(io::Error::from(io::ErrorKind::PermissionDenied))
+                })
+                .unwrap_err();
+                assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+                assert_eq!(fs::read(&p).unwrap(), b"original");
+            }
+            {
+                let d = TempDir::new().unwrap();
+                let p = d.path().join("broker-identity");
+                let open = |tmp: &Path| {
+                    std::fs::OpenOptions::new()
+                        .write(true)
+                        .create_new(true)
+                        .open(tmp)
+                };
+                assert!(create_with_temp_opener(&p, b"first", open).unwrap());
+                assert!(!create_with_temp_opener(&p, b"second", open).unwrap());
+                assert_eq!(fs::read(&p).unwrap(), b"first");
+                assert_eq!(
+                    fs::read_dir(d.path()).unwrap().count(),
+                    1,
+                    "neither the winner's nor the loser's temp file may remain"
+                );
+            }
         }
     }
 

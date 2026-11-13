@@ -224,55 +224,59 @@ mod tests {
         VPath::new(path).unwrap()
     }
 
-    #[test]
-    fn a_watch_sees_changes_below_it_relative_to_its_root() {
-        let watchers = Watchers::default();
-        let inbox = watchers.register(&p("app/data/notes"), &p("app/data"));
-        watchers
-            .notify("app/data/notes/a.md", ChangeKind::Changed)
-            .wake();
-        watchers
-            .notify("app/data/notes", ChangeKind::Removed)
-            .wake();
-        watchers
-            .notify("app/data/notesx", ChangeKind::Changed)
-            .wake();
-        watchers
-            .notify("app/data/other", ChangeKind::Changed)
-            .wake();
-        assert_eq!(
-            inbox.pop(None),
-            Some(Change {
-                path: p("notes/a.md"),
-                kind: ChangeKind::Changed
-            })
-        );
-        assert_eq!(
-            inbox.pop(None),
-            Some(Change {
-                path: p("notes"),
-                kind: ChangeKind::Removed
-            })
-        );
-        assert_eq!(inbox.pop(None), None);
-    }
+    tilo_test_env::scenario! {
+        fn a_watch_delivers_collapsed_changes_below_its_root;
 
-    #[test]
-    fn awaiting_a_change_can_cross_threads() {
-        fn send<T: Send>(_: &T) {}
-        let watch = Watch::new(Arc::new(Inbox::default()), Box::new(()));
-        send(&watch.next());
-    }
+        phase a_watch_sees_changes_below_it_relative_to_its_root;
+        {
+            let watchers = Watchers::default();
+            let inbox = watchers.register(&p("app/data/notes"), &p("app/data"));
+            watchers
+                .notify("app/data/notes/a.md", ChangeKind::Changed)
+                .wake();
+            watchers
+                .notify("app/data/notes", ChangeKind::Removed)
+                .wake();
+            watchers
+                .notify("app/data/notesx", ChangeKind::Changed)
+                .wake();
+            watchers
+                .notify("app/data/other", ChangeKind::Changed)
+                .wake();
+            assert_eq!(
+                inbox.pop(None),
+                Some(Change {
+                    path: p("notes/a.md"),
+                    kind: ChangeKind::Changed
+                })
+            );
+            assert_eq!(
+                inbox.pop(None),
+                Some(Change {
+                    path: p("notes"),
+                    kind: ChangeKind::Removed
+                })
+            );
+            assert_eq!(inbox.pop(None), None);
+        }
 
-    #[test]
-    fn repeated_changes_collapse_and_dropped_watches_unregister() {
-        let watchers = Watchers::default();
-        let inbox = watchers.register(&VPath::root(), &VPath::root());
-        watchers.notify("a", ChangeKind::Changed).wake();
-        watchers.notify("a", ChangeKind::Changed).wake();
-        assert!(inbox.pop(None).is_some());
-        assert!(inbox.pop(None).is_none());
-        drop(inbox);
-        assert!(watchers.is_empty());
+        phase awaiting_a_change_can_cross_threads;
+        {
+            fn send<T: Send>(_: &T) {}
+            let watch = Watch::new(Arc::new(Inbox::default()), Box::new(()));
+            send(&watch.next());
+        }
+
+        phase repeated_changes_collapse_and_dropped_watches_unregister;
+        {
+            let watchers = Watchers::default();
+            let inbox = watchers.register(&VPath::root(), &VPath::root());
+            watchers.notify("a", ChangeKind::Changed).wake();
+            watchers.notify("a", ChangeKind::Changed).wake();
+            assert!(inbox.pop(None).is_some());
+            assert!(inbox.pop(None).is_none());
+            drop(inbox);
+            assert!(watchers.is_empty());
+        }
     }
 }

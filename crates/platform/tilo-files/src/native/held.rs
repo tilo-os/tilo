@@ -118,59 +118,63 @@ fn replaced(file: &File, path: &Path) -> io::Result<bool> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_held_file_reads_until_its_writer_lets_go() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("current.json");
-        assert_eq!(read(&path, 64).unwrap(), None, "nothing published yet");
+    tilo_test_env::scenario! {
+        fn a_held_file_is_vouched_for_only_while_its_writer_holds_it;
 
-        let first = publish(&path, b"first", 0o600).unwrap();
-        assert_eq!(read(&path, 64).unwrap().as_deref(), Some(&b"first"[..]));
-        #[cfg(unix)]
+        phase a_held_file_reads_until_its_writer_lets_go;
         {
-            use std::os::unix::fs::PermissionsExt as _;
-            let mode = std::fs::metadata(&path).unwrap().permissions().mode();
-            assert_eq!(mode & 0o777, 0o600);
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("current.json");
+            assert_eq!(read(&path, 64).unwrap(), None, "nothing published yet");
+
+            let first = publish(&path, b"first", 0o600).unwrap();
+            assert_eq!(read(&path, 64).unwrap().as_deref(), Some(&b"first"[..]));
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt as _;
+                let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+                assert_eq!(mode & 0o777, 0o600);
+            }
+
+            // A replacement is read from the moment it is in place, even after the old file's hold is
+            // gone.
+            let second = publish(&path, b"second", 0o600).unwrap();
+            drop(first);
+            assert_eq!(read(&path, 64).unwrap().as_deref(), Some(&b"second"[..]));
+            assert!(read(&path, 3).is_err(), "the bound still applies");
+
+            // The writer lets go (it exited, or a replacement failed): the file is still there, and is no
+            // one's.
+            drop(second);
+            assert!(path.exists());
+            assert_eq!(read(&path, 64).unwrap(), None);
         }
 
-        // A replacement is read from the moment it is in place, even after the old file's hold is
-        // gone.
-        let second = publish(&path, b"second", 0o600).unwrap();
-        drop(first);
-        assert_eq!(read(&path, 64).unwrap().as_deref(), Some(&b"second"[..]));
-        assert!(read(&path, 3).is_err(), "the bound still applies");
+        phase a_reader_that_opened_the_old_file_follows_the_replacement;
+        {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("current.json");
+            let first = publish(&path, b"first", 0o600).unwrap();
+            let old = File::open(&path).unwrap();
+            let second = publish(&path, b"second", 0o600).unwrap();
+            drop(first);
+            // The reader's open file is the old one, let go; the name is not.
+            let unheld = FileLock::try_lock(old, LockMode::Shared).unwrap();
+            assert!(replaced(unheld.file(), &path).unwrap());
+            drop(unheld);
+            assert_eq!(read(&path, 64).unwrap().as_deref(), Some(&b"second"[..]));
+            drop(second);
+        }
 
-        // The writer lets go (it exited, or a replacement failed): the file is still there, and is no
-        // one's.
-        drop(second);
-        assert!(path.exists());
-        assert_eq!(read(&path, 64).unwrap(), None);
-    }
-
-    #[test]
-    fn a_reader_that_opened_the_old_file_follows_the_replacement() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("current.json");
-        let first = publish(&path, b"first", 0o600).unwrap();
-        let old = File::open(&path).unwrap();
-        let second = publish(&path, b"second", 0o600).unwrap();
-        drop(first);
-        // The reader's open file is the old one, let go; the name is not.
-        let unheld = FileLock::try_lock(old, LockMode::Shared).unwrap();
-        assert!(replaced(unheld.file(), &path).unwrap());
-        drop(unheld);
-        assert_eq!(read(&path, 64).unwrap().as_deref(), Some(&b"second"[..]));
-        drop(second);
-    }
-
-    #[test]
-    fn readers_do_not_vouch_for_each_other() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("current.json");
-        drop(publish(&path, b"orphan", 0o600).unwrap());
-        // Another reader holding a shared lock does not make the file held.
-        let other = FileLock::try_lock(File::open(&path).unwrap(), LockMode::Shared).unwrap();
-        assert_eq!(read(&path, 64).unwrap(), None);
-        drop(other);
+        phase readers_do_not_vouch_for_each_other;
+        {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("current.json");
+            drop(publish(&path, b"orphan", 0o600).unwrap());
+            // Another reader holding a shared lock does not make the file held.
+            let other = FileLock::try_lock(File::open(&path).unwrap(), LockMode::Shared).unwrap();
+            assert_eq!(read(&path, 64).unwrap(), None);
+            drop(other);
+        }
     }
 }

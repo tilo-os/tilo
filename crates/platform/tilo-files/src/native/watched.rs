@@ -284,82 +284,86 @@ mod tests {
         move || std::fs::read_to_string(&path).unwrap_or_default()
     }
 
-    #[test]
-    fn a_change_in_the_directory_is_read_on_the_worker() {
-        let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("value");
-        std::fs::write(&file, "one").unwrap();
-        let watched = Watched::start(
-            "watched-test",
-            vec![dir.path().to_owned()],
-            read_file(file.clone()),
-        )
-        .unwrap();
-        assert_eq!(*watched.get(), "one");
-        let told = Arc::new(AtomicUsize::new(0));
-        let counter = Arc::clone(&told);
-        watched.on_change(move || {
-            counter.fetch_add(1, Ordering::AcqRel);
-        });
-        std::fs::write(dir.path().join("value.tmp"), "two").unwrap();
-        std::fs::rename(dir.path().join("value.tmp"), &file).unwrap();
-        assert!(
-            within(|| *watched.get() == "two"),
-            "the change was not read"
-        );
-        // The value is kept before the listeners are told, on the same worker.
-        assert!(
-            within(|| told.load(Ordering::Acquire) >= 1),
-            "no listener was told"
-        );
-    }
+    tilo_test_env::scenario! {
+        fn a_watched_value_follows_its_directories_from_the_worker;
 
-    #[test]
-    fn a_directory_made_later_is_followed() {
-        let root = tempfile::tempdir().unwrap();
-        let dir = root.path().join("not").join("yet");
-        let file = dir.join("value");
-        let watched =
-            Watched::start("watched-test", vec![dir.clone()], read_file(file.clone())).unwrap();
-        assert_eq!(*watched.get(), "");
-        std::fs::create_dir_all(&dir).unwrap();
-        assert!(within(|| {
-            let _ = std::fs::write(&file, "made");
-            *watched.get() == "made"
-        }));
-        std::fs::write(&file, "changed").unwrap();
-        assert!(within(|| *watched.get() == "changed"));
-    }
-
-    #[test]
-    fn a_value_started_unread_arrives_from_the_worker() {
-        // A read this test holds open until it lets go: starting must not wait for it, and the value
-        // given stands in until the read lands.
-        let held = std::sync::Arc::new(std::sync::Barrier::new(2));
-        let read = std::sync::Arc::clone(&held);
-        let watched =
-            Watched::start_unread("watched-test", Vec::new(), "unread".to_owned(), move || {
-                read.wait();
-                "read".to_owned()
-            })
+        phase a_change_in_the_directory_is_read_on_the_worker;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let file = dir.path().join("value");
+            std::fs::write(&file, "one").unwrap();
+            let watched = Watched::start(
+                "watched-test",
+                vec![dir.path().to_owned()],
+                read_file(file.clone()),
+            )
             .unwrap();
-        assert_eq!(*watched.get(), "unread");
-        held.wait();
-        assert!(within(|| *watched.get() == "read"), "the read never landed");
-    }
+            assert_eq!(*watched.get(), "one");
+            let told = Arc::new(AtomicUsize::new(0));
+            let counter = Arc::clone(&told);
+            watched.on_change(move || {
+                counter.fetch_add(1, Ordering::AcqRel);
+            });
+            std::fs::write(dir.path().join("value.tmp"), "two").unwrap();
+            std::fs::rename(dir.path().join("value.tmp"), &file).unwrap();
+            assert!(
+                within(|| *watched.get() == "two"),
+                "the change was not read"
+            );
+            // The value is kept before the listeners are told, on the same worker.
+            assert!(
+                within(|| told.load(Ordering::Acquire) >= 1),
+                "no listener was told"
+            );
+        }
 
-    #[test]
-    fn a_writer_sees_its_own_write_at_once() {
-        let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("value");
-        let watched = Watched::start(
-            "watched-test",
-            vec![dir.path().to_owned()],
-            read_file(file.clone()),
-        )
-        .unwrap();
-        std::fs::write(&file, "mine").unwrap();
-        watched.refresh();
-        assert_eq!(*watched.get(), "mine");
+        phase a_directory_made_later_is_followed;
+        {
+            let root = tempfile::tempdir().unwrap();
+            let dir = root.path().join("not").join("yet");
+            let file = dir.join("value");
+            let watched =
+                Watched::start("watched-test", vec![dir.clone()], read_file(file.clone())).unwrap();
+            assert_eq!(*watched.get(), "");
+            std::fs::create_dir_all(&dir).unwrap();
+            assert!(within(|| {
+                let _ = std::fs::write(&file, "made");
+                *watched.get() == "made"
+            }));
+            std::fs::write(&file, "changed").unwrap();
+            assert!(within(|| *watched.get() == "changed"));
+        }
+
+        phase a_value_started_unread_arrives_from_the_worker;
+        {
+            // A read this test holds open until it lets go: starting must not wait for it, and the value
+            // given stands in until the read lands.
+            let held = std::sync::Arc::new(std::sync::Barrier::new(2));
+            let read = std::sync::Arc::clone(&held);
+            let watched =
+                Watched::start_unread("watched-test", Vec::new(), "unread".to_owned(), move || {
+                    read.wait();
+                    "read".to_owned()
+                })
+                .unwrap();
+            assert_eq!(*watched.get(), "unread");
+            held.wait();
+            assert!(within(|| *watched.get() == "read"), "the read never landed");
+        }
+
+        phase a_writer_sees_its_own_write_at_once;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let file = dir.path().join("value");
+            let watched = Watched::start(
+                "watched-test",
+                vec![dir.path().to_owned()],
+                read_file(file.clone()),
+            )
+            .unwrap();
+            std::fs::write(&file, "mine").unwrap();
+            watched.refresh();
+            assert_eq!(*watched.get(), "mine");
+        }
     }
 }

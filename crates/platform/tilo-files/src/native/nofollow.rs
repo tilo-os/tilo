@@ -165,41 +165,45 @@ mod tests {
         dir
     }
 
-    #[test]
-    fn a_link_anywhere_along_the_path_is_refused() {
-        let dir = tree();
-        let path = dir.path();
-        let file = open_read(&path.join("real/file")).unwrap();
-        assert_eq!(io::read_to_string(file).unwrap(), "bytes");
-        assert!(open_read(&path.join("linked/file")).is_err());
-        assert!(open_read(&path.join("real/alias")).is_err());
-    }
+    tilo_test_env::scenario! {
+        fn no_link_is_followed_along_a_path;
 
-    #[test]
-    fn beneath_a_root_only_plain_components_without_links_open() {
-        let dir = tree();
-        let root = File::open(dir.path()).unwrap();
-        assert!(open_beneath(&root, Path::new("real/file"), false).is_ok());
-        assert!(open_beneath(&root, Path::new("real"), true).is_ok());
-        assert!(open_beneath(&root, Path::new("linked/file"), false).is_err());
-        assert!(open_beneath(&root, Path::new("real/alias"), false).is_err());
-        for unsafe_path in ["../real/file", "/etc/passwd", "./real/file", ""] {
-            let error = open_beneath(&root, Path::new(unsafe_path), false).unwrap_err();
-            assert_eq!(error.kind(), io::ErrorKind::InvalidInput, "{unsafe_path:?}");
+        phase a_link_anywhere_along_the_path_is_refused;
+        {
+            let dir = tree();
+            let path = dir.path();
+            let file = open_read(&path.join("real/file")).unwrap();
+            assert_eq!(io::read_to_string(file).unwrap(), "bytes");
+            assert!(open_read(&path.join("linked/file")).is_err());
+            assert!(open_read(&path.join("real/alias")).is_err());
         }
-    }
 
-    /// The fallback where `openat2` is refused refuses the same links.
-    #[test]
-    fn the_component_walk_refuses_links_too() {
-        use std::os::unix::ffi::OsStrExt as _;
-        let dir = tree();
-        let root = || Some(File::open(dir.path()).unwrap().into());
-        assert!(imp::walk(root(), b"real/file", false).is_ok());
-        assert!(imp::walk(root(), b"real", true).is_ok());
-        assert!(imp::walk(root(), b"linked/file", false).is_err());
-        assert!(imp::walk(root(), b"real/alias", false).is_err());
-        let absolute = dir.path().join("linked/file");
-        assert!(imp::walk(None, absolute.as_os_str().as_bytes(), false).is_err());
+        phase beneath_a_root_only_plain_components_without_links_open;
+        {
+            let dir = tree();
+            let root = File::open(dir.path()).unwrap();
+            assert!(open_beneath(&root, Path::new("real/file"), false).is_ok());
+            assert!(open_beneath(&root, Path::new("real"), true).is_ok());
+            assert!(open_beneath(&root, Path::new("linked/file"), false).is_err());
+            assert!(open_beneath(&root, Path::new("real/alias"), false).is_err());
+            for unsafe_path in ["../real/file", "/etc/passwd", "./real/file", ""] {
+                let error = open_beneath(&root, Path::new(unsafe_path), false).unwrap_err();
+                assert_eq!(error.kind(), io::ErrorKind::InvalidInput, "{unsafe_path:?}");
+            }
+        }
+
+        phase the_component_walk_refuses_links_too;
+        // The fallback where `openat2` is refused refuses the same links.
+        {
+            use std::os::unix::ffi::OsStrExt as _;
+            let dir = tree();
+            let root = || Some(File::open(dir.path()).unwrap().into());
+            assert!(imp::walk(root(), b"real/file", false).is_ok());
+            assert!(imp::walk(root(), b"real", true).is_ok());
+            assert!(imp::walk(root(), b"linked/file", false).is_err());
+            assert!(imp::walk(root(), b"real/alias", false).is_err());
+            let absolute = dir.path().join("linked/file");
+            assert!(imp::walk(None, absolute.as_os_str().as_bytes(), false).is_err());
+        }
     }
 }

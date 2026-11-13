@@ -233,38 +233,6 @@ mod tests {
     use std::os::unix::fs::symlink;
 
     #[test]
-    fn missing_is_empty_and_arbitrary_bytes_round_trip() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().canonicalize().unwrap();
-        let copy = CheckedCopy::open(&root.join("settings.json")).unwrap();
-        assert_eq!(copy.read().unwrap(), (Vec::new(), None));
-        for contents in [b"".as_slice(), b"{", b"[]", b"null", b"\xff"] {
-            let identity = copy.write(contents).unwrap();
-            assert_eq!(copy.read().unwrap(), (contents.to_vec(), Some(identity)));
-            assert_eq!(copy.identity().unwrap(), Some(identity));
-        }
-    }
-
-    #[test]
-    fn links_in_ancestors_copy_and_lock_are_refused() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().canonicalize().unwrap();
-        std::fs::create_dir(root.join("real")).unwrap();
-        symlink("real", root.join("alias")).unwrap();
-        assert!(CheckedCopy::open(&root.join("alias/settings.json")).is_err());
-        let path = root.join("real/settings.json");
-        let copy = CheckedCopy::open(&path).unwrap();
-        std::fs::write(root.join("target"), b"{}").unwrap();
-        symlink("../target", &path).unwrap();
-        symlink("../target", root.join("real/settings.json.lock")).unwrap();
-        assert!(copy.read().is_err());
-        assert!(copy.identity().is_err());
-        assert!(copy.write(b"{}").is_err());
-        assert!(copy.lock().is_err());
-        assert_eq!(std::fs::read(root.join("target")).unwrap(), b"{}");
-    }
-
-    #[test]
     #[cfg(target_os = "linux")]
     fn fifo_copy_and_lock_are_rejected_without_waiting_for_a_peer() {
         let dir = tempfile::tempdir().unwrap();
@@ -292,51 +260,87 @@ mod tests {
         assert!(copy.lock().is_err());
     }
 
-    #[test]
-    fn renamed_parent_stays_anchored_for_read_lock_and_write() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().canonicalize().unwrap();
-        let parent = root.join("original");
-        let copy = CheckedCopy::open(&parent.join("settings.json")).unwrap();
-        let moved = root.join("moved");
-        std::fs::rename(&parent, &moved).unwrap();
-        std::fs::create_dir(&parent).unwrap();
-        std::fs::write(parent.join("settings.json"), b"{\"foreign\":true}").unwrap();
-        let lock = copy.lock().unwrap();
-        let document = b"{\"value\":true}".to_vec();
-        let identity = copy.write(&document).unwrap();
-        assert_eq!(copy.read().unwrap(), (document, Some(identity)));
-        assert_eq!(copy.identity().unwrap(), Some(identity));
-        assert!(moved.join("settings.json.lock").is_file());
-        assert!(!parent.join("settings.json.lock").exists());
-        assert_eq!(
-            std::fs::read(parent.join("settings.json")).unwrap(),
-            b"{\"foreign\":true}"
-        );
-        drop(lock);
-    }
+    tilo_test_env::scenario! {
+        fn a_checked_copy_round_trips_stays_anchored_and_refuses_links;
 
-    #[test]
-    fn ordinary_writer_lock_contends_with_checked_lock() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().canonicalize().unwrap();
-        let copy = CheckedCopy::open(&root.join("settings.json")).unwrap();
-        let lock = copy.lock().unwrap();
-        let peer = File::options()
-            .read(true)
-            .write(true)
-            .open(root.join("settings.json.lock"))
-            .unwrap();
-        assert!(matches!(
-            FileLock::try_exclusive(peer),
-            Err(advisory_lock::TryLockError::WouldBlock)
-        ));
-        drop(lock);
-        let peer = File::options()
-            .read(true)
-            .write(true)
-            .open(root.join("settings.json.lock"))
-            .unwrap();
-        assert!(FileLock::try_exclusive(peer).is_ok());
+        phase missing_is_empty_and_arbitrary_bytes_round_trip;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path().canonicalize().unwrap();
+            let copy = CheckedCopy::open(&root.join("settings.json")).unwrap();
+            assert_eq!(copy.read().unwrap(), (Vec::new(), None));
+            for contents in [b"".as_slice(), b"{", b"[]", b"null", b"\xff"] {
+                let identity = copy.write(contents).unwrap();
+                assert_eq!(copy.read().unwrap(), (contents.to_vec(), Some(identity)));
+                assert_eq!(copy.identity().unwrap(), Some(identity));
+            }
+        }
+
+        phase links_in_ancestors_copy_and_lock_are_refused;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path().canonicalize().unwrap();
+            std::fs::create_dir(root.join("real")).unwrap();
+            symlink("real", root.join("alias")).unwrap();
+            assert!(CheckedCopy::open(&root.join("alias/settings.json")).is_err());
+            let path = root.join("real/settings.json");
+            let copy = CheckedCopy::open(&path).unwrap();
+            std::fs::write(root.join("target"), b"{}").unwrap();
+            symlink("../target", &path).unwrap();
+            symlink("../target", root.join("real/settings.json.lock")).unwrap();
+            assert!(copy.read().is_err());
+            assert!(copy.identity().is_err());
+            assert!(copy.write(b"{}").is_err());
+            assert!(copy.lock().is_err());
+            assert_eq!(std::fs::read(root.join("target")).unwrap(), b"{}");
+        }
+
+        phase renamed_parent_stays_anchored_for_read_lock_and_write;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path().canonicalize().unwrap();
+            let parent = root.join("original");
+            let copy = CheckedCopy::open(&parent.join("settings.json")).unwrap();
+            let moved = root.join("moved");
+            std::fs::rename(&parent, &moved).unwrap();
+            std::fs::create_dir(&parent).unwrap();
+            std::fs::write(parent.join("settings.json"), b"{\"foreign\":true}").unwrap();
+            let lock = copy.lock().unwrap();
+            let document = b"{\"value\":true}".to_vec();
+            let identity = copy.write(&document).unwrap();
+            assert_eq!(copy.read().unwrap(), (document, Some(identity)));
+            assert_eq!(copy.identity().unwrap(), Some(identity));
+            assert!(moved.join("settings.json.lock").is_file());
+            assert!(!parent.join("settings.json.lock").exists());
+            assert_eq!(
+                std::fs::read(parent.join("settings.json")).unwrap(),
+                b"{\"foreign\":true}"
+            );
+            drop(lock);
+        }
+
+        phase ordinary_writer_lock_contends_with_checked_lock;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path().canonicalize().unwrap();
+            let copy = CheckedCopy::open(&root.join("settings.json")).unwrap();
+            let lock = copy.lock().unwrap();
+            let peer = File::options()
+                .read(true)
+                .write(true)
+                .open(root.join("settings.json.lock"))
+                .unwrap();
+            assert!(matches!(
+                FileLock::try_exclusive(peer),
+                Err(advisory_lock::TryLockError::WouldBlock)
+            ));
+            drop(lock);
+            let peer = File::options()
+                .read(true)
+                .write(true)
+                .open(root.join("settings.json.lock"))
+                .unwrap();
+            assert!(FileLock::try_exclusive(peer).is_ok());
+        }
     }
 }

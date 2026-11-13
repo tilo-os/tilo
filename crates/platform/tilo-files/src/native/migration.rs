@@ -278,115 +278,119 @@ mod tests {
         steps: &[add_tail, add_tail],
     };
 
-    #[test]
-    fn an_older_file_comes_up_to_date_and_the_old_one_is_kept() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("notes.json");
-        std::fs::write(&path, b"v1").unwrap();
+    tilo_test_env::scenario! {
+        fn a_format_migrates_step_by_step_and_keeps_what_it_replaced;
 
-        let migrated = NOTES.bring_up(&path, b"v1".to_vec(), 1).unwrap();
-        assert_eq!(migrated, b"v1++");
-        assert_eq!(std::fs::read(&path).unwrap(), b"v1++");
-        let snapshot = Format::snapshot_path(&path, 1);
-        assert_eq!(snapshot, dir.path().join("notes.json.v1"));
-        assert_eq!(
-            std::fs::read(snapshot).unwrap(),
-            b"v1",
-            "rollback loses nothing"
-        );
+        phase an_older_file_comes_up_to_date_and_the_old_one_is_kept;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("notes.json");
+            std::fs::write(&path, b"v1").unwrap();
 
-        assert_eq!(NOTES.bring_up(&path, b"v3".to_vec(), 3).unwrap(), b"v3");
-        assert_eq!(std::fs::read(&path).unwrap(), b"v1++");
-    }
+            let migrated = NOTES.bring_up(&path, b"v1".to_vec(), 1).unwrap();
+            assert_eq!(migrated, b"v1++");
+            assert_eq!(std::fs::read(&path).unwrap(), b"v1++");
+            let snapshot = Format::snapshot_path(&path, 1);
+            assert_eq!(snapshot, dir.path().join("notes.json.v1"));
+            assert_eq!(
+                std::fs::read(snapshot).unwrap(),
+                b"v1",
+                "rollback loses nothing"
+            );
 
-    #[test]
-    fn an_older_file_of_its_own_comes_up_in_the_new_place_and_is_kept_beside_it() {
-        let dir = tempfile::tempdir().unwrap();
-        let old = dir.path().join("notes-v1.json");
-        let path = dir.path().join("notes.log");
-        std::fs::write(&old, b"v1").unwrap();
+            assert_eq!(NOTES.bring_up(&path, b"v3".to_vec(), 3).unwrap(), b"v3");
+            assert_eq!(std::fs::read(&path).unwrap(), b"v1++");
+        }
 
-        let migrated = NOTES
-            .bring_up_moved(&old, &path, b"v1".to_vec(), 1)
-            .unwrap();
-        assert_eq!(migrated, b"v1++");
-        assert_eq!(std::fs::read(&path).unwrap(), b"v1++");
-        assert!(!old.exists(), "the old file moved");
-        assert_eq!(
-            std::fs::read(Format::snapshot_path(&path, 1)).unwrap(),
-            b"v1",
-            "rollback loses nothing"
-        );
+        phase an_older_file_of_its_own_comes_up_in_the_new_place_and_is_kept_beside_it;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let old = dir.path().join("notes-v1.json");
+            let path = dir.path().join("notes.log");
+            std::fs::write(&old, b"v1").unwrap();
 
-        let refusing = Format {
-            steps: &[add_tail, refuse],
-            ..NOTES
-        };
-        std::fs::write(&old, b"v1").unwrap();
-        std::fs::remove_file(&path).unwrap();
-        assert!(matches!(
-            refusing.bring_up_moved(&old, &path, b"v1".to_vec(), 1),
-            Err(MigrationError::Step { from: 2, .. })
-        ));
-        assert_eq!(
-            std::fs::read(&old).unwrap(),
-            b"v1",
-            "a refusal moves nothing"
-        );
-        assert!(!path.exists());
-    }
+            let migrated = NOTES
+                .bring_up_moved(&old, &path, b"v1".to_vec(), 1)
+                .unwrap();
+            assert_eq!(migrated, b"v1++");
+            assert_eq!(std::fs::read(&path).unwrap(), b"v1++");
+            assert!(!old.exists(), "the old file moved");
+            assert_eq!(
+                std::fs::read(Format::snapshot_path(&path, 1)).unwrap(),
+                b"v1",
+                "rollback loses nothing"
+            );
 
-    #[test]
-    fn a_newer_file_or_a_refused_step_leaves_the_file_as_it_is() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("notes.json");
-        std::fs::write(&path, b"v4").unwrap();
-        assert!(matches!(
-            NOTES.bring_up(&path, b"v4".to_vec(), 4),
-            Err(MigrationError::Newer { stored: 4, .. })
-        ));
-        assert!(matches!(
-            NOTES.bring_up(&path, b"v0".to_vec(), 0),
-            Err(MigrationError::TooOld { stored: 0, .. })
-        ));
-        let refusing = Format {
-            steps: &[add_tail, refuse],
-            ..NOTES
-        };
-        assert!(matches!(
-            refusing.bring_up(&path, b"v1".to_vec(), 1),
-            Err(MigrationError::Step { from: 2, .. })
-        ));
-        assert_eq!(std::fs::read(&path).unwrap(), b"v4");
-        assert!(!Format::snapshot_path(&path, 1).exists());
-    }
+            let refusing = Format {
+                steps: &[add_tail, refuse],
+                ..NOTES
+            };
+            std::fs::write(&old, b"v1").unwrap();
+            std::fs::remove_file(&path).unwrap();
+            assert!(matches!(
+                refusing.bring_up_moved(&old, &path, b"v1".to_vec(), 1),
+                Err(MigrationError::Step { from: 2, .. })
+            ));
+            assert_eq!(
+                std::fs::read(&old).unwrap(),
+                b"v1",
+                "a refusal moves nothing"
+            );
+            assert!(!path.exists());
+        }
 
-    #[test]
-    fn golden_bytes_are_what_this_build_reads_and_writes() {
-        assert_golden_bytes(
-            "notes",
-            b"v3",
-            |bytes| assert_eq!(bytes, b"v3"),
-            || b"v3".to_vec(),
-        );
-        let failed = std::panic::catch_unwind(|| {
-            assert_golden_bytes("notes", b"v3", |_| {}, || b"v4".to_vec());
-        });
-        assert!(failed.is_err(), "a layout that changed does not pass");
-    }
+        phase a_newer_file_or_a_refused_step_leaves_the_file_as_it_is;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("notes.json");
+            std::fs::write(&path, b"v4").unwrap();
+            assert!(matches!(
+                NOTES.bring_up(&path, b"v4".to_vec(), 4),
+                Err(MigrationError::Newer { stored: 4, .. })
+            ));
+            assert!(matches!(
+                NOTES.bring_up(&path, b"v0".to_vec(), 0),
+                Err(MigrationError::TooOld { stored: 0, .. })
+            ));
+            let refusing = Format {
+                steps: &[add_tail, refuse],
+                ..NOTES
+            };
+            assert!(matches!(
+                refusing.bring_up(&path, b"v1".to_vec(), 1),
+                Err(MigrationError::Step { from: 2, .. })
+            ));
+            assert_eq!(std::fs::read(&path).unwrap(), b"v4");
+            assert!(!Format::snapshot_path(&path, 1).exists());
+        }
 
-    #[test]
-    fn a_format_has_a_step_per_version() {
-        assert!(NOTES.is_whole());
-        let missing = Format {
-            steps: &[add_tail],
-            ..NOTES
-        };
-        assert!(!missing.is_whole());
-        assert!(matches!(
-            missing.migrate(b"v1".to_vec(), 1),
-            Err(MigrationError::TooOld { .. })
-        ));
-        assert_step_reads_previous(&NOTES, b"v2", |bytes| assert_eq!(bytes, b"v2+"));
+        phase golden_bytes_are_what_this_build_reads_and_writes;
+        {
+            assert_golden_bytes(
+                "notes",
+                b"v3",
+                |bytes| assert_eq!(bytes, b"v3"),
+                || b"v3".to_vec(),
+            );
+            let failed = std::panic::catch_unwind(|| {
+                assert_golden_bytes("notes", b"v3", |_| {}, || b"v4".to_vec());
+            });
+            assert!(failed.is_err(), "a layout that changed does not pass");
+        }
+
+        phase a_format_has_a_step_per_version;
+        {
+            assert!(NOTES.is_whole());
+            let missing = Format {
+                steps: &[add_tail],
+                ..NOTES
+            };
+            assert!(!missing.is_whole());
+            assert!(matches!(
+                missing.migrate(b"v1".to_vec(), 1),
+                Err(MigrationError::TooOld { .. })
+            ));
+            assert_step_reads_previous(&NOTES, b"v2", |bytes| assert_eq!(bytes, b"v2+"));
+        }
     }
 }

@@ -14,182 +14,186 @@ use tilo_files::native::atomic::test_support::{
 use tilo_files::native::atomic::{FileIdentity, Privacy, StorageDirectory, reconcile_directory};
 use tilo_test_env::SpawnUnderEnvLock as _;
 
-#[test]
-fn existing_commit_retains_nondeleting_retry_and_rejects_replacement() {
-    for checkpoint in [E::BeforeDataFlush, E::BeforeNamespaceFlush] {
+tilo_test_env::scenario! {
+    fn an_existing_commit_keeps_its_retry_and_refuses_replaced_objects;
+
+    phase existing_commit_retains_nondeleting_retry_and_rejects_replacement;
+    {
+        for checkpoint in [E::BeforeDataFlush, E::BeforeNamespaceFlush] {
+            let root = tempfile::tempdir().unwrap();
+            let path = root.path().join("winner");
+            fs::write(&path, b"owner\n").unwrap();
+            let parent = StorageDirectory::open(root.path()).unwrap();
+            let identity = FileIdentity::of(&File::open(&path).unwrap()).unwrap();
+            let error = with_existing_hooks(
+                Some(checkpoint),
+                |_| {},
+                || parent.commit_existing(OsStr::new("winner"), &identity, Privacy::Inherit),
+            )
+            .unwrap_err();
+            assert!(!error.source_changed());
+            assert!(tilo_files::native::atomic::publication_state(&error.into_io_error()).is_none());
+            let error = with_existing_hooks(
+                Some(checkpoint),
+                |_| {},
+                || parent.commit_existing(OsStr::new("winner"), &identity, Privacy::Inherit),
+            )
+            .unwrap_err();
+            with_existing_hooks(
+                Some(checkpoint),
+                |_| {},
+                || assert!(error.retry_commit().is_err()),
+            );
+            let error = with_existing_hooks(
+                Some(checkpoint),
+                |_| {},
+                || parent.commit_existing(OsStr::new("winner"), &identity, Privacy::Inherit),
+            )
+            .unwrap_err();
+            error.retry_commit().unwrap();
+            assert_eq!(fs::read(&path).unwrap(), b"owner\n");
+            let error = with_existing_hooks(
+                Some(checkpoint),
+                |_| {},
+                || parent.commit_existing(OsStr::new("winner"), &identity, Privacy::Inherit),
+            )
+            .unwrap_err();
+            fs::rename(&path, root.path().join("old")).unwrap();
+            fs::write(&path, b"owner\n").unwrap();
+            assert!(error.retry_commit().unwrap_err().source_changed());
+            assert_eq!(fs::read(&path).unwrap(), b"owner\n");
+        }
+    }
+
+    phase existing_reconciliation_commits_exact_chain_and_never_recreates;
+    {
         let root = tempfile::tempdir().unwrap();
-        let path = root.path().join("winner");
-        fs::write(&path, b"owner\n").unwrap();
-        let parent = StorageDirectory::open(root.path()).unwrap();
-        let identity = FileIdentity::of(&File::open(&path).unwrap()).unwrap();
-        let error = with_existing_hooks(
-            Some(checkpoint),
-            |_| {},
-            || parent.commit_existing(OsStr::new("winner"), &identity, Privacy::Inherit),
-        )
+        let path = root.path().join("one/two");
+        fs::create_dir_all(&path).unwrap();
+        let directory = StorageDirectory::open(&path).unwrap();
+        let physical = fs::canonicalize(&path).unwrap();
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let observed = events.clone();
+        let error = with_provision_failure(P::BeforeSync, physical.parent().unwrap(), || {
+            reconcile_directory(&path, &directory, Privacy::Inherit)
+        })
         .unwrap_err();
-        assert!(!error.source_changed());
-        assert!(tilo_files::native::atomic::publication_state(&error.into_io_error()).is_none());
-        let error = with_existing_hooks(
-            Some(checkpoint),
-            |_| {},
-            || parent.commit_existing(OsStr::new("winner"), &identity, Privacy::Inherit),
+        with_provision_observer(
+            move |event| {
+                assert!(!matches!(event.checkpoint, P::BeforeCreate | P::Created));
+                if event.checkpoint == P::BeforeSync {
+                    observed.borrow_mut().push(event.path.clone());
+                }
+            },
+            || error.retry_commit(),
         )
-        .unwrap_err();
-        with_existing_hooks(
-            Some(checkpoint),
-            |_| {},
-            || assert!(error.retry_commit().is_err()),
+        .unwrap();
+        assert_eq!(
+            *events.borrow(),
+            physical
+                .ancestors()
+                .map(std::borrow::ToOwned::to_owned)
+                .collect::<Vec<_>>()
         );
-        let error = with_existing_hooks(
-            Some(checkpoint),
-            |_| {},
-            || parent.commit_existing(OsStr::new("winner"), &identity, Privacy::Inherit),
-        )
-        .unwrap_err();
-        error.retry_commit().unwrap();
-        assert_eq!(fs::read(&path).unwrap(), b"owner\n");
-        let error = with_existing_hooks(
-            Some(checkpoint),
-            |_| {},
-            || parent.commit_existing(OsStr::new("winner"), &identity, Privacy::Inherit),
-        )
+        let error = with_provision_failure(P::BeforeSync, &physical, || {
+            reconcile_directory(&path, &directory, Privacy::Inherit)
+        })
         .unwrap_err();
         fs::rename(&path, root.path().join("old")).unwrap();
-        fs::write(&path, b"owner\n").unwrap();
         assert!(error.retry_commit().unwrap_err().source_changed());
-        assert_eq!(fs::read(&path).unwrap(), b"owner\n");
+        assert!(
+            reconcile_directory(&path, &directory, Privacy::Inherit)
+                .unwrap_err()
+                .source_changed()
+        );
+        assert!(!path.exists());
+        fs::create_dir(&path).unwrap();
+        assert!(
+            reconcile_directory(&path, &directory, Privacy::Inherit)
+                .unwrap_err()
+                .source_changed()
+        );
     }
-}
 
-#[test]
-fn existing_reconciliation_commits_exact_chain_and_never_recreates() {
-    let root = tempfile::tempdir().unwrap();
-    let path = root.path().join("one/two");
-    fs::create_dir_all(&path).unwrap();
-    let directory = StorageDirectory::open(&path).unwrap();
-    let physical = fs::canonicalize(&path).unwrap();
-    let events = Rc::new(RefCell::new(Vec::new()));
-    let observed = events.clone();
-    let error = with_provision_failure(P::BeforeSync, physical.parent().unwrap(), || {
-        reconcile_directory(&path, &directory, Privacy::Inherit)
-    })
-    .unwrap_err();
-    with_provision_observer(
-        move |event| {
-            assert!(!matches!(event.checkpoint, P::BeforeCreate | P::Created));
-            if event.checkpoint == P::BeforeSync {
-                observed.borrow_mut().push(event.path.clone());
-            }
-        },
-        || error.retry_commit(),
-    )
-    .unwrap();
-    assert_eq!(
-        *events.borrow(),
-        physical
-            .ancestors()
-            .map(std::borrow::ToOwned::to_owned)
-            .collect::<Vec<_>>()
-    );
-    let error = with_provision_failure(P::BeforeSync, &physical, || {
-        reconcile_directory(&path, &directory, Privacy::Inherit)
-    })
-    .unwrap_err();
-    fs::rename(&path, root.path().join("old")).unwrap();
-    assert!(error.retry_commit().unwrap_err().source_changed());
-    assert!(
-        reconcile_directory(&path, &directory, Privacy::Inherit)
-            .unwrap_err()
-            .source_changed()
-    );
-    assert!(!path.exists());
-    fs::create_dir(&path).unwrap();
-    assert!(
-        reconcile_directory(&path, &directory, Privacy::Inherit)
-            .unwrap_err()
-            .source_changed()
-    );
-}
-
-#[test]
-fn held_sentinel_and_append_refuse_symlinks_nonregular_and_replaced_parent() {
-    use std::os::unix::fs::{PermissionsExt, symlink};
-    let root = tempfile::tempdir().unwrap();
-    let path = root.path().join("held");
-    fs::create_dir(&path).unwrap();
-    let directory = StorageDirectory::open(&path).unwrap();
-    fs::write(path.join("data"), b"old").unwrap();
-    let identity = FileIdentity::of(&File::open(path.join("data")).unwrap()).unwrap();
-    assert!(
+    phase held_sentinel_and_append_refuse_symlinks_nonregular_and_replaced_parent;
+    {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("held");
+        fs::create_dir(&path).unwrap();
+        let directory = StorageDirectory::open(&path).unwrap();
+        fs::write(path.join("data"), b"old").unwrap();
+        let identity = FileIdentity::of(&File::open(path.join("data")).unwrap()).unwrap();
+        assert!(
+            directory
+                .commit_existing(OsStr::new("data"), &identity, Privacy::OwnerOnly)
+                .is_err()
+        );
+        fs::set_permissions(path.join("data"), fs::Permissions::from_mode(0o600)).unwrap();
         directory
             .commit_existing(OsStr::new("data"), &identity, Privacy::OwnerOnly)
-            .is_err()
-    );
-    fs::set_permissions(path.join("data"), fs::Permissions::from_mode(0o600)).unwrap();
-    directory
-        .commit_existing(OsStr::new("data"), &identity, Privacy::OwnerOnly)
-        .unwrap();
-    symlink("data", path.join("link")).unwrap();
-    fs::create_dir(path.join("folder")).unwrap();
-    for name in ["link", "folder", "../escape"] {
-        assert!(
-            directory
-                .try_acquire_lease(OsStr::new(name), LeaseMode::Exclusive)
-                .is_err()
-        );
-        assert!(
-            directory
-                .open_append_existing(OsStr::new(name), Privacy::Inherit)
-                .is_err()
-        );
-        assert!(
-            directory
-                .commit_existing(OsStr::new(name), &identity, Privacy::Inherit)
-                .is_err()
-        );
-    }
-    let lease = directory
-        .try_acquire_lease(OsStr::new("gate"), LeaseMode::Exclusive)
-        .unwrap();
-    assert!(matches!(
-        directory.try_acquire_lease(OsStr::new("gate"), LeaseMode::Shared),
-        Err(AcquireError::Busy)
-    ));
-    let gate_identity = lease.identity().unwrap();
-    assert_eq!(
-        gate_identity,
-        FileIdentity::of(
-            &directory
-                .open_read(OsStr::new("gate"), Privacy::Inherit)
-                .unwrap()
-        )
-        .unwrap()
-    );
-    drop(lease);
-    assert!(
-        directory
+            .unwrap();
+        symlink("data", path.join("link")).unwrap();
+        fs::create_dir(path.join("folder")).unwrap();
+        for name in ["link", "folder", "../escape"] {
+            assert!(
+                directory
+                    .try_acquire_lease(OsStr::new(name), LeaseMode::Exclusive)
+                    .is_err()
+            );
+            assert!(
+                directory
+                    .open_append_existing(OsStr::new(name), Privacy::Inherit)
+                    .is_err()
+            );
+            assert!(
+                directory
+                    .commit_existing(OsStr::new(name), &identity, Privacy::Inherit)
+                    .is_err()
+            );
+        }
+        let lease = directory
             .try_acquire_lease(OsStr::new("gate"), LeaseMode::Exclusive)
-            .is_ok()
-    );
-    fs::rename(&path, root.path().join("moved")).unwrap();
-    fs::create_dir(&path).unwrap();
-    let mut file = directory
-        .open_append_existing(OsStr::new("data"), Privacy::Inherit)
-        .unwrap();
-    file.write_all(b"+delta").unwrap();
-    file.sync_all().unwrap();
-    assert_eq!(
-        fs::read(root.path().join("moved/data")).unwrap(),
-        b"old+delta"
-    );
-    assert!(!path.join("data").exists());
-    assert!(
-        directory
-            .open_append_existing(OsStr::new("absent"), Privacy::Inherit)
-            .is_err()
-    );
-    assert!(!root.path().join("moved/absent").exists());
+            .unwrap();
+        assert!(matches!(
+            directory.try_acquire_lease(OsStr::new("gate"), LeaseMode::Shared),
+            Err(AcquireError::Busy)
+        ));
+        let gate_identity = lease.identity().unwrap();
+        assert_eq!(
+            gate_identity,
+            FileIdentity::of(
+                &directory
+                    .open_read(OsStr::new("gate"), Privacy::Inherit)
+                    .unwrap()
+            )
+            .unwrap()
+        );
+        drop(lease);
+        assert!(
+            directory
+                .try_acquire_lease(OsStr::new("gate"), LeaseMode::Exclusive)
+                .is_ok()
+        );
+        fs::rename(&path, root.path().join("moved")).unwrap();
+        fs::create_dir(&path).unwrap();
+        let mut file = directory
+            .open_append_existing(OsStr::new("data"), Privacy::Inherit)
+            .unwrap();
+        file.write_all(b"+delta").unwrap();
+        file.sync_all().unwrap();
+        assert_eq!(
+            fs::read(root.path().join("moved/data")).unwrap(),
+            b"old+delta"
+        );
+        assert!(!path.join("data").exists());
+        assert!(
+            directory
+                .open_append_existing(OsStr::new("absent"), Privacy::Inherit)
+                .is_err()
+        );
+        assert!(!root.path().join("moved/absent").exists());
+    }
 }
 
 #[test]

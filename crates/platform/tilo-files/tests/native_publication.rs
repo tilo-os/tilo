@@ -30,152 +30,140 @@ mod unix_tests {
     const FIFO_CHILD: &str = "TILO_ATOMIC_FILE_FIFO_CHILD";
     const FIFO_ROOT: &str = "TILO_ATOMIC_FILE_FIFO_ROOT";
 
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn held_directory_privacy_rejects_unproven_permission_profile() {
-        // Native procfs is deliberately outside the journal permission profiles.
-        // A missing proc mount is a failed prerequisite, never a skipped proof.
-        let directory = StorageDirectory::open(Path::new("/proc")).unwrap();
-        assert_eq!(
+    tilo_test_env::scenario! {
+        fn a_held_directory_publishes_and_reads_by_object_not_by_name;
+
+        phase held_directory_privacy_admission_uses_directory_policy_and_held_object;
+        {
+            let root = tempfile::tempdir().unwrap();
+            let path = root.path().join("journal");
+            fs::create_dir(&path).unwrap();
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
+            fs::create_dir(path.join("child")).unwrap();
+            let directory = StorageDirectory::open(&path).unwrap();
+            directory.validate_privacy(Privacy::OwnerOnly).unwrap();
+            let moved = root.path().join("moved");
+            fs::rename(&path, &moved).unwrap();
+            fs::create_dir(&path).unwrap();
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o777)).unwrap();
+            directory.validate_privacy(Privacy::OwnerOnly).unwrap();
+            fs::set_permissions(&moved, fs::Permissions::from_mode(0o770)).unwrap();
+            assert_eq!(
+                directory
+                    .validate_privacy(Privacy::OwnerOnly)
+                    .unwrap_err()
+                    .kind(),
+                std::io::ErrorKind::PermissionDenied
+            );
+            directory.validate_privacy(Privacy::Inherit).unwrap();
+        }
+
+        phase held_directory_survives_ambient_path_replacement;
+        {
+            let root = tempfile::tempdir().unwrap();
+            let admitted = root.path().join("admitted");
+            let moved = root.path().join("moved");
+            fs::create_dir(&admitted).unwrap();
+            let directory = StorageDirectory::open(&admitted).unwrap();
+
+            fs::rename(&admitted, &moved).unwrap();
+            fs::create_dir(&admitted).unwrap();
             directory
-                .validate_privacy(Privacy::OwnerOnly)
-                .unwrap_err()
-                .kind(),
-            std::io::ErrorKind::Unsupported
-        );
-        directory.validate_privacy(Privacy::Inherit).unwrap();
-    }
+                .publish(
+                    OsStr::new("state"),
+                    b"held",
+                    PublishMode::Replace,
+                    Privacy::Inherit,
+                )
+                .unwrap();
 
-    #[test]
-    fn held_directory_privacy_admission_uses_directory_policy_and_held_object() {
-        let root = tempfile::tempdir().unwrap();
-        let path = root.path().join("journal");
-        fs::create_dir(&path).unwrap();
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
-        fs::create_dir(path.join("child")).unwrap();
-        let directory = StorageDirectory::open(&path).unwrap();
-        directory.validate_privacy(Privacy::OwnerOnly).unwrap();
-        let moved = root.path().join("moved");
-        fs::rename(&path, &moved).unwrap();
-        fs::create_dir(&path).unwrap();
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o777)).unwrap();
-        directory.validate_privacy(Privacy::OwnerOnly).unwrap();
-        fs::set_permissions(&moved, fs::Permissions::from_mode(0o770)).unwrap();
-        assert_eq!(
-            directory
-                .validate_privacy(Privacy::OwnerOnly)
-                .unwrap_err()
-                .kind(),
-            std::io::ErrorKind::PermissionDenied
-        );
-        directory.validate_privacy(Privacy::Inherit).unwrap();
-    }
+            assert_eq!(fs::read(moved.join("state")).unwrap(), b"held");
+            assert!(!admitted.join("state").exists());
+        }
 
-    #[test]
-    fn held_directory_survives_ambient_path_replacement() {
-        let root = tempfile::tempdir().unwrap();
-        let admitted = root.path().join("admitted");
-        let moved = root.path().join("moved");
-        fs::create_dir(&admitted).unwrap();
-        let directory = StorageDirectory::open(&admitted).unwrap();
+        phase identity_uses_the_open_file_object_and_full_unix_pair;
+        {
+            let root = tempfile::tempdir().unwrap();
+            let path = root.path().join("state");
+            let link = root.path().join("link");
+            fs::write(&path, b"old").unwrap();
+            fs::hard_link(&path, &link).unwrap();
+            let held = File::open(&path).unwrap();
+            let original = FileIdentity::of(&held).unwrap();
 
-        fs::rename(&admitted, &moved).unwrap();
-        fs::create_dir(&admitted).unwrap();
-        directory
-            .publish(
-                OsStr::new("state"),
-                b"held",
-                PublishMode::Replace,
-                Privacy::Inherit,
-            )
-            .unwrap();
+            assert_eq!(
+                original,
+                FileIdentity::of(&File::open(&link).unwrap()).unwrap()
+            );
+            tilo_files::native::atomic::replace(&path, b"new", Privacy::Inherit).unwrap();
+            let replacement = FileIdentity::of(&File::open(&path).unwrap()).unwrap();
+            assert_ne!(original, replacement);
+            assert_eq!(original, FileIdentity::of(&held).unwrap());
+            assert_eq!(original.volume(), replacement.volume());
+        }
 
-        assert_eq!(fs::read(moved.join("state")).unwrap(), b"held");
-        assert!(!admitted.join("state").exists());
-    }
+        phase no_replace_collision_preserves_the_winner;
+        {
+            let root = tempfile::tempdir().unwrap();
+            let path = root.path().join("state");
+            fs::write(&path, b"winner").unwrap();
 
-    #[test]
-    fn identity_uses_the_open_file_object_and_full_unix_pair() {
-        let root = tempfile::tempdir().unwrap();
-        let path = root.path().join("state");
-        let link = root.path().join("link");
-        fs::write(&path, b"old").unwrap();
-        fs::hard_link(&path, &link).unwrap();
-        let held = File::open(&path).unwrap();
-        let original = FileIdentity::of(&held).unwrap();
+            let error =
+                tilo_files::native::atomic::publish_if_absent(&path, b"loser", Privacy::Inherit)
+                    .unwrap_err();
 
-        assert_eq!(
-            original,
-            FileIdentity::of(&File::open(&link).unwrap()).unwrap()
-        );
-        tilo_files::native::atomic::replace(&path, b"new", Privacy::Inherit).unwrap();
-        let replacement = FileIdentity::of(&File::open(&path).unwrap()).unwrap();
-        assert_ne!(original, replacement);
-        assert_eq!(original, FileIdentity::of(&held).unwrap());
-        assert_eq!(original.volume(), replacement.volume());
-    }
+            assert_eq!(error.state(), PublicationState::NotPublished);
+            assert_eq!(error.io_error().kind(), std::io::ErrorKind::AlreadyExists);
+            assert_eq!(fs::read(&path).unwrap(), b"winner");
+            assert_no_stages(root.path());
+        }
 
-    #[test]
-    fn no_replace_collision_preserves_the_winner() {
-        let root = tempfile::tempdir().unwrap();
-        let path = root.path().join("state");
-        fs::write(&path, b"winner").unwrap();
+        phase private_read_rejects_symlinks_and_non_private_files;
+        {
+            let root = tempfile::tempdir().unwrap();
+            let directory = StorageDirectory::open(root.path()).unwrap();
+            fs::write(root.path().join("broad"), b"secret").unwrap();
+            fs::set_permissions(root.path().join("broad"), fs::Permissions::from_mode(0o644)).unwrap();
+            std::os::unix::fs::symlink("broad", root.path().join("link")).unwrap();
 
-        let error =
-            tilo_files::native::atomic::publish_if_absent(&path, b"loser", Privacy::Inherit)
-                .unwrap_err();
-
-        assert_eq!(error.state(), PublicationState::NotPublished);
-        assert_eq!(error.io_error().kind(), std::io::ErrorKind::AlreadyExists);
-        assert_eq!(fs::read(&path).unwrap(), b"winner");
-        assert_no_stages(root.path());
-    }
-
-    #[test]
-    fn private_read_rejects_symlinks_and_non_private_files() {
-        let root = tempfile::tempdir().unwrap();
-        let directory = StorageDirectory::open(root.path()).unwrap();
-        fs::write(root.path().join("broad"), b"secret").unwrap();
-        fs::set_permissions(root.path().join("broad"), fs::Permissions::from_mode(0o644)).unwrap();
-        std::os::unix::fs::symlink("broad", root.path().join("link")).unwrap();
-
-        assert!(
-            directory
-                .open_read(OsStr::new("broad"), Privacy::OwnerOnly)
-                .is_err()
-        );
-        assert!(
-            directory
-                .open_read(OsStr::new("link"), Privacy::Inherit)
-                .is_err()
-        );
-
-        fs::set_permissions(root.path().join("broad"), fs::Permissions::from_mode(0o600)).unwrap();
-        fs::hard_link(root.path().join("broad"), root.path().join("hard-link")).unwrap();
-        assert!(
-            directory
-                .open_read(OsStr::new("broad"), Privacy::OwnerOnly)
-                .is_err()
-        );
-    }
-
-    #[test]
-    fn child_names_are_single_components() {
-        let root = tempfile::tempdir().unwrap();
-        let directory = StorageDirectory::open(root.path()).unwrap();
-
-        for invalid in ["", ".", "..", "nested/state", "/absolute"] {
             assert!(
                 directory
-                    .publish(
-                        OsStr::new(invalid),
-                        b"data",
-                        PublishMode::Replace,
-                        Privacy::Inherit,
-                    )
-                    .is_err(),
-                "accepted invalid component {invalid:?}"
+                    .open_read(OsStr::new("broad"), Privacy::OwnerOnly)
+                    .is_err()
             );
+            assert!(
+                directory
+                    .open_read(OsStr::new("link"), Privacy::Inherit)
+                    .is_err()
+            );
+
+            fs::set_permissions(root.path().join("broad"), fs::Permissions::from_mode(0o600)).unwrap();
+            fs::hard_link(root.path().join("broad"), root.path().join("hard-link")).unwrap();
+            assert!(
+                directory
+                    .open_read(OsStr::new("broad"), Privacy::OwnerOnly)
+                    .is_err()
+            );
+        }
+
+        phase child_names_are_single_components;
+        {
+            let root = tempfile::tempdir().unwrap();
+            let directory = StorageDirectory::open(root.path()).unwrap();
+
+            for invalid in ["", ".", "..", "nested/state", "/absolute"] {
+                assert!(
+                    directory
+                        .publish(
+                            OsStr::new(invalid),
+                            b"data",
+                            PublishMode::Replace,
+                            Privacy::Inherit,
+                        )
+                        .is_err(),
+                    "accepted invalid component {invalid:?}"
+                );
+            }
         }
     }
 
@@ -219,21 +207,40 @@ mod unix_tests {
         assert!(status.success(), "FIFO validation child failed: {status}");
     }
 
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn path_only_directory_handle_is_rejected_before_target_mutation() {
-        let root = tempfile::tempdir().unwrap();
-        let target = root.path().join("state");
-        fs::write(&target, b"old").unwrap();
-        let descriptor = rustix::fs::open(
-            root.path(),
-            rustix::fs::OFlags::PATH | rustix::fs::OFlags::DIRECTORY | rustix::fs::OFlags::CLOEXEC,
-            rustix::fs::Mode::empty(),
-        )
-        .unwrap();
+    tilo_test_env::scenario! {
+        #[cfg(target_os = "linux")]
+        fn unproven_profiles_and_path_only_handles_are_rejected_on_linux;
 
-        assert!(StorageDirectory::from_file(File::from(descriptor)).is_err());
-        assert_eq!(fs::read(target).unwrap(), b"old");
+        phase held_directory_privacy_rejects_unproven_permission_profile;
+        {
+            // Native procfs is deliberately outside the journal permission profiles.
+            // A missing proc mount is a failed prerequisite, never a skipped proof.
+            let directory = StorageDirectory::open(Path::new("/proc")).unwrap();
+            assert_eq!(
+                directory
+                    .validate_privacy(Privacy::OwnerOnly)
+                    .unwrap_err()
+                    .kind(),
+                std::io::ErrorKind::Unsupported
+            );
+            directory.validate_privacy(Privacy::Inherit).unwrap();
+        }
+
+        phase path_only_directory_handle_is_rejected_before_target_mutation;
+        {
+            let root = tempfile::tempdir().unwrap();
+            let target = root.path().join("state");
+            fs::write(&target, b"old").unwrap();
+            let descriptor = rustix::fs::open(
+                root.path(),
+                rustix::fs::OFlags::PATH | rustix::fs::OFlags::DIRECTORY | rustix::fs::OFlags::CLOEXEC,
+                rustix::fs::Mode::empty(),
+            )
+            .unwrap();
+
+            assert!(StorageDirectory::from_file(File::from(descriptor)).is_err());
+            assert_eq!(fs::read(target).unwrap(), b"old");
+        }
     }
 
     #[test]
@@ -314,104 +321,104 @@ mod unix_tests {
         );
     }
 
-    #[cfg(feature = "test-support")]
-    #[test]
-    fn preflush_failure_preserves_old_target_and_removes_stage() {
-        let root = tempfile::tempdir().unwrap();
-        let path = root.path().join("state");
-        fs::write(&path, b"old").unwrap();
+    tilo_test_env::scenario! {
+        #[cfg(feature = "test-support")]
+        fn publication_faults_leave_the_state_they_report;
 
-        let error = with_failure(Checkpoint::BeforeDataFlush, || {
-            tilo_files::native::atomic::replace(&path, b"new", Privacy::Inherit)
-        })
-        .unwrap_err();
-
-        assert_eq!(error.state(), PublicationState::NotPublished);
-        assert_eq!(fs::read(&path).unwrap(), b"old");
-        assert_no_stages(root.path());
-    }
-
-    #[cfg(feature = "test-support")]
-    #[test]
-    fn stage_is_owner_only_before_secret_bytes_are_written() {
-        let root = tempfile::tempdir().unwrap();
-        let path = root.path().join("secret");
-        let mode = Arc::new(Mutex::new(None));
-        let observed_mode = Arc::clone(&mode);
-
-        with_observer(
-            move |event| {
-                if event.checkpoint == Checkpoint::StageCreated {
-                    let metadata = &event.stage.as_ref().unwrap().metadata;
-                    *observed_mode.lock().unwrap() = Some(metadata.permissions().mode() & 0o777);
-                }
-            },
-            || tilo_files::native::atomic::replace(&path, b"secret", Privacy::OwnerOnly).unwrap(),
-        );
-
-        assert_eq!(*mode.lock().unwrap(), Some(0o600));
-    }
-
-    #[cfg(feature = "test-support")]
-    #[test]
-    fn legacy_io_error_preserves_publication_state_and_typed_source() {
-        let root = tempfile::tempdir().unwrap();
-        let path = root.path().join("state");
-        fs::write(&path, b"old").unwrap();
-
-        let error = with_failure(Checkpoint::BeforeCommit, || {
-            tilo_files::native::atomic::write(&path, b"new")
-        })
-        .unwrap_err();
-
-        assert_eq!(
-            publication_state(&error),
-            Some(PublicationState::PublishedDurabilityUnknown)
-        );
-        assert!(
-            error
-                .get_ref()
-                .and_then(|source| source.downcast_ref::<PublicationError>())
-                .is_some()
-        );
-    }
-
-    #[cfg(feature = "test-support")]
-    #[test]
-    fn dropping_post_publication_error_does_not_delete_new_target() {
-        let root = tempfile::tempdir().unwrap();
-        let path = root.path().join("state");
-        fs::write(&path, b"old").unwrap();
-
-        let error = with_failure(Checkpoint::BeforeCommit, || {
-            tilo_files::native::atomic::replace(&path, b"new", Privacy::Inherit)
-        })
-        .unwrap_err();
-        drop(error);
-
-        assert_eq!(fs::read(&path).unwrap(), b"new");
-        assert_no_stages(root.path());
-    }
-
-    #[cfg(feature = "test-support")]
-    #[test]
-    fn submitted_and_completed_publish_faults_are_ambiguous() {
-        for checkpoint in [Checkpoint::PublishSubmitted, Checkpoint::AfterPublish] {
+        phase preflush_failure_preserves_old_target_and_removes_stage;
+        {
             let root = tempfile::tempdir().unwrap();
             let path = root.path().join("state");
             fs::write(&path, b"old").unwrap();
 
-            let error = with_failure(checkpoint, || {
+            let error = with_failure(Checkpoint::BeforeDataFlush, || {
                 tilo_files::native::atomic::replace(&path, b"new", Privacy::Inherit)
             })
             .unwrap_err();
 
-            assert_eq!(error.state(), PublicationState::PublicationUnknown);
-            assert!(error.retry_commit().is_err());
-            if checkpoint == Checkpoint::AfterPublish {
-                assert_eq!(fs::read(&path).unwrap(), b"new");
-            } else {
-                assert_eq!(fs::read(&path).unwrap(), b"old");
+            assert_eq!(error.state(), PublicationState::NotPublished);
+            assert_eq!(fs::read(&path).unwrap(), b"old");
+            assert_no_stages(root.path());
+        }
+
+        phase stage_is_owner_only_before_secret_bytes_are_written;
+        {
+            let root = tempfile::tempdir().unwrap();
+            let path = root.path().join("secret");
+            let mode = Arc::new(Mutex::new(None));
+            let observed_mode = Arc::clone(&mode);
+
+            with_observer(
+                move |event| {
+                    if event.checkpoint == Checkpoint::StageCreated {
+                        let metadata = &event.stage.as_ref().unwrap().metadata;
+                        *observed_mode.lock().unwrap() = Some(metadata.permissions().mode() & 0o777);
+                    }
+                },
+                || tilo_files::native::atomic::replace(&path, b"secret", Privacy::OwnerOnly).unwrap(),
+            );
+
+            assert_eq!(*mode.lock().unwrap(), Some(0o600));
+        }
+
+        phase legacy_io_error_preserves_publication_state_and_typed_source;
+        {
+            let root = tempfile::tempdir().unwrap();
+            let path = root.path().join("state");
+            fs::write(&path, b"old").unwrap();
+
+            let error = with_failure(Checkpoint::BeforeCommit, || {
+                tilo_files::native::atomic::write(&path, b"new")
+            })
+            .unwrap_err();
+
+            assert_eq!(
+                publication_state(&error),
+                Some(PublicationState::PublishedDurabilityUnknown)
+            );
+            assert!(
+                error
+                    .get_ref()
+                    .and_then(|source| source.downcast_ref::<PublicationError>())
+                    .is_some()
+            );
+        }
+
+        phase dropping_post_publication_error_does_not_delete_new_target;
+        {
+            let root = tempfile::tempdir().unwrap();
+            let path = root.path().join("state");
+            fs::write(&path, b"old").unwrap();
+
+            let error = with_failure(Checkpoint::BeforeCommit, || {
+                tilo_files::native::atomic::replace(&path, b"new", Privacy::Inherit)
+            })
+            .unwrap_err();
+            drop(error);
+
+            assert_eq!(fs::read(&path).unwrap(), b"new");
+            assert_no_stages(root.path());
+        }
+
+        phase submitted_and_completed_publish_faults_are_ambiguous;
+        {
+            for checkpoint in [Checkpoint::PublishSubmitted, Checkpoint::AfterPublish] {
+                let root = tempfile::tempdir().unwrap();
+                let path = root.path().join("state");
+                fs::write(&path, b"old").unwrap();
+
+                let error = with_failure(checkpoint, || {
+                    tilo_files::native::atomic::replace(&path, b"new", Privacy::Inherit)
+                })
+                .unwrap_err();
+
+                assert_eq!(error.state(), PublicationState::PublicationUnknown);
+                assert!(error.retry_commit().is_err());
+                if checkpoint == Checkpoint::AfterPublish {
+                    assert_eq!(fs::read(&path).unwrap(), b"new");
+                } else {
+                    assert_eq!(fs::read(&path).unwrap(), b"old");
+                }
             }
         }
     }
@@ -447,48 +454,52 @@ mod identity_tests {
         lease::{FileLease, LeaseMode},
     };
 
-    #[test]
-    fn identity_tracks_objects_across_clones_links_renames_and_replacement() {
-        let root = tempfile::tempdir().unwrap();
-        let path = root.path().join("first");
-        let first = File::create(&path).unwrap();
-        let clone = first.try_clone().unwrap();
-        let second = File::create(root.path().join("second")).unwrap();
-        let times = FileTimes::new().set_modified(std::time::UNIX_EPOCH);
-        first.set_times(times).unwrap();
-        second.set_times(times).unwrap();
-        let original = FileIdentity::of(&first).unwrap();
-        assert_eq!(original, FileIdentity::of(&clone).unwrap());
-        assert_ne!(original, FileIdentity::of(&second).unwrap());
-        assert_eq!(
-            original.volume(),
-            FileIdentity::of(&second).unwrap().volume()
-        );
-        fs::hard_link(&path, root.path().join("alias")).unwrap();
-        assert_eq!(
-            original,
-            FileIdentity::of(&File::open(root.path().join("alias")).unwrap()).unwrap()
-        );
-        fs::rename(&path, root.path().join("renamed")).unwrap();
-        assert_eq!(original, FileIdentity::of(&first).unwrap());
-        let replacement = File::create(&path).unwrap();
-        assert_ne!(original, FileIdentity::of(&replacement).unwrap());
-    }
+    tilo_test_env::scenario! {
+        fn an_identity_follows_the_object_not_its_name;
 
-    #[test]
-    fn lease_identity_retains_the_leased_object_after_name_replacement() {
-        let root = tempfile::tempdir().unwrap();
-        let path = root.path().join("lease");
-        let file = File::create(&path).unwrap();
-        let identity = FileIdentity::of(&file).unwrap();
-        let lease = FileLease::acquire(file, LeaseMode::Exclusive).unwrap();
-        fs::rename(&path, root.path().join("old")).unwrap();
-        let replacement = File::create(path).unwrap();
-        assert_eq!(lease.identity().unwrap(), identity);
-        assert_ne!(
-            lease.identity().unwrap(),
-            FileIdentity::of(&replacement).unwrap()
-        );
+        phase identity_tracks_objects_across_clones_links_renames_and_replacement;
+        {
+            let root = tempfile::tempdir().unwrap();
+            let path = root.path().join("first");
+            let first = File::create(&path).unwrap();
+            let clone = first.try_clone().unwrap();
+            let second = File::create(root.path().join("second")).unwrap();
+            let times = FileTimes::new().set_modified(std::time::UNIX_EPOCH);
+            first.set_times(times).unwrap();
+            second.set_times(times).unwrap();
+            let original = FileIdentity::of(&first).unwrap();
+            assert_eq!(original, FileIdentity::of(&clone).unwrap());
+            assert_ne!(original, FileIdentity::of(&second).unwrap());
+            assert_eq!(
+                original.volume(),
+                FileIdentity::of(&second).unwrap().volume()
+            );
+            fs::hard_link(&path, root.path().join("alias")).unwrap();
+            assert_eq!(
+                original,
+                FileIdentity::of(&File::open(root.path().join("alias")).unwrap()).unwrap()
+            );
+            fs::rename(&path, root.path().join("renamed")).unwrap();
+            assert_eq!(original, FileIdentity::of(&first).unwrap());
+            let replacement = File::create(&path).unwrap();
+            assert_ne!(original, FileIdentity::of(&replacement).unwrap());
+        }
+
+        phase lease_identity_retains_the_leased_object_after_name_replacement;
+        {
+            let root = tempfile::tempdir().unwrap();
+            let path = root.path().join("lease");
+            let file = File::create(&path).unwrap();
+            let identity = FileIdentity::of(&file).unwrap();
+            let lease = FileLease::acquire(file, LeaseMode::Exclusive).unwrap();
+            fs::rename(&path, root.path().join("old")).unwrap();
+            let replacement = File::create(path).unwrap();
+            assert_eq!(lease.identity().unwrap(), identity);
+            assert_ne!(
+                lease.identity().unwrap(),
+                FileIdentity::of(&replacement).unwrap()
+            );
+        }
     }
 }
 

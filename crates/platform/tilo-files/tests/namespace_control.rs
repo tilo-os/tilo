@@ -10,70 +10,74 @@ use tilo_test_env::SpawnUnderEnvLock as _;
 #[path = "support/posix_acl.rs"]
 mod posix_acl;
 
-#[test]
-fn namespace_control_is_distinct_from_directory_privacy() {
-    for mode in [0o755, 0o750, 0o711, 0o700, 0o775, 0o757, 0o777] {
-        let root = tempfile::tempdir().unwrap();
-        fs::set_permissions(root.path(), fs::Permissions::from_mode(mode)).unwrap();
-        fs::create_dir(root.path().join("child")).unwrap(); // Directory link count is not file privacy.
-        let held = StorageDirectory::open(root.path()).unwrap();
-        assert_eq!(held.validate_namespace_control().is_ok(), mode & 0o022 == 0);
-        assert_eq!(
-            held.validate_privacy(Privacy::OwnerOnly).is_ok(),
-            mode == 0o700
-        );
-        if mode != 0o700 {
-            assert!(provision_directory(root.path(), Privacy::OwnerOnly).is_err());
-        }
-        assert_eq!(fs::metadata(root.path()).unwrap().mode() & 0o777, mode);
-    }
-}
+tilo_test_env::scenario! {
+    fn namespace_control_is_judged_apart_from_privacy_and_without_mutation;
 
-#[test]
-fn namespace_control_rejects_foreign_owned_directory_without_mutation() {
-    // An ordinary principal meets a foreign owner at `/`. Root owns `/`, so
-    // as root the foreign owner is a directory handed to `nobody`, which root
-    // without CAP_CHOWN (a job sandbox) cannot make.
-    let effective = rustix::process::geteuid();
-    let foreign = if effective.is_root() {
-        tilo_test_env::require_capability!(
-            Chown,
-            tilo_test_env::chown_to(65534),
-            "root needs a directory owned by nobody"
+    phase namespace_control_is_distinct_from_directory_privacy;
+    {
+        for mode in [0o755, 0o750, 0o711, 0o700, 0o775, 0o757, 0o777] {
+            let root = tempfile::tempdir().unwrap();
+            fs::set_permissions(root.path(), fs::Permissions::from_mode(mode)).unwrap();
+            fs::create_dir(root.path().join("child")).unwrap(); // Directory link count is not file privacy.
+            let held = StorageDirectory::open(root.path()).unwrap();
+            assert_eq!(held.validate_namespace_control().is_ok(), mode & 0o022 == 0);
+            assert_eq!(
+                held.validate_privacy(Privacy::OwnerOnly).is_ok(),
+                mode == 0o700
+            );
+            if mode != 0o700 {
+                assert!(provision_directory(root.path(), Privacy::OwnerOnly).is_err());
+            }
+            assert_eq!(fs::metadata(root.path()).unwrap().mode() & 0o777, mode);
+        }
+    }
+
+    phase namespace_control_rejects_foreign_owned_directory_without_mutation;
+    {
+        // An ordinary principal meets a foreign owner at `/`. Root owns `/`, so
+        // as root the foreign owner is a directory handed to `nobody`, which root
+        // without CAP_CHOWN (a job sandbox) cannot make.
+        let effective = rustix::process::geteuid();
+        let foreign = if effective.is_root() {
+            tilo_test_env::require_capability!(
+                Chown,
+                tilo_test_env::chown_to(65534),
+                "root needs a directory owned by nobody"
+            );
+            let temp = tempfile::tempdir().unwrap();
+            fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o755)).unwrap();
+            rustix::fs::chown(
+                temp.path(),
+                Some(rustix::process::Uid::from_raw(65534)),
+                None,
+            )
+            .unwrap();
+            Some(temp)
+        } else {
+            None
+        };
+        let root = foreign
+            .as_ref()
+            .map_or_else(|| std::path::Path::new("/"), tempfile::TempDir::path);
+        let before = fs::metadata(root).unwrap();
+        assert_ne!(
+            before.uid(),
+            effective.as_raw(),
+            "the fixture directory must have a foreign owner"
         );
-        let temp = tempfile::tempdir().unwrap();
-        fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o755)).unwrap();
-        rustix::fs::chown(
-            temp.path(),
-            Some(rustix::process::Uid::from_raw(65534)),
-            None,
-        )
-        .unwrap();
-        Some(temp)
-    } else {
-        None
-    };
-    let root = foreign
-        .as_ref()
-        .map_or_else(|| std::path::Path::new("/"), tempfile::TempDir::path);
-    let before = fs::metadata(root).unwrap();
-    assert_ne!(
-        before.uid(),
-        effective.as_raw(),
-        "the fixture directory must have a foreign owner"
-    );
-    assert_eq!(before.mode() & 0o022, 0, "only ownership may be foreign");
-    assert!(
-        StorageDirectory::open(root)
-            .unwrap()
-            .validate_namespace_control()
-            .is_err()
-    );
-    let after = fs::metadata(root).unwrap();
-    assert_eq!(
-        (after.uid(), after.mode(), after.ino()),
-        (before.uid(), before.mode(), before.ino())
-    );
+        assert_eq!(before.mode() & 0o022, 0, "only ownership may be foreign");
+        assert!(
+            StorageDirectory::open(root)
+                .unwrap()
+                .validate_namespace_control()
+                .is_err()
+        );
+        let after = fs::metadata(root).unwrap();
+        assert_eq!(
+            (after.uid(), after.mode(), after.ino()),
+            (before.uid(), before.mode(), before.ino())
+        );
+    }
 }
 
 #[cfg(target_os = "macos")]

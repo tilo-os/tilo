@@ -243,47 +243,53 @@ mod tests {
             components: vec![],
         }
     }
-    #[test]
-    fn controller_evidence_inside_test_namespace_refuses_without_report_effect() {
-        let fixture = tempfile::tempdir().unwrap();
-        let external = tempfile::tempdir().unwrap();
-        let root = fs::canonicalize(fixture.path()).unwrap();
-        let external = fs::canonicalize(external.path()).unwrap();
-        let evidence = root.join("anchor.json");
-        let report = external.join("report.json");
-        fs::write(&evidence,r#"{"volume_serial":1,"file_id":"000102030405060708090a0b0c0d0e0f","establishment_record":"controller-record","storage_profile":"disposable-vm"}"#).unwrap();
-        assert!(execute(args(&root, &evidence, &report)).is_err());
-        assert!(!report.exists());
-    }
-    #[test]
-    fn missing_and_malformed_arguments_or_evidence_are_refused() {
-        assert!(parse(Vec::new()).is_err());
-        assert!(parse(["--root".into()]).is_err());
-        assert!(parse(["--unknown".into(), "value".into()]).is_err());
-        for text in [
-            "{}",
-            "not json",
-            r#"{"volume_serial":1,"file_id":"0","establishment_record":"x","storage_profile":"x"}"#,
-            r#"{"volume_serial":1,"file_id":"000102030405060708090a0b0c0d0e0f","establishment_record":"","storage_profile":"x"}"#,
-        ] {
-            assert!(evidence(text).is_err());
+    tilo_test_env::scenario! {
+        fn the_probe_refuses_bad_arguments_evidence_and_report_places;
+
+        phase controller_evidence_inside_test_namespace_refuses_without_report_effect;
+        {
+            let fixture = tempfile::tempdir().unwrap();
+            let external = tempfile::tempdir().unwrap();
+            let root = fs::canonicalize(fixture.path()).unwrap();
+            let external = fs::canonicalize(external.path()).unwrap();
+            let evidence = root.join("anchor.json");
+            let report = external.join("report.json");
+            fs::write(&evidence,r#"{"volume_serial":1,"file_id":"000102030405060708090a0b0c0d0e0f","establishment_record":"controller-record","storage_profile":"disposable-vm"}"#).unwrap();
+            assert!(execute(args(&root, &evidence, &report)).is_err());
+            assert!(!report.exists());
         }
-    }
-    #[test]
-    fn report_refuses_existing_file_and_under_test_namespace() {
-        let root = tempfile::tempdir().unwrap();
-        let external = tempfile::tempdir().unwrap();
-        let root_path = fs::canonicalize(root.path()).unwrap();
-        let external_path = fs::canonicalize(external.path()).unwrap();
-        let report = external_path.join("existing");
-        let fresh = external_path.join("fresh");
-        assert!(external_report(&fresh, &root_path).is_ok());
-        assert!(fresh.exists());
-        fs::write(&report, b"preserve").unwrap();
-        assert!(external_report(&report, &root_path).is_err());
-        assert_eq!(fs::read(&report).unwrap(), b"preserve");
-        let inside = root_path.join("report");
-        assert!(external_report(&inside, &root_path).is_err());
-        assert!(!inside.exists());
+
+        phase missing_and_malformed_arguments_or_evidence_are_refused;
+        {
+            assert!(parse(Vec::new()).is_err());
+            assert!(parse(["--root".into()]).is_err());
+            assert!(parse(["--unknown".into(), "value".into()]).is_err());
+            for text in [
+                "{}",
+                "not json",
+                r#"{"volume_serial":1,"file_id":"0","establishment_record":"x","storage_profile":"x"}"#,
+                r#"{"volume_serial":1,"file_id":"000102030405060708090a0b0c0d0e0f","establishment_record":"","storage_profile":"x"}"#,
+            ] {
+                assert!(evidence(text).is_err());
+            }
+        }
+
+        phase report_refuses_existing_file_and_under_test_namespace;
+        {
+            let root = tempfile::tempdir().unwrap();
+            let external = tempfile::tempdir().unwrap();
+            let root_path = fs::canonicalize(root.path()).unwrap();
+            let external_path = fs::canonicalize(external.path()).unwrap();
+            let report = external_path.join("existing");
+            let fresh = external_path.join("fresh");
+            assert!(external_report(&fresh, &root_path).is_ok());
+            assert!(fresh.exists());
+            fs::write(&report, b"preserve").unwrap();
+            assert!(external_report(&report, &root_path).is_err());
+            assert_eq!(fs::read(&report).unwrap(), b"preserve");
+            let inside = root_path.join("report");
+            assert!(external_report(&inside, &root_path).is_err());
+            assert!(!inside.exists());
+        }
     }
 }

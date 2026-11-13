@@ -86,52 +86,56 @@ mod tests {
         ))
     }
 
-    #[test]
-    fn a_zfs_dataset_with_posix_or_no_acls_is_admitted_for_both_uses() {
-        // The `f_type` a ZFS dataset's statfs reports: ZFS sets its Linux
-        // superblock's magic to ZFS_SUPER_MAGIC,
-        // whatever the dataset's acltype.
-        let recorded: u32 = 0x2fc1_2fc1;
-        for use_ in [Use::Directory, Use::Private] {
-            assert!(decide(recorded, use_, || Ok(AclModel::Posix)).unwrap());
-        }
-    }
+    tilo_test_env::scenario! {
+        fn a_filesystem_is_admitted_only_by_its_proven_profile;
 
-    #[test]
-    fn a_zfs_dataset_with_nfs4_acls_is_refused_whatever_its_mode_bits() {
-        for use_ in [Use::Directory, Use::Private] {
-            assert!(!decide(ZFS, use_, || Ok(AclModel::Nfs4)).unwrap());
+        phase a_zfs_dataset_with_posix_or_no_acls_is_admitted_for_both_uses;
+        {
+            // The `f_type` a ZFS dataset's statfs reports: ZFS sets its Linux
+            // superblock's magic to ZFS_SUPER_MAGIC,
+            // whatever the dataset's acltype.
+            let recorded: u32 = 0x2fc1_2fc1;
+            for use_ in [Use::Directory, Use::Private] {
+                assert!(decide(recorded, use_, || Ok(AclModel::Posix)).unwrap());
+            }
         }
-    }
 
-    #[test]
-    fn a_zfs_acl_probe_that_fails_refuses_rather_than_admits() {
-        let error = decide(ZFS, Use::Directory, || {
-            Err(io::ErrorKind::PermissionDenied.into())
-        });
-        assert_eq!(error.unwrap_err().kind(), io::ErrorKind::PermissionDenied);
-    }
-
-    #[test]
-    fn the_other_filesystems_keep_their_rules() {
-        for magic in [EXT4, BTRFS, XFS, TMPFS] {
-            assert!(decide(magic, Use::Directory, unasked).unwrap());
-            assert!(decide(magic, Use::Private, unasked).unwrap());
+        phase a_zfs_dataset_with_nfs4_acls_is_refused_whatever_its_mode_bits;
+        {
+            for use_ in [Use::Directory, Use::Private] {
+                assert!(!decide(ZFS, use_, || Ok(AclModel::Nfs4)).unwrap());
+            }
         }
-        assert!(decide(OVERLAYFS, Use::Directory, unasked).unwrap());
-        assert!(!decide(OVERLAYFS, Use::Private, unasked).unwrap());
-        // FUSE, NFS and procfs: unproven, never admitted.
-        for magic in [0x6573_5546, 0x6969, 0x9fa0] {
-            assert!(!decide(magic, Use::Directory, unasked).unwrap());
-            assert!(!decide(magic, Use::Private, unasked).unwrap());
-        }
-    }
 
-    #[test]
-    fn the_acl_model_of_a_local_posix_directory_is_posix() {
-        // The test directory's filesystem knows no NFS version 4 ACL name, wherever it is.
-        let directory = tempfile::tempdir().unwrap();
-        let file = File::open(directory.path()).unwrap();
-        assert_eq!(acl_model(&file).unwrap(), AclModel::Posix);
+        phase a_zfs_acl_probe_that_fails_refuses_rather_than_admits;
+        {
+            let error = decide(ZFS, Use::Directory, || {
+                Err(io::ErrorKind::PermissionDenied.into())
+            });
+            assert_eq!(error.unwrap_err().kind(), io::ErrorKind::PermissionDenied);
+        }
+
+        phase the_other_filesystems_keep_their_rules;
+        {
+            for magic in [EXT4, BTRFS, XFS, TMPFS] {
+                assert!(decide(magic, Use::Directory, unasked).unwrap());
+                assert!(decide(magic, Use::Private, unasked).unwrap());
+            }
+            assert!(decide(OVERLAYFS, Use::Directory, unasked).unwrap());
+            assert!(!decide(OVERLAYFS, Use::Private, unasked).unwrap());
+            // FUSE, NFS and procfs: unproven, never admitted.
+            for magic in [0x6573_5546, 0x6969, 0x9fa0] {
+                assert!(!decide(magic, Use::Directory, unasked).unwrap());
+                assert!(!decide(magic, Use::Private, unasked).unwrap());
+            }
+        }
+
+        phase the_acl_model_of_a_local_posix_directory_is_posix;
+        {
+            // The test directory's filesystem knows no NFS version 4 ACL name, wherever it is.
+            let directory = tempfile::tempdir().unwrap();
+            let file = File::open(directory.path()).unwrap();
+            assert_eq!(acl_model(&file).unwrap(), AclModel::Posix);
+        }
     }
 }

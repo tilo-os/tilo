@@ -462,180 +462,185 @@ async fn watches_report_changes_below_them(dir: &Dir) {
     );
 }
 
-#[test]
-fn memory_locations_are_shared_and_prefixes_isolated() {
-    let location = |prefix: &str| Location::Virtual(VirtualRoot::Memory, p(prefix));
-    let one = Dir::open(location("shared/app")).unwrap();
-    let same = Dir::open(location("shared/app")).unwrap();
-    let parent = Dir::open(location("shared")).unwrap();
-    let other = Dir::open(location("shared/other")).unwrap();
-    block_on(one.write_atomic(&p("state.json"), b"{}")).unwrap();
-    assert_eq!(block_on(same.read(&p("state.json"))).unwrap(), b"{}");
-    assert_eq!(block_on(parent.read(&p("app/state.json"))).unwrap(), b"{}");
-    assert_eq!(
-        block_on(other.read(&p("state.json"))),
-        Err(FsError::NotFound)
-    );
-    assert_eq!(
-        block_on(Dir::memory().read(&p("state.json"))),
-        Err(FsError::NotFound)
-    );
-}
+tilo_test_env::scenario! {
+    #[cfg(unix)]
+    fn native_modes_and_links_are_kept_and_reported;
 
-#[test]
-fn only_native_directories_have_paths() {
-    let (dir, temp) = disk();
-    let root = temp.as_ref().unwrap().path();
-    assert_eq!(
-        dir.native_path(&p("a/b")).unwrap(),
-        root.join("a").join("b")
-    );
-    assert_eq!(
-        Dir::memory()
-            .native_path(&p("a"))
-            .map_err(|error| error.feature),
-        Err(Feature::NativePaths)
-    );
-}
+    phase native_metadata_reports_modes_and_links;
+    {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        let (dir, temp) = disk();
+        let root = temp.as_ref().unwrap().path();
+        block_on(dir.write_atomic(&p("f"), b"abc")).unwrap();
+        std::fs::set_permissions(root.join("f"), std::fs::Permissions::from_mode(0o640)).unwrap();
+        symlink("f", root.join("link")).unwrap();
+        symlink("missing", root.join("dangling")).unwrap();
 
-#[test]
-fn browser_storage_is_unsupported_natively() {
-    let opfs = Location::Virtual(
-        VirtualRoot::Opfs {
-            profile: "default".into(),
-        },
-        p("so.tilo.notes/data"),
-    );
-    assert!(matches!(
-        Dir::open(opfs),
-        Err(FsError::Unsupported {
-            feature: Feature::Files,
-            ..
-        })
-    ));
-}
+        let file = block_on(dir.metadata(&p("f"))).unwrap();
+        assert_eq!(file.mode, Some(0o640));
+        let link = block_on(dir.metadata(&p("link"))).unwrap();
+        assert_eq!((link.symlink, link.kind, link.len), (true, Kind::File, 3));
+        let dangling = block_on(dir.metadata(&p("dangling"))).unwrap();
+        assert_eq!((dangling.symlink, dangling.kind), (true, Kind::Other));
+        assert_eq!(
+            block_on(Dir::memory().metadata(&VPath::root())).map(|meta| meta.mode),
+            Ok(None)
+        );
+    }
 
-#[test]
-fn a_first_run_root_is_created_by_the_first_write() {
-    let temp = tempfile::tempdir().unwrap();
-    let root: PathBuf = temp.path().join("so.tilo.notes").join("data");
-    let dir = Dir::open(Location::Native(root.clone())).unwrap();
-    assert_eq!(block_on(dir.list(&VPath::root())), Err(FsError::NotFound));
-    block_on(dir.write_atomic(&p("a"), b"x")).unwrap();
-    assert_eq!(std::fs::read(root.join("a")).unwrap(), b"x");
-}
+    phase removing_a_tree_keeps_what_its_links_point_to;
+    {
+        use std::os::unix::fs::symlink;
+        let (dir, temp) = disk();
+        let root = temp.as_ref().unwrap().path();
+        block_on(dir.write_atomic(&p("outside/keep.png"), b"k")).unwrap();
+        block_on(dir.write_atomic(&p("cache/tile.png"), b"t")).unwrap();
+        symlink(root.join("outside"), root.join("cache/linked")).unwrap();
+        blocking::remove_all(&dir, &p("cache")).unwrap();
+        assert!(!root.join("cache").exists());
+        assert_eq!(std::fs::read(root.join("outside/keep.png")).unwrap(), b"k");
+    }
 
-#[cfg(unix)]
-#[test]
-fn native_metadata_reports_modes_and_links() {
-    use std::os::unix::fs::{PermissionsExt, symlink};
-    let (dir, temp) = disk();
-    let root = temp.as_ref().unwrap().path();
-    block_on(dir.write_atomic(&p("f"), b"abc")).unwrap();
-    std::fs::set_permissions(root.join("f"), std::fs::Permissions::from_mode(0o640)).unwrap();
-    symlink("f", root.join("link")).unwrap();
-    symlink("missing", root.join("dangling")).unwrap();
+    phase private_writes_are_owner_only_natively_and_plain_elsewhere;
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let (dir, temp) = disk();
+        let root = temp.as_ref().unwrap().path();
+        blocking::write_private(&dir, &p("secret/key"), b"k").unwrap();
+        let mode = |path: &str| {
+            std::fs::metadata(root.join(path))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777
+        };
+        assert_eq!((mode("secret/key"), mode("secret")), (0o600, 0o700));
+        assert_eq!(blocking::read(&dir, &p("secret/key")).unwrap(), b"k");
+        let memory = Dir::memory();
+        block_on(memory.write_private(&p("a/b"), b"m")).unwrap();
+        assert_eq!(blocking::read(&memory, &p("a/b")).unwrap(), b"m");
+    }
 
-    let file = block_on(dir.metadata(&p("f"))).unwrap();
-    assert_eq!(file.mode, Some(0o640));
-    let link = block_on(dir.metadata(&p("link"))).unwrap();
-    assert_eq!((link.symlink, link.kind, link.len), (true, Kind::File, 3));
-    let dangling = block_on(dir.metadata(&p("dangling"))).unwrap();
-    assert_eq!((dangling.symlink, dangling.kind), (true, Kind::Other));
-    assert_eq!(
-        block_on(Dir::memory().metadata(&VPath::root())).map(|meta| meta.mode),
-        Ok(None)
-    );
-}
-
-#[cfg(unix)]
-#[test]
-fn removing_a_tree_keeps_what_its_links_point_to() {
-    use std::os::unix::fs::symlink;
-    let (dir, temp) = disk();
-    let root = temp.as_ref().unwrap().path();
-    block_on(dir.write_atomic(&p("outside/keep.png"), b"k")).unwrap();
-    block_on(dir.write_atomic(&p("cache/tile.png"), b"t")).unwrap();
-    symlink(root.join("outside"), root.join("cache/linked")).unwrap();
-    blocking::remove_all(&dir, &p("cache")).unwrap();
-    assert!(!root.join("cache").exists());
-    assert_eq!(std::fs::read(root.join("outside/keep.png")).unwrap(), b"k");
-}
-
-#[cfg(unix)]
-#[test]
-fn private_writes_are_owner_only_natively_and_plain_elsewhere() {
-    use std::os::unix::fs::PermissionsExt;
-    let (dir, temp) = disk();
-    let root = temp.as_ref().unwrap().path();
-    blocking::write_private(&dir, &p("secret/key"), b"k").unwrap();
-    let mode = |path: &str| {
-        std::fs::metadata(root.join(path))
+    phase saving_a_document_keeps_its_mode_and_link;
+    {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        let (dir, temp) = disk();
+        let root = temp.as_ref().unwrap().path();
+        std::fs::write(root.join("tool.sh"), b"old").unwrap();
+        std::fs::set_permissions(root.join("tool.sh"), std::fs::Permissions::from_mode(0o751)).unwrap();
+        symlink("tool.sh", root.join("link")).unwrap();
+        blocking::save_document(&dir, &p("link"), b"new").unwrap();
+        assert_eq!(std::fs::read(root.join("tool.sh")).unwrap(), b"new");
+        assert!(
+            std::fs::symlink_metadata(root.join("link"))
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        let mode = std::fs::metadata(root.join("tool.sh"))
             .unwrap()
             .permissions()
-            .mode()
-            & 0o777
-    };
-    assert_eq!((mode("secret/key"), mode("secret")), (0o600, 0o700));
-    assert_eq!(blocking::read(&dir, &p("secret/key")).unwrap(), b"k");
-    let memory = Dir::memory();
-    block_on(memory.write_private(&p("a/b"), b"m")).unwrap();
-    assert_eq!(blocking::read(&memory, &p("a/b")).unwrap(), b"m");
+            .mode();
+        assert_eq!(mode & 0o777, 0o751);
+        blocking::save_document(&dir, &p("fresh.txt"), b"f").unwrap();
+        assert_eq!(std::fs::read(root.join("fresh.txt")).unwrap(), b"f");
+        assert_eq!(
+            blocking::save_document(&dir, &p("gone/doc.txt"), b"x"),
+            Err(FsError::NotFound)
+        );
+        assert!(!root.join("gone").exists());
+    }
 }
 
-#[cfg(unix)]
-#[test]
-fn saving_a_document_keeps_its_mode_and_link() {
-    use std::os::unix::fs::{PermissionsExt, symlink};
-    let (dir, temp) = disk();
-    let root = temp.as_ref().unwrap().path();
-    std::fs::write(root.join("tool.sh"), b"old").unwrap();
-    std::fs::set_permissions(root.join("tool.sh"), std::fs::Permissions::from_mode(0o751)).unwrap();
-    symlink("tool.sh", root.join("link")).unwrap();
-    blocking::save_document(&dir, &p("link"), b"new").unwrap();
-    assert_eq!(std::fs::read(root.join("tool.sh")).unwrap(), b"new");
-    assert!(
-        std::fs::symlink_metadata(root.join("link"))
-            .unwrap()
-            .file_type()
-            .is_symlink()
-    );
-    let mode = std::fs::metadata(root.join("tool.sh"))
-        .unwrap()
-        .permissions()
-        .mode();
-    assert_eq!(mode & 0o777, 0o751);
-    blocking::save_document(&dir, &p("fresh.txt"), b"f").unwrap();
-    assert_eq!(std::fs::read(root.join("fresh.txt")).unwrap(), b"f");
-    assert_eq!(
-        blocking::save_document(&dir, &p("gone/doc.txt"), b"x"),
-        Err(FsError::NotFound)
-    );
-    assert!(!root.join("gone").exists());
-}
+tilo_test_env::scenario! {
+    fn locations_open_as_what_they_are_and_handles_cross_threads;
 
-#[test]
-fn a_native_file_is_reached_through_its_directory() {
-    let (_, temp) = disk();
-    let path = temp.as_ref().unwrap().path().join("report.csv");
-    std::fs::write(&path, b"a,b").unwrap();
-    let (dir, name) = tilo_files::file_at(&path).unwrap();
-    assert_eq!(name, p("report.csv"));
-    assert_eq!(blocking::read(&dir, &name).unwrap(), b"a,b");
-    assert!(matches!(
-        tilo_files::file_at(std::path::Path::new("/")),
-        Err(FsError::InvalidPath(_))
-    ));
-    let (_, relative) = tilo_files::file_at(std::path::Path::new("notes.md")).unwrap();
-    assert_eq!(relative, p("notes.md"));
-}
+    phase memory_locations_are_shared_and_prefixes_isolated;
+    {
+        let location = |prefix: &str| Location::Virtual(VirtualRoot::Memory, p(prefix));
+        let one = Dir::open(location("shared/app")).unwrap();
+        let same = Dir::open(location("shared/app")).unwrap();
+        let parent = Dir::open(location("shared")).unwrap();
+        let other = Dir::open(location("shared/other")).unwrap();
+        block_on(one.write_atomic(&p("state.json"), b"{}")).unwrap();
+        assert_eq!(block_on(same.read(&p("state.json"))).unwrap(), b"{}");
+        assert_eq!(block_on(parent.read(&p("app/state.json"))).unwrap(), b"{}");
+        assert_eq!(
+            block_on(other.read(&p("state.json"))),
+            Err(FsError::NotFound)
+        );
+        assert_eq!(
+            block_on(Dir::memory().read(&p("state.json"))),
+            Err(FsError::NotFound)
+        );
+    }
 
-#[test]
-fn directory_handles_and_futures_cross_threads() {
-    fn send_sync<T: Send + Sync>(_: &T) {}
-    fn send<T: Send>(_: T) {}
-    let dir = Dir::memory();
-    send_sync(&dir);
-    send(dir.read(&p("a")));
-    send(dir.lock(&p("a"), LockMode::Shared));
+    phase only_native_directories_have_paths;
+    {
+        let (dir, temp) = disk();
+        let root = temp.as_ref().unwrap().path();
+        assert_eq!(
+            dir.native_path(&p("a/b")).unwrap(),
+            root.join("a").join("b")
+        );
+        assert_eq!(
+            Dir::memory()
+                .native_path(&p("a"))
+                .map_err(|error| error.feature),
+            Err(Feature::NativePaths)
+        );
+    }
+
+    phase browser_storage_is_unsupported_natively;
+    {
+        let opfs = Location::Virtual(
+            VirtualRoot::Opfs {
+                profile: "default".into(),
+            },
+            p("so.tilo.notes/data"),
+        );
+        assert!(matches!(
+            Dir::open(opfs),
+            Err(FsError::Unsupported {
+                feature: Feature::Files,
+                ..
+            })
+        ));
+    }
+
+    phase a_first_run_root_is_created_by_the_first_write;
+    {
+        let temp = tempfile::tempdir().unwrap();
+        let root: PathBuf = temp.path().join("so.tilo.notes").join("data");
+        let dir = Dir::open(Location::Native(root.clone())).unwrap();
+        assert_eq!(block_on(dir.list(&VPath::root())), Err(FsError::NotFound));
+        block_on(dir.write_atomic(&p("a"), b"x")).unwrap();
+        assert_eq!(std::fs::read(root.join("a")).unwrap(), b"x");
+    }
+
+    phase a_native_file_is_reached_through_its_directory;
+    {
+        let (_, temp) = disk();
+        let path = temp.as_ref().unwrap().path().join("report.csv");
+        std::fs::write(&path, b"a,b").unwrap();
+        let (dir, name) = tilo_files::file_at(&path).unwrap();
+        assert_eq!(name, p("report.csv"));
+        assert_eq!(blocking::read(&dir, &name).unwrap(), b"a,b");
+        assert!(matches!(
+            tilo_files::file_at(std::path::Path::new("/")),
+            Err(FsError::InvalidPath(_))
+        ));
+        let (_, relative) = tilo_files::file_at(std::path::Path::new("notes.md")).unwrap();
+        assert_eq!(relative, p("notes.md"));
+    }
+
+    phase directory_handles_and_futures_cross_threads;
+    {
+        fn send_sync<T: Send + Sync>(_: &T) {}
+        fn send<T: Send>(_: T) {}
+        let dir = Dir::memory();
+        send_sync(&dir);
+        send(dir.read(&p("a")));
+        send(dir.lock(&p("a"), LockMode::Shared));
+    }
 }

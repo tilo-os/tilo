@@ -12,32 +12,36 @@ use tilo_test_env::SpawnUnderEnvLock as _;
 #[path = "support/posix_acl.rs"]
 mod posix_acl;
 
-#[test]
-fn unresolved_parent_components_fail_before_creation() {
-    let root = tempfile::tempdir().unwrap();
-    let path = root.path().join("missing/../other/state");
-    let error = tilo_files::native::atomic::write_creating_parent(&path, b"x").unwrap_err();
-    assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
-    assert!(!root.path().join("missing").exists());
-    assert!(!root.path().join("other").exists());
-}
+tilo_test_env::scenario! {
+    fn a_bad_file_name_fails_before_any_parent_is_made;
 
-#[test]
-fn invalid_final_component_fails_before_parent_creation() {
-    for exact_mode in [None, Some(0o600)] {
+    phase unresolved_parent_components_fail_before_creation;
+    {
         let root = tempfile::tempdir().unwrap();
-        let path = root.path().join("missing").join("bad\0name");
-        assert_filename_rejected_without_effects(root.path(), &path, exact_mode);
+        let path = root.path().join("missing/../other/state");
+        let error = tilo_files::native::atomic::write_creating_parent(&path, b"x").unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+        assert!(!root.path().join("missing").exists());
+        assert!(!root.path().join("other").exists());
     }
-}
 
-#[test]
-fn missing_final_component_fails_before_parent_creation() {
-    for exact_mode in [None, Some(0o600)] {
-        let root = tempfile::tempdir().unwrap();
-        let path = root.path().join("missing/..");
-        assert!(path.file_name().is_none());
-        assert_filename_rejected_without_effects(root.path(), &path, exact_mode);
+    phase invalid_final_component_fails_before_parent_creation;
+    {
+        for exact_mode in [None, Some(0o600)] {
+            let root = tempfile::tempdir().unwrap();
+            let path = root.path().join("missing").join("bad\0name");
+            assert_filename_rejected_without_effects(root.path(), &path, exact_mode);
+        }
+    }
+
+    phase missing_final_component_fails_before_parent_creation;
+    {
+        for exact_mode in [None, Some(0o600)] {
+            let root = tempfile::tempdir().unwrap();
+            let path = root.path().join("missing/..");
+            assert!(path.file_name().is_none());
+            assert_filename_rejected_without_effects(root.path(), &path, exact_mode);
+        }
     }
 }
 
@@ -106,108 +110,6 @@ fn committed(leaf: &Path, prefix: &Path) -> Vec<PathBuf> {
     chain
 }
 
-#[test]
-fn wrappers_flush_entire_complete_tree_before_staging_on_every_call() {
-    for explicit_mode in [None, Some(0o644)] {
-        let root = tempfile::tempdir().unwrap();
-        let leaf = physical(root.path()).join("profile/data");
-        let visits = Rc::new(RefCell::new(Vec::new()));
-        let observed = visits.clone();
-        let complete = leaf.clone();
-        let staged = visits.clone();
-        let expected = committed(&leaf, &physical(root.path()));
-        let expected_stage = expected.clone();
-        with_provision_observer(
-            move |event| {
-                if matches!(event.checkpoint, P::BeforeSync | P::Synced) {
-                    assert!(
-                        complete.is_dir(),
-                        "whole suffix must precede the first real fsync"
-                    );
-                    assert!(event.identity.is_some());
-                    observed
-                        .borrow_mut()
-                        .push((event.checkpoint, event.path.clone()));
-                }
-            },
-            || {
-                with_observer(
-                    move |event| {
-                        if event.checkpoint == Checkpoint::StageCreated {
-                            assert_eq!(
-                                *staged.borrow(),
-                                expected_stage
-                                    .iter()
-                                    .flat_map(|p| [
-                                        (P::BeforeSync, p.clone()),
-                                        (P::Synced, p.clone())
-                                    ])
-                                    .collect::<Vec<_>>()
-                            );
-                        }
-                    },
-                    || match explicit_mode {
-                        None => tilo_files::native::atomic::write_creating_parent(
-                            &leaf.join("state"),
-                            b"payload",
-                        ),
-                        Some(mode) => tilo_files::native::atomic::write_creating_parent_with_mode(
-                            &leaf.join("state"),
-                            b"payload",
-                            mode,
-                        ),
-                    },
-                )
-            },
-        )
-        .unwrap();
-        assert_eq!(
-            visits
-                .borrow()
-                .iter()
-                .filter(|(p, _)| *p == P::Synced)
-                .map(|(_, path)| path.clone())
-                .collect::<Vec<_>>(),
-            expected
-        );
-        assert_eq!(fs::read(leaf.join("state")).unwrap(), b"payload");
-    }
-}
-
-#[test]
-fn early_ancestor_failure_prevents_staging_and_fresh_call_replays() {
-    let root = tempfile::tempdir().unwrap();
-    let profile = physical(root.path()).join("profile");
-    let path = profile.join("data/state");
-    let error = with_provision_failure(P::BeforeSync, &profile, || {
-        with_observer(
-            |event| {
-                assert_ne!(event.checkpoint, Checkpoint::StageCreated);
-            },
-            || tilo_files::native::atomic::write_creating_parent(&path, b"payload"),
-        )
-    })
-    .unwrap_err();
-    assert!(profile.join("data").is_dir());
-    assert!(!path.exists());
-    drop(error);
-    let seen = Rc::new(RefCell::new(Vec::new()));
-    let observed = seen.clone();
-    with_provision_observer(
-        move |e| {
-            if e.checkpoint == P::Synced {
-                observed.borrow_mut().push(e.path.clone());
-            }
-        },
-        || tilo_files::native::atomic::write_creating_parent(&path, b"payload"),
-    )
-    .unwrap();
-    assert_eq!(
-        *seen.borrow(),
-        committed(path.parent().unwrap(), path.parent().unwrap())
-    );
-}
-
 use std::{
     io,
     os::unix::fs::{PermissionsExt, symlink},
@@ -222,403 +124,208 @@ fn error(result: Result<StorageDirectory, ProvisionError>) -> ProvisionError {
     result.err().expect("provision must fail")
 }
 
-#[test]
-fn complete_retry_replays_every_barrier_and_returns_requested_leaf() {
-    let root = tempfile::tempdir().unwrap();
-    let profile = physical(root.path()).join("profile");
-    let leaf = profile.join("data");
-    let first = error(with_provision_failure(P::BeforeSync, &profile, || {
-        provision_directory(&leaf, Privacy::Inherit)
-    }));
-    assert_eq!(first.state(), D::CreatedDurabilityUnknown);
-    let second = error(with_provision_failure(P::BeforeSync, &profile, || {
-        first.retry_commit()
-    }));
-    assert_eq!(second.state(), D::CreatedDurabilityUnknown);
-    let visits = Rc::new(RefCell::new(Vec::new()));
-    let observed = visits.clone();
-    let held = with_provision_observer(
-        move |e| {
-            if e.checkpoint == P::Synced {
-                observed.borrow_mut().push(e.path.clone());
-            }
-        },
-        || second.retry_commit(),
-    )
-    .unwrap();
-    assert_eq!(*visits.borrow(), committed(&leaf, &physical(root.path())));
-    assert_eq!(
-        held.identity().unwrap(),
-        StorageDirectory::open(&leaf).unwrap().identity().unwrap()
-    );
-    let existing = error(with_provision_failure(P::BeforeSync, &leaf, || {
-        provision_directory(&leaf, Privacy::Inherit)
-    }));
-    assert_eq!(existing.state(), D::Unchanged);
-    assert!(existing.retry_commit().is_ok());
-}
+tilo_test_env::scenario! {
+    fn provisioning_admits_ancestors_aliases_and_modes_only_as_they_are;
 
-#[test]
-fn provisioning_is_bounded_by_a_root_whose_ancestors_are_unreadable() {
-    if rustix::process::getuid().as_raw() == 0 {
-        return;
-    }
-    let base = tempfile::tempdir().unwrap();
-    let store = fs::canonicalize(base.path()).unwrap().join("store");
-    fs::create_dir(&store).unwrap();
-    let leaf = store.join("leaf");
-    // Execute-only ancestors admit traversal but refuse to be opened, the way a
-    // sandbox grants the directories a launch uses and none above them.
-    fs::set_permissions(base.path(), fs::Permissions::from_mode(0o111)).unwrap();
-    let visits = Rc::new(RefCell::new(Vec::new()));
-    let observed = visits.clone();
-    let result = with_provision_observer(
-        move |e| {
-            if e.checkpoint == P::Synced {
-                observed.borrow_mut().push(e.path.clone());
-            }
-        },
-        || {
-            let unreadable = StorageDirectory::open(base.path())
-                .err()
-                .expect("ancestor must not open");
-            assert_eq!(unreadable.kind(), io::ErrorKind::PermissionDenied);
-            provision_directory(&leaf, Privacy::Inherit)
-        },
-    );
-    fs::set_permissions(base.path(), fs::Permissions::from_mode(0o755)).unwrap();
-    let held = result.unwrap();
-    assert_eq!(*visits.borrow(), vec![leaf.clone(), store]);
-    assert_eq!(
-        held.identity().unwrap(),
-        StorageDirectory::open(&leaf).unwrap().identity().unwrap()
-    );
-    tilo_files::native::atomic::write_creating_parent(&leaf.join("state"), b"payload").unwrap();
-    assert_eq!(fs::read(leaf.join("state")).unwrap(), b"payload");
-}
-
-#[test]
-fn partial_retry_cannot_create_remainder_or_return_prefix() {
-    for checkpoint in [P::BeforeCreate, P::Created] {
+    phase replaced_ancestor_fails_without_publishing_or_recreating_on_retry;
+    {
         let root = tempfile::tempdir().unwrap();
         let profile = physical(root.path()).join("profile");
         let leaf = profile.join("data");
-        let failure = error(with_provision_failure(checkpoint, &profile, || {
-            provision_directory(&leaf, Privacy::Inherit)
-        }));
-        assert_eq!(
-            failure.state(),
-            if checkpoint == P::Created {
-                D::CreatedDurabilityUnknown
-            } else {
-                D::Unchanged
-            }
-        );
+        let moved = physical(root.path()).join("old-profile");
+        let source = profile.clone();
+        let destination = moved.clone();
+        let observed_leaf = leaf.clone();
+        let failure = error(with_provision_observer(
+            move |e| {
+                if e.checkpoint == P::BeforeSync && e.path == observed_leaf {
+                    fs::rename(&source, &destination).unwrap();
+                    fs::create_dir(&source).unwrap();
+                }
+            },
+            || provision_directory(&leaf, Privacy::Inherit),
+        ));
+        assert_eq!(failure.state(), D::CreatedDurabilityUnknown);
         assert!(!leaf.exists());
-        let state = failure.state();
-        let same = with_provision_observer(
-            |_| panic!("partial retry must perform no provisioning operation"),
-            || error(failure.retry_commit()),
-        );
-        assert_eq!(same.state(), state);
+        assert!(moved.join("data").is_dir());
+        assert!(failure.retry_commit().is_err());
         assert!(!leaf.exists());
-        drop(same);
-        provision_directory(&leaf, Privacy::Inherit).unwrap();
-        assert!(leaf.is_dir());
+        assert_eq!(fs::read_dir(&profile).unwrap().count(), 0);
     }
-}
 
-#[test]
-fn presubmission_failure_preserves_earlier_known_creation() {
-    let root = tempfile::tempdir().unwrap();
-    let leaf = physical(root.path()).join("profile/data");
-    let failure = error(with_provision_failure(P::BeforeCreate, &leaf, || {
-        provision_directory(&leaf, Privacy::Inherit)
-    }));
-    assert_eq!(failure.state(), D::CreatedDurabilityUnknown);
-    assert!(leaf.parent().unwrap().is_dir());
-    assert!(!leaf.exists());
-    assert!(failure.retry_commit().is_err());
-    assert!(!leaf.exists());
-}
-
-#[test]
-fn submitted_mkdir_failure_retains_unknown_effects_and_never_retries_or_cleans() {
-    for after in [false, true] {
+    phase wrapper_refuses_ancestor_replacement_before_any_file_stage;
+    {
         let root = tempfile::tempdir().unwrap();
-        let uncertain = physical(root.path()).join("profile/uncertain");
-        let leaf = uncertain.join("leaf");
-        let fault = if after {
-            MkdirFault::AfterSuccess(5)
-        } else {
-            MkdirFault::BeforeNative(5)
-        };
-        let failure = error(with_mkdir_result(&uncertain, fault, || {
-            provision_directory(&leaf, Privacy::Inherit)
-        }));
-        assert_eq!(failure.state(), D::NamespaceUnknown);
-        assert_eq!(failure.io_error().raw_os_error(), Some(5));
-        assert_eq!(uncertain.exists(), after);
-        assert!(!leaf.exists());
-        let wrapped = failure.into_io_error();
-        assert_eq!(directory_state(&wrapped), Some(D::NamespaceUnknown));
-        let failure = *wrapped
-            .into_inner()
-            .unwrap()
-            .downcast::<ProvisionError>()
-            .unwrap();
-        let failure = with_provision_observer(
-            |_| panic!("unknown partial must not replay"),
-            || error(failure.retry_commit()),
-        );
-        assert_eq!(failure.io_error().raw_os_error(), Some(5));
-        drop(failure);
-        assert_eq!(
-            uncertain.exists(),
-            after,
-            "drop must not clean up unknown effects"
-        );
-        provision_directory(&leaf, Privacy::Inherit).unwrap();
-        assert!(leaf.is_dir());
-    }
-}
-
-#[test]
-fn eexist_winner_is_admitted_and_flushed_but_never_assumed_private() {
-    for private in [false, true] {
-        let root = tempfile::tempdir().unwrap();
-        let leaf = physical(root.path()).join("winner");
-        let winner = leaf.clone();
+        let leaf = physical(root.path()).join("profile/data");
+        let observed_leaf = leaf.clone();
+        let profile = leaf.parent().unwrap().to_owned();
+        let moved = physical(root.path()).join("moved");
         let result = with_provision_observer(
             move |e| {
-                if e.checkpoint == P::BeforeCreate && e.path == winner {
-                    fs::create_dir(&winner).unwrap();
-                    fs::set_permissions(&winner, fs::Permissions::from_mode(0o755)).unwrap();
+                if e.checkpoint == P::BeforeSync && e.path == observed_leaf {
+                    fs::rename(&profile, &moved).unwrap();
+                    fs::create_dir(&profile).unwrap();
                 }
             },
             || {
-                provision_directory(
-                    &leaf,
-                    if private {
-                        Privacy::OwnerOnly
-                    } else {
-                        Privacy::Inherit
-                    },
+                with_observer(
+                    |e| assert_ne!(e.checkpoint, Checkpoint::StageCreated),
+                    || tilo_files::native::atomic::write_creating_parent(&leaf.join("state"), b"x"),
                 )
             },
         );
-        if private {
-            let failure = error(result);
-            assert_eq!(failure.state(), D::Unchanged);
-            assert_eq!(failure.io_error().kind(), io::ErrorKind::PermissionDenied);
-        } else {
-            result.unwrap();
+        assert!(result.is_err());
+        assert!(!leaf.exists());
+    }
+
+    phase admitted_alias_succeeds_but_retargeting_and_new_suffix_symlinks_fail;
+    {
+        let root = tempfile::tempdir().unwrap();
+        let base = physical(root.path());
+        let alias = base.join("alias");
+        fs::create_dir(base.join("target")).unwrap();
+        fs::create_dir(base.join("other")).unwrap();
+        symlink(base.join("target"), &alias).unwrap();
+        let leaf = alias.join("nested");
+        provision_directory(&leaf, Privacy::Inherit).unwrap();
+        let changed_alias = alias;
+        let other = base.join("other");
+        let physical_leaf = base.join("target/nested");
+        let failure = error(with_provision_observer(
+            move |e| {
+                if e.checkpoint == P::BeforeSync && e.path == physical_leaf {
+                    fs::remove_file(&changed_alias).unwrap();
+                    symlink(&other, &changed_alias).unwrap();
+                }
+            },
+            || provision_directory(&leaf, Privacy::Inherit),
+        ));
+        assert_eq!(failure.state(), D::Unchanged);
+        assert!(failure.retry_commit().is_err());
+        assert!(!base.join("other/nested").exists());
+        let injected = base.join("injected");
+        let selected = injected.clone();
+        let target = base.join("other");
+        let failure = error(with_provision_observer(
+            move |e| {
+                if e.checkpoint == P::BeforeCreate && e.path == selected {
+                    symlink(&target, &selected).unwrap();
+                }
+            },
+            || provision_directory(&injected.join("data"), Privacy::Inherit),
+        ));
+        assert_eq!(failure.state(), D::Unchanged);
+        assert!(!base.join("other/data").exists());
+        assert!(
+            fs::symlink_metadata(&injected)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+    }
+
+    phase dangling_alias_and_nondirectory_prefix_fail_without_effects;
+    {
+        let root = tempfile::tempdir().unwrap();
+        symlink(root.path().join("absent"), root.path().join("dangling")).unwrap();
+        let failure = error(provision_directory(
+            &root.path().join("dangling/child"),
+            Privacy::Inherit,
+        ));
+        assert_eq!(failure.state(), D::Unchanged);
+        assert!(!root.path().join("absent").exists());
+        fs::write(root.path().join("file"), b"x").unwrap();
+        let failure = error(provision_directory(
+            &root.path().join("file/child"),
+            Privacy::Inherit,
+        ));
+        assert_eq!(failure.state(), D::Unchanged);
+        assert_eq!(failure.io_error().kind(), io::ErrorKind::NotADirectory);
+    }
+
+    phase owner_only_creation_and_existing_leaf_do_not_restrict_traversal_ancestors;
+    {
+        let root = tempfile::tempdir().unwrap();
+        fs::set_permissions(root.path(), fs::Permissions::from_mode(0o755)).unwrap();
+        let leaf = root.path().join("private/leaf");
+        provision_directory(&leaf, Privacy::OwnerOnly).unwrap();
+        for path in [root.path().join("private"), leaf.clone()] {
+            assert_eq!(
+                fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o700
+            );
         }
+        provision_directory(&leaf, Privacy::OwnerOnly).unwrap();
         assert_eq!(
-            fs::metadata(&leaf).unwrap().permissions().mode() & 0o777,
+            fs::metadata(root.path()).unwrap().permissions().mode() & 0o777,
+            0o755
+        );
+        let failure = error(provision_directory(root.path(), Privacy::OwnerOnly));
+        assert_eq!(failure.state(), D::Unchanged);
+        assert_eq!(failure.io_error().kind(), io::ErrorKind::PermissionDenied);
+        assert_eq!(
+            fs::metadata(root.path()).unwrap().permissions().mode() & 0o777,
             0o755
         );
     }
-}
 
-#[test]
-fn replaced_ancestor_fails_without_publishing_or_recreating_on_retry() {
-    let root = tempfile::tempdir().unwrap();
-    let profile = physical(root.path()).join("profile");
-    let leaf = profile.join("data");
-    let moved = physical(root.path()).join("old-profile");
-    let source = profile.clone();
-    let destination = moved.clone();
-    let observed_leaf = leaf.clone();
-    let failure = error(with_provision_observer(
-        move |e| {
-            if e.checkpoint == P::BeforeSync && e.path == observed_leaf {
-                fs::rename(&source, &destination).unwrap();
-                fs::create_dir(&source).unwrap();
-            }
-        },
-        || provision_directory(&leaf, Privacy::Inherit),
-    ));
-    assert_eq!(failure.state(), D::CreatedDurabilityUnknown);
-    assert!(!leaf.exists());
-    assert!(moved.join("data").is_dir());
-    assert!(failure.retry_commit().is_err());
-    assert!(!leaf.exists());
-    assert_eq!(fs::read_dir(&profile).unwrap().count(), 0);
-}
-
-#[test]
-fn wrapper_refuses_ancestor_replacement_before_any_file_stage() {
-    let root = tempfile::tempdir().unwrap();
-    let leaf = physical(root.path()).join("profile/data");
-    let observed_leaf = leaf.clone();
-    let profile = leaf.parent().unwrap().to_owned();
-    let moved = physical(root.path()).join("moved");
-    let result = with_provision_observer(
-        move |e| {
-            if e.checkpoint == P::BeforeSync && e.path == observed_leaf {
-                fs::rename(&profile, &moved).unwrap();
-                fs::create_dir(&profile).unwrap();
-            }
-        },
-        || {
-            with_observer(
-                |e| assert_ne!(e.checkpoint, Checkpoint::StageCreated),
-                || tilo_files::native::atomic::write_creating_parent(&leaf.join("state"), b"x"),
-            )
-        },
-    );
-    assert!(result.is_err());
-    assert!(!leaf.exists());
-}
-
-#[test]
-fn admitted_alias_succeeds_but_retargeting_and_new_suffix_symlinks_fail() {
-    let root = tempfile::tempdir().unwrap();
-    let base = physical(root.path());
-    let alias = base.join("alias");
-    fs::create_dir(base.join("target")).unwrap();
-    fs::create_dir(base.join("other")).unwrap();
-    symlink(base.join("target"), &alias).unwrap();
-    let leaf = alias.join("nested");
-    provision_directory(&leaf, Privacy::Inherit).unwrap();
-    let changed_alias = alias;
-    let other = base.join("other");
-    let physical_leaf = base.join("target/nested");
-    let failure = error(with_provision_observer(
-        move |e| {
-            if e.checkpoint == P::BeforeSync && e.path == physical_leaf {
-                fs::remove_file(&changed_alias).unwrap();
-                symlink(&other, &changed_alias).unwrap();
-            }
-        },
-        || provision_directory(&leaf, Privacy::Inherit),
-    ));
-    assert_eq!(failure.state(), D::Unchanged);
-    assert!(failure.retry_commit().is_err());
-    assert!(!base.join("other/nested").exists());
-    let injected = base.join("injected");
-    let selected = injected.clone();
-    let target = base.join("other");
-    let failure = error(with_provision_observer(
-        move |e| {
-            if e.checkpoint == P::BeforeCreate && e.path == selected {
-                symlink(&target, &selected).unwrap();
-            }
-        },
-        || provision_directory(&injected.join("data"), Privacy::Inherit),
-    ));
-    assert_eq!(failure.state(), D::Unchanged);
-    assert!(!base.join("other/data").exists());
-    assert!(
-        fs::symlink_metadata(&injected)
-            .unwrap()
-            .file_type()
-            .is_symlink()
-    );
-}
-
-#[test]
-fn dangling_alias_and_nondirectory_prefix_fail_without_effects() {
-    let root = tempfile::tempdir().unwrap();
-    symlink(root.path().join("absent"), root.path().join("dangling")).unwrap();
-    let failure = error(provision_directory(
-        &root.path().join("dangling/child"),
-        Privacy::Inherit,
-    ));
-    assert_eq!(failure.state(), D::Unchanged);
-    assert!(!root.path().join("absent").exists());
-    fs::write(root.path().join("file"), b"x").unwrap();
-    let failure = error(provision_directory(
-        &root.path().join("file/child"),
-        Privacy::Inherit,
-    ));
-    assert_eq!(failure.state(), D::Unchanged);
-    assert_eq!(failure.io_error().kind(), io::ErrorKind::NotADirectory);
-}
-
-#[test]
-fn owner_only_creation_and_existing_leaf_do_not_restrict_traversal_ancestors() {
-    let root = tempfile::tempdir().unwrap();
-    fs::set_permissions(root.path(), fs::Permissions::from_mode(0o755)).unwrap();
-    let leaf = root.path().join("private/leaf");
-    provision_directory(&leaf, Privacy::OwnerOnly).unwrap();
-    for path in [root.path().join("private"), leaf.clone()] {
-        assert_eq!(
-            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
-            0o700
-        );
-    }
-    provision_directory(&leaf, Privacy::OwnerOnly).unwrap();
-    assert_eq!(
-        fs::metadata(root.path()).unwrap().permissions().mode() & 0o777,
-        0o755
-    );
-    let failure = error(provision_directory(root.path(), Privacy::OwnerOnly));
-    assert_eq!(failure.state(), D::Unchanged);
-    assert_eq!(failure.io_error().kind(), io::ErrorKind::PermissionDenied);
-    assert_eq!(
-        fs::metadata(root.path()).unwrap().permissions().mode() & 0o777,
-        0o755
-    );
-}
-
-#[test]
-fn retry_revalidates_created_directory_privacy() {
-    let root = tempfile::tempdir().unwrap();
-    let parent = physical(root.path()).join("private");
-    let leaf = parent.join("leaf");
-    let failure = error(with_provision_failure(P::BeforeSync, &leaf, || {
-        provision_directory(&leaf, Privacy::OwnerOnly)
-    }));
-    fs::set_permissions(&parent, fs::Permissions::from_mode(0o755)).unwrap();
-    let failure = error(failure.retry_commit());
-    assert_eq!(failure.io_error().kind(), io::ErrorKind::PermissionDenied);
-    assert_eq!(
-        fs::metadata(&parent).unwrap().permissions().mode() & 0o777,
-        0o755
-    );
-}
-
-#[test]
-fn legacy_explicit_file_modes_preserve_inherited_directory_search_bits() {
-    let root = tempfile::tempdir().unwrap();
-    // Compare ordinary mkdir under the current umask; never mutate process umask.
-    fs::create_dir(root.path().join("ordinary")).unwrap();
-    let directory_mode = fs::metadata(root.path().join("ordinary"))
-        .unwrap()
-        .permissions()
-        .mode()
-        & 0o777;
-    for mode in [0o600, 0o644] {
-        let parent = root.path().join(format!("mode-{mode:o}"));
-        let file = parent.join("state");
-        tilo_files::native::atomic::write_creating_parent_with_mode(&file, b"x", mode).unwrap();
-        assert_eq!(
-            fs::metadata(&file).unwrap().permissions().mode() & 0o777,
-            mode
-        );
+    phase retry_revalidates_created_directory_privacy;
+    {
+        let root = tempfile::tempdir().unwrap();
+        let parent = physical(root.path()).join("private");
+        let leaf = parent.join("leaf");
+        let failure = error(with_provision_failure(P::BeforeSync, &leaf, || {
+            provision_directory(&leaf, Privacy::OwnerOnly)
+        }));
+        fs::set_permissions(&parent, fs::Permissions::from_mode(0o755)).unwrap();
+        let failure = error(failure.retry_commit());
+        assert_eq!(failure.io_error().kind(), io::ErrorKind::PermissionDenied);
         assert_eq!(
             fs::metadata(&parent).unwrap().permissions().mode() & 0o777,
-            directory_mode
+            0o755
         );
     }
-}
 
-#[test]
-fn empty_root_and_existing_parent_traversal_are_admitted_correctly() {
-    assert_eq!(
-        error(provision_directory(Path::new(""), Privacy::Inherit))
-            .io_error()
-            .kind(),
-        io::ErrorKind::InvalidInput
-    );
-    provision_directory(Path::new("/"), Privacy::Inherit).unwrap();
-    provision_directory(Path::new("."), Privacy::Inherit).unwrap();
-    let root = tempfile::tempdir().unwrap();
-    fs::create_dir(root.path().join("existing")).unwrap();
-    provision_directory(&root.path().join("existing/../new"), Privacy::Inherit).unwrap();
-    assert!(root.path().join("new").is_dir());
+    phase legacy_explicit_file_modes_preserve_inherited_directory_search_bits;
+    {
+        let root = tempfile::tempdir().unwrap();
+        // Compare ordinary mkdir under the current umask; never mutate process umask.
+        fs::create_dir(root.path().join("ordinary")).unwrap();
+        let directory_mode = fs::metadata(root.path().join("ordinary"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        for mode in [0o600, 0o644] {
+            let parent = root.path().join(format!("mode-{mode:o}"));
+            let file = parent.join("state");
+            tilo_files::native::atomic::write_creating_parent_with_mode(&file, b"x", mode).unwrap();
+            assert_eq!(
+                fs::metadata(&file).unwrap().permissions().mode() & 0o777,
+                mode
+            );
+            assert_eq!(
+                fs::metadata(&parent).unwrap().permissions().mode() & 0o777,
+                directory_mode
+            );
+        }
+    }
+
+    phase empty_root_and_existing_parent_traversal_are_admitted_correctly;
+    {
+        assert_eq!(
+            error(provision_directory(Path::new(""), Privacy::Inherit))
+                .io_error()
+                .kind(),
+            io::ErrorKind::InvalidInput
+        );
+        provision_directory(Path::new("/"), Privacy::Inherit).unwrap();
+        provision_directory(Path::new("."), Privacy::Inherit).unwrap();
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir(root.path().join("existing")).unwrap();
+        provision_directory(&root.path().join("existing/../new"), Privacy::Inherit).unwrap();
+        assert!(root.path().join("new").is_dir());
+    }
 }
 
 #[test]
@@ -654,28 +361,6 @@ fn restart_child() {
     .unwrap();
     assert_eq!(*visits.borrow(), vec![file.parent().unwrap().to_owned()]);
     assert_eq!(fs::read(file).unwrap(), b"payload");
-}
-
-#[test]
-fn process_restart_replays_existing_ancestors_without_prior_authority() {
-    let root = tempfile::tempdir().unwrap();
-    for phase in ["fail", "retry"] {
-        let output = Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", "restart_child", "--nocapture"])
-            .env("ATOMIC_PROVISION_RESTART_FIXTURE", physical(root.path()))
-            .env("ATOMIC_PROVISION_RESTART_PHASE", phase)
-            .output_locked()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-    assert_eq!(
-        fs::read(root.path().join("profile/data/state")).unwrap(),
-        b"payload"
-    );
 }
 
 #[cfg(target_os = "macos")]
@@ -771,44 +456,375 @@ fn native_tmp_alias_is_traversed_forward_and_fully_flushed() {
     );
 }
 
-#[test]
-fn provision_hooks_restore_outer_scope_after_unwind() {
-    let root = tempfile::tempdir().unwrap();
-    let leaf = physical(root.path()).join("leaf");
-    fs::create_dir(&leaf).unwrap();
-    let visits = Rc::new(RefCell::new(0));
-    let observed = visits.clone();
-    with_provision_observer(
-        move |_| *observed.borrow_mut() += 1,
-        || {
-            with_provision_failure(P::BeforeSync, &leaf, || {
-                let nested = std::panic::catch_unwind(|| {
-                    with_provision_observer(
-                        |_| panic!("nested observer"),
-                        || {
-                            with_provision_failure(P::BeforeCreate, &leaf, || {
-                                let _ = provision_directory(&leaf, Privacy::Inherit);
-                            });
+tilo_test_env::scenario! {
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+    )]
+    fn provisioning_flushes_every_barrier_and_keeps_what_a_failure_left;
+
+    phase wrappers_flush_entire_complete_tree_before_staging_on_every_call;
+    {
+        for explicit_mode in [None, Some(0o644)] {
+            let root = tempfile::tempdir().unwrap();
+            let leaf = physical(root.path()).join("profile/data");
+            let visits = Rc::new(RefCell::new(Vec::new()));
+            let observed = visits.clone();
+            let complete = leaf.clone();
+            let staged = visits.clone();
+            let expected = committed(&leaf, &physical(root.path()));
+            let expected_stage = expected.clone();
+            with_provision_observer(
+                move |event| {
+                    if matches!(event.checkpoint, P::BeforeSync | P::Synced) {
+                        assert!(
+                            complete.is_dir(),
+                            "whole suffix must precede the first real fsync"
+                        );
+                        assert!(event.identity.is_some());
+                        observed
+                            .borrow_mut()
+                            .push((event.checkpoint, event.path.clone()));
+                    }
+                },
+                || {
+                    with_observer(
+                        move |event| {
+                            if event.checkpoint == Checkpoint::StageCreated {
+                                assert_eq!(
+                                    *staged.borrow(),
+                                    expected_stage
+                                        .iter()
+                                        .flat_map(|p| [
+                                            (P::BeforeSync, p.clone()),
+                                            (P::Synced, p.clone())
+                                        ])
+                                        .collect::<Vec<_>>()
+                                );
+                            }
                         },
+                        || match explicit_mode {
+                            None => tilo_files::native::atomic::write_creating_parent(
+                                &leaf.join("state"),
+                                b"payload",
+                            ),
+                            Some(mode) => tilo_files::native::atomic::write_creating_parent_with_mode(
+                                &leaf.join("state"),
+                                b"payload",
+                                mode,
+                            ),
+                        },
+                    )
+                },
+            )
+            .unwrap();
+            assert_eq!(
+                visits
+                    .borrow()
+                    .iter()
+                    .filter(|(p, _)| *p == P::Synced)
+                    .map(|(_, path)| path.clone())
+                    .collect::<Vec<_>>(),
+                expected
+            );
+            assert_eq!(fs::read(leaf.join("state")).unwrap(), b"payload");
+        }
+    }
+
+    phase early_ancestor_failure_prevents_staging_and_fresh_call_replays;
+    {
+        let root = tempfile::tempdir().unwrap();
+        let profile = physical(root.path()).join("profile");
+        let path = profile.join("data/state");
+        let error = with_provision_failure(P::BeforeSync, &profile, || {
+            with_observer(
+                |event| {
+                    assert_ne!(event.checkpoint, Checkpoint::StageCreated);
+                },
+                || tilo_files::native::atomic::write_creating_parent(&path, b"payload"),
+            )
+        })
+        .unwrap_err();
+        assert!(profile.join("data").is_dir());
+        assert!(!path.exists());
+        drop(error);
+        let seen = Rc::new(RefCell::new(Vec::new()));
+        let observed = seen.clone();
+        with_provision_observer(
+            move |e| {
+                if e.checkpoint == P::Synced {
+                    observed.borrow_mut().push(e.path.clone());
+                }
+            },
+            || tilo_files::native::atomic::write_creating_parent(&path, b"payload"),
+        )
+        .unwrap();
+        assert_eq!(
+            *seen.borrow(),
+            committed(path.parent().unwrap(), path.parent().unwrap())
+        );
+    }
+
+    phase complete_retry_replays_every_barrier_and_returns_requested_leaf;
+    {
+        let root = tempfile::tempdir().unwrap();
+        let profile = physical(root.path()).join("profile");
+        let leaf = profile.join("data");
+        let first = error(with_provision_failure(P::BeforeSync, &profile, || {
+            provision_directory(&leaf, Privacy::Inherit)
+        }));
+        assert_eq!(first.state(), D::CreatedDurabilityUnknown);
+        let second = error(with_provision_failure(P::BeforeSync, &profile, || {
+            first.retry_commit()
+        }));
+        assert_eq!(second.state(), D::CreatedDurabilityUnknown);
+        let visits = Rc::new(RefCell::new(Vec::new()));
+        let observed = visits.clone();
+        let held = with_provision_observer(
+            move |e| {
+                if e.checkpoint == P::Synced {
+                    observed.borrow_mut().push(e.path.clone());
+                }
+            },
+            || second.retry_commit(),
+        )
+        .unwrap();
+        assert_eq!(*visits.borrow(), committed(&leaf, &physical(root.path())));
+        assert_eq!(
+            held.identity().unwrap(),
+            StorageDirectory::open(&leaf).unwrap().identity().unwrap()
+        );
+        let existing = error(with_provision_failure(P::BeforeSync, &leaf, || {
+            provision_directory(&leaf, Privacy::Inherit)
+        }));
+        assert_eq!(existing.state(), D::Unchanged);
+        assert!(existing.retry_commit().is_ok());
+    }
+
+    phase provisioning_is_bounded_by_a_root_whose_ancestors_are_unreadable;
+    {
+        if rustix::process::getuid().as_raw() == 0 {
+            return;
+        }
+        let base = tempfile::tempdir().unwrap();
+        let store = fs::canonicalize(base.path()).unwrap().join("store");
+        fs::create_dir(&store).unwrap();
+        let leaf = store.join("leaf");
+        // Execute-only ancestors admit traversal but refuse to be opened, the way a
+        // sandbox grants the directories a launch uses and none above them.
+        fs::set_permissions(base.path(), fs::Permissions::from_mode(0o111)).unwrap();
+        let visits = Rc::new(RefCell::new(Vec::new()));
+        let observed = visits.clone();
+        let result = with_provision_observer(
+            move |e| {
+                if e.checkpoint == P::Synced {
+                    observed.borrow_mut().push(e.path.clone());
+                }
+            },
+            || {
+                let unreadable = StorageDirectory::open(base.path())
+                    .err()
+                    .expect("ancestor must not open");
+                assert_eq!(unreadable.kind(), io::ErrorKind::PermissionDenied);
+                provision_directory(&leaf, Privacy::Inherit)
+            },
+        );
+        fs::set_permissions(base.path(), fs::Permissions::from_mode(0o755)).unwrap();
+        let held = result.unwrap();
+        assert_eq!(*visits.borrow(), vec![leaf.clone(), store]);
+        assert_eq!(
+            held.identity().unwrap(),
+            StorageDirectory::open(&leaf).unwrap().identity().unwrap()
+        );
+        tilo_files::native::atomic::write_creating_parent(&leaf.join("state"), b"payload").unwrap();
+        assert_eq!(fs::read(leaf.join("state")).unwrap(), b"payload");
+    }
+
+    phase partial_retry_cannot_create_remainder_or_return_prefix;
+    {
+        for checkpoint in [P::BeforeCreate, P::Created] {
+            let root = tempfile::tempdir().unwrap();
+            let profile = physical(root.path()).join("profile");
+            let leaf = profile.join("data");
+            let failure = error(with_provision_failure(checkpoint, &profile, || {
+                provision_directory(&leaf, Privacy::Inherit)
+            }));
+            assert_eq!(
+                failure.state(),
+                if checkpoint == P::Created {
+                    D::CreatedDurabilityUnknown
+                } else {
+                    D::Unchanged
+                }
+            );
+            assert!(!leaf.exists());
+            let state = failure.state();
+            let same = with_provision_observer(
+                |_| panic!("partial retry must perform no provisioning operation"),
+                || error(failure.retry_commit()),
+            );
+            assert_eq!(same.state(), state);
+            assert!(!leaf.exists());
+            drop(same);
+            provision_directory(&leaf, Privacy::Inherit).unwrap();
+            assert!(leaf.is_dir());
+        }
+    }
+
+    phase presubmission_failure_preserves_earlier_known_creation;
+    {
+        let root = tempfile::tempdir().unwrap();
+        let leaf = physical(root.path()).join("profile/data");
+        let failure = error(with_provision_failure(P::BeforeCreate, &leaf, || {
+            provision_directory(&leaf, Privacy::Inherit)
+        }));
+        assert_eq!(failure.state(), D::CreatedDurabilityUnknown);
+        assert!(leaf.parent().unwrap().is_dir());
+        assert!(!leaf.exists());
+        assert!(failure.retry_commit().is_err());
+        assert!(!leaf.exists());
+    }
+
+    phase submitted_mkdir_failure_retains_unknown_effects_and_never_retries_or_cleans;
+    {
+        for after in [false, true] {
+            let root = tempfile::tempdir().unwrap();
+            let uncertain = physical(root.path()).join("profile/uncertain");
+            let leaf = uncertain.join("leaf");
+            let fault = if after {
+                MkdirFault::AfterSuccess(5)
+            } else {
+                MkdirFault::BeforeNative(5)
+            };
+            let failure = error(with_mkdir_result(&uncertain, fault, || {
+                provision_directory(&leaf, Privacy::Inherit)
+            }));
+            assert_eq!(failure.state(), D::NamespaceUnknown);
+            assert_eq!(failure.io_error().raw_os_error(), Some(5));
+            assert_eq!(uncertain.exists(), after);
+            assert!(!leaf.exists());
+            let wrapped = failure.into_io_error();
+            assert_eq!(directory_state(&wrapped), Some(D::NamespaceUnknown));
+            let failure = *wrapped
+                .into_inner()
+                .unwrap()
+                .downcast::<ProvisionError>()
+                .unwrap();
+            let failure = with_provision_observer(
+                |_| panic!("unknown partial must not replay"),
+                || error(failure.retry_commit()),
+            );
+            assert_eq!(failure.io_error().raw_os_error(), Some(5));
+            drop(failure);
+            assert_eq!(
+                uncertain.exists(),
+                after,
+                "drop must not clean up unknown effects"
+            );
+            provision_directory(&leaf, Privacy::Inherit).unwrap();
+            assert!(leaf.is_dir());
+        }
+    }
+
+    phase eexist_winner_is_admitted_and_flushed_but_never_assumed_private;
+    {
+        for private in [false, true] {
+            let root = tempfile::tempdir().unwrap();
+            let leaf = physical(root.path()).join("winner");
+            let winner = leaf.clone();
+            let result = with_provision_observer(
+                move |e| {
+                    if e.checkpoint == P::BeforeCreate && e.path == winner {
+                        fs::create_dir(&winner).unwrap();
+                        fs::set_permissions(&winner, fs::Permissions::from_mode(0o755)).unwrap();
+                    }
+                },
+                || {
+                    provision_directory(
+                        &leaf,
+                        if private {
+                            Privacy::OwnerOnly
+                        } else {
+                            Privacy::Inherit
+                        },
+                    )
+                },
+            );
+            if private {
+                let failure = error(result);
+                assert_eq!(failure.state(), D::Unchanged);
+                assert_eq!(failure.io_error().kind(), io::ErrorKind::PermissionDenied);
+            } else {
+                result.unwrap();
+            }
+            assert_eq!(
+                fs::metadata(&leaf).unwrap().permissions().mode() & 0o777,
+                0o755
+            );
+        }
+    }
+
+    phase process_restart_replays_existing_ancestors_without_prior_authority;
+    {
+        let root = tempfile::tempdir().unwrap();
+        for phase in ["fail", "retry"] {
+            let output = Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "restart_child", "--nocapture"])
+                .env("ATOMIC_PROVISION_RESTART_FIXTURE", physical(root.path()))
+                .env("ATOMIC_PROVISION_RESTART_PHASE", phase)
+                .output_locked()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        assert_eq!(
+            fs::read(root.path().join("profile/data/state")).unwrap(),
+            b"payload"
+        );
+    }
+
+    phase provision_hooks_restore_outer_scope_after_unwind;
+    {
+        let root = tempfile::tempdir().unwrap();
+        let leaf = physical(root.path()).join("leaf");
+        fs::create_dir(&leaf).unwrap();
+        let visits = Rc::new(RefCell::new(0));
+        let observed = visits.clone();
+        with_provision_observer(
+            move |_| *observed.borrow_mut() += 1,
+            || {
+                with_provision_failure(P::BeforeSync, &leaf, || {
+                    let nested = std::panic::catch_unwind(|| {
+                        with_provision_observer(
+                            |_| panic!("nested observer"),
+                            || {
+                                with_provision_failure(P::BeforeCreate, &leaf, || {
+                                    let _ = provision_directory(&leaf, Privacy::Inherit);
+                                });
+                            },
+                        );
+                    });
+                    assert!(nested.is_err());
+                    let restored = error(provision_directory(&leaf, Privacy::Inherit));
+                    assert_eq!(restored.state(), D::Unchanged);
+                    assert_eq!(
+                        *visits.borrow(),
+                        1,
+                        "outer observer runs before restored failure"
                     );
                 });
-                assert!(nested.is_err());
-                let restored = error(provision_directory(&leaf, Privacy::Inherit));
-                assert_eq!(restored.state(), D::Unchanged);
-                assert_eq!(
-                    *visits.borrow(),
-                    1,
-                    "outer observer runs before restored failure"
-                );
-            });
-            provision_directory(&leaf, Privacy::Inherit).unwrap();
-        },
-    );
-    let final_visits = *visits.borrow();
-    provision_directory(&leaf, Privacy::Inherit).unwrap();
-    assert_eq!(
-        *visits.borrow(),
-        final_visits,
-        "outer observer restored on return"
-    );
+                provision_directory(&leaf, Privacy::Inherit).unwrap();
+            },
+        );
+        let final_visits = *visits.borrow();
+        provision_directory(&leaf, Privacy::Inherit).unwrap();
+        assert_eq!(
+            *visits.borrow(),
+            final_visits,
+            "outer observer restored on return"
+        );
+    }
 }
