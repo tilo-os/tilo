@@ -23,6 +23,8 @@
     reason = "test fixtures: a failed step is the assertion, and a session lives for its whole test"
 )]
 
+use std::time::Duration;
+
 use tilo_service::Questions;
 use tilo_session::{ActionPlane, Options, Session};
 
@@ -115,4 +117,148 @@ fn a_second_ask_goes_to_the_agent_the_first_made() {
         to["id"].as_str().is_some_and(|id| !id.is_empty()),
         "named by its id: {second}"
     );
+}
+
+/// The agent the steps below are attributed to, as an agent's turn names it.
+const AGENT: &str = "agent:assistant";
+
+/// The published root of the seeded app `app` (`so.tilo.lang.mail`): what the agent's steps
+/// show, and what they stand beside.
+fn root_of(session: &Session, app: &str) -> String {
+    let prefix = format!("tl:{app}:root-");
+    session
+        .resources()
+        .into_iter()
+        .find(|spec| spec.id.as_str().starts_with(&prefix))
+        .map(|spec| spec.id.as_str().to_owned())
+        .unwrap_or_else(|| panic!("{app}'s root is published"))
+}
+
+/// The canvas point of the strip `place` stands in, and its workspace.
+fn canvas_point(
+    session: &Session,
+    place: &tilo_session::arrangement::PlaceReading,
+) -> (i64, i64, String) {
+    let strip = crate::common::strip(session, crate::common::number(&place.strip))
+        .expect("the place has its strip");
+    (
+        strip.canvas_x.into(),
+        strip.canvas_y.into(),
+        strip.workspace,
+    )
+}
+
+/// `arguments` placed on the canvas as the agent, and the place showing `record` once it stands.
+fn placed_as_agent(
+    session: &mut Session,
+    record: &str,
+    arguments: serde_json::Value,
+) -> tilo_session::arrangement::PlaceReading {
+    session
+        .invoke_with_actor(AGENT, "shell:arrangement", "place", &arguments)
+        .unwrap_or_else(|error| panic!("the place runs: {error}"));
+    crate::common::wait_for(session, format!("{record} placed"), |session| {
+        crate::common::places(session)
+            .into_iter()
+            .find(|place| place.record == record)
+    })
+}
+
+/// An agent's `place` that names no point but something to stand beside stands what it shows in
+/// the free space to that place's right, at its line — an agent's turn names the conversation it
+/// was asked in, so what it places stands next to that conversation (`shell.md` §8.1). Placing it
+/// again brings the place showing it forward rather than standing a second one.
+#[test]
+fn an_agents_place_without_a_point_stands_beside_what_it_names() {
+    let _settled = ui::motion::testing::settled();
+    let root = private_home();
+    let mut session = session(root.path());
+    let (inbox_root, notes_root) = (
+        root_of(&session, "so.tilo.lang.mail"),
+        root_of(&session, "so.tilo.lang.notes"),
+    );
+    let (inbox_id, notes_id) = (inbox_root.as_str(), notes_root.as_str());
+    let inbox = placed_as_agent(
+        &mut session,
+        inbox_id,
+        serde_json::json!({"resource": inbox_id, "x": 240, "y": 160}),
+    );
+    let beside = serde_json::json!({"resource": notes_id, "beside": inbox_id});
+    let notes = placed_as_agent(&mut session, notes_id, beside.clone());
+
+    let (x, y, workspace) = canvas_point(&session, &notes);
+    let (ix, iy, inbox_in) = canvas_point(&session, &inbox);
+    assert_eq!(workspace, inbox_in, "it stands in the anchor's workspace");
+    assert_eq!(y, iy, "it stands at the anchor's line");
+    assert!(x > ix, "it stands to the anchor's right: {x} against {ix}");
+    let (who, verb) = session
+        .arrangement()
+        .borrow_mut()
+        .last_step()
+        .expect("a step of the history");
+    assert_eq!(who, AGENT, "attributed to the agent");
+    assert_eq!(verb, "place");
+
+    session
+        .invoke_with_actor(AGENT, "shell:arrangement", "place", &beside)
+        .unwrap_or_else(|error| panic!("the second place runs: {error}"));
+    session.step(Duration::from_millis(1)).expect("a frame");
+    let shown = crate::common::places(&session)
+        .into_iter()
+        .filter(|place| place.record == notes_id)
+        .count();
+    assert_eq!(shown, 1, "one place shows it");
+}
+
+/// A place moved beside another (`position` with `beside`, no point) stands in the free space next
+/// to it: "put my notes next to the inbox". One that names neither a point nor anything to stand
+/// beside is refused rather than sent to the canvas' origin.
+#[test]
+fn a_place_positioned_beside_another_stands_next_to_it() {
+    let _settled = ui::motion::testing::settled();
+    let root = private_home();
+    let mut session = session(root.path());
+    let (inbox_root, notes_root) = (
+        root_of(&session, "so.tilo.lang.mail"),
+        root_of(&session, "so.tilo.lang.notes"),
+    );
+    let (inbox_id, notes_id) = (inbox_root.as_str(), notes_root.as_str());
+    let inbox = placed_as_agent(
+        &mut session,
+        inbox_id,
+        serde_json::json!({"resource": inbox_id, "x": 240, "y": 160}),
+    );
+    let note = placed_as_agent(
+        &mut session,
+        notes_id,
+        serde_json::json!({"resource": notes_id, "x": 6000, "y": 4000}),
+    );
+    let (ix, iy, _) = canvas_point(&session, &inbox);
+    let (nx, ny, _) = canvas_point(&session, &note);
+    assert!(
+        nx >= 6000 && ny >= 4000,
+        "the note stands far off first: {nx},{ny}"
+    );
+
+    let place = format!("shell:place:{}", note.key);
+    let refused = session.invoke_with_actor(AGENT, &place, "position", &serde_json::json!({}));
+    assert!(refused.is_err(), "no point and nothing beside is refused");
+
+    session
+        .invoke_with_actor(
+            AGENT,
+            &place,
+            "position",
+            &serde_json::json!({"beside": format!("shell:place:{}", inbox.key)}),
+        )
+        .unwrap_or_else(|error| panic!("the position runs: {error}"));
+    let moved = crate::common::wait_for(&mut session, "the note moved", |session| {
+        let place = crate::common::places(session)
+            .into_iter()
+            .find(|place| place.record == notes_id)?;
+        let (x, y, _) = canvas_point(session, &place);
+        (x < 6000).then_some((x, y))
+    });
+    assert_eq!(moved.1, iy, "it stands at the inbox's line: {moved:?}");
+    assert!(moved.0 > ix, "to the inbox's right: {moved:?} against {ix}");
 }

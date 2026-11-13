@@ -292,9 +292,16 @@ say "the apps run on $app_runtime"
 tilolang_version=$(sed -n 's/^provides *= *"tilolang\/\([^"]*\)".*/\1/p' \
     "$repo_root/apps/tilolang/tilo-runtime.toml")
 [[ -n $tilolang_version ]] || die "apps/tilolang/tilo-runtime.toml provides no tilolang version"
+# Beside it, the tilolang host (crates/platform/tilolang-host), which runs a workspace's tilolang
+# apps by one author as instances, as `nested-session.sh` bakes it: without it every tilolang
+# app's window and every agent program finds no host to run in. `nested-session-build.sh` builds
+# it without the toolkit, so it runs on the app runtime's loader and libraries alone.
+tilolang_host_bin=$repo_root/target/nested-session/bin/tilolang-host
+[[ -f $tilolang_host_bin ]] || die "no tilolang host at $tilolang_host_bin: run dist/dev/nested-session-build.sh"
 say "baking the tilolang runtime bundle $tilolang_version"
 "$bin/tilo-runtime-bundle" build --binaries-only --version "$tilolang_version" \
     --out "$runtimes/$tilolang_version" --include-bin "$tilolang_bin" \
+    --include-bin "$tilolang_host_bin" \
     --identity "$identity" >/dev/null
 tilolang_runtime=tilolang/$tilolang_version
 

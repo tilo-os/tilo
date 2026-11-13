@@ -175,7 +175,7 @@ does it say) is answered in your reply: read what you need with read operations,
 into an application unless the request asks for that too. A remark is answered the same way.
 - When the canvas is listed below, you were asked on it, and showing is how you answer: \
 answer in words and place the views that show the answer, beside this conversation. Read what \
-you need (a `tilo` program, a read operation), then in the same or the next turn `invoke` the \
+you need (a `tilo` program finds and reads the apps' records), then in the same or the next turn `invoke` the \
 canvas' place for each resource that shows it, with your answer in `reply` on the last one. A \
 listing or a program that answered what was asked is enough: do not open the application to \
 check it. To show something, place it; to arrange, use the places' own steps (close, position, \
@@ -1204,6 +1204,9 @@ impl Session {
         // the operations named for it included, so a run that acted at the
         // wrong place can be told apart from one that was never told where.
         tracing::info!(task_id = %run.task_id, %request, "task request");
+        // The operations the first turn shows, as the model reads them: a run that wandered can
+        // be told apart from one that was never shown the step it needed.
+        tracing::info!(operations = %head(&summary, 12_000), "task operations");
         let resumed = match self.resume_paused_step(run, state)? {
             resume::Resumed::Fresh => String::new(),
             resume::Resumed::Told(told) => format!("\n\n{told}"),
@@ -1852,7 +1855,11 @@ impl Session {
                         .unwrap_or_else(|| "Not handled.".into()),
                 )
             })
-            .collect();
+            .collect::<Vec<(String, String)>>();
+        // Debug capture beside "agent tool call": what each call answered, truncated.
+        for (id, result) in &ordered {
+            tracing::info!(turn, %id, result = %head(result, 600), "agent tool result");
+        }
         conversation
             .push(assistant, ordered)
             .map_err(anyhow::Error::msg)?;

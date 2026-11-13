@@ -167,11 +167,7 @@ pub fn canvas_section(
         for (resource, label, kind, count) in &roots {
             let _ = write!(s, "  {resource} — {label} ({kind})");
             if *count > 0 {
-                let _ = write!(
-                    s,
-                    "; {count} of its items are published, placed by the ids a program or \
-                     listing answers"
-                );
+                let _ = write!(s, "; {count} items");
             }
             s.push('\n');
         }

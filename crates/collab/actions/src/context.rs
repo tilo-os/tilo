@@ -1138,7 +1138,16 @@ impl ParticipantId {
     /// Returns a description when the derived id is not a valid participant
     /// id (see [`ParticipantId::new`]).
     pub fn for_agent_task(task_id: &str) -> Result<Self, String> {
-        Self::new(format!("{AGENT_TASK_PARTICIPANT_PREFIX}{task_id}"))
+        // A task id the participant cannot spell as it is — a conversation's turn names its
+        // channel and message, and a direct conversation's channel names both its members by
+        // their keys, which together run past the bound — is keyed by its digest instead: still
+        // derived from the task alone, the same for every invoke of it, and distinct per task.
+        Self::new(format!("{AGENT_TASK_PARTICIPANT_PREFIX}{task_id}")).or_else(|_| {
+            let digest = blake3::hash(task_id.as_bytes()).to_hex();
+            Self::new(format!(
+                "{AGENT_TASK_PARTICIPANT_PREFIX}{AGENT_TASK_DIGEST_PREFIX}{digest}"
+            ))
+        })
     }
 
     /// One host-minted execution's private view. This key is subordinate to the
@@ -1156,6 +1165,10 @@ impl ParticipantId {
 
 /// Reserved namespace of [`ParticipantId::for_agent_task`].
 pub const AGENT_TASK_PARTICIPANT_PREFIX: &str = "agent-task:";
+
+/// What an agent task participant keyed by its task id's digest says after
+/// [`AGENT_TASK_PARTICIPANT_PREFIX`]: the task id did not fit as it is.
+const AGENT_TASK_DIGEST_PREFIX: &str = "blake3:";
 
 impl TryFrom<String> for ParticipantId {
     type Error = String;
@@ -1758,6 +1771,29 @@ mod tests {
             invoker.on_behalf_of.as_deref(),
             Some("person:owner"),
             "the host records whom the admitted actor acts for"
+        );
+    }
+
+    /// A turn of a direct conversation with an agent names its channel by both members' keys and
+    /// its message: past the participant bound. Its participant is still derived, valid, the same
+    /// for every invoke of the task, and another task's is another.
+    #[test]
+    fn a_long_task_id_still_derives_its_participant() {
+        let person = "b6bd224fcba7522731eb807d63a5a8653f8a4c3f5f40a09181ba00197d22feb6";
+        let task = format!(
+            "chat.workspace/channels/direct:agent:assistant|person:{person}/messages/e95e92bf8587b7a3f70b@00000000075ad1e5"
+        );
+        let participant = ParticipantId::for_agent_task(&task).expect("a participant");
+        assert!(participant.as_str().len() <= MAX_PARTICIPANT_ID_BYTES);
+        assert!(participant.agent_task().is_some(), "{participant}");
+        assert_eq!(
+            ParticipantId::for_agent_task(&task).unwrap(),
+            participant,
+            "the same task, the same participant"
+        );
+        assert_ne!(
+            ParticipantId::for_agent_task(&format!("{task}0")).unwrap(),
+            participant
         );
     }
 

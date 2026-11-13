@@ -2667,6 +2667,31 @@ pub(crate) fn awaited_sentence(name: &str, host: &str) -> String {
 mod tests {
     use super::*;
 
+    /// An agent's `open` and `place` naming nothing to stand beside stand beside the conversation
+    /// of its turn; one that names its own anchor, and every other action, keep their arguments.
+    #[test]
+    fn a_turns_open_and_place_stand_beside_its_conversation() {
+        let conversation = "chat.workspace/channels/c1";
+        let address =
+            |action: &str| tilo_actions::ActionAddress::new(crate::arrangement::RESOURCE, action);
+        let resource = serde_json::json!({"resource": "tl:so.tilo.lang.tasks:root-t"});
+        let resource = resource.as_object().expect("an object");
+        for action in ["open", "place"] {
+            let filled = with_turn_beside(&address(action), resource, conversation);
+            assert_eq!(filled["beside"], conversation, "{action}");
+        }
+        let own = serde_json::json!({"resource": "r", "beside": "shell:place:3"});
+        let own = own.as_object().expect("an object");
+        assert_eq!(
+            with_turn_beside(&address("place"), own, conversation)["beside"],
+            "shell:place:3"
+        );
+        assert!(
+            !with_turn_beside(&address("place-found"), resource, conversation)
+                .contains_key("beside")
+        );
+    }
+
     /// What the person remembers is the program, and every connection it admits is an instance of
     /// its own: revoking the one takes back the answer of the other, and no other program's.
     #[test]
