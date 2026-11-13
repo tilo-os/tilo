@@ -1,6 +1,8 @@
 //! What text typed on the canvas finds and stands, and how a query starts.
 
-use super::{found_resource, most_specific, placed, query_state_from_outcome};
+use super::{
+    Target as Placed, found_place, found_resource, most_specific, placed, query_state_from_outcome,
+};
 use tilo_desktop_search::{Hit, InvokeTarget, ResourceKind, Target};
 
 /// The query's starting state is the app's own search invocation result: a run that was taken
@@ -128,4 +130,75 @@ fn the_text_places_the_row_that_opens_the_resource_not_one_that_acts_on_it() {
         Some("tl:so.tilo.lang.mail:root"),
         "and the canvas stands its resource"
     );
+}
+
+/// Mail's root as the session publishes it: its whole window primary, and the inbox's list as what
+/// a place of it shows standing on its own.
+fn mail_root() -> Placed {
+    Placed {
+        app: "so.tilo.lang.mail".into(),
+        views: vec!["mail".into(), "all_inboxes".into(), "unified".into()],
+        title: "Mail".into(),
+        kind: "tl.so.tilo.lang.mail.Mail".into(),
+        place_view: Some("all_inboxes".into()),
+        app_title: "Mail".into(),
+    }
+}
+
+/// Words that name the thing place it through its place view; words that name the app alone place
+/// its whole window (canvas.md §7, "The thing, never the app").
+#[test]
+fn the_words_name_the_thing_unless_they_name_the_app_alone() {
+    let mail = mail_root();
+    for thing in ["my mails", "mails", "my mail", "my inbox", "all my mail"] {
+        assert_eq!(
+            mail.view_for(thing),
+            "all_inboxes",
+            "{thing:?} names the mail"
+        );
+    }
+    for app in ["Mail", "mail", "open Mail", "open the mail app", "  Mail "] {
+        assert_eq!(
+            mail.view_for(app),
+            "",
+            "{app:?} names the app: its primary view"
+        );
+    }
+    let notes = Placed {
+        place_view: Some("all_notes".into()),
+        app_title: "Notes".into(),
+        ..Placed::default()
+    };
+    assert_eq!(
+        notes.view_for("my notes"),
+        "all_notes",
+        "the notes, not Notes"
+    );
+    assert_eq!(notes.view_for("Notes"), "", "the app named alone");
+    assert_eq!(
+        Placed::default().view_for("my mails"),
+        "",
+        "a resource whose default view is its own has no other to stand through"
+    );
+}
+
+/// The canvas, the REPL and an agent's `find` resolve one way: the resource the hits name, through
+/// the view the words place it through.
+#[test]
+fn what_text_places_is_the_resource_and_its_view() {
+    let hits = vec![opening(
+        "tl:so.tilo.lang.mail:root",
+        "Mail",
+        ResourceKind::Record,
+    )];
+    let target = |resource: &str| (resource == "tl:so.tilo.lang.mail:root").then(mail_root);
+    assert_eq!(
+        found_place(&hits, "my mails", target),
+        Some(("tl:so.tilo.lang.mail:root".into(), "all_inboxes".into()))
+    );
+    assert_eq!(
+        found_place(&hits, "open Mail", target),
+        Some(("tl:so.tilo.lang.mail:root".into(), String::new()))
+    );
+    assert_eq!(found_place(&hits, "my mails", |_| None), None);
 }

@@ -58,7 +58,8 @@ pub struct ResourceType {
     /// Its app, as people call it: `Mail`, `mails`.
     pub app: Noun,
     /// The app's root: its one resource of the type, which a search naming
-    /// the app means ("my mails" is Mail's root, drawn as its default view).
+    /// the app means ("my mails" is Mail's root, placed through its place
+    /// view; "Mail" alone through its default view, the app's window).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub root: bool,
 }

@@ -215,6 +215,23 @@ mirrors the ABI additions; `tilolang-runtime/tests/abi_parity.rs` checks that th
   first: the host draws them as the bar's labelled switch and opens the one the person last
   chose in that window. A view of a type that is not named is the app's own helper (a row body,
   a piece a page places), so it is never a window of its own.
+- **A place shows the thing, never the app: `place view v for T`.** A root's default view is
+  the app's window (Mail's sidebar of accounts and every folder; the notebook's tree, editor and
+  history), which is what opening the app shows. A place on the canvas, a reference's place and an
+  agent's `place` stand the resource as content instead (canvas.md §7), so a type whose default
+  view is app-shaped names the view of it that is not: `place view all_inboxes for Mail`, a view
+  of the resource alone with no sidebar, bar or menu of the app's (E018 otherwise, E011 for a
+  second). It is published as the resource view whose `place` flag is set
+  (`ResourceViewSpec::place`), and the arrangement's `place` with no view takes it. Text typed on
+  the canvas takes it unless the words are the app's name alone, with at most `open`, `launch`,
+  `start`, `app` or `the` around it; "my mails" and "my notes" name what the app holds, "Mail" and
+  "open Mail" the app (`Target::view_for`). Neither `default view` nor `row view` could say it:
+  the first is the window every launcher, `open` and `open-app` keep opening, the second is one line
+  in a list. A type whose default view is already its own (a Mailbox's `inbox`, a Note's editor)
+  declares none, and its places show the default view. What a filter over values names ("tasks due
+  this week") is no resource with a place view: it is a question, which the canvas sends to the
+  person's agent, and the agent answers with a view of its own over a `find` (the Views app's
+  `WrittenView`), placed as any view is.
 - **An item's actions are on the item.** A row, card or tree node standing for a resource
   carries its type's actions in its context menu (right-click, long press, Menu key) and, for
   a list row, as its swipe; the page of one item carries them behind the "…" beside its title.
@@ -759,9 +776,9 @@ search.md, "What a type declares" and "Types, references and paths".
   of them (`Tasks` is a `task` and `tasks`), and English's irregular plurals are in it
   (`Person` is a `person` and `people`), so a catalogue refines a type's noun only where the app
   words it its own way (a `Note` it calls a `notebook`). A query naming an app means its root
-  (`ResourceType::root`), and what the person then
-  sees is the app's default view of its root: Mail's is the inbox, so "my mails" is the inbox with
-  no further declaration. `noun "…" "…"` and `primary <test>` were search lines for this and are
+  (`ResourceType::root`). What the person then sees is the root's place view when the words name
+  what the app holds ("my mails"), and its default view, the app's window, only when they name the
+  app alone ("Mail", "open Mail"); see `place view` below. `noun "…" "…"` and `primary <test>` were search lines for this and are
   removed: `noun` was used by no app, and `primary` repeated the word `primary action` already
   means for something else, to say what the root's default view already says.
 - **A document's running text is placed by its view.** `ui.BlockEditor` is a described

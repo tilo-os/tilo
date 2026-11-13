@@ -94,6 +94,8 @@ views project_list (icon: .list), project_board (icon: .columns_2) for Project
 
 row view task_summary for Task
 
+place view to_do for Tasks
+
 /// Adds a task to the inbox or to `p`, in the lane `s` of its board: the entry at a list's end
 /// fills `title` with the words nothing else there takes, and the day, moment and person they
 /// name, so "Call the landlord fri 10am @Bo" is a task due Friday at ten, for Bo.
@@ -604,6 +606,27 @@ view home(t: Tasks) {
                     task_list(shown, by_day, done_place, folds, opened, project)
                 }
             }
+        }
+    }
+}
+
+/// What there is to do, standing on its own as a place shows it: the open tasks, due soonest
+/// first and grouped by day, each opening where it stands, with the entry that adds one at their
+/// foot. None of the window's places, search or bar is around them.
+view to_do(t: Tasks) {
+    state opened: Option<Task> = .none
+    on show(x: Task): set(opened, x)
+    let open = t.items.filter(x -> not x.done).sort_by(.due)
+    ui.Docked {
+        foot: {
+            stack {
+                std.add_entry("New task", new_task(t))
+            }
+        }
+        if open.is_empty() {
+            ui.EmptyState("Nothing to do", icon: .list_checks)
+        } else {
+            task_list(open, true, false, false, opened, .none)
         }
     }
 }

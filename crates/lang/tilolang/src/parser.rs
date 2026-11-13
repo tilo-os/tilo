@@ -604,6 +604,7 @@ impl<'a> Parser<'a> {
             || self.at_root_decl()
             || self.at_default_view()
             || self.at_row_view()
+            || self.at_place_view()
             || self.at_template_view()
             || self.at_scenario()
             || self.at_action_role().is_some()
@@ -612,6 +613,12 @@ impl<'a> Parser<'a> {
     /// `row view v for T` at the start of an item.
     fn at_row_view(&self) -> bool {
         matches!(self.peek(), Tok::Ident(n) if n == "row")
+            && matches!(self.peek_at(1), Tok::Kw("view"))
+    }
+
+    /// `place view v for T` at the start of an item.
+    fn at_place_view(&self) -> bool {
+        matches!(self.peek(), Tok::Ident(n) if n == "place")
             && matches!(self.peek_at(1), Tok::Kw("view"))
     }
 
@@ -919,6 +926,20 @@ impl<'a> Parser<'a> {
             self.expect_kw("for")?;
             let ty = self.type_expr()?;
             return Ok(Item::RowView(DefaultViewDecl {
+                node,
+                view,
+                ty,
+                span: start.to(Span::new(self.prev_end(), self.prev_end())),
+            }));
+        }
+        if self.at_place_view() {
+            self.bump();
+            self.bump();
+            let node = self.node();
+            let view = self.ident("the name of the place view")?;
+            self.expect_kw("for")?;
+            let ty = self.type_expr()?;
+            return Ok(Item::PlaceView(DefaultViewDecl {
                 node,
                 view,
                 ty,

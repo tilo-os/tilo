@@ -196,9 +196,18 @@ fn collect_targets(resource: &ResourceSpec, out: &mut BTreeMap<String, Target>) 
             resource.id.as_str().to_owned(),
             Target {
                 app: app.to_owned(),
+                place_view: views
+                    .iter()
+                    .find(|view| view.place)
+                    .map(|view| view.id.clone()),
                 views: views.into_iter().map(|view| view.id.clone()).collect(),
                 title: resource.label.clone(),
                 kind: resource.kind.clone(),
+                app_title: resource
+                    .resource_type
+                    .as_ref()
+                    .map(|named| named.app.one.clone())
+                    .unwrap_or_default(),
             },
         );
     }

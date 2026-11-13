@@ -301,6 +301,40 @@ pub fn found_resource(
     Some(resource.to_owned())
 }
 
+/// What a text typed on the canvas places: the resource it names ([`found_resource`]) and the view
+/// that resource stands through for these words ([`Target::view_for`]): "my mails" is Mail's root
+/// through its place view, the inbox's list, and "Mail" the same root through its whole window.
+/// `target` reads a resource as the session publishes it, `None` for one no place can show. Text
+/// typed on the canvas and the REPL's `place_found` resolve through it; an agent's `find` leads with
+/// the same resource, and its `place` of it takes the same place view (`Door::place_as_content`).
+#[must_use]
+pub fn found_place(
+    hits: &[tilo_desktop_search::Hit],
+    text: &str,
+    target: impl Fn(&str) -> Option<Target>,
+) -> Option<(String, String)> {
+    let resource = found_resource(hits, text, |resource| target(resource).is_some())?;
+    let view = target(&resource).map_or_else(String::new, |target| target.view_for(text));
+    Some((resource, view))
+}
+
+/// Whether `text` names the app called `title` and nothing else: its name, with at most the words
+/// that ask for an app ([`ui::search::system::APP_WORDS`]) around it. "Mail" and "open Mail" do;
+/// "my mails", "mails" and "my inbox" name what Mail holds.
+fn names_app(text: &str, title: &str) -> bool {
+    let title = ui::search::fold_search_text(title);
+    let title: Vec<&str> = title.split_whitespace().collect();
+    if title.is_empty() {
+        return false;
+    }
+    let text = ui::search::fold_search_text(text);
+    let words: Vec<&str> = text
+        .split_whitespace()
+        .filter(|word| !ui::search::system::APP_WORDS.contains(word))
+        .collect();
+    words == title
+}
+
 /// What the canvas does with text that is a question, or that nothing matches (shell.md §8.1,
 /// "Asking from the canvas"; canvas.md §3): the session sends it as the person to the workspace's
 /// agent, as a send-to box sends, and Chat posts it in their conversation with the agent. It
@@ -503,9 +537,28 @@ pub struct Target {
     /// The resource's kind, as its app publishes it (`tube.video`,
     /// `tl.so.tilo.lang.tasks.Tasks`): what a reference to it names.
     pub kind: String,
+    /// The view a place shows the resource through when it stands as content on its own
+    /// (`place view v for T`), when its app declares one: an app's root whose default view is the
+    /// app's whole window shows this when the words that placed it name the resource rather than
+    /// the app. `None` where the default view is the resource's own.
+    pub place_view: Option<String>,
+    /// What its app is called (`Mail`): the words that, typed alone, name the app rather than the
+    /// resource, so its whole window stands (canvas.md §7, "The thing, never the app").
+    pub app_title: String,
 }
 
 impl Target {
+    /// The view a place made from `text` shows the resource through: its place view, unless the
+    /// text names the app alone ("Mail", "open Mail"), which is the app's whole window, its primary
+    /// view. Empty for the primary view, as `place` takes it (canvas.md §7).
+    #[must_use]
+    pub fn view_for(&self, text: &str) -> String {
+        match &self.place_view {
+            Some(view) if !names_app(text, &self.app_title) => view.clone(),
+            _ => String::new(),
+        }
+    }
+
     /// The view a place shows the resource through: `view` when the resource publishes it, else its
     /// primary view, else its first, else empty for the app's own default.
     #[must_use]
@@ -771,9 +824,13 @@ impl Arrangement {
         // A rectangle the person dragged is its size; a click names none, and what stands there
         // takes its own.
         let size = size.filter(|(width, height)| *width > 0 && *height > 0);
-        let named = found_resource(hits, text, |resource| {
-            self.catalog.borrow().get(resource).is_some()
+        let found = found_place(hits, text, |resource| {
+            self.catalog.borrow().get(resource).cloned()
         });
+        let (named, found_view) = match found {
+            Some((resource, view)) => (Some(resource), view),
+            None => (None, String::new()),
+        };
         // A text naming an app's type (shell.md §8) that names nothing held asks that app, through
         // its own search action, for what it says: the query stands as a place of its own while
         // the app answers, and answers into it (`Self::answer_query`). A question goes to the
@@ -849,7 +906,12 @@ impl Arrangement {
             strip: surface.strip,
             place: surface.place,
             resource,
-            view: view.to_owned(),
+            // The view the caller named, else the one these words place it through.
+            view: if view.trim().is_empty() {
+                found_view
+            } else {
+                view.to_owned()
+            },
             x: at.0,
             y: at.1,
             width,
@@ -2485,6 +2547,7 @@ impl Door {
             return Ok(completed());
         }
         if address.action == "place" {
+            self.place_as_content(&mut action);
             if self.placed_beside(&asked, arguments, &action)? {
                 return Ok(completed());
             }
@@ -2618,6 +2681,28 @@ impl Door {
         arguments: &serde_json::Map<String, Json>,
     ) -> Result<ui::host_operation::ResourceOperationStart, tilo_actions::DoorError> {
         self.invoke_by(Some(actor), address, arguments)
+    }
+
+    /// A `place` that names no view stands its resource as content, through the view its app
+    /// declares for a place of it (`place view`), never through the app's whole window: an agent,
+    /// the REPL and a reference's activation place the thing, as text typed on the canvas does
+    /// (canvas.md §7, "The thing, never the app"). The app's window is `open-app`'s, or the view a
+    /// caller names.
+    fn place_as_content(&self, action: &mut ArrangementAction) {
+        let ArrangementAction::Place { resource, view, .. } = action else {
+            return;
+        };
+        if !view.trim().is_empty() {
+            return;
+        }
+        let targets = self.arrangement.borrow().targets();
+        let place_view = targets
+            .borrow()
+            .get(resource.trim())
+            .and_then(|target| target.place_view.clone());
+        if let Some(place_view) = place_view {
+            *view = place_view;
+        }
     }
 
     /// A `place` that names no workspace, row, strip or id of its own stands on the

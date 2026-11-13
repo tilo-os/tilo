@@ -920,3 +920,104 @@ fn a_places_size_action_sizes_it() {
         "the place takes the size: {strip:?}"
     );
 }
+
+/// What Mail's whole window says and its content never does: the title over its sidebar of every
+/// account's places.
+const MAIL_SIDEBAR: &str = "All accounts";
+
+/// A note in the list of notes the canvas places for "my notes": the last the notebook holds, so a
+/// row that is not the first note's page.
+const SECOND_NOTE: &str = "Lentil soup";
+
+/// Say `text` at a point of free ground on the canvas of a seeded session served from `root`.
+fn say_on_the_canvas(root: &std::path::Path, text: &str) -> Session {
+    let mut session = seeded_session(root);
+    let (x, y, w, h) = on_screen(&session, CANVAS).expect("the canvas");
+    point_and_say(&mut session, (x + w * 0.1, y + h * 0.2), text);
+    session
+}
+
+/// "my mails" places the thing it names, the inbox's list of conversations, never Mail's window
+/// (canvas.md §7, "The thing, never the app"): a conversation's row stands on the canvas, and the
+/// window's sidebar of accounts does not.
+#[test]
+fn my_mails_places_the_message_list_not_the_mail_window() {
+    let _settled = ui::motion::testing::settled();
+    let root = private_home();
+    let mut session = say_on_the_canvas(root.path(), "my mails");
+    until(
+        &mut session,
+        "a conversation's row on the canvas",
+        |session| session.shell_says(crate::common::SUBJECT),
+    );
+    assert!(
+        !session.shell_says(MAIL_SIDEBAR),
+        "the inbox's list stands with no sidebar of the mail window around it"
+    );
+}
+
+/// "my notes" places the list of notes: every note a row, and no note's page, editor or the
+/// notebook's file menu.
+#[test]
+fn my_notes_places_the_list_of_notes_not_the_notebook_window() {
+    let _settled = ui::motion::testing::settled();
+    let root = private_home();
+    let mut session = say_on_the_canvas(root.path(), "my notes");
+    until(&mut session, "the notes as rows on the canvas", |session| {
+        session.shell_says(crate::common::NOTE_TITLE) && session.shell_says(SECOND_NOTE)
+    });
+    assert!(
+        session.shell_controls("File").is_empty(),
+        "no notebook window's file menu stands on the canvas"
+    );
+    assert!(
+        session.shell_controls("Write something").is_empty()
+            && !session.shell_says("Write something"),
+        "no note's editor stands on the canvas"
+    );
+}
+
+/// Words naming the app alone place the app: "open Mail" stands Mail's whole window, its sidebar
+/// of accounts with it.
+#[test]
+fn open_mail_places_the_whole_app() {
+    let _settled = ui::motion::testing::settled();
+    let root = private_home();
+    let mut session = say_on_the_canvas(root.path(), "open Mail");
+    until(&mut session, "Mail's window with its sidebar", |session| {
+        session.shell_says(MAIL_SIDEBAR) && session.shell_says(crate::common::SUBJECT)
+    });
+}
+
+/// An agent showing the person's mail stands the same thing typing "my mails" does: the
+/// arrangement's `place` of Mail's root with no view places the inbox's list, never Mail's window
+/// (canvas.md §4, §7). The step is the arrangement's own published `place`, as the broker runs an
+/// agent's.
+#[test]
+fn placing_mails_root_without_a_view_stands_the_message_list() {
+    let _settled = ui::motion::testing::settled();
+    let root = private_home();
+    let mut session = seeded_session(root.path());
+    let mail = session
+        .resources()
+        .into_iter()
+        .find(|spec| spec.id.as_str().starts_with("tl:so.tilo.lang.mail:root-"))
+        .map(|spec| spec.id.as_str().to_owned())
+        .expect("Mail's root is published");
+    session
+        .invoke(
+            "shell:arrangement",
+            "place",
+            serde_json::json!({ "resource": mail }).as_object().unwrap(),
+        )
+        .unwrap_or_else(|error| panic!("the mail is placed: {error:?}"));
+    until(
+        &mut session,
+        "a conversation's row on the canvas",
+        |session| session.shell_says(crate::common::SUBJECT),
+    );
+    assert!(
+        !session.shell_says(MAIL_SIDEBAR),
+        "the inbox's list stands with no sidebar of the mail window around it"
+    );
+}

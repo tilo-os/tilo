@@ -61,6 +61,7 @@ pub(super) fn query_target(query: &ArrangementQueryReading) -> Target {
         views: vec!["page".to_owned()],
         title: query.text.clone(),
         kind: QUERY_KIND.to_owned(),
+        ..Target::default()
     }
 }
 

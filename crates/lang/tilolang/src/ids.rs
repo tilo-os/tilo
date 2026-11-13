@@ -291,6 +291,7 @@ pub fn declared_names(m: &Module) -> Vec<String> {
             | Item::Root(_)
             | Item::DefaultView(_)
             | Item::RowView(_)
+            | Item::PlaceView(_)
             | Item::Views(_) => {}
             Item::Scenario(s) => out.push(scenario_key(&s.name)),
             Item::Trigger(t) => out.push(trigger_key(&t.name.name)),

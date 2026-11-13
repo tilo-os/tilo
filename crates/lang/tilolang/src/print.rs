@@ -1081,6 +1081,11 @@ impl Printer<'_> {
                 d.view.name,
                 print_type(&d.ty)
             )),
+            Item::PlaceView(d) => self.line(&format!(
+                "place view {} for {}",
+                d.view.name,
+                print_type(&d.ty)
+            )),
             Item::Views(d) => {
                 let views = d
                     .views
