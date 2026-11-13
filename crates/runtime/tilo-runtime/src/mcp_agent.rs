@@ -2821,15 +2821,33 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 if !opens {
                     return Err(Self::may_not_open(&app_id));
                 }
-                let value = self
-                    .app_in_workspace(
-                        &app_id,
-                        tilo_actions::remote::APPLICATION_START_ACTION,
-                        serde_json::Map::new(),
-                        None,
-                        wait_ms,
-                    )
-                    .await?;
+                // A start still pending is followed under its own id, which
+                // answers how it went rather than starting the app again: a
+                // workspace starting many apps at once (hundreds of fresh ones
+                // on a host, each its first) takes longer than one wait, and
+                // the call waits for its app rather than failing.
+                let start = uuid::Uuid::new_v4().to_string();
+                let deadline = std::time::Instant::now()
+                    .checked_add(std::time::Duration::from_millis(super::MAX_WAIT_MS));
+                let mut value = Value::Null;
+                for first in [true].into_iter().chain(std::iter::repeat(false)) {
+                    value = self
+                        .app_in_workspace(
+                            &app_id,
+                            tilo_actions::remote::APPLICATION_START_ACTION,
+                            serde_json::Map::new(),
+                            Some(start.clone()),
+                            if first { wait_ms } else { None },
+                        )
+                        .await?;
+                    let pending = !matches!(
+                        value.pointer("/update/state").and_then(Value::as_str),
+                        Some("succeeded" | "failed" | "cancelled")
+                    );
+                    if !pending || deadline.is_none_or(|end| std::time::Instant::now() >= end) {
+                        break;
+                    }
+                }
                 if value.pointer("/update/state").and_then(Value::as_str) != Some("succeeded") {
                     return Err(format!("{app_id} did not start: {}", outcome(&value).text));
                 }
