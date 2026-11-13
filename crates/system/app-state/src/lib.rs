@@ -243,7 +243,7 @@ impl DocStore {
     /// tools; rejects any id that is not a single, non-traversing directory name.
     pub fn open_for(app_id: &str) -> Result<Self, StoreError> {
         checked_app_id(app_id)?;
-        Self::shared(Self::native_store(), StorageKey::package(app_id))
+        Self::shared(Self::native_store(), StorageKey::app(app_id))
     }
 
     /// Open one record in one workspace.  A record id is only unique
@@ -262,7 +262,7 @@ impl DocStore {
         validate_record_identity(app_id, workspace_key, record_key)?;
         Self::shared(
             Self::native_store(),
-            StorageKey::record(app_id, workspace_key, record_key),
+            StorageKey::document(app_id, workspace_key, record_key),
         )
     }
 
@@ -603,7 +603,7 @@ fn directory_key(directory: &Path) -> Result<(Rc<dyn DurableStore>, StorageKey),
     };
     Ok((
         Rc::new(FsStore::new(root)) as Rc<dyn DurableStore>,
-        StorageKey::package(name),
+        StorageKey::app(name),
     ))
 }
 
@@ -1170,7 +1170,7 @@ mod tests {
 
             let result = DocStore::shared(
                 Rc::new(FsStore::new(blocker.join("sub"))),
-                StorageKey::package("so.tilo.blocked"),
+                StorageKey::app("so.tilo.blocked"),
             );
 
             match result {

@@ -838,7 +838,7 @@ mod tests {
                 provider: "record:chat:feedback".into(),
                 channel: "feedback".into(),
             },
-            Outbox::open(storage.clone(), StorageKey::package("feedback-outbox"))
+            Outbox::open(storage.clone(), StorageKey::app("feedback-outbox"))
                 .expect("private outbox"),
             Box::new(Host(transport.clone())),
         )
@@ -936,7 +936,7 @@ mod tests {
                 },
                 Outbox::open(
                     Rc::new(MemoryStore::new()),
-                    StorageKey::package("feedback-outbox"),
+                    StorageKey::app("feedback-outbox"),
                 )
                 .expect("private outbox"),
                 Box::new(Host(transport.clone())),
@@ -1158,7 +1158,7 @@ mod tests {
                 },
                 Outbox::open(
                     Rc::new(MemoryStore::new()),
-                    StorageKey::package("feedback-outbox"),
+                    StorageKey::app("feedback-outbox"),
                 )
                 .expect("private outbox"),
                 Box::new(Recording {
@@ -1242,7 +1242,7 @@ mod tests {
                 },
                 Outbox::open(
                     Rc::new(MemoryStore::new()),
-                    StorageKey::package("feedback-outbox"),
+                    StorageKey::app("feedback-outbox"),
                 )
                 .expect("private outbox"),
                 Box::new(Host(Rc::clone(transport))),

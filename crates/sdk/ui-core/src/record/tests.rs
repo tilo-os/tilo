@@ -99,7 +99,7 @@ fn a_part_stored_after_the_window_opened_is_held_and_opens() {
     let workspace = uuid::Uuid::new_v4().to_string();
     let chain = RecordId::derived("messages", &RecordId::workspace_default());
     let part = RecordCheckout::new(chain.part(0), RecordKind::new("test.chain-part"));
-    let key = StorageKey::record(
+    let key = StorageKey::document(
         "so.tilo.test-chain",
         &workspace,
         chain.part(0).storage_key(),
@@ -214,7 +214,7 @@ fn a_record_written_while_the_field_was_named_workspace_reads_with_its_workspace
     let history = written.get_heads();
 
     let backend = Rc::new(durable_store::MemoryStore::new());
-    let key = StorageKey::record(package, &workspace, checkout.id.storage_key());
+    let key = StorageKey::document(package, &workspace, checkout.id.storage_key());
     backend
         .write(&key, durable_store::WriteOp::Replace(written.save()), None)
         .unwrap();
@@ -526,7 +526,7 @@ fn canonical_records_persist_through_the_host_store_and_report_save_status() {
         assert_eq!(store.canonical_namespace().unwrap().0, backend.namespace());
         drop((store, owners));
 
-        let key = StorageKey::record("so.tilo.test", "workspace-a", want.id.storage_key());
+        let key = StorageKey::document("so.tilo.test", "workspace-a", want.id.storage_key());
         let restarted = Rc::new(MemoryStore::queued().named(backend.namespace()));
         restarted
             .hydrate(key.clone(), backend.read(&key).unwrap().unwrap())
@@ -1128,7 +1128,7 @@ fn history_existing_records_reopen_and_refuse_corruption() {
             let path = {
                 let owner = app_state::DocStore::shared(
                     Rc::clone(&documents),
-                    StorageKey::record(package, workspace, &key),
+                    StorageKey::document(package, workspace, &key),
                 )
                 .unwrap();
                 owner.document_path().to_path_buf()

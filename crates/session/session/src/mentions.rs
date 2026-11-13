@@ -393,7 +393,7 @@ impl Mentions {
         let Some(store) = &self.0.store else {
             return;
         };
-        let key = StorageKey::package(PACKAGE);
+        let key = StorageKey::app(PACKAGE);
         let Ok(bytes) =
             serde_json::to_vec(&serde_json::Value::Object(self.0.held.borrow().encoded()))
         else {
@@ -417,7 +417,7 @@ impl Mentions {
 
 /// What this device told before it started, as its store kept it.
 fn read(store: &dyn DurableStore) -> Option<serde_json::Map<String, serde_json::Value>> {
-    let key = StorageKey::package(PACKAGE);
+    let key = StorageKey::app(PACKAGE);
     let stored = match store.read(&key) {
         Ok(stored) => stored?,
         Err(error) => {

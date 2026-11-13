@@ -313,7 +313,7 @@ impl TwoDevices {
             .unwrap();
         self.guest_backend
             .write(
-                &durable_store::StorageKey::record(
+                &durable_store::StorageKey::document(
                     "so.tilo.chat",
                     &self.workspace,
                     crate::parts::part(0).storage_key(),

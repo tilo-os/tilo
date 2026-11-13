@@ -45,7 +45,7 @@ fn composer(calls: &Rc<RefCell<Calls>>) -> Composer {
             provider: "record:so.tilo.chat:".into(),
             channel: "c_feedback".into(),
         },
-        Outbox::open(Rc::new(MemoryStore::new()), StorageKey::package("feedback")).unwrap(),
+        Outbox::open(Rc::new(MemoryStore::new()), StorageKey::app("feedback")).unwrap(),
         Box::new(Host(Rc::clone(calls))),
     )
     .unwrap()

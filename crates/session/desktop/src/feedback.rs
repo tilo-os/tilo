@@ -64,7 +64,7 @@ impl PrivateFeedback {
     ) -> Result<Self, Error> {
         destination.validate()?;
         let namespace = blake3::hash(&serde_json::to_vec(&destination)?);
-        let key = StorageKey::package(format!("so.tilo.feedback-outbox.{}", namespace.to_hex()));
+        let key = StorageKey::app(format!("so.tilo.feedback-outbox.{}", namespace.to_hex()));
         let outbox = Outbox::open(store, key)?;
         let controller = Composer::new(destination, outbox, host)?;
         Ok(Self {

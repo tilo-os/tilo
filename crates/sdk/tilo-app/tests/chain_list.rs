@@ -334,7 +334,7 @@ fn a_write_while_its_part_is_on_its_way_lands_once_the_part_arrived() {
     );
 
     // The workspace's part reaches the device's own copy of its records.
-    let key = StorageKey::record(APP, "workspace", LogPart::chain().part(0).storage_key());
+    let key = StorageKey::document(APP, "workspace", LogPart::chain().part(0).storage_key());
     let kept = theirs
         .read(&key)
         .unwrap()
@@ -358,7 +358,7 @@ fn part_arrives(
     reader: &RecordStore,
 ) {
     use durable_store::{DurableStore as _, StorageKey};
-    let key = StorageKey::record(
+    let key = StorageKey::document(
         "so.tilo.test-chain-log",
         "workspace",
         LogPart::chain().part(0).storage_key(),
@@ -489,7 +489,7 @@ fn a_native_window_waits_for_the_workspaces_newest_part_and_founds_no_part_of_it
     );
     let newest = LogPart::chain().part(1);
     let kept = theirs
-        .read(&StorageKey::record(APP, &workspace, newest.storage_key()))
+        .read(&StorageKey::document(APP, &workspace, newest.storage_key()))
         .unwrap()
         .expect("the writer kept part 1")
         .bytes;

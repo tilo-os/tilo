@@ -1781,11 +1781,11 @@ pub(crate) fn mount(
     workspace_name: Option<&str>,
     notify: Arc<dyn Fn() + Send + Sync>,
 ) -> Result<(DesktopSurface, DesktopHandle, Shared, Persistence), String> {
-    let key = StorageKey::record(DESKTOP_PACKAGE, inputs.workspace.clone(), "desktop");
+    let key = StorageKey::document(DESKTOP_PACKAGE, inputs.workspace.clone(), "desktop");
     let salt = peer_salt(&inputs.salt);
     let shared = shared_with_its_host(&inputs, &notify);
     take_up_feedback(&shared, &mut inputs, &store, &notify);
-    let history_key = StorageKey::record(DESKTOP_PACKAGE, inputs.workspace.clone(), "history");
+    let history_key = StorageKey::document(DESKTOP_PACKAGE, inputs.workspace.clone(), "history");
     let document = open_desk(store.as_ref(), &key, &history_key, &inputs.author);
     // In a workspace the profile keeps the workspace's desk, which holds nobody's own windows
     // (`tilo_desktop_model::personal`); a desk no workspace shares is this person's alone, all of
@@ -1837,7 +1837,7 @@ pub(crate) fn mount(
         }
     };
     let notifications_key =
-        StorageKey::record(DESKTOP_PACKAGE, inputs.workspace.clone(), "notifications");
+        StorageKey::document(DESKTOP_PACKAGE, inputs.workspace.clone(), "notifications");
     let notifications = tilo_desktop_surface::DesktopNotifications::default();
     if let Some(stored) = store.read(&notifications_key).ok().flatten() {
         // A record this page cannot read leaves the centre empty rather than the page unopened.

@@ -1269,7 +1269,7 @@ impl HistoryMaps {
 
     /// What this device's store holds of the view.
     fn read(store: &dyn DurableStore) -> Option<serde_json::Map<String, Value>> {
-        let key = StorageKey::package(VIEW_PACKAGE);
+        let key = StorageKey::app(VIEW_PACKAGE);
         let stored = match store.read(&key) {
             Ok(stored) => stored?,
             Err(error) => {
@@ -1334,7 +1334,7 @@ impl HistoryMaps {
         let Some(store) = &self.store else {
             return;
         };
-        let key = StorageKey::package(VIEW_PACKAGE);
+        let key = StorageKey::app(VIEW_PACKAGE);
         let Ok(bytes) = serde_json::to_vec(&*self.known.borrow()) else {
             return;
         };

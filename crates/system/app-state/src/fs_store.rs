@@ -354,22 +354,22 @@ fn workspace_indexes_in(root: &Path) -> Result<Vec<(String, String)>, SeamError>
 
 fn target_in(root: &Path, key: &StorageKey) -> Result<Target, SeamError> {
     match key {
-        StorageKey::Record {
+        StorageKey::Document {
             app,
             workspace,
-            record,
+            document,
         } => {
             validate_record_key(workspace)?;
-            validate_record_key(record)?;
+            validate_record_key(document)?;
             Ok(Target::Document(
                 app_dir_in(root, app.as_str())?
                     .join(WORKSPACES_DIR)
                     .join(workspace)
                     .join(RECORDS_DIR)
-                    .join(record),
+                    .join(document),
             ))
         }
-        StorageKey::Package { app } => Ok(Target::Document(app_dir_in(root, app.as_str())?)),
+        StorageKey::App { app } => Ok(Target::Document(app_dir_in(root, app.as_str())?)),
         StorageKey::WorkspaceIndex { app, workspace } => {
             validate_record_key(workspace)?;
             Ok(Target::Document(
@@ -988,7 +988,7 @@ impl DurableStore for FsStore {
         let marker = match key {
             // A workspace record adopted under a new identity (see
             // `ui::RecordCheckout::formerly`): the claimant is its successor.
-            StorageKey::Record { .. } => match self.target(key)? {
+            StorageKey::Document { .. } => match self.target(key)? {
                 Target::Document(directory) => directory.join(RECORD_SUCCESSOR_CLAIM),
                 Target::View(_) => {
                     return Err(SeamError::InvalidKey {
@@ -1013,7 +1013,7 @@ impl DurableStore for FsStore {
 
     /// Records whose document file holds committed bytes. A write still in
     /// its debounce window is not listed until it commits.
-    fn records(&self, app: &str, workspace: &str) -> Result<Vec<String>, SeamError> {
+    fn documents(&self, app: &str, workspace: &str) -> Result<Vec<String>, SeamError> {
         validate_record_key(workspace)?;
         let directory = self
             .app_dir(app)?
@@ -1863,7 +1863,7 @@ mod tests {
     use tempfile::TempDir;
 
     fn record(name: &str) -> StorageKey {
-        StorageKey::record("so.tilo.test", "room-a", name)
+        StorageKey::document("so.tilo.test", "room-a", name)
     }
 
     /// An idle frame loop told "not yet" hears when the answer is ready:
@@ -2250,14 +2250,19 @@ mod tests {
     fn records_lists_one_workspaces_committed_documents_sorted() {
         let tmp = TempDir::new().unwrap();
         let store = FsStore::with_debounce(tmp.path(), Duration::ZERO);
-        assert!(store.records("so.tilo.test", "room-a").unwrap().is_empty());
+        assert!(
+            store
+                .documents("so.tilo.test", "room-a")
+                .unwrap()
+                .is_empty()
+        );
         for (workspace, name, bytes) in [
             ("room-a", "b-rec", b"doc".as_slice()),
             ("room-a", "a-rec", b"doc"),
             ("room-a", "empty", b""),
             ("room-b", "elsewhere", b"doc"),
         ] {
-            let key = StorageKey::record("so.tilo.test", workspace, name);
+            let key = StorageKey::document("so.tilo.test", workspace, name);
             let _lease = store.lease(&key).unwrap();
             store
                 .write(&key, WriteOp::Replace(bytes.to_vec()), None)
@@ -2265,10 +2270,10 @@ mod tests {
             store.flush(Some(&key)).unwrap();
         }
         assert_eq!(
-            store.records("so.tilo.test", "room-a").unwrap(),
+            store.documents("so.tilo.test", "room-a").unwrap(),
             ["a-rec", "b-rec"]
         );
-        assert!(store.records("so.tilo.test", "../room-a").is_err());
+        assert!(store.documents("so.tilo.test", "../room-a").is_err());
     }
 
     #[test]
@@ -2367,7 +2372,7 @@ mod tests {
             let store = FsStore::with_debounce(tmp.path(), Duration::ZERO);
             let app = tmp.path().join("so.tilo.test");
             for (key, directory) in [
-                (StorageKey::package("so.tilo.test"), app.clone()),
+                (StorageKey::app("so.tilo.test"), app.clone()),
                 (
                     StorageKey::workspace_index("so.tilo.test", "room-a"),
                     app.join(WORKSPACES_DIR).join("room-a"),

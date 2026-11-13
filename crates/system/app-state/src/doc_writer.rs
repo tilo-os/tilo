@@ -1096,7 +1096,7 @@ mod tests {
             Rc::new(
                 DocOwner::acquire(
                     Rc::clone(&self.store),
-                    StorageKey::record("so.tilo.test", "room", record),
+                    StorageKey::document("so.tilo.test", "room", record),
                 )
                 .unwrap(),
             )
@@ -1120,7 +1120,7 @@ mod tests {
         let owner = Rc::new(
             DocOwner::acquire(
                 store,
-                StorageKey::record("so.tilo.test", "room", "on-its-way"),
+                StorageKey::document("so.tilo.test", "room", "on-its-way"),
             )
             .unwrap(),
         );
@@ -1169,7 +1169,7 @@ mod tests {
     fn accepting_a_stored_document_syncs_on_the_stores_thread_not_the_openers() {
         let tmp = tempfile::TempDir::new().unwrap();
         let root = tmp.path().join("profile");
-        let key = StorageKey::record("so.tilo.test", "room", "opened");
+        let key = StorageKey::document("so.tilo.test", "room", "opened");
         {
             let store: Rc<dyn DurableStore> =
                 Rc::new(FsStore::with_debounce(&root, Duration::ZERO));
@@ -1380,7 +1380,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let store: Rc<dyn DurableStore> =
             Rc::new(FsStore::with_debounce(tmp.path(), Duration::from_secs(600)));
-        let key = StorageKey::record("so.tilo.test", "room", "on-the-loop");
+        let key = StorageKey::document("so.tilo.test", "room", "on-the-loop");
         let owner = Rc::new(DocOwner::acquire(Rc::clone(&store), key.clone()).unwrap());
         let mut doc = owner.new_document();
         doc.put(ROOT, "body", "typed").unwrap();
@@ -1415,7 +1415,7 @@ mod tests {
     }
 
     fn store_raw(subject: &Subject, record: &str, bytes: Vec<u8>) {
-        let key = StorageKey::record("so.tilo.test", "room", record);
+        let key = StorageKey::document("so.tilo.test", "room", record);
         let _lease = subject.store.lease(&key).unwrap();
         subject
             .store
@@ -1521,7 +1521,7 @@ mod tests {
                 assert!(matches!(
                     DocOwner::acquire(
                         Rc::clone(&subject.store),
-                        StorageKey::record("so.tilo.test", "room", "exclusive"),
+                        StorageKey::document("so.tilo.test", "room", "exclusive"),
                     ),
                     Err(StoreError::WriterBusy { .. })
                 ));
@@ -1537,7 +1537,7 @@ mod tests {
         // Phase `only_the_primary_shared_writer_continues_the_stored_actor`.
         {
             for subject in Subject::all() {
-                let key = StorageKey::package("so.tilo.shared");
+                let key = StorageKey::app("so.tilo.shared");
                 let primary = Rc::new(
                     DocOwner::acquire_shared(Rc::clone(&subject.store), key.clone()).unwrap(),
                 );
@@ -1577,7 +1577,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let store: Rc<dyn DurableStore> =
             Rc::new(FsStore::with_debounce(tmp.path(), Duration::from_secs(600)));
-        let key = StorageKey::record("so.tilo.test", "room", "large");
+        let key = StorageKey::document("so.tilo.test", "room", "large");
         let owner = Rc::new(DocOwner::acquire(Rc::clone(&store), key.clone()).unwrap());
         let mut doc = owner.new_document();
         let items = doc.put_object(ROOT, "items", ObjType::Map).unwrap();

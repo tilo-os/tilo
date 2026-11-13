@@ -189,7 +189,7 @@ fn storage_key(app: &str, workspace: &str, record: &str) -> Result<StorageKey, &
         return Ok(StorageKey::workspace_index(app, workspace));
     }
     let id = RecordId::parse(record).ok_or("not a record id")?;
-    Ok(StorageKey::record(app, workspace, id.storage_key()))
+    Ok(StorageKey::document(app, workspace, id.storage_key()))
 }
 
 /// Start replicating `workspace` for peer `id`. `events` must have been created

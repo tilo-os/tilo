@@ -83,7 +83,7 @@ pub fn record_document(
     app_state::validate_record_identity(package, home, record_key)?;
     DocStore::shared(
         Rc::clone(documents),
-        StorageKey::record(package, home, record_key),
+        StorageKey::document(package, home, record_key),
     )
 }
 

@@ -394,7 +394,7 @@ pub fn document(
     workspace: &str,
     record: &str,
 ) -> Option<AutoCommit> {
-    let stored = match store.read(&StorageKey::record(app, workspace, record)) {
+    let stored = match store.read(&StorageKey::document(app, workspace, record)) {
         Ok(stored) => stored?,
         Err(error) => {
             tracing::warn!(%error, %app, %record, "a record is not read");
@@ -501,11 +501,11 @@ struct Noted {
 impl Noted {
     fn wrote(&self, key: &StorageKey) {
         match key {
-            StorageKey::Record {
+            StorageKey::Document {
                 app,
                 workspace,
-                record,
-            } => self.changes.note(workspace, app, record, false),
+                document,
+            } => self.changes.note(workspace, app, document, false),
             // The workspace's list of an app's records moved: a record appeared in it or left.
             StorageKey::WorkspaceIndex { app, workspace } => {
                 self.changes.note(workspace, app, "", false);
@@ -575,8 +575,8 @@ impl DurableStore for Noted {
         self.store.as_ref().claim(key, claimant)
     }
 
-    fn records(&self, package: &str, workspace: &str) -> Result<Vec<String>, StoreError> {
-        self.store.as_ref().records(package, workspace)
+    fn documents(&self, app: &str, workspace: &str) -> Result<Vec<String>, StoreError> {
+        self.store.as_ref().documents(app, workspace)
     }
 
     fn workspace_indexes(&self) -> Result<Vec<(String, String)>, StoreError> {

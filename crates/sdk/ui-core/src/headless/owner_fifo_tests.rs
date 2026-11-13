@@ -648,14 +648,17 @@ fn background_gate(presentation: super::owner_background_work::Presentation) {
         .unwrap()
         .to_owned();
     close(&mut frame, 1);
-    let key =
-        durable_store::StorageKey::record(probe::APP, probe::WORKSPACE, checkout.id.storage_key());
+    let key = durable_store::StorageKey::document(
+        probe::APP,
+        probe::WORKSPACE,
+        checkout.id.storage_key(),
+    );
     let mirror = Rc::new(durable_store::MemoryStore::new());
     mirror
         .hydrate(
             key,
             backend
-                .read(&durable_store::StorageKey::record(
+                .read(&durable_store::StorageKey::document(
                     probe::APP,
                     probe::WORKSPACE,
                     checkout.id.storage_key(),
@@ -1125,7 +1128,7 @@ fn background_exact_offer_never_settles_unrelated_same_store_typing() {
     assert_eq!(writes.len(), 1);
     assert_eq!(
         writes[0].key,
-        durable_store::StorageKey::record(probe::APP, probe::WORKSPACE, aid.storage_key())
+        durable_store::StorageKey::document(probe::APP, probe::WORKSPACE, aid.storage_key())
     );
 }
 

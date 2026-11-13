@@ -430,23 +430,23 @@ impl crate::DurableStore for MemoryStore {
     }
 
     fn workspace_indexes(&self) -> Result<Vec<(String, String)>, StoreError> {
-        // Every key that names a workspace holds a record or an index there: a page's store has no
-        // directories to list, so that is what says which packages a profile holds.
+        // Every key that names a workspace holds a document or an index there: a page's store has no
+        // directories to list, so that is what says which apps a profile holds.
         let state = self.state.borrow();
         let mut held = std::collections::BTreeSet::new();
         for key in state.slots.keys() {
             match key {
-                StorageKey::Record { app, workspace, .. }
+                StorageKey::Document { app, workspace, .. }
                 | StorageKey::WorkspaceIndex { app, workspace } => {
                     held.insert((app.to_string(), workspace.clone()));
                 }
-                StorageKey::Package { .. } | StorageKey::View { .. } => {}
+                StorageKey::App { .. } | StorageKey::View { .. } => {}
             }
         }
         Ok(held.into_iter().collect())
     }
 
-    fn records(&self, package: &str, workspace: &str) -> Result<Vec<String>, StoreError> {
+    fn documents(&self, app: &str, workspace: &str) -> Result<Vec<String>, StoreError> {
         // `slots` is ordered, so the answer is sorted.
         Ok(self
             .state
@@ -455,11 +455,11 @@ impl crate::DurableStore for MemoryStore {
             .iter()
             .filter(|(_, slot)| slot.current.as_ref().is_some_and(|s| !s.bytes.is_empty()))
             .filter_map(|(key, _)| match key {
-                StorageKey::Record {
+                StorageKey::Document {
                     app: p,
                     workspace: w,
-                    record,
-                } if p == package && w == workspace => Some(record.clone()),
+                    document,
+                } if p == app && w == workspace => Some(document.clone()),
                 _ => None,
             })
             .collect())
@@ -501,7 +501,7 @@ mod tests {
     use crate::DurableStore;
 
     fn key() -> StorageKey {
-        StorageKey::record("pkg", "room", "rec")
+        StorageKey::document("pkg", "room", "rec")
     }
 
     #[test]

@@ -124,7 +124,7 @@ impl EngineRecords {
         let id = RecordId::parse(record)?;
         self.0
             .store
-            .read(&StorageKey::record(app, workspace, id.storage_key()))
+            .read(&StorageKey::document(app, workspace, id.storage_key()))
             .ok()
             .flatten()
             .map(|stored| stored.bytes)
@@ -186,7 +186,7 @@ impl Inner {
             if self.keeping.get() {
                 continue;
             }
-            if let StorageKey::Record { app, workspace, .. }
+            if let StorageKey::Document { app, workspace, .. }
             | StorageKey::WorkspaceIndex { app, workspace } = write.key
             {
                 noted |= self
@@ -302,7 +302,7 @@ impl Inner {
             StorageKey::workspace_index(app, workspace)
         } else {
             let id = RecordId::parse(record).ok_or("not a record id")?;
-            StorageKey::record(app, workspace, id.storage_key())
+            StorageKey::document(app, workspace, id.storage_key())
         };
         let writer = self
             .store

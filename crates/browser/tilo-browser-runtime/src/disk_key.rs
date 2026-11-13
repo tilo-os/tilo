@@ -42,16 +42,16 @@ pub(crate) enum DiskKey {
 impl From<&StorageKey> for DiskKey {
     fn from(key: &StorageKey) -> Self {
         match key.clone() {
-            StorageKey::Record {
+            StorageKey::Document {
                 app,
                 workspace,
-                record,
+                document,
             } => Self::Record {
                 app: app.to_string(),
                 workspace,
-                record,
+                record: document,
             },
-            StorageKey::Package { app } => Self::Package {
+            StorageKey::App { app } => Self::Package {
                 app: app.to_string(),
             },
             StorageKey::WorkspaceIndex { app, workspace } => Self::WorkspaceIndex {
@@ -141,12 +141,12 @@ impl DiskKey {
                 app,
                 workspace,
                 record,
-            } => StorageKey::Record {
+            } => StorageKey::Document {
                 app: app.into(),
                 workspace,
-                record,
+                document: record,
             },
-            Self::Package { app } => StorageKey::Package { app: app.into() },
+            Self::Package { app } => StorageKey::App { app: app.into() },
             Self::WorkspaceIndex { app, workspace } => StorageKey::WorkspaceIndex {
                 app: app.into(),
                 workspace,
@@ -172,12 +172,12 @@ mod tests {
 
     fn keys() -> Vec<StorageKey> {
         vec![
-            StorageKey::Record {
+            StorageKey::Document {
                 app: "so.tilo.notes".into(),
                 workspace: "w".into(),
-                record: "r".into(),
+                document: "r".into(),
             },
-            StorageKey::Package {
+            StorageKey::App {
                 app: "so.tilo.notes".into(),
             },
             StorageKey::WorkspaceIndex {

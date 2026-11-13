@@ -1092,7 +1092,7 @@ impl RecordSet {
             &documents,
             want,
             &self.home,
-            |former| StorageKey::record(&self.app_id, &self.home, former.storage_key()),
+            |former| StorageKey::document(&self.app_id, &self.home, former.storage_key()),
             |key| app_state::DocStore::shared(Rc::clone(&documents), key.clone())?.load_complete(),
         )
     }
@@ -1275,7 +1275,7 @@ impl RecordSet {
         app_state::validate_record_identity(&self.app_id, &self.home, &record)?;
         Ok((
             Rc::clone(backend),
-            StorageKey::record(&self.app_id, &self.home, record),
+            StorageKey::document(&self.app_id, &self.home, record),
         ))
     }
 
@@ -1393,7 +1393,7 @@ impl RecordSet {
                     &backend,
                     want,
                     &self.home,
-                    |former| StorageKey::record(&self.app_id, &self.home, former.storage_key()),
+                    |former| StorageKey::document(&self.app_id, &self.home, former.storage_key()),
                     |key| {
                         Ok(
                             app_state::DocOwner::acquire(Rc::clone(&backend), key.clone())?
@@ -2483,7 +2483,7 @@ impl RecordStore {
                     ) {
                         (Some(cache), _) => cache.records(&set.app_id, workspace),
                         (None, Some(store)) => {
-                            store.records(&set.app_id, workspace).unwrap_or_default()
+                            store.documents(&set.app_id, workspace).unwrap_or_default()
                         }
                         (None, None) => Vec::new(),
                     }
@@ -2580,7 +2580,7 @@ impl RecordStore {
         if home.is_empty() {
             return Vec::new();
         }
-        let keys = match store.records(package.as_str(), &home) {
+        let keys = match store.documents(package.as_str(), &home) {
             Ok(keys) => keys,
             Err(error) => {
                 tracing::warn!(%package, workspace = %home, %error, "listing the workspace's records failed");

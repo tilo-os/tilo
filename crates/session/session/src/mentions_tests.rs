@@ -95,7 +95,7 @@ impl Device {
     }
 
     fn write_through(store: &Store, app: &str, route: &str, doc: &mut AutoCommit) {
-        Self::write_doc(store, &StorageKey::record(app, WORKSPACE, route), doc);
+        Self::write_doc(store, &StorageKey::document(app, WORKSPACE, route), doc);
     }
 
     /// Write `doc` at `key` through `store`, as a writer of it does.

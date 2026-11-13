@@ -10,7 +10,7 @@
 //! per lease, is told of each accepted write through the store's write hook,
 //! and drains, commits and acknowledges on its own schedule. Rust code that
 //! keeps its own state in the profile (peer state, settings) writes to
-//! [`store`] under a reserved `StorageKey::Package` id and is persisted the
+//! [`store`] under a reserved `StorageKey::App` id and is persisted the
 //! same way.
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -223,7 +223,7 @@ pub(crate) const PROFILE_WORKSPACE: &str = "profile";
 #[wasm_bindgen]
 pub fn profile_value(profile: &str, device: &str, name: &str) -> Result<Option<Vec<u8>>, JsValue> {
     let stored = cached(profile, device)?
-        .read(&StorageKey::record(
+        .read(&StorageKey::document(
             PAGE_VALUES_PACKAGE,
             PROFILE_WORKSPACE,
             name,
@@ -253,7 +253,7 @@ pub fn set_profile_value(
 ) -> Result<(), JsValue> {
     cached(profile, device)?
         .write(
-            &StorageKey::record(PAGE_VALUES_PACKAGE, PROFILE_WORKSPACE, name),
+            &StorageKey::document(PAGE_VALUES_PACKAGE, PROFILE_WORKSPACE, name),
             durable_store::WriteOp::Replace(bytes.unwrap_or_default()),
             None,
         )

@@ -29,16 +29,16 @@ pub use memory::{MemoryStore, PendingWrite};
 /// keys onto a filesystem must validate each one as a single name.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum StorageKey {
-    /// One record's document within one workspace. A record id is unique
-    /// only within its workspace, so the workspace is part of the identity.
-    Record {
+    /// One document within one workspace. A document id is unique only
+    /// within its workspace, so the workspace is part of the identity.
+    Document {
         app: AppId,
         workspace: String,
-        record: String,
+        document: String,
     },
     /// An app's own document, outside any workspace.
-    Package { app: AppId },
-    /// The index of records one workspace holds for an app.
+    App { app: AppId },
+    /// The index of documents one workspace holds for an app.
     WorkspaceIndex { app: AppId, workspace: String },
     /// One application instance's local presentation on one device.
     View {
@@ -49,20 +49,20 @@ pub enum StorageKey {
 }
 
 impl StorageKey {
-    pub fn record(
+    pub fn document(
         app: impl Into<AppId>,
         workspace: impl Into<String>,
-        record: impl Into<String>,
+        document: impl Into<String>,
     ) -> Self {
-        Self::Record {
+        Self::Document {
             app: app.into(),
             workspace: workspace.into(),
-            record: record.into(),
+            document: document.into(),
         }
     }
 
-    pub fn package(app: impl Into<AppId>) -> Self {
-        Self::Package { app: app.into() }
+    pub fn app(app: impl Into<AppId>) -> Self {
+        Self::App { app: app.into() }
     }
 
     pub fn workspace_index(app: impl Into<AppId>, workspace: impl Into<String>) -> Self {
@@ -75,7 +75,7 @@ impl StorageKey {
     /// The app owning this key's data, when it has one.
     pub fn app_id(&self) -> Option<&AppId> {
         match self {
-            Self::Record { app, .. } | Self::Package { app } | Self::WorkspaceIndex { app, .. } => {
+            Self::Document { app, .. } | Self::App { app } | Self::WorkspaceIndex { app, .. } => {
                 Some(app)
             }
             Self::View { .. } => None,
@@ -94,12 +94,12 @@ impl StorageKey {
 impl fmt::Display for StorageKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Record {
+            Self::Document {
                 app,
                 workspace,
-                record,
-            } => write!(f, "record {app}/{workspace}/{record}"),
-            Self::Package { app } => write!(f, "package {app}"),
+                document,
+            } => write!(f, "document {app}/{workspace}/{document}"),
+            Self::App { app } => write!(f, "app {app}"),
             Self::WorkspaceIndex { app, workspace } => {
                 write!(f, "workspace index {app}/{workspace}")
             }
@@ -355,18 +355,18 @@ pub trait DurableStore {
     /// A key the store cannot claim, or a failure recording the claim.
     fn claim(&self, key: &StorageKey, claimant: &str) -> Result<bool, StoreError>;
 
-    /// The `record` component of every [`StorageKey::Record`] of `package`
-    /// in `workspace` that holds stored bytes, sorted. Lets a host find
-    /// records it can no longer name: an app that used to keep a record per
-    /// window and now keeps one per workspace adopts its windows' records. A
-    /// store that cannot enumerate its keys answers with none.
-    fn records(&self, package: &str, workspace: &str) -> Result<Vec<String>, StoreError> {
-        let _ = (package, workspace);
+    /// The document of every [`StorageKey::Document`] of `app` in
+    /// `workspace` that holds stored bytes, sorted. Lets a host find
+    /// documents it can no longer name: an app that used to keep a document
+    /// per window and now keeps one per workspace adopts its windows'
+    /// documents. A store that cannot enumerate its keys answers with none.
+    fn documents(&self, app: &str, workspace: &str) -> Result<Vec<String>, StoreError> {
+        let _ = (app, workspace);
         Ok(Vec::new())
     }
 
-    /// Every [`StorageKey::WorkspaceIndex`] the store holds, as its `package` and
-    /// `workspace` components, sorted. Lets a host read which records the
+    /// Every [`StorageKey::WorkspaceIndex`] the store holds, as its app and
+    /// `workspace` components, sorted. Lets a host read which documents the
     /// workspaces on this device keep without knowing their names first. A
     /// store that cannot enumerate its keys answers with none.
     fn workspace_indexes(&self) -> Result<Vec<(String, String)>, StoreError> {
@@ -426,14 +426,14 @@ mod tests {
         // Phase `keys_display_every_identifying_component`.
         {
             assert_eq!(
-                StorageKey::record("pkg", "room", "rec").to_string(),
-                "record pkg/room/rec"
+                StorageKey::document("pkg", "room", "rec").to_string(),
+                "document pkg/room/rec"
             );
             assert_eq!(
                 StorageKey::view("dev", "room", 7).to_string(),
                 "view dev/room/7"
             );
-            assert_eq!(StorageKey::package("pkg").to_string(), "package pkg");
+            assert_eq!(StorageKey::app("pkg").to_string(), "app pkg");
             assert_eq!(
                 StorageKey::workspace_index("pkg", "room").to_string(),
                 "workspace index pkg/room"
