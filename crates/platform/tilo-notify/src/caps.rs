@@ -2,26 +2,17 @@
 
 pub use tilo_platform_caps::{Availability, availability, available};
 
-/// A feature this target, or this particular host, cannot provide.
 pub type Unsupported = tilo_platform_caps::Unsupported<Feature>;
 
-/// One capability of this crate, for [`availability`] and [`Unsupported`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum Feature {
-    /// Showing, replacing and withdrawing notifications while the app runs.
     Show,
-    /// Handing a notification to the platform for later, including after the
-    /// app exits: [`Notifier::schedule`](crate::Notifier::schedule).
     Schedule,
-    /// Handing a clicked notification's activation URI to the app:
-    /// [`set_activation_handler`](crate::set_activation_handler).
     Activate,
     /// Saying why a notification the app showed went away:
     /// [`set_close_handler`](crate::set_close_handler).
     Close,
-    /// Naming who may break through Do Not Disturb:
-    /// [`publish_priority_contacts`](crate::publish_priority_contacts).
     PriorityContacts,
 }
 
@@ -33,9 +24,8 @@ pub(crate) const MAC_CLOSE: &str =
 pub(crate) const WEB_CLOSE: &str = "Browsers report a notification closing, never why.";
 
 impl tilo_platform_caps::Feature for Feature {
-    /// The feature's availability on Linux, macOS and the web, in that
-    /// order. `Prompt`: macOS and browsers ask the user before the first
-    /// notification.
+    /// The feature's availability on Linux, macOS and the web, in that order.
+    /// `Prompt`: macOS and browsers ask the user before the first notification.
     fn targets(self) -> [Availability; 3] {
         use Availability::{Available, Prompt, Unsupported};
         match self {
