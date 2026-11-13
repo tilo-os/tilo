@@ -438,6 +438,16 @@ if [[ $hosted == 1 ]]; then
         tilo-sh-vm-host-0 >&2 2>/dev/null || true
       sudo -n podman exec tilo-sh-vm-host-0 sh -c \
         'grep -c "BEGIN CERTIFICATE" /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem 2>&1 || true' >&2 2>/dev/null || true
+      # The session in the VM writes what it said beside its VM's files: a
+      # session that exited before its window came up says why there.
+      echo '--- the browser session in the VM said:' >&2
+      sudo -n podman exec tilo-sh-vm-host-0 sh -c \
+        'find /var /srv -name "browser*.log" 2>/dev/null | while read -r log; do echo "$log:"; tail -60 "$log"; done' \
+        >&2 2>/dev/null || true
+      echo '--- what the guest was shown of the workspace:' >&2
+      sudo -n podman exec tilo-sh-vm-host-0 sh -c \
+        'ls -la --time-style=full-iso /srv/tilo-member/home/Tilo 2>&1; find /srv/tilo-member/home -maxdepth 4 -name browser -type d 2>/dev/null | head -3' \
+        >&2 2>/dev/null || true
       fail "Browser did not open in the workspace's VM (see $work/hosted-open.log)"
     fi
     hosted_workspace=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["workspace"])' "$hosted_report")
