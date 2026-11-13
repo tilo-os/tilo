@@ -1142,58 +1142,8 @@ impl Session {
         let began = ui::time::now();
         self.chooser.begin_trace();
         let catalogue = self.task_catalogue();
-        // "ping/tell/notify … in Chat" requires a successful Chat operation,
-        // whatever the model later claims.
-        // A question is answered in the reply: nothing is implied of it.
-        // Only the person's own words imply anything: the selection quoted
-        // as context and earlier answers in the conversation do not.
-        let request = run.request().to_lowercase();
-        let question = asks_question(&request);
-        if !question
-            && request.contains("chat")
-            && asks_for_message(&request)
-            && let Some(chat) = catalogue
-                .offers
-                .iter()
-                .map(|offer| offer.app.as_str())
-                .find(|app| app.to_lowercase().contains("chat"))
-        {
-            state.parts.push(tools::Part {
-                text: "(implied) the message in Chat the request asks for".into(),
-                app: chat.to_owned(),
-            });
-        }
-        // An application the request names (by the title it publishes, e.g.
-        // "Writer") requires a successful operation in it — opening it is
-        // not enough — whatever parts the model later lists.
-        for (app, title) in tools::named_applications(&catalogue, &request)
-            .into_iter()
-            .filter(|_| !question)
-        {
-            if !state.parts.iter().any(|part| app_matches(&part.app, app)) {
-                state.parts.push(tools::Part {
-                    text: format!("(implied) what the request asks for in {title}"),
-                    app: app.to_owned(),
-                });
-            }
-        }
-        // Asked on the canvas, the canvas' own steps come first, whole: showing
-        // what answers the question beside the conversation is the answer's
-        // normal shape. The applications' operations are summarised after them.
-        let canvas = tools::canvas::canvas_section(
-            &catalogue,
-            &mut state.revealed,
-            tools::canvas::conversation_of(&run.task_id),
-        );
-        let summary = if canvas.is_empty() {
-            tools::catalogue_summary(&catalogue, &mut state.revealed, tools::MOST_SUMMARISED)
-        } else {
-            let rest = tools::canvas::without_canvas(&catalogue);
-            let summary =
-                tools::catalogue_summary(&rest, &mut state.revealed, tools::MOST_SUMMARISED);
-            format!("{canvas}Applications:\n\n{summary}")
-        };
-        // Stable first, volatile last. System and tools are the same bytes on
+        Self::note_implied_parts(run, &catalogue, state);
+        let summary = Self::operations_summary(run, &catalogue, state); // Stable first, volatile last. System and tools are the same bytes on
         // every turn of every task; this catalogue changes only when the
         // applications republish, so it opens the first turn in a block of
         // its own and the earlier conversation and the request follow it.
@@ -1252,6 +1202,71 @@ impl Session {
             context.compact(&mut conversation, &mut state.pages);
             turn += 1;
         }
+    }
+
+    /// What the request implies of the run, whatever the model later claims: a Chat operation when
+    /// it asks for a message to be sent, and an operation in each application it names by the title
+    /// it publishes. A question implies nothing of itself — it is answered in the reply — and only
+    /// the person's own words imply anything: the selection quoted as context and earlier answers
+    /// in the conversation do not.
+    fn note_implied_parts(
+        run: &runtime_collab::TaskRunEnvelope,
+        catalogue: &surface::Catalogue,
+        state: &mut LoopState,
+    ) {
+        let request = run.request().to_lowercase();
+        let question = asks_question(&request);
+        if !question
+            && request.contains("chat")
+            && asks_for_message(&request)
+            && let Some(chat) = catalogue
+                .offers
+                .iter()
+                .map(|offer| offer.app.as_str())
+                .find(|app| app.to_lowercase().contains("chat"))
+        {
+            state.parts.push(tools::Part {
+                text: "(implied) the message in Chat the request asks for".into(),
+                app: chat.to_owned(),
+            });
+        }
+        for (app, title) in tools::named_applications(catalogue, &request)
+            .into_iter()
+            .filter(|_| !question)
+        {
+            if !state.parts.iter().any(|part| app_matches(&part.app, app)) {
+                state.parts.push(tools::Part {
+                    text: format!("(implied) what the request asks for in {title}"),
+                    app: app.to_owned(),
+                });
+            }
+        }
+    }
+
+    /// The operations the first turn shows, as the model reads them. Asked on the canvas, the
+    /// canvas' own steps come first, whole: showing what answers the question beside the
+    /// conversation is the answer's normal shape, and the applications' operations are summarised
+    /// after them.
+    fn operations_summary(
+        run: &runtime_collab::TaskRunEnvelope,
+        catalogue: &surface::Catalogue,
+        state: &mut LoopState,
+    ) -> String {
+        let canvas = tools::canvas::canvas_section(
+            catalogue,
+            &mut state.revealed,
+            tools::canvas::conversation_of(&run.task_id),
+        );
+        if canvas.is_empty() {
+            return tools::catalogue_summary(
+                catalogue,
+                &mut state.revealed,
+                tools::MOST_SUMMARISED,
+            );
+        }
+        let rest = tools::canvas::without_canvas(catalogue);
+        let summary = tools::catalogue_summary(&rest, &mut state.revealed, tools::MOST_SUMMARISED);
+        format!("{canvas}Applications:\n\n{summary}")
     }
 
     /// Publish only provider-exposed presentation, never argument previews or
@@ -1911,7 +1926,7 @@ impl Session {
                     return Ok(None);
                 }
                 if said.reply.is_none() {
-                    said.reply = state.reply.clone();
+                    said.reply.clone_from(&state.reply);
                 }
                 self.chooser
                     .mark(tilo_model_client::TraceEvent::PlanReady, turn);

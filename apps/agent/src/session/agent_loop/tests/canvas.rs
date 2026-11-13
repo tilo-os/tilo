@@ -64,6 +64,43 @@ fn surface(peer: u64, app: &str, actions: Vec<ExportedAction>) -> BrokerActionSu
 /// The session's canvas, the tilolang apps' records, a setting of the session's that is no
 /// arranging, and the opens of host programs.
 pub(super) fn surfaces() -> Vec<BrokerActionSurface> {
+    // Notes' own open, by its title: a request naming Notes asks for something of it.
+    let notes = vec![on(
+        "app.so.tilo.lang.notes",
+        crate::surface::APPLICATION_KIND,
+        "Notes",
+        "open",
+        "Notes",
+        vec![],
+    )];
+    // The session's door for the task's programs, offered to the agent for its runs: no app's
+    // window, and so no app's own host, is open.
+    let door = vec![on(
+        tilo_actions::remote::task_programs::RESOURCE,
+        tilo_actions::remote::task_programs::RESOURCE,
+        "Task programs",
+        tilo_actions::remote::task_programs::RUN,
+        "Run a step of a task",
+        vec![
+            ActionParam::required("program", ParamType::Text, "program"),
+            ActionParam::optional("confirm", ParamType::Boolean, "confirm"),
+            ActionParam::optional("this", ParamType::Text, "this"),
+            ActionParam::required("run", ParamType::Text, "run"),
+            ActionParam::optional("label", ParamType::Text, "label"),
+        ],
+    )];
+    vec![
+        surface(SESSION_PEER, "so.tilo.session", session_actions()),
+        surface(RECORDS_PEER, "so.tilo.session", record_actions()),
+        surface(NOTES_PEER, "so.tilo.lang.notes", notes),
+        surface(HOST_PEER, "so.tilo.desktop", host_actions()),
+        surface(DOOR_PEER, "so.tilo.agent", door),
+    ]
+}
+
+/// The session's own actions: the arrangement's, two places' steps, the viewing record's
+/// `show-style`, the chrome's `open-app` and a network setting.
+fn session_actions() -> Vec<ExportedAction> {
     let text = |name: &'static str| ActionParam::optional(name, ParamType::Text, name);
     let int = |name: &'static str| ActionParam::optional(name, ParamType::Integer, name);
     let arrangement = |action: &str, label: &str, params| {
@@ -75,34 +112,6 @@ pub(super) fn surfaces() -> Vec<BrokerActionSurface> {
             label,
             params,
         )
-    };
-    let place_steps = |place: &str, label: &str| {
-        vec![
-            on(
-                place,
-                "shell.place",
-                label,
-                "close",
-                "Close a place",
-                vec![],
-            ),
-            on(
-                place,
-                "shell.place",
-                label,
-                "position",
-                "Stand a place at a point on the canvas",
-                vec![int("x"), int("y"), text("beside")],
-            ),
-            on(
-                place,
-                "shell.place",
-                label,
-                "activate",
-                "Bring a place in front",
-                vec![],
-            ),
-        ]
     };
     let mut session = vec![
         arrangement(
@@ -156,7 +165,44 @@ pub(super) fn surfaces() -> Vec<BrokerActionSurface> {
     ];
     session.extend(place_steps(INBOX_PLACE, "Inbox — Mail"));
     session.extend(place_steps(NOTE_PLACE, "Groceries — Notes"));
-    let records = vec![
+    session
+}
+
+/// The steps of the place `place`: its close, its position and its activate.
+fn place_steps(place: &str, label: &str) -> Vec<ExportedAction> {
+    let text = |name: &'static str| ActionParam::optional(name, ParamType::Text, name);
+    let int = |name: &'static str| ActionParam::optional(name, ParamType::Integer, name);
+    vec![
+        on(
+            place,
+            "shell.place",
+            label,
+            "close",
+            "Close a place",
+            vec![],
+        ),
+        on(
+            place,
+            "shell.place",
+            label,
+            "position",
+            "Stand a place at a point on the canvas",
+            vec![int("x"), int("y"), text("beside")],
+        ),
+        on(
+            place,
+            "shell.place",
+            label,
+            "activate",
+            "Bring a place in front",
+            vec![],
+        ),
+    ]
+}
+
+/// The tilolang apps' records the session serves: the Tasks root and one task, and Mail.
+fn record_actions() -> Vec<ExportedAction> {
+    vec![
         on(
             TASKS,
             "tl.so.tilo.lang.tasks.Tasks",
@@ -181,8 +227,12 @@ pub(super) fn surfaces() -> Vec<BrokerActionSurface> {
             "Open",
             vec![],
         ),
-    ];
-    let host = ["Alacritty", "org.gnome.Calculator", "chromium-browser"]
+    ]
+}
+
+/// The desktop's opens of the host programs installed on this computer.
+fn host_actions() -> Vec<ExportedAction> {
+    ["Alacritty", "org.gnome.Calculator", "chromium-browser"]
         .into_iter()
         .map(|program| {
             on(
@@ -194,39 +244,7 @@ pub(super) fn surfaces() -> Vec<BrokerActionSurface> {
                 vec![],
             )
         })
-        .collect();
-    // Notes' own open, by its title: a request naming Notes asks for something of it.
-    let notes = vec![on(
-        "app.so.tilo.lang.notes",
-        crate::surface::APPLICATION_KIND,
-        "Notes",
-        "open",
-        "Notes",
-        vec![],
-    )];
-    // The session's door for the task's programs, offered to the agent for its runs: no app's
-    // window, and so no app's own host, is open.
-    let door = vec![on(
-        tilo_actions::remote::task_programs::RESOURCE,
-        tilo_actions::remote::task_programs::RESOURCE,
-        "Task programs",
-        tilo_actions::remote::task_programs::RUN,
-        "Run a step of a task",
-        vec![
-            ActionParam::required("program", ParamType::Text, "program"),
-            ActionParam::optional("confirm", ParamType::Boolean, "confirm"),
-            ActionParam::optional("this", ParamType::Text, "this"),
-            ActionParam::required("run", ParamType::Text, "run"),
-            ActionParam::optional("label", ParamType::Text, "label"),
-        ],
-    )];
-    vec![
-        surface(SESSION_PEER, "so.tilo.session", session),
-        surface(RECORDS_PEER, "so.tilo.session", records),
-        surface(NOTES_PEER, "so.tilo.lang.notes", notes),
-        surface(HOST_PEER, "so.tilo.desktop", host),
-        surface(DOOR_PEER, "so.tilo.agent", door),
-    ]
+        .collect()
 }
 
 /// The id the model is shown for `action` on `resource` of the session.
@@ -307,6 +325,8 @@ fn the_first_turn_leads_with_the_canvas_and_leaves_host_programs_out() {
     f.session.run_task(&f.run).unwrap();
     let bodies = f.script.bodies.lock().unwrap();
     let first = bodies[0].to_string();
+    let offered = tool_names(&bodies[0]);
+    drop(bodies);
     let canvas_at = first.find("The canvas: where the person sees things.");
     let applications_at = first.find("Applications:");
     assert!(
@@ -349,7 +369,7 @@ fn the_first_turn_leads_with_the_canvas_and_leaves_host_programs_out() {
         "the apps a program can use, open or not: {first}"
     );
     assert!(
-        tool_names(&bodies[0]).contains(&crate::programs::TILO.to_owned()),
+        offered.contains(&crate::programs::TILO.to_owned()),
         "the `tilo` tool is offered"
     );
     for host in ["Alacritty", "org.gnome.Calculator", "chromium-browser"] {
