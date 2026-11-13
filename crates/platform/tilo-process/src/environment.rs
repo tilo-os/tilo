@@ -1,11 +1,10 @@
-//! Host inputs — who the process is, where its files live, and how its user
-//! asked to be served.
+//! Host inputs: who the process is, where its files live, and how its user asked to
+//! be served.
 //!
-//! Toolkit and collab-client code take these from [`environment`] (or from
-//! constructor parameters such as `ui::record::RecordSet::open_in`) rather
-//! than reading the process environment itself. Only the native fallback
-//! derives them from the process ([`process_environment`], feature
-//! `native`). Another host installs its own with [`install_environment`].
+//! Toolkit and collab-client code take these from [`environment`] rather than reading
+//! the process environment. Only the native fallback derives them from the process
+//! ([`process_environment`], feature `native`); another host installs its own with
+//! [`install_environment`].
 
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
@@ -17,11 +16,9 @@ mod native;
 #[cfg(feature = "native")]
 pub use native::process_environment;
 
-/// Inert, app-owned resume projection sent only to the local shell.
-///
-/// The bytes are deliberately opaque to the toolkit so each app can version
-/// its CRDT-derived schema. The shell validates size and path redaction before
-/// retaining them for same-identity continuation.
+//! Inert, app-owned resume projection sent only to the local shell: the bytes are
+//! opaque to the toolkit, so each app can version its own schema, and the shell
+//! validates size and path redaction before keeping them.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ContinuationMetadata {
     pub schema_version: u16,
@@ -40,27 +37,17 @@ pub(crate) fn decode_continuation(hex: &str, schema: &str) -> Option<Continuatio
     })
 }
 
-/// Who this process is and which workspace it serves.
-///
-/// Every field is optional: a process started outside a launcher has none,
-/// and each reader applies its own documented fallback.
+/// Who this process is and which workspace it serves; every field is optional, and
+/// each reader applies its own fallback.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct HostIdentity {
-    /// The app this process runs as.
     pub app_id: Option<String>,
-    /// A development-time application id, used when no package id is set.
     pub development_app_id: Option<String>,
-    /// The human-readable application name.
     pub app_name: Option<String>,
-    /// The workspace this process collaborates in.
     pub workspace_id: Option<String>,
-    /// The signed-in person's id, when the launcher bound one.
     pub user_id: Option<String>,
-    /// The operating-system account name.
     pub account_name: Option<String>,
-    /// The resume projection this window was relaunched with.
     pub continuity_resume: Option<ContinuationMetadata>,
-    /// The launcher-issued instance identity of this window.
     pub continuity_instance: Option<String>,
     /// The launcher configured a collaboration service for this process, so
     /// its absence is a failure rather than a standalone launch.
@@ -72,12 +59,6 @@ pub struct HostIdentity {
 
 /// The MPRIS bus name of the media player a launched package publishes:
 /// `org.mpris.MediaPlayer2.<package id>`.
-///
-/// The toolkit's media session requests this name for the package it runs
-/// as, and a sandbox's session-bus filter lets the package own exactly this
-/// name and no other. Both name it here so the request and the grant cannot
-/// drift apart; a mismatch would have the bus refuse the player and leave
-/// it out of the desktop's now-playing controls.
 #[must_use]
 pub fn media_player_bus_name(app_id: &str) -> String {
     format!("org.mpris.MediaPlayer2.{app_id}")
@@ -101,35 +82,23 @@ pub const FONT_INDEX_ENV: &str = "TILO_FONT_INDEX";
 /// font catalog, as `TILO_REQUIRE_GPU=1` promises a GPU: a test run sets it.
 pub const FONTS_REQUIRED_ENV: &str = "TILO_REQUIRE_FONTS";
 
-/// Where this process's user files live.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct HostPaths {
-    /// The user's home as bound into the sandbox by the launcher. Presence
-    /// means "you can read this", not merely "this is where it would be".
     pub user_home: Option<PathBuf>,
-    /// The account's home directory.
     pub home: Option<PathBuf>,
-    /// The per-user configuration directory.
     pub config_home: Option<PathBuf>,
-    /// This process's own cache directory (`XDG_CACHE_HOME`). In a sandbox it
-    /// is the app's private, persistent `.cache`, which no other app reads.
     pub cache_home: Option<PathBuf>,
-    /// The session's read-only pipeline cache directory
-    /// (`TILO_PIPELINE_SEED_DIR`), bound in by the launcher.
+    /// The session's read-only pipeline cache directory (`TILO_PIPELINE_SEED_DIR`), bound
+    /// in by the launcher.
     pub pipeline_seed: Option<PathBuf>,
     /// The directory this process reads and records its font index in
     /// (`TILO_FONT_INDEX`), when the host names one; else it is
     /// `tilo/font-index` under [`Self::cache_dir`].
     pub font_index: Option<PathBuf>,
-    /// The font catalog to read instead of the one compiled in
-    /// (`TILO_FONT_CATALOG`). A build materializes the pinned catalog on the
-    /// machine that builds it and bakes that path in, so a binary built
-    /// elsewhere — a remote runner — names a directory this one does not have.
-    /// This says where the catalog is here.
+    /// The font catalog to read instead of the compiled-in one (`TILO_FONT_CATALOG`); a
+    /// build bakes in the pinned catalog's path, which a binary built elsewhere does not
+    /// have.
     pub font_catalog: Option<PathBuf>,
-    /// The font artifact cache to look for a prepared catalog in
-    /// (`TILO_FONT_ASSET_CACHE`). The default is under [`Self::cache_dir`],
-    /// where the catalog tool prepares one.
     pub font_artifact_cache: Option<PathBuf>,
     /// Explicit development-host record for public identity presentation only.
     /// It is not signing authority or permission to resolve a secret provider.
@@ -137,16 +106,12 @@ pub struct HostPaths {
 }
 
 impl HostPaths {
-    /// The per-user configuration directory: [`Self::config_home`], else
-    /// `.config` under [`Self::home`].
     pub fn config_dir(&self) -> Option<PathBuf> {
         self.config_home
             .clone()
             .or_else(|| self.home.as_ref().map(|home| home.join(".config")))
     }
 
-    /// This process's cache directory: [`Self::cache_home`], else `.cache`
-    /// under [`Self::home`].
     pub fn cache_dir(&self) -> Option<PathBuf> {
         self.cache_home
             .clone()
@@ -154,19 +119,15 @@ impl HostPaths {
     }
 }
 
-/// Accessibility requests the host passes to the app at startup.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct AccessibilityInputs {
     pub screen_reader: bool,
     pub high_contrast: bool,
     pub reduce_motion: bool,
-    /// Text scale factor; `None` keeps the default.
     pub text_scale: Option<f32>,
-    /// Interface scale factor; `None` keeps the default.
     pub ui_scale: Option<f32>,
 }
 
-/// Opt-in developer diagnostics for the runner and the toolkit.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 #[allow(
     clippy::struct_excessive_bools,
@@ -175,39 +136,24 @@ pub struct AccessibilityInputs {
 pub struct RunnerDiagnostics {
     /// Debug overlays (only honoured in debug builds).
     pub debug_overlay: bool,
-    /// Per-frame performance logging.
     pub perf_log: bool,
-    /// Disable the scroll-reposition layout fast path.
     pub disable_scroll_fast_path: bool,
-    /// Request GPU timestamp queries.
     pub gpu_timestamps: bool,
-    /// Request timestamp queries inside compute passes.
     pub gpu_dispatch_timestamps: bool,
-    /// Show the in-app frame profiler HUD.
     pub profile_hud: bool,
-    /// Append per-frame profiles to this file.
     pub profile_out: Option<PathBuf>,
-    /// Record presentation feedback for a native performance scenario.
     pub presentation_profile: bool,
-    /// Record content-free render stages under explicit presentation diagnostics.
     pub presentation_timing: bool,
     /// Open windows without taking focus from the active application.
     pub window_no_activate: bool,
     /// Restore the always-refresh hosted pump for paired host measurements.
     pub host_perf_baseline: bool,
-    /// Print one payload-free timing line per hosted pump.
     pub hosted_pump_timing: bool,
-    /// The run was promised the product's font catalog
-    /// (`TILO_REQUIRE_FONTS=1`): a test run sets it, so a process that finds no
-    /// catalog stops rather than setting text in the host's faces, whose every
-    /// overflow, truncation and weight judgement is about a font the product
-    /// does not ship.
+    /// The run was promised the product's font catalog (`TILO_REQUIRE_FONTS=1`), so a
+    /// process that finds none stops rather than setting text in the host's faces.
     pub fonts_required: bool,
 }
 
-/// The variable a launch names the item its window opens on in, for a
-/// process the shell starts for one window: a window door request cannot
-/// reach a window that is already being built.
 pub const REVEAL_ENV: &str = "TILO_WINDOW_REVEAL";
 
 /// The variable a launch sets (`1`) for a process the session starts with no
@@ -215,7 +161,6 @@ pub const REVEAL_ENV: &str = "TILO_WINDOW_REVEAL";
 /// a window only once the shell asks it for one.
 pub const WINDOWLESS_ENV: &str = "TILO_WINDOWLESS";
 
-/// Everything the host tells a `ui` process about itself.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct HostEnvironment {
     pub identity: HostIdentity,
@@ -223,21 +168,11 @@ pub struct HostEnvironment {
     pub accessibility: AccessibilityInputs,
     /// The user's preferred locale, as a POSIX or BCP 47 tag.
     pub locale: Option<String>,
-    /// The desktop session (`XDG_CURRENT_DESKTOP`, a colon-separated list),
-    /// which decides who draws History and Search.
     pub desktop: Option<String>,
     pub diagnostics: RunnerDiagnostics,
-    /// Directory `tilo-app dev` uses to hand the open document, route, and
-    /// caret to the next process. Absent outside that loop.
     pub dev_session: Option<PathBuf>,
-    /// Directory of live `ui/*.json` screens. Absent when the app uses the
-    /// graph embedded in its binary.
     pub ui_graph_dir: Option<PathBuf>,
-    /// The item the shell opened this process's window on, for a launch it
-    /// started for one window ([`REVEAL_ENV`]): a window asked for over the
-    /// process's door names its own.
     pub reveal: Option<String>,
-    /// The process was started with no window ([`WINDOWLESS_ENV`]).
     pub windowless: bool,
 }
 
@@ -254,11 +189,9 @@ pub fn parse_posix_locale(locale: &str) -> Option<LanguageIdentifier> {
     tilo_paths::locale_tag(first).parse().ok()
 }
 
-/// The user's message locale from the variables `var` reads: `LC_ALL`,
-/// `LC_MESSAGES`, `LANGUAGE`, then `LANG`. The first variable with a usable
-/// value decides: an explicit `C`/`POSIX` there means source copy (`None`),
-/// not "ignore this and consult the next variable". Unset, empty and
-/// malformed values are skipped.
+/// The user's message locale from the variables `var` reads: `LC_ALL`, `LC_MESSAGES`,
+/// `LANGUAGE`, then `LANG`. The first variable with a usable value decides, and an
+/// explicit `C`/`POSIX` there means source copy.
 #[cfg(any(feature = "native", test))]
 pub(crate) fn locale_from_vars(var: impl Fn(&str) -> Option<String>) -> Option<String> {
     for name in ["LC_ALL", "LC_MESSAGES", "LANGUAGE", "LANG"] {
@@ -278,20 +211,14 @@ pub(crate) fn locale_from_vars(var: impl Fn(&str) -> Option<String>) -> Option<S
     None
 }
 
-/// Install `environment` for this process, replacing any earlier one.
 pub fn install_environment(environment: HostEnvironment) {
     if let Ok(mut slot) = INSTALLED.write() {
         *slot = Some(Arc::new(environment));
     }
 }
 
-/// The host inputs for this process: the installed ones, else — with the
-/// `native` feature — what the native runner reads from the process, else
-/// none.
-///
-/// The native fallback is read afresh on each call, because the process
-/// environment is the routing truth for a launched app and tests change it
-/// between cases.
+/// The host inputs for this process: the installed ones, else (with `native`) what the
+/// runner reads from the process environment afresh on each call, else none.
 pub fn environment() -> Arc<HostEnvironment> {
     if let Some(installed) = INSTALLED.read().ok().and_then(|slot| slot.clone()) {
         return installed;

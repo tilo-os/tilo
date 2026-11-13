@@ -1,36 +1,31 @@
 //! Memory shared with a child process this one starts.
 //!
-//! The parent creates the memory and maps it; the child inherits its
-//! descriptor at spawn ([`SharedMemory::hand_to`]) and maps the same pages.
-//! Bulk data then crosses the process boundary as one copy into the memory
-//! and one out, with no pipe or socket in between.
+//! The parent creates and maps the memory; the child inherits its descriptor at spawn
+//! ([`SharedMemory::hand_to`]) and maps the same pages, so bulk data crosses with one
+//! copy in and one out and no pipe in between.
 //!
-//! On Linux and Android the memory is a memfd sealed against resizing, so the
-//! child can never shrink it under the parent's mapping. On macOS it is a
-//! POSIX shared memory object unlinked at once, which macOS sizes once and
-//! never again. A `unix` this file names no shape for, and the web, which has
-//! no child processes at all, get a [`SharedMemory::create`] that fails.
+//! On Linux and Android it is a memfd sealed against resizing; on macOS a POSIX shared
+//! memory object unlinked at once.
 
 use std::io;
 use std::process::Command;
 
-/// Memory this process maps and a child it starts inherits.
 pub struct SharedMemory(imp::Memory);
 
 impl SharedMemory {
-    /// New zeroed memory of `len` bytes. `name` labels it for diagnostics.
+    /// New zeroed memory of `len` bytes; `name` labels it for diagnostics.
     ///
     /// # Errors
     ///
-    /// Creation, sizing, sealing or mapping failures; `Unsupported` where
-    /// there are no child processes.
+    /// Creation, sizing, sealing or mapping failures; `Unsupported` where there are no child
+    /// processes.
     pub fn create(name: &str, len: usize) -> io::Result<Self> {
         imp::Memory::create(name, len).map(Self)
     }
 
-    /// The first byte of this process's mapping, valid for [`Self::len`]
-    /// bytes until the memory drops. The child writes the same bytes: read
-    /// and write them only as the two processes agree.
+    /// The first byte of this process's mapping, valid for [`Self::len`] bytes until the
+    /// memory drops. The child writes the same bytes, so read and write them only as the two
+    /// processes agree.
     #[must_use]
     pub fn as_ptr(&self) -> *mut u8 {
         self.0.as_ptr()
@@ -48,15 +43,10 @@ impl SharedMemory {
         self.len() == 0
     }
 
-    /// Lets the child `command` starts inherit the memory: its descriptor
-    /// stays open across exec and the child is passed `{flag}{descriptor}`
-    /// as an argument. Does nothing once [`Self::handed_over`].
     pub fn hand_to(&self, command: &mut Command, flag: &str) {
         self.0.hand_to(command, flag);
     }
 
-    /// The child holds its own descriptor now: this process closes its
-    /// one and keeps the mapping.
     pub fn handed_over(&mut self) {
         self.0.handed_over();
     }
@@ -180,8 +170,8 @@ mod imp {
         Ok(unsafe { OwnedFd::from_raw_fd(fd) })
     }
 
-    /// The child could otherwise shrink the memory under this process's
-    /// mapping, which would then fault reading it.
+    // The child could otherwise shrink the memory under this process's mapping, which would
+    // then fault reading it.
     #[cfg(any(target_os = "linux", target_os = "android"))]
     fn seal(descriptor: &OwnedFd) -> io::Result<()> {
         // SAFETY: fixed seals on an owned memfd.
@@ -263,9 +253,8 @@ mod imp {
     }
 }
 
-/// Neither a memfd nor a POSIX shared memory object exists on a platform this
-/// file does not name, so the memory says so, as it does where there is no
-/// `unix` at all.
+// Neither a memfd nor a POSIX shared memory object exists on a platform this file does
+// not name, so the memory says so.
 #[cfg(all(
     unix,
     not(any(
@@ -342,8 +331,6 @@ mod tests {
     use super::*;
     use tilo_test_env::SpawnUnderEnvLock as _;
 
-    /// Runs `script` with the memory handed to it as its last argument,
-    /// `--memory=N`, and gives back its exit status.
     fn run_child(memory: &mut SharedMemory, script: &str) -> io::Result<std::process::ExitStatus> {
         let mut command = Command::new("/bin/sh");
         command.args([
@@ -357,8 +344,6 @@ mod tests {
         child.wait()
     }
 
-    /// The child holds the descriptor; the parent's own is gone once it is
-    /// handed over, and is not handed on again.
     #[test]
     fn a_child_inherits_the_memory_once() {
         let mut memory = SharedMemory::create("tilo-process-test", 4096).unwrap();
@@ -373,7 +358,6 @@ mod tests {
         assert_eq!(again.get_args().count(), 0);
     }
 
-    /// What the child writes into the memory, the parent reads.
     #[test]
     #[cfg(target_os = "linux")]
     fn a_child_writes_into_the_memory_it_inherits() {

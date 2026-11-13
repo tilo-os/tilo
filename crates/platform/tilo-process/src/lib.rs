@@ -1,12 +1,8 @@
 //! The current process, with one API on every target.
 //!
-//! On Linux and macOS an app runs as an OS process with an id. In the
-//! browser it runs inside the page, which has no process of its own; the
-//! functions here answer `None` there instead of panicking as
-//! `std::process::id` does.
-//!
-//! This crate is the platform layer's home for process capabilities; child
-//! processes, process groups and PTYs (today's `bounded-command`) move here.
+//! On Linux and macOS an app runs as an OS process with an id; in the browser it runs
+//! inside the page, which has none, so the functions here answer `None` rather than
+//! panicking as `std::process::id` does.
 
 pub mod child;
 #[cfg(feature = "native-editor")]
@@ -20,12 +16,9 @@ pub mod rendezvous;
 pub mod shared_memory;
 pub mod tools;
 
-/// A capability of this crate.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Feature {
-    /// The current process has an OS process id.
     ProcessId,
-    /// Processes meet at a [`rendezvous::Rendezvous`] beside a resource.
     Rendezvous,
 }
 
@@ -47,7 +40,6 @@ impl tilo_platform_caps::Feature for Feature {
         }
     }
 
-    /// Whether the feature works on the running target.
     fn availability(self) -> Availability {
         let here = match self {
             Self::ProcessId => backend::HAS_PROCESS_ID,
@@ -68,42 +60,36 @@ pub fn id() -> Option<u32> {
     backend::id()
 }
 
-/// The real user id this process runs as.
 #[cfg(unix)]
 #[must_use]
 pub fn uid() -> u32 {
     rustix::process::getuid().as_raw()
 }
 
-/// The effective user id this process acts with: the owner it creates files
-/// as and is checked against.
 #[cfg(unix)]
 #[must_use]
 pub fn effective_uid() -> u32 {
     rustix::process::geteuid().as_raw()
 }
 
-/// How many files process `pid` has open, where the system says (Linux's
-/// `/proc/<pid>/fd`). `None` elsewhere, and when the process has exited or
-/// its table is not readable; never a made-up zero.
+/// How many files `pid` has open, where the system says (Linux's `/proc/<pid>/fd`).
+/// `None` elsewhere, and when the process has exited or its table is unreadable;
+/// never a made-up zero.
 #[must_use]
 pub fn open_file_count(pid: u32) -> Option<usize> {
     table::open_file_count(pid)
 }
 
-/// Whether this process may read the system's process table: `Ok` where no
-/// separate table exists to fail, the read error on Linux (`/proc`), so a
-/// process list that comes back empty can be told apart from a denied one.
+/// Whether this process may read the system's process table: the read error on Linux,
+/// `Ok` where no separate table exists to fail, so an empty list can be told apart from
+/// a denied one.
 pub fn probe_process_table() -> std::io::Result<()> {
     table::probe()
 }
 
-/// Raise this process's soft open-file limit to the 1024 descriptors a Linux
-/// app starts with, as far as the hard limit allows. macOS starts processes
-/// at 256, which one app retaining a descriptor per selected file exhausts.
-/// The limit is never lowered and the hard limit is left alone; it stops at
-/// 1024 so code bounded by `select`'s `FD_SETSIZE` keeps working. Other
-/// platforms already start at least that high, so it does nothing there.
+/// Raise this process's soft open-file limit to the 1024 descriptors a Linux app starts
+/// with, as far as the hard limit allows; macOS starts processes at 256, which one app
+/// retaining a descriptor per selected file exhausts.
 pub fn raise_open_file_limit() {
     limits::raise_open_files();
 }

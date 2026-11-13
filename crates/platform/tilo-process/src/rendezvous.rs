@@ -1,37 +1,19 @@
 //! One owner process per resource; every other process connects to it.
 //!
-//! Some resources admit only one process at a time — a browser profile, a
-//! database file — yet several processes want them. A [`Rendezvous`] beside
-//! the resource elects the owner with an advisory lock (`<name>.lock`) and
-//! lets every other process reach it over a local socket (`<name>.sock`).
-//!
-//! The owner keeps its [`Ownership`] for as long as it uses the resource; the
-//! lock is released when that is dropped, so the next process can take over
-//! even when the owner died without cleaning up. A socket left behind by a
-//! dead owner is removed by its successor: nobody can be serving it.
-//!
-//! A resource a child process runs outlives its owner process: the host of a
-//! browser profile, for one, keeps its profile directory open while it shuts
-//! down after the owner that started it is gone. [`Ownership::hold_with`]
-//! hands the lock to that child, so the resource stays owned while either of
-//! them lives and no successor starts a second user of it beside a child that
-//! has not exited yet.
-//!
-//! Local sockets exist on Linux and macOS. In the browser [`Rendezvous::beside`]
-//! reports [`std::io::ErrorKind::Unsupported`].
+//! A [`Rendezvous`] beside the resource elects the owner with an advisory lock
+//! (`<name>.lock`) and lets every other process reach it over a local socket
+//! (`<name>.sock`). The owner keeps its [`Ownership`] while it uses the resource, and
+//! the lock is released when that drops, so the next process can take over even when
+//! the owner died.
 
 use std::io::{self, Read, Write};
 use std::path::Path;
 use std::time::Duration;
 
-/// The meeting point beside one resource.
 pub struct Rendezvous(backend::Rendezvous);
 
-/// The outcome of [`Rendezvous::join`].
 pub enum Joined {
-    /// No process owns the resource; this one does now.
     Owner(Ownership),
-    /// Another process owns the resource; this is the connection to it.
     Peer(Connection),
 }
 
@@ -42,34 +24,23 @@ pub struct Ownership(backend::Ownership);
 /// socket so no process connects to an owner that stopped serving.
 pub struct Listener(backend::Listener);
 
-/// A byte stream between the owner and one other process.
 pub struct Connection(backend::Connection);
 
 impl Rendezvous {
-    /// The rendezvous for `resource`: `<resource>.sock` and `<resource>.lock`
-    /// beside it, named after the resource's canonical path.
+    /// The rendezvous for `resource`: `<resource>.sock` and `<resource>.lock` beside it,
+    /// named after the resource's canonical path.
     ///
     /// # Errors
     ///
-    /// [`io::ErrorKind::InvalidInput`] when the socket's file name alone is
-    /// too long for a local socket (a deeper path is reached relative to its
-    /// directory), [`io::ErrorKind::Unsupported`] where local sockets do not
-    /// exist, and the error resolving `resource`, which must exist.
+    /// [`io::ErrorKind::InvalidInput`] when the socket's file name alone is too long for a
+    /// local socket address.
     pub fn beside(resource: &Path) -> io::Result<Self> {
         backend::Rendezvous::beside(resource).map(Self)
     }
 
-    /// Connects to the owner, or becomes the owner when there is none.
-    ///
-    /// `greet` checks a new connection before it counts as a peer; an owner
-    /// that is shutting down refuses there, and joining tries again. While
-    /// another process holds the lock without serving yet (it is starting,
-    /// or still releasing the resource), this waits up to `timeout`.
-    ///
-    /// # Errors
-    ///
-    /// [`io::ErrorKind::TimedOut`] when the owner neither served nor let go
-    /// in time, and the error opening or locking the lock file.
+    /// Connects to the owner, or becomes the owner when there is none. `greet` checks a new
+    /// connection before it counts as a peer, and an owner that is shutting down refuses
+    /// there.
     pub fn join(
         &self,
         timeout: Duration,
@@ -97,26 +68,18 @@ impl Rendezvous {
 }
 
 impl Ownership {
-    /// Starts serving other processes.
     pub fn listen(&self) -> io::Result<Listener> {
         self.0.listen().map(Listener)
     }
 
-    /// Gives the resource's lock to the program `command` starts: it holds
-    /// the resource for as long as it runs, even when this process exits
-    /// without letting go first.
-    ///
-    /// A child that runs the resource must not outlive its owner's claim on
-    /// it. Until it exits, its descriptor keeps the lock held, so a successor
-    /// waits for the child rather than starting a second user of the same
-    /// resource beside a child still shutting down.
+    /// Gives the resource's lock to the program `command` starts, which holds the resource
+    /// for as long as it runs, even when this process exits without letting go first.
     pub fn hold_with(&self, command: &mut std::process::Command) {
         self.0.hold_with(command);
     }
 }
 
 impl Listener {
-    /// The next process that connected, waiting at most `wait` for one.
     pub fn accept_within(&self, wait: Duration) -> io::Result<Option<Connection>> {
         Ok(self.0.accept_within(wait)?.map(Connection))
     }
@@ -129,12 +92,10 @@ impl Listener {
 }
 
 impl Connection {
-    /// A second handle to the same connection, for a reader and a writer.
     pub fn try_clone(&self) -> io::Result<Self> {
         self.0.try_clone().map(Self)
     }
 
-    /// Ends the connection in both directions, for every handle to it.
     pub fn close(&self) {
         self.0.close();
     }
@@ -203,11 +164,10 @@ mod backend {
         lock: advisory_lock::FileLock,
     }
 
-    /// How the socket is bound and reached. A local socket address holds a
-    /// path of about a hundred bytes (104 on macOS, 108 on Linux), and a
-    /// resource may lie deeper than that, as a private browser profile in
-    /// macOS's per-user temporary directory does. Such a socket is reached
-    /// by its name relative to its directory instead of by its full path.
+    /// How the socket is bound and reached. A local socket address holds a path of about a
+    /// hundred bytes, and a resource may lie deeper, as a private browser profile in macOS's
+    /// temporary directory does; such a socket is reached by its name relative to its
+    /// directory.
     enum Address {
         Path(PathBuf),
         Beside {
@@ -268,7 +228,6 @@ mod backend {
         use std::os::unix::net::{UnixListener, UnixStream};
         use std::path::{Path, PathBuf};
 
-        /// The socket's directory, held open.
         pub struct Directory(OwnedFd);
 
         impl Directory {
@@ -294,11 +253,9 @@ mod backend {
         }
     }
 
-    /// macOS has no such path, and no `bindat` it exports. The socket's
-    /// directory is reached through a symbolic link in a fresh private
-    /// temporary directory (`mkdtemp`, mode 0700) in `/tmp`, made for the one
-    /// call and removed after it: the socket itself is created in, and found
-    /// in, its own directory.
+    /// macOS has no `/proc/self/fd` path and no `bindat`: the socket's directory is reached
+    /// through a symbolic link in a fresh private temporary directory (`mkdtemp`, mode
+    /// 0700) in `/tmp`, made for the one call and removed after it.
     #[cfg(target_vendor = "apple")]
     mod relative {
         use std::ffi::{CString, OsString};
@@ -307,7 +264,6 @@ mod backend {
         use std::os::unix::net::{UnixListener, UnixStream};
         use std::path::{Path, PathBuf};
 
-        /// The socket's directory, by its canonical path.
         pub struct Directory(PathBuf);
 
         impl Directory {
@@ -399,9 +355,8 @@ mod backend {
                 Err(std::fs::TryLockError::WouldBlock) => return Ok(None),
                 Err(std::fs::TryLockError::Error(error)) => return Err(error),
             };
-            // The previous owner may have removed the lock file (with the
-            // directory it lived in) after this process opened it: a lock on
-            // a file that is gone owns nothing.
+            // The previous owner may have removed the lock file, with its directory, after this
+            // process opened it: a lock on a file that is gone owns nothing.
             let held = lock.metadata()?;
             if !std::fs::metadata(&self.lock).is_ok_and(|path| identity(&path) == identity(&held)) {
                 return Ok(None);
@@ -486,7 +441,6 @@ mod backend {
                     stream.set_nonblocking(false)?;
                     Ok(Some(Connection(stream)))
                 }
-                // The peer went away between poll and accept.
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => Ok(None),
                 Err(error) => Err(error),
             }
@@ -541,7 +495,6 @@ mod backend {
     use std::path::Path;
     use std::time::Duration;
 
-    /// Nothing of these exists where local sockets do not.
     pub enum Never {}
 
     pub struct Rendezvous(Never);

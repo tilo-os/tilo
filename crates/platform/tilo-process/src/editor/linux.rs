@@ -40,7 +40,6 @@ impl Drop for Client {
     }
 }
 impl Client {
-    /// Own a bounded worker for this already admitted editor descriptor.
     pub fn new(socket: editor::Socket, waker: Arc<dyn Fn() + Send + Sync>) -> io::Result<Self> {
         let socket = Arc::new(socket);
         let epoch = Arc::new(AtomicU64::new(1));
