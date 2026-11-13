@@ -1,13 +1,12 @@
-//! Helpers shared by application tests that drive a root under framework
-//! History through the headless [`FrameHarness`].
+//! Helpers shared by application tests that drive a root under framework History through the headless
+//! [`FrameHarness`].
 #![cfg(any(test, feature = "test-support"))]
 
 use super::{FrameHarness, InspectionNode};
 use crate::a11y::AccessNode;
 
-/// Every semantic node of the current frame, paired with the inspection path
-/// of the widget that owns it (the owner [`FrameHarness::perform_semantic_named`]
-/// routes to).
+/// Every semantic node of the current frame, paired with the inspection path of the widget that owns it
+/// (the owner [`FrameHarness::perform_semantic_named`] routes to).
 #[must_use]
 pub fn semantic_nodes(driver: &FrameHarness) -> Vec<(String, AccessNode)> {
     fn access(node: &AccessNode, owner: &str, out: &mut Vec<(String, AccessNode)>) {

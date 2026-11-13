@@ -1,7 +1,6 @@
-//! A host on its own frame clock (a browser page) takes the frame that typing
-//! asks for on its next frame: each key reaches its widget
-//! at once, and the layout runs once for all of them, not once inside every
-//! event handler and again for the screen.
+//! A host on its own frame clock (a browser page) takes the frame that typing asks for on its next
+//! frame: each key reaches its widget at once, and the layout runs once for all of them, not once
+//! inside every event handler and again for the screen.
 use super::*;
 use crate::widget::TextInput;
 
@@ -15,8 +14,6 @@ fn keys_typed_between_frames_lay_out_once_on_the_hosts_frame() {
     );
     frame.set_coalesce_input_frames(true);
     frame.root_mut::<TextInput>().set_focus(true);
-    // The first key switches the window to keyboard use; the host's next
-    // frame lays that out.
     frame.send_host_event(&crate::synthetic_input::named_key(
         winit::keyboard::NamedKey::End,
     ));
@@ -72,10 +69,9 @@ fn a_host_without_its_own_frame_clock_lays_out_each_key() {
     assert_eq!(frame.relayout_frames(), before + 2);
 }
 
-/// Switching from the pointer to the keyboard, or pinching, between two
-/// frames lays out nothing inside the event handlers: the window draws the
-/// new modality and the zoom once, on its next frame, as the live window
-/// does.
+/// Switching from the pointer to the keyboard, or pinching, between two frames lays out nothing inside
+/// the event handlers: the window draws the new modality and the zoom once, on its next frame, as the
+/// live window does.
 #[test]
 fn a_change_of_modality_and_a_pinch_wait_for_the_hosts_frame() {
     let mut frame = FrameHarness::for_root(
@@ -113,9 +109,7 @@ fn a_change_of_modality_and_a_pinch_wait_for_the_hosts_frame() {
     );
 }
 
-/// Other people's presence arrives many times a frame while they type and
-/// move. A host on its own frame clock lays none of it out on arrival: its
-/// next frame draws all of it, once.
+/// Other people's presence arrives many times a frame while they type and move.
 #[test]
 fn presence_arriving_between_frames_lays_out_once_on_the_hosts_frame() {
     let mut frame = FrameHarness::for_root(

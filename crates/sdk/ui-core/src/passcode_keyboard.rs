@@ -1,16 +1,7 @@
-//! A keyboard drawn on the screen for entering a passcode by touch.
-//!
-//! Where no input method may run — the greeter before any session, the
-//! session's lock screen — a touch-only device still needs a way to type a
-//! passcode. This is that keyboard as a model, a layout and a paint, for the
-//! trusted surface that owns the passcode to draw itself: nothing outside it
-//! sees a key. It types letters, digits and symbols, with a one-shot shift
-//! and a symbols layer, and it never predicts, corrects or remembers.
-//!
-//! For a PIN it is a phone's number pad instead
-//! ([`PasscodeKeyboard::for_pin`]): the digits in four rows of three, a
-//! backspace at the bottom left and enter at the bottom right, and no
-//! letters at all.
+//! A keyboard drawn on the screen for entering a passcode by touch. Where no input method may run — the
+//! greeter before any session, the session's lock screen — a touch-only device still needs a way to
+//! type a passcode. It types letters, digits and symbols, with a one-shot shift and a symbols layer,
+//! and it never predicts, corrects or remembers.
 
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke, Vec2};
@@ -52,28 +43,23 @@ pub enum PasscodeInput {
 const LETTERS: [&str; 4] = ["1234567890", "qwertyuiop", "asdfghjkl", "zxcvbnm"];
 const SYMBOLS: [&str; 4] = ["1234567890", "!@#$%^&*()", "-_=+[]{};:", "'\",.<>/?\\"];
 
-/// The number pad's first three rows; the fourth is backspace, zero and
-/// enter.
 const PAD: [&str; 3] = ["123", "456", "789"];
 
-/// How much wider than tall a key may grow: a number pad is wide rows of
-/// three, as on a phone, while the letters stay a comfortable key apart.
+/// How much wider than tall a key may grow: a number pad is wide rows of three, as on a phone, while
+/// the letters stay a comfortable key apart.
 const PAD_KEY_ASPECT: f64 = 3.0;
 const LETTER_KEY_ASPECT: f64 = 1.4;
 
-/// The keyboard's state: which layer shows and whether the next letter is a
-/// capital. Small and `Copy`, so a surface can keep it beside its own state.
+/// The keyboard's state: which layer shows and whether the next letter is a capital.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct PasscodeKeyboard {
     shift: bool,
     symbols: bool,
-    /// The keyboard is for a PIN: it shows the number pad.
     pin: bool,
 }
 
 impl PasscodeKeyboard {
-    /// The keyboard for a PIN: its digits on a phone's number pad, four rows
-    /// of three.
+    /// The keyboard for a PIN: its digits on a phone's number pad, four rows of three.
     #[must_use]
     pub fn for_pin() -> Self {
         Self {
@@ -82,8 +68,7 @@ impl PasscodeKeyboard {
         }
     }
 
-    /// The keyboard for a secret that is a PIN when `pin`, a password
-    /// otherwise.
+    /// The keyboard for a secret that is a PIN when `pin`, a password otherwise.
     #[must_use]
     pub fn for_secret(pin: bool) -> Self {
         if pin {
@@ -99,8 +84,7 @@ impl PasscodeKeyboard {
         self.pin
     }
 
-    /// The character a [`PasscodeKey::Char`] key types now, shift applied;
-    /// `None` for every other key.
+    /// The character a [`PasscodeKey::Char`] key types now, shift applied; `None` for every other key.
     #[must_use]
     pub fn character(self, key: PasscodeKey) -> Option<String> {
         match key {
@@ -110,8 +94,7 @@ impl PasscodeKeyboard {
         }
     }
 
-    /// How tall the keyboard is: four rows for a PIN's number pad, five for
-    /// the letters.
+    /// How tall the keyboard is: four rows for a PIN's number pad, five for the letters.
     pub fn height(self, key_height: f64, gap: f64) -> f64 {
         let rows = f64::from(u32::try_from(self.rows().len()).unwrap_or(1));
         key_height * rows + gap * (rows - 1.0)
@@ -147,9 +130,7 @@ impl PasscodeKeyboard {
         rows
     }
 
-    /// Every key and where it sits inside `rect`, row by row, left to
-    /// right. Keys are no wider than a comfortable target and each row is
-    /// centred; the number pad's rows share one grid of three columns.
+    /// Every key and where it sits inside `rect`, row by row, left to right.
     pub fn layout(self, rect: Rect, key_height: f64, gap: f64) -> Vec<(PasscodeKey, Rect)> {
         let pad_unit = ((rect.width() - 2.0 * gap) / 3.0).min(key_height * PAD_KEY_ASPECT);
         let mut out = Vec::new();
@@ -187,8 +168,8 @@ impl PasscodeKeyboard {
             .map(|(key, _)| key)
     }
 
-    /// Press `key`: shift and the symbols layer change the keyboard; every
-    /// other key asks something of the passcode.
+    /// Press `key`: shift and the symbols layer change the keyboard; every other key asks something of
+    /// the passcode.
     pub fn press(&mut self, key: PasscodeKey) -> Option<PasscodeInput> {
         match key {
             PasscodeKey::Char(c) => {
@@ -215,8 +196,8 @@ impl PasscodeKeyboard {
         }
     }
 
-    /// What `key` shows on this keyboard: the character it types (shift
-    /// applied), its layer's word, or the icon of what it does.
+    /// What `key` shows on this keyboard: the character it types (shift applied), its layer's word, or
+    /// the icon of what it does.
     #[must_use]
     pub fn face(self, key: PasscodeKey) -> KeyFace {
         if let Some(character) = self.character(key) {
@@ -232,10 +213,8 @@ impl PasscodeKeyboard {
         }
     }
 
-    /// Paint the keys at `place` (the keyboard's rectangle, key height and
-    /// gap) as the theme's controls: a key's filled face and its label, the
-    /// active modifiers lit. Enter takes the disabled face while
-    /// `enter_enabled` is false, as the action it stands for would.
+    /// Paint the keys at `place` (the keyboard's rectangle, key height and gap) as the theme's
+    /// controls: a key's filled face and its label, the active modifiers lit.
     pub fn paint(
         self,
         scene: &mut Scene,
@@ -256,8 +235,6 @@ impl PasscodeKeyboard {
                 ..Interaction::default()
             },
         );
-        // A key's label is its face's: the key role sets it in the title
-        // line, and its icon to that line.
         let style = theme.text(TextRole::Title);
         let icon_side = f64::from(style.size).round();
         for (key, key_rect) in self.layout(rect, key_height, gap) {

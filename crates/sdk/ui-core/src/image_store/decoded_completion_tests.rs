@@ -232,11 +232,9 @@ fn dropping_old_ticket_after_cache_eviction_cannot_settle_same_url_again() {
     assert_eq!(store.get("evicted").unwrap().width, 3);
 }
 
-/// A window's host serves every image store the window builds while its
-/// scope is entered, also one it builds long after it was constructed (a
-/// view part built once its workspace arrived): that store's pictures load
-/// through the host, and show. A store built outside the window is not the
-/// host's, and a closed window's host is let go.
+/// A window's host serves every image store the window builds while its scope is entered, also one it
+/// builds long after it was constructed (a view part built once its workspace arrived): that store's
+/// pictures load through the host, and show.
 #[test]
 fn a_store_a_served_window_builds_later_loads_through_its_host() {
     let mut window = WakeScope::new();
@@ -251,7 +249,6 @@ fn a_store_a_served_window_builds_later_loads_through_its_host() {
         }),
     );
     let unused: Fetcher = Arc::new(|_| panic!("a served window's store never fetches itself"));
-    // The window's code runs again, frames after it was constructed.
     let store = {
         let _entry = window.enter();
         ImageStore::new(&unused)
@@ -274,7 +271,6 @@ fn a_store_a_served_window_builds_later_loads_through_its_host() {
     let picture = store.get(url).expect("the picture shows");
     assert_eq!((picture.width, picture.height), (8, 8));
 
-    // Outside the window, a store is the toolkit's own.
     let pumped = crate::background::Pumped::new();
     {
         let _executor = pumped.background().enter();
@@ -282,7 +278,6 @@ fn a_store_a_served_window_builds_later_loads_through_its_host() {
     }
     assert_eq!(loaders.borrow().len(), 1);
 
-    // A closed window's host serves nothing more.
     window.close();
     let other = WakeScope::new();
     {

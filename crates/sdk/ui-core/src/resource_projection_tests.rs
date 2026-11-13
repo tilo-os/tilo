@@ -25,7 +25,6 @@ fn counted_control_app(
 
 #[test]
 fn lazy_control_projection_defers_semantics_and_preserves_surface_state() {
-    // Case `lazy_control_projection_defers_semantics_until_full_collection`.
     {
         let (mut app, counts, _) = counted_control_app(false);
         app.refresh_control_action_availability();
@@ -50,7 +49,6 @@ fn lazy_control_projection_defers_semantics_and_preserves_surface_state() {
         assert_eq!(counts[1].get(), 1, "full cache remains materialized");
     }
 
-    // Case `lazy_control_projection_preserves_permissions_widget_changes_and_overflow`.
     {
         let (mut app, counts, visible) = counted_control_app(false);
         app.refresh_control_action_availability();
@@ -82,7 +80,6 @@ fn lazy_control_projection_defers_semantics_and_preserves_surface_state() {
         assert_eq!(counts[1].get(), 1);
     }
 
-    // Case `lazy_control_projection_preserves_rejected_surface_and_declared_availability`.
     {
         let (mut app, counts, _) = counted_control_app(true);
         app.refresh_control_action_availability();
@@ -110,7 +107,6 @@ fn lazy_control_projection_defers_semantics_and_preserves_surface_state() {
         assert!(app.state.doc.get(ROOT, "flipped").unwrap().is_none());
     }
 
-    // Case `lazy_control_projection_does_not_commit_pending_document_transaction`.
     {
         let (mut app, counts, _) = counted_control_app(false);
         app.state_mut_for_test()
@@ -172,8 +168,6 @@ impl Widget for SemanticCountingPublisher {
     }
 }
 
-/// One counted inventory read: `Publisher`'s resources while `visible`,
-/// listed twice when `duplicate`.
 fn counted_resources(
     counts: &[Cell<usize>; 2],
     visible: &Cell<bool>,
@@ -230,7 +224,6 @@ fn inventory_only_publisher() -> (Box<dyn Widget>, std::rc::Rc<Cell<bool>>) {
 
 #[test]
 fn control_presence_keeps_inventory_permissions_and_availability_stamps() {
-    // Case `control_presence_keeps_inventory_only_custom_emitters_and_permissions`.
     {
         for wrapper in 0..4 {
             let (root, enabled) = inventory_only_publisher();
@@ -262,13 +255,10 @@ fn control_presence_keeps_inventory_permissions_and_availability_stamps() {
         }
     }
 
-    // Case `control_presence_replacement_resets_availability_stamp`.
     {
         let mut app =
             App::new_with_controlled_inputs(State::new(), Box::new(crate::widget::Column::new()));
         app.action_registry_mut().register::<Flip>(FLIP_TYPE);
-        // A root swapped in place, with nothing the walks follow moving: the
-        // walks are owed as after any change of the tree.
         let swap = |app: &mut App, root: Box<dyn Widget>| {
             app.root_widget = root;
             app.layout.walks = super::runtime::TreeWalks::default();
@@ -292,7 +282,6 @@ fn control_presence_keeps_inventory_permissions_and_availability_stamps() {
         );
     }
 
-    // Case `control_presence_host_uses_predicate_but_coverage_keeps_inventory`.
     {
         for wrapper in 0..4 {
             let counts = std::rc::Rc::new([Cell::new(0), Cell::new(0)]);
@@ -324,8 +313,6 @@ fn control_presence_keeps_inventory_permissions_and_availability_stamps() {
                 0,
                 "presence refresh must not inventory controls"
             );
-            // A shell with a sidebar adds its own action control: the
-            // sidebar toggle.
             let expected = if wrapper == 3 { 2 } else { 1 };
             assert_eq!(app.control_action_coverage().len(), expected);
             assert!(

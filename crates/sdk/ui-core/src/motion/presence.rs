@@ -1,15 +1,11 @@
-//! [`Presence`] — whether something is shown, and how far along its coming
-//! or going is.
+//! [`Presence`] — whether something is shown, and how far along its coming or going is.
 
 use super::spec::{Direction, MotionSpec};
 use super::value::MotionValue;
 use crate::time::Instant;
 use crate::tokens::{EffectiveMotion, MotionSource};
 
-/// The openness (`0..=1`) of something that comes and goes, on the spring
-/// its named motion picks. The intent ([`Self::is_open`]) changes the moment
-/// it is asked for, so input acts on the new state at once; the openness only
-/// says how it is drawn.
+/// The openness (`0..=1`) of something that comes and goes, on the spring its named motion picks.
 #[derive(Clone, Copy, Debug)]
 pub struct Presence {
     openness: MotionValue<f64>,
@@ -45,9 +41,8 @@ impl Presence {
         }
     }
 
-    /// Shown and held at `permille` openness, for capturing a frame of the
-    /// motion deterministically: asking to show it again keeps the pose;
-    /// hiding it closes from there. Never for normal UI.
+    /// Shown and held at `permille` openness, for capturing a frame of the motion deterministically:
+    /// asking to show it again keeps the pose; hiding it closes from there. Never for normal UI.
     #[doc(hidden)]
     #[must_use]
     pub fn held_at(permille: u16) -> Self {
@@ -58,9 +53,7 @@ impl Presence {
         }
     }
 
-    /// Show or hide with `spec`'s motion. Asking for the state it is already
-    /// in or going to changes nothing; asking for the other one mid-flight
-    /// reverses from where it is drawn.
+    /// Show or hide with `spec`'s motion.
     #[track_caller]
     pub fn show(
         &mut self,
@@ -95,8 +88,8 @@ impl Presence {
         self.openness.snap(if open { 1.0 } else { 0.0 });
     }
 
-    /// Whether it is held at a capture pose ([`Self::held_at`]): frozen part
-    /// way, so an owner that drops a finished motion keeps it.
+    /// Whether it is held at a capture pose ([`Self::held_at`]): frozen part way, so an owner that
+    /// drops a finished motion keeps it.
     pub fn is_held(&self) -> bool {
         self.held
     }

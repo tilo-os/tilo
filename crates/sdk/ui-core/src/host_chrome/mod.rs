@@ -1,10 +1,5 @@
-//! Where History, Search and Undo appear when an app runs outside the Tilo
-//! desktop: in the host operating system's own chrome.
-//!
-//! Apps never describe menus or draw chrome. The host reads one command
-//! model ([`model::host_commands`]) built from its own resources and the
-//! app's declared actions; every item is an [`tilo_actions::ActionBinding`]
-//! that enters the same local door as the palette and assistive technology.
+//! Where History, Search and Undo appear when an app runs outside the Tilo desktop: in the host
+//! operating system's own chrome. Apps never describe menus or draw chrome.
 
 pub(crate) mod edit;
 #[cfg(any(feature = "native", test))]

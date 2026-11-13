@@ -1,21 +1,5 @@
-//! The Android entry point.
-//!
-//! [`crate::android_main!`] in an app's `main.rs` exports `android_main`,
-//! which android-activity calls on its own thread once `TiloActivity` has
-//! created the native activity. It prepares the process the way a desktop
-//! launcher would and then runs the app's ordinary `main`, so the Android app
-//! takes the same [`super::run`] path as every other native host.
-//!
-//! Android starts a process with no launcher environment, so this module
-//! supplies one: stdout and stderr go to logcat, `HOME`, `TMPDIR` and the XDG
-//! base directories point into the app's private storage, `LANG` follows the
-//! device locale, and the window's system-bar insets reach the runner.
-//!
-//! Java calls into Rust through `static native` methods on the Java classes in
-//! `so.tilo.android`. `TiloActivity` loads the app library with
-//! `System.loadLibrary` before the native activity starts, so the JVM resolves
-//! those methods by their exported `Java_so_tilo_android_<Class>_<method>`
-//! symbols; see `nativeSafeAreaChanged` below.
+//! The Android entry point. [`crate::android_main!`] in an app's `main.rs` exports `android_main`,
+//! which android-activity calls on its own thread once `TiloActivity` has created the native activity.
 
 use std::ffi::{CString, c_void};
 use std::io::{BufRead, BufReader};
@@ -32,15 +16,12 @@ pub fn app() -> Option<&'static AndroidApp> {
     APP.get()
 }
 
-/// Run the app's `main` for the activity android-activity handed to
-/// `android_main`. Called by [`crate::android_main!`]; not an app API.
+/// Run the app's `main` for the activity android-activity handed to `android_main`.
 #[doc(hidden)]
 pub fn run_main<T: std::process::Termination>(app: AndroidApp, main: fn() -> T) {
     forward_stdio_to_logcat();
     install_environment(&app);
     if APP.set(app).is_err() {
-        // `TiloActivity` ends the process when its activity is destroyed:
-        // winit's event loop and the toolkit's process state run once.
         crate::diag!("tilo: android_main started twice in one process");
         return;
     }
@@ -58,9 +39,7 @@ unsafe extern "C" {
 
 const ANDROID_LOG_INFO: i32 = 4;
 
-/// Android connects a process's stdout and stderr to `/dev/null`. Everything
-/// the toolkit reports goes through them (`tracing`'s formatter, `diag!`,
-/// panic messages), so pipe both into logcat line by line.
+/// Android connects a process's stdout and stderr to `/dev/null`.
 #[allow(
     clippy::disallowed_methods,
     reason = "the logcat pump is a dedicated blocking reader thread for the process's lifetime"
@@ -95,9 +74,8 @@ fn forward_stdio_to_logcat() {
         });
 }
 
-/// The directories and locale a desktop session would have exported, placed
-/// in the app's sandbox so `tilo-paths`, `dirs` and every store built on them
-/// resolve there unchanged.
+/// The directories and locale a desktop session would have exported, placed in the app's sandbox so
+/// `tilo-paths`, `dirs` and every store built on them resolve there unchanged.
 fn install_environment(app: &AndroidApp) {
     let Some(files) = app.internal_data_path() else {
         crate::diag!("tilo: the activity reports no internal data path");
@@ -130,7 +108,6 @@ fn install_environment(app: &AndroidApp) {
     }
 }
 
-/// The device locale as a POSIX `language_COUNTRY`.
 fn locale(app: &AndroidApp) -> Option<String> {
     let config = app.config();
     let language = config.language().filter(|language| !language.is_empty())?;
@@ -146,24 +123,20 @@ static SAFE_AREA: [AtomicI32; 4] = [const { AtomicI32::new(0) }; 4];
 
 static ON_SAFE_AREA_CHANGED: OnceLock<Box<dyn Fn() + Send + Sync>> = OnceLock::new();
 
-/// Call `notify` whenever the window's insets change. Waking the looper is
-/// not enough: winit's Android loop drops a wake that brings no event or
-/// redraw request, so a soft keyboard the app hid itself would leave the
-/// layout at the keyboard's height until the next touch.
+/// Call `notify` whenever the window's insets change.
 pub(crate) fn on_safe_area_changed(notify: Box<dyn Fn() + Send + Sync>) {
     let _ = ON_SAFE_AREA_CHANGED.set(notify);
 }
 
-/// The system bars', display cutout's and soft keyboard's current overlap of
-/// the window, in physical pixels: `[left, top, right, bottom]`.
+/// The system bars', display cutout's and soft keyboard's current overlap of the window, in physical
+/// pixels: `[left, top, right, bottom]`.
 pub fn safe_area_insets() -> [i32; 4] {
     SAFE_AREA
         .each_ref()
         .map(|inset| inset.load(Ordering::Relaxed))
 }
 
-/// `TiloActivity.nativeSafeAreaChanged`, called on the UI thread whenever the
-/// window's insets change. It can run before `android_main` has started.
+/// `TiloActivity.nativeSafeAreaChanged`, called on the UI thread whenever the window's insets change.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_so_tilo_android_TiloActivity_nativeSafeAreaChanged(
     _env: *mut c_void,
@@ -176,7 +149,6 @@ pub extern "system" fn Java_so_tilo_android_TiloActivity_nativeSafeAreaChanged(
     for (slot, value) in SAFE_AREA.iter().zip([left, top, right, bottom]) {
         slot.store(value.max(0), Ordering::Relaxed);
     }
-    // Before the event loop runs, its first frame reads the insets.
     if let Some(notify) = ON_SAFE_AREA_CHANGED.get() {
         notify();
     }

@@ -1,11 +1,8 @@
-//! The launcher environment an Android process is given; see
-//! [`super::android`].
+//! The launcher environment an Android process is given; see [`super::android`].
 
 use std::path::{Path, PathBuf};
 
-/// The base directories for an app whose `getFilesDir()` is `files`. `HOME`
-/// is the sandbox root above it (`getDataDir()`), the boundary of what the app
-/// may open; the cache Android clears under storage pressure is `cache` there.
+/// The base directories for an app whose `getFilesDir()` is `files`.
 pub(super) fn directories(files: &Path) -> [(&'static str, PathBuf); 7] {
     let root = files.parent().unwrap_or(files);
     let cache = root.join("cache");

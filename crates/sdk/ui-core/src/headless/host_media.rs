@@ -1,5 +1,5 @@
-//! A retained component's local media lane for in-process hosts. Requests
-//! retain their exact component lifetime; a reply cannot reach a replacement.
+//! A retained component's local media lane for in-process hosts. Requests retain their exact component
+//! lifetime; a reply cannot reach a replacement.
 use super::FrameHarness;
 use crate::bound_dispatch::{CallbackBinding, ComponentRequest};
 use crate::collaboration::{CollabEvent, CollabRequest};
@@ -27,16 +27,14 @@ pub struct MediaLane {
     catalogues: Vec<(CallbackBinding, tilo_actions::remote::RemoteActionMessage)>,
 }
 impl MediaLane {
-    /// Take local media commands from each retained component under its
-    /// bound callback context. This lane carries no identity or remote authority.
-    /// The host handles document replication separately.
+    /// Take local media commands from each retained component under its bound callback context.
     pub fn take(&mut self, frame: &mut FrameHarness) -> Vec<MediaRequest> {
         self.pump(frame);
         std::mem::take(&mut self.ready)
     }
 
-    /// Drain read-only catalogue requests without stealing pending media commands.
-    /// The transport must authenticate them; closed component owners are discarded.
+    /// Drain read-only catalogue requests without stealing pending media commands. The transport must
+    /// authenticate them; closed component owners are discarded.
     pub fn take_catalogue_requests(
         &mut self,
         frame: &mut FrameHarness,
@@ -67,8 +65,6 @@ impl MediaLane {
         requests.retain(|request| request.retired || self.pending.contains_key(&request.ticket));
         self.catalogues
             .retain(|(binding, _)| !binding.closing.get() && binding.lifetime.is_active());
-        // Whether a component handed over a request: taking it (and the
-        // answers some get at once) changes that component.
         let mut took = false;
         let mut visit = |binding: &CallbackBinding,
                          widget: &mut dyn crate::widget::AppWidget,
@@ -142,8 +138,7 @@ impl MediaLane {
         }
     }
 
-    /// Complete only the exact retained owner that asked. Closed components
-    /// and duplicate completions are refused.
+    /// Complete only the exact retained owner that asked.
     pub fn complete(
         &mut self,
         frame: &mut FrameHarness,
@@ -175,16 +170,16 @@ impl MediaLane {
 }
 
 /// Whether the workspace's host runs `provider`'s actions: a workspace record's
-/// (`record:<app>:<record>`), the workspace's own (`workspace:<workspace>`) and its
-/// governance resource's (`workspace.permissions:<workspace>`).
+/// (`record:<app>:<record>`), the workspace's own (`workspace:<workspace>`) and its governance
+/// resource's (`workspace.permissions:<workspace>`).
 fn host_runs(provider: &str) -> bool {
     provider.starts_with("record:")
         || tilo_actions::remote::provider_workspace(provider).is_some()
         || provider == tilo_actions::remote::WORKSPACE_GOVERNANCE_PROVIDER
 }
 
-/// Why the lane refuses an invocation of `provider` with `queued` already
-/// waiting for the host, if it does.
+/// Why the lane refuses an invocation of `provider` with `queued` already waiting for the host, if it
+/// does.
 fn refusal(provider: &str, queued: usize) -> Option<&'static str> {
     if !host_runs(provider) {
         Some("Only the workspace's host runs another app's actions here")

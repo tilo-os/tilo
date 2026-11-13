@@ -50,8 +50,7 @@ impl HistoryPresentation {
     }
 }
 
-/// Immutable identity supplied by the owning runner. This carries no document.
-/// Bound runners resolve their actual checkout instead of accepting a foreign identity.
+/// Immutable identity supplied by the owning runner.
 #[derive(Clone)]
 #[allow(
     clippy::large_enum_variant,
@@ -78,8 +77,6 @@ pub enum HistorySourceRegistration {
 }
 impl HistorySourceRegistration {
     /// Capture the mounted component/tile's actual custody and storage identity.
-    /// # Errors
-    /// Refuses unavailable custody or an owner belonging to another application.
     pub fn owned(
         scope: &'static str,
         app_id: &str,
@@ -128,8 +125,8 @@ pub struct HistoryRegistration {
     pub(crate) sources: Vec<HistorySourceRegistration>,
     pub(crate) assets:
         std::collections::HashMap<&'static str, std::rc::Rc<dyn super::HistoricalAssetSource>>,
-    /// The change History opens at when the window starts, as a window
-    /// replaying a recording opens at its first step.
+    /// The change History opens at when the window starts, as a window replaying a recording opens at
+    /// its first step.
     pub(crate) opening_at: Option<crate::HistoryEntryId>,
 }
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -150,9 +147,7 @@ pub enum HistoryRegistrationError {
     ForeignSource,
 }
 impl HistoryRegistration {
-    /// A registration over an app-global state document, for tests of
-    /// History's presentation. A persistence path identifies storage; it is
-    /// not a user-file write target.
+    /// A registration over an app-global state document, for tests of History's presentation.
     #[cfg(test)]
     #[cfg(feature = "native")]
     pub(crate) fn installed_app_state(
@@ -234,8 +229,8 @@ impl HistoryRegistration {
         }
         Ok(registration)
     }
-    /// Whether every source is a checked file of the mounted filesystem: a
-    /// root's witness of the files it names, owning no document.
+    /// Whether every source is a checked file of the mounted filesystem: a root's witness of the files
+    /// it names, owning no document.
     #[must_use]
     pub fn is_checked_files_only(&self) -> bool {
         self.sources

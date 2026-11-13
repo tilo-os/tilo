@@ -1,46 +1,28 @@
-//! The window around an app its host shows in its own process.
-//!
-//! An app in a process of its own reaches its window's bar and its tab over its shell connection
-//! ([`crate::window_toolbar`], [`crate::shell_tabs`]), which knows the asking app by its process.
-//! Apps a host mounts in its own process (the desktop's Terminal tabs) share that process and its
-//! thread, so they cannot use those: the host lends each of them the window it shows it in, a
-//! [`HostedWindow`] (through [`HostContext::lend`](crate::application::HostContext::lend)). On it
-//! the app declares its bar's slots and asks to close its tab; the host draws the slots in the bar,
-//! hands back what the person did with them, and closes the tab the way the desktop closes any tab,
-//! the window with it when it was the window's only tab.
-//!
-//! The app's side may be used from any thread: a shell that exits is seen by the thread reading its
-//! terminal, and the tab closes even while it is not the one the window shows.
-//!
-//! An app need not know it shares a process: while a host's [`TileHost`](crate::widget::TileHost)
-//! runs the app it shows in a window
-//! ([`TileHost::set_hosted_window`](crate::widget::TileHost::set_hosted_window)),
-//! [`crate::window_toolbar`]'s calls act on that window, so an app written for a process of its own
-//! declares its slots and hears its events the same way in either. What the host does with the
-//! windows is one [`crate::window_slots::WindowSlots`] in every desktop.
+//! The window around an app its host shows in its own process. An app in a process of its own reaches
+//! its window's bar and its tab over its shell connection ([`crate::window_toolbar`],
+//! [`crate::shell_tabs`]), which knows the asking app by its process. Apps a host mounts in its own
+//! process (the desktop's Terminal tabs) share that process and its thread, so they cannot use those:
+//! the host lends each of them the window it shows it in, a [`HostedWindow`] (through
+//! [`HostContext::lend`](crate::application::HostContext::lend)).
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use crate::window_toolbar::{ToolbarEvent, WindowToolbar};
 
-/// Upper bound on events the app has not read yet, as for an app in a
-/// process of its own.
 const MAX_PENDING: usize = 32;
 
 /// One window a host shows an app in, shared by the host and the app.
-/// Clones are the same window.
 #[derive(Clone)]
 pub struct HostedWindow {
     inner: Arc<Mutex<State>>,
-    /// Which window this is ([`Self::identity`]).
     id: u64,
 }
 
 impl Default for HostedWindow {
     fn default() -> Self {
-        /// Windows made so far, so that no two of them ever share an identity:
-        /// a cache keyed by it never mistakes one window for another.
+        /// Windows made so far, so that no two of them ever share an identity: a cache keyed by it
+        /// never mistakes one window for another.
         static MADE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         Self {
             inner: Arc::new(Mutex::new(State::default())),
@@ -52,42 +34,30 @@ impl Default for HostedWindow {
 #[derive(Default)]
 struct State {
     toolbar: Option<WindowToolbar>,
-    /// The notice up ([`crate::window_toolbar::notify`]).
     notice: Option<crate::window_toolbar::ToolbarNotice>,
-    /// The notices' buttons pressed, not yet taken by their posters.
     notice_presses: Vec<String>,
-    /// The reactions shown ([`crate::window_toolbar::show_reactions`]).
     reactions: Option<crate::window_toolbar::ToolbarReactions>,
-    /// The emoji pressed among them, not yet taken by their shower.
     reaction_presses: Vec<String>,
     /// Whether its person may only look ([`crate::window_toolbar::show_view_only`]).
     view_only: bool,
-    /// Whether its document has work not yet saved
-    /// ([`crate::window_toolbar::show_edited`]).
     edited: bool,
-    /// Bumped by every declaration that changed the slots.
     revision: u64,
     events: VecDeque<ToolbarEvent>,
     close: bool,
-    /// The session-supervisor session the tab runs, as the supervisor named
-    /// it to the app: how the host knows which tab a program typed in a
-    /// terminal belongs to.
+    /// The session-supervisor session the tab runs, as the supervisor named it to the app: how the host
+    /// knows which tab a program typed in a terminal belongs to.
     session: Option<String>,
-    /// The workspace the window is in, as its host knows it: an app that
-    /// shares its process with other windows has no workspace of its own.
+    /// The workspace the window is in, as its host knows it: an app that shares its process with other
+    /// windows has no workspace of its own.
     workspace: Option<String>,
-    /// The window floats over the desk ([`crate::window_toolbar::floats`]).
     floats: bool,
-    /// The app asked to edit its location (its Ctrl+L).
     edit: bool,
-    /// The app asked to open the window's search (its Ctrl+F, or Ctrl+H
-    /// for the replacement field).
     search: Option<crate::window_toolbar::SearchOpening>,
-    /// Where the app wants other apps' views of resources drawn, and how
-    /// each is coming along ([`crate::window_share`]).
+    /// Where the app wants other apps' views of resources drawn, and how each is coming along
+    /// ([`crate::window_share`]).
     embeds: crate::window_share::Embeds,
-    /// What the host runs when the app declared or asked to close, so it
-    /// looks again even while nothing else is happening.
+    /// What the host runs when the app declared or asked to close, so it looks again even while nothing
+    /// else is happening.
     wake: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
@@ -109,9 +79,9 @@ impl HostedWindow {
         Self::default()
     }
 
-    /// Which window this is: equal for clones of one window, and for no other
-    /// window ever, so what a reader keeps of one window never answers for
-    /// another ([`crate::window_toolbar::current_window`]).
+    /// Which window this is: equal for clones of one window, and for no other window ever, so what a
+    /// reader keeps of one window never answers for another
+    /// ([`crate::window_toolbar::current_window`]).
     pub fn identity(&self) -> u64 {
         self.id
     }
@@ -128,11 +98,8 @@ impl HostedWindow {
         }
     }
 
-    // --- the app's side
-
-    /// Declare the window's slots (`None`: none), bounded as
-    /// [`crate::window_toolbar::declare`] bounds them. Cheap when nothing
-    /// changed.
+    /// Declare the window's slots (`None`: none), bounded as [`crate::window_toolbar::declare`] bounds
+    /// them.
     pub fn declare(&self, toolbar: Option<WindowToolbar>) {
         let toolbar = toolbar
             .map(crate::window_toolbar::declaration)
@@ -149,9 +116,8 @@ impl HostedWindow {
         Self::wake(wake);
     }
 
-    /// Show `notice` in the bar (`None`: take it down), bounded as
-    /// [`crate::window_toolbar::notify`] bounds it. Cheap when nothing
-    /// changed.
+    /// Show `notice` in the bar (`None`: take it down), bounded as [`crate::window_toolbar::notify`]
+    /// bounds it.
     pub fn notify(&self, notice: Option<crate::window_toolbar::ToolbarNotice>) {
         let wake = {
             let mut state = self.state();
@@ -181,8 +147,7 @@ impl HostedWindow {
     }
 
     /// Show `reactions` at the bar's end (`None`: none), bounded as
-    /// [`crate::window_toolbar::show_reactions`] bounds them. Cheap when
-    /// nothing changed.
+    /// [`crate::window_toolbar::show_reactions`] bounds them.
     pub fn show_reactions(&self, reactions: Option<crate::window_toolbar::ToolbarReactions>) {
         let wake = {
             let mut state = self.state();
@@ -197,8 +162,6 @@ impl HostedWindow {
     }
 
     /// Say whether the window's person may only look at what it shows.
-    /// Said while the app syncs, inside a frame of its host's: the host
-    /// reads the bar after that sync, so this wakes no further frame.
     pub fn show_view_only(&self, view_only: bool) {
         let mut state = self.state();
         if state.view_only != view_only {
@@ -213,9 +176,7 @@ impl HostedWindow {
         self.state().view_only
     }
 
-    /// Mark the window's document as having work not yet saved. Said when
-    /// a save stalls, fails or lands, which may be outside any sync of the
-    /// app: the host is woken to read the bar again.
+    /// Mark the window's document as having work not yet saved.
     pub fn show_edited(&self, edited: bool) {
         let wake = {
             let mut state = self.state();
@@ -247,15 +208,14 @@ impl HostedWindow {
         std::mem::take(&mut self.state().reaction_presses)
     }
 
-    /// What the person did with the slots since the last call, oldest
-    /// first.
+    /// What the person did with the slots since the last call, oldest first.
     #[must_use]
     pub fn take_events(&self) -> Vec<ToolbarEvent> {
         self.state().events.drain(..).collect()
     }
 
-    /// Close this window's tab, and the window with it when it is the only
-    /// tab, the way the desktop closes any tab. From any thread.
+    /// Close this window's tab, and the window with it when it is the only tab, the way the desktop
+    /// closes any tab.
     pub fn close(&self) {
         let wake = {
             let mut state = self.state();
@@ -268,8 +228,8 @@ impl HostedWindow {
         Self::wake(wake);
     }
 
-    /// Name the session-supervisor session this tab runs (`None`: none
-    /// now), as the supervisor answered when it opened. From any thread.
+    /// Name the session-supervisor session this tab runs (`None`: none now), as the supervisor answered
+    /// when it opened.
     pub fn set_session(&self, session: Option<String>) {
         self.state().session = session;
     }
@@ -291,9 +251,8 @@ impl HostedWindow {
         self.state().toolbar.clone()
     }
 
-    /// What the window's bar shows: the slots as declared, with the
-    /// notice up and the reactions at the end, which are the window's own
-    /// ([`Self::notify`], [`Self::show_reactions`]).
+    /// What the window's bar shows: the slots as declared, with the notice up and the reactions at the
+    /// end, which are the window's own ([`Self::notify`], [`Self::show_reactions`]).
     #[must_use]
     pub fn shown(&self) -> Option<WindowToolbar> {
         let state = self.state();
@@ -322,8 +281,7 @@ impl HostedWindow {
         Self::wake(wake);
     }
 
-    /// Ask the bar to open the window's search, as a click on its control
-    /// does.
+    /// Ask the bar to open the window's search, as a click on its control does.
     pub fn open_search(&self, opening: crate::window_toolbar::SearchOpening) {
         let wake = {
             let mut state = self.state();
@@ -334,7 +292,6 @@ impl HostedWindow {
     }
 
     /// Ask for `embeds` in this window ([`crate::window_share::declare`]).
-    /// Cheap when nothing changed.
     pub fn declare_embeds(&self, embeds: Vec<crate::window_share::Embed>) {
         let wake = {
             let mut state = self.state();
@@ -352,7 +309,6 @@ impl HostedWindow {
         self.state().embeds.states.get(key).cloned()
     }
 
-    // --- the host's side
     /// The embeds the app asks for, as last declared.
     #[must_use]
     pub fn embeds(&self) -> Vec<crate::window_share::Embed> {
@@ -390,8 +346,7 @@ impl HostedWindow {
         std::mem::take(&mut self.state().edit)
     }
 
-    /// How the app asked to open the window's search since the last
-    /// call.
+    /// How the app asked to open the window's search since the last call.
     #[must_use]
     pub fn take_search_request(&self) -> Option<crate::window_toolbar::SearchOpening> {
         self.state().search.take()
@@ -402,8 +357,8 @@ impl HostedWindow {
         self.state().wake = Some(Arc::new(wake));
     }
 
-    /// The slots and their revision, when the revision is not `seen` (the
-    /// one the host last showed; `None`: it showed none yet).
+    /// The slots and their revision, when the revision is not `seen` (the one the host last showed;
+    /// `None`: it showed none yet).
     #[must_use]
     pub fn toolbar_since(&self, seen: Option<u64>) -> Option<(u64, Option<WindowToolbar>)> {
         let revision = self.revision();
@@ -504,8 +459,8 @@ mod tests {
         assert!(!window.take_close(), "one close per ask");
     }
 
-    /// Apps sharing one process (the browser's) each learn their window's
-    /// workspace from it, not from the process.
+    /// Apps sharing one process (the browser's) each learn their window's workspace from it, not from
+    /// the process.
     #[test]
     fn an_app_is_in_the_workspace_its_window_is_in() {
         let window = HostedWindow::new();

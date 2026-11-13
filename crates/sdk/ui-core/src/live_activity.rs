@@ -1,26 +1,17 @@
-//! What an app keeps going outside its own window: a running timer, a call, a
-//! route, a song, a picture in a picture.
-//!
-//! An app describes its activity as a [`Summary`]: a title, the value it reads
-//! (a countdown, an elapsed time, who is on the line), how far along it is, up
-//! to three controls and a tone. The session draws that one shape as the bar's
-//! pill and as a floating card, so the two never disagree and neither has to
-//! know what the activity is. Rich bodies (a call's video, a live route) are
-//! drawn by their app inside the card frame; the summary is still what names,
-//! prioritises and closes them.
-//!
-//! The summary crosses from an app to the session as JSON, so every field is
-//! optional but the title and kind: an older app's activity still shows.
+//! What an app keeps going outside its own window: a running timer, a call, a route, a song, a picture
+//! in a picture. An app describes its activity as a [`Summary`]: a title, the value it reads (a
+//! countdown, an elapsed time, who is on the line), how far along it is, up to three controls and a
+//! tone. The session draws that one shape as the bar's pill and as a floating card, so the two never
+//! disagree and neither has to know what the activity is.
 
 use serde::{Deserialize, Serialize};
 
-/// The most controls a summary names: what fits a card's row, and what the
-/// bar's pill and keyboard reach. A song names three (previous, play or
-/// pause, next) beside the close its card's header carries.
+/// The most controls a summary names: what fits a card's row, and what the bar's pill and keyboard
+/// reach.
 pub const MAX_CONTROLS: usize = 4;
 
-/// What an activity is. It decides where the activity sits in the bar's pill
-/// and whether it wants a card of its own.
+/// What an activity is. It decides where the activity sits in the bar's pill and whether it wants a
+/// card of its own.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Kind {
@@ -42,9 +33,8 @@ pub enum Kind {
 }
 
 impl Kind {
-    /// Where an activity of this kind stands in the pill, sooner first: a call
-    /// before directions, a timer that is nearly due before one that is not,
-    /// and a song last.
+    /// Where an activity of this kind stands in the pill, sooner first: a call before directions, a
+    /// timer that is nearly due before one that is not, and a song last.
     #[must_use]
     pub const fn pill_rank(self) -> u8 {
         match self {
@@ -58,16 +48,15 @@ impl Kind {
         }
     }
 
-    /// Whether an activity of this kind is a card of its own while it runs
-    /// (a call, directions) rather than only once it is pulled out of the
-    /// pill (music).
+    /// Whether an activity of this kind is a card of its own while it runs (a call, directions) rather
+    /// than only once it is pulled out of the pill (music).
     #[must_use]
     pub const fn asks_for_a_card(self) -> bool {
         matches!(self, Self::Call | Self::Navigation | Self::PictureInPicture)
     }
 
-    /// The lucide glyph that stands for this kind of activity, for a card
-    /// whose app names no icon of its own.
+    /// The lucide glyph that stands for this kind of activity, for a card whose app names no icon of
+    /// its own.
     #[must_use]
     pub const fn glyph(self) -> &'static str {
         match self {
@@ -82,8 +71,7 @@ impl Kind {
     }
 }
 
-/// How loudly an activity reads: its glyph on the card, its reading in the
-/// pill.
+/// How loudly an activity reads: its glyph on the card, its reading in the pill.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Tone {
@@ -97,8 +85,8 @@ pub enum Tone {
 }
 
 impl Tone {
-    /// The ink an activity of this tone reads in, wherever it is drawn: the
-    /// bar's pill and the card's glyph say the same thing about it.
+    /// The ink an activity of this tone reads in, wherever it is drawn: the bar's pill and the card's
+    /// glyph say the same thing about it.
     #[must_use]
     pub fn ink(self, theme: &crate::theme::Theme) -> vello::peniko::Color {
         let colors = &theme.tokens.colors;
@@ -114,12 +102,11 @@ impl Tone {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Art {
-    /// A square tile beside the lines, as a song's cover stands beside its
-    /// title and artist.
+    /// A square tile beside the lines, as a song's cover stands beside its title and artist.
     #[default]
     Square,
-    /// The card's whole width at nine sixteenths above the lines: a picture
-    /// the activity made, such as a screenshot, shown as its own hero.
+    /// The card's whole width at nine sixteenths above the lines: a picture the activity made, such as
+    /// a screenshot, shown as its own hero.
     Hero,
 }
 
@@ -134,24 +121,21 @@ pub enum ControlKind {
     Secondary,
     /// Ends the activity: the card's close, or the pill's dismiss.
     Close,
-    /// Ends what runs, in the colour that warns: a recording's stop. It comes
-    /// after the rest because a compact encoding names a variant by its place.
+    /// Ends what runs, in the colour that warns: a recording's stop.
     Destructive,
 }
 
 /// One control the activity offers.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Control {
-    /// What the app calls it: its own command id, pressed back to the app as
-    /// it is.
+    /// What the app calls it: its own command id, pressed back to the app as it is.
     pub id: String,
     /// What the button says.
     pub label: String,
     #[serde(default)]
     pub kind: ControlKind,
-    /// The glyph the button shows instead of its label, by lucide name
-    /// ("play", "skip-back"): a media control reads as its icon, and its
-    /// label is still what assistive technology says.
+    /// The glyph the button shows instead of its label, by lucide name ("play", "skip-back"): a media
+    /// control reads as its icon, and its label is still what assistive technology says.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub icon: String,
 }
@@ -174,9 +158,8 @@ impl Control {
         self
     }
 
-    /// What this control does in a media transport, when it is one of the
-    /// transport's three: read from its glyph first, so play and pause say
-    /// what the player does now, then from its id.
+    /// What this control does in a media transport, when it is one of the transport's three: read from
+    /// its glyph first, so play and pause say what the player does now, then from its id.
     #[must_use]
     pub fn transport(&self) -> Option<crate::widget::TransportControl> {
         use crate::widget::TransportControl;
@@ -197,44 +180,40 @@ impl Control {
 /// One activity, as the bar's pill and the floating layer draw it.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Summary {
-    /// The activity's own id, stable while it runs: the same timer or call
-    /// keeps its id across frames, so a card keeps its place and its
-    /// dismissal.
+    /// The activity's own id, stable while it runs: the same timer or call keeps its id across frames,
+    /// so a card keeps its place and its dismissal.
     pub id: String,
     #[serde(default)]
     pub kind: Kind,
     /// What it is, in the app's words: "Tea", "Ada", "9th Street".
     pub title: String,
-    /// The line under it: the artist of a song, who is speaking, the street
-    /// the directions turn onto.
+    /// The line under it: the artist of a song, who is speaking, the street the directions turn onto.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub subtitle: String,
-    /// The app's own glyph, by lucide name ("timer", "music"): a card's
-    /// header shows it, so a glance says which app the activity is.
+    /// The app's own glyph, by lucide name ("timer", "music"): a card's header shows it, so a glance
+    /// says which app the activity is.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub icon: String,
-    /// The app the activity belongs to, as the person knows it ("Music",
-    /// "Clocks"): a card's header says it beside the app's glyph. The session
-    /// that shows the activity fills it, so it is named in the person's
-    /// language and never as an id.
+    /// The app the activity belongs to, as the person knows it ("Music", "Clocks"): a card's header
+    /// says it beside the app's glyph. The session that shows the activity fills it, so it is named in
+    /// the person's language and never as an id.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub source: String,
     /// What it reads now: "4:32", "2 min", "muted".
     #[serde(default)]
     pub value: String,
-    /// What is left, in seconds, for a countdown: a timer due sooner stands
-    /// ahead of one that is not.
+    /// What is left, in seconds, for a countdown: a timer due sooner stands ahead of one that is not.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub countdown: Option<i64>,
     /// How far along it is, from 0 to 1, when it has a length.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub progress: Option<f32>,
-    /// How long what it plays runs, in seconds: with `progress`, a card says
-    /// where the song is and what is left of it.
+    /// How long what it plays runs, in seconds: with `progress`, a card says where the song is and what
+    /// is left of it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub length: Option<u64>,
-    /// Its artwork, by picture address (a content address, or a `data:`
-    /// picture): a card shows it beside the title, the pill's a thumbnail.
+    /// Its artwork, by picture address (a content address, or a `data:` picture): a card shows it
+    /// beside the title, the pill's a thumbnail.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub artwork: String,
     /// How the artwork heads the card: beside the lines, or over them.
@@ -282,16 +261,14 @@ impl Summary {
         self
     }
 
-    /// The app it belongs to, as the person knows it: a card's header says it
-    /// beside the app's glyph.
+    /// The app it belongs to, as the person knows it: a card's header says it beside the app's glyph.
     #[must_use]
     pub fn with_source(mut self, source: impl Into<String>) -> Self {
         self.source = source.into();
         self
     }
 
-    /// The glyph a card's header shows: the app's own, or the one its kind
-    /// stands for.
+    /// The glyph a card's header shows: the app's own, or the one its kind stands for.
     #[must_use]
     pub fn glyph(&self) -> &str {
         if self.icon.is_empty() {
@@ -319,8 +296,7 @@ impl Summary {
         self
     }
 
-    /// How long it runs, in seconds, so a card can say where it is and what
-    /// is left of it.
+    /// How long it runs, in seconds, so a card can say where it is and what is left of it.
     #[must_use]
     pub fn with_length(mut self, seconds: u64) -> Self {
         self.length = Some(seconds);
@@ -334,9 +310,8 @@ impl Summary {
         self
     }
 
-    /// The artwork heads the card over its lines, at nine sixteenths of the
-    /// card's width: a picture the activity made is shown whole, not as a
-    /// tile beside a title.
+    /// The artwork heads the card over its lines, at nine sixteenths of the card's width: a picture the
+    /// activity made is shown whole, not as a tile beside a title.
     #[must_use]
     pub fn with_hero_artwork(mut self, artwork: impl Into<String>) -> Self {
         self.artwork = artwork.into();
@@ -344,8 +319,8 @@ impl Summary {
         self
     }
 
-    /// Where the activity stands in what it runs, in seconds, from how far
-    /// along it is: `None` when it has no length.
+    /// Where the activity stands in what it runs, in seconds, from how far along it is: `None` when it
+    /// has no length.
     #[must_use]
     pub fn elapsed_seconds(&self) -> Option<u64> {
         let length = self.length?;
@@ -378,8 +353,7 @@ impl Summary {
         self
     }
 
-    /// The words the pill and a card's header say: the title, and its reading
-    /// when it has one.
+    /// The words the pill and a card's header say: the title, and its reading when it has one.
     #[must_use]
     pub fn reading(&self) -> String {
         if self.value.is_empty() {
@@ -391,9 +365,7 @@ impl Summary {
         format!("{}  {}", self.title, self.value)
     }
 
-    /// What a card shows largest: the reading when it has one, else the
-    /// title. A timer's countdown is what a glance is after; a song has no
-    /// countdown, and its track is.
+    /// What a card shows largest: the reading when it has one, else the title.
     #[must_use]
     pub fn hero(&self) -> &str {
         if self.value.is_empty() {
@@ -403,23 +375,22 @@ impl Summary {
         }
     }
 
-    /// The title a card's header says above its hero, when the hero is not
-    /// the title itself.
+    /// The title a card's header says above its hero, when the hero is not the title itself.
     #[must_use]
     pub fn header_title(&self) -> Option<&str> {
         (!self.value.is_empty() && !self.title.is_empty()).then_some(self.title.as_str())
     }
 
-    /// What a card's header says beside the app's glyph: the title, when the
-    /// hero is the card's reading, else the app the activity belongs to.
+    /// What a card's header says beside the app's glyph: the title, when the hero is the card's
+    /// reading, else the app the activity belongs to.
     #[must_use]
     pub fn header_line(&self) -> &str {
         self.header_title().unwrap_or(&self.source)
     }
 
-    /// Where this activity stands in the pill: its kind first, then a timer
-    /// that is due within a minute, then what it has left, then its id, so
-    /// the order never depends on the order the board was read in.
+    /// Where this activity stands in the pill: its kind first, then a timer that is due within a
+    /// minute, then what it has left, then its id, so the order never depends on the order the board
+    /// was read in.
     #[must_use]
     pub fn pill_rank(&self) -> (u8, i64, &str) {
         let due_soon = self
@@ -438,8 +409,8 @@ impl Summary {
         (rank, left, self.id.as_str())
     }
 
-    /// The control a plain press (Space, a click on the card) runs: the first
-    /// one the app marked primary, else its first.
+    /// The control a plain press (Space, a click on the card) runs: the first one the app marked
+    /// primary, else its first.
     #[must_use]
     pub fn first_control(&self) -> Option<&Control> {
         self.controls
@@ -456,8 +427,8 @@ impl Summary {
             .find(|control| control.kind == ControlKind::Close)
     }
 
-    /// Whether the card draws a row of offered controls: every control but
-    /// the close, which its header carries instead.
+    /// Whether the card draws a row of offered controls: every control but the close, which its header
+    /// carries instead.
     #[must_use]
     pub fn has_actions(&self) -> bool {
         self.controls
@@ -465,8 +436,8 @@ impl Summary {
             .any(|control| control.kind != ControlKind::Close)
     }
 
-    /// The controls the card's row draws, in the order the app named them:
-    /// everything but the close, which the card's header carries instead.
+    /// The controls the card's row draws, in the order the app named them: everything but the close,
+    /// which the card's header carries instead.
     #[must_use]
     pub fn action_controls(&self) -> Vec<&Control> {
         self.controls
@@ -476,9 +447,9 @@ impl Summary {
             .collect()
     }
 
-    /// The activity's offered controls as a media transport, when every one
-    /// of them is the transport's — previous, play/pause, next: the card then
-    /// paints them the one way every media surface paints a transport, by id.
+    /// The activity's offered controls as a media transport, when every one of them is the transport's
+    /// — previous, play/pause, next: the card then paints them the one way every media surface paints a
+    /// transport, by id.
     #[must_use]
     pub fn transport(&self) -> Option<Vec<(&str, crate::widget::TransportControl)>> {
         let controls = self.action_controls();
@@ -503,15 +474,15 @@ pub struct Announcement {
     pub body: String,
 }
 
-/// What an app publishes on the live activity board: the activity it keeps
-/// going, and an announcement it wants made.
+/// What an app publishes on the live activity board: the activity it keeps going, and an announcement
+/// it wants made.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Published {
     /// The activity running now, if any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary: Option<Summary>,
-    /// The person keeps this one over the windows: it is a card while it runs,
-    /// not only a pill in the bar.
+    /// The person keeps this one over the windows: it is a card while it runs, not only a pill in the
+    /// bar.
     #[serde(default)]
     pub overlay: bool,
     /// Something that came due and wants announcing.

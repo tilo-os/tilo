@@ -1,15 +1,14 @@
-//! `--headless-drive`: a prepared component driven by a spec's actions,
-//! then audited, captured and written out. A spec that names a scenario
-//! (`"scenario"`, or `--scenario`) has its app built from that scenario's
-//! fixtures by the launcher; the scenario is staged here, before the
-//! actions, as `--shots --scenario` stages it before its capture.
+//! `--headless-drive`: a prepared component driven by a spec's actions, then audited, captured and
+//! written out. A spec that names a scenario (`"scenario"`, or `--scenario`) has its app built from
+//! that scenario's fixtures by the launcher; the scenario is staged here, before the actions, as
+//! `--shots --scenario` stages it before its capture.
 
 use super::{
     DEFAULT_VIEWPORT, FrameHarness, Spec, audit_spec, drive_spec_actions, write_spec_outputs,
 };
 
-/// Drive the same prepared component with existing actions, audit, and output formats.
-/// Returns 0 for success, 1 for an action/output failure, and 3 for durability failure.
+/// Drive the same prepared component with existing actions, audit, and output formats. Returns 0 for
+/// success, 1 for an action/output failure, and 3 for durability failure.
 pub fn run_component(
     spec: &Spec,
     component: crate::application::AppComponent,
@@ -18,9 +17,8 @@ pub fn run_component(
     run_component_staged(spec, component, inputs, |_| Ok(()))
 }
 
-/// [`run_component`], with `stage` run on the mounted window before the
-/// actions: the named scenario's selection, open menu or drag, as a capture
-/// of it shows them. A stage that fails fails the drive (1).
+/// [`run_component`], with `stage` run on the mounted window before the actions: the named scenario's
+/// selection, open menu or drag, as a capture of it shows them.
 pub fn run_component_staged(
     spec: &Spec,
     component: crate::application::AppComponent,

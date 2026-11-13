@@ -1,5 +1,5 @@
-//! Layout and input routing for chrome plus a borrowed presentation slot.
-//! Live ownership/lifecycle traversal stays entirely with the runner.
+//! Layout and input routing for chrome plus a borrowed presentation slot. Live ownership/lifecycle
+//! traversal stays entirely with the runner.
 use super::{
     Affine, Dimension, FlexDirection, HashMap, HistoryHost, NodeId, Point, PresenceCtx,
     PreviewSide, Rect, Scene, Size, Style, TaffyTree, TaffyTreeExt, TextRenderer, Theme, Widget,
@@ -37,8 +37,6 @@ impl HistoryHost {
         // runner's row) shows it, and this bar never stands above the app.
         let presents =
             offered || (control.is_some() && crate::window_toolbar::declared().is_some());
-        // Closed, the sync status reads as quiet text in the same row; open,
-        // it stays with this bar.
         let status = (!self.open).then_some(self.sync_status.as_ref()).flatten();
         let presents_status = live
             .as_deref_mut()
@@ -48,10 +46,6 @@ impl HistoryHost {
             self.app_presents_status = presents_status;
             self.rebuild_toolbar();
         }
-        // What this build lays out, including the toolbar the offer above
-        // just rebuilt: admitted before it, the first build of every app
-        // with History read its own toolbar as a change after it and built
-        // the whole tree a second time.
         self.admit_composition();
         self.timeline_node = None;
         self.canvas_node = None;
@@ -65,8 +59,6 @@ impl HistoryHost {
             return self.build_side_panel(live, tree, theme, nodes);
         }
         let toolbar = self.toolbar.build_layout(tree, theme, nodes);
-        // A selected change lays out its own navigation rows edge to edge;
-        // the strip holding the History control is inset like a bar.
         if self.has_toolbar_controls()
             && self.selected.is_empty()
             && let Ok(style) = tree.style(toolbar)
@@ -131,7 +123,6 @@ impl HistoryHost {
         self.compose_root(vec![toolbar, body], tree, theme, nodes)
     }
 
-    /// The composition's root: `children`, and the restore review over them.
     fn compose_root(
         &mut self,
         mut composition_children: Vec<NodeId>,
@@ -159,16 +150,12 @@ impl HistoryHost {
             &composition_children,
         );
         self.chrome_node = Some(root);
-        // This is a structural composition node, not an actionable widget.
-        // Registering `self` could alias the thin data pointer of its first
-        // inline child and make reverse-node lookup resolve to the wrong node.
         root
     }
 
-    /// History as a panel at the window's trailing side: the content stays
-    /// where it is (the live app, or the selected version in its place,
-    /// read-only), and the panel beside it holds the timeline, its controls
-    /// and, for a selected change, what can be done with it.
+    /// History as a panel at the window's trailing side: the content stays where it is (the live app,
+    /// or the selected version in its place, read-only), and the panel beside it holds the timeline,
+    /// its controls and, for a selected change, what can be done with it.
     fn build_side_panel(
         &mut self,
         live: Option<&mut dyn Widget>,
@@ -177,7 +164,6 @@ impl HistoryHost {
         nodes: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let inset = f32::from(theme.tokens.spacing.s4);
-        // The content: the preview under its banner, or the live app.
         let mut content_children = vec![];
         if self.show_preview() {
             let banner = self.banner.build_layout(tree, theme, nodes);
@@ -214,8 +200,6 @@ impl HistoryHost {
             &content_children,
         );
         self.content_node = Some(content);
-        // The panel: its head and controls, the timeline, the selected
-        // change's foot.
         let toolbar = self.toolbar.build_layout(tree, theme, nodes);
         if let Ok(style) = tree.style(toolbar) {
             let mut style = style.clone();
@@ -230,7 +214,6 @@ impl HistoryHost {
         }
         self.toolbar_node = Some(toolbar);
         let mut panel_children = vec![toolbar];
-        // The timeline stands on the panel's own ground.
         self.timeline.set_draws_own_surface(false);
         let list = if self.timeline_available() {
             let timeline = self.timeline.build_layout(tree, theme, nodes);
@@ -293,8 +276,6 @@ impl HistoryHost {
         self.compose_root(vec![body], tree, theme, nodes)
     }
 
-    /// The origin of `node`, a child of the composition's body, for the
-    /// widgets inside it.
     fn body_child_origin(&self, tree: &TaffyTree<()>, node: Option<NodeId>) -> Point {
         let body = self.body_origin(tree);
         node.map_or(body, |node| {
@@ -302,8 +283,6 @@ impl HistoryHost {
         })
     }
 
-    /// Where the live app is laid out: the content beside the side panel, or
-    /// the body.
     fn live_origin(&self, tree: &TaffyTree<()>) -> Point {
         if self.content_node.is_some() {
             self.body_child_origin(tree, self.content_node)
@@ -311,8 +290,8 @@ impl HistoryHost {
             self.body_origin(tree)
         }
     }
-    /// A closed History with its button in the host's chrome leaves the
-    /// toolbar empty; it then takes no bar at all.
+    /// A closed History with its button in the host's chrome leaves the toolbar empty; it then takes no
+    /// bar at all.
     fn has_toolbar_controls(&self) -> bool {
         !self.toolbar.children().is_empty()
     }
@@ -337,9 +316,7 @@ impl HistoryHost {
     pub(crate) fn live_layout_node(&self) -> Option<NodeId> {
         self.live_node
     }
-    /// Route `event` to the History chrome, then (when the chrome did not
-    /// take it) to the `live` app. Each is dispatched at its own layout node;
-    /// `ctx.node_id` is the node the event arrived at and is not forwarded.
+    /// Route `event` to the History chrome, then (when the chrome did not take it) to the `live` app.
     pub(crate) fn route_event(
         &mut self,
         live: &mut dyn Widget,
@@ -416,7 +393,6 @@ impl Widget for HistoryHost {
     fn apply_layout(&mut self, tree: &TaffyTree<()>, node: NodeId, origin: Point) {
         let narrow = self.rect.width() < 600.0;
         self.rect = crate::widget::layout_rect(tree, node, origin);
-        // Its layout follows whether it is narrow (`needs_refresh`).
         if (self.rect.width() < 600.0) != narrow {
             super::super::note_news();
         }
@@ -470,8 +446,6 @@ impl Widget for HistoryHost {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        // Authors are named by the workspace's participants; a name that arrived
-        // or changed shows on the next refresh.
         if self
             .controller
             .as_mut()
@@ -480,8 +454,6 @@ impl Widget for HistoryHost {
             self.toolbar_dirty = true;
         }
         self.motion = theme.motion();
-        // The content first: the selected version in place under its banner,
-        // drawn as the live view is in this window.
         if self.show_preview() {
             let window_presents = self.window_presents;
             let canvas = self.canvas_mut();
@@ -503,8 +475,6 @@ impl Widget for HistoryHost {
                 .draw_child(scene, transform, text, theme, presence);
         }
         let side = self.panel_node.is_some();
-        // However History came to be open, its panel slides in the first
-        // frame it shows; once History closes, the next opening slides again.
         if side && !self.panel_motion.is_open() {
             self.panel_motion.show(
                 true,
@@ -521,7 +491,6 @@ impl Widget for HistoryHost {
         } else if !self.open && self.panel_motion.is_open() {
             self.panel_motion.snap(false);
         }
-        // Then the panel, where its slide has it, clipped to its own place.
         let slide = if side {
             let progress = self.panel_motion.progress(crate::motion::frame_now());
             crate::motion::PanelSlide::shown(progress, self.panel_rect.width())
@@ -544,8 +513,6 @@ impl Widget for HistoryHost {
             );
         }
         if side {
-            // The panel is a region of the window: one step recessed from
-            // the content beside it, which is all that parts the two.
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 bar_transform,
@@ -559,7 +526,6 @@ impl Widget for HistoryHost {
         self.toolbar
             .draw_child(scene, bar_transform, text, theme, presence);
         if side && let Some(head) = self.toolbar.children().first() {
-            // The panel's name, at the head's leading edge, on its centre line.
             let style = theme.text(crate::tokens::TextRole::Title);
             let title = crate::i18n::I18nManager::lookup_plain("history-panel-title");
             let row = head.get_rect();
@@ -575,8 +541,6 @@ impl Widget for HistoryHost {
         }
         if self.bar_status.text().is_some()
             && let Some(row) = self.toolbar.children().first()
-            // The status ends before the row's first control: its Retry,
-            // when it has one, or the History control.
             && let Some(control) = row.children().first()
         {
             let row = row.get_rect();
@@ -614,8 +578,6 @@ impl Widget for HistoryHost {
         if sliding {
             scene.pop_layer();
         }
-        // The restore review is a modal: the host's top layer paints it
-        // (`draw_overlay` reaches it through `children_mut`).
     }
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         if let (Some(panel), Some(node)) = (&mut self.review, self.review_node) {
@@ -711,9 +673,8 @@ impl Widget for HistoryHost {
         }
         children
     }
-    /// Everything a composition can lay out, also under an open review and
-    /// whichever side the preview is not showing. The live app is its
-    /// owner's child, not this one's.
+    /// Everything a composition can lay out, also under an open review and whichever side the preview
+    /// is not showing.
     fn for_each_layout_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) -> bool {
         visitor(&self.toolbar);
         visitor(&self.bar_status);

@@ -21,7 +21,6 @@ impl Widget for Node {
     }
 }
 
-/// A message row: who said it, what they said and a Reply button.
 fn window() -> Node {
     let leaf = |name, rect, access| Node {
         name,

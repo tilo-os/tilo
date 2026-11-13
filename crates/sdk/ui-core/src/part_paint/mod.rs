@@ -1,23 +1,13 @@
-//! Part painters: the host side of the theme SDK (`tilo_theme_sdk`,
-//! `docs/architecture/theming.md`, "Part painters").
-//!
-//! A theme's painter set ([`PainterSet`], a [`PartPainter`]) draws parts;
-//! this module is everything around it that the toolkit owns:
-//!
-//! * the sets a document can name: the built-in Default, Glass and Block
-//!   ([`builtin`]) and those a theme installs ([`register_painter_set`],
-//!   [`painter_set`]), its own loaded from wasm ([`wasm`]); the set drawing
-//!   each surface role is the role's [`crate::tokens::Finish`]
-//!   ([`Theme::painter`]);
-//! * the values a part is drawn with ([`part_tokens`]);
-//! * drawing a painted part into the frame, with its backdrop filled by the
-//!   backdrop pass and held legible ([`paint_part`]), and the cache that
-//!   keeps a settled part's drawing ([`draw`]);
-//! * the clock its transitions run on ([`PartMotion`]);
-//! * the painted shape that takes the pointer ([`hit_contains`]).
-//!
-//! A set paints what it chooses to; a part it returns `None` for is drawn by
-//! the toolkit's own painters, so a theme draws only the parts it changes.
+//! Part painters: the host side of the theme SDK (`tilo_theme_sdk`, `docs/architecture/theming.md`,
+//! "Part painters"). A theme's painter set ([`PainterSet`], a [`PartPainter`]) draws parts; this module
+//! is everything around it that the toolkit owns: * the sets a document can name: the built-in Default,
+//! Glass and Block ([`builtin`]) and those a theme installs ([`register_painter_set`],
+//! [`painter_set`]), its own loaded from wasm ([`wasm`]); the set drawing each surface role is the
+//! role's [`crate::tokens::Finish`] ([`Theme::painter`]); * the values a part is drawn with
+//! ([`part_tokens`]); * drawing a painted part into the frame, with its backdrop filled by the backdrop
+//! pass and held legible ([`paint_part`]), and the cache that keeps a settled part's drawing
+//! ([`draw`]); * the clock its transitions run on ([`PartMotion`]); * the painted shape that takes the
+//! pointer ([`hit_contains`]).
 
 pub mod builtin;
 mod draw;
@@ -47,13 +37,12 @@ use vello::peniko::Color;
 use crate::theme::Theme;
 use crate::tokens::SurfaceRole;
 
-/// A painter set the toolkit draws with: its name, as a theme document
-/// names it, and the painter.
+/// A painter set the toolkit draws with: its name, as a theme document names it, and the painter.
 #[derive(Clone)]
 pub struct PainterSet {
     name: Arc<str>,
-    /// Unique per set made in this process, so a cache entry of one set is
-    /// never taken for another's of the same name.
+    /// Unique per set made in this process, so a cache entry of one set is never taken for another's of
+    /// the same name.
     id: u64,
     painter: Arc<dyn PartPainter>,
 }
@@ -98,10 +87,7 @@ impl PartialEq for PainterSet {
 
 static REGISTRY: RwLock<Vec<PainterSet>> = RwLock::new(Vec::new());
 
-/// Make `set` one a theme document can name. A set registered under a name
-/// already taken replaces it: a theme's author installing a fixed version.
-/// The built-in sets' names are the toolkit's: `false`, and nothing
-/// registered, for a set that claims one.
+/// Make `set` one a theme document can name.
 pub fn register_painter_set(set: PainterSet) -> bool {
     if builtin::builtin(&set.name).is_some() {
         return false;
@@ -126,10 +112,8 @@ pub fn painter_set(name: &str) -> Option<PainterSet> {
         .cloned()
 }
 
-/// The values a part of `role` is drawn with under `theme`: `fill`, `ink`
-/// and `edge` as its role and state resolved them, `ground` what it stands
-/// on, and the parameters the role's finish states. No backdrop: the
-/// toolkit says where a part shows one.
+/// The values a part of `role` is drawn with under `theme`: `fill`, `ink` and `edge` as its role and
+/// state resolved them, `ground` what it stands on, and the parameters the role's finish states.
 #[must_use]
 pub fn part_tokens(
     theme: &Theme,
@@ -168,8 +152,8 @@ pub fn part_tokens(
     }
 }
 
-/// Whether `point` (in the coordinates `hit` is in) lies in the painted
-/// shape `hit`, by the non-zero rule the shape was filled with.
+/// Whether `point` (in the coordinates `hit` is in) lies in the painted shape `hit`, by the non-zero
+/// rule the shape was filled with.
 #[must_use]
 pub fn hit_contains(hit: &BezPath, point: Point) -> bool {
     hit.winding(point) != 0

@@ -1,26 +1,20 @@
-//! Workspace-level collaboration experience shared by every application.
-//!
-//! Pointer/caret presence answers *where*. This module answers the two human
-//! questions that should not be inferred independently by every app: what a
-//! participant is doing, and what they are trying to achieve. Inference is
-//! deliberately local and transient; only the resulting short status is fit
-//! for publication, and a manual status always wins.
+//! Workspace-level collaboration experience shared by every application. Pointer/caret presence answers
+//! *where*. Inference is deliberately local and transient; only the resulting short status is fit for
+//! publication, and a manual status always wins.
 
 use crate::time::{Duration, SystemTime};
 
 pub use collab_types::presence::{Availability, CallPresence, IDLE_AFTER};
 
-/// Automatic summaries go stale quickly. A stale intention is worse than no
-/// status because it makes collaborators coordinate around work that stopped.
+/// Automatic summaries go stale quickly.
 pub const INFERRED_STATUS_TTL: Duration = Duration::from_secs(5 * 60);
-/// Manual statuses are explicit communication and therefore remain until the
-/// author clears them.
+/// Manual statuses are explicit communication and therefore remain until the author clears them.
 pub const MAX_STATUS_CHARS: usize = 96;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum StatusSharing {
-    /// No inferred status is produced or published. Manual status remains
-    /// available so privacy never removes the useful explicit path.
+    /// No inferred status is produced or published. Manual status remains available so privacy never
+    /// removes the useful explicit path.
     Off,
     /// Only a status typed by the participant is visible.
     ManualOnly,
@@ -55,8 +49,8 @@ impl StatusSharing {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum StatusOrigin {
     Manual,
-    /// Name of the local generator, surfaced in details rather than disguised
-    /// as something the participant literally wrote.
+    /// Name of the local generator, surfaced in details rather than disguised as something the
+    /// participant literally wrote.
     Inferred {
         generator: String,
     },
@@ -69,20 +63,17 @@ pub struct LiveStatus {
     pub updated_at: SystemTime,
 }
 
-/// What the people in a workspace see of this person, chosen per workspace.
-///
-/// A public workspace (one listed in its host's directory, open to anyone)
-/// starts at [`Self::ThatImHere`]: strangers see a face, never where it is.
-/// A private one starts at [`Self::WhereIAm`].
+/// What the people in a workspace see of this person, chosen per workspace. A public workspace (one
+/// listed in its host's directory, open to anyone) starts at [`Self::ThatImHere`]: strangers see a
+/// face, never where it is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum PresenceVisibility {
-    /// Your face, which window you are in, your pointer, your selection and
-    /// what you say beside your pointer.
+    /// Your face, which window you are in, your pointer, your selection and what you say beside your
+    /// pointer.
     WhereIAm,
     /// Your face only: not which window, not your pointer.
     ThatImHere,
-    /// Nothing: you do not appear, and you do not see others' pointers
-    /// either.
+    /// Nothing: you do not appear, and you do not see others' pointers either.
     Nothing,
 }
 
@@ -97,8 +88,8 @@ impl PresenceVisibility {
         }
     }
 
-    /// Whether others may see where this person is: which window, their
-    /// pointer, caret and selection, what they say beside the pointer.
+    /// Whether others may see where this person is: which window, their pointer, caret and selection,
+    /// what they say beside the pointer.
     #[must_use]
     pub const fn shows_where(self) -> bool {
         matches!(self, Self::WhereIAm)
@@ -110,8 +101,8 @@ impl PresenceVisibility {
         !matches!(self, Self::Nothing)
     }
 
-    /// Whether this person sees others' pointers: someone who shows nothing
-    /// sees nothing of where others are, which is fair.
+    /// Whether this person sees others' pointers: someone who shows nothing sees nothing of where
+    /// others are, which is fair.
     #[must_use]
     pub const fn sees_pointers(self) -> bool {
         !matches!(self, Self::Nothing)
@@ -127,8 +118,7 @@ impl PresenceVisibility {
         }
     }
 
-    /// The choice a stored word names; `None` for one this build does not
-    /// know.
+    /// The choice a stored word names; `None` for one this build does not know.
     #[must_use]
     pub fn from_id(id: &str) -> Option<Self> {
         match id {
@@ -144,8 +134,8 @@ impl PresenceVisibility {
 mod presence_choice_tests {
     use super::*;
 
-    /// A public workspace shows strangers a face and nothing of where it is;
-    /// a private one shows where; Nothing shows nothing and sees no pointers.
+    /// A public workspace shows strangers a face and nothing of where it is; a private one shows where;
+    /// Nothing shows nothing and sees no pointers.
     #[test]
     fn what_people_see_defaults_by_workspace_and_round_trips() {
         assert_eq!(
@@ -169,8 +159,7 @@ mod presence_choice_tests {
         }
     }
 
-    /// Locked is away; five quiet minutes is idle unless another status
-    /// was chosen.
+    /// Locked is away; five quiet minutes is idle unless another status was chosen.
     #[test]
     fn idle_and_away_come_on_their_own() {
         let quiet = IDLE_AFTER;

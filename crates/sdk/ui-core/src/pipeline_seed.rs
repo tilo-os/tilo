@@ -1,25 +1,12 @@
-//! A pipeline cache every app starts from, written by the session.
-//!
-//! Each app has its own home, so each has its own Mesa shader cache, and the
-//! first launch of every app on a machine compiles vello's ~30 compute
-//! pipelines from scratch: ~300 ms on a Snapdragon X with turnip, seconds on
-//! lavapipe. The compositor renders with the same vello on the same device,
-//! so it already holds every one of them compiled. It publishes them as a
-//! `wgpu::PipelineCache` blob in `$XDG_RUNTIME_DIR/tilo/pipeline-seed/`, and
-//! the launcher binds that directory **read-only** into every sandbox and
-//! names it in `TILO_PIPELINE_SEED_DIR` (the host environment's `paths.pipeline_seed`).
-//!
-//! Only the session writes the seed. Apps read it, and never write anything
-//! another app reads: a cache another app could write would let it plant
-//! binaries in its neighbours' GPU pipelines. The blob is keyed by
-//! [`wgpu::util::pipeline_cache_key`] (vendor and device), and both wgpu and
-//! the driver validate its header against the device, so a seed from another
-//! GPU or driver version is ignored rather than trusted.
+//! A pipeline cache every app starts from, written by the session. Each app has its own home, so each
+//! has its own Mesa shader cache, and the first launch of every app on a machine compiles vello's ~30
+//! compute pipelines from scratch: ~300 ms on a Snapdragon X with turnip, seconds on lavapipe. Only the
+//! session writes the seed. Apps read it, and never write anything another app reads: a cache another
+//! app could write would let it plant binaries in its neighbours' GPU pipelines.
 
 use std::path::{Path, PathBuf};
 
-/// The seed blob's file under `dir` for this adapter, if its backend has
-/// pipeline caches at all.
+/// The seed blob's file under `dir` for this adapter, if its backend has pipeline caches at all.
 #[must_use]
 pub fn seed_file(dir: &Path, adapter: &wgpu::AdapterInfo) -> Option<PathBuf> {
     wgpu::util::pipeline_cache_key(adapter).map(|key| dir.join(key))
@@ -58,8 +45,7 @@ pub(crate) fn create(
     }
 }
 
-/// A pipeline cache started from the session's seed, when the launcher
-/// provided one for this device. `None` leaves vello compiling without one.
+/// A pipeline cache started from the session's seed, when the launcher provided one for this device.
 #[must_use]
 pub fn seeded(device: &crate::gpu::DeviceHandle) -> Option<wgpu::PipelineCache> {
     if !supported(device) {
@@ -77,20 +63,15 @@ pub(crate) fn seed_data(device: &crate::gpu::DeviceHandle) -> Option<Vec<u8>> {
     tilo_files::blocking::read(&dir, &name).ok()
 }
 
-/// An empty pipeline cache for the session to fill and then publish: what
-/// `cache.get_data()` returns afterwards, written to [`seed_file`] in the
-/// directory the launcher binds.
+/// An empty pipeline cache for the session to fill and then publish: what `cache.get_data()` returns
+/// afterwards, written to [`seed_file`] in the directory the launcher binds.
 #[must_use]
 pub fn empty(device: &crate::gpu::DeviceHandle) -> Option<wgpu::PipelineCache> {
     supported(device).then(|| create(device, None))
 }
 
-/// Replace the seed for `device` under `dir` with what `cache` holds,
-/// atomically, readable by every app and writable by its owner only.
-/// `Ok(false)` when the backend has no cache data to share.
-///
-/// # Errors
-/// When the directory or the file cannot be written.
+/// Replace the seed for `device` under `dir` with what `cache` holds, atomically, readable by every app
+/// and writable by its owner only. # Errors When the directory or the file cannot be written.
 pub fn publish(
     device: &crate::gpu::DeviceHandle,
     cache: &wgpu::PipelineCache,
@@ -145,8 +126,6 @@ mod tests {
         gl.backend = wgpu::Backend::Gl;
         assert_eq!(seed_file(dir, &gl), None);
 
-        // The real thing, where a GPU with pipeline caches is available:
-        // building vello into an empty cache leaves data to publish.
         let mut context = crate::gpu::RenderContext::new();
         let Some(index) = pollster::block_on(context.device(None)) else {
             return;

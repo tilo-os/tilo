@@ -1,18 +1,9 @@
-//! Evaluating a theme's surface shader (`crate::tokens::shader`).
-//!
-//! A surface shader is a straight-line WGSL function over the documented
-//! inputs (`shader::check` refuses loops, branches and mutable variables),
-//! so the toolkit evaluates it **once per settled part**: one call per texel
-//! of an image sized to the part, cached with the part until its size,
-//! state, theme or what it samples changes. An idle surface therefore draws
-//! no frame at all.
-//!
-//! Nothing here touches a GPU. The program is parsed by the same WGSL front
-//! end wgpu runs (naga) and interpreted on the CPU, so a shader draws on
-//! every renderer alike: vello, the CPU rasteriser, a capture, a remote
-//! render service. What it cannot interpret is an error
-//! ([`EvalError`]) the caller draws as the part's fallback colour, never a
-//! blank part and never a panic.
+//! Evaluating a theme's surface shader (`crate::tokens::shader`). A surface shader is a straight-line
+//! WGSL function over the documented inputs (`shader::check` refuses loops, branches and mutable
+//! variables), so the toolkit evaluates it **once per settled part**: one call per texel of an image
+//! sized to the part, cached with the part until its size, state, theme or what it samples changes.
+//! What it cannot interpret is an error ([`EvalError`]) the caller draws as the part's fallback colour,
+//! never a blank part and never a panic.
 
 use vello::kurbo::Rect;
 use vello::peniko::Color;
@@ -20,15 +11,14 @@ use vello::peniko::Color;
 use crate::part_paint::PartTokens;
 use crate::tokens::shader;
 
-/// The most texels one part evaluates: a 724 × 724 square, or any rectangle
-/// of the same area. A pixelated shader over a huge window samples on the
-/// grid this caps to; it never costs more than this per settled frame.
+/// The most texels one part evaluates: a 724 × 724 square, or any rectangle of the same area. A
+/// pixelated shader over a huge window samples on the grid this caps to; it never costs more than this
+/// per settled frame.
 pub const MAX_TEXELS: u32 = 512 * 1024;
 
 #[cfg(test)]
 thread_local! {
-    /// How many times this thread evaluated a shader: an idle part is
-    /// evaluated once and replayed.
+    /// How many times this thread evaluated a shader: an idle part is evaluated once and replayed.
     pub(crate) static EVALUATED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
@@ -36,16 +26,12 @@ thread_local! {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EvalError(pub String);
 
-/// The code behind surface shaders: the grammar check a theme's shader
-/// passes when the theme is read, and the interpreter that draws it. A
-/// program built with `lazy-surface-shader` (the browser desktop) fetches it
-/// the first time a theme states a shader; until then the theme applies
-/// with every such part drawn as its fallback, and is read again once the
-/// code is in (its generation is part of what a theme is built from).
+/// The code behind surface shaders: the grammar check a theme's shader passes when the theme is read,
+/// and the interpreter that draws it.
 #[derive(Clone, Copy)]
 pub struct SurfaceShaderCode {
-    /// Whether a theme may draw this program: [`shader::check`], then one
-    /// texel through the interpreter.
+    /// Whether a theme may draw this program: [`shader::check`], then one texel through the
+    /// interpreter.
     pub admit: fn(&str) -> Result<(), String>,
     /// The shader's image for a part ([`evaluate`]).
     pub evaluate:
@@ -63,8 +49,8 @@ crate::lazy_code! {
     pub static SURFACE_SHADER: SurfaceShaderCode = builtin_surface_shader, feature = "lazy-surface-shader";
 }
 
-/// `fallback` over the part: what a shader draws while its code is on the
-/// way, and what one that cannot be evaluated draws.
+/// `fallback` over the part: what a shader draws while its code is on the way, and what one that cannot
+/// be evaluated draws.
 #[must_use]
 pub fn fallback_image(fallback: Color) -> vello::peniko::ImageData {
     crate::raster::rgba8(fallback_pixels(fallback, 1, 1), 1, 1)
@@ -78,9 +64,8 @@ fn admit(wgsl: &str) -> Result<(), String> {
     probe(wgsl).map_err(|reason| format!("surface shader cannot be drawn: {reason}"))
 }
 
-/// The shader's image for the part `rect` (logical pixels) in `theme`,
-/// drawn with `tokens`; `fallback` is what a shader that cannot be
-/// evaluated is drawn as.
+/// The shader's image for the part `rect` (logical pixels) in `theme`, drawn with `tokens`; `fallback`
+/// is what a shader that cannot be evaluated is drawn as.
 #[must_use]
 fn evaluate(
     source: &crate::part_paint::ShaderSource,
@@ -104,13 +89,8 @@ fn evaluate(
     }
 }
 
-/// Whether the interpreter can draw `wgsl`: one texel over neutral inputs.
-/// The program is straight-line (no loops, branches or mutable
-/// variables), so one texel walks every statement it has; what this
-/// refuses, every part would draw as its fallback.
-///
-/// # Errors
-/// What the interpreter cannot run, as the theme's author reads it.
+/// Whether the interpreter can draw `wgsl`: one texel over neutral inputs. # Errors What the
+/// interpreter cannot run, as the theme's author reads it.
 fn probe(wgsl: &str) -> Result<(), String> {
     let inputs = Inputs::of(&PartTokens::default(), Rect::new(0.0, 0.0, 1.0, 1.0), 0);
     run(wgsl, &inputs, 1, 1)
@@ -118,8 +98,8 @@ fn probe(wgsl: &str) -> Result<(), String> {
         .map_err(|error| error.0)
 }
 
-/// The image's size in texels: the part's own size, the same total area
-/// capped at [`MAX_TEXELS`] with its aspect kept, at least 1 × 1.
+/// The image's size in texels: the part's own size, the same total area capped at [`MAX_TEXELS`] with
+/// its aspect kept, at least 1 × 1.
 fn rail(width: f64, height: f64) -> (u32, u32) {
     let area = width.max(1.0) * height.max(1.0);
     let scale = if area > f64::from(MAX_TEXELS) {
@@ -148,8 +128,6 @@ fn fallback_pixels(color: Color, width: u32, height: u32) -> Vec<u8> {
         .repeat((width as usize).saturating_mul(height as usize))
 }
 
-/// The documented inputs, resolved for one part
-/// (`crate::tokens::shader::INPUTS`).
 struct Inputs {
     backdrop: [f32; 4],
     size: [f32; 2],
@@ -188,7 +166,6 @@ impl Inputs {
         }
     }
 
-    /// The value of the documented argument `index`, as a [`Value`].
     fn argument(&self, index: usize) -> Option<Value> {
         Some(match index {
             0 => Value::Vec4(self.backdrop),
@@ -212,14 +189,12 @@ fn half(value: f32) -> [f32; 2] {
     [value, value]
 }
 
-/// One texel's inputs: uv and position.
 #[derive(Clone, Copy)]
 struct Texel {
     uv: [f32; 2],
     position: [f32; 2],
 }
 
-/// Interpret `wgsl` once per texel into tight RGBA8 rows.
 fn run(wgsl: &str, inputs: &Inputs, width: u32, height: u32) -> Result<Vec<u8>, EvalError> {
     let module = naga::front::wgsl::parse_str(wgsl)
         .map_err(|error| EvalError(format!("does not parse: {}", error.message())))?;
@@ -254,7 +229,6 @@ fn float(value: u32) -> f32 {
     value
 }
 
-/// One linear channel as straight-alpha sRGB8.
 fn encode(value: f32) -> u8 {
     let value = if value.is_finite() {
         value.clamp(0.0, 1.0)
@@ -275,8 +249,7 @@ fn encode(value: f32) -> u8 {
     byte
 }
 
-/// A value the interpreter carries: a scalar, a vector of 2, 3 or 4
-/// channels, or a bool.
+/// A value the interpreter carries: a scalar, a vector of 2, 3 or 4 channels, or a bool.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Value {
     Scalar(f32),
@@ -303,7 +276,6 @@ impl Value {
         }
     }
 
-    /// This value as `n` channels, broadcasting a scalar.
     fn widened(&self, n: usize) -> Option<[f32; 4]> {
         let mut out = [0.0; 4];
         match self {
@@ -318,8 +290,8 @@ impl Value {
     }
 }
 
-/// A shader in a form the interpreter runs: its expression list and its
-/// statement list, resolved against the module.
+/// A shader in a form the interpreter runs: its expression list and its statement list, resolved
+/// against the module.
 struct Program<'a> {
     expressions: &'a naga::Arena<naga::Expression>,
     body: &'a naga::Block,
@@ -336,11 +308,8 @@ impl<'a> Program<'a> {
         })
     }
 
-    /// The shader's colour for `texel`.
     fn shade(&self, inputs: &Inputs, texel: Texel) -> Result<[f32; 4], EvalError> {
         let mut scope = Scope::new(self.expressions.len());
-        // A function's arguments and literals are values without an `Emit`
-        // of their own: the front end hands them to the body directly.
         let standing: Vec<(naga::Handle<naga::Expression>, naga::Expression)> = self
             .expressions
             .iter()
@@ -397,11 +366,9 @@ impl<'a> Program<'a> {
                 }
             }
         }
-        // A function with no return is no colour.
         Ok(Value::Vec4([0.0, 0.0, 0.0, 1.0]))
     }
 
-    /// The value of `handle`, as the emitted range computed it.
     fn value(
         &self,
         handle: naga::Handle<naga::Expression>,
@@ -412,9 +379,7 @@ impl<'a> Program<'a> {
             .ok_or_else(|| EvalError("refers to a value it never computed".to_owned()))
     }
 
-    /// Evaluate one expression. The emitted range evaluates every
-    /// expression in order, so an `Emit` pushes one value per expression and
-    /// a handle's index is its slot.
+    /// Evaluate one expression.
     fn eval(
         &self,
         expression: &naga::Expression,
@@ -597,9 +562,9 @@ impl<'a> Program<'a> {
     }
 }
 
-/// Values the shader computed so far in the current call, by the index of
-/// the expression that computed each (`naga`'s `Emit` ranges name exactly
-/// which expressions run before the statement that reads them).
+/// Values the shader computed so far in the current call, by the index of the expression that computed
+/// each (`naga`'s `Emit` ranges name exactly which expressions run before the statement that reads
+/// them).
 struct Scope {
     computed: Vec<Option<Value>>,
 }
@@ -622,7 +587,6 @@ impl Scope {
     }
 }
 
-/// Evaluate `fun` over already-evaluated `args`.
 fn math(fun: naga::MathFunction, args: &[Value]) -> Result<Value, EvalError> {
     use naga::MathFunction as M;
     let one = |f: &dyn Fn(f32) -> f32| -> Option<Value> { map(&args[0], f) };
@@ -736,8 +700,7 @@ fn map(value: &Value, f: &dyn Fn(f32) -> f32) -> Option<Value> {
     })
 }
 
-/// A vector made of `values`, each a scalar or a smaller vector, summed to
-/// 2, 3 or 4 channels.
+/// A vector made of `values`, each a scalar or a smaller vector, summed to 2, 3 or 4 channels.
 fn compose(values: &[Value]) -> Option<Value> {
     let mut out = Vec::with_capacity(4);
     for value in values {

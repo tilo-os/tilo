@@ -34,10 +34,9 @@ fn target(action: &str) -> RemoteActionTarget {
     }
 }
 
-/// Two catalogue pages; `done` completes at once, `slow` is still running
-/// for its first [`RUNNING_LOOKS`] observes and done after, `forbidden` is
-/// refused. It cannot signal changes, so it answers a waiting observe at
-/// once, as a host from before waits does.
+/// Two catalogue pages; `done` completes at once, `slow` is still running for its first
+/// [`RUNNING_LOOKS`] observes and done after, `forbidden` is refused. It cannot signal changes, so it
+/// answers a waiting observe at once, as a host from before waits does.
 #[derive(Default)]
 struct FakeHost {
     seen: Mutex<Vec<Caller>>,
@@ -106,11 +105,10 @@ impl ActionHost for FakeHost {
     }
 }
 
-/// How often `slow` is seen still running: once by the host's own look when
-/// the invoke asks to wait, once by the client's first waiting observe.
+/// How often `slow` is seen still running: once by the host's own look when the invoke asks to wait,
+/// once by the client's first waiting observe.
 const RUNNING_LOOKS: usize = 2;
 
-/// The one catalogue request `actions` has sent since its last take: the page it asks for.
 fn catalogue_query(actions: &mut RemoteActions, what: &str) -> CatalogueQuery {
     let requests = actions.take_collab_requests();
     let [
@@ -124,7 +122,6 @@ fn catalogue_query(actions: &mut RemoteActions, what: &str) -> CatalogueQuery {
     query.clone()
 }
 
-/// The correlation the one catalogue request `actions` has sent answers by.
 fn catalogue_correlation(actions: &mut RemoteActions, what: &str) -> u64 {
     let requests = actions.take_collab_requests();
     let [
@@ -413,9 +410,8 @@ fn a_retry_safe_invocation_keeps_the_callers_durable_identity() {
     assert_eq!(request.invocation, invocation);
 }
 
-/// Against a host that answers a waiting observe at once with nothing new
-/// (one from before waits), the client falls back to observing on its
-/// interval.
+/// Against a host that answers a waiting observe at once with nothing new (one from before waits), the
+/// client falls back to observing on its interval.
 #[test]
 fn a_running_invocation_is_followed_until_it_ends() {
     let clock = crate::background::Pumped::new();
@@ -441,9 +437,8 @@ fn a_running_invocation_is_followed_until_it_ends() {
     assert!(!actions.is_busy());
 }
 
-/// A catalogue request nothing answers (no host in reach of the connection)
-/// is refused as unavailable once its wait is up, so the app can say so
-/// instead of waiting forever.
+/// A catalogue request nothing answers (no host in reach of the connection) is refused as unavailable
+/// once its wait is up, so the app can say so instead of waiting forever.
 #[test]
 fn an_unanswered_catalogue_read_is_refused_after_its_wait() {
     let clock = crate::background::Pumped::new();
@@ -475,7 +470,6 @@ fn the_session_transport_carries_requests_out_and_answers_back() {
     let answer = actions.catalogue(CatalogueQuery::default());
     let correlation = catalogue_correlation(&mut actions, "one catalogue request");
     assert!(actions.take_collab_requests().is_empty(), "sent once");
-    // An answer for someone else's request is not ours.
     actions.handle_collab_event(&CollabEvent::RemoteAction {
         message: RemoteActionMessage::CatalogueResponse {
             correlation: correlation + 100,
@@ -640,8 +634,8 @@ fn progress(invocation: InvocationId, sequence: u64) -> InvocationUpdate {
     }
 }
 
-/// A running invocation is followed by one waiting observe at a time, sent
-/// the moment the last answer lands — never by a poll on a timer.
+/// A running invocation is followed by one waiting observe at a time, sent the moment the last answer
+/// lands — never by a poll on a timer.
 #[test]
 fn a_running_invocation_sends_one_waiting_observe_not_a_poll() {
     let clock = crate::background::Pumped::new();
@@ -664,7 +658,6 @@ fn a_running_invocation_sends_one_waiting_observe_not_a_poll() {
         "the invocation asks for its outcome in the same round trip: {requests:?}"
     );
 
-    // Still running when the receipt was due: follow it at once.
     actions.handle_collab_event(&CollabEvent::RemoteAction {
         message: accepted(invocation),
     });
@@ -710,8 +703,6 @@ fn a_running_invocation_sends_one_waiting_observe_not_a_poll() {
     assert!(!actions.is_busy());
 }
 
-/// A wait that ran out with nothing new is waited again, not mistaken for
-/// a host that does not wait.
 #[test]
 fn a_wait_that_ran_out_is_waited_again() {
     let clock = crate::background::Pumped::new();
@@ -741,8 +732,8 @@ fn a_wait_that_ran_out_is_waited_again() {
     ));
 }
 
-/// A host from before waits answers the waiting observe at once with
-/// nothing new; the client then observes it on its interval, as before.
+/// A host from before waits answers the waiting observe at once with nothing new; the client then
+/// observes it on its interval, as before.
 #[test]
 fn an_old_host_is_observed_on_the_interval() {
     let clock = crate::background::Pumped::new();
@@ -778,8 +769,8 @@ fn an_old_host_is_observed_on_the_interval() {
     assert!(running.get().is_finished());
 }
 
-/// A followed live result shows each new item the host sends, keeps a
-/// waiting observe out for the next, and is cancelled once dropped.
+/// A followed live result shows each new item the host sends, keeps a waiting observe out for the next,
+/// and is cancelled once dropped.
 #[test]
 fn a_followed_result_shows_each_item_and_stops_when_dropped() {
     let mut actions = RemoteActions::session();

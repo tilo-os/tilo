@@ -1,15 +1,6 @@
-//! The desktop's window bar over a headless app's frame.
-//!
-//! In a Tilo session the desktop draws one bar per window: the app's icon,
-//! the slots the app declares there ([`crate::window_toolbar`]), the
-//! window's search and History controls and its own controls. Driven
-//! headless, an app runs outside a session, so nothing draws that bar and
-//! a picture of it would show the app without the chrome a person sees.
-//! [`FrameHarness::present_in_window_bar`] makes the harness stand in for the
-//! desktop: the app is told the bar hosts its slots, search and History
-//! (as the native runner tells it over its shell connection), its frame is
-//! laid out under the bar, and every capture paints the bar above it with
-//! the shell's own [`TabBar`] and [`WindowSearch`].
+//! The desktop's window bar over a headless app's frame. In a Tilo session the desktop draws one bar
+//! per window: the app's icon, the slots the app declares there ([`crate::window_toolbar`]), the
+//! window's search and History controls and its own controls.
 
 use crate::host_core::KeyHost as _;
 use vello::Scene;
@@ -19,11 +10,8 @@ use super::FrameHarness;
 use crate::widget::DrawChild;
 use crate::widget::{TabBar, TabDescriptor, Widget, WindowBar, WindowSearchRequest};
 
-/// The one tab the stand-in window shows.
 const TAB: u64 = 1;
 
-/// Room the bar keeps for the window's search control, as the window group
-/// keeps it.
 const SEARCH_CONTROL_ROOM: f64 =
     crate::widget::window_controls::CONTROL_PX + crate::widget::window_controls::CONTROL_GAP;
 
@@ -51,8 +39,8 @@ impl FrameHarness {
         self.present_window_bar(false);
     }
 
-    /// Whether the window's bar stands out at rest, over the app's frame. Always, save for a
-    /// harness that shows the window at rest ([`Self::present_window_bar_at_rest`]).
+    /// Whether the window's bar stands out at rest, over the app's frame. Always, save for a harness
+    /// that shows the window at rest ([`Self::present_window_bar_at_rest`]).
     #[must_use]
     pub fn window_bar_revealed(&self) -> bool {
         self.bar_revealed
@@ -78,8 +66,6 @@ impl FrameHarness {
         let bar = self.window_bar_offer();
         let presents = self.presents_search();
         crate::widget::window_header::offer_root_header_bar(self.root.as_mut(), Some(bar));
-        // A row holding the bar carries the search the app keeps in it; a bar over the frame
-        // presents the window's own.
         crate::widget::window_header::offer_window_search(self.root.as_mut(), presents);
         let frame = self.content_viewport(self.viewport);
         if let Err(error) = self.resize(frame) {
@@ -88,18 +74,17 @@ impl FrameHarness {
         self.refresh_row_holds();
     }
 
-    /// This window is the one the app's bar calls act on while the guard lives: what it declares
-    /// or asks there is this window's, never another window's a process lays out beside it. None
-    /// while the harness shows no bar, where the thread's own window is the app's.
+    /// This window is the one the app's bar calls act on while the guard lives: what it declares or
+    /// asks there is this window's, never another window's a process lays out beside it.
     pub(super) fn running(&self) -> Option<crate::window_toolbar::WindowScope> {
         self.window
             .as_ref()
             .map(|window| crate::window_toolbar::enter(Some(window)))
     }
 
-    /// Take a window of this harness's own to host the app's bar in, standing as the thread's own
-    /// while the harness lives: the app declares its slots on it and asks it for what its bar
-    /// does, so windows a process lays out beside each other keep their bars apart.
+    /// Take a window of this harness's own to host the app's bar in, standing as the thread's own while
+    /// the harness lives: the app declares its slots on it and asks it for what its bar does, so
+    /// windows a process lays out beside each other keep their bars apart.
     pub(super) fn host_bar_window(&mut self) {
         // The app may show a notice or reactions on the thread's own bar before this harness hosts
         // a window for it: they are this window's from here on, so a read that comes before the
@@ -120,8 +105,8 @@ impl FrameHarness {
         self.window.as_ref()
     }
 
-    /// What this window's bar shows: the slots the app declared on this window, with the notice
-    /// up and the reactions shown. The thread's own bar while the harness stands in for none.
+    /// What this window's bar shows: the slots the app declared on this window, with the notice up and
+    /// the reactions shown.
     #[must_use]
     pub fn window_toolbar(&self) -> Option<crate::window_toolbar::WindowToolbar> {
         match &self.window {
@@ -130,18 +115,15 @@ impl FrameHarness {
         }
     }
 
-    /// Read whether the app's frame holds the window's bar in a header row of its own, from the
-    /// frame just laid out: a row that draws one takes the bar, and the window's controls stand
-    /// at its trailing end. A row that appeared with the screen the app opened makes the frame
-    /// lay itself out again in the room the row leaves, so the window shows one bar either way.
+    /// Read whether the app's frame holds the window's bar in a header row of its own, from the frame
+    /// just laid out: a row that draws one takes the bar, and the window's controls stand at its
+    /// trailing end.
     fn refresh_row_holds(&mut self) {
         let holds = crate::widget::window_header::content_bar(self.root.as_ref()).is_some();
         if holds == self.row_holds {
             return;
         }
         self.row_holds = holds;
-        // The search follows the bar it stands in: the row's own while the row is the bar, the
-        // window's while the bar stands over the frame.
         let presents = self.presents_search();
         crate::widget::window_header::offer_window_search(self.root.as_mut(), presents);
         let frame = self.content_viewport(self.viewport);
@@ -150,9 +132,9 @@ impl FrameHarness {
         }
     }
 
-    /// The window's bar as the frame offers it to the content's header row: the room the
-    /// window's furniture takes at its trailing end ([`crate::widget::merged_row_width`]), shown
-    /// now, listing nothing else.
+    /// The window's bar as the frame offers it to the content's header row: the room the window's
+    /// furniture takes at its trailing end ([`crate::widget::merged_row_width`]), shown now, listing
+    /// nothing else.
     fn window_bar_offer(&self) -> WindowBar {
         WindowBar {
             controls_width: crate::widget::merged_row_width_in(f64::from(self.viewport.0)),
@@ -160,33 +142,31 @@ impl FrameHarness {
         }
     }
 
-    /// Whether the window presents the app's search in its own bar: always while its bar stands
-    /// over the frame, and while a row holds the bar only where the room it keeps for its
-    /// furniture holds one ([`crate::widget::merged_row_holds_search`]) — otherwise the row draws
-    /// its own search control.
+    /// Whether the window presents the app's search in its own bar: always while its bar stands over
+    /// the frame, and while a row holds the bar only where the room it keeps for its furniture holds
+    /// one ([`crate::widget::merged_row_holds_search`]) — otherwise the row draws its own search
+    /// control.
     fn presents_search(&self) -> bool {
         !self.row_holds || crate::widget::merged_row_holds_search(f64::from(self.viewport.0))
     }
 
-    /// Whether the app's frame holds the window's bar in a header row of its own, rather than
-    /// standing under a bar of the window's.
+    /// Whether the app's frame holds the window's bar in a header row of its own, rather than standing
+    /// under a bar of the window's.
     #[must_use]
     pub fn row_holds_bar(&self) -> bool {
         self.row_holds
     }
 
-    /// Where the content's header row stands and where the window's controls go while the row
-    /// holds the bar.
+    /// Where the content's header row stands and where the window's controls go while the row holds the
+    /// bar.
     pub(super) fn row_bar_slot(&self) -> Option<crate::widget::WindowBarSlot> {
         self.row_holds
             .then(|| crate::widget::window_header::content_bar(self.root.as_ref()))
             .flatten()
     }
 
-    /// The height of the header row the window root draws of its own under the window's bar: a
-    /// window shows one bar, so a row under it is a second one. `0.0` while the root holds the
-    /// bar itself, and for a root that draws no row of its own (a desk of windows, whose windows
-    /// each offer their own bar).
+    /// The height of the header row the window root draws of its own under the window's bar: a window
+    /// shows one bar, so a row under it is a second one.
     #[must_use]
     pub fn window_header_row_height(&self) -> f64 {
         if self.row_holds {
@@ -202,9 +182,8 @@ impl FrameHarness {
         self.window_bar
     }
 
-    /// Where each column of the window stands and the header row it draws at its top, as the
-    /// frame was laid out last. A column's header stands at every time, the bar out or at rest,
-    /// so this is what the person reads at the top of each column before reaching for the bar.
+    /// Where each column of the window stands and the header row it draws at its top, as the frame was
+    /// laid out last.
     #[must_use]
     pub fn column_frames(&self) -> Vec<crate::widget::ColumnFrame> {
         crate::widget::window_header::root_header_row(self.root.as_ref())
@@ -212,10 +191,9 @@ impl FrameHarness {
             .unwrap_or_default()
     }
 
-    /// What the window's header rows say, as the person reads them at the top of each column:
-    /// the names of the titles and controls standing in a column's header row, in the order the
-    /// window lays them out. A shell whose app declares no bar slots draws these rows as the
-    /// window's bar, so this is where its location and commands stand.
+    /// What the window's header rows say, as the person reads them at the top of each column: the names
+    /// of the titles and controls standing in a column's header row, in the order the window lays them
+    /// out.
     #[must_use]
     pub fn header_row_names(&self) -> Vec<String> {
         self.header_row_parts()
@@ -255,13 +233,8 @@ impl FrameHarness {
         parts
     }
 
-    /// Lay the whole window out at `viewport`, its bar included, under
-    /// `theme`: the app's frame gets the part under the bar, as the desktop
-    /// gives it one. The bar itself is laid out when it is drawn
-    /// ([`Self::window_bar_layout`], a capture).
-    ///
-    /// # Errors
-    /// As [`Self::relayout_themed`].
+    /// Lay the whole window out at `viewport`, its bar included, under `theme`: the app's frame gets
+    /// the part under the bar, as the desktop gives it one.
     pub fn relayout_window_themed(
         &mut self,
         viewport: (u32, u32),
@@ -277,14 +250,10 @@ impl FrameHarness {
         Ok(())
     }
 
-    /// Lay the whole window out at `viewport` under `theme` for a person
-    /// using `input`, as [`Self::relayout_window_themed`] does: the window is
-    /// laid out once, for the person and the size it will be read at, which
-    /// [`Self::set_interaction_environment`] would otherwise do first at the
+    /// Lay the whole window out at `viewport` under `theme` for a person using `input`, as
+    /// [`Self::relayout_window_themed`] does: the window is laid out once, for the person and the size
+    /// it will be read at, which [`Self::set_interaction_environment`] would otherwise do first at the
     /// size it was last laid out at.
-    ///
-    /// # Errors
-    /// As [`Self::relayout_themed`].
     pub fn relayout_window_themed_for(
         &mut self,
         viewport: (u32, u32),
@@ -296,9 +265,8 @@ impl FrameHarness {
         self.relayout_window_themed(viewport, theme)
     }
 
-    /// The History control the window lists beside the app's slots, as the
-    /// desktop's bar (or, outside a session, the runner's slot row) shows
-    /// it: none while the app has no History to open.
+    /// The History control the window lists beside the app's slots, as the desktop's bar (or, outside a
+    /// session, the runner's slot row) shows it: none while the app has no History to open.
     #[must_use]
     pub fn window_history_control(&self) -> Option<crate::widget::HistoryControl> {
         self.history
@@ -306,9 +274,8 @@ impl FrameHarness {
             .and_then(crate::history_mode::host::window_control)
     }
 
-    /// Press the window's History control as the bar hands the press over:
-    /// it runs on the app's History door, as the History shortcut does, and
-    /// never reaches the app.
+    /// Press the window's History control as the bar hands the press over: it runs on the app's History
+    /// door, as the History shortcut does, and never reaches the app.
     pub fn press_window_history(&mut self) -> Result<(), String> {
         self.invalidate_local();
         let control = self
@@ -320,10 +287,9 @@ impl FrameHarness {
         Ok(())
     }
 
-    /// Type `query` into the window bar's search, opened with Find or
-    /// Replace as the desktop opens it, and carry it to the app's widgets,
-    /// which find it in place. Returns the current match and the count, as
-    /// the bar shows them.
+    /// Type `query` into the window bar's search, opened with Find or Replace as the desktop opens it,
+    /// and carry it to the app's widgets, which find it in place. Returns the current match and the
+    /// count, as the bar shows them.
     pub fn search_in_window(
         &mut self,
         opening: crate::window_toolbar::SearchOpening,
@@ -352,9 +318,9 @@ impl FrameHarness {
         self.drive_window_search()
     }
 
-    /// Type `with` into the open search's replacement and press Replace
-    /// (or Replace all); the frame after writes what the app made of it.
-    /// Returns whether the search offered Replace on what the window shows.
+    /// Type `with` into the open search's replacement and press Replace (or Replace all); the frame
+    /// after writes what the app made of it. Returns whether the search offered Replace on what the
+    /// window shows.
     pub fn replace_in_window(&mut self, with: &str, all: bool) -> bool {
         self.invalidate_local();
         self.drive_window_search();
@@ -370,8 +336,8 @@ impl FrameHarness {
         true
     }
 
-    /// The window bar's search's current match and count, as the bar
-    /// shows them; `None` with nothing found.
+    /// The window bar's search's current match and count, as the bar shows them; `None` with nothing
+    /// found.
     #[must_use]
     pub fn window_search_position(&self) -> Option<(usize, usize)> {
         self.window_search.position()
@@ -383,27 +349,22 @@ impl FrameHarness {
         self.window_search.query()
     }
 
-    /// What the window bar's search counts: the rows a list or a query view
-    /// kept of all of them, the current match of all matches in a document;
-    /// `None` before anything is typed.
+    /// What the window bar's search counts: the rows a list or a query view kept of all of them, the
+    /// current match of all matches in a document; `None` before anything is typed.
     #[must_use]
     pub fn window_search_count(&self) -> Option<crate::widget::FilterCount> {
         self.window_search.count()
     }
 
-    /// Whether the window bar's search offers Replace on what the window
-    /// shows.
+    /// Whether the window bar's search offers Replace on what the window shows.
     #[must_use]
     pub fn window_search_replaces(&self) -> bool {
         self.window_search.abilities().replace
     }
 
-    /// Perform `action` on a part of the window bar's search (a
-    /// `window-search-*` target: open it, type the query or the
-    /// replacement, set an option, step, replace, close), as an agent
-    /// performs it on the desktop's window, then carry the search to the
-    /// app's widgets. The window carries out what the search asks of it:
-    /// it opens in place where the app offers that.
+    /// Perform `action` on a part of the window bar's search (a `window-search-*` target: open it, type
+    /// the query or the replacement, set an option, step, replace, close), as an agent performs it on
+    /// the desktop's window, then carry the search to the app's widgets.
     pub(super) fn perform_window_search_semantic(
         &mut self,
         target: &str,
@@ -414,8 +375,6 @@ impl FrameHarness {
                 "{target} is part of the window bar's search: present the window bar"
             ));
         }
-        // The search's parts stand where the bar lays them out; the bar
-        // spans the window, as wide as the app under it.
         let width = f64::from(self.viewport.0);
         self.paint_window_bar(&mut Scene::new(), Affine::IDENTITY, width);
         let handled = self.window_search_action(target, action);
@@ -445,9 +404,6 @@ impl FrameHarness {
                 "the window bar's search did not take {action:?} on {target} now"
             ));
         }
-        // What the action opened (the search, its options) is laid out
-        // before the app hears of it, as the next frame lays it out on the
-        // desktop: the app is told what the options cover.
         self.paint_window_bar(&mut Scene::new(), Affine::IDENTITY, width);
         self.drive_window_search();
         Ok(())
@@ -463,8 +419,8 @@ impl FrameHarness {
         )
     }
 
-    /// Carry the search to the app's widgets, then run the frame that shows
-    /// (and writes) what they made of it.
+    /// Carry the search to the app's widgets, then run the frame that shows (and writes) what they made
+    /// of it.
     fn drive_window_search(&mut self) -> Option<(usize, usize)> {
         self.invalidate_local();
         self.window_search.drive(self.root.as_mut());
@@ -472,11 +428,10 @@ impl FrameHarness {
         self.window_search.position()
     }
 
-    /// One frame ([`FrameHarness::try_relayout`]), then the open search
-    /// carried to the app's widgets, as the live window carries it once a
-    /// frame, so what the app shows after the query was typed (a program's
-    /// output, a page that loaded) is found too; the frame lays out again
-    /// when that changed what it shows.
+    /// One frame ([`FrameHarness::try_relayout`]), then the open search carried to the app's widgets,
+    /// as the live window carries it once a frame, so what the app shows after the query was typed (a
+    /// program's output, a page that loaded) is found too; the frame lays out again when that changed
+    /// what it shows.
     pub(super) fn try_relayout_following_search(
         &mut self,
     ) -> Result<(), crate::widget::WidgetLayoutError> {
@@ -491,13 +446,8 @@ impl FrameHarness {
         Ok(())
     }
 
-    /// Press one of the app's own slots in the window's bar (a mode, an
-    /// action, the sidebar toggle), as the desktop hands the press to the
-    /// app. The press is a press on the app: it hands the app the keyboard
-    /// (`Self::hand_keyboard_to_app`), as in the native window. What the
-    /// app asked of the host when its sync took the press (the Undo beside a
-    /// notice asks for an undo) is done and shown, as the live window's idle
-    /// service does after that sync.
+    /// Press one of the app's own slots in the window's bar (a mode, an action, the sidebar toggle), as
+    /// the desktop hands the press to the app.
     pub fn press_window_slot(&mut self, event: crate::window_toolbar::ToolbarEvent) {
         self.invalidate_local();
         let _running = self.running();
@@ -510,17 +460,8 @@ impl FrameHarness {
         self.relayout();
     }
 
-    /// Press the action named `name` the app declares in its window's bar,
-    /// among its leading actions, its actions and their menu items, as the
-    /// person finds it by what it says.
-    ///
-    /// # Errors
-    /// Says what the bar offers when no action is named `name`.
-    /// A window whose app declares no slots shows its commands in its shell's header row, which
-    /// is the window's bar there: the control named `name` in that row is clicked.
-    ///
-    /// # Errors
-    /// Says what the bar offers when no action is named `name`.
+    /// Press the action named `name` the app declares in its window's bar, among its leading actions,
+    /// its actions and their menu items, as the person finds it by what it says.
     pub fn press_window_action(&mut self, name: &str) -> Result<(), String> {
         self.invalidate_local();
         let _running = self.running();
@@ -563,8 +504,8 @@ impl FrameHarness {
         }
     }
 
-    /// Where the app's frame stands in a window of `viewport`: how far below the window's top it
-    /// starts (the desktop's bar above it) and how tall it is, in the window's own pixels.
+    /// Where the app's frame stands in a window of `viewport`: how far below the window's top it starts
+    /// (the desktop's bar above it) and how tall it is, in the window's own pixels.
     pub fn frame_extent(&self, viewport: (u32, u32)) -> (f64, f64) {
         let (_, height) = self.content_viewport(viewport);
         (
@@ -573,9 +514,8 @@ impl FrameHarness {
         )
     }
 
-    /// Where a point of the window (a capture's picture, as the person sees
-    /// it) is in the app's frame under the bar. The bar is the desktop's:
-    /// a point on it is refused, never handed to the app.
+    /// Where a point of the window (a capture's picture, as the person sees it) is in the app's frame
+    /// under the bar. The bar is the desktop's: a point on it is refused, never handed to the app.
     pub(super) fn frame_point(&self, x: f64, y: f64) -> Result<(f64, f64), String> {
         let frame_y = self.frame_y(y);
         if frame_y < 0.0 {
@@ -587,8 +527,7 @@ impl FrameHarness {
         Ok((x, frame_y))
     }
 
-    /// [`Self::frame_point`]'s height alone, for the end of a gesture that
-    /// may leave the frame.
+    /// [`Self::frame_point`]'s height alone, for the end of a gesture that may leave the frame.
     pub(super) fn frame_y(&self, y: f64) -> f64 {
         y - self.frame_top()
     }
@@ -598,7 +537,6 @@ impl FrameHarness {
         rect + vello::kurbo::Vec2::new(0.0, self.frame_top())
     }
 
-    /// Where the app's frame starts in the window.
     fn frame_top(&self) -> f64 {
         if self.window_bar {
             f64::from(self.window_bar_height_px(self.viewport.0))
@@ -628,15 +566,12 @@ impl FrameHarness {
         tab
     }
 
-    /// The bar as the desktop would draw it for this window now, laid out
-    /// across `width`.
+    /// The bar as the desktop would draw it for this window now, laid out across `width`.
     fn window_bar(&self, width: f64) -> TabBar {
         let tab = self.window_tab();
         let mut bar = TabBar::new("headless-window", vec![tab], TAB);
         bar.set_window_controls(true);
         bar.set_search_control(Some(SEARCH_CONTROL_ROOM));
-        // The room the window's search keeps: the app says whether it searches in place at all,
-        // as its offer does when the desktop opens the search.
         bar.set_search_least(
             (self.window_search.in_place() != crate::widget::InPlace::Nothing)
                 .then(|| crate::widget::WindowSearch::least_span(&self.theme)),
@@ -644,22 +579,18 @@ impl FrameHarness {
         bar.set_toolbar(TAB, self.window_toolbar());
         bar.set_history_control(TAB, self.window_history_control());
         bar.set_group_focused(true);
-        // The first layout gives the bar its width; the second measures a
-        // compact window's notice strip for it.
         lay_out_bar(&mut bar, width, &self.theme);
         lay_out_bar(&mut bar, width, &self.theme);
         bar
     }
 
-    /// The bar's height in whole logical pixels across a window `width`
-    /// wide: its row, and a compact window's notice strip under it. None while the app's frame
-    /// holds the bar in a header row of its own: the row is the bar.
+    /// The bar's height in whole logical pixels across a window `width` wide: its row, and a compact
+    /// window's notice strip under it.
     pub(super) fn window_bar_height_px(&self, width: u32) -> u32 {
         if self.row_holds || !self.bar_revealed {
             return 0;
         }
         let height = self.window_bar(f64::from(width)).bar_height().ceil();
-        // A bar is a row or two and a strip tall, far inside `u32`.
         #[allow(
             clippy::cast_possible_truncation,
             clippy::cast_sign_loss,
@@ -669,8 +600,8 @@ impl FrameHarness {
         px
     }
 
-    /// The window's bar as the desktop draws it across a window `width`
-    /// wide, at rest, its labels measured as painted.
+    /// The window's bar as the desktop draws it across a window `width` wide, at rest, its labels
+    /// measured as painted.
     pub(super) fn painted_window_bar(&mut self, width: f64) -> TabBar {
         let _settled = crate::motion::testing::settled();
         let mut bar = self.window_bar(width);
@@ -698,8 +629,6 @@ impl FrameHarness {
                 labels: Vec::new(),
             };
         }
-        // A row holding the bar is the app's own: its slots are read in the frame, and the window's
-        // furniture stands at the row's trailing end.
         if self.row_holds {
             let Some(slot) = self.row_bar_slot() else {
                 return crate::window_toolbar::BarLayout {
@@ -711,16 +640,14 @@ impl FrameHarness {
             return crate::window_toolbar::BarLayout {
                 spare: 0.0,
                 controls: self.row_furniture_layout(slot),
-                // The app's own row stands in the frame, where its words are read as the
-                // widgets that paint them: the bar paints no words of its own.
                 labels: Vec::new(),
             };
         }
         self.painted_window_bar(width).bar_layout()
     }
 
-    /// The window's furniture in a row holding the bar, as the layout check reads the bar's
-    /// controls: the new-tab door and the window's own close/restore.
+    /// The window's furniture in a row holding the bar, as the layout check reads the bar's controls:
+    /// the new-tab door and the window's own close/restore.
     fn row_furniture_layout(
         &self,
         slot: crate::widget::WindowBarSlot,
@@ -767,7 +694,6 @@ impl FrameHarness {
         Self::shown_notice(&self.painted_window_bar(width))
     }
 
-    /// How the bar `bar` shows the notice up: none while it shows none.
     fn shown_notice(bar: &TabBar) -> Option<WindowBarNotice> {
         let bar_height = bar.bar_height();
         let row = bar.toolbar_row();
@@ -795,7 +721,6 @@ impl FrameHarness {
                 })
                 .collect()
         };
-        // A compact window's notice, in its strip under the row.
         if let Some((notice, text, whole, rects)) = row.strip_notice() {
             return Some(WindowBarNotice {
                 text: notice.text.clone(),
@@ -821,13 +746,9 @@ impl FrameHarness {
         })
     }
 
-    /// Click the notice's button `index` where the window's bar, as the
-    /// desktop draws it across a window `width` wide, puts it (in the
-    /// location's place, or in a compact window's strip), and hand the app
-    /// what the press runs, as [`Self::press_window_slot`] does.
-    ///
-    /// # Errors
-    /// When no notice with that button is up, or the press runs nothing.
+    /// Click the notice's button `index` where the window's bar, as the desktop draws it across a
+    /// window `width` wide, puts it (in the location's place, or in a compact window's strip), and hand
+    /// the app what the press runs, as [`Self::press_window_slot`] does.
     pub fn click_window_notice_action(&mut self, width: f64, index: usize) -> Result<(), String> {
         self.invalidate_local();
         let mut bar = self.painted_window_bar(width);
@@ -846,13 +767,9 @@ impl FrameHarness {
         self.deliver_bar_events(&mut bar)
     }
 
-    /// Run the notice's button `index` through its semantic action, as
-    /// assistive technology and automation do, on the window's bar as the
-    /// desktop draws it across a window `width` wide, and hand the app
-    /// what it runs, as [`Self::press_window_slot`] does.
-    ///
-    /// # Errors
-    /// When the bar lists no such button, or its action runs nothing.
+    /// Run the notice's button `index` through its semantic action, as assistive technology and
+    /// automation do, on the window's bar as the desktop draws it across a window `width` wide, and
+    /// hand the app what it runs, as [`Self::press_window_slot`] does.
     pub fn invoke_window_notice_action(&mut self, width: f64, index: usize) -> Result<(), String> {
         self.invalidate_local();
         fn targets(node: &crate::a11y::AccessNode, out: &mut Vec<String>) {
@@ -908,8 +825,6 @@ impl FrameHarness {
         );
         let title = self.window_tab().title;
         let frame_top = self.frame_top();
-        // The app's header row is the bar: it draws itself, and the window's furniture stands at
-        // its trailing end.
         if self.row_holds {
             if let Some(slot) = self.row_bar_slot() {
                 let furniture = crate::widget::window_header::RowFurniture::of(slot);
@@ -961,8 +876,8 @@ impl FrameHarness {
         );
     }
 
-    /// Paint the bar's top layer over the app's frame: the open search's
-    /// options and replacement, under the field.
+    /// Paint the bar's top layer over the app's frame: the open search's options and replacement, under
+    /// the field.
     pub(super) fn paint_window_bar_top_layer(&mut self, scene: &mut Scene, transform: Affine) {
         self.window_search.draw_overlay(
             scene,
@@ -974,8 +889,7 @@ impl FrameHarness {
     }
 }
 
-/// How the window's bar shows the notice up
-/// ([`FrameHarness::window_bar_notice`]).
+/// How the window's bar shows the notice up ([`FrameHarness::window_bar_notice`]).
 #[derive(Clone, Debug, PartialEq)]
 pub struct WindowBarNotice {
     /// What it says.
@@ -984,18 +898,16 @@ pub struct WindowBarNotice {
     pub text_bounds: Rect,
     /// Its text stands whole, not cut short.
     pub whole: bool,
-    /// Its buttons, in order, where they stand (none: it has none, or the
-    /// row has no room for its text).
+    /// Its buttons, in order, where they stand (none: it has none, or the row has no room for its
+    /// text).
     pub buttons: Vec<WindowBarNoticeButton>,
-    /// How many of the app's actions and the leading actions that do not
-    /// move through the content stand in the row beside it, not in the
-    /// overflow menu: what yields to it.
+    /// How many of the app's actions and the leading actions that do not move through the content stand
+    /// in the row beside it, not in the overflow menu: what yields to it.
     pub beside: usize,
-    /// Its strip under the bar's row, where the window is compact (none:
-    /// it stands inline, in the location's place).
+    /// Its strip under the bar's row, where the window is compact (none: it stands inline, in the
+    /// location's place).
     pub strip: Option<Rect>,
-    /// The whole bar's height, the strip included: where the app's frame
-    /// starts.
+    /// The whole bar's height, the strip included: where the app's frame starts.
     pub bar_height: f64,
 }
 
@@ -1008,11 +920,8 @@ pub struct WindowBarNoticeButton {
     pub labelled: bool,
 }
 
-/// The bar's height in whole logical pixels without a notice strip: one
-/// row, the slots in it.
 #[cfg(test)]
 fn bar_height_px() -> u32 {
-    // A fixed layout constant, far inside `u32`.
     #[allow(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
@@ -1022,8 +931,8 @@ fn bar_height_px() -> u32 {
     px
 }
 
-/// Lay `bar` out across `width` as the window group does: the bar is the
-/// first child of a column as wide as the window.
+/// Lay `bar` out across `width` as the window group does: the bar is the first child of a column as
+/// wide as the window.
 fn lay_out_bar(bar: &mut TabBar, width: f64, theme: &crate::theme::Theme) {
     use crate::num::f32_of_f64;
     use std::collections::HashMap;
@@ -1118,9 +1027,9 @@ mod tests {
         crate::window_toolbar::declare(None);
     }
 
-    /// A shell's header row is the window's bar, whatever it holds — a popover, as a window's
-    /// catch-up opens, or plain buttons: the row fills the window, its title and the window's
-    /// controls stand in it, and no second row stacks above.
+    /// A shell's header row is the window's bar, whatever it holds — a popover, as a window's catch-up
+    /// opens, or plain buttons: the row fills the window, its title and the window's controls stand in
+    /// it, and no second row stacks above.
     #[test]
     fn a_header_row_that_keeps_a_popover_is_the_window_bar() {
         let _hosted = HostedReset;
@@ -1166,8 +1075,8 @@ mod tests {
         );
     }
 
-    /// A root that draws no header row of its own — a desk of windows — offers each window its
-    /// own bar: a row its windows draw is no second row under the bar over the desk.
+    /// A root of windows that draws no header row offers each window its bar: a row its windows draw
+    /// is not a second row under it.
     #[test]
     fn a_desk_of_windows_is_no_second_row_under_the_bar() {
         use crate::component::Described as _;
@@ -1220,12 +1129,9 @@ mod tests {
             .map(str::to_owned)
     }
 
-    /// A press on one of the app's own slots in the window's bar is a press
-    /// on the app: with nothing in the window holding the keyboard, the
-    /// control the app declares its default takes it, never the first
-    /// button merely for being first, so what is typed next reaches the
-    /// app. Typing in the bar's search keeps the keyboard where it is, and
-    /// a control that holds it keeps it.
+    /// A press on one of the app's own slots in the window's bar is a press on the app: with nothing in
+    /// the window holding the keyboard, the control the app declares its default takes it, never the
+    /// first button merely for being first, so what is typed next reaches the app.
     #[test]
     fn a_slot_press_hands_the_keyboard_to_the_apps_default_control() {
         let root = crate::widget::Column::new()
@@ -1257,10 +1163,9 @@ mod tests {
         let _ = crate::window_toolbar::take_events();
     }
 
-    /// A window that takes the keyboard (it opened, or was brought
-    /// forward) hands it to the app's default control when nothing holds
-    /// it; a window of buttons only keeps none focused, since Enter would
-    /// press the first.
+    /// A window that takes the keyboard (it opened, or was brought forward) hands it to the app's
+    /// default control when nothing holds it; a window of buttons only keeps none focused, since Enter
+    /// would press the first.
     #[test]
     fn a_window_taking_the_keyboard_hands_it_to_the_apps_default_control() {
         let root = crate::widget::Column::new()
@@ -1281,8 +1186,8 @@ mod tests {
         assert_eq!(harness.focused(), None, "never a button for being first");
     }
 
-    /// A spec aims at the picture it captures: with the bar over the app, a
-    /// click on a control where the capture shows it presses that control.
+    /// A spec aims at the picture it captures: with the bar over the app, a click on a control where
+    /// the capture shows it presses that control.
     #[test]
     fn a_click_aimed_at_the_captured_window_lands_where_it_is_painted() {
         let _hosted = HostedReset;
@@ -1342,8 +1247,6 @@ mod tests {
         }
     }
 
-    // Every hosted bar wears its app's icon at its leading edge, whatever
-    // the location says (a cloud folder, a page, nothing).
     #[test]
     fn every_hosted_bar_wears_its_apps_icon() {
         let _hosted = HostedReset;
@@ -1369,9 +1272,9 @@ mod tests {
         crate::window_toolbar::declare(None);
     }
 
-    /// A compact (420 px) window with a long title and no location: the
-    /// title takes the room the row leaves it, with no slots and beside one
-    /// trailing action alike, and is cut short only where none is left.
+    /// A compact (420 px) window with a long title and no location: the title takes the room the row
+    /// leaves it, with no slots and beside one trailing action alike, and is cut short only where none
+    /// is left.
     #[test]
     fn a_compact_windows_long_title_takes_the_room_the_row_leaves_it() {
         use crate::window_toolbar::{ToolbarAction, WindowToolbar};
@@ -1383,7 +1286,6 @@ mod tests {
             (420, 800),
             crate::theme::Theme::dark(),
         );
-        // The location names it in the body style.
         let style = harness.theme.text(crate::tokens::TextRole::Body);
         let title_w = f64::from(harness.text.measure_style(TITLE, None, &style).0);
         let one_action = WindowToolbar {
@@ -1398,7 +1300,6 @@ mod tests {
             bar.set_search_control(Some(SEARCH_CONTROL_ROOM));
             let slots = toolbar.is_some();
             bar.set_toolbar(TAB, toolbar);
-            // Painting measures the title; the layout after it sizes it.
             for _ in 0..2 {
                 lay_out_bar(&mut bar, 420.0, &harness.theme);
                 bar.draw(
@@ -1435,12 +1336,9 @@ mod tests {
         }
     }
 
-    /// A compact window's notice has a strip of its own under the bar's
-    /// row: its whole text and its actions as buttons that name themselves,
-    /// the row standing as it does without a notice, and the app's frame
-    /// moved down by the strip until the notice goes, then back. A wide
-    /// window's notice stands inline, with no strip. Either button reaches
-    /// the app, by pointer and by its semantic action, at either width.
+    /// A compact window's notice has a strip of its own under the bar's row: its whole text and its
+    /// actions as buttons that name themselves, the row standing as it does without a notice, and the
+    /// app's frame moved down by the strip until the notice goes, then back.
     #[test]
     fn a_compact_windows_notice_has_its_own_strip_and_a_wide_ones_stands_inline() {
         use crate::widget::toast::ToastKind;
@@ -1570,17 +1468,15 @@ mod tests {
         crate::window_toolbar::declare(None);
     }
 
-    /// The 1st of the calendar's weeks across a month: Mon, Jun 29 to
-    /// Sun, Jul 5, 2026.
+    /// The 1st of the calendar's weeks across a month: Mon, Jun 29 to Sun, Jul 5, 2026.
     fn week_across_a_month() -> crate::format::Period {
         let day = |m, d| chrono::NaiveDate::from_ymd_opt(2026, m, d).unwrap_or_default();
         crate::format::Period::Days(day(6, 29), day(7, 5))
     }
 
-    /// The calendar's whole bar (the sidebar, previous, next and Today, a
-    /// week as its period, five views, New event and a menu of more) in a
-    /// compact (420 px) window that lists History, painted once so its
-    /// views are measured.
+    /// The calendar's whole bar (the sidebar, previous, next and Today, a week as its period, five
+    /// views, New event and a menu of more) in a compact (420 px) window that lists History, painted
+    /// once so its views are measured.
     fn compact_calendar_bar() -> (HostedReset, FrameHarness, TabBar) {
         use crate::window_toolbar::{
             ToolbarAction, ToolbarLocation, ToolbarView, ToolbarViews, WindowToolbar,
@@ -1627,10 +1523,8 @@ mod tests {
             .bounded(),
         ));
         let mut bar = harness.window_bar(420.0);
-        // The window lists its History beside the slots, as the calendar's does.
         bar.set_history_control(TAB, Some(crate::widget::HistoryControl::of(false)));
         lay_out_bar(&mut bar, 420.0, &harness.theme);
-        // The bar measures its views as it paints, as a capture paints it.
         bar.draw(
             &mut Scene::new(),
             Affine::IDENTITY,
@@ -1641,10 +1535,9 @@ mod tests {
         (hosted, harness, bar)
     }
 
-    /// A compact (420 px) window's bar, beside its search and History, has
-    /// no room for the calendar's views beside its navigation and period:
-    /// the views and Today (which jumps rather than steps) go into the
-    /// overflow menu, previous and next stay, and the period stays, elided.
+    /// A compact (420 px) window's bar, beside its search and History, has no room for the calendar's
+    /// views beside its navigation and period: the views and Today (which jumps rather than steps) go
+    /// into the overflow menu, previous and next stay, and the period stays, elided.
     #[test]
     fn a_compact_window_keeps_its_navigation_and_location_and_folds_the_views() {
         use crate::a11y::{AccessNode, Role};
@@ -1710,9 +1603,8 @@ mod tests {
         crate::window_toolbar::declare(None);
     }
 
-    /// A compact window's bar has no room for the week as `Mon, Jun 29 –
-    /// Sun, Jul 5`: it names it `Jun 29 – Jul 5`, whole, instead of cutting
-    /// the wider form short.
+    /// A compact window's bar has no room for the week as `Mon, Jun 29 – Sun, Jul 5`: it names it `Jun
+    /// 29 – Jul 5`, whole, instead of cutting the wider form short.
     #[test]
     fn a_compact_window_names_its_period_in_a_form_that_fits() {
         let (_hosted, mut harness, bar) = compact_calendar_bar();
@@ -1760,7 +1652,6 @@ mod tests {
         harness.paint_window_bar(&mut Scene::new(), Affine::IDENTITY, 800.0);
     }
 
-    /// A text the window's search finds in place and can replace in.
     struct Draft {
         text: String,
         found: Vec<crate::widget::find_bar::FindMatch>,
@@ -1867,8 +1758,6 @@ mod tests {
         assert_eq!(harness.window_search.replacement(), "the");
     }
 
-    // What the app shows after the query was typed is found on the next
-    // frame, as the live window drives its search once a frame.
     #[test]
     fn text_that_arrives_after_the_query_is_found_on_the_next_frame() {
         use crate::a11y::Action;
@@ -1903,7 +1792,6 @@ mod tests {
         );
     }
 
-    /// A list the window's search narrows.
     struct Rows {
         rows: Vec<&'static str>,
         filter: String,
@@ -1951,8 +1839,6 @@ mod tests {
         }
     }
 
-    // What a scenario types into the bar's search narrows the app's list
-    // and stands in the bar's field, as on the desktop.
     #[test]
     fn a_scenario_narrows_a_list_through_the_window_bars_search() {
         use crate::a11y::Action;
@@ -1985,8 +1871,6 @@ mod tests {
     }
 
     /// Hosting is per thread: a test leaves it as it found it.
-    /// A text that shows its current match clear of what the window's
-    /// search covers of it, as it was told.
     struct Covered {
         text: String,
         covers: Vec<Option<Rect>>,
@@ -2051,8 +1935,8 @@ mod tests {
         }
     }
 
-    /// A document's slots in the bar: navigation, a location and actions,
-    /// which leave a narrow window's search little room before the location.
+    /// A document's slots in the bar: navigation, a location and actions, which leave a narrow window's
+    /// search little room before the location.
     fn writer_slots() -> crate::window_toolbar::WindowToolbar {
         use crate::window_toolbar::{
             ToolbarAction, ToolbarLocation, ToolbarNavigation, WindowToolbar,
@@ -2161,9 +2045,6 @@ mod tests {
         crate::window_toolbar::declare(None);
     }
 
-    // The options open over the app: it is told what they cover, in its
-    // own coordinates (under the bar), before its current match is shown
-    // again; closed, they cover nothing.
     #[test]
     fn the_app_hears_what_the_open_options_cover_before_its_match_is_shown() {
         use crate::a11y::Action;
@@ -2202,7 +2083,6 @@ mod tests {
         crate::window_toolbar::declare(None);
     }
 
-    /// The colour of the frame's pixel at logical `(x, y)`.
     fn pixel(harness: &FrameHarness, x: u32, y: u32) -> [u8; 4] {
         let rgba = harness.render_rgba();
         let at = usize::try_from((y * harness.viewport.0 + x) * 4).unwrap_or(usize::MAX);
@@ -2211,11 +2091,8 @@ mod tests {
             .unwrap_or_default()
     }
 
-    /// At compact width an app's palette stands under the window's bar,
-    /// across the window less its insets, and the bar keeps its controls:
-    /// they still take their presses. The window under the bar dims behind
-    /// the palette while it is open and not after, and a press on that
-    /// scrim closes it, as Escape does.
+    /// At compact width an app's palette stands under the window's bar, across the window less its
+    /// insets, and the bar keeps its controls: they still take their presses.
     #[test]
     fn a_compact_palette_keeps_the_window_bar_clear_over_a_scrim() {
         let _hosted = HostedReset;
@@ -2240,7 +2117,6 @@ mod tests {
         }));
         harness.relayout();
         let (w, h) = harness.viewport;
-        // Sampled in the inset beside where the card stands: always scrim.
         let ground = pixel(&harness, 2, h - 40);
 
         harness.open_caller_search("").expect("the palette opens");
@@ -2292,9 +2168,6 @@ mod tests {
             "the bar's control runs while the palette is open"
         );
 
-        // In the inset beside the card: the scrim, wherever the card ends.
-        // Delivered as the platform delivers it, through the host's input
-        // policy, where the palette takes the window's pointer.
         let scale = harness.input_scale;
         harness.send_host_event(&crate::synthetic_input::cursor_moved(
             2.0 * scale,
@@ -2315,7 +2188,6 @@ mod tests {
         crate::window_toolbar::declare(None);
     }
 
-    /// An app whose frame declares the window's bar, as an app's own does when it draws.
     struct DeclaresBar(crate::window_toolbar::WindowToolbar);
 
     impl Widget for DeclaresBar {
@@ -2339,9 +2211,9 @@ mod tests {
         }
     }
 
-    /// Two windows a process lays out keep their bars apart: each app declares its slots on its
-    /// own window, the frame of one reads nothing of the other's, and the thread keeps none of
-    /// them once the windows are gone.
+    /// Two windows a process lays out keep their bars apart: each app declares its slots on its own
+    /// window, the frame of one reads nothing of the other's, and the thread keeps none of them once
+    /// the windows are gone.
     #[test]
     fn windows_a_process_lays_out_keep_their_bars_apart() {
         use crate::window_toolbar::{ToolbarAction, WindowToolbar};
@@ -2373,7 +2245,6 @@ mod tests {
             Some(1),
             "notes' window shows the one action its app declares"
         );
-        // A press the desktop hands one window reaches that window's app, not the other's.
         let press = crate::window_toolbar::ToolbarEvent::Action {
             id: "new-note".into(),
         };

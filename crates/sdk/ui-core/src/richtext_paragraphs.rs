@@ -1,24 +1,10 @@
-//! Plain text laid out paragraph by paragraph, so an edit prepares and shapes
-//! only the paragraphs it touched.
-//!
-//! A multiline field's text is a list of paragraphs, and every step that
-//! turns a paragraph into a laid-out line here depends on that paragraph
-//! alone: its break hints and hyphenation, its font plan (faces, emoji runs,
-//! detected identifiers), its shape and its wrap. A block editor gets the
-//! same by giving every block its own layout. An edit is therefore spliced
-//! into the previous layout: the paragraphs between the first and the last
-//! changed byte are prepared and shaped again, every other `BufferLine` keeps
-//! its shape and wrap caches, and the offsets after the edit shift. A splice
-//! equals building the new text from scratch by construction, because a
-//! fresh build is the same per-paragraph step applied to every paragraph.
-//!
-//! The one thing this decides differently from planning the whole text at
-//! once is font fallback across a line feed: digits and punctuation at a
-//! paragraph's edge take their face from that paragraph's own words, never
-//! from the neighbouring paragraph's.
-//!
-//! Text whose paragraphs are not independent takes the whole-text styled
-//! path instead (see [`RichTextLayout::paragraphs_apply`]).
+//! Plain text laid out paragraph by paragraph, so an edit prepares and shapes only the paragraphs it
+//! touched. A multiline field's text is a list of paragraphs, and every step that turns a paragraph
+//! into a laid-out line here depends on that paragraph alone: its break hints and hyphenation, its font
+//! plan (faces, emoji runs, detected identifiers), its shape and its wrap. The one thing this decides
+//! differently from planning the whole text at once is font fallback across a line feed: digits and
+//! punctuation at a paragraph's edge take their face from that paragraph's own words, never from the
+//! neighbouring paragraph's.
 
 use super::{
     Attrs, AttrsList, Buffer, BufferLine, FontSystem, LineEnding, Metrics, OffsetMap,
@@ -32,20 +18,17 @@ thread_local! {
     static PREPARED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
-/// How many paragraphs this thread has prepared and handed to cosmic-text
-/// for shaping since the last call. Every other line keeps its shape.
+/// How many paragraphs this thread has prepared and handed to cosmic-text for shaping since the last
+/// call.
 #[cfg(test)]
 pub(crate) fn take_prepared_paragraphs() -> usize {
     PREPARED.with(|count| count.replace(0))
 }
 
-/// Everything one paragraph's line is built from that is the same for every
-/// paragraph of the text.
 struct ParagraphCx<'s> {
     style: &'s TextStyle,
     /// The buffer's default attributes, as the styled path gives them.
     base: Attrs<'s>,
-    /// The attributes of an unstyled run, as the styled path gives them.
     run: Attrs<'s>,
     metrics: Metrics,
     align: TextAlign,
@@ -67,10 +50,8 @@ impl<'s> ParagraphCx<'s> {
         }
     }
 
-    /// The laid-out line of one paragraph (`paragraph` holds no line feed),
-    /// and its virtual break insertions relative to the paragraph's start.
-    /// Lines and attributes are those cosmic-text's rich setter gives the
-    /// same paragraph.
+    /// The laid-out line of one paragraph (`paragraph` holds no line feed), and its virtual break
+    /// insertions relative to the paragraph's start.
     fn line(
         &self,
         fs: &FontSystem,
@@ -124,8 +105,8 @@ impl<'s> ParagraphCx<'s> {
         (line, map.insertions)
     }
 
-    /// The lines of `region` (whole paragraphs separated by line feeds) and
-    /// their insertions, offset by `source_start`.
+    /// The lines of `region` (whole paragraphs separated by line feeds) and their insertions, offset by
+    /// `source_start`.
     fn lines(
         &self,
         fs: &FontSystem,
@@ -148,10 +129,9 @@ impl<'s> ParagraphCx<'s> {
     }
 }
 
-/// Whether `text`'s paragraphs are cosmic-text's lines and are never split:
-/// no paragraph separator but a line feed (cosmic-text also breaks lines at
-/// CR, U+001C–U+001E, NEL and U+2029) and no paragraph long enough to be
-/// shaped in chunks.
+/// Whether `text`'s paragraphs are cosmic-text's lines and are never split: no paragraph separator but
+/// a line feed (cosmic-text also breaks lines at CR, U+001C–U+001E, NEL and U+2029) and no paragraph
+/// long enough to be shaped in chunks.
 fn independent_paragraphs(text: &str) -> bool {
     let bytes = text.as_bytes();
     let separator = bytes.iter().enumerate().any(|(index, &byte)| match byte {
@@ -167,8 +147,8 @@ fn independent_paragraphs(text: &str) -> bool {
             .all(|paragraph| paragraph.len() <= HUGE_PARAGRAPH_BYTES)
 }
 
-/// The width cosmic-text wraps to: the styled path reserves a left-aligned
-/// block's discretionary hyphen.
+/// The width cosmic-text wraps to: the styled path reserves a left-aligned block's discretionary
+/// hyphen.
 fn layout_width(width: f32, discretionary_hyphen_width: f32, align: TextAlign) -> f32 {
     let reserved = if align == TextAlign::Left {
         discretionary_hyphen_width
@@ -179,17 +159,8 @@ fn layout_width(width: f32, discretionary_hyphen_width: f32, align: TextAlign) -
 }
 
 impl RichTextLayout {
-    /// Lay out plain `text` in `style`, wrapped to `max_width`, paragraph by
-    /// paragraph, reusing `previous`.
-    ///
-    /// When `previous` was laid out this way in the same style, alignment and
-    /// emoji font, the edit from its text to `text` is spliced into it: only
-    /// the changed paragraphs are prepared and shaped, and only a changed
-    /// width wraps the others again. Unchanged inputs return `previous`. `sibling`, a layout of the same
-    /// text at another width, lends the changed paragraphs its shapes, so
-    /// measuring at several widths shapes an edited paragraph once.
-    /// Text whose paragraphs are not independent falls back to
-    /// [`Self::shape_styled_reusing_browser`] over one unstyled span.
+    /// Lay out plain `text` in `style`, wrapped to `max_width`, paragraph by paragraph, reusing
+    /// `previous`.
     pub(crate) fn shape_paragraphs_reusing_browser(
         fs: &mut FontSystem,
         text: &str,
@@ -235,9 +206,8 @@ impl RichTextLayout {
             })
     }
 
-    /// Whether `style` lays paragraphs out independently: balanced rows are
-    /// planned over the whole text, and a custom hyphenator sees the whole
-    /// text. A wrapped row's hanging indent depends on its own paragraph.
+    /// Whether `style` lays paragraphs out independently: balanced rows are planned over the whole
+    /// text, and a custom hyphenator sees the whole text.
     fn paragraphs_apply(style: &TextStyle, _max_width: Option<f32>) -> bool {
         style.wrap_mode != crate::text_render::TextWrapMode::Balance
             && !matches!(
@@ -256,10 +226,8 @@ impl RichTextLayout {
         })
     }
 
-    /// Build `text` paragraph by paragraph, moving in whatever shaping of
-    /// `previous` still matches (another style or alignment; a colour-only
-    /// theme change keeps all of it). `None`, with `previous` untouched, when
-    /// its paragraphs are not independent.
+    /// Build `text` paragraph by paragraph, moving in whatever shaping of `previous` still matches
+    /// (another style or alignment; a colour-only theme change keeps all of it).
     fn shape_paragraphs_fresh(
         fs: &mut FontSystem,
         text: &str,
@@ -333,8 +301,6 @@ impl RichTextLayout {
     }
 
     /// Splice the edit from this layout's text to `text`, wrapped to `width`.
-    /// `false`, with this layout unchanged, when the new paragraphs are not
-    /// independent.
     fn splice_paragraphs(
         &mut self,
         fs: &mut FontSystem,
@@ -345,7 +311,6 @@ impl RichTextLayout {
         let Some(prepared) = self.prepared.take() else {
             return false;
         };
-        // The lines below are spliced and wrapped again in place.
         self.row_tops = std::cell::OnceCell::new();
         let Some(old) = prepared.spans.first().map(|span| span.text.as_str()) else {
             self.prepared = Some(prepared);
@@ -398,8 +363,6 @@ impl RichTextLayout {
         } else {
             0.0
         };
-        // A changed width (or reserved hyphen) wraps every line again, keeping
-        // its shape; spliced lines are shaped and wrapped once.
         let wrap_width = layout_width(width, self.discretionary_hyphen_width, prepared.align);
         let rewrapped = self.buffer.size().0 != Some(wrap_width);
         if rewrapped {
@@ -437,8 +400,8 @@ impl RichTextLayout {
         true
     }
 
-    /// A copy that keeps every line's shape and wrap, for a caller that lays
-    /// the same text out at a second width without shaping it twice.
+    /// A copy that keeps every line's shape and wrap, for a caller that lays the same text out at a
+    /// second width without shaping it twice.
     pub(crate) fn duplicate(&self, fs: &mut FontSystem) -> Self {
         let mut buffer = Buffer::new_empty(self.buffer.metrics());
         let (width, height) = self.buffer.size();
@@ -448,7 +411,6 @@ impl RichTextLayout {
         buffer.set_monospace_width(self.buffer.monospace_width());
         buffer.set_tab_width(self.buffer.tab_width());
         buffer.set_hinting(self.buffer.hinting());
-        // Freshly set lines: the copied caches stay valid.
         buffer.set_text("", &Attrs::new(), Shaping::Advanced, None);
         buffer.lines.clone_from(&self.buffer.lines);
         // Settle the dirty state now: a pending "lines set" would make
@@ -486,9 +448,9 @@ impl RichTextLayout {
             .map(|span| span.text.as_str())
     }
 
-    /// The lines of `region` (starting at line `first`, source byte
-    /// `edit.start`) and their insertions, copied with their shapes from this
-    /// layout of the same text at another width, to be wrapped again.
+    /// The lines of `region` (starting at line `first`, source byte `edit.start`) and their insertions,
+    /// copied with their shapes from this layout of the same text at another width, to be wrapped
+    /// again.
     fn copy_lines(
         &self,
         edit: &LineEdit,
@@ -514,8 +476,6 @@ impl RichTextLayout {
         Some((lines, insertions))
     }
 
-    /// `line_starts`/`line_lens` read off the buffer's lines, which are the
-    /// shaping text's paragraphs.
     fn line_map_of(buffer: &Buffer) -> (Vec<usize>, Vec<usize>) {
         let mut line_starts = Vec::with_capacity(buffer.lines.len());
         let mut line_lens = Vec::with_capacity(buffer.lines.len());
@@ -533,12 +493,10 @@ impl RichTextLayout {
     }
 }
 
-/// Hang each wrapped row of `lines` (whole paragraphs of `text`, laid out
-/// in `buffer`) under its paragraph's indentation, as the whole-text build
-/// does: the row's start gets one [`super::WRAP_INDENT`] per column of the
-/// paragraph's leading whitespace, and the paragraph is prepared and
-/// wrapped again until its rows stop moving. `offset_map` takes the new
-/// insertions. Returns whether any line changed.
+/// Hang each wrapped row of `lines` (whole paragraphs of `text`, laid out in `buffer`) under its
+/// paragraph's indentation, as the whole-text build does: the row's start gets one
+/// [`super::WRAP_INDENT`] per column of the paragraph's leading whitespace, and the paragraph is
+/// prepared and wrapped again until its rows stop moving.
 fn hang_wrapped_rows(
     fs: &mut FontSystem,
     cx: &ParagraphCx<'_>,
@@ -636,12 +594,10 @@ fn paragraph_insertions(
     start..end.max(start)
 }
 
-/// The hanging indent each wrapped row of one paragraph's `rows` (laid out
-/// from `line_text`, its shaping text, whose virtual insertions `map`
-/// holds) takes: one [`super::WRAP_INDENT`] per column of the paragraph's
-/// leading whitespace (a tab to the next multiple of `tab`), at the row's
-/// start, in paragraph bytes. A row that starts inside the indentation
-/// keeps the edge, and so does a line indented past half the `room`.
+/// The hanging indent each wrapped row of one paragraph's `rows` (laid out from `line_text`, its
+/// shaping text, whose virtual insertions `map` holds) takes: one [`super::WRAP_INDENT`] per column of
+/// the paragraph's leading whitespace (a tab to the next multiple of `tab`), at the row's start, in
+/// paragraph bytes.
 fn hanging_indents(
     paragraph: &str,
     (rows, line_text): (&[cosmic_text::LayoutLine], &str),
@@ -692,8 +648,8 @@ fn hanging_indents(
     wanted
 }
 
-/// Insertions after an edit: those of the old paragraphs replaced by
-/// `region`'s (already in new source bytes), later ones shifted.
+/// Insertions after an edit: those of the old paragraphs replaced by `region`'s (already in new source
+/// bytes), later ones shifted.
 fn splice_insertions(
     edit: &LineEdit,
     previous: Vec<VirtualInsertion>,

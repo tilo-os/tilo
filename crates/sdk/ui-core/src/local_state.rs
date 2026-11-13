@@ -1,8 +1,5 @@
-//! Small, typed process-local state for retained application views.
-//!
-//! Durable/shareable values belong in the app's Automerge document. This
-//! handle is for presentation state that should survive between widget events
-//! without becoming part of persistence, collaboration, or undo history.
+//! Small, typed process-local state for retained application views. Durable/shareable values belong in
+//! the app's Automerge document.
 
 use std::future::Future;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -21,9 +18,6 @@ struct LocalStateInner<T> {
 }
 
 /// A cloneable handle to typed, process-local application state.
-///
-/// Clones refer to the same value. Mutations advance an internal revision so
-/// bound widgets can skip formatting work when nothing changed.
 pub struct LocalState<T> {
     inner: Arc<LocalStateInner<T>>,
 }
@@ -47,41 +41,33 @@ impl<T> LocalState<T> {
         }
     }
 
-    /// Whether both handles are one state, not two that happen to hold the same value: a
-    /// control following a binding asks this to tell a new binding from the one it follows.
+    /// Whether both handles are one state, not two that happen to hold the same value: a control
+    /// following a binding asks this to tell a new binding from the one it follows.
     pub fn same_state(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.inner, &other.inner)
     }
 
     /// Read the current value without exposing the backing lock.
-    ///
-    /// A component's pass that reads it follows it from then on
-    /// ([`crate::component_inputs`]): a write moves its owner's input
-    /// revision, so the reader syncs again.
     pub fn with<R>(&self, read: impl FnOnce(&T) -> R) -> R {
         crate::component_inputs::read_owned_by(&self.inner.wake);
         let value = self.inner.value.read_recover();
         read(&value)
     }
 
-    /// Tell whoever reads this state that it changed: its owner's input
-    /// revision moves, or, for state of no scope, the detached revision.
+    /// Tell whoever reads this state that it changed: its owner's input revision moves, or, for state
+    /// of no scope, the detached revision.
     fn note_written(&self) {
         crate::component_inputs::note_written(&self.inner.wake);
     }
 
     /// Replace the value and invalidate widgets bound to this handle.
-    ///
-    /// At revision exhaustion this is a no-op. Use [`Self::try_set`] when the
-    /// caller needs to observe that failure.
     pub fn set(&self, value: T) {
         let _ = self.try_set(value);
     }
 
-    /// As [`Self::set`], reporting whether the replacement was published.
-    /// Returns `false` when the captured owner is closed or the revision
-    /// namespace is exhausted. The value is then left untouched, so a bound
-    /// widget cannot mistake a new value for one it already observed under a
+    /// As [`Self::set`], reporting whether the replacement was published. Returns `false` when the
+    /// captured owner is closed or the revision namespace is exhausted. The value is then left
+    /// untouched, so a bound widget cannot mistake a new value for one it already observed under a
     /// wrapped revision.
     pub fn try_set(&self, value: T) -> bool {
         self.replace(value).is_some()
@@ -101,15 +87,12 @@ impl<T> LocalState<T> {
     }
 
     /// Mutate the value and invalidate widgets bound to this handle once.
-    /// At revision exhaustion this is a no-op. Use [`Self::try_update`] when
-    /// the caller needs to observe that failure.
     pub fn update(&self, update: impl FnOnce(&mut T)) {
         let _ = self.try_update(update);
     }
 
-    /// As [`Self::update`], reporting whether `update` ran. Returns `false`
-    /// when the captured owner is closed or at revision exhaustion, without
-    /// invoking `update`.
+    /// As [`Self::update`], reporting whether `update` ran. Returns `false` when the captured owner is
+    /// closed or at revision exhaustion, without invoking `update`.
     pub fn try_update(&self, update: impl FnOnce(&mut T)) -> bool {
         if !self.inner.wake.authorize_publication() {
             return false;
@@ -138,13 +121,7 @@ impl<T> LocalState<T> {
         self.inner.revision.load(Ordering::Relaxed).checked_add(1)
     }
 
-    /// Create a thread-safe writer that wakes this state's captured owner after
-    /// mutation.
-    ///
-    /// The owner is captured once by [`LocalState::new`], so writers requested
-    /// under another app keep the original destination. State created outside
-    /// a wake scope is permanently detached. Live apps should construct state
-    /// and roots inside an [`App`](crate::App) factory or explicit scope.
+    /// Create a thread-safe writer that wakes this state's captured owner after mutation.
     pub fn writer(&self) -> LocalStateWriter<T>
     where
         T: Send + Sync + 'static,
@@ -157,9 +134,6 @@ impl<T> LocalState<T> {
 }
 
 /// Revision-aware widget-side half of a [`LocalState`] binding.
-///
-/// Kept crate-private so every retained control shares identical polling and
-/// publication semantics without exposing implementation machinery to apps.
 pub(crate) struct LocalBinding<T> {
     state: LocalState<T>,
     observed_revision: u64,
@@ -182,8 +156,8 @@ impl<T: Clone> LocalBinding<T> {
         )
     }
 
-    /// Whether the state moved since this binding last observed it: what
-    /// the next [`Self::poll`] would return, without taking it.
+    /// Whether the state moved since this binding last observed it: what the next [`Self::poll`] would
+    /// return, without taking it.
     pub(crate) fn changed(&self) -> bool {
         self.state.revision() != self.observed_revision
     }
@@ -223,9 +197,7 @@ pub struct LocalStateWriter<T> {
     wake: WakeHandle,
 }
 
-/// Typed state for restartable background work where only the latest run may
-/// publish a result. Starting or cancelling a run invalidates every older
-/// [`TaskCompletion`].
+/// Typed state for restartable background work where only the latest run may publish a result.
 pub struct LatestTask<T> {
     state: LocalState<T>,
     generation: Arc<Mutex<u64>>,
@@ -233,11 +205,6 @@ pub struct LatestTask<T> {
 }
 
 /// UI-thread inbox for worker results where only the newest request may win.
-///
-/// The owner keeps this value inside its table/list/domain model. Calling
-/// [`Self::begin`] invalidates every older completion; an accepted completion
-/// wakes the application and is drained with [`Self::try_take`]. This keeps
-/// channels, event-loop proxies, and generation races out of app models.
 pub struct LatestRequest<T> {
     sender: Sender<(u64, T)>,
     receiver: Receiver<(u64, T)>,
@@ -279,12 +246,8 @@ impl<T> LatestRequest<T> {
         }
     }
 
-    /// Start a request, invalidating any older completion capability.
-    ///
-    /// After the generation namespace is exhausted this returns a permanently
-    /// stale capability which cannot publish. This preserves the original
-    /// infallible API without aliasing a live generation; long-lived hosts that
-    /// need to observe exhaustion can use [`Self::try_begin`].
+    /// Start a request, invalidating any older completion capability. After the generation namespace is
+    /// exhausted this returns a permanently stale capability which cannot publish.
     pub fn begin(&mut self) -> RequestCompletion<T> {
         match self.try_begin() {
             Some(completion) => completion,
@@ -297,9 +260,8 @@ impl<T> LatestRequest<T> {
         }
     }
 
-    /// Fallible form of [`Self::begin`]. Returns `None` without changing state
-    /// when the captured owner is closed or no unique completion generation
-    /// remains.
+    /// Fallible form of [`Self::begin`]. Returns `None` without changing state when the captured owner
+    /// is closed or no unique completion generation remains.
     pub fn try_begin(&mut self) -> Option<RequestCompletion<T>> {
         if !self.wake.authorize_publication() {
             return None;
@@ -325,16 +287,12 @@ impl<T> LatestRequest<T> {
     }
 
     /// Invalidate outstanding work without publishing a replacement.
-    ///
-    /// At the terminal invalidation marker this is a safe no-op because no
-    /// completion capability is ever issued for that reserved generation. Use
-    /// [`Self::try_cancel`] when the caller needs to observe exhaustion.
     pub fn cancel(&mut self) {
         let _ = self.try_cancel();
     }
 
-    /// Fallible form of [`Self::cancel`]. Returns `false` only after the
-    /// terminal invalidation marker has already been reached.
+    /// Fallible form of [`Self::cancel`]. Returns `false` only after the terminal invalidation marker
+    /// has already been reached.
     pub fn try_cancel(&mut self) -> bool {
         self.abort_task();
         if self
@@ -376,15 +334,8 @@ impl<T> LatestRequest<T> {
 }
 
 impl<T: Send + 'static> LatestRequest<T> {
-    /// Start a request whose result is `future`'s output.
-    ///
-    /// The future runs on the app runtime ([`tilo_rt::app`]), never on the
-    /// calling UI thread. Its output wakes the event loop and is drained with
-    /// [`Self::try_take`]. A newer request, a cancellation or dropping this
-    /// inbox aborts the future at its next await point.
-    ///
-    /// Returns `false` without spawning when the owner is closed or the
-    /// generation namespace is exhausted (see [`Self::try_begin`]).
+    /// Start a request whose result is `future`'s output. The future runs on the app runtime
+    /// ([`tilo_rt::app`]), never on the calling UI thread.
     pub fn spawn<F>(&mut self, future: F) -> bool
     where
         F: Future<Output = T> + Send + 'static,
@@ -410,8 +361,7 @@ pub struct RequestCompletion<T> {
 }
 
 impl<T> RequestCompletion<T> {
-    /// Whether this request is still current. Workers can check between
-    /// expensive units for cooperative cancellation.
+    /// Whether this request is still current.
     #[must_use]
     pub fn is_current(&self) -> bool {
         self.request_generation != 0
@@ -419,9 +369,8 @@ impl<T> RequestCompletion<T> {
             && self.generation.load(Ordering::Acquire) == self.request_generation
     }
 
-    /// Publish a result only if no newer request or cancellation won first.
-    /// Returns whether the result was accepted. The captured owner may close
-    /// after authorization and suppress notification without revoking it.
+    /// Publish a result only if no newer request or cancellation won first. Returns whether the result
+    /// was accepted.
     pub fn complete(self, value: T) -> bool {
         if self.request_generation == 0
             || self.generation.load(Ordering::Acquire) != self.request_generation
@@ -462,8 +411,8 @@ impl<T> LatestTask<T> {
         }
     }
 
-    /// Abort the future started by [`Self::spawn`], if one is running, and
-    /// remember `next` as the one to abort later.
+    /// Abort the future started by [`Self::spawn`], if one is running, and remember `next` as the one
+    /// to abort later.
     fn replace_task(&self, next: Option<AbortHandle>) {
         let previous = std::mem::replace(&mut *self.task.lock_recover(), next);
         if let Some(previous) = previous {
@@ -471,14 +420,8 @@ impl<T> LatestTask<T> {
         }
     }
 
-    /// Publish `running`, then run `future` on the app runtime
-    /// ([`tilo_rt::app`]) and publish its output, waking the event loop.
-    ///
-    /// The future never runs on the calling UI thread. Starting another run
-    /// or cancelling aborts it at its next await point, and its output is
-    /// discarded if it finishes anyway.
-    ///
-    /// Returns `false` without spawning when [`Self::try_begin`] refuses.
+    /// Publish `running`, then run `future` on the app runtime ([`tilo_rt::app`]) and publish its
+    /// output, waking the event loop. The future never runs on the calling UI thread.
     pub fn spawn<F>(&self, running: T, future: F) -> bool
     where
         T: Send + Sync + 'static,
@@ -501,12 +444,9 @@ impl<T> LatestTask<T> {
         self.state.clone()
     }
 
-    /// Begin a new run and return its background-safe completion capability.
-    /// Any earlier capability becomes stale before `running` is published.
-    ///
-    /// After the generation namespace is exhausted this returns a permanently
-    /// stale capability which cannot publish. This preserves the original
-    /// infallible API without reissuing an aliased generation; use
+    /// Begin a new run and return its background-safe completion capability. After the generation
+    /// namespace is exhausted this returns a permanently stale capability which cannot publish. This
+    /// preserves the original infallible API without reissuing an aliased generation; use
     /// [`Self::try_begin`] when exhaustion must be handled explicitly.
     pub fn begin(&self, running: T) -> TaskCompletion<T>
     where
@@ -522,11 +462,7 @@ impl<T> LatestTask<T> {
         }
     }
 
-    /// Fallible form of [`Self::begin`]. `Some` means the running state and a
-    /// unique task generation were accepted for publication; it does not mean
-    /// that a wake was delivered or scheduled. Returns `None` without
-    /// publishing when the captured owner is closed, the state revision
-    /// namespace is exhausted, or the task generation namespace is exhausted.
+    /// Fallible form of [`Self::begin`].
     pub fn try_begin(&self, running: T) -> Option<TaskCompletion<T>>
     where
         T: Send + Sync + 'static,
@@ -548,8 +484,8 @@ impl<T> LatestTask<T> {
         })
     }
 
-    /// Invalidate the current run and publish its replacement state. A worker
-    /// that finishes afterward cannot overwrite this value.
+    /// Invalidate the current run and publish its replacement state. A worker that finishes afterward
+    /// cannot overwrite this value.
     pub fn cancel(&self, cancelled: T) {
         let _ = self.try_cancel(cancelled);
     }
@@ -580,8 +516,7 @@ pub struct TaskCompletion<T> {
 }
 
 impl<T> TaskCompletion<T> {
-    /// Whether this run is still the latest. Long-running workers can check
-    /// this between units of work for cooperative cancellation.
+    /// Whether this run is still the latest.
     #[must_use]
     pub fn is_current(&self) -> bool {
         if self.run == 0 || !self.writer.wake.is_active() {
@@ -591,9 +526,8 @@ impl<T> TaskCompletion<T> {
         *generation == self.run
     }
 
-    /// Publish `value` only if no newer run or cancellation won the race.
-    /// Returns whether the value was accepted. The captured owner may close
-    /// after authorization and suppress notification without revoking it.
+    /// Publish `value` only if no newer run or cancellation won the race. Returns whether the value was
+    /// accepted.
     pub fn complete(self, value: T) -> bool {
         let generation = self.generation.lock_recover();
         if self.run == 0 || *generation != self.run {
@@ -621,19 +555,11 @@ impl<T> Clone for LocalStateWriter<T> {
 
 impl<T> LocalStateWriter<T> {
     /// Replace the value and request synchronization and redraw.
-    ///
-    /// The mutation is accepted only while the captured owner is open and its
-    /// revision namespace is not exhausted. The return value from
-    /// [`Self::try_set`] reports publication acceptance, not wake delivery or
-    /// scheduling.
     pub fn set(&self, value: T) {
         let _ = self.try_set(value);
     }
 
-    /// As [`Self::set`], reporting whether the replacement was accepted for
-    /// publication. `false` means the captured owner is closed or the
-    /// revision namespace is exhausted; no wake delivery or scheduling is
-    /// implied by `true`.
+    /// As [`Self::set`], reporting whether the replacement was accepted for publication.
     pub fn try_set(&self, value: T) -> bool {
         if !self.state.try_set(value) {
             return false;
@@ -643,19 +569,11 @@ impl<T> LocalStateWriter<T> {
     }
 
     /// Mutate the value once and request synchronization and redraw.
-    ///
-    /// The mutation is accepted only while the captured owner is open and its
-    /// revision namespace is not exhausted. The return value from
-    /// [`Self::try_update`] reports publication acceptance, not wake delivery
-    /// or scheduling.
     pub fn update(&self, update: impl FnOnce(&mut T)) {
         let _ = self.try_update(update);
     }
 
-    /// As [`Self::update`], reporting whether the mutation was accepted for
-    /// publication. `false` means the captured owner is closed or the
-    /// revision namespace is exhausted; the callback is not invoked. `true`
-    /// does not mean that a wake was delivered or scheduled.
+    /// As [`Self::update`], reporting whether the mutation was accepted for publication.
     pub fn try_update(&self, update: impl FnOnce(&mut T)) -> bool {
         if !self.state.try_update(update) {
             return false;
@@ -666,9 +584,8 @@ impl<T> LocalStateWriter<T> {
 }
 
 impl<T: PartialEq> LocalState<T> {
-    /// Replace the value only when `value` differs from it: a value set
-    /// again on every pass is no change, so nothing that follows the state
-    /// syncs again for it. Whether it was replaced.
+    /// Replace the value only when `value` differs from it: a value set again on every pass is no
+    /// change, so nothing that follows the state syncs again for it.
     pub fn set_if_changed(&self, value: T) -> bool {
         if self.with(|current| *current == value) {
             return false;
@@ -685,9 +602,6 @@ impl<T: Clone> LocalState<T> {
 
 impl LocalState<String> {
     /// A directly usable [`TextInput`](crate::widget::TextInput) callback.
-    ///
-    /// This keeps the common input-to-local-state path allocation and closure
-    /// boilerplate out of application code.
     pub fn text_sink(&self) -> impl FnMut(&str) + 'static {
         let state = self.clone();
         move |value| {
@@ -1152,8 +1066,6 @@ mod tests {
                         tilo_rt::is_ui_thread(),
                     )
                 }));
-                // Spawning neither entered a runtime on the UI thread nor ran the
-                // future inline.
                 assert!(!tilo_rt::in_runtime());
                 assert!(request.try_take().is_none());
                 release.send(()).unwrap();
@@ -1206,7 +1118,6 @@ mod tests {
                     let _ = gate.await;
                     "loaded"
                 }));
-                // The running state is published before the future runs.
                 assert_eq!(state.get(), "loading");
                 release.send(()).unwrap();
                 let event = wakes.recv_timeout(tilo_test_env::hang_bound()).unwrap();
@@ -1216,9 +1127,8 @@ mod tests {
         }
     }
 
-    /// Stands in for the event loop: a thread marked as the UI thread whose
-    /// wake scope is bound to a channel, as the native runner binds it to
-    /// its event-loop proxy.
+    /// Stands in for the event loop: a thread marked as the UI thread whose wake scope is bound to a
+    /// channel, as the native runner binds it to its event-loop proxy.
     fn on_ui_thread(body: impl FnOnce(&WakeScope, &Receiver<WakeEvent>) + Send + 'static) {
         std::thread::Builder::new()
             .name("ui-event-loop".into())
@@ -1242,9 +1152,8 @@ mod tests {
     }
 }
 
-/// The queue a view's controls write what they ask for to, and its app
-/// applies in one ordered place after the event: a click, a key and an
-/// accessibility action all become the same intent. Clones share the queue.
+/// The queue a view's controls write what they ask for to, and its app applies in one ordered place
+/// after the event: a click, a key and an accessibility action all become the same intent.
 pub struct Intents<T>(std::rc::Rc<std::cell::RefCell<Vec<T>>>);
 
 impl<T> Clone for Intents<T> {
@@ -1273,8 +1182,7 @@ impl<T> Intents<T> {
 }
 
 impl<T: Clone + 'static> Intents<T> {
-    /// A callback that queues `intent` each time it runs, for a control's
-    /// `on_view` / `on_effect`.
+    /// A callback that queues `intent` each time it runs, for a control's `on_view` / `on_effect`.
     pub fn sender(&self, intent: T) -> impl FnMut() + 'static {
         let intents = self.clone();
         move || intents.push(intent.clone())

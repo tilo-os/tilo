@@ -443,7 +443,6 @@ fn restore_rebuilds_every_content_type_while_keeping_live_metadata() {
                     Mark::new("comment".into(), ScalarValue::Uint(9), 0, 1)
                 ]
             );
-            // Replayed marks deliberately do not expand at a boundary.
             doc.splice_text(&text, end, 0, "!").unwrap();
             assert_eq!(doc.marks(&text).unwrap()[0].end, end);
         }
@@ -1084,7 +1083,6 @@ fn records_containing_table_objects_are_refused_without_mutation() {
     assert_eq!(doc.save(), before);
 }
 
-/// A schema registration of `TEXT` that reads storage version `version`.
 fn text_schema_at(version: u32) -> &'static HistoryRestoreSchema {
     Box::leak(Box::new(HistoryRestoreSchema { version, ..TEXT }))
 }
@@ -1122,6 +1120,5 @@ fn a_record_at_another_stored_version_is_refused_unread_and_unwritten() {
     assert_eq!(migrated.get_heads(), migrated_heads);
     assert_eq!(migrated.save(), migrated_save);
 
-    // At the version it reads, the same restore is prepared as before.
     assert!(prepare_content_restore(&doc, &TEXT, &live, &target).is_ok());
 }

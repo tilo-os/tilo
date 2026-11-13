@@ -1,14 +1,6 @@
-//! Opt-in resource-refresh diagnostics (`TILO_PROFILE_RESOURCES=1`, or the
-//! normal launcher's content-free `TILO_PROFILE_PRESENTATION=1` diagnostics).
-//!
-//! Each `tilo-resource-stage ` stderr line contains one JSON object. Durations
-//! are CPU wall time for disjoint stages, excluding serialization/logging and
-//! child stages. Cache lookup rows report the actual hit/miss; work stages
-//! report `not_applicable`. Bound discovery owns an internal cache whose result
-//! is not exposed here, so its result is explicitly `not_observed`.
-//! Resource and permission generations belong to the App, not a frame counter.
-//! The environment switch is read once per process. Disabled spans read no
-//! clock and serialize nothing. Diagnostic I/O can perturb subsequent timing.
+//! Opt-in resource-refresh diagnostics (`TILO_PROFILE_RESOURCES=1`, or the normal launcher's
+//! content-free `TILO_PROFILE_PRESENTATION=1` diagnostics). Each `tilo-resource-stage ` stderr line
+//! contains one JSON object.
 
 use crate::time::Instant;
 use std::sync::OnceLock;

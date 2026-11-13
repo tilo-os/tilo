@@ -1,15 +1,12 @@
-//! The glyph that stands for an application where no artwork exists.
-//!
-//! Tilo apps ship no raster icon, so every surface that lists applications
-//! (search palette, switcher, tab strip) asks here and gets the same
-//! recognisable symbol per app, falling back by menu category and finally to
-//! [`Icon::AppWindow`]. It is never a magnifier or a grid: those name the
-//! *kind of row*, not the app.
+//! The glyph that stands for an application where no artwork exists. Tilo apps ship no raster icon, so
+//! every surface that lists applications (search palette, switcher, tab strip) asks here and gets the
+//! same recognisable symbol per app, falling back by menu category and finally to [`Icon::AppWindow`].
+//! It is never a magnifier or a grid: those name the *kind of row*, not the app.
 
 use super::Icon;
 
-/// The glyph for the package `package_id` (`so.tilo.notes`, or a local build's
-/// `dev.tilo.notes`) in menu category `category`, if it has one.
+/// The glyph for the package `package_id` (`so.tilo.notes`, or a local build's `dev.tilo.notes`) in
+/// menu category `category`, if it has one.
 #[must_use]
 pub fn app_glyph(package_id: &str, category: Option<&str>) -> Icon {
     // A window of an app the machine installed says so by its desktop

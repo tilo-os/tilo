@@ -362,7 +362,6 @@ fn refresh_heads_allocation_growth_independent_of_real_graph_size_in_all_documen
                     store
                         .with_history(&checkout.id, |owned, _| populate(owned, size))
                         .unwrap();
-                    // The owner validates its real parked graph; no opaque stand-in.
                     HistorySourceRegistration::owned(
                         "document",
                         APP,

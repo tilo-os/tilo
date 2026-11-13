@@ -125,14 +125,13 @@ impl Write for Limited {
     }
 }
 impl FrameHarness {
-    /// Retain outcomes from subsequent explicit scenario invocations. Inputs and
-    /// confirmation phrases are excluded; returned data is retained only on request.
+    /// Retain outcomes from subsequent explicit scenario invocations.
     pub fn retain_invocation_results(&mut self) {
         self.invalidate_local();
         self.invocation_results = Some(InvocationResults::new(self.author.0.clone()));
     }
-    /// Serialize retained actual Completed/Accepted/Refused outcomes in invocation order.
-    /// Accepted means only admission, never successful completion of a background job.
+    /// Serialize retained actual Completed/Accepted/Refused outcomes in invocation order. Accepted
+    /// means only admission, never successful completion of a background job.
     pub fn invocation_results_json(&self) -> Result<String, String> {
         let results = self
             .invocation_results

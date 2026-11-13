@@ -1,8 +1,6 @@
-//! `RichTextLayout` — attributed, word-wrapped, hit-testable text layout. The
-//! toolkit's rich-text primitive (cosmic-text under the hood): per-run
-//! **bold**/*italic*, underlines, wrapping to a width, caret geometry, selection
-//! rectangles, and point↔offset hit-testing. Render it with
-//! [`crate::text_render::TextRenderer::draw_rich`].
+//! `RichTextLayout` — attributed, word-wrapped, hit-testable text layout. The toolkit's rich-text
+//! primitive (cosmic-text under the hood): per-run **bold**/*italic*, underlines, wrapping to a width,
+//! caret geometry, selection rectangles, and point↔offset hit-testing.
 
 use cosmic_text::{
     Affinity, Align, Attrs, AttrsList, Buffer, BufferLine, Cursor, Family, FontSystem, LineEnding,
@@ -55,11 +53,6 @@ impl FontFamily {
 }
 
 /// Per-run baseline shift, for superscript / subscript runs.
-///
-/// `Super`/`Sub` cause the run's glyphs to be shaped at a reduced size
-/// ([`BaselineShift::SCALE`]) and drawn with a vertical offset
-/// ([`BaselineShift::offset`]) — up for super, down for sub — relative to the
-/// surrounding text's baseline. `None` leaves the run on the normal baseline.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Hash)]
 pub enum BaselineShift {
     #[default]
@@ -76,12 +69,9 @@ impl BaselineShift {
         !matches!(self, BaselineShift::None)
     }
 
-    /// Vertical draw-time offset (in px) for a run shaped at `font_size`.
-    ///
-    /// Returns the signed delta to add to the glyph baseline: **negative**
-    /// (upward) for `Super`, **positive** (downward) for `Sub`, `0.0` for
-    /// `None`. Tuned to ~0.33× / ~0.18× of the surrounding size so the shifted
-    /// run reads clearly above/below the baseline without leaving the line box.
+    /// Vertical draw-time offset (in px) for a run shaped at `font_size`. Returns the signed delta to
+    /// add to the glyph baseline: **negative** (upward) for `Super`, **positive** (downward) for `Sub`,
+    /// `0.0` for `None`.
     pub fn offset(self, font_size: f32) -> f32 {
         match self {
             BaselineShift::None => 0.0,
@@ -101,22 +91,19 @@ pub struct RichSpan {
     pub family: Option<FontFamily>,
     /// Per-run text colour (RGB). `None` uses the block's default ink.
     pub color: Option<[u8; 3]>,
-    /// Per-run highlight / background colour (RGB). `None` paints no band.
+    /// Per-run highlight / background colour (RGB).
     pub background: Option<[u8; 3]>,
-    /// Per-run baseline shift for super/subscript. `None` is the baseline.
+    /// Per-run baseline shift for super/subscript.
     pub baseline: BaselineShift,
     /// What the run is, when the run knows it: a mention is an
     /// [`Identifier`](crate::text_render::TextKind::Identifier), a link a
-    /// [`Url`](crate::text_render::TextKind::Url). `None` takes the block
-    /// style's kind, with the identifiers found in prose set apart
-    /// ([`crate::text_detect`]).
+    /// [`Url`](crate::text_render::TextKind::Url).
     pub kind: Option<crate::text_render::TextKind>,
-    /// The run is the `:name:` of an emoji of the window's workspace, drawn
-    /// as its picture in a square of its own ([`inline_emoji`]); its bytes
-    /// stay the text's.
+    /// The run is the `:name:` of an emoji of the window's workspace, drawn as its picture in a square
+    /// of its own ([`inline_emoji`]); its bytes stay the text's.
     pub workspace_emoji: bool,
-    /// Its background is a chip's: a pill reaching a little past the run, as
-    /// a reference in text is painted, rather than a highlighter's band.
+    /// Its background is a chip's: a pill reaching a little past the run, as a reference in text is
+    /// painted, rather than a highlighter's band.
     pub pill: bool,
 }
 
@@ -175,8 +162,8 @@ impl RichSpan {
         self
     }
 
-    /// Whether the run carries no styling of its own: text in the block's
-    /// style, as [`Self::new`] makes it.
+    /// Whether the run carries no styling of its own: text in the block's style, as [`Self::new`] makes
+    /// it.
     pub(crate) fn is_unstyled(&self) -> bool {
         !self.bold
             && !self.italic
@@ -211,24 +198,20 @@ impl TextAlign {
     }
 }
 
-/// How far the ink of a layout's rows reaches past their own bands: above a
-/// row's top and below its bottom, in the layout's units. Zero where every
-/// glyph stays inside its row.
+/// How far the ink of a layout's rows reaches past their own bands: above a row's top and below its
+/// bottom, in the layout's units.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct InkReach {
     pub above: f32,
     pub below: f32,
 }
 
-/// How far each logical line's rows' ink reaches past their bands, kept
-/// as it is worked out the first time it is asked for
-/// ([`crate::text_render::TextRenderer::rich_ink_reach`]), and the most of
-/// them. Each line's reach is measured from its own rows, so an edit
-/// forgets only the lines it replaced; a new width forgets them all.
+/// How far each logical line's rows' ink reaches past their bands, kept as it is worked out the first
+/// time it is asked for ([`crate::text_render::TextRenderer::rich_ink_reach`]), and the most of them.
 #[derive(Default)]
 pub(crate) struct InkReachCache {
-    /// Each logical line's reach, once worked out; shorter than the lines
-    /// where the ones past its end are not.
+    /// Each logical line's reach, once worked out; shorter than the lines where the ones past its end
+    /// are not.
     pub(crate) lines: std::sync::Mutex<Vec<Option<InkReach>>>,
     /// The most any line's reaches, until a line changes.
     pub(crate) all: std::sync::OnceLock<InkReach>,
@@ -270,13 +253,12 @@ impl InkReachCache {
 
 /// A laid-out block of attributed text.
 pub struct RichTextLayout {
-    /// One exact source snapshot, scoped to this layout owner. It avoids
-    /// reconstructing runs/offset maps/buffer lines for unchanged rich input.
+    /// One exact source snapshot, scoped to this layout owner.
     prepared: Option<RichPreparation>,
     pub(crate) buffer: Buffer,
-    /// Global byte offset of every cosmic-text logical line. cosmic-text
-    /// cursors are `(line, byte-within-line)`; the public toolkit API uses a
-    /// single byte space over the complete paragraph/block.
+    /// Global byte offset of every cosmic-text logical line. cosmic-text cursors are `(line,
+    /// byte-within-line)`; the public toolkit API uses a single byte space over the complete
+    /// paragraph/block.
     line_starts: Vec<usize>,
     /// Byte length of each logical line, excluding its trailing newline.
     line_lens: Vec<usize>,
@@ -284,41 +266,34 @@ pub struct RichTextLayout {
     text_len: usize,
     pub(crate) underlines: Vec<(usize, usize)>,
     pub(crate) strikes: Vec<(usize, usize)>,
-    /// Highlight bands: `(start_byte, end_byte, rgb)`. Painted behind glyphs.
+    /// Highlight bands: `(start_byte, end_byte, rgb)`.
     pub(crate) backgrounds: Vec<(usize, usize, [u8; 3])>,
     /// The bands of [`Self::backgrounds`] painted as chips' pills.
     pub(crate) pills: Vec<(usize, usize)>,
-    /// Baseline-shifted runs: `(start_byte, end_byte, shift)`. Glyphs in these
-    /// ranges are already shaped at the reduced size; the draw path applies the
-    /// vertical offset.
+    /// Baseline-shifted runs: `(start_byte, end_byte, shift)`.
     pub(crate) baselines: Vec<(usize, usize, BaselineShift)>,
     /// The runs drawn as a workspace emoji's picture, in text order.
     pub(crate) inline_emoji: Vec<inline_emoji::InlineEmoji>,
     discretionary_hyphen_width: f32,
     line_height: f32,
-    /// Block-level paint axes. The renderer replaces `wght` with each batch's
-    /// shaped glyph weight so an explicit block axis cannot override span bold.
+    /// Block-level paint axes. The renderer replaces `wght` with each batch's shaped glyph weight so an
+    /// explicit block axis cannot override span bold.
     pub(crate) font_variations: Vec<crate::text_render::FontVariation>,
     pub(crate) hanging_punctuation: crate::text_render::HangingPunctuation,
     fragmentation: crate::text_render::Fragmentation,
-    /// Where each shaped logical line starts down the layout, and the
-    /// tallest visual row: found once per shaped buffer, so a view of a
-    /// long text finds its first visible row by bisection
+    /// Where each shaped logical line starts down the layout, and the tallest visual row: found once
+    /// per shaped buffer, so a view of a long text finds its first visible row by bisection
     /// ([`Self::rows_within`]) instead of walking every row above it.
     row_tops: std::cell::OnceCell<RowTops>,
-    /// The faces the runs asked for ([`requested_faces`]). The shaped
-    /// buffer only records the face each glyph fell back to, so the web,
-    /// where the monospace, serif and italic faces load on demand, reads
-    /// these to fetch them.
+    /// The faces the runs asked for ([`requested_faces`]).
     pub(crate) faces: Vec<crate::text_render::TextStyle>,
     /// How far the rows' ink reaches past their bands
     /// ([`crate::text_render::TextRenderer::rich_ink_reach`]).
     pub(crate) ink_reach: InkReachCache,
 }
 
-/// Where each shaped logical line of a buffer starts, as its rows are laid
-/// out from the top, and the tallest row: up to the first line not shaped
-/// yet, where the buffer's own rows stop too.
+/// Where each shaped logical line of a buffer starts, as its rows are laid out from the top, and the
+/// tallest row: up to the first line not shaped yet, where the buffer's own rows stop too.
 #[derive(Debug, Default)]
 struct RowTops {
     starts: Vec<f32>,
@@ -348,11 +323,9 @@ impl RowTops {
     }
 }
 
-/// The rows of an unscrolled buffer of unbounded height from the start of
-/// line `line_i`, whose top is `line_top`, placed as
-/// [`cosmic_text::LayoutRunIter`] places them from the first: each row's
-/// top is the sum of the heights above it, added in the same order, so it
-/// is the same to the bit.
+/// The rows of an unscrolled buffer of unbounded height from the start of line `line_i`, whose top is
+/// `line_top`, placed as [`cosmic_text::LayoutRunIter`] places them from the first: each row's top is
+/// the sum of the heights above it, added in the same order, so it is the same to the bit.
 struct RowsFrom<'b> {
     lines: &'b [cosmic_text::BufferLine],
     line_i: usize,
@@ -397,7 +370,6 @@ impl<'b> Iterator for RowsFrom<'b> {
     }
 }
 
-/// [`RowsFrom`] where it applies, else the buffer's own walk.
 enum Rows<'b> {
     From(RowsFrom<'b>),
     Walk(cosmic_text::LayoutRunIter<'b>),
@@ -414,8 +386,7 @@ impl<'b> Iterator for Rows<'b> {
     }
 }
 
-/// The block style and each span's family, weight, slant and size
-/// override, without repeats.
+/// The block style and each span's family, weight, slant and size override, without repeats.
 pub(crate) fn requested_faces(
     spans: &[RichSpan],
     style: &crate::text_render::TextStyle,
@@ -455,8 +426,8 @@ struct RichPreparation {
     width: Option<f32>,
     align: TextAlign,
     browser_emoji: bool,
-    /// Built paragraph by paragraph ([`RichTextLayout::shape_paragraphs_reusing_browser`]),
-    /// whose fonts are planned per paragraph, not over the whole text.
+    /// Built paragraph by paragraph ([`RichTextLayout::shape_paragraphs_reusing_browser`]), whose fonts
+    /// are planned per paragraph, not over the whole text.
     paragraph_planned: bool,
 }
 
@@ -469,7 +440,6 @@ impl RichPreparation {
         align: TextAlign,
         browser_emoji: bool,
     ) -> bool {
-        // A custom hyphenator's Arc is not an immutable revision witness.
         !matches!(
             style.hyphenation,
             crate::text_render::Hyphenation::Custom(_)
@@ -482,8 +452,8 @@ impl RichPreparation {
     }
 }
 
-/// Cosmic-text runs plus the byte-ranged background/baseline decoration
-/// tables built alongside them by `RichTextLayout::build_rich_runs`.
+/// Cosmic-text runs plus the byte-ranged background/baseline decoration tables built alongside them by
+/// `RichTextLayout::build_rich_runs`.
 type RichRuns<'a, 's> = (
     Vec<(
         std::borrow::Cow<'a, str>,
@@ -497,8 +467,7 @@ type RichRuns<'a, 's> = (
 );
 
 impl RichTextLayout {
-    /// Revealed secret controls need geometry without an additional retained
-    /// plaintext source snapshot. They opt out before keeping the layout.
+    /// Revealed secret controls need geometry without an additional retained plaintext source snapshot.
     pub(crate) fn discard_prepared_inputs(&mut self) {
         self.prepared = None;
     }
@@ -519,8 +488,7 @@ impl RichTextLayout {
     }
 
     /// Shape an un-attributed paragraph with the same complete style used by
-    /// [`crate::text_render::TextRenderer`]. `max_width = None` produces one
-    /// unwrapped line (form fields); a width enables Unicode word wrapping.
+    /// [`crate::text_render::TextRenderer`].
     pub fn shape_plain(
         fs: &mut FontSystem,
         text: &str,
@@ -640,9 +608,8 @@ impl RichTextLayout {
         }
     }
 
-    /// The complete style of a legacy text block for [`Self::shape_styled`]:
-    /// `base_bold` makes the whole block bold (headings) and
-    /// `line_height_mult` scales the default 1.4 line advance.
+    /// The complete style of a legacy text block for [`Self::shape_styled`]: `base_bold` makes the
+    /// whole block bold (headings) and `line_height_mult` scales the default 1.4 line advance.
     pub fn block_style(
         base_bold: bool,
         size: f32,
@@ -665,11 +632,7 @@ impl RichTextLayout {
             .with_family(family)
     }
 
-    /// Shape attributed spans with the same complete block style used by
-    /// plain application text. This is the preferred entry point for editors
-    /// and custom widgets: font family, weight, size, and leading remain one
-    /// value from measurement through painting.
-
+    /// Shape attributed spans with the same complete block style used by plain application text.
     pub fn shape_styled(
         fs: &mut FontSystem,
         spans: &[RichSpan],
@@ -698,12 +661,9 @@ impl RichTextLayout {
             .with_decorations(underlines, strikes)
     }
 
-    /// Reuse unchanged paragraphs from this renderer's previous layout.
-    /// The caller must enforce the same font-system identity and generation;
-    /// font replacement or locale changes require `previous = None`.
-    /// Exact retained inputs skip preparation; otherwise fresh paragraph
-    /// construction remains authoritative for attributes and document offsets,
-    /// and only compatible cosmic shape/layout caches move over.
+    /// Reuse unchanged paragraphs from this renderer's previous layout. The caller must enforce the
+    /// same font-system identity and generation; font replacement or locale changes require `previous =
+    /// None`.
     pub fn shape_styled_reusing(
         fs: &mut FontSystem,
         spans: &[RichSpan],
@@ -750,9 +710,8 @@ impl RichTextLayout {
         Self::build_styled_indented(fs, spans, style, max_width, align, None, browser_emoji)
     }
 
-    /// Build, then (for [`crate::text_render::TextWrapMode::Indented`]) hang
-    /// each wrapped row under its line's indentation and build again until
-    /// the rows stop moving.
+    /// Build, then (for [`crate::text_render::TextWrapMode::Indented`]) hang each wrapped row under its
+    /// line's indentation and build again until the rows stop moving.
     fn build_styled_indented(
         fs: &mut FontSystem,
         spans: &[RichSpan],
@@ -1022,13 +981,11 @@ impl RichTextLayout {
         hash.finish()
     }
 
-    /// Build cosmic-text runs (with their `Attrs`) for `spans`, plus the
-    /// byte-ranged background/baseline decoration tables that
-    /// [`Self::shape_styled`] stores alongside the shaped buffer.
-    ///
-    /// Byte offsets accumulate over the *non-empty* spans (matching what gets
-    /// fed to cosmic-text), so backgrounds/baselines align with glyph
-    /// start/end indices reported in `layout_runs`.
+    /// Build cosmic-text runs (with their `Attrs`) for `spans`, plus the byte-ranged
+    /// background/baseline decoration tables that [`Self::shape_styled`] stores alongside the shaped
+    /// buffer. Byte offsets accumulate over the *non-empty* spans (matching what gets fed to
+    /// cosmic-text), so backgrounds/baselines align with glyph start/end indices reported in
+    /// `layout_runs`.
     fn build_rich_runs<'a, 's>(
         spans: &'a [RichSpan],
         style: &'s crate::text_render::TextStyle,
@@ -1084,7 +1041,6 @@ impl RichTextLayout {
         (built, backgrounds, pills, baselines, pictures)
     }
 
-    /// The cosmic-text attributes of one span's run in `style`.
     fn run_attrs<'s>(
         r: &RichSpan,
         style: &'s crate::text_render::TextStyle,
@@ -1132,14 +1088,14 @@ impl RichTextLayout {
             .max(self.line_height)
     }
 
-    /// Return the number of lines that may be placed in the current fragment
-    /// without stranding fewer than the configured orphan/widow counts.
+    /// Return the number of lines that may be placed in the current fragment without stranding fewer
+    /// than the configured orphan/widow counts.
     pub fn fragment_line_count(&self, available_lines: usize) -> usize {
         self.fragment_line_count_from(0, available_lines)
     }
 
-    /// As [`Self::fragment_line_count`], starting at `first_line` for a
-    /// paragraph that already spans one or more earlier fragments.
+    /// As [`Self::fragment_line_count`], starting at `first_line` for a paragraph that already spans
+    /// one or more earlier fragments.
     pub fn fragment_line_count_from(&self, first_line: usize, available_lines: usize) -> usize {
         let total = self.buffer.layout_runs().count();
         self.fragmentation
@@ -1170,8 +1126,7 @@ impl RichTextLayout {
             .fold(0.0f32, f32::max)
     }
 
-    /// Underline and strike through byte ranges of the shaped text; neither
-    /// affects shaping.
+    /// Underline and strike through byte ranges of the shaped text; neither affects shaping.
     #[must_use]
     pub(crate) fn with_decorations(
         mut self,
@@ -1183,9 +1138,7 @@ impl RichTextLayout {
         self
     }
 
-    /// Add an underline decoration in this layout's global byte space. This
-    /// is used for IME preedit, where the composition is shaped and painted
-    /// but has not yet entered the document model.
+    /// Add an underline decoration in this layout's global byte space.
     #[allow(
         clippy::suspicious_operation_groupings,
         reason = "not a mirrored typo: range.start < range.end checks well-ordering, range.end <= text_len is the separate bounds check"
@@ -1205,9 +1158,6 @@ impl RichTextLayout {
     }
 
     /// Map a local point to a byte offset (click → caret).
-    ///
-    /// Prefer [`Self::hit_position`] in an editor so a mixed-BiDi boundary
-    /// keeps the side that was clicked.
     pub fn hit(&self, x: f32, y: f32) -> usize {
         self.hit_position(x, y).byte
     }
@@ -1222,9 +1172,9 @@ impl RichTextLayout {
             .unwrap_or((0.0, 0.0, self.line_height))
     }
 
-    /// Observer caret geometry with the same per-run work limits as
-    /// [`Self::selection_rects_bounded`]. Missing stops and invalid positions
-    /// are unavailable, never the ordinary editor's origin fallback.
+    /// Observer caret geometry with the same per-run work limits as [`Self::selection_rects_bounded`].
+    /// Missing stops and invalid positions are unavailable, never the ordinary editor's origin
+    /// fallback.
     pub fn caret_geometry_bounded(&self, byte: usize) -> Option<(f32, f32, f32)> {
         if byte > self.text_len {
             return None;
@@ -1261,10 +1211,9 @@ impl RichTextLayout {
         byte_fallback
     }
 
-    /// Resolve a set of carets from one traversal of the shaped visual rows.
-    /// Exact affinity wins over the first byte-only fallback, as in
-    /// `caret_geometry_at`. Geometry is local to this call and never survives
-    /// an edit, reshape, font change or owner replacement.
+    /// Resolve a set of carets from one traversal of the shaped visual rows. Exact affinity wins over
+    /// the first byte-only fallback, as in `caret_geometry_at`. Geometry is local to this call and
+    /// never survives an edit, reshape, font change or owner replacement.
     pub(crate) fn caret_geometries(&self, positions: &[TextPosition]) -> Vec<(f32, f32, f32)> {
         use std::collections::HashMap;
         let mut exact = HashMap::new();
@@ -1297,9 +1246,7 @@ impl RichTextLayout {
         self.caret_geometry_at(TextPosition::new(byte))
     }
 
-    /// Logical byte positions reached by Home and End for the visual line
-    /// containing `byte`. Paragraph direction is respected: Home is the
-    /// right edge for an RTL line and the left edge for an LTR line.
+    /// Logical byte positions reached by Home and End for the visual line containing `byte`.
     pub fn visual_line_edges(&self, byte: usize) -> (usize, usize) {
         let cursor = self.cursor_at(byte);
         let mut fallback = None;
@@ -1342,9 +1289,8 @@ impl RichTextLayout {
         fallback
     }
 
-    /// Vertical bands for every soft-wrapped visual row belonging to the
-    /// logical line that contains `byte`. Useful for editor chrome such as a
-    /// current-line background without rebuilding a second line model.
+    /// Vertical bands for every soft-wrapped visual row belonging to the logical line that contains
+    /// `byte`.
     pub fn logical_line_bands(&self, byte: usize) -> Vec<(f32, f32)> {
         let line = self.cursor_at(byte).line;
         self.rows_of_lines(line..line.saturating_add(1))
@@ -1357,9 +1303,7 @@ impl RichTextLayout {
         self.cursor_at(byte).line
     }
 
-    /// The first visual row for each logical line as
-    /// `(zero_based_line, top, height)`. Line-number gutters consume this so
-    /// their baselines come from the authoritative shaped paragraph too.
+    /// The first visual row for each logical line as `(zero_based_line, top, height)`.
     pub fn logical_line_origins(&self) -> Vec<(usize, f32, f32)> {
         let mut origins = Vec::new();
         for run in self.buffer.layout_runs() {
@@ -1373,9 +1317,8 @@ impl RichTextLayout {
         origins
     }
 
-    /// [`Self::logical_line_origins`] of the lines whose first row meets
-    /// `top..=bottom`, in the layout's coordinates: a gutter numbers only
-    /// the lines it shows.
+    /// [`Self::logical_line_origins`] of the lines whose first row meets `top..=bottom`, in the
+    /// layout's coordinates: a gutter numbers only the lines it shows.
     pub fn logical_line_origins_within(&self, top: f32, bottom: f32) -> Vec<(usize, f32, f32)> {
         let mut origins = Vec::new();
         let mut last_line = None;
@@ -1394,12 +1337,7 @@ impl RichTextLayout {
         origins
     }
 
-    /// Move one shaped caret stop toward the visual left or right. Stops are
-    /// derived from grapheme boundaries inside each glyph cluster, so this
-    /// respects ligatures, combining sequences, and `BiDi` reordering. At
-    /// the edge of a row the caret moves on to the row it reads into: the
-    /// next row's start, or the previous row's end, in the paragraph's
-    /// direction, so an arrow key crosses a soft wrap or a line break.
+    /// Move one shaped caret stop toward the visual left or right.
     pub fn visual_motion_position(&self, position: TextPosition, right: bool) -> TextPosition {
         let position = TextPosition {
             byte: position.byte.min(self.text_len),
@@ -1444,15 +1382,13 @@ impl RichTextLayout {
         if (to - from).abs() > 0.5 {
             return *stop;
         }
-        // The row's edge: no stop on it lies further this way.
         self.adjacent_row_stop(line, top, right != rtl, right)
             .filter(|next| *next != position)
             .unwrap_or(*stop)
     }
 
-    /// The stop a caret enters on the row after (`forward`) or before the
-    /// row of line `line` at `top`: its left edge when moving right, its
-    /// right edge when moving left. `None` at either end of the text.
+    /// The stop a caret enters on the row after (`forward`) or before the row of line `line` at `top`:
+    /// its left edge when moving right, its right edge when moving left.
     fn adjacent_row_stop(
         &self,
         line: usize,
@@ -1475,10 +1411,7 @@ impl RichTextLayout {
         entry.map(|(_, stop)| *stop)
     }
 
-    /// The stop one visual step from `index`: the next one at another place
-    /// on the line. The end of one glyph and the start of the next are two
-    /// stops at the same place (after "H", before "i"); stepping onto the
-    /// other would leave the caret where it was.
+    /// The stop one visual step from `index`: the next one at another place on the line.
     fn visual_step(stops: &[(f32, TextPosition)], index: usize, right: bool) -> usize {
         let Some((x, _)) = stops.get(index) else {
             return index;
@@ -1509,12 +1442,11 @@ impl RichTextLayout {
             .byte
     }
 
-    /// The shaped lines whose rows can hold a caret stop at source byte
-    /// `byte`: its own paragraph's line and, where a huge paragraph was
-    /// shaped in chunks, the chunk ending there. A chunk boundary is a soft
-    /// wrap whose two sides are two shaped lines; the end of the earlier one
-    /// maps to the same source byte as the start of the later one, and the
-    /// caret must find it there as it finds the end of a wrapped row.
+    /// The shaped lines whose rows can hold a caret stop at source byte `byte`: its own paragraph's
+    /// line and, where a huge paragraph was shaped in chunks, the chunk ending there. A chunk boundary
+    /// is a soft wrap whose two sides are two shaped lines; the end of the earlier one maps to the same
+    /// source byte as the start of the later one, and the caret must find it there as it finds the end
+    /// of a wrapped row.
     fn lines_holding_stops(&self, byte: usize) -> std::ops::Range<usize> {
         let line = self.cursor_at(byte).line;
         let end = line.saturating_add(1);
@@ -1531,11 +1463,10 @@ impl RichTextLayout {
         }
     }
 
-    /// Whether [`Self::caret_stops`] of `run` can hold a stop at source
-    /// byte `byte`, without building them. Every stop maps a shaped byte
-    /// inside one of the row's glyphs through the same monotone source
-    /// mapping, keeping both ends inclusive for bidi and soft-wrap affinity
-    /// boundaries; a row with no stop of its own stands at its line's start.
+    /// Whether [`Self::caret_stops`] of `run` can hold a stop at source byte `byte`, without building
+    /// them. Every stop maps a shaped byte inside one of the row's glyphs through the same monotone
+    /// source mapping, keeping both ends inclusive for bidi and soft-wrap affinity boundaries; a row
+    /// with no stop of its own stands at its line's start.
     fn row_may_hold_stop(&self, run: &cosmic_text::LayoutRun<'_>, byte: usize) -> bool {
         if self.global_byte(Cursor::new(run.line_i, 0)) == byte {
             return true;
@@ -1572,7 +1503,6 @@ impl RichTextLayout {
             .unwrap_or(self.text_len);
         let hanging = self.hanging_punctuation != crate::text_render::HangingPunctuation::default();
         for glyph in run.glyphs {
-            // A wrapped row's hanging indent is not text: no caret stands in it.
             if virtual_text
                 && self
                     .offset_map
@@ -1633,8 +1563,7 @@ impl RichTextLayout {
         stops
     }
 
-    /// The shaped rows of the logical lines `lines`, as
-    /// [`Buffer::layout_runs`] places them.
+    /// The shaped rows of the logical lines `lines`, as [`Buffer::layout_runs`] places them.
     pub(crate) fn rows_of_lines(
         &self,
         lines: std::ops::Range<usize>,
@@ -1645,9 +1574,8 @@ impl RichTextLayout {
             .take_while(move |run| run.line_i < lines.end)
     }
 
-    /// The shaped rows whose band, widened by twice its height for ink that
-    /// overhangs it, meets `top..=bottom` (in the layout's coordinates), and
-    /// any between them.
+    /// The shaped rows whose band, widened by twice its height for ink that overhangs it, meets
+    /// `top..=bottom` (in the layout's coordinates), and any between them.
     pub fn rows_within(
         &self,
         top: f32,
@@ -1661,25 +1589,21 @@ impl RichTextLayout {
             .take_while(move |run| run.line_top - run.line_height * 2.0 <= bottom)
     }
 
-    /// The shaped rows whose band, widened by how far any row's ink reaches
-    /// past its own (`reach`), meets `top..bottom` (in the layout's
-    /// coordinates), and any between them: every row whose ink may show
-    /// there, for a caller that checks each row's own ink.
+    /// The shaped rows whose band, widened by how far any row's ink reaches past its own (`reach`),
+    /// meets `top..bottom` (in the layout's coordinates), and any between them: every row whose ink may
+    /// show there, for a caller that checks each row's own ink.
     pub fn rows_reaching(
         &self,
         top: f32,
         bottom: f32,
         reach: InkReach,
     ) -> impl Iterator<Item = cosmic_text::LayoutRun<'_>> {
-        // No row of a line above the first ends below `top - reach.below`.
         self.rows_from(top - reach.below, 1.0)
             .skip_while(move |run| run.line_top + run.line_height + reach.below <= top)
             .take_while(move |run| run.line_top - reach.above < bottom)
     }
 
     /// The rows from the start of the line `rows` tallest rows above `y`.
-    /// The bisection reads rows from the top of an unscrolled buffer of
-    /// unbounded height, as layouts here are shaped; any other walks.
     fn rows_from(&self, y: f32, rows: f32) -> Rows<'_> {
         if self.buffer.scroll() == cosmic_text::Scroll::default() && self.buffer.size().1.is_none()
         {
@@ -1741,7 +1665,6 @@ impl RichTextLayout {
     }
 
     /// Baseline shift in effect at byte offset `byte`, if any range covers it.
-    /// Used by the draw path to nudge super/subscript glyphs off the baseline.
     pub(crate) fn baseline_at(&self, byte: usize) -> BaselineShift {
         for &(s, e, shift) in &self.baselines {
             if byte >= s && byte < e {
@@ -1760,10 +1683,6 @@ impl RichTextLayout {
         let cursor_start = self.cursor_at(start);
         let cursor_end = self.cursor_at(end);
         for run in self.rows_of_lines(cursor_start.line..cursor_end.line.saturating_add(1)) {
-            // A wrapped paragraph is one logical line of many visual rows, and
-            // `highlight` segments every grapheme of a row it is given. A row
-            // whose glyphs all end before the range or start after it selects
-            // nothing (as in `selection_rects_many_within`): skip it.
             let (mut low, mut high) = (usize::MAX, 0);
             for glyph in run.glyphs {
                 low = low.min(glyph.start);
@@ -1782,12 +1701,10 @@ impl RichTextLayout {
         rects
     }
 
-    /// Selection rectangles in a vertical layout band, refusing overflow
-    /// instead of returning a partial selection. Caller byte validation is
-    /// unchanged. This bounded observer path also refuses a visible run with
-    /// more than 65,536 glyphs or summed glyph-source bytes: the shaper's
-    /// `highlight` iterator internally collects its per-run spans first.
-    /// Ordinary editing continues to use the unrestricted APIs below/above.
+    /// Selection rectangles in a vertical layout band, refusing overflow instead of returning a partial
+    /// selection. Caller byte validation is unchanged. This bounded observer path also refuses a
+    /// visible run with more than 65,536 glyphs or summed glyph-source bytes: the shaper's `highlight`
+    /// iterator internally collects its per-run spans first.
     pub fn selection_rects_bounded(
         &self,
         range: std::ops::Range<usize>,
@@ -1828,14 +1745,9 @@ impl RichTextLayout {
         Some(rects)
     }
 
-    /// [`Self::selection_rects`] for several byte ranges in one pass over the
-    /// layout runs, in input order. A long paragraph is one logical line with
-    /// many visual runs; the per-range form walks every run and every glyph
-    /// of it once per range, so decorating every span of a pasted page
-    /// (spell-check squiggles, find matches) was quadratic in the paragraph
-    /// length. Here each run looks up only the ranges that can touch its byte
-    /// extent (sorted starts plus a running maximum of ends), which yields
-    /// exactly the same rectangles.
+    /// [`Self::selection_rects`] for several byte ranges in one pass over the layout runs, in input
+    /// order. Here each run looks up only the ranges that can touch its byte extent (sorted starts plus
+    /// a running maximum of ends), which yields exactly the same rectangles.
     pub fn selection_rects_many(
         &self,
         ranges: &[(usize, usize)],
@@ -1843,10 +1755,8 @@ impl RichTextLayout {
         self.selection_rects_many_within(ranges, f32::NEG_INFINITY, f32::INFINITY)
     }
 
-    /// [`Self::selection_rects_many`] restricted to visual lines that overlap
-    /// the vertical band `[top, bottom]` (layout coordinates). Rectangles of
-    /// lines entirely outside the band are omitted; a caller passing its clip
-    /// paints exactly what the unrestricted form would have shown.
+    /// [`Self::selection_rects_many`] restricted to visual lines that overlap the vertical band `[top,
+    /// bottom]` (layout coordinates). Rectangles of lines entirely outside the band are omitted.
     pub fn selection_rects_many_within(
         &self,
         ranges: &[(usize, usize)],
@@ -1854,7 +1764,6 @@ impl RichTextLayout {
         bottom: f32,
     ) -> Vec<Vec<(f32, f32, f32, f32)>> {
         let mut out = vec![Vec::new(); ranges.len()];
-        // (global shaped start, global shaped end, start cursor, end cursor, input index)
         let mut index: Vec<(usize, usize, Cursor, Cursor, usize)> = ranges
             .iter()
             .enumerate()
@@ -1923,10 +1832,9 @@ impl RichTextLayout {
         out
     }
 
-    /// Source byte range `[start, end)` covered by the visual lines that
-    /// overlap the vertical band `[top, bottom]`, or `None` when no line does.
-    /// Callers with many decorated spans use it to skip spans that cannot
-    /// reach the band before asking for their geometry.
+    /// Source byte range `[start, end)` covered by the visual lines that overlap the vertical band
+    /// `[top, bottom]`, or `None` when no line does. Callers with many decorated spans use it to skip
+    /// spans that cannot reach the band before asking for their geometry.
     pub fn source_range_within(&self, top: f32, bottom: f32) -> Option<(usize, usize)> {
         let mut range: Option<(usize, usize)> = None;
         for run in self.buffer.layout_runs() {
@@ -1942,8 +1850,8 @@ impl RichTextLayout {
         range
     }
 
-    /// Position of a cursor in the paragraph-global shaped byte space (the
-    /// space of `line_starts` and of cosmic-text glyph offsets within a line).
+    /// Position of a cursor in the paragraph-global shaped byte space (the space of `line_starts` and
+    /// of cosmic-text glyph offsets within a line).
     fn shaped_global(&self, cursor: Cursor) -> usize {
         self.line_starts.get(cursor.line).copied().unwrap_or(0) + cursor.index
     }
@@ -1952,9 +1860,9 @@ impl RichTextLayout {
         style.wrap_mode == crate::text_render::TextWrapMode::Indented && max_width.is_some()
     }
 
-    /// The virtual indent each wrapped row of this layout hangs under: one
-    /// [`WRAP_INDENT`] per column of its line's leading whitespace (a tab to
-    /// the next multiple of the buffer's tab width), at the row's start.
+    /// The virtual indent each wrapped row of this layout hangs under: one [`WRAP_INDENT`] per column
+    /// of its line's leading whitespace (a tab to the next multiple of the buffer's tab width), at the
+    /// row's start.
     fn wrap_indent_insertions(&self, source: &str) -> Vec<crate::text_break::VirtualInsertion> {
         let tab = usize::from(self.buffer.tab_width()).max(1);
         let room = self.buffer.size().0.unwrap_or(f32::INFINITY);
@@ -2011,22 +1919,20 @@ impl RichTextLayout {
     }
 }
 
-/// What a styled build adds to its spans: whether colour emoji come from the
-/// browser's font, and the virtual insertions of a wrapped row's indent.
+/// What a styled build adds to its spans: whether colour emoji come from the browser's font, and the
+/// virtual insertions of a wrapped row's indent.
 #[derive(Clone, Copy)]
 struct StyledPrep<'a> {
     browser_emoji: bool,
     extra: &'a [crate::text_break::VirtualInsertion],
 }
 
-/// The virtual character a wrapped row's hanging indent is set in: a no-break
-/// space, a space's width that binds to the text after it, so the row breaks
-/// before it, not after.
+/// The virtual character a wrapped row's hanging indent is set in: a no-break space, a space's width
+/// that binds to the text after it, so the row breaks before it, not after.
 const WRAP_INDENT: char = '\u{a0}';
 
-/// How many times an [`crate::text_render::TextWrapMode::Indented`] layout is
-/// built again while its rows still move; indenting a row can only push text
-/// onto later rows, which settles in a pass or two.
+/// How many times an [`crate::text_render::TextWrapMode::Indented`] layout is built again while its
+/// rows still move; indenting a row can only push text onto later rows, which settles in a pass or two.
 const WRAP_INDENT_PASSES: usize = 3;
 
 #[cfg(test)]
@@ -2055,8 +1961,7 @@ fn geometry_run_within_budget(run: &cosmic_text::LayoutRun<'_>) -> bool {
     true
 }
 
-/// One-byte ASCII clusters contain one grapheme. Keep the full segmenter for
-/// ligatures, CRLF and every non-ASCII cluster.
+/// One-byte ASCII clusters contain one grapheme.
 fn caret_cluster_boundaries(cluster: &str) -> std::borrow::Cow<'_, [usize]> {
     if cluster.len() == 1 && cluster.is_ascii() {
         return std::borrow::Cow::Borrowed(&[0, 1]);

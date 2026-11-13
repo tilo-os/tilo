@@ -1,5 +1,5 @@
-//! Shared coordinator for framework surfaces retained inside tiles. Visitors
-//! never retain widget references across a topology change.
+//! Shared coordinator for framework surfaces retained inside tiles. Visitors never retain widget
+//! references across a topology change.
 #[allow(
     clippy::wildcard_imports,
     reason = "private implementation module shares its enclosing host types"
@@ -10,8 +10,8 @@ use std::collections::{HashMap, HashSet};
 use taffy::{NodeId, TaffyTree};
 use winit::event::{ElementState, WindowEvent};
 
-/// Focus eligibility for one recomputation of the current layout. This owns
-/// only node ids and never survives a layout or input-capture change.
+/// Focus eligibility for one recomputation of the current layout. This owns only node ids and never
+/// survives a layout or input-capture change.
 pub(crate) struct FocusRestrictions {
     denied: HashSet<NodeId>,
 }
@@ -42,9 +42,8 @@ pub(crate) fn owns_node(root: &dyn Widget, node: NodeId, tree: &TaffyTree<()>) -
     });
     owned
 }
-/// One node's focus admission, walking every surface: the reference
-/// [`FocusRestrictions`] must agree with. Production asks it of whole
-/// compositions through [`FocusRestrictions`] instead.
+/// One node's focus admission, walking every surface: the reference [`FocusRestrictions`] must agree
+/// with.
 #[cfg(test)]
 pub(crate) fn allows_focus(root: &dyn Widget, node: NodeId, tree: &TaffyTree<()>) -> bool {
     let mut allowed = true;
@@ -106,8 +105,7 @@ pub(crate) struct SurfacesWalk {
     pub(crate) needed: bool,
     /// The tree holds any History surface.
     pub(crate) found: bool,
-    /// The earliest moment a surface asks for a refresh on its own
-    /// (`HistoryHost::next_refresh`).
+    /// The earliest moment a surface asks for a refresh on its own (`HistoryHost::next_refresh`).
     pub(crate) due: Option<(crate::background::Background, crate::time::Instant)>,
 }
 
@@ -137,19 +135,8 @@ pub(crate) fn surfaces_need_refresh(
     });
     walk
 }
-/// One walk for a frame that changes nothing History reads: `None` when any
-/// surface is not at rest (`HistoryHost::at_rest`), otherwise whether any needs a
-/// refresh ([`needs_refresh`]). While every surface rests, entry capture,
-/// review service, focus return, control return and focus denial have
-/// nothing to do, so such a frame skips their walks.
-///
-/// `settled` says the previous frame already asked this of the same
-/// composition and owner documents, and nothing either reads has moved since
-/// (the frame witness held across it). Then a surface whose documents the
-/// witness follows ([`settled_checks_hold`]) is not asked again whether its
-/// live root still has the owners it registered or whether its committed
-/// frontier moved: both read only what the witness proves unchanged. What
-/// other threads deliver and what is queued for it are asked every frame.
+/// One walk for a frame that changes nothing History reads: `None` when any surface is not at rest
+/// (`HistoryHost::at_rest`), otherwise whether any needs a refresh ([`needs_refresh`]).
 pub(crate) fn surfaces_at_rest(
     root: &dyn Widget,
     doc: &automerge::AutoCommit,
@@ -191,10 +178,9 @@ pub(crate) fn surfaces_at_rest(
     });
     resting.then_some(needed)
 }
-/// Whether what a settled [`surfaces_at_rest`] did not ask again still holds
-/// for every surface it skipped it for: each live root has the owners its
-/// surface registered, and no committed frontier asks for a refresh. A
-/// debug build proves every quiet frame with this.
+/// Whether what a settled [`surfaces_at_rest`] did not ask again still holds for every surface it
+/// skipped it for: each live root has the owners its surface registered, and no committed frontier asks
+/// for a refresh.
 #[cfg(debug_assertions)]
 pub(crate) fn settled_checks_hold(
     root: &dyn Widget,
@@ -315,9 +301,9 @@ pub(crate) fn finish_pending_command(
         }
     });
 }
-/// Hand `status` to every History surface under `root` that can take it
-/// where it already shows ([`super::host::HistoryHost::set_sync_status_in_place`]),
-/// so a status-only change repaints that text instead of rebuilding.
+/// Hand `status` to every History surface under `root` that can take it where it already shows
+/// ([`super::host::HistoryHost::set_sync_status_in_place`]), so a status-only change repaints that text
+/// instead of rebuilding.
 pub(crate) fn set_sync_status_in_place(
     root: &mut dyn Widget,
     status: Option<&crate::widget::WindowStatus>,
@@ -365,10 +351,8 @@ pub(crate) fn refresh(
         }
     });
 }
-/// Run a History door control (the History control in an app's header row)
-/// on the History of the tile that hosts the app `owner` names, as the
-/// window's own History runs it for a window's app. `None` when no tile in
-/// `root` hosts that app with History.
+/// Run a History door control (the History control in an app's header row) on the History of the tile
+/// that hosts the app `owner` names, as the window's own History runs it for a window's app.
 pub(crate) fn invoke_door(
     root: &mut dyn Widget,
     owner: &HistoryOwner,
@@ -383,8 +367,8 @@ pub(crate) fn invoke_door(
     });
     result
 }
-/// Run one History door control on `history` exactly as its own History
-/// control does: resolved against the door this History serves now.
+/// Run one History door control on `history` exactly as its own History control does: resolved against
+/// the door this History serves now.
 pub(crate) fn run_door_control(
     history: &mut dyn host::HistoryChromeApi,
     intent: &tilo_actions::ControlInvocation,
@@ -409,7 +393,6 @@ pub(crate) fn has_review(root: &dyn Widget) -> bool {
     pending
 }
 /// Settled matching owners are checked again immediately at the shared door.
-/// Caller has removed raw maps before any modal replacement.
 pub(crate) fn service_reviews(
     root: &mut dyn Widget,
     state: &mut crate::State,
@@ -434,7 +417,6 @@ pub(crate) unsafe fn move_focus(
     bindings: &BoundNodeMap,
     tree: &TaffyTree<()>,
 ) -> bool {
-    // Capture before borrowing a retained subtree through the mutable visitor.
     let mut captured =
         unsafe { crate::widget::layout::CompositionFocus::capture(current, nodes, bindings) };
     let mut suspended = false;
@@ -495,13 +477,12 @@ pub(crate) unsafe fn restore_focus(
             }
         }
     });
-    // No retained child borrow overlaps raw map access.
     saved.and_then(|focus| unsafe { focus.restore(nodes, bindings, None) })
 }
 
-/// The runner calls this after its remaining exit layout/draw/focus callbacks.
-/// Restoring one surface's focus must not end its custody halfway through the
-/// same return frame, or release any other surface's independent lease.
+/// The runner calls this after its remaining exit layout/draw/focus callbacks. Restoring one surface's
+/// focus must not end its custody halfway through the same return frame, or release any other surface's
+/// independent lease.
 pub(crate) fn finish_returns(root: &mut dyn Widget) {
     crate::history_mode::capability::visit_framework_history_mut(root, &mut |history, live| {
         if history.has_settled_control_return() {

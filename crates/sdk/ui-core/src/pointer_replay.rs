@@ -1,26 +1,8 @@
-//! A still pointer over a rebuilt tree.
-//!
-//! Controls learn that the pointer is over them from its moves. A rebuild
-//! (a worker result, a model refresh) or a relayout can put a fresh or moved
-//! control under a pointer that has not moved since, and that control never
-//! saw it arrive: a press there would be lost, and a release after a
-//! rebuild that happened while the button was held would reach a control
-//! that never saw the press.
-//!
-//! Every host keeps one [`PointerReplay`]. It remembers where the pointer
-//! last moved and is marked unsettled whenever the widgets were rebuilt or
-//! moved. Before the next button press or release it hands back the last
-//! position as a `CursorMoved`, which the host dispatches first, so hover
-//! follows the pointer and a control that moved out from under it is no
-//! longer hovered.
-//!
-//! The release half needs the press too. Every shared control that runs on
-//! a completed click (a button, a row, a disclosure, a copy action) keeps
-//! its press in a `HeldPress`, which records what the control was when it
-//! took the press: a key naming it and where it was. A fresh control with
-//! the same key at the same place accepts the release that ends that press.
-//! The host forgets the press before every press and after every release
-//! ([`PointerReplay::end_press`]), whichever widget it reached.
+//! A still pointer over a rebuilt tree. Controls learn that the pointer is over them from its moves. A
+//! rebuild (a worker result, a model refresh) or a relayout can put a fresh or moved control under a
+//! pointer that has not moved since, and that control never saw it arrive: a press there would be lost,
+//! and a release after a rebuild that happened while the button was held would reach a control that
+//! never saw the press.
 
 use std::cell::RefCell;
 
@@ -28,8 +10,7 @@ use vello::kurbo::Rect;
 use winit::dpi::PhysicalPosition;
 use winit::event::{ElementState, WindowEvent};
 
-/// The pointer's last position over one surface, and whether the widgets
-/// changed under it since.
+/// The pointer's last position over one surface, and whether the widgets changed under it since.
 #[derive(Debug, Default)]
 pub struct PointerReplay {
     last: Option<PhysicalPosition<f64>>,
@@ -37,23 +18,21 @@ pub struct PointerReplay {
 }
 
 impl PointerReplay {
-    /// Whether a pointer rests over the surface with nothing changed under
-    /// it since it moved: only then can a relayout that moves a control
-    /// under it go unnoticed, so only then is the geometry worth comparing.
+    /// Whether a pointer rests over the surface with nothing changed under it since it moved: only then
+    /// can a relayout that moves a control under it go unnoticed, so only then is the geometry worth
+    /// comparing.
     pub fn is_resting(&self) -> bool {
         self.last.is_some() && !self.unsettled
     }
 
-    /// The widgets were rebuilt or moved: a control under the still pointer
-    /// may not know it is there.
+    /// The widgets were rebuilt or moved: a control under the still pointer may not know it is there.
     pub fn mark_unsettled(&mut self) {
         self.unsettled = true;
     }
 
-    /// Observe `event` before the host dispatches it. Returns the move to
-    /// dispatch first when `event` is a pointer button and the widgets
-    /// changed since the pointer last moved. A press starts afresh: a press
-    /// whose release never came (the window lost the pointer) is forgotten.
+    /// Observe `event` before the host dispatches it. Returns the move to dispatch first when `event`
+    /// is a pointer button and the widgets changed since the pointer last moved. A press starts afresh:
+    /// a press whose release never came (the window lost the pointer) is forgotten.
     pub fn before(&mut self, event: &WindowEvent) -> Option<WindowEvent> {
         if matches!(
             event,
@@ -85,8 +64,7 @@ impl PointerReplay {
         }
     }
 
-    /// Whether `event` ends the press, so the host calls
-    /// [`Self::end_press`] once it has dispatched it.
+    /// Whether `event` ends the press, so the host calls [`Self::end_press`] once it has dispatched it.
     pub fn ends_press(event: &WindowEvent) -> bool {
         matches!(
             event,
@@ -97,19 +75,16 @@ impl PointerReplay {
         )
     }
 
-    /// A release was dispatched: the press is over, whether or not a
-    /// control took it.
+    /// A release was dispatched: the press is over, whether or not a control took it.
     pub fn end_press(&mut self) {
         end_press();
     }
 }
 
-/// Every widget's layout box in tree order that a pointer can reach: in a
-/// long scrolled collection only the children near its view
-/// ([`crate::widget::Widget::for_each_child_in_clip`]), so the snapshot
-/// costs what is shown, not what is held. Two snapshots of one unchanged
-/// tree are equal exactly when no widget the pointer can reach moved or
-/// resized.
+/// Every widget's layout box in tree order that a pointer can reach: in a long scrolled collection only
+/// the children near its view ([`crate::widget::Widget::for_each_child_in_clip`]), so the snapshot
+/// costs what is shown, not what is held. Two snapshots of one unchanged tree are equal exactly when no
+/// widget the pointer can reach moved or resized.
 pub(crate) fn widget_geometry(root: &dyn crate::widget::Widget) -> Vec<Rect> {
     fn walk(widget: &dyn crate::widget::Widget, out: &mut Vec<Rect>) {
         out.push(widget.get_rect());
@@ -120,14 +95,11 @@ pub(crate) fn widget_geometry(root: &dyn crate::widget::Widget) -> Vec<Rect> {
     out
 }
 
-/// One target a control can press: `target` tells the control's own
-/// targets apart (`()` for a control that is one target), `key` names it
-/// across a rebuild and `rect` is where it is now.
-///
-/// The key, with the place, is what a rebuilt control must match to
-/// complete a press its predecessor took: an id the app gave the control,
-/// or the content that tells it apart (a row's label). An empty key never
-/// carries a press across a rebuild.
+/// One target a control can press: `target` tells the control's own targets apart (`()` for a control
+/// that is one target), `key` names it across a rebuild and `rect` is where it is now. The key, with
+/// the place, is what a rebuilt control must match to complete a press its predecessor took: an id the
+/// app gave the control, or the content that tells it apart (a row's label). An empty key never carries
+/// a press across a rebuild.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct PressAt<'a, T = ()> {
     pub(crate) target: T,
@@ -151,30 +123,20 @@ impl<'a> PressAt<'a> {
 pub(crate) enum Release<T = ()> {
     /// The control holds no press: the release is not its.
     NotHeld,
-    /// The pointer left the pressed target first: the release ends the
-    /// press and runs nothing.
+    /// The pointer left the pressed target first: the release ends the press and runs nothing.
     Cancelled,
     /// A completed click on this target.
     Click(T),
 }
 
 impl<T> Release<T> {
-    /// Whether the release ended a press this control held, so it is
-    /// consumed.
+    /// Whether the release ended a press this control held, so it is consumed.
     pub(crate) fn ended(&self) -> bool {
         !matches!(self, Self::NotHeld)
     }
 }
 
-/// The press a control took and has not seen released, carried across a
-/// rebuild.
-///
-/// A control keeps one, calls [`Self::press`] when a press lands on one of
-/// its targets and [`Self::release`] on every left-button release. A fresh
-/// control that replaced the one that took the press (a worker result or a
-/// model refresh rebuilt it while the button was held) completes that press
-/// when it has the same key and stands at the same place; one that moved,
-/// or another control, does not.
+/// The press a control took and has not seen released, carried across a rebuild.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct HeldPress<T = ()> {
     held: Option<T>,
@@ -196,10 +158,8 @@ impl<T: Copy + PartialEq> HeldPress<T> {
         self.held.is_some()
     }
 
-    /// A left-button release with the pointer over `over` (`None` when it
-    /// is over none of this control's targets). The press this control
-    /// took, or the one its predecessor took on `over`, ends: a click when
-    /// the pointer is still over the pressed target.
+    /// A left-button release with the pointer over `over` (`None` when it is over none of this
+    /// control's targets).
     pub(crate) fn release(&mut self, over: Option<PressAt<'_, T>>) -> Release<T> {
         let carried = || {
             over.filter(|at| press_continues(at.key, at.rect))
@@ -215,9 +175,8 @@ impl<T: Copy + PartialEq> HeldPress<T> {
         }
     }
 
-    /// The gesture ended without a release this control saw (the pointer
-    /// left the window, the control was disabled): forget the press, here
-    /// and for a control rebuilt in its place.
+    /// The gesture ended without a release this control saw (the pointer left the window, the control
+    /// was disabled): forget the press, here and for a control rebuilt in its place.
     pub(crate) fn cancel(&mut self) {
         if self.held.take().is_some() {
             end_press();
@@ -225,20 +184,19 @@ impl<T: Copy + PartialEq> HeldPress<T> {
     }
 }
 
-/// The control holding the current press: its id and where it was.
 struct Press {
     id: String,
     rect: Rect,
 }
 
 thread_local! {
-    /// Input is dispatched on the thread that owns the widgets, one physical
-    /// pointer at a time, so one slot per thread holds the press.
+    /// Input is dispatched on the thread that owns the widgets, one physical pointer at a time, so one
+    /// slot per thread holds the press.
     static PRESS: RefCell<Option<Press>> = const { RefCell::new(None) };
 }
 
-/// The control `id`, placed at `rect`, took a press. A control with no id
-/// cannot be recognised after a rebuild, so its press is not recorded.
+/// The control `id`, placed at `rect`, took a press. A control with no id cannot be recognised after a
+/// rebuild, so its press is not recorded.
 fn record_press(id: &str, rect: Rect) {
     PRESS.with(|press| {
         *press.borrow_mut() = (!id.is_empty()).then(|| Press {
@@ -248,8 +206,8 @@ fn record_press(id: &str, rect: Rect) {
     });
 }
 
-/// Whether a control `id` placed at `rect` is the one that took the current
-/// press, rebuilt since: the same id at the same place.
+/// Whether a control `id` placed at `rect` is the one that took the current press, rebuilt since: the
+/// same id at the same place.
 fn press_continues(id: &str, rect: Rect) -> bool {
     PRESS.with(|press| {
         press
@@ -259,7 +217,6 @@ fn press_continues(id: &str, rect: Rect) -> bool {
     })
 }
 
-/// The current press ended where a control took it.
 fn end_press() {
     PRESS.with(|press| press.borrow_mut().take());
 }
@@ -349,21 +306,18 @@ mod tests {
     type Staged = Rc<RefCell<Option<(Box<dyn Widget>, f64)>>>;
     type Clicks = Rc<RefCell<Vec<&'static str>>>;
 
-    /// Shows one child and swaps in the staged replacement on its next
-    /// structural poll, as an app rebuilding its content from a worker
-    /// result does. The replacement sits `offset` lower.
+    /// Shows one child and swaps in the staged replacement on its next structural poll, as an app
+    /// rebuilding its content from a worker result does.
     struct Rebuilds {
         child: Box<dyn Widget>,
         staged: Staged,
         offset: f64,
         replaced: bool,
         rect: Rect,
-        /// Where the child was last placed, for a test with no harness.
         placed: Rc<Cell<Rect>>,
     }
 
     impl Rebuilds {
-        /// The first "Copy link" button, rebuilt from `staged`.
         fn new(clicks: &Clicks, staged: &Staged) -> (Self, Rc<Cell<Rect>>) {
             let placed = Rc::new(Cell::new(Rect::ZERO));
             let root = Self {
@@ -433,7 +387,6 @@ mod tests {
         }
     }
 
-    /// A "Copy link" button that logs `generation` when it is clicked.
     fn copy_link(clicks: &Clicks, generation: &'static str) -> Box<dyn Widget> {
         let clicks = Rc::clone(clicks);
         Box::new(
@@ -442,8 +395,6 @@ mod tests {
         )
     }
 
-    /// A harness showing the first "Copy link" button, the pointer resting
-    /// on its centre.
     fn hovered() -> (FrameHarness, Staged, Clicks) {
         let clicks = Clicks::default();
         let staged = Staged::default();
@@ -457,8 +408,8 @@ mod tests {
         (harness, staged, clicks)
     }
 
-    /// Stage a fresh, equivalent button `offset` below the first and run
-    /// the frame that swaps it in, as a worker result landing does.
+    /// Stage a fresh, equivalent button `offset` below the first and run the frame that swaps it in, as
+    /// a worker result landing does.
     fn rebuild(harness: &mut FrameHarness, staged: &Staged, clicks: &Clicks, offset: f64) {
         *staged.borrow_mut() = Some((copy_link(clicks, "rebuilt"), offset));
         harness.relayout();
@@ -483,7 +434,6 @@ mod tests {
         rebuild(&mut harness, &staged, &clicks, 0.0);
         harness.send(&button(ElementState::Released));
         assert_eq!(*clicks.borrow(), vec!["rebuilt"]);
-        // The press is over: a later bare release clicks nothing.
         rebuild(&mut harness, &staged, &clicks, 0.0);
         harness.send(&button(ElementState::Released));
         assert_eq!(*clicks.borrow(), vec!["rebuilt"]);
@@ -507,8 +457,8 @@ mod tests {
         );
     }
 
-    /// The live host and an embedding one: the App replays the pointer on
-    /// its own surface input, not only the headless driver.
+    /// The live host and an embedding one: the App replays the pointer on its own surface input, not
+    /// only the headless driver.
     #[cfg(feature = "native")]
     #[test]
     fn an_app_surface_clicks_a_control_rebuilt_under_a_still_pointer() {

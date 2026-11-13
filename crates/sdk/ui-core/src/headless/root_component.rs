@@ -1,18 +1,15 @@
-//! What stands in a harness's place as its root: the component a window shows, mounted over the
-//! root it replaced.
-//!
-//! A component asks to open another record (`component_lifecycle`), and a host builds the
+//! What stands in a harness's place as its root: the component a window shows, mounted over the root it
+//! replaced. A component asks to open another record (`component_lifecycle`), and a host builds the
 //! application it stood a window in for: both replace the root the harness shows with a component,
-//! keeping the viewport, theme and fonts the frame was set up with, and closing whatever the root
-//! it replaces owned.
+//! keeping the viewport, theme and fonts the frame was set up with, and closing whatever the root it
+//! replaces owned.
 
 use crate::Widget;
 use crate::headless::{ComponentRunnerWakeState, FrameHarness};
 
 /// A component mounted ready to stand in place of the root a harness shows
-/// ([`FrameHarness::take_component_root`]): nothing of the root it replaces is
-/// closed until it is taken, so a host that fails to mount it keeps what it
-/// showed.
+/// ([`FrameHarness::take_component_root`]): nothing of the root it replaces is closed until it is
+/// taken, so a host that fails to mount it keeps what it showed.
 struct MountedComponent {
     root: Box<dyn Widget>,
     wake: ComponentRunnerWakeState,
@@ -41,20 +38,15 @@ impl FrameHarness {
                 return;
             }
         };
-        // The asking component answers the operation that asked before it
-        // closes.
         outcome.answer(Ok(()));
         self.poll_control_invocations();
         self.take_component_root(mounted);
     }
 
-    /// Show `component` as the root in place of what this harness shows, its wakes reaching
-    /// `notify`: a host that stood a window in for its application until the record it opens came
-    /// builds the application here, keeping the viewport, theme and fonts. What the root it
-    /// replaces owned closes.
-    ///
-    /// # Errors
-    /// Refuses a component that cannot mount, keeping the root it showed.
+    /// Show `component` as the root in place of what this harness shows, its wakes reaching `notify`: a
+    /// host that stood a window in for its application until the record it opens came builds the
+    /// application here, keeping the viewport, theme and fonts. # Errors Refuses a component that
+    /// cannot mount, keeping the root it showed.
     pub fn show_component(
         &mut self,
         component: crate::application::AppComponent,
@@ -92,7 +84,6 @@ impl FrameHarness {
         })
     }
 
-    /// Show `mounted` as the root, closing what the root it replaces owned.
     fn take_component_root(&mut self, mounted: MountedComponent) {
         let MountedComponent {
             root,

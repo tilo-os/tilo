@@ -26,8 +26,7 @@ impl Observer {
         Some(self.worker_id)
     }
 
-    /// Emitted only under the native timing gate. The caller brackets complete
-    /// row construction and this emission, reporting that cost one frame later.
+    /// Emitted only under the native timing gate.
     pub(crate) fn log_native_handoff(&self, row: serde_json::Value) {
         let Some(row) = handoff_row(row, self.worker_id()) else {
             eprintln!("tilo-display-error handoff row is not an object");

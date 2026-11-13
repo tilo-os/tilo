@@ -1,7 +1,4 @@
-//! Original checked activation: actual Scene ink versus final focus and IME.
-//! TEST-only. No production ordering or presentation-credit contract is changed.
-//! The marker is real probe Widget.draw ink in the encoded Scene, not raster
-//! pixels, a screenshot, physical display presentation, or a GPU receipt.
+//! Original checked activation: actual Scene ink versus final focus and IME. TEST-only.
 use super::*;
 use crate::application::{AppComponent, HostContext, LaunchTarget, RestoreInput};
 use crate::application_test_support::{self as probe, ProbeHost};
@@ -50,7 +47,6 @@ fn marker(id: u64, focused: bool) -> vello::peniko::Color {
         (false, false) => vello::peniko::Color::from_rgb8(0x14, 0x19, 0xd2),
     }
 }
-// Draw data offsets come from the scene stream, not the separate info buffer.
 fn scene_has(scene: &Scene, color: vello::peniko::Color) -> bool {
     use vello_encoding::{DrawMonoid, DrawTag, Monoid};
     let expected = vello_encoding::DrawColor::from(color).rgba;
@@ -377,8 +373,6 @@ impl ViewState for Pair {
                 .view_restores
                 .set(self.tail.view_restores.get() + 1);
             self.tail.events.borrow_mut().push("restore_view");
-            // Current owned reference through original BoundAppWidget.set_focus
-            // admission; no saved raw alias, document loan, or forced map.
             self.column.children_mut()[0].set_focus(true);
         }
     }
@@ -545,7 +539,6 @@ fn assert_consistent_return(f: &mut Fixture, instance: u64) {
             "original restoration really precedes the last actual draw: {events:?}"
         );
     }
-    // Sample all live observations BEFORE cleanup/lifetime revocation.
     let drawn_focus = f.old.draw_focus.get();
     let drawn_ime = f.old.draw_ime.get();
     f.close();
@@ -990,8 +983,6 @@ fn original_history_return_completes_with_activation_intent_and_matching_live_in
         .unwrap();
     assert!(f.frame.history.as_ref().unwrap().captures_input());
     assert!(f.frame.check_app_activation().is_err());
-    // The actual History button's production request is queued separately
-    // from layout. Its original return now runs WITH activation intent.
     f.frame.history.as_ref().unwrap().request_close();
     f.frame.activate_app_focus(OLD);
     assert!(!f.frame.history.as_ref().unwrap().captures_input());

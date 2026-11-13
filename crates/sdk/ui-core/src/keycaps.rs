@@ -1,20 +1,8 @@
-//! The words and symbols printed on the keys of the active keyboard layout.
-//!
-//! A shortcut is shown the way the keyboard under the person's hands spells
-//! it, not in the language of the interface: a German using a US layout reads
-//! `Ctrl`, the same German on a German layout reads `Strg`. Stored chords and
-//! matching stay canonical and English (`Super`, `Ctrl`, `Alt`, `Shift`,
-//! `pageup`); only what is painted changes.
-//!
-//! The host publishes the layout the keyboard is typing with through
-//! [`set_active`] whenever it switches, and every label drawn afterwards reads
-//! it through [`active`], so an open shortcut guide follows a layout switch
-//! on its next frame.
-//!
-//! The Super key is always called `Super` on PC keyboards: the key carries a
-//! vendor logo rather than a word, and `Super` is the name the desktop's
-//! documentation and onboarding use for it. Apple keyboards and XKB's Mac
-//! layout variants use the symbols printed on Apple keycaps (⌘ ⌥ ⌃ ⇧).
+//! The words and symbols printed on the keys of the active keyboard layout. A shortcut is shown the way
+//! the keyboard under the person's hands spells it, not in the language of the interface: a German
+//! using a US layout reads `Ctrl`, the same German on a German layout reads `Strg`. The Super key is
+//! always called `Super` on PC keyboards: the key carries a vendor logo rather than a word, and `Super`
+//! is the name the desktop's documentation and onboarding use for it.
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU8, Ordering};
@@ -23,10 +11,8 @@ use tilo_sort::CompactSort as _;
 use crate::input::KeyboardModifier;
 use crate::interaction::KeyboardFamily;
 
-/// The legend language of a keyboard layout: which words are printed on its
-/// modifier and navigation keys. Layouts whose keyboards carry English
-/// legends (Dutch, Portuguese, Nordic, Swiss, Japanese) differ from US
-/// English only in naming the right Alt key `Alt Gr`.
+/// The legend language of a keyboard layout: which words are printed on its modifier and navigation
+/// keys.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum KeycapLanguage {
     #[default]
@@ -59,7 +45,6 @@ impl KeycapLanguage {
     ];
 
     /// The legend language of XKB layout `layout` (`de`, `fr`, `ch`, …).
-    /// Layouts without a table of their own keep US English legends.
     pub fn from_xkb_layout(layout: &str) -> Self {
         match layout.trim().to_ascii_lowercase().as_str() {
             "de" | "at" => Self::German,
@@ -100,8 +85,7 @@ impl KeycapLanguage {
     }
 }
 
-/// The legends of one keyboard: its layout's language and whether it is an
-/// Apple keyboard.
+/// The legends of one keyboard: its layout's language and whether it is an Apple keyboard.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Keycaps {
     pub language: KeycapLanguage,
@@ -121,10 +105,7 @@ impl Keycaps {
         family: KeyboardFamily::Pc,
     };
 
-    /// The legends of XKB layout `layout` with variant `variant` (empty for
-    /// the base layout). Mac variants (`mac`, `de_mac`, `mac_nodeadkeys`, …)
-    /// describe Apple keyboards.
-    /// A keymap of several groups (`de,us`) types with its first: its legends are that one's.
+    /// The legends of XKB layout `layout` with variant `variant` (empty for the base layout).
     pub fn from_xkb(layout: &str, variant: &str) -> Self {
         let first = |names: &str| names.split(',').next().unwrap_or_default().to_owned();
         let (layout, variant) = (first(layout), first(variant));
@@ -139,8 +120,7 @@ impl Keycaps {
         }
     }
 
-    /// The same layout on a keyboard of `family`. An Apple keyboard stays
-    /// Apple: its keycaps carry symbols whatever the layout says.
+    /// The same layout on a keyboard of `family`.
     #[must_use]
     pub fn on_family(self, family: KeyboardFamily) -> Self {
         if family == KeyboardFamily::Apple {
@@ -179,8 +159,7 @@ impl Keycaps {
         }
     }
 
-    /// Format native keysym metadata without composing text or applying Ctrl
-    /// transformations. Shared by static previews and the focused-seat map.
+    /// Format native keysym metadata without composing text or applying Ctrl transformations.
     pub fn native_symbol(self, name: &str, text: &str) -> String {
         if !text.is_empty() && !text.chars().any(char::is_control) {
             return text.to_owned();
@@ -203,10 +182,9 @@ impl Keycaps {
         }
     }
 
-    /// What is printed on the key with canonical name `name` (`pageup`,
-    /// `escape`, `f4`, `k`): a single character upper-cased (unless its
-    /// capital is more than one letter, like `ß`), a function key
-    /// as `F4`, and a name this table does not know as given.
+    /// What is printed on the key with canonical name `name` (`pageup`, `escape`, `f4`, `k`): a single
+    /// character upper-cased (unless its capital is more than one letter, like `ß`), a function key as
+    /// `F4`, and a name this table does not know as given.
     pub fn key(self, name: &str) -> String {
         let lower = name.trim().to_ascii_lowercase();
         let canonical = match lower.as_str() {
@@ -256,10 +234,8 @@ impl Keycaps {
         }
     }
 
-    /// A canonical chord (`["Super", "Shift"]`, `"s"`) as the keyboard spells
-    /// it. PC legends are joined with `+`; Apple symbols are written
-    /// together, as Apple does (`⌘⇧S`). Modifiers are always listed in the
-    /// same order, Super first, whatever order they were given in.
+    /// A canonical chord (`["Super", "Shift"]`, `"s"`) as the keyboard spells it. Modifiers are always
+    /// listed in the same order, Super first, whatever order they were given in.
     pub fn chord<'a>(self, modifiers: impl IntoIterator<Item = &'a str>, key: &str) -> String {
         let separator = if self.family == KeyboardFamily::Apple {
             ""
@@ -269,8 +245,8 @@ impl Keycaps {
         self.chord_keys(modifiers, key).join(separator)
     }
 
-    /// The keys of a chord as this keyboard spells them, modifiers first in
-    /// the order the platform names them: what drawn keycaps show.
+    /// The keys of a chord as this keyboard spells them, modifiers first in the order the platform
+    /// names them: what drawn keycaps show.
     pub fn chord_keys<'a>(
         self,
         modifiers: impl IntoIterator<Item = &'a str>,
@@ -288,9 +264,8 @@ impl Keycaps {
             .collect()
     }
 
-    /// One token of a free-text chord (`Super`, `Ctrl`, `pageup`, `K`) as the
-    /// keyboard spells it: a canonical modifier gets its legend, anything
-    /// else is a key.
+    /// One token of a free-text chord (`Super`, `Ctrl`, `pageup`, `K`) as the keyboard spells it: a
+    /// canonical modifier gets its legend, anything else is a key.
     pub fn token(self, token: &str) -> String {
         canonical_modifier(token).map_or_else(
             || self.key(token),
@@ -350,8 +325,7 @@ fn is_number(text: &str) -> bool {
     !text.is_empty() && text.chars().all(|c| c.is_ascii_digit())
 }
 
-/// The canonical modifier a chord token names, in any of the spellings the
-/// chord parsers accept.
+/// The canonical modifier a chord token names, in any of the spellings the chord parsers accept.
 pub(crate) fn canonical_modifier(token: &str) -> Option<KeyboardModifier> {
     Some(match token.trim().to_ascii_lowercase().as_str() {
         "super" | "meta" | "cmd" | "command" | "logo" => KeyboardModifier::System,
@@ -409,8 +383,8 @@ fn english_key(name: &str) -> Option<&'static str> {
     })
 }
 
-/// Keys whose legend is an arrow on every keyboard that translates its
-/// legends: there is no word to translate.
+/// Keys whose legend is an arrow on every keyboard that translates its legends: there is no word to
+/// translate.
 fn arrow_key(name: &str) -> Option<&'static str> {
     Some(match name {
         "left" => "←",
@@ -525,8 +499,8 @@ fn apple_key(name: &str) -> Option<&'static str> {
     })
 }
 
-/// The punctuation a US keyboard types with Shift, by the mark the same key types alone: a chord
-/// names a key by its unshifted mark, so `Shift+/` is the key that types `?`.
+/// The punctuation a US keyboard types with Shift, by the mark the same key types alone: a chord names
+/// a key by its unshifted mark, so `Shift+/` is the key that types `?`.
 const US_SHIFTED: [(char, char); 21] = [
     ('/', '?'),
     (';', ':'),
@@ -559,9 +533,8 @@ pub fn us_unshifted(shifted: char) -> Option<char> {
         .find_map(|(alone, with_shift)| (*with_shift == shifted).then_some(*alone))
 }
 
-/// Where the active layout types a mark (`/`, `=`, `[`): the legend of the key that carries it,
-/// as that key types alone (`7`, `0`, `8` on a German keyboard), and whether Shift or `AltGr` add
-/// the mark.
+/// Where the active layout types a mark (`/`, `=`, `[`): the legend of the key that carries it, as that
+/// key types alone (`7`, `0`, `8` on a German keyboard), and whether Shift or `AltGr` add the mark.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TypedMark {
     pub key: String,
@@ -579,12 +552,11 @@ pub fn set_typed_marks(marks: BTreeMap<char, TypedMark>) {
         .unwrap_or_else(std::sync::PoisonError::into_inner) = marks;
 }
 
-/// A canonical chord (`["Super"]`, `"/"`) as the keys the active layout presses for it, as
-/// canonical tokens: a mark the layout types with Shift or `AltGr` is its key with them
-/// (`Super+Shift+7` for `Super+/` on a German keyboard), and `Shift` with a mark is the mark a US
-/// keyboard types so (`Super+Shift+/` is the key that types `?`). The desktop matches presses the
-/// same way: a mark the layout typed with Shift is named without it. Letters, named keys and a
-/// layout that never published its marks keep the chord as it is.
+/// A canonical chord (`["Super"]`, `"/"`) as the keys the active layout presses for it, as canonical
+/// tokens: a mark the layout types with Shift or `AltGr` is its key with them (`Super+Shift+7` for
+/// `Super+/` on a German keyboard), and `Shift` with a mark is the mark a US keyboard types so
+/// (`Super+Shift+/` is the key that types `?`). Letters, named keys and a layout that never published
+/// its marks keep the chord as it is.
 #[must_use]
 pub fn as_typed<'a>(
     modifiers: impl IntoIterator<Item = &'a str>,
@@ -625,8 +597,6 @@ pub fn as_typed<'a>(
 static ACTIVE: AtomicU8 = AtomicU8::new(0);
 
 thread_local! {
-    /// The layout [`scoped`] put in place on this thread, read ahead of the
-    /// process-wide one.
     static SCOPED: std::cell::Cell<Option<Keycaps>> = const { std::cell::Cell::new(None) };
 }
 
@@ -642,12 +612,8 @@ pub fn set_active(keycaps: Keycaps) {
     ACTIVE.store(keycaps.code(), Ordering::Relaxed);
 }
 
-/// Read `keycaps` as the active layout on this thread only, until the
-/// returned guard drops; the previous scope comes back then, even when the
-/// holder panics. For code that renders labels under a given layout (a test
-/// asking for German keycaps) without changing what every other thread
-/// reads: [`set_active`] is process-wide, so a test using it would leak its
-/// layout into every test running beside it.
+/// Read `keycaps` as the active layout on this thread only, until the returned guard drops; the
+/// previous scope comes back then, even when the holder panics.
 #[must_use = "the layout applies only while the guard lives"]
 pub fn scoped(keycaps: Keycaps) -> ScopedKeycaps {
     ScopedKeycaps {

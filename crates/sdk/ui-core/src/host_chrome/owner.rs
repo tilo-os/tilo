@@ -7,9 +7,8 @@ use crate::platform::{Platform, PlatformConventions};
 pub(crate) enum HostChrome {
     /// The Tilo shell owns History (Super+H) and Search; the app shows none.
     TiloShell,
-    /// The host's own chrome: the macOS menu bar and title bar, the Windows
-    /// menu bar and Jump List, or the header bar a Linux app draws where the
-    /// desktop leaves decorations to it.
+    /// The host's own chrome: the macOS menu bar and title bar, the Windows menu bar and Jump List, or
+    /// the header bar a Linux app draws where the desktop leaves decorations to it.
     Native,
     /// No native backend yet: buttons inside the window.
     InWindow,

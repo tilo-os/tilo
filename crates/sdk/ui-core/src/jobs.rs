@@ -40,8 +40,7 @@ mod surface;
 #[cfg(test)]
 mod tests;
 
-/// Who a job belongs to, as the surfaces name it: the same owner an
-/// attention row carries.
+/// Who a job belongs to, as the surfaces name it: the same owner an attention row carries.
 pub use crate::attention::Owner;
 pub use record::{
     Job, JobId, Outcome, Progress, Running, Spec, Subject, Summary, Unit, clear, dismiss, finished,
@@ -52,9 +51,6 @@ pub use surface::{Band, Press, Presses, apply, band, pane};
 use crate::wake::WakeHandle;
 
 /// The chord that opens the Jobs surface, wherever the person is.
-///
-/// A host resolves it ([`take_opening`]) and shows the surface the same way
-/// it shows [`crate::attention`]'s.
 pub const CHORD: &str = "ctrl+shift+j";
 
 thread_local! {
@@ -72,18 +68,15 @@ pub fn take_opening() -> bool {
     OPENING.with(|opening| opening.replace(false))
 }
 
-/// Call `wake` whenever a job starts, reports or ends, until the returned
-/// guard drops: a surface that shows jobs redraws then, rather than on a
-/// timer.
+/// Call `wake` whenever a job starts, reports or ends, until the returned guard drops: a surface that
+/// shows jobs redraws then, rather than on a timer.
 #[must_use = "the surface stops hearing about jobs when the guard drops"]
 pub fn watch(wake: WakeHandle) -> Watch {
     record::watch(wake)
 }
 
-/// One test at a time: the registry is the process's, as the real one is,
-/// so two tests running at once would see each other's jobs. A failed job
-/// publishes to [`crate::attention`], so its tests hold this same lock: the
-/// stack and the ledger are one shared state with the jobs.
+/// One test at a time: the registry is the process's, as the real one is, so two tests running at once
+/// would see each other's jobs.
 #[cfg(test)]
 pub(crate) fn test_lock() -> std::sync::MutexGuard<'static, ()> {
     use crate::lock::MutexRecover as _;

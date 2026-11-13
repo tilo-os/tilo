@@ -1,24 +1,6 @@
-//! The painter sets the toolkit ships: Default, Glass and Block
-//! (`docs/architecture/theming.md`, "Part painters"). They implement the
-//! same [`PartPainter`] a theme's own set does and draw through the same
+//! The painter sets the toolkit ships: Default, Glass and Block (`docs/architecture/theming.md`, "Part
+//! painters"). They implement the same [`PartPainter`] a theme's own set does and draw through the same
 //! host; a theme document names them as it would any other set.
-//!
-//! * **Default** is the design language's look: opaque grounds and faces,
-//!   or, given a `blur` or a `tint`, a body that shows the blurred backdrop
-//!   under its ground at that tint, and a rest control face that lets the
-//!   window ground through at it.
-//! * **Glass** is Default with light on it: the backdrop bent at the rim
-//!   (`refraction`), a sheen across the upper body (`specular`) and a lit
-//!   rim (`edge_highlight`).
-//! * **Block** is flat colour, square to the border: no translucency, no
-//!   light, no hairline of its own.
-//! * **Liquid** is a lens: what lies below bent along the rounded edge as
-//!   a convex lens bends it (`refraction` across a `band`), straight in the
-//!   flat middle, optionally softened (`blur`) and fringed (`dispersion`),
-//!   with a thin specular rim lit from `light_angle` (`edge_highlight`).
-//!
-//! Each draws the four surface parts (window ground, floating panel, bar
-//! body and control face) and leaves the rest to the toolkit.
 
 use std::sync::{Arc, LazyLock};
 
@@ -47,8 +29,7 @@ pub const LIQUID: &str = "liquid";
 pub const CELL_ADMITTED: std::ops::RangeInclusive<f32> = 1.0..=64.0;
 /// The cell band the Pixelated set is built at.
 pub const CELL_USABLE: std::ops::RangeInclusive<f32> = 2.0..=32.0;
-/// Tint band for the Pixelated and Shader sets: the ground's opacity over
-/// what they sample. Any, as for Default; legibility is the band's.
+/// Tint band for the Pixelated and Shader sets: the ground's opacity over what they sample.
 pub const COVER_ADMITTED: std::ops::RangeInclusive<f32> = 0.0..=1.0;
 
 /// The Shader set's `scale` band: a cell or pattern size, logical pixels.
@@ -66,19 +47,16 @@ pub const TINT_ADMITTED: std::ops::RangeInclusive<f32> = 0.0..=1.0;
 pub const SATURATION_ADMITTED: std::ops::RangeInclusive<f32> = 0.0..=2.0;
 /// Refraction band, logical pixels of displacement at the rim.
 pub const REFRACTION_ADMITTED: std::ops::RangeInclusive<f32> = 0.0..=32.0;
-/// Edge highlight and specular band: past half they read as a second
-/// surface, not light on this one.
+/// Edge highlight and specular band: past half they read as a second surface, not light on this one.
 pub const LIGHT_ADMITTED: std::ops::RangeInclusive<f32> = 0.0..=0.5;
-/// The Liquid set's `band`: how far in from the rim the bend reaches,
-/// logical pixels.
+/// The Liquid set's `band`: how far in from the rim the bend reaches, logical pixels.
 pub const BAND_ADMITTED: std::ops::RangeInclusive<f32> = 0.0..=64.0;
 /// The band a theme is built at: past 48 a bar or a button is all rim.
 pub const BAND_USABLE: std::ops::RangeInclusive<f32> = 0.0..=48.0;
-/// The Liquid set's `light_angle`: the direction the light comes from,
-/// degrees counter-clockwise from the right (90 from above).
+/// The Liquid set's `light_angle`: the direction the light comes from, degrees counter-clockwise from
+/// the right (90 from above).
 pub const LIGHT_ANGLE_ADMITTED: std::ops::RangeInclusive<f32> = 0.0..=360.0;
-/// The Liquid set's `dispersion`: red and blue set apart by up to this
-/// fraction of the bend. Past half the fringe is a rainbow, not glass.
+/// The Liquid set's `dispersion`: red and blue set apart by up to this fraction of the bend.
 pub const DISPERSION_ADMITTED: std::ops::RangeInclusive<f32> = 0.0..=0.5;
 
 static DEFAULT_SET: LazyLock<PainterSet> =
@@ -154,7 +132,6 @@ struct Light {
     refraction: f32,
     edge_highlight: f32,
     specular: f32,
-    /// The light the surface catches, from the theme's tokens.
     catch: Color,
 }
 
@@ -177,9 +154,8 @@ impl Stock {
     }
 }
 
-/// Whether the document gave the role a blur, a tint or a saturation: a
-/// body that lets what is below it through
-/// (`crate::tokens::Finish::translucent`).
+/// Whether the document gave the role a blur, a tint or a saturation: a body that lets what is below it
+/// through (`crate::tokens::Finish::translucent`).
 fn translucent(tokens: &PartTokens) -> bool {
     tokens
         .params
@@ -208,8 +184,6 @@ impl PartPainter for Stock {
                 // chrome and bars blur what lies below.
                 let sampled = tokens.backdrop && part != Part::WindowGround;
                 if sampled && translucent(tokens) && blur > 0.0 {
-                    // The backdrop, the sheen on it, held in the band by the
-                    // toolkit; the ground at its tint; the rim over all.
                     scene.fill(
                         path.clone(),
                         Brush::Backdrop {
@@ -272,7 +246,6 @@ impl PartPainter for Stock {
     }
 }
 
-/// Block: flat colour, nothing else.
 struct Block;
 
 impl PartPainter for Block {
@@ -297,15 +270,10 @@ impl PartPainter for Block {
     }
 }
 
-/// Pixelated: what lies below the part, sampled at a coarse cell so the
-/// surface shows it as pixels, and the cell grid itself drawn over the body
-/// so the surface reads as pixels even where nothing below it varies: each
-/// cell its ground at `cover`, every `cell`th line a shade off it (a dither
-/// of the surface's own fill towards its ink at `grid`). A window, a panel
-/// and a bar show the backdrop through the cell grid; where there is no
-/// backdrop pass (a window's own ground, a panel outside a recording) the
-/// part is its fill and the grid is what shows, and a control face is its
-/// fill with the grid on it.
+/// Pixelated: what lies below the part, sampled at a coarse cell so the surface shows it as pixels, and
+/// the cell grid itself drawn over the body so the surface reads as pixels even where nothing below it
+/// varies: each cell its ground at `cover`, every `cell`th line a shade off it (a dither of the
+/// surface's own fill towards its ink at `grid`).
 struct Pixelated;
 
 impl PartPainter for Pixelated {
@@ -378,22 +346,20 @@ impl PartPainter for Pixelated {
     }
 }
 
-/// A shade a document may state for a dither's strength: the cells and grid
-/// marks of the Pixelated set, and the pattern of the Shader set. Past half
-/// the dither reads as a texture of its own, not as the surface's tone.
+/// A shade a document may state for a dither's strength: the cells and grid marks of the Pixelated set,
+/// and the pattern of the Shader set.
 pub const DITHER_ADMITTED: std::ops::RangeInclusive<f32> = 0.0..=0.5;
 
-/// The 4 by 4 Bayer matrix: the order in which a cell grid's texels turn
-/// over as the dither deepens (`crate::part_paint::builtin::dither`).
+/// The 4 by 4 Bayer matrix: the order in which a cell grid's texels turn over as the dither deepens
+/// (`crate::part_paint::builtin::dither`).
 const BAYER: [u8; 16] = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5];
 
 /// One tile's bytes: 16 RGBA texels.
 const TILE_BYTES: usize = 64;
 
-/// A 4 by 4 dither tile between `from` and `to`, `amount` (0 to 1) of whose
-/// texels are `to`, turned over in Bayer order so the tone is even and
-/// crisp at any scale. Drawn as a [`Brush::Pattern`] at the cell's side, its
-/// texels are the pixels.
+/// A 4 by 4 dither tile between `from` and `to`, `amount` (0 to 1) of whose texels are `to`, turned
+/// over in Bayer order so the tone is even and crisp at any scale. Drawn as a [`Brush::Pattern`] at the
+/// cell's side, its texels are the pixels.
 fn dither(from: Color, to: Color, amount: f32) -> super::PartImage {
     let from = from.to_rgba8();
     let to = to.to_rgba8();
@@ -413,10 +379,8 @@ fn dither(from: Color, to: Color, amount: f32) -> super::PartImage {
     }
 }
 
-/// The pixel cells a Pixelated body shows over its fill: a dither tile
-/// spanning `cell` logical pixels per texel, from `fill` towards `ink` by
-/// `strength`, clipped to the body's rounded outline. Nothing at `0` or on
-/// a body too small to hold a cell.
+/// The pixel cells a Pixelated body shows over its fill: a dither tile spanning `cell` logical pixels
+/// per texel, from `fill` towards `ink` by `strength`, clipped to the body's rounded outline.
 fn cell_grid(body: &RoundedRect, fill: Color, ink: Color, cell: f32, strength: f32) -> Vec<Op> {
     let rect = body.rect();
     if strength <= 0.0 || rect.width() < f64::from(cell) || rect.height() < f64::from(cell) {
@@ -439,13 +403,8 @@ fn cell_grid(body: &RoundedRect, fill: Color, ink: Color, cell: f32, strength: f
     ops
 }
 
-/// Shader: the theme's own WGSL fragment over the fixed input set
-/// (`crate::tokens::shader`), evaluated once per settled frame.
-///
-/// The set draws every part it is given as one [`Brush::Shader`] over the
-/// part's body. The toolkit evaluates it into an image the first time it is
-/// drawn and replays that image until the part's size, state or tokens
-/// change, so an idle surface draws no frame at all.
+/// Shader: the theme's own WGSL fragment over the fixed input set (`crate::tokens::shader`), evaluated
+/// once per settled frame.
 struct Shader;
 
 impl PartPainter for Shader {
@@ -474,9 +433,8 @@ impl PartPainter for Shader {
         Some(PaintedPart::new(scene))
     }
 
-    /// The four numbers a shader reads as `params.xyzw`
-    /// (`crate::tokens::shader::FINISH_PARAMS`), each with the value it
-    /// has when a theme states none.
+    /// The four numbers a shader reads as `params.xyzw` (`crate::tokens::shader::FINISH_PARAMS`), each
+    /// with the value it has when a theme states none.
     fn params(&self) -> Vec<ParamSpec> {
         let [tint, saturation, scale, phase] = crate::tokens::shader::FINISH_PARAMS;
         vec![
@@ -488,21 +446,11 @@ impl PartPainter for Shader {
     }
 }
 
-/// Liquid: a lens of glass over what lies below. A window, a panel and a
-/// bar that show the backdrop show it bent along their rounded edge as a
-/// convex lens bends it: within `band` of the rim each pixel shows what
-/// lies up to `refraction` further in along the outline's normal (all of it
-/// at the rim, easing to none at the band's inner side), red and blue set
-/// apart by `dispersion`; the flat middle shows what lies below straight,
-/// softened by `blur` (none by default). A window's ground is glass too:
-/// what lies below a window shows through it the same way. The bend is the
-/// backdrop pass's
-/// (`crate::backdrop`), evaluated with the blur, so a settled surface draws
-/// nothing new. The ground lies over it at `tint`, and every body and rest
-/// face carries a thin specular rim lit from `light_angle`: at
-/// `edge_highlight` where it faces the light, faintly on the far side where
-/// light leaves the glass. Where there is no backdrop pass the part is its
-/// fill under the rim.
+/// Liquid: a lens of glass over what lies below. A window, a panel and a bar that show the backdrop
+/// show it bent along their rounded edge as a convex lens bends it: within `band` of the rim each pixel
+/// shows what lies up to `refraction` further in along the outline's normal (all of it at the rim,
+/// easing to none at the band's inner side), red and blue set apart by `dispersion`; the flat middle
+/// shows what lies below straight, softened by `blur` (none by default).
 struct Liquid;
 
 impl PartPainter for Liquid {
@@ -563,8 +511,8 @@ impl PartPainter for Liquid {
         Some(PaintedPart::new(scene))
     }
 
-    /// `tint` is required, so every Liquid role states it and reads as
-    /// translucent to the legibility audit; the rest have stock values.
+    /// `tint` is required, so every Liquid role states it and reads as translucent to the legibility
+    /// audit; the rest have stock values.
     fn params(&self) -> Vec<ParamSpec> {
         vec![
             ParamSpec::new("tint", None, TINT_ADMITTED),
@@ -578,8 +526,7 @@ impl PartPainter for Liquid {
     }
 }
 
-/// The lens a Liquid body asks the backdrop pass for. A stated band of `0`
-/// is a band too thin to bend anything, not the lens's own default.
+/// The lens a Liquid body asks the backdrop pass for.
 fn liquid_lens(tokens: &PartTokens) -> Lens {
     Lens {
         refraction: tokens.param("refraction", 12.0),
@@ -589,32 +536,27 @@ fn liquid_lens(tokens: &PartTokens) -> Lens {
     }
 }
 
-/// A thin bright edge just inside a body's outline, lit from one side:
-/// each stretch of the rim is as bright as its outward normal faces the
-/// light ([`rim_light`]).
+/// A thin bright edge just inside a body's outline, lit from one side: each stretch of the rim is as
+/// bright as its outward normal faces the light ([`rim_light`]).
 #[derive(Clone, Copy)]
 struct SpecularRim {
-    /// Opacity of the light where the rim faces it squarely.
     strength: f32,
-    /// The direction the light comes from, degrees counter-clockwise from
-    /// the right (90 from above).
+    /// The direction the light comes from, degrees counter-clockwise from the right (90 from above).
     light_angle: f32,
-    /// The light the surface catches, from the theme's tokens.
     catch: Color,
 }
 
-/// The rim's width, logical pixels: one and a half, so it reads as an edge
-/// catching light at any scale and never as a border.
+/// The rim's width, logical pixels: one and a half, so it reads as an edge catching light at any scale
+/// and never as a border.
 const RIM_WIDTH: f64 = 1.5;
 
-/// Arcs each rounded corner of the rim is drawn in: enough that the light
-/// turns smoothly round the corner.
+/// Arcs each rounded corner of the rim is drawn in: enough that the light turns smoothly round the
+/// corner.
 const RIM_CORNER_STEPS: u32 = 4;
 
-/// How bright the rim is where its outward `normal` points, lit from
-/// `toward_light` (unit vectors in part coordinates, y down): fully where
-/// it faces the light, nothing side on, and a third as much where it faces
-/// away, where light that entered the glass leaves it.
+/// How bright the rim is where its outward `normal` points, lit from `toward_light` (unit vectors in
+/// part coordinates, y down): fully where it faces the light, nothing side on, and a third as much
+/// where it faces away, where light that entered the glass leaves it.
 #[must_use]
 pub(crate) fn rim_light(normal: Vec2, toward_light: Vec2) -> f32 {
     let facing = normal.dot(toward_light);
@@ -630,19 +572,16 @@ impl SpecularRim {
         Vec2::new(angle.cos(), -angle.sin())
     }
 
-    /// The light's colour where the rim's outward normal is `normal`.
     fn at(self, normal: Vec2) -> Color {
         self.catch
             .with_alpha(self.strength.clamp(0.0, 1.0) * rim_light(normal, self.toward_light()))
     }
 
-    /// The rim of `body` as fills, one per straight edge and a few per
-    /// corner, each lit for its own normal: fills that meet edge to edge,
-    /// never strokes, whose caps would overlap and light the joins twice.
-    /// Nothing at `0` strength or on a body too small to have a rim, and
-    /// nothing on a side in `flush`: a body on the display's own edge has
-    /// no ground behind that side to catch light against, and a lit pixel
-    /// there shows as a line at the screen's edge.
+    /// The rim of `body` as fills, one per straight edge and a few per corner, each lit for its own
+    /// normal: fills that meet edge to edge, never strokes, whose caps would overlap and light the
+    /// joins twice. Nothing at `0` strength or on a body too small to have a rim, and nothing on a side
+    /// in `flush`: a body on the display's own edge has no ground behind that side to catch light
+    /// against, and a lit pixel there shows as a line at the screen's edge.
     fn ops(self, body: &RoundedRect, flush: Sides) -> Vec<Op> {
         use std::f64::consts::{FRAC_PI_2, FRAC_PI_4, PI};
         let rect = body.rect();
@@ -666,7 +605,6 @@ impl SpecularRim {
             brush: Brush::Solid(self.at(normal)),
             brush_transform: Affine::IDENTITY,
         };
-        // The straight edges, between the corners.
         let (x0, y0, x1, y1) = (rect.x0, rect.y0, rect.x1, rect.y1);
         let edges = [
             (
@@ -717,8 +655,6 @@ impl SpecularRim {
                 continue;
             }
             if radius <= 0.0 {
-                // A square corner: the rim's corner square, lit for the
-                // diagonal it faces.
                 let outward = Vec2::from_angle(start + FRAC_PI_4);
                 let square = Rect::from_center_size(
                     centre + Vec2::new(-outward.x.signum(), -outward.y.signum()) * (width / 2.0),
@@ -742,8 +678,6 @@ impl SpecularRim {
                     piece.line_to(centre);
                 }
                 piece.close_path();
-                // The light turns with the normal across the arc: a
-                // gradient from one end's light to the other's.
                 ops.push(Op::Fill {
                     path: piece,
                     brush: Brush::Linear {
@@ -768,7 +702,6 @@ impl SpecularRim {
     }
 }
 
-/// The part's body: its rect at the radius the toolkit gave it.
 fn body(size: Size, tokens: &PartTokens) -> RoundedRect {
     RoundedRect::from_rect(
         Rect::from_origin_size(Point::ORIGIN, size),
@@ -776,9 +709,8 @@ fn body(size: Size, tokens: &PartTokens) -> RoundedRect {
     )
 }
 
-/// The sheen a glass body catches across its upper body: the theme's light
-/// at `specular` opacity at the top-left, gone past the body's middle.
-/// Nothing at `0`.
+/// The sheen a glass body catches across its upper body: the theme's light at `specular` opacity at the
+/// top-left, gone past the body's middle.
 fn sheen(body: &RoundedRect, light: Light) -> Option<Op> {
     let rect = body.rect();
     let specular = light.specular;
@@ -809,14 +741,8 @@ fn sheen(body: &RoundedRect, light: Light) -> Option<Op> {
     })
 }
 
-/// The lit rim of a glass body: its outermost pixel row, brightest along
-/// the top edge at `edge_highlight` opacity, fading down the sides and
-/// catching a little bounced light at the foot. Nothing at `0`.
-///
-/// A side in `flush` stands on the display's own edge, with no ground
-/// behind it and nothing to separate: the rim is drawn only where it is
-/// not, so the body reaches the screen's edge in its own colour rather than
-/// showing a line of light along it.
+/// The lit rim of a glass body: its outermost pixel row, brightest along the top edge at
+/// `edge_highlight` opacity, fading down the sides and catching a little bounced light at the foot.
 fn rim(body: &RoundedRect, light: Light, flush: Sides) -> Option<Op> {
     let rect = body.rect();
     let edge_highlight = light.edge_highlight;
@@ -876,8 +802,8 @@ fn rim(body: &RoundedRect, light: Light, flush: Sides) -> Option<Op> {
     })
 }
 
-/// The rim's light down the body: brightest at the top, a trace at the
-/// middle, a little bounced light at the foot.
+/// The rim's light down the body: brightest at the top, a trace at the middle, a little bounced light
+/// at the foot.
 fn rim_brush(rect: Rect, light: Light) -> Brush {
     let edge_highlight = light.edge_highlight;
     Brush::Linear {

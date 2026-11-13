@@ -14,11 +14,11 @@ use crate::{
 #[derive(Clone, Copy)]
 pub(super) enum ReviewCommand {
     Open,
-    /// Take back just the selected change, leaving everything since: a
-    /// forward change of its own, undoable, so it asks no confirmation.
+    /// Take back just the selected change, leaving everything since: a forward change of its own,
+    /// undoable, so it asks no confirmation.
     RevertChange,
-    /// Name the selected run of changes with the panel's name field, or
-    /// remove its name when the field is empty.
+    /// Name the selected run of changes with the panel's name field, or remove its name when the field
+    /// is empty.
     Name,
     Confirm,
     FileConfirm(uuid::Uuid),
@@ -150,8 +150,6 @@ impl HistoryHost {
                 | ReviewCommand::RevertChange
                 | ReviewCommand::Name
         ) {
-            // Review against a finished boundary: the word still being typed
-            // becomes its own step, and the review sees the frontier after it.
             if let HistorySourceRegistration::OwnedDocument { owner, .. } = self.source() {
                 owner.close_open_step(&mut state.doc);
             }
@@ -242,9 +240,8 @@ impl HistoryHost {
         }
     }
 
-    /// Restore just this change: take back what the selected change did, on
-    /// its own, against the live frontier as it is now. A refusal shows in
-    /// the review panel, as a refused restore does.
+    /// Restore just this change: take back what the selected change did, on its own, against the live
+    /// frontier as it is now.
     fn revert_selected_change(
         &mut self,
         state: &mut State,
@@ -258,8 +255,8 @@ impl HistoryHost {
         )
     }
 
-    /// Name the selected run of changes, from its oldest to its newest, with
-    /// what the name field holds; an empty field removes the run's name.
+    /// Name the selected run of changes, from its oldest to its newest, with what the name field holds;
+    /// an empty field removes the run's name.
     fn name_selected_changes(
         &mut self,
         state: &mut State,
@@ -286,8 +283,8 @@ impl HistoryHost {
         )
     }
 
-    /// One forward write about the selected changes through the restore
-    /// door: its authority, the live frontier and the owner's writer.
+    /// One forward write about the selected changes through the restore door: its authority, the live
+    /// frontier and the owner's writer.
     fn write_selected(
         &mut self,
         state: &mut State,

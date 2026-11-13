@@ -1,10 +1,7 @@
-//! Captures: what writes frames, what those frames must not lie about, and the
-//! numbers a run prints about them.
-//!
-//! A capture is evidence, so it is refused rather than produced when it would
-//! not be about this product. Frames set in the host's font faces look almost
-//! right and are wrong in a way only a review of the frame notices, and a
-//! measurement that reported nothing must not exit as though it had.
+//! Captures: what writes frames, what those frames must not lie about, and the numbers a run prints
+//! about them. A capture is evidence, so it is refused rather than produced when it would not be about
+//! this product. Frames set in the host's font faces look almost right and are wrong in a way only a
+//! review of the frame notices, and a measurement that reported nothing must not exit as though it had.
 
 #[cfg(feature = "native")]
 use super::{DefinitionDispatch, LaunchSpec, dispatch_definition};
@@ -19,10 +16,8 @@ pub(super) fn captures_frames(args: &LaunchArgs) -> bool {
         || args.first_frame
 }
 
-/// A capture set in the host's faces is not evidence about this product: every
-/// overflow, truncation and weight judgement made from it is about a font Tilo
-/// does not ship. So it does not happen, and the message says what to point
-/// [`tilo_font_catalog::OVERRIDE_ENV`] at.
+/// A capture set in the host's faces is not evidence about this product: every overflow, truncation and
+/// weight judgement made from it is about a font Tilo does not ship.
 #[cfg(not(test))]
 pub(super) fn capture_font_gate(args: &LaunchArgs) -> Result<(), LaunchError> {
     if !captures_frames(args) {
@@ -58,12 +53,9 @@ pub(super) fn capture_directory(
     })
 }
 
-/// `--first-frame`: the app constructed as a live launch constructs it, then
-/// its first frame synced, composed, laid out and drawn as its window would
-/// draw it ([`App::surface_frame`]), with no window, GPU or runtime. Prints
-/// the process's startup line (with `TILO_STARTUP_METRICS_PATH` set) and one
-/// `FIRST-FRAME-SCOPE` line per named scope the construction and the frame
-/// ran, so a cold launch can be measured one process at a time.
+/// `--first-frame`: the app constructed as a live launch constructs it, then its first frame synced,
+/// composed, laid out and drawn as its window would draw it ([`App::surface_frame`]), with no window,
+/// GPU or runtime.
 #[allow(
     clippy::print_stdout,
     reason = "the measurement is this mode's output, as --native-audit prints its audit"

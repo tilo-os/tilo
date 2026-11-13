@@ -19,17 +19,15 @@ use crate::tokens::SurfaceRole;
 /// A part as the toolkit drew it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Painted {
-    /// Where it takes the pointer, in the coordinates its rect was given
-    /// in; `None`: its rect.
+    /// Where it takes the pointer, in the coordinates its rect was given in; `None`: its rect.
     pub hit: Option<BezPath>,
 }
 
-/// Settled parts kept per thread. A window's parts at rest are a few dozen
-/// distinct sizes and states; past this the least recently drawn go.
+/// Settled parts kept per thread.
 const CACHE_ENTRIES: usize = 256;
 
-/// What identifies a settled part's drawing: the set, the part, its size in
-/// device pixels, its states and the tokens it was drawn with.
+/// What identifies a settled part's drawing: the set, the part, its size in device pixels, its states
+/// and the tokens it was drawn with.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 struct Key {
     set: u64,
@@ -41,8 +39,6 @@ struct Key {
     tokens: u64,
 }
 
-/// A settled part's drawing, at the origin; `None` where its set left it to
-/// the toolkit.
 struct Entry {
     drawn: Option<(Scene, Option<BezPath>)>,
 }
@@ -51,8 +47,7 @@ struct Entry {
 struct Cache {
     entries: HashMap<Key, (Rc<Entry>, u64)>,
     tick: u64,
-    /// Pattern tiles by content, so a part redrawn while it moves uploads
-    /// its tile once.
+    /// Pattern tiles by content, so a part redrawn while it moves uploads its tile once.
     tiles: HashMap<u64, ImageData>,
 }
 
@@ -60,24 +55,14 @@ thread_local! {
     static CACHE: RefCell<Cache> = RefCell::new(Cache::default());
 }
 
-/// How many settled parts this thread holds drawn (for tests and the
-/// performance overlay).
+/// How many settled parts this thread holds drawn (for tests and the performance overlay).
 #[must_use]
 pub fn cached_parts() -> usize {
     CACHE.with(|cache| cache.borrow().entries.len())
 }
 
-/// Draw `part` of `set` in `rect` (in the coordinates `transform` maps into
-/// `scene`'s), at `moment` of its motion, with `tokens`. `None` when the set
-/// leaves the part to the toolkit's own painters, which the caller then
-/// draws.
-///
-/// A settled part is drawn once per size, state and tokens and replayed
-/// from then on; a moving one is drawn every frame; one that shows the
-/// backdrop is drawn every frame into `scene` itself, which the backdrop
-/// pass records it against. Windows, floating chrome and bars may show
-/// the backdrop, as their painter says; a control's backdrop brush is its
-/// fallback.
+/// Draw `part` of `set` in `rect` (in the coordinates `transform` maps into `scene`'s), at `moment` of
+/// its motion, with `tokens`.
 pub fn paint_part(
     scene: &mut Scene,
     transform: Affine,
@@ -207,19 +192,11 @@ fn tokens_hash(tokens: &PartTokens) -> u64 {
         param.name.hash(&mut hasher);
         param.value.to_bits().hash(&mut hasher);
     }
-    // A theme's surface shader draws the part: another program is another
-    // picture, whatever else is the same.
     tokens.shader.hash(&mut hasher);
     hasher.finish()
 }
 
 /// Encode `ops` into `out`, in the coordinates `transform` maps into its.
-/// `sampled`: whether a backdrop brush may show the backdrop, or is its
-/// fallback.
-///
-/// A backdrop fill is the sample (or the fallback), the painter's glaze
-/// over it, and, over a sample, the material's band holding all of it:
-/// the band is the toolkit's, applied last.
 fn encode(
     out: &mut Scene,
     transform: Affine,
@@ -261,11 +238,7 @@ fn encode(
                 if shown == Shown::Fallback {
                     out.fill(Fill::NonZero, transform, *fallback, None, path);
                 }
-                // A glaze shows no backdrop of its own.
                 encode(out, transform, (glaze, false), theme, tokens);
-                // The pass compresses its own sample into the band; a glaze
-                // lit over it, or a sample the host provided, is held in it
-                // here.
                 let held = match shown {
                     Shown::Fallback => false,
                     Shown::Compressed => !glaze.is_empty(),
@@ -344,8 +317,8 @@ fn encode(
     }
 }
 
-/// `brush` as vello draws it, and the transform that places the brush's
-/// own space (a pattern's texels) in the part's.
+/// `brush` as vello draws it, and the transform that places the brush's own space (a pattern's texels)
+/// in the part's.
 fn vello_brush(brush: &Brush) -> (VelloBrush, Affine) {
     let stops = |stops: &[super::Stop]| -> Vec<ColorStop> {
         stops
@@ -401,7 +374,6 @@ fn vello_brush(brush: &Brush) -> (VelloBrush, Affine) {
     }
 }
 
-/// The image of a pattern tile, made once per content on this thread.
 fn tile(image: &super::PartImage) -> ImageData {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     (image.width, image.height, &image.rgba).hash(&mut hasher);

@@ -81,8 +81,6 @@ fn visual_wait_submits_and_samples_a_save_before_its_first_readiness_check() {
     fixture.frame.relayout();
     assert_eq!(fixture.status(), RecordSaveStatus::Saving);
     assert!(fixture.frame.root.has_pending_visual_work());
-    // Immediate ACKs need no park. A zero bound still runs the ordinary
-    // initial frame/idle/frame sequence, including the real record writer.
     fixture
         .frame
         .wait_for_visuals(crate::time::Duration::ZERO)

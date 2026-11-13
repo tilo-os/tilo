@@ -1,7 +1,6 @@
-//! Opt-in native input timelines. These schedule delivery, not display completion.
-//!
-//! Call `spawn` only after the native window has first presented. Deadlines use
-//! one origin so slow handling cannot silently reduce the requested input rate.
+//! Opt-in native input timelines. These schedule delivery, not display completion. Call `spawn` only
+//! after the native window has first presented. Deadlines use one origin so slow handling cannot
+//! silently reduce the requested input rate.
 #![allow(
     clippy::disallowed_methods,
     reason = "native host runner: input timelines pace real window delivery"
@@ -58,26 +57,25 @@ pub enum Input {
     Key {
         key: crate::synthetic_input::NativeKey,
     },
-    /// Find, as the platform types it: its command modifier (⌘ on macOS,
-    /// Ctrl elsewhere) held around one press of F.
+    /// Find, as the platform types it: its command modifier (⌘ on macOS, Ctrl elsewhere) held around
+    /// one press of F.
     Find {},
-    /// A stylus tip touching down at `pressure` (`0.0..=1.0`): a pen sample
-    /// with a pointer move, then a sample with the left press, as a tablet
-    /// reports it.
+    /// A stylus tip touching down at `pressure` (`0.0..=1.0`): a pen sample with a pointer move, then a
+    /// sample with the left press, as a tablet reports it.
     PenDown {
         x: f64,
         y: f64,
         pressure: f64,
     },
-    /// One pen sample with a pointer move: a drag while the tip is down, a
-    /// hover at pressure `0.0` while it is up.
+    /// One pen sample with a pointer move: a drag while the tip is down, a hover at pressure `0.0`
+    /// while it is up.
     PenMove {
         x: f64,
         y: f64,
         pressure: f64,
     },
-    /// The tip lifting: a zero-pressure sample with a pointer move, then a
-    /// sample with the left release.
+    /// The tip lifting: a zero-pressure sample with a pointer move, then a sample with the left
+    /// release.
     PenUp {
         x: f64,
         y: f64,
@@ -85,8 +83,7 @@ pub enum Input {
 }
 
 impl Input {
-    /// The window events this step delivers, in order, through the same
-    /// routing platform input takes.
+    /// The window events this step delivers, in order, through the same routing platform input takes.
     #[cfg(feature = "native")]
     pub(crate) fn window_events(self) -> Vec<winit::event::WindowEvent> {
         use crate::synthetic_input as input;
@@ -161,9 +158,6 @@ pub struct Packet {
 }
 
 impl Scenario {
-    /// # Errors
-    /// Rejects invalid names, intervals, step counts, warmup bounds, non-finite inputs,
-    /// or timelines whose final deadline exceeds the clock range.
     pub fn validate(&self) -> Result<(), String> {
         if self.name.trim().is_empty() {
             return Err("native scenario name must not be empty".into());
@@ -229,8 +223,7 @@ pub fn load_from_env() -> Result<Option<Scenario>, String> {
     parse(&contents).map(Some)
 }
 
-/// Opt-in diagnostic protocol only. Each non-hover step needs its own fresh
-/// collector reply; ordinary benchmark timelines do not create or use a gate.
+/// Opt-in diagnostic protocol only.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct GateConfig {
@@ -356,10 +349,9 @@ impl InputGate {
         }
     }
 
-    /// The permit expires on the producer's monotonic clock. A stalled
-    /// collector cannot open the gate; a stale reply cannot revive it. Denial
-    /// or EOF revokes a pending request, but cannot retract an event already
-    /// released. This is not an atomic guarantee of the OS session lock state.
+    /// The permit expires on the producer's monotonic clock. A stalled collector cannot open the gate;
+    /// a stale reply cannot revive it. Denial or EOF revokes a pending request, but cannot retract an
+    /// event already released.
     fn approve(&mut self, step_id: usize) -> Result<Instant, String> {
         #[cfg(not(unix))]
         {
@@ -426,9 +418,6 @@ impl InputGate {
 }
 
 /// Compute an absolute deadline without wrapping either duration or clock range.
-///
-/// # Errors
-/// Rejects a zero interval or an index, duration, or deadline that overflows.
 pub fn deadline(origin: Instant, interval_us: u64, index: usize) -> Result<Instant, String> {
     if interval_us == 0 {
         return Err("native scenario interval_us must be positive".into());
@@ -443,9 +432,6 @@ pub fn deadline(origin: Instant, interval_us: u64, index: usize) -> Result<Insta
 }
 
 /// Starts an absolute timeline; `false` from the callback stops delivery.
-///
-/// Joining this thread proves only delivery has ended, not that inputs were
-/// handled, changed application state, rendered, or appeared on a display.
 pub fn spawn(
     scenario: Scenario,
     mut deliver: impl FnMut(Packet) -> bool + Send + 'static,
@@ -453,7 +439,6 @@ pub fn spawn(
     scenario.validate()?;
     let mut gate = InputGate::from_env(&scenario)?;
     let origin = crate::time::now();
-    // Resolve every checked deadline before starting: no partial timeline on error.
     let packets = scenario
         .steps
         .into_iter()
@@ -496,8 +481,6 @@ pub fn spawn(
                     }
                 } else { None };
                 (packet.sent_at, packet.sent_host) = host_clock::sample();
-                // Recheck immediately before the callback, including time spent
-                // descheduled after receipt or sampling the diagnostic clock.
                 if expires.is_some_and(|expires| crate::time::now() >= expires) {
                     log::emit_json("tilo-native-gate", serde_json::json!({
                         "event":"denied", "step_id":packet.id, "reason":"permit expired before delivery" }));
@@ -649,9 +632,7 @@ mod tests {
         }
     }
 
-    /// The steps the fixture delivered, in order, as it printed them. The marker is
-    /// read wherever it stands: the fixture's own line may share the test harness's
-    /// progress line, which it prints without ending it.
+    /// The steps the fixture delivered, in order, as it printed them.
     #[cfg(unix)]
     fn delivered_ids(output: &str) -> Vec<usize> {
         output

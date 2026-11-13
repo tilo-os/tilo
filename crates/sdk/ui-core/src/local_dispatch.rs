@@ -1,24 +1,14 @@
-//! The local executor every immediate action goes through.
-//!
-//! A bound view's dispatcher hands each action of its resource to
-//! [`LocalDispatch`] through [`Edits::apply`](crate::widget::Edits::apply): it
-//! runs on the canonical executor with this device's actor, is reported to the
-//! collaboration route, and opens the undo boundary the host takes with
-//! [`LocalDispatch::take_committed`].
+//! The local executor every immediate action goes through. A bound view's dispatcher hands each action
+//! of its resource to [`LocalDispatch`] through [`Edits::apply`](crate::widget::Edits::apply): it runs
+//! on the canonical executor with this device's actor, is reported to the collaboration route, and
+//! opens the undo boundary the host takes with [`LocalDispatch::take_committed`].
 
 use automerge::{AutoCommit, ChangeHash};
 use tilo_actions::{Action, ActionContext, EncodedAction};
 
 /// The local executor, held by whatever applies actions to a document.
-///
-/// The undo boundary this brackets carries no author: what crosses this
-/// seam is heads, not identity. It's still reachable by interactive Ctrl+Z
-/// because an author-scoped undo claims unattributed entries too — see
-/// `UndoLog::claimable_by`.
 #[derive(Default)]
 pub struct LocalDispatch {
-    /// Drained via [`Self::take_committed`] to record exactly one undo
-    /// boundary bracketing the action(s).
     commit_before: Option<Vec<ChangeHash>>,
 }
 
@@ -41,13 +31,7 @@ impl LocalDispatch {
         self.try_dispatch_maybe_context(doc, type_id, action, None)
     }
 
-    /// Apply `action` now under `context`, which names it in the workspace
-    /// history. Records the undo boundary only once the action applies.
-    ///
-    /// # Errors
-    ///
-    /// Returns the encoding, document or application refusal error; no undo
-    /// boundary is recorded then.
+    /// Apply `action` now under `context`, which names it in the workspace history.
     pub fn try_dispatch_with_context<A>(
         &mut self,
         doc: &mut AutoCommit,
@@ -75,8 +59,6 @@ impl LocalDispatch {
         self.dispatch_encoded(doc, action, encoded, context)
     }
 
-    /// [`Self::try_dispatch_with_context`] past encoding: one compiled copy
-    /// for every action type.
     fn dispatch_encoded(
         &mut self,
         doc: &mut AutoCommit,
@@ -137,8 +119,6 @@ impl LocalDispatch {
         {
             observation.finish(doc, &before, encoded.clone(), captured_context)?;
         }
-        // Content from outside (fetched rows, a process's output) is nobody's
-        // undo step: it opens no bracket and is left out of the open one.
         let step = change_kind.is_step();
         if let Some(before) = observed_before {
             let after = doc.get_heads();
@@ -150,9 +130,7 @@ impl LocalDispatch {
         Ok(())
     }
 
-    /// Rising-edge: reading clears it, so it returns `Some` once per
-    /// dispatched batch, then `None`. Wire this straight to
-    /// [`CommittedActions::take_committed_action`](crate::undo::CommittedActions::take_committed_action).
+    /// Rising-edge: reading clears it, so it returns `Some` once per dispatched batch, then `None`.
     pub fn take_committed(&mut self) -> Option<Vec<ChangeHash>> {
         self.commit_before.take()
     }
@@ -166,7 +144,6 @@ mod tests {
     use serde::{Deserialize, Serialize};
     use tilo_actions::{ActionError, Doc, ExecutionLocus};
 
-    /// Deterministic, no wall-clock / RNG — the executor's contract.
     #[derive(Debug, Clone, Serialize, Deserialize)]
     struct Put {
         key: String,

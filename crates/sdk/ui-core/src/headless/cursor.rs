@@ -1,6 +1,6 @@
-//! The pointer shape a surface this harness hosts asks for (the browser
-//! page's desktop and windows among them), by the rule every host shares
-//! ([`crate::widget::cursor`]); the page shows it as the canvas's cursor.
+//! The pointer shape a surface this harness hosts asks for (the browser page's desktop and windows
+//! among them), by the rule every host shares ([`crate::widget::cursor`]); the page shows it as the
+//! canvas's cursor.
 
 use crate::host_core::HostCore as _;
 use vello::kurbo::Point;
@@ -8,11 +8,10 @@ use vello::kurbo::Point;
 use super::FrameHarness;
 
 impl FrameHarness {
-    /// The pointer shape the laid-out surface asks for at logical `point`,
-    /// by the rule every host shares ([`crate::widget::cursor`]): its laid-out
-    /// nodes, and the shown tree walked as well, since a container that
-    /// places its own children (a desktop's strip of windows) keeps them out
-    /// of the node map.
+    /// The pointer shape the laid-out surface asks for at logical `point`, by the rule every host
+    /// shares ([`crate::widget::cursor`]): its laid-out nodes, and the shown tree walked as well, since
+    /// a container that places its own children (a desktop's strip of windows) keeps them out of the
+    /// node map.
     #[must_use]
     pub fn cursor_at(&self, point: Point) -> Option<winit::window::CursorIcon> {
         let mut pick = self.tree().cursor_pick_at(point);
@@ -25,8 +24,8 @@ impl FrameHarness {
         pick.icon()
     }
 
-    /// The pointer shape to show where the pointer last was: the default
-    /// arrow off the surface and where nothing asks for another.
+    /// The pointer shape to show where the pointer last was: the default arrow off the surface and
+    /// where nothing asks for another.
     #[must_use]
     pub fn pointer_cursor(&self) -> winit::window::CursorIcon {
         self.pointer
@@ -42,9 +41,8 @@ mod tests {
     use crate::state::State;
     use winit::event::WindowEvent;
 
-    /// The browser page shows the pointer shape a native window would: a
-    /// text field's I-beam where the pointer is over it, the arrow where
-    /// nothing asks for another ([`crate::widget::cursor`]).
+    /// The browser page shows the pointer shape a native window would: a text field's I-beam where the
+    /// pointer is over it, the arrow where nothing asks for another ([`crate::widget::cursor`]).
     #[test]
     fn a_text_field_shows_the_text_cursor_through_the_shared_rule() {
         use winit::window::CursorIcon;
@@ -70,9 +68,9 @@ mod tests {
         assert_eq!(harness.pointer_cursor(), CursorIcon::Default);
     }
 
-    /// A card that builds its contents again while it draws, as a panel opening the card it was
-    /// asked for does, and says so: what it let go of is kept aside, so a read through the old
-    /// nodes finds them out of the tree instead of in freed memory.
+    /// A card that builds its contents again while it draws, as a panel opening the card it was asked
+    /// for does, and says so: what it let go of is kept aside, so a read through the old nodes finds
+    /// them out of the tree instead of in freed memory.
     struct RebuildsWhileDrawing {
         child: Box<dyn crate::widget::Widget>,
         let_go: Vec<Box<dyn crate::widget::Widget>>,
@@ -153,7 +151,6 @@ mod tests {
         }
     }
 
-    /// The mapped nodes whose widget is no longer in the shown tree.
     fn out_of_tree(harness: &FrameHarness) -> usize {
         fn walk(widget: &dyn crate::widget::Widget, live: &mut Vec<usize>) {
             live.push(std::ptr::from_ref(widget).cast::<()>() as usize);
@@ -170,10 +167,8 @@ mod tests {
             .count()
     }
 
-    /// A widget that built its children again while the frame drew leaves the frame's layout
-    /// maps naming the ones it let go of. The page reads them on input before its next frame
-    /// (a tooltip, the pointer's shape after an event that dispatched nothing); input admits the
-    /// composition first, so nothing is read through a widget that is gone.
+    /// A widget that built its children again while the frame drew leaves the frame's layout maps
+    /// naming the ones it let go of.
     #[test]
     fn input_after_a_widget_rebuilt_while_drawing_reads_no_widget_it_let_go_of() {
         let root = RebuildsWhileDrawing {
@@ -185,7 +180,6 @@ mod tests {
         };
         let mut harness =
             FrameHarness::for_root(State::new(), root, (240, 160), crate::theme::Theme::dark());
-        // The page's own clock: input does not lay out by itself.
         harness.set_coalesce_input_frames(true);
         harness.relayout();
         assert_eq!(out_of_tree(&harness), 0);
@@ -195,8 +189,6 @@ mod tests {
             out_of_tree(&harness) > 0,
             "the frame drew a rebuilt card after laying out the old one"
         );
-        // A modifier snapshot the page repeats dispatches nothing, and the page shows the
-        // pointer's shape after it all the same.
         harness.send_host_event(&WindowEvent::ModifiersChanged(
             winit::event::Modifiers::default(),
         ));

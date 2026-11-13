@@ -1,18 +1,16 @@
-//! The keyboard's place in a headless frame: traversal order inside a trap,
-//! and the trap that holds focus while a dialog or command is open.
-//!
-//! The policy is the live window's ([`crate::focus_navigation`] and
-//! [`crate::history_mode::embedded::FocusRestrictions`]); what differs is that
-//! this host resolves a stable identity in its own layout maps, never a Taffy
-//! id carried across a rebuild.
+//! The keyboard's place in a headless frame: traversal order inside a trap, and the trap that holds
+//! focus while a dialog or command is open. The policy is the live window's
+//! ([`crate::focus_navigation`] and [`crate::history_mode::embedded::FocusRestrictions`]); what differs
+//! is that this host resolves a stable identity in its own layout maps, never a Taffy id carried across
+//! a rebuild.
 
 use super::FrameHarness;
 use crate::host_core::{HostCore as _, KeyHost as _};
 use taffy::NodeId;
 
 impl FrameHarness {
-    /// Whether the surface this tree draws holds the keyboard, as
-    /// [`Self::set_keyboard_held`] last said: its fields paint carets only while it does.
+    /// Whether the surface this tree draws holds the keyboard, as [`Self::set_keyboard_held`] last
+    /// said: its fields paint carets only while it does.
     #[must_use]
     pub const fn keyboard_held(&self) -> bool {
         self.keyboard_held
@@ -40,9 +38,8 @@ impl FrameHarness {
         true
     }
 
-    /// Whether embedded History and a History holding saved focus leave a
-    /// node free to take focus, for asking of every node in one pass: each
-    /// History's subtrees are walked once, not once per node.
+    /// Whether embedded History and a History holding saved focus leave a node free to take focus, for
+    /// asking of every node in one pass: each History's subtrees are walked once, not once per node.
     pub(super) fn history_focus_admission(&self) -> impl Fn(NodeId) -> bool + '_ {
         let restrictions = crate::history_mode::embedded::FocusRestrictions::collect(
             self.root.as_ref(),
@@ -58,10 +55,8 @@ impl FrameHarness {
         }
     }
 
-    /// Whether the walk in [`Self::update_focus_trap`] could find a trap: History
-    /// review is open, or a widget it would inspect traps focus. `false` is
-    /// exact — that walk would conclude "untrapped" — while `true` may still
-    /// end there (a trap under a hidden or denied ancestor).
+    /// Whether the walk in [`Self::update_focus_trap`] could find a trap: History review is open, or a
+    /// widget it would inspect traps focus.
     pub(super) fn focus_trap_possible(&self) -> bool {
         let _profile = tilo_resource::profiling::Phase::start("ui.focus_trap_probe");
         if self
@@ -75,8 +70,6 @@ impl FrameHarness {
             || crate::history_mode::embedded::has_surfaces(self.root.as_ref())
             || crate::focus_navigation::hosts_components(self.root.as_ref())
         {
-            // The mapped walk inspects composed nodes, some of which are not
-            // Widget children of the root; every one it can inspect is mapped.
             let mut sweep = crate::bound_dispatch::NodeSweep::new(&self.bindings, &self.node_map);
             self.node_map.keys().any(|&node| {
                 // SAFETY: FrameHarness owns this stable tree; no target reference escapes.
@@ -165,8 +158,6 @@ impl FrameHarness {
         } else {
             None
         };
-        // A dialog opens on the control the person types into, ahead of its first control:
-        // what they type reaches the form it asks.
         let entry = self.keyboard_entry(&order);
         if let Some(next) = crate::focus_navigation::reconcile_trap(
             &mut self.focus_trap_active,

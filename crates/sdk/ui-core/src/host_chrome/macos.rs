@@ -1,10 +1,6 @@
-//! macOS host chrome: the menu bar and a title-bar search field, drawn by
-//! AppKit from the host command model.
-//!
-//! Every item a person can choose is a [`HostCommand`]; choosing it hands the
-//! command's invocation back to the app, which enters the same door as the
-//! palette. AppKit asks `validateMenuItem:` for enabled state, so items follow
-//! each action's availability, and the Help menu's search finds them all.
+//! macOS host chrome: the menu bar and a title-bar search field, drawn by AppKit from the host command
+//! model. Every item a person can choose is a [`HostCommand`]; choosing it hands the command's
+//! invocation back to the app, which enters the same door as the palette.
 
 use std::cell::RefCell;
 
@@ -114,8 +110,8 @@ define_class!(
     unsafe impl NSTextFieldDelegate for Target {}
 
     unsafe impl NSSearchFieldDelegate for Target {
-        /// Search continues in the palette, where results can act; the field
-        /// hands over what was typed and gives the keyboard back.
+        /// Search continues in the palette, where results can act; the field hands over what was typed
+        /// and gives the keyboard back.
         #[unsafe(method(searchFieldDidStartSearching:))]
         fn search_started(&self, field: &NSSearchField) {
             let text = field.stringValue().to_string();
@@ -231,7 +227,6 @@ impl MacChrome {
             &menu_bar,
             &I18nManager::lookup_plain(MenuKind::History.title_key()),
         );
-        // The item just added, hidden while the app has no History to show.
         let history_item = menu_bar.itemAtIndex(menu_bar.numberOfItems() - 1);
         if let Some(item) = &history_item {
             item.setHidden(true);
@@ -276,8 +271,7 @@ impl MacChrome {
         }
     }
 
-    /// Replace winit's default menu with this one. AppKit then adds its own
-    /// window list, full-screen item and Help search.
+    /// Replace winit's default menu with this one.
     pub(crate) fn install(&self, app: &NSApplication) {
         app.setMainMenu(Some(&self.menu_bar));
         app.setWindowsMenu(Some(&self.window));
@@ -298,8 +292,7 @@ impl MacChrome {
         *self.toolbar.borrow_mut() = Some(toolbar);
     }
 
-    /// Present `commands`. Menus are rebuilt only when an item's title, place
-    /// or shortcut changed; enabled state is read live by `validateMenuItem:`.
+    /// Present `commands`.
     pub(crate) fn update(&self, commands: Vec<HostCommand>) {
         let shape: Vec<_> = commands
             .iter()
@@ -365,7 +358,6 @@ impl MacChrome {
     }
 }
 
-/// The search field at the trailing edge, as in Finder and Mail.
 fn toolbar_items() -> Retained<NSArray<NSString>> {
     NSArray::from_retained_slice(&[
         NSString::from_str("NSToolbarFlexibleSpaceItem"),
@@ -485,7 +477,6 @@ mod tests {
             panic!("the title-bar field hands its query over");
         };
         assert_eq!(query, "notes");
-        // What the runner does with it: the Search command, then the query.
         assert!(
             app.invoke_host_shortcut(crate::platform::HostShortcut::Search),
             "the palette opens"

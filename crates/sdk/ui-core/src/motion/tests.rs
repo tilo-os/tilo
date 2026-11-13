@@ -1,6 +1,6 @@
-//! The library's promises: interruption keeps position and velocity,
-//! frame rate does not change the curve, a settled motion costs nothing,
-//! reduced motion and shortcuts land, and each named motion's shape holds.
+//! The library's promises: interruption keeps position and velocity, frame rate does not change the
+//! curve, a settled motion costs nothing, reduced motion and shortcuts land, and each named motion's
+//! shape holds.
 
 use super::*;
 use crate::time::{Duration, Instant};
@@ -42,7 +42,6 @@ fn a_reversal_continues_from_the_drawn_position_and_velocity() {
         (v.velocity(flip) - speed_before).abs() < 1e-6,
         "the velocity carries across the reversal"
     );
-    // A frame later it is still moving the old way, braking: no snap back.
     let next = start + Duration::from_micros(60_000 + 8_333);
     assert!(v.get(next) > before);
     assert!(v.velocity(next) < speed_before);
@@ -244,8 +243,6 @@ fn appear_comes_from_its_anchor_and_goes_back_to_it() {
         "{:?}",
         half.offset
     );
-    // The first frames after a press show the least of it: whatever a frame
-    // catches in the first fifth of the motion, it is faint and still small.
     let early = Appear::coming(0.35, Direction::Enter, surface, anchor, on());
     assert!(early.opacity < 0.15, "{}", early.opacity);
     assert!(early.scale < 0.94, "more than 6 % smaller: {}", early.scale);
@@ -300,7 +297,6 @@ fn drill_pages_share_one_axis_and_back_is_the_same_curve_reversed() {
     // The outgoing page is gone by 60 % of the way.
     assert!(!Drill::pose(-0.65, width, on()).is_visible());
     assert!(Drill::pose(0.0, width, on()).is_rest());
-    // A narrow panel shifts less.
     assert!(Drill::pose(1.0, 100.0, on()).to_drawn(Point::ZERO).x <= 10.0 + 1e-9);
 
     let now = crate::time::now();
@@ -424,13 +420,10 @@ fn the_overview_zoom_stays_spatial_context_when_a_key_opens_it() {
     let keyed = enter(on(), MotionSource::Keyboard);
     assert!(keyed > Duration::ZERO, "a key still shows where they went");
     assert!(keyed <= fast + Duration::from_millis(1), "{keyed:?}");
-    // A click on "Overview" is a whole-view change.
     assert!(enter(on(), MotionSource::Pointer) <= slow + Duration::from_millis(1));
     assert!(enter(on(), MotionSource::Pointer) > keyed);
-    // Reduced motion: a key lands, a click fades at `fast`.
     assert_eq!(enter(reduced(), MotionSource::Keyboard), Duration::ZERO);
     assert!(enter(reduced(), MotionSource::Pointer) <= fast + Duration::from_millis(1));
-    // The shared element's own rule is unchanged: a shortcut lands.
     assert_eq!(
         Zoom::SPEC.settle_time(Direction::Enter, on(), MotionSource::Keyboard),
         Duration::ZERO
@@ -476,7 +469,6 @@ fn ambient_chrome_leaves_at_once_and_arrives_gently_unless_asked() {
     assert!(!asked.is_visible(probe), "leaving is instant");
 }
 
-/// Every routine standard motion, for the rules they all keep.
 fn routine_specs() -> [MotionSpec; 13] {
     [
         ControlChange::MOVE,
@@ -529,7 +521,6 @@ fn standard_motion_never_makes_tilo_annoying() {
             (0..800).all(|t| v.get(ms(now, t)) <= 1.0 + 1e-9),
             "{spec:?} bounces"
         );
-        // Short: nothing routine takes longer than `slow`.
         let enter = spec.settle_time(Direction::Enter, on(), MotionSource::Pointer);
         assert!(
             enter <= slow + Duration::from_millis(1),
@@ -544,12 +535,9 @@ fn standard_motion_never_makes_tilo_annoying() {
         // Leaving is never slower than arriving.
         let exit = spec.settle_time(Direction::Exit, on(), MotionSource::Pointer);
         assert!(exit <= enter, "{spec:?}: exit {exit:?} vs enter {enter:?}");
-        // Reduced motion is no slower either.
         let reduced = spec.settle_time(Direction::Enter, self::reduced(), MotionSource::Pointer);
         assert!(reduced <= enter, "{spec:?}: reduced {reduced:?}");
     }
-    // Repeated toggles collapse into one motion: no queue, and the state
-    // asked for last is the one input acts on.
     let mut p = Presence::closed();
     for i in 0..10_u64 {
         p.show(
@@ -585,7 +573,6 @@ fn a_transient_arrives_holds_and_is_gone_exactly_when_it_expires() {
     let o = Transient::opacity(readout, span, fading, on());
     assert!(o > 0.0 && o < 1.0, "{o}");
     assert_eq!(Transient::opacity(readout, span, span.1, on()), 0.0);
-    // A confirmation is there at once.
     assert_eq!(
         Transient::opacity(Transient::CONFIRMATION, span, shown, on()),
         1.0
@@ -640,10 +627,6 @@ fn a_deferred_motion_resumes_where_it_stood() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Appearing, the motion clock and the input a change follows
-// ---------------------------------------------------------------------------
-
 #[test]
 fn an_appearing_surface_follows_the_input_that_asked() {
     use crate::time::testing::with_monotonic_time;
@@ -690,7 +673,6 @@ fn an_appearing_surface_leans_from_its_nearest_edge_toward_its_control() {
     use crate::time::testing::with_monotonic_time;
     let start = crate::time::now();
     let surface = Rect::new(100.0, 60.0, 300.0, 260.0);
-    // A button above the surface's leading half.
     let button = Point::new(140.0, 40.0);
     let mut menu = Appearing::closed();
     with_monotonic_time(start, || {
@@ -779,9 +761,7 @@ fn a_started_motion_asks_for_frames_until_it_settles_and_no_longer() {
     assert!(frames_until().is_none(), "and holds nothing");
 }
 
-/// The last frame of a motion is the one showing it at rest. A frame drawn
-/// a hair before the motion ended leaves that hair on screen, so the clock
-/// keeps asking until a frame was drawn at or after the end, and then stops.
+/// The last frame of a motion is the one showing it at rest.
 #[test]
 fn the_frame_at_rest_is_owed_until_one_is_drawn_after_the_motion_ends() {
     let start = crate::time::now();
@@ -802,8 +782,8 @@ fn the_frame_at_rest_is_owed_until_one_is_drawn_after_the_motion_ends() {
     );
 }
 
-/// Every motion asks for its frames, whoever started it and whoever draws
-/// it: a host only has to read the clock to paint every motion it shows.
+/// Every motion asks for its frames, whoever started it and whoever draws it: a host only has to read
+/// the clock to paint every motion it shows.
 #[test]
 fn any_motion_value_started_asks_the_clock_for_its_frames() {
     let start = crate::time::now();
@@ -821,8 +801,8 @@ fn any_motion_value_started_asks_the_clock_for_its_frames() {
     );
 }
 
-/// A motion started for one surface asks frames of that surface alone: another surface drawing on
-/// the same thread (a banner over the overview coming up) has nothing to draw for it.
+/// A motion started for one surface asks frames of that surface alone: another surface drawing on the
+/// same thread (a banner over the overview coming up) has nothing to draw for it.
 #[test]
 fn a_motion_asks_frames_of_its_own_surface_only() {
     let start = crate::time::now();
@@ -840,9 +820,9 @@ fn a_motion_asks_frames_of_its_own_surface_only() {
     });
 }
 
-/// A motion jumped to its end mid-way (a shortcut landing what it changed,
-/// an owner letting it go) takes back its wish: the clock asks for no frame
-/// it would never draw, while another motion still moving keeps its own.
+/// A motion jumped to its end mid-way (a shortcut landing what it changed, an owner letting it go)
+/// takes back its wish: the clock asks for no frame it would never draw, while another motion still
+/// moving keeps its own.
 #[test]
 fn a_motion_landed_mid_way_asks_for_no_more_frames() {
     let start = crate::time::now();
@@ -869,9 +849,8 @@ fn a_motion_landed_mid_way_asks_for_no_more_frames() {
     assert_eq!(frames_until(), retargeted.settles_at());
 }
 
-/// A motion that asks the clock for frames is named while it moves: the
-/// place that started it, so a frame nobody can see in the widget tree
-/// (a menu an owner draws in its own pass) is still attributed.
+/// A motion that asks the clock for frames is named while it moves: the place that started it, so a
+/// frame nobody can see in the widget tree (a menu an owner draws in its own pass) is still attributed.
 #[test]
 fn a_motion_asking_for_frames_is_named_while_it_moves() {
     use crate::time::testing::with_monotonic_time;
@@ -947,11 +926,8 @@ fn a_speaking_ring_comes_with_the_voice_and_eases_out_in_the_pause() {
     assert!(!ring.is_moving(now));
 }
 
-/// Every layout pass of one frame reads a motion at the same instant, so a
-/// widget sized by a motion (a disclosure opening) measures the same in each
-/// pass and the frame's composition settles. Read at the clock, a slow pass
-/// saw the motion further on each time and resizing during it failed with
-/// `CompositionDidNotSettle`.
+/// Every layout pass of one frame reads a motion at the same instant, so a widget sized by a motion (a
+/// disclosure opening) measures the same in each pass and the frame's composition settles.
 #[test]
 fn a_frame_reads_its_motions_at_one_instant_across_its_layout_passes() {
     let start = crate::time::now();
@@ -991,7 +967,6 @@ fn a_controls_thumb_retargets_mid_flight_from_where_it_is_drawn() {
     let mid = ms(now, 40);
     let drawn = thumb.get(mid);
     assert!(drawn > 0.0 && drawn < 1.0, "on its way: {drawn}");
-    // A second click mid-flight reverses from the drawn place, no jump.
     thumb.go(0.0, on(), MotionSource::Pointer, mid);
     assert!((thumb.get(mid) - drawn).abs() < 1e-9, "the reversal jumped");
     assert_eq!(thumb.target(), 0.0);
@@ -1037,7 +1012,6 @@ fn a_settled_control_wants_no_frames() {
     let now = crate::time::now();
     let mut thumb = Thumb::at(1.0);
     let mut mark = Mark::at(true);
-    // Asking for where it already is starts nothing.
     thumb.go(1.0, on(), MotionSource::Pointer, now);
     mark.set(true, on(), MotionSource::Pointer, now);
     assert!(thumb.settles_at().is_none() && mark.settles_at().is_none());
@@ -1058,7 +1032,6 @@ fn a_settled_control_wants_no_frames() {
     assert!(!thumb.is_moving(rest) && !mark.is_moving(rest));
 }
 
-/// The frame wish of an earlier test on this thread is cleared.
 fn testing_clean_frames() {
     super::clock::forget_frames_for_tests();
 }
@@ -1067,7 +1040,6 @@ fn testing_clean_frames() {
 fn a_held_thumb_is_where_the_hand_is_and_settles_with_its_velocity() {
     let now = crate::time::now();
     let mut thumb = Thumb::at(0.0);
-    // A click sends it on its way; the hand takes it mid-flight.
     thumb.go(1.0, on(), MotionSource::Pointer, now);
     for (i, hand) in [0.3, 0.42, 0.55, 0.61].into_iter().enumerate() {
         thumb.track(hand);
@@ -1075,7 +1047,6 @@ fn a_held_thumb_is_where_the_hand_is_and_settles_with_its_velocity() {
         assert_eq!(thumb.get(at), hand, "1:1 with the hand");
         assert!(!thumb.is_moving(at), "nothing runs while it is held");
     }
-    // Let go moving right: it carries on toward the side it was thrown.
     let released = ms(now, 60);
     thumb.release(1.0, 4.0, on(), released);
     let just_after = thumb.get(released + Duration::from_millis(8));
@@ -1089,7 +1060,6 @@ fn a_held_thumb_is_where_the_hand_is_and_settles_with_its_velocity() {
     let mut thrown = Thumb::at(0.9);
     thrown.release(1.0, 40.0, on(), now);
     assert!((0..200).all(|t| thrown.get(ms(now, t)) <= 1.0));
-    // Reduced motion: the release lands.
     let mut calm = Thumb::at(0.4);
     calm.release(1.0, 4.0, reduced(), now);
     assert_eq!(calm.get(now), 1.0);
@@ -1105,17 +1075,12 @@ fn a_controls_mark_goes_quicker_than_it_comes() {
     leaving.set(false, on(), MotionSource::Pointer, now);
     let went = leaving.settles_at().expect("going") - now;
     assert!(went < came, "out {went:?} vs in {came:?}");
-    // Unchecked mid-way, it goes from what is drawn.
     let mid = ms(now, 40);
     let drawn = mark.level(mid);
     mark.set(false, on(), MotionSource::Pointer, mid);
     assert!((mark.level(mid) - drawn).abs() < 1e-6);
     assert!(!mark.is_on());
 }
-
-// ---------------------------------------------------------------------------
-// Scroll to what was asked for
-// ---------------------------------------------------------------------------
 
 fn down(y: f64) -> vello::kurbo::Vec2 {
     vello::kurbo::Vec2::new(0.0, y)
@@ -1147,9 +1112,6 @@ fn a_short_jump_glides_at_fast_and_then_asks_for_no_frames() {
     assert_eq!(to.opacity(ms(start, 40)), 1.0, "a glide does not fade");
     let fast = ScrollTo::SPEC.settle_time(Direction::Enter, on(), MotionSource::Pointer);
     assert_eq!(fast, Motion::default().durations.fast());
-    // `fast` brings a spring within a thousandth of the jump; the glide
-    // goes on to within a quarter pixel, a whole device pixel at twice the
-    // density, which a long jump reaches a little later.
     let rest = to.settles_at().expect("moving");
     assert!(rest >= start + fast.mul_f64(0.9), "not sooner than fast");
     assert!(
@@ -1203,7 +1165,6 @@ fn a_second_jump_retargets_from_the_drawn_offset_and_speed() {
     );
     let next = ms(start, 30);
     let drawn = to.offset(next).expect("gliding");
-    // Enter pressed again in the find field: the next hit, further down.
     let jump = to.go_from(
         down(0.0),
         down(1200.0),
@@ -1264,7 +1225,6 @@ fn a_long_jump_fades_in_at_the_target_instead_of_scrolling_through() {
     let rest = to.settles_at().expect("fading");
     assert_eq!(to.opacity(rest), 1.0);
     assert!(!to.is_moving(rest));
-    // Exactly three viewports still glides.
     let mut near = ScrollTo::new();
     let three = down(VIEW.y * ScrollTo::GLIDE_VIEWPORTS);
     assert_eq!(
@@ -1304,11 +1264,9 @@ fn reduced_motion_lands_and_a_long_jump_still_fades() {
 fn focus_walking_by_key_and_a_reveal_nobody_asked_for_land() {
     let start = crate::time::now();
     let mut to = ScrollTo::new();
-    // Tab moving focus off screen lands it.
     to.land(down(300.0));
     assert!(!to.is_moving(start));
     assert_eq!(to.offset(start), None);
-    // An agent's action lands.
     crate::time::testing::with_monotonic_time(start, || {
         note_source(MotionSource::Action);
         assert_eq!(
@@ -1316,7 +1274,6 @@ fn focus_walking_by_key_and_a_reveal_nobody_asked_for_land() {
             ScrollJump::Land
         );
     });
-    // A reveal long after the last input (a sync) lands.
     crate::time::testing::with_monotonic_time(start, || note_source(MotionSource::Pointer));
     let later = ms(start, 2_000);
     crate::time::testing::with_monotonic_time(later, || {
@@ -1325,7 +1282,6 @@ fn focus_walking_by_key_and_a_reveal_nobody_asked_for_land() {
             ScrollJump::Land
         );
     });
-    // A click just now glides.
     crate::time::testing::with_monotonic_time(later, || {
         note_source(MotionSource::Pointer);
         assert_eq!(
@@ -1455,8 +1411,6 @@ fn a_capture_samples_a_motion_at_a_chosen_point_of_its_run() {
     assert!((x - v.get(start + at)).abs() < 1e-9);
     assert!((dx - v.velocity(start + at)).abs() < 1e-9);
     {
-        // The settled clock reads live frames at the end; a capture's pose
-        // is the point it asked for.
         let _settled = testing::settled();
         assert_eq!(v.get(start + at), 300.0);
         assert_eq!(v.sampled_after(at).0, x);

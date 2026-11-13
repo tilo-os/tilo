@@ -1,13 +1,7 @@
-//! Descriptions of the open resource's changes: asked of the shell, shown as
-//! they arrive, and written into the document so every member reads them.
-//!
-//! The app holds no model. While History is open the host asks the shell,
-//! a few of the newest undescribed changes at a time, with what each change
-//! did (never who did it); the shell asks the model on this device and
-//! answers. An answer shows at once, and the owner writes it into the
-//! resource's own document ([`crate::history_source::descriptions`]) when no
-//! edit is open, through the door a restore takes. A member without write
-//! permission keeps what it was told for as long as History is open.
+//! Descriptions of the open resource's changes: asked of the shell, shown as they arrive, and written
+//! into the document so every member reads them. The app holds no model. While History is open the host
+//! asks the shell, a few of the newest undescribed changes at a time, with what each change did (never
+//! who did it); the shell asks the model on this device and answers.
 #[allow(
     clippy::wildcard_imports,
     reason = "private implementation module shares its enclosing host types"
@@ -19,14 +13,11 @@ use crate::history_source::descriptions;
 use crate::widget::history_group::hex16;
 use std::collections::{HashMap, HashSet};
 
-/// How many changes one request asks about.
 const BATCH: usize = 12;
 
 #[derive(Default)]
 pub(super) struct Describing {
-    /// Descriptions the shell gave, by change, with their generator.
     received: HashMap<HistoryEntryId, (String, String)>,
-    /// Received and not yet in the document.
     #[cfg(feature = "native")]
     unwritten: Vec<HistoryEntryId>,
     /// Changes asked about, answered or not: each is asked once.
@@ -36,8 +27,7 @@ pub(super) struct Describing {
 }
 
 impl HistoryHost {
-    /// Queue the newest listed changes nobody has described, when no request
-    /// is out. `document` is the projected resource.
+    /// Queue the newest listed changes nobody has described, when no request is out.
     pub(super) fn queue_descriptions(&mut self, document: &mut automerge::AutoCommit) {
         if self.describing.in_flight
             || !self.describing.outbox.is_empty()
@@ -95,7 +85,6 @@ impl HistoryHost {
         self.describing.outbox = facts.into_iter().map(|(_, fact)| fact).collect();
     }
 
-    /// Whether this scope is a document History can write into.
     fn writes_document(&self) -> bool {
         matches!(
             self.source(),
@@ -117,8 +106,8 @@ pub(super) fn shown_descriptions(
     shown
 }
 
-/// The exchange with the shell, which only the native runner holds: the
-/// portable build asks nobody and so never receives or writes descriptions.
+/// The exchange with the shell, which only the native runner holds: the portable build asks nobody and
+/// so never receives or writes descriptions.
 #[cfg(feature = "native")]
 mod shell {
     #[allow(
@@ -132,8 +121,7 @@ mod shell {
     use crate::widget::history_group::from_hex16;
 
     impl HistoryHost {
-        /// The changes to ask the shell about, once: the request stays out
-        /// until it is answered.
+        /// The changes to ask the shell about, once: the request stays out until it is answered.
         pub(crate) fn take_describe_request(&mut self) -> Vec<HistoryChangeFacts> {
             if self.describing.outbox.is_empty() {
                 return Vec::new();
@@ -142,8 +130,7 @@ mod shell {
             std::mem::take(&mut self.describing.outbox)
         }
 
-        /// The shell went away: what it was asked and never answered may be
-        /// asked of the next one.
+        /// The shell went away: what it was asked and never answered may be asked of the next one.
         pub(crate) fn describing_disconnected(&mut self) {
             let received = &self.describing.received;
             self.describing.asked.retain(|id| received.contains_key(id));
@@ -151,8 +138,8 @@ mod shell {
             self.describing.in_flight = false;
         }
 
-        /// Take the shell's answer: descriptions of changes this host asked
-        /// about show at once and wait to be written.
+        /// Take the shell's answer: descriptions of changes this host asked about show at once and wait
+        /// to be written.
         pub(crate) fn receive_descriptions(&mut self, described: Vec<HistoryChangeDescription>) {
             self.describing.in_flight = false;
             for description in described {
@@ -181,8 +168,8 @@ mod shell {
             !self.describing.unwritten.is_empty()
         }
 
-        /// Write the received descriptions into the resource's document as one
-        /// change, when no edit is open. Whether the document changed.
+        /// Write the received descriptions into the resource's document as one change, when no edit is
+        /// open.
         pub(crate) fn service_descriptions(
             &mut self,
             state: &mut State,
@@ -226,14 +213,12 @@ mod shell {
                     }
                     receipt.changed
                 }
-                // An open edit: the descriptions wait for the next quiet frame.
                 Err(
                     crate::state::owned_restore::OwnedRestoreError::PendingEdits
                     | crate::state::owned_restore::OwnedRestoreError::StaleReview
                     | crate::state::owned_restore::OwnedRestoreError::UnfinishedActionBoundary
                     | crate::state::owned_restore::OwnedRestoreError::ActiveAction,
                 ) => false,
-                // No write permission, or no document to write: shown, unshared.
                 Err(_) => {
                     self.describing.unwritten.clear();
                     false

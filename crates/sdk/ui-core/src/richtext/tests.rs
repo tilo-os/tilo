@@ -79,7 +79,6 @@ fn huge_paragraph_chunks_keep_source_offsets_and_reuse_shaping() {
         layout.caret_geometry(text.len()).1,
         last_y.max(layout.caret_geometry(text.len()).1)
     );
-    // An edit near the end retains the shaped allocation of the first chunk.
     let retained = layout.buffer.lines[0].layout_opt().unwrap().as_ptr();
     let edited = format!("{text} tail");
     let reused = RichTextLayout::shape_styled_reusing(
@@ -177,7 +176,6 @@ fn batched_selection_rects_match_per_range_geometry() {
             "range {range:?}"
         );
     }
-    // The band's source range covers every range that has a rectangle in it.
     let (lo, hi) = layout.source_range_within(0.0, 20.0).unwrap();
     for (range, rects) in ranges
         .iter()
@@ -188,7 +186,6 @@ fn batched_selection_rects_match_per_range_geometry() {
         }
     }
     assert_eq!(layout.source_range_within(1.0e6, 2.0e6), None);
-    // A band keeps exactly the unrestricted rectangles of the lines it overlaps.
     let bottom = 20.0;
     let banded = layout.selection_rects_many_within(&ranges, 0.0, bottom);
     for (all, within) in batched.iter().zip(&banded) {
@@ -207,7 +204,6 @@ fn batched_selection_rects_match_per_range_geometry() {
 
 #[test]
 fn reused_paragraphs_keep_allocations_and_match_fresh_geometry_through_edits() {
-    // Case `reused_paragraphs_keep_allocations_and_match_fresh_geometry`.
     {
         let mut fs = crate::font_catalog::fixture_font_system();
         let style = crate::text_render::TextStyle::new(16.0);
@@ -258,7 +254,6 @@ fn reused_paragraphs_keep_allocations_and_match_fresh_geometry_through_edits() {
         }
     }
 
-    // Case `reused_paragraphs_match_fresh_after_edit_and_style_transitions`.
     {
         let mut fs = crate::font_catalog::fixture_font_system();
         let base = crate::text_render::TextStyle::new(16.0);
@@ -368,7 +363,6 @@ thread_local! {
 )]
 #[test]
 fn caret_hit_and_selection_geometry_follow_visual_direction() {
-    // Case `caret_geometry_does_not_segment_unrelated_paragraphs`.
     {
         let text = "ordinary paragraph\n".repeat(1000);
         let shaped = layout(&text, 300.0);
@@ -382,7 +376,6 @@ fn caret_hit_and_selection_geometry_follow_visual_direction() {
         );
     }
 
-    // Case `caret_geometry_matches_full_scan_for_all_byte_affinity_boundaries`.
     {
         for text in [
             "",
@@ -423,7 +416,6 @@ fn caret_hit_and_selection_geometry_follow_visual_direction() {
         }
     }
 
-    // Case `shapes_caret_hit_and_selection`.
     {
         let mut fs = crate::font_catalog::fixture_font_system();
         let layout = RichTextLayout::shape_styled(
@@ -446,7 +438,6 @@ fn caret_hit_and_selection_geometry_follow_visual_direction() {
         assert!(rects[0].2 > rects[0].0);
     }
 
-    // Case `multiline_hit_and_caret_use_global_byte_offsets`.
     {
         let text = "first\nשני";
         let second_line = "first\n".len();
@@ -464,7 +455,6 @@ fn caret_hit_and_selection_geometry_follow_visual_direction() {
         assert!(rects.len() >= 2, "a cross-line selection paints each line");
     }
 
-    // Case `rtl_caret_geometry_follows_visual_direction`.
     {
         let text = "שלום";
         let layout = layout(text, 400.0);
@@ -482,7 +472,6 @@ fn caret_hit_and_selection_geometry_follow_visual_direction() {
         );
     }
 
-    // Case `mixed_bidi_selection_can_produce_disjoint_visual_bands`.
     {
         let text = "abc אבג xyz";
         // Logically select the Latin prefix plus the first Hebrew character.
@@ -500,7 +489,6 @@ fn caret_hit_and_selection_geometry_follow_visual_direction() {
         assert!(rects.iter().all(|(x0, y0, x1, y1)| x1 > x0 && y1 > y0));
     }
 
-    // Case `mixed_bidi_boundary_preserves_both_visual_affinities`.
     {
         let layout = layout("abc אבג xyz", 400.0);
         let (_, top, height) = layout.caret_geometry(0);
@@ -571,9 +559,8 @@ fn layout(text: &str, width: f32) -> RichTextLayout {
     )
 }
 
-/// Visual motion as a scan of every row of the document: the reference the
-/// paragraph-scoped search must agree with. At a row's edge it enters the
-/// row before or after in document order.
+/// Visual motion as a scan of every row of the document: the reference the paragraph-scoped search must
+/// agree with.
 fn visual_motion_full_scan(
     layout: &RichTextLayout,
     position: TextPosition,
@@ -676,7 +663,6 @@ fn rows_of_a_line_are_the_rows_a_full_scan_places_there() {
     let all_rows = shaped.buffer.layout_runs().count();
     assert!(all_rows > lines, "the fixture wraps");
     for height in [None, Some(60.0)] {
-        // A height ends the runs early; the seek leaves them ended there too.
         shaped.buffer.set_size(Some(120.0), height);
         let rows = shaped.buffer.layout_runs().count();
         assert_eq!(rows < all_rows, height.is_some(), "height {height:?}");
@@ -832,7 +818,6 @@ fn bounded_geometry_refuses_oversized_shaped_runs_before_caret_allocation() {
 
 #[test]
 fn paragraph_wrapping_alignment_and_final_rows_follow_controls() {
-    // Case `center_alignment_offsets_text`.
     {
         let mut fs = crate::font_catalog::fixture_font_system();
         let left = RichTextLayout::shape_styled(
@@ -861,7 +846,6 @@ fn paragraph_wrapping_alignment_and_final_rows_follow_controls() {
         );
     }
 
-    // Case `wrapping_produces_multiple_lines`.
     {
         let mut fs = crate::font_catalog::fixture_font_system();
         let long = "word ".repeat(60);
@@ -886,7 +870,6 @@ fn paragraph_wrapping_alignment_and_final_rows_follow_controls() {
         assert!(wrapped.height() > one.height() * 3.0);
     }
 
-    // Case `paragraph_controls_shape_and_fragment_the_authoritative_layout`.
     {
         let mut fs = crate::font_catalog::fixture_font_system();
         let text = "Good typography makes a paragraph feel even before it is read. Spacing supports the argument without calling attention to itself.";
@@ -924,7 +907,6 @@ fn paragraph_wrapping_alignment_and_final_rows_follow_controls() {
         );
     }
 
-    // Case `balanced_wrap_avoids_a_short_final_line_without_adding_lines`.
     {
         let mut fs = crate::font_catalog::fixture_font_system();
         let text = "A balanced heading wraps its thought into lines of comparable visual weight.";
@@ -957,7 +939,6 @@ fn paragraph_wrapping_alignment_and_final_rows_follow_controls() {
         );
     }
 
-    // Case `attributed_terminal_lf_preserves_the_plain_layout_final_row`.
     {
         use crate::text_render::TextStyle;
 
@@ -1028,7 +1009,6 @@ fn paragraph_wrapping_alignment_and_final_rows_follow_controls() {
         }
     }
 
-    // Case `terminal_empty_row_inherits_the_final_run_metrics_and_alignment`.
     {
         use crate::text_render::TextStyle;
 
@@ -1063,7 +1043,6 @@ fn paragraph_wrapping_alignment_and_final_rows_follow_controls() {
 
 #[test]
 fn script_aware_breaks_keep_document_offsets() {
-    // Case `offset_map_round_trips_document_boundaries_around_virtual_breaks`.
     {
         let text = "ทุกสองสัปดาห์";
         let map = OffsetMap::for_text_with_hyphenation(text, None);
@@ -1092,7 +1071,6 @@ fn script_aware_breaks_keep_document_offsets() {
         }
     }
 
-    // Case `attributed_thai_wraps_at_dictionary_boundaries_in_document_byte_space`.
     {
         let text = "ทุกสองสัปดาห์";
         let first = &text[..9];
@@ -1135,7 +1113,6 @@ fn script_aware_breaks_keep_document_offsets() {
         }
     }
 
-    // Case `plain_thai_layout_uses_the_same_dictionary_wrapping`.
     {
         use crate::text_render::TextStyle;
 
@@ -1155,7 +1132,6 @@ fn script_aware_breaks_keep_document_offsets() {
         );
     }
 
-    // Case `virtual_dictionary_hints_have_no_visible_advance`.
     {
         use crate::text_render::TextStyle;
 
@@ -1171,7 +1147,6 @@ fn script_aware_breaks_keep_document_offsets() {
         );
     }
 
-    // Case `real_layout_wraps_cjk_but_preserves_nbsp_and_emoji_zwj_clusters`.
     {
         use crate::text_render::TextStyle;
 
@@ -1203,7 +1178,6 @@ fn script_aware_breaks_keep_document_offsets() {
         assert!(emoji_layout.visual_line_index(family.len() + 1) >= 1);
     }
 
-    // Case `hyphenated_attributed_layout_keeps_document_offsets_and_decorations`.
     {
         use crate::text_render::TextStyle;
 
@@ -1241,10 +1215,8 @@ fn script_aware_breaks_keep_document_offsets() {
 
 #[test]
 fn run_styles_paint_backgrounds_superscripts_and_line_heights() {
-    // Case `background_span_records_a_paintable_band`.
     {
         let mut fs = crate::font_catalog::fixture_font_system();
-        // "AAA" plain, "BBB" highlighted, "CCC" plain.
         let spans = [
             RichSpan::new("AAA"),
             RichSpan::new("BBB").background(Some([255, 230, 0])),
@@ -1271,7 +1243,6 @@ fn run_styles_paint_backgrounds_superscripts_and_line_heights() {
         let (x0, y0, x1, y1) = rects[0];
         assert!(x1 > x0, "highlight band must have positive width");
         assert!(y1 > y0, "highlight band must have positive height");
-        // A span without a background contributes no band.
         let plain = RichTextLayout::shape_styled(
             &mut fs,
             &[RichSpan::new("AAA")],
@@ -1284,7 +1255,6 @@ fn run_styles_paint_backgrounds_superscripts_and_line_heights() {
         assert!(plain.backgrounds.is_empty());
     }
 
-    // Case `super_run_shapes_smaller_and_offsets_up`.
     {
         let mut fs = crate::font_catalog::fixture_font_system();
         let base_size = 20.0f32;
@@ -1309,8 +1279,6 @@ fn run_styles_paint_backgrounds_superscripts_and_line_heights() {
         assert_eq!(layout.baseline_at(1), BaselineShift::Super);
         assert_eq!(layout.baseline_at(0), BaselineShift::None);
 
-        // The superscript glyph is shaped at the reduced size; the base glyph
-        // keeps the full size.
         let mut base_glyph_size = None;
         let mut super_glyph_size = None;
         for run in layout.buffer.layout_runs() {
@@ -1347,7 +1315,6 @@ fn run_styles_paint_backgrounds_superscripts_and_line_heights() {
         assert_eq!(BaselineShift::None.offset(sg), 0.0);
     }
 
-    // Case `line_height_mult_scales_line_advance`.
     {
         let mut fs = crate::font_catalog::fixture_font_system();
         // Force two lines so the gap between line tops reflects the line advance.
@@ -1454,9 +1421,8 @@ fn caret_cluster_fast_path_matches_unicode_segmenter() {
     }
 }
 
-/// Skipping the visual rows a range cannot touch returns exactly the
-/// rectangles a scan of every row does, for every range of wrapped,
-/// multi-line, mixed-direction and clustered text.
+/// Skipping the visual rows a range cannot touch returns exactly the rectangles a scan of every row
+/// does, for every range of wrapped, multi-line, mixed-direction and clustered text.
 #[test]
 fn selection_rects_match_a_scan_of_every_row() {
     let scan = |shaped: &RichTextLayout, start: usize, end: usize| {
@@ -1540,8 +1506,8 @@ fn the_rows_within_a_view_of_a_long_text_are_found_without_walking_those_above()
     }
 }
 
-/// Caret geometry as a scan of every row of the document: the first exact
-/// stop, else the first stop of the byte.
+/// Caret geometry as a scan of every row of the document: the first exact stop, else the first stop of
+/// the byte.
 fn caret_geometry_full_scan(layout: &RichTextLayout, position: TextPosition) -> (f32, f32, f32) {
     let mut fallback = None;
     for run in layout.buffer.layout_runs() {
@@ -1591,7 +1557,6 @@ fn a_caret_at_a_huge_paragraphs_chunk_boundary_stands_and_moves_as_at_a_wrap() {
                 }
             }
         }
-        // Left from the end of a chunk leaves the boundary.
         let end = TextPosition::with_affinity(boundary, TextAffinity::Before);
         assert!(
             shaped.visual_motion_position(end, false).byte < boundary,

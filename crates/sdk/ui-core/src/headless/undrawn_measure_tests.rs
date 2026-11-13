@@ -1,10 +1,10 @@
-//! The layout pass answers a widget's measure, drawn or not: a part a container lays out and
-//! does not paint asks once for the change it measures, not on every frame after.
+//! The layout pass answers a widget's measure, drawn or not: a part a container lays out and does not
+//! paint asks once for the change it measures, not on every frame after.
 use super::*;
 use crate::widget::Text;
 
-/// A container that lays out both its parts and paints, and rests, only the first: a shut
-/// door's contents, a collapsed band's body.
+/// A container that lays out both its parts and paints, and rests, only the first: a shut door's
+/// contents, a collapsed band's body.
 struct HiddenPart {
     shown: Text,
     hidden: Text,

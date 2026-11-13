@@ -1,8 +1,8 @@
 use super::*;
 use crate::text_selection::{TextAffinity, TextPosition};
 
-/// Paragraphs in many scripts: bidi runs, Thai (dictionary breaks become
-/// virtual insertions), CJK, emoji, combining marks, blank lines.
+/// Paragraphs in many scripts: bidi runs, Thai (dictionary breaks become virtual insertions), CJK,
+/// emoji, combining marks, blank lines.
 const SEED: &str = "The rehearsal ran long, so the doors opened late.\n\
 \n\
 שלום עולם, mixed with English and 123 numbers.\n\
@@ -13,8 +13,6 @@ emoji 👩‍💻 and flags 🇩🇪🇫🇷 and é with e\u{301} combining.\n\
 \n\
 last paragraph";
 
-/// Text pieces an edit inserts: plain letters, a line feed, several
-/// paragraphs at once, other scripts.
 const INSERTS: [&str; 8] = [
     "x",
     " ",
@@ -77,7 +75,6 @@ fn paragraphs(
     )
 }
 
-/// Everything painting, wrapping, carets, selection and hit-testing read.
 fn assert_same_layout(spliced: &RichTextLayout, fresh: &RichTextLayout, text: &str, case: &str) {
     assert!(
         spliced
@@ -165,7 +162,6 @@ fn spliced_edits_match_a_fresh_layout() {
         let mut layout = paragraphs(&mut fs, &text, &style, 220.0, None);
         for step in 0..50 {
             text = edit(&text, &mut random);
-            // Most keystrokes keep the width; some measure at another one.
             let width = if step % 7 == 3 { 140.0 } else { 220.0 };
             layout = paragraphs(&mut fs, &text, &style, width, Some(layout));
             let fresh = paragraphs(&mut fs, &text, &style, width, None);
@@ -190,8 +186,6 @@ fn a_spliced_layout_knows_how_far_its_ink_reaches_as_a_fresh_one_does() {
         let width = if step % 9 == 4 { 140.0 } else { 220.0 };
         layout = paragraphs(&mut tr.font_system, &text, &style, width, Some(layout));
         let fresh = paragraphs(&mut tr.font_system, &text, &style, width, None);
-        // A line kept from before the edit was measured where its rows
-        // stood then: the same reach, up to f32 rounding of the positions.
         let (kept, fresh) = (tr.rich_ink_reach(&layout), tr.rich_ink_reach(&fresh));
         assert!(
             (kept.above - fresh.above).abs() < 1e-3 && (kept.below - fresh.below).abs() < 1e-3,
@@ -238,7 +232,6 @@ fn a_keystroke_shapes_only_its_paragraph() {
             "a caret and an arrow key built the stops of {visited} rows; the paragraph has {rows}"
         );
     }
-    // Every other line kept its wrap: still laid out, at the same rows.
     assert_eq!(wraps(&layout), before);
     assert!(
         layout
@@ -268,9 +261,8 @@ fn a_keystroke_shapes_only_its_paragraph() {
     );
 }
 
-/// A field measured at several widths keeps one layout per width; each
-/// keystroke is spliced into all of them, the later ones borrowing the shapes
-/// of the one spliced first.
+/// A field measured at several widths keeps one layout per width; each keystroke is spliced into all of
+/// them, the later ones borrowing the shapes of the one spliced first.
 #[test]
 fn layouts_kept_per_width_track_edits_and_share_shapes() {
     let mut fs = crate::font_catalog::fixture_font_system();
@@ -279,7 +271,6 @@ fn layouts_kept_per_width_track_edits_and_share_shapes() {
     let mut random = Lcg(0xd0b1e);
     let mut text = SEED.to_owned();
     let first = paragraphs(&mut fs, &text, &style, widths[0], None);
-    // The other widths start from copies, as a field's first frame does.
     let mut slots: Vec<RichTextLayout> = vec![first.duplicate(&mut fs), first.duplicate(&mut fs)];
     slots.insert(0, first);
     for (slot, width) in slots.iter_mut().zip(widths).skip(1) {
@@ -371,8 +362,6 @@ fn dependent_paragraphs_take_the_whole_text_path() {
         assert_eq!(layout.height(), styled.height());
         assert_eq!(layout.line_starts, styled.line_starts);
     }
-    // Typing a separator into a paragraph layout leaves the paragraph path
-    // and lands exactly where a fresh layout of the result does.
     let layout = paragraphs(&mut fs, "one\ntwo", &style, 200.0, None);
     let layout = paragraphs(&mut fs, "one\ntw\u{2029}o", &style, 200.0, Some(layout));
     let fresh = paragraphs(&mut fs, "one\ntw\u{2029}o", &style, 200.0, None);

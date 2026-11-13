@@ -1,16 +1,10 @@
-//! Semantic platform conventions for app-authored controls and shortcuts.
-//!
-//! Apps describe intent (`command + K`, primary vs cancel); the host chooses
-//! the modifier label, event modifier, and dialog ordering for its platform.
+//! Semantic platform conventions for app-authored controls and shortcuts. Apps describe intent
+//! (`command + K`, primary vs cancel); the host chooses the modifier label, event modifier, and dialog
+//! ordering for its platform.
 
-/// A row of a shortcut reference, as this platform spells it: `{cmd:K}` is
-/// the command key with K (Ctrl+K, or the Command key on a Mac),
-/// `{cmd+shift:Enter}` adds Shift, `{alt:Up}` is Alt with Up and `{F2}` is a
-/// key on its own, each in the active keyboard's legends. Everything else is
-/// shown as written.
-///
-/// A reference sheet that prints "Ctrl+S" as a string teaches a Mac user the
-/// wrong modifier, so every sheet spells its keys here.
+/// A row of a shortcut reference, as this platform spells it: `{cmd:K}` is the command key with K
+/// (Ctrl+K, or the Command key on a Mac), `{cmd+shift:Enter}` adds Shift, `{alt:Up}` is Alt with Up and
+/// `{F2}` is a key on its own, each in the active keyboard's legends.
 #[must_use]
 pub fn spell_shortcut(template: &str) -> String {
     let conventions = PlatformConventions::default();
@@ -30,10 +24,8 @@ pub fn spell_shortcut(template: &str) -> String {
     out
 }
 
-/// The same row as [`spell_shortcut`], one keycap per key, for a reference
-/// sheet that draws its keys with [`crate::widget::InputHint`]:
-/// `{cmd+shift:S}` is the command key, the shift key and S. Text outside the
-/// braces is a key of its own, so a plain `Page Up` is one cap.
+/// The same row as [`spell_shortcut`], one keycap per key, for a reference sheet that draws its keys
+/// with [`crate::widget::InputHint`]: `{cmd+shift:S}` is the command key, the shift key and S.
 #[must_use]
 pub fn spell_shortcut_keycaps(template: &str) -> Vec<String> {
     let conventions = PlatformConventions::default();
@@ -56,7 +48,6 @@ pub fn spell_shortcut_keycaps(template: &str) -> Vec<String> {
     caps
 }
 
-/// The key names written between two chords as their own cap.
 fn push_caps(caps: &mut Vec<String>, plain: &mut String, conventions: PlatformConventions) {
     let loose = std::mem::take(plain);
     if !loose.trim().is_empty() {
@@ -64,8 +55,8 @@ fn push_caps(caps: &mut Vec<String>, plain: &mut String, conventions: PlatformCo
     }
 }
 
-/// The chord a template's `{…}` names: `cmd` is the platform's command
-/// modifier, `shift` and `alt` add theirs.
+/// The chord a template's `{…}` names: `cmd` is the platform's command modifier, `shift` and `alt` add
+/// theirs.
 fn shortcut(spec: &str) -> Shortcut {
     let (modifiers, key) = spec.split_once(':').unwrap_or(("", spec));
     let mut shortcut = if modifiers.contains("cmd") {
@@ -117,8 +108,7 @@ pub enum DialogActionOrder {
     PrimaryFirst,
 }
 
-/// Host-selected conventions. Copyable so it can be propagated through a
-/// retained tree and overridden by deterministic tests or a native shell.
+/// Host-selected conventions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PlatformConventions {
     platform: Platform,
@@ -148,10 +138,7 @@ impl PlatformConventions {
         }
     }
 
-    /// The platform's primary command modifier: Command (Super) on macOS,
-    /// Control elsewhere. The one place that says what a
-    /// [`Shortcut::command`] chord is pressed with; matching it, pressing it
-    /// in a test and sending it to a page all ask here.
+    /// The platform's primary command modifier: Command (Super) on macOS, Control elsewhere.
     pub const fn command_modifier(self) -> winit::keyboard::ModifiersState {
         match self.platform {
             Platform::MacOs => winit::keyboard::ModifiersState::SUPER,
@@ -174,8 +161,6 @@ pub struct Shortcut {
     command: bool,
     shift: bool,
     alt: bool,
-    /// The desktop's own modifier (Super): the chords the system answers
-    /// whichever app has focus.
     system: bool,
 }
 
@@ -190,8 +175,8 @@ impl Shortcut {
         }
     }
 
-    /// A key pressed on its own, without the command modifier: F3, Delete,
-    /// or a single letter a view answers while it has focus.
+    /// A key pressed on its own, without the command modifier: F3, Delete, or a single letter a view
+    /// answers while it has focus.
     pub fn key(key: impl Into<String>) -> Self {
         Self {
             key: key.into(),
@@ -202,9 +187,8 @@ impl Shortcut {
         }
     }
 
-    /// A chord as the desktop's shortcut table stores it: modifier names
-    /// (`Super`, `Ctrl`, `Alt`, `Shift`) and a key, spelled for display in
-    /// the active keyboard layout's legends.
+    /// A chord as the desktop's shortcut table stores it: modifier names (`Super`, `Ctrl`, `Alt`,
+    /// `Shift`) and a key, spelled for display in the active keyboard layout's legends.
     pub fn chord<'a>(modifiers: impl IntoIterator<Item = &'a str>, key: &str) -> Self {
         let mut shortcut = Self::key(crate::keycaps::active().key(key));
         for modifier in modifiers {
@@ -268,8 +252,8 @@ impl Shortcut {
         }
     }
 
-    /// Labels to paint as individual physical-looking caps, in the legends
-    /// of the active keyboard layout ([`crate::keycaps::active`]).
+    /// Labels to paint as individual physical-looking caps, in the legends of the active keyboard
+    /// layout ([`crate::keycaps::active`]).
     pub fn keycap_labels(&self, conventions: PlatformConventions) -> Vec<String> {
         use crate::input::KeyboardModifier;
         let keycaps = crate::keycaps::active();
@@ -291,11 +275,8 @@ impl Shortcut {
         .collect()
     }
 
-    /// Whether the press of `key` with `modifiers` asks for this shortcut: the
-    /// same key, with exactly the modifiers it names. A command modifier is
-    /// the platform's own ([`PlatformConventions::command_modifier`]), so a
-    /// declared `Ctrl+Enter` is Command+Enter on a Mac and Ctrl+Enter
-    /// elsewhere, and no other modifier held along with it matches.
+    /// Whether the press of `key` with `modifiers` asks for this shortcut: the same key, with exactly
+    /// the modifiers it names.
     #[must_use]
     pub fn matches(
         &self,
@@ -306,8 +287,8 @@ impl Shortcut {
         Self::pressed(key, modifiers, conventions).is_some_and(|pressed| self.same_press(&pressed))
     }
 
-    /// The shortcut a live press asks for, in `conventions`' spelling, or
-    /// `None` for a key no shortcut can name.
+    /// The shortcut a live press asks for, in `conventions`' spelling, or `None` for a key no shortcut
+    /// can name.
     #[must_use]
     pub fn pressed(
         key: &winit::keyboard::Key,
@@ -326,8 +307,7 @@ impl Shortcut {
         })
     }
 
-    /// Whether both ask for one press: one key, in one spelling, with the
-    /// same modifiers.
+    /// Whether both ask for one press: one key, in one spelling, with the same modifiers.
     #[must_use]
     pub fn same_press(&self, other: &Self) -> bool {
         crate::keys::canonical(&self.key) == crate::keys::canonical(&other.key)
@@ -350,8 +330,8 @@ pub enum HostShortcut {
 }
 
 impl HostShortcut {
-    /// The one shortcut table. Plain Ctrl+H stays with apps (Find and
-    /// Replace), so History takes Shift where ⌘Y is not the convention.
+    /// The one shortcut table. Plain Ctrl+H stays with apps (Find and Replace), so History takes Shift
+    /// where ⌘Y is not the convention.
     pub fn shortcut(self, conventions: PlatformConventions) -> Shortcut {
         let mac = conventions.platform() == Platform::MacOs;
         match self {
@@ -365,9 +345,9 @@ impl HostShortcut {
         }
     }
 
-    /// The host service an action is, by the action's id: a row that lists one
-    /// of the toolkit's own commands shows the chord pressing it means, read
-    /// from the same table the key press resolves through.
+    /// The host service an action is, by the action's id: a row that lists one of the toolkit's own
+    /// commands shows the chord pressing it means, read from the same table the key press resolves
+    /// through.
     #[must_use]
     pub fn of_action(id: &str) -> Option<Self> {
         match id {
@@ -378,9 +358,8 @@ impl HostShortcut {
         }
     }
 
-    /// The picture a host service is drawn with where a row lists it, beside
-    /// the chord in the same table: an undo is an arrow turning back, whichever
-    /// app lists it.
+    /// The picture a host service is drawn with where a row lists it, beside the chord in the same
+    /// table: an undo is an arrow turning back, whichever app lists it.
     #[must_use]
     pub fn icon(self) -> crate::icons::Icon {
         use crate::icons::Icon;
@@ -393,8 +372,7 @@ impl HostShortcut {
         }
     }
 
-    /// Which host service a command-modified character means. Besides each
-    /// platform's own spelling, Ctrl+Shift+Z and Ctrl+Y both redo off macOS.
+    /// Which host service a command-modified character means.
     pub fn resolve(conventions: PlatformConventions, character: &str, shift: bool) -> Option<Self> {
         let mac = conventions.platform() == Platform::MacOs;
         match (character.to_ascii_lowercase().as_str(), shift) {
@@ -413,8 +391,8 @@ impl HostShortcut {
 mod tests {
     use super::*;
 
-    /// A desktop chord from the shortcut table (Super+F) reads with its
-    /// Super key, ahead of the others, in the standard menu spelling.
+    /// A desktop chord from the shortcut table (Super+F) reads with its Super key, ahead of the others,
+    /// in the standard menu spelling.
     #[test]
     fn a_desktop_chord_shows_its_super_key_first() {
         let _us = crate::keycaps::scoped(crate::keycaps::Keycaps::US);
@@ -473,8 +451,8 @@ mod tests {
         );
     }
 
-    /// A reference sheet paints one drawn keycap per key: a chord is its
-    /// modifiers and its key, never one cap holding a joined string.
+    /// A reference sheet paints one drawn keycap per key: a chord is its modifiers and its key, never
+    /// one cap holding a joined string.
     #[test]
     fn a_shortcut_row_is_one_keycap_per_key() {
         let _us = crate::keycaps::scoped(crate::keycaps::Keycaps::US);
@@ -560,15 +538,12 @@ mod tests {
     }
 }
 
-/// A chord as an app, a menu or the person's table writes it (`Ctrl+Enter`,
-/// `Super+W`, `F2`, `e`): one table for the modifiers and the key names it
-/// parses with ([`tilo_ui_graph::keys::Chord`]), the same one the compiler
-/// checks an app's declared shortcut against.
+/// A chord as an app, a menu or the person's table writes it (`Ctrl+Enter`, `Super+W`, `F2`, `e`): one
+/// table for the modifiers and the key names it parses with ([`tilo_ui_graph::keys::Chord`]), the same
+/// one the compiler checks an app's declared shortcut against.
 impl From<&str> for Shortcut {
     fn from(label: &str) -> Self {
         let Ok(chord) = tilo_ui_graph::keys::Chord::parse(label) else {
-            // Not a chord the toolkit knows: it matches the press of that one
-            // key, spelled as it was written, and nothing else.
             return Self::key(label.trim());
         };
         Self {

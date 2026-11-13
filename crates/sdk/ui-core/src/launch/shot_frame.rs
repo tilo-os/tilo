@@ -1,12 +1,5 @@
 //! One offscreen frame of a widget, for app-specific screenshot handlers.
-//!
-//! [`LaunchSpec::shot_root`](super::LaunchSpec::shot_root) captures through
-//! the full headless harness. Apps whose screenshots stage state between the
-//! passes of a frame (seed the document after the first sync, pin a
-//! selection once layout has settled, warm an image cache between two draws)
-//! drive the passes themselves through [`ShotFrame`]:
-//! `sync` → `build_layout` → layout → `apply_layout` → draw → PNG, the same
-//! cycle as `ui::App`. [`render_widget_png`] runs that cycle unchanged.
+//! [`LaunchSpec::shot_root`](super::LaunchSpec::shot_root) captures through the full headless harness.
 
 use crate::widget::DrawChild;
 use std::collections::HashMap;
@@ -28,7 +21,7 @@ use crate::{State, Theme};
 
 /// The document, theme, text renderer and layout tree of one offscreen frame.
 pub struct ShotFrame {
-    /// Document the widget syncs from. Seed it before [`ShotFrame::sync`].
+    /// Document the widget syncs from.
     pub state: State,
     /// Theme passed to layout and every draw pass.
     pub theme: Theme,
@@ -42,16 +35,15 @@ pub struct ShotFrame {
     taffy: TaffyTree<()>,
     node_map: HashMap<NodeId, *mut dyn Widget>,
     child: Option<NodeId>,
-    /// The floating surfaces the last [`ShotFrame::draw`] and the
-    /// [`ShotFrame::draw_overlay`] after it drew over the blurred material,
-    /// with what lay below each; the PNG blurs them as a live window does.
+    /// The floating surfaces the last [`ShotFrame::draw`] and the [`ShotFrame::draw_overlay`] after it
+    /// drew over the blurred material, with what lay below each; the PNG blurs them as a live window
+    /// does.
     backdrop: Vec<crate::backdrop::RecordedBackdrop>,
 }
 
 impl ShotFrame {
-    /// A frame at `viewport` with a fresh document, the theme's text scale
-    /// applied to the text renderer, and settled layout. Its PNG lands on the
-    /// window ground (`surfaces.content`), as a live window clears.
+    /// A frame at `viewport` with a fresh document, the theme's text scale applied to the text
+    /// renderer, and settled layout.
     #[must_use]
     pub fn new(viewport: (u32, u32), theme: Theme) -> Self {
         let mut text = TextRenderer::new();
@@ -93,18 +85,14 @@ impl ShotFrame {
         widget.sync(&self.state.doc, &self.state.root);
     }
 
-    /// Build a fresh layout tree for the widget inside a viewport-sized root,
-    /// resolve it, and apply the result.
+    /// Build a fresh layout tree for the widget inside a viewport-sized root, resolve it, and apply the
+    /// result.
     pub fn layout(&mut self, widget: &mut dyn Widget) -> Result<(), WidgetLayoutError> {
         self.layout_at(widget, self.viewport)
     }
 
-    /// [`ShotFrame::layout`] at a viewport other than the frame's own, to
-    /// simulate the window size a widget saw before a resize.
-    ///
-    /// # Errors
-    ///
-    /// As [`ShotFrame::layout`].
+    /// [`ShotFrame::layout`] at a viewport other than the frame's own, to simulate the window size a
+    /// widget saw before a resize.
     #[allow(
         clippy::cast_precision_loss,
         reason = "viewport dimensions are screen/image sizes, always far under 2^24"
@@ -149,15 +137,13 @@ impl ShotFrame {
         Ok(())
     }
 
-    /// The document, the layout tree of the last [`ShotFrame::layout`] and the
-    /// widget's node in it, for scenarios that stage input against laid-out
-    /// geometry.
+    /// The document, the layout tree of the last [`ShotFrame::layout`] and the widget's node in it, for
+    /// scenarios that stage input against laid-out geometry.
     pub fn layout_parts(&mut self) -> Option<(&mut State, &TaffyTree<()>, NodeId)> {
         let child = self.child?;
         Some((&mut self.state, &self.taffy, child))
     }
 
-    /// The window the frame stands for, in its own coordinates.
     fn window(&self) -> vello::kurbo::Rect {
         vello::kurbo::Rect::new(
             0.0,
@@ -167,8 +153,8 @@ impl ShotFrame {
         )
     }
 
-    /// Paint the widget's main pass into a new scene, culled against the
-    /// frame's window as a live host culls.
+    /// Paint the widget's main pass into a new scene, culled against the frame's window as a live host
+    /// culls.
     pub fn draw(&mut self, widget: &mut dyn Widget) -> Scene {
         let mut scene = Scene::new();
         let recording = crate::backdrop::BackdropRecording::begin();
@@ -188,9 +174,8 @@ impl ShotFrame {
         scene
     }
 
-    /// Composite the widget's top layer (open menus, popovers, modals) onto
-    /// `scene` over the frame's window, as the live host does after the main
-    /// pass and the window chrome.
+    /// Composite the widget's top layer (open menus, popovers, modals) onto `scene` over the frame's
+    /// window, as the live host does after the main pass and the window chrome.
     pub fn draw_overlay(&mut self, widget: &mut dyn Widget, scene: &mut Scene) {
         let recording =
             crate::backdrop::BackdropRecording::continuing(std::mem::take(&mut self.backdrop));
@@ -207,8 +192,8 @@ impl ShotFrame {
         self.backdrop = recording.finish();
     }
 
-    /// Paint app-owned floating surfaces onto `scene`, in the order the live
-    /// compositor stacks them above the window.
+    /// Paint app-owned floating surfaces onto `scene`, in the order the live compositor stacks them
+    /// above the window.
     pub fn draw_floating_surfaces(&mut self, widget: &mut dyn Widget, scene: &mut Scene) {
         widget.draw_floating_surfaces(
             scene,
@@ -222,13 +207,9 @@ impl ShotFrame {
 
 #[cfg(not(target_arch = "wasm32"))]
 impl ShotFrame {
-    /// Rasterise `scene` over the window ground at the frame's viewport and
-    /// publish it to `out` as a PNG, creating the parent directory.
-    ///
-    /// # Panics
-    ///
-    /// Panics when the offscreen renderer cannot publish the file, as
-    /// [`OffscreenRenderer::render_png`] does.
+    /// Rasterise `scene` over the window ground at the frame's viewport and publish it to `out` as a
+    /// PNG, creating the parent directory. # Panics Panics when the offscreen renderer cannot publish
+    /// the file, as [`OffscreenRenderer::render_png`] does.
     pub fn write_png(&self, scene: &Scene, out: &Path) {
         self.write_png_on(scene, self.theme.tokens.colors.surfaces.content, out);
     }
@@ -246,13 +227,8 @@ impl ShotFrame {
     }
 }
 
-/// Render one frame of `widget` at `viewport` under `theme` and write it to
-/// `out` as a PNG: [`ShotFrame`] with its defaults, synced once, laid out
-/// once and drawn once with its top layer.
-///
-/// # Errors
-///
-/// As [`ShotFrame::layout`].
+/// Render one frame of `widget` at `viewport` under `theme` and write it to `out` as a PNG:
+/// [`ShotFrame`] with its defaults, synced once, laid out once and drawn once with its top layer.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn render_widget_png(
     widget: &mut dyn Widget,

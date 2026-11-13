@@ -1,26 +1,6 @@
-//! UI render worker thread.
-//!
-//! Moves scene encode, swapchain acquire, blit, submit, present, and poll
-//! off the main winit thread onto a dedicated `ui-render` worker. Main keeps
-//! the widget tree + scene encoding; the worker owns the wgpu
-//! `RenderContext`, `RenderSurface<'static>`, and `vello::Renderer`.
-//!
-//! Three channels: `render_tx`/`rx` (capacity 1 — blocks main until the
-//! worker drains the previous frame) moves an encoded `Scene` + dims +
-//! base colour; `pool_tx`/`buffers` (worker → main, capacity 2,
-//! pre-seeded) recycles each `Scene` and damage vector as one atomic pair;
-//! `outcome_tx`/`frame_complete` (capacity 8) reports per-frame outcomes so
-//! main can re-request a redraw on Outdated/Suboptimal/Occluded/Timeout.
-//!
-//! The worker resizes the surface itself — main never touches it after
-//! handing it off at spawn — so wgpu state never crosses threads.
-//!
-//! On `exiting`, the App sends `RenderRequest::Shutdown` and `join()`s the
-//! worker, which drops its `RenderSurface<'static>` before the `Window` is
-//! dropped — required or wgpu panics on a surface outliving its window.
-//! On `suspended` the worker drops only the surface and hands its context
-//! and renderer back (`RenderThreadHandle::shutdown_keeping_renderer`), so
-//! the next surface does not open a device and compile pipelines again.
+//! UI render worker thread. Moves scene encode, swapchain acquire, blit, submit, present, and poll off
+//! the main winit thread onto a dedicated `ui-render` worker. The worker resizes the surface itself —
+//! main never touches it after handing it off at spawn — so wgpu state never crosses threads.
 #![allow(
     clippy::disallowed_methods,
     reason = "native host runner: the GPU render worker is a dedicated thread"
@@ -31,8 +11,8 @@ mod deferred_pipelines_tests;
 mod native_gpu_trace;
 #[cfg(target_os = "linux")]
 pub mod remote;
-/// Only a Linux session has a render service; elsewhere the same questions
-/// answer that nothing draws for this process.
+/// Only a Linux session has a render service; elsewhere the same questions answer that nothing draws
+/// for this process.
 #[cfg(not(target_os = "linux"))]
 #[path = "render_thread/remote_absent.rs"]
 pub mod remote;
@@ -59,8 +39,7 @@ use vello::peniko::Color;
 use vello::util::RenderSurface;
 use vello::{Renderer, Scene};
 
-/// Compile-time `Send` check: a vello/wgpu regression fails to compile rather
-/// than at thread spawn.
+/// Compile-time `Send` check: a vello/wgpu regression fails to compile rather than at thread spawn.
 const _: fn() = || {
     fn assert_send<T: Send>() {}
     assert_send::<Renderer>();
@@ -74,53 +53,40 @@ pub type PresentHook = Box<dyn FnOnce(crate::time::SystemTime) + Send>;
 
 pub enum RenderRequest {
     Frame {
-        /// Originating CPU profile sample; auxiliary/unprofiled frames have none.
         cpu_frame_id: Option<u64>,
-        // Inline deliberately. `Scene` is a collection of Vec/Arc handles:
-        // moving it through the bounded channel does not copy their backing
-        // data, while boxing it allocated and freed one heap object per frame.
         scene: Scene,
         width: u32,
         height: u32,
         base_color: Color,
-        /// Physical-pixel rectangles. Empty means the retained target is
-        /// already current and only needs presenting.
+        /// Physical-pixel rectangles. Empty means the retained target is already current and only needs
+        /// presenting.
         damage_regions: Vec<Rect>,
-        /// Copies within the retained target, in order, before the damage is
-        /// repainted: what a scroll keeps on screen (`crate::scroll_copy`).
-        /// A whole-surface frame ignores them.
+        /// Copies within the retained target, in order, before the damage is repainted: what a scroll
+        /// keeps on screen (`crate::scroll_copy`).
         scroll_copies: Vec<crate::scroll_copy::DeviceCopy>,
-        /// Resize, relayout, structure, or untracked overlay invalidation.
         full_redraw: bool,
-        /// The scene holds only what its damage needs (`crate::draw_cull`):
-        /// it must not be repainted beyond the damage, and a frame that must
-        /// be is not presented, but asks main for one drawn whole.
+        /// The scene holds only what its damage needs (`crate::draw_cull`): it must not be repainted
+        /// beyond the damage, and a frame that must be is not presented, but asks main for one drawn
+        /// whole.
         partial: bool,
-        /// The backdrops the scene's floating surfaces were recorded over
-        /// (`crate::backdrop`), in physical pixels. Empty draws no blur.
+        /// The backdrops the scene's floating surfaces were recorded over (`crate::backdrop`), in
+        /// physical pixels.
         backdrop: crate::backdrop::BackdropFrame,
-        /// The frame drawn as layers (`crate::strip_layers::LayerRecording`),
-        /// whose `scene` is their composition: a worker keeping their
-        /// textures pans the strip by copying instead of rasterising it.
+        /// The frame drawn as layers (`crate::strip_layers::LayerRecording`), whose `scene` is their
+        /// composition: a worker keeping their textures pans the strip by copying instead of
+        /// rasterising it.
         layers: Option<crate::strip_layers::FrameCache>,
-        /// Called with the time this frame, or the first later one, is
-        /// presented.
         on_present: Option<PresentHook>,
     },
-    /// Drain the channel and exit the worker loop. Sent from
-    /// `AppHandler::exiting`; the App then `join()`s the handle.
+    /// Drain the channel and exit the worker loop.
     Shutdown { keep_renderer: bool },
 }
 
-/// A device and a renderer whose pipelines are compiled for it, with no
-/// surface yet.
-/// Why the drawing surface was lost, kept for the window that stops on it.
+/// A device and a renderer whose pipelines are compiled for it, with no surface yet.
 static SURFACE_LOSS: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
-/// Set once this process recorded whether its first frame drew a backdrop.
 static FIRST_FRAME_BACKDROP_RECORDED: AtomicBool = AtomicBool::new(false);
 
-/// Record why the drawing surface was lost; the first reason is the cause.
 fn note_surface_loss(reason: String) {
     let mut slot = SURFACE_LOSS.lock_recover();
     slot.get_or_insert(reason);
@@ -163,18 +129,14 @@ use crate::render_bump_recovery as bump_recovery;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FrameOutcome {
     Presented,
-    /// Surface was outdated or suboptimal; worker reconfigured it and
-    /// skipped the frame. Main should redraw.
+    /// Surface was outdated or suboptimal; worker reconfigured it and skipped the frame.
     Reconfigured,
     /// Acquisition explicitly reported occlusion; retry with bounded backoff.
     Occluded,
     /// Acquisition timed out or encoding failed; retry at the normal cadence.
     Skipped,
-    /// No retry will help; the worker stops after emitting this and main
-    /// treats it as "close the window". Ordinary end of session, not a
-    /// fault — the compositor exiting destroys the surface mid-frame, and
-    /// wgpu's uncaptured-validation-error handler is `panic!`, which under
-    /// `panic = "abort"` killed the process. This variant avoids that.
+    /// No retry will help; the worker stops after emitting this and main treats it as "close the
+    /// window".
     SurfaceGone,
 }
 
@@ -190,17 +152,16 @@ pub struct RenderThreadHandle {
     pub(crate) buffers: BufferPool<(Scene, Vec<Rect>)>,
     pub frame_complete: Receiver<FrameOutcome>,
     pub(crate) retry: retry::RenderRetryState,
-    /// Set by the worker when presented pixels lost geometry to a Vello bump
-    /// overflow; the next frame main submits must repaint everything.
+    /// Set by the worker when presented pixels lost geometry to a Vello bump overflow; the next frame
+    /// main submits must repaint everything.
     full_repaint: Arc<AtomicBool>,
-    /// The largest texture edge the frames' device accepts: main fits each
-    /// frame under it (`crate::scale::fit_to_texture_limit`). The limit
-    /// every device is opened with until the worker reads its own device's.
+    /// The largest texture edge the frames' device accepts: main fits each frame under it
+    /// (`crate::scale::fit_to_texture_limit`). The limit every device is opened with until the worker
+    /// reads its own device's.
     texture_limit: Arc<AtomicU32>,
     join: Option<JoinHandle<Option<PreparedRenderer>>>,
-    /// Ends a wait the worker cannot end itself, before it is joined: the
-    /// remote worker's on a render service that may never answer a closing
-    /// window's last frame.
+    /// Ends a wait the worker cannot end itself, before it is joined: the remote worker's on a render
+    /// service that may never answer a closing window's last frame.
     interrupt: Option<Box<dyn Fn() + Send>>,
 }
 
@@ -252,7 +213,6 @@ impl<T> BufferPool<T> {
     }
 
     /// Put a reserved buffer back when this redraw will not present.
-    /// Dropping it would shrink the pool until the worker had nothing to return.
     #[cfg(feature = "native")]
     pub(crate) fn unprepare(&mut self, buffers: T) {
         self.prepared = Some(buffers);
@@ -311,8 +271,8 @@ impl RenderThreadHandle {
         self.texture_limit.load(Ordering::Relaxed)
     }
 
-    /// A window of `physical` pixels at `scale`, as a frame this worker can
-    /// draw: past the device's texture limit it draws at a lower scale.
+    /// A window of `physical` pixels at `scale`, as a frame this worker can draw: past the device's
+    /// texture limit it draws at a lower scale.
     #[cfg(feature = "native")]
     pub(crate) fn frame_extent(
         &self,
@@ -326,24 +286,21 @@ impl RenderThreadHandle {
         )
     }
 
-    /// Whether the worker asked for a whole-surface repaint since the last
-    /// call. It wakes the window when it asks, so the request does not wait
-    /// for an unrelated event.
+    /// Whether the worker asked for a whole-surface repaint since the last call.
     #[cfg(feature = "native")]
     pub(crate) fn take_full_repaint(&self) -> bool {
         self.full_repaint.swap(false, Ordering::SeqCst)
     }
 
-    /// Idempotent: a second call is a no-op (the `JoinHandle` is taken on
-    /// the first). The worker drops its `RenderSurface` before this
-    /// returns — it must die before the `Window` it was created against,
-    /// or wgpu may panic on Vulkan backends.
+    /// Idempotent: a second call is a no-op (the `JoinHandle` is taken on the first). The worker drops
+    /// its `RenderSurface` before this returns — it must die before the `Window` it was created
+    /// against, or wgpu may panic on Vulkan backends.
     pub fn shutdown_and_join(&mut self) {
         let _ = self.stop(false);
     }
 
-    /// [`Self::shutdown_and_join`], taking back the worker's context and
-    /// renderer if it was still running.
+    /// [`Self::shutdown_and_join`], taking back the worker's context and renderer if it was still
+    /// running.
     #[cfg(feature = "native")]
     pub(crate) fn shutdown_keeping_renderer(&mut self) -> Option<PreparedRenderer> {
         self.stop(true)
@@ -373,15 +330,12 @@ pub(crate) fn spawn_render_thread_for_window(
     spawn_render_thread_deferred(move || Ok((render_cx, surface, renderer)), wake, window)
 }
 
-/// What a render worker renders with: the device context, the window's
-/// surface and vello's renderer.
+/// What a render worker renders with: the device context, the window's surface and vello's renderer.
 pub(crate) type RenderParts = (RenderContext, RenderSurface<'static>, Renderer);
 
-/// [`spawn_render_thread_for_window`] whose parts `prepare` makes on the
-/// worker itself, before its first frame: the handle (and the scene pool the
-/// main thread draws into) exists at once, so the first frame is drawn while
-/// the GPU is still being prepared. A `prepare` that fails ends the worker as
-/// a lost surface with its reason.
+/// [`spawn_render_thread_for_window`] whose parts `prepare` makes on the worker itself, before its
+/// first frame: the handle (and the scene pool the main thread draws into) exists at once, so the first
+/// frame is drawn while the GPU is still being prepared.
 #[allow(
     clippy::too_many_lines,
     reason = "keep the single GPU owner's resize/render/trace/recycle/shutdown sequence and resource drop order visible together"
@@ -447,8 +401,6 @@ pub(crate) fn spawn_render_thread_deferred(
                 tracing::info!("tilo-ui: CPU fine rasterization selected for software adapter");
             }
             let mut target_valid = false;
-            // The layers of frames drawn as layers, and the frame the
-            // target holds when it holds a presented one.
             let mut layer_presenter = crate::strip_layers::LayerPresenter::default();
             let mut holds: Option<u64> = None;
             let mut bump_recovery = bump_recovery::BumpRecovery::default();
@@ -566,11 +518,6 @@ pub(crate) fn spawn_render_thread_deferred(
                         crate::pipeline_cache::persist_unsaved,
                     );
                 }
-                // The process's first frame, the primary window's (its
-                // worker starts before any other window's, as the startup
-                // marks assume): what the next launch's renderer preparation
-                // reads to decide when to build
-                // (`pipeline_cache::first_frame_backdrop`).
                 if frame_ix == 0
                     && raster.on_cpu()
                     && !FIRST_FRAME_BACKDROP_RECORDED.swap(true, Ordering::AcqRel)
@@ -596,8 +543,6 @@ pub(crate) fn spawn_render_thread_deferred(
                     if let Err(err) =
                         resize_surface_checked(&render_cx, &mut surface, width, height)
                     {
-                        // Re-attempting the same reconfigure on a destroyed
-                        // surface fails identically forever.
                         tracing::warn!(%err, "drawing surface is gone; stopping the render thread");
                         note_surface_loss(format!(
                             "its drawing surface could not be resized: {err}"
@@ -642,9 +587,6 @@ pub(crate) fn spawn_render_thread_deferred(
                 if let Some(observer) = gpu_trace.as_mut() {
                     observer.observe(&mut renderer, None);
                 }
-                // A frame drawn as layers is composited from them once they
-                // hold an earlier frame's; the first is rasterised from its
-                // scene as any other, and its layers warmed after it.
                 let layers = layers.filter(|cache| {
                     !raster.on_cpu()
                         && backdrop.is_empty()
@@ -674,8 +616,6 @@ pub(crate) fn spawn_render_thread_deferred(
                         base_color,
                         damage_regions: &damage_regions,
                         scroll_copies: &scroll_copies,
-                        // A blurred surface samples everything under it, and
-                        // the frame after one repaints what it covered.
                         full_redraw: full_redraw
                             || !target_valid
                             || !backdrop.is_empty()
@@ -717,8 +657,6 @@ pub(crate) fn spawn_render_thread_deferred(
                     render_duration,
                 );
                 timing::handoff::record(&mut handoff, timing::handoff::Stage::AfterOutcomeLog);
-                // A per-session frame counter; bounded by wall-clock session
-                // length at typical refresh rates, nowhere near `u64::MAX`.
                 if outcome == FrameOutcome::Presented
                     && composited.is_none()
                     && let Some(cache) = layers.as_ref()
@@ -760,8 +698,6 @@ pub(crate) fn spawn_render_thread_deferred(
                 if target_valid && !first_present_recorded {
                     first_present_recorded = true;
                     tilo_startup_metrics::mark("first-frame-presented");
-                    // The pipelines the renderer deferred past this frame;
-                    // then the app's pipeline cache holds all it compiled.
                     if let Some(device) = render_cx.devices.get(surface.dev_id) {
                         renderer.start_deferred_pipelines(
                             &device.device,
@@ -818,8 +754,6 @@ pub(crate) fn spawn_render_thread_deferred(
             // the early resize-failure path that cannot recycle its scene.
             drop(pool_tx);
             notify_buffer_waiter(&waiting, wake.as_ref());
-            // The surface goes first: it releases its swapchain on the
-            // instance `render_cx` owns.
             let device_id = surface.dev_id;
             drop(raster);
             drop(surface);
@@ -848,7 +782,6 @@ pub(crate) fn spawn_render_thread_deferred(
     })
 }
 
-/// Collect finished bump counters; `true` when presented pixels lost geometry.
 fn poll_bump_recovery(
     recovery: &mut bump_recovery::BumpRecovery,
     renderer: &mut Renderer,
@@ -861,20 +794,16 @@ fn poll_bump_recovery(
     recovery.poll(renderer, &device_handle.device) == bump_recovery::BumpStep::Repaint
 }
 
-/// The retained target is no longer a faithful frame: the next one repaints
-/// everything, and main is woken to submit it even if nothing else changed.
+/// The retained target is no longer a faithful frame: the next one repaints everything, and main is
+/// woken to submit it even if nothing else changed.
 fn request_full_repaint(target_valid: &mut bool, full_repaint: &AtomicBool, wake: &dyn Fn()) {
     *target_valid = false;
     full_repaint.store(true, Ordering::SeqCst);
     wake();
 }
 
-/// Opt-in worker timing for every consumed frame, including early exits that
-/// never reach the existing `present-frame` diagnostic. Times are relative to
-/// this worker's origin, not the main-thread profiler or another process.
-/// `total_us` excludes resize and is null when resize failed before rendering.
-/// These are CPU wall times, not GPU completion or display presentation times;
-/// worker bounds exclude channel waiting, scene recycling, and this log write.
+/// Opt-in worker timing for every consumed frame, including early exits that never reach the existing
+/// `present-frame` diagnostic.
 fn log_render_outcome(
     frame_ix: u64,
     cpu_frame_id: Option<u64>,
@@ -956,15 +885,8 @@ mod correlation_tests {
     }
 }
 
-/// `Surface::configure` returns no `Result` — failures go to the device's
-/// error sink and panic with no matching error scope. Pushing the scope
-/// here, around this one call, keeps the catch narrow: every other wgpu
-/// misuse still panics.
-///
-/// The failure reads `Surface does not support the adapter's queue family`,
-/// which is misleading: wgpu-core reports `UnsupportedQueueFamily`
-/// whenever `get_capabilities` errors, and the Vulkan backend returns that
-/// for `ERROR_SURFACE_LOST_KHR` too — the actual case here.
+/// `Surface::configure` returns no `Result` — failures go to the device's error sink and panic with no
+/// matching error scope.
 fn configure_surface_checked(
     render_cx: &RenderContext,
     surface: &RenderSurface<'static>,
@@ -982,8 +904,8 @@ fn configure_surface_checked(
     }
 }
 
-/// [`configure_surface_checked`] for the resize path, which reconfigures after
-/// swapping the intermediate targets.
+/// [`configure_surface_checked`] for the resize path, which reconfigures after swapping the
+/// intermediate targets.
 fn resize_surface_checked(
     render_cx: &RenderContext,
     surface: &mut RenderSurface<'static>,
@@ -1003,9 +925,7 @@ fn resize_surface_checked(
     }
 }
 
-/// A suboptimal acquisition still owns a swapchain texture. Discard it while
-/// the old swapchain is configured, before entering recovery; a wildcard match
-/// would keep the acquisition temporary alive across the reconfiguration.
+/// A suboptimal acquisition still owns a swapchain texture.
 fn acquire_surface_texture(
     surface: &vello::wgpu::Surface<'_>,
     reconfigure: impl FnOnce() -> FrameOutcome,
@@ -1031,7 +951,6 @@ fn acquire_surface_texture(
     }
 }
 
-/// How a presented frame is identified and observed.
 #[derive(Clone, Copy)]
 struct FramePresentation<'a> {
     frame_ix: u64,
@@ -1049,11 +968,9 @@ struct FrameRasterizers<'a> {
     layers: Option<FrameLayersPresent<'a>>,
 }
 
-/// A frame composited from the layers it was drawn as.
 struct FrameLayersPresent<'a> {
     cache: &'a crate::strip_layers::FrameCache,
     presenter: &'a mut crate::strip_layers::LayerPresenter,
-    /// The frame the target holds, when it holds a presented one.
     holds: Option<u64>,
 }
 
@@ -1100,8 +1017,6 @@ fn render_one_frame(
     // packed and uploaded the scene wasted the entire GPU pass.
     let t_acquire = present_dbg.then(crate::time::now);
     let surface_texture = match acquire_surface_texture(&surface.surface, || {
-        // Surface drifted (resize, scale change). Reconfigure and ask main
-        // to redraw, after acquisition has released any suboptimal texture.
         if let Err(err) = configure_surface_checked(render_cx, surface) {
             tracing::info!(%err, "drawing surface is gone; abandoning the frame");
             note_surface_loss(format!(
@@ -1145,7 +1060,6 @@ fn render_one_frame(
         view: &surface.target_view,
     };
     let gpu = (&device_handle.device, &device_handle.queue);
-    // Where a frame composited from layers changed the target.
     let mut composited = None;
     let (rasterized, backdrop_stats) = if let Some(FrameLayersPresent {
         cache,
@@ -1287,7 +1201,6 @@ fn render_one_frame(
     let submit_us = t_submit.map(|t| t.elapsed().as_secs_f64() * 1e6);
 
     let t_present = present_dbg.then(crate::time::now);
-    // The compositor repaints where the copies landed as well as the damage.
     let presented: std::borrow::Cow<'_, [Rect]> = if let Some(rect) = composited {
         std::borrow::Cow::Owned(
             vec![rect]
@@ -1354,8 +1267,6 @@ fn render_one_frame(
             .saturating_add(std::mem::size_of_val(
                 encoding.resources.normalized_coords.as_slice(),
             ));
-        // The present pass samples every RGBA8 pixel from Vello's target into
-        // the swapchain. This is GPU-local traffic, not a CPU readback.
         let blit_bytes = u64::from(width)
             .saturating_mul(u64::from(height))
             .saturating_mul(4);
@@ -1377,7 +1288,6 @@ fn render_one_frame(
     if let (Some(observer), Some(bounds)) = (presentation, present_bounds) {
         observer.log_native_present(frame_ix, cpu_frame_id, bounds);
     }
-    // `Poll` is the non-blocking variant — nudges the queue without stalling.
     let _ = device_handle.device.poll(vello::wgpu::PollType::Poll);
     if frame_ix == 0 {
         tilo_startup_metrics::mark("render-worker-first-poll-done");
@@ -1385,9 +1295,8 @@ fn render_one_frame(
     FrameOutcome::Presented
 }
 
-/// Whether the render worker repaints a frame of `width` × `height` with
-/// `damage` (physical pixels) from its scene region by region, never
-/// whole: what a frame drawn for its damage only needs
+/// Whether the render worker repaints a frame of `width` × `height` with `damage` (physical pixels)
+/// from its scene region by region, never whole: what a frame drawn for its damage only needs
 /// (`crate::draw_cull`).
 pub(crate) fn renders_damage_alone(width: u32, height: u32, damage: &[Rect]) -> bool {
     crate::damage::bounded_present_damage(width, height, damage).is_some()
@@ -1478,7 +1387,6 @@ mod admission_tests {
                     _: &crate::widget::AppModel,
                     _: &crate::widget::ModelPath,
                 ) -> bool {
-                    // The owner wrote the label; this pass takes it up.
                     self.pending.take().is_some()
                 }
                 fn sync(&mut self, doc: &crate::widget::AppModel, path: &crate::widget::ModelPath) {
@@ -1690,7 +1598,6 @@ mod admission_tests {
             );
             assert!(pool.prepare().unwrap());
             assert_eq!(pool.recv().unwrap(), 7);
-            // Completion before admission needs no wake: admission finds the pair.
             tx.send(8).unwrap();
             notify_buffer_waiter(&waiting, &wake);
             assert!(pool.prepare().unwrap());
@@ -1706,9 +1613,9 @@ mod admission_tests {
 }
 
 /// Every frame the native host presents is its retained target after
-/// `retained_raster::rasterize_damage`. However frames alternate between partial and full
-/// raster, what is presented must equal a full render of the same scene;
-/// otherwise the screen shows holes or stale content outside the damage.
+/// `retained_raster::rasterize_damage`. However frames alternate between partial and full raster, what
+/// is presented must equal a full render of the same scene; otherwise the screen shows holes or stale
+/// content outside the damage.
 #[cfg(test)]
 mod retained_damage_tests {
     use super::*;
@@ -1719,8 +1626,8 @@ mod retained_damage_tests {
     const WIDTH: u32 = 320;
     const HEIGHT: u32 = 200;
 
-    /// One moving or recoloured item on a still backdrop, like a field,
-    /// a caret, a hovered button or a spinner.
+    /// One moving or recoloured item on a still backdrop, like a field, a caret, a hovered button or a
+    /// spinner.
     #[derive(Clone, Copy)]
     struct Item {
         rect: Rect,
@@ -1845,8 +1752,7 @@ mod retained_damage_tests {
         tight
     }
 
-    /// A small deterministic generator, so a failure names a reproducible
-    /// frame.
+    /// A small deterministic generator, so a failure names a reproducible frame.
     struct Lcg(u64);
 
     impl Lcg {
@@ -1869,8 +1775,8 @@ mod retained_damage_tests {
         }
     }
 
-    /// Marching ants around a fur selection: thousands of dashes over the
-    /// whole surface, far more than a fresh bump reservation holds.
+    /// Marching ants around a fur selection: thousands of dashes over the whole surface, far more than
+    /// a fresh bump reservation holds.
     fn marching_ants() -> Scene {
         let mut scene = scene_of(&[]);
         let mut rng = Lcg(0xa17);
@@ -1951,10 +1857,9 @@ mod retained_damage_tests {
         );
     }
 
-    /// A list scrolled by a whole number of device pixels: rows over a flat
-    /// ground (what a scroll copies must translate), the second frame the
-    /// same rows `dy` higher and a new row where the scroll exposed the
-    /// bottom.
+    /// A list scrolled by a whole number of device pixels: rows over a flat ground (what a scroll
+    /// copies must translate), the second frame the same rows `dy` higher and a new row where the
+    /// scroll exposed the bottom.
     fn scrolled_rows(dy: f64) -> Scene {
         let mut scene = Scene::new();
         scene.fill(
@@ -1986,10 +1891,9 @@ mod retained_damage_tests {
         scene
     }
 
-    /// The copy moves the rows that stay on screen and the damage repaints
-    /// the strip the scroll exposed: what the native window presents equals
-    /// a full render of the scrolled scene, on the GPU path and on the CPU
-    /// path a software adapter takes.
+    /// The copy moves the rows that stay on screen and the damage repaints the strip the scroll
+    /// exposed: what the native window presents equals a full render of the scrolled scene, on the GPU
+    /// path and on the CPU path a software adapter takes.
     #[test]
     fn a_scroll_copy_then_its_damage_matches_a_full_render() {
         let gpu = crate::offscreen::shared_gpu().expect("shared GPU context for the copy oracle");
@@ -2097,10 +2001,8 @@ mod retained_damage_tests {
         );
     }
 
-    /// A frame that overflowed Vello's bump buffers was presented without
-    /// some of its geometry. The worker must notice from the counters alone
-    /// and repaint the whole surface; later damage-only frames, or none at
-    /// all for an idle window, never touch most of the missing pixels.
+    /// A frame that overflowed Vello's bump buffers was presented without some of its geometry. The
+    /// worker must notice from the counters alone and repaint the whole surface.
     #[test]
     fn an_overflowed_frame_is_repainted_whole() {
         let gpu = crate::offscreen::shared_gpu().expect("shared GPU context for the damage oracle");
@@ -2185,8 +2087,6 @@ mod retained_damage_tests {
             "the overflowed frame must visibly lack geometry, or this test proves nothing"
         );
 
-        // The idle worker: poll on its receive timeout and repaint whenever
-        // asked, exactly as main answers `take_full_repaint`.
         let mut repaints = 0;
         loop {
             let step = recovery.poll(&mut renderer, device);
@@ -2226,10 +2126,9 @@ mod retained_damage_tests {
         );
     }
 
-    /// A frame whose bump counters report no overflow drew everything. The
-    /// segments reservation is separate from seg_counts and had no overflow
-    /// check: a frame could outgrow it, report `failed=0`, and be presented
-    /// with geometry missing, which the overflow repaint then never fixed.
+    /// A frame whose bump counters report no overflow drew everything. The segments reservation is
+    /// separate from seg_counts and had no overflow check: a frame could outgrow it, report `failed=0`,
+    /// and be presented with geometry missing, which the overflow repaint then never fixed.
     #[test]
     fn a_frame_reported_complete_is_complete() {
         let gpu = crate::offscreen::shared_gpu().expect("shared GPU context for the damage oracle");
@@ -2332,8 +2231,6 @@ mod retained_damage_tests {
                 let index = rng.below(items.len() as u64) as usize;
                 let before = items[index];
                 let mut after = before;
-                // Small moves keep damage partial; an occasional big one
-                // crosses the half-screen threshold into one full pass.
                 let reach: u64 = if rng.below(9) < 1.0 { 260 } else { 30 };
                 let dx = rng.below(reach) - (reach as f64) / 2.0;
                 let dy = rng.below(reach / 2) - (reach as f64) / 4.0;
@@ -2351,7 +2248,6 @@ mod retained_damage_tests {
                     rng.below(255) as u8,
                 ];
                 items[index] = after;
-                // What the native host reports: both boxes, with its margin.
                 damage.push(before.rect.union(after.rect).inflate(16.0, 16.0));
             }
             let scene = scene_of(&items);
@@ -2405,7 +2301,6 @@ mod retained_damage_tests {
     }
 }
 
-/// The app a startup summary names: its package, else its executable.
 fn startup_app_name() -> String {
     std::env::var("TILO_PACKAGE_ID").ok().unwrap_or_else(|| {
         std::env::current_exe()

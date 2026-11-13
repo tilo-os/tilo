@@ -26,8 +26,8 @@ struct Key {
     binding: uuid::Uuid,
     selection: Option<FileVersionId>,
 }
-/// The agents behind those versions of a file an agent caused, by version,
-/// as each version's own signing device recorded them.
+/// The agents behind those versions of a file an agent caused, by version, as each version's own
+/// signing device recorded them.
 pub(super) type Attributions = std::collections::BTreeMap<FileVersionId, FileAttributionV1>;
 
 enum Reply {
@@ -103,8 +103,8 @@ pub(super) struct FileController {
     pub live_updates: bool,
     active: bool,
     refreshing: bool,
-    /// `message` reports a restore outcome. The activity summary must not
-    /// replace it until the user acts or the presentation is reactivated.
+    /// `message` reports a restore outcome. The activity summary must not replace it until the user
+    /// acts or the presentation is reactivated.
     reporting: bool,
     next_poll: crate::time::Instant,
 }
@@ -167,8 +167,8 @@ impl FileController {
             });
         }
     }
-    /// When this controller next asks for the activity list on its own
-    /// ([`Self::has_results`]), on the clock of its background work.
+    /// When this controller next asks for the activity list on its own ([`Self::has_results`]), on the
+    /// clock of its background work.
     pub fn next_refresh(&self) -> Option<(Background, crate::time::Instant)> {
         (self.active && !self.refreshing).then(|| (self.background.clone(), self.next_poll))
     }
@@ -303,9 +303,6 @@ impl FileController {
             })
     }
     fn hide(&mut self) {
-        // A denial is a barrier even for successful reads that already returned
-        // but have not delivered their completion. Exact operation settlement
-        // remains bound to host/binding/request independently of this epoch.
         self.advance();
         self.presentation_invalidated = true;
         self.key.selection = None;
@@ -351,9 +348,6 @@ impl FileController {
                 self.versions = versions;
                 self.attributions = attributions;
                 self.current_revision = current_revision;
-                // Activity polling is ambient status. Keep an admitted restore
-                // outcome visible, and after a transient read failure restore the
-                // exact operational message that failure temporarily displaced.
                 if let Some(message) = self.activity_recovery_message.take() {
                     self.message = message;
                 } else if self.after.is_none() && self.restore.outcome.is_none() && !self.reporting
@@ -516,7 +510,6 @@ impl FileController {
         }
         changed
     }
-    /// Everything an activity reply can change that the host presents.
     fn presented(&self) -> Presented {
         Presented {
             versions: self.versions.clone(),
@@ -530,7 +523,6 @@ impl FileController {
             review_changed: self.review_changed,
         }
     }
-    /// Refresh the activity list again after the poll interval.
     fn schedule_poll(&mut self) {
         let now = self.background.now();
         self.next_poll = now.checked_add(POLL_INTERVAL).unwrap_or(now);
@@ -594,7 +586,6 @@ fn load_all(
         if page.next_after.is_some() && page.next_after != page.versions.last().map(|v| v.id) {
             return Err(Error::InvalidRequest);
         }
-        // An attribution names an agent for one of this page's own versions.
         for attributed in page.attributions {
             if attributed.attribution.validate().is_err()
                 || !page
@@ -752,7 +743,6 @@ mod tests {
             Outcome::Unavailable
         }
     }
-    /// The review `scope()` answers with, or one at another `frontier`.
     fn review(frontier: [u8; 32]) -> Review {
         Review {
             schema_version: 1,
@@ -762,7 +752,6 @@ mod tests {
             frontier,
         }
     }
-    /// A version of `controller()`'s record, made by its own signing device.
     fn version(id: u128) -> FileVersionV1 {
         FileVersionV1 {
             id: FileVersionId(uuid::Uuid::from_u128(id)),
@@ -885,8 +874,6 @@ mod tests {
                 "a pinned frontier cannot change its total across pages"
             );
 
-            // A page names the agent behind one of its own versions; one that
-            // names another page's version, or no agent, is incoherent.
             let attributed = |id, actor: &str| fs_protocol::FileVersionAttributionV1 {
                 version_id: version(id).id,
                 attribution: fs_protocol::FileAttributionV1 {

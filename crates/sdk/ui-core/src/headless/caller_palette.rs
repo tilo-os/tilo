@@ -1,5 +1,5 @@
-//! Caller-only palette presentation. Submission transfers inert intent to the
-//! host; it never installs a worker route or executes an application effect.
+//! Caller-only palette presentation. Submission transfers inert intent to the host; it never installs a
+//! worker route or executes an application effect.
 use super::{
     ElementState, FrameHarness, HashMap, InspectionNode, Key, WindowEvent, collect_inspection,
 };
@@ -30,10 +30,8 @@ impl FrameHarness {
         );
         resources
     }
-    /// Replace the caller's currently authenticated action projection. Resource
-    /// addresses must include immutable host/route/catalogue identity.
-    /// Whether the command chord opens the caller palette. A root that
-    /// answers the chord with its own search (the web desktop) turns it off.
+    /// Replace the caller's currently authenticated action projection. Resource addresses must include
+    /// immutable host/route/catalogue identity.
     pub fn set_caller_palette_enabled(&mut self, enabled: bool) {
         self.invalidate_local();
         self.caller_palette.disabled = !enabled;
@@ -49,9 +47,8 @@ impl FrameHarness {
         self.relayout();
     }
 
-    /// Transfer one UI intent. The host owns durable invocation admission and
-    /// recovery; this frame never acknowledges an effect or mutates its document.
-    /// Browser-owned command search opens the same authoritative palette.
+    /// Transfer one UI intent. The host owns durable invocation admission and recovery; this frame
+    /// never acknowledges an effect or mutates its document.
     pub fn open_caller_search(&mut self, query: &str) -> Result<(), String> {
         self.invalidate_local();
         if self.root.modal_capture().is_some()
@@ -70,8 +67,8 @@ impl FrameHarness {
         self.relayout();
         Ok(())
     }
-    /// The caller palette's rows as a person reads them, label and the line
-    /// under it, in display order; empty while it is closed.
+    /// The caller palette's rows as a person reads them, label and the line under it, in display order;
+    /// empty while it is closed.
     #[must_use]
     pub fn caller_palette_rows(&self) -> Vec<(String, Option<String>)> {
         self.caller_palette
@@ -211,7 +208,6 @@ impl FrameHarness {
     pub(super) fn draw_caller_palette(&mut self) {
         let transform = self.capture_draw_transform();
         if let Some(palette) = &mut self.caller_palette.palette {
-            // The app's frame, under the window's bar where one is shown.
             let window = vello::kurbo::Rect::new(
                 0.0,
                 0.0,
@@ -397,7 +393,6 @@ mod tests {
         )));
         enter(&mut frame);
         assert!(frame.take_caller_operation().is_none());
-        // Cancel has the keyboard first; the name is typed in its field.
         frame.send_host_event(&crate::synthetic_input::key_input(
             &winit::keyboard::Key::Named(winit::keyboard::NamedKey::Tab),
             winit::event::ElementState::Pressed,
@@ -405,8 +400,6 @@ mod tests {
         frame.send_host_event(&WindowEvent::Ime(winit::event::Ime::Commit(
             "INSERT".into(),
         )));
-        // Return in the field stays the safe answer: the action's own button,
-        // past Cancel, goes ahead.
         enter(&mut frame);
         assert!(frame.take_caller_operation().is_none());
         frame.send_host_event(&crate::synthetic_input::key_input(
@@ -546,7 +539,6 @@ mod tests {
             .action_target
             .clone()
             .unwrap();
-        // semanticBridge chooses a unique test ID before the inspection path.
         let owner = results.test_id.as_deref().unwrap();
         assert_eq!(owner, "action-palette-results");
         frame.set_caller_actions(vec![]);

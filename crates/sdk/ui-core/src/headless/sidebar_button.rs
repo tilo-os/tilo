@@ -1,36 +1,21 @@
-//! The window bar's sidebar button, clicked as a person clicks it.
-//!
-//! The bar is the desktop's ([`super::window_bar`]): a click on its sidebar
-//! button lands on the bar's row as the desktop lays it out, and the row
-//! hands the app what was pressed, as the live window's bar does. What the
-//! press did is read back from the window's sidebar ([`NavShell`]), the
-//! slots the app declares and the frame laid out after it.
-//!
-//! An app whose own header row is the window's bar ([`FrameHarness::row_holds_bar`])
-//! declares no slots: its row holds the shell's own toggle, and the click lands
-//! there, in the frame.
+//! The window bar's sidebar button, clicked as a person clicks it. The bar is the desktop's
+//! ([`super::window_bar`]): a click on its sidebar button lands on the bar's row as the desktop lays it
+//! out, and the row hands the app what was pressed, as the live window's bar does.
 
 use super::FrameHarness;
 use crate::widget::{NavPane, NavShell, SidebarPlacement, Widget};
 use vello::kurbo::Rect;
 
-/// The shell's own sidebar toggle, the button the app's header row holds while the row
-/// is the window's bar.
+/// The shell's own sidebar toggle, the button the app's header row holds while the row is the window's
+/// bar.
 const SIDEBAR_TOGGLE: &str = "nav-shell-sidebar";
 
-/// The shell's own way back, the button the row holds where it puts the sidebar toggle
-/// aside for it.
 const BACK_BUTTON: &str = "nav-shell-back";
 
-/// Where the window's bar keeps its sidebar button, and what the button says.
 struct BarSidebarButton {
-    /// Where it stands, in logical window coordinates.
     spot: Rect,
-    /// The desktop's bar draws it as one of the app's slots, so the press
-    /// lands on the bar's row. Otherwise the app's header row is the bar and
-    /// the button is a widget in the frame.
+    /// The desktop's bar draws it as one of the app's slots, so the press lands on the bar's row.
     on_the_row: bool,
-    /// It says it hides the sidebar: the sidebar stands shown.
     shown: bool,
 }
 
@@ -41,8 +26,8 @@ pub struct SidebarShown {
     pub bar: bool,
     /// The window's shell holds its sidebar shown.
     pub shell: bool,
-    /// The frame shows the sidebar: a docked or drawn column with width, or
-    /// the push stack's front screen.
+    /// The frame shows the sidebar: a docked or drawn column with width, or the push stack's front
+    /// screen.
     pub frame: bool,
 }
 
@@ -55,9 +40,8 @@ impl SidebarShown {
 }
 
 impl FrameHarness {
-    /// The sidebar button the window's bar shows: the desktop's own slot, or —
-    /// while the app's header row is the bar — the shell's toggle in that row.
-    /// `None` while the bar shows neither.
+    /// The sidebar button the window's bar shows: the desktop's own slot, or — while the app's header
+    /// row is the bar — the shell's toggle in that row.
     fn bar_sidebar_button(&mut self) -> Option<BarSidebarButton> {
         let width = f64::from(self.viewport.0);
         let bar = self.painted_window_bar(width);
@@ -79,12 +63,10 @@ impl FrameHarness {
         })
     }
 
-    /// The button the app's header row holds for `id`, while that row is the
-    /// window's bar ([`FrameHarness::row_holds_bar`]): where it stands in the
-    /// window, and the words assistive technology reads for it. `None` while the
-    /// row is not the bar, or holds no such button.
+    /// The button the app's header row holds for `id`, while that row is the window's bar
+    /// ([`FrameHarness::row_holds_bar`]): where it stands in the window, and the words assistive
+    /// technology reads for it.
     fn row_button(&self, id: &str) -> Option<(Rect, Option<String>)> {
-        /// The button's place and its words, at any depth under `node`.
         fn find(node: &super::InspectionNode, id: &str) -> Option<(Rect, Option<String>)> {
             if node.test_id.as_deref() == Some(id) && node.rect[2] > 0.0 && node.rect[3] > 0.0 {
                 let [x, y, width, height] = node.rect;
@@ -103,12 +85,8 @@ impl FrameHarness {
         find(&self.inspection().root, id)
     }
 
-    /// Click the sidebar button where the window's bar, as the desktop or the
-    /// app's own row draws it across the window, puts it, and hand the app what
-    /// the press runs ([`Self::press_window_slot`]).
-    ///
-    /// # Errors
-    /// When the bar shows no sidebar button, or the click runs nothing.
+    /// Click the sidebar button where the window's bar, as the desktop or the app's own row draws it
+    /// across the window, puts it, and hand the app what the press runs ([`Self::press_window_slot`]).
     pub fn click_window_sidebar_button(&mut self) -> Result<(), String> {
         self.invalidate_local();
         let width = f64::from(self.viewport.0);
@@ -117,7 +95,6 @@ impl FrameHarness {
         };
         let at = button.spot.center();
         if !button.on_the_row {
-            // The app's own row: the button takes the press as any widget does.
             self.click_at(at.x, at.y);
             return Ok(());
         }
@@ -148,9 +125,6 @@ impl FrameHarness {
         })?;
         let geometry = shell.geometry();
         let front_is_sidebar = shell.front_pane() == NavPane::Sidebar;
-        // A narrow window's bar puts the button aside for the way back: on a screen in front of
-        // the sidebar's own, which that bar shows hidden, and on the sidebar's own screen, whose
-        // way out is Back to the screen the button covered, which shows it.
         let bar = match button {
             Some(button) => button.shown,
             // The bar shows the way back in the button's place: hidden on a screen in front of
@@ -174,16 +148,8 @@ impl FrameHarness {
         })
     }
 
-    /// Click the window bar's sidebar button `presses` times, each followed
-    /// by the frames the window draws until its motion has landed, and
-    /// return where the sidebar stood before and after each. A narrow window
-    /// whose button lives on the sidebar's own screen stops after the click
-    /// that puts the sidebar away: the screen in front has its way back
-    /// alone.
-    ///
-    /// # Errors
-    /// When a click fails ([`Self::click_window_sidebar_button`]) or the
-    /// window has no sidebar to read back.
+    /// Click the window bar's sidebar button `presses` times, each followed by the frames the window
+    /// draws until its motion has landed, and return where the sidebar stood before and after each.
     pub fn press_window_sidebar_button(
         &mut self,
         presses: usize,
@@ -226,16 +192,16 @@ impl FrameHarness {
         Ok(states)
     }
 
-    /// Whether the window's bar shows its sidebar button, and — where it shows
-    /// none — whether it shows its way back to the screen that holds one.
+    /// Whether the window's bar shows its sidebar button, and — where it shows none — whether it shows
+    /// its way back to the screen that holds one.
     fn window_bar_controls(&mut self) -> (bool, bool) {
         let button = self.bar_sidebar_button().is_some();
         (button, !button && self.window_bar_shows_back())
     }
 
-    /// Whether the window's bar shows the way back to the screen that holds
-    /// its sidebar button: the desktop's own slot, or — while the app's header
-    /// row is the bar — the shell's Back button in that row.
+    /// Whether the window's bar shows the way back to the screen that holds its sidebar button: the
+    /// desktop's own slot, or — while the app's header row is the bar — the shell's Back button in that
+    /// row.
     fn window_bar_shows_back(&mut self) -> bool {
         let width = f64::from(self.viewport.0);
         let toolbar = self
@@ -251,10 +217,6 @@ impl FrameHarness {
             || self.row_button(BACK_BUTTON).is_some()
     }
 
-    /// Press the window bar's way back.
-    ///
-    /// # Errors
-    /// When the bar shows no way back.
     fn press_the_bars_back(&mut self) -> Result<(), String> {
         let width = f64::from(self.viewport.0);
         let toolbar = self
@@ -271,7 +233,6 @@ impl FrameHarness {
             self.press_window_slot(crate::window_toolbar::ToolbarEvent::Back);
             return Ok(());
         }
-        // The app's own row: its Back button takes the press as any widget does.
         let (spot, _) = self
             .row_button(BACK_BUTTON)
             .ok_or_else(|| format!("the bar shows no way back at {width} px"))?;
@@ -280,14 +241,9 @@ impl FrameHarness {
         Ok(())
     }
 
-    /// Take the bar's way back: a narrow window puts its sidebar button aside
-    /// for it on a screen that went somewhere deeper, and the screen it leads
-    /// to holds the button — or is the sidebar's own, in an app whose header
-    /// row is the bar.
-    ///
-    /// # Errors
-    /// When the bar shows no sidebar button and no way back to the screen
-    /// that holds one.
+    /// Take the bar's way back: a narrow window puts its sidebar button aside for it on a screen that
+    /// went somewhere deeper, and the screen it leads to holds the button — or is the sidebar's own, in
+    /// an app whose header row is the bar.
     fn reach_the_bars_sidebar_button(&mut self) -> Result<(), String> {
         let width = f64::from(self.viewport.0);
         let (sidebar, back) = self.window_bar_controls();
@@ -305,13 +261,9 @@ impl FrameHarness {
         Ok(())
     }
 
-    /// Click the window bar's sidebar button up to three times and check
-    /// that each click flipped the sidebar, with the bar, the window's shell
-    /// and its frame agreeing every time, whatever opened it. Returns
-    /// whether the sidebar was shown before the first click.
-    ///
-    /// # Errors
-    /// What the clicks did instead, as a sentence naming each state.
+    /// Click the window bar's sidebar button up to three times and check that each click flipped the
+    /// sidebar, with the bar, the window's shell and its frame agreeing every time, whatever opened it.
+    /// Returns whether the sidebar was shown before the first click.
     pub fn check_window_sidebar_button(&mut self) -> Result<bool, String> {
         self.invalidate_local();
         let states = self.press_window_sidebar_button(3)?;
@@ -343,7 +295,6 @@ impl FrameHarness {
         Ok(states.first().and_then(|state| state.agreed()) == Some(true))
     }
 
-    /// Where the window's shell stands, for a failure to say.
     fn sidebar_diagnosis(&self) -> String {
         let schedule = self.frame_schedule();
         window_sidebar_shell(self.root.as_ref()).map_or_else(
@@ -366,15 +317,10 @@ impl FrameHarness {
         )
     }
 
-    /// Lay out frames as the window's host draws them: the one asked for,
-    /// then more while the app asks, until the shell's motion has landed.
-    /// Motion lands at once here, so a shell still moving after many
-    /// frames never comes to rest. Work the window queues of its own (a
-    /// scenario's service that never answers) is not the sidebar's: it may
-    /// go on.
-    ///
-    /// # Errors
-    /// When the shell's motion never lands.
+    /// Lay out frames as the window's host draws them: the one asked for, then more while the app asks,
+    /// until the shell's motion has landed. Motion lands at once here, so a shell still moving after
+    /// many frames never comes to rest. Work the window queues of its own (a scenario's service that
+    /// never answers) is not the sidebar's: it may go on.
     fn relayout_until_still(&mut self) -> Result<(), String> {
         self.relayout();
         for _ in 0..64 {
@@ -393,10 +339,8 @@ impl FrameHarness {
     }
 }
 
-/// The shell whose sidebar the window bar's button toggles: the first laid
-/// out shell, depth first, that has a sidebar. A widget standing in for a
-/// shell (a framework app's root, which lists the shell's parts as its own)
-/// answers for it as a capability.
+/// The shell whose sidebar the window bar's button toggles: the first laid out shell, depth first, that
+/// has a sidebar.
 fn window_sidebar_shell(widget: &dyn Widget) -> Option<&NavShell> {
     let shell = widget
         .as_any()
@@ -410,8 +354,8 @@ fn window_sidebar_shell(widget: &dyn Widget) -> Option<&NavShell> {
     widget.children().into_iter().find_map(window_sidebar_shell)
 }
 
-/// The paths of the deepest widgets under `widget` that ask for animation
-/// frames, for a failure whose window never comes to rest.
+/// The paths of the deepest widgets under `widget` that ask for animation frames, for a failure whose
+/// window never comes to rest.
 fn animation_askers(widget: &dyn Widget, path: &str, askers: &mut Vec<String>) {
     if !widget.needs_animation_frame() {
         return;
@@ -425,8 +369,6 @@ fn animation_askers(widget: &dyn Widget, path: &str, askers: &mut Vec<String>) {
     }
 }
 
-/// The names of `widget` and its descendants `depth` levels down, for a
-/// failure that found no shell.
 fn widget_outline(widget: &dyn Widget, depth: usize) -> String {
     let children = widget.children();
     if depth == 0 || children.is_empty() {

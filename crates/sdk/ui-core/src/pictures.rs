@@ -1,15 +1,8 @@
-//! The pictures a window's components show: each [`Picture`] as the toolkit's decoded image.
-//!
-//! A picture is an address ([`Picture::src`]): a content address (`tilo-blob://<hash>`) whose
-//! bytes are read from the window's content store, or any other address an image store fetches.
-//! [`Pictures::window`] is the window's own, which every component showing a picture reads:
-//! the process's content store answers a content address, and a host that serves the window's
-//! image stores ([`crate::ImageStore::serve_window`]) answers for it instead, as it does for
-//! every picture in a web page.
-//!
-//! A picture whose bytes are not here yet keeps its place: the component paints its placeholder
-//! until [`Pictures::get`] answers, and an address that cannot be read fails visibly, as any
-//! other image does.
+//! The pictures a window's components show: each [`Picture`] as the toolkit's decoded image. A picture
+//! is an address ([`Picture::src`]): a content address (`tilo-blob://<hash>`) whose bytes are read from
+//! the window's content store, or any other address an image store fetches. A picture whose bytes are
+//! not here yet keeps its place: the component paints its placeholder until [`Pictures::get`] answers,
+//! and an address that cannot be read fails visibly, as any other image does.
 
 use vello::peniko::ImageData as PenikoImage;
 
@@ -20,8 +13,8 @@ use crate::widget::PictureSource;
 /// How an app names a picture by its content address.
 pub const BLOB_SCHEME: &str = "tilo-blob://";
 
-/// What a component showing a picture reads: the store its bytes load through (which caches a
-/// decoded picture by its address), and what a window's pictures are.
+/// What a component showing a picture reads: the store its bytes load through (which caches a decoded
+/// picture by its address), and what a window's pictures are.
 #[derive(Clone)]
 pub struct Pictures {
     store: ImageStore,
@@ -40,8 +33,8 @@ impl Pictures {
         Self { store }
     }
 
-    /// The window's pictures: loaded through the store the toolkit builds for the window (the
-    /// one its host serves), with content addresses read from the process's content store.
+    /// The window's pictures: loaded through the store the toolkit builds for the window (the one its
+    /// host serves), with content addresses read from the process's content store.
     #[must_use]
     pub fn window() -> Self {
         thread_local! {
@@ -50,9 +43,9 @@ impl Pictures {
         WINDOW.with(|window| window.get_or_init(Self::own).clone())
     }
 
-    /// The pictures this window reads, loading their bytes from the content store the process
-    /// holds (`tilo-blob://<hash>`) or a picture carried in its own address
-    /// (`data:image/png;base64,...`), and fetching nothing else.
+    /// The pictures this window reads, loading their bytes from the content store the process holds
+    /// (`tilo-blob://<hash>`) or a picture carried in its own address (`data:image/png;base64,...`),
+    /// and fetching nothing else.
     fn own() -> Self {
         let fetch: Fetcher = std::sync::Arc::new(|url: &str| {
             if let Some(hash) = url.strip_prefix(BLOB_SCHEME) {
@@ -78,10 +71,8 @@ impl Pictures {
         &self.store
     }
 
-    /// The decoded picture at `picture`'s address, once its bytes are here: `None` while it
-    /// loads (or when it names nothing, or failed to load). Asking starts the load. The store
-    /// already caches a decoded picture by its address, so a picture still loading is asked
-    /// for again each frame without a second cache here.
+    /// The decoded picture at `picture`'s address, once its bytes are here: `None` while it loads (or
+    /// when it names nothing, or failed to load).
     #[must_use]
     pub fn get(&self, picture: &PictureSource) -> Option<PenikoImage> {
         if picture.is_empty() {
@@ -96,16 +87,16 @@ impl Pictures {
         carried(&picture.src)
     }
 
-    /// Whether the picture at `picture`'s address has failed to load: its bytes are not here,
-    /// or do not decode.
+    /// Whether the picture at `picture`'s address has failed to load: its bytes are not here, or do not
+    /// decode.
     #[must_use]
     pub fn failed(&self, picture: &PictureSource) -> bool {
         !picture.is_empty() && self.store.failed(&picture.src)
     }
 }
 
-/// The picture a `data:` address carries, decoded here and kept for the next frame: `None`
-/// for any other address, which only its store loads.
+/// The picture a `data:` address carries, decoded here and kept for the next frame: `None` for any
+/// other address, which only its store loads.
 fn carried(url: &str) -> Option<PenikoImage> {
     thread_local! {
         static LAST: std::cell::RefCell<Option<(String, PenikoImage)>> =
@@ -128,12 +119,8 @@ fn carried(url: &str) -> Option<PenikoImage> {
     Some(picture)
 }
 
-/// The bytes of the content at `hash`, from the content store this process holds (the
-/// launcher's device store): `None` where the build has none (the web) or it is not here.
-///
-/// A process the launcher handed no store of its own — the session drawing the windows it runs
-/// itself, over records whose stills an app's connector kept — reads it from the store it was
-/// lent ([`lend_content`]) instead.
+/// The bytes of the content at `hash`, from the content store this process holds (the launcher's device
+/// store): `None` where the build has none (the web) or it is not here.
 #[cfg(feature = "native")]
 fn blob_bytes(hash: &str) -> Option<Vec<u8>> {
     if let Some(bytes) = crate::content::device().and_then(|store| store.read(hash)) {
@@ -142,31 +129,22 @@ fn blob_bytes(hash: &str) -> Option<Vec<u8>> {
     lent_content()?.read(hash)
 }
 
-/// The store the windows this process draws read a content address from when the launcher
-/// handed the process no store of its own: the session's document media, which the session lends
-/// while it draws ([`lend_content`]).
-///
-/// It is the process's, not a thread's: the pictures load on the toolkit's background threads,
-/// which no window's own thread reaches.
+/// The store the windows this process draws read a content address from when the launcher handed the
+/// process no store of its own: the session's document media, which the session lends while it draws
+/// ([`lend_content`]).
 #[cfg(feature = "native")]
 static LENT_CONTENT: std::sync::RwLock<Option<tilo_content::ContentStore>> =
     std::sync::RwLock::new(None);
 
-/// [`LENT_CONTENT`], or `None` where nothing was lent.
 #[cfg(feature = "native")]
 fn lent_content() -> Option<tilo_content::ContentStore> {
     LENT_CONTENT.read().ok().and_then(|lent| lent.clone())
 }
 
-/// Let the windows this process draws read their content addresses from `store`: what a session
-/// lends the windows it draws in its own process, once it knows the store the workspaces' content
-/// is read through. Until it is called a process the launcher handed no store of its own reads
-/// no content address.
-///
-/// The pictures keep the store they were built with, so what this changes is where their bytes
-/// come from, read afresh each time a picture is asked for. `None` forgets the loads that failed
-/// against no store, so the pictures drawn again are asked for afresh; a store already lent is
-/// left to the pictures' own cache.
+/// Let the windows this process draws read their content addresses from `store`: what a session lends
+/// the windows it draws in its own process, once it knows the store the workspaces' content is read
+/// through. The pictures keep the store they were built with, so what this changes is where their bytes
+/// come from, read afresh each time a picture is asked for.
 #[cfg(feature = "native")]
 pub fn lend_content(store: Option<tilo_content::ContentStore>) {
     let Ok(mut lent) = LENT_CONTENT.write() else {
@@ -182,16 +160,16 @@ pub fn lend_content(store: Option<tilo_content::ContentStore>) {
     }
 }
 
-/// The bytes of the content at `hash`: a web page reads no content store, so a content address
-/// there resolves to nothing until its host serves it.
+/// The bytes of the content at `hash`: a web page reads no content store, so a content address there
+/// resolves to nothing until its host serves it.
 #[cfg(not(feature = "native"))]
 fn blob_bytes(hash: &str) -> Option<Vec<u8>> {
     let _ = hash;
     None
 }
 
-/// The bytes a `data:` address carries (`data:image/png;base64,<data>`), when it is one:
-/// a picture that travels in its own address, which a document or a demo can hold.
+/// The bytes a `data:` address carries (`data:image/png;base64,<data>`), when it is one: a picture that
+/// travels in its own address, which a document or a demo can hold.
 #[must_use]
 pub fn data_bytes(url: &str) -> Option<Vec<u8>> {
     use base64::Engine as _;
@@ -206,13 +184,12 @@ pub fn data_bytes(url: &str) -> Option<Vec<u8>> {
         .filter(|bytes| !bytes.is_empty())
 }
 
-/// The largest a picture is decoded to, in each dimension: a picture shown in a window or a
-/// card is never larger, and a screen-sized cap keeps a huge source from filling the cache.
+/// The largest a picture is decoded to, in each dimension: a picture shown in a window or a card is
+/// never larger, and a screen-sized cap keeps a huge source from filling the cache.
 const PICTURE_MAX_DIMENSION: u32 = 4096;
 
-/// One picture a widget shows, by its address: loaded through the window's pictures the first
-/// frame it is here, and kept while the address stays. A widget holds one and reads it from
-/// `sync` and `draw`.
+/// One picture a widget shows, by its address: loaded through the window's pictures the first frame it
+/// is here, and kept while the address stays.
 #[derive(Clone, Default)]
 pub struct Shown {
     pictures: Option<Pictures>,
@@ -230,8 +207,8 @@ impl std::fmt::Debug for Shown {
 }
 
 impl Shown {
-    /// Show `picture` instead, through `pictures`; `true` when that is a picture other than
-    /// the one shown (its bytes load on the next read).
+    /// Show `picture` instead, through `pictures`; `true` when that is a picture other than the one
+    /// shown (its bytes load on the next read).
     pub fn set(&mut self, pictures: Pictures, picture: PictureSource) -> bool {
         let same = self
             .picture
@@ -291,10 +268,8 @@ mod tests {
 
     use super::*;
 
-    /// A session's own process — the shell drawing the windows it runs itself — holds no device
-    /// store of its own: the launcher hands one only to the apps it starts. A content address is
-    /// read from the store the session lends it, and from nowhere before that, which is what a
-    /// place's stills are drawn through.
+    /// A session's own process — the shell drawing the windows it runs itself — holds no device store
+    /// of its own: the launcher hands one only to the apps it starts.
     #[test]
     fn a_content_address_reads_from_the_store_the_session_lent() {
         let _env = tilo_test_env::lock();
@@ -302,7 +277,6 @@ mod tests {
         let store = tilo_content::ContentStore::memory();
         let hash = store.put(still).expect("the still is kept");
 
-        // Nothing lent, and no launcher's capability in this process: the address names nothing.
         lend_content(None);
         assert_eq!(
             blob_bytes(&hash),
@@ -310,7 +284,6 @@ mod tests {
             "a process handed no store reads no content address"
         );
 
-        // The session lends the media of the workspace its places stand in: the address reads.
         lend_content(Some(store));
         assert_eq!(
             blob_bytes(&hash),

@@ -1,9 +1,7 @@
-//! A scroll view's give past its ends (`motion::RubberBand`): while the hand
-//! holds the content it follows one to one inside, and past an end through
-//! the shared band ([`crate::tokens::rubber_band`]), stiffening the further
-//! it goes; let go, the give springs back to the end, carrying the hand's
-//! speed. Under reduced motion there is no give: the content stops at its
-//! ends.
+//! A scroll view's give past its ends (`motion::RubberBand`): while the hand holds the content it
+//! follows one to one inside, and past an end through the shared band ([`crate::tokens::rubber_band`]),
+//! stiffening the further it goes; let go, the give springs back to the end, carrying the hand's speed.
+//! Under reduced motion there is no give: the content stops at its ends.
 
 use super::spec::{Direction, MotionSpec, Pace, Reduced, Shortcut};
 use super::value::MotionValue;
@@ -11,17 +9,16 @@ use crate::time::Instant;
 use crate::tokens::{EffectiveMotion, MotionSource};
 use vello::kurbo::Vec2;
 
-/// The give of a scroll view past its ends, per axis: negative before the
-/// start, positive past the end, in logical pixels.
+/// The give of a scroll view past its ends, per axis: negative before the start, positive past the end,
+/// in logical pixels.
 #[derive(Clone, Debug)]
 pub struct RubberBand {
-    /// How far past an end the hand has asked the content to go while it
-    /// holds it; the give is this through the band.
+    /// How far past an end the hand has asked the content to go while it holds it; the give is this
+    /// through the band.
     pulled: Vec2,
-    /// The give as drawn: the hand's, at rest, while it holds the content;
-    /// springing back to none once it let go.
+    /// The give as drawn: the hand's, at rest, while it holds the content; springing back to none once
+    /// it let go.
     give: MotionValue<Vec2>,
-    /// The give last handed out to be drawn ([`Self::give`]).
     given: std::cell::Cell<Vec2>,
 }
 
@@ -36,8 +33,8 @@ impl Default for RubberBand {
 }
 
 impl RubberBand {
-    /// The spring back: `fast`; reduced motion has no give to spring from,
-    /// and nothing a shortcut does stretches it.
+    /// The spring back: `fast`; reduced motion has no give to spring from, and nothing a shortcut does
+    /// stretches it.
     pub const SPEC: MotionSpec = MotionSpec {
         enter: Pace::Fast,
         exit: Pace::Fast,
@@ -50,10 +47,9 @@ impl RubberBand {
         Self::default()
     }
 
-    /// The hand asked the content `excess` past its ends this input (what
-    /// the content could not take, per axis; zero where it took it all), in
-    /// a view `viewport` large: the give follows through the band. A give
-    /// springing back is caught where it is drawn.
+    /// The hand asked the content `excess` past its ends this input (what the content could not take,
+    /// per axis; zero where it took it all), in a view `viewport` large: the give follows through the
+    /// band.
     pub fn pull(&mut self, excess: Vec2, viewport: Vec2, motion: EffectiveMotion, now: Instant) {
         if motion.reduced() {
             self.stop();
@@ -71,9 +67,9 @@ impl RubberBand {
         ));
     }
 
-    /// The hand moved the content by `delta` while it may hold a give: the
-    /// part of it that goes back toward the ends takes the give in first,
-    /// through the band. Returns what is left to move the content by.
+    /// The hand moved the content by `delta` while it may hold a give: the part of it that goes back
+    /// toward the ends takes the give in first, through the band. Returns what is left to move the
+    /// content by.
     pub fn take_in(
         &mut self,
         delta: Vec2,
@@ -94,7 +90,6 @@ impl RubberBand {
             (&mut self.pulled.x, &mut left.x),
             (&mut self.pulled.y, &mut left.y),
         ] {
-            // Back toward the content: the opposite way to the pull.
             if *pulled * *moved < 0.0 {
                 let taken = if moved.abs() >= pulled.abs() {
                     -*pulled
@@ -112,9 +107,8 @@ impl RubberBand {
         left
     }
 
-    /// The hand let go moving the content at `velocity` (logical pixels per
-    /// second): the give springs back to the ends, starting at the speed the
-    /// band gave it there.
+    /// The hand let go moving the content at `velocity` (logical pixels per second): the give springs
+    /// back to the ends, starting at the speed the band gave it there.
     pub fn release(
         &mut self,
         velocity: Vec2,
@@ -152,9 +146,8 @@ impl RubberBand {
         self.give.snap(Vec2::ZERO);
     }
 
-    /// The give drawn at `now`, in whole device pixels of `device_scale`
-    /// per logical pixel, so a host that copies what a scroll keeps copies
-    /// it.
+    /// The give drawn at `now`, in whole device pixels of `device_scale` per logical pixel, so a host
+    /// that copies what a scroll keeps copies it.
     #[must_use]
     pub fn give(&self, now: Instant, device_scale: f64) -> Vec2 {
         let give = self.give_at(now, device_scale);
@@ -162,8 +155,8 @@ impl RubberBand {
         give
     }
 
-    /// Whether the content wants a frame for its give: it springs back, or
-    /// was last drawn with another give than it has now.
+    /// Whether the content wants a frame for its give: it springs back, or was last drawn with another
+    /// give than it has now.
     #[must_use]
     pub fn needs_frame(&self, now: Instant, device_scale: f64) -> bool {
         self.give.is_moving(now) || self.give_at(now, device_scale) != self.given.get()
@@ -198,14 +191,12 @@ impl RubberBand {
         self.give.settles_at()
     }
 
-    /// The furthest the content gives on each axis, never reached: a
-    /// little over one viewport.
+    /// The furthest the content gives on each axis, never reached: a little over one viewport.
     fn limits(viewport: Vec2, motion: EffectiveMotion) -> Vec2 {
         viewport * f64::from(motion.tokens().gesture.overscroll_reach_frac)
     }
 }
 
-/// How far the content gives for a pull of `pulled` against `limit`.
 #[allow(
     clippy::cast_possible_truncation,
     reason = "the shared band takes f32 screen distances; a pull is a few viewports at most"
@@ -218,7 +209,6 @@ fn stretch(pulled: f64, limit: f64) -> f64 {
     give.copysign(pulled)
 }
 
-/// The pull that gives `give` against `limit`: the band's inverse.
 fn unstretch(give: f64, limit: f64) -> f64 {
     let held = give.abs().min(limit * 0.999);
     if held <= 0.0 {

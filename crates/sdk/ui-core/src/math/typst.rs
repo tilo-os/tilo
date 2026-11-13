@@ -1,7 +1,6 @@
-//! Typst math syntax lowered into the shared mathematical expression tree.
-//!
-//! The parser targets Typst's math language (identifiers, function calls,
-//! scripts, fractions and matrix/cases constructors), not general Typst markup.
+//! Typst math syntax lowered into the shared mathematical expression tree. The parser targets Typst's
+//! math language (identifiers, function calls, scripts, fractions and matrix/cases constructors), not
+//! general Typst markup.
 
 use super::model::{MathExpr, Node, Row};
 use super::tex::{ParseDiagnostic, ParseOutput};
@@ -134,10 +133,8 @@ fn serialize_node(node: &Node, out: &mut String) {
     }
 }
 
-/// A `Delimited` node whose sole child is a `Table` is one of Typst's
-/// bracketed constructors (`vec`, `cases`, `mat`) rather than a literal
-/// delimiter pair; everything else falls back to matching open/close glyphs
-/// or a named function (`abs`, `norm`, `floor`, `ceil`).
+/// A `Delimited` node whose sole child is a `Table` is one of Typst's bracketed constructors (`vec`,
+/// `cases`, `mat`) rather than a literal delimiter pair.
 fn serialize_delimited(open: Option<char>, close: Option<char>, body: &Row, out: &mut String) {
     if let [Node::Table { rows }] = body.as_slice() {
         let is_vector = open == Some('(')
@@ -434,9 +431,8 @@ impl TypstParser {
         }]
     }
 
-    /// Typst vectors and cases are lists of vertical branches, unlike `mat`
-    /// where commas separate columns. Cases additionally use `&` to align
-    /// content within each branch.
+    /// Typst vectors and cases are lists of vertical branches, unlike `mat` where commas separate
+    /// columns.
     fn parse_branches(&mut self, open: Option<char>, close: Option<char>, aligned: bool) -> Row {
         let mut rows = Vec::new();
         loop {

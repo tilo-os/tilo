@@ -1,9 +1,6 @@
-//! What the Windows menu bar and Jump List show, kept apart from Win32 so
-//! the mapping tests on every host.
-//!
-//! A Jump List task starts a new process of the app with `--host-command`
-//! and the task's invocation; that process runs it through the same door as
-//! the palette once its window exists.
+//! What the Windows menu bar and Jump List show, kept apart from Win32 so the mapping tests on every
+//! host. A Jump List task starts a new process of the app with `--host-command` and the task's
+//! invocation; that process runs it through the same door as the palette once its window exists.
 
 use serde::{Deserialize, Serialize};
 use tilo_actions::{ActionAddress, ControlInvocation};
@@ -16,8 +13,8 @@ use crate::search::request::SEARCH_RESOURCE;
 /// The launch option a Jump List task passes its invocation in.
 pub(crate) const LAUNCH_OPTION: &str = "--host-command";
 
-/// A menu item's text: the label with `&` kept literal (Win32 reads it as
-/// the mnemonic marker) and the shortcut right-aligned after a tab.
+/// A menu item's text: the label with `&` kept literal (Win32 reads it as the mnemonic marker) and the
+/// shortcut right-aligned after a tab.
 pub(crate) fn menu_text(command: &HostCommand, conventions: PlatformConventions) -> String {
     let label = command.label.replace('&', "&&");
     match &command.shortcut {
@@ -39,7 +36,6 @@ pub(crate) fn jump_tasks(commands: &[HostCommand]) -> Vec<JumpTask> {
         .iter()
         .filter(|command| match command.group {
             CommandGroup::Search | CommandGroup::RecentChanges => true,
-            // A new process has no History open to hide or compare in.
             CommandGroup::History => command.binding.address().action == "open",
             CommandGroup::Undo | CommandGroup::AppActions | CommandGroup::AppViews => false,
         })
@@ -69,16 +65,14 @@ fn encode(invocation: &ControlInvocation) -> String {
     .unwrap_or_default()
 }
 
-/// What a Jump List task may ask of a new process. Anything that can start
-/// the app can pass `--host-command`, so it reaches these and nothing else.
+/// What a Jump List task may ask of a new process.
 const TASK_ACTIONS: [(&str, &str); 3] = [
     (SEARCH_RESOURCE, "open"),
     (HISTORY_RESOURCE, "open"),
     (HISTORY_RESOURCE, "open_at"),
 ];
 
-/// The invocation a `--host-command` value carries, if it is one a Jump
-/// List task could have made.
+/// The invocation a `--host-command` value carries, if it is one a Jump List task could have made.
 pub(crate) fn decode(value: &str) -> Option<ControlInvocation> {
     let wire: Wire = serde_json::from_str(value).ok()?;
     if !TASK_ACTIONS.contains(&(wire.resource.as_str(), wire.action.as_str())) {
@@ -90,8 +84,8 @@ pub(crate) fn decode(value: &str) -> Option<ControlInvocation> {
     })
 }
 
-/// One argument quoted so `CommandLineToArgvW` gives it back unchanged:
-/// backslashes double before a quote, quotes are escaped.
+/// One argument quoted so `CommandLineToArgvW` gives it back unchanged: backslashes double before a
+/// quote, quotes are escaped.
 fn quote(value: &str) -> String {
     let mut quoted = String::from('"');
     let mut backslashes = 0;

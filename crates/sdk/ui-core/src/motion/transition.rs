@@ -1,15 +1,13 @@
-//! The curves a theme's painter declares for a part ([`tilo_theme_sdk::Transition`]):
-//! the painter says how a change moves and the toolkit runs it on its clock. The math lives
-//! here, with the rest of the motion library, so a theme cannot hand-roll its own.
+//! The curves a theme's painter declares for a part ([`tilo_theme_sdk::Transition`]): the painter says
+//! how a change moves and the toolkit runs it on its clock. The math lives here, with the rest of the
+//! motion library, so a theme cannot hand-roll its own.
 
 use tilo_theme_sdk::{Easing, Transition};
 
-/// How close to its end a spring counts as settled.
 const SETTLED: f32 = 1e-3;
 
 /// The progress `elapsed` seconds after a change, and whether it has settled; `None` for
-/// [`Transition::Inherit`], whose curve the toolkit's named motion owns. A spring's progress
-/// overshoots 1 when it is underdamped.
+/// [`Transition::Inherit`], whose curve the toolkit's named motion owns.
 #[must_use]
 pub fn progress(transition: Transition, elapsed: f32) -> Option<(f32, bool)> {
     let t = elapsed.max(0.0);
@@ -35,8 +33,8 @@ pub fn progress(transition: Transition, elapsed: f32) -> Option<(f32, bool)> {
     })
 }
 
-/// Where `easing` puts the part `t` of the way along: a change that answers input is fast out
-/// and slow in, so it reads as the person's own speed.
+/// Where `easing` puts the part `t` of the way along: a change that answers input is fast out and slow
+/// in, so it reads as the person's own speed.
 fn eased(easing: Easing, t: f32) -> f32 {
     let t = t.clamp(0.0, 1.0);
     match easing {

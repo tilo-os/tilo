@@ -1,16 +1,5 @@
-//! The stylus behind the pointer event a widget is handling.
-//!
-//! A pen moves the cursor and clicks as a mouse does, so every widget works
-//! with one unchanged. A widget that wants more of it — a brush following
-//! pressure and tilt, the eraser end — asks
-//! [`EventCtx::pen`](crate::widget::EventCtx::pen) while it handles a
-//! `CursorMoved` or `MouseInput`.
-//!
-//! The platform reports a pen as `WindowEvent::PenSample` immediately before
-//! each pointer event it makes. Hosts pass every window event
-//! through [`PenInput::route`]: it keeps the sample, which no widget sees as an event
-//! of its own, and hands it to the pointer event that follows for exactly
-//! that event's dispatch. A mouse's events carry none.
+//! The stylus behind the pointer event a widget is handling. A pen moves the cursor and clicks as a
+//! mouse does, so every widget works with one unchanged.
 
 use std::cell::Cell;
 
@@ -19,20 +8,18 @@ use winit::event::WindowEvent;
 /// What a stylus reported with one pointer event.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct PenSample {
-    /// How hard the tip is pressed, `0.0..=1.0`: `0.0` while it hovers, and
-    /// on a pen that reports no pressure.
+    /// How hard the tip is pressed, `0.0..=1.0`: `0.0` while it hovers, and on a pen that reports no
+    /// pressure.
     pub pressure: f64,
-    /// Tilt in degrees from upright towards the window's positive x and y
-    /// axes, each within `-90.0..=90.0`: `(0.0, 0.0)` upright, and on a pen
-    /// that reports no tilt.
+    /// Tilt in degrees from upright towards the window's positive x and y axes, each within
+    /// `-90.0..=90.0`: `(0.0, 0.0)` upright, and on a pen that reports no tilt.
     pub tilt: (f64, f64),
     /// The eraser end is in use rather than the tip.
     pub eraser: bool,
 }
 
 impl PenSample {
-    /// The sample a `WindowEvent::PenSample` carries, `None` for any other
-    /// event.
+    /// The sample a `WindowEvent::PenSample` carries, `None` for any other event.
     #[must_use]
     pub fn from_event(event: &WindowEvent) -> Option<Self> {
         match *event {
@@ -52,7 +39,6 @@ impl PenSample {
 }
 
 thread_local! {
-    /// The sample of the pointer event being dispatched on this thread.
     static CURRENT: Cell<Option<PenSample>> = const { Cell::new(None) };
 }
 
@@ -69,10 +55,7 @@ pub struct PenInput {
 }
 
 impl PenInput {
-    /// Route one window event before the host dispatches it. A pen sample is
-    /// kept and `None` returned: the host drops the event. Anything else is
-    /// dispatched while the returned scope lives; for a `CursorMoved` or
-    /// `MouseInput` the kept sample, if any, is the pen widgets see.
+    /// Route one window event before the host dispatches it.
     #[must_use]
     pub fn route(&mut self, event: &WindowEvent) -> Option<PenScope> {
         if let Some(sample) = PenSample::from_event(event) {
@@ -98,10 +81,8 @@ impl PenInput {
 pub struct PenScope(Restore);
 
 enum Restore {
-    /// This event's pen is set; the one before it comes back on drop.
     Previous(Option<PenSample>),
-    /// Nothing was set, so that an event re-entering dispatch keeps the
-    /// outer event's pen.
+    /// Nothing was set, so that an event re-entering dispatch keeps the outer event's pen.
     Nothing,
 }
 

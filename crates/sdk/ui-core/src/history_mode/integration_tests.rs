@@ -400,8 +400,7 @@ struct RetainedLifecycleHandles {
     accepted: Accepted,
 }
 
-/// The results an owner accepted, each with the owner of the document it was
-/// handed when it did.
+/// The results an owner accepted, each with the owner of the document it was handed when it did.
 type Accepted = std::rc::Rc<std::cell::RefCell<Vec<(String, String)>>>;
 
 struct QueuedLifecycleResult {

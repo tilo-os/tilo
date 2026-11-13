@@ -1,5 +1,5 @@
-//! Current authenticated host's shared local vocabulary. No filesystem or
-//! app-local fallback; missing/revoked channels clear personal hints.
+//! Current authenticated host's shared local vocabulary. No filesystem or app-local fallback;
+//! missing/revoked channels clear personal hints.
 pub use settings_store::personal_dictionary::{Edit, Snapshot, Vocabulary, Word};
 use std::io;
 use std::sync::Arc;
@@ -36,7 +36,6 @@ impl Vocabulary for Shared {
 }
 
 /// Reader for input consumers of the current authenticated app channel.
-/// Account replacement revokes this reader; create another for the new identity.
 pub fn reader() -> Arc<dyn Vocabulary> {
     Arc::new(Shared {
         owner: crate::local_identity::bound().map(|identity| identity.group_public_key),
@@ -44,8 +43,6 @@ pub fn reader() -> Arc<dyn Vocabulary> {
     })
 }
 
-/// # Errors
-/// No authenticated current channel, revoked identity or unavailable host.
 #[cfg(feature = "broker-transport")]
 pub fn snapshot() -> io::Result<Snapshot> {
     crate::collaboration::channel_settings::installed()
@@ -58,9 +55,9 @@ pub fn snapshot() -> io::Result<Snapshot> {
         .dictionary_snapshot()
 }
 
-/// How many times the shell's records this process reads have changed: what
-/// [`snapshot`] copies out of them changes only where this moved, so a reader
-/// that shows words compares it instead of taking the snapshot again.
+/// How many times the shell's records this process reads have changed: what [`snapshot`] copies out of
+/// them changes only where this moved, so a reader that shows words compares it instead of taking the
+/// snapshot again.
 #[must_use]
 pub fn revision() -> u64 {
     #[cfg(feature = "broker-transport")]
@@ -74,10 +71,6 @@ pub fn revision() -> u64 {
 }
 
 /// Submit an explicit user edit through the app's existing settings capability.
-/// The host validates current identity, app authority and revision again.
-///
-/// # Errors
-/// A stale/revoked/unavailable channel or an invalid edit.
 #[cfg(feature = "broker-transport")]
 pub fn edit(revision: u64, edit: Edit) -> io::Result<()> {
     crate::collaboration::channel_settings::installed()
@@ -90,8 +83,6 @@ pub fn edit(revision: u64, edit: Edit) -> io::Result<()> {
         .dictionary_edit(revision, edit)
 }
 
-/// # Errors
-/// Builds without an authenticated host transport have no personal vocabulary.
 #[cfg(not(feature = "broker-transport"))]
 pub fn snapshot() -> io::Result<Snapshot> {
     Err(io::Error::new(
@@ -100,8 +91,6 @@ pub fn snapshot() -> io::Result<Snapshot> {
     ))
 }
 
-/// # Errors
-/// Builds without an authenticated host transport cannot submit personal edits.
 #[cfg(not(feature = "broker-transport"))]
 pub fn edit(_: u64, _: Edit) -> io::Result<()> {
     Err(io::Error::new(
@@ -151,8 +140,7 @@ mod tests {
     }
 }
 
-/// Production settings-channel client paired with a real host source for
-/// headless app tests. It supplies no storage or identity of its own.
+/// Production settings-channel client paired with a real host source for headless app tests.
 #[cfg(all(feature = "broker-transport", any(test, feature = "test-support")))]
 pub struct TestHost {
     source: Arc<dyn settings_store::SettingsSource>,
@@ -166,9 +154,6 @@ pub struct TestHost {
 #[cfg(all(feature = "broker-transport", any(test, feature = "test-support")))]
 impl TestHost {
     /// Attach an authenticated client to the host's existing dictionary.
-    ///
-    /// # Errors
-    /// The bound local identity differs from the certified test owner.
     pub fn new(
         source: Arc<dyn settings_store::SettingsSource>,
         app: &str,
@@ -207,11 +192,8 @@ impl TestHost {
         view
     }
 
-    /// Run queued typed edits through production host permission and persistence
-    /// checks and deliver the authoritative answer back to the mounted app.
-    ///
-    /// # Errors
-    /// A revoked owner, stale revision or failed host persistence.
+    /// Run queued typed edits through production host permission and persistence checks and deliver the
+    /// authoritative answer back to the mounted app.
     pub fn flush(&mut self) -> io::Result<()> {
         for (section, values, action) in self.channel.take_outbox() {
             let result = settings_store::personal_dictionary::host::command(

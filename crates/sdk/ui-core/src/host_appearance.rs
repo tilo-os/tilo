@@ -1,13 +1,8 @@
-//! The appearance a standalone app takes from the operating system it runs
-//! on. Inside Tilo OS the shell supplies appearance through settings and
-//! nothing here runs; outside it, light/dark, the contrast and motion
-//! preferences follow the host, and the presence hue nearest the host's
-//! accent becomes the person's own colour (focus ring, caret, selection), so
-//! an SDK app looks at home without choosing a colour of its own.
-//!
-//! Light/dark comes from winit (`Window::theme`, `ThemeChanged`) where it
-//! reports one; `tilo_appearance` adds what the desktop itself reports, and
-//! its scheme wins because winit reports none where the desktop has one.
+//! The appearance a standalone app takes from the operating system it runs on. Inside Tilo OS the shell
+//! supplies appearance through settings and nothing here runs; outside it, light/dark, the contrast and
+//! motion preferences follow the host, and the presence hue nearest the host's accent becomes the
+//! person's own colour (focus ring, caret, selection), so an SDK app looks at home without choosing a
+//! colour of its own.
 
 use crate::theme::Theme;
 
@@ -35,18 +30,15 @@ fn scheme(theme: winit::window::Theme) -> Scheme {
     }
 }
 
-/// The shell supplies this process's settings through its app-scoped
-/// collaboration channel, which owns the theme the shell chrome already
-/// paints from.
-/// Sandboxes clear `XDG_CURRENT_DESKTOP` and may not expose the host Settings
-/// portal; its unset scheme must not paint the dark fallback over the shell's
+/// The shell supplies this process's settings through its app-scoped collaboration channel, which owns
+/// the theme the shell chrome already paints from. Sandboxes clear `XDG_CURRENT_DESKTOP` and may not
+/// expose the host Settings portal; its unset scheme must not paint the dark fallback over the shell's
 /// configured theme.
 pub(crate) fn session_document_owns_appearance() -> bool {
     settings_store::installed_source().is_some()
 }
 
 /// Whether the host, not the Tilo shell, owns this process's appearance.
-/// `desktop` is `XDG_CURRENT_DESKTOP`, a colon-separated list.
 pub(crate) fn host_owns_appearance(desktop: Option<&str>) -> bool {
     !desktop.is_some_and(|desktop| {
         desktop
@@ -55,23 +47,18 @@ pub(crate) fn host_owns_appearance(desktop: Option<&str>) -> bool {
     })
 }
 
-/// The native runner's view of the host appearance, reporting each change
-/// once.
+/// The native runner's view of the host appearance, reporting each change once.
 pub(crate) struct Source {
     window_scheme: Option<Scheme>,
     system: tilo_appearance::System,
-    /// Accessibility the launcher requested; the host can add to it, never
-    /// take it away.
+    /// Accessibility the launcher requested; the host can add to it, never take it away.
     requested: crate::host::AccessibilityInputs,
     applied: Option<HostAppearance>,
 }
 
 impl Source {
-    /// `None` when the shell's settings source or session document owns
-    /// appearance, and when the desktop is already Tilo. Otherwise the host
-    /// portal owns it.
-    /// Start it under the app's wake scope: a platform that reports changes
-    /// itself wakes the event loop through it.
+    /// `None` when the shell's settings source or session document owns appearance, and when the
+    /// desktop is already Tilo.
     pub fn start() -> Option<Self> {
         if session_document_owns_appearance() {
             return None;
@@ -107,8 +94,8 @@ impl Source {
         }
     }
 
-    /// The appearance to apply when it changed since the last call, or
-    /// always with `force` — after something else re-themed the app.
+    /// The appearance to apply when it changed since the last call, or always with `force` — after
+    /// something else re-themed the app.
     pub fn take_change(&mut self, force: bool) -> Option<HostAppearance> {
         let current = self.current();
         if !force && self.applied == Some(current) {
@@ -162,8 +149,6 @@ mod tests {
         });
         let accent = Color::from_rgb8(0xE0, 0x40, 0x80);
         let you = theme.tokens.colors.intent.you;
-        // The focus ring is the accent's ink: your colour at the lightness
-        // its contrast floor needs (design language, "Colour roles").
         assert_eq!(theme.border_focus, theme.tokens.colors.intent.accent_ink);
         let ring = Oklch::from_color(theme.border_focus);
         let ring_d = (ring.h - Oklch::from_color(you).h).rem_euclid(360.0);
@@ -260,12 +245,10 @@ mod tests {
         assert!(applied.reduce_motion);
     }
 
-    /// Tests share one process: a settings document one installs
-    /// process-wide is read by every test running beside it, which is how
-    /// one test's light theme reached another's high-contrast toggle. The
-    /// toolkit's tests scope theirs to their thread
-    /// (`settings_store::scoped_source`); the toolkit itself never installs
-    /// one, its host does.
+    /// Tests share one process: a settings document one installs process-wide is read by every test
+    /// running beside it, which is how one test's light theme reached another's high-contrast toggle.
+    /// The toolkit's tests scope theirs to their thread (`settings_store::scoped_source`); the toolkit
+    /// itself never installs one, its host does.
     #[test]
     fn no_toolkit_code_installs_a_process_wide_settings_document() {
         let needle = concat!("settings_store::", "install_source(");

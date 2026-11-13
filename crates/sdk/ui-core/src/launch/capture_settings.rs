@@ -1,15 +1,13 @@
-//! A capture's settings: what its private profile stores before the app
-//! reads it.
+//! A capture's settings: what its private profile stores before the app reads it.
 
 use serde_json::{Map, Value};
 
 use crate::theme::Preset;
 use crate::theme_layers::{DARK_THEME_KEY, LIGHT_THEME_KEY, MODE_KEY};
 
-/// The `appearance` section a capture's profile stores: the theme the
-/// capture draws in (`--theme`, else `TILO_SHOTS_THEME`, else dark) as the
-/// person's choice, so a control showing the stored theme shows what is on
-/// screen.
+/// The `appearance` section a capture's profile stores: the theme the capture draws in (`--theme`, else
+/// `TILO_SHOTS_THEME`, else dark) as the person's choice, so a control showing the stored theme shows
+/// what is on screen.
 #[must_use]
 pub fn capture_appearance(args: &super::LaunchArgs) -> Map<String, Value> {
     appearance(
@@ -20,7 +18,6 @@ pub fn capture_appearance(args: &super::LaunchArgs) -> Map<String, Value> {
     )
 }
 
-/// The `appearance` section that stores `preset` as the person's theme.
 fn appearance(preset: Preset) -> Map<String, Value> {
     let dark = preset.document().is_dark();
     let mut appearance = Map::new();

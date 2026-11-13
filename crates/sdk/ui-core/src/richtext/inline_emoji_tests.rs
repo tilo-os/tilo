@@ -172,7 +172,6 @@ fn an_emoji_takes_one_square_on_its_row_without_growing_it() {
         layout.height(),
         plain.height()
     );
-    // The text after it moves up by what the letters took beyond the square.
     let shift = (natural.2 - natural.0) - (x1 - x0);
     let after = layout.caret_geometry(text.len()).0;
     assert!((plain.caret_geometry(text.len()).0 - shift - after).abs() < 0.25);

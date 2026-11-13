@@ -1,7 +1,5 @@
-//! Standard command-line lifecycle for Tilo applications.
-//!
-//! An app is an application definition its component host prepares; this
-//! module owns common argument validation, headless driving, captures,
+//! Standard command-line lifecycle for Tilo applications. An app is an application definition its
+//! component host prepares; this module owns common argument validation, headless driving, captures,
 //! logging, and live startup around it.
 
 use std::fmt;
@@ -36,8 +34,6 @@ mod scenario;
 pub use scenario::HostSource;
 mod shot_frame;
 pub use shot_frame::ShotFrame;
-// Writing a PNG needs the offscreen renderer's blocking GPU readback, which
-// the browser has not got; laying out and drawing a frame is portable.
 #[cfg(not(target_arch = "wasm32"))]
 pub use shot_frame::render_widget_png;
 
@@ -47,14 +43,6 @@ pub mod android;
 mod android_env;
 
 /// Export the Android entry point for this binary's `main`.
-///
-/// On Android an app is a shared library that `TiloActivity` loads, not an
-/// executable, so there is no process `main`. Invoked once at the top level
-/// of an app's `main.rs`, this defines the `android_main` the activity calls,
-/// which prepares the process and runs that same `main`. On every other
-/// target it expands to nothing. `tilo-app build --platform android` builds
-/// the file as a `cdylib` example. `android_main!(entry)` runs `entry`
-/// instead of `main`, as `dev_reload_entry!` does for an app library.
 #[macro_export]
 macro_rules! android_main {
     () => {
@@ -79,19 +67,17 @@ pub type ComponentHostPreparer =
     ) -> Result<crate::application::PreparedComponentInputs, LaunchError>;
 
 /// Drive a mounted capture through its normal actions/input before rendering.
-/// The callback receives no unbound root or document mutation shortcut.
 pub type ComponentCaptureScenario = fn(&mut FrameHarness, &LaunchArgs) -> Result<(), LaunchError>;
 
 type ViewportFactory = fn(&LaunchArgs) -> (u32, u32);
 type CommandHandler = fn(&LaunchArgs) -> Result<bool, LaunchError>;
 
-/// Parsed common launch arguments. Extra flags are retained for an app's
-/// screenshot factory after being explicitly allow-listed by [`LaunchSpec`].
+/// Parsed common launch arguments.
 #[derive(Clone, Debug, Default)]
 pub struct LaunchArgs {
     pub shots: Option<PathBuf>,
-    /// `--shots-dir DIR`: one capture of every declared scenario, written to
-    /// `DIR/NN-name.png` in declaration order.
+    /// `--shots-dir DIR`: one capture of every declared scenario, written to `DIR/NN-name.png` in
+    /// declaration order.
     pub shots_dir: Option<PathBuf>,
     pub responsive_matrix: Option<PathBuf>,
     pub viewport: Option<(u32, u32)>,
@@ -99,41 +85,34 @@ pub struct LaunchArgs {
     pub headless: Option<headless::Spec>,
     /// Lay out the production root and print its Tilo-native certification.
     pub native_audit: bool,
-    /// `--first-frame`: construct the app as a live launch does, lay out and
-    /// draw its first frame as its window would, without a window or a GPU,
-    /// and print where the time went since the process started. One process
-    /// per measured launch, so nothing it reads is warm from an earlier one.
+    /// `--first-frame`: construct the app as a live launch does, lay out and draw its first frame as
+    /// its window would, without a window or a GPU, and print where the time went since the process
+    /// started.
     pub first_frame: bool,
     pub pseudo_locale: bool,
     pub text_scale: Option<f32>,
-    /// `--theme NAME`: the shipped theme a capture renders in
-    /// ([`Theme::named`]), over `TILO_SHOTS_THEME`.
+    /// `--theme NAME`: the shipped theme a capture renders in ([`Theme::named`]), over
+    /// `TILO_SHOTS_THEME`.
     pub theme: Option<String>,
-    /// `--workspace-hue DEGREES` and `--your-colour NAME`: what the shell
-    /// would tell the captured window about where and for whom it is shown
-    /// ([`crate::theme::WindowAppearance`]). Without them a capture is what
-    /// a window without a shell shows: neutral, in the default colour.
+    /// `--workspace-hue DEGREES` and `--your-colour NAME`: what the shell would tell the captured
+    /// window about where and for whom it is shown ([`crate::theme::WindowAppearance`]).
     pub window: crate::theme::WindowAppearance,
-    /// `--history`: a capture shows History open, where the app has
-    /// History.
+    /// `--history`: a capture shows History open, where the app has History.
     pub history: bool,
-    /// `--window-bar`: a capture is drawn as a desktop window shows the app,
-    /// under the window's bar with the app's slots in it.
+    /// `--window-bar`: a capture is drawn as a desktop window shows the app, under the window's bar
+    /// with the app's slots in it.
     pub window_bar: bool,
-    /// `--search QUERY`: a capture shows this window's search open with
-    /// `QUERY` typed, as the app's search launcher opens it.
+    /// `--search QUERY`: a capture shows this window's search open with `QUERY` typed, as the app's
+    /// search launcher opens it.
     pub search: Option<String>,
-    /// `--device-scale N`: a capture is drawn at N device pixels per
-    /// logical pixel (1 to [`MAX_SHOT_DEVICE_SCALE`]), as a HiDPI display
-    /// draws the same window.
+    /// `--device-scale N`: a capture is drawn at N device pixels per logical pixel (1 to
+    /// [`MAX_SHOT_DEVICE_SCALE`]), as a HiDPI display draws the same window.
     pub device_scale: Option<u32>,
-    /// `--touch`: the capture is a touch-only window — a phone — which
-    /// reports a finger and no pointer, so controls offer the gestures it can
-    /// make rather than those only a dragged pointer can.
+    /// `--touch`: the capture is a touch-only window — a phone — which reports a finger and no pointer,
+    /// so controls offer the gestures it can make rather than those only a dragged pointer can.
     pub touch: bool,
-    /// `--distinct-letters on|off`: a capture renders with "Always
-    /// distinguish similar letters" on or off, whatever the theme's face
-    /// would choose.
+    /// `--distinct-letters on|off`: a capture renders with "Always distinguish similar letters" on or
+    /// off, whatever the theme's face would choose.
     pub distinct_letters: Option<bool>,
     extras: Vec<String>,
     values: Vec<(String, String)>,
@@ -141,8 +120,8 @@ pub struct LaunchArgs {
 }
 
 impl LaunchArgs {
-    /// The arguments of a component mounted by an in-process host: no
-    /// screenshot, headless or audit mode and no app-specific arguments.
+    /// The arguments of a component mounted by an in-process host: no screenshot, headless or audit
+    /// mode and no app-specific arguments.
     pub fn component() -> Self {
         Self::default()
     }
@@ -151,8 +130,8 @@ impl LaunchArgs {
         self.extras.iter().any(|arg| arg == flag)
     }
 
-    /// These arguments naming the app's switch `flag` too (`--private`), as
-    /// a command line does: what a host or a test launches with.
+    /// These arguments naming the app's switch `flag` too (`--private`), as a command line does: what a
+    /// host or a test launches with.
     #[must_use]
     pub fn with_flag(mut self, flag: &str) -> Self {
         if !self.has(flag) {
@@ -161,8 +140,7 @@ impl LaunchArgs {
         self
     }
 
-    /// Value supplied for an app-specific option allow-listed by the launch
-    /// specification.
+    /// Value supplied for an app-specific option allow-listed by the launch specification.
     pub fn value(&self, option: &str) -> Option<&str> {
         self.values
             .iter()
@@ -175,13 +153,8 @@ impl LaunchArgs {
         &self.positionals
     }
 
-    /// This process's arguments, for a binary that runs its own live loop
-    /// (the greeter, the installer) yet takes the standard capture options,
-    /// plus its own capture-only `options`.
-    ///
-    /// # Errors
-    /// The same refusals as [`run`]: an unknown, malformed or duplicate
-    /// argument, or a capture option outside a capture.
+    /// This process's arguments, for a binary that runs its own live loop (the greeter, the installer)
+    /// yet takes the standard capture options, plus its own capture-only `options`.
     #[cfg(feature = "native")]
     pub fn from_env(options: &[&str]) -> Result<Self, LaunchError> {
         let args: Vec<String> = std::env::args().collect();
@@ -189,8 +162,8 @@ impl LaunchArgs {
     }
 }
 
-/// How the standard lifecycle launches one application definition: its
-/// component host, capture scenarios, commands and accepted arguments.
+/// How the standard lifecycle launches one application definition: its component host, capture
+/// scenarios, commands and accepted arguments.
 #[derive(Clone)]
 pub struct LaunchSpec {
     definition: &'static crate::application::ApplicationDefinition,
@@ -212,9 +185,8 @@ pub struct LaunchSpec {
 }
 
 impl LaunchSpec {
-    /// Select automatic runtime attachment for native launches. The default is
-    /// enabled. Disabling bootstrap does not revoke inherited service handles;
-    /// privacy-sensitive apps must also construct a local-only application.
+    /// Select automatic runtime attachment for native launches. Disabling bootstrap does not revoke
+    /// inherited service handles; privacy-sensitive apps must also construct a local-only application.
     #[must_use]
     pub fn runtime_attachment(mut self, policy: fn(&LaunchArgs) -> bool) -> Self {
         self.runtime_attachment = policy;
@@ -268,30 +240,23 @@ impl LaunchSpec {
     }
 
     /// Use the shared native system-service runner for a prepared application.
-    /// Service discovery happens only when opening a window, after preparation;
-    /// captures, audits and headless driving retain their explicit isolation.
     #[must_use]
     pub fn native_services(mut self) -> Self {
         self.component_native_services = true;
         self
     }
 
-    /// Apply capture-only interactions after the normal factory and restoration.
-    /// Runs for captures and for headless drives that name a scenario; never
-    /// for live launches or native certification audits.
+    /// Apply capture-only interactions after the normal factory and restoration. Runs for captures and
+    /// for headless drives that name a scenario; never for live launches or native certification
+    /// audits.
     #[must_use]
     pub fn capture_scenario(mut self, scenario: ComponentCaptureScenario) -> Self {
         self.component_capture_scenario = Some(scenario);
         self
     }
 
-    /// What a launch with `args` opens, prepared by the specification's
-    /// component host but not instantiated: the record, the profile it
-    /// lives in and what the host hands the component.
-    ///
-    /// # Errors
-    /// Returns argument, profile or record failures, or
-    /// [`LaunchError::MissingComponentHost`].
+    /// What a launch with `args` opens, prepared by the specification's component host but not
+    /// instantiated: the record, the profile it lives in and what the host hands the component.
     pub fn prepare_hosted(
         &self,
         args: &LaunchArgs,
@@ -315,47 +280,38 @@ impl LaunchSpec {
         self.definition.instantiate(context, target, restore)
     }
 
-    /// Scenario-specific default viewport. An explicit `--viewport` always
-    /// wins over this callback.
+    /// Scenario-specific default viewport. An explicit `--viewport` always wins over this callback.
     #[must_use]
     pub fn shot_viewport(mut self, factory: ViewportFactory) -> Self {
         self.shot_viewport = factory;
         self
     }
 
-    /// Handle an app-specific, non-windowed command after argument validation.
-    /// Return `true` when the command was handled and launch should stop.
-    ///
-    /// This keeps developer utilities such as fixture generation and benchmark
-    /// drivers in the standard parser without making them part of the normal
-    /// screenshot or live-window lifecycle. A component's in-process hosts
-    /// never run it: commands belong to the app's own process.
+    /// Handle an app-specific, non-windowed command after argument validation. Return `true` when the
+    /// command was handled and launch should stop. A component's in-process hosts never run it:
+    /// commands belong to the app's own process.
     #[must_use]
     pub fn command_handler(mut self, handler: CommandHandler) -> Self {
         self.command_handler = Some(handler);
         self
     }
 
-    /// Reject headless input driving for apps whose widgets have privileged
-    /// side effects, such as an on-screen keyboard that injects keystrokes into
-    /// another application.
+    /// Reject headless input driving for apps whose widgets have privileged side effects, such as an
+    /// on-screen keyboard that injects keystrokes into another application.
     #[must_use]
     pub fn disable_headless(mut self) -> Self {
         self.headless_enabled = false;
         self
     }
 
-    /// Allow app-specific boolean flags. Value-taking common options belong
-    /// in `LaunchArgs`; specialized CLIs should use the lower-level APIs.
+    /// Allow app-specific boolean flags.
     #[must_use]
     pub fn allowed_flags(mut self, flags: &'static [&'static str]) -> Self {
         self.allowed_flags = flags;
         self
     }
 
-    /// Allow app-specific, value-taking options in both `--name value` and
-    /// `--name=value` form. Their values are available through
-    /// [`LaunchArgs::value`].
+    /// Allow app-specific, value-taking options in both `--name value` and `--name=value` form.
     #[must_use]
     pub fn allowed_options(mut self, options: &'static [&'static str]) -> Self {
         self.allowed_options = options;
@@ -383,8 +339,7 @@ impl LaunchSpec {
         self
     }
 
-    /// Declare every accepted screenshot scenario. With no declaration,
-    /// `--scenario` is rejected instead of being silently ignored.
+    /// Declare every accepted screenshot scenario.
     #[must_use]
     pub fn scenarios(mut self, scenarios: &'static [&'static str]) -> Self {
         self.scenarios = scenarios;
@@ -401,8 +356,8 @@ pub enum LaunchError {
     BindingMismatch,
     MissingComponentHost,
     IncompatibleComponentSetup,
-    /// Setup failed after the record became Ready: `recovery` holds its
-    /// store (and any close reports) so the caller can reopen or flush it.
+    /// Setup failed after the record became Ready: `recovery` holds its store (and any close reports)
+    /// so the caller can reopen or flush it.
     ComponentSetup {
         source: Box<LaunchError>,
         record: Box<crate::record::RecordCheckout>,
@@ -424,12 +379,11 @@ pub enum LaunchError {
     HeadlessUnsupported,
     Scenario(String),
     Operation(String),
-    /// A capture would have set text in the host's faces instead of the
-    /// product's, because no root holds this build's font catalog.
+    /// A capture would have set text in the host's faces instead of the product's, because no root
+    /// holds this build's font catalog.
     SubstituteFont(String),
-    /// The record the launch opens is not on this device yet, and the
-    /// workspace's join, still under way, brings it: the launch builds
-    /// once the join is over instead of creating a copy here.
+    /// The record the launch opens is not on this device yet, and the workspace's join, still under
+    /// way, brings it: the launch builds once the join is over instead of creating a copy here.
     RecordNotHere,
 }
 
@@ -582,17 +536,11 @@ const _: () = {
     assert_send_sync::<LaunchError>();
 };
 
-/// What a failed launch still owns, handed back to the caller so nothing
-/// dirty is lost: the record store holding the canonical record (reopen it,
-/// or flush it), and the close reports of components torn down on the way
-/// (retry their view or record durability).
-///
-/// These owners are single-threaded (`Rc` stores). The error carrying them
-/// is still `Send + Sync`: the owners are reachable only on the thread that
-/// launched, and every accessor returns nothing elsewhere. A recovery dropped
-/// on another thread is leaked rather than dropped there — its stores are
-/// never touched off their thread — so move the error back to the launching
-/// thread (or consume the recovery there) when it must be released.
+/// What a failed launch still owns, handed back to the caller so nothing dirty is lost: the record
+/// store holding the canonical record (reopen it, or flush it), and the close reports of components
+/// torn down on the way (retry their view or record durability). A recovery dropped on another thread
+/// is leaked rather than dropped there — its stores are never touched off their thread — so move the
+/// error back to the launching thread (or consume the recovery there) when it must be released.
 pub struct LaunchRecovery {
     owner: std::thread::ThreadId,
     report_count: usize,
@@ -726,8 +674,8 @@ impl fmt::Debug for LaunchRecovery {
     }
 }
 
-/// Run the standard app lifecycle and report command-line errors using the
-/// conventional usage-error exit status (`2`).
+/// Run the standard app lifecycle and report command-line errors using the conventional usage-error
+/// exit status (`2`).
 #[allow(
     clippy::exit,
     reason = "this *is* the app's CLI entry point (every app's `main` just \
@@ -744,14 +692,6 @@ pub fn run_or_exit(spec: &LaunchSpec) {
 }
 
 /// Run the standard app lifecycle using `std::env::args`.
-///
-/// # Errors
-///
-/// Returns a [`LaunchError`] if argument parsing fails (an unknown flag, a
-/// missing or malformed value, a duplicate flag, `--shots` combined with
-/// `--headless-drive`, a shots-only flag used outside `--shots`, or an
-/// undeclared `--scenario`), or if the app's root factory, shot factory, or
-/// shot handler returns one.
 #[cfg(feature = "native")]
 pub fn run(spec: &LaunchSpec) -> Result<(), LaunchError> {
     tilo_startup_metrics::init();
@@ -776,9 +716,6 @@ fn run_with_args_with_attachment(
     attach: impl FnOnce(&str) -> std::io::Result<()>,
 ) -> Result<(), LaunchError> {
     let _detached = crate::wake::WakeScope::enter_detached();
-    // Take the content-store capability the launcher handed this process
-    // before anything else can, in every mode that was handed one (live,
-    // headless drives, captures); the app's store is that device store.
     #[cfg(feature = "native")]
     let _ = tilo_content_device::device();
     let args = parse_args_extended(
@@ -812,9 +749,9 @@ fn run_with_args_with_attachment(
     run_parsed(spec, &args, attach)
 }
 
-/// `--shots-dir`: each declared scenario (or the plain capture, for an app
-/// that declares none) captured on its own, exactly as `--shots --scenario`
-/// captures it, into `NN-name.png` so a gallery keeps declaration order.
+/// `--shots-dir`: each declared scenario (or the plain capture, for an app that declares none) captured
+/// on its own, exactly as `--shots --scenario` captures it, into `NN-name.png` so a gallery keeps
+/// declaration order.
 #[cfg(feature = "native")]
 fn capture_every_scenario(
     spec: &LaunchSpec,
@@ -840,8 +777,8 @@ fn capture_every_scenario(
     Ok(())
 }
 
-/// Whether these arguments run the app in a live native window, rather than
-/// headless, as captures or as an audit.
+/// Whether these arguments run the app in a live native window, rather than headless, as captures or as
+/// an audit.
 #[cfg(feature = "native")]
 fn opens_native_window(args: &LaunchArgs) -> bool {
     args.headless.is_none()
@@ -870,11 +807,6 @@ fn run_parsed(
     {
         return Ok(());
     }
-    // Attachment can exec the runtime host in this process's place, and marks
-    // the inherited launch guard close-on-exec: it finishes before the
-    // renderer preparation below starts a thread.
-    // A surface of the desktop is shown by the session that placed it and
-    // reaches it over its own actions socket: it needs no runtime host.
     let attaches = !crate::surface_services::is_surface() && (spec.runtime_attachment)(&args);
     if opens_native_window(&args) && attaches {
         attach(spec.app_id).map_err(|error| {
@@ -936,7 +868,6 @@ fn run_parsed(
     let app = match dispatched? {
         DefinitionDispatch::Native(app) => app,
         DefinitionDispatch::Headless(status) => {
-            // process::exit skips the ScopedDumper in run().
             tilo_startup_metrics::mark("headless-exit");
             tilo_startup_metrics::dump();
             std::process::exit(status);
@@ -967,18 +898,15 @@ fn run_parsed(
     };
     #[cfg(any(windows, target_os = "linux"))]
     let app = Box::new((*app).with_startup_renderer(renderer.take()));
-    // Later windows of this app in its workspace open here
-    // (`crate::window_door`), built as the first was.
     let mut open = |pending| crate::window_door::open_window(spec, &args, pending);
     let open: &mut dyn FnMut(_) -> Option<App> = &mut open;
     (*app).run_windows(|_| {}, Some(open));
     Ok(())
 }
 
-/// Start building the process's font database in the background
-/// (`text_render::prepare_font_database`): only the database, so it neither
-/// shapes text nor touches the GPU the renderer preparation is opening. Where
-/// no background work can run, the first text renderer builds it as before.
+/// Start building the process's font database in the background (`text_render::prepare_font_database`):
+/// only the database, so it neither shapes text nor touches the GPU the renderer preparation is
+/// opening.
 #[cfg(feature = "native")]
 fn prepare_font_database_beside() {
     let _ = crate::background::Background::current().spawn("font-database-prepare", || {
@@ -1034,7 +962,6 @@ pub(crate) enum DefinitionDispatch {
     Audit(Box<FrameHarness>),
 }
 
-/// Construction/selection is testable without a process exit, native loop, or GPU.
 #[cfg(feature = "native")]
 fn dispatch_definition(
     spec: &LaunchSpec,
@@ -1113,8 +1040,6 @@ fn dispatch_definition_with(
                 eprintln!("headless: state open failed: {error}");
                 return Ok(DefinitionDispatch::Headless(3));
             }
-            // The record arrives with the workspace's join: hand back the
-            // joining manager and its scope to build in once it is over.
             Err(LaunchError::RecordNotHere) => {
                 let parts = construction.map(|construction| construction.into_parts());
                 return Err(match parts {
@@ -1136,8 +1061,6 @@ fn dispatch_definition_with(
         spec.prepare_component(args, prepared.context, prepared.target, prepared.restore)
     })?;
     if let Some(headless) = &args.headless {
-        // A drive that names a scenario was built from its fixtures; it is
-        // staged as its capture is, before the drive's actions.
         let scenario = spec
             .component_capture_scenario
             .filter(|_| args.scenario.is_some());
@@ -1156,13 +1079,9 @@ fn dispatch_definition_with(
             viewport,
             prepared.runner_inputs,
         )?);
-        // The host prepared the component's presentation; a capture that
-        // names a palette is drawn in it, as every other `--shots` path is.
         if args.theme.is_some() || std::env::var_os("TILO_SHOTS_THEME").is_some() {
             driver.set_theme(shot_theme(args));
         }
-        // A capture of a phone reports the device a phone is: a finger and
-        // no pointer, before any scenario stages its frame.
         if args.touch {
             driver.set_interaction_environment(crate::interaction::InteractionEnvironment::TOUCH);
         }
@@ -1206,8 +1125,8 @@ fn dispatch_definition_with(
     Ok(DefinitionDispatch::Native(Box::new(app)))
 }
 
-/// `--history` and `--search`: open History or this window's search before
-/// the capture settles, so the shot shows it as a person sees it.
+/// `--history` and `--search`: open History or this window's search before the capture settles, so the
+/// shot shows it as a person sees it.
 #[cfg(feature = "native")]
 fn show_history_for_capture(
     driver: &mut FrameHarness,
@@ -1218,8 +1137,6 @@ fn show_history_for_capture(
             .open_history()
             .map_err(|error| LaunchError::Operation(format!("--history: {error}")))?;
     }
-    // `--search`: the window's search, opened as the app's own launcher
-    // opens it.
     if let Some(query) = &args.search {
         driver
             .open_search(&crate::search::SearchRequest::this_app().with_query(query.clone()))
@@ -1237,9 +1154,8 @@ fn selected_local_construction()
     .map_err(LaunchError::Operation)
 }
 
-/// The actions socket the session handed this process, when it is a
-/// surface app's: `None` when the number in
-/// [`crate::surface_services::ACTIONS_FD_ENV`] names no socket.
+/// The actions socket the session handed this process, when it is a surface app's: `None` when the
+/// number in [`crate::surface_services::ACTIONS_FD_ENV`] names no socket.
 #[cfg(feature = "native")]
 fn surface_peer() -> Option<crate::surface_peer::SurfacePeer> {
     let number = std::env::var(crate::surface_services::ACTIONS_FD_ENV).ok()?;
@@ -1285,19 +1201,19 @@ fn validate_spec_args(args: &LaunchArgs, spec: &LaunchSpec) -> Result<(), Launch
     scenario::check(args, spec)
 }
 
-/// How long a capture waits for the window to settle (animations finished,
-/// thumbnails loaded) before it writes anyway.
+/// How long a capture waits for the window to settle (animations finished, thumbnails loaded) before it
+/// writes anyway.
 pub const CAPTURE_SETTLE_BOUND: crate::time::Duration = crate::time::Duration::from_secs(3);
 
 /// The largest `--device-scale`: a 1280 x 800 window at 4x is 5120 x 3200.
 pub const MAX_SHOT_DEVICE_SCALE: u32 = 4;
 
-/// `--distinct-letters` for the capture this process writes: every capture
-/// theme ([`shot_theme`], [`shot_theme_from_env`]) takes it.
+/// `--distinct-letters` for the capture this process writes: every capture theme ([`shot_theme`],
+/// [`shot_theme_from_env`]) takes it.
 static CAPTURE_DISTINCT_LETTERS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
 
-/// Pin "Always distinguish similar letters" on a capture theme when the
-/// capture asked for it (`--distinct-letters`).
+/// Pin "Always distinguish similar letters" on a capture theme when the capture asked for it
+/// (`--distinct-letters`).
 fn with_capture_letters(mut theme: Theme, explicit: Option<bool>) -> Theme {
     if let Some(on) = explicit.or_else(|| CAPTURE_DISTINCT_LETTERS.get().copied()) {
         theme.document.type_.distinct_letters = Some(on);
@@ -1306,24 +1222,18 @@ fn with_capture_letters(mut theme: Theme, explicit: Option<bool>) -> Theme {
     theme
 }
 
-/// The theme a capture asked for by name: `--theme`, else
-/// `TILO_SHOTS_THEME`.
 fn shot_theme_name(args: &LaunchArgs) -> Option<String> {
     args.theme
         .clone()
         .or_else(|| std::env::var("TILO_SHOTS_THEME").ok())
 }
 
-/// Resolve the palette, text scale, and motion policy used by screenshot
-/// capture. An explicit `--text-scale` wins over the
-/// `TILO_SHOTS_TEXT_SCALE` environment variable.
+/// Resolve the palette, text scale, and motion policy used by screenshot capture.
 #[must_use]
 pub fn shot_theme(args: &LaunchArgs) -> Theme {
     let theme = shot_theme_name(args)
         .and_then(|name| Theme::named(&name))
         .unwrap_or_else(Theme::dark);
-    // `TILO_SHOTS_ACCENT=#RRGGBB` stands in for the host accent a standalone
-    // app takes as the person's own colour: the presence hue nearest it.
     let theme = match std::env::var("TILO_SHOTS_ACCENT")
         .ok()
         .and_then(|hex| crate::color::parse_hex(&hex))
@@ -1344,11 +1254,10 @@ pub fn shot_theme(args: &LaunchArgs) -> Theme {
     theme.with_reduce_motion(shot_motion_reduced())
 }
 
-/// The screenshot theme for capture frontends that have no [`LaunchArgs`]
-/// (the `ui-shots` examples): `TILO_SHOTS_THEME`, `TILO_SHOTS_TEXT_SCALE` and
-/// the motion preference through the same policy as [`shot_theme`]. An
-/// unknown theme name is an error rather than a silent fall back to dark, so
-/// a mis-typed light capture cannot masquerade as a dark one.
+/// The screenshot theme for capture frontends that have no [`LaunchArgs`] (the `ui-shots` examples):
+/// `TILO_SHOTS_THEME`, `TILO_SHOTS_TEXT_SCALE` and the motion preference through the same policy as
+/// [`shot_theme`]. An unknown theme name is an error rather than a silent fall back to dark, so a
+/// mis-typed light capture cannot masquerade as a dark one.
 pub fn shot_theme_from_env() -> Result<Theme, String> {
     let theme = match std::env::var("TILO_SHOTS_THEME") {
         Ok(name) => {
@@ -1362,9 +1271,7 @@ pub fn shot_theme_from_env() -> Result<Theme, String> {
         .with_reduce_motion(shot_motion_reduced()))
 }
 
-/// Resolve screenshot text-scale precedence without reading process-global
-/// state. Custom capture frontends can pass their parsed CLI value and the
-/// compatibility environment value through the same policy as [`shot_theme`].
+/// Resolve screenshot text-scale precedence without reading process-global state.
 #[must_use]
 pub fn shot_text_scale(cli: Option<f32>, environment: Option<&str>) -> f32 {
     cli.or_else(|| {
@@ -1376,10 +1283,6 @@ pub fn shot_text_scale(cli: Option<f32>, environment: Option<&str>) -> f32 {
 }
 
 /// Read the user motion preference for the headless screenshot path.
-///
-/// Keep this deliberately in lockstep with `tilo_ui::App`'s startup gate: a test
-/// image should not claim reduced-motion support while a launched app animates
-/// (or vice versa).
 fn shot_motion_reduced() -> bool {
     [
         "TILO_SHOTS_REDUCE_MOTION",
@@ -1396,8 +1299,7 @@ fn motion_env_value_enabled(value: &str) -> bool {
     !value.is_empty() && value != "0" && !value.eq_ignore_ascii_case("false")
 }
 
-/// Product acceptance sizes in logical pixels. They exercise the supported
-/// shape classes rather than pretending every device has one canonical size.
+/// Product acceptance sizes in logical pixels.
 pub const RESPONSIVE_VIEWPORTS: [(&str, (u32, u32)); 4] = [
     ("phone", (390, 844)),
     ("tablet", (768, 1024)),
@@ -1574,7 +1476,6 @@ fn parse_args_extended(
                 }
                 parsed.touch = true;
             }
-            // A Jump List task: run this host command once the window exists.
             #[cfg(all(windows, feature = "native"))]
             crate::host_chrome::windows_items::LAUNCH_OPTION => {
                 let value = take_value(args, &mut index, flag, inline)?;
@@ -1616,7 +1517,6 @@ fn parse_args_extended(
     if mode_count > 1 {
         return Err(LaunchError::ConflictingModes);
     }
-    // A drive names its scenario in its spec or with `--scenario`.
     if let Some(named) = parsed
         .headless
         .as_ref()
@@ -1629,7 +1529,6 @@ fn parse_args_extended(
         }
         parsed.scenario = Some(named);
     }
-    // Every scenario is captured; naming one is a single `--shots`.
     if parsed.shots_dir.is_some() && parsed.scenario.is_some() {
         return Err(LaunchError::ConflictingModes);
     }
@@ -1758,7 +1657,6 @@ mod tests {
     use super::*;
 
     /// The launcher's environment contract, pointed at a scratch data home.
-    /// The variables are restored before the directory is removed.
     struct LaunchFixtureEnv {
         _env: tilo_test_env::ScopedEnv,
         _directory: tempfile::TempDir,
@@ -1781,8 +1679,8 @@ mod tests {
         values.iter().map(|value| (*value).to_owned()).collect()
     }
 
-    /// A capture is what asks for frames or measurements; a viewport alone is
-    /// a size, and a live launch takes one too.
+    /// A capture is what asks for frames or measurements; a viewport alone is a size, and a live launch
+    /// takes one too.
     #[test]
     fn a_capture_is_what_writes_frames() {
         let is_capture = |argv: &[&str]| {
@@ -1801,8 +1699,8 @@ mod tests {
         ));
     }
 
-    /// `run_parsed` starts the renderer preparation thread (Windows and Linux)
-    /// and the runtime attachment exactly for these arguments.
+    /// `run_parsed` starts the renderer preparation thread (Windows and Linux) and the runtime
+    /// attachment exactly for these arguments.
     #[test]
     fn only_a_live_window_prepares_its_renderer_ahead() {
         let live = parse_args(&strings(&["app"]), &[], &[]).unwrap();
@@ -1963,7 +1861,6 @@ mod tests {
             assert_eq!(spec.actions.len(), 1);
         }
 
-        // A drive names its scenario in its spec, or with the same flag.
         {
             let drive = |extra: &[&str]| {
                 let mut args = vec!["app", "--headless-drive", r#"{"scenario":"wide"}"#];

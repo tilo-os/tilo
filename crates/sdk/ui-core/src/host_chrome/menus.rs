@@ -1,6 +1,5 @@
-//! The menus of a menu bar the host commands fill, for hosts that have one
-//! (macOS, Windows). Commands keep their model order; adjacent groups in one
-//! menu are separated.
+//! The menus of a menu bar the host commands fill, for hosts that have one (macOS, Windows). Commands
+//! keep their model order; adjacent groups in one menu are separated.
 
 use super::model::{CommandGroup, HostCommand};
 

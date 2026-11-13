@@ -1,14 +1,8 @@
-//! Parts of a frame the host composites itself.
-//!
-//! A part that only fades, grows or moves while it shows the same thing (the overview's ground
-//! coming up, its panel rising into place) costs a whole raster of everything it covers on every
-//! frame when its pose is drawn into the frame. A host whose compositor can pose a layer instead
-//! ([`Recording`]) takes such a part out of the frame as a layer of its own, drawn once at rest,
-//! and hands the compositor its pose each frame. Everywhere else ([`lifted`] outside a recording)
-//! the part is drawn into the frame in its pose, as it always was: the widget draws it one way.
-//!
-//! Lifted layers stand below the rest of the frame, so a part is lifted only when nothing was
-//! drawn into the frame before it; a part that has something under it is drawn in place.
+//! Parts of a frame the host composites itself. A part that only fades, grows or moves while it shows
+//! the same thing (the overview's ground coming up, its panel rising into place) costs a whole raster
+//! of everything it covers on every frame when its pose is drawn into the frame. Everywhere else
+//! ([`lifted`] outside a recording) the part is drawn into the frame in its pose, as it always was: the
+//! widget draws it one way.
 
 use std::cell::RefCell;
 
@@ -57,7 +51,6 @@ impl Pose {
             * Affine::translate(-self.pivot.to_vec2())
     }
 
-    /// This pose in the coordinates `transform` maps into.
     fn mapped(self, transform: Affine) -> Self {
         let pivot = transform * self.pivot;
         Self {
@@ -68,8 +61,8 @@ impl Pose {
     }
 }
 
-/// One part a host composites: its scene drawn at rest in the frame's coordinates, the rectangle
-/// it may paint and the pose to draw it in.
+/// One part a host composites: its scene drawn at rest in the frame's coordinates, the rectangle it may
+/// paint and the pose to draw it in.
 pub struct Lifted {
     /// Names the part across frames.
     pub key: PartKey,
@@ -84,7 +77,6 @@ pub struct Lifted {
 }
 
 struct Active {
-    /// The address of the frame's own scene.
     root: usize,
     lifted: Vec<Lifted>,
 }
@@ -93,8 +85,8 @@ thread_local! {
     static RECORDING: RefCell<Option<Active>> = const { RefCell::new(None) };
 }
 
-/// Lifts parts out of the frame drawn into `root` until finished. The scene must stay at its
-/// address until then.
+/// Lifts parts out of the frame drawn into `root` until finished. The scene must stay at its address
+/// until then.
 pub struct Recording {
     previous: Option<Active>,
     finished: bool,
@@ -135,8 +127,7 @@ impl Drop for Recording {
 
 /// Draw a part that may move as a whole: `draw` paints it at rest with the transform it is handed,
 /// inside `bounds` (in the coordinates `transform` maps from), and `pose` says how it is drawn this
-/// frame. Lifted out of the frame for the host to pose where it can be ([`Recording`]); drawn into
-/// `scene` in its pose otherwise.
+/// frame.
 pub fn lifted(
     scene: &mut Scene,
     transform: Affine,

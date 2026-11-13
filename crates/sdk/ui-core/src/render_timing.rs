@@ -83,8 +83,6 @@ fn record_main_stage_with(
 pub(crate) fn enabled() -> bool {
     static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ENABLED.get_or_init(|| {
-        // Wayland feedback and CLOCK_MONOTONIC provide the same frame identity
-        // and clock bounds as the opt-in Metal observer.
         let diagnostics = &crate::host::environment().diagnostics;
         (tilo_presentation::clock::SUPPORTS_WAYLAND_TIMING && diagnostics.presentation_timing)
             || (tilo_presentation::clock::SUPPORTS_METAL_TIMING

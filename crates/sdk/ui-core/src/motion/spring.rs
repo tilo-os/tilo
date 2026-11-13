@@ -1,25 +1,16 @@
-//! The one motion engine: a damped spring solved in closed form.
-//!
-//! A spring is described the way Apple's springs are: `response` (the period
-//! of the undamped spring, in seconds: how quick it is) and `damping` (the
-//! damping fraction: 1 is critical, below 1 overshoots). Both are positive.
-//!
-//! A segment starts at a displacement from its target and a velocity; its
-//! state at any later time is computed exactly, so sampling at 30, 60 or
-//! 144 Hz, or once after a stall, lands on the same curve. The instant the
-//! segment is within tolerance of rest is solved once, when it starts, so a
-//! settled motion computes nothing.
+//! The one motion engine: a damped spring solved in closed form. A spring is described the way Apple's
+//! springs are: `response` (the period of the undamped spring, in seconds: how quick it is) and
+//! `damping` (the damping fraction: 1 is critical, below 1 overshoots).
 
 use crate::time::Duration;
 
-/// How far a critically damped spring has to go before it counts as having
-/// arrived when a motion token is turned into a spring: within 0.1 % of the
-/// distance, where a fraction (an openness, an opacity) settles.
-/// `(1 + x) e^-x = 0.001` at `x ≈ 9.2335`.
+/// How far a critically damped spring has to go before it counts as having arrived when a motion token
+/// is turned into a spring: within 0.1 % of the distance, where a fraction (an openness, an opacity)
+/// settles.
 const TOKEN_SETTLE_OMEGA_T: f64 = 9.2335;
 
-/// The longest a segment may take to settle, whatever its parameters: a
-/// spring this slow is a mistake, and a bounded solve keeps it harmless.
+/// The longest a segment may take to settle, whatever its parameters: a spring this slow is a mistake,
+/// and a bounded solve keeps it harmless.
 const MAX_SETTLE_SECS: f64 = 10.0;
 
 /// A spring's shape: how quick (`response`) and how bouncy (`damping`).
@@ -32,9 +23,8 @@ pub struct SpringSpec {
 }
 
 impl SpringSpec {
-    /// A critically damped spring that is within 0.1 % of where it is going
-    /// after `duration`: what a motion token (`fast`, `base`, `slow`) means
-    /// as a spring.
+    /// A critically damped spring that is within 0.1 % of where it is going after `duration`: what a
+    /// motion token (`fast`, `base`, `slow`) means as a spring.
     #[must_use]
     pub fn settling_within(duration: Duration) -> Self {
         let secs = duration.as_secs_f64().max(1e-4);
@@ -80,8 +70,8 @@ impl SpringSpec {
         }
     }
 
-    /// Displacement and velocity `t` seconds into a segment that started at
-    /// displacement `x0` with velocity `v0` (target at 0).
+    /// Displacement and velocity `t` seconds into a segment that started at displacement `x0` with
+    /// velocity `v0` (target at 0).
     #[must_use]
     pub fn state(self, x0: f64, v0: f64, t: f64) -> (f64, f64) {
         let t = t.max(0.0);
@@ -111,7 +101,6 @@ impl SpringSpec {
         }
     }
 
-    /// An upper bound on `|displacement|` at `t`.
     fn envelope(self, x0: f64, v0: f64, t: f64) -> f64 {
         let w = self.omega();
         let z = self.damping.max(0.0);
@@ -142,13 +131,11 @@ impl SpringSpec {
                 (1.0 / w - x0.abs() / b).max(0.0)
             }
         } else {
-            // Both other envelopes are sums of decaying exponentials.
             0.0
         }
     }
 
-    /// Seconds until a segment starting at `(x0, v0)` stays within
-    /// `tolerance` of its target for good.
+    /// Seconds until a segment starting at `(x0, v0)` stays within `tolerance` of its target for good.
     #[must_use]
     pub fn settle_secs(self, x0: f64, v0: f64, tolerance: f64) -> f64 {
         let tolerance = tolerance.max(1e-9);
@@ -157,7 +144,6 @@ impl SpringSpec {
             // Already there, and it never gets further away.
             return 0.0;
         }
-        // March from the peak in quarter periods, then bisect.
         let step = 0.25 / self.omega();
         let mut lo = peak;
         let mut hi = peak + step;

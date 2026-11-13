@@ -1,11 +1,8 @@
-//! Rasterizing frames into one retained target: only a frame's damage (or
-//! all of it), its scroll copies made first and its backdrops blurred. Every
-//! host that keeps the pixels it presented draws through [`RetainedRaster`]:
-//! the native app's render worker, the workspace's render service and the
-//! browser desktop, so they produce the same pixels from the same frame.
+//! Rasterizing frames into one retained target: only a frame's damage (or all of it), its scroll copies
+//! made first and its backdrops blurred. Every host that keeps the pixels it presented draws through
+//! [`RetainedRaster`]: the native app's render worker, the workspace's render service and the browser
+//! desktop, so they produce the same pixels from the same frame.
 
-/// The CPU raster a software adapter's frames are drawn with, whichever host
-/// draws them.
 use crate::cpu_raster;
 use crate::damage::{FineDamageRect, area, coalesce_regions, pixel_rect};
 use crate::offscreen::{
@@ -30,13 +27,10 @@ pub(crate) struct DamageCache {
     last_region_count: Option<usize>,
     geometric_capacity: bool,
     coarse_pool_high_water_pixels: u64,
-    /// Scratch space for scroll copies within the retained target.
     copy_scratch: crate::scroll_copy::CopyScratch,
-    /// The frame's scene holds only what its damage needs
-    /// ([`RetainedRaster::rasterize_damage_only`]).
+    /// The frame's scene holds only what its damage needs ([`RetainedRaster::rasterize_damage_only`]).
     damage_only: bool,
-    /// A frame drawn for its damage only would have had to repaint more:
-    /// nothing was drawn.
+    /// A frame drawn for its damage only would have had to repaint more: nothing was drawn.
     refused: bool,
 }
 
@@ -44,10 +38,9 @@ pub(crate) struct DamageCache {
 pub const DAMAGE_ONLY_REFUSED: &str =
     "a scene drawn for its damage only cannot repaint more than the damage";
 
-/// Whether a frame of `width` × `height` with `damage` (physical pixels,
-/// not empty) is repainted region by region rather than whole: a damage
-/// that covers half the target, or whose window does, is rendered as one
-/// whole frame ([`repaint_damage`]).
+/// Whether a frame of `width` × `height` with `damage` (physical pixels, not empty) is repainted region
+/// by region rather than whole: a damage that covers half the target, or whose window does, is rendered
+/// as one whole frame ([`repaint_damage`]).
 #[allow(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
@@ -77,22 +70,19 @@ pub(crate) fn repaints_alone(width: u32, height: u32, damage: &[Rect]) -> bool {
     u64::from(window_width).saturating_mul(u64::from(window_height)) < full_pixels.saturating_div(2)
 }
 
-/// What a host keeps between frames to rasterize them into one retained
-/// target: the damage scratch, the backdrop blur and, on a software adapter,
-/// the CPU canvas. The app's own render worker draws with it, and so does the
-/// workspace's render service for each surface it draws for an app, so both
-/// produce the same pixels from the same frame.
+/// What a host keeps between frames to rasterize them into one retained target: the damage scratch, the
+/// backdrop blur and, on a software adapter, the CPU canvas. The app's own render worker draws with it,
+/// and so does the workspace's render service for each surface it draws for an app, so both produce the
+/// same pixels from the same frame.
 pub struct RetainedRaster {
     damage_cache: DamageCache,
-    /// Built with the first frame that draws a floating surface over the
-    /// blurred material.
     backdrop_blur: Option<crate::backdrop::BackdropBlur>,
     cpu: Option<cpu_raster::CpuCanvas>,
 }
 
 impl RetainedRaster {
-    /// Scratch for one target; `on_cpu` rasterizes on the CPU and uploads the
-    /// pixels (a software adapter, see `crate::gpu::rasterizes_on_cpu`).
+    /// Scratch for one target; `on_cpu` rasterizes on the CPU and uploads the pixels (a software
+    /// adapter, see `crate::gpu::rasterizes_on_cpu`).
     pub fn new(on_cpu: bool) -> Self {
         Self {
             damage_cache: DamageCache {
@@ -120,15 +110,9 @@ impl RetainedRaster {
         }
     }
 
-    /// Bring `target` up to date with `frame`: its backdrops blurred and
-    /// substituted, its scroll copies made, its damage (or all of it)
-    /// repainted. Returns the pixels rasterized, and the backdrop pass's
-    /// statistics when the frame had backdrops.
-    ///
-    /// `renderer` is `None` only while the host's pipelines are still
-    /// compiling: the frame is then rasterized on a raster made
-    /// [`on_cpu`](Self::on_cpu), and one that would draw a backdrop is
-    /// refused.
+    /// Bring `target` up to date with `frame`: its backdrops blurred and substituted, its scroll copies
+    /// made, its damage (or all of it) repainted. Returns the pixels rasterized, and the backdrop
+    /// pass's statistics when the frame had backdrops.
     pub fn rasterize(
         &mut self,
         (device, queue): (&vello::wgpu::Device, &vello::wgpu::Queue),
@@ -170,8 +154,6 @@ impl RetainedRaster {
                     canvas.upload(queue, target.texture);
                 })
             } else {
-                // Backdrop substitutions currently belong to Vello's GPU renderer.
-                // Invalidate retained CPU pixels when that path writes the target.
                 if let Some(canvas) = self.cpu.as_mut() {
                     canvas.invalidate();
                 }
@@ -198,11 +180,10 @@ impl RetainedRaster {
         (rasterized, backdrop_stats)
     }
 
-    /// [`Self::rasterize`] for a frame whose scene holds only what its
-    /// damage needs (`crate::draw_cull`): it is never repainted beyond its
-    /// damage. `Err` with [`DAMAGE_ONLY_REFUSED`] when it would have to be
-    /// (a whole frame, a backdrop, a copy that cannot be made, a damage too
-    /// large to repaint alone); the target then still holds the last frame.
+    /// [`Self::rasterize`] for a frame whose scene holds only what its damage needs
+    /// (`crate::draw_cull`): it is never repainted beyond its damage. `Err` with
+    /// [`DAMAGE_ONLY_REFUSED`] when it would have to be (a whole frame, a backdrop, a copy that cannot
+    /// be made, a damage too large to repaint alone); the target then still holds the last frame.
     pub fn rasterize_damage_only(
         &mut self,
         gpu: (&vello::wgpu::Device, &vello::wgpu::Queue),
@@ -233,18 +214,17 @@ impl RetainedRaster {
     }
 }
 
-/// The retained frame the native host rasterizes into and presents from.
-/// Pixels outside a frame's damage are whatever the previous frame left, so
-/// it must only ever be written through [`RetainedRaster::rasterize`].
-/// `Rgba8Unorm` with storage, copy-source and copy-destination usage.
+/// The retained frame the native host rasterizes into and presents from. Pixels outside a frame's
+/// damage are whatever the previous frame left, so it must only ever be written through
+/// [`RetainedRaster::rasterize`].
 #[derive(Clone, Copy)]
 pub struct RetainedTarget<'a> {
     pub texture: &'a vello::wgpu::Texture,
     pub view: &'a vello::wgpu::TextureView,
 }
 
-/// Bring `retained` up to date with `frame`: its scroll copies made, then
-/// its damage (or all of it) repainted.
+/// Bring `retained` up to date with `frame`: its scroll copies made, then its damage (or all of it)
+/// repainted.
 pub(crate) fn rasterize_damage(
     (device, queue): (&vello::wgpu::Device, &vello::wgpu::Queue),
     retained: RetainedTarget<'_>,
@@ -252,8 +232,6 @@ pub(crate) fn rasterize_damage(
     damage_cache: &mut DamageCache,
     frame: &FrameContent<'_>,
 ) -> Result<u64, vello::Error> {
-    // What a scroll keeps on screen moves before the damage around it is
-    // repainted; the target holds the last presented frame.
     if !frame.full_redraw && !frame.scroll_copies.is_empty() {
         let mut encoder = device.create_command_encoder(&vello::wgpu::CommandEncoderDescriptor {
             label: Some("ui-native-scroll-copies"),
@@ -416,8 +394,6 @@ fn repaint_damage(
     if raster_pixels >= full_pixels.saturating_div(2) {
         return render_full(renderer, damage_cache);
     }
-    // Damage topology is volatile; preserve warm partial pools, but discard
-    // full-target scratch before switching to the smaller window target.
     if damage_cache.last_region_count == Some(0) {
         renderer.trim_pooled_buffers();
     }
@@ -502,8 +478,6 @@ fn repaint_damage(
         shifted = scene_at_origin;
         &shifted
     };
-    // Rendered as a full frame is, then copied in a submission of its own:
-    // one render path for both, which the web build carries once.
     renderer.render_to_texture(
         device,
         queue,
@@ -555,8 +529,8 @@ fn repaint_damage(
     Ok(raster_pixels)
 }
 
-/// Vello's tile edge in pixels: a window rendered from a multiple of it
-/// bins its paths into the same tiles as the full frame.
+/// Vello's tile edge in pixels: a window rendered from a multiple of it bins its paths into the same
+/// tiles as the full frame.
 const RASTER_TILE: u32 = 16;
 
 /// One frame's scene, surface size and damage, as the worker received it.
@@ -575,8 +549,8 @@ pub struct FrameContent<'a> {
     pub backdrop: &'a crate::backdrop::BackdropFrame,
 }
 
-/// What a target holds and how a scene is placed on it: a frame drawn for
-/// another key cannot be repainted over the last one.
+/// What a target holds and how a scene is placed on it: a frame drawn for another key cannot be
+/// repainted over the last one.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TargetKey {
     pub width: u32,
@@ -584,20 +558,15 @@ pub struct TargetKey {
     /// From scene coordinates to the target's pixels (the display scale).
     pub to_device: vello::kurbo::Affine,
     pub base_color: Color,
-    /// Changed by the host whenever the target's pixels may no longer be
-    /// the last frame's: a new texture or device, a theme, a frame drawn
-    /// but not presented.
+    /// Changed by the host whenever the target's pixels may no longer be the last frame's: a new
+    /// texture or device, a theme, a frame drawn but not presented.
     pub generation: u64,
 }
 
-/// What of `scene`, drawn with `parts`, repainting `damage` (target pixels)
-/// on the target `key` names takes: the scene without the parts that cannot
-/// reach the damage ([`crate::scene_parts::culled`]), or `None` when it takes
-/// all of it: no parts, every part reaching the damage, or a damage
-/// repainted as one whole frame ([`repaints_alone`]), which draws every
-/// pixel. The renderer works through every path it is given, wherever it
-/// lands, so a software GPU otherwise spends as long on a caret as on the
-/// whole page.
+/// What of `scene`, drawn with `parts`, repainting `damage` (target pixels) on the target `key` names
+/// takes: the scene without the parts that cannot reach the damage ([`crate::scene_parts::culled`]), or
+/// `None` when it takes all of it: no parts, every part reaching the damage, or a damage repainted as
+/// one whole frame ([`repaints_alone`]), which draws every pixel.
 pub fn culled_for_damage(
     scene: &Scene,
     parts: Option<&crate::scene_parts::SectionParts>,
@@ -635,35 +604,30 @@ pub enum Unknown {
     Target,
     /// The frames cannot be compared part by part.
     Unproven(crate::scene_parts::Unproven),
-    /// The renderer dropped geometry from a frame drawn since the target
-    /// was last repainted whole ([`RetainedFrames::note_scratch`]).
+    /// The renderer dropped geometry from a frame drawn since the target was last repainted whole
+    /// ([`RetainedFrames::note_scratch`]).
     LostGeometry,
 }
 
-/// The frame a host presented last, to compare the next with. Where a scene
-/// drawn with damage parts ([`crate::scene_parts`]) changed is the parts
-/// whose commands differ (or what a hinted part says changed); every other
-/// pixel is drawn by the same commands as before. Anything that cannot be
-/// proven (no parts, a change outside every part, another target) repaints
-/// the whole frame.
+/// The frame a host presented last, to compare the next with. Where a scene drawn with damage parts
+/// ([`crate::scene_parts`]) changed is the parts whose commands differ (or what a hinted part says
+/// changed); every other pixel is drawn by the same commands as before. Anything that cannot be proven
+/// (no parts, a change outside every part, another target) repaints the whole frame.
 #[derive(Default)]
 pub struct RetainedFrames {
     last: Option<(Scene, crate::scene_parts::SectionParts, TargetKey)>,
-    /// The target holds the frame last presented, parts or not.
     shown: bool,
-    /// The renderer's scratch ([`crate::render_bump_recovery::Scratch`]) when
-    /// the target was last brought up to date.
+    /// The renderer's scratch ([`crate::render_bump_recovery::Scratch`]) when the target was last
+    /// brought up to date.
     scratch: Option<crate::render_bump_recovery::Scratch>,
     /// The target may show a frame with geometry missing.
     lost: bool,
-    /// Bounds what a frame draws outside its parts, for its copies
-    /// ([`Self::repaint_copying`]).
     bounds: crate::scene_parts::DrawBounds,
 }
 
 impl RetainedFrames {
-    /// What to repaint of `scene`, drawn with `parts`, onto a target that
-    /// shows the frame last [`Self::presented`].
+    /// What to repaint of `scene`, drawn with `parts`, onto a target that shows the frame last
+    /// [`Self::presented`].
     pub fn repaint(
         &self,
         scene: &Scene,
@@ -690,8 +654,6 @@ impl RetainedFrames {
         Repaint::Regions(
             changed
                 .into_iter()
-                // Part bounds cover antialiasing; whole pixels plus one
-                // absorb rounding.
                 .map(|rect| {
                     key.to_device
                         .transform_rect_bbox(rect)
@@ -704,12 +666,10 @@ impl RetainedFrames {
         )
     }
 
-    /// [`Self::repaint`] for a host that moves the pixels of the target
-    /// before it repaints: what hinted parts say moved
-    /// ([`crate::scene_parts::DamageHint::copies`]) is copied, in order,
-    /// and then the rest repainted. A copy that cannot be made exactly (its
-    /// content drawn through a fading layer, something unbounded drawn over
-    /// it) repaints where it lands instead.
+    /// [`Self::repaint`] for a host that moves the pixels of the target before it repaints: what hinted
+    /// parts say moved ([`crate::scene_parts::DamageHint::copies`]) is copied, in order, and then the
+    /// rest repainted. A copy that cannot be made exactly (its content drawn through a fading layer,
+    /// something unbounded drawn over it) repaints where it lands instead.
     pub fn repaint_copying(
         &mut self,
         scene: &Scene,
@@ -780,25 +740,16 @@ impl RetainedFrames {
         self.lost = false;
     }
 
-    /// Whether the renderer's scratch is `scratch` without the target having
-    /// been brought up to date since it changed: a frame the target shows may
-    /// have geometry missing.
-    ///
-    /// Either half of a scratch names the same renderer being short: a
-    /// reservation that grew because a frame did not fit, or an overflow
-    /// collected while the reservation was at its ceiling. The reservation
-    /// changes as soon as the counters are collected, before the frame that
-    /// dropped the geometry has been repainted whole for it, so a host that
-    /// compares it here repaints again even when nothing was collected since.
+    /// Whether the renderer's scratch is `scratch` without the target having been brought up to date
+    /// since it changed: a frame the target shows may have geometry missing.
     #[must_use]
     pub fn shows_lost_geometry(&self, scratch: crate::render_bump_recovery::Scratch) -> bool {
         self.lost || self.scratch.is_some_and(|recorded| recorded != scratch)
     }
 
-    /// The renderer's scratch is `scratch` now: once it changed since the
-    /// target was brought up to date, the next frame repaints the whole
-    /// target. Pixels drawn with geometry missing stay on it otherwise, since
-    /// later frames repaint only what changes.
+    /// The renderer's scratch is `scratch` now: once it changed since the target was brought up to
+    /// date, the next frame repaints the whole target. Pixels drawn with geometry missing stay on it
+    /// otherwise, since later frames repaint only what changes.
     pub fn note_scratch(&mut self, scratch: crate::render_bump_recovery::Scratch) {
         if self.scratch.is_none_or(|recorded| recorded != scratch) {
             self.lost = self.scratch.is_some();
@@ -812,50 +763,38 @@ impl RetainedFrames {
         self.shown = false;
     }
 
-    /// Whether the target still holds the frame last presented: a host
-    /// that acquired a surface texture for a frame it then skipped puts
-    /// that on it again ([`crate::gpu::submit_target_to_surface`]) rather
-    /// than presenting a cleared one.
+    /// Whether the target still holds the frame last presented: a host that acquired a surface texture
+    /// for a frame it then skipped puts that on it again ([`crate::gpu::submit_target_to_surface`])
+    /// rather than presenting a cleared one.
     #[must_use]
     pub const fn shows_frame(&self) -> bool {
         self.shown
     }
 }
 
-/// A check that a retained target shows what a full render of the same
-/// frame does: a frame repainted only where it changed must leave no stale
-/// pixel. Debug and test builds run it on the frames they repaint in part.
-/// The two images are read back asynchronously; [`Self::differences`] answers
-/// once both are in.
+/// A check that a retained target shows what a full render of the same frame does: a frame repainted
+/// only where it changed must leave no stale pixel.
 pub struct RasterCheck {
     retained: vello::wgpu::Buffer,
     full: vello::wgpu::Buffer,
     width: u32,
     height: u32,
     row: u32,
-    /// The colour the target was cleared with: a pixel missing geometry
-    /// shows it, so a difference that has one side at it names the side that
-    /// dropped the geometry.
+    /// The colour the target was cleared with: a pixel missing geometry shows it, so a difference that
+    /// has one side at it names the side that dropped the geometry.
     base: [u8; 4],
-    /// The renderer's scratch when the check started
-    /// ([`crate::render_bump_recovery::Scratch`]): one that changed before
-    /// the comparison means a render in it, or the frame it compares, may
-    /// have dropped geometry, and a difference then names neither.
+    /// The renderer's scratch when the check started ([`crate::render_bump_recovery::Scratch`]): one
+    /// that changed before the comparison means a render in it, or the frame it compares, may have
+    /// dropped geometry, and a difference then names neither.
     scratch: crate::render_bump_recovery::Scratch,
     mapped: std::sync::Arc<std::sync::atomic::AtomicU32>,
-    /// Why the readback failed, when it did: a check that could not read
-    /// the frames back says so, rather than claiming they differ.
+    /// Why the readback failed, when it did: a check that could not read the frames back says so,
+    /// rather than claiming they differ.
     unreadable: std::sync::Arc<std::sync::Mutex<Option<String>>>,
 }
 
 impl RasterCheck {
-    /// Render `scene` in full beside `target`, which must already show it,
-    /// and start reading both back. `scratch` is the renderer's
-    /// [`crate::render_bump_recovery::Overflows::scratch`] now.
-    ///
-    /// # Errors
-    ///
-    /// When the full render fails.
+    /// Render `scene` in full beside `target`, which must already show it, and start reading both back.
     pub fn start(
         (device, queue): (&vello::wgpu::Device, &vello::wgpu::Queue),
         renderer: &mut Renderer,
@@ -970,17 +909,8 @@ impl RasterCheck {
         })
     }
 
-    /// What reading the frames back said: how the pixels that differ fall on
-    /// the frame, so a stale repaint is found on the screen rather than only
-    /// counted, or why the frames could not be read. `None` while they are
-    /// not read yet.
-    ///
-    /// `scratch` is the renderer's
-    /// [`crate::render_bump_recovery::Overflows::scratch`] now: a renderer
-    /// whose reservation changed, or which collected an overflow, since the
-    /// check started may have dropped geometry from the frame it compares or
-    /// from the check's own render of it, so a difference then proves
-    /// nothing and says what it saw instead.
+    /// What reading the frames back said: how the pixels that differ fall on the frame, so a stale
+    /// repaint is found on the screen rather than only counted, or why the frames could not be read.
     pub fn differences(&self, scratch: crate::render_bump_recovery::Scratch) -> Option<Readback> {
         let mapped = self.mapped.load(std::sync::atomic::Ordering::Acquire);
         if mapped < 2 {
@@ -1152,8 +1082,8 @@ impl RasterCheck {
 pub enum Readback {
     /// Both frames were read: how one differs from the other.
     Differing(Differences),
-    /// The frames could not be read, so there is nothing to compare: why
-    /// not. A check that could not run never passes.
+    /// The frames could not be read, so there is nothing to compare: why not. A check that could not
+    /// run never passes.
     Unreadable(String),
 }
 
@@ -1162,28 +1092,26 @@ pub enum Readback {
 pub struct Differences {
     /// How many pixels differ.
     pub count: usize,
-    /// How many of them lie more than eight pixels inside [`Self::bounds`]:
-    /// `0` says the difference is the outline of a rectangle, not its fill.
+    /// How many of them lie more than eight pixels inside [`Self::bounds`]: `0` says the difference is
+    /// the outline of a rectangle, not its fill.
     pub inside: usize,
-    /// For each row that differs, up to [`DIFF_ROWS`] of them, the runs of
-    /// columns that differ, up to [`DIFF_RUNS`] a row.
+    /// For each row that differs, up to [`DIFF_ROWS`] of them, the runs of columns that differ, up to
+    /// [`DIFF_RUNS`] a row.
     pub rows: Vec<(u32, Vec<(u32, u32)>)>,
-    /// How many of them are the colour the target was cleared with in the
-    /// frame repainted in part: geometry missing from what the target shows.
+    /// How many of them are the colour the target was cleared with in the frame repainted in part:
+    /// geometry missing from what the target shows.
     pub kept_base: usize,
-    /// How many of them are that colour in the full render: geometry the
-    /// check's own render dropped, which names no stale frame.
+    /// How many of them are that colour in the full render: geometry the check's own render dropped,
+    /// which names no stale frame.
     pub render_base: usize,
-    /// The first pixel that differs beyond the ±1 two renders of one frame
-    /// may differ by: where it is, then its colour in the frame repainted in
-    /// part and in the full render.
+    /// The first pixel that differs beyond the ±1 two renders of one frame may differ by: where it is,
+    /// then its colour in the frame repainted in part and in the full render.
     pub first: Option<(u32, u32, [u8; 4], [u8; 4])>,
-    /// The left, top, right and bottom of the pixels that differ, the far
-    /// edges exclusive, or `None` where none do.
+    /// The left, top, right and bottom of the pixels that differ, the far edges exclusive, or `None`
+    /// where none do.
     pub bounds: Option<(u32, u32, u32, u32)>,
 }
 
-/// Rows of a difference [`Differences`] reports, and column runs a row.
 const DIFF_ROWS: usize = 16;
 const DIFF_RUNS: usize = 8;
 

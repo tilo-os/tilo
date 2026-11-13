@@ -90,7 +90,6 @@ fn a_widget_reads_the_pen_behind_each_pointer_event_and_none_for_a_mouse() {
         crate::permissions::UserId("pen-review".into()),
     );
 
-    // A stroke: hover in, touch down harder and harder, lift.
     for event in [
         sample(0.0, false),
         cursor_moved(40.0, 50.0),
@@ -103,7 +102,6 @@ fn a_widget_reads_the_pen_behind_each_pointer_event_and_none_for_a_mouse() {
     ] {
         frame.send_host_event(&event);
     }
-    // The eraser end, then the mouse again.
     frame.send_host_event(&sample(0.5, true));
     frame.send(&cursor_moved(80.0, 90.0));
     frame.send_host_event(&cursor_moved(100.0, 110.0));

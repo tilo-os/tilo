@@ -1,19 +1,10 @@
-//! Shared reading-surface chrome for the document readers (ebook, `pdf_viewer`),
-//! so both present the *same* selection affordances with the same spacing,
-//! hover, and selected-state treatment:
-//!
-//! - [`SelectionHud`] — the floating toolbar shown while a passage is
-//!   selected: a floating Panel ([`crate::widget::floating_surface`]) with
-//!   the highlight colours as [`ColorSwatchFace`]s and Copy / Note / Delete
-//!   as plain buttons (and Select all, with shortcuts where a keyboard is
-//!   the way in). Presentation + hit-testing only: each app owns the
-//!   selection model and maps the emitted [`HudAction`] to its own command.
-//! - [`MarkerDrag`] — the grab/track/threshold state a reader embeds to let
-//!   an annotation marker be *dragged*, agnostic of the coordinate space
-//!   (page points vs. screen-y).
-//!
-//! Nothing here reaches into a document. The HUD is chrome, so it reads the
-//! window's theme end to end; the reading palette stays on the page.
+//! Shared reading-surface chrome for the document readers (ebook, `pdf_viewer`), so both present the
+//! *same* selection affordances with the same spacing, hover, and selected-state treatment: -
+//! [`SelectionHud`] — the floating toolbar shown while a passage is selected: a floating Panel
+//! ([`crate::widget::floating_surface`]) with the highlight colours as [`ColorSwatchFace`]s and Copy /
+//! Note / Delete as plain buttons (and Select all, with shortcuts where a keyboard is the way in).
+//! Presentation + hit-testing only: each app owns the selection model and maps the emitted
+//! [`HudAction`] to its own command.
 
 use vello::Scene;
 use vello::kurbo::{Affine, Line, Point, Rect, Stroke};
@@ -25,8 +16,8 @@ use crate::theme::Theme;
 use crate::widget::color_swatch::ColorSwatchFace;
 use crate::widget::{Button, ButtonFace, ButtonRole, ControlSize, floating_surface};
 
-/// The swatch index in [`HudAction::Highlight`] indexes into the `swatches`
-/// slice passed to [`SelectionHud::draw`]; the caller maps it back to its own colour model.
+/// The swatch index in [`HudAction::Highlight`] indexes into the `swatches` slice passed to
+/// [`SelectionHud::draw`]; the caller maps it back to its own colour model.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HudAction {
     Copy,
@@ -65,8 +56,8 @@ impl HudSwatch {
     }
 }
 
-/// Which controls a [`SelectionHud`] offers besides the always-present Copy:
-/// the highlight swatch row, and the Note and Delete controls when enabled.
+/// Which controls a [`SelectionHud`] offers besides the always-present Copy: the highlight swatch row,
+/// and the Note and Delete controls when enabled.
 #[derive(Clone, Copy, Debug)]
 pub struct HudControls<'a> {
     pub swatches: &'a [HudSwatch],
@@ -74,36 +65,32 @@ pub struct HudControls<'a> {
     pub show_delete: bool,
     /// A Select all button after Copy (and Note).
     pub show_select_all: bool,
-    /// Copy and Select all carry their keyboard shortcuts, where a
-    /// keyboard is how the reader works.
+    /// Copy and Select all carry their keyboard shortcuts, where a keyboard is how the reader works.
     pub shortcuts: bool,
 }
 
 /// Which side of the selection a [`SelectionHud`] prefers.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum HudSide {
-    /// Above the selection's first line, below it only when there is no
-    /// room (the default: the bar never covers what is being read next).
+    /// Above the selection's first line, below it only when there is no room (the default: the bar
+    /// never covers what is being read next).
     #[default]
     Above,
-    /// Below the selection's last line (a page whose own chrome sits above
-    /// the text).
+    /// Below the selection's last line (a page whose own chrome sits above the text).
     Below,
 }
 
-/// Where a [`SelectionHud`] floats: `anchor` is the horizontal centre and
-/// top-y of the selection's first band, `bounds` the area the bar must stay
-/// inside, both in the drawing transform's space.
+/// Where a [`SelectionHud`] floats: `anchor` is the horizontal centre and top-y of the selection's
+/// first band, `bounds` the area the bar must stay inside, both in the drawing transform's space.
 #[derive(Clone, Copy, Debug)]
 pub struct HudPlacement {
     pub anchor: Point,
     pub bounds: Rect,
     pub side: HudSide,
     /// The bottom y of the selection's last band, for a bar placed below.
-    /// `None` uses the anchor.
     pub below: Option<f64>,
-    /// A rect the bar must not cover (a note card, a popover); it moves to
-    /// the other side when it would.
+    /// A rect the bar must not cover (a note card, a popover); it moves to the other side when it
+    /// would.
     pub avoid: Option<Rect>,
 }
 
@@ -120,8 +107,7 @@ impl HudPlacement {
         }
     }
 
-    /// Prefer the side below the selection, whose last line ends at
-    /// `bottom`.
+    /// Prefer the side below the selection, whose last line ends at `bottom`.
     #[must_use]
     pub fn below(mut self, bottom: f64) -> Self {
         self.side = HudSide::Below;
@@ -137,10 +123,7 @@ impl HudPlacement {
     }
 }
 
-/// A drawn [`SelectionHud`]: its bounding rect plus the hit rects of its
-/// controls. Built fresh each frame by [`SelectionHud::draw`]; the caller either
-/// hit-tests it directly via [`SelectionHud::hit`] or folds its buttons into its
-/// own hit list via [`SelectionHud::buttons`].
+/// A drawn [`SelectionHud`]: its bounding rect plus the hit rects of its controls.
 #[derive(Clone, Debug, Default)]
 pub struct SelectionHud {
     rect: Rect,
@@ -148,9 +131,9 @@ pub struct SelectionHud {
     shown: bool,
 }
 
-/// The HUD's geometry, from the theme: a panel `control_inset` around one
-/// row of Small controls, swatches a Small control square less the item
-/// inset, `s1` between controls and a hairline between the groups.
+/// The HUD's geometry, from the theme: a panel `control_inset` around one row of Small controls,
+/// swatches a Small control square less the item inset, `s1` between controls and a hairline between
+/// the groups.
 struct HudMetrics {
     pad: f64,
     control_h: f64,
@@ -177,9 +160,8 @@ impl HudMetrics {
     }
 }
 
-/// The bar's rect: centred on the anchor, on the preferred side of the
-/// selection, inside `bounds` by the panel margin; the other side when the
-/// preferred one has no room or covers `avoid`.
+/// The bar's rect: centred on the anchor, on the preferred side of the selection, inside `bounds` by
+/// the panel margin; the other side when the preferred one has no room or covers `avoid`.
 fn place(m: &HudMetrics, width: f64, placement: HudPlacement) -> Rect {
     let HudPlacement {
         anchor,
@@ -216,7 +198,6 @@ fn place(m: &HudMetrics, width: f64, placement: HudPlacement) -> Rect {
     at(y)
 }
 
-/// A plain Small bar button, carrying `key`'s command shortcut when given.
 fn hud_button<'a>(rect: Rect, label: &'a str, key: Option<&str>) -> ButtonFace<'a> {
     let face = ButtonFace::new(rect, label)
         .role(ButtonRole::Plain)
@@ -233,10 +214,8 @@ impl SelectionHud {
         HudMetrics::of(theme).height()
     }
 
-    /// The bar centres on `placement.anchor.x` on the preferred side of the
-    /// selection, moving to the other side when that would leave
-    /// `placement.bounds` or cover `placement.avoid`. `cursor` drives the
-    /// hover treatment.
+    /// The bar centres on `placement.anchor.x` on the preferred side of the selection, moving to the
+    /// other side when that would leave `placement.bounds` or cover `placement.avoid`.
     pub fn draw(
         scene: &mut Scene,
         transform: Affine,
@@ -362,8 +341,8 @@ impl SelectionHud {
         }
         hud
     }
-    /// The control rects + their actions, for a caller that folds them into its
-    /// own hit list (the ebook records `Action`s this way).
+    /// The control rects + their actions, for a caller that folds them into its own hit list (the ebook
+    /// records `Action`s this way).
     pub fn buttons(&self) -> &[(Rect, HudAction)] {
         &self.buttons
     }
@@ -392,19 +371,15 @@ impl SelectionHud {
     }
 }
 
-/// A reader begins a drag when a press lands on a marker it owns, tracks the
-/// pointer while held, and reads back the marker origin on release to
-/// persist the new anchor. Agnostic of the coordinate space (page points vs.
-/// screen-y) — the caller decides how to interpret the returned origin.
+/// A reader begins a drag when a press lands on a marker it owns, tracks the pointer while held, and
+/// reads back the marker origin on release to persist the new anchor.
 #[derive(Clone, Debug)]
 pub struct MarkerDrag {
     /// Opaque to this type.
     pub id: String,
     /// Captured at grab, so the marker doesn't jump to the cursor on the first move.
     grab_off: (f64, f64),
-    /// Past [`Self::THRESHOLD`] since the grab — below it, a release is a click, not a move.
     moved: bool,
-    /// As of the last [`Self::update`].
     origin: (f64, f64),
 }
 
@@ -422,7 +397,6 @@ impl MarkerDrag {
     }
 
     /// Returns the marker's new origin (pointer minus the grab offset).
-    /// Latches [`Self::moved`] once travelled past the threshold from where it started.
     pub fn update(&mut self, pointer: (f64, f64)) -> (f64, f64) {
         let new = (pointer.0 - self.grab_off.0, pointer.1 - self.grab_off.1);
         if (new.0 - self.origin.0).hypot(new.1 - self.origin.1) > Self::THRESHOLD {
@@ -450,7 +424,6 @@ mod tests {
         ]
     }
 
-    /// Asserts on the real geometry the readers will hit-test, not a re-derived layout.
     fn draw_hud(show_note: bool, show_delete: bool, anchor: Point, bounds: Rect) -> SelectionHud {
         let mut scene = Scene::new();
         let mut tr = TextRenderer::new();

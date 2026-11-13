@@ -1,5 +1,5 @@
-//! The Tilo mark ([`super::Icon::Tilo`]): the brand's own shapes, two bars and the block
-//! between them, in the brand's colours rather than an ink.
+//! The Tilo mark ([`super::Icon::Tilo`]): the brand's own shapes, two bars and the block between them,
+//! in the brand's colours rather than an ink.
 
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Rect, RoundedRect, Shape as _};
@@ -32,13 +32,12 @@ fn side() -> BezPath {
     path
 }
 
-/// The block between the bars, in the view box.
 fn block() -> RoundedRect {
     RoundedRect::new(29.0, 16.0, 71.0, 84.0, 6.0)
 }
 
-/// The mark's outlines in the 24-unit box every glyph is drawn in: what an SVG of it or a
-/// filled glyph traces.
+/// The mark's outlines in the 24-unit box every glyph is drawn in: what an SVG of it or a filled glyph
+/// traces.
 pub(super) fn subpaths() -> Vec<BezPath> {
     let to_glyph = Affine::scale(24.0 / 100.0);
     let mirror = Affine::translate((100.0, 0.0)) * Affine::scale_non_uniform(-1.0, 1.0);
@@ -49,9 +48,7 @@ pub(super) fn subpaths() -> Vec<BezPath> {
     ]
 }
 
-/// Paint the mark centred in `rect`, its view box the largest square that fits. A dark ground
-/// (`dark`) takes the brand's dark variant (`mark-dark.svg`): the light one's pale bars glare
-/// there.
+/// Paint the mark centred in `rect`, its view box the largest square that fits.
 pub fn paint_tilo_mark(scene: &mut Scene, transform: Affine, rect: Rect, dark: bool) {
     static SIDE: std::sync::LazyLock<BezPath> = std::sync::LazyLock::new(side);
     let tones = if dark {

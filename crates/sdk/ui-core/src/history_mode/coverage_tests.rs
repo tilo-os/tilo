@@ -14,7 +14,6 @@ fn scope(schema: Option<&'static HistoryRestoreSchema>) -> HistoryScopeDefinitio
 
 #[test]
 fn a_type_is_classified_by_the_declarations_it_made_not_by_its_app() {
-    // A type with a restore schema restores content.
     let content = HistoricalSupport::of(
         &scope(Some(&crate::state::owned_restore_tests::SCHEMA)),
         true,
@@ -63,7 +62,6 @@ fn the_three_gaps_are_distinct_and_say_their_own_reason() {
     );
     assert_eq!(HistoricalGap::of_version(2, 2), None);
 
-    // Every gap says something a person can read, and says it once.
     for gap in [unsupported, unavailable, incompatible, older] {
         assert!(!gap.reason().is_empty());
         assert_eq!(gap.to_string(), gap.reason());

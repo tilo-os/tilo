@@ -12,12 +12,8 @@ pub struct HistoricalAssetRequest {
     pub resource: HistoryResource,
     pub snapshot: HistorySnapshot,
 }
-/// Host-registered resolver. It may complete immediately or on a worker; the
-/// same captured response key is checked on the owner thread in both cases.
-/// The trusted domain resolver derives content-hash references from the supplied
-/// immutable snapshot, not a live record or current media path. The framework
-/// checks response custody and byte integrity; it cannot infer a domain's media
-/// schema. A missing recorded hash must remain unavailable.
+/// Host-registered resolver. The framework checks response custody and byte integrity; it cannot infer
+/// a domain's media schema. A missing recorded hash must remain unavailable.
 pub trait HistoricalAssetSource {
     fn request(&self, request: HistoricalAssetRequest, response: HistoricalAssetResponse);
 }
@@ -29,8 +25,8 @@ pub(crate) struct AssetResponseKey {
     pub(crate) side: PreviewSide,
     pub(crate) heads: Vec<automerge::ChangeHash>,
 }
-/// A single request-bound completion capability, never a live document handle.
-/// The provider cannot relabel an old result with another request's identity.
+/// A single request-bound completion capability, never a live document handle. The provider cannot
+/// relabel an old result with another request's identity.
 pub struct HistoricalAssetResponse {
     key: AssetResponseKey,
     sender: mpsc::Sender<(AssetResponseKey, Result<FrozenPreviewAssets, String>)>,
@@ -47,10 +43,9 @@ impl HistoricalAssetResponse {
             wake: crate::wake::WakeHandle::new(),
         }
     }
-    /// Keys are SHA-256 (bare hex or `sha256:`), or explicit `asset:blake3:`
-    /// content identities. Bare hashes always retain SHA-256 semantics. Bytes are
-    /// admitted only after digest and total-size verification. Missing keys
-    /// remain missing; no current-media fallback is available to a renderer.
+    /// Keys are SHA-256 (bare hex or `sha256:`), or explicit `asset:blake3:` content identities. Bare
+    /// hashes always retain SHA-256 semantics. Bytes are admitted only after digest and total-size
+    /// verification.
     pub fn complete(self, assets: Result<BTreeMap<String, Arc<[u8]>>, String>) {
         let admitted = assets.and_then(|assets| {
             if assets.len() > 4096 {

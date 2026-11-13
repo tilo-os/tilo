@@ -1,9 +1,5 @@
-//! Shared visual/IME state for transient search and command queries.
-//!
-//! Query owners keep their committed `String` and filtering semantics. This
-//! helper makes the editable presentation behave like every other toolkit text
-//! surface: one shaped layout for ink, selection, caret and candidate geometry,
-//! with IME preedit excluded from application state until commit.
+//! Shared visual/IME state for transient search and command queries. Query owners keep their committed
+//! `String` and filtering semantics.
 
 use std::sync::Arc;
 
@@ -18,19 +14,16 @@ use crate::text_edit::{Edit, EditCore, Motion};
 use crate::text_render::TextStyle;
 use crate::text_selection::{Selection, TextPosition, clipboard_copy, clipboard_paste};
 
-/// Whether an IME event changed only the display composition or committed a
-/// new query value. Owners should re-run filtering only for `Committed`.
+/// Whether an IME event changed only the display composition or committed a new query value.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum QueryImeChange {
     Display,
     Committed,
 }
 
-/// Result of routing an event through the shared single-line query editor.
-///
-/// `Display` covers caret/selection movement, clipboard copy, and IME preedit;
-/// owners should repaint but must not recompute their result set. `Edited`
-/// means committed text changed and filtering should be refreshed.
+/// Result of routing an event through the shared single-line query editor. `Display` covers
+/// caret/selection movement, clipboard copy, and IME preedit; owners should repaint but must not
+/// recompute their result set.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum QueryEventChange {
     Ignored,
@@ -38,9 +31,8 @@ pub enum QueryEventChange {
     Edited,
 }
 
-/// The query a [`QueryComposition`] paints: the committed text and its
-/// selection, the placeholder shown while it is empty, and whether the caret
-/// is visible.
+/// The query a [`QueryComposition`] paints: the committed text and its selection, the placeholder shown
+/// while it is empty, and whether the caret is visible.
 #[derive(Clone, Copy, Debug)]
 pub struct QueryView<'a> {
     pub text: &'a str,
@@ -59,9 +51,8 @@ pub struct QueryInk {
 }
 
 impl QueryInk {
-    /// Primary ink, the secondary tier for the placeholder, and the
-    /// person's own colour for the caret and selection
-    /// ([`crate::tokens::Intents::you`]).
+    /// Primary ink, the secondary tier for the placeholder, and the person's own colour for the caret
+    /// and selection ([`crate::tokens::Intents::you`]).
     pub fn of(colors: &crate::tokens::Colors) -> Self {
         Self {
             text: colors.text_primary,
@@ -72,10 +63,7 @@ impl QueryInk {
     }
 }
 
-/// Retained shaping and IME state for an inline query editor. Editing goes
-/// through the shared [`EditCore`]: the owner's [`Selection`] is loaded into
-/// it for every event and written back afterwards, so a query keeps the same
-/// grapheme, word, clipboard and composition rules as every other field.
+/// Retained shaping and IME state for an inline query editor.
 pub struct QueryComposition {
     core: EditCore,
     layout: Option<RichTextLayout>,
@@ -126,7 +114,6 @@ impl QueryComposition {
     }
 
     /// Place an inline query caret using its last shaped, painted layout.
-    /// Stale text or active IME composition keeps the existing selection.
     pub fn pointer_selection(&self, text: &str, position: Point) -> Option<Selection> {
         if self.is_composing()
             || self.layout_text != text
@@ -154,8 +141,7 @@ impl QueryComposition {
         self.core.clamp_to(text);
     }
 
-    /// Apply a core edit to the owner's text: `Edited` when it changed the
-    /// text, otherwise `unchanged`.
+    /// Apply a core edit to the owner's text: `Edited` when it changed the text, otherwise `unchanged`.
     fn apply(text: &mut String, edit: &Edit, unchanged: QueryEventChange) -> QueryEventChange {
         if !edit.is_noop() && edit.apply(text) {
             QueryEventChange::Edited
@@ -164,8 +150,8 @@ impl QueryComposition {
         }
     }
 
-    /// Apply one platform IME event. Preedit changes only this helper; commit
-    /// replaces the owner's current selection as one atomic string edit.
+    /// Apply one platform IME event. Preedit changes only this helper; commit replaces the owner's
+    /// current selection as one atomic string edit.
     pub fn handle_ime(
         &mut self,
         ime: &Ime,
@@ -193,13 +179,7 @@ impl QueryComposition {
         change
     }
 
-    /// Apply the ordinary editing subset of a window event to a transient
-    /// query. Navigation/activation keys such as Up, Down, Enter, Escape and
-    /// Tab are intentionally left to the owning popup.
-    ///
-    /// The owner supplies modifier state because winit reports it separately
-    /// from `KeyEvent`. `command` should be true for Ctrl on Linux/Windows or
-    /// Command on macOS.
+    /// Apply the ordinary editing subset of a window event to a transient query.
     pub fn handle_event(
         &mut self,
         event: &WindowEvent,
@@ -271,10 +251,8 @@ impl QueryComposition {
         change
     }
 
-    /// `ArrowLeft`/`ArrowRight`: by word with `command`, otherwise to the
-    /// adjacent shaped (visual) caret stop, falling back to the logical
-    /// grapheme step before the first layout. An unshifted arrow over a
-    /// selection collapses it to its edge.
+    /// `ArrowLeft`/`ArrowRight`: by word with `command`, otherwise to the adjacent shaped (visual)
+    /// caret stop, falling back to the logical grapheme step before the first layout.
     fn arrow(&mut self, text: &str, shift: bool, command: bool, right: bool) {
         let motion = match (command, right) {
             (true, true) => Motion::WordRight,
@@ -293,7 +271,6 @@ impl QueryComposition {
         }
     }
 
-    /// Ctrl/Cmd chords: select-all, copy, cut, paste.
     fn command_shortcut(&mut self, shortcut: &str, text: &mut String) -> QueryEventChange {
         match shortcut {
             "a" | "A" => {
@@ -325,8 +302,7 @@ impl QueryComposition {
         }
     }
 
-    /// Display text including the composition, shown at the caret. The
-    /// committed `text` is untouched until the IME commits.
+    /// Display text including the composition, shown at the caret.
     pub fn display_text(&mut self, text: &str, selection: &Selection) -> String {
         self.load(text, selection);
         self.core.display_text(text).into_owned()
@@ -355,9 +331,7 @@ impl QueryComposition {
         hash.finish()
     }
 
-    /// Paint an unwrapped query into a clipped viewport. The shaped caret is
-    /// kept visible by horizontal scrolling; placeholder, selection and
-    /// preedit use the same layout and baseline.
+    /// Paint an unwrapped query into a clipped viewport.
     pub fn draw(
         &mut self,
         ctx: &mut PaintCtx<'_>,
@@ -369,10 +343,8 @@ impl QueryComposition {
         self.paint(ctx, query, rect, style, ink, None);
     }
 
-    /// Paint a query that wraps at `rect`'s width, for a field of more than
-    /// one line: the message of a box that makes room for what is written in
-    /// it. The lines sit centred while they fit and start from the top, scrolled
-    /// to keep the caret in view, once they do not, so nothing runs sideways.
+    /// Paint a query that wraps at `rect`'s width, for a field of more than one line: the message of a
+    /// box that makes room for what is written in it.
     pub fn draw_wrapped(
         &mut self,
         ctx: &mut PaintCtx<'_>,
@@ -393,7 +365,6 @@ impl QueryComposition {
         ink: QueryInk,
         wrap: Option<f64>,
     ) {
-        // A field narrower than a glyph wraps nowhere: it stays one line.
         #[allow(
             clippy::cast_possible_truncation,
             reason = "a finite widget width in CSS pixels fits the f32 shaping API"
@@ -448,8 +419,6 @@ impl QueryComposition {
             self.core.display_caret(text)
         };
         let Some(layout) = self.layout.as_ref() else {
-            // Unreachable: the block above always leaves `self.layout`
-            // populated before this point runs.
             return;
         };
         let (caret_x, caret_top, caret_height) = layout.caret_geometry(caret_byte);
@@ -552,9 +521,8 @@ impl QueryComposition {
         self.caret
     }
 
-    /// Move to the adjacent shaped caret stop when the retained layout still
-    /// represents the committed query. Callers can fall back to logical
-    /// grapheme movement before the first draw after an edit.
+    /// Move to the adjacent shaped caret stop when the retained layout still represents the committed
+    /// query.
     pub fn visual_motion(&self, text: &str, byte: usize, right: bool) -> Option<usize> {
         if self.is_composing() || self.layout_text != text {
             return None;
@@ -819,7 +787,6 @@ mod tests {
         let typed = |s: &str| key(Key::Character(s.into()), Some(s));
         let named = |k: NamedKey| key(Key::Named(k), None);
 
-        // A decomposed "é" arrives as two keystrokes; emoji and a flag as one.
         for s in ["e", "\u{301}", "👍🏽", "🇩🇪"] {
             assert_eq!(
                 press(
@@ -848,7 +815,6 @@ mod tests {
         );
         assert_eq!(text, "e\u{301}👍🏽🇩🇪");
 
-        // Backspace removes whole clusters: the flag, then the toned thumb.
         press(
             &mut composition,
             &mut text,
@@ -867,7 +833,6 @@ mod tests {
             false,
         );
         assert_eq!(text, "e\u{301}");
-        // Left steps over the whole "é"; Delete removes it as one.
         press(
             &mut composition,
             &mut text,
@@ -934,7 +899,6 @@ mod tests {
         assert!(!composition.is_composing());
         assert_eq!(selection, Selection::collapsed("a火".len()));
 
-        // Shift+Home selects back to the start; typing replaces the selection.
         press(
             &mut composition,
             &mut text,
@@ -955,7 +919,6 @@ mod tests {
         assert_eq!(text, "zb");
         assert_eq!(selection, Selection::collapsed(1));
 
-        // Ctrl+A then Backspace clears; Ctrl+Backspace removes a word.
         text = "find these words".to_owned();
         selection = Selection::collapsed(text.len());
         press(

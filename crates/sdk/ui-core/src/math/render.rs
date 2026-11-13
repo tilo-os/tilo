@@ -9,7 +9,6 @@ use crate::text_render::TextRenderer;
 use super::layout::{Box2d, BoxKind, Layout};
 
 /// Paint an immutable mathematical layout at `origin` in scene coordinates.
-/// Carets, selections, and clipping belong to the consuming editor or reader.
 pub fn draw_layout(
     scene: &mut Scene,
     transform: Affine,
@@ -239,8 +238,8 @@ fn draw_delimiter(
     scene.stroke(&stroke, transform, color, None, &path);
 }
 
-/// Shared box geometry for a delimiter glyph, passed as one value so the
-/// per-shape path builders below stay well under the argument-count lint.
+/// Shared box geometry for a delimiter glyph, passed as one value so the per-shape path builders below
+/// stay well under the argument-count lint.
 #[derive(Clone, Copy)]
 struct DelimGeom {
     left: f64,
@@ -252,9 +251,7 @@ struct DelimGeom {
     height: f64,
 }
 
-/// Construct delimiters in their final geometry. Stretching ordinary font
-/// glyphs around their baselines produces asymmetric matrix fences and
-/// visibly changes stroke weight as expressions grow.
+/// Construct delimiters in their final geometry.
 fn delimiter_path(ch: char, g: DelimGeom) -> BezPath {
     let mut path = BezPath::new();
     match ch {
@@ -388,8 +385,8 @@ fn slash_path(path: &mut BezPath, ch: char, g: DelimGeom) {
     }
 }
 
-/// Unknown delimiter: a straight rule is preferable to silently dropping
-/// structural punctuation from a valid formula.
+/// Unknown delimiter: a straight rule is preferable to silently dropping structural punctuation from a
+/// valid formula.
 fn default_path(path: &mut BezPath, g: DelimGeom) {
     let x = f64::midpoint(g.left, g.right);
     path.move_to(Point::new(x, g.top));

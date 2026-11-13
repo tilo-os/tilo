@@ -23,8 +23,8 @@ pub(crate) enum OwnedDocumentPublication {
         mutation: collab_types::DocumentMutation,
         authorization: Option<crate::invocation_scope::DocumentAuthorization>,
         heads: Vec<automerge::ChangeHash>,
-        /// The document the mutation was read from: what a change that
-        /// continues an earlier one names its action through.
+        /// The document the mutation was read from: what a change that continues an earlier one names
+        /// its action through.
         document: AutoCommit,
     },
 }
@@ -58,12 +58,10 @@ pub(crate) enum OwnerKind {
         store: RecordStore,
         checkout: RecordCheckout,
         lifetime: Weak<RecordOwnerLifetime>,
-        /// Whether this app publishes the record's changes: the identity
-        /// service signs a change on a route only for the app of that
-        /// route, or for one of the workspace's shared records
-        /// ([`StoredRecord::publishes`](crate::record::StoredRecord::publishes)).
-        /// A record this app only reads is merged from its route, never
-        /// published on it.
+        /// Whether this app publishes the record's changes: the identity service signs a change on a
+        /// route only for the app of that route, or for one of the workspace's shared records
+        /// ([`StoredRecord::publishes`](crate::record::StoredRecord::publishes)). A record this app
+        /// only reads is merged from its route, never published on it.
         publishes: bool,
     },
 }
@@ -93,9 +91,9 @@ impl HistoryOwner {
             OwnerKind::Record { .. } => None,
         }
     }
-    /// `record`, held by this app, which `publishes` its changes when it is
-    /// the app that may ([`Self::publishes_record`]): a record it only
-    /// reads is joined and merged from its route, never published on it.
+    /// `record`, held by this app, which `publishes` its changes when it is the app that may
+    /// ([`Self::publishes_record`]): a record it only reads is joined and merged from its route, never
+    /// published on it.
     pub(crate) fn record(
         store: RecordStore,
         checkout: RecordCheckout,
@@ -110,9 +108,7 @@ impl HistoryOwner {
         })
     }
 
-    /// Whether this app publishes what changes in the record behind this
-    /// owner ([`Self::record`]). A component owner is the window's own
-    /// document, which it publishes.
+    /// Whether this app publishes what changes in the record behind this owner ([`Self::record`]).
     pub(crate) fn publishes_record(&self) -> bool {
         match &self.0 {
             OwnerKind::Component(_) => true,
@@ -277,9 +273,6 @@ impl HistoryOwner {
                 return OwnedDocumentPublication::Unfinished;
             }
             let heads = super::sorted_heads(document.base_heads());
-            // Nothing arrived and nothing was made since the destination was
-            // told what the document holds: no history is cloned for a
-            // publication that has nothing to carry.
             if !needs_snapshot && sent.unchanged(&heads) {
                 return OwnedDocumentPublication::Unchanged;
             }
@@ -324,9 +317,6 @@ impl HistoryOwner {
         let provenance = store
             .invocation_provenance(&checkout.id)
             .map_err(|_| HistoryRegistrationError::UnsupportedOwner)?;
-        // The writers this replica writes the record as: a change an action
-        // made as another collaborator is this replica's own even though the
-        // document now writes as the record's writer again.
         let own = store
             .writing_actors(&checkout.id)
             .map_err(|_| HistoryRegistrationError::UnsupportedOwner)?;
@@ -417,10 +407,9 @@ impl HistoryOwner {
             } => (store, checkout),
         }
     }
-    /// What the owner's record holds, as the checkout that opened it says.
-    /// A host that must create the record on this device's first write needs
-    /// the kind named here; a route joined without one can only be written
-    /// where the record already exists.
+    /// What the owner's record holds, as the checkout that opened it says. A host that must create the
+    /// record on this device's first write needs the kind named here; a route joined without one can
+    /// only be written where the record already exists.
     pub(crate) fn record_kind(&self) -> crate::record::RecordKind {
         self.store_checkout().1.kind.clone()
     }
@@ -434,12 +423,7 @@ impl HistoryOwner {
             } => store.route(checkout).ok(),
         }
     }
-    /// Merge a peer's `mutation` into the record. A merge is an action boundary, as an undo or a
-    /// save is: the word still being typed in the window's document `outer` becomes its own step,
-    /// named by the action typing it, and the peer's change lands after it. Waiting for the
-    /// person's next boundary instead held every peer's change for as long as they kept typing or
-    /// sat idle. A step no action names stays open: committed unnamed, the identity service would
-    /// refuse it, so the change waits for that step's end.
+    /// Merge a peer's `mutation` into the record.
     pub(crate) fn merge_remote(
         &self,
         mutation: &collab_types::DocumentMutation,
@@ -491,8 +475,7 @@ impl HistoryOwner {
         }
     }
 
-    /// See [`crate::bound_dispatch::CallbackBinding::close_open_step`]. A
-    /// record owner outside a component keeps no open step.
+    /// See [`crate::bound_dispatch::CallbackBinding::close_open_step`].
     pub(crate) fn close_open_step(&self, outer: &mut AutoCommit) {
         if let OwnerKind::Component(binding) = &self.0
             && let Err(error) = binding.close_open_step(outer)
@@ -501,9 +484,8 @@ impl HistoryOwner {
         }
     }
 
-    /// See [`crate::bound_dispatch::CallbackBinding::close_named_step`]:
-    /// whether a step an open action names closed. A record owner outside a
-    /// component keeps no step.
+    /// See [`crate::bound_dispatch::CallbackBinding::close_named_step`]: whether a step an open action
+    /// names closed.
     pub(crate) fn close_named_step(&self, outer: &mut AutoCommit) -> bool {
         match &self.0 {
             OwnerKind::Component(binding) => {
@@ -516,8 +498,6 @@ impl HistoryOwner {
         }
     }
 
-    /// # Errors
-    /// The record's writer reports a storage failure.
     pub(crate) fn schedule_committed_history(&self) -> Result<(), String> {
         let (store, checkout) = self.store_checkout();
         store.schedule_committed_history(&checkout.id)
@@ -530,8 +510,7 @@ impl Drop for RecordOwnerLifetime {
     }
 }
 
-/// A stored record in a temporary profile and the owner a test opens scopes
-/// and History sources for.
+/// A stored record in a temporary profile and the owner a test opens scopes and History sources for.
 #[cfg(test)]
 pub(crate) struct RecordOwnerFixture {
     _temp: tempfile::TempDir,
@@ -544,8 +523,8 @@ pub(crate) struct RecordOwnerFixture {
 
 #[cfg(test)]
 impl RecordOwnerFixture {
-    /// Record `id` of `so.tilo.controlled` in `workspace`, holding `value: 1` and
-    /// `owner: id`, with invocation provenance required.
+    /// Record `id` of `so.tilo.controlled` in `workspace`, holding `value: 1` and `owner: id`, with
+    /// invocation provenance required.
     pub(crate) fn in_workspace(id: u64, workspace: &str) -> Self {
         let temp = tempfile::tempdir().unwrap();
         let mut owners = crate::record::RecordOwners::new(temp.path().join("profile"));

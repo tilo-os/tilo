@@ -1,11 +1,9 @@
-//! Which launches render at the capture instant
-//! ([`crate::clock::freeze_for_capture`]).
+//! Which launches render at the capture instant ([`crate::clock::freeze_for_capture`]).
 
 use super::LaunchArgs;
 
-/// Whether this launch renders at the capture instant: a capture, and a
-/// drive that names a scenario, whose app is built and staged as that
-/// capture.
+/// Whether this launch renders at the capture instant: a capture, and a drive that names a scenario,
+/// whose app is built and staged as that capture.
 pub(super) fn pins_the_clock(args: &LaunchArgs) -> bool {
     args.shots.is_some()
         || args.shots_dir.is_some()
@@ -23,8 +21,8 @@ mod tests {
         parse_args(&args, &[], &[]).expect("the arguments parse")
     }
 
-    /// A scenario drive renders at the capture instant, as its capture
-    /// does; a drive of the live app reads the real clock.
+    /// A scenario drive renders at the capture instant, as its capture does; a drive of the live app
+    /// reads the real clock.
     #[test]
     fn a_scenario_drive_renders_at_the_capture_instant() {
         assert!(pins_the_clock(&launch(&[

@@ -1,13 +1,8 @@
-//! A reusable, app-agnostic navigation stack with a back action and an
-//! edge-swipe back-gesture hook.
-//!
-//! Apps that model UI as a series of views need three things the toolkit can
-//! own once: a history with push/pop ([`NavStack<T>`]), a single back intent
-//! ([`NavAction`]) that gesture/key/button all resolve to, and a gesture
-//! entry point ([`EdgeSwipeBack`]) so an edge-swipe drives the same action.
-//!
-//! The stack stores cloneable descriptors, never widgets — pure state,
-//! unit-tested without a render pass.
+//! A reusable, app-agnostic navigation stack with a back action and an edge-swipe back-gesture hook.
+//! Apps that model UI as a series of views need three things the toolkit can own once: a history with
+//! push/pop ([`NavStack<T>`]), a single back intent ([`NavAction`]) that gesture/key/button all resolve
+//! to, and a gesture entry point ([`EdgeSwipeBack`]) so an edge-swipe drives the same action. The stack
+//! stores cloneable descriptors, never widgets — pure state, unit-tested without a render pass.
 
 use vello::kurbo::Point;
 
@@ -18,9 +13,7 @@ pub enum NavAction {
     Forward,
 }
 
-/// A generic navigation history. `T` names a view (an app's route/screen
-/// descriptor). Back and forward keep browser-style history; pushing after a
-/// Back clears the abandoned forward branch.
+/// A generic navigation history. `T` names a view (an app's route/screen descriptor).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NavStack<T> {
     past: Vec<T>,
@@ -43,9 +36,7 @@ impl<T: Clone + PartialEq> NavStack<T> {
         &self.current
     }
 
-    /// Push `view` as the new current view. A push equal to the current view is
-    /// a no-op (navigating to where you already are does not grow history), so
-    /// repeated identical navigations don't stack up and Back stays meaningful.
+    /// Push `view` as the new current view.
     pub fn push(&mut self, view: T) {
         if self.current() != &view {
             let previous = std::mem::replace(&mut self.current, view);
@@ -54,9 +45,7 @@ impl<T: Clone + PartialEq> NavStack<T> {
         }
     }
 
-    /// Replace the current view in place without growing history. Use when a
-    /// view mutates into a variant of itself (e.g. a query refining) that a
-    /// Back should skip over rather than replay.
+    /// Replace the current view in place without growing history.
     pub fn replace_current(&mut self, view: T) {
         if self.past.last() == Some(&view) {
             self.past.pop();
@@ -72,8 +61,8 @@ impl<T: Clone + PartialEq> NavStack<T> {
         !self.future.is_empty()
     }
 
-    /// Pop the current view and return a reference to the view now on screen,
-    /// or `None` when already at the root (nothing to pop).
+    /// Pop the current view and return a reference to the view now on screen, or `None` when already at
+    /// the root (nothing to pop).
     pub fn back(&mut self) -> Option<&T> {
         let previous = self.past.pop()?;
         let current = std::mem::replace(&mut self.current, previous);
@@ -99,8 +88,6 @@ impl<T: Clone + PartialEq> NavStack<T> {
 
     /// Number of views in the history (>= 1).
     pub fn depth(&self) -> usize {
-        // Current plus past; bounded by however many views an app ever pushed,
-        // nowhere near `usize::MAX`.
         self.past.len().saturating_add(1)
     }
 
@@ -120,9 +107,7 @@ impl<T: Clone + PartialEq> NavStack<T> {
         &self.future
     }
 
-    /// Rebuild a stack from an exported history. `past` is oldest first and
-    /// `future` is nearest-first, matching [`past`](Self::past) and
-    /// [`future`](Self::future).
+    /// Rebuild a stack from an exported history.
     pub fn from_parts(past: Vec<T>, current: T, future: Vec<T>) -> Self {
         Self {
             past,
@@ -132,24 +117,20 @@ impl<T: Clone + PartialEq> NavStack<T> {
     }
 }
 
-/// Arms when a press starts within `edge_width` of the left edge, fires
-/// [`NavAction::Back`] once the pointer travels `trigger_distance` px right
-/// in a mostly-horizontal drag. No velocity/animation, but a complete
-/// pointer-event contract a richer recognizer can later drop into.
+/// Arms when a press starts within `edge_width` of the left edge, fires [`NavAction::Back`] once the
+/// pointer travels `trigger_distance` px right in a mostly-horizontal drag.
 #[derive(Clone, Debug)]
 pub struct EdgeSwipeBack {
     edge_width: f64,
     trigger_distance: f64,
-    /// The armed press origin (within the edge zone), or `None` when idle.
     origin: Option<Point>,
     /// Latched once a swipe fires, so a single drag emits Back exactly once.
     fired: bool,
 }
 
 impl EdgeSwipeBack {
-    /// A recognizer for a left-edge back swipe. `edge_width` is how far from the
-    /// left edge a press must start to arm; `trigger_distance` is the rightward
-    /// travel that fires Back.
+    /// A recognizer for a left-edge back swipe. `edge_width` is how far from the left edge a press must
+    /// start to arm; `trigger_distance` is the rightward travel that fires Back.
     pub fn new(edge_width: f64, trigger_distance: f64) -> Self {
         Self {
             edge_width: edge_width.max(0.0),
@@ -159,22 +140,19 @@ impl EdgeSwipeBack {
         }
     }
 
-    /// A sensible default: arm within 24px of the left edge, fire after 80px of
-    /// rightward travel.
+    /// A sensible default: arm within 24px of the left edge, fire after 80px of rightward travel.
     pub fn default_back() -> Self {
         Self::new(24.0, 80.0)
     }
 
-    /// A pointer press landed at `p` (logical coords, relative to the surface's
-    /// left edge). Arms the recognizer when the press is inside the edge zone.
+    /// A pointer press landed at `p` (logical coords, relative to the surface's left edge).
     pub fn pointer_down(&mut self, p: Point) {
         self.fired = false;
         self.origin = (p.x <= self.edge_width).then_some(p);
     }
 
-    /// The pointer moved to `p`. Returns [`NavAction::Back`] exactly once, on the
-    /// frame the horizontal travel first exceeds the trigger distance while the
-    /// gesture stays predominantly horizontal. `None` otherwise.
+    /// The pointer moved to `p`. Returns [`NavAction::Back`] exactly once, on the frame the horizontal
+    /// travel first exceeds the trigger distance while the gesture stays predominantly horizontal.
     pub fn pointer_move(&mut self, p: Point) -> Option<NavAction> {
         if self.fired {
             return None;
@@ -195,8 +173,8 @@ impl EdgeSwipeBack {
         self.fired = false;
     }
 
-    /// Whether a swipe is currently armed (a press started in the edge zone and
-    /// has not yet fired or been released).
+    /// Whether a swipe is currently armed (a press started in the edge zone and has not yet fired or
+    /// been released).
     pub fn is_armed(&self) -> bool {
         self.origin.is_some() && !self.fired
     }
@@ -328,9 +306,7 @@ mod tests {
         {
             let mut g = EdgeSwipeBack::new(24.0, 80.0);
             g.pointer_down(Point::new(6.0, 100.0));
-            // Sub-threshold horizontal with a large vertical: a scroll.
             assert_eq!(g.pointer_move(Point::new(50.0, 400.0)), None);
-            // Past the horizontal threshold too, but vertical delta is bigger.
             assert_eq!(g.pointer_move(Point::new(90.0, 500.0)), None);
         }
     }

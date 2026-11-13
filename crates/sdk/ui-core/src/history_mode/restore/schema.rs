@@ -112,10 +112,9 @@ impl HistoryRootPattern {
             }
         }
     }
-    /// At a candidate total length, each byte is fixed or belongs to the same
-    /// capture alphabet. Affixes are ASCII, so every possible family/family
-    /// intersection has an ASCII witness. Exact keys may contain UTF-8 and are
-    /// checked directly, retaining the byte-bound and control-character rules.
+    /// At a candidate total length, each byte is fixed or belongs to the same capture alphabet. Exact
+    /// keys may contain UTF-8 and are checked directly, retaining the byte-bound and control-character
+    /// rules.
     fn byte_at(self, length: usize, index: usize) -> Option<u8> {
         match self {
             Self::Exact(key) => key.as_bytes().get(index).copied(),
@@ -165,13 +164,10 @@ impl HistoryRootPattern {
     }
 }
 
-/// Refuse a document written at a schema version this registration does not
-/// read: its selectors, validators and writer describe content at
-/// `schema.version`, and a document at an older version names its content by
-/// another shape. Restoring it anyway would write through selectors that do
-/// not match it, or a validator that accepts a shape it never had. An older
-/// version is brought up by the resource's migration when it opens, and
-/// restored from then on.
+/// Refuse a document written at a schema version this registration does not read: its selectors,
+/// validators and writer describe content at `schema.version`, and a document at an older version names
+/// its content by another shape. Restoring it anyway would write through selectors that do not match
+/// it, or a validator that accepts a shape it never had.
 pub(super) fn check_version(
     doc: &AutoCommit,
     schema: &HistoryRestoreSchema,

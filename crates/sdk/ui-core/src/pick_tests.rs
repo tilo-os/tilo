@@ -1,7 +1,6 @@
 use super::*;
 use crate::a11y::{AccessBounds, AccessNode, AccessState, Role};
 
-/// A laid-out widget with fixed geometry and semantics.
 struct Node {
     name: &'static str,
     rect: Rect,
@@ -44,8 +43,8 @@ fn text(name: &str, interface: bool) -> Option<AccessNode> {
     )
 }
 
-/// A chat window: a heading, a list of two message rows (author, text,
-/// a Reply button each) and a composer field.
+/// A chat window: a heading, a list of two message rows (author, text, a Reply button each) and a
+/// composer field.
 fn window() -> Node {
     let row = |y: f64, author: &str, said: &str| {
         node(
@@ -89,7 +88,6 @@ fn window() -> Node {
         vec![
             row(50.0, "Ada Lovelace", "Thanks Ada for the fix"),
             row(100.0, "Grace Hopper", "Looks good"),
-            // Scrolled out of the list's clip.
             row(170.0, "Hidden Person", "Not on screen"),
         ],
     );
@@ -289,8 +287,8 @@ fn placed(role: Role, name: &str, (x0, y0, x1, y1): (f64, f64, f64, f64)) -> Acc
     node
 }
 
-/// A message row in a synthetic list: its name, and parts that say where
-/// the author, the avatar and each line of the text are drawn.
+/// A message row in a synthetic list: its name, and parts that say where the author, the avatar and
+/// each line of the text are drawn.
 fn message_list(lines: &[&str]) -> Node {
     let mut row = placed(
         Role::ListItem,
@@ -340,7 +338,6 @@ fn a_row_its_parts_spell_out_is_masked_part_by_part() {
 
 #[test]
 fn a_row_whose_parts_leave_words_out_is_masked_whole() {
-    // The second line is drawn by the row itself: nothing says where.
     let window = message_list(&["Thanks Grace"]);
     let whole = Rect::new(0.0, 0.0, 400.0, 60.0);
     let areas = sensitive_areas(&window, "Chat[0]#0", whole);

@@ -1,20 +1,18 @@
-//! Picking parts of a window drawn by another process: what the desktop
-//! asks the app that draws a window while a person points at what is wrong
-//! ([`crate::floating_surface::FloatingSurfaceHostMessage::Pick`]), and
-//! what the app answers from its own retained tree with [`answer`]
-//! ([`crate::floating_surface::FloatingSurfaceClientMessage::PickAnswered`]).
-//!
-//! Everything is in the window's logical coordinates, rectangles as
-//! `[x0, y0, x1, y1]`. The desktop names the app by the launcher's id, never
-//! by anything in an answer.
+//! Picking parts of a window drawn by another process: what the desktop asks the app that draws a
+//! window while a person points at what is wrong
+//! ([`crate::floating_surface::FloatingSurfaceHostMessage::Pick`]), and what the app answers from its
+//! own retained tree with [`answer`]
+//! ([`crate::floating_surface::FloatingSurfaceClientMessage::PickAnswered`]). Everything is in the
+//! window's logical coordinates, rectangles as `[x0, y0, x1, y1]`. The desktop names the app by the
+//! launcher's id, never by anything in an answer.
 
 use serde::{Deserialize, Serialize};
 use vello::kurbo::{Point, Rect};
 
 use crate::widget::Widget;
 
-/// Most parts one answer names: the chain under a point is never this deep
-/// in a person's interface, and a dragged rectangle asks for fewer.
+/// Most parts one answer names: the chain under a point is never this deep in a person's interface, and
+/// a dragged rectangle asks for fewer.
 pub const MAX_PARTS: usize = 64;
 /// Most parts one capture is asked for.
 pub const MAX_CAPTURES: usize = 16;
@@ -25,15 +23,14 @@ pub const MAX_RECENT: usize = crate::pick::RECENT_INVOCATIONS;
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum PickQuery {
-    /// The nameable parts under `point`, outermost first
-    /// ([`crate::pick::targets_at`]).
+    /// The nameable parts under `point`, outermost first ([`crate::pick::targets_at`]).
     At { point: [f64; 2] },
     /// The outermost nameable parts wholly inside `area`, at most `limit`
     /// ([`crate::pick::targets_within`]).
     Within { area: [f64; 4], limit: u32 },
-    /// The texts of the picked parts and where a picture of each must be
-    /// masked ([`crate::pick::capture`], [`crate::pick::sensitive_areas`]),
-    /// with what the person last did in the app.
+    /// The texts of the picked parts and where a picture of each must be masked
+    /// ([`crate::pick::capture`], [`crate::pick::sensitive_areas`]), with what the person last did in
+    /// the app.
     Capture { parts: Vec<PartToCapture> },
 }
 
@@ -50,8 +47,7 @@ pub struct PartToCapture {
 pub enum PickAnswer {
     /// For [`PickQuery::At`] and [`PickQuery::Within`].
     Targets { parts: Vec<PickedPart> },
-    /// For [`PickQuery::Capture`]: a part the tree no longer has is left
-    /// out.
+    /// For [`PickQuery::Capture`]: a part the tree no longer has is left out.
     Captured {
         parts: Vec<CapturedPart>,
         recent: Vec<RecentAction>,
@@ -101,8 +97,7 @@ pub struct CapturedText {
     pub rect: Option<[f64; 4]>,
 }
 
-/// Something the person last did through a control of the app: names
-/// only, never arguments.
+/// Something the person last did through a control of the app: names only, never arguments.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RecentAction {
     /// Unix milliseconds.

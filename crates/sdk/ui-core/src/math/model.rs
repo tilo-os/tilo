@@ -1,40 +1,27 @@
-//! Structured model for the math editor.
-//!
-//! A formula is a [`Row`] — an ordered list of [`Node`] atoms. Atoms are
-//! either *leaves* (a single character: a digit, an operator, a letter of an
-//! identifier) or *structures* that own one or more child rows (a fraction
-//! owns a numerator row and a denominator row; a power owns an exponent row;
-//! a radical owns a radicand row and an optional index row). This is a real
-//! tree, not a flat string — which is what makes a true 2D caret, structural
-//! backspace, and stacked rendering possible.
-//!
-//! The model serializes to a compact linear expression and parses that form
-//! back into a tree. Applications may feed the serialization to an evaluator,
-//! persist it, or use the tree directly for read-only mathematical content.
+//! Structured model for the math editor. A formula is a [`Row`] — an ordered list of [`Node`] atoms.
 
 /// One element of a [`Row`].
 #[derive(Clone, Debug, PartialEq)]
 pub enum Node {
-    /// A single character placed directly in a row: a digit `0-9`, a `.`, a
-    /// letter (identifiers are stored as runs of `Char` letters so the caret
-    /// can sit between letters), or an operator glyph (`+ - * / · ^` etc.).
+    /// A single character placed directly in a row: a digit `0-9`, a `.`, a letter (identifiers are
+    /// stored as runs of `Char` letters so the caret can sit between letters), or an operator glyph (`+
+    /// - * / · ^` etc.).
     Char(char),
     /// A fraction: numerator over denominator with a centered bar.
     Frac { num: Row, den: Row },
-    /// A power: the base is whatever precedes this node in the row; the
-    /// exponent is the raised, smaller child row.
+    /// A power: the base is whatever precedes this node in the row; the exponent is the raised, smaller
+    /// child row.
     Sup { exp: Row },
     /// A lowered, smaller child row attached to the preceding base.
     Sub { sub: Row },
     /// Paired lower and upper scripts sharing one horizontal script column.
     SubSup { sub: Row, sup: Row },
-    /// A radical: `√` with an overbar spanning `radicand`, optional `index`
-    /// (the small number in the crook, e.g. cube root).
+    /// A radical: `√` with an overbar spanning `radicand`, optional `index` (the small number in the
+    /// crook, e.g.
     Sqrt { index: Option<Row>, radicand: Row },
     /// A parenthesized group `( body )`.
     Paren { body: Row },
-    /// A group with explicit scalable delimiters. `None` represents TeX's
-    /// invisible `.` delimiter, used by cases and one-sided constructions.
+    /// A group with explicit scalable delimiters.
     Delimited {
         open: Option<char>,
         close: Option<char>,
@@ -77,9 +64,8 @@ pub enum Slot {
     Cell(u16, u16),
 }
 
-/// A caret location: a chain of (node index in the current row, which child
-/// slot) descents, terminated by an `offset` insertion gap in the deepest
-/// row. An empty `steps` with `offset = k` means "gap `k` in the root row".
+/// A caret location: a chain of (node index in the current row, which child slot) descents, terminated
+/// by an `offset` insertion gap in the deepest row.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Path {
     pub steps: Vec<(usize, Slot)>,
@@ -238,12 +224,7 @@ pub fn node_slots(node: &Node) -> Vec<Slot> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Serialization: model → linear ASCII the engine parses.
-// ---------------------------------------------------------------------------
-
-/// Serialize the whole expression to a flat ASCII string. Round-trips with
-/// [`parse`].
+/// Serialize the whole expression to a flat ASCII string.
 pub fn to_linear(expr: &MathExpr) -> String {
     let mut out = String::new();
     write_row(&expr.root, &mut out);
@@ -346,10 +327,7 @@ pub const FUNCS: &[&str] = &[
     "pow", "rad", "deg", "int",
 ];
 
-/// The four top-level argument spans of a definite integral. Keeping commas
-/// in the ordinary function row preserves the editor's paths and clipboard
-/// format while layout presents the spans as integrand, variable and limits.
-/// Malformed calls remain ordinary function calls so no input is hidden.
+/// The four top-level argument spans of a definite integral.
 pub(super) fn integral_ranges(arg: &Row) -> Option<[std::ops::Range<usize>; 4]> {
     let mut start = 0;
     let mut ranges = Vec::new();
@@ -372,16 +350,9 @@ pub(super) fn integral_parts<'a>(name: &str, arg: &'a Row) -> Option<[&'a [Node]
     Some(ranges.map(|range| arg.get(range).unwrap_or_default()))
 }
 
-// ---------------------------------------------------------------------------
-// Parsing: linear ASCII → model tree.
-// ---------------------------------------------------------------------------
-
-/// Parse a flat ASCII expression into a structured tree. Best-effort and
-/// total: anything it cannot classify is kept as literal `Char` atoms so the
-/// field never loses content (the engine reports semantic errors at plot
-/// time). Recognizes `name(...)` calls, `(...)` groups, `^` powers,
-/// `sqrt(...)`/`root(i,x)` radicals, and `a/b` fractions where `a` and `b`
-/// are simple immediate operands.
+/// Parse a flat ASCII expression into a structured tree. Best-effort and total: anything it cannot
+/// classify is kept as literal `Char` atoms so the field never loses content (the engine reports
+/// semantic errors at plot time).
 pub fn parse(input: &str) -> MathExpr {
     let chars: Vec<char> = input.chars().collect();
     let mut p = LinParser { chars, pos: 0 };
@@ -399,8 +370,7 @@ impl LinParser {
         self.chars.get(self.pos).copied()
     }
 
-    /// Parse a sequence of atoms until one of `stop` chars (consumed by the
-    /// caller) or end of input. Builds `^` and `/` structures as it goes.
+    /// Parse a sequence of atoms until one of `stop` chars (consumed by the caller) or end of input.
     fn parse_row(&mut self, stop: &[char]) -> Row {
         let mut row: Row = Vec::new();
         while let Some(c) = self.peek() {
@@ -415,9 +385,6 @@ impl LinParser {
                 }
                 '/' => {
                     self.pos = self.pos.saturating_add(1);
-                    // Denominator is the next immediate operand; numerator is
-                    // the operand already emitted (last node, unwrapping a
-                    // redundant paren).
                     let den_row = self.parse_operand_row();
                     let num_node = row.pop();
                     let num = match num_node {
@@ -461,8 +428,7 @@ impl LinParser {
         row
     }
 
-    /// Parse the exponent that follows a `^`. `^(...)` takes the group; a
-    /// bare `^2` / `^x` / `^sin(x)` takes a single operand.
+    /// Parse the exponent that follows a `^`.
     fn parse_superscript(&mut self) -> Row {
         if self.peek() == Some('(') {
             self.pos = self.pos.saturating_add(1);
@@ -474,8 +440,7 @@ impl LinParser {
         }
     }
 
-    /// Parse one "operand": a number, an identifier (optionally a call), or a
-    /// parenthesized group. Used for `^` exponents and `/` denominators.
+    /// Parse one "operand": a number, an identifier (optionally a call), or a parenthesized group.
     fn parse_operand_row(&mut self) -> Row {
         match self.peek() {
             Some('(') => {
@@ -518,9 +483,7 @@ impl LinParser {
         }
     }
 
-    /// Classify exactly one call in place. Re-parsing the entire remaining
-    /// source for a denominator or exponent would swallow its following
-    /// operators and duplicate the opening parenthesis.
+    /// Classify exactly one call in place.
     fn parse_named_atom(&mut self, name: String) -> Row {
         if self.peek() != Some('(') {
             return name.chars().map(Node::Char).collect();

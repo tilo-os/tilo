@@ -1,6 +1,6 @@
-//! The default History preview: the app's own root, synchronised, laid out and
-//! drawn over the document as it was at one version. The root is a separate
-//! read-only instance; no event, focus or dispatch path ever reaches it.
+//! The default History preview: the app's own root, synchronised, laid out and drawn over the document
+//! as it was at one version. The root is a separate read-only instance; no event, focus or dispatch
+//! path ever reaches it.
 
 use automerge::AutoCommit;
 use vello::Scene;
@@ -13,8 +13,7 @@ use crate::theme::Theme;
 use crate::widget::DrawChild;
 use crate::widget::Widget;
 
-/// A past version drawn by a read-only root of the app over its frozen
-/// document.
+/// A past version drawn by a read-only root of the app over its frozen document.
 pub struct FrozenRootPreview {
     root: Box<dyn Widget>,
     doc: Option<AutoCommit>,
@@ -23,13 +22,12 @@ pub struct FrozenRootPreview {
     view: PreviewView,
     /// The live window's bar presents search: the root's header is told so.
     window_search: bool,
-    /// The live window's presentation was handed to the root.
     presented: bool,
 }
 
 impl FrozenRootPreview {
-    /// `label` names what is shown ("Calendar", "Document") for assistive
-    /// technology; `doc` is the frozen version the preview owns.
+    /// `label` names what is shown ("Calendar", "Document") for assistive technology; `doc` is the
+    /// frozen version the preview owns.
     pub fn new(root: Box<dyn Widget>, doc: AutoCommit, label: impl Into<String>) -> Self {
         Self {
             root,
@@ -74,8 +72,6 @@ impl HistoryPreview for FrozenRootPreview {
         );
         let mut frame = crate::launch::ShotFrame::new(size, theme.clone());
         if let Some(doc) = self.doc.take() {
-            // The version opens as the live window shows its record (its
-            // mode, the open item), drawn by the same view.
             if !self.presented
                 && let Some(local) = &self.view.application
             {
@@ -84,9 +80,6 @@ impl HistoryPreview for FrozenRootPreview {
             }
             frame = frame.with_state(crate::State::from_doc(doc));
         }
-        // The view is measured by the renderer that draws it — the live
-        // window's, with its fonts and text scale — or a label laid out by
-        // another renderer can come out too narrow and collapse to "…".
         std::mem::swap(&mut frame.text, text);
         // A layout that leaves more to settle runs again at once, as the
         // live app's frame does: Notes centres its column on the width its
@@ -158,11 +151,8 @@ impl HistoryPreview for FrozenRootPreview {
 
 const OUTLINE_LINES: usize = 400;
 
-/// A past version drawn as its document outline ([`outline_root`]): the
-/// preview of a document whose app draws no version of its own.
-///
-/// # Errors
-/// The snapshot does not load as a document.
+/// A past version drawn as its document outline ([`outline_root`]): the preview of a document whose app
+/// draws no version of its own.
 pub fn outline_preview(input: super::PreviewInput) -> Result<Box<dyn HistoryPreview>, String> {
     let doc = AutoCommit::load(input.snapshot.bytes()).map_err(|error| error.to_string())?;
     let label = crate::i18n::I18nManager::lookup_plain("history-mode-preview-resource");
@@ -171,8 +161,8 @@ pub fn outline_preview(input: super::PreviewInput) -> Result<Box<dyn HistoryPrev
     ))
 }
 
-/// A faithful fallback when the app's own root cannot be built a second
-/// time: the version's document itself, one `path: value` line per field.
+/// A faithful fallback when the app's own root cannot be built a second time: the version's document
+/// itself, one `path: value` line per field.
 fn outline_root(doc: &AutoCommit) -> Box<dyn Widget> {
     use automerge::{ObjType, ReadDoc, Value};
     fn walk(doc: &AutoCommit, obj: &automerge::ObjId, path: &str, out: &mut Vec<String>) {
@@ -215,15 +205,12 @@ mod tests {
     use std::collections::HashMap;
     use taffy::{NodeId, TaffyTree};
 
-    /// A page that, like Notes, centres its column on the width its last
-    /// layout gave it: the first pass builds at no width and asks to be
-    /// built again.
+    /// A page that, like Notes, centres its column on the width its last layout gave it: the first pass
+    /// builds at no width and asks to be built again.
     #[derive(Default)]
     struct Page {
         rect: Rect,
-        /// The width the column was built for.
         built_for: f64,
-        /// The width the last layout gave it.
         given: f64,
         rebuild: bool,
     }
@@ -274,10 +261,6 @@ mod tests {
         }
     }
 
-    // The preview of a version lays out exactly like the live view: a root
-    // that settles over a second pass is shown settled, not as its first
-    // pass left it (Notes drew its text wider than the live note and its
-    // first paragraph under the "Created" line).
     #[test]
     fn a_version_is_laid_out_settled_as_the_live_view_is() {
         let mut preview =

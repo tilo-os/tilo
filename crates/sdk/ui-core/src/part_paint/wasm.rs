@@ -1,19 +1,7 @@
-//! Painter sets loaded from wasm: a theme's own painters, run in the UI host
-//! with nothing to reach (`docs/architecture/theming.md`, "Part painters").
-//!
-//! A module built against `tilo_theme_sdk` (`export_painter!`) exports a
-//! buffer and one call, and imports nothing; [`load`] refuses one that
-//! imports anything, so a painter has no clock, no I/O, no files and no
-//! host to ask. Each call runs on the interpreter (wasmi) with a fuel
-//! budget and the module's memory capped, and its answer is decoded as
-//! untrusted bytes ([`tilo_theme_sdk::wire`]). The set is then a
-//! [`PartPainter`] like the built-in ones and draws through the same host
-//! ([`super::paint_part`]): one path, whoever wrote the painter.
-//!
-//! A call that traps, runs out of fuel or answers malformed bytes is a
-//! part the set leaves to the toolkit (`None`, drawn by the Default set);
-//! a set that traps is not called again, so a broken painter costs one
-//! frame's budget, not one per frame.
+//! Painter sets loaded from wasm: a theme's own painters, run in the UI host with nothing to reach
+//! (`docs/architecture/theming.md`, "Part painters"). A module built against `tilo_theme_sdk`
+//! (`export_painter!`) exports a buffer and one call, and imports nothing; [`load`] refuses one that
+//! imports anything, so a painter has no clock, no I/O, no files and no host to ask.
 
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -28,9 +16,8 @@ use wasmi::{
 
 use super::{PaintedPart, ParamSpec, Part, PartPainter, PartState, PartTokens, States, Transition};
 
-/// Fuel one call may burn: well past what any part takes to draw (a dithered
-/// panel is a few hundred thousand), short enough that a looping painter is
-/// stopped within a frame.
+/// Fuel one call may burn: well past what any part takes to draw (a dithered panel is a few hundred
+/// thousand), short enough that a looping painter is stopped within a frame.
 pub const FUEL_PER_CALL: u64 = 40_000_000;
 
 /// Linear memory one set may hold, bytes.
@@ -39,7 +26,6 @@ pub const MAX_MEMORY: usize = 64 << 20;
 /// Largest answer the host reads, bytes.
 pub const MAX_ANSWER: usize = 16 << 20;
 
-/// The exports a painter module provides (`tilo_theme_sdk::export_painter!`).
 const BUFFER: &str = "tilo_theme_buffer";
 const CALL: &str = "tilo_theme_call";
 const MEMORY: &str = "memory";
@@ -51,8 +37,7 @@ pub enum Refusal {
     Invalid(String),
     /// It imports something; a painter may import nothing.
     Imports(String),
-    /// It lacks `memory`, `tilo_theme_buffer` or `tilo_theme_call` of the
-    /// SDK's types.
+    /// It lacks `memory`, `tilo_theme_buffer` or `tilo_theme_call` of the SDK's types.
     Exports(String),
     /// Its start-up trapped or ran past its budget.
     Start(String),
@@ -82,8 +67,8 @@ struct Guest {
 }
 
 impl Guest {
-    /// Send `request` and read the answer; `None` for a trap, an exhausted
-    /// budget or an answer out of bounds.
+    /// Send `request` and read the answer; `None` for a trap, an exhausted budget or an answer out of
+    /// bounds.
     fn exchange(&mut self, request: &[u8]) -> Option<Vec<u8>> {
         let len = u32::try_from(request.len()).ok()?;
         self.store.set_fuel(FUEL_PER_CALL).ok()?;
@@ -105,13 +90,11 @@ impl Guest {
 pub struct WasmPainter {
     guest: Mutex<Guest>,
     params: Vec<ParamSpec>,
-    /// Set once a call fails: the set is not called again.
     broken: AtomicBool,
 }
 
 impl WasmPainter {
-    /// One exchange, or `None` once the set is broken; a failed exchange
-    /// breaks it.
+    /// One exchange, or `None` once the set is broken; a failed exchange breaks it.
     fn exchange(&self, request: &[u8]) -> Option<Vec<u8>> {
         if self.broken.load(Ordering::Relaxed) {
             return None;
@@ -123,19 +106,15 @@ impl WasmPainter {
         answer
     }
 
-    /// Whether a call failed and the set now leaves every part to the
-    /// toolkit.
+    /// Whether a call failed and the set now leaves every part to the toolkit.
     #[must_use]
     pub fn is_broken(&self) -> bool {
         self.broken.load(Ordering::Relaxed)
     }
 }
 
-/// Load the painter module `bytes`: validated, refused if it imports
-/// anything, started under the call budget, and asked for its parameters.
-///
-/// # Errors
-/// The module is not a painter set this host runs ([`Refusal`]).
+/// Load the painter module `bytes`: validated, refused if it imports anything, started under the call
+/// budget, and asked for its parameters.
 pub fn load(bytes: &[u8]) -> Result<WasmPainter, Refusal> {
     let mut config = Config::default();
     config.consume_fuel(true);
@@ -189,11 +168,8 @@ pub fn load(bytes: &[u8]) -> Result<WasmPainter, Refusal> {
     })
 }
 
-/// The set `name` drawn by the painter module `bytes` ([`load`]), ready to
-/// register ([`super::register_painter_set`]).
-///
-/// # Errors
-/// As [`load`].
+/// The set `name` drawn by the painter module `bytes` ([`load`]), ready to register
+/// ([`super::register_painter_set`]).
 pub fn painter_set(name: &str, bytes: &[u8]) -> Result<super::PainterSet, Refusal> {
     Ok(super::PainterSet::new(
         name,

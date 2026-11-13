@@ -16,9 +16,7 @@ struct Seen {
     drain_close_gate: Rc<RefCell<Option<Rc<Cell<bool>>>>>,
     drained: Rc<Cell<bool>>,
     saves: Rc<Cell<usize>>,
-    /// Whether the last save status the owner heard is Saved.
     saved: Rc<Cell<bool>>,
-    /// Every save status the owner heard, as whether it was Saved.
     heard: Rc<RefCell<Vec<bool>>>,
     write_next: Rc<Cell<bool>>,
     body: Rc<RefCell<String>>,
@@ -205,7 +203,6 @@ impl Widget for HiddenOwners {
             .map(|o| o as &mut dyn Widget)
             .collect()
     }
-    // No retained override: preserve the original custom visitor fallback.
     fn visit_components(
         &mut self,
         request: &mut ComponentRequest<'_>,
@@ -328,10 +325,9 @@ fn one_dirty_hidden_owner_of_110_enters_only_its_actual_model_and_save_service_w
         );
     }
 }
-/// A save that lands after a keystroke changes the save status and
-/// nothing the model holds: its owner hears the status, and no model
-/// callback runs (no update, no sync) and no layout is retired or solved
-/// for it. Any other wake of the same owner takes its whole service.
+/// A save that lands after a keystroke changes the save status and nothing the model holds: its owner
+/// hears the status, and no model callback runs (no update, no sync) and no layout is retired or solved
+/// for it.
 #[test]
 fn a_landed_save_shows_its_status_without_an_owner_service_or_layout() {
     let host = ProbeHost::new();
@@ -1049,8 +1045,6 @@ fn background_partial_batch_report_keeps_accepted_peer_bytes_before_later_busy_r
     let bid = b.component.record().id.clone();
     let (mut frame, _, _) = frame(&queue, vec![a, b]);
     commit_accepted(&backend, &mirror);
-    // Both records' first writes land, and their stores' wakes are taken up,
-    // before the batch under test.
     other.records.try_flush().unwrap();
     frame.service_pending_owner_models().unwrap();
     sa.write_next.set(true);
@@ -1096,8 +1090,6 @@ fn background_exact_offer_never_settles_unrelated_same_store_typing() {
     let bid = b.component.record().id.clone();
     let (mut frame, _, _) = frame(&queue, vec![a, b]);
     commit_accepted(&backend, &mirror);
-    // The records' first writes landed: their store's wakes are taken up
-    // before the offer under test.
     frame.service_pending_owner_models().unwrap();
     host.records
         .with(&bid, |doc| {
@@ -1132,13 +1124,7 @@ fn background_exact_offer_never_settles_unrelated_same_store_typing() {
     );
 }
 
-/// A window shows its record saved by drawing what the status changed. The
-/// change is no structure change: that would rebuild its host's layout tree
-/// and repaint the whole window for a save label after every keystroke. Nor
-/// does it re-solve the layout when nothing showing it changed size, or wake
-/// the owner a second time: the save landing woke it once, and the sync that
-/// took the new status up belongs to the frame that shows it. Each would add
-/// work, or a whole frame, after every keystroke.
+/// A window shows its record saved by drawing what the status changed.
 #[test]
 fn a_save_status_change_is_no_structure_change() {
     let host = ProbeHost::new();
@@ -1171,11 +1157,9 @@ fn a_save_status_change_is_no_structure_change() {
     let (mut frame, _, _) = frame(&queue, vec![owner]);
     close(&mut frame, 1);
 }
-/// A worker wakes its component's owner from another thread, and the window
-/// that shows it is idle: its idle pass serves the model as the live window
-/// does, so the wake is taken up and the window comes to rest. Left queued, a
-/// still window counted the wake as work for ever and every capture of it ran
-/// frames nothing asked for.
+/// A worker wakes its component's owner from another thread, and the window that shows it is idle: its
+/// idle pass serves the model as the live window does, so the wake is taken up and the window comes to
+/// rest.
 #[test]
 fn an_idle_pass_serves_the_owner_a_worker_woke_so_the_window_rests() {
     let host = ProbeHost::new();
@@ -1204,9 +1188,8 @@ fn an_idle_pass_serves_the_owner_a_worker_woke_so_the_window_rests() {
     close(&mut frame, 1);
 }
 
-/// A capture of a window that rests draws nothing: it runs the idle pass and
-/// finds what it needs already there, as a live window draws no frame between
-/// two interactions.
+/// A capture of a window that rests draws nothing: it runs the idle pass and finds what it needs
+/// already there, as a live window draws no frame between two interactions.
 #[test]
 fn a_capture_of_a_still_window_runs_no_frame() {
     let host = ProbeHost::new();

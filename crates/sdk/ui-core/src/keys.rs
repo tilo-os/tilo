@@ -1,21 +1,11 @@
-//! One spelling for a key: the token a shortcut declares (`Ctrl+Enter`), the
-//! token a live press answers to (`enter`), and the key a test drives
-//! (`Enter`).
-//!
-//! A shortcut is written by a person and matched against a press, which winit
-//! reports as a named key or a character. Both sides read their key through
-//! [`canonical`], so `Esc`, `escape` and the Escape key are one press, and so
-//! are `Space` and the space bar.
-//!
-//! A host delivers a press as keysyms and modifiers, which `from_keysym` and
-//! `chord` turn into the key a shortcut table matches.
+//! One spelling for a key: the token a shortcut declares (`Ctrl+Enter`), the token a live press answers
+//! to (`enter`), and the key a test drives (`Enter`). A shortcut is written by a person and matched
+//! against a press, which winit reports as a named key or a character.
 
 use winit::keyboard::{Key, KeyLocation, NamedKey, NativeKey, SmolStr};
 
-/// The key `spec` names, as a driver or a typed shortcut writes it: `Enter`,
-/// `Tab`, `Escape`, the arrows, `F1`–`F12`, `Home`, `End`, `PageUp`,
-/// `PageDown`, `Delete`, `Space` and the rest; one character is that
-/// character typed (`" "` is the space bar's character, `"Space"` the key).
+/// The key `spec` names, as a driver or a typed shortcut writes it: `Enter`, `Tab`, `Escape`, the
+/// arrows, `F1`–`F12`, `Home`, `End`, `PageUp`, `PageDown`, `Delete`, `Space` and the rest.
 #[must_use]
 pub fn parse(spec: &str) -> Key {
     if spec.chars().count() == 1 {
@@ -53,8 +43,8 @@ pub fn parse(spec: &str) -> Key {
     }
 }
 
-/// The token `key` answers to, or `None` for a key no shortcut can name (a
-/// modifier pressed on its own, a media key).
+/// The token `key` answers to, or `None` for a key no shortcut can name (a modifier pressed on its own,
+/// a media key).
 #[must_use]
 pub fn token(key: &Key) -> Option<String> {
     let name = match key {
@@ -96,22 +86,15 @@ pub fn token(key: &Key) -> Option<String> {
     Some(name)
 }
 
-/// `key` as one token: its [`token`] when it is a live key, else the name a
-/// shortcut writes, in the same spelling. `Esc` and `Escape`, `Space` and
-/// `" "`, `Up` and `ArrowUp`, `E` and `e` are each one token.
-///
-/// The names are the toolkit's one table ([`tilo_ui_graph::keys`]), which the
-/// compiler checks an app's declared shortcut with too, so a key an app may
-/// write is a key a press answers to.
+/// `key` as one token: its [`token`] when it is a live key, else the name a shortcut writes, in the
+/// same spelling.
 #[must_use]
 pub fn canonical(key: &str) -> String {
     tilo_ui_graph::keys::key(key).unwrap_or_else(|| key.trim().to_lowercase())
 }
 
-/// The key a host's keysym is, as a shortcut matches against it: a named key when the toolkit names
-/// it, else the text the layout types with it, else the character of the keysym itself. The
-/// keysym vocabulary is the platform's ([`tilo_presentation::keys::keysym_key`]), so a host that
-/// reads the keyboard itself is the only caller.
+/// The key a host's keysym is, as a shortcut matches against it: a named key when the toolkit names it,
+/// else the text the layout types with it, else the character of the keysym itself.
 #[must_use]
 pub fn from_keysym(keysym: u32, text: Option<&str>) -> (Key, KeyLocation) {
     let (key, location) = tilo_presentation::keys::keysym_key(keysym).unwrap_or((
@@ -130,9 +113,9 @@ pub fn from_keysym(keysym: u32, text: Option<&str>) -> (Key, KeyLocation) {
     }
 }
 
-/// The key a chord names a key by: under Ctrl, Alt or Super a letter outside the Latin script is
-/// named by the Latin character the same key types on a layout that has one, so Ctrl+C copies and
-/// Super+L locks whichever layout is typing. A diacritic stays as typed.
+/// The key a chord names a key by: under Ctrl, Alt or Super a letter outside the Latin script is named
+/// by the Latin character the same key types on a layout that has one, so Ctrl+C copies and Super+L
+/// locks whichever layout is typing.
 #[must_use]
 pub fn chord(
     keysym: u32,
@@ -189,7 +172,6 @@ mod tests {
         let latin = u32::from('c');
         let (logical, _) = chord(cyrillic, None, latin, true);
         assert_eq!(logical, Key::Character("c".into()));
-        // The letter itself, with no chord modifier, stays Cyrillic.
         let (typed, _) = chord(cyrillic, None, latin, false);
         assert_eq!(typed, Key::Character("с".into()));
     }

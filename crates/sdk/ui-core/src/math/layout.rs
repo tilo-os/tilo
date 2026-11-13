@@ -1,19 +1,10 @@
-//! Recursive 2D box layout for the math model.
-//!
-//! Lays the [`MathExpr`](crate::math::model::MathExpr) tree out into a flat list of positioned
-//! [`Box2d`]es with exact glyph metrics from [`TextRenderer`], plus the gap
-//! geometry the caret and hit-testing need. Layout is pure: it reads the
-//! model + a renderer (for measuring) and produces positions; it never
-//! mutates the model.
-//!
-//! Coordinates are local to the field's content origin `(0, 0)`; the caller
-//! translates by the field's on-screen rect.
-//!
-//! Every size here is content: glyphs are measured and painted at exactly
-//! the size the geometry (bars, radicals, delimiters, script offsets) is
-//! built from, never grown again by the reader's text scale, so a caller
-//! that scales an expression scales all of it together. [`layout_wrapped`]
-//! breaks a long expression before its top-level operators.
+//! Recursive 2D box layout for the math model. Lays the [`MathExpr`](crate::math::model::MathExpr) tree
+//! out into a flat list of positioned [`Box2d`]es with exact glyph metrics from [`TextRenderer`], plus
+//! the gap geometry the caret and hit-testing need. Layout is pure: it reads the model + a renderer
+//! (for measuring) and produces positions; it never mutates the model. Every size here is content:
+//! glyphs are measured and painted at exactly the size the geometry (bars, radicals, delimiters, script
+//! offsets) is built from, never grown again by the reader's text scale, so a caller that scales an
+//! expression scales all of it together.
 
 use crate::text_render::{FontChoice, TextKind, TextRenderer, TextStyle, UI_MATH_FAMILY};
 
@@ -28,13 +19,10 @@ pub enum BoxKind {
     Name { text: String, size: f32 },
     /// The horizontal bar of a fraction.
     FracBar,
-    /// The `√` sign + its overbar; `over_w` is the radicand span the bar
-    /// must cover, starting at the box's right edge.
+    /// The `√` sign + its overbar; `over_w` is the radicand span the bar must cover, starting at the
+    /// box's right edge.
     SqrtSign { over_w: f64, size: f32 },
-    /// A vector parenthesis constructed to exactly span this box. It is not
-    /// a vertically-scaled font glyph: scaling a normal `(` distorts its
-    /// stroke and, more importantly, makes its optical centre depend on the
-    /// font glyph's baseline rather than on the enclosed expression.
+    /// A vector parenthesis constructed to exactly span this box.
     Paren { open: bool, size: f32 },
     /// A scalable TeX delimiter (`[]`, `{}`, `|`, `‖`, `⌊⌋`, `⌈⌉`, `⟨⟩`).
     Delimiter { ch: char, size: f32 },
@@ -54,8 +42,7 @@ pub struct Box2d {
     pub kind: BoxKind,
 }
 
-/// A caret-insertable gap inside one laid-out row. `index` is the offset in
-/// that row (0..=len). `x`/`top`/`bottom` give the caret bar geometry.
+/// A caret-insertable gap inside one laid-out row.
 #[derive(Clone, Debug)]
 pub struct Gap {
     /// Path steps identifying which row this gap belongs to.
@@ -77,14 +64,11 @@ pub struct Layout {
     pub baseline: f64,
 }
 
-/// Internal size of a laid-out fragment before it is placed.
 struct Frag {
     boxes: Vec<Box2d>,
     gaps: Vec<Gap>,
     width: f64,
-    /// Height above the baseline.
     ascent: f64,
-    /// Height below the baseline.
     descent: f64,
 }
 
@@ -97,17 +81,15 @@ impl Frag {
 pub const BASE_SIZE: f32 = 22.0;
 const SCRIPT_RATIO: f32 = 0.72;
 const MIN_SIZE: f32 = 11.0;
-/// How far a superscript's baseline sits above its base's, in ems: high
-/// enough that a script of several characters (`x^(2-2)`) reads as raised,
-/// not as text on the line.
+/// How far a superscript's baseline sits above its base's, in ems: high enough that a script of several
+/// characters (`x^(2-2)`) reads as raised, not as text on the line.
 const SUP_SHIFT: f32 = 0.38;
 
 fn line_h(size: f32) -> f64 {
     f64::from(size * 1.25)
 }
 
-/// Approximate ascent/descent split of a glyph cell. cosmic-text centers the
-/// glyph in a `size * 1.25` cell; the baseline sits near 80% down.
+/// Approximate ascent/descent split of a glyph cell.
 fn metrics(size: f32) -> (f64, f64) {
     let lh = line_h(size);
     let ascent = lh * 0.78;
@@ -134,13 +116,9 @@ fn delimiter_padding(size: f32) -> f64 {
     (f64::from(size) * 0.10).max(1.5)
 }
 
-/// The math face at exactly `size`, as content: measured and painted at the
-/// size the layout's geometry uses.
-///
-/// A caller sets the size itself — a theme role, or the formula size the
-/// screen resolves — so it already includes the reader's text scale. The
-/// style is content-sized (the text scale is never applied again on top of
-/// it) and only the caller's own zoom belongs in the transform.
+/// The math face at exactly `size`, as content: measured and painted at the size the layout's geometry
+/// uses. The style is content-sized (the text scale is never applied again on top of it) and only the
+/// caller's own zoom belongs in the transform.
 pub(crate) fn math_style(size: f32) -> TextStyle {
     TextStyle::new(size)
         .with_family(FontChoice::Named(UI_MATH_FAMILY.into()))
@@ -161,9 +139,7 @@ fn measure_name(tr: &mut TextRenderer, name: &str, size: f32) -> f64 {
     f64::from(w)
 }
 
-/// Noto Sans Math encodes mathematical italic letters as their semantic
-/// Unicode math alphabet. Keep the source tree plain while selecting those
-/// presentation glyphs for single-letter variables.
+/// Noto Sans Math encodes mathematical italic letters as their semantic Unicode math alphabet.
 pub fn math_display_char(character: char) -> char {
     match character {
         'A'..='Z' => {
@@ -200,16 +176,13 @@ fn operator_spacing(character: char, size: f32) -> (f64, f64) {
     }
 }
 
-/// Full horizontal advance of one mathematical atom, including its TeX-style
-/// binary/relation spacing. Editors use this when mapping external geometry.
+/// Full horizontal advance of one mathematical atom, including its TeX-style binary/relation spacing.
 pub fn measure_atom(tr: &mut TextRenderer, character: char, size: f32) -> f64 {
     let (before, after) = operator_spacing(character, size);
     before + measure_glyph(tr, character, size) + after
 }
 
-/// Lay out a whole expression at the field origin. The fragment's baseline is
-/// already at local `y = ascent`; boxes/gaps are emitted directly in content
-/// coords (top of the row at `y = 0`).
+/// Lay out a whole expression at the field origin.
 pub fn layout(row: &Row, tr: &mut TextRenderer, base_size: f32) -> Layout {
     let frag = layout_row(row, &[], tr, base_size);
     let baseline = frag.ascent;
@@ -224,8 +197,8 @@ pub fn layout(row: &Row, tr: &mut TextRenderer, base_size: f32) -> Layout {
     }
 }
 
-/// Whether a top-level row may break before this node: a relation or a
-/// binary operator that is not a sign (it follows an operand).
+/// Whether a top-level row may break before this node: a relation or a binary operator that is not a
+/// sign (it follows an operand).
 fn breaks_before(row: &Row, index: usize) -> bool {
     let Some(Node::Char(ch)) = row.get(index) else {
         return false;
@@ -235,7 +208,6 @@ fn breaks_before(row: &Row, index: usize) -> bool {
     if !(relation || binary) || index == 0 {
         return false;
     }
-    // A sign right after another operator stays with its operand.
     !matches!(
         row.get(index - 1),
         Some(Node::Char(
@@ -257,10 +229,8 @@ fn breaks_before(row: &Row, index: usize) -> bool {
     )
 }
 
-/// Lay out an expression no wider than `max_width` where it can be: a line
-/// that would run over breaks before a top-level relation or binary
-/// operator, and the continuation lines are indented by one em. Gaps keep
-/// their row indices, so a caret still lands where it did.
+/// Lay out an expression no wider than `max_width` where it can be: a line that would run over breaks
+/// before a top-level relation or binary operator, and the continuation lines are indented by one em.
 pub fn layout_wrapped(row: &Row, tr: &mut TextRenderer, base_size: f32, max_width: f64) -> Layout {
     let whole = layout(row, tr, base_size);
     if whole.width <= max_width || row.len() < 2 {
@@ -334,8 +304,6 @@ pub fn layout_wrapped(row: &Row, tr: &mut TextRenderer, base_size: f32, max_widt
             g.top += top;
             g.bottom += top;
             if g.steps.is_empty() {
-                // The segment's leading gap is the previous line's trailing
-                // one; keep a single caret stop per index.
                 if line > 0 && g.index == 0 {
                     continue;
                 }
@@ -353,7 +321,6 @@ pub fn layout_wrapped(row: &Row, tr: &mut TextRenderer, base_size: f32, max_widt
 }
 
 /// Lay out a row, producing a fragment whose baseline is at local y = ascent.
-/// `steps` is the path prefix identifying this row in the tree.
 fn layout_row(row: &Row, steps: &[(usize, Slot)], tr: &mut TextRenderer, size: f32) -> Frag {
     let (mut ascent, mut descent) = metrics(size);
     // First pass: build each node's fragment and track the row's extents.
@@ -417,8 +384,6 @@ fn layout_row(row: &Row, steps: &[(usize, Slot)], tr: &mut TextRenderer, size: f
     }
 }
 
-/// A node's fragment: its own boxes/gaps plus the row baseline relative to
-/// the fragment top (`ascent`).
 struct NodeFrag {
     boxes: Vec<Box2d>,
     gaps: Vec<Gap>,
@@ -657,9 +622,8 @@ fn layout_table(
     place_table(measured)
 }
 
-/// Cell fragments plus the shared row/column geometry `layout_table` derives
-/// from them, kept separate so measuring and placing the grid stay under the
-/// function-length lint independently.
+/// Cell fragments plus the shared row/column geometry `layout_table` derives from them, kept separate
+/// so measuring and placing the grid stay under the function-length lint independently.
 struct TableMeasure {
     fragments: Vec<Vec<Frag>>,
     column_widths: Vec<f64>,
@@ -881,8 +845,6 @@ fn layout_sup(
     tr: &mut TextRenderer,
     size: f32,
 ) -> NodeFrag {
-    // Exponent is raised and smaller: its baseline sits [`SUP_SHIFT`] above
-    // the row's.
     let exp_size = (size * SCRIPT_RATIO).max(MIN_SIZE);
     let exp_steps = child_steps(steps, idx, Slot::Exp);
     let inner = layout_row(exp, &exp_steps, tr, exp_size);
@@ -1024,7 +986,6 @@ fn layout_frac(
     let bar_thick = 1.6;
     let gap_above = 3.0;
     let gap_below = 3.0;
-    // Numerator sits above the bar; the bar is at the row baseline.
     let num_h = num_f.height();
     let den_h = den_f.height();
     let bar_y = num_h + gap_above;
@@ -1033,7 +994,6 @@ fn layout_frac(
 
     let mut boxes = Vec::new();
     let mut gaps = Vec::new();
-    // numerator centered
     let num_x = (width - num_f.width) / 2.0;
     for mut b in num_f.boxes {
         b.x += num_x;
@@ -1044,7 +1004,6 @@ fn layout_frac(
         g.x += num_x;
         gaps.push(g);
     }
-    // bar
     boxes.push(Box2d {
         x: bar_pad,
         y: bar_y - bar_thick * 0.5,
@@ -1053,7 +1012,6 @@ fn layout_frac(
         baseline: bar_thick,
         kind: BoxKind::FracBar,
     });
-    // denominator centered, below the bar
     let den_x = (width - den_f.width) / 2.0;
     let den_dy = bar_y + bar_thick * 0.5 + gap_below;
     for mut b in den_f.boxes {
@@ -1098,7 +1056,6 @@ fn layout_sqrt(
     let mut gaps = Vec::new();
     let mut pen = 0.0;
 
-    // Optional index in the crook (small, raised).
     if let Some(idx_row) = index {
         let idx_size = (size * 0.6).max(MIN_SIZE);
         let idx_steps = child_steps(steps, idx, Slot::Index);
@@ -1224,9 +1181,7 @@ fn layout_delimited(
     }
 }
 
-/// Lay out a function argument without inventing a second model row. Both
-/// direct insertion gaps and paths into nested structures retain their real
-/// indices in `Func::arg`, including the separators we do not paint.
+/// Lay out a function argument without inventing a second model row.
 fn layout_argument(
     arg: &Row,
     range: std::ops::Range<usize>,
@@ -1340,9 +1295,7 @@ fn child_steps(steps: &[(usize, Slot)], idx: usize, slot: Slot) -> Vec<(usize, S
     s
 }
 
-/// Find the gap nearest a click point `(px, py)` (content-local). Picks the
-/// row whose vertical band contains `py` if any, else the globally nearest
-/// gap by Euclidean distance to the gap's vertical extent.
+/// Find the gap nearest a click point `(px, py)` (content-local).
 pub fn nearest_gap(gaps: &[Gap], px: f64, py: f64) -> Option<&Gap> {
     let mut best: Option<(&Gap, f64)> = None;
     for g in gaps {
@@ -1354,7 +1307,6 @@ pub fn nearest_gap(gaps: &[Gap], px: f64, py: f64) -> Option<&Gap> {
             0.0
         };
         let dx = (g.x - px).abs();
-        // Strongly prefer gaps whose band contains py, then nearest x.
         let cost = dy * 4.0 + dx;
         match best {
             Some((_, c)) if c <= cost => {}
@@ -1412,10 +1364,9 @@ mod layout_tests {
     #[test]
     fn functions_operators_scripts_and_delimiters_get_math_spacing_and_baselines() {
         // phase: func_name_and_argument_share_size_and_baseline
-        // The 3D default surface `sin(√(x²+y²))` used to render its `sin` at the
-        // frag top — floating above the argument and reading as an oversized,
-        // misaligned glyph. The name and its parenthesised argument must be the
-        // same font size AND share the row baseline.
+        // The 3D default surface `sin(√(x²+y²))`: a `sin` at the frag top floats above its argument
+        // and reads as an oversized, misaligned glyph. The name and its parenthesised argument must
+        // be the same font size AND share the row baseline.
         {
             let mut tr = crate::font_catalog::fixture_renderer();
             let expr = parse("sin(sqrt(x^2+y^2))");

@@ -1,23 +1,6 @@
-//! Frame profiler and headless performance-testing harness for `ui` apps.
-//!
-//! Measures each of the toolkit's five frame passes (`sync`, `build_layout`,
-//! `apply_layout`, `draw`, `handle_event` — see [`crate::widget::Widget`]) so
-//! frame cost can be **read off, not guessed**. Three surfaces share one type
-//! ([`FrameTiming`]): an in-app HUD (`TILO_PROFILE=1`, hooked into
-//! [`crate::app::App`]'s render loop with no per-app code), a machine-readable
-//! dump (`TILO_PROFILE_OUT=<path>`, JSON-lines or CSV, plus a `tracing` event
-//! under `tilo::profile` per frame), and a headless perf harness
-//! ([`run_scenario`]) that drives a scripted [`PerfScenario`] through the
-//! app's **real** widget passes with no GPU or display and returns a
-//! [`PerfReport`] a test can assert on.
-//!
-//! When neither env var is set, [`FrameProfiler::from_env`] returns `None`
-//! and the render-loop hooks are `Option::map` over that: no clock read, no
-//! allocation, until profiling is explicitly requested.
-//!
-//! Live-frame diagnostics also attribute resource availability, recycled-buffer
-//! waiting, and presence overlays. Waiting is wall time, not active CPU work;
-//! none of these fields measure GPU completion or display presentation.
+//! Frame profiler and headless performance-testing harness for `ui` apps. Measures each of the
+//! toolkit's five frame passes (`sync`, `build_layout`, `apply_layout`, `draw`, `handle_event` — see
+//! [`crate::widget::Widget`]) so frame cost can be **read off, not guessed**.
 
 #[cfg(test)]
 pub(crate) mod frame_probe;
@@ -39,12 +22,11 @@ use vello::peniko::{Color, Fill};
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 
-/// Rounded 60 Hz CPU-work budget. Exceeding it is a CPU diagnostic, not
-/// evidence of an actual dropped display frame.
+/// Rounded 60 Hz CPU-work budget.
 pub const FRAME_BUDGET_US: u64 = 16_667;
 
-/// Optional logical desktop position for live profiling with several apps.
-/// Kept in the shared host so benchmarks never need per-app windowing code.
+/// Optional logical desktop position for live profiling with several apps. Kept in the shared host so
+/// benchmarks never need per-app windowing code.
 #[cfg(feature = "native")]
 pub(crate) fn profile_window_position(value: &str) -> Option<(i32, i32)> {
     let (x, y) = value.split_once(',')?;
@@ -62,8 +44,7 @@ mod window_position_tests {
     }
 }
 
-/// Attributes a measured duration to the right column of the current
-/// frame's [`FrameTiming`].
+/// Attributes a measured duration to the right column of the current frame's [`FrameTiming`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Pass {
     Sync,
@@ -80,30 +61,24 @@ pub enum Pass {
     PresenceOverlay,
 }
 
-/// Where one input event's `handle_event` time went, in the live app.
-///
-/// The phases are disjoint spans inside one event's dispatch, so their sum
-/// never exceeds that event's total; the remainder is routing glue (focus,
-/// shortcuts, palette and navigation fallbacks) that no phase claims.
+/// Where one input event's `handle_event` time went, in the live app. The phases are disjoint spans
+/// inside one event's dispatch, so their sum never exceeds that event's total.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct InputPhases {
-    /// The widget tree's own `handle_event`, including the hit tests widgets
-    /// do while routing the event to the control under the pointer.
+    /// The widget tree's own `handle_event`, including the hit tests widgets do while routing the event
+    /// to the control under the pointer.
     pub dispatch: Duration,
-    /// The host's pointer hit tests after dispatch: cursor shape and tooltip
-    /// target under the pointer.
+    /// The host's pointer hit tests after dispatch: cursor shape and tooltip target under the pointer.
     pub hit_test: Duration,
     /// Resource discovery before dispatch and resource invalidation after it.
     pub resources: Duration,
-    /// Presence, action-surface and metadata publication, plus screen-reader
-    /// announcements.
+    /// Presence, action-surface and metadata publication, plus screen-reader announcements.
     pub publication: Duration,
     /// Document commits and undo boundaries the event closes.
     pub commit: Duration,
 }
 
-/// Measures [`InputPhases`] for one event. Inert unless profiling is on:
-/// [`start`](Self::start) then returns `None` and reads no clock.
+/// Measures [`InputPhases`] for one event.
 #[derive(Debug, Default)]
 pub struct InputPhaseClock {
     enabled: bool,
@@ -122,7 +97,6 @@ pub enum InputPhase {
 
 impl InputPhaseClock {
     pub fn new(enabled: bool) -> Self {
-        // A test probing what a frame costs sees the input's phases too.
         #[cfg(test)]
         let enabled = enabled || frame_probe::enabled();
         Self {
@@ -136,8 +110,7 @@ impl InputPhaseClock {
         self.enabled.then(crate::time::now)
     }
 
-    /// Attributes the time since `start` to `phase`. Does nothing for a
-    /// `None` start.
+    /// Attributes the time since `start` to `phase`.
     #[inline]
     pub fn finish(&mut self, phase: InputPhase, start: Option<Instant>) {
         let Some(start) = start else {
@@ -170,8 +143,8 @@ impl InputPhaseClock {
     }
 }
 
-/// This is the atom every surface shares: the HUD graphs it, the dump
-/// serialises it, and [`PerfReport`] aggregates it.
+/// This is the atom every surface shares: the HUD graphs it, the dump serialises it, and [`PerfReport`]
+/// aggregates it.
 #[derive(Debug, Clone, Copy, Default, Serialize)]
 pub struct FrameTiming {
     pub frame: u64,
@@ -181,16 +154,14 @@ pub struct FrameTiming {
     pub build_layout_us: u64,
     pub apply_layout_us: u64,
     pub draw_us: u64,
-    /// The draw commands the frame's drawn scene encoded: the drawing it
-    /// composed, whether a frame reuses what it kept or draws it again.
+    /// The draw commands the frame's drawn scene encoded: the drawing it composed, whether a frame
+    /// reuses what it kept or draws it again.
     pub draw_commands: u64,
     pub handle_event_us: u64,
     pub resource_availability_us: u64,
     pub scene_pool_wait_us: u64,
     pub presence_overlay_us: u64,
     /// Input events whose `handle_event` time is folded into this frame.
-    /// Several events share a frame, so `handle_event_us` is their sum, not
-    /// any one event's cost.
     pub input_events: u64,
     /// The costliest single event among `input_events`.
     pub input_event_max_us: u64,
@@ -204,19 +175,15 @@ pub struct FrameTiming {
     pub input_publication_us: u64,
     /// [`InputPhases::commit`], summed over `input_events`.
     pub input_commit_us: u64,
-    /// From the start of the oldest of `input_events` to this frame's
-    /// commit: how long the first input waited for a CPU frame showing it.
-    /// Ends before the render worker, so it is not input-to-photon latency.
+    /// From the start of the oldest of `input_events` to this frame's commit: how long the first input
+    /// waited for a CPU frame showing it.
     pub input_to_commit_us: u64,
-    /// For the live app this is the measured wall time of the whole frame
-    /// build (so it includes work *between* passes); for the headless
-    /// harness, where passes run contiguously, it is their sum.
+    /// For the live app this is the measured wall time of the whole frame build (so it includes work
+    /// *between* passes); for the headless harness, where passes run contiguously, it is their sum.
     pub total_us: u64,
 }
 
 impl FrameTiming {
-    /// Used as the total in the headless harness, where nothing runs
-    /// between passes.
     fn pass_sum(&self) -> u64 {
         self.sync_us
             .saturating_add(self.build_layout_us)
@@ -317,30 +284,27 @@ impl DumpWriter {
 /// 4 s at 60 fps.
 const HISTORY_CAP: usize = 240;
 
-/// The [`crate::app::App`] holds one of these behind an `Option`; the
-/// headless [`crate::headless::FrameHarness`] holds another for the perf harness.
-/// Both feed it the same way: [`record`](Self::record) a pass duration, then
-/// [`commit_frame`](Self::commit_frame) once per frame.
+/// The [`crate::app::App`] holds one of these behind an `Option`; the headless
+/// [`crate::headless::FrameHarness`] holds another for the perf harness.
 pub struct FrameProfiler {
     origin: Instant,
     frame_index: u64,
     /// The in-progress frame — passes accumulate here until commit.
     cur: FrameTiming,
-    /// In the live app several input events land between two redraws;
-    /// their cost is summed here and attributed to the next frame.
+    /// In the live app several input events land between two redraws; their cost is summed here and
+    /// attributed to the next frame.
     pending_handle_event_us: u64,
-    /// The per-event breakdown of `pending_handle_event_us`, banked the same
-    /// way; only the live app's [`record_input`](Self::record_input) fills it.
+    /// The per-event breakdown of `pending_handle_event_us`, banked the same way; only the live app's
+    /// [`record_input`](Self::record_input) fills it.
     pending_input: PendingInput,
     history: VecDeque<FrameTiming>,
     hud: bool,
     dump: Option<DumpWriter>,
-    /// When `Some`, every committed frame is also appended here — the
-    /// headless harness reads this back as its [`PerfReport`] sample set.
+    /// When `Some`, every committed frame is also appended here — the headless harness reads this back
+    /// as its [`PerfReport`] sample set.
     capture: Option<Vec<FrameTiming>>,
 }
 
-/// Input banked between two frames, folded into the next one.
 #[derive(Debug, Default)]
 struct PendingInput {
     events: u64,
@@ -353,15 +317,14 @@ struct PendingInput {
     oldest: Option<Instant>,
 }
 
-/// `Duration::as_micros` returns `u128`; frame passes and elapsed profiler
-/// time never approach `u64::MAX` microseconds (~584,942 years), so this
-/// saturates rather than truncates in practice.
+/// `Duration::as_micros` returns `u128`; frame passes and elapsed profiler time never approach
+/// `u64::MAX` microseconds (~584,942 years), so this saturates rather than truncates in practice.
 fn saturating_u64(value: u128) -> u64 {
     u64::try_from(value).unwrap_or(u64::MAX)
 }
 
-/// Fixed geometry for one [`FrameProfiler::draw_hud`] call, computed once
-/// and shared by the text and graph sections.
+/// Fixed geometry for one [`FrameProfiler::draw_hud`] call, computed once and shared by the text and
+/// graph sections.
 struct HudLayout {
     x0: f64,
     y0: f64,
@@ -387,17 +350,15 @@ impl FrameProfiler {
         }
     }
 
-    /// `TILO_PROFILE` (non-empty) turns on the in-app HUD;
-    /// `TILO_PROFILE_OUT=<path>` appends a per-frame dump (CSV when the path
-    /// ends in `.csv`, JSON-lines otherwise); either alone enables profiling.
-    /// Deliberately **not** gated on `debug_assertions`: the point of a
-    /// profiler is to measure release builds, where frame cost matters.
+    /// `TILO_PROFILE` (non-empty) turns on the in-app HUD; `TILO_PROFILE_OUT=<path>` appends a
+    /// per-frame dump (CSV when the path ends in `.csv`, JSON-lines otherwise); either alone enables
+    /// profiling.
     pub fn from_env() -> Option<Self> {
         Self::from_diagnostics(&crate::host::environment().diagnostics)
     }
 
-    /// The profiler `diagnostics` asks for, if any: its HUD flag and dump
-    /// path correspond to `TILO_PROFILE` and `TILO_PROFILE_OUT`.
+    /// The profiler `diagnostics` asks for, if any: its HUD flag and dump path correspond to
+    /// `TILO_PROFILE` and `TILO_PROFILE_OUT`.
     pub fn from_diagnostics(diagnostics: &crate::host::RunnerDiagnostics) -> Option<Self> {
         let hud = diagnostics.profile_hud;
         let out = diagnostics.profile_out.as_deref();
@@ -449,9 +410,7 @@ impl FrameProfiler {
         }
     }
 
-    /// Does nothing when `start` is `None` (profiling was off when the
-    /// pass began). Keeps the call sites in `app.rs` / `headless.rs` to
-    /// two lines each.
+    /// Does nothing when `start` is `None` (profiling was off when the pass began).
     #[inline]
     pub fn record_since(&mut self, pass: Pass, start: Option<Instant>) {
         if let Some(t) = start {
@@ -459,18 +418,16 @@ impl FrameProfiler {
         }
     }
 
-    /// Bank the number of draw commands the frame encoded, for a host that
-    /// draws its own scene.
+    /// Bank the number of draw commands the frame encoded, for a host that draws its own scene.
     #[inline]
     pub fn record_draw_commands(&mut self, commands: u64) {
         self.cur.draw_commands = self.cur.draw_commands.saturating_add(commands);
     }
 
-    /// Banks one live input event that began at `started` and took `total`,
-    /// with `phases` saying where that time went. Counts toward
-    /// `handle_event_us` exactly as [`Pass::HandleEvent`] does, and also
-    /// keeps the event count, the costliest event and the per-phase sums, so
-    /// a frame's banked input is not mistaken for one event's duration.
+    /// Banks one live input event that began at `started` and took `total`, with `phases` saying where
+    /// that time went. Counts toward `handle_event_us` exactly as [`Pass::HandleEvent`] does, and also
+    /// keeps the event count, the costliest event and the per-phase sums, so a frame's banked input is
+    /// not mistaken for one event's duration.
     pub fn record_input(&mut self, started: Instant, total: Duration, phases: InputPhases) {
         let us = saturating_u64(total.as_micros());
         self.pending_handle_event_us = self.pending_handle_event_us.saturating_add(us);
@@ -545,8 +502,7 @@ impl FrameProfiler {
         self.cur = FrameTiming::default();
     }
 
-    /// Used by the headless harness, where passes run contiguously so
-    /// their sum *is* the frame cost.
+    /// Used by the headless harness, where passes run contiguously so their sum *is* the frame cost.
     pub fn commit_frame_summed(&mut self) {
         // Fold pending input in before summing, so it is counted.
         let total = self
@@ -576,11 +532,8 @@ impl FrameProfiler {
         &self.history
     }
 
-    /// Drawn in the same logical space and `transform` the app draws its
-    /// widgets with, so it's crisp at any scale. `viewport` is the logical
-    /// `(width, height)`. A top-right panel: a text readout above a rolling
-    /// bar graph, with the 16.6ms budget line drawn across it and
-    /// over-budget bars painted red.
+    /// Drawn in the same logical space and `transform` the app draws its widgets with, so it's crisp at
+    /// any scale.
     pub fn draw_hud(
         &self,
         scene: &mut Scene,
@@ -635,9 +588,8 @@ impl FrameProfiler {
         self.draw_hud_graph(scene, transform, theme, &layout);
     }
 
-    /// The text readout above the bar graph: current frame, rolling
-    /// mean/max/over-budget count, and a per-pass breakdown of the last
-    /// frame.
+    /// The text readout above the bar graph: current frame, rolling mean/max/over-budget count, and a
+    /// per-pass breakdown of the last frame.
     fn draw_hud_text(
         &self,
         scene: &mut Scene,
@@ -752,8 +704,6 @@ impl FrameProfiler {
         );
     }
 
-    /// The rolling bar graph: one bar per recent frame, a budget line, and
-    /// over-budget bars painted red.
     fn draw_hud_graph(
         &self,
         scene: &mut Scene,
@@ -806,12 +756,7 @@ impl FrameProfiler {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Statistics & report
-// ---------------------------------------------------------------------------
-
-/// For one column of measurements (a single pass, or the total), in
-/// microseconds.
+/// For one column of measurements (a single pass, or the total), in microseconds.
 #[derive(Debug, Clone, Copy, Default, Serialize)]
 pub struct StatSummary {
     pub count: usize,
@@ -844,8 +789,8 @@ impl StatSummary {
     }
 }
 
-/// Nearest-rank (NIST method): the value at 1-indexed rank
-/// `ceil(p/100 * n)`, clamped into range. `sorted` must already be sorted.
+/// Nearest-rank (NIST method): the value at 1-indexed rank `ceil(p/100 * n)`, clamped into range.
+/// `sorted` must already be sorted.
 fn percentile(sorted: &[u64], p: f64) -> u64 {
     if sorted.is_empty() {
         return 0;
@@ -856,8 +801,8 @@ fn percentile(sorted: &[u64], p: f64) -> u64 {
     sorted.get(idx).copied().unwrap_or(0)
 }
 
-/// Per-pass and total statistics over every frame a [`PerfScenario`]
-/// produced, plus how many blew the frame budget.
+/// Per-pass and total statistics over every frame a [`PerfScenario`] produced, plus how many blew the
+/// frame budget.
 #[derive(Debug, Clone, Serialize)]
 pub struct PerfReport {
     pub scenario: String,
@@ -875,8 +820,8 @@ pub struct PerfReport {
     pub resource_availability: StatSummary,
     pub scene_pool_wait: StatSummary,
     pub presence_overlay: StatSummary,
-    /// Skipped when serialising the report itself so a JSON summary stays
-    /// small; dump separately if wanted.
+    /// Skipped when serialising the report itself so a JSON summary stays small; dump separately if
+    /// wanted.
     #[serde(skip)]
     pub samples: Vec<FrameTiming>,
 }
@@ -967,19 +912,13 @@ impl std::fmt::Display for PerfReport {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Scenario harness
-// ---------------------------------------------------------------------------
-
-/// Each step drives the headless driver and produces one or more measured
-/// frames.
+/// Each step drives the headless driver and produces one or more measured frames.
 #[derive(Debug, Clone)]
 pub enum PerfStep {
     /// No input — measures steady-state redraw cost.
     Frame,
     Frames(usize),
-    /// Negative `dy` scrolls the content down. Each notch is one measured
-    /// frame.
+    /// Negative `dy` scrolls the content down.
     Scroll {
         dy: f64,
         count: usize,
@@ -993,14 +932,14 @@ pub enum PerfStep {
     ClickAt(f64, f64),
 }
 
-/// Reusable across any app: build a [`crate::headless::FrameHarness`] over the
-/// app's real root + state, then call [`run_scenario`].
+/// Reusable across any app: build a [`crate::headless::FrameHarness`] over the app's real root + state,
+/// then call [`run_scenario`].
 #[derive(Debug, Clone)]
 pub struct PerfScenario {
     pub name: String,
     pub viewport: (u32, u32),
-    /// Frames to run and discard before measuring, so first-frame
-    /// allocation / shaping-cache warmup doesn't skew the stats.
+    /// Frames to run and discard before measuring, so first-frame allocation / shaping-cache warmup
+    /// doesn't skew the stats.
     pub warmup: usize,
     pub steps: Vec<PerfStep>,
 }
@@ -1032,13 +971,9 @@ impl PerfScenario {
     }
 }
 
-/// The driver runs the app's real five passes with no GPU or display, so
-/// timings are of the production code path, not a mock.
-///
-/// # Panics
-///
-/// Panics if a named click target cannot be resolved or has an empty rectangle.
-/// A failed workload must not return a successful timing report.
+/// The driver runs the app's real five passes with no GPU or display, so timings are of the production
+/// code path, not a mock. # Panics Panics if a named click target cannot be resolved or has an empty
+/// rectangle. A failed workload must not return a successful timing report.
 #[expect(
     clippy::panic,
     reason = "invalid benchmark workloads must not return timing reports"
@@ -1084,8 +1019,7 @@ pub fn run_scenario(
     PerfReport::from_samples(&scenario.name, samples, FRAME_BUDGET_US)
 }
 
-/// The one-call entry point for an app author or a test: no driver
-/// bookkeeping.
+/// The one-call entry point for an app author or a test: no driver bookkeeping.
 pub fn run_scenario_on(
     state: crate::state::State,
     root: Box<dyn crate::widget::Widget>,
@@ -1219,8 +1153,6 @@ mod tests {
                 banked.input_to_commit_us >= 1_000,
                 "measured from the oldest event: {banked:?}"
             );
-            // A frame with no live input keeps none of the last frame's,
-            // while the headless pass still counts toward the sum.
             let next = samples[1];
             assert_eq!(next.handle_event_us, 7);
             assert_eq!(

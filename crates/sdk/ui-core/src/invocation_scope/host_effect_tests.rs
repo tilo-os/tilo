@@ -1,5 +1,5 @@
-//! The host's scoped chooser and URI effects recheck the original admitted
-//! caller on the worker, immediately before the effect.
+//! The host's scoped chooser and URI effects recheck the original admitted caller on the worker,
+//! immediately before the effect.
 
 use crate::invocation_scope::{
     PublishedInvocationLease, PublishedInvocationRequest, ResourceInvocationScope,

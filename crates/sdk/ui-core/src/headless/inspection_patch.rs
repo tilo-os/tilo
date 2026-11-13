@@ -1,25 +1,7 @@
-//! What changed between two inspection snapshots, as a patch a mirror of the
-//! older one applies to become the newer one.
-//!
-//! A host that mirrors the semantics tree (the browser page's accessibility
-//! DOM) needs only what changed: while typing that is the edited field and
-//! its caret, not the whole window's hundreds of nodes. The patch is a JSON
-//! array of operations, applied in order, each naming a node by its `p`ath:
-//! `"root"`, then child indices, with `"s"` stepping from
-//! a retained widget into its semantics node.
-//!
-//! - `{"p":P,"own":N}`: node P's own fields become N's; its `children` (and,
-//!   for a retained widget, its `semantics`) stay as they are.
-//! - `{"p":P,"splice":[at,removed,[N…]]}`: in P's children, `removed` nodes
-//!   at `at` give way to the whole nodes listed. Later operations address
-//!   the list as it is after the splice.
-//! - `{"p":P,"full":N}`: the value at P (a semantics node, possibly
-//!   `null`) becomes N, whole.
-//!
-//! Children are matched by identity (keys, semantic keys, action targets
-//! and roles of semantic nodes; paths of widgets) from both ends of a list,
-//! so a node inserted or removed in the middle costs that node, not every
-//! sibling after it.
+//! What changed between two inspection snapshots, as a patch a mirror of the older one applies to
+//! become the newer one. A host that mirrors the semantics tree (the browser page's accessibility DOM)
+//! needs only what changed: while typing that is the edited field and its caret, not the whole window's
+//! hundreds of nodes.
 use super::{InspectionNode, InspectionSnapshot};
 use crate::a11y::AccessNode;
 use serde::Serialize;
@@ -36,18 +18,16 @@ pub struct InspectionPatchStats {
 }
 
 impl InspectionPatchStats {
-    /// Whether the patch changes nothing in the nodes (the snapshot's focus
-    /// owner and viewport are compared apart).
+    /// Whether the patch changes nothing in the nodes (the snapshot's focus owner and viewport are
+    /// compared apart).
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.changed == 0 && self.added == 0 && self.removed == 0
     }
 }
 
-/// Write the operations that turn `old` into `new` to `out`, as a JSON
-/// array (see the module documentation), and say how much they carry.
-/// `new` is lent mutably only to write a node's own fields without its
-/// children; it is left as it was.
+/// Write the operations that turn `old` into `new` to `out`, as a JSON array (see the module
+/// documentation), and say how much they carry.
 pub fn write_inspection_patch(
     old: &InspectionSnapshot,
     new: &mut InspectionSnapshot,
@@ -137,8 +117,8 @@ impl Writer<'_> {
         self.path.pop();
     }
 
-    /// Match `old` and `new` by identity from both ends; what is left in
-    /// the middle is spliced, the matched pairs compared.
+    /// Match `old` and `new` by identity from both ends; what is left in the middle is spliced, the
+    /// matched pairs compared.
     fn list<T: Node>(&mut self, old: &[T], new: &mut [T]) {
         let both = old.len().min(new.len());
         let mut head = 0;
@@ -167,9 +147,7 @@ impl Writer<'_> {
 }
 
 trait Node: Serialize {
-    /// Whether `other` stands for the same node, whatever it now says.
     fn same(&self, other: &Self) -> bool;
-    /// This node and every node inside it.
     fn count(&self) -> usize;
     fn diff(writer: &mut Writer<'_>, old: &Self, new: &mut Self);
 }
@@ -228,8 +206,8 @@ impl Node for InspectionNode {
     }
 }
 
-/// Whether two semantic nodes say the same apart from their children.
-/// Every field is named, so a new one cannot be missed here.
+/// Whether two semantic nodes say the same apart from their children. Every field is named, so a new
+/// one cannot be missed here.
 fn access_own_eq(a: &AccessNode, b: &AccessNode) -> bool {
     let AccessNode {
         role,
@@ -275,8 +253,6 @@ fn access_own_eq(a: &AccessNode, b: &AccessNode) -> bool {
         && *action == b.action
 }
 
-/// Whether two widget nodes say the same apart from their semantics and
-/// children.
 fn inspection_own_eq(a: &InspectionNode, b: &InspectionNode) -> bool {
     let InspectionNode {
         path,
@@ -384,7 +360,6 @@ mod tests {
             "own fields go without children"
         );
         assert!(text.len() < 600, "{} bytes: {text}", text.len());
-        // The input is lent back as it was.
         assert_eq!(
             new.root.children[0]
                 .semantics

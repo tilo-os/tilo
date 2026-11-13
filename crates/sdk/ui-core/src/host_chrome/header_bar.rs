@@ -1,12 +1,7 @@
-//! The header bar an SDK app draws where the desktop leaves decorations to
-//! the client (GNOME, and any Wayland compositor without server-side
-//! `xdg-decoration`): History as an icon menu button, a search toggle, the title
-//! and the window controls, in one bar that replaces the fallback frame.
-//!
-//! It presents the host command model and nothing else. A chosen History
-//! item or the search toggle hands back its command's invocation, which the
-//! app runs through the same door as the palette; window controls hand back
-//! a [`HeaderRequest`] for the runner to apply to its window.
+//! The header bar an SDK app draws where the desktop leaves decorations to the client (GNOME, and any
+//! Wayland compositor without server-side `xdg-decoration`): History as an icon menu button, a search
+//! toggle, the title and the window controls, in one bar that replaces the fallback frame. It presents
+//! the host command model and nothing else.
 
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
@@ -41,8 +36,7 @@ pub(crate) enum HeaderRequest {
 
 type Requests = Rc<RefCell<VecDeque<HeaderRequest>>>;
 
-/// What a bar shows and does: its title, and each command's label, enabled
-/// state, place and invocation.
+/// What a bar shows and does: its title, and each command's label, enabled state, place and invocation.
 type Presented = (
     String,
     Vec<(String, bool, CommandGroup, Option<ControlInvocation>)>,
@@ -79,8 +73,8 @@ pub(crate) struct HeaderBar {
     last_press: Option<crate::time::Instant>,
     swallow_release: bool,
 
-    /// Input or a new document value changed what this widget paints: it
-    /// repaints once, and rests after the frame draws it.
+    /// Input or a new document value changed what this widget paints: it repaints once, and rests after
+    /// the frame draws it.
     dirty: bool,
 }
 
@@ -188,8 +182,8 @@ impl HeaderBar {
         }
     }
 
-    /// Whether this bar already shows `title` and `commands`, so a refresh
-    /// can keep it, and the pointer and press state it holds.
+    /// Whether this bar already shows `title` and `commands`, so a refresh can keep it, and the pointer
+    /// and press state it holds.
     pub(crate) fn presents(&self, title: &str, commands: &[HostCommand]) -> bool {
         self.presented == presented(title, commands)
     }
@@ -200,8 +194,8 @@ impl HeaderBar {
         self.viewport = viewport;
     }
 
-    /// Lay the bar out `width` wide in `tree`, an arena of its own that
-    /// `nodes` maps back into this bar. `None` when it did not settle.
+    /// Lay the bar out `width` wide in `tree`, an arena of its own that `nodes` maps back into this
+    /// bar.
     pub(crate) fn solve_layout(
         &mut self,
         tree: &mut TaffyTree<()>,
@@ -233,13 +227,12 @@ impl HeaderBar {
         Some(node)
     }
 
-    /// Requests in the order the person made them. Rising-edge.
+    /// Requests in the order the person made them.
     pub(crate) fn take_requests(&self) -> Vec<HeaderRequest> {
         self.requests.borrow_mut().drain(..).collect()
     }
 
-    /// Whether `event` belongs to the bar: its own area, or anywhere while
-    /// its menu is open.
+    /// Whether `event` belongs to the bar: its own area, or anywhere while its menu is open.
     pub(crate) fn claims(&self, point: Point) -> bool {
         self.menu.is_open() || self.rect.contains(point)
     }
@@ -248,11 +241,7 @@ impl HeaderBar {
         self.menu.open_anchored(self.history_button, self.viewport);
     }
 
-    /// Open the menu the History control asked for, once. The bar answers
-    /// that press itself when it is hosted apart from an app's tree; a bar
-    /// that is the root of a tree some host owns is answered in that host's
-    /// tick instead, after the event, so the request is also taken on the
-    /// next frame's sync.
+    /// Open the menu the History control asked for, once.
     fn take_menu_request(&mut self) {
         if std::mem::take(&mut *self.menu_requested.borrow_mut()) {
             self.open_menu();
@@ -271,8 +260,8 @@ impl HeaderBar {
         }
     }
 
-    /// A press on the bar that no control took: a double press maximizes,
-    /// a single one lets the compositor move the window.
+    /// A press on the bar that no control took: a double press maximizes, a single one lets the
+    /// compositor move the window.
     fn press_empty_area(&mut self) {
         let now = crate::time::now();
         let double = self
@@ -287,7 +276,6 @@ impl HeaderBar {
     }
 }
 
-/// Within this, a second press on the bar is a double press.
 const DOUBLE_PRESS: std::time::Duration = std::time::Duration::from_millis(400);
 
 fn control(id: &str, icon: Icon, key: &str) -> Button {
@@ -298,8 +286,6 @@ fn control(id: &str, icon: Icon, key: &str) -> Button {
 impl Widget for HeaderBar {
     fn sync(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) {
         self.dirty = true;
-        // A press the host's tick answered after the event that made it
-        // reaches the bar here, in the frame that press asks for.
         self.take_menu_request();
         for child in self.children_mut() {
             child.sync(state, path);
@@ -447,8 +433,7 @@ impl Widget for HeaderBar {
     }
 }
 
-/// Which window edge a pointer at `point` grabs for resizing, for a window
-/// that draws its own frame. The grab band is one related-row step wide.
+/// Which window edge a pointer at `point` grabs for resizing, for a window that draws its own frame.
 pub(crate) fn resize_edge(
     point: Point,
     window: Rect,
@@ -678,8 +663,6 @@ mod tests {
                 HeaderRequest::Close,
             ]
         );
-        // The title is no control: a press there moves the window, a
-        // second one soon after maximizes it.
         let bar = driver.targets()["host-header-bar"];
         let history = driver.targets()["host-header-history"];
         let empty = vello::kurbo::Point::new(history.x1 + 16.0, bar.center().y);
@@ -705,7 +688,6 @@ mod tests {
         assert_eq!(at(400.0, 300.0), None);
     }
 
-    /// `TILO_HOST_CHROME_SHOTS=<dir>` writes the bar, menu open, per theme.
     #[test]
     fn header_bar_shots_in_every_theme() {
         let Ok(directory) = std::env::var("TILO_HOST_CHROME_SHOTS") else {

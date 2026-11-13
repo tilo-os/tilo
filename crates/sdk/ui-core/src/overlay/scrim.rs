@@ -1,9 +1,7 @@
-//! Scrims: the dim behind a modal Panel, the fade under text on media, and the
-//! plate a line of text stands on where a fade cannot keep it legible.
-//!
-//! All read their colour from the theme (`surfaces.scrim`, `media.scrim`).
-//! A scrim never names a colour of its own, and one over the window stays
-//! translucent, so what it covers shows behind it.
+//! Scrims: the dim behind a modal Panel, the fade under text on media, and the plate a line of text
+//! stands on where a fade cannot keep it legible. All read their colour from the theme
+//! (`surfaces.scrim`, `media.scrim`). A scrim never names a colour of its own, and one over the window
+//! stays translucent, so what it covers shows behind it.
 
 use vello::Scene;
 use vello::kurbo::{Affine, Rect, RoundedRect};
@@ -11,9 +9,7 @@ use vello::peniko::{ColorStop, Fill, Gradient};
 
 use crate::theme::Theme;
 
-/// Dim `rect` (the whole window) behind a modal Panel. `openness` runs from
-/// 0 (closed) to 1 (open), so the scrim fades in with the panel. Call after
-/// everything it dims is drawn into the same scene.
+/// Dim `rect` (the whole window) behind a modal Panel.
 pub fn modal(scene: &mut Scene, transform: Affine, rect: Rect, openness: f32, theme: &Theme) {
     crate::chrome::fill_scrim(
         scene,
@@ -24,13 +20,10 @@ pub fn modal(scene: &mut Scene, transform: Affine, rect: Rect, openness: f32, th
     );
 }
 
-/// The ground of a whole-view surface that pictures the windows it covers
-/// (the workspace overview): the desktop, blurred and tinted as the
-/// floating material is, then the modal dim. Unlike [`modal`] it hides what
-/// it covers, because the surface shows those windows itself and they must
-/// not be seen twice; it fades in as a whole ([`crate::lift`]). Opaque base
-/// where the theme does not blur (reduced transparency, forced colours) or
-/// no desktop is published.
+/// The ground of a whole-view surface that pictures the windows it covers (the workspace overview): the
+/// desktop, blurred and tinted as the floating material is, then the modal dim. Unlike [`modal`] it
+/// hides what it covers, because the surface shows those windows itself and they must not be seen
+/// twice; it fades in as a whole ([`crate::lift`]).
 pub fn whole_view(scene: &mut Scene, transform: Affine, rect: Rect, theme: &Theme) {
     crate::backdrop::desktop::fill(
         scene,
@@ -43,12 +36,7 @@ pub fn whole_view(scene: &mut Scene, transform: Affine, rect: Rect, theme: &Them
     modal(scene, transform, rect, 1.0, theme);
 }
 
-/// Dim the whole window behind a modal Panel, the part under the panel
-/// included. Floating material blurs the scene recorded behind it, so the
-/// scrim belongs under the material: a bright control behind the panel (a
-/// primary button) is dimmed with everything else before it is blurred,
-/// instead of glowing through the sheet as a coloured smudge. `panel` is
-/// where the sheet stands; the dim does not stop at its edge.
+/// Dim the whole window behind a modal Panel, the part under the panel included.
 pub fn behind_panel(
     scene: &mut Scene,
     transform: Affine,
@@ -71,16 +59,14 @@ pub enum FadeEdge {
 /// Samples of the fade's ease; enough that no band shows at 8 bits.
 const FADE_STOPS: usize = 9;
 
-/// The least a fade over media is: over dark content (a night map, a dark
-/// photo) a fainter scrim does not move the picture enough to read as a
-/// band under the text, so any fade at all is at least this strong.
+/// The least a fade over media is: over dark content (a night map, a dark photo) a fainter scrim does
+/// not move the picture enough to read as a band under the text, so any fade at all is at least this
+/// strong.
 pub const MIN_FADE_STRENGTH: f32 = 0.4;
 
-/// Fade `rect` from `media.scrim` at `strength` on `edge` to clear on the
-/// opposite edge, so text drawn on media near that edge (in `media.ink`)
-/// stays legible. One smooth gradient, eased so the fade has no visible
-/// start line; never stepped bands. `strength` is clamped to
-/// [`MIN_FADE_STRENGTH`]`..=1`; zero paints nothing.
+/// Fade `rect` from `media.scrim` at `strength` on `edge` to clear on the opposite edge, so text drawn
+/// on media near that edge (in `media.ink`) stays legible. One smooth gradient, eased so the fade has
+/// no visible start line; never stepped bands.
 pub fn vertical_fade(
     scene: &mut Scene,
     transform: Affine,
@@ -113,9 +99,8 @@ pub fn vertical_fade(
     scene.fill(Fill::NonZero, transform, &gradient, None, &rect);
 }
 
-/// The fade's opacity at `t` (0 at the strong edge, 1 at the clear one): a
-/// smoothstep from `strength` to clear, flat at both ends so neither end of
-/// the fade reads as a line.
+/// The fade's opacity at `t` (0 at the strong edge, 1 at the clear one): a smoothstep from `strength`
+/// to clear, flat at both ends so neither end of the fade reads as a line.
 #[must_use]
 pub fn fade_alpha(t: f64, strength: f32) -> f32 {
     #[allow(
@@ -126,17 +111,9 @@ pub fn fade_alpha(t: f64, strength: f32) -> f32 {
     strength.clamp(0.0, 1.0) * (1.0 - t * t * (3.0 - 2.0 * t))
 }
 
-/// The plate a line of words stands on where it is painted straight onto media
-/// (a caption over the picture, a label over a call): `media.scrim` in the
-/// theme's control radius, at the strength [`MediaColors::ink`] is measured
-/// legible on in every theme. Paint it, then the line in that ink, inside
-/// `rect`: words over the picture alone are legible on some frames and lost on
-/// others. [`vertical_fade`] suits words along an edge, where the picture above
-/// them stays clear; a line that needs the same room on every side of it stands
-/// on a plate. A plate thinner than its radius takes half its short side, so a
-/// short one stays a squircle rather than a sliver.
-///
-/// [`MediaColors::ink`]: crate::tokens::colors::MediaColors::ink
+/// The plate a line of words stands on where it is painted straight onto media (a caption over the
+/// picture, a label over a call): `media.scrim` in the theme's control radius, at the strength
+/// [`MediaColors::ink`] is measured legible on in every theme.
 pub fn text_plate(scene: &mut Scene, transform: Affine, rect: Rect, theme: &Theme) {
     if rect.width() <= 0.0 || rect.height() <= 0.0 {
         return;
@@ -157,9 +134,8 @@ pub fn text_plate(scene: &mut Scene, transform: Affine, rect: Rect, theme: &Them
 mod tests {
     use super::*;
 
-    /// The plate is the words' own room and nothing more: a fill over the
-    /// picture, rounded at the theme's control radius, so what it covers still
-    /// reads as the picture around it.
+    /// The plate is the words' own room and nothing more: a fill over the picture, rounded at the
+    /// theme's control radius, so what it covers still reads as the picture around it.
     #[test]
     fn the_plate_keeps_its_room_behind_the_words_and_its_rounded_corners() {
         let theme = Theme::dark();
@@ -233,9 +209,8 @@ mod tests {
         }
     }
 
-    /// The scrim is under the sheet's material, not cut around it: the
-    /// material blurs a dimmed scene, so a primary button behind a sheet
-    /// does not glow through it as a coloured smudge.
+    /// The scrim is under the sheet's material, not cut around it: the material blurs a dimmed scene,
+    /// so a primary button behind a sheet does not glow through it as a coloured smudge.
     #[test]
     fn the_scrim_runs_under_the_panel_so_its_material_blurs_dimmed_content() {
         let window = Rect::new(0.0, 0.0, 800.0, 600.0);

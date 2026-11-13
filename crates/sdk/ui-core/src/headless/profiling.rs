@@ -1,22 +1,19 @@
-//! What the harness's frames cost and what they draw: the per-pass timing a scenario reads off,
-//! the drawing each frame composed, and the counters a test holds a frame to (see
-//! [`crate::profiling`]).
+//! What the harness's frames cost and what they draw: the per-pass timing a scenario reads off, the
+//! drawing each frame composed, and the counters a test holds a frame to (see [`crate::profiling`]).
 
 use super::FrameHarness;
 
 impl FrameHarness {
-    /// Install a capture profiler so [`Self::relayout`] / [`Self::send`] time
-    /// each pass and commit a per-frame sample. Called by
-    /// [`crate::profiling::run_scenario`].
+    /// Install a capture profiler so [`Self::relayout`] / [`Self::send`] time each pass and commit a
+    /// per-frame sample.
     pub fn begin_profiling(&mut self) {
         self.invalidate_local();
         self.pump_component_wakes();
         self.profiler = Some(crate::profiling::FrameProfiler::for_capture());
     }
 
-    /// The draw commands the frames drawn since construction encoded: a
-    /// frame that draws only what changed adds few, one that draws the whole
-    /// tree adds all of it, every frame.
+    /// The draw commands the frames drawn since construction encoded: a frame that draws only what
+    /// changed adds few, one that draws the whole tree adds all of it, every frame.
     #[must_use]
     pub const fn drawn_commands(&self) -> u64 {
         self.drawn_commands
@@ -28,8 +25,7 @@ impl FrameHarness {
         self.profiler = None;
     }
 
-    /// Render one frame with no input and record it. A frame here is one
-    /// `relayout`, which runs the sync → build → apply → draw passes.
+    /// Render one frame with no input and record it.
     pub fn profile_frame(&mut self) {
         self.invalidate_local();
         self.pump_component_wakes();

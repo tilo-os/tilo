@@ -1,7 +1,6 @@
-//! The frame's composition ([`crate::composition`]), read from the same
-//! laid-out frame inspection reads: every widget by the path semantic
-//! actions name it by, its layout node's style, what it is and what it
-//! shows of its own.
+//! The frame's composition ([`crate::composition`]), read from the same laid-out frame inspection
+//! reads: every widget by the path semantic actions name it by, its layout node's style, what it is and
+//! what it shows of its own.
 
 use std::collections::HashMap;
 
@@ -14,8 +13,8 @@ use crate::composition::{Composed, Composition, HtmlCx, css};
 use crate::host_core::HostCore as _;
 use crate::widget::Widget;
 
-/// Every widget of the retained tree by its address: the path semantic
-/// actions name it by, and the widget.
+/// Every widget of the retained tree by its address: the path semantic actions name it by, and the
+/// widget.
 fn index_widgets<'a>(
     widget: &'a dyn Widget,
     parent_path: &str,
@@ -39,8 +38,6 @@ fn index_widgets<'a>(
     for child in widget.children() {
         index_widgets(child, &path, &mut child_counts, out);
     }
-    // A wrapper that holds its child inline shares its address: the
-    // outermost one names it, as it is the one laid out.
     out.entry(address(widget)).or_insert((path, widget));
 }
 
@@ -58,14 +55,10 @@ struct Walk<'a> {
 }
 
 impl Walk<'_> {
-    /// Whether every child of `node` stands where the layout node put it,
-    /// from `origin`.
     fn flows(&self, node: NodeId, origin: (f64, f64), children: &[Composed]) -> bool {
         let nodes = self.taffy.children(node).unwrap_or_default();
         !children.is_empty()
             && nodes.iter().zip(children).all(|(&child, composed)| {
-                // A child its parent places by inset stands where it was put,
-                // not in the run of its siblings.
                 self.taffy
                     .style(child)
                     .is_ok_and(|style| style.position != taffy::Position::Absolute)
@@ -150,8 +143,6 @@ impl Walk<'_> {
         let semantics = widget
             .accessibility()
             .map(|access| crate::a11y::with_synthetic_bounds(access, widget));
-        // Children are laid out from where the widget stands, which a
-        // scroller's offset already moved.
         let base = (rect.x0, rect.y0);
         let mut compose_children = || {
             let mut inner = 0;
@@ -196,8 +187,8 @@ impl Walk<'_> {
 }
 
 impl FrameHarness {
-    /// The laid-out frame's composition: what a host that renders it with
-    /// elements of its own shows ([`crate::composition`]).
+    /// The laid-out frame's composition: what a host that renders it with elements of its own shows
+    /// ([`crate::composition`]).
     #[must_use]
     pub fn composition(&self) -> Composition {
         self.drain_component_wakes();
@@ -269,7 +260,6 @@ impl FrameHarness {
             })
             .collect();
         layers.sort_by(|a, b| a.path.cmp(&b.path));
-        // The window's bar of slots, which the frame hosts over the app.
         layers.extend(self.slot_row_composition());
         let focus = self.focused.and_then(|focused| {
             walk.node_widgets
@@ -294,8 +284,6 @@ impl FrameHarness {
         if path == super::slot_row::WINDOW_SLOTS {
             return self.paint_slot_row(scale);
         }
-        // A widget's own part ([`HtmlCx::part`]): the widget's paint, within
-        // the part's rect.
         let (widget_path, part) = match path.split_once('#') {
             Some((widget, _)) => (widget, Some(self.composed_rect(path)?)),
             None => (path, None),
@@ -325,8 +313,6 @@ impl FrameHarness {
         .ok()
     }
 
-    /// Where the composed node at `path` stands in the window, as the
-    /// window's composition places it now.
     fn composed_rect(&self, path: &str) -> Option<Rect> {
         fn find(node: &Composed, path: &str) -> Option<[f64; 4]> {
             if node.path == path {
@@ -341,8 +327,8 @@ impl FrameHarness {
         Some(Rect::new(x, y, x + width, y + height))
     }
 
-    /// Scroll the widget at `path` to `offset` logical pixels, as a host
-    /// whose own scroller the person moved asks; whether it took it.
+    /// Scroll the widget at `path` to `offset` logical pixels, as a host whose own scroller the person
+    /// moved asks; whether it took it.
     pub fn scroll_composed(&mut self, path: &str, offset: f64) -> bool {
         self.invalidate_local();
         let Some(&node) = self.named_target_nodes().get(path) else {

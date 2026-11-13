@@ -1,5 +1,5 @@
-//! The wasm host: what it refuses, what it bounds, and a module's painter
-//! drawing and taking the pointer through the toolkit's one path.
+//! The wasm host: what it refuses, what it bounds, and a module's painter drawing and taking the
+//! pointer through the toolkit's one path.
 
 use std::fmt::Write as _;
 
@@ -23,8 +23,8 @@ fn data(bytes: &[u8]) -> String {
     text
 }
 
-/// A module that answers a params request with `params` and every other
-/// request with `answer`, as fixed bytes, and imports nothing.
+/// A module that answers a params request with `params` and every other request with `answer`, as fixed
+/// bytes, and imports nothing.
 fn canned(params: &[u8], answer: &[u8]) -> Vec<u8> {
     let text = format!(
         r#"(module
@@ -44,8 +44,8 @@ fn canned(params: &[u8], answer: &[u8]) -> Vec<u8> {
     wat::parse_str(text).unwrap()
 }
 
-/// The triangle a 120 by 40 button is drawn as: its apex at the top centre,
-/// its foot a tenth of the width in from each side.
+/// The triangle a 120 by 40 button is drawn as: its apex at the top centre, its foot a tenth of the
+/// width in from each side.
 fn triangle() -> BezPath {
     let mut path = BezPath::new();
     path.move_to((60.0, 0.0));
@@ -76,9 +76,8 @@ fn moved_to(button: &mut Button, at: (f64, f64)) -> bool {
     Widget::cursor_shape(button, Point::new(at.0, at.1)).is_some()
 }
 
-/// A theme naming a set loaded from wasm draws a button with it, and the
-/// button takes the pointer in the shape the module drew, as a built-in
-/// set's would.
+/// A theme naming a set loaded from wasm draws a button with it, and the button takes the pointer in
+/// the shape the module drew, as a built-in set's would.
 #[test]
 fn a_wasm_set_draws_a_button_and_its_shape_takes_the_pointer() {
     let set = wasm::painter_set("test.wasm-triangles", &triangle_module()).unwrap();
@@ -137,8 +136,8 @@ fn a_module_that_imports_anything_is_refused() {
     );
 }
 
-/// A painter that loops is stopped by its budget, and its parts go to the
-/// toolkit from then on; one that starts by looping is never loaded.
+/// A painter that loops is stopped by its budget, and its parts go to the toolkit from then on; one
+/// that starts by looping is never loaded.
 #[test]
 fn a_looping_painter_is_stopped_and_left_to_the_toolkit() {
     let looping = wat::parse_str(format!(
@@ -183,9 +182,8 @@ fn a_looping_painter_is_stopped_and_left_to_the_toolkit() {
     ));
 }
 
-/// Memory past the cap is refused, an answer past the bound or out of the
-/// module's memory is not read, and bytes that are not an answer break
-/// the set.
+/// Memory past the cap is refused, an answer past the bound or out of the module's memory is not read,
+/// and bytes that are not an answer break the set.
 #[test]
 fn a_painter_stays_inside_its_memory_and_answers_are_bounded() {
     let greedy = wat::parse_str(format!(
@@ -235,7 +233,6 @@ fn a_painter_stays_inside_its_memory_and_answers_are_bounded() {
         None
     );
     assert!(garbage.is_broken());
-    // "Not mine" is an answer, not a failure.
     let declines = wasm::load(&canned(
         &wire::params_answer(&[]),
         &wire::paint_answer(None),

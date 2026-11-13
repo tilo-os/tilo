@@ -39,26 +39,16 @@ use crate::application::{AppComponent, ComponentRunnerInputs};
 use serde_json::Value;
 use tilo_actions::{ActionAddress, ResourceSpec};
 
-/// One step of a drive: an action from the headless grammar, a document the
-/// app must hold, or a resource it must publish.
-///
-/// It is the vocabulary a scenario already speaks
-/// ([`super::driver::Step`]), so a failing test's steps are a spec someone can
-/// replay with `--headless-drive`. The step a test about state usually means is
-/// an invocation — one published action, by address, through the door every
-/// other caller uses — and a resource or document expectation, which asserts on
-/// what the app publishes or stores at that point. A click stays available for
-/// the thing a click alone proves: hit-testing, a hit's geometry, what a frame
-/// paints.
+/// One step of a drive: an action from the headless grammar, a document the app must hold, or a
+/// resource it must publish.
 pub use super::driver::Step;
 
-/// Everything one drive answers — the document, the inspection tree, the named
-/// targets, the resources, and what each step did — and the first step that
-/// failed.
+/// Everything one drive answers — the document, the inspection tree, the named targets, the resources,
+/// and what each step did — and the first step that failed.
 pub use super::driver::Outcome;
 
-/// The runner inputs every application test draws with: the pinned font
-/// catalogue and the dark theme a capture is usually taken in.
+/// The runner inputs every application test draws with: the pinned font catalogue and the dark theme a
+/// capture is usually taken in.
 #[must_use]
 pub fn fixture_runner_inputs() -> ComponentRunnerInputs {
     ComponentRunnerInputs {
@@ -67,8 +57,8 @@ pub fn fixture_runner_inputs() -> ComponentRunnerInputs {
     }
 }
 
-/// The window a bare [`HeadlessApp::mount`] gives the app: wide enough for a
-/// strip of strips, as the headless runner's default is.
+/// The window a bare [`HeadlessApp::mount`] gives the app: wide enough for a strip of strips, as the
+/// headless runner's default is.
 pub const MOUNT_VIEWPORT: (u32, u32) = (800, 600);
 
 /// An application component mounted in a frame, with its door open.
@@ -77,26 +67,15 @@ pub struct HeadlessApp {
 }
 
 impl HeadlessApp {
-    /// Mount `component` in a window of [`MOUNT_VIEWPORT`].
-    ///
-    /// Its runner inputs are the controlled fixture every application test
-    /// draws with: the pinned font catalogue and the dark theme.
-    ///
-    /// # Errors
-    ///
-    /// Returns the setup failure the host reports when the component cannot
-    /// be mounted — the same [`crate::launch::LaunchError::ComponentSetup`] a
-    /// live window fails with, so a test asserts on the real recovery owner
-    /// rather than a harness-only one.
+    /// Mount `component` in a window of [`MOUNT_VIEWPORT`]. # Errors Returns the setup failure the host
+    /// reports when the component cannot be mounted — the same
+    /// [`crate::launch::LaunchError::ComponentSetup`] a live window fails with, so a test asserts on
+    /// the real recovery owner rather than a harness-only one.
     pub fn mount(component: AppComponent) -> Result<Self, crate::launch::LaunchError> {
         Self::mount_sized(component, MOUNT_VIEWPORT, fixture_runner_inputs())
     }
 
     /// Mount `component` in a window of `viewport`, drawing with `inputs`.
-    ///
-    /// # Errors
-    ///
-    /// As [`HeadlessApp::mount`].
     pub fn mount_sized(
         component: AppComponent,
         viewport: (u32, u32),
@@ -107,8 +86,8 @@ impl HeadlessApp {
         })
     }
 
-    /// The frame and its host, for what only a frame can prove: a click's
-    /// hit-test, a named control's geometry, a capture of the pixels.
+    /// The frame and its host, for what only a frame can prove: a click's hit-test, a named control's
+    /// geometry, a capture of the pixels.
     #[must_use]
     pub fn frame(&self) -> &FrameHarness {
         &self.frame
@@ -119,16 +98,10 @@ impl HeadlessApp {
         &mut self.frame
     }
 
-    /// Invoke an action the app publishes on one of its resources, the way an
-    /// agent's call, a script's and a screen reader's reach it: resolved
-    /// against the resources the app publishes now, refused when unavailable
-    /// or unconfirmed, its arguments bound strictly, and then run through the
-    /// host's own executor and tick.
-    ///
-    /// # Errors
-    ///
-    /// Returns the door's refusal: unknown or hidden address, unavailable
-    /// action, missing confirmation, invalid arguments, or a failed run.
+    /// Invoke an action the app publishes on one of its resources, the way an agent's call, a script's
+    /// and a screen reader's reach it: resolved against the resources the app publishes now, refused
+    /// when unavailable or unconfirmed, its arguments bound strictly, and then run through the host's
+    /// own executor and tick.
     pub fn call(
         &mut self,
         address: &ActionAddress,
@@ -137,12 +110,8 @@ impl HeadlessApp {
         self.frame.invoke_action(address, &arguments, false, None)
     }
 
-    /// [`HeadlessApp::call`] after the person confirmed this exact request,
-    /// as the host's confirmation prompt does for an irreversible action.
-    ///
-    /// # Errors
-    ///
-    /// As [`HeadlessApp::call`], except that no confirmation is required.
+    /// [`HeadlessApp::call`] after the person confirmed this exact request, as the host's confirmation
+    /// prompt does for an irreversible action.
     pub fn call_confirmed(
         &mut self,
         address: &ActionAddress,
@@ -151,12 +120,8 @@ impl HeadlessApp {
         self.frame.invoke_action(address, &arguments, true, None)
     }
 
-    /// Invoke the action `action` of the resource `resource` — the ids the
-    /// app publishes — with `arguments`, an object.
-    ///
-    /// # Errors
-    ///
-    /// As [`HeadlessApp::call`], and when `arguments` is not an object.
+    /// Invoke the action `action` of the resource `resource` — the ids the app publishes — with
+    /// `arguments`, an object.
     pub fn call_on(
         &mut self,
         resource: &str,
@@ -172,10 +137,6 @@ impl HeadlessApp {
     }
 
     /// [`HeadlessApp::call_on`] after the person confirmed this exact request.
-    ///
-    /// # Errors
-    ///
-    /// As [`HeadlessApp::call_on`], except that no confirmation is required.
     pub fn call_on_confirmed(
         &mut self,
         resource: &str,
@@ -190,8 +151,8 @@ impl HeadlessApp {
         self.call_confirmed(&ActionAddress::new(resource, action), arguments)
     }
 
-    /// The resources the app publishes now — its public surface, which
-    /// search, the palette and an agent all read.
+    /// The resources the app publishes now — its public surface, which search, the palette and an agent
+    /// all read.
     #[must_use]
     pub fn resources(&self) -> Vec<ResourceSpec> {
         self.frame.resources()
@@ -203,38 +164,30 @@ impl HeadlessApp {
         self.contract(resource, action).is_some()
     }
 
-    /// The action's contract, as the app publishes it — what a caller is
-    /// promised about confirmation, execution and result — or `None` when
-    /// the app does not publish it.
+    /// The action's contract, as the app publishes it — what a caller is promised about confirmation,
+    /// execution and result — or `None` when the app does not publish it.
     #[must_use]
     pub fn contract(&self, resource: &str, action: &str) -> Option<tilo_actions::ActionSpec> {
         tilo_actions::door::resolve(&self.resources(), &ActionAddress::new(resource, action))
             .cloned()
     }
 
-    /// Run `steps` in order, as a scenario file runs its actions: the answers
-    /// earlier steps bound fill later `{{name.path}}` placeholders, and the
-    /// run stops at the first step that cannot be carried out.
-    ///
-    /// This is [`super::driver::drive`] — the same function `--headless-drive`
-    /// runs its steps through, on the same `FrameHarness::perform_bound`, so
-    /// what a test proves here is what the app's own process does. The app is
-    /// left where the last step put it, so a test keeps driving it or asserts
-    /// on the state it reached.
+    /// Run `steps` in order, as a scenario file runs its actions: the answers earlier steps bound fill
+    /// later `{{name.path}}` placeholders, and the run stops at the first step that cannot be carried
+    /// out.
     pub fn drive(&mut self, steps: &[Step]) -> Outcome {
         super::driver::drive(&mut self.frame, steps)
     }
 
-    /// The semantic tree of the current frame: what a screen reader, an
-    /// automation script and the control socket's target list read.
+    /// The semantic tree of the current frame: what a screen reader, an automation script and the
+    /// control socket's target list read.
     #[must_use]
     pub fn inspection(&self) -> super::InspectionSnapshot {
         self.frame.inspection()
     }
 
-    /// Draw a frame and let its edits land, as a live session does between two
-    /// things a person does: the state the next step judges is the state this
-    /// frame shows.
+    /// Draw a frame and let its edits land, as a live session does between two things a person does:
+    /// the state the next step judges is the state this frame shows.
     pub fn settle(&mut self) {
         self.frame.relayout();
         self.frame.persist_tick();
