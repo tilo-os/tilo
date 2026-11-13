@@ -141,7 +141,7 @@ async fn a_share_grants_the_room_one_item_until_its_sharer_ends_it() {
 
     // A view share gives no writes.
     let viewed = invoke(workspaces, &ada, share("view")).await.unwrap();
-    assert_eq!(viewed, json!({ "grants": 4 }));
+    assert_eq!(viewed, json!({ "grants": 1 }));
     assert!(!bo_writes(&p1).await);
 
     // Ada, an Editor, shares it to edit: Bo writes that note, not its sibling.
@@ -153,7 +153,7 @@ async fn a_share_grants_the_room_one_item_until_its_sharer_ends_it() {
     );
     assert_eq!(
         invoke(workspaces, &ada, share("edit")).await.unwrap(),
-        json!({ "grants": 4 }),
+        json!({ "grants": 1 }),
         "a repeat is the same share"
     );
     // The page door decides the same.
@@ -178,7 +178,7 @@ async fn a_share_grants_the_room_one_item_until_its_sharer_ends_it() {
     assert!(bo_writes(&p1).await);
     assert_eq!(
         invoke(workspaces, &ada, unshare()).await.unwrap(),
-        json!({ "revoked": 4 })
+        json!({ "revoked": 1 })
     );
     assert!(!bo_writes(&p1).await);
 
@@ -194,7 +194,7 @@ async fn a_share_grants_the_room_one_item_until_its_sharer_ends_it() {
             },
         )
         .await;
-    assert_eq!(shared, WorkspacesReply::Shared(4));
+    assert_eq!(shared, WorkspacesReply::Shared(1));
     assert!(bo_writes(&p1).await);
     let every = tilo_action_policy::TreePath::workspace(&workspace)
         .app("so.tilo.notes")
@@ -225,7 +225,7 @@ async fn a_share_grants_the_room_one_item_until_its_sharer_ends_it() {
                 },
             )
             .await,
-        WorkspacesReply::Shared(4)
+        WorkspacesReply::Shared(1)
     );
     assert!(!bo_writes(&p1).await);
     relay.shutdown().await;
