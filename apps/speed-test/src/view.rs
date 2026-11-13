@@ -1,6 +1,5 @@
-//! The screen: the dial and its controls beside the results, which stack
-//! below them in a narrow window. Built from the toolkit's composites; the
-//! only thing the app draws itself is nothing.
+//! The screen: the dial and its controls beside the results, which stack below them in a
+//! narrow window.
 
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -28,12 +27,11 @@ use crate::run::{Reading, Runs, Stage};
 /// What the scroll position of the page is, kept across rebuilds.
 type ScrollOffset = Rc<Cell<(f32, f32)>>;
 
-/// The whole window: built again when the run moves to another stage or the
-/// measurements kept change; the dial follows the stage's reading on its own.
+/// The whole window: built again when the run moves to another stage or the measurements
+/// kept change; the dial follows the stage's reading on its own.
 pub(crate) fn page(cx: &ViewCx<SpeedTest>) -> Element {
     let runs = Runs::new(cx);
     runs.answer_effects(cx);
-    // A screenshot holds the dial's arc still on the staged reading.
     let pinned = cx.local(None::<f64>);
     stage(cx, &runs, &pinned);
     let results = cx.value(|state: &SpeedTest| state.newest_first().cloned().collect::<Vec<_>>());
@@ -95,10 +93,7 @@ fn stage(cx: &ViewCx<SpeedTest>, runs: &Runs, pinned: &LocalState<Option<f64>>) 
     });
 }
 
-/// What the page shows for the run's `stage` and the measurements kept,
-/// newest first. A finished run shows the newest measurement on the dial
-/// and the earlier ones below it; once they are cleared there is nothing
-/// finished to show.
+/// What the page shows for the run's `stage` and the measurements kept, newest first.
 pub(crate) fn model(stage: &Stage, reading: &Reading, results: &[Measurement]) -> Model {
     let latest = results.first();
     let phase = match (stage.phase, latest) {
@@ -131,7 +126,6 @@ pub(crate) fn model(stage: &Stage, reading: &Reading, results: &[Measurement]) -
 }
 
 /// The page for the model's current state.
-/// `run` is what the run button invokes; without it the button is disabled.
 fn build(
     model: &Model,
     dial: &DialSource,
@@ -176,8 +170,8 @@ fn build(
     )
 }
 
-/// Whether there is nothing to show beside the test: no reading of this
-/// test, no finished test.
+/// Whether there is nothing to show beside the test: no reading of this test, no finished
+/// test.
 fn nothing_measured(model: &Model) -> bool {
     let readings = &model.readings;
     readings.ping.is_none()
@@ -188,9 +182,8 @@ fn nothing_measured(model: &Model) -> bool {
         && model.latest().is_none()
 }
 
-/// Before any test: the dial, the action and where it measures, as one
-/// column in the middle of the window rather than a dial in a corner and
-/// an empty results column beside it.
+/// Before any test: the dial, the action and where it measures, as one column in the middle
+/// of the window rather than a dial in a corner and an empty results column beside it.
 fn idle_page(
     model: &Model,
     dial: &DialSource,
@@ -226,7 +219,6 @@ fn idle_page(
 /// Where the test measures, said once.
 fn server_label(model: &Model) -> String {
     match model.readings.location.as_deref() {
-        // A server that answered before: "Cloudflare at AMS".
         Some(server) if !server.starts_with("Nearest") => CATALOG.t_args(
             "speed-test-measures-against",
             &[("server", ui::i18n::ArgValue::Text(server.to_owned()))],
@@ -235,8 +227,8 @@ fn server_label(model: &Model) -> String {
     }
 }
 
-/// A column that centres its children in the height it is given: the
-/// scroll view stretches it to at least what it shows.
+/// A column that centres its children in the height it is given: the scroll view stretches
+/// it to at least what it shows.
 struct Balanced(Column);
 
 impl Decorator for Balanced {
@@ -278,9 +270,9 @@ impl Decorator for Balanced {
     }
 }
 
-/// The preferred two-column measure is capped by the actual available row.
-/// At phone widths the shared composites must see the viewport width, so
-/// their own wrapping (result tiles and progress stations) can operate.
+/// The preferred two-column measure is capped by the actual available row. At phone widths
+/// the shared composites must see the viewport width, so their own wrapping (result tiles
+/// and progress stations) can operate.
 struct TestColumns {
     row: Row,
     preferred_minimum: f32,
@@ -317,9 +309,6 @@ impl Decorator for TestColumns {
         let Ok(layout) = tree.layout(node) else {
             return false;
         };
-        // Intrinsic descendants may initially widen the row beyond its
-        // Scrollable. Cap against the enclosing layout's measured viewport,
-        // rather than accepting that overflow as the available space.
         let mut available = layout.size.width;
         let mut ancestor = tree.parent(node);
         while let Some(parent) = ancestor {
@@ -343,7 +332,6 @@ impl Decorator for TestColumns {
             style.size.width = minimum;
             changed |= tree.set_style(child, style).is_ok();
         }
-        // This adapter stands in for the row's node; the row adjusts it too.
         self.row.adjust_layout_style(tree, node, text) | changed
     }
 }
@@ -406,14 +394,10 @@ fn results_column(model: &Model) -> Column {
     let number = |value: Option<f64>, decimals: usize| {
         value.map_or_else(String::new, |v| format!("{v:.decimals$}"))
     };
-    // The location names the server ("Cloudflare at AMS"); without one,
-    // the provider alone.
     let server = readings
         .location
         .clone()
         .unwrap_or_else(|| "Cloudflare".to_owned());
-    // Only what was measured is shown: before a test there are no numbers,
-    // and a dash in their place reads as a value.
     let mut facts = vec![Property::new(CATALOG.t("speed-test-server"), server)];
     if let Some(jitter) = readings.jitter {
         facts.push(
@@ -521,25 +505,21 @@ fn tile(label: &str, value: String, measured: Option<f64>, unit: &str) -> StatTi
     }
 }
 
-/// What the dial follows between rebuilds: the stage's reading, or the
-/// arc a screenshot holds still.
+/// What the dial follows between rebuilds: the stage's reading, or the arc a screenshot
+/// holds still.
 #[derive(Clone)]
 struct DialSource {
     reading: LocalState<Reading>,
     pinned: LocalState<Option<f64>>,
-    /// How far the arc has eased toward its target, kept across rebuilds
-    /// so a new stage continues the arc rather than restarting it.
     eased: Rc<Cell<f64>>,
 }
 
-/// The dial: a progress ring whose arc eases toward the stage's reading
-/// every frame.
+/// The dial: a progress ring whose arc eases toward the stage's reading every frame.
 struct Dial {
     ring: ProgressRing,
     reading: LocalState<Reading>,
     pinned: LocalState<Option<f64>>,
     phase: Phase,
-    /// The finished run's download, which a complete dial shows.
     download: Option<f64>,
     eased: Rc<Cell<f64>>,
     shown: crate::model::DialReading,
@@ -789,9 +769,9 @@ mod tests {
     }
 }
 
-/// German is one of the languages the app ships, and it reads in German: the
-/// copy comes from `locales/de-DE.ftl`, never from the English source beside
-/// it, so a device set to German reads a German window.
+/// German is one of the languages the app ships, and it reads in German: the copy comes
+/// from `locales/de-DE.ftl`, never from the English source beside it, so a device set to
+/// German reads a German window.
 #[cfg(test)]
 mod german_catalogue_tests {
     #[test]

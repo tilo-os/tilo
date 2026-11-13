@@ -81,9 +81,9 @@ fn nothing_has_been_measured_before_a_test_runs() {
     );
 }
 
-/// Before a test, the dial, the action and where it measures stand in the
-/// middle of the window at every size, not in its top corner beside an
-/// empty column; and the server is named once.
+/// Before a test, the dial, the action and where it measures stand in the middle of the
+/// window at every size, not in its top corner beside an empty column; and the server is
+/// named once.
 #[test]
 fn an_idle_window_centres_the_test() {
     for viewport in [(960, 860), (1280, 800), (1708, 1400)] {
@@ -155,8 +155,8 @@ fn a_running_test_offers_stop_where_an_idle_one_offers_run() {
     );
 }
 
-/// Inspect the actual shared widgets, including the last result tile;
-/// stacking below the action alone does not prove they fit horizontally.
+/// Inspect the actual shared widgets, including the last result tile; stacking below the
+/// action alone does not prove they fit horizontally.
 #[test]
 fn phone_width_contains_every_result_and_centres_the_test() {
     fn collect(widget: &dyn ui::widget::Widget, name: &str, bounds: &mut Vec<Rect>) {

@@ -1,7 +1,6 @@
 //! A small, responsive internet speed test.
 
-// Apps run in isolated processes, so app-local arithmetic checks are relaxed.
-// Panic-producing lints remain denied.
+// Apps run isolated, so app-local arithmetic checks are relaxed; a fault in a shared crate reaches the session, so its lints stay.
 #![allow(
     clippy::arithmetic_side_effects,
     reason = "app-local arithmetic over small bounded quantities"

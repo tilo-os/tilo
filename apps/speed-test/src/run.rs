@@ -1,6 +1,5 @@
-//! A run of the test: the worker that measures, and what the window shows
-//! of it while it runs. Starting and stopping are the resource's effects; a
-//! finished run is recorded with the resource's `record` action.
+//! A run of the test: the worker that measures, and what the window shows of it while it
+//! runs.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -36,7 +35,6 @@ pub(crate) struct Run {
 pub(crate) struct Stage {
     pub phase: Phase,
     pub error: Option<String>,
-    /// Bytes the finished run moved.
     pub bytes: u64,
 }
 
@@ -50,11 +48,10 @@ impl Default for Stage {
     }
 }
 
-/// The reading of the stage in progress, which moves with every chunk
-/// received: only the dial follows it.
+/// The reading of the stage in progress, which moves with every chunk received: only the
+/// dial follows it.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(crate) struct Reading {
-    /// Milliseconds while pinging, megabits per second while transferring.
     pub live: f64,
     pub bytes: u64,
 }
@@ -87,8 +84,7 @@ impl Signal {
     }
 }
 
-/// Marks a run over when its worker is dropped before answering: its
-/// caller cancelled it.
+/// Marks a run over when its worker is dropped before answering: its caller cancelled it.
 struct Answers(Arc<Signal>);
 
 impl Drop for Answers {
@@ -102,14 +98,12 @@ impl Drop for Answers {
     }
 }
 
-/// The window's run: the stage and reading the view shows, and the run in
-/// flight, if any.
+/// The window's run: the stage and reading the view shows, and the run in flight, if any.
 #[derive(Clone)]
 pub(crate) struct Runs {
     pub stage: LocalState<Stage>,
     pub reading: LocalState<Reading>,
     current: Rc<RefCell<Option<Arc<Signal>>>>,
-    /// The device this window runs on, which every run it records names.
     device: Option<String>,
 }
 
@@ -284,11 +278,8 @@ fn stopped(signal: &Signal, progress: &Progress) -> Result<(), String> {
     Ok(())
 }
 
-/// The server every stage measures against.
 const SERVER: &str = "https://speed.cloudflare.com";
-/// Bytes the download stage fetches.
 const DOWNLOAD_BYTES: u64 = 10_000_000;
-/// Bytes the upload stage sends.
 const UPLOAD_BYTES: usize = 2_000_000;
 
 fn client() -> Result<tilo_net::Client, String> {
@@ -358,9 +349,9 @@ async fn measure(signal: &Signal, progress: &Progress) -> Result<Run, String> {
     })
 }
 
-/// Download from `server`, telling `received` the bytes moved so far and
-/// the rate they came at. A refusal (a busy server's 429, say) is a failed
-/// stage, never its error page timed as the connection.
+/// Download from `server`, telling `received` the bytes moved so far and the rate they came
+/// at. A refusal (a busy server's 429, say) is a failed stage, never its error page timed
+/// as the connection.
 async fn download_stage(
     client: &tilo_net::Client,
     server: &str,
@@ -402,8 +393,8 @@ mod tests {
     use super::*;
     use std::sync::atomic::AtomicU64;
 
-    /// A local server that reads each request whole and answers it with
-    /// `status` and `body`.
+    /// A local server that reads each request whole and answers it with `status` and
+    /// `body`.
     fn serve(status: &'static str, body: Vec<u8>) -> String {
         use std::io::{Read, Write};
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();

@@ -1,17 +1,12 @@
-//! Speed Test's resource: the measurements taken, which follow their owner
-//! to every device. A run in flight is the surface's own; starting and
-//! stopping one are effects, and a finished run is recorded as an action.
+//! Speed Test's resource: the measurements taken, which follow their owner to every device.
 
 use ui::framework::{ResourceApp, ViewCx};
 use ui::prelude::*;
 use ui::widget::Element;
 
-/// How many measurements are kept; the oldest go first.
 pub const KEPT: usize = 20;
 
-/// Every measurement taken, oldest first. A measurement is what a run
-/// found, so only recording one adds to them and only clearing removes them;
-/// nobody edits a result.
+/// Every measurement taken, oldest first.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct SpeedTest {
     /// Measurements
@@ -40,11 +35,6 @@ pub struct Measurement {
 
 impl SpeedTest {
     /// What the record holds: every measurement taken, oldest first.
-    ///
-    /// It answers through [`fields`](tilo_resource::read::fields): a caller
-    /// with no window open reads the record as it reads any app's record, and
-    /// a named item is read from the record's table or by the read its own
-    /// type gives it.
     pub fn read_document(
         &self,
         item: Option<&tilo_resource::Id>,
@@ -101,21 +91,16 @@ impl SpeedTest {
     }
 }
 
-/// What anyone can do with a run: the button, the palette, an agent. A run
-/// measures this device's own connection and shares nothing, so a guest in
-/// a public workspace runs it as its owner does.
+/// What anyone can do with a run: the button, the palette, an agent.
 #[derive(Clone, Debug, PartialEq, Effect)]
 #[effect(operation = "so.tilo.speed-test.run")]
 pub enum SpeedEffect {
-    /// Run speed test.
     #[effect(job, cancellable, own_device)]
     Start,
-    /// Stop speed test.
     #[effect(own_device)]
     Stop,
 }
 
-/// Framework app.
 pub struct SpeedTestShell;
 
 impl ResourceApp for SpeedTestShell {
@@ -137,8 +122,6 @@ impl ResourceApp for SpeedTestShell {
             _ => (1180, 760),
         }
     }
-    // Results stay on this device and the document is empty: nothing to
-    // look back on.
     const DOCUMENT_HISTORY: bool = false;
 
     fn view(cx: &mut ViewCx<SpeedTest>) -> Element {
@@ -170,7 +153,6 @@ impl ResourceApp for SpeedTestShell {
         };
         match name {
             Some("idle" | "running") => Vec::new(),
-            // Oldest first: the last is the run the dial shows.
             _ => vec![
                 record(14.1, 2.2, 584.6, 109.3),
                 record(12.4, 1.8, 618.2, 112.9),
