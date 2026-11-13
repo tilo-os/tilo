@@ -1,9 +1,4 @@
 //! Replay: the workspace's layout at each recent change.
-//!
-//! The slider and the transport step through the changes; playing steps
-//! one a beat until the last ([`ui::widget::Pacer`]). Each step shows the
-//! change, who made it and when, every workspace's window groups with the
-//! tab each showed, and who was present.
 
 use ui::prelude::*;
 use ui::tilo_actions::remote::workspace_activity as wire;
@@ -12,7 +7,6 @@ use ui::widget::{Card, ListRow, Pacer, Section, TransportControl};
 
 use crate::{Filter, Nav, Provider, ago, page, tr, trf};
 
-/// How long each change shows while playing.
 const BEAT: Duration = Duration::from_millis(850);
 
 /// The slider's position of change `index`.
@@ -20,7 +14,6 @@ fn place_of(index: usize) -> f64 {
     f64::from(u32::try_from(index).unwrap_or(u32::MAX))
 }
 
-/// The change at the slider's position `at`, of `total`.
 #[allow(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
@@ -58,8 +51,6 @@ pub(crate) fn view(cx: &ViewCx<Filter>, nav: &Nav) -> (Element, Vec<Element>) {
     let forward =
         Button::transport("activity-replay-forward", TransportControl::Next).on_view(step(true));
     let toggled = (position.clone(), playing.clone(), frames.clone());
-    // The control shows what it does now: play while paused, pause while
-    // playing.
     let play = cx.switch(&playing, move |_, now| {
         let toggled = toggled.clone();
         Box::new(
@@ -135,9 +126,8 @@ fn frames_view(cx: &ViewCx<Filter>, nav: &Nav, replay: &wire::Replay) -> Element
     )
 }
 
-/// A workspace's windows as they stood side by side, each as wide as its
-/// share of the strip: the window's tab in front names it, and the others
-/// it holds follow.
+/// A workspace's windows as they were side by side, each as wide as its share of the strip:
+/// the window's tab in front names it, and the others it holds follow.
 fn arrangement(workspace: &wire::ReplayWorkspace) -> Element {
     let mut row = Row::new()
         .no_wrap()

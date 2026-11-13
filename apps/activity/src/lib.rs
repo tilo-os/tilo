@@ -1,27 +1,6 @@
 //! Activity: what changed in a workspace, and who changed it.
-//!
-//! Three places, one beside the other in the sidebar:
-//!
-//! * **What's new** (`whats_new`): the work sessions since this device
-//!   last looked, where you left off, the on-device summary and the morning
-//!   sources you chose. Leaving it, or marking it viewed, counts it seen.
-//! * **History** (`history`): every change, grouped by work group and
-//!   day, narrowed by period, person and lens ([`Filter`]) and by the window
-//!   bar's search; a selected run of changes shows in the inspector
-//!   (`detail`) with what it touched and what can be done with it:
-//!   compare, undo, restore, name, split, merge.
-//! * **Replay** (`replay`): the workspace's layout at each recent change,
-//!   stepped or played.
-//!
-//! The history is the workspace's, not the app's: the session reads it and
-//! serves it under [`wire::PROVIDER`], live, to whoever may read it. The app
-//! follows those reads ([`ui::framework::RecordEnv::query`]) and asks for
-//! changes through the same door (`Provider`). Its own record holds only
-//! which changes History shows.
 
-/// The application id.
 pub const APP_ID: &str = wire::APP_ID;
-/// The window and launcher title.
 pub const APP_TITLE: &str = "Activity";
 
 mod detail;
@@ -48,12 +27,9 @@ pub use filter::Filter;
 /// What the window shows.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Place {
-    /// What changed since this device last looked.
     #[default]
     WhatsNew,
-    /// Every change.
     History,
-    /// The layout at each change.
     Replay,
 }
 
@@ -95,27 +71,16 @@ impl Place {
 /// The window's view state, shared by its parts: never stored or synced.
 #[derive(Clone)]
 pub(crate) struct Nav {
-    /// The key of the place shown, as the sidebar selects it.
     pub(crate) place: LocalState<Option<String>>,
     pub(crate) pane: LocalState<ui::widget::NavPane>,
-    /// History reads every workspace on this device, not just this one.
     pub(crate) everywhere: LocalState<bool>,
-    /// The run of changes History selected.
     pub(crate) selection: LocalState<Option<wire::Range>>,
-    /// History's inspector shows: docked beside it in a wide window, as a
-    /// sheet over it in a narrow one.
     pub(crate) inspector: LocalState<bool>,
-    /// History is to open with its inspector showing what was chosen
-    /// elsewhere: a work session in What's new, a focus asked for outside.
     pub(crate) reveal: LocalState<bool>,
-    /// The selection's changes are compared before and after.
     pub(crate) compare: LocalState<bool>,
-    /// How many changes History reads; none for the first page.
     pub(crate) limit: LocalState<usize>,
-    /// The change Replay shows, as the slider's position.
     pub(crate) replay_at: LocalState<f64>,
     pub(crate) replay_playing: LocalState<bool>,
-    /// The last focus asked for from outside the app that was shown.
     pub(crate) shown_focus: LocalState<u64>,
 }
 
@@ -146,8 +111,8 @@ impl Nav {
     }
 }
 
-/// The session's door to the workspace's history, for the parts of the
-/// view that ask it for a change.
+/// The session's door to the workspace's history, for the parts of the view that ask it for
+/// a change.
 #[derive(Clone)]
 pub(crate) struct Provider(RecordEnv<Filter>);
 
@@ -261,8 +226,6 @@ impl ResourceApp for App {
             cx.on_stage(move |scenario| sample::stage(scenario, &stage));
         }
 
-        // What the person asked to be shown from outside the app (the
-        // glance in the top bar, a file's own history) lands here once.
         let provider = Provider::of(cx);
         {
             let (nav, provider) = (nav.clone(), provider.clone());
@@ -299,7 +262,6 @@ fn show_focus(cx: &ViewCx<Filter>, nav: &Nav, focus: &wire::Focus) {
                 paths.author.set(focus.author.clone().unwrap_or_default()),
                 paths.lens.set(focus.lens.clone().unwrap_or_default()),
             ] {
-                // A text field's edit always serializes.
                 if let Ok(invoke) = Invoke::edit(&edit) {
                     dispatcher.submit(invoke);
                 }
@@ -321,8 +283,8 @@ fn show_focus(cx: &ViewCx<Filter>, nav: &Nav, focus: &wire::Focus) {
     );
 }
 
-/// The window as it shows `nav`'s place: the sidebar of places, the place
-/// with its commands in the header, and History's inspector.
+/// The window as it shows `nav`'s place: the sidebar of places, the place with its commands
+/// in the header, and History's inspector.
 fn window(cx: &ViewCx<Filter>, nav: &Nav) -> Element {
     let chosen = nav.clone();
     let sidebar = ui::widget::NavList::new(vec![NavSection::untitled(

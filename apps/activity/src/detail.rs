@@ -1,9 +1,4 @@
 //! The inspector of History: what the selected run of changes is.
-//!
-//! Who made it and what it touched; what can be done with it (open what it
-//! changed, compare before and after, undo, restore, split or merge its
-//! work groups, choose it as a morning source); what changed, once
-//! compared; the agent task it was part of; and its name as a work session.
 
 use ui::icons::Icon;
 use ui::prelude::*;
@@ -71,8 +66,6 @@ fn content(cx: &ViewCx<Filter>, nav: &Nav, range: &wire::Range, detail: &wire::D
     if !detail.offers.is_empty() {
         parts.push(offers(&provider, nav, range, detail));
     }
-    // What each field held either side, before the lines that only name the
-    // change: "Title — was Q3 budget" says nothing a person can act on.
     if !detail.changes.is_empty() {
         let rows: Vec<Element> = detail
             .changes
@@ -189,8 +182,6 @@ fn agent_run(provider: &Provider, range: &wire::Range, run: &wire::Run) -> Vec<E
                 )
                 .subtitle(changed.change.clone())
                 .secondary(changed.app.clone());
-                // One record undone on its own, beside the task-wide undo:
-                // the same step, asked of the run in this record alone.
                 let Some(offer) = &changed.undo else {
                     return Box::new(row);
                 };

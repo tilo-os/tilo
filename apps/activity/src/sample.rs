@@ -1,6 +1,5 @@
-//! What the screenshot scenarios show: a small workspace's afternoon, as
-//! the session would serve it. A capture reaches no session; these are the
-//! answers its reads get instead. Never written into a real workspace.
+//! What the screenshot scenarios show: a small workspace's afternoon, as the session would
+//! serve it. Never written into a real workspace.
 
 use ui::prelude::*;
 use ui::tilo_actions::remote::workspace_activity as wire;
@@ -47,7 +46,6 @@ fn agent(name: &str, person: &str) -> wire::Author {
         relation: wire::Relation::Software,
         kind: ui::tilo_actions::ActorKind::Agent,
         on_behalf_of: Some(person.to_owned()),
-        // It acted for the person reading this history.
         for_reader: true,
         ..wire::Author::default()
     }
@@ -109,8 +107,6 @@ fn feed() -> wire::Feed {
         entry(5, grace, 95, "Checked off the catering", "Checklist"),
         entry(6, ada, 26 * 60, "Created the launch plan", "Plan"),
     ];
-    // A change the launch's owner stopped taking: its row says where it is
-    // not and why.
     if let Some(refused) = entries.get_mut(4) {
         refused.refused.push(wire::Refusal {
             change: id(5),
@@ -211,8 +207,8 @@ fn summary(caught_up: bool) -> wire::Summary {
     }
 }
 
-/// The ledger's outcomes beside the workspace's changes: what this device
-/// did that needed nobody.
+/// The ledger's outcomes beside the workspace's changes: what this device did that needed
+/// nobody.
 fn seed_ledger() {
     let owner = |app: &str, name: &str| {
         let icon = match name {

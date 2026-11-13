@@ -1,15 +1,5 @@
-//! History: every change in the workspace, newest first — and, beside them,
-//! the ledger's outcomes: what the system did that needs no decision.
-//!
-//! Changes a work group holds sit under its name, the rest under their
-//! day. The filter row narrows them by scope, period, person and lens, and
-//! the window bar's search by what they say; the filter is the app's record
-//! ([`Filter`]), the scope is this window's. The feed answers the bar's
-//! search as a query view ([`ui::widget::QueryView`]): what is typed reaches
-//! the filter, and the bar counts what the filter left of the page it read.
-//! Choosing a change selects it; "Select through here" stretches the
-//! selection to another change, and a work group's "Select" takes all of
-//! it. The selection shows in the inspector ([`crate::detail`]).
+//! History: every change in the workspace, newest first — and, beside them, the ledger's
+//! outcomes: what the system did that needs no decision.
 
 use std::collections::HashMap;
 
@@ -37,8 +27,6 @@ pub(crate) fn view(cx: &ViewCx<Filter>, nav: &Nav) -> (Element, Vec<Element>) {
             let limit = *limit;
             cx.switch(&filter, move |cx, filter| {
                 let mut query = filter.query(scope);
-                // A search reaches past one page: the feed keeps reading
-                // while someone is looking for something.
                 query.limit = if filter.searching() {
                     limit.max(wire::FEED_PAGE).saturating_mul(4)
                 } else {
@@ -51,8 +39,8 @@ pub(crate) fn view(cx: &ViewCx<Filter>, nav: &Nav) -> (Element, Vec<Element>) {
     (content, Vec::new())
 }
 
-/// The feed `query` reads, under the filter row; `narrows` says whether the
-/// filter narrows it.
+/// The feed `query` reads, under the filter row; `narrows` says whether the filter narrows
+/// it.
 fn feed(cx: &ViewCx<Filter>, nav: &Nav, query: &wire::FeedQuery, narrows: bool) -> Element {
     let read = Provider::of(cx).follow::<wire::Feed>(wire::FEED, Some(query));
     let nav = nav.clone();
@@ -87,9 +75,8 @@ fn feed(cx: &ViewCx<Filter>, nav: &Nav, query: &wire::FeedQuery, narrows: bool) 
     }))
 }
 
-/// The page, as the window bar's search narrows it: what is typed reaches the
-/// filter, and the bar counts what the filter left of the `total` the read
-/// returned.
+/// The page, as the window bar's search narrows it: what is typed reaches the filter, and
+/// the bar counts what the filter left of the `total` the read returned.
 fn searchable(
     cx: &ViewCx<Filter>,
     content: Element,
@@ -105,7 +92,6 @@ fn searchable(
             if text == current {
                 return;
             }
-            // A text field's edit always serializes.
             if let Ok(invoke) = Invoke::edit(&path.set(text.to_owned())) {
                 dispatcher.submit(invoke);
             }
@@ -114,8 +100,8 @@ fn searchable(
     )
 }
 
-/// What the search leaves of the feed: the changes whose words, person or
-/// app contain its query.
+/// What the search leaves of the feed: the changes whose words, person or app contain its
+/// query.
 fn found(feed: &wire::Feed, filter: &Filter) -> Vec<wire::Entry> {
     feed.entries
         .iter()
@@ -166,8 +152,8 @@ fn picker(
     ))
 }
 
-/// The filter row, with a way back to every change while the filter
-/// narrows them, and only then.
+/// The filter row, with a way back to every change while the filter narrows them, and only
+/// then.
 fn filters(cx: &ViewCx<Filter>, nav: &Nav, feed: &wire::Feed, narrows: bool) -> Element {
     let paths = Filter::paths();
     let scope = ToggleGroup::from_state(
@@ -337,9 +323,8 @@ fn list(
     Box::new(column)
 }
 
-/// What the system did, from the ledger: outcomes that needed nobody, with
-/// the app that did them and when. They sit at the end of the history and
-/// the window bar's search narrows them with the changes.
+/// What the system did, from the ledger: outcomes that needed nobody, with the app that did
+/// them and when.
 fn ledger_section(filter: &Filter) -> Option<Element> {
     let entries: Vec<ui::attention::Entry> = ui::attention::entries()
         .into_iter()
@@ -390,9 +375,8 @@ fn entry_row(
         place.push(workspace.clone());
     }
     place.extend(entry.resource.clone().or_else(|| entry.app.clone()));
-    // Where the change is not, and why: a device that refused it says so on
-    // the change's own line, so its author reads which of their devices hold
-    // it.
+    // Where the change is not, and why: a device that refused it says so on the change's
+    // own line, so its author reads which of their devices hold it.
     let refused = entry
         .refused
         .iter()
