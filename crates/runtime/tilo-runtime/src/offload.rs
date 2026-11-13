@@ -248,10 +248,8 @@ pub fn own_offering(app: &str, holds: Vec<[u8; 32]>) -> Answer {
         state: State {
             requester: false,
             online: true,
-            holds_workspace: true,
             app_installed: app_catalogue::apps::read_one_from_env(app)
                 .is_ok_and(|row| row.is_some()),
-            store_role: false,
             // Nothing here asks a device to keep off its discretionary work.
             data_saving: false,
             critical_battery,

@@ -231,9 +231,7 @@ mod tests {
         State {
             requester: false,
             online: true,
-            holds_workspace: true,
             app_installed: true,
-            store_role: false,
             data_saving: false,
             critical_battery: false,
             priority: 0,
@@ -446,11 +444,9 @@ mod tests {
     #[test]
     fn each_rule_passes_a_device_over_with_its_reason() {
         type Change = fn(&mut State);
-        let cases: [(Change, Decline); 6] = [
+        let cases: [(Change, Decline); 4] = [
             (|w| w.requester = true, Decline::Requester),
             (|w| w.online = false, Decline::Offline),
-            (|w| w.store_role = true, Decline::StoreOnly),
-            (|w| w.holds_workspace = false, Decline::WorkspaceNotHeld),
             (|w| w.app_installed = false, Decline::AppNotInstalled),
             (|w| w.data_saving = true, Decline::DataSaving),
         ];

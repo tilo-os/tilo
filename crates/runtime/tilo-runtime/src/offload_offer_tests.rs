@@ -158,9 +158,7 @@ impl OffloadPeers for Peers {
             state: State {
                 requester: false,
                 online: true,
-                holds_workspace: true,
                 app_installed: true,
-                store_role: false,
                 data_saving: false,
                 critical_battery: false,
                 priority: 0,

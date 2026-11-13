@@ -569,7 +569,6 @@ impl ActionPlane {
             return Some(Answer {
                 state: State {
                     online: true,
-                    holds_workspace: true,
                     ..State::unreachable()
                 },
                 holds: Vec::new(),
@@ -579,7 +578,6 @@ impl ActionPlane {
         // What the plane knows better than the device's own report.
         answer.state.requester = false;
         answer.state.online = true;
-        answer.state.holds_workspace = true;
         answer.state.latency_ms = 0;
         // Only the inputs the job named, so no answer carries more than the
         // question did.

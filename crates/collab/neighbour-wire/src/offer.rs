@@ -46,10 +46,6 @@ pub enum Decline {
     Requester,
     /// Not connected, so the offer never came back.
     Offline,
-    /// A store keeps ciphertext and holds no keys: it never runs work.
-    StoreOnly,
-    /// It does not hold the workspace the request names.
-    WorkspaceNotHeld,
     /// It cannot run the app the request's action belongs to.
     AppNotInstalled,
     /// Its person asked the device to avoid discretionary work.
@@ -68,8 +64,6 @@ impl Decline {
         match self {
             Self::Requester => "requester",
             Self::Offline => "offline",
-            Self::StoreOnly => "store_only",
-            Self::WorkspaceNotHeld => "workspace_not_held",
             Self::AppNotInstalled => "app_not_installed",
             Self::DataSaving => "data_saving",
             Self::CriticalBattery => "critical_battery",
@@ -83,9 +77,8 @@ impl Decline {
 ///
 /// The answerer fills the facts it knows of itself; the device that asked
 /// overrides the ones it knows better — that the device answered at all
-/// (`online`), whether it is the one asking (`requester`), that the
-/// workspace was found here (`holds_workspace`), and the round trip it
-/// measured (`latency_ms`).
+/// (`online`), whether it is the one asking (`requester`), and the round trip
+/// it measured (`latency_ms`).
 #[expect(
     clippy::struct_excessive_bools,
     reason = "each flag is a separate fact the device reports, not a mode"
@@ -96,12 +89,8 @@ pub struct State {
     pub requester: bool,
     /// Whether it is connected right now.
     pub online: bool,
-    /// Whether it holds the workspace's keys and state.
-    pub holds_workspace: bool,
     /// Whether it can run the request's app.
     pub app_installed: bool,
-    /// Whether it is a store of the workspace rather than a participant.
-    pub store_role: bool,
     /// Its person asked it to avoid discretionary work.
     pub data_saving: bool,
     /// Bumped-out-of-shape low battery: not while there is anything else.
@@ -127,9 +116,7 @@ impl State {
         Self {
             requester: false,
             online: false,
-            holds_workspace: false,
             app_installed: false,
-            store_role: false,
             data_saving: false,
             critical_battery: false,
             priority: 0,
@@ -150,10 +137,6 @@ impl State {
             Decline::Requester
         } else if !self.online {
             Decline::Offline
-        } else if self.store_role {
-            Decline::StoreOnly
-        } else if !self.holds_workspace {
-            Decline::WorkspaceNotHeld
         } else if !self.app_installed {
             Decline::AppNotInstalled
         } else if self.free_slots == Some(0) {
@@ -291,9 +274,7 @@ mod tests {
         State {
             requester: false,
             online: true,
-            holds_workspace: true,
             app_installed: true,
-            store_role: false,
             data_saving: false,
             critical_battery: false,
             priority: 0,
@@ -310,11 +291,9 @@ mod tests {
     #[test]
     fn each_rule_passes_a_device_over_with_its_reason() {
         type Change = fn(&mut State);
-        let cases: [(Change, Decline); 7] = [
+        let cases: [(Change, Decline); 5] = [
             (|w| w.requester = true, Decline::Requester),
             (|w| w.online = false, Decline::Offline),
-            (|w| w.store_role = true, Decline::StoreOnly),
-            (|w| w.holds_workspace = false, Decline::WorkspaceNotHeld),
             (|w| w.app_installed = false, Decline::AppNotInstalled),
             (|w| w.data_saving = true, Decline::DataSaving),
             (|w| w.free_slots = Some(0), Decline::AtCapacity),

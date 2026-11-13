@@ -242,3 +242,8 @@ reason = "renamed to `Grantee`, which is a member or a role: the policy format c
 file = "crates/collab/action-policy/src/grant.rs"
 enum = "Grantee"
 reason = "a device that is not the person's is no longer a grantee: what such a device may do is the code's cap on the person's party (`Cap::FOREIGN_DEVICE`), and the policy format changes with the code that reads it"
+
+[[break]]
+file = "crates/collab/neighbour-wire/src/offer.rs"
+enum = "Decline"
+reason = "the offer is one round on a live connection, answered inside the asking device's deadline: nothing keeps an answer, so an answer written by an older build is never read back"

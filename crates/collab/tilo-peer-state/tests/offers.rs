@@ -123,9 +123,7 @@ fn willing(load_permille: u32) -> State {
     State {
         requester: false,
         online: true,
-        holds_workspace: true,
         app_installed: true,
-        store_role: false,
         data_saving: false,
         critical_battery: false,
         priority: 0,
@@ -220,31 +218,31 @@ async fn the_device_that_reports_the_lowest_cost_wins_and_the_rest_say_why() {
 async fn nobody_offering_leaves_the_run_where_it_was_asked() {
     let root = SigningKey::from_bytes(&[0x61; 32]);
     let here = device(&root, 0x62);
-    let store = device(&root, 0x63);
-    let roster = vec![here.1.clone(), store.1.clone()];
+    let other = device(&root, 0x63);
+    let roster = vec![here.1.clone(), other.1.clone()];
     let peer = workspace(WORKSPACE, &here, &roster);
     let replica = Replica::new(peer);
 
-    // The only other device is a store of the workspace: it keeps ciphertext
-    // and runs nothing.
-    let mut store_only = willing(0);
-    store_only.store_role = true;
-    let store = Engine::serving(replica.clone(), store.0.clone(), Some(answer(store_only))).await;
+    // The only other device of the workspace does not have the app the route
+    // names, so it says it cannot run the request.
+    let mut without_app = willing(0);
+    without_app.app_installed = false;
+    let other = Engine::serving(replica.clone(), other.0.clone(), Some(answer(without_app))).await;
     let asker = localhost_endpoint(&here.0).await;
     let plane = ActionPlane::new(here.0.clone(), Arc::new(TestHost::new()));
 
-    let choice = asked(&plane, &asker, vec![store.addr()], OFFER_DEADLINE).await;
-    assert!(choice.is_local(), "a store never takes work: {choice}");
+    let choice = asked(&plane, &asker, vec![other.addr()], OFFER_DEADLINE).await;
+    assert!(choice.is_local(), "no device takes it: {choice}");
     assert_eq!(
         choice.considered.first().map(|candidate| candidate.verdict),
-        Some(Err(Decline::StoreOnly))
+        Some(Err(Decline::AppNotInstalled))
     );
     assert_eq!(choice.to_string(), {
-        let short = hex::encode(&store.device()[..4]);
-        format!("no device offered to run it; {short}: store_only")
+        let short = hex::encode(&other.device()[..4]);
+        format!("no device offered to run it; {short}: app_not_installed")
     });
 
-    store.close().await;
+    other.close().await;
     asker.close().await;
 }
 

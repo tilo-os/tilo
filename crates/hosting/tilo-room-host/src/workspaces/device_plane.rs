@@ -274,11 +274,7 @@ impl Offering for HostOffering {
             state: State {
                 requester: false,
                 online: true,
-                holds_workspace: true,
                 app_installed: takes,
-                // It holds the workspace's state as a member, not as a store of
-                // ciphertext it has no keys for.
-                store_role: false,
                 data_saving: false,
                 critical_battery: false,
                 priority: 0,
