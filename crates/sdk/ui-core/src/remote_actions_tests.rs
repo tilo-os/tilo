@@ -144,41 +144,102 @@ fn client() -> (Arc<FakeHost>, RemoteActions) {
     (host, actions)
 }
 
-#[test]
-fn a_catalogue_read_gathers_every_page_as_the_app() {
-    let (host, actions) = client();
-    let answer = actions.catalogue(CatalogueQuery::default());
-    let Arrival::Ready(page) = answer.get() else {
-        panic!("the catalogue is answered: {:?}", answer.get());
-    };
-    let ids: Vec<_> = page
-        .rows
-        .iter()
-        .map(|row| row.resource.id.clone())
-        .collect();
-    assert_eq!(ids, ["a", "b"]);
-    assert!(
-        page.exhausted,
-        "the aggregate retains authoritative completion"
-    );
-    assert!(page.next_cursor.is_empty());
-    assert!(!page.stale_cursor);
-    assert!(!page.budget_exhausted);
-    let seen = host.seen.lock().unwrap();
-    assert_eq!(seen.len(), 2, "one request per page");
-    assert!(
-        seen.iter().all(
-            |caller| caller.acting().app().map(ToString::to_string).as_deref()
-                == Some("so.tilo.example")
-        ),
-        "the app asks as itself"
-    );
-    assert!(!actions.is_busy());
-}
+tilo_test_env::scenario! {
+    fn a_catalogue_read_is_whole_bounded_and_refused_when_it_cannot_be;
 
-#[test]
-fn incomplete_or_contradictory_catalogue_pages_never_publish_partial_offers() {
-    for (exhausted, next_cursor) in [(false, Vec::new()), (true, vec![1])] {
+    phase a_catalogue_read_gathers_every_page_as_the_app;
+    {
+        let (host, actions) = client();
+        let answer = actions.catalogue(CatalogueQuery::default());
+        let Arrival::Ready(page) = answer.get() else {
+            panic!("the catalogue is answered: {:?}", answer.get());
+        };
+        let ids: Vec<_> = page
+            .rows
+            .iter()
+            .map(|row| row.resource.id.clone())
+            .collect();
+        assert_eq!(ids, ["a", "b"]);
+        assert!(
+            page.exhausted,
+            "the aggregate retains authoritative completion"
+        );
+        assert!(page.next_cursor.is_empty());
+        assert!(!page.stale_cursor);
+        assert!(!page.budget_exhausted);
+        let seen = host.seen.lock().unwrap();
+        assert_eq!(seen.len(), 2, "one request per page");
+        assert!(
+            seen.iter().all(
+                |caller| caller.acting().app().map(ToString::to_string).as_deref()
+                    == Some("so.tilo.example")
+            ),
+            "the app asks as itself"
+        );
+        assert!(!actions.is_busy());
+    }
+
+    phase incomplete_or_contradictory_catalogue_pages_never_publish_partial_offers;
+    {
+        for (exhausted, next_cursor) in [(false, Vec::new()), (true, vec![1])] {
+            let mut actions = RemoteActions::session();
+            let answer = actions.catalogue(CatalogueQuery::default());
+            let correlation = catalogue_correlation(&mut actions, "first catalogue request");
+            actions.handle_collab_event(&CollabEvent::RemoteAction {
+                message: RemoteActionMessage::CatalogueResponse {
+                    correlation,
+                    result: Ok(CataloguePage {
+                        revision: "r1".into(),
+                        rows: vec![row("partial-offer")],
+                        exhausted,
+                        next_cursor,
+                        ..CataloguePage::default()
+                    }),
+                },
+            });
+            assert!(matches!(
+                answer.get(),
+                Arrival::Failed(ActionHostError::Unavailable { reason })
+                    if reason.contains("inconsistent completion metadata")
+            ));
+            assert!(!actions.is_busy());
+            assert!(actions.take_collab_requests().is_empty());
+        }
+    }
+
+    phase a_single_page_catalogue_read_leaves_hierarchy_budget_with_its_caller;
+    {
+        let (host, actions) = client();
+        let answer = actions.catalogue_page(CatalogueQuery::default());
+        let Arrival::Ready(page) = answer.get() else {
+            panic!("the first page is answered: {:?}", answer.get());
+        };
+        assert_eq!(
+            page.rows
+                .iter()
+                .map(|row| row.resource.id.as_str())
+                .collect::<Vec<_>>(),
+            ["a"]
+        );
+        assert_eq!(page.next_cursor, [1]);
+        assert_eq!(host.seen.lock().unwrap().len(), 1);
+        assert!(!actions.is_busy());
+    }
+
+    phase a_provider_only_catalogue_request_keeps_the_wire_zero;
+    {
+        let mut actions = RemoteActions::session();
+        let _answer = actions.catalogue(CatalogueQuery {
+            max_results: 0,
+            ..CatalogueQuery::default()
+        });
+        let query = catalogue_query(&mut actions, "one provider-only catalogue request");
+        assert_eq!(query.max_results, 0);
+        assert!(query.provider.is_none());
+    }
+
+    phase a_repeated_catalogue_cursor_is_refused_without_another_request;
+    {
         let mut actions = RemoteActions::session();
         let answer = actions.catalogue(CatalogueQuery::default());
         let correlation = catalogue_correlation(&mut actions, "first catalogue request");
@@ -187,9 +248,20 @@ fn incomplete_or_contradictory_catalogue_pages_never_publish_partial_offers() {
                 correlation,
                 result: Ok(CataloguePage {
                     revision: "r1".into(),
-                    rows: vec![row("partial-offer")],
-                    exhausted,
-                    next_cursor,
+                    rows: vec![row("a")],
+                    next_cursor: vec![1],
+                    ..CataloguePage::default()
+                }),
+            },
+        });
+        let correlation = catalogue_correlation(&mut actions, "second catalogue request");
+        actions.handle_collab_event(&CollabEvent::RemoteAction {
+            message: RemoteActionMessage::CatalogueResponse {
+                correlation,
+                result: Ok(CataloguePage {
+                    revision: "r1".into(),
+                    rows: vec![row("b")],
+                    next_cursor: vec![1],
                     ..CataloguePage::default()
                 }),
             },
@@ -197,407 +269,547 @@ fn incomplete_or_contradictory_catalogue_pages_never_publish_partial_offers() {
         assert!(matches!(
             answer.get(),
             Arrival::Failed(ActionHostError::Unavailable { reason })
-                if reason.contains("inconsistent completion metadata")
+                if reason.contains("repeated a cursor")
         ));
-        assert!(!actions.is_busy());
         assert!(actions.take_collab_requests().is_empty());
     }
-}
 
-#[test]
-fn a_single_page_catalogue_read_leaves_hierarchy_budget_with_its_caller() {
-    let (host, actions) = client();
-    let answer = actions.catalogue_page(CatalogueQuery::default());
-    let Arrival::Ready(page) = answer.get() else {
-        panic!("the first page is answered: {:?}", answer.get());
-    };
-    assert_eq!(
-        page.rows
-            .iter()
-            .map(|row| row.resource.id.as_str())
-            .collect::<Vec<_>>(),
-        ["a"]
-    );
-    assert_eq!(page.next_cursor, [1]);
-    assert_eq!(host.seen.lock().unwrap().len(), 1);
-    assert!(!actions.is_busy());
-}
+    phase a_catalogue_walk_has_a_total_page_bound;
+    {
+        let mut actions = RemoteActions::session();
+        let answer = actions.catalogue(CatalogueQuery::default());
+        for page in 0..MAX_CATALOGUE_PAGES {
+            let correlation = catalogue_correlation(&mut actions, "catalogue request for a page");
+            actions.handle_collab_event(&CollabEvent::RemoteAction {
+                message: RemoteActionMessage::CatalogueResponse {
+                    correlation,
+                    result: Ok(CataloguePage {
+                        revision: "r1".into(),
+                        rows: vec![row(&format!("row-{page}"))],
+                        next_cursor: vec![u8::try_from(page + 1).unwrap()],
+                        ..CataloguePage::default()
+                    }),
+                },
+            });
+        }
+        assert!(matches!(
+            answer.get(),
+            Arrival::Failed(ActionHostError::Unavailable { reason })
+                if reason.contains("page budget")
+        ));
+        assert!(actions.take_collab_requests().is_empty());
+    }
 
-#[test]
-fn a_provider_only_catalogue_request_keeps_the_wire_zero() {
-    let mut actions = RemoteActions::session();
-    let _answer = actions.catalogue(CatalogueQuery {
-        max_results: 0,
-        ..CatalogueQuery::default()
-    });
-    let query = catalogue_query(&mut actions, "one provider-only catalogue request");
-    assert_eq!(query.max_results, 0);
-    assert!(query.provider.is_none());
-}
+    phase stale_catalogue_restarts_share_the_global_page_bound;
+    {
+        let mut actions = RemoteActions::session();
+        let answer = actions.catalogue(CatalogueQuery::default());
+        for page in 0..MAX_CATALOGUE_PAGES {
+            let correlation = catalogue_correlation(&mut actions, "catalogue request for a stale page");
+            actions.handle_collab_event(&CollabEvent::RemoteAction {
+                message: RemoteActionMessage::CatalogueResponse {
+                    correlation,
+                    result: Ok(CataloguePage {
+                        revision: format!("r{page}"),
+                        stale_cursor: true,
+                        ..CataloguePage::default()
+                    }),
+                },
+            });
+        }
+        assert!(matches!(
+            answer.get(),
+            Arrival::Failed(ActionHostError::Unavailable { reason })
+                if reason.contains("page budget")
+        ));
+        assert!(actions.take_collab_requests().is_empty());
+    }
 
-#[test]
-fn a_repeated_catalogue_cursor_is_refused_without_another_request() {
-    let mut actions = RemoteActions::session();
-    let answer = actions.catalogue(CatalogueQuery::default());
-    let correlation = catalogue_correlation(&mut actions, "first catalogue request");
-    actions.handle_collab_event(&CollabEvent::RemoteAction {
-        message: RemoteActionMessage::CatalogueResponse {
-            correlation,
-            result: Ok(CataloguePage {
-                revision: "r1".into(),
-                rows: vec![row("a")],
-                next_cursor: vec![1],
-                ..CataloguePage::default()
-            }),
-        },
-    });
-    let correlation = catalogue_correlation(&mut actions, "second catalogue request");
-    actions.handle_collab_event(&CollabEvent::RemoteAction {
-        message: RemoteActionMessage::CatalogueResponse {
-            correlation,
-            result: Ok(CataloguePage {
-                revision: "r1".into(),
-                rows: vec![row("b")],
-                next_cursor: vec![1],
-                ..CataloguePage::default()
-            }),
-        },
-    });
-    assert!(matches!(
-        answer.get(),
-        Arrival::Failed(ActionHostError::Unavailable { reason })
-            if reason.contains("repeated a cursor")
-    ));
-    assert!(actions.take_collab_requests().is_empty());
-}
-
-#[test]
-fn a_catalogue_walk_has_a_total_page_bound() {
-    let mut actions = RemoteActions::session();
-    let answer = actions.catalogue(CatalogueQuery::default());
-    for page in 0..MAX_CATALOGUE_PAGES {
-        let correlation = catalogue_correlation(&mut actions, "catalogue request for a page");
+    phase an_unannounced_catalogue_revision_change_is_refused;
+    {
+        let mut actions = RemoteActions::session();
+        let answer = actions.catalogue(CatalogueQuery::default());
+        let correlation = catalogue_correlation(&mut actions, "first catalogue request");
         actions.handle_collab_event(&CollabEvent::RemoteAction {
             message: RemoteActionMessage::CatalogueResponse {
                 correlation,
                 result: Ok(CataloguePage {
                     revision: "r1".into(),
-                    rows: vec![row(&format!("row-{page}"))],
-                    next_cursor: vec![u8::try_from(page + 1).unwrap()],
+                    next_cursor: vec![1],
                     ..CataloguePage::default()
                 }),
             },
         });
-    }
-    assert!(matches!(
-        answer.get(),
-        Arrival::Failed(ActionHostError::Unavailable { reason })
-            if reason.contains("page budget")
-    ));
-    assert!(actions.take_collab_requests().is_empty());
-}
-
-#[test]
-fn stale_catalogue_restarts_share_the_global_page_bound() {
-    let mut actions = RemoteActions::session();
-    let answer = actions.catalogue(CatalogueQuery::default());
-    for page in 0..MAX_CATALOGUE_PAGES {
-        let correlation = catalogue_correlation(&mut actions, "catalogue request for a stale page");
+        let correlation = catalogue_correlation(&mut actions, "second catalogue request");
         actions.handle_collab_event(&CollabEvent::RemoteAction {
             message: RemoteActionMessage::CatalogueResponse {
                 correlation,
                 result: Ok(CataloguePage {
-                    revision: format!("r{page}"),
-                    stale_cursor: true,
+                    revision: "r2".into(),
+                    exhausted: true,
                     ..CataloguePage::default()
                 }),
             },
         });
+        assert!(matches!(
+            answer.get(),
+            Arrival::Failed(ActionHostError::Unavailable { reason })
+                if reason.contains("changed revision")
+        ));
     }
-    assert!(matches!(
-        answer.get(),
-        Arrival::Failed(ActionHostError::Unavailable { reason })
-            if reason.contains("page budget")
-    ));
-    assert!(actions.take_collab_requests().is_empty());
-}
 
-#[test]
-fn an_unannounced_catalogue_revision_change_is_refused() {
-    let mut actions = RemoteActions::session();
-    let answer = actions.catalogue(CatalogueQuery::default());
-    let correlation = catalogue_correlation(&mut actions, "first catalogue request");
-    actions.handle_collab_event(&CollabEvent::RemoteAction {
-        message: RemoteActionMessage::CatalogueResponse {
-            correlation,
-            result: Ok(CataloguePage {
-                revision: "r1".into(),
-                next_cursor: vec![1],
-                ..CataloguePage::default()
-            }),
-        },
-    });
-    let correlation = catalogue_correlation(&mut actions, "second catalogue request");
-    actions.handle_collab_event(&CollabEvent::RemoteAction {
-        message: RemoteActionMessage::CatalogueResponse {
-            correlation,
-            result: Ok(CataloguePage {
-                revision: "r2".into(),
-                exhausted: true,
-                ..CataloguePage::default()
-            }),
-        },
-    });
-    assert!(matches!(
-        answer.get(),
-        Arrival::Failed(ActionHostError::Unavailable { reason })
-            if reason.contains("changed revision")
-    ));
-}
-
-#[test]
-fn an_incomplete_catalogue_budget_response_is_never_reported_as_complete() {
-    let mut actions = RemoteActions::session();
-    let answer = actions.catalogue(CatalogueQuery::default());
-    let correlation = catalogue_correlation(&mut actions, "catalogue request");
-    actions.handle_collab_event(&CollabEvent::RemoteAction {
-        message: RemoteActionMessage::CatalogueResponse {
-            correlation,
-            result: Ok(CataloguePage {
-                revision: "r1".into(),
-                rows: vec![row("partial")],
-                exhausted: true,
-                budget_exhausted: true,
-                ..CataloguePage::default()
-            }),
-        },
-    });
-    assert!(matches!(
-        answer.get(),
-        Arrival::Failed(ActionHostError::Unavailable { reason })
-            if reason.contains("work budget")
-    ));
-}
-
-#[test]
-fn an_invocation_reports_its_outcome_or_its_refusal() {
-    let (_host, actions) = client();
-    let done = actions.invoke(target("done"), InvokeArgument::None, None);
-    assert!(matches!(
-        done.get(),
-        Arrival::Ready(InvocationUpdate::Succeeded { .. })
-    ));
-    let refused = actions.invoke(target("forbidden"), InvokeArgument::None, None);
-    assert_eq!(
-        refused.get(),
-        Arrival::Failed(ActionHostError::NotPermitted)
-    );
-    assert!(refused.get().is_finished());
-}
-
-#[test]
-fn a_retry_safe_invocation_keeps_the_callers_durable_identity() {
-    let invocation = InvocationId(uuid::Uuid::from_bytes([0x4a; 16]));
-    let mut actions = RemoteActions::session();
-    let _answer = actions.invoke_with_id(invocation, target("done"), InvokeArgument::None, None);
-    let requests = actions.take_collab_requests();
-    let [
-        CollabRequest::RemoteAction {
-            message: RemoteActionMessage::Invoke(request),
-        },
-    ] = requests.as_slice()
-    else {
-        panic!("one invocation request");
-    };
-    assert_eq!(request.invocation, invocation);
-}
-
-/// Against a host that answers a waiting observe at once with nothing new (one from before waits), the
-/// client falls back to observing on its interval.
-#[test]
-fn a_running_invocation_is_followed_until_it_ends() {
-    let clock = crate::background::Pumped::new();
-    let _entered = clock.background().enter();
-    let (_host, actions) = client();
-    let slow = actions.invoke(target("slow"), InvokeArgument::None, None);
-    assert!(matches!(
-        slow.get(),
-        Arrival::Ready(InvocationUpdate::Accepted { .. })
-    ));
-    assert!(!slow.get().is_finished());
-    actions.poll();
-    assert!(
-        !slow.get().is_finished(),
-        "not observed again before the interval"
-    );
-    clock.advance(OBSERVE_INTERVAL);
-    actions.poll();
-    assert!(matches!(
-        slow.get(),
-        Arrival::Ready(InvocationUpdate::Succeeded { .. })
-    ));
-    assert!(!actions.is_busy());
-}
-
-/// A catalogue request nothing answers (no host in reach of the connection) is refused as unavailable
-/// once its wait is up, so the app can say so instead of waiting forever.
-#[test]
-fn an_unanswered_catalogue_read_is_refused_after_its_wait() {
-    let clock = crate::background::Pumped::new();
-    let _entered = clock.background().enter();
-    let mut actions = RemoteActions::session();
-    let answer = actions.catalogue(CatalogueQuery::default());
-    assert_eq!(
-        actions.take_collab_requests().len(),
-        1,
-        "the request is sent"
-    );
-    clock.advance(CATALOGUE_WAIT - Duration::from_millis(1));
-    assert!(actions.take_collab_requests().is_empty());
-    assert!(answer.get().is_pending(), "still within its wait");
-    clock.advance(Duration::from_millis(1));
-    actions.poll();
-    assert_eq!(
-        answer.get(),
-        Arrival::Failed(ActionHostError::Unavailable {
-            reason: CATALOGUE_UNANSWERED.into()
-        })
-    );
-    assert!(!actions.is_busy(), "nothing is left waiting");
-}
-
-#[test]
-fn the_session_transport_carries_requests_out_and_answers_back() {
-    let mut actions = RemoteActions::session();
-    let answer = actions.catalogue(CatalogueQuery::default());
-    let correlation = catalogue_correlation(&mut actions, "one catalogue request");
-    assert!(actions.take_collab_requests().is_empty(), "sent once");
-    actions.handle_collab_event(&CollabEvent::RemoteAction {
-        message: RemoteActionMessage::CatalogueResponse {
-            correlation: correlation + 100,
-            result: Err(ActionHostError::NotPermitted),
-        },
-    });
-    assert!(answer.get().is_pending());
-    actions.handle_collab_event(&CollabEvent::RemoteAction {
-        message: RemoteActionMessage::CatalogueResponse {
-            correlation,
-            result: Err(ActionHostError::NotPermitted),
-        },
-    });
-    assert_eq!(answer.get(), Arrival::Failed(ActionHostError::NotPermitted));
-}
-
-#[test]
-fn cancellation_acknowledgement_never_pretends_the_invocation_stopped() {
-    let invocation = InvocationId(uuid::Uuid::from_bytes([0x6c; 16]));
-    let mut actions = RemoteActions::session();
-    let running = actions.invoke_with_id(invocation, target("slow"), InvokeArgument::None, None);
-    let _invoke = actions.take_collab_requests();
-
-    let cancellation = actions.cancel(invocation).expect("tracked invocation");
-    assert!(cancellation.get().is_pending());
-    assert!(actions.cancel(invocation).unwrap().get().is_pending());
-    let requests = actions.take_collab_requests();
-    assert!(matches!(
-        requests.as_slice(),
-        [CollabRequest::RemoteAction {
-            message: RemoteActionMessage::Cancel { invocation: id },
-        }] if *id == invocation
-    ));
-    actions.handle_collab_event(&CollabEvent::RemoteAction {
-        message: RemoteActionMessage::CancelResponse {
-            invocation,
-            result: Ok(()),
-        },
-    });
-    assert_eq!(cancellation.get(), Arrival::Ready(()));
-    assert_eq!(
-        actions.cancel(invocation).unwrap().get(),
-        Arrival::Ready(())
-    );
-    assert!(actions.take_collab_requests().is_empty());
-    assert!(
-        !running.get().is_finished(),
-        "a cancellation receipt is not a stopped invocation"
-    );
-
-    actions.handle_collab_event(&CollabEvent::RemoteAction {
-        message: RemoteActionMessage::Update {
-            invocation,
-            state: Some(InvocationState::new(
-                invocation,
-                InvocationUpdate::Cancelled {
-                    invocation,
-                    message: Some("Stopped by the person".into()),
-                },
-            )),
-        },
-    });
-    assert!(matches!(
-        running.get(),
-        Arrival::Ready(InvocationUpdate::Cancelled { .. })
-    ));
-    assert!(actions.cancel(invocation).is_none());
-    assert!(
-        actions
-            .cancel(InvocationId(uuid::Uuid::from_bytes([0xee; 16])))
-            .is_none()
-    );
-}
-
-#[test]
-fn refused_cancellation_leaves_the_invocation_running_and_actionable() {
-    let invocation = InvocationId(uuid::Uuid::from_bytes([0x7c; 16]));
-    let mut actions = RemoteActions::session();
-    let running = actions.invoke_with_id(invocation, target("slow"), InvokeArgument::None, None);
-    let _invoke = actions.take_collab_requests();
-    let cancellation = actions.cancel(invocation).expect("tracked invocation");
-    let _cancel = actions.take_collab_requests();
-    let error = ActionHostError::NotCancellable {
-        reason: "the provider is still attaching".into(),
-    };
-    actions.handle_collab_event(&CollabEvent::RemoteAction {
-        message: RemoteActionMessage::CancelResponse {
-            invocation,
-            result: Err(error.clone()),
-        },
-    });
-    assert_eq!(cancellation.get(), Arrival::Failed(error));
-    assert!(!running.get().is_finished());
-    assert!(actions.is_busy());
-
-    let retried = actions.cancel(invocation).expect("running retry");
-    assert!(retried.get().is_pending());
-    let requests = actions.take_collab_requests();
-    assert!(matches!(
-        requests.as_slice(),
-        [CollabRequest::RemoteAction {
-            message: RemoteActionMessage::Cancel { invocation: id },
-        }] if *id == invocation
-    ));
-    assert!(actions.cancel(invocation).unwrap().get().is_pending());
-    assert!(actions.take_collab_requests().is_empty());
-}
-
-#[test]
-fn an_entered_host_serves_the_current_client_until_the_guard_drops() {
-    let host = Arc::new(FakeHost::default());
+    phase an_incomplete_catalogue_budget_response_is_never_reported_as_complete;
     {
-        let _served = RemoteActions::enter(
-            Arc::clone(&host) as Arc<dyn ActionHost + Send + Sync>,
-            Caller::local_app("so.tilo.example").in_workspace("workspace"),
-        );
-        let answer = RemoteActions::current().catalogue(CatalogueQuery::default());
-        assert!(matches!(answer.get(), Arrival::Ready(_)));
+        let mut actions = RemoteActions::session();
+        let answer = actions.catalogue(CatalogueQuery::default());
+        let correlation = catalogue_correlation(&mut actions, "catalogue request");
+        actions.handle_collab_event(&CollabEvent::RemoteAction {
+            message: RemoteActionMessage::CatalogueResponse {
+                correlation,
+                result: Ok(CataloguePage {
+                    revision: "r1".into(),
+                    rows: vec![row("partial")],
+                    exhausted: true,
+                    budget_exhausted: true,
+                    ..CataloguePage::default()
+                }),
+            },
+        });
+        assert!(matches!(
+            answer.get(),
+            Arrival::Failed(ActionHostError::Unavailable { reason })
+                if reason.contains("work budget")
+        ));
     }
-    let mut after = RemoteActions::current();
-    let _pending = after.catalogue(CatalogueQuery::default());
-    assert_eq!(
-        after.take_collab_requests().len(),
-        1,
-        "without a guard the client talks through the session"
-    );
+
+    phase an_unanswered_catalogue_read_is_refused_after_its_wait;
+    // A catalogue request nothing answers (no host in reach of the connection) is refused as unavailable
+    // once its wait is up, so the app can say so instead of waiting forever.
+    {
+        let clock = crate::background::Pumped::new();
+        let _entered = clock.background().enter();
+        let mut actions = RemoteActions::session();
+        let answer = actions.catalogue(CatalogueQuery::default());
+        assert_eq!(
+            actions.take_collab_requests().len(),
+            1,
+            "the request is sent"
+        );
+        clock.advance(CATALOGUE_WAIT - Duration::from_millis(1));
+        assert!(actions.take_collab_requests().is_empty());
+        assert!(answer.get().is_pending(), "still within its wait");
+        clock.advance(Duration::from_millis(1));
+        actions.poll();
+        assert_eq!(
+            answer.get(),
+            Arrival::Failed(ActionHostError::Unavailable {
+                reason: CATALOGUE_UNANSWERED.into()
+            })
+        );
+        assert!(!actions.is_busy(), "nothing is left waiting");
+    }
+}
+
+tilo_test_env::scenario! {
+    fn an_invocation_is_followed_to_its_end_and_cancelled_honestly;
+
+    phase an_invocation_reports_its_outcome_or_its_refusal;
+    {
+        let (_host, actions) = client();
+        let done = actions.invoke(target("done"), InvokeArgument::None, None);
+        assert!(matches!(
+            done.get(),
+            Arrival::Ready(InvocationUpdate::Succeeded { .. })
+        ));
+        let refused = actions.invoke(target("forbidden"), InvokeArgument::None, None);
+        assert_eq!(
+            refused.get(),
+            Arrival::Failed(ActionHostError::NotPermitted)
+        );
+        assert!(refused.get().is_finished());
+    }
+
+    phase a_retry_safe_invocation_keeps_the_callers_durable_identity;
+    {
+        let invocation = InvocationId(uuid::Uuid::from_bytes([0x4a; 16]));
+        let mut actions = RemoteActions::session();
+        let _answer = actions.invoke_with_id(invocation, target("done"), InvokeArgument::None, None);
+        let requests = actions.take_collab_requests();
+        let [
+            CollabRequest::RemoteAction {
+                message: RemoteActionMessage::Invoke(request),
+            },
+        ] = requests.as_slice()
+        else {
+            panic!("one invocation request");
+        };
+        assert_eq!(request.invocation, invocation);
+    }
+
+    phase a_running_invocation_is_followed_until_it_ends;
+    // Against a host that answers a waiting observe at once with nothing new (one from before waits), the
+    // client falls back to observing on its interval.
+    {
+        let clock = crate::background::Pumped::new();
+        let _entered = clock.background().enter();
+        let (_host, actions) = client();
+        let slow = actions.invoke(target("slow"), InvokeArgument::None, None);
+        assert!(matches!(
+            slow.get(),
+            Arrival::Ready(InvocationUpdate::Accepted { .. })
+        ));
+        assert!(!slow.get().is_finished());
+        actions.poll();
+        assert!(
+            !slow.get().is_finished(),
+            "not observed again before the interval"
+        );
+        clock.advance(OBSERVE_INTERVAL);
+        actions.poll();
+        assert!(matches!(
+            slow.get(),
+            Arrival::Ready(InvocationUpdate::Succeeded { .. })
+        ));
+        assert!(!actions.is_busy());
+    }
+
+    phase cancellation_acknowledgement_never_pretends_the_invocation_stopped;
+    {
+        let invocation = InvocationId(uuid::Uuid::from_bytes([0x6c; 16]));
+        let mut actions = RemoteActions::session();
+        let running = actions.invoke_with_id(invocation, target("slow"), InvokeArgument::None, None);
+        let _invoke = actions.take_collab_requests();
+
+        let cancellation = actions.cancel(invocation).expect("tracked invocation");
+        assert!(cancellation.get().is_pending());
+        assert!(actions.cancel(invocation).unwrap().get().is_pending());
+        let requests = actions.take_collab_requests();
+        assert!(matches!(
+            requests.as_slice(),
+            [CollabRequest::RemoteAction {
+                message: RemoteActionMessage::Cancel { invocation: id },
+            }] if *id == invocation
+        ));
+        actions.handle_collab_event(&CollabEvent::RemoteAction {
+            message: RemoteActionMessage::CancelResponse {
+                invocation,
+                result: Ok(()),
+            },
+        });
+        assert_eq!(cancellation.get(), Arrival::Ready(()));
+        assert_eq!(
+            actions.cancel(invocation).unwrap().get(),
+            Arrival::Ready(())
+        );
+        assert!(actions.take_collab_requests().is_empty());
+        assert!(
+            !running.get().is_finished(),
+            "a cancellation receipt is not a stopped invocation"
+        );
+
+        actions.handle_collab_event(&CollabEvent::RemoteAction {
+            message: RemoteActionMessage::Update {
+                invocation,
+                state: Some(InvocationState::new(
+                    invocation,
+                    InvocationUpdate::Cancelled {
+                        invocation,
+                        message: Some("Stopped by the person".into()),
+                    },
+                )),
+            },
+        });
+        assert!(matches!(
+            running.get(),
+            Arrival::Ready(InvocationUpdate::Cancelled { .. })
+        ));
+        assert!(actions.cancel(invocation).is_none());
+        assert!(
+            actions
+                .cancel(InvocationId(uuid::Uuid::from_bytes([0xee; 16])))
+                .is_none()
+        );
+    }
+
+    phase refused_cancellation_leaves_the_invocation_running_and_actionable;
+    {
+        let invocation = InvocationId(uuid::Uuid::from_bytes([0x7c; 16]));
+        let mut actions = RemoteActions::session();
+        let running = actions.invoke_with_id(invocation, target("slow"), InvokeArgument::None, None);
+        let _invoke = actions.take_collab_requests();
+        let cancellation = actions.cancel(invocation).expect("tracked invocation");
+        let _cancel = actions.take_collab_requests();
+        let error = ActionHostError::NotCancellable {
+            reason: "the provider is still attaching".into(),
+        };
+        actions.handle_collab_event(&CollabEvent::RemoteAction {
+            message: RemoteActionMessage::CancelResponse {
+                invocation,
+                result: Err(error.clone()),
+            },
+        });
+        assert_eq!(cancellation.get(), Arrival::Failed(error));
+        assert!(!running.get().is_finished());
+        assert!(actions.is_busy());
+
+        let retried = actions.cancel(invocation).expect("running retry");
+        assert!(retried.get().is_pending());
+        let requests = actions.take_collab_requests();
+        assert!(matches!(
+            requests.as_slice(),
+            [CollabRequest::RemoteAction {
+                message: RemoteActionMessage::Cancel { invocation: id },
+            }] if *id == invocation
+        ));
+        assert!(actions.cancel(invocation).unwrap().get().is_pending());
+        assert!(actions.take_collab_requests().is_empty());
+    }
+
+    phase a_running_invocation_sends_one_waiting_observe_not_a_poll;
+    // A running invocation is followed by one waiting observe at a time, sent the moment the last answer
+    // lands — never by a poll on a timer.
+    {
+        let clock = crate::background::Pumped::new();
+        let _entered = clock.background().enter();
+        let invocation = InvocationId(uuid::Uuid::from_bytes([0x60; 16]));
+        let mut actions = RemoteActions::session();
+        let running = actions.invoke_with_id(invocation, target("slow"), InvokeArgument::None, None);
+        let requests = actions.take_collab_requests();
+        assert!(
+            matches!(
+                requests.as_slice(),
+                [CollabRequest::RemoteAction {
+                    message: RemoteActionMessage::Invoke(InvokeRequest {
+                        wait_ms: Some(INVOKE_WAIT_MS),
+                        appearance: None,
+                        ..
+                    }),
+                }]
+            ),
+            "the invocation asks for its outcome in the same round trip: {requests:?}"
+        );
+
+        actions.handle_collab_event(&CollabEvent::RemoteAction {
+            message: accepted(invocation),
+        });
+        assert_eq!(
+            only_message(actions.take_collab_requests()),
+            RemoteActionMessage::Observe {
+                invocation,
+                wait_ms: Some(OBSERVE_WAIT_MS),
+                seen: Some(UpdateMark::Accepted),
+            }
+        );
+        for _ in 0..5 {
+            clock.advance(OBSERVE_INTERVAL);
+            assert!(
+                actions.take_collab_requests().is_empty(),
+                "no poll while a waiting observe is out"
+            );
+        }
+
+        actions.handle_collab_event(&update(invocation, progress(invocation, 1)));
+        assert!(matches!(
+            running.get(),
+            Arrival::Ready(InvocationUpdate::Progress { sequence: 1, .. })
+        ));
+        assert_eq!(
+            only_message(actions.take_collab_requests()),
+            RemoteActionMessage::Observe {
+                invocation,
+                wait_ms: Some(OBSERVE_WAIT_MS),
+                seen: Some(UpdateMark::Progress { sequence: 1 }),
+            }
+        );
+
+        actions.handle_collab_event(&update(
+            invocation,
+            InvocationUpdate::Succeeded {
+                invocation,
+                output: ActionOutput::default(),
+            },
+        ));
+        assert!(running.get().is_finished());
+        assert!(actions.take_collab_requests().is_empty());
+        assert!(!actions.is_busy());
+    }
+
+    phase a_wait_that_ran_out_is_waited_again;
+    {
+        let clock = crate::background::Pumped::new();
+        let _entered = clock.background().enter();
+        let invocation = InvocationId(uuid::Uuid::from_bytes([0x61; 16]));
+        let mut actions = RemoteActions::session();
+        let _running = actions.invoke_with_id(invocation, target("slow"), InvokeArgument::None, None);
+        let _invoke = actions.take_collab_requests();
+        actions.handle_collab_event(&CollabEvent::RemoteAction {
+            message: accepted(invocation),
+        });
+        let _observe = actions.take_collab_requests();
+        clock.advance(Duration::from_millis(u64::from(OBSERVE_WAIT_MS)));
+        actions.handle_collab_event(&update(
+            invocation,
+            InvocationUpdate::Accepted { invocation },
+        ));
+        assert!(matches!(
+            actions.take_collab_requests().as_slice(),
+            [CollabRequest::RemoteAction {
+                message: RemoteActionMessage::Observe {
+                    wait_ms: Some(OBSERVE_WAIT_MS),
+                    seen: Some(UpdateMark::Accepted),
+                    ..
+                },
+            }]
+        ));
+    }
+
+    phase an_old_host_is_observed_on_the_interval;
+    // A host from before waits answers the waiting observe at once with nothing new; the client then
+    // observes it on its interval, as before.
+    {
+        let clock = crate::background::Pumped::new();
+        let _entered = clock.background().enter();
+        let invocation = InvocationId(uuid::Uuid::from_bytes([0x62; 16]));
+        let mut actions = RemoteActions::session();
+        let running = actions.invoke_with_id(invocation, target("slow"), InvokeArgument::None, None);
+        let _invoke = actions.take_collab_requests();
+        actions.handle_collab_event(&CollabEvent::RemoteAction {
+            message: accepted(invocation),
+        });
+        let _observe = actions.take_collab_requests();
+        actions.handle_collab_event(&update(
+            invocation,
+            InvocationUpdate::Accepted { invocation },
+        ));
+        assert!(
+            actions.take_collab_requests().is_empty(),
+            "not asked again before the interval"
+        );
+        clock.advance(OBSERVE_INTERVAL);
+        assert_eq!(
+            only_message(actions.take_collab_requests()),
+            RemoteActionMessage::observe(invocation)
+        );
+        actions.handle_collab_event(&update(
+            invocation,
+            InvocationUpdate::Succeeded {
+                invocation,
+                output: ActionOutput::default(),
+            },
+        ));
+        assert!(running.get().is_finished());
+    }
+
+    phase a_followed_result_shows_each_item_and_stops_when_dropped;
+    // A followed live result shows each new item the host sends, keeps a waiting observe out for the next,
+    // and is cancelled once dropped.
+    {
+        let mut actions = RemoteActions::session();
+        let followed = actions.follow(target("live"), InvokeArgument::None);
+        let invocation = followed.invocation();
+        let requests = actions.take_collab_requests();
+        let [
+            CollabRequest::RemoteAction {
+                message: RemoteActionMessage::Invoke(request),
+            },
+        ] = requests.as_slice()
+        else {
+            panic!("one invocation: {requests:?}");
+        };
+        assert_eq!(request.wait_ms, None, "the receipt is the admission");
+        actions.handle_collab_event(&CollabEvent::RemoteAction {
+            message: RemoteActionMessage::Receipt(InvocationReceipt {
+                invocation,
+                status: ReceiptStatus::Accepted,
+            }),
+        });
+        for (sequence, count) in [(1, 0), (2, 3)] {
+            let requests = actions.take_collab_requests();
+            assert!(
+                matches!(
+                    requests.as_slice(),
+                    [CollabRequest::RemoteAction {
+                        message: RemoteActionMessage::Observe {
+                            wait_ms: Some(_),
+                            seen: Some(_),
+                            ..
+                        },
+                    }]
+                ),
+                "a waiting observe follows each update: {requests:?}"
+            );
+            let item = InvocationUpdate::Item {
+                invocation,
+                sequence,
+                value: serde_json::json!({ "count": count }),
+            };
+            actions.handle_collab_event(&CollabEvent::RemoteAction {
+                message: RemoteActionMessage::Update {
+                    invocation,
+                    state: Some(InvocationState::new(invocation, item.clone())),
+                },
+            });
+            assert_eq!(followed.call().get(), Arrival::Ready(item));
+        }
+        let _observe = actions.take_collab_requests();
+        drop(followed);
+        let requests = actions.take_collab_requests();
+        assert!(
+            matches!(
+                requests.as_slice(),
+                [CollabRequest::RemoteAction {
+                    message: RemoteActionMessage::Cancel { invocation: id },
+                }] if *id == invocation
+            ),
+            "dropping it cancels the invocation: {requests:?}"
+        );
+    }
+}
+
+tilo_test_env::scenario! {
+    fn a_client_talks_through_the_session_or_the_host_entered_for_it;
+
+    phase the_session_transport_carries_requests_out_and_answers_back;
+    {
+        let mut actions = RemoteActions::session();
+        let answer = actions.catalogue(CatalogueQuery::default());
+        let correlation = catalogue_correlation(&mut actions, "one catalogue request");
+        assert!(actions.take_collab_requests().is_empty(), "sent once");
+        actions.handle_collab_event(&CollabEvent::RemoteAction {
+            message: RemoteActionMessage::CatalogueResponse {
+                correlation: correlation + 100,
+                result: Err(ActionHostError::NotPermitted),
+            },
+        });
+        assert!(answer.get().is_pending());
+        actions.handle_collab_event(&CollabEvent::RemoteAction {
+            message: RemoteActionMessage::CatalogueResponse {
+                correlation,
+                result: Err(ActionHostError::NotPermitted),
+            },
+        });
+        assert_eq!(answer.get(), Arrival::Failed(ActionHostError::NotPermitted));
+    }
+
+    phase an_entered_host_serves_the_current_client_until_the_guard_drops;
+    {
+        let host = Arc::new(FakeHost::default());
+        {
+            let _served = RemoteActions::enter(
+                Arc::clone(&host) as Arc<dyn ActionHost + Send + Sync>,
+                Caller::local_app("so.tilo.example").in_workspace("workspace"),
+            );
+            let answer = RemoteActions::current().catalogue(CatalogueQuery::default());
+            assert!(matches!(answer.get(), Arrival::Ready(_)));
+        }
+        let mut after = RemoteActions::current();
+        let _pending = after.catalogue(CatalogueQuery::default());
+        assert_eq!(
+            after.take_collab_requests().len(),
+            1,
+            "without a guard the client talks through the session"
+        );
+    }
 }
 
 fn only_message(requests: Vec<CollabRequest>) -> RemoteActionMessage {
@@ -634,204 +846,4 @@ fn progress(invocation: InvocationId, sequence: u64) -> InvocationUpdate {
         total: None,
         message: None,
     }
-}
-
-/// A running invocation is followed by one waiting observe at a time, sent the moment the last answer
-/// lands — never by a poll on a timer.
-#[test]
-fn a_running_invocation_sends_one_waiting_observe_not_a_poll() {
-    let clock = crate::background::Pumped::new();
-    let _entered = clock.background().enter();
-    let invocation = InvocationId(uuid::Uuid::from_bytes([0x60; 16]));
-    let mut actions = RemoteActions::session();
-    let running = actions.invoke_with_id(invocation, target("slow"), InvokeArgument::None, None);
-    let requests = actions.take_collab_requests();
-    assert!(
-        matches!(
-            requests.as_slice(),
-            [CollabRequest::RemoteAction {
-                message: RemoteActionMessage::Invoke(InvokeRequest {
-                    wait_ms: Some(INVOKE_WAIT_MS),
-                    appearance: None,
-                    ..
-                }),
-            }]
-        ),
-        "the invocation asks for its outcome in the same round trip: {requests:?}"
-    );
-
-    actions.handle_collab_event(&CollabEvent::RemoteAction {
-        message: accepted(invocation),
-    });
-    assert_eq!(
-        only_message(actions.take_collab_requests()),
-        RemoteActionMessage::Observe {
-            invocation,
-            wait_ms: Some(OBSERVE_WAIT_MS),
-            seen: Some(UpdateMark::Accepted),
-        }
-    );
-    for _ in 0..5 {
-        clock.advance(OBSERVE_INTERVAL);
-        assert!(
-            actions.take_collab_requests().is_empty(),
-            "no poll while a waiting observe is out"
-        );
-    }
-
-    actions.handle_collab_event(&update(invocation, progress(invocation, 1)));
-    assert!(matches!(
-        running.get(),
-        Arrival::Ready(InvocationUpdate::Progress { sequence: 1, .. })
-    ));
-    assert_eq!(
-        only_message(actions.take_collab_requests()),
-        RemoteActionMessage::Observe {
-            invocation,
-            wait_ms: Some(OBSERVE_WAIT_MS),
-            seen: Some(UpdateMark::Progress { sequence: 1 }),
-        }
-    );
-
-    actions.handle_collab_event(&update(
-        invocation,
-        InvocationUpdate::Succeeded {
-            invocation,
-            output: ActionOutput::default(),
-        },
-    ));
-    assert!(running.get().is_finished());
-    assert!(actions.take_collab_requests().is_empty());
-    assert!(!actions.is_busy());
-}
-
-#[test]
-fn a_wait_that_ran_out_is_waited_again() {
-    let clock = crate::background::Pumped::new();
-    let _entered = clock.background().enter();
-    let invocation = InvocationId(uuid::Uuid::from_bytes([0x61; 16]));
-    let mut actions = RemoteActions::session();
-    let _running = actions.invoke_with_id(invocation, target("slow"), InvokeArgument::None, None);
-    let _invoke = actions.take_collab_requests();
-    actions.handle_collab_event(&CollabEvent::RemoteAction {
-        message: accepted(invocation),
-    });
-    let _observe = actions.take_collab_requests();
-    clock.advance(Duration::from_millis(u64::from(OBSERVE_WAIT_MS)));
-    actions.handle_collab_event(&update(
-        invocation,
-        InvocationUpdate::Accepted { invocation },
-    ));
-    assert!(matches!(
-        actions.take_collab_requests().as_slice(),
-        [CollabRequest::RemoteAction {
-            message: RemoteActionMessage::Observe {
-                wait_ms: Some(OBSERVE_WAIT_MS),
-                seen: Some(UpdateMark::Accepted),
-                ..
-            },
-        }]
-    ));
-}
-
-/// A host from before waits answers the waiting observe at once with nothing new; the client then
-/// observes it on its interval, as before.
-#[test]
-fn an_old_host_is_observed_on_the_interval() {
-    let clock = crate::background::Pumped::new();
-    let _entered = clock.background().enter();
-    let invocation = InvocationId(uuid::Uuid::from_bytes([0x62; 16]));
-    let mut actions = RemoteActions::session();
-    let running = actions.invoke_with_id(invocation, target("slow"), InvokeArgument::None, None);
-    let _invoke = actions.take_collab_requests();
-    actions.handle_collab_event(&CollabEvent::RemoteAction {
-        message: accepted(invocation),
-    });
-    let _observe = actions.take_collab_requests();
-    actions.handle_collab_event(&update(
-        invocation,
-        InvocationUpdate::Accepted { invocation },
-    ));
-    assert!(
-        actions.take_collab_requests().is_empty(),
-        "not asked again before the interval"
-    );
-    clock.advance(OBSERVE_INTERVAL);
-    assert_eq!(
-        only_message(actions.take_collab_requests()),
-        RemoteActionMessage::observe(invocation)
-    );
-    actions.handle_collab_event(&update(
-        invocation,
-        InvocationUpdate::Succeeded {
-            invocation,
-            output: ActionOutput::default(),
-        },
-    ));
-    assert!(running.get().is_finished());
-}
-
-/// A followed live result shows each new item the host sends, keeps a waiting observe out for the next,
-/// and is cancelled once dropped.
-#[test]
-fn a_followed_result_shows_each_item_and_stops_when_dropped() {
-    let mut actions = RemoteActions::session();
-    let followed = actions.follow(target("live"), InvokeArgument::None);
-    let invocation = followed.invocation();
-    let requests = actions.take_collab_requests();
-    let [
-        CollabRequest::RemoteAction {
-            message: RemoteActionMessage::Invoke(request),
-        },
-    ] = requests.as_slice()
-    else {
-        panic!("one invocation: {requests:?}");
-    };
-    assert_eq!(request.wait_ms, None, "the receipt is the admission");
-    actions.handle_collab_event(&CollabEvent::RemoteAction {
-        message: RemoteActionMessage::Receipt(InvocationReceipt {
-            invocation,
-            status: ReceiptStatus::Accepted,
-        }),
-    });
-    for (sequence, count) in [(1, 0), (2, 3)] {
-        let requests = actions.take_collab_requests();
-        assert!(
-            matches!(
-                requests.as_slice(),
-                [CollabRequest::RemoteAction {
-                    message: RemoteActionMessage::Observe {
-                        wait_ms: Some(_),
-                        seen: Some(_),
-                        ..
-                    },
-                }]
-            ),
-            "a waiting observe follows each update: {requests:?}"
-        );
-        let item = InvocationUpdate::Item {
-            invocation,
-            sequence,
-            value: serde_json::json!({ "count": count }),
-        };
-        actions.handle_collab_event(&CollabEvent::RemoteAction {
-            message: RemoteActionMessage::Update {
-                invocation,
-                state: Some(InvocationState::new(invocation, item.clone())),
-            },
-        });
-        assert_eq!(followed.call().get(), Arrival::Ready(item));
-    }
-    let _observe = actions.take_collab_requests();
-    drop(followed);
-    let requests = actions.take_collab_requests();
-    assert!(
-        matches!(
-            requests.as_slice(),
-            [CollabRequest::RemoteAction {
-                message: RemoteActionMessage::Cancel { invocation: id },
-            }] if *id == invocation
-        ),
-        "dropping it cancels the invocation: {requests:?}"
-    );
 }

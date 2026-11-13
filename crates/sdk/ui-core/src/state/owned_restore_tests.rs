@@ -84,13 +84,10 @@ fn snapshot(state: &State) -> Snapshot {
         revision: state.history_revision(),
     }
 }
-#[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario, one labelled phase per merged case"
-)]
-fn owned_legacy_restores_are_exact_guarded_and_roll_back_only_owned_writes() {
-    // phase: owned_restore_legacy_one_stamp_exact_span_and_undo
+tilo_test_env::scenario! {
+    fn owned_legacy_restores_are_exact_guarded_and_roll_back_only_owned_writes;
+
+    phase owned_restore_legacy_one_stamp_exact_span_and_undo;
     {
         let (mut state, plan) = fixture();
         let authority = PermissionContext::permissive();
@@ -129,7 +126,8 @@ fn owned_legacy_restores_are_exact_guarded_and_roll_back_only_owned_writes() {
             .unwrap();
         assert_eq!(value(&state.doc), "live");
     }
-    // phase: owned_restore_legacy_refuses_pending_and_logically_unfinished_edits
+
+    phase owned_restore_legacy_refuses_pending_and_logically_unfinished_edits;
     {
         let authority = PermissionContext::permissive();
         let (mut state, plan) = fixture();
@@ -165,7 +163,8 @@ fn owned_legacy_restores_are_exact_guarded_and_roll_back_only_owned_writes() {
                 .changed
         );
     }
-    // phase: owned_restore_legacy_stale_and_capacity_leave_everything_untouched
+
+    phase owned_restore_legacy_stale_and_capacity_leave_everything_untouched;
     {
         let authority = PermissionContext::permissive();
         let (mut state, plan) = fixture();
@@ -192,7 +191,8 @@ fn owned_legacy_restores_are_exact_guarded_and_roll_back_only_owned_writes() {
         ));
         assert_eq!(snapshot(&state), before);
     }
-    // phase: owned_restore_legacy_noop_and_errors_preserve_redo
+
+    phase owned_restore_legacy_noop_and_errors_preserve_redo;
     {
         let authority = PermissionContext::permissive();
         let (mut state, plan) = fixture();
@@ -225,7 +225,8 @@ fn owned_legacy_restores_are_exact_guarded_and_roll_back_only_owned_writes() {
                 .changed
         );
     }
-    // phase: owned_restore_legacy_unwind_rolls_back_only_owned_writes
+
+    phase owned_restore_legacy_unwind_rolls_back_only_owned_writes;
     {
         let authority = PermissionContext::permissive();
         let (mut state, plan) = fixture();

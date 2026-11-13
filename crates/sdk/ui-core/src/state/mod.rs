@@ -561,83 +561,84 @@ mod tests {
         assert_eq!(state.doc.get_heads(), peer.get_heads());
     }
 
-    #[test]
-    fn a_frontier_publishes_only_this_replicas_changes() {
-        let mut doc = AutoCommit::new().with_actor(automerge::ActorId::random());
-        doc.put(ROOT, "mine", "this device").unwrap();
-        doc.commit();
-        let mine = doc.get_heads();
-        let mut other = AutoCommit::load(&doc.save())
-            .unwrap()
-            .with_actor(automerge::ActorId::random());
-        other.put(ROOT, "from_peer", "another device").unwrap();
-        other.commit();
-        doc.load_incremental(&other.save_after(&mine)).unwrap();
-        assert_eq!(
-            doc.get_heads(),
-            other.get_heads(),
-            "the change is held here"
-        );
-        // A frontier never told the delivered change arrived publishes this replica's
-        // change alone: a change goes out from the replica that made it, and the snapshot
-        // handshake carries the rest.
-        let mut frontier = DocumentFrontier::default();
-        let (delta, heads) = frontier.pending_delta(&mut doc, &WritingActors::default());
-        let published = automerge::Automerge::parse_changes(&delta).unwrap();
-        assert_eq!(published.len(), 1);
-        assert_eq!(published[0].actor_id(), doc.get_actor());
-        assert_eq!(heads, doc.get_heads());
+    tilo_test_env::scenario! {
+        fn a_frontier_publishes_what_this_replica_wrote;
+
+        phase a_frontier_publishes_only_this_replicas_changes;
+        {
+            let mut doc = AutoCommit::new().with_actor(automerge::ActorId::random());
+            doc.put(ROOT, "mine", "this device").unwrap();
+            doc.commit();
+            let mine = doc.get_heads();
+            let mut other = AutoCommit::load(&doc.save())
+                .unwrap()
+                .with_actor(automerge::ActorId::random());
+            other.put(ROOT, "from_peer", "another device").unwrap();
+            other.commit();
+            doc.load_incremental(&other.save_after(&mine)).unwrap();
+            assert_eq!(
+                doc.get_heads(),
+                other.get_heads(),
+                "the change is held here"
+            );
+            // A frontier never told the delivered change arrived publishes this replica's
+            // change alone: a change goes out from the replica that made it, and the snapshot
+            // handshake carries the rest.
+            let mut frontier = DocumentFrontier::default();
+            let (delta, heads) = frontier.pending_delta(&mut doc, &WritingActors::default());
+            let published = automerge::Automerge::parse_changes(&delta).unwrap();
+            assert_eq!(published.len(), 1);
+            assert_eq!(published[0].actor_id(), doc.get_actor());
+            assert_eq!(heads, doc.get_heads());
+        }
+
+        phase a_frontier_publishes_changes_a_handle_on_this_device_made;
+        {
+            let device = automerge::ActorId::random();
+            let mut doc = AutoCommit::new().with_actor(device.clone());
+            doc.put(ROOT, "setting", "on").unwrap();
+            doc.commit();
+            let mut frontier = DocumentFrontier::at_document(&mut doc);
+            let handled = automerge::ActorId::from(
+                crate::history_source::authors::device_actor("alice", &device).as_slice(),
+            );
+            doc.set_actor(handled.clone());
+            doc.put(ROOT, "named", "alice").unwrap();
+            doc.commit();
+            doc.set_actor(device);
+            let (delta, heads) = frontier.pending_delta(&mut doc, &WritingActors::default());
+            let published = automerge::Automerge::parse_changes(&delta).unwrap();
+            assert_eq!(published.len(), 1);
+            assert_eq!(published[0].actor_id(), &handled);
+            assert_eq!(heads, doc.get_heads());
+        }
+
+        phase a_frontier_publishes_changes_written_as_an_author_writer;
+        {
+            let writer = automerge::ActorId::random();
+            let mut doc = AutoCommit::new().with_actor(writer.clone());
+            doc.put(ROOT, "setting", "on").unwrap();
+            doc.commit();
+            let mut frontier = DocumentFrontier::at_document(&mut doc);
+            let mut own = WritingActors::default();
+            let authored = crate::record::author_writer(&writer, "alice");
+            own.note(authored.clone());
+            doc.set_actor(authored.clone());
+            doc.put(ROOT, "named", "alice").unwrap();
+            doc.commit();
+            doc.set_actor(writer);
+            let (delta, heads) = frontier.pending_delta(&mut doc, &own);
+            let published = automerge::Automerge::parse_changes(&delta).unwrap();
+            assert_eq!(published.len(), 1);
+            assert_eq!(published[0].actor_id(), &authored);
+            assert_eq!(heads, doc.get_heads());
+        }
     }
 
-    #[test]
-    fn a_frontier_publishes_changes_a_handle_on_this_device_made() {
-        let device = automerge::ActorId::random();
-        let mut doc = AutoCommit::new().with_actor(device.clone());
-        doc.put(ROOT, "setting", "on").unwrap();
-        doc.commit();
-        let mut frontier = DocumentFrontier::at_document(&mut doc);
-        let handled = automerge::ActorId::from(
-            crate::history_source::authors::device_actor("alice", &device).as_slice(),
-        );
-        doc.set_actor(handled.clone());
-        doc.put(ROOT, "named", "alice").unwrap();
-        doc.commit();
-        doc.set_actor(device);
-        let (delta, heads) = frontier.pending_delta(&mut doc, &WritingActors::default());
-        let published = automerge::Automerge::parse_changes(&delta).unwrap();
-        assert_eq!(published.len(), 1);
-        assert_eq!(published[0].actor_id(), &handled);
-        assert_eq!(heads, doc.get_heads());
-    }
+    tilo_test_env::scenario! {
+        fn undo_restores_text_marks_and_list_order_exactly;
 
-    #[test]
-    fn a_frontier_publishes_changes_written_as_an_author_writer() {
-        let writer = automerge::ActorId::random();
-        let mut doc = AutoCommit::new().with_actor(writer.clone());
-        doc.put(ROOT, "setting", "on").unwrap();
-        doc.commit();
-        let mut frontier = DocumentFrontier::at_document(&mut doc);
-        let mut own = WritingActors::default();
-        let authored = crate::record::author_writer(&writer, "alice");
-        own.note(authored.clone());
-        doc.set_actor(authored.clone());
-        doc.put(ROOT, "named", "alice").unwrap();
-        doc.commit();
-        doc.set_actor(writer);
-        let (delta, heads) = frontier.pending_delta(&mut doc, &own);
-        let published = automerge::Automerge::parse_changes(&delta).unwrap();
-        assert_eq!(published.len(), 1);
-        assert_eq!(published[0].actor_id(), &authored);
-        assert_eq!(heads, doc.get_heads());
-    }
-
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario, one labelled phase per merged case"
-    )]
-    fn undo_restores_text_marks_and_list_order_exactly() {
-        // phase: undo_restores_multi_span_and_multi_character_text_edits_exactly
+        phase undo_restores_multi_span_and_multi_character_text_edits_exactly;
         {
             let mut state = State::new();
             let text = state.doc.put_object(ROOT, "text", ObjType::Text).unwrap();
@@ -670,7 +671,8 @@ mod tests {
                 assert_eq!(state.doc.text(&text).unwrap(), expected);
             }
         }
-        // phase: undo_unformatted_text_between_formatted_neighbors_does_not_inherit_marks
+
+        phase undo_unformatted_text_between_formatted_neighbors_does_not_inherit_marks;
         {
             use automerge::marks::{ExpandMark, Mark};
             let mut state = State::new();
@@ -718,7 +720,8 @@ mod tests {
                 assert_eq!(state.doc.marks(&text).unwrap(), after);
             }
         }
-        // phase: grouped_list_reorder_undo_redo_preserves_objects_marks_and_order
+
+        phase grouped_list_reorder_undo_redo_preserves_objects_marks_and_order;
         {
             fn insert(doc: &mut AutoCommit, list: &ObjId, index: usize, label: &str) {
                 let block = doc.insert_object(list, index, ObjType::Map).unwrap();
@@ -819,13 +822,10 @@ mod tests {
         );
     }
 
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario, one labelled phase per merged case"
-    )]
-    fn frontiers_and_rejected_deltas_survive_merges_and_retries() {
-        // phase: explicit_frontier_is_independent_of_automerge_save_cursor
+    tilo_test_env::scenario! {
+        fn frontiers_and_rejected_deltas_survive_merges_and_retries;
+
+        phase explicit_frontier_is_independent_of_automerge_save_cursor;
         {
             let mut doc = AutoCommit::new();
             let mut frontier = DocumentFrontier::at_document(&mut doc);
@@ -843,7 +843,8 @@ mod tests {
                     .is_empty()
             );
         }
-        // phase: rebased_frontier_does_not_echo_inbound_changes
+
+        phase rebased_frontier_does_not_echo_inbound_changes;
         {
             let mut source = AutoCommit::new();
             source.put(automerge::ROOT, "remote", true).unwrap();
@@ -868,7 +869,8 @@ mod tests {
                     .is_empty()
             );
         }
-        // phase: pending_delta_is_retryable_until_transport_accepts_it
+
+        phase pending_delta_is_retryable_until_transport_accepts_it;
         {
             let mut doc = AutoCommit::new();
             let mut frontier = DocumentFrontier::at_document(&mut doc);
@@ -886,7 +888,8 @@ mod tests {
                     .is_empty()
             );
         }
-        // phase: rejected_local_delta_survives_concurrent_incremental_merge
+
+        phase rejected_local_delta_survives_concurrent_incremental_merge;
         {
             let mut state = State::new();
             state.doc.put(ROOT, "local", true).unwrap();
@@ -919,7 +922,8 @@ mod tests {
             state.advance_outbound(accepted_heads);
             assert!(state.pending_outbound_delta().0.is_empty());
         }
-        // phase: rejected_local_delta_survives_concurrent_snapshot_merge
+
+        phase rejected_local_delta_survives_concurrent_snapshot_merge;
         {
             let mut state = State::new();
             state.doc.put(ROOT, "local", true).unwrap();
@@ -951,7 +955,8 @@ mod tests {
             state.advance_outbound(accepted_heads);
             assert!(state.pending_outbound_delta().0.is_empty());
         }
-        // phase: metadata_replica_does_not_lose_rejected_delta_on_receive
+
+        phase metadata_replica_does_not_lose_rejected_delta_on_receive;
         {
             let mut replica = DocumentReplica::new(AutoCommit::new());
             replica.document_mut().put(ROOT, "local", true).unwrap();
@@ -973,13 +978,10 @@ mod tests {
         }
     }
 
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario, one labelled phase per merged case"
-    )]
-    fn the_history_is_a_lifo_carrying_focus_and_context() {
-        // phase: history_keeps_every_step_in_the_document
+    tilo_test_env::scenario! {
+        fn the_history_is_a_lifo_carrying_focus_and_context;
+
+        phase history_keeps_every_step_in_the_document;
         // The history is the document's: no window evicts old steps, and the
         // newest stays undoable whatever came before it.
         {
@@ -1010,7 +1012,8 @@ mod tests {
                 i64::try_from(steps).unwrap().checked_sub(2)
             );
         }
-        // phase: redo_entry_carries_current_focus_and_metadata
+
+        phase redo_entry_carries_current_focus_and_metadata;
         // A single `commit_action` → undo → redo round-trip must preserve the
         // focus index and widget metadata captured on the stacks — that's
         // what restores the caret in `EditorApp` after Ctrl+Shift+Z.
@@ -1052,7 +1055,8 @@ mod tests {
             let (val, _) = state.doc.get(&automerge::ROOT, "k").unwrap().unwrap();
             assert_eq!(val.as_str(), Some("v2"));
         }
-        // phase: native_commit_context_is_stamped_without_changing_undo
+
+        phase native_commit_context_is_stamped_without_changing_undo;
         {
             let mut state = State::new();
             state.doc.put(&ROOT, "body", "hello").unwrap();
@@ -1077,7 +1081,8 @@ mod tests {
             );
             assert!(state.peek_last_undo().is_some());
         }
-        // phase: single_user_undo_redo_roundtrip
+
+        phase single_user_undo_redo_roundtrip;
         // Single-user undo/redo round-trip on a map value returns to the exact
         // pre/post values.
         {
@@ -1109,7 +1114,8 @@ mod tests {
             state.redo(None, None).unwrap();
             assert_eq!(val(&state), "b", "redo restores the action");
         }
-        // phase: multi_action_undo_order_is_lifo
+
+        phase multi_action_undo_order_is_lifo;
         // Multiple actions undo in LIFO order, each reverting only its own change.
         {
             let mut state = State::new();
@@ -1139,9 +1145,10 @@ mod tests {
         state.doc.text(obj).unwrap_or_default()
     }
 
-    #[test]
-    fn undo_and_redo_keep_concurrent_remote_edits() {
-        // phase: undo_preserves_concurrent_remote_edit
+    tilo_test_env::scenario! {
+        fn undo_and_redo_keep_concurrent_remote_edits;
+
+        phase undo_preserves_concurrent_remote_edit;
         // A committed local action, then a *concurrent remote change* merged in,
         // then `undo()`. The remote change MUST survive and only the local
         // action is reverted.
@@ -1176,7 +1183,8 @@ mod tests {
                 "remote prepend survives; only local append reverted"
             );
         }
-        // phase: redo_after_concurrent_merge_keeps_both
+
+        phase redo_after_concurrent_merge_keeps_both;
         // Redoing the undone local action must reinstate it while *still* keeping
         // the concurrently-merged remote edit.
         {
@@ -1204,7 +1212,8 @@ mod tests {
                 "redo reinstates local append; remote prepend still present"
             );
         }
-        // phase: undo_text_delete_with_concurrent_prepend
+
+        phase undo_text_delete_with_concurrent_prepend;
         // A local text *deletion* undone after a concurrent remote prepend must
         // re-insert the deleted text at the correctly-shifted position.
         {
@@ -1234,13 +1243,10 @@ mod tests {
         }
     }
 
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario, one labelled phase per merged case"
-    )]
-    fn author_scoped_undo_and_redo_touch_only_that_authors_actions() {
-        // phase: undo_for_author_reverts_only_that_authors_op
+    tilo_test_env::scenario! {
+        fn author_scoped_undo_and_redo_touch_only_that_authors_actions;
+
+        phase undo_for_author_reverts_only_that_authors_op;
         // `undo_as` with an author reverts only the requested author's most-recent action
         // as a new forward change, leaving other authors' committed ops intact in
         // the live document — not just unpopped from the stack.
@@ -1267,7 +1273,8 @@ mod tests {
                 "bob's change survives in the live doc, not just on the stack"
             );
         }
-        // phase: undo_as_an_author_skips_a_collaborators_action
+
+        phase undo_as_an_author_skips_a_collaborators_action;
         // `undo_as` is the entry point `App`'s Ctrl+Z takes. With an author it
         // must behave like an authored undo — walk past a collaborator's action
         // to the local user's own — not like plain LIFO undo.
@@ -1299,7 +1306,8 @@ mod tests {
                 "bob's change survives alice's undo"
             );
         }
-        // phase: undo_as_without_an_author_is_plain_lifo
+
+        phase undo_as_without_an_author_is_plain_lifo;
         // With no identity at all — an app running outside any session — `undo_as`
         // degrades to plain LIFO rather than refusing to undo.
         {
@@ -1315,7 +1323,8 @@ mod tests {
             assert!(state.doc.get(&ROOT, "b").unwrap().is_none());
             assert!(state.doc.get(&ROOT, "a").unwrap().is_some());
         }
-        // phase: redo_as_an_author_only_reapplies_that_authors_undo
+
+        phase redo_as_an_author_only_reapplies_that_authors_undo;
         // Redo is the mirror: Bob's undone action must not be re-applied by
         // Alice's Ctrl+Y.
         {
@@ -1347,7 +1356,8 @@ mod tests {
                 .expect("bob redoes his own");
             assert!(state.doc.get(&ROOT, "b").unwrap().is_some());
         }
-        // phase: can_undo_predicts_exactly_what_undo_as_does
+
+        phase can_undo_predicts_exactly_what_undo_as_does;
         // The availability a control renders from must be the availability the
         // act has. Asserted by *doing* the undo and checking the query predicted
         // it — not by reading the stack length, which is what would let the two
@@ -1381,7 +1391,8 @@ mod tests {
             assert!(state.can_undo_as(Some(&a)));
             assert!(!state.can_redo_as(Some(&a)));
         }
-        // phase: can_undo_is_author_scoped_like_the_shortcut
+
+        phase can_undo_is_author_scoped_like_the_shortcut;
         // A session where every entry belongs to a collaborator must report
         // nothing to undo. Without author scoping the control would light up and
         // then do nothing — or, worse, revert someone else's work.
@@ -1436,13 +1447,10 @@ mod tests {
         )
     }
 
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario, one labelled phase per merged case"
-    )]
-    fn undo_status_and_revision_describe_and_bound_every_stack_change() {
-        // phase: undo_status_describes_the_action_on_the_stack
+    tilo_test_env::scenario! {
+        fn undo_status_and_revision_describe_and_bound_every_stack_change;
+
+        phase undo_status_describes_the_action_on_the_stack;
         // The status a widget receives describes the step that is on the
         // stack as its action record says it, as the history pane does.
         {
@@ -1462,7 +1470,8 @@ mod tests {
             );
             assert_eq!(s.redo_summary, None, "nothing has been undone yet");
         }
-        // phase: redo_summary_describes_the_action_restored_not_the_reversal
+
+        phase redo_summary_describes_the_action_restored_not_the_reversal;
         // Redo's summary must read as the action being put *back*, not as the
         // reversal that is physically on the redo stack — otherwise "Redo" is
         // described to the user as deleting their text.
@@ -1480,7 +1489,8 @@ mod tests {
                 "redo names the step it puts back"
             );
         }
-        // phase: the_revision_moves_on_every_stack_change
+
+        phase the_revision_moves_on_every_stack_change;
         // The status is only ever recomputed when the revision moves, so the
         // revision has to move on every stack change — a miss leaves a control
         // rendering a history that is no longer there.
@@ -1539,7 +1549,8 @@ mod tests {
                 "the new document has no history"
             );
         }
-        // phase: exhausted_history_revision_refuses_transitions_without_mutating
+
+        phase exhausted_history_revision_refuses_transitions_without_mutating;
         {
             let mut state = State::new();
             let author = alice();
@@ -1567,7 +1578,8 @@ mod tests {
             assert!(!state.adopt_doc(replacement));
             assert_eq!(state.doc.get_heads(), heads_before_commit);
         }
-        // phase: task4_bound_history_revision_limit_refuses_undo_redo_and_restore
+
+        phase task4_bound_history_revision_limit_refuses_undo_redo_and_restore;
         {
             let mut doc = AutoCommit::new();
             let mut history = UndoLog::new(&mut doc);
@@ -1592,7 +1604,8 @@ mod tests {
                 Some(11)
             );
         }
-        // phase: a_restore_is_visible_to_a_control
+
+        phase a_restore_is_visible_to_a_control;
         // A restore from the history scrubber lands on the undo stack, so a
         // control must report it as undoable.
         {
@@ -1610,206 +1623,210 @@ mod tests {
         }
     }
 
-    #[test]
-    fn undo_of_one_mark_over_several_texts_clears_it_from_each() {
-        use automerge::marks::{ExpandMark, Mark};
-        let mut state = State::new();
-        let texts: Vec<ObjId> = ["Background", "Method", "Results"]
-            .into_iter()
-            .map(|word| {
-                let text = state.doc.put_object(ROOT, word, ObjType::Text).unwrap();
-                state.doc.splice_text(&text, 0, 0, word).unwrap();
-                text
-            })
-            .collect();
-        state.commit_action(None, None);
-        for text in &texts {
-            let end = state.doc.length(text);
+    tilo_test_env::scenario! {
+        fn undo_in_formatted_text_restores_marks_and_keeps_concurrent_edits;
+
+        phase undo_of_one_mark_over_several_texts_clears_it_from_each;
+        {
+            use automerge::marks::{ExpandMark, Mark};
+            let mut state = State::new();
+            let texts: Vec<ObjId> = ["Background", "Method", "Results"]
+                .into_iter()
+                .map(|word| {
+                    let text = state.doc.put_object(ROOT, word, ObjType::Text).unwrap();
+                    state.doc.splice_text(&text, 0, 0, word).unwrap();
+                    text
+                })
+                .collect();
+            state.commit_action(None, None);
+            for text in &texts {
+                let end = state.doc.length(text);
+                state
+                    .doc
+                    .mark(
+                        text,
+                        Mark::new("bold".into(), true, 0, end),
+                        ExpandMark::After,
+                    )
+                    .unwrap();
+            }
+            state.commit_action(None, None);
+            state.undo(None, None).unwrap();
+            for text in &texts {
+                assert_eq!(state.doc.marks(text).unwrap(), [], "{text}");
+            }
+        }
+
+        phase undo_of_several_splices_in_formatted_text_restores_text_and_marks;
+        {
+            use automerge::marks::{ExpandMark, Mark};
+            let mut state = State::new();
+            let text = state.doc.put_object(ROOT, "text", ObjType::Text).unwrap();
+            state
+                .doc
+                .splice_text(&text, 0, 0, "Project Falcon remains")
+                .unwrap();
             state
                 .doc
                 .mark(
-                    text,
-                    Mark::new("bold".into(), true, 0, end),
+                    &text,
+                    Mark::new("bold".into(), true, 0, 14),
                     ExpandMark::After,
                 )
                 .unwrap();
-        }
-        state.commit_action(None, None);
-        state.undo(None, None).unwrap();
-        for text in &texts {
-            assert_eq!(state.doc.marks(text).unwrap(), [], "{text}");
-        }
-    }
-
-    #[test]
-    fn undo_of_several_splices_in_formatted_text_restores_text_and_marks() {
-        use automerge::marks::{ExpandMark, Mark};
-        let mut state = State::new();
-        let text = state.doc.put_object(ROOT, "text", ObjType::Text).unwrap();
-        state
-            .doc
-            .splice_text(&text, 0, 0, "Project Falcon remains")
-            .unwrap();
-        state
-            .doc
-            .mark(
-                &text,
-                Mark::new("bold".into(), true, 0, 14),
-                ExpandMark::After,
-            )
-            .unwrap();
-        state.commit_action(None, None);
-        let before = state.doc.marks(&text).unwrap();
-        state.doc.splice_text(&text, 9, 0, "Osprey").unwrap();
-        state.doc.splice_text(&text, 8, 1, "").unwrap();
-        state.doc.splice_text(&text, 14, 5, "").unwrap();
-        state.commit_action(None, None);
-        assert_eq!(state.doc.text(&text).unwrap(), "Project Osprey remains");
-        let after = state.doc.marks(&text).unwrap();
-        for _ in 0..2 {
-            state.undo(None, None).unwrap();
-            assert_eq!(state.doc.text(&text).unwrap(), "Project Falcon remains");
-            assert_eq!(state.doc.marks(&text).unwrap(), before);
-            state.redo(None, None).unwrap();
+            state.commit_action(None, None);
+            let before = state.doc.marks(&text).unwrap();
+            state.doc.splice_text(&text, 9, 0, "Osprey").unwrap();
+            state.doc.splice_text(&text, 8, 1, "").unwrap();
+            state.doc.splice_text(&text, 14, 5, "").unwrap();
+            state.commit_action(None, None);
             assert_eq!(state.doc.text(&text).unwrap(), "Project Osprey remains");
-            assert_eq!(state.doc.marks(&text).unwrap(), after);
+            let after = state.doc.marks(&text).unwrap();
+            for _ in 0..2 {
+                state.undo(None, None).unwrap();
+                assert_eq!(state.doc.text(&text).unwrap(), "Project Falcon remains");
+                assert_eq!(state.doc.marks(&text).unwrap(), before);
+                state.redo(None, None).unwrap();
+                assert_eq!(state.doc.text(&text).unwrap(), "Project Osprey remains");
+                assert_eq!(state.doc.marks(&text).unwrap(), after);
+            }
         }
-    }
 
-    #[test]
-    fn undo_of_formatted_text_keeps_a_concurrent_edit_in_it() {
-        use automerge::marks::{ExpandMark, Mark};
-        let mut state = State::new();
-        let text = state.doc.put_object(ROOT, "text", ObjType::Text).unwrap();
-        state
-            .doc
-            .splice_text(&text, 0, 0, "Project Falcon remains")
-            .unwrap();
-        state
-            .doc
-            .mark(
-                &text,
-                Mark::new("bold".into(), true, 0, 14),
-                ExpandMark::After,
-            )
-            .unwrap();
-        state.commit_action(None, None);
-        let before_local = state.doc.get_heads();
-        state.doc.splice_text(&text, 9, 0, "Osprey").unwrap();
-        state.doc.splice_text(&text, 8, 1, "").unwrap();
-        state.doc.splice_text(&text, 14, 5, "").unwrap();
-        state.commit_action(None, None);
-        let mut peer = state.doc.fork_at(&before_local).unwrap();
-        peer.splice_text(&text, 0, 0, "New: ").unwrap();
-        peer.splice_text(&text, 27, 0, " today").unwrap();
-        peer.commit();
-        state
-            .load_incremental(&peer.save_after(&before_local))
-            .unwrap();
-        assert_eq!(
-            state.doc.text(&text).unwrap(),
-            "New: Project Osprey remains today"
-        );
-        state.undo(None, None).unwrap();
-        assert_eq!(
-            state.doc.text(&text).unwrap(),
-            "New: Project Falcon remains today"
-        );
-        let bold: Vec<_> = state
-            .doc
-            .marks(&text)
-            .unwrap()
-            .into_iter()
-            .map(|mark| (mark.name.to_string(), mark.start, mark.end))
-            .collect();
-        assert_eq!(bold, [("bold".to_owned(), 5, 19)]);
-    }
-
-    #[test]
-    fn revert_beside_a_concurrent_edit_keeps_wide_characters_whole_in_every_encoding() {
-        use automerge::TextEncoding;
-        for encoding in [
-            TextEncoding::UnicodeCodePoint,
-            TextEncoding::Utf8CodeUnit,
-            TextEncoding::Utf16CodeUnit,
-            TextEncoding::GraphemeCluster,
-        ] {
-            let width = |s: &str| match encoding {
-                TextEncoding::Utf8CodeUnit => s.len(),
-                TextEncoding::Utf16CodeUnit => s.encode_utf16().count(),
-                TextEncoding::UnicodeCodePoint | TextEncoding::GraphemeCluster => s.chars().count(),
-            };
-            let mut doc = AutoCommit::new_with_encoding(encoding);
-            let text = doc.put_object(ROOT, "text", ObjType::Text).unwrap();
-            doc.splice_text(&text, 0, 0, "a🦀b").unwrap();
-            let before = doc.get_heads();
-            doc.splice_text(&text, width("a🦀"), 0, "XY").unwrap();
-            doc.splice_text(&text, 0, 1, "").unwrap();
-            let after = doc.get_heads();
-            assert_eq!(doc.text(&text).unwrap(), "🦀XYb", "{encoding:?}");
-            let mut peer = doc.fork_at(&before).unwrap();
-            peer.splice_text(&text, width("a🦀b"), 0, "!").unwrap();
-            peer.commit();
-            doc.load_incremental(&peer.save_after(&before)).unwrap();
-            assert_eq!(doc.text(&text).unwrap(), "🦀XYb!", "{encoding:?}");
-            write_revert_patches(&mut doc, &after, &before);
-            doc.commit();
-            assert_eq!(doc.text(&text).unwrap(), "a🦀b!", "{encoding:?}");
-        }
-    }
-
-    #[test]
-    fn undo_keeps_a_created_paragraph_a_collaborator_wrote_in() {
-        fn paragraph(state: &mut State, blocks: &ObjId, id: &str) -> ObjId {
-            let block = state.doc.put_object(blocks, id, ObjType::Map).unwrap();
-            state.doc.put(&block, "order", id).unwrap();
-            state.doc.put_object(&block, "text", ObjType::Text).unwrap()
-        }
-        fn texts(state: &State, blocks: &ObjId) -> Vec<(String, String)> {
+        phase undo_of_formatted_text_keeps_a_concurrent_edit_in_it;
+        {
+            use automerge::marks::{ExpandMark, Mark};
+            let mut state = State::new();
+            let text = state.doc.put_object(ROOT, "text", ObjType::Text).unwrap();
             state
                 .doc
-                .keys(blocks)
-                .map(|id| {
-                    let block = state.doc.get(blocks, &id).unwrap().unwrap().1;
-                    let text = state.doc.get(&block, "text").unwrap().unwrap().1;
-                    (id, state.doc.text(&text).unwrap())
-                })
-                .collect()
+                .splice_text(&text, 0, 0, "Project Falcon remains")
+                .unwrap();
+            state
+                .doc
+                .mark(
+                    &text,
+                    Mark::new("bold".into(), true, 0, 14),
+                    ExpandMark::After,
+                )
+                .unwrap();
+            state.commit_action(None, None);
+            let before_local = state.doc.get_heads();
+            state.doc.splice_text(&text, 9, 0, "Osprey").unwrap();
+            state.doc.splice_text(&text, 8, 1, "").unwrap();
+            state.doc.splice_text(&text, 14, 5, "").unwrap();
+            state.commit_action(None, None);
+            let mut peer = state.doc.fork_at(&before_local).unwrap();
+            peer.splice_text(&text, 0, 0, "New: ").unwrap();
+            peer.splice_text(&text, 27, 0, " today").unwrap();
+            peer.commit();
+            state
+                .load_incremental(&peer.save_after(&before_local))
+                .unwrap();
+            assert_eq!(
+                state.doc.text(&text).unwrap(),
+                "New: Project Osprey remains today"
+            );
+            state.undo(None, None).unwrap();
+            assert_eq!(
+                state.doc.text(&text).unwrap(),
+                "New: Project Falcon remains today"
+            );
+            let bold: Vec<_> = state
+                .doc
+                .marks(&text)
+                .unwrap()
+                .into_iter()
+                .map(|mark| (mark.name.to_string(), mark.start, mark.end))
+                .collect();
+            assert_eq!(bold, [("bold".to_owned(), 5, 19)]);
         }
-        let mut state = State::new();
-        let blocks = state.doc.put_object(ROOT, "blocks", ObjType::Map).unwrap();
-        let first = paragraph(&mut state, &blocks, "a");
-        state.commit_action(None, None);
-        state.doc.splice_text(&first, 0, 0, "hello").unwrap();
-        state.commit_action(None, None);
-        paragraph(&mut state, &blocks, "b");
-        state.commit_action(None, None);
-        let seen = state.doc.get_heads();
-        let mut peer = state.doc.fork_at(&seen).unwrap();
-        let block = peer.get(&blocks, "b").unwrap().unwrap().1;
-        let text = peer.get(&block, "text").unwrap().unwrap().1;
-        peer.splice_text(&text, 0, 0, "their words").unwrap();
-        peer.commit();
-        state.load_incremental(&peer.save_after(&seen)).unwrap();
 
-        state.undo(None, None).unwrap();
-        state.undo(None, None).unwrap();
-        assert_eq!(
-            texts(&state, &blocks),
-            [
-                ("a".to_owned(), String::new()),
-                ("b".to_owned(), "their words".to_owned())
-            ]
-        );
-        // Redo puts back only what the undo took.
-        state.redo(None, None).unwrap();
-        state.redo(None, None).unwrap();
-        assert_eq!(
-            texts(&state, &blocks),
-            [
-                ("a".to_owned(), "hello".to_owned()),
-                ("b".to_owned(), "their words".to_owned())
-            ]
-        );
+        phase revert_beside_a_concurrent_edit_keeps_wide_characters_whole_in_every_encoding;
+        {
+            use automerge::TextEncoding;
+            for encoding in [
+                TextEncoding::UnicodeCodePoint,
+                TextEncoding::Utf8CodeUnit,
+                TextEncoding::Utf16CodeUnit,
+                TextEncoding::GraphemeCluster,
+            ] {
+                let width = |s: &str| match encoding {
+                    TextEncoding::Utf8CodeUnit => s.len(),
+                    TextEncoding::Utf16CodeUnit => s.encode_utf16().count(),
+                    TextEncoding::UnicodeCodePoint | TextEncoding::GraphemeCluster => s.chars().count(),
+                };
+                let mut doc = AutoCommit::new_with_encoding(encoding);
+                let text = doc.put_object(ROOT, "text", ObjType::Text).unwrap();
+                doc.splice_text(&text, 0, 0, "a🦀b").unwrap();
+                let before = doc.get_heads();
+                doc.splice_text(&text, width("a🦀"), 0, "XY").unwrap();
+                doc.splice_text(&text, 0, 1, "").unwrap();
+                let after = doc.get_heads();
+                assert_eq!(doc.text(&text).unwrap(), "🦀XYb", "{encoding:?}");
+                let mut peer = doc.fork_at(&before).unwrap();
+                peer.splice_text(&text, width("a🦀b"), 0, "!").unwrap();
+                peer.commit();
+                doc.load_incremental(&peer.save_after(&before)).unwrap();
+                assert_eq!(doc.text(&text).unwrap(), "🦀XYb!", "{encoding:?}");
+                write_revert_patches(&mut doc, &after, &before);
+                doc.commit();
+                assert_eq!(doc.text(&text).unwrap(), "a🦀b!", "{encoding:?}");
+            }
+        }
+
+        phase undo_keeps_a_created_paragraph_a_collaborator_wrote_in;
+        {
+            fn paragraph(state: &mut State, blocks: &ObjId, id: &str) -> ObjId {
+                let block = state.doc.put_object(blocks, id, ObjType::Map).unwrap();
+                state.doc.put(&block, "order", id).unwrap();
+                state.doc.put_object(&block, "text", ObjType::Text).unwrap()
+            }
+            fn texts(state: &State, blocks: &ObjId) -> Vec<(String, String)> {
+                state
+                    .doc
+                    .keys(blocks)
+                    .map(|id| {
+                        let block = state.doc.get(blocks, &id).unwrap().unwrap().1;
+                        let text = state.doc.get(&block, "text").unwrap().unwrap().1;
+                        (id, state.doc.text(&text).unwrap())
+                    })
+                    .collect()
+            }
+            let mut state = State::new();
+            let blocks = state.doc.put_object(ROOT, "blocks", ObjType::Map).unwrap();
+            let first = paragraph(&mut state, &blocks, "a");
+            state.commit_action(None, None);
+            state.doc.splice_text(&first, 0, 0, "hello").unwrap();
+            state.commit_action(None, None);
+            paragraph(&mut state, &blocks, "b");
+            state.commit_action(None, None);
+            let seen = state.doc.get_heads();
+            let mut peer = state.doc.fork_at(&seen).unwrap();
+            let block = peer.get(&blocks, "b").unwrap().unwrap().1;
+            let text = peer.get(&block, "text").unwrap().unwrap().1;
+            peer.splice_text(&text, 0, 0, "their words").unwrap();
+            peer.commit();
+            state.load_incremental(&peer.save_after(&seen)).unwrap();
+
+            state.undo(None, None).unwrap();
+            state.undo(None, None).unwrap();
+            assert_eq!(
+                texts(&state, &blocks),
+                [
+                    ("a".to_owned(), String::new()),
+                    ("b".to_owned(), "their words".to_owned())
+                ]
+            );
+            // Redo puts back only what the undo took.
+            state.redo(None, None).unwrap();
+            state.redo(None, None).unwrap();
+            assert_eq!(
+                texts(&state, &blocks),
+                [
+                    ("a".to_owned(), "hello".to_owned()),
+                    ("b".to_owned(), "their words".to_owned())
+                ]
+            );
+        }
     }
 }

@@ -89,112 +89,116 @@ mod tests {
         I18nManager::install("en-US", locale, &[("en-US", &english), ("de-DE", &german)]).unwrap();
     }
 
-    /// The toolkit's own catalogue holds every kind's line, and German says
-    /// its own word order: the point of asking the catalogue rather than
-    /// assembling English words.
-    #[test]
-    fn every_kind_of_step_reads_in_the_window_language() {
-        speak("en-US");
-        assert_eq!(
-            line(&Step::new(StepKind::Create, Some("Issues")).in_app(Some("Tasks"))),
-            "Creating in Issues"
-        );
-        assert_eq!(
-            line(&Step::new(StepKind::Write, Some("Trip plan"))),
-            "Writing in Trip plan"
-        );
-        assert_eq!(
-            line(&Step::new(StepKind::Delete, Some("Trip plan"))),
-            "Deleting Trip plan"
-        );
-        assert_eq!(
-            line(&Step::new(StepKind::Run, None).running(Some("cargo build"))),
-            "Running cargo build"
-        );
-        assert_eq!(line(&Step::new(StepKind::Work, None)), "Working");
+    tilo_test_env::scenario! {
+        fn a_step_reads_as_a_sentence_of_the_window_language;
 
-        speak("de-DE");
-        assert_eq!(
-            line(&Step::new(StepKind::Create, Some("Issues"))),
-            "Legt in Issues an",
-            "German says the work happening now, never words that read as the past"
-        );
-        assert_eq!(
-            line(&Step::new(StepKind::Write, Some("Trip plan"))),
-            "Schreibt in Trip plan"
-        );
-        assert_eq!(
-            line(&Step::new(StepKind::Delete, Some("Trip plan"))),
-            "Löscht Trip plan"
-        );
-        assert_eq!(
-            line(&Step::new(StepKind::Run, None).running(Some("cargo build"))),
-            "Führt cargo build aus",
-            "the command sits where German puts it, never where English does"
-        );
-    }
+        phase every_kind_of_step_reads_in_the_window_language;
+        // The toolkit's own catalogue holds every kind's line, and German says
+        // its own word order: the point of asking the catalogue rather than
+        // assembling English words.
+        {
+            speak("en-US");
+            assert_eq!(
+                line(&Step::new(StepKind::Create, Some("Issues")).in_app(Some("Tasks"))),
+                "Creating in Issues"
+            );
+            assert_eq!(
+                line(&Step::new(StepKind::Write, Some("Trip plan"))),
+                "Writing in Trip plan"
+            );
+            assert_eq!(
+                line(&Step::new(StepKind::Delete, Some("Trip plan"))),
+                "Deleting Trip plan"
+            );
+            assert_eq!(
+                line(&Step::new(StepKind::Run, None).running(Some("cargo build"))),
+                "Running cargo build"
+            );
+            assert_eq!(line(&Step::new(StepKind::Work, None)), "Working");
 
-    /// A step on one of a collection's items says that item, as its app
-    /// named it ("Editing Book table 4 for Friday"), in the window's language:
-    /// the record's own name only stands where the step names no item.
-    #[test]
-    fn a_step_on_an_item_says_the_item_in_the_window_language() {
-        let on = |kind| Step::new(kind, Some("Book table 4 for Friday"));
-        speak("en-US");
-        assert_eq!(line(&on(StepKind::Edit)), "Editing Book table 4 for Friday");
-        assert_eq!(
-            line(&on(StepKind::Delete)),
-            "Deleting Book table 4 for Friday"
-        );
-        assert_eq!(line(&on(StepKind::Move)), "Moving Book table 4 for Friday");
-        assert_eq!(
-            line(&on(StepKind::Write)),
-            "Writing in Book table 4 for Friday"
-        );
-        speak("de-DE");
-        assert_eq!(
-            line(&on(StepKind::Edit)),
-            "Bearbeitet Book table 4 for Friday"
-        );
-        assert_eq!(
-            line(&on(StepKind::Delete)),
-            "Löscht Book table 4 for Friday"
-        );
-        assert_eq!(
-            line(&on(StepKind::Move)),
-            "Verschiebt Book table 4 for Friday"
-        );
-        assert_eq!(
-            line(&on(StepKind::Write)),
-            "Schreibt in Book table 4 for Friday"
-        );
-    }
+            speak("de-DE");
+            assert_eq!(
+                line(&Step::new(StepKind::Create, Some("Issues"))),
+                "Legt in Issues an",
+                "German says the work happening now, never words that read as the past"
+            );
+            assert_eq!(
+                line(&Step::new(StepKind::Write, Some("Trip plan"))),
+                "Schreibt in Trip plan"
+            );
+            assert_eq!(
+                line(&Step::new(StepKind::Delete, Some("Trip plan"))),
+                "Löscht Trip plan"
+            );
+            assert_eq!(
+                line(&Step::new(StepKind::Run, None).running(Some("cargo build"))),
+                "Führt cargo build aus",
+                "the command sits where German puts it, never where English does"
+            );
+        }
 
-    /// A create that names the collection it adds to says what is being made,
-    /// by the app's own noun for one of them, with its own article and word
-    /// order: the line a person reads is a sentence of their language, never
-    /// English words with their language's name in them.
-    #[test]
-    fn a_create_says_what_it_makes_in_the_window_language() {
-        let made = |record: &'static str| {
-            Step::new(StepKind::Create, Some(record))
-                .in_app(Some("Tasks"))
-                .making("tasks.tracker", "issues")
-        };
-        speak("en-US");
-        assert_eq!(line(&made("Issues")), "Creating an issue in Issues");
-        speak("de-DE");
-        assert_eq!(line(&made("Aufgaben")), "Legt eine Aufgabe in Aufgaben an");
-    }
+        phase a_step_on_an_item_says_the_item_in_the_window_language;
+        // A step on one of a collection's items says that item, as its app
+        // named it ("Editing Book table 4 for Friday"), in the window's language:
+        // the record's own name only stands where the step names no item.
+        {
+            let on = |kind| Step::new(kind, Some("Book table 4 for Friday"));
+            speak("en-US");
+            assert_eq!(line(&on(StepKind::Edit)), "Editing Book table 4 for Friday");
+            assert_eq!(
+                line(&on(StepKind::Delete)),
+                "Deleting Book table 4 for Friday"
+            );
+            assert_eq!(line(&on(StepKind::Move)), "Moving Book table 4 for Friday");
+            assert_eq!(
+                line(&on(StepKind::Write)),
+                "Writing in Book table 4 for Friday"
+            );
+            speak("de-DE");
+            assert_eq!(
+                line(&on(StepKind::Edit)),
+                "Bearbeitet Book table 4 for Friday"
+            );
+            assert_eq!(
+                line(&on(StepKind::Delete)),
+                "Löscht Book table 4 for Friday"
+            );
+            assert_eq!(
+                line(&on(StepKind::Move)),
+                "Verschiebt Book table 4 for Friday"
+            );
+            assert_eq!(
+                line(&on(StepKind::Write)),
+                "Schreibt in Book table 4 for Friday"
+            );
+        }
 
-    /// A collection no catalogue of the window names says only where the step
-    /// works, rather than a sentence with a hole in it.
-    #[test]
-    fn a_create_no_catalogue_names_says_where_it_works() {
-        speak("en-US");
-        assert_eq!(
-            line(&Step::new(StepKind::Create, Some("Notes")).making("notes.notebook", "pages")),
-            "Creating in Notes"
-        );
+        phase a_create_says_what_it_makes_in_the_window_language;
+        // A create that names the collection it adds to says what is being made,
+        // by the app's own noun for one of them, with its own article and word
+        // order: the line a person reads is a sentence of their language, never
+        // English words with their language's name in them.
+        {
+            let made = |record: &'static str| {
+                Step::new(StepKind::Create, Some(record))
+                    .in_app(Some("Tasks"))
+                    .making("tasks.tracker", "issues")
+            };
+            speak("en-US");
+            assert_eq!(line(&made("Issues")), "Creating an issue in Issues");
+            speak("de-DE");
+            assert_eq!(line(&made("Aufgaben")), "Legt eine Aufgabe in Aufgaben an");
+        }
+
+        phase a_create_no_catalogue_names_says_where_it_works;
+        // A collection no catalogue of the window names says only where the step
+        // works, rather than a sentence with a hole in it.
+        {
+            speak("en-US");
+            assert_eq!(
+                line(&Step::new(StepKind::Create, Some("Notes")).making("notes.notebook", "pages")),
+                "Creating in Notes"
+            );
+        }
     }
 }

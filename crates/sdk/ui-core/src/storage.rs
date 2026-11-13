@@ -838,40 +838,224 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_section_update_keeps_other_sections_and_keys() {
-        let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().to_path_buf();
-        let appearance = SettingsSection::named("appearance").in_profile(&file);
-        appearance
-            .update(
-                [("theme".to_owned(), Value::from("dark"))]
-                    .into_iter()
-                    .collect(),
-            )
-            .unwrap();
-        let locale = SettingsSection::named("locale").in_profile(&file);
-        locale
-            .update(
-                [("measurement".to_owned(), Value::from("Metric"))]
-                    .into_iter()
-                    .collect(),
-            )
-            .unwrap();
-        locale
-            .update(
-                [("first_day_of_week".to_owned(), Value::from(1))]
-                    .into_iter()
-                    .collect(),
-            )
-            .unwrap();
-        assert_eq!(appearance.string("theme").as_deref(), Some("dark"));
-        assert_eq!(locale.string("measurement").as_deref(), Some("Metric"));
-        assert_eq!(
-            locale.load().get("first_day_of_week"),
-            Some(&Value::from(1))
-        );
-        assert!(settings_at(&file).contains_key("appearance"));
+    tilo_test_env::scenario! {
+        fn settings_live_in_the_section_of_their_scope_and_store_only_what_changed;
+
+        phase a_section_update_keeps_other_sections_and_keys;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let file = dir.path().to_path_buf();
+            let appearance = SettingsSection::named("appearance").in_profile(&file);
+            appearance
+                .update(
+                    [("theme".to_owned(), Value::from("dark"))]
+                        .into_iter()
+                        .collect(),
+                )
+                .unwrap();
+            let locale = SettingsSection::named("locale").in_profile(&file);
+            locale
+                .update(
+                    [("measurement".to_owned(), Value::from("Metric"))]
+                        .into_iter()
+                        .collect(),
+                )
+                .unwrap();
+            locale
+                .update(
+                    [("first_day_of_week".to_owned(), Value::from(1))]
+                        .into_iter()
+                        .collect(),
+                )
+                .unwrap();
+            assert_eq!(appearance.string("theme").as_deref(), Some("dark"));
+            assert_eq!(locale.string("measurement").as_deref(), Some("Metric"));
+            assert_eq!(
+                locale.load().get("first_day_of_week"),
+                Some(&Value::from(1))
+            );
+            assert!(settings_at(&file).contains_key("appearance"));
+        }
+
+        phase typed_settings_live_in_the_section_of_their_scope;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let file = dir.path().to_path_buf();
+            let storage = AppStorage::new(
+                "so.tilo.example",
+                crate::secrets::SecretStore::memory("so.tilo.example"),
+                SettingsDocument::Profile(file.clone()),
+            );
+            let prefs = storage.settings::<Prefs>();
+            assert_eq!(prefs.get(), Prefs::default());
+            let before = prefs.revision();
+            prefs.update(|prefs| prefs.confirm = false).unwrap();
+            assert_ne!(prefs.revision(), before);
+            storage
+                .settings::<Placement>()
+                .set(&Placement { x: 40 })
+                .unwrap();
+            Settings::<Prefs>::for_app("so.tilo.other")
+                .in_profile(&file)
+                .set(&Prefs {
+                    confirm: true,
+                    interval_ms: 1000,
+                })
+                .unwrap();
+
+            let document = settings_at(&file);
+            assert_eq!(
+                Value::Object(document.clone()),
+                serde_json::json!({
+                    "app_personal": {
+                        "so.tilo.example": {"confirm": false},
+                        "so.tilo.other": {"interval_ms": 1000}
+                    },
+                    "app_device_local": {"so.tilo.example": {"x": 40}}
+                })
+            );
+            assert_eq!(
+                settings_store::placement::holder("app_personal"),
+                settings_store::placement::Holder::Person
+            );
+            assert_eq!(
+                settings_store::placement::holder("app_device_local"),
+                settings_store::placement::Holder::Device
+            );
+            assert_eq!(
+                storage.settings::<Prefs>().get(),
+                Prefs {
+                    confirm: false,
+                    interval_ms: 1500
+                }
+            );
+        }
+
+        phase a_setting_nobody_changed_reads_as_the_default_of_the_device_it_is_read_on;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let file = dir.path().to_path_buf();
+            let on = |device| {
+                Settings::<Copies>::for_app("so.tilo.example")
+                    .in_profile(&file)
+                    .on_device(device)
+            };
+            assert!(on(DeviceClass::Native).get().keep);
+            assert!(!on(DeviceClass::Web).get().keep);
+            assert!(on(DeviceClass::Native).available());
+            assert!(!on(DeviceClass::Web).available());
+            assert!(
+                Settings::<Prefs>::for_app("so.tilo.example")
+                    .on_device(DeviceClass::Web)
+                    .available(),
+                "a setting is available everywhere unless it says otherwise"
+            );
+
+            // Choosing the default stores nothing, so the choice keeps following the device;
+            // choosing otherwise is the person's on every device.
+            on(DeviceClass::Native).set(&Copies { keep: true }).unwrap();
+            assert!(!settings_at(&file).contains_key("app_device_local"));
+            on(DeviceClass::Native)
+                .set(&Copies { keep: false })
+                .unwrap();
+            assert!(!on(DeviceClass::Native).get().keep);
+            on(DeviceClass::Web).set(&Copies { keep: true }).unwrap();
+            assert!(on(DeviceClass::Web).get().keep);
+        }
+
+        phase changing_one_field_never_stores_the_others_defaults;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let file = dir.path().to_path_buf();
+            let prefs = Settings::<Prefs>::for_app("so.tilo.example").in_profile(&file);
+            prefs.update(|prefs| prefs.confirm = false).unwrap();
+            let stored = || {
+                SettingsSection::named("app_personal")
+                    .in_profile(&file)
+                    .load()
+                    .get("so.tilo.example")
+                    .cloned()
+            };
+            assert_eq!(stored(), Some(serde_json::json!({"confirm": false})));
+            Settings::<Prefs>::for_app("so.tilo.example")
+                .in_profile(&file)
+                .update(|prefs| prefs.interval_ms = 900)
+                .unwrap();
+            prefs.update(|prefs| prefs.confirm = true).unwrap();
+            assert_eq!(
+                stored(),
+                Some(serde_json::json!({"confirm": true, "interval_ms": 900}))
+            );
+            let revision = prefs.revision();
+            prefs.set(&prefs.get()).unwrap();
+            let elsewhere = dir.path().join("other");
+            Settings::<Prefs>::for_app("so.tilo.example")
+                .in_profile(&elsewhere)
+                .update(|prefs| prefs.interval_ms = 700)
+                .unwrap();
+            assert_eq!(prefs.revision(), revision);
+        }
+
+        phase a_key_that_does_not_decode_reads_as_its_default_alone;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let file = dir.path().to_path_buf();
+            SettingsSection::named("app_personal")
+                .in_profile(&file)
+                .update(
+                    serde_json::json!({"so.tilo.example": {"confirm": false, "interval_ms": "soon", "retired": 1}})
+                        .as_object()
+                        .unwrap()
+                        .clone(),
+                )
+                .unwrap();
+            let prefs = Settings::<Prefs>::for_app("so.tilo.example").in_profile(&file);
+            assert_eq!(
+                prefs.get(),
+                Prefs {
+                    confirm: false,
+                    interval_ms: 1500
+                }
+            );
+            prefs.update(|prefs| prefs.interval_ms = 2000).unwrap();
+            assert_eq!(
+                SettingsSection::named("app_personal")
+                    .in_profile(&file)
+                    .load()
+                    .get("so.tilo.example"),
+                Some(&serde_json::json!({"confirm": false, "interval_ms": 2000, "retired": 1}))
+            );
+        }
+
+        phase a_personal_section_too_large_to_roam_is_refused;
+        {
+            #[derive(Default, serde::Serialize, serde::Deserialize)]
+            struct Big {
+                words: Vec<String>,
+            }
+            impl SettingsSchema for Big {
+                const SCOPE: Scope = Scope::Personal;
+            }
+            let dir = tempfile::tempdir().unwrap();
+            let file = dir.path().to_path_buf();
+            let big = Settings::<Big>::for_app("so.tilo.example").in_profile(&file);
+            let words = vec!["x".repeat(1024); 80];
+            let error = big.set(&Big { words }).unwrap_err();
+            assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+            assert!(settings_at(&file).is_empty());
+        }
+
+        phase a_malformed_document_reads_as_empty;
+        {
+            assert!(parse_settings("{not json").is_empty());
+            let dir = tempfile::tempdir().unwrap();
+            assert!(
+                SettingsSection::named("locale")
+                    .in_profile(dir.path())
+                    .load()
+                    .is_empty()
+            );
+        }
     }
 
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -902,60 +1086,6 @@ mod tests {
         const SCOPE: Scope = Scope::DeviceLocal;
     }
 
-    #[test]
-    fn typed_settings_live_in_the_section_of_their_scope() {
-        let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().to_path_buf();
-        let storage = AppStorage::new(
-            "so.tilo.example",
-            crate::secrets::SecretStore::memory("so.tilo.example"),
-            SettingsDocument::Profile(file.clone()),
-        );
-        let prefs = storage.settings::<Prefs>();
-        assert_eq!(prefs.get(), Prefs::default());
-        let before = prefs.revision();
-        prefs.update(|prefs| prefs.confirm = false).unwrap();
-        assert_ne!(prefs.revision(), before);
-        storage
-            .settings::<Placement>()
-            .set(&Placement { x: 40 })
-            .unwrap();
-        Settings::<Prefs>::for_app("so.tilo.other")
-            .in_profile(&file)
-            .set(&Prefs {
-                confirm: true,
-                interval_ms: 1000,
-            })
-            .unwrap();
-
-        let document = settings_at(&file);
-        assert_eq!(
-            Value::Object(document.clone()),
-            serde_json::json!({
-                "app_personal": {
-                    "so.tilo.example": {"confirm": false},
-                    "so.tilo.other": {"interval_ms": 1000}
-                },
-                "app_device_local": {"so.tilo.example": {"x": 40}}
-            })
-        );
-        assert_eq!(
-            settings_store::placement::holder("app_personal"),
-            settings_store::placement::Holder::Person
-        );
-        assert_eq!(
-            settings_store::placement::holder("app_device_local"),
-            settings_store::placement::Holder::Device
-        );
-        assert_eq!(
-            storage.settings::<Prefs>().get(),
-            Prefs {
-                confirm: false,
-                interval_ms: 1500
-            }
-        );
-    }
-
     #[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
     struct Copies {
         keep: bool,
@@ -973,132 +1103,6 @@ mod tests {
         fn available_on(device: DeviceClass) -> bool {
             device == DeviceClass::Native
         }
-    }
-
-    #[test]
-    fn a_setting_nobody_changed_reads_as_the_default_of_the_device_it_is_read_on() {
-        let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().to_path_buf();
-        let on = |device| {
-            Settings::<Copies>::for_app("so.tilo.example")
-                .in_profile(&file)
-                .on_device(device)
-        };
-        assert!(on(DeviceClass::Native).get().keep);
-        assert!(!on(DeviceClass::Web).get().keep);
-        assert!(on(DeviceClass::Native).available());
-        assert!(!on(DeviceClass::Web).available());
-        assert!(
-            Settings::<Prefs>::for_app("so.tilo.example")
-                .on_device(DeviceClass::Web)
-                .available(),
-            "a setting is available everywhere unless it says otherwise"
-        );
-
-        // Choosing the default stores nothing, so the choice keeps following the device;
-        // choosing otherwise is the person's on every device.
-        on(DeviceClass::Native).set(&Copies { keep: true }).unwrap();
-        assert!(!settings_at(&file).contains_key("app_device_local"));
-        on(DeviceClass::Native)
-            .set(&Copies { keep: false })
-            .unwrap();
-        assert!(!on(DeviceClass::Native).get().keep);
-        on(DeviceClass::Web).set(&Copies { keep: true }).unwrap();
-        assert!(on(DeviceClass::Web).get().keep);
-    }
-
-    #[test]
-    fn changing_one_field_never_stores_the_others_defaults() {
-        let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().to_path_buf();
-        let prefs = Settings::<Prefs>::for_app("so.tilo.example").in_profile(&file);
-        prefs.update(|prefs| prefs.confirm = false).unwrap();
-        let stored = || {
-            SettingsSection::named("app_personal")
-                .in_profile(&file)
-                .load()
-                .get("so.tilo.example")
-                .cloned()
-        };
-        assert_eq!(stored(), Some(serde_json::json!({"confirm": false})));
-        Settings::<Prefs>::for_app("so.tilo.example")
-            .in_profile(&file)
-            .update(|prefs| prefs.interval_ms = 900)
-            .unwrap();
-        prefs.update(|prefs| prefs.confirm = true).unwrap();
-        assert_eq!(
-            stored(),
-            Some(serde_json::json!({"confirm": true, "interval_ms": 900}))
-        );
-        let revision = prefs.revision();
-        prefs.set(&prefs.get()).unwrap();
-        let elsewhere = dir.path().join("other");
-        Settings::<Prefs>::for_app("so.tilo.example")
-            .in_profile(&elsewhere)
-            .update(|prefs| prefs.interval_ms = 700)
-            .unwrap();
-        assert_eq!(prefs.revision(), revision);
-    }
-
-    #[test]
-    fn a_key_that_does_not_decode_reads_as_its_default_alone() {
-        let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().to_path_buf();
-        SettingsSection::named("app_personal")
-            .in_profile(&file)
-            .update(
-                serde_json::json!({"so.tilo.example": {"confirm": false, "interval_ms": "soon", "retired": 1}})
-                    .as_object()
-                    .unwrap()
-                    .clone(),
-            )
-            .unwrap();
-        let prefs = Settings::<Prefs>::for_app("so.tilo.example").in_profile(&file);
-        assert_eq!(
-            prefs.get(),
-            Prefs {
-                confirm: false,
-                interval_ms: 1500
-            }
-        );
-        prefs.update(|prefs| prefs.interval_ms = 2000).unwrap();
-        assert_eq!(
-            SettingsSection::named("app_personal")
-                .in_profile(&file)
-                .load()
-                .get("so.tilo.example"),
-            Some(&serde_json::json!({"confirm": false, "interval_ms": 2000, "retired": 1}))
-        );
-    }
-
-    #[test]
-    fn a_personal_section_too_large_to_roam_is_refused() {
-        #[derive(Default, serde::Serialize, serde::Deserialize)]
-        struct Big {
-            words: Vec<String>,
-        }
-        impl SettingsSchema for Big {
-            const SCOPE: Scope = Scope::Personal;
-        }
-        let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().to_path_buf();
-        let big = Settings::<Big>::for_app("so.tilo.example").in_profile(&file);
-        let words = vec!["x".repeat(1024); 80];
-        let error = big.set(&Big { words }).unwrap_err();
-        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
-        assert!(settings_at(&file).is_empty());
-    }
-
-    #[test]
-    fn a_malformed_document_reads_as_empty() {
-        assert!(parse_settings("{not json").is_empty());
-        let dir = tempfile::tempdir().unwrap();
-        assert!(
-            SettingsSection::named("locale")
-                .in_profile(dir.path())
-                .load()
-                .is_empty()
-        );
     }
 
     #[test]

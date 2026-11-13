@@ -68,98 +68,102 @@ fn encoded() -> EncodedAction {
     }
 }
 
-#[test]
-fn exact_registered_spec_selects_but_copied_or_client_only_claims_do_not() {
-    let resource = resource();
-    let encoded = encoded();
-    assert!(
-        select(&READERS, &resource, &resource.actions[0], &encoded)
-            .unwrap()
-            .is_some()
-    );
-    assert!(
-        select(&[], &resource, &resource.actions[0], &encoded)
-            .unwrap()
-            .is_none()
-    );
-    let copied = resource.actions[0].clone();
-    assert!(matches!(
-        select(&READERS, &resource, &copied, &encoded),
-        Err(SemanticReadError::InvalidContract)
-    ));
-    let duplicate = [
-        RegisteredSemanticReader::new("fixture.read", schema, decode, project),
-        RegisteredSemanticReader::new("fixture.read", schema, decode, project),
-    ];
-    assert!(matches!(
-        select(&duplicate, &resource, &resource.actions[0], &encoded),
-        Err(SemanticReadError::InvalidRegistration)
-    ));
-}
+tilo_test_env::scenario! {
+    fn only_the_exact_registered_reader_and_request_are_admitted;
 
-#[test]
-fn changed_contract_resource_and_closed_payload_are_refused() {
-    for change in 0..5 {
-        let mut resource = resource();
-        match change {
-            0 => resource.actions[0].type_mut().kind = OperationKind::View,
-            1 => resource.actions[0].type_mut().contract.kind = tilo_actions::ActionKind::Undoable,
-            2 => {
-                resource.actions[0].type_mut().contract.execution =
-                    ExecutionMode::Background { cancellable: false }
-            }
-            3 => {
-                resource.actions[0].type_mut().contract.result = ResultSpec::Json {
-                    schema: serde_json::json!({"type":"object"}),
-                }
-            }
-            _ => resource.actions[0].type_mut().operation_type = Some("client.assertion".into()),
-        }
+    phase exact_registered_spec_selects_but_copied_or_client_only_claims_do_not;
+    {
+        let resource = resource();
+        let encoded = encoded();
+        assert!(
+            select(&READERS, &resource, &resource.actions[0], &encoded)
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            select(&[], &resource, &resource.actions[0], &encoded)
+                .unwrap()
+                .is_none()
+        );
+        let copied = resource.actions[0].clone();
         assert!(matches!(
-            select(&READERS, &resource, &resource.actions[0], &encoded()),
+            select(&READERS, &resource, &copied, &encoded),
             Err(SemanticReadError::InvalidContract)
         ));
+        let duplicate = [
+            RegisteredSemanticReader::new("fixture.read", schema, decode, project),
+            RegisteredSemanticReader::new("fixture.read", schema, decode, project),
+        ];
+        assert!(matches!(
+            select(&duplicate, &resource, &resource.actions[0], &encoded),
+            Err(SemanticReadError::InvalidRegistration)
+        ));
     }
-    let mut wrong_resource = resource();
-    wrong_resource.id = tilo_actions::ResourceId::new("another.document");
-    assert!(matches!(
-        select(
-            &READERS,
-            &wrong_resource,
-            &wrong_resource.actions[0],
-            &encoded()
-        ),
-        Err(SemanticReadError::InvalidRequest)
-    ));
-    let resource = resource();
-    let mut bad = encoded();
-    bad.payload = b"{\"pageSize\":2,\"heads\":[]}".to_vec();
-    assert!(matches!(
-        select(&READERS, &resource, &resource.actions[0], &bad),
-        Err(SemanticReadError::InvalidRequest)
-    ));
-}
 
-#[test]
-fn oversized_request_is_refused_before_app_decoder() {
-    fn must_not_decode(_: &ResourceSpec, _: &[u8]) -> Result<(), SemanticReadError> {
-        panic!("oversized request reached app decoder")
+    phase changed_contract_resource_and_closed_payload_are_refused;
+    {
+        for change in 0..5 {
+            let mut resource = resource();
+            match change {
+                0 => resource.actions[0].type_mut().kind = OperationKind::View,
+                1 => resource.actions[0].type_mut().contract.kind = tilo_actions::ActionKind::Undoable,
+                2 => {
+                    resource.actions[0].type_mut().contract.execution =
+                        ExecutionMode::Background { cancellable: false }
+                }
+                3 => {
+                    resource.actions[0].type_mut().contract.result = ResultSpec::Json {
+                        schema: serde_json::json!({"type":"object"}),
+                    }
+                }
+                _ => resource.actions[0].type_mut().operation_type = Some("client.assertion".into()),
+            }
+            assert!(matches!(
+                select(&READERS, &resource, &resource.actions[0], &encoded()),
+                Err(SemanticReadError::InvalidContract)
+            ));
+        }
+        let mut wrong_resource = resource();
+        wrong_resource.id = tilo_actions::ResourceId::new("another.document");
+        assert!(matches!(
+            select(
+                &READERS,
+                &wrong_resource,
+                &wrong_resource.actions[0],
+                &encoded()
+            ),
+            Err(SemanticReadError::InvalidRequest)
+        ));
+        let resource = resource();
+        let mut bad = encoded();
+        bad.payload = b"{\"pageSize\":2,\"heads\":[]}".to_vec();
+        assert!(matches!(
+            select(&READERS, &resource, &resource.actions[0], &bad),
+            Err(SemanticReadError::InvalidRequest)
+        ));
     }
-    let readers = [RegisteredSemanticReader::new(
-        "fixture.read",
-        schema,
-        must_not_decode,
-        project,
-    )];
-    let resource = resource();
-    let encoded = EncodedAction {
-        type_id: "fixture.read".into(),
-        payload: vec![b' '; MAX_REQUEST_BYTES + 1],
-    };
-    assert!(matches!(
-        select(&readers, &resource, &resource.actions[0], &encoded),
-        Err(SemanticReadError::Limit)
-    ));
+
+    phase oversized_request_is_refused_before_app_decoder;
+    {
+        fn must_not_decode(_: &ResourceSpec, _: &[u8]) -> Result<(), SemanticReadError> {
+            panic!("oversized request reached app decoder")
+        }
+        let readers = [RegisteredSemanticReader::new(
+            "fixture.read",
+            schema,
+            must_not_decode,
+            project,
+        )];
+        let resource = resource();
+        let encoded = EncodedAction {
+            type_id: "fixture.read".into(),
+            payload: vec![b' '; MAX_REQUEST_BYTES + 1],
+        };
+        assert!(matches!(
+            select(&readers, &resource, &resource.actions[0], &encoded),
+            Err(SemanticReadError::Limit)
+        ));
+    }
 }
 
 #[test]
