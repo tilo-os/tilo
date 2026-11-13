@@ -57,8 +57,8 @@ pub(crate) fn current(reading: &Reading) -> Appearance {
     *reading.lock_recover()
 }
 
-/// Publishes the portal's appearance, then the appearance after each change
-/// to it, until the connection closes.
+/// Publishes the portal's appearance, then the appearance after each change,
+/// until the connection closes.
 fn watch(
     connection: &zbus::blocking::Connection,
     mut publish: impl FnMut(Appearance),
@@ -184,7 +184,6 @@ mod tests {
         assert_eq!(appearance, Appearance::default());
     }
 
-    /// A stand-in for `xdg-desktop-portal` serving one appearance.
     struct FakePortal {
         appearance: HashMap<String, OwnedValue>,
     }
