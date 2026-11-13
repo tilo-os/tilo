@@ -1,7 +1,5 @@
-//! Code help (suggestions, problems, go to definition) comes from a language
-//! server. When it cannot run, the status bar says so in a person's words, and
-//! the reason sits behind that readout: a click, or activating it from an
-//! assistive technology, opens a sheet that says why and offers to try again.
+//! Code help (suggestions, problems, go to definition) comes from a language server; when it cannot
+//! run, the status bar says so in a person's words.
 
 use ui::chrome::status_bar::{StatusReadout, draw_readouts};
 use ui::text_render::TextRenderer;
@@ -14,20 +12,16 @@ use super::dialogs::{Answer, Wording};
 use super::{CodeApp, LspStatus};
 use crate::lsp::LspFailure;
 
-/// The semantic target of the readout's accessible button.
 const TARGET: &str = "code.code-help";
 
 #[derive(Default)]
 pub(super) struct CodeHelpReadout {
-    /// Where the readout was last painted; empty while it is not shown.
     rect: Rect,
     hovered: bool,
     painted_hovered: bool,
-    /// Whether the sheet saying why is up.
     asked: bool,
 }
 
-/// What each of the sheet's answers does, in the order it lists them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum CodeHelpAnswer {
     TryAgain,
@@ -43,7 +37,6 @@ impl CodeApp {
         }
     }
 
-    /// What the status bar says while code help is missing, else empty.
     pub(super) fn code_help_readout(&self) -> String {
         if self.code_help_failure().is_none() {
             return String::new();
@@ -117,8 +110,6 @@ impl CodeApp {
         }
     }
 
-    /// "Try again" lets the next sync start the server afresh; "Copy details"
-    /// leaves the sheet up, so the person can still try again.
     pub(super) fn answer_code_help(&mut self, index: usize) {
         match self.code_help_answers().get(index) {
             Some(CodeHelpAnswer::TryAgain) => {
@@ -134,8 +125,6 @@ impl CodeApp {
         }
     }
 
-    /// Paint the status bar in `band`, leading with the code-help readout
-    /// while code help is unavailable.
     pub(super) fn draw_status(
         &mut self,
         scene: &mut Scene,
@@ -183,8 +172,6 @@ impl CodeApp {
         self.code_help.hovered != self.code_help.painted_hovered
     }
 
-    /// Follow the pointer over the readout, and open the sheet on a press on
-    /// it. Returns `true` when the press was the readout's.
     pub(super) fn code_help_pointer(&mut self, event: &WindowEvent) -> bool {
         self.code_help.hovered = self.code_help.rect.contains(self.last_cursor);
         let pressed = matches!(

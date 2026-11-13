@@ -1,12 +1,5 @@
 //! The editor's disk work, done where the window may wait for it.
 //!
-//! Reading a file into a tab, writing it back, noticing it changed, reading a
-//! folder and opening a project all touch the disk. Where the window's thread
-//! may wait (its own process, a test) that happens at once, as a direct call.
-//! On the compositor's frame loop ([`ui::storage::waiting`]), which never
-//! waits on the disk, the same work runs on a background thread; the window
-//! is woken when it is done and folds the outcome in at its next settlement,
-//! exactly as the direct call would have.
 
 use std::any::Any;
 use std::collections::HashMap;
@@ -17,27 +10,19 @@ use ui::widget::toast::ToastKind;
 
 use super::CodeApp;
 
-/// What to do with a finished piece of work, given the editor and the live
-/// document.
 type Apply = Box<dyn FnOnce(&mut CodeApp, &mut ui::widget::Edits<'_>, Box<dyn Any + Send>)>;
 
-/// Work finished on a background thread, by the id it was queued under.
 type Finished = Arc<Mutex<Vec<(u64, Box<dyn Any + Send>)>>>;
 
-/// Work under way on a background thread, and what came back.
 #[derive(Default)]
 pub(crate) struct DiskWork {
     next: u64,
     waiting: HashMap<u64, Apply>,
     done: Finished,
-    /// Files being read into their tabs.
     pub(crate) seeding: std::collections::HashSet<super::TreeId>,
 }
 
 impl CodeApp {
-    /// Do `work`, then `apply` its outcome: at once where this thread may
-    /// wait on the disk, else on a background thread named `name`, applying
-    /// at the settlement after it is done.
     pub(crate) fn on_disk<T: Send + 'static>(
         &mut self,
         name: &'static str,
@@ -67,7 +52,6 @@ impl CodeApp {
         });
     }
 
-    /// [`Self::on_disk`] for an outcome applied to the live document.
     pub(crate) fn on_disk_editing<T: Send + 'static>(
         &mut self,
         name: &'static str,
@@ -82,9 +66,6 @@ impl CodeApp {
         self.in_background(name, |_| true, work, apply);
     }
 
-    /// [`Self::on_disk`] for work a file effect waits on: its answer at once
-    /// where this thread may wait, else `None`, and the effect waiting
-    /// ([`CodeApp::finish_file_effect`]) is answered once the work is done.
     pub(crate) fn on_disk_answering<T: Send + 'static>(
         &mut self,
         name: &'static str,
@@ -150,7 +131,6 @@ impl CodeApp {
         id
     }
 
-    /// Fold in the work finished since the last settlement.
     pub(crate) fn apply_disk_work(&mut self, doc: &mut ui::widget::Edits<'_>) {
         let finished = std::mem::take(&mut *self.disk_work.done.lock_recover());
         for (id, outcome) in finished {

@@ -1,11 +1,5 @@
 //! Find and replace in the active buffer, for the window bar's search.
 //!
-//! The editor is the [`Findable`] the bar drives in place: it runs the query
-//! over the text it shows, keeps the matches to paint, selects the current
-//! one, and replaces through the editor's own edit path, which the app
-//! dispatches as one undoable action like every other edit. Find (Ctrl+F)
-//! and Replace (Ctrl+H) open the bar's search; the editor draws no find
-//! field of its own.
 
 use ui::widget::toast::ToastKind;
 use ui::widget::{FindMatch, FindOptions, Findable};
@@ -28,8 +22,6 @@ impl Findable for CodeApp {
         } else {
             (Vec::new(), Vec::new())
         };
-        // A find again after an edit keeps the emphasised match; a new
-        // query reveals its first one.
         self.find_current = self.find_current.filter(|i| *i < matches.len());
         self.find_matches = matches;
         self.editor
@@ -83,8 +75,6 @@ impl Findable for CodeApp {
 }
 
 impl CodeApp {
-    /// Open the window bar's search on the active buffer: on its query for
-    /// Find, on its replacement for Replace.
     pub(super) fn open_find(opening: SearchOpening) {
         ui::window_toolbar::open_search(opening);
     }
@@ -97,8 +87,6 @@ impl CodeApp {
         }
     }
 
-    /// Make match `index` current: select it, so the next keystroke replaces
-    /// it the way it would in any editor, and keep it on screen.
     pub(super) fn focus_match(&mut self, index: Option<usize>) {
         self.find_current = index;
         if let Some(m) = index.and_then(|i| self.find_matches.get(i)).copied() {

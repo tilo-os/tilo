@@ -1,32 +1,5 @@
-//! Root widget for the code editor. Owns the [`Session`] (project + open
-//! buffers), the editor pane, the status model and the bottom panel, and
-//! coordinates the data flow between them and the file tree in the shell's
-//! sidebar.
-//!
-//! Layout, in the shell's content column:
-//! ```text
-//! +-------------------------------+
-//! |  editor view                  |
-//! +-------------------------------+
-//! |  bottom panel (problems/term) |
-//! +-------------------------------+
-//! |  status bar                   |
-//! +-------------------------------+
-//! ```
-//! The caret and diagnostics readout is a real row: the status bar reserves its
-//! band under the editor, so nothing is ever drawn over code. The shown file's
-//! name, the bottom panel toggle, and find and replace in the buffer are the
-//! window bar's ([`window_bar`], [`find_workflow`]). Searching the project and
-//! running a command belong to the platform search, which this root opens with
-//! Ctrl+P, Ctrl+Shift+P and Ctrl+Shift+F.
-//!
-//! ## The sidebar
-//!
-//! The file tree is the shell's sidebar ([`ui::widget::NavShell`]): docked
-//! beside the editor when the window is wide, a drawer over it when it is
-//! narrow, with its toggle in the window's bar. The editor shows the project
-//! through an [`ExplorerFeed`] and reads the sidebar through its
-//! [`ui::widget::WindowBarLink`].
+//! The code editor's root widget: the [`Session`] (project and open buffers), the editor pane, the
+//! status model and the bottom panel.
 
 mod continuity;
 
@@ -117,8 +90,6 @@ struct DiagnosticsCache {
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct SymbolProjectionRevision {
     heads: Vec<ChangeHash>,
-    /// Canonical resource identity and displayed path, sorted independently of
-    /// the local project tree's allocation and iteration order.
     files: Vec<(String, String)>,
 }
 
@@ -132,15 +103,8 @@ struct ReopenPhases {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct SearchProjectionRevision {
-    /// Collaborative text and durable file metadata are authoritative in the
-    /// CRDT, so its heads cheaply cover every remote/local document edit.
     document_heads: Vec<ChangeHash>,
     pending_ops: usize,
-    /// Filesystem/project and streamed-result changes are local projections,
-    /// not necessarily CRDT mutations.
-    /// `None` means this local revision counter is exhausted. In that state we
-    /// deliberately rebuild rather than reusing a cursor that could describe a
-    /// different tree after a wrapped identity.
     local_generation: Option<u64>,
 }
 
@@ -153,8 +117,6 @@ struct SearchRefreshStats {
     indexed_records: usize,
 }
 
-/// The files an opener may show, and the ones asked for since the last
-/// sync.
 #[derive(Default)]
 struct Opened {
     known: HashSet<String>,
@@ -167,52 +129,27 @@ struct Opened {
 )]
 pub struct CodeApp {
     session: Session,
-    /// What the shell's sidebar lists: the project and the file on screen.
-    /// What the person does there lands in `explorer_events`.
     explorer: ExplorerFeed,
     explorer_events: ExplorerEvents,
-    /// The shell around the editor: its sidebar, open or put away.
     bar: Option<WindowBarLink>,
-    /// The window bar's toggle of the bottom panel.
     panel_entry: ui::framework::BarCommands<()>,
     editor: EditorView,
-    /// The caret / language / diagnostics readout, drawn in the status bar
-    /// band under the editor.
     status: StatusModel,
     panel: Box<BottomPanel>,
 
-    /// What a test runs with the document at the start of the next sync.
     #[cfg(test)]
     pub(crate) test_hook: Option<TestHook>,
-    /// Where every edit of the project goes: the framework's door, which
-    /// checks, applies, records and replicates it. `None` until the
-    /// framework mounts the editor; an editor that is not mounted edits
-    /// nothing.
     dispatch: Option<ui::framework::Dispatcher<crate::project::Project>>,
-    /// The project as it was last presented, and the live handle that asks
-    /// for the text of the file the window shows.
     presented: std::rc::Rc<crate::project::Project>,
-    /// Files a search hit or an agent's `open` asked to show, taken up in
-    /// the next sync, and the files it may name.
     opened: std::rc::Rc<std::cell::RefCell<Opened>>,
     live_state: Option<ui::framework::Live<crate::project::Project>>,
-    /// The `(revision, loads)` of the project last presented from
-    /// `live_state`.
     followed: Option<(u64, u64)>,
-    /// What the editor shares with the view it is laid out in.
     store: view::Shared,
-    /// Whether the files, symbols and search hits were projected again
-    /// since the view's store last took them.
     shown_stale: bool,
-    /// The file ids whose text the window demanded last.
     demanded: Vec<String>,
-    /// A command invoked through its published effect. An effect handler has
-    /// no document, so the next sync runs the command with it.
     pending_command: Option<Command>,
-    /// The file a New File command created, opened once its record arrives.
     pending_open: Option<String>,
 
-    /// Last cursor position, since `MouseInput` carries no coordinates.
     last_cursor: Point,
     panel_visible: bool,
 
@@ -224,77 +161,37 @@ pub struct CodeApp {
     content_node: Option<NodeId>,
     editor_col_node: Option<NodeId>,
 
-    /// The node currently bound into the editor view, so we only re-bind on
-    /// change.
     bound_node: Option<TreeId>,
-    /// One-time seed guard for the CRDT buffers.
     seeded: bool,
-    /// The file whose disk text the document refused last, and when: the
-    /// recording is tried again until the document holds the text.
     text_seed: Option<(String, std::time::Instant)>,
 
-    /// The embedded system terminal, spawned lazily the first time the Terminal
-    /// dock tab is shown. `None` until then (so `CodeApp::new` — used across the
-    /// test suite — never spawns a shell) and if the shell fails to launch.
-    ///
-    /// This reuses `terminal::TerminalWidget` through a direct dependency on the
-    /// `terminal` app crate. That is a stop-gap: an app depending on another app
-    /// is the wrong shape, and the same widget should back both this panel and
-    /// the standalone terminal. The right home is a shared terminal-widget crate
-    /// that both binaries depend on; until the terminal is extracted there, this
-    /// panel keeps embedding the widget from the app crate rather than shipping a
-    /// second, weaker emulator.
+    /// The embedded terminal, spawned the first time the Terminal tab is shown, so `CodeApp::new` never
+    /// spawns a shell. It embeds `terminal::TerminalWidget`, which belongs in a shared terminal-widget
+    /// crate rather than in another app.
     terminal: Option<ui::widget::Embedded<terminal::TerminalView>>,
-    /// The command lines asked of the terminal's session, handed from the
-    /// project's outbox to the terminal that types them.
     terminal_runs: terminal::runs::RunQueue,
-    /// True while the terminal owns keyboard input (the user clicked into it).
-    /// Cleared when a press lands anywhere else.
     terminal_focused: bool,
 
-    /// The live LSP session for the active buffer's language, when one has been
-    /// started (opt-in — see `maybe_start_lsp`). Diagnostics / completion /
-    /// hover / definition responses are drained from it each frame.
     lsp: Option<crate::lsp::LspClient>,
-    /// The language the current `lsp` client serves, so we restart it when the
-    /// active buffer switches to a different language.
     lsp_language: Option<crate::model::Language>,
-    /// The `file://` URI most recently opened on the LSP server, so edits go out
-    /// as `didChange` against the right document.
     lsp_uri: Option<String>,
-    /// Monotonic document version for LSP `didChange`.
     lsp_version: i64,
-    /// LSP-provided diagnostics, keyed by document URI. Merged with the local
-    /// linter into the Problems panel + editor squiggles.
     lsp_diagnostics: std::collections::HashMap<String, Vec<crate::lsp::LspDiagnostic>>,
     /// The buffer text last sent to the LSP server (as `didChange`), so we only
     /// notify on an actual change.
     lsp_sent_text: String,
     diagnostics_cache: Option<DiagnosticsCache>,
-    /// At most two inactive exact-input lint snapshots and 16,384 records.
     inactive_diagnostics: Vec<DiagnosticsCache>,
     #[cfg(test)]
     diagnostics_buffer_reads: usize,
-    /// What the server is currently busy with, if anything. Shown in the status
-    /// bar so a multi-minute rust-analyzer index reads as "working", not
-    /// "broken".
     lsp_status: LspStatus,
-    /// Languages whose server failed to start, so we report the failure once
-    /// and do not respawn a missing binary on every frame.
     lsp_failed: std::collections::HashSet<crate::model::Language>,
-    /// Where language servers are looked for: the person's tool folders
-    /// ([`tilo_process::tools::ToolDirs::current`]) unless set.
     lsp_tools: Option<tilo_process::tools::ToolDirs>,
-    /// A language server is being launched on a background thread.
     lsp_launching: bool,
 
-    /// The matches of the window search's query in the active buffer, and
-    /// which of them is current ([`find_workflow`]).
     find_matches: Vec<crate::find::Match>,
     find_current: Option<usize>,
 
-    /// The project text search the platform palette drives, and the latch that
-    /// asks the platform to open its search.
     search_job: Option<search::Job>,
     search_hits: Vec<search::Hit>,
     search_truncated: bool,
@@ -310,86 +207,52 @@ pub struct CodeApp {
     /// reads them and never rebuilds files, symbols, result previews, or an
     /// LSP index.
     search_entries: Vec<ui::tilo_resource::SearchEntry>,
-    /// Revision gate for the expensive complete projection above. An idle
-    /// `sync` compares this tiny value and does no project/body traversal.
     search_projection_revision: Option<SearchProjectionRevision>,
     search_projection_local_generation: Option<u64>,
-    /// Last actual phase costs, exposed only by the explicit native observer.
     reopen_phase_micros: ReopenPhases,
     symbol_projection_revision: Option<SymbolProjectionRevision>,
     projected_search_results: Vec<actions::SearchResultRef>,
     #[cfg(test)]
     search_refresh_stats: SearchRefreshStats,
 
-    /// Whether the editor serves a window someone uses, and may start work
-    /// that reaches outside the process (a language server).
     live: bool,
-    /// The person's preferences, once the framework mounted the editor.
     settings: Option<ui::framework::Setting<crate::settings::CodeSettings>>,
-    /// The chrome laid out last (dock shown, its tab, the find bar), so a
-    /// change made outside an event (an effect, a staged scenario) rebuilds
-    /// the layout before it is drawn.
     laid_out: (bool, PanelTab),
     structure_dirty: bool,
-    /// A file picker in flight, and what the app asked for.
     portal: Option<ui::portal::PortalChannel>,
     portal_intent: Option<PortalIntent>,
-    /// The answer owed to the effect that is opening or saving a file, given
-    /// once the picker or the write settles.
     file_reply: Option<ui::framework::EffectReply>,
-    /// Disk work under way where the window must not wait for it.
     disk_work: disk_work::DiskWork,
-    /// Whether the shown file is being looked at for changes on disk.
     staleness_looking: bool,
-    /// A save an effect asked for, written on the next sync, where the
-    /// buffer's text is.
     pending_save: Option<(TreeId, Option<std::path::PathBuf>)>,
-    /// The file the language server is formatting, and what follows once it
-    /// answered.
     formatting: Option<format_workflow::PendingFormat>,
-    /// The server's answer to `formatting`, applied on the next settlement.
     formatted: Option<Result<Vec<crate::lsp::TextEdit>, String>>,
-    /// The screenshot scenario still being staged: the view state it shows is
-    /// set once the file it is about is open and bound.
     staging: Option<Staging>,
-    /// Until when a staged scenario waits for a live source (the terminal's
-    /// shell) to draw.
     staging_until: Option<Instant>,
 
     /// A save that stopped because the file changed on disk. Holds the buffer
     /// it was for, so the user's choice applies to the right one.
     conflict: Option<Conflict>,
-    /// A tab close waiting on the user's "save your changes?" answer.
     close_prompt: Option<ClosePrompt>,
-    /// The sheet a question is asked in: it keeps where its answers landed.
     question_sheet: ui::widget::ModalSheet,
     code_help: code_help::CodeHelpReadout,
 
-    /// A caret position to land on once the buffer it belongs to is bound —
-    /// used by a search hit and a cross-file go-to-definition, both of which
-    /// open a file that has no editor geometry until the next frame.
     pending_jump: Option<(usize, usize)>,
     pending_continuation: Option<ui::text_position::TextPosition>,
 }
 
-/// What a test runs with the editor and its document.
 #[cfg(test)]
 pub(crate) type TestHook = Box<dyn FnOnce(&mut CodeApp, &mut ui::widget::Edits<'_>)>;
 
-/// A screenshot scenario being staged: `None` for a plain `--shots`.
 #[derive(Clone, Debug)]
 struct Staging {
     scenario: Option<String>,
 }
 
-/// What a pending portal pick is for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PortalIntent {
-    /// Replace the project with the chosen directory.
     OpenFolder,
-    /// Open the chosen file into a tab, in the current project.
     OpenFile,
-    /// Give this buffer a path and write it there.
     SaveAs(TreeId),
 }
 
@@ -400,12 +263,9 @@ struct Conflict {
     name: String,
 }
 
-/// The three ways out of a conflict.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ConflictChoice {
-    /// Write our text over theirs.
     Overwrite,
-    /// Throw our edits away and take what is on disk.
     Reload,
     Cancel,
 }
@@ -416,44 +276,36 @@ enum ConflictChoice {
 struct ClosePrompt {
     node: TreeId,
     name: String,
-    /// The file to show once this one is saved or discarded.
     then_open: Option<TreeId>,
 }
 
-/// The three ways out of an unsaved-close prompt.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum CloseChoice {
     Save,
-    /// Close the tab, discarding the unsaved edits.
     Discard,
-    /// Keep the tab open.
     Cancel,
 }
 
-/// What the language server is doing, as far as the editor can tell.
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub enum LspStatus {
-    /// No server for this buffer's language (or none configured).
     #[default]
     None,
-    /// Spawned, handshake sent, nothing reported back yet.
-    Starting { server: String },
-    /// Busy with a named task — this is the indexing state.
+    Starting {
+        server: String,
+    },
     Busy {
         server: String,
         title: String,
         detail: Option<String>,
         percentage: Option<u32>,
     },
-    /// Up and answering.
-    Ready { server: String },
-    /// Not answering, and why.
+    Ready {
+        server: String,
+    },
     Failed(crate::lsp::LspFailure),
 }
 
 impl LspStatus {
-    /// What the status bar says while the project is still being read, in
-    /// the person's words: nothing once it is ready.
     pub fn label(&self) -> String {
         match self {
             LspStatus::None | LspStatus::Ready { .. } | LspStatus::Failed(_) => String::new(),
@@ -468,22 +320,10 @@ impl LspStatus {
         }
     }
 
-    /// Whether the server is working on something — the status bar spins its
-    /// activity dot while this is true.
     pub fn is_working(&self) -> bool {
         matches!(self, LspStatus::Starting { .. } | LspStatus::Busy { .. })
     }
 
-    /// What the Problems panel should title its zero-state with while the
-    /// server is still working, or `None` when an empty list really is a
-    /// finding.
-    ///
-    /// A cold `rust-analyzer` on a workspace this size spends minutes on
-    /// `cargo metadata`, proc-macro loading and indexing before it says
-    /// anything. During that window the editor looks exactly like an editor
-    /// that has analysed the file and found it perfect. Naming the task is the
-    /// difference between "this is working" and "this is broken", and it is the
-    /// honest reading of an empty list.
     pub fn analysis_note(&self) -> Option<String> {
         let task = match self {
             LspStatus::Starting { .. } => "starting".to_string(),
@@ -519,17 +359,11 @@ impl Default for CodeApp {
 }
 
 impl CodeApp {
-    /// The editor with no project: what the app opens to when it was not given
-    /// a path. There is nothing to show, and it says so rather than inventing a
-    /// project that does not exist on this machine. Files made before a
-    /// folder is opened belong to an untitled project, named as one.
     pub fn new() -> Self {
         Self::from_session(Session::new(Project::new("Untitled")), None)
     }
 
-    /// The editor over the bundled sample project, held in memory. Shots and
-    /// the demo write the sample to disk and open it like any folder; tests
-    /// that only need a populated editor start here.
+    /// The editor over the bundled sample project, in memory.
     #[cfg(test)]
     pub(crate) fn with_sample() -> Self {
         let project = crate::sample_project::build();
@@ -541,12 +375,6 @@ impl CodeApp {
         Self::from_session(session, default)
     }
 
-    /// Open a real path: a directory becomes the project tree, a file opens in
-    /// a tab inside a project rooted at its folder.
-    ///
-    /// A path that cannot be read is reported in the editor rather than being
-    /// swallowed into an empty window — that failure is the single most
-    /// important thing the user needs to see.
     pub fn open_path(path: &std::path::Path) -> Self {
         match std::fs::metadata(path) {
             Ok(md) if md.is_dir() => match Project::from_dir(path) {
@@ -565,7 +393,6 @@ impl CodeApp {
         }
     }
 
-    /// An editor that opened nothing, showing why.
     fn failed_to_open(path: &std::path::Path, reason: &str) -> Self {
         let app = Self::new();
         Self::note(
@@ -680,25 +507,18 @@ impl CodeApp {
         }
     }
 
-    /// The project root on disk, when a real directory is open.
     pub fn project_root(&self) -> Option<std::path::PathBuf> {
         self.session.project.root_path()
     }
 
-    /// Say what the last file operation came to in the window's bar, as the
-    /// kind of news it is.
     fn note(text: impl Into<String>, kind: ToastKind) {
         ui::window_toolbar::notify(Some(ui::window_toolbar::ToolbarNotice::new(text, kind)));
     }
 
-    /// What the language server is doing.
     pub fn lsp_status(&self) -> &LspStatus {
         &self.lsp_status
     }
 
-    /// Stand in the shell: list the project in its sidebar through
-    /// `explorer`, hear the tree through `events`, and read the sidebar
-    /// through `bar`.
     #[must_use]
     pub(crate) fn in_shell(
         mut self,
@@ -714,8 +534,6 @@ impl CodeApp {
         self
     }
 
-    /// Show or hide the sidebar (Ctrl+B, the palette command), as the
-    /// window bar's toggle does.
     fn toggle_sidebar(&self) {
         if let Some(bar) = &self.bar {
             bar.event(&ui::window_toolbar::ToolbarEvent::ToggleSidebar);
@@ -734,8 +552,6 @@ impl CodeApp {
         }
     }
 
-    /// Apply `action` to `doc` now, through the framework's door: within the
-    /// event, so the editor sees its own edit before the next keystroke.
     fn submit_now(
         &self,
         doc: &mut ui::widget::Edits<'_>,
@@ -749,12 +565,9 @@ impl CodeApp {
         }
     }
 
-    /// Keep the open buffers' saved-on-disk comparison current, and bind the
-    /// editor to the active buffer's text. Reads only: a buffer's text is
-    /// seeded when its file is opened ([`Self::open_node`]).
+    /// Keep the buffers' saved-on-disk comparison current and bind the editor to the active buffer's
+    /// text. Reads only.
     fn ensure_buffers(&mut self, doc: &AutoCommit) {
-        // A New File command opens the file it created once its record is in
-        // the project.
         if let Some(id) = self.pending_open.clone()
             && let Some(node) = self.session.project.node_for_resource(&id)
         {
@@ -762,8 +575,7 @@ impl CodeApp {
             self.open_node(node);
         }
         if let Some(buffer) = self.session.buffer.as_mut() {
-            // A buffer with no file on disk (a scratch file, a collaborator's
-            // file) is saved when its text is first here: an untouched one is
+            // A buffer with no file on disk is saved when its text is first here: an untouched one is
             // clean and closes without a prompt.
             if buffer.stamp.is_none() && buffer.path.is_none() && buffer.saved_text.is_empty() {
                 let key = self
@@ -790,7 +602,6 @@ impl CodeApp {
             }
         }
 
-        // Bind the editor to the active buffer.
         let active = self.session.active_buffer().map(|b| (b.node, b.language));
         match active {
             Some((node, lang)) => {
@@ -810,16 +621,6 @@ impl CodeApp {
         }
     }
 
-    /// Record the disk text of the file the window shows when the document
-    /// does not hold it yet: the first time the file is opened in the
-    /// project, once its entry is recorded. Applied in the settlement as
-    /// the person's own edit, like their typing. Opening used to queue this
-    /// recording from the open itself, and a launch that hands the editor its
-    /// file queued it before the record would take it, which left the file
-    /// open over an empty "No file open" editor with nothing to select or
-    /// edit. Text already there — a collaborator's or an earlier session's
-    /// unsaved edits — is kept. A refused recording is tried again at most
-    /// once a second.
     fn record_missing_text(&mut self, doc: &mut ui::widget::Edits<'_>) {
         const RETRY: std::time::Duration = std::time::Duration::from_secs(1);
         let Some(buffer) = self.session.active_buffer() else {
@@ -837,8 +638,6 @@ impl CodeApp {
         {
             return;
         }
-        // The file's own entry is recorded first (`record_disk_entries`):
-        // text for a file the project does not hold yet is not taken.
         if EditorDoc::file(doc, &key).is_none() {
             return;
         }
@@ -880,10 +679,6 @@ impl CodeApp {
         self.reopen_phase_micros.demand = started.elapsed().as_micros();
     }
 
-    /// Record the files and folders the editor read from disk since it last
-    /// looked — the folder it opened, a folder expanded, the way to a search
-    /// hit — so each is a file of the project its collaborators, the palette
-    /// and agents address. One step of content from outside, nobody's undo.
     fn record_disk_entries(&mut self) {
         let fresh = self.session.project.take_read_from_disk();
         if fresh.is_empty() || self.dispatch.is_none() {
@@ -931,10 +726,6 @@ impl CodeApp {
         }
     }
 
-    /// Project durable file records into the local tree. An empty list does not
-    /// wipe a project that has not been published yet.
-    /// Adopt the project as last presented again: after a folder or file
-    /// was opened, its tree meets the records the project already holds.
     fn adopt_presented(&mut self) {
         let state = std::rc::Rc::clone(&self.presented);
         self.adopt_resource_state(&state);
@@ -944,7 +735,6 @@ impl CodeApp {
         let previous = std::mem::replace(&mut self.presented, std::rc::Rc::clone(state));
         let mut files = crate::doc::CollaborativeFile::all(state);
         self.opened.borrow_mut().known = files.iter().map(|file| file.id.clone()).collect();
-        // A file a collaborator deleted leaves the tree too.
         files.extend(
             crate::doc::CollaborativeFile::all(&previous)
                 .into_iter()
@@ -965,13 +755,10 @@ impl CodeApp {
         self.project_files(files);
     }
 
-    /// The queue the terminal takes the project's asked command lines from.
     pub fn terminal_runs(&self) -> terminal::runs::RunQueue {
         self.terminal_runs.clone()
     }
 
-    /// What shows file `id` when a search hit or an agent's `open` names
-    /// it; a file the project does not hold is refused.
     pub(crate) fn opener(
         &self,
     ) -> impl FnMut(&ui::tilo_resource::Id) -> Result<(), ui::tilo_resource::Refusal> + 'static
@@ -989,8 +776,6 @@ impl CodeApp {
         }
     }
 
-    /// Attach the framework dispatcher, this window's liveness, the person's
-    /// preferences and the project the document holds.
     pub(crate) fn attach_framework(
         &mut self,
         dispatcher: ui::framework::Dispatcher<crate::project::Project>,
@@ -1005,10 +790,6 @@ impl CodeApp {
         self.settings = Some(settings);
     }
 
-    /// Change the editor's text size one step, store it for this person, and
-    /// answer the factor the code now shows. The window bar says the level
-    /// through the host's content-zoom indicator, as for any content that
-    /// zooms itself.
     pub(crate) fn zoom_editor_text(&mut self, step: ui::content_zoom::ZoomStep) -> f32 {
         let factor = self.editor.text_zoom();
         let next = step.apply(factor);
@@ -1067,10 +848,8 @@ impl CodeApp {
         )
     }
 
-    /// The only UI-to-document route for editor text. `EditorView` merely
-    /// prepares a before/after request; this boundary derives the compact
-    /// character splice, dispatches the public action, and reconciles the
-    /// optimistic paint cache if validation refuses it.
+    /// The only route from the editor's view to the document: it derives the character splice, dispatches
+    /// the action and reconciles the paint cache when a check refuses it.
     fn dispatch_editor_text_edits(&mut self, doc: &mut ui::widget::Edits<'_>) {
         let Some(edit) = self.editor.take_text_edit() else {
             return;
@@ -1097,24 +876,12 @@ impl CodeApp {
         self.submit_now(doc, &actions::text_edit_action(file_id, base, next))
     }
 
-    /// Recompute diagnostics over the active buffer and push to the panel +
-    /// status bar.
+    /// Recompute diagnostics over the active buffer and show them in the panel and the status bar.
     ///
-    /// Two sources feed the Problems panel, and which parts of the local linter
-    /// run depends on whether the language server has answered yet. Before it
-    /// has — no server for this language, or one still indexing — the linter is
-    /// the only feedback there is, so it runs in full. Once the server has
-    /// published for this buffer, its structural scan steps aside
-    /// ([`lint::Scope::TextualOnly`]): a bracket-counter with no type
-    /// information cannot usefully disagree with a compiler, and when it does
-    /// the user is the one who has to work out which to believe.
+    /// Before the language server answered for this buffer the local linter is the only feedback, so it
+    /// runs in full; after that its structural scan steps aside ([`lint::Scope::TextualOnly`]).
     fn refresh_diagnostics(&mut self, doc: &AutoCommit) {
         use automerge::transaction::Transactable;
-        // Heads identify committed CRDT content, including remote/history changes.
-        // Even zero pending operations may hide an open empty transaction.
-        // Read the committed witness without cloning or closing the caller's
-        // transaction or changing its patch/history cursors. Pending edits bypass
-        // caching; an equal pending-operation count is not a content version.
         let heads = (doc.pending_ops() == 0).then(|| doc.committed_heads());
         self.refresh_diagnostics_at(doc, heads);
     }
@@ -1141,7 +908,6 @@ impl CodeApp {
 
     fn restore_diagnostics(&mut self, revision: Option<&DiagnosticsRevision>) {
         let Some(revision) = revision else {
-            // Pending observations remain completely uncached.
             self.inactive_diagnostics.clear();
             self.diagnostics_cache = None;
             return;
@@ -1170,9 +936,6 @@ impl CodeApp {
             .lsp_uri
             .as_ref()
             .is_some_and(|uri| self.lsp_diagnostics.contains_key(uri));
-        // An empty publish still counts as an answer: it is the server saying
-        // "this file is clean", which is exactly when a stale bracket warning
-        // would be most confusing.
         let scope = if lsp_for_buffer {
             lint::Scope::TextualOnly
         } else {
@@ -1210,7 +973,6 @@ impl CodeApp {
                     {
                         self.diagnostics_buffer_reads += 1;
                     }
-                    // The editor's optimistic text is not authoritative here.
                     let text = EditorDoc::read_buffer_key(doc, &key).unwrap_or_default();
                     lint::lint(&text, language, scope)
                 }
@@ -1238,7 +1000,6 @@ impl CodeApp {
         self.panel.set_analysis(self.lsp_status.analysis_note());
     }
 
-    /// Rebuild the status bar snapshot.
     fn refresh_status(&mut self) {
         let (line, col) = self.editor.primary_caret();
         let lang = if self.editor.is_bound() {
@@ -1246,7 +1007,6 @@ impl CodeApp {
         } else {
             String::new()
         };
-        // With no buffer open there is no caret to report.
         let (line, col) = if self.editor.is_bound() {
             (line + 1, col + 1)
         } else {
@@ -1266,10 +1026,8 @@ impl CodeApp {
         });
     }
 
-    /// The presentation context the Ctrl+K resource tree is built from: the
-    /// project name, the UUID the next created file will take, and every
-    /// materialised project file/folder. Everything here mirrors state the app
-    /// already holds; local arena IDs are never exported as identities.
+    /// What the Ctrl+K resource tree is built from: the project name, the id the next file will take, and
+    /// every materialised file and folder. Local arena ids are never exported as identities.
     fn search_file_entries(&self) -> Vec<crate::search_entries::FileEntry> {
         self.session
             .project
@@ -1285,8 +1043,6 @@ impl CodeApp {
             .collect()
     }
 
-    /// The text hits the platform search currently lists, as the resources
-    /// that reveal them.
     fn search_result_refs(&self) -> Vec<actions::SearchResultRef> {
         self.search_hits
             .iter()
@@ -1314,8 +1070,6 @@ impl CodeApp {
         use automerge::{ReadDoc, transaction::Transactable};
         let mut files = self.search_file_entries();
         files.sort_by(|a, b| a.resource_id.cmp(&b.resource_id).then(a.path.cmp(&b.path)));
-        // Pending transaction counts do not identify their content. Rebuild
-        // for every pending projection, including equal-count unrelated forks.
         let revision = (doc.pending_ops() == 0).then(|| SymbolProjectionRevision {
             heads: doc.committed_heads(),
             files: files
@@ -1349,8 +1103,6 @@ impl CodeApp {
                 let symbols =
                     crate::search_entries::symbols_in(&file.resource_id, &file.path, &text);
                 if active.as_ref() == Some(&key) {
-                    // The editor syncs against this same immutable document
-                    // next. Move the text instead of walking its CRDT twice.
                     *observed = Some(SyncText {
                         document: doc,
                         object,
@@ -1371,10 +1123,8 @@ impl CodeApp {
             .and_then(|generation| generation.checked_add(1));
     }
 
-    /// Refresh the durable search projection only when the authoritative CRDT
-    /// document or a local project/result generation changed. This is
-    /// intentionally separate from `search_providers`: opening the palette,
-    /// typing, and unchanged frames do no filesystem, document, or LSP work.
+    /// Refresh the durable search projection only when the document or a project/result generation
+    /// changed, so opening the palette, typing and unchanged frames do no work.
     #[cfg(test)]
     fn refresh_search_entries(&mut self, doc: &AutoCommit) {
         self.refresh_search_entries_observed(doc, &mut None);
@@ -1390,9 +1140,6 @@ impl CodeApp {
             pending_ops: doc.pending_ops(),
             local_generation: self.search_projection_local_generation,
         };
-        // Once the local identity space is exhausted there can be no safe
-        // equality shortcut: reusing the old projection would let an obsolete
-        // action directory masquerade as the current project.
         if revision.pending_ops == 0
             && revision.local_generation.is_some()
             && self.search_projection_revision.as_ref() == Some(&revision)
@@ -1429,7 +1176,6 @@ impl CodeApp {
         }
     }
 
-    /// The symbols and project-search results as search entries.
     #[cfg(test)]
     pub(crate) fn code_search_entries(&self) -> Vec<ui::tilo_resource::SearchEntry> {
         self.search_entries.clone()
@@ -1440,8 +1186,6 @@ impl CodeApp {
         self.search_refresh_stats
     }
 
-    /// Tear down any running language server, so the next sync starts one for
-    /// the new project root.
     fn reset_language_server(&mut self) {
         self.lsp = None;
         self.lsp_language = None;
@@ -1452,9 +1196,6 @@ impl CodeApp {
         self.lsp_failed.clear();
     }
 
-    /// Show the file `node` in this window and bind the editor. A shown file
-    /// with unsaved edits is not dropped: the person decides first, and the
-    /// new file opens once it was saved or discarded.
     fn open_node(&mut self, node: TreeId) {
         if let Some(shown) = self.session.active_buffer()
             && shown.node != node
@@ -1480,20 +1221,14 @@ impl CodeApp {
         self.bound_node = None; // force re-bind in ensure_buffers
     }
 
-    /// The node of the file in the active tab, if any. Lets a test observe
-    /// where a Ctrl+K activation navigated.
     pub fn active_file_node(&self) -> Option<crate::model::NodeId> {
         self.session.active_buffer().map(|b| b.node)
     }
 
-    /// Read access to the editing session — the open buffers + project tree a
-    /// search provider snapshots. Exposed for tests.
     pub fn session_for_test(&self) -> &crate::model::Session {
         &self.session
     }
 
-    /// Apply an explorer signal: activating a file opens it, activating a
-    /// folder toggles it, and an expansion reads and records the folder.
     fn apply_tree_event(&mut self, ev: ExplorerEvent) {
         match ev {
             ExplorerEvent::Activate(id) => {
@@ -1510,15 +1245,9 @@ impl CodeApp {
                     return;
                 }
                 self.open_node(id);
-                // The file lands on screen: a drawer over it goes away, a
-                // docked sidebar stays.
                 self.put_drawer_away();
             }
             ExplorerEvent::Expand(id, open) => {
-                // Reading the folder's children happens here, on first
-                // expansion, rather than when the project was opened — one
-                // directory level at a time is what makes opening a large
-                // repository instant.
                 if open && let Some(folder) = self.session.project.folder_to_read(id) {
                     self.on_disk(
                         "code-read-folder",
@@ -1534,8 +1263,6 @@ impl CodeApp {
         }
     }
 
-    /// Apply every explorer signal queued since the last frame, including
-    /// the expansions a folder activation echoes back.
     fn drain_explorer_events(&mut self) {
         loop {
             let events = std::mem::take(&mut *self.explorer_events.borrow_mut());
@@ -1548,9 +1275,6 @@ impl CodeApp {
         }
     }
 
-    /// Stop showing `node` once that is decided — already clean, a discarded
-    /// prompt, or a save that landed — and show the file the person asked
-    /// for next, if any.
     fn close_node(&mut self, node: TreeId, then_open: Option<TreeId>) {
         if self.session.buffer_of(node).is_some() {
             self.session.close_file(node);
@@ -1563,7 +1287,6 @@ impl CodeApp {
         }
     }
 
-    /// Answer an unsaved-close prompt.
     fn resolve_close_prompt(&mut self, doc: &AutoCommit, choice: CloseChoice) {
         let Some(prompt) = self.close_prompt.take() else {
             return;
@@ -1575,9 +1298,7 @@ impl CodeApp {
                     .buffer_of(prompt.node)
                     .is_some_and(|b| b.path.is_some());
                 if has_path {
-                    // Close only once the save landed. A
-                    // save that hits a disk conflict leaves the tab open so the
-                    // conflict prompt (now showing) gets answered first.
+                    // Close only once the save landed: a disk conflict leaves the tab open for the prompt.
                     let snapshot = doc.clone();
                     self.save_buffer_then(
                         &snapshot,
@@ -1586,10 +1307,6 @@ impl CodeApp {
                         file_workflow::AfterSave::Close(prompt.then_open),
                     );
                 } else {
-                    // No file yet: the destination has to be chosen first. The
-                    // Save As runs async through the portal, so the tab stays
-                    // open — once written, it is clean and closes without a
-                    // prompt.
                     self.request_save_as(prompt.node);
                 }
             }
@@ -1598,15 +1315,11 @@ impl CodeApp {
         }
     }
 
-    /// Run a command. `doc` is threaded in because the one doc-mutating
-    /// command (New file) submits the project's `new-file` verb through the action
-    /// host; the rest are pure presentation.
-    ///
+    /// Run a command. `doc` is threaded in for the one command that writes: New file submits the
+    /// project's `new-file` verb through the action host.
     fn apply_command(&mut self, cmd: Command, doc: &mut ui::widget::Edits<'_>) {
         match cmd {
             Command::NewFile => {
-                // An untitled file at the project root, created through the
-                // project's own action and opened once it is there.
                 let name = format!("untitled-{}.txt", self.session.project.nodes.len());
                 let before = self.presented.files.ids().cloned().collect::<HashSet<_>>();
                 let action = actions::new_file_action(name.clone(), None, "");
@@ -1672,8 +1385,6 @@ impl CodeApp {
             Command::Find => Self::open_find(ui::window_toolbar::SearchOpening::Find),
             Command::Replace => Self::open_find(ui::window_toolbar::SearchOpening::Replace),
             Command::SearchProject => {
-                // The platform search, seeded from the selection the way
-                // every editor does.
                 let seed = self
                     .editor
                     .selected_text_public()
@@ -1705,7 +1416,6 @@ impl CodeApp {
         self.dispatch_editor_text_edits(doc);
     }
 
-    /// Show the bottom panel, or close it (Ctrl+J, the window bar's toggle).
     fn toggle_bottom_panel(&mut self) {
         if self.panel_visible {
             self.close_bottom_panel();
@@ -1714,22 +1424,14 @@ impl CodeApp {
         }
     }
 
-    /// Close the retained dock without destroying its selected tab or live
-    /// Terminal. Every close route uses this transition so hidden Terminal
-    /// content cannot retain keyboard ownership.
     fn close_bottom_panel(&mut self) {
         self.panel_visible = false;
         self.terminal_focused = false;
     }
 
-    /// Drain everything the child widgets emitted this frame. `doc` is threaded
-    /// through so a chosen palette command that mutates the document (New file)
-    /// can dispatch its action.
     fn drain_child_events(&mut self) {
         self.run_window_toolbar();
         self.drain_explorer_events();
-        // Closing a tab of the dock closes the dock; choosing the Terminal
-        // tab starts the shell it shows.
         if self.panel.take_close_request() {
             self.close_bottom_panel();
             self.panel.reset_tabs();
@@ -1748,7 +1450,6 @@ impl CodeApp {
                 }
             });
         }
-        // Choosing a problem takes the caret to where it was reported.
         if let Some((line, col)) = self.panel.take_jump()
             && self.editor.is_bound()
         {
@@ -1757,8 +1458,6 @@ impl CodeApp {
         }
     }
 
-    /// Move the caret to a 1-based line number (the go-to-line target). Clamped
-    /// to the buffer; a no-op with a clear note when nothing is open.
     pub fn go_to_line(&mut self, line_1based: usize) {
         if !self.editor.is_bound() {
             Self::note("Open a file to jump to a line", ToastKind::Error);
@@ -1770,17 +1469,12 @@ impl CodeApp {
         self.editor.move_caret_to(target, 0);
     }
 
-    /// Spawn the embedded system terminal on first use. Idempotent. On success
-    /// the panel hands the Terminal tab body to the live widget; on failure it
-    /// shows a clear note instead of the static log.
     fn ensure_terminal(&mut self) {
         if self.terminal.is_some() {
             return;
         }
         match terminal::TerminalView::spawn_default() {
             Ok(mut w) => {
-                // The session is the project's terminal child: what it shows
-                // is recorded through the project's own dispatcher.
                 if let Some(dispatch) = &self.dispatch {
                     w.bind(
                         dispatch.child(crate::resource::TERMINAL_RESOURCE_ID, actions::terminal),
@@ -1806,9 +1500,6 @@ impl CodeApp {
         }
     }
 
-    /// Show the embedded terminal's session as the project records it: a
-    /// collaborator's, a past version's, or this one's own before its shell
-    /// draws.
     pub(crate) fn present_terminal(&mut self, session: Option<&terminal::resource::Terminal>) {
         if let (Some(terminal), Some(session)) = (self.terminal.as_mut(), session) {
             ui::framework::ResourceSurface::present(
@@ -1818,47 +1509,37 @@ impl CodeApp {
         }
     }
 
-    /// Whether the Terminal dock tab is currently visible with a live terminal.
     fn terminal_visible(&self) -> bool {
         self.panel_visible
             && self.panel.active_tab() == PanelTab::Terminal
             && self.terminal.is_some()
     }
 
-    /// Give the Terminal panel an honest empty state until a real shell is
-    /// spawned. Opening the Terminal tab spawns the live PTY (`ensure_terminal`,
-    /// which clears this note); we never pre-fill a fabricated build log.
+    /// The Terminal tab's empty state until a real shell is spawned (`ensure_terminal` clears it): never a
+    /// fabricated build log.
     fn seed_terminal(&mut self) {
         self.panel
             .set_terminal_note(Some("No terminal is running".to_string()));
     }
 
-    /// Open the Terminal dock tab and spawn the live shell (for a screenshot of
-    /// the embedded terminal).
     pub fn shots_open_terminal(&mut self) {
         self.panel_visible = true;
         self.panel.set_tab(PanelTab::Terminal);
         self.ensure_terminal();
     }
 
-    /// Type a command into the embedded terminal (drives the real shell).
     pub fn shots_terminal_input(&mut self, s: &str) {
         if let Some(t) = self.terminal.as_mut() {
             t.widget_mut().write_input(s.as_bytes());
         }
     }
 
-    /// The embedded terminal's current grid text, if a live terminal is
-    /// present. `None` before the Terminal tab is opened (or if the shell
-    /// failed to spawn). Used by `--shots` staging and the embed tests to read
-    /// the live shell session without a GPU scene.
     pub fn shots_terminal_grid_text(&self) -> Option<String> {
         self.terminal
             .as_ref()
             .map(|terminal| terminal.widget().grid_text())
     }
 
-    /// Stage the "changed on disk" prompt for the active buffer.
     pub fn shots_conflict(&mut self) {
         if let Some(buf) = self.session.active_buffer() {
             self.conflict = Some(Conflict {
@@ -1868,8 +1549,6 @@ impl CodeApp {
         }
     }
 
-    /// Ask for a line to go to in search, on the project's go-to-line
-    /// effect: search opens on it, asking for the line.
     pub(crate) fn ask_for_line(&mut self) {
         let address = crate::effects::CodeEditorEffect::GO_TO_LINE
             .on(<crate::project::Project as ui::tilo_resource::Resource>::KIND);
@@ -1879,10 +1558,8 @@ impl CodeApp {
         ));
     }
 
-    /// Stage the "save changes before closing?" prompt for the active buffer.
-    ///
-    /// The prompt only appears for a buffer with unsaved edits, so the file's
-    /// saved text is staged one line shorter than the buffer.
+    /// Stage the "save changes before closing?" prompt for the active buffer, whose saved text is one line
+    /// shorter than the buffer.
     pub fn shots_close_prompt(&mut self) {
         if let Some(buf) = self.session.active_buffer() {
             self.close_prompt = Some(ClosePrompt {
@@ -1893,14 +1570,11 @@ impl CodeApp {
         }
     }
 
-    /// Stage a screenshot of the bar's notice over a live multi-word
-    /// selection.
     pub fn shots_status(&mut self) {
         self.shots_select_words();
         Self::note("Reloaded main.rs from disk", ToastKind::Success);
     }
 
-    /// Stage the language-server indexing readout.
     pub fn shots_indexing(&mut self) {
         self.lsp_status = LspStatus::Busy {
             server: "rust-analyzer".to_string(),
@@ -1910,18 +1584,12 @@ impl CodeApp {
         };
     }
 
-    /// Stage a multi-word selection in the editor for the selection screenshot.
     pub fn shots_select_words(&mut self) {
-        // Select a span on the first line that covers several words. Line 0 of
-        // every sample buffer is a doc comment, so this is content-stable.
         if self.editor.line_count() > 0 {
             self.editor.set_selection_lc((0, 4), (0, 24));
         }
     }
 
-    /// Stage a diagnostics + completion-popup screenshot by feeding canned LSP
-    /// JSON through the *real* parser and model path (no server binary needed).
-    /// This proves the same code the live client uses renders correctly.
     pub fn shots_completion_demo(&mut self, doc: &AutoCommit) {
         use crate::lsp::{parse_completion, parse_publish_diagnostics};
 
@@ -1932,8 +1600,6 @@ impl CodeApp {
         let uri = self.node_uri(node);
         self.lsp_uri = Some(uri.clone());
 
-        // Canned diagnostics shaped exactly like rust-analyzer's, anchored to
-        // real spans found in the buffer so the squiggles land on real tokens.
         let mut diag_json = Vec::new();
         if let Some((l, c0, c1)) = find_char_span(&text, "unwrap_or(20)") {
             diag_json.push(serde_json::json!({
@@ -1961,7 +1627,6 @@ impl CodeApp {
         }
         self.refresh_diagnostics_at(doc, None);
 
-        // Canned completion response fed through the real parser.
         let completion_json = serde_json::json!({
             "result": {
                 "isIncomplete": false,
@@ -1975,8 +1640,6 @@ impl CodeApp {
             }
         });
         let items = parse_completion(&completion_json);
-        // Place the caret after a partial identifier so the popup anchors on a
-        // real token, then show the completions.
         if let Some((l, _c0, c1)) = find_char_span(&text, "primes") {
             self.editor.move_caret_to(l, c1);
         }
@@ -1984,17 +1647,11 @@ impl CodeApp {
         self.refresh_status();
     }
 
-    // ---- build_layout helpers (split out of `Widget::build_layout`, which
-    // assembles their results into the content row and outer column) ----
-
-    /// Lay out the editor column: the editor, (when visible) the bottom panel,
-    /// and the status bar, stacked into one flex column.
+    /// Lay out the editor, the bottom panel when visible and the status bar in one column.
     ///
     /// # Panics
-    /// Panics if taffy's internal tree storage is corrupted — this only
-    /// inserts freshly built child nodes into a tree this same call already
-    /// holds a mutable reference to, so there is no data-dependent failure
-    /// path to recover from.
+    /// If taffy's tree storage is corrupted; only freshly built nodes go in, so there is no
+    /// data-dependent failure.
     fn build_editor_column(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -2026,8 +1683,6 @@ impl CodeApp {
         } else {
             self.panel_node = None;
         }
-        // The status bar reserves its own band under everything, so nothing
-        // is ever painted beneath it.
         #[allow(
             clippy::unwrap_used,
             reason = "inserting one fixed leaf into the app-owned layout tree is infallible unless the taffy arena is already corrupted"
@@ -2069,20 +1724,12 @@ impl CodeApp {
         editor_col
     }
 
-    // ---- handle_event helpers (split out of `Widget::handle_event`, which
-    // dispatches to them in the same order they used to run inline) ----
-
-    /// Track the pointer for the controls this root draws itself.
     fn track_pointer(&mut self, event: &WindowEvent, scale_factor: f64) {
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
         }
     }
 
-    /// Global shortcuts: Ctrl/Cmd+P and Ctrl/Cmd+Shift+P (the platform
-    /// search), Ctrl/Cmd+B (sidebar), Ctrl/Cmd+J (panel), and the rest of the
-    /// single-letter command bindings. Returns `true` when the event was
-    /// consumed.
     fn handle_global_shortcuts(
         &mut self,
         event: &WindowEvent,
@@ -2110,12 +1757,7 @@ impl CodeApp {
         let shift = mods.shift_key();
         let alt = mods.alt_key();
         let command = match c.to_lowercase().as_str() {
-            // Quick open and the command list are the host palette: the
-            // project's files are its search entries, its commands its
-            // published effects.
             "p" => {
-                // Files and commands are platform search rows: both shortcuts
-                // open the same search over this app.
                 self.search_opener
                     .open(ui::search::SearchRequest::this_app());
                 *handled = true;
@@ -2138,8 +1780,6 @@ impl CodeApp {
             let closes_bottom_panel = command == Command::ToggleBottomPanel && self.panel_visible;
             self.apply_command(command, state);
             if closes_bottom_panel {
-                // The panel's toggle is in the window's bar: the keyboard
-                // goes back to the code.
                 *focus_target = self.editor_node;
             }
             *handled = true;
@@ -2148,11 +1788,6 @@ impl CodeApp {
         false
     }
 
-    /// While the Terminal dock tab shows a live terminal, a click in its
-    /// content region focuses the shell and routes keyboard + pointer input
-    /// to it; a press elsewhere returns focus to the editor. Returns `true`
-    /// when the focused terminal owns this event (the caller should stop
-    /// routing it to anything else).
     fn handle_terminal_input(
         &mut self,
         event: &WindowEvent,
@@ -2189,8 +1824,6 @@ impl CodeApp {
                 *handled = true;
             }
         }
-        // The focused terminal owns keyboard + pointer; consume those so the
-        // editor underneath doesn't also react.
         matches!(
             event,
             WindowEvent::KeyboardInput { .. }
@@ -2199,7 +1832,6 @@ impl CodeApp {
         )
     }
 
-    /// Route the event to the bottom panel and the editor.
     fn route_to_children(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if self.panel_visible
             && let Some(n) = self.panel_node
@@ -2250,8 +1882,6 @@ pub(crate) fn replace_chars(text: &mut String, start: usize, delete: usize, repl
     text.replace_range(first..last, replacement);
 }
 
-/// The file-type filter the open and save choosers offer, plus the "All files"
-/// escape hatch every picker needs so an unusual extension is not a trap.
 fn source_filter() -> ui::portal::FileFilter {
     let mut f = ui::portal::FileFilter::new("Text & source").mimetype("text/plain");
     for glob in [
@@ -2263,9 +1893,6 @@ fn source_filter() -> ui::portal::FileFilter {
     f
 }
 
-/// Locate the first occurrence of `needle` in `text`, returning its
-/// `(line, start_col, end_col)` in zero-based *character* coordinates. Used by
-/// the shots scenarios to anchor canned diagnostics on real tokens.
 fn find_char_span(text: &str, needle: &str) -> Option<(usize, usize, usize)> {
     let byte = text.find(needle)?;
     let prefix = text.get(..byte).unwrap_or("");
@@ -2277,8 +1904,6 @@ fn find_char_span(text: &str, needle: &str) -> Option<(usize, usize, usize)> {
 }
 
 impl ui::presence::capability::PublishesPresence for CodeApp {
-    /// The editor's selection in the open file, placed by the file's id in
-    /// the project, so an agent's `replace-range` edits exactly that text.
     fn shared_selection(&self) -> Option<ui::shared_selection::SharedSelection> {
         let node = self.bound_node?;
         Some(
@@ -2295,10 +1920,6 @@ impl ui::semantic_document_read::SemanticReaders for CodeApp {
     }
 }
 
-/// The editor's text zooms by itself: Ctrl+Plus, Ctrl+Minus, Ctrl+0, a
-/// Ctrl+scroll or a pinch change the code and its line numbers, not the
-/// window's chrome. The chosen size is kept in the person's preferences, so
-/// it follows them to the next window and device.
 impl ui::content_zoom::ContentZoom for CodeApp {
     fn zoom_content(&mut self, step: ui::content_zoom::ZoomStep) -> Option<f32> {
         Some(self.zoom_editor_text(step))
@@ -2403,8 +2024,6 @@ impl Widget for CodeApp {
         self.run_window_toolbar();
         self.restore_pending_continuation(state);
 
-        // A jump queued by a search hit or a cross-file definition lands once
-        // the target buffer is actually bound.
         if let Some((line, col)) = self.pending_jump
             && self.editor.is_bound()
         {
@@ -2412,14 +2031,10 @@ impl Widget for CodeApp {
             self.pending_jump = None;
         }
 
-        // Show the terminal record; update drains its PTY and settlement
-        // records the resulting screen through the terminal's action door.
         if let Some(t) = self.terminal.as_mut() {
             t.sync(state, path);
         }
 
-        // Language server: start on demand (opt-in), stream edits out as
-        // `didChange`, and drain diagnostics/completions/hover back in.
         self.maybe_start_lsp(state);
         if self.lsp.is_some()
             && let Some((node, uri)) = self
@@ -2477,9 +2092,6 @@ impl Widget for CodeApp {
         if let Some(terminal) = self.terminal.as_mut() {
             terminal.widget_mut().settle(&mut state.reborrow(), path);
         }
-        // Canonical row View callbacks run after pointer dispatch. Consume
-        // their navigation requests in this settlement, without waiting for
-        // another physical input event.
         self.drain_child_events();
     }
 
@@ -2489,10 +2101,8 @@ impl Widget for CodeApp {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        // --- Editor column: file header + editor + (optional) bottom panel ---
         let editor_col = self.build_editor_column(taffy, theme, node_map);
 
-        // --- Content row: the editor column ---
         #[allow(
             clippy::unwrap_used,
             reason = "Widget::build_layout is infallible by trait contract; inserting a node with a fixed Style and freshly-created children cannot fail short of an already-corrupted taffy arena, which nothing here could recover from"
@@ -2515,7 +2125,6 @@ impl Widget for CodeApp {
             .unwrap();
         self.content_node = Some(content_node);
 
-        // --- Outer column ---
         let style = Style {
             display: taffy::Display::Flex,
             flex_direction: taffy::FlexDirection::Column,
@@ -2531,7 +2140,6 @@ impl Widget for CodeApp {
 
         if let Some(content_node) = self.content_node {
             let content_origin = ui::widget::layout_rect(taffy, content_node, new_origin).origin();
-            // Editor column origin within the content row.
             if let Some(col) = self.editor_col_node {
                 let col_origin = ui::widget::layout_rect(taffy, col, content_origin).origin();
                 if let Some(n) = self.editor_node {
@@ -2555,8 +2163,6 @@ impl Widget for CodeApp {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        // The framework painted the window ground; each region stands on its
-        // own tier.
         self.draw_content(scene, transform, text_renderer, theme, presence);
 
         // The embedded terminal renders its live grid over the panel's content
@@ -2570,7 +2176,6 @@ impl Widget for CodeApp {
         }
     }
 
-    /// The top layer: the open question, over the whole window.
     fn draw_overlay(
         &mut self,
         scene: &mut Scene,
@@ -2581,8 +2186,6 @@ impl Widget for CodeApp {
     ) {
         let window = presence.viewport.get().unwrap_or(self.rect);
         self.draw_question(scene, transform, text_renderer, theme, window);
-        // The completion list and the other floating pieces draw themselves
-        // in `draw`; nothing else lives in the top layer.
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
@@ -2616,9 +2219,6 @@ impl Widget for CodeApp {
             return;
         }
 
-        // The bottom dock is a retained disclosure. Escape dismisses it after
-        // higher-priority modal/find surfaces have had their own Escape, then
-        // returns keyboard focus to the visible trigger that can reopen it.
         if self.panel_visible
             && matches!(
                 event,
@@ -2638,10 +2238,6 @@ impl Widget for CodeApp {
             return;
         }
 
-        // Terminal input capture: while the Terminal dock tab shows a live
-        // terminal, a click in its content region focuses the shell and routes
-        // keyboard + pointer input to it (like clicking into any terminal); a
-        // press elsewhere returns focus to the editor.
         if self.handle_terminal_input(
             event,
             ctx.scale_factor,
@@ -2653,17 +2249,12 @@ impl Widget for CodeApp {
             return;
         }
 
-        // Route to child widgets.
         self.route_to_children(event, ctx);
 
-        // If the editor asked for a language-server action (Ctrl+Space, F1,
-        // F12), issue it now with the caret position.
         if let Some(ask) = self.editor.take_lsp_ask() {
             self.dispatch_lsp_ask(ask);
         }
 
-        // The zero-state's "Open file" button routes to the same portal picker
-        // as the Open file command.
         if self.editor.take_empty_action() {
             self.request_open_file();
         }
@@ -2691,12 +2282,6 @@ impl Widget for CodeApp {
         Some("code-editor")
     }
 
-    /// The editor is a custom-painted multi-pane surface. Its retained child
-    /// widgets expose their own controls, while this node gives a screen reader
-    /// the missing document-level context: project, active buffer, open-tab
-    /// count, and live analysis/file-operation state. Without it an AT user
-    /// lands in a generic canvas before discovering the editor's actual
-    /// document.
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
         use ui::a11y::{AccessNode, AccessState, Politeness, Role};
 
@@ -2764,13 +2349,10 @@ impl Widget for CodeApp {
         Some(self)
     }
 
-    /// A scenario a capture staged is staged on the next sync.
     fn needs_idle_sync(&self) -> bool {
         !self.store.borrow().staged.is_empty()
     }
 
-    /// A capture waits while a scenario is still staging, a project search
-    /// is still streaming its hits.
     fn has_pending_visual_work(&self) -> bool {
         self.staging.is_some() || self.search_job.is_some()
     }
@@ -2784,12 +2366,10 @@ impl Widget for CodeApp {
             || self.panel.needs_redraw()
             || self.question().is_some()
             || self.code_help_needs_redraw()
-            // A live terminal repaints continuously while visible.
             || self.terminal_visible()
-                || ui::widget::Widget::needs_animation_frame(self)
+            || ui::widget::Widget::needs_animation_frame(self)
     }
 
-    /// Advance the editor and drain the retained terminal before settlement.
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         let mut changed = self.editor.update(state, path);
         if let Some(terminal) = self.terminal.as_mut() {
@@ -2799,15 +2379,6 @@ impl Widget for CodeApp {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        // Keep the event loop pumping frames while a live terminal is
-        // visible: its PTY is drained during update, which the App repeats
-        // while an animation frame is requested.
-        //
-        // A running search or an in-flight file picker also needs frames: both
-        // deliver over a channel drained in `sync`, so without a frame their
-        // results would sit unread until the user happened to move the mouse.
-        // A language server that is still working needs them too, so the
-        // indexing readout actually advances.
         self.panel.needs_animation_frame()
             || self.terminal_visible()
             || self.search_job.is_some()
@@ -2851,8 +2422,6 @@ mod diagnostics_cache_tests;
 
 impl CodeApp {
     fn start_project_search(&mut self, query: search::Query) {
-        // A previous job is cancelled rather than left to finish: eight
-        // abandoned walks of a large repository is eight threads reading it.
         if let Some(job) = self.search_job.take() {
             job.cancel();
         }

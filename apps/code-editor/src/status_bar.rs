@@ -1,15 +1,6 @@
-//! `StatusModel` — the editor's caret position, language, diagnostics and
-//! buffer status, composed into the two readouts of the toolkit's status bar:
-//! what the editor is doing at the leading edge, where the caret is at the
-//! trailing edge.
-//!
-//! `CodeApp` refreshes a [`StatusState`] snapshot each frame and draws the two
-//! strings in the band [`ui::chrome::status_bar::split`] reserves under the
-//! editor. This type owns no render state and does no drawing — it holds the
-//! snapshot and formats the readouts, which keeps it trivially unit-testable.
+//! `StatusModel`: the editor's caret position, language, diagnostics and buffer status, composed into
+//! the toolkit's status bar readouts.
 
-/// Snapshot of everything the status readout can show. The app refreshes this
-/// each frame; the model composes the actionable subset into the readouts.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct StatusState {
     pub language: String,
@@ -18,21 +9,14 @@ pub struct StatusState {
     pub selection: usize,
     pub caret_count: usize,
     pub problems: usize,
-    /// The project still being read ("Loading project 42%"), else empty.
     pub lsp: String,
     /// True while the server is starting or busy — the readout surfaces the
     /// server's state only then, so a resting "ready" doesn't clutter it.
     pub lsp_working: bool,
-    /// True when the active buffer has unsaved edits.
     pub dirty: bool,
-    /// What the status bar says while the language server can't run, so
-    /// suggestions, problems and go to definition are missing ("Rust: code
-    /// help unavailable"), else empty.
     pub code_help: String,
 }
 
-/// Holds the latest [`StatusState`] and composes it into the status bar's
-/// readouts.
 #[derive(Default)]
 pub struct StatusModel {
     state: StatusState,
@@ -43,14 +27,10 @@ impl StatusModel {
         StatusModel::default()
     }
 
-    /// Replace the snapshot.
     pub fn set_state(&mut self, new: StatusState) {
         self.state = new;
     }
 
-    /// The caret readout at the trailing edge: line and column, then how much
-    /// is selected and how many carets there are when that is more than one.
-    /// Blank while no buffer is open (line 0).
     pub fn right(&self) -> String {
         let s = &self.state;
         if s.line == 0 {
@@ -66,8 +46,6 @@ impl StatusModel {
         parts.join(", ")
     }
 
-    /// The readout that leads the status bar while code help is missing
-    /// ("Rust: code help unavailable"). A click on it says why.
     pub fn trouble(&self) -> Option<String> {
         let s = &self.state;
         (!s.code_help.is_empty()).then(|| s.code_help.clone())
@@ -80,7 +58,6 @@ impl StatusModel {
     pub fn left(&self) -> String {
         let s = &self.state;
         let mut parts: Vec<String> = Vec::new();
-        // A missing code help names the language itself, in [`Self::trouble`].
         if !s.language.is_empty() && self.trouble().is_none() {
             parts.push(s.language.clone());
         }
@@ -128,8 +105,6 @@ mod tests {
                 "Ln 12, Col 5",
             ),
             ("no buffer open", caret(0, 0, ""), "", ""),
-            // No problems, no selection, an idle (not working) server and a
-            // clean buffer => nothing beyond the caret and language.
             (
                 "omits default and clean signals",
                 StatusState {

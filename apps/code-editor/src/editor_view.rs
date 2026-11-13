@@ -1,20 +1,5 @@
-//! The code editor pane: a custom [`Widget`] that renders line numbers, a
-//! gutter, syntax-highlighted source text, the active-line highlight, and the
-//! caret(s) + selection — all drawn directly into the Vello scene so the
-//! editor has the dense, monospace IDE look the toolkit's prose widgets don't
-//! provide.
-//!
-//! Text is the source of truth in the CRDT: the widget is bound to a single
-//! Automerge `Text` object (the active buffer). Every edit is first emitted as
-//! an action request; the app dispatcher is the only code that splices that
-//! Text. The widget keeps only render
-//! caches: the split-into-lines view of the buffer, the per-line highlight
-//! spans, and the caret/selection positions (which are ephemeral per-peer
-//! state, restored across undo via `get_state`/`set_state`).
-//!
-//! Caret model: positions are *(line, column)* where column is a count of
-//! characters (not bytes), matching Automerge Text's char addressing. Multiple
-//! carets are supported; the primary caret drives the status bar and scrolling.
+//! The code editor pane: a [`Widget`] that renders line numbers, the gutter, syntax-highlighted
+//! source, the active line, the caret and the selection.
 
 use crate::app::replace_chars;
 use automerge::{AutoCommit, ObjId, ReadDoc};
@@ -59,18 +44,12 @@ mod scroll;
 mod sync;
 pub(super) use sync::SyncText;
 
-/// A pre-mutation request emitted by the editor surface.  Keeping the complete
-/// before/after snapshots here lets the app derive the compact action payload
-/// at the dispatch boundary, while the view itself remains a CRDT reader.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PendingTextEdit {
     pub base: String,
     pub next: String,
 }
 
-/// A language-server request the editor wants the app to make on its behalf,
-/// carrying the primary caret's position implicitly (the app reads it). Set by
-/// a keybind, drained by the app after routing the event.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LspAsk {
     Completion,
@@ -78,9 +57,6 @@ pub enum LspAsk {
     Definition,
 }
 
-/// The icon of a completion item's kind: what the candidate is, at a glance.
-/// A macro is a function by LSP kind, so it is told apart by its detail (or
-/// the `!` its name ends in) and given its own icon.
 fn completion_kind_icon(item: &CompletionItem) -> Icon {
     let is_macro = item.label.ends_with('!')
         || item
@@ -110,51 +86,37 @@ fn completion_kind_icon(item: &CompletionItem) -> Icon {
     }
 }
 
-/// An inline diagnostic projected into the editor's line/column space (0-based),
-/// drawn as a coloured squiggle under the offending span.
 #[derive(Clone, Debug)]
 struct InlineDiag {
     line: usize,
     start_col: usize,
-    /// Exclusive end column on `line`; `usize::MAX` means "to end of line" (the
-    /// diagnostic spanned multiple lines).
     end_col: usize,
     severity: Severity,
     message: String,
 }
 
-/// The rows one paint pass covers and where their columns start.
 #[derive(Clone, Copy, Debug)]
 struct VisibleRows {
     gutter_w: f64,
-    /// Left edge of the code area, after the gutter and its padding.
     code_x0: f64,
-    /// The first (possibly partial) visible line.
     first_line: usize,
-    /// Where the top of the buffer's first line is drawn: above the
-    /// viewport by the scroll, or at its top for lines drawn unscrolled.
     origin_y: f64,
-    /// Below this, nothing of a line is drawn.
     bottom: f64,
     n_visible: usize,
 }
 
 impl VisibleRows {
-    /// Where the top of line `line` is drawn.
     fn line_top(&self, line: usize, line_h: f64) -> f64 {
         self.origin_y + line as f64 * line_h
     }
 }
 
-/// How many completion candidates the popup lists before it scrolls.
 const COMPLETION_ROWS: usize = 8;
 
-/// A single caret + optional selection anchor, in (line, col) char coords.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Caret {
     pub line: usize,
     pub col: usize,
-    /// Selection anchor; the selected range is [anchor, caret] (either order).
     pub anchor: Option<(usize, usize)>,
 }
 
@@ -166,14 +128,12 @@ impl Caret {
             anchor: None,
         }
     }
-    /// Ordered ((line,col) start, (line,col) end) of the selection, or None.
     fn selection(&self) -> Option<((usize, usize), (usize, usize))> {
         let a = self.anchor?;
         let c = (self.line, self.col);
         if a <= c { Some((a, c)) } else { Some((c, a)) }
     }
 
-    /// This caret as a shared-core selection over the flat buffer `text`.
     fn core(&self, text: &str) -> EditCore {
         let cursor = byte_of(text, self.line, self.col);
         let anchor = self.anchor.map_or(cursor, |(l, c)| byte_of(text, l, c));
@@ -182,7 +142,6 @@ impl Caret {
         core
     }
 
-    /// The caret a shared-core selection over `text` describes.
     fn from_core(text: &str, core: &EditCore) -> Self {
         let (line, col) = line_col_of(text, core.caret());
         Caret {
@@ -195,8 +154,6 @@ impl Caret {
     }
 }
 
-/// The byte offset of `(line, col)` — `col` in characters — in `text`,
-/// clamped to the end of the line (and of the buffer).
 fn byte_of(text: &str, line: usize, col: usize) -> usize {
     let mut start = 0;
     for _ in 0..line {
@@ -212,7 +169,6 @@ fn byte_of(text: &str, line: usize, col: usize) -> usize {
     start + row.char_indices().nth(col).map_or(row.len(), |(b, _)| b)
 }
 
-/// The `(line, col)` — `col` in characters — of byte `byte` in `text`.
 fn line_col_of(text: &str, byte: usize) -> (usize, usize) {
     let head = text.get(..byte.min(text.len())).unwrap_or(text);
     let line_start = head.rfind('\n').map_or(0, |nl| nl + 1);
@@ -252,52 +208,34 @@ const INACTIVE_SOURCE_BYTES: usize = 48 * 1024 * 1024;
 
 pub struct EditorView {
     rect: Rect,
-    /// The buffer's lines (cache of the CRDT Text split on '\n').
     lines: Arc<Vec<String>>,
     row_windows: HashMap<usize, RowViewportIndex>,
     projections: std::collections::VecDeque<BufferProjection>,
     background_highlights: Option<BackgroundHighlights>,
     highlight_wake: ui::WakeHandle,
-    /// Highlight spans per line, recomputed when the buffer changes.
     spans: Vec<Vec<Span>>,
     highlight_cache: IncrementalHighlights,
-    /// The Automerge Text object this view edits. `None` until bound.
     text_obj: Option<ObjId>,
-    /// Stable committed content witness; pending edits always bypass it.
     text_heads: Option<Vec<automerge::ChangeHash>>,
     #[cfg(test)]
     sync_text_reads: usize,
-    /// Active language → grammar for highlighting.
     language: Language,
-    /// Carets. Always at least one. Index 0 is primary.
     carets: Vec<Caret>,
-    /// Vertical scroll offset in lines (fractional for smooth wheel).
     scroll_y: f64,
-    /// Horizontal scroll offset in pixels.
     scroll_x: f64,
-    /// Wheel and touchpad motion and what the frames showed of the lines
-    /// (`editor_scroll.rs`).
     scroll: scroll::Scroll,
     /// The scenes of the lines in view, kept where they stand in the buffer
     /// while the theme, the fonts, the geometry and each row's source and
     /// spans hold (`editor_scroll.rs`). Presentation only: the buffer, the
     /// carets and the diagnostics stay the state a frame paints from.
     rows_kept: scroll::RowsKept,
-    /// Measured monospace cell width of the `Code` role, resolved on every
-    /// draw so it follows the theme and the text scale.
     cell_w: f64,
     /// Line pitch: the measured `Code` line. Every row, hit test, caret,
     /// selection, diagnostic underline and scroll step reads this one value,
     /// so large text never overprints its neighbouring row.
     line_h: f64,
-    /// Top offset that centres a measured `Code` line inside `line_h`: rows
-    /// and gutter numbers share it instead of per-site nudges.
     text_dy: f64,
-    /// Inset of the line numbers from the gutter's edges and of the code from
-    /// the gutter (`spacing.s3` of the theme last drawn with).
     pad: f64,
-    /// The `Code` role's resolved size last drawn with, so a change of theme
-    /// or text scale re-measures the cell and keeps the caret in view.
     code_size: f32,
     /// The editor's own text zoom, on top of the window's theme. The window
     /// zoom still reflows every part of the window; this changes only the
@@ -305,58 +243,31 @@ pub struct EditorView {
     text_zoom: f32,
     is_focused: bool,
     dirty: bool,
-    /// Snapshot of the buffer text the line cache was built from — lets `sync`
-    /// detect remote edits cheaply (string compare) and rebuild.
     cached_text: String,
-    /// Soft-tab width for the active language.
     indent_width: usize,
-    /// Last known cursor position in logical pixels, updated on `CursorMoved` so
-    /// click handlers can hit-test without threading the position through.
     last_cursor: Point,
-    /// Shared press→move→release selection gesture (the toolkit's click ladder:
-    /// single→char, double→word, triple→line, shift→extend). Owns the
-    /// multi-click timing so the editor doesn't re-derive it.
     drag: DragSelect,
-    /// The flat char-index span the current drag was anchored on. For a
-    /// word/line drag this is the whole word/line clicked; the drag extends
-    /// from whichever end is opposite the pointer so the original span stays
-    /// covered — same rule as `TextInput`'s `drag_anchor_span`.
     drag_anchor: (usize, usize),
 
-    /// Inline diagnostics for the active buffer (from the language server),
-    /// drawn as squiggles and used for the Problems panel.
     diagnostics: Vec<InlineDiag>,
-    /// The completion popup's candidates. Non-empty + `completion_active` draws
-    /// the popup and captures navigation keys.
     completions: Vec<CompletionItem>,
     completion_index: usize,
     completion_active: bool,
-    /// The word start (line, col) the completion should replace when accepted —
-    /// the identifier prefix under the caret at request time.
     completion_anchor: (usize, usize),
     /// The toolkit's suggestion list, used for its dropdown only: the editor
     /// owns the text and the keys, this paints the rows beside the caret.
     completion_list: SuggestionList,
-    /// A hover tooltip's text, drawn near the caret until dismissed.
     hover_text: Option<String>,
-    /// A pending language-server request the app should perform (set by a
-    /// keybind, drained by the app).
     lsp_ask: Option<LspAsk>,
 
-    /// Every match of the find bar's query, so all of them are tinted at once
-    /// and the user can see where the hits are without stepping through them.
     find_matches: Vec<crate::find::Match>,
-    /// Which of them is current, drawn more strongly than the rest.
     find_current: Option<usize>,
 
-    /// The no-buffer zero-state and its one "Open file" action; the app
-    /// drains the action and opens the file picker.
     empty: EmptyState,
     /// Compact recovery affordance shown only after horizontal scrolling. It
     /// makes the current offset explicit and returns to column zero on click;
     /// Home provides the matching keyboard path.
     horizontal_scroll_reset_rect: Rect,
-    /// One optimistic UI edit awaiting the app's authoritative action dispatch.
     pending_text_edit: Option<PendingTextEdit>,
     /// The input method's composition in progress. It is shown at the
     /// primary caret (see [`Self::composition_on_line`]) and becomes text
@@ -366,9 +277,6 @@ pub struct EditorView {
 
 impl EditorView {
     pub fn new() -> Self {
-        // Before the first draw measures the real face, geometry comes from
-        // the default theme's `Code` role: a monospace advance of about 0.6 em
-        // and the role's leading.
         let nominal = {
             let theme = Theme::dark();
             let style = theme.text(TextRole::Code);
@@ -432,12 +340,10 @@ impl EditorView {
         }
     }
 
-    /// Drain the one coalesced edit requested by UI primitives this event.
     pub fn take_text_edit(&mut self) -> Option<PendingTextEdit> {
         self.pending_text_edit.take()
     }
 
-    /// Reconcile an optimistic view after an action refusal.
     pub fn reconcile_from_doc(&mut self, doc: &AutoCommit) {
         self.pending_text_edit = None;
         self.sync_from_doc(doc);
@@ -445,12 +351,10 @@ impl EditorView {
         self.scroll_to_caret();
     }
 
-    /// Drain the rising-edge "Open File" click from the zero-state, if any.
     pub fn take_empty_action(&mut self) -> bool {
         self.empty.take_action()
     }
 
-    /// Portable native view over the currently bound shared text resource.
     pub(crate) fn continuation_position(
         &self,
         doc: &AutoCommit,
@@ -460,7 +364,6 @@ impl EditorView {
         if doc.text(object).ok()? != self.cached_text || self.cell_w <= 0.0 {
             return None;
         }
-        // Mid-glide, the view is the one the lines are gliding to.
         let scroll_y = self.resting_scroll_y();
         let top_line = scroll_y.max(0.0).floor() as usize;
         let view = ui::text_position::ResolvedTextPosition {
@@ -539,34 +442,25 @@ impl EditorView {
             self.find_current = current;
         }
         if let Some(m) = current.and_then(|i| self.find_matches.get(i)).copied() {
-            // Keep the current match on screen as the user steps through.
             self.carets = vec![Caret::at(m.line, m.col)];
             self.scroll_to_caret();
         }
     }
 
-    /// The editor's current selection as text, if any.
     pub fn selected_text_public(&self) -> Option<String> {
         self.selected_text()
     }
 
-    /// The text of the bound buffer as the editor shows it, its own edits
-    /// waiting for the app's dispatch included.
     pub fn text(&self) -> &str {
         &self.cached_text
     }
 
-    /// Replace `matches` (in document order) with `with` as one edit through
-    /// the editor's own edit path: shown now, dispatched by the app as one
-    /// undoable action. The caret lands after the last replacement. Returns
-    /// whether the text changed.
     pub fn replace_matches(&mut self, matches: &[crate::find::Match], with: &str) -> bool {
         if self.text_obj.is_none() || matches.is_empty() {
             return false;
         }
         let text = self.cached_text.clone();
         let mut next = text.clone();
-        // Last to first, so each splice's place is still where it was found.
         for m in matches.iter().rev() {
             if let Some(at) = crate::app::flat_index(&text, m.line, m.col) {
                 crate::app::replace_chars(&mut next, at, m.len, with);
@@ -577,8 +471,6 @@ impl EditorView {
         }
         self.request_text_edit(&next);
         if let Some((last, before)) = matches.split_last() {
-            // The replacements before it on its line moved it by their change
-            // in length.
             let inserted = with.chars().count();
             let col = before
                 .iter()
@@ -593,9 +485,6 @@ impl EditorView {
         true
     }
 
-    /// What the person has selected (or where the caret is) while the editor
-    /// is focused, for asking an agent about it: character offsets into the
-    /// whole text of `file`, the place the project's `replace-range` reads.
     pub fn shared_selection_in(&self, file: &str) -> Option<ui::shared_selection::SharedSelection> {
         use ui::shared_selection::SharedSelection;
         if !self.is_focused || !self.is_bound() {
@@ -632,8 +521,6 @@ impl EditorView {
         )
     }
 
-    /// Where lines `first..=last` are drawn: their rows across the editor,
-    /// clipped to what it shows.
     fn lines_drawn(&self, first: usize, last: usize) -> Rect {
         let line = |index: usize| f64::from(u32::try_from(index).unwrap_or(u32::MAX));
         let top = self.rect.y0 + (line(first) - self.scroll_y) * self.line_h;
@@ -641,9 +528,6 @@ impl EditorView {
         Rect::new(self.rect.x0, top, self.rect.x1, bottom).intersect(self.rect)
     }
 
-    /// Bind the authoritative Text while restoring this peer's recent render
-    /// projection and viewport. `sync` validates its committed witness before
-    /// reusing content; pending transactions always bypass that witness.
     pub fn bind(&mut self, text_obj: ObjId, language: Language) {
         self.save_projection();
         self.language = language;
@@ -730,7 +614,6 @@ impl EditorView {
         changed
     }
 
-    /// Unbind while retaining bounded recent projections for reopening.
     pub fn unbind(&mut self) {
         self.save_projection();
         self.clear_projection();
@@ -743,7 +626,6 @@ impl EditorView {
         (self.scroll_x, self.scroll_y)
     }
 
-    /// Opt-in native performance observation, outside normal frame work.
     pub(crate) fn native_projection_stats(&self) -> (usize, usize, usize) {
         (
             self.spans.len(),
@@ -760,18 +642,15 @@ impl EditorView {
         self.language
     }
 
-    /// Primary caret position (line, col), 0-based.
     pub fn primary_caret(&self) -> (usize, usize) {
         let c = self.primary();
         (c.line, c.col)
     }
 
-    /// Number of carets (for the status bar's "N cursors" indicator).
     pub fn caret_count(&self) -> usize {
         self.carets.len()
     }
 
-    /// Total selected character count across all carets.
     pub fn selection_len(&self) -> usize {
         self.carets
             .iter()
@@ -793,7 +672,6 @@ impl EditorView {
         total
     }
 
-    /// Rebuild the line + highlight caches from the buffer text.
     fn rebuild(&mut self, text: &str) {
         self.cached_text = text.to_string();
         let lines = if text.is_empty() {
@@ -803,8 +681,6 @@ impl EditorView {
                 .map(std::string::ToString::to_string)
                 .collect()
         };
-        // split('\n') on "a\n" yields ["a", ""]; that trailing empty line is
-        // the editable line after the final newline, which is what we want.
         let lines = Arc::new(lines);
         if text.len() > EAGER_HIGHLIGHT_BYTES {
             self.spans.clear();
@@ -830,7 +706,6 @@ impl EditorView {
         self.dirty = true;
     }
 
-    /// Clamp every caret into the buffer and onto a grapheme boundary.
     fn clamp_carets(&mut self) {
         let last_line = self.lines.len().saturating_sub(1);
         let clamp = |lines: &[String], (l, c): (usize, usize)| {
@@ -843,8 +718,6 @@ impl EditorView {
         }
     }
 
-    /// Convert a (line, col) char position to an absolute char index into the
-    /// flat buffer (for CRDT splicing).
     fn char_index(&self, line: usize, col: usize) -> usize {
         let mut idx = 0;
         for l in 0..line {
@@ -853,10 +726,6 @@ impl EditorView {
         idx + col
     }
 
-    /// Inverse of [`char_index`]: map a flat char index into the buffer back to
-    /// a `(line, col)` position. Used to convert the byte/char offsets the
-    /// shared `ui::text_selection` word-boundary walkers return into the
-    /// editor's line/column caret model.
     fn pos_from_flat(&self, mut idx: usize) -> (usize, usize) {
         for (l, line) in self.lines.iter().enumerate() {
             let len = line.chars().count();
@@ -869,14 +738,11 @@ impl EditorView {
         (last, self.lines.get(last).map_or(0, |s| s.chars().count()))
     }
 
-    /// The primary caret's ordered selection as flat char indices, or `None`.
     fn primary_flat_selection(&self) -> Option<(usize, usize)> {
         let (s, e) = self.primary().selection()?;
         Some((self.char_index(s.0, s.1), self.char_index(e.0, e.1)))
     }
 
-    /// The text covered by the primary caret's selection, sliced out of the
-    /// flat buffer (`cached_text`). `None` when nothing is selected.
     fn selected_text(&self) -> Option<String> {
         let (s, e) = self.primary_flat_selection()?;
         if s >= e {
@@ -885,10 +751,6 @@ impl EditorView {
         Some(self.cached_text.chars().skip(s).take(e - s).collect())
     }
 
-    /// The primary caret as UTF-8 byte offsets into [`Self::text`], the space
-    /// an accessible text selection is published in: the anchor and the focus
-    /// in the order a screen reader reads them, which is where the selection
-    /// starts and where it ends.
     fn accessible_caret(&self) -> (usize, usize) {
         let caret = self.primary();
         let focus = byte_of(&self.cached_text, caret.line, caret.col);
@@ -923,10 +785,6 @@ impl EditorView {
         self.scroll_to_caret();
     }
 
-    /// Word-wise caret motion (Ctrl+Left / Ctrl+Right, and their shift-extend
-    /// variants), delegating the boundary walk to the shared
-    /// `ui::text_selection` char-indexed helpers so the editor uses exactly the
-    /// same word semantics as `TextInput`.
     fn word_move(&mut self, forward: bool, extend: bool) {
         let primary = self.primary();
         let flat = self.char_index(primary.line, primary.col);
@@ -938,9 +796,6 @@ impl EditorView {
         self.set_primary_flat(target, extend);
     }
 
-    /// Select the whole word under `(line, col)` via the shared
-    /// `word_boundaries_chars` helper (double-click). Returns the flat span so
-    /// a following drag can extend from it.
     fn select_word_at(&mut self, line: usize, col: usize) -> (usize, usize) {
         self.carets.truncate(1);
         let flat = self.char_index(line, col);
@@ -956,7 +811,6 @@ impl EditorView {
         (ws, we)
     }
 
-    /// Select the whole line `line` (triple-click). Returns the flat span.
     fn select_line_at(&mut self, line: usize) -> (usize, usize) {
         let len = self.lines.get(line).map_or(0, |l| l.chars().count());
         self.carets = vec![Caret {
@@ -968,8 +822,6 @@ impl EditorView {
         (self.char_index(line, 0), self.char_index(line, len))
     }
 
-    /// Set the primary selection from an anchor+cursor pair of flat indices,
-    /// collapsing to a bare caret when the two coincide.
     fn set_primary_range(&mut self, anchor: usize, cursor: usize) {
         let (al, ac) = self.pos_from_flat(anchor);
         let (cl, cc) = self.pos_from_flat(cursor);
@@ -984,23 +836,19 @@ impl EditorView {
         }];
     }
 
-    /// Copy the primary selection to the system clipboard (no-op when empty).
     fn copy_selection(&self) {
         if let Some(t) = self.selected_text() {
             clipboard_copy(&t);
         }
     }
 
-    /// Cut: copy the primary selection, then request its action-owned delete.
     fn cut_selection(&mut self, doc: &mut ui::widget::Edits<'_>) {
         if let Some(t) = self.selected_text() {
             clipboard_copy(&t);
-            // `backspace` deletes an active selection wholesale.
             self.backspace(doc);
         }
     }
 
-    /// Paste clipboard text at the caret, replacing any selection.
     fn paste_clipboard(&mut self, doc: &mut ui::widget::Edits<'_>) {
         if let Some(t) = clipboard_paste()
             && !t.is_empty()
@@ -1009,7 +857,6 @@ impl EditorView {
         }
     }
 
-    /// Replace the editor's inline diagnostics from a fresh LSP set.
     pub fn set_diagnostics(&mut self, diags: &[LspDiagnostic]) {
         self.diagnostics = diags
             .iter()
@@ -1027,8 +874,6 @@ impl EditorView {
             .collect();
     }
 
-    /// Show a completion popup for `items` (hidden when empty). The anchor is
-    /// the identifier prefix under the caret, which accepting will replace.
     pub fn show_completions(&mut self, items: Vec<CompletionItem>) {
         if items.is_empty() {
             self.hide_completions();
@@ -1037,7 +882,6 @@ impl EditorView {
         let (line, col) = self.primary_caret();
         let flat = self.char_index(line, col);
         let start = prev_word_boundary_chars(&self.cached_text, flat).min(flat);
-        // Only treat it as a word-prefix if the run start..caret is a word.
         self.completion_anchor = self.pos_from_flat(start);
         self.completions = items;
         self.completion_index = 0;
@@ -1045,7 +889,6 @@ impl EditorView {
         self.dirty = true;
     }
 
-    /// Dismiss the completion popup.
     pub fn hide_completions(&mut self) {
         if self.completion_active {
             self.dirty = true;
@@ -1054,13 +897,10 @@ impl EditorView {
         self.completions.clear();
     }
 
-    /// Whether the completion popup is currently capturing navigation keys.
     pub fn completion_active(&self) -> bool {
         self.completion_active && !self.completions.is_empty()
     }
 
-    /// Accept the highlighted completion: replace the identifier prefix under
-    /// the caret with the item's insert text through the action path.
     fn accept_completion(&mut self, doc: &mut ui::widget::Edits<'_>) {
         if !self.completion_active() {
             return;
@@ -1078,13 +918,10 @@ impl EditorView {
         self.hide_completions();
     }
 
-    /// Set (or clear) the hover tooltip text.
     pub fn set_hover(&mut self, text: Option<String>) {
         self.hover_text = text;
     }
 
-    /// The message of the diagnostic whose span contains `(line, col)`, if any.
-    /// Powers an instant, server-free hover when the caret sits on a squiggle.
     fn diagnostic_message_at(&self, line: usize, col: usize) -> Option<String> {
         self.diagnostics.iter().find_map(|d| {
             if d.line != line {
@@ -1103,7 +940,6 @@ impl EditorView {
         })
     }
 
-    /// Move the primary caret to an absolute (line, col), clamped to the buffer.
     pub fn move_caret_to(&mut self, line: usize, col: usize) {
         self.carets = vec![Caret::at(line, col)];
         self.clamp_carets();
@@ -1111,13 +947,10 @@ impl EditorView {
         self.dirty = true;
     }
 
-    /// Drain a pending language-server request the user triggered by a keybind.
     pub fn take_lsp_ask(&mut self) -> Option<LspAsk> {
         self.lsp_ask.take()
     }
 
-    /// Set the primary selection to span `anchor..cursor` in (line, col) space.
-    /// Used by the headless `--shots` scenarios to stage a visible selection.
     pub fn set_selection_lc(&mut self, anchor: (usize, usize), cursor: (usize, usize)) {
         self.carets = vec![Caret {
             line: cursor.0,
@@ -1128,7 +961,6 @@ impl EditorView {
         self.scroll_to_caret();
     }
 
-    /// The buffer's line count — used by shots scenarios to pick a valid line.
     pub fn line_count(&self) -> usize {
         self.lines.len()
     }
@@ -1145,13 +977,11 @@ impl EditorView {
         self.pad
     }
 
-    /// The width of the gutter (line-number column) for the current line count.
     fn gutter_width(&self) -> f64 {
         let digits = self.lines.len().max(1).to_string().len().max(2);
         self.gutter_pad() * 2.0 + digits as f64 * self.cell_w
     }
 
-    /// The viewport trimmed to a whole number of lines.
     fn whole_line_rect(&self) -> Rect {
         let lines = (self.rect.height() / self.line_h).floor();
         if lines < 1.0 {
@@ -1165,12 +995,10 @@ impl EditorView {
         )
     }
 
-    /// Visible-line capacity of the viewport.
     fn visible_lines(&self) -> usize {
         (self.rect.height() / self.line_h).ceil() as usize + 1
     }
 
-    /// Scroll so the primary caret is visible.
     fn scroll_to_caret(&mut self) {
         let (line, col) = self.primary_caret();
         let top = self.scroll_y;
@@ -1181,7 +1009,6 @@ impl EditorView {
         } else if (line as f64) > bottom {
             self.scroll_y = line as f64 - rows + 1.0;
         }
-        // Horizontal: keep the caret column in view.
         let code_w = (self.rect.width() - self.gutter_width() - self.code_pad_left()).max(0.0);
         let caret_px = col as f64 * self.cell_w;
         if caret_px < self.scroll_x {
@@ -1193,11 +1020,6 @@ impl EditorView {
         self.dirty = true;
     }
 
-    // ---- editing primitives (all request an action before CRDT mutation) ----
-
-    /// Optimistically rebuild the render cache and coalesce the requested
-    /// change. The caller is responsible for dispatching it; a refusal calls
-    /// `reconcile_from_doc` and puts this cache back on the real document.
     fn request_text_edit(&mut self, next: &str) {
         if next == self.cached_text {
             return;
@@ -1227,7 +1049,6 @@ impl EditorView {
         let mut cores: Vec<EditCore> = self.carets.iter().map(|c| c.core(&next)).collect();
         let mut order: Vec<usize> = (0..cores.len()).collect();
         order.sort_by_key(|&i| std::cmp::Reverse(cores.get(i).map_or(0, |c| c.range().start)));
-        // Start of the lowest edit made so far.
         let mut floor = next.len();
         let mut done: Vec<usize> = Vec::with_capacity(cores.len());
         for i in order {
@@ -1270,33 +1091,23 @@ impl EditorView {
         self.scroll_to_caret();
     }
 
-    /// Insert a string at every caret, replacing its selection.
     fn insert(&mut self, _doc: &mut ui::widget::Edits<'_>, s: &str) {
         self.edit_at_carets(|core, _| core.insert(s));
     }
 
-    /// Backspace at every caret: the selection, else the character (grapheme
-    /// cluster) before the caret — joining lines at a line start.
     fn backspace(&mut self, _doc: &mut ui::widget::Edits<'_>) {
         self.edit_at_carets(|core, text| core.delete_backward(text, false));
     }
 
-    /// Forward-delete at every caret: the selection, else the character
-    /// (grapheme cluster) after the caret.
     fn delete_forward(&mut self, _doc: &mut ui::widget::Edits<'_>) {
         self.edit_at_carets(|core, text| core.delete_forward(text, false));
     }
 
-    /// The input method committed `text`: the composition ends and the text
-    /// is typed at every caret.
     fn commit_composition(&mut self, text: &str) {
         self.composition.clear_preedit();
         self.edit_at_carets(|core, _| core.commit(text));
     }
 
-    /// The primary line's composition as a core whose caret sits at the
-    /// primary caret within that line, so the core's display mapping places
-    /// the preedit there. `None` while nothing is being composed.
     fn composition_on_line(&self) -> Option<(usize, EditCore)> {
         if !self.composition.has_preedit() {
             return None;
@@ -1312,8 +1123,6 @@ impl EditorView {
         Some((primary.line, core))
     }
 
-    /// The column the primary caret is drawn at: inside the composition at
-    /// the input method's cursor while composing.
     fn primary_display_col(&self) -> usize {
         match self.composition_on_line() {
             Some((line, core)) => {
@@ -1351,8 +1160,6 @@ impl EditorView {
         *handled = true;
     }
 
-    /// Re-read the buffer from the CRDT and rebuild caches. Called after every
-    /// local edit and from `sync` for remote edits.
     fn sync_from_doc(&mut self, doc: &AutoCommit) {
         if let Some(t) = self.text_obj.clone() {
             use automerge::ReadDoc;
@@ -1361,10 +1168,6 @@ impl EditorView {
         }
     }
 
-    /// Arrow motion of the primary caret: `dx` characters (grapheme
-    /// clusters, crossing line ends) and `dy` lines at the same column.
-    /// `extend` grows the selection; a plain arrow collapses multi-carets to
-    /// the primary and a live selection to its near edge.
     fn move_caret(&mut self, dx: isize, dy: isize, extend: bool) {
         if !extend {
             self.carets.truncate(1);
@@ -1398,8 +1201,6 @@ impl EditorView {
         self.scroll_to_caret();
     }
 
-    /// To the line's first non-blank character, then its start; with Ctrl,
-    /// to the start of the file.
     fn move_home(&mut self, extend: bool, document: bool) {
         self.carets.truncate(1);
         if self.carets.is_empty() {
@@ -1419,7 +1220,6 @@ impl EditorView {
             self.scroll_to_caret();
             return;
         }
-        // Smart home: first non-whitespace, then column 0.
         let first_non_ws = self.lines.get(c.line).map_or(0, |line| {
             line.chars().take_while(|ch| ch.is_whitespace()).count()
         });
@@ -1431,7 +1231,6 @@ impl EditorView {
         self.scroll_to_caret();
     }
 
-    /// To the end of the line; with Ctrl, to the end of the file.
     fn move_end(&mut self, extend: bool, document: bool) {
         self.carets.truncate(1);
         if self.carets.is_empty() {
@@ -1464,7 +1263,6 @@ impl EditorView {
         self.dirty = true;
     }
 
-    /// Add a caret on the line below the lowest current caret (multi-cursor).
     fn add_caret_below(&mut self) {
         if let Some(last) = self.carets.iter().max_by_key(|c| c.line).copied()
             && let Some(col) = self
@@ -1477,8 +1275,6 @@ impl EditorView {
         }
     }
 
-    /// Insert a newline plus auto-indent matching the current line's leading
-    /// whitespace — the single most-felt editor nicety.
     fn newline_with_indent(&mut self, doc: &mut ui::widget::Edits<'_>) {
         let (line, _) = self.primary_caret();
         let indent: String = self
@@ -1495,7 +1291,6 @@ impl EditorView {
         self.insert(doc, &payload);
     }
 
-    /// Indent: insert `indent_width` spaces at the caret.
     fn insert_indent(&mut self, doc: &mut ui::widget::Edits<'_>) {
         let spaces = " ".repeat(self.indent_width);
         self.insert(doc, &spaces);
@@ -1517,14 +1312,10 @@ impl EditorView {
         }
     }
 
-    /// The flat char index of the first character of `line`.
     fn line_start_index(&self, line: usize) -> usize {
         self.char_index(line, 0)
     }
 
-    /// Reposition the primary caret (and its selection anchor) by `delta` lines,
-    /// keeping the column. Used after a line move so the caret rides with the
-    /// text it moved.
     fn shift_primary_lines(&mut self, delta: isize) {
         let cur = self.primary();
         let shift = |l: usize| (l as isize + delta).max(0) as usize;
@@ -1537,10 +1328,6 @@ impl EditorView {
         self.scroll_to_caret();
     }
 
-    /// Duplicate the caret's line(s), inserting the copy directly below. With
-    /// `focus_copy` the caret rides down onto the new copy (copy-down); without
-    /// it the caret stays on the original (copy-up). Bound to Shift+Alt+Down /
-    /// Shift+Alt+Up.
     pub fn duplicate_lines(&mut self, _doc: &mut ui::widget::Edits<'_>, focus_copy: bool) {
         if self.text_obj.is_none() {
             return;
@@ -1562,8 +1349,6 @@ impl EditorView {
         }
     }
 
-    /// Move the caret's line(s) up or down by one, swapping with the neighbour.
-    /// One action-owned replacement, so it undoes as one step. Bound to Alt+Up/Alt+Down.
     pub fn move_lines(&mut self, _doc: &mut ui::widget::Edits<'_>, up: bool) {
         if self.text_obj.is_none() {
             return;
@@ -1583,7 +1368,6 @@ impl EditorView {
             };
             let from = self.line_start_index(a - 1);
             let to = self.char_index(b, self.lines.get(b).map_or(0, |l| l.chars().count()));
-            // Region is "{prev}\n{block}" → swap to "{block}\n{prev}".
             let mut next = self.cached_text.clone();
             replace_chars(&mut next, from, to - from, &format!("{block}\n{prev}"));
             self.request_text_edit(&next);
@@ -1600,7 +1384,6 @@ impl EditorView {
                 b + 1,
                 self.lines.get(b + 1).map_or(0, |l| l.chars().count()),
             );
-            // Region is "{block}\n{next}" → swap to "{next}\n{block}".
             let mut updated = self.cached_text.clone();
             replace_chars(&mut updated, from, to - from, &format!("{next}\n{block}"));
             self.request_text_edit(&updated);
@@ -1608,18 +1391,14 @@ impl EditorView {
         }
     }
 
-    /// Delete the caret's line(s) entirely, landing the caret at the start of
-    /// what follows. Bound to Ctrl+Shift+K.
     pub fn delete_lines(&mut self, _doc: &mut ui::widget::Edits<'_>) {
         if self.text_obj.is_none() {
             return;
         }
         let (a, b) = self.primary_line_range();
         let (from, to) = if b + 1 < self.lines.len() {
-            // Take the block and its trailing newline so the line vanishes.
             (self.line_start_index(a), self.line_start_index(b + 1))
         } else if a > 0 {
-            // Last line(s): take the leading newline instead.
             (
                 self.char_index(
                     a - 1,
@@ -1628,7 +1407,6 @@ impl EditorView {
                 self.char_index(b, self.lines.get(b).map_or(0, |l| l.chars().count())),
             )
         } else {
-            // The whole buffer is selected — leave a single empty line.
             (
                 0,
                 self.char_index(b, self.lines.get(b).map_or(0, |l| l.chars().count())),
@@ -1666,7 +1444,6 @@ impl EditorView {
                 .get(l)
                 .is_some_and(|s| s.trim_start().starts_with(token))
         });
-        // Shallowest indent across the range, so added markers align.
         let indent = non_blank
             .iter()
             .map(|&l| {
@@ -1676,15 +1453,12 @@ impl EditorView {
             })
             .min()
             .unwrap_or(0);
-        // Splice bottom-up so earlier line indices stay valid.
         let mut next = self.cached_text.clone();
         for &l in non_blank.iter().rev() {
             let Some(line) = self.lines.get(l) else {
                 continue;
             };
             if all_commented {
-                // Remove the token (and one following space, if present) at the
-                // first non-whitespace column.
                 let lead = line.chars().take_while(|c| c.is_whitespace()).count();
                 let after_start = line.char_indices().nth(lead).map_or(line.len(), |(i, _)| i);
                 let after = line.get(after_start..).unwrap_or("");
@@ -1756,14 +1530,11 @@ impl EditorView {
         self.clamp_carets();
     }
 
-    /// Whether the primary selection spans more than one line — the caller uses
-    /// this to decide between block-indent and a plain tab insertion.
     pub fn selection_is_multiline(&self) -> bool {
         let (a, b) = self.primary_line_range();
         b > a
     }
 
-    /// Map a pixel point to a (line, col) caret position.
     fn point_to_caret(&self, p: Point) -> (usize, usize) {
         let gutter = self.gutter_width();
         let rel_y = p.y - self.rect.y0 + self.scroll_y * self.line_height();
@@ -1777,11 +1548,6 @@ impl EditorView {
         )
     }
 
-    // ---- draw helpers (split out of `Widget::draw`, which orchestrates them) ----
-
-    /// Measure the real monospace cell width once a renderer is available,
-    /// caching it on `self` (the fallback stays in place until the first
-    /// successful measurement).
     fn measure_cell_width(&mut self, text_renderer: &mut TextRenderer, theme: &Theme) {
         let style = Self::code_style(theme);
         let (mw, mh) = text_renderer.measure_style("M", None, &style);
@@ -1795,18 +1561,14 @@ impl EditorView {
         self.pad = f64::from(theme.tokens.spacing.s3);
     }
 
-    /// The face the buffer and its line numbers are set in: the `Code` role.
     fn code_style(theme: &Theme) -> TextStyle {
         theme.text(TextRole::Code)
     }
 
-    /// Row pitch for a measured `Code` line: the line itself, on a whole
-    /// pixel so rows tile without seams.
     fn line_pitch(line_h: f64) -> f64 {
         line_h.ceil()
     }
 
-    /// The geometry a draw pass threads through.
     fn visible_rows(&self) -> VisibleRows {
         let gutter_w = self.gutter_width();
         let first_line = self.scroll_y.floor() as usize;
@@ -1852,7 +1614,6 @@ impl EditorView {
                 break;
             }
 
-            // Active-line highlight across the code area.
             if line_idx == primary_line && self.carets.len() == 1 {
                 let hl = Rect::new(self.rect.x0 + gutter_w, y, self.rect.x1, y + self.line_h);
                 scene.fill(
@@ -1864,7 +1625,6 @@ impl EditorView {
                 );
             }
 
-            // Selection rectangles for any caret touching this line.
             for caret in &self.carets {
                 if let Some((s, e)) = caret.selection() {
                     if line_idx < s.0 || line_idx > e.0 {
@@ -1910,8 +1670,6 @@ impl EditorView {
         }
     }
 
-    /// Draw the gutter line number and syntax-highlighted code text for every
-    /// visible row (the pass on top of [`Self::draw_line_backgrounds`]).
     fn draw_line_text(&self, ctx: &mut PaintCtx<'_>, rows: &VisibleRows, primary_line: usize) {
         let PaintCtx {
             scene,
@@ -1937,7 +1695,6 @@ impl EditorView {
             if y > rows.bottom {
                 break;
             }
-            // The row's glyphs may reach a line past it either way.
             let code_clip = Rect::new(
                 self.rect.x0 + rows.gutter_w,
                 y - self.line_h,
@@ -1945,7 +1702,6 @@ impl EditorView {
                 y + 2.0 * self.line_h,
             );
 
-            // Line number, right-aligned in the gutter.
             let num = (line_idx + 1).to_string();
             let num_w = num.len() as f64 * self.cell_w;
             let num_x = self.rect.x0 + rows.gutter_w - self.gutter_pad() - num_w;
@@ -1963,7 +1719,6 @@ impl EditorView {
                 &number_style,
             );
 
-            // The highlighted code text, span by span.
             scene.push_layer(
                 Fill::NonZero,
                 BlendMode::default(),
@@ -1986,7 +1741,6 @@ impl EditorView {
         }
     }
 
-    /// Map the visible display columns back to committed text around IME.
     fn visible_row_window(
         &self,
         index: &RowViewportIndex,
@@ -2010,9 +1764,6 @@ impl EditorView {
         window
     }
 
-    /// Draw one row's highlighted code, span by span. On the composing row
-    /// the preedit is spliced in at the caret through the shared core's
-    /// display mapping: text after the caret is drawn shifted past it.
     fn draw_code_row(
         &self,
         ctx: &mut PaintCtx<'_>,
@@ -2045,8 +1796,6 @@ impl EditorView {
             (base_x, rows.gutter_w),
             (caret_column, preedit_columns),
         );
-        // The display column committed byte `byte` starts at; a run
-        // starting at the caret begins after the composition.
         let col_at = |byte: usize| {
             column_at(byte).saturating_add(
                 if preedit.as_ref().is_some_and(|range| byte >= range.start) {
@@ -2056,9 +1805,6 @@ impl EditorView {
                 },
             )
         };
-        // A line the highlighter produced no spans for draws plain, so no
-        // characters are ever dropped; a span the composition falls
-        // inside is drawn as two runs.
         let plain = [(0..line.len(), None)];
         let highlighted = spans
             .iter()
@@ -2110,7 +1856,6 @@ impl EditorView {
             );
         }
         if let (Some(core), Some(range)) = (composing, &preedit) {
-            // The composition, underlined until the input method commits it.
             let x0 = base_x + column_at(range.start) as f64 * self.cell_w;
             let x1 = x0 + preedit_columns as f64 * self.cell_w;
             text_renderer.draw_style(
@@ -2127,8 +1872,6 @@ impl EditorView {
         }
     }
 
-    /// Draw a coloured wavy underline under each inline diagnostic's span
-    /// (from the language server) that falls within the visible line range.
     fn draw_diagnostics(
         &self,
         scene: &mut Scene,
@@ -2179,9 +1922,6 @@ impl EditorView {
         }
     }
 
-    /// Draw the caret(s) as a thin vertical stroke, blink-free for screenshot
-    /// determinism, for whichever carets fall in the visible line range.
-    /// No-op while the view isn't focused.
     fn draw_carets(
         &self,
         scene: &mut Scene,
@@ -2222,8 +1962,6 @@ impl EditorView {
                 Point::new(x, y + self.line_h - inset),
             );
             scene.stroke(&stroke, transform, c.intent.you, None, &caret_line);
-            // Enclose the actual stroke, including its width. Retain a full
-            // viewport fallback for geometry that cannot describe finite ink.
             let ink = Rect::from_points(caret_line.p0, caret_line.p1)
                 .inflate(stroke.width / 2.0, stroke.width / 2.0);
             let ink = if ink.is_finite() { ink } else { self.rect };
@@ -2232,10 +1970,6 @@ impl EditorView {
         bounds
     }
 
-    /// Draw the completion popup: the toolkit's suggestion list, anchored
-    /// under the caret (above it when there is no room below). Each row
-    /// carries its kind icon, its label and the candidate's detail in a
-    /// trailing column. No-op when the popup isn't showing.
     fn draw_completion_popup(
         &mut self,
         scene: &mut Scene,
@@ -2260,9 +1994,6 @@ impl EditorView {
                 }
             })
             .collect();
-        // The shared suggestion list opens from the caret's line: below it,
-        // or above it when the editor ends first; it scrolls to keep the
-        // chosen row in view and sizes itself to its labels and details.
         let x = caret_x.max(self.rect.x0 + self.gutter_width());
         self.completion_list.set_rows(suggestions);
         self.completion_list
@@ -2274,9 +2005,6 @@ impl EditorView {
             .paint(scene, transform, text_renderer, theme);
     }
 
-    /// Draw the hover tooltip: a small panel near the caret with the server's
-    /// text, preferring above the caret and dropping below when there's no
-    /// room. No-op when there is no hover text to show.
     fn draw_hover_tooltip(
         &self,
         scene: &mut Scene,
@@ -2301,7 +2029,6 @@ impl EditorView {
         let px = caret_x
             .min(self.rect.x1 - width - f64::from(spacing.s2))
             .max(self.rect.x0 + self.gutter_width());
-        // Prefer above the caret; drop below if there's no room.
         let py = if caret_top - height - gap >= self.rect.y0 {
             caret_top - height - gap
         } else {
@@ -2322,11 +2049,6 @@ impl EditorView {
 }
 
 impl EditorView {
-    // ---- event helpers (split out of `Widget::handle_event`, which dispatches to them) ----
-
-    /// Left-click: add a caret (Ctrl/Cmd-click) or resolve the shared click
-    /// ladder (single/double/triple, shift-extend) into a char/word/line
-    /// selection anchored for the drag that may follow.
     fn handle_mouse_press(&mut self, mods: winit::keyboard::ModifiersState, handled: &mut bool) {
         if !self.rect.contains(self.last_cursor) {
             return;
@@ -2343,8 +2065,6 @@ impl EditorView {
                 Granularity::Char => {
                     let flat = self.char_index(line, col);
                     if intent.extend {
-                        // Shift-click: keep the existing anchor (or promote
-                        // the current caret) and extend.
                         let primary = self.primary();
                         let (al, ac) = primary.anchor.unwrap_or((primary.line, primary.col));
                         let anchor = self.char_index(al, ac);
@@ -2362,9 +2082,6 @@ impl EditorView {
         *handled = true;
     }
 
-    /// Pointer motion: while dragging, extend the selection to the pointer at
-    /// the gesture's granularity — char follows the caret; word/line snap so
-    /// the original span the press selected stays covered.
     fn handle_cursor_moved(&mut self, next: Point, handled: &mut bool) {
         self.last_cursor = next;
         let Some(gran) = self.drag.drag() else {
@@ -2396,10 +2113,6 @@ impl EditorView {
         *handled = true;
     }
 
-    /// A pressed key: completion-popup navigation, LSP request triggers, then
-    /// caret motion / editing / clipboard commands, then plain text input.
-    /// A pressed key: completion-popup navigation, LSP request triggers, then
-    /// caret motion / editing / clipboard commands, then plain text input.
     fn handle_key_press(
         &mut self,
         key_event: &KeyEvent,
@@ -2413,7 +2126,6 @@ impl EditorView {
         let shift = mods.shift_key();
         let alt = mods.alt_key();
 
-        // Any keypress dismisses a stale hover tooltip.
         if self.hover_text.is_some() {
             self.hover_text = None;
             self.dirty = true;
@@ -2434,10 +2146,6 @@ impl EditorView {
         self.handle_editing_keys(logical_key, text, ctrl, shift, state, handled);
     }
 
-    /// While the completion popup is open, handle its navigation keys
-    /// (Up/Down/Enter/Tab/Escape) and consume the event. Any other key
-    /// dismisses the popup and falls through to normal handling. Returns
-    /// `true` when the event was fully handled here.
     fn handle_completion_popup_keys(
         &mut self,
         logical_key: &Key,
@@ -2479,10 +2187,6 @@ impl EditorView {
         }
     }
 
-    /// The pointer over the open completion popup: a row lifts under it, a
-    /// click accepts that row, the wheel scrolls the list. A press anywhere
-    /// else dismisses the popup and goes on to the editor. Returns `true`
-    /// when the event was the popup's.
     fn handle_completion_pointer(
         &mut self,
         event: &WindowEvent,
@@ -2540,8 +2244,6 @@ impl EditorView {
         }
     }
 
-    /// F12 (go to definition) and F1 (hover — instant for an on-caret
-    /// diagnostic, plus an LSP request). Returns `true` when consumed.
     fn handle_lsp_trigger_keys(&mut self, logical_key: &Key, handled: &mut bool) -> bool {
         if matches!(logical_key, Key::Named(NamedKey::F12)) {
             self.lsp_ask = Some(LspAsk::Definition);
@@ -2549,9 +2251,6 @@ impl EditorView {
             return true;
         }
         if matches!(logical_key, Key::Named(NamedKey::F1)) {
-            // Instant, server-free hover: if the caret sits on a diagnostic,
-            // show its message immediately. Also ask the LSP for a richer
-            // hover (which supersedes this when it arrives).
             let (cl, cc) = self.primary_caret();
             if let Some(msg) = self.diagnostic_message_at(cl, cc) {
                 self.set_hover(Some(msg));
@@ -2563,9 +2262,6 @@ impl EditorView {
         false
     }
 
-    /// Caret motion: arrows (plain, Ctrl-by-word, Alt for line move/duplicate,
-    /// Ctrl+Alt to add a caret below), Home/End, Page Up/Down. Returns `true`
-    /// when the key matched.
     fn handle_navigation_keys(
         &mut self,
         logical_key: &Key,
@@ -2577,7 +2273,6 @@ impl EditorView {
     ) -> bool {
         match logical_key {
             Key::Named(NamedKey::ArrowLeft) => {
-                // Ctrl+Left jumps a word; +Shift extends by a word.
                 if ctrl {
                     self.word_move(false, shift);
                 } else {
@@ -2629,8 +2324,6 @@ impl EditorView {
         true
     }
 
-    /// Ctrl+letter shortcuts: select-all, copy/cut/paste, add-caret-below,
-    /// delete-line, toggle-comment. Returns `true` when the key matched.
     fn handle_ctrl_shortcut_keys(
         &mut self,
         logical_key: &Key,
@@ -2659,8 +2352,6 @@ impl EditorView {
         true
     }
 
-    /// Backspace/Delete/Enter/Tab/Space, and — for anything else — plain
-    /// printable text insertion.
     fn handle_editing_keys(
         &mut self,
         logical_key: &Key,
@@ -2697,7 +2388,6 @@ impl EditorView {
                 *handled = true;
             }
             Key::Named(NamedKey::Space) => {
-                // Ctrl+Space asks the app to fetch completions here.
                 if ctrl {
                     self.lsp_ask = Some(LspAsk::Completion);
                 } else {
@@ -2706,9 +2396,6 @@ impl EditorView {
                 *handled = true;
             }
             _ => {
-                // Printable text insertion. `text` carries the resolved
-                // character(s) for the key (handles shift, layout, dead
-                // keys).
                 if !ctrl
                     && let Some(s) = text
                     && !s.is_empty()
@@ -2760,15 +2447,11 @@ impl EditorView {
 }
 
 impl EditorView {
-    /// The editor's text zoom, as a factor of the theme's code size.
     #[must_use]
     pub fn text_zoom(&self) -> f32 {
         self.text_zoom
     }
 
-    /// Set the editor's text zoom. The next draw re-measures the code line and
-    /// keeps the caret in view, so rows, hit-testing and the caret all follow
-    /// the new size.
     pub fn set_text_zoom(&mut self, zoom: f32) {
         let zoom = zoom.clamp(ui::content_zoom::MIN, ui::content_zoom::MAX);
         if (zoom - self.text_zoom).abs() > f32::EPSILON {
@@ -2806,8 +2489,6 @@ impl Widget for EditorView {
         self.present_shown();
     }
 
-    /// An outer cache keeps the editor's scene: what it showed is not known
-    /// to be on screen where the next frame scrolls from.
     fn release_scene_cache(&mut self) {
         self.forget_shown();
     }
@@ -2849,9 +2530,6 @@ impl Widget for EditorView {
         let VisibleRows { code_x0, .. } = rows;
 
         if self.text_obj.is_none() {
-            // A composed zero-state through the shared primitive: a hero icon,
-            // one sentence, and an actionable "Open file" button that summons
-            // the portal picker.
             self.empty.apply_layout_external(self.rect);
             self.empty
                 .draw_child(scene, transform, text_renderer, theme, presence);
@@ -2860,9 +2538,6 @@ impl Widget for EditorView {
         }
         self.note_motion(theme);
 
-        // The viewport shows whole lines: a line the bottom edge would cut in
-        // half is not drawn at all, so no half-glyphs sit against the panel
-        // or the status bar.
         let clip = self.whole_line_rect();
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &clip);
         let primary_line = self.primary().line;
@@ -2881,8 +2556,6 @@ impl Widget for EditorView {
         );
         scene.append(&recovery, None);
         scene.pop_layer();
-        // Scrolled, the code continues past the top edge: it fades out
-        // there, so a line the edge cuts mid-scroll reads as going on.
         let mut fade = Scene::new();
         if self.scroll_y > 0.0 {
             ui::surface::content_edge_fade(
@@ -2895,7 +2568,6 @@ impl Widget for EditorView {
         }
         scene.append(&fade, None);
 
-        // Caret pixel, reused by the completion popup + hover tooltip.
         let (caret_line, _) = self.primary_caret();
         let caret_x = code_x0 + self.primary_display_col() as f64 * self.cell_w - self.scroll_x;
         let caret_top = self.rect.y0 + (caret_line as f64 - self.scroll_y) * self.line_h;
@@ -3002,10 +2674,6 @@ impl Widget for EditorView {
                     .focused(self.is_focused)
                     .multiline(true),
             );
-        // What the document holds and where the caret is, for everything that
-        // reads the editor without looking at its pixels: a screen reader, an
-        // automation script, an agent, and the headless driver's checks.
-        // Nothing is bound to a buffer yet, so there is no text to publish.
         if self.is_bound() {
             node = node.with_value(self.cached_text.clone());
             let (anchor, focus) = self.accessible_caret();
@@ -3039,7 +2707,6 @@ impl Widget for EditorView {
     }
 
     fn ime_content(&self) -> Option<ui::ime::InputContent> {
-        // This is an action-owned source buffer, not input to a live process.
         (self.is_focused && self.is_bound()).then_some(ui::ime::InputContent::TEXT)
     }
 
@@ -3051,7 +2718,6 @@ impl Widget for EditorView {
         let object = self.text_obj.as_ref()?;
         let mut stamp = ui::ime::edit_fingerprint(&self.cached_text, 0, 0, key);
         stamp = ui::ime::scoped_fingerprint(object.to_string().as_bytes(), stamp, key);
-        // Include every selection, even when the primary caret stays put.
         for caret in &self.carets {
             let scope = format!("{}:{}:{:?}", caret.line, caret.col, caret.anchor);
             stamp = ui::ime::scoped_fingerprint(scope.as_bytes(), stamp, key);
@@ -3080,48 +2746,38 @@ impl Widget for EditorView {
 }
 
 impl EditorView {
-    /// Test hook: directly drive a text insertion (bypasses winit events).
     #[cfg(test)]
     pub fn insert_for_test(&mut self, doc: &mut ui::widget::Edits<'_>, s: &str) {
         self.insert(doc, s);
     }
 
-    /// Test hook: backspace at the primary caret.
     #[cfg(test)]
     pub fn backspace_for_test(&mut self, doc: &mut ui::widget::Edits<'_>) {
         self.backspace(doc);
     }
 
-    /// Test hook: place the primary caret at (line, col).
     #[cfg(test)]
     pub fn set_caret_for_test(&mut self, line: usize, col: usize) {
         self.carets = vec![Caret::at(line, col)];
         self.clamp_carets();
     }
 
-    /// Test hook: newline-with-indent at the primary caret.
     #[cfg(test)]
     pub fn newline_for_test(&mut self, doc: &mut ui::widget::Edits<'_>) {
         self.newline_with_indent(doc);
     }
 
-    /// Test hook: current buffer text.
     #[cfg(test)]
     pub fn text_for_test(&self) -> String {
         self.cached_text.clone()
     }
 
-    /// Test hook: force geometry (rect + measured cell width) so pointer
-    /// hit-testing (`point_to_caret`) resolves without a real draw pass.
     #[cfg(test)]
     pub fn force_geometry(&mut self, rect: Rect, cell_w: f64) {
         self.rect = rect;
         self.cell_w = cell_w;
     }
 
-    /// Test hook: the logical pixel that `point_to_caret` maps back to
-    /// `(line, col)` — the inverse of hit-testing, so mouse tests can aim at a
-    /// known caret cell. Assumes `scroll == 0` (the test default).
     #[cfg(test)]
     pub fn pixel_for_test(&self, line: usize, col: usize) -> Point {
         let x =
@@ -3130,31 +2786,26 @@ impl EditorView {
         Point::new(x, y)
     }
 
-    /// Test hook: the primary caret's ordered selection endpoints, or `None`.
     #[cfg(test)]
     pub fn selection_for_test(&self) -> Option<((usize, usize), (usize, usize))> {
         self.carets[0].selection()
     }
 
-    /// Test hook: how many find matches the editor is currently highlighting.
     #[cfg(test)]
     pub fn find_match_count_for_test(&self) -> usize {
         self.find_matches.len()
     }
 
-    /// Test hook: the primary selection's text (production `selected_text`).
     #[cfg(test)]
     pub fn selected_text_for_test(&self) -> Option<String> {
         self.selected_text()
     }
 
-    /// Test hook: word-wise caret motion on the production path.
     #[cfg(test)]
     pub fn word_move_for_test(&mut self, forward: bool, extend: bool) {
         self.word_move(forward, extend);
     }
 
-    /// Test hook: cut the primary selection through the action request path.
     #[cfg(test)]
     pub fn cut_for_test(&mut self, doc: &mut ui::widget::Edits<'_>) {
         self.cut_selection(doc);
@@ -3173,7 +2824,6 @@ mod tests {
         let t = EditorDoc::ensure_buffer(&mut doc, 0, seed);
         let mut ev = EditorView::new();
         ev.bind(t, Language::Rust);
-        // Mimic the App's first sync so the line cache is populated.
         let root = automerge::ROOT;
         ev.sync(&doc, &root);
         (ev, doc)
@@ -3408,7 +3058,6 @@ mod tests {
 
     #[test]
     fn pointer_hit_testing_follows_the_line_pitch_and_selects_words_lines_and_ranges() {
-        // Each phase builds a fresh bound editor so click counts and selections cannot leak.
         line_pitch_matches_the_code_line_at_1x_and_follows_the_text_scale();
         double_click_selects_word();
         triple_click_selects_line();
@@ -3416,9 +3065,6 @@ mod tests {
         drag_across_lines_selects_multiline();
     }
 
-    /// The row pitch is the `Code` role's measured line at 1× and grows with
-    /// the glyphs at 2×; pointer hit-testing maps a click on the third row
-    /// back to line 2 at both scales, so paint and hits share one pitch.
     fn line_pitch_matches_the_code_line_at_1x_and_follows_the_text_scale() {
         let (mut ev, _doc) = bound_editor("a\nb\nc\nd");
         ev.rect = Rect::new(0.0, 0.0, 400.0, 300.0);
@@ -3452,7 +3098,6 @@ mod tests {
             2.5 * ev.line_h,
         );
         assert_eq!(ev.point_to_caret(third_row_2x).0, 2);
-        // The 1× third-row point now lands on the taller second row.
         assert_eq!(ev.point_to_caret(third_row_1x).0, 1);
     }
 
@@ -3473,8 +3118,6 @@ mod tests {
             )),
             Icon::Code
         );
-        // A macro is a function by LSP kind; its detail (or the `!` of its
-        // name) says what it is.
         assert_eq!(
             completion_kind_icon(&item(
                 "println",
@@ -3557,7 +3200,6 @@ mod tests {
         let (mut ev, mut doc) = bound_editor("    foo");
         ev.set_caret_for_test(0, 7); // end of "    foo"
         ev.newline_for_test(&mut ui::widget::Edits::lend(&mut doc));
-        // New line carries the 4-space indent.
         assert_eq!(ev.text_for_test(), "    foo\n    ");
         assert_eq!(ev.primary_caret(), (1, 4));
     }
@@ -3599,8 +3241,6 @@ mod tests {
 
     fn geom_editor(seed: &str) -> (EditorView, AutoCommit) {
         let (mut ev, doc) = bound_editor(seed);
-        // 800x600 viewport, 8px monospace cells — matches the draw-time metric
-        // closely enough for deterministic hit-testing.
         ev.force_geometry(Rect::new(0.0, 0.0, 800.0, 600.0), 8.0);
         (ev, doc)
     }
@@ -3646,8 +3286,6 @@ mod tests {
     }
 
     fn ime(ev: &mut EditorView, doc: &mut AutoCommit, ime: Ime) {
-        // Positive composition cases model delivery to the active field.
-        // The app-level journey separately verifies refusal after focus loss.
         ev.set_focus(true);
         let handled = ui::testing::Dispatch::new()
             .doc(doc)
@@ -3665,7 +3303,6 @@ mod tests {
         let line = "ae\u{301}👍🏽🇩🇪z";
         let (mut ev, mut doc) = bound_editor(line);
         ev.set_caret_for_test(0, 1);
-        // Right steps over "e\u{301}" (2 chars), then the thumb (2), the flag (2).
         named(&mut ev, &mut doc, NamedKey::ArrowRight, false);
         assert_eq!(ev.primary_caret(), (0, 3));
         named(&mut ev, &mut doc, NamedKey::ArrowRight, false);
@@ -3675,7 +3312,6 @@ mod tests {
         ev.set_caret_for_test(0, 2);
         assert_eq!(ev.primary_caret(), (0, 1));
 
-        // Shift+Right selects the whole thumb; typing replaces it.
         ev.set_caret_for_test(0, 3);
         named(&mut ev, &mut doc, NamedKey::ArrowRight, true);
         assert_eq!(ev.selected_text_for_test().as_deref(), Some("👍🏽"));
@@ -3683,8 +3319,6 @@ mod tests {
         assert_eq!(ev.text_for_test(), "ae\u{301}ok🇩🇪z");
         assert_eq!(ev.primary_caret(), (0, 5));
 
-        // Delete removes the flag whole; Backspace takes "k", "o", then the
-        // whole combined "e\u{301}".
         named(&mut ev, &mut doc, NamedKey::Delete, false);
         assert_eq!(ev.text_for_test(), "ae\u{301}okz");
         named(&mut ev, &mut doc, NamedKey::Backspace, false);
@@ -3730,7 +3364,6 @@ mod tests {
         assert_eq!(ev.text_for_test(), "xy");
         assert_eq!(ev.caret_count(), 2, "carets that meet merge");
 
-        // A multi-line commit at two carets keeps both carets after it.
         let (mut ev, mut doc) = bound_editor("a\nb");
         ev.set_caret_for_test(0, 1);
         key(&mut ev, &mut doc, Key::Character("d".into()), true, false);
@@ -3742,7 +3375,6 @@ mod tests {
 
     fn double_click_selects_word() {
         let (mut ev, mut doc) = geom_editor("hello world");
-        // Two presses at the same point within the multi-click window → word.
         let p = ev.pixel_for_test(0, 8); // inside "world"
         move_to(&mut ev, &mut doc, p);
         left(&mut ev, &mut doc, true, false);
@@ -3767,7 +3399,6 @@ mod tests {
         let (p0, p5) = (ev.pixel_for_test(0, 0), ev.pixel_for_test(0, 5));
         move_to(&mut ev, &mut doc, p0);
         left(&mut ev, &mut doc, true, false); // press at col 0
-        // Drag to col 5 (end of "hello").
         move_to(&mut ev, &mut doc, p5);
         assert_eq!(ev.selection_for_test(), Some(((0, 0), (0, 5))));
         assert_eq!(ev.selected_text_for_test().as_deref(), Some("hello"));
@@ -3864,9 +3495,6 @@ mod tests {
     }
 
     fn word_move_uses_shared_boundaries_across_lines() {
-        // Word-forward at end of a line steps onto the next line's first word —
-        // proving the flat-index conversion round-trips through the shared
-        // char-indexed boundary helper.
         let (mut ev, _doc) = geom_editor("foo\nbar");
         ev.set_caret_for_test(0, 3); // end of "foo"
         ev.word_move_for_test(true, false);
@@ -3876,7 +3504,6 @@ mod tests {
     fn plain_arrow_collapses_selection_to_edge() {
         let (mut ev, mut doc) = geom_editor("hello");
         ev.set_caret_for_test(0, 1);
-        // Build a selection (0,1)..(0,4).
         key(
             &mut ev,
             &mut doc,
@@ -3899,7 +3526,6 @@ mod tests {
             true,
         );
         assert_eq!(ev.selection_for_test(), Some(((0, 1), (0, 4))));
-        // Plain Left collapses to the left edge, not one char before it.
         key(
             &mut ev,
             &mut doc,
@@ -3920,11 +3546,8 @@ mod tests {
     }
 
     fn ctrl_x_cuts_selection_through_crdt() {
-        // Cut requests deletion of the selected range (clipboard write is a
-        // silent no-op in the headless test env, so we assert on the buffer).
         let (mut ev, mut doc) = geom_editor("hello world");
         ev.set_caret_for_test(0, 0);
-        // Select "hello " (0,0)..(0,6) with word+char extends.
         for _ in 0..6 {
             key(
                 &mut ev,
@@ -3941,9 +3564,6 @@ mod tests {
     }
 
     fn clipboard_copy_paste_round_trips_when_available() {
-        // Only meaningful where arboard has a backend (a Wayland/X11 session).
-        // Probe with a sentinel; if it doesn't round-trip, skip cleanly — the
-        // clipboard helper is silent on absence (headless CI).
         ui::text_selection::clipboard_copy("__tilo_probe__");
         if ui::text_selection::clipboard_paste().as_deref() != Some("__tilo_probe__") {
             eprintln!("clipboard_copy_paste_round_trips: no clipboard backend, skipping");

@@ -1,21 +1,11 @@
 //! What the editor, the tests and agents build to change the project, and
 //! the ids of what the editor publishes beside it.
-//!
-//! Every change is the [`Project`]'s action: a field edit at a path (a
-//! file's text, its language) or one of its verbs (creating, renaming,
-//! moving and deleting files and folders, recording what was read from
-//! disk, recording the embedded terminal's session). Which file is open,
-//! the tabs, the caret, selection and scroll, the sidebar and the bottom
-//! panel are the window's own and never an action. The language server,
-//! linter and terminal are services the window runs.
 
 use tilo_actions::{ActionAddress, EncodedAction};
 use ui::tilo_resource::{Edit, Id, Resource, Stamped, items};
 
 use crate::project::{self, EntryKind, Project, ProjectAction, SourceEdit};
 
-/// The project's action: a field edit or a verb, stamped with when it was
-/// authored.
 pub type Action = <Project as Resource>::Action;
 
 fn stamped(operation: ProjectAction) -> Action {
@@ -29,20 +19,16 @@ fn edit(edit: Edit<Project>) -> Action {
     stamped(ProjectAction::FieldEdit(edit))
 }
 
-/// The wire form of `action`, for applying it to a document directly.
 pub fn encode(action: &Action) -> Result<EncodedAction, tilo_actions::ActionError> {
     ui::tilo_resource::encode::<Project>(action)
 }
 
-/// The kind of the resources a project's files and folders are published as.
 pub const FILE_KIND: &str = "code_editor.project.files";
 
-/// The resource a file of the project is published as: its item.
 pub fn file_resource_id(file: impl std::fmt::Display) -> String {
     items::item_resource_id::<Project>("files", &Id::from(file.to_string()))
 }
 
-/// The resource a folder of the project is published as: its item.
 pub fn folder_resource_id(folder: impl std::fmt::Display) -> String {
     file_resource_id(folder)
 }
@@ -86,23 +72,14 @@ pub fn result_resource_id(result: &SearchResultRef) -> String {
     )
 }
 
-/// What a symbol's search hit invokes: the reveal its live row offers.
 pub fn open_symbol_address(symbol: &SymbolRef) -> ActionAddress {
     crate::effects::CodeEditorEffect::REVEAL.on(symbol_resource_id(symbol))
 }
 
-/// What a search result's hit invokes: the reveal its live row offers.
 pub fn reveal_result_address(result: &SearchResultRef) -> ActionAddress {
     crate::effects::CodeEditorEffect::REVEAL.on(result_resource_id(result))
 }
 
-/// The edit turning the text of `file` from `base`, as the editor showed
-/// it, into `next`: the one smallest splice, carrying enough of the text
-/// around it to land where it was made if a collaborator's typing got there
-/// first.
-///
-/// # Panics
-/// Never: a text edit is plain data that always serializes.
 #[allow(
     clippy::expect_used,
     reason = "a text edit is plain data that always serializes"
@@ -118,8 +95,6 @@ pub fn text_edit_action(file: impl Into<String>, base: &str, next: &str) -> Acti
     )
 }
 
-/// Replace the whole text of `file` with `text`, written as the smallest
-/// splice against the text it meets.
 #[cfg(test)]
 #[must_use]
 pub(crate) fn replace_text_action(file: impl Into<String>, text: impl Into<String>) -> Action {
@@ -143,7 +118,6 @@ pub(crate) fn set_language_action(file: &str, language: impl Into<String>) -> Ac
     )
 }
 
-/// A new file named `name` in `folder`, holding `text`.
 #[must_use]
 pub fn new_file_action(
     name: impl Into<String>,
@@ -166,7 +140,6 @@ pub(crate) fn new_folder_action(name: impl Into<String>, folder: Option<&str>) -
     }))
 }
 
-/// Rename the file or folder `entry`.
 #[cfg(test)]
 #[must_use]
 pub(crate) fn rename_action(entry: &str, name: impl Into<String>) -> Action {
@@ -176,7 +149,6 @@ pub(crate) fn rename_action(entry: &str, name: impl Into<String>) -> Action {
     }))
 }
 
-/// Move the file or folder `entry` into `folder`, before `before`.
 #[cfg(test)]
 #[must_use]
 pub(crate) fn move_action(entry: &str, folder: Option<&str>, before: Option<&str>) -> Action {
@@ -187,7 +159,6 @@ pub(crate) fn move_action(entry: &str, folder: Option<&str>, before: Option<&str
     }))
 }
 
-/// Delete the file or folder `entry`.
 #[cfg(test)]
 #[must_use]
 pub(crate) fn delete_action(entry: &str) -> Action {
@@ -196,7 +167,6 @@ pub(crate) fn delete_action(entry: &str) -> Action {
     }))
 }
 
-/// Record an entry the editor read from disk.
 #[must_use]
 pub fn record_entry_action(
     id: &str,
@@ -214,7 +184,6 @@ pub fn record_entry_action(
     }))
 }
 
-/// Keep `text`, read from disk, as the text of `file` unless it has one.
 #[must_use]
 pub fn record_text_action(file: impl Into<String>, text: impl Into<String>) -> Action {
     stamped(ProjectAction::RecordText(project::project::RecordText {
@@ -223,8 +192,6 @@ pub fn record_text_action(file: impl Into<String>, text: impl Into<String>) -> A
     }))
 }
 
-/// The project's action recording what the embedded terminal's session
-/// recorded.
 #[must_use]
 pub fn terminal(action: <terminal::resource::Terminal as Resource>::Action) -> Action {
     use terminal::resource::TerminalAction;
@@ -282,8 +249,4 @@ pub fn terminal(action: <terminal::resource::Terminal as Resource>::Action) -> A
     }
 }
 
-/// How many live rows of one kind (files, symbols, search hits) the published
-/// tree carries; every omitted row still resolves by id. Keeping this small
-/// prevents a large project (or a noisy search result set) from being
-/// flattened on every palette interaction.
 pub const EAGER_RESOURCE_SNAPSHOT_LIMIT: usize = 96;

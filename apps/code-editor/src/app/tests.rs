@@ -84,7 +84,6 @@ fn hardware_dialects_use_standard_language_server_ids() {
 
 #[test]
 fn sample_app_opens_main_rs_with_accessible_context_and_a_collapsed_dock() {
-    // Each phase builds a fresh sample app.
     new_app_opens_main_rs();
     accessibility_exposes_project_and_active_document_context();
     ensure_buffers_seeds_active_text();
@@ -116,7 +115,6 @@ fn accessibility_exposes_project_and_active_document_context() {
 
 #[test]
 fn search_projection_rebuilds_only_on_revisions_or_an_exhausted_generation() {
-    // Each phase builds a fresh synced sample; rebuild counters must not leak.
     search_projection_rebuilds_only_for_document_project_or_result_revisions();
     exhausted_search_projection_generation_rebuilds_instead_of_reusing_a_cursor();
 }
@@ -272,7 +270,6 @@ fn exhausted_search_projection_generation_rebuilds_instead_of_reusing_a_cursor()
 
 #[test]
 fn bottom_dock_keeps_a_live_terminal_across_toggles_and_returns_focus_to_the_code() {
-    // Each phase builds a fresh app (and its own terminal or headless driver).
     ide_embeds_the_real_terminal_widget();
     ide_terminal_runs_a_command_and_shows_output();
     dock_commands_open_the_requested_content_and_toggle_without_clearing_it();
@@ -281,9 +278,6 @@ fn bottom_dock_keeps_a_live_terminal_across_toggles_and_returns_focus_to_the_cod
 }
 
 fn ide_embeds_the_real_terminal_widget() {
-    // The IDE must embed the real system `TerminalWidget` as its integrated
-    // terminal — not ship a second, weaker emulator. Opening the Terminal
-    // dock tab spawns a live widget whose grid the panel hands its body to.
     let mut app = CodeApp::with_sample();
     assert!(
         app.shots_terminal_grid_text().is_none(),
@@ -298,9 +292,6 @@ fn ide_embeds_the_real_terminal_widget() {
 }
 
 fn ide_terminal_runs_a_command_and_shows_output() {
-    // End-to-end: open the embedded terminal, type a command, pump the
-    // app's update, settle and sync passes, and prove the shell's
-    // output flowed back into the IDE's integrated terminal grid.
     let mut app = CodeApp::with_sample();
     app.shots_open_terminal();
     let mut state = ui::State::new();
@@ -328,8 +319,6 @@ fn the_embedded_terminal_is_the_projects_terminal_child() {
     crate::test_support::editor(&mut app, |app| {
         app.shots_terminal_input("printf 'CHILD_TERM_OK\\n'\n");
     });
-    // The shell's output stays in the terminal; the project records the
-    // session the process took.
     let shown = |app: &mut ui::framework::testing::TestApp<crate::CodeEditorShell>| {
         let recorded = app
             .state()
@@ -383,7 +372,6 @@ fn ensure_buffers_seeds_active_text() {
 
 #[test]
 fn a_window_shows_one_file_and_asks_before_dropping_unsaved_work() {
-    // Each phase builds a fresh sample app.
     opening_another_file_replaces_the_shown_one();
     opening_another_file_over_unsaved_edits_asks_first();
     the_window_bar_names_the_shown_file_and_marks_unsaved_edits();
@@ -549,7 +537,6 @@ fn quick_open_and_go_to_line_open_search() {
 
 #[test]
 fn editor_commands_edit_through_the_crdt_and_move_the_caret() {
-    // Each phase builds a fresh synced sample.
     editing_routes_through_crdt();
     duplicate_line_repeats_it_below();
     move_line_down_swaps_with_the_next();
@@ -572,15 +559,11 @@ fn editing_routes_through_crdt() {
 
 #[test]
 fn project_files_are_created_by_durable_actions_and_adopted_from_peers() {
-    // Each phase builds a fresh sample app and document.
     new_file_command_dispatches_the_durable_create_file_action();
     a_collaborative_file_is_adopted_as_a_tracked_file();
 }
 
 fn new_file_command_dispatches_the_durable_create_file_action() {
-    // The on-screen "New file" command creates the file through the
-    // project's own action, under a UUID minted when it is authored (never a
-    // local project-arena id), and opens it.
     let mut sample = synced_sample();
     let created = sample.with_doc(|app, doc| {
         let before: std::collections::HashSet<String> = EditorDoc::files(doc)
@@ -602,9 +585,6 @@ fn new_file_command_dispatches_the_durable_create_file_action() {
 }
 
 fn a_collaborative_file_is_adopted_as_a_tracked_file() {
-    // A peer's durable file record is surfaced by the next sync. The
-    // resource UUID, rather than a coincidental local arena number, is the
-    // thing the projection follows.
     let mut sample = synced_sample();
     let before = sample.editor(|app| app.session.project.nodes.len());
     let orphan = "00000000-0000-4000-8000-0000000000ee";
@@ -622,7 +602,6 @@ fn a_collaborative_file_is_adopted_as_a_tracked_file() {
     assert_eq!(after, before + 1);
 }
 
-/// Where the shell puts the file tree, and whether it shows it.
 fn shell_sidebar(
     app: &mut ui::framework::testing::TestApp<crate::CodeEditorShell>,
 ) -> (ui::widget::SidebarPlacement, bool) {
@@ -632,8 +611,6 @@ fn shell_sidebar(
     .expect("the editor stands in the shell")
 }
 
-/// Activate the file tree's row `name`, as a person or an assistive
-/// technology does.
 fn activate_tree_row(
     app: &mut ui::framework::testing::TestApp<crate::CodeEditorShell>,
     name: &str,
@@ -660,7 +637,6 @@ fn toggle_sidebar_command(sample: &mut crate::test_support::Sample) {
 #[test]
 fn the_file_tree_is_the_shells_sidebar() {
     use ui::widget::SidebarPlacement;
-    // Case `a_wide_window_docks_it_and_the_command_hides_it`.
     {
         let mut sample = crate::test_support::sample();
         assert_eq!(
@@ -672,7 +648,6 @@ fn the_file_tree_is_the_shells_sidebar() {
         toggle_sidebar_command(&mut sample);
         assert!(shell_sidebar(&mut sample.app).1, "and shows it again");
     }
-    // Case `opening_a_file_keeps_a_docked_tree_and_marks_the_file`.
     {
         let mut sample = crate::test_support::sample();
         activate_tree_row(&mut sample.app, "src");
@@ -692,7 +667,6 @@ fn the_file_tree_is_the_shells_sidebar() {
             });
         assert!(selected, "the file on screen is the tree's selection");
     }
-    // Case `a_narrow_window_floats_it_and_opening_a_file_puts_it_away`.
     {
         let mut sample = crate::test_support::sample();
         sample.app.harness().resize((480, 800)).unwrap();
@@ -715,7 +689,6 @@ fn the_file_tree_is_the_shells_sidebar() {
     }
 }
 
-/// Overwrite a buffer's whole text through the CRDT, the way an edit does.
 fn replace_buffer_text(doc: &mut AutoCommit, key: &str, text: &str) {
     let Some(obj) = EditorDoc::ensure_buffer_key(doc, key, "") else {
         return;
@@ -726,7 +699,6 @@ fn replace_buffer_text(doc: &mut AutoCommit, key: &str, text: &str) {
 
 #[test]
 fn problems_panel_reports_lint_findings_and_defers_to_the_language_server() {
-    // Each phase builds a fresh app and document.
     diagnostics_populate_for_buffer_with_todo();
     an_unfinished_server_replaces_the_no_problems_claim();
     the_panel_learns_the_server_is_still_working();
@@ -738,9 +710,6 @@ fn diagnostics_populate_for_buffer_with_todo() {
     let mut app = CodeApp::with_sample();
     let mut doc = AutoCommit::new();
     app.ensure_buffers(&doc);
-    // Put a marker the linter is guaranteed to report into the open buffer,
-    // so this asserts that the pipeline carries a real finding through to
-    // the panel rather than merely that it does not panic.
     let node = app.session.active_buffer().expect("a buffer is open").node;
     replace_buffer_text(
         &mut doc,
@@ -754,9 +723,6 @@ fn diagnostics_populate_for_buffer_with_todo() {
     );
 }
 
-/// An empty Problems list means two completely different things depending
-/// on whether anything has looked yet, and the panel has to distinguish
-/// them: "analysed and clean" is a finding, "not analysed yet" is not.
 fn an_unfinished_server_replaces_the_no_problems_claim() {
     let busy = LspStatus::Busy {
         server: "rust-analyzer".to_string(),
@@ -787,8 +753,6 @@ fn an_unfinished_server_replaces_the_no_problems_claim() {
         "a server that has not answered yet is also not a verdict"
     );
 
-    // Once something has answered — or there is no server at all and the
-    // local linter is the analysis — an empty list is a real finding again.
     for settled in [
         LspStatus::Ready {
             server: "rust-analyzer".to_string(),
@@ -807,8 +771,6 @@ fn an_unfinished_server_replaces_the_no_problems_claim() {
     }
 }
 
-/// And the note reaches the panel through the production path, not just the
-/// helper that formats it.
 fn the_panel_learns_the_server_is_still_working() {
     let mut app = CodeApp::with_sample();
     let doc = AutoCommit::new();
@@ -846,8 +808,6 @@ fn failed_save_as_preserves_the_original_destination_and_conflict_stamp() {
     });
     sample.app.settle();
     let directory = tempfile::tempdir().unwrap();
-    // A directory cannot be replaced with a regular file, even when the
-    // tests run with privileges that bypass file permission bits.
     let destination = directory.path().to_path_buf();
     sample.with_doc(move |app, doc| {
         let before = app.session.active_buffer().unwrap().clone();
@@ -869,8 +829,6 @@ fn failed_save_as_preserves_the_original_destination_and_conflict_stamp() {
         assert!(after.dirty);
         assert_eq!(app.session.project.disk_path_of(before.node), before.path);
         assert_eq!(EditorDoc::read_buffer_key(doc, &key).unwrap(), text);
-        // The old freshness guard must still protect external edits after
-        // the failed Save As, rather than saving to the rejected destination.
         std::fs::write(&original, "externally changed source\n").unwrap();
         assert!(!app.save_buffer(doc, before.node, false));
         assert!(app.conflict.is_some());
@@ -918,19 +876,9 @@ fn successful_save_as_writes_current_text_before_adopting_the_destination() {
 
 #[test]
 fn disk_files_load_stat_and_save_back_through_the_crdt() {
-    // Each phase uses its own tempdir, app and document.
     a_document_from_a_previous_session_still_stats_the_file();
 }
 
-/// A persisted document handing back a buffer must not let a save skip the
-/// conflict check.
-///
-/// The document outlives the process. On the next launch it already holds
-/// text for the node, which used to be read as "this file is loaded" — so
-/// the file was never stat'ed, the buffer carried no stamp, and
-/// [`crate::disk::save`] takes a missing stamp as "no check requested" and
-/// writes unconditionally. Driving the real editor over a real file with a
-/// document from an earlier run overwrote 203 bytes of it without a word.
 fn a_document_from_a_previous_session_still_stats_the_file() {
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("main.rs");
@@ -939,7 +887,6 @@ fn a_document_from_a_previous_session_still_stats_the_file() {
     let mut app =
         ui::framework::testing::TestApp::<crate::CodeEditorShell>::launched(&launch).unwrap();
 
-    // Unsaved edits the project's document keeps from this session.
     let key = crate::test_support::editor(&mut app, |app| {
         app.buffer_key(app.session.active_buffer().unwrap().node)
     });
@@ -953,7 +900,6 @@ fn a_document_from_a_previous_session_still_stats_the_file() {
     )
     .unwrap();
 
-    // The next launch finds that text in the document.
     let mut app = app.relaunch(&launch).unwrap();
     app.settle();
     let (stamped, path, saved, dirty) = crate::test_support::editor(&mut app, |app| {
@@ -983,8 +929,6 @@ fn a_document_from_a_previous_session_still_stats_the_file() {
         "the restored text differs from the file, so it reads as unsaved \
              edits rather than as agreement"
     );
-    // The restored text is kept — a previous session's unsaved work, or a
-    // peer's in-flight edits, are not ours to throw away.
     assert_eq!(
         app.read_document(|doc| EditorDoc::read_buffer_key(doc, &key))
             .as_deref(),
@@ -992,8 +936,6 @@ fn a_document_from_a_previous_session_still_stats_the_file() {
     );
 }
 
-/// The structural scan defers to a language server that has published for
-/// the buffer, and only to one that has.
 fn a_published_diagnostic_retires_the_bracket_scan() {
     let mut app = CodeApp::with_sample();
     let mut doc = AutoCommit::new();
@@ -1010,8 +952,6 @@ fn a_published_diagnostic_retires_the_bracket_scan() {
         "with nothing better answering, the scan reports the unbalanced bracket"
     );
 
-    // Now let a server publish for this buffer — even an empty publish is
-    // an answer, and it is the answer that counts.
     let uri = app
         .lsp_uri
         .clone()
@@ -1033,13 +973,6 @@ fn a_published_diagnostic_retires_the_bracket_scan() {
     );
 }
 
-/// The sample project with `src/main.rs` open and bound, its text read from
-/// disk.
-/// A file opened where the open itself can submit nothing — a launch hands
-/// the editor its file before its record takes changes — still has its disk
-/// text recorded and shown: the settlement records it once the file's entry
-/// is in the project, instead of the editor staying empty over "No file
-/// open" with nothing to select or edit.
 #[test]
 fn a_file_opened_without_a_way_to_submit_still_shows_its_text() {
     let mut sample = crate::test_support::sample();
@@ -1080,8 +1013,6 @@ fn buffer_lines(app: &CodeApp, doc: &AutoCommit, node: TreeId) -> Vec<String> {
         .collect()
 }
 
-/// Go-to-line moves the caret to the requested 1-based line and clamps past
-/// the end of the buffer.
 fn go_to_line_moves_the_caret() {
     let mut sample = synced_sample();
     sample.with_doc(|app, _doc| {
@@ -1392,9 +1323,6 @@ fn the_dock_opens_and_closes_from_the_bar_the_keyboard_and_escape_inside_the_vie
     assert!((restored["bottom_panel"].height() - panel_narrow.height()).abs() < 0.5);
 }
 
-/// With format on save, the person's Save waits for the language server's
-/// edits and writes the formatted text; edits made meanwhile are not
-/// reformatted from a stale answer but saved as they are.
 #[test]
 fn format_on_save_writes_what_the_formatter_answered() {
     fn at_start(text: &str) -> crate::lsp::TextEdit {
@@ -1484,7 +1412,6 @@ fn format_on_save_writes_what_the_formatter_answered() {
 
 #[test]
 fn the_status_and_header_say_only_what_the_person_needs() {
-    // Case `a_project_still_loading_reads_in_plain_words`.
     {
         let busy = |percentage| LspStatus::Busy {
             server: "rust-analyzer".to_string(),
@@ -1509,7 +1436,6 @@ fn the_status_and_header_say_only_what_the_person_needs() {
             ""
         );
     }
-    // Case `opening_a_folder_is_not_narrated`.
     {
         let mut sample = crate::test_support::sample();
         let left = sample.editor(|app| app.status.left());
@@ -1521,7 +1447,6 @@ fn the_status_and_header_say_only_what_the_person_needs() {
 fn missing_code_help_says_so_and_keeps_why_behind_a_click() {
     use super::code_help::CodeHelpAnswer;
     let mut sample = crate::test_support::sample();
-    // A computer with no rust-analyzer anywhere the editor looks.
     sample.editor(|app| app.lsp_tools = Some(tilo_process::tools::ToolDirs::default()));
     sample
         .app
@@ -1604,9 +1529,6 @@ fn missing_code_help_says_so_and_keeps_why_behind_a_click() {
     assert!(answers.contains(&CodeHelpAnswer::CopyDetails));
 }
 
-/// The editor's text size is the person's: a zoom step grows the code and
-/// its line numbers, is kept in their settings, and reset goes back to the
-/// theme's own size.
 #[test]
 fn the_editor_text_zooms_and_remembers_its_size() {
     use ui::content_zoom::{ContentZoom as _, ZoomStep};

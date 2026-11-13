@@ -2,10 +2,6 @@
 
 //! it the way `code-editor FOLDER` opens a real one, so every capture shows
 //! multi-file, syntax-highlighted content.
-//!
-//! The files are deliberately idiomatic small programs that exercise the
-//! highlighter across several languages: keywords, types, functions, strings,
-//! numbers, comments, macros/attributes.
 
 use crate::model::Project;
 
@@ -19,7 +15,6 @@ use std::env;
 mod prime;
 mod greeter;
 
-/// Program entry point. Parses an optional `--count N` flag.
 fn main() {
     let args: Vec<String> = env::args().collect();
     let limit = parse_limit(&args).unwrap_or(20);
@@ -29,14 +24,12 @@ fn main() {
     let primes = prime::primes_below(limit);
     println!("Found {} primes below {}:", primes.len(), limit);
     for (i, p) in primes.iter().enumerate() {
-        // Six per row keeps the output tidy in an 80-column terminal.
         let sep = if (i + 1) % 6 == 0 { '\n' } else { ' ' };
         print!("{:>4}{}", p, sep);
     }
     println!();
 }
 
-/// Pull an integer out of `--count N`, returning `None` if absent or invalid.
 fn parse_limit(args: &[String]) -> Option<u64> {
     let pos = args.iter().position(|a| a == "--count")?;
     args.get(pos + 1)?.parse().ok()
@@ -45,7 +38,6 @@ fn parse_limit(args: &[String]) -> Option<u64> {
 
 const PRIME_RS: &str = r"//! Prime-number utilities.
 
-/// Return every prime strictly below `limit` using a sieve of Eratosthenes.
 pub fn primes_below(limit: u64) -> Vec<u64> {
     if limit < 2 {
         return Vec::new();
@@ -89,12 +81,10 @@ const GREETER_RS: &str = r#"//! Greeting helpers.
 
 use std::fmt::Display;
 
-/// Print a friendly greeting to stdout.
 pub fn greet<T: Display>(who: T) {
     println!("Hello, {}! \u{1F980}", who);
 }
 
-/// Build (but don't print) a greeting string — handy for tests.
 pub fn greeting<T: Display>(who: T) -> String {
     format!("Hello, {}!", who)
 }
@@ -187,7 +177,6 @@ pub const NAME: &str = "ferris-cli";
 pub const HARDWARE_FILE: &str = "rtl/signed_mac.sv";
 
 const SIGNED_MAC_SV: &str = r"// Illustrative RTL fixture, not an accelerator implementation.
-// Signed INT8 operands accumulate into a 32-bit register.
 module signed_mac (
     input  logic               clk,
     input  logic               reset_n,
@@ -211,7 +200,6 @@ module signed_mac (
 endmodule
 ";
 
-/// Write the sample project's files into a new folder at `root`.
 pub fn write(root: &std::path::Path) -> std::io::Result<()> {
     use crate::model::NodeKind;
     let project = build();
@@ -232,8 +220,6 @@ pub fn write(root: &std::path::Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Construct the bundled sample project tree. Returns a [`Project`] with the
-/// `src/main.rs` folder expanded so the first screenshot lands on real code.
 pub fn build() -> Project {
     let mut p = Project::new(NAME);
     let root = p.root;
@@ -254,14 +240,10 @@ pub fn build() -> Project {
     p.add_file(root, "README.md", README_MD);
     p.add_file(root, "config.json", CONFIG_JSON);
 
-    // Expand `src` so the file tree opens on something interesting.
     p.toggle_folder(src);
     p
 }
 
-/// The node id of `src/main.rs` in a freshly-built sample project — the file
-/// we open by default. Resolved by walking the tree so it stays correct if the
-/// construction order changes.
 #[cfg(test)]
 pub(crate) fn default_open(project: &Project) -> Option<crate::model::NodeId> {
     use crate::model::NodeKind;

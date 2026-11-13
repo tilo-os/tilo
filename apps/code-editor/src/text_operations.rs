@@ -192,7 +192,6 @@ fn project_snapshot(
         .map_err(|_| Error::InvalidRequest)?,
     )
     .map_err(|_| Error::Limit)?;
-    // Reserve room for the SDK's bounded record and committed-head stamp.
     if serde_json::to_vec(&content)
         .map_err(|_| Error::Limit)?
         .len()
@@ -206,15 +205,11 @@ fn project_snapshot(
     })
 }
 
-/// What a committed text read is invoked with.
 #[derive(serde::Deserialize, ui::tilo_resource::JsonSchema)]
 struct SnapshotParams {
-    /// Zero-based Unicode scalar position
     start_chars: usize,
-    /// Maximum Unicode scalars, 1 through 4096
     #[schema(range(min = 1, max = MAX_READ_CHARS))]
     max_chars: usize,
-    /// Exact sorted JSON heads array from the first page
     expected_heads: Option<String>,
 }
 

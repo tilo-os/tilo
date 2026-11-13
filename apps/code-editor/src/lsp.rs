@@ -1,35 +1,5 @@
-//! A small Language Server Protocol client.
-//!
-//! Three layers, from the bottom up:
-//!
-//! 1. **Framing** — LSP speaks JSON-RPC 2.0 over stdio, each message prefixed
-//!    by a `Content-Length` header. [`encode`] frames an outgoing payload;
-//!    [`MessageReader`] decodes a stream of incoming ones, refusing frames
-//!    larger than the editor will hold.
-//! 2. **Parsing** — [`parse_publish_diagnostics`], [`parse_completion`],
-//!    [`parse_hover`], and [`parse_definition`] read a server's JSON as the
-//!    `lsp-types` protocol types and project it onto the editor's own model
-//!    types ([`LspDiagnostic`], [`CompletionItem`], …), bounding what is kept.
-//!    They run on canned LSP JSON with no server binary and no network.
-//! 3. **Client** — [`LspClient`] spawns the appropriate server for a language
-//!    (rust-analyzer for Rust, gopls for Go, …), performs the
-//!    `initialize`/`initialized` handshake, and pumps notifications +
-//!    responses off a background thread into a channel the editor drains each
-//!    frame. Spawning is guarded so a missing binary degrades gracefully to a
-//!    clear note rather than a crash.
-//!
-//! The editor only *starts* a server when explicitly asked (see `app.rs`),
-//! keeping the hermetic build and `--shots` from ever launching rust-analyzer.
-//!
-//! [`encode`]: crate::lsp::encode
-//! [`MessageReader`]: crate::lsp::MessageReader
-//! [`parse_publish_diagnostics`]: crate::lsp::parse_publish_diagnostics
-//! [`parse_completion`]: crate::lsp::parse_completion
-//! [`parse_hover`]: crate::lsp::parse_hover
-//! [`parse_definition`]: crate::lsp::parse_definition
-//! [`LspDiagnostic`]: crate::lsp::LspDiagnostic
-//! [`CompletionItem`]: crate::lsp::CompletionItem
-//! [`LspClient`]: crate::lsp::LspClient
+//! A small Language Server Protocol client: the transport, the messages it answers, and the state a
+//! request keeps while it runs.
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -69,44 +39,24 @@ use serde_json::{Value, json};
 use crate::bottom_panel::{Diagnostic, Severity};
 use crate::model::Language;
 
-/// A language server is an external process. Never let a malformed or runaway
-/// server turn one advertised frame into an unbounded allocation in the IDE.
-/// This still comfortably fits the largest text buffer Code supports (8 MiB),
-/// plus JSON-RPC framing and diagnostics.
 pub const MAX_LSP_MESSAGE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_LSP_HEADER_LINE_BYTES: usize = 8 * 1024;
-/// The UI folds reader events every frame. A fixed queue keeps a server that
-/// floods progress notifications from accumulating memory while preserving a
-/// responsive editor; a later diagnostics publication supersedes an earlier
-/// one, so dropped backpressure events are safe to recover from.
 const LSP_EVENT_QUEUE_CAPACITY: usize = 64;
-/// Completion / hover / definition requests are ephemeral. Capping their
-/// response table prevents key-repeat from retaining an unlimited number of
-/// request identities when a server is slow or wedged.
 const MAX_PENDING_REQUESTS: usize = 64;
 const MAX_LSP_DIAGNOSTICS: usize = 10_000;
 const MAX_LSP_COMPLETIONS: usize = 256;
 const MAX_LSP_DEFINITIONS: usize = 128;
 const MAX_LSP_DISPLAY_TEXT_CHARS: usize = 64 * 1024;
 
-// ---------------------------------------------------------------------------
-// Model types (LSP → editor)
-// ---------------------------------------------------------------------------
-
-/// A parsed `textDocument/publishDiagnostics` entry.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LspDiagnostic {
     pub range: Range,
-    /// Error when a server omits it (the LSP spec's stated default).
     pub severity: DiagnosticSeverity,
     pub message: String,
     pub source: Option<String>,
 }
 
 impl LspDiagnostic {
-    /// Project this LSP diagnostic onto the editor's Problems-panel model,
-    /// converting the zero-based LSP position to the panel's one-based
-    /// line/column.
     pub fn to_panel(&self) -> Diagnostic {
         Diagnostic {
             severity: severity_from_lsp(self.severity),
@@ -117,7 +67,6 @@ impl LspDiagnostic {
     }
 }
 
-/// Map an LSP severity to the panel's severity vocabulary.
 pub fn severity_from_lsp(severity: DiagnosticSeverity) -> Severity {
     match severity {
         DiagnosticSeverity::ERROR => Severity::Error,
@@ -127,37 +76,24 @@ pub fn severity_from_lsp(severity: DiagnosticSeverity) -> Severity {
     }
 }
 
-/// One completion candidate.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CompletionItem {
     pub label: String,
     pub kind: Option<CompletionItemKind>,
     pub detail: Option<String>,
-    /// The text to actually insert — `insertText` when present, else `label`.
     pub insert_text: String,
 }
 
-/// A source location (go-to-definition result), its URI in the form the
-/// editor keys documents by.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Location {
     pub uri: String,
     pub range: Range,
 }
 
-// ---------------------------------------------------------------------------
-// Parsers (pure; hermetically tested)
-// ---------------------------------------------------------------------------
-
-/// A message's `params` (or `result`) as the protocol type `T`; `None` when
-/// the server sent something else.
 fn payload<T: serde::de::DeserializeOwned>(msg: &Value, field: &str) -> Option<T> {
     T::deserialize(msg.get(field).unwrap_or(msg)).ok()
 }
 
-/// Parse a `textDocument/publishDiagnostics` notification into `(uri, diags)`.
-/// Accepts either the full notification (`{method, params:{uri, diagnostics}}`)
-/// or a bare `params` object.
 pub fn parse_publish_diagnostics(msg: &Value) -> Option<(String, Vec<LspDiagnostic>)> {
     let params: PublishDiagnosticsParams = payload(msg, "params")?;
     let uri = normalize_document_uri(&clip_display_text(params.uri.as_str()));
@@ -184,8 +120,6 @@ pub fn parse_publish_diagnostics(msg: &Value) -> Option<(String, Vec<LspDiagnost
 /// notification said.
 pub fn parse_progress(msg: &Value) -> Option<Progress> {
     let params: ProgressParams = payload(msg, "params")?;
-    // The token may be a string or an integer; normalise to a string so it can
-    // key a map either way.
     let token = match params.token {
         NumberOrString::String(s) => clip_display_text(&s),
         NumberOrString::Number(n) => n.to_string(),
@@ -205,9 +139,6 @@ pub fn parse_progress(msg: &Value) -> Option<Progress> {
     })
 }
 
-/// Parse a `textDocument/completion` result: a bare `CompletionItem[]` or a
-/// `CompletionList`. Accepts either the full response envelope
-/// (`{result: …}`) or the result value directly.
 pub fn parse_completion(msg: &Value) -> Vec<CompletionItem> {
     let items = match payload(msg, "result") {
         Some(CompletionResponse::Array(items)) => items,
@@ -219,7 +150,6 @@ pub fn parse_completion(msg: &Value) -> Vec<CompletionItem> {
         .take(MAX_LSP_COMPLETIONS)
         .map(|item| {
             let label = clip_display_text(&item.label);
-            // `textEdit.newText` is the modern insert payload; fall back to it.
             let insert_text = item
                 .insert_text
                 .or_else(|| {
@@ -239,8 +169,6 @@ pub fn parse_completion(msg: &Value) -> Vec<CompletionItem> {
         .collect()
 }
 
-/// Parse a `textDocument/hover` result into plain display text, whichever
-/// `contents` shape the server chose. `null` or empty → `None`.
 pub fn parse_hover(msg: &Value) -> Option<String> {
     let marked = |marked: MarkedString| match marked {
         MarkedString::String(text) => text,
@@ -270,8 +198,6 @@ fn clip_display_text(text: &str) -> String {
     text.get(..end).unwrap_or_default().trim().to_string()
 }
 
-/// Parse a `textDocument/definition` result: a `Location`, a `Location[]`, or
-/// a `LocationLink[]`, whose target selection is where the editor goes.
 pub fn parse_definition(msg: &Value) -> Vec<Location> {
     let location = |uri: &lsp_types::Uri, range| Location {
         uri: normalize_document_uri(&clip_display_text(uri.as_str())),
@@ -293,8 +219,6 @@ pub fn parse_definition(msg: &Value) -> Vec<Location> {
     }
 }
 
-/// Parse a `textDocument/formatting` response: the edits that format the
-/// document (none when it is formatted already), or the server's refusal.
 pub fn parse_formatting(msg: &Value) -> Result<Vec<TextEdit>, String> {
     if let Some(error) = msg.get("error") {
         return Err(clip_display_text(
@@ -326,8 +250,6 @@ fn byte_offset(text: &str, line_starts: &[usize], position: Position) -> usize {
     text.len()
 }
 
-/// `text` with `edits` applied. The edits are against `text` as it was and do
-/// not overlap, as the protocol guarantees.
 pub fn apply_text_edits(text: &str, edits: &[TextEdit]) -> Result<String, String> {
     let line_starts: Vec<usize> = std::iter::once(0)
         .chain(text.match_indices('\n').map(|(at, _)| at + 1))
@@ -355,10 +277,6 @@ pub fn apply_text_edits(text: &str, edits: &[TextEdit]) -> Result<String, String
     Ok(out)
 }
 
-// ---------------------------------------------------------------------------
-// JSON-RPC framing
-// ---------------------------------------------------------------------------
-
 /// Frame a JSON-RPC payload as bytes: `Content-Length: N\r\n\r\n<body>`.
 ///
 /// Every payload this client builds is either a `json!()` literal or a
@@ -374,7 +292,6 @@ pub fn encode(payload: &Value) -> Vec<u8> {
     out
 }
 
-/// Streaming decoder for `Content-Length`-framed JSON-RPC messages.
 pub struct MessageReader<R: BufRead> {
     reader: R,
 }
@@ -384,7 +301,6 @@ impl<R: BufRead> MessageReader<R> {
         Self { reader }
     }
 
-    /// Read the next framed message. Returns `Ok(None)` at clean EOF.
     pub fn next_message(&mut self) -> std::io::Result<Option<Value>> {
         let mut content_length: Option<usize> = None;
         loop {
@@ -437,12 +353,6 @@ impl<R: BufRead> MessageReader<R> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Live client
-// ---------------------------------------------------------------------------
-
-/// Which pending request a response id corresponds to, so the reader thread can
-/// emit the right event when the matching response arrives.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Pending {
     Completion,
@@ -451,31 +361,17 @@ enum Pending {
     Formatting,
 }
 
-/// A long-running server task the user should be able to see, parsed from
-/// `$/progress`.
-///
-/// rust-analyzer takes minutes to index a workspace this size, and it answers
-/// completion and go-to-definition with nothing until it has. Without this the
-/// editor is indistinguishable from broken for those minutes, so the indexing
-/// state is a first-class event rather than something buried in a log.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Progress {
-    /// The server's token for this task; `end` arrives against the same one.
     pub token: String,
-    /// e.g. "Indexing" / "Roots Scanned".
     pub title: String,
-    /// The current step, e.g. the crate being indexed.
     pub message: Option<String>,
-    /// 0–100 when the server reports one.
     pub percentage: Option<u32>,
-    /// Whether this is the task's `end` notification.
     pub done: bool,
 }
 
-/// An event surfaced by the background reader thread for the editor to fold in.
 #[derive(Clone, Debug)]
 pub enum LspEvent {
-    /// The server finished initializing and is ready for document syncs.
     Initialized,
     Diagnostics {
         uri: String,
@@ -484,30 +380,27 @@ pub enum LspEvent {
     Completion(Vec<CompletionItem>),
     Hover(Option<String>),
     Definition(Vec<Location>),
-    /// The edits that format the document, or why the server would not.
     Formatted(Result<Vec<TextEdit>, String>),
-    /// A `$/progress` update — the server is busy with something named.
     Progress(Progress),
-    /// The server process exited or the stream errored.
     Exited,
 }
 
-/// Why a language server isn't answering.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LspFailure {
-    /// Its program isn't on this computer.
-    NotInstalled { server: String },
-    /// It ran and ended; `detail` says how, when the system told.
+    NotInstalled {
+        server: String,
+    },
     Stopped {
         server: String,
         detail: Option<String>,
     },
-    /// It could not start, for a reason in the system's own words.
-    Unknown { server: String, detail: String },
+    Unknown {
+        server: String,
+        detail: String,
+    },
 }
 
 impl LspFailure {
-    /// The server's program name ("rust-analyzer").
     pub fn server(&self) -> &str {
         match self {
             LspFailure::NotInstalled { server }
@@ -516,7 +409,6 @@ impl LspFailure {
         }
     }
 
-    /// The system's own account of the failure, for whoever wants it.
     pub fn detail(&self) -> Option<&str> {
         match self {
             LspFailure::NotInstalled { .. } => None,
@@ -543,20 +435,14 @@ impl std::fmt::Display for LspFailure {
     }
 }
 
-/// A running language-server connection.
 pub struct LspClient {
     child: Child,
     stdin: Arc<Mutex<ChildStdin>>,
     events: Receiver<LspEvent>,
     pending: Arc<Mutex<HashMap<i64, Pending>>>,
-    /// `None` once the JSON-RPC identity space is exhausted. It is better to
-    /// drop an ephemeral IDE request than to reuse a response id and route a
-    /// stale completion or definition into the current document.
     next_id: Option<i64>,
     server_name: String,
-    /// The directory the server was rooted at.
     root: PathBuf,
-    /// Live `$/progress` tasks, keyed by the server's token.
     progress: HashMap<String, Progress>,
 }
 
@@ -576,9 +462,6 @@ pub fn path_to_uri(path: &Path) -> String {
     }
 }
 
-/// Windows drive letters identify the same volume regardless of case.
-/// rust-analyzer lowercases them; normalize both directions so diagnostics
-/// and definition locations use the same keys as the editor's documents.
 fn normalize_document_uri(uri: &str) -> String {
     if let Some(path) = uri.strip_prefix("file:///") {
         let bytes = path.as_bytes();
@@ -594,9 +477,6 @@ fn normalize_document_uri(uri: &str) -> String {
 }
 
 impl LspClient {
-    /// The server program + args for a language, or `None` when Tilo has no
-    /// mapping. The binaries are the conventional ones; a missing binary is
-    /// handled at spawn time, not here.
     pub fn server_command(lang: Language) -> Option<(String, Vec<String>)> {
         let (prog, args): (&str, &[&str]) = match lang {
             Language::Rust => ("rust-analyzer", &[]),
@@ -634,10 +514,6 @@ impl LspClient {
         Self::start_with(lang, root, &tilo_process::tools::ToolDirs::current())
     }
 
-    /// [`Self::start`], looking for the server's program in `tools`.
-    ///
-    /// # Errors
-    /// As [`Self::start`].
     pub fn start_with(
         lang: Language,
         root: &Path,
@@ -661,20 +537,13 @@ impl LspClient {
             server: prog.clone(),
         })?;
         let mut command = Command::new(&program);
-        // Language servers communicate over pipes, not a console window.
         bounded_command::without_console_window(&mut command);
         command
             .args(&args)
-            // Run the server *in* the project, so anything it resolves
-            // relatively (rustfmt.toml, .cargo/config.toml) resolves the way
-            // the same command would from a shell in that directory.
             .current_dir(root)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
-        // Language servers routinely start indexers and compiler helpers.
-        // Own the complete tree so closing a project cannot strand those
-        // descendants in the user's session.
         bounded_command::own_process_tree(&mut command);
         let mut child = command.spawn().map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
@@ -714,8 +583,6 @@ impl LspClient {
         Ok(client)
     }
 
-    /// How the server's process ended, once it has: its exit status or the
-    /// signal that ended it.
     pub fn exit_detail(&mut self) -> Option<String> {
         self.child
             .try_wait()
@@ -724,18 +591,10 @@ impl LspClient {
             .map(|status| status.to_string())
     }
 
-    /// The directory this server was rooted at.
     pub fn root(&self) -> &Path {
         &self.root
     }
 
-    /// Fold a `$/progress` update into the client's running-task table and
-    /// return the state the UI should show.
-    ///
-    /// This is where a `report` without a title gets the title its `begin`
-    /// carried — the server sends the label once and then updates against the
-    /// token, so a UI reading the raw notifications would show "Indexing 12%"
-    /// and then a blank label at 13%.
     pub fn note_progress(&mut self, p: &Progress) -> Option<Progress> {
         if p.done {
             self.progress.remove(&p.token);
@@ -753,13 +612,10 @@ impl LspClient {
         Some(entry.clone())
     }
 
-    /// Whether the server is currently busy with a reported task.
     pub fn is_busy(&self) -> bool {
         !self.progress.is_empty()
     }
 
-    /// The task to show, when the server is busy. Picks the one furthest from
-    /// finishing so a long index is not hidden behind a quick sub-task.
     pub fn busy_task(&self) -> Option<&Progress> {
         self.progress
             .values()
@@ -770,7 +626,6 @@ impl LspClient {
         &self.server_name
     }
 
-    /// Drain any events the reader thread produced since the last call.
     pub fn poll(&mut self) -> Vec<LspEvent> {
         let mut out = Vec::new();
         loop {
@@ -792,7 +647,6 @@ impl LspClient {
         out
     }
 
-    /// Notify the server a document was opened.
     pub fn did_open(&mut self, uri: &str, language_id: &str, version: i64, text: &str) {
         let Some(uri) = parse_uri(uri) else { return };
         self.notify::<DidOpenTextDocument>(&DidOpenTextDocumentParams {
@@ -805,7 +659,6 @@ impl LspClient {
         });
     }
 
-    /// Notify the server a document changed (full-text sync).
     pub fn did_change(&mut self, uri: &str, version: i64, text: &str) {
         let Some(uri) = parse_uri(uri) else { return };
         self.notify::<DidChangeTextDocument>(&DidChangeTextDocumentParams {
@@ -818,11 +671,6 @@ impl LspClient {
         });
     }
 
-    /// Notify the server the document was written to disk.
-    ///
-    /// This is not bookkeeping: rust-analyzer runs `cargo check` on save, and
-    /// the compiler errors that make the Problems panel worth reading arrive in
-    /// response to this notification and nothing else.
     pub fn did_save(&mut self, uri: &str) {
         let Some(uri) = parse_uri(uri) else { return };
         self.notify::<DidSaveTextDocument>(&DidSaveTextDocumentParams {
@@ -831,7 +679,6 @@ impl LspClient {
         });
     }
 
-    /// Request completions at a position (result arrives as an `LspEvent`).
     pub fn request_completion(&mut self, uri: &str, pos: Position) {
         let Some(at) = position_params(uri, pos) else {
             return;
@@ -860,7 +707,6 @@ impl LspClient {
         );
     }
 
-    /// Request the definition location(s) at a position.
     pub fn request_definition(&mut self, uri: &str, pos: Position) {
         let Some(at) = position_params(uri, pos) else {
             return;
@@ -875,8 +721,6 @@ impl LspClient {
         );
     }
 
-    /// Ask for the edits that format the document (result arrives as an
-    /// [`LspEvent::Formatted`]). Returns whether the request went out.
     pub fn request_formatting(&mut self, uri: &str, tab_size: u32, insert_spaces: bool) -> bool {
         let Some(uri) = parse_uri(uri) else {
             return false;
@@ -1081,8 +925,6 @@ fn send_initialize_handshake(client: &mut LspClient, root: &Path, root_uri: &str
     client.notify::<Initialized>(&InitializedParams {});
 }
 
-/// A document URI as the protocol type. The editor builds its URIs with
-/// [`path_to_uri`], so they always parse.
 fn parse_uri(uri: &str) -> Option<lsp_types::Uri> {
     uri.parse().ok()
 }
@@ -1094,7 +936,6 @@ fn position_params(uri: &str, position: Position) -> Option<TextDocumentPosition
     ))
 }
 
-/// The editor counts document versions in `i64`; the protocol's are `i32`.
 fn protocol_version(version: i64) -> i32 {
     i32::try_from(version).unwrap_or(i32::MAX)
 }
@@ -1127,39 +968,24 @@ impl LspClient {
 
 impl Drop for LspClient {
     fn drop(&mut self) {
-        // `start` made the server the owner of its process tree.
         bounded_command::kill_tree(&mut self.child);
         let _ = self.child.wait();
     }
 }
 
-/// What the reader thread should do with one incoming message: surface an event
-/// to the editor, write a reply back to the server, or both.
 #[derive(Default)]
 struct Routed {
     event: Option<LspEvent>,
     reply: Option<Value>,
 }
 
-/// Turn an incoming server message into an editor event and/or a reply,
-/// consulting the pending map to resolve response ids to their request kind.
-///
-/// Replies matter more than they look. A server→client **request** carries an
-/// `id`, and the protocol says every request gets a response. rust-analyzer
-/// asks `workspace/configuration` and `client/registerCapability` during
-/// startup; leaving those unanswered leaves it waiting on us rather than
-/// indexing. Answering with a null/empty result means "no per-workspace
-/// configuration, defaults are fine", which is exactly true here.
 fn route_message(msg: &Value, pending: &Arc<Mutex<HashMap<i64, Pending>>>) -> Routed {
     let method = msg.get("method").and_then(Value::as_str);
     let id = msg.get("id");
 
     if let Some(method) = method {
-        // A `method` *with* an `id` is a request from the server: it needs an
-        // answer, not just handling.
         if let Some(id) = id {
             let result = match method {
-                // One config object per requested scope; `null` = use defaults.
                 WorkspaceConfiguration::METHOD => {
                     let n = msg
                         .get("params")
@@ -1168,9 +994,6 @@ fn route_message(msg: &Value, pending: &Arc<Mutex<HashMap<i64, Pending>>>) -> Ro
                         .map_or(1, std::vec::Vec::len);
                     Value::Array(vec![Value::Null; n])
                 }
-                // Accepting a dynamic registration, a progress token, or an
-                // apply-edit we do not implement: an empty/negative result is a
-                // valid answer and lets the server proceed.
                 ApplyWorkspaceEdit::METHOD => json!({ "applied": false }),
                 _ => Value::Null,
             };
@@ -1184,7 +1007,6 @@ fn route_message(msg: &Value, pending: &Arc<Mutex<HashMap<i64, Pending>>>) -> Ro
             };
         }
 
-        // No id: a plain notification.
         let event = match method {
             PublishDiagnostics::METHOD => parse_publish_diagnostics(msg)
                 .map(|(uri, diagnostics)| LspEvent::Diagnostics { uri, diagnostics }),
@@ -1194,7 +1016,6 @@ fn route_message(msg: &Value, pending: &Arc<Mutex<HashMap<i64, Pending>>>) -> Ro
         return Routed { event, reply: None };
     }
 
-    // Responses carry an `id` (and a `result` or `error`).
     let Some(id) = id.and_then(Value::as_i64) else {
         return Routed::default();
     };
@@ -1204,7 +1025,6 @@ fn route_message(msg: &Value, pending: &Arc<Mutex<HashMap<i64, Pending>>>) -> Ro
         Some(Pending::Hover) => LspEvent::Hover(parse_hover(msg)),
         Some(Pending::Definition) => LspEvent::Definition(parse_definition(msg)),
         Some(Pending::Formatting) => LspEvent::Formatted(parse_formatting(msg)),
-        // The `initialize` response (or any unmatched id) reports readiness.
         None => LspEvent::Initialized,
     };
     Routed {
@@ -1231,8 +1051,6 @@ mod tests {
     }
 
     fn a_workspace_configuration_request_is_answered_per_item() {
-        // rust-analyzer asks this during startup and waits for the answer. One
-        // result per requested item, `null` meaning "defaults are fine".
         let msg = json!({
             "jsonrpc": "2.0",
             "id": 4,
@@ -1250,8 +1068,6 @@ mod tests {
     }
 
     fn every_server_request_gets_some_reply() {
-        // The rule is protocol-level: a message with both `method` and `id` is a
-        // request, and leaving any of them unanswered blocks the server.
         for method in [
             "client/registerCapability",
             "client/unregisterCapability",
@@ -1304,7 +1120,6 @@ mod tests {
         assert_eq!(p.percentage, Some(0));
         assert!(!p.done);
 
-        // And it reaches the editor as an event, not just a parse.
         assert!(matches!(
             route_message(&begin, &no_pending()).event,
             Some(LspEvent::Progress(_))
@@ -1312,9 +1127,6 @@ mod tests {
     }
 
     fn a_report_without_a_title_inherits_the_one_begin_carried() {
-        // The server names the task once and then updates against the token, so
-        // a UI reading raw notifications would blank the label at the first
-        // report. The client's table is what keeps it stable.
         let mut client = fake_client();
         let begin = Progress {
             token: "t1".into(),
@@ -1338,7 +1150,6 @@ mod tests {
         assert_eq!(shown.message.as_deref(), Some("tilo-ui"));
         assert!(client.is_busy());
 
-        // `end` clears it, and the editor stops showing an indexing state.
         let end = Progress {
             token: "t1".into(),
             title: String::new(),
@@ -1402,9 +1213,6 @@ mod tests {
     }
 
     fn a_server_cannot_be_rooted_at_a_path_that_is_not_a_directory() {
-        // The bug this replaced: a synthetic `file:///project-name` root meant
-        // rust-analyzer found no Cargo.toml and reported nothing, forever,
-        // while looking like a working editor.
         let d = tempfile::tempdir().unwrap();
         let missing = d.path().join("does-not-exist");
         let Err(err) = LspClient::start(Language::Rust, &missing) else {
@@ -1417,8 +1225,6 @@ mod tests {
         );
     }
 
-    /// An `LspClient` with an inert child process, for exercising the pure
-    /// progress-table logic. Every field the tests touch is real.
     fn fake_client() -> LspClient {
         LspClient::inert()
     }
@@ -1446,7 +1252,6 @@ mod tests {
             edit((1, 0), (1, 0), "    "),
             // After the emoji, two UTF-16 units wide.
             edit((1, 11), (1, 12), ""),
-            // Past the end of the text: its end.
             edit((9, 0), (9, 4), ""),
         ];
         assert_eq!(
@@ -1583,7 +1388,6 @@ mod tests {
         );
         assert_eq!(diags[0].source.as_deref(), Some("rustc"));
 
-        // Projection onto the panel model converts to 1-based coordinates.
         let panel = diags[0].to_panel();
         assert_eq!(panel.severity, Severity::Error);
         assert_eq!(panel.line, 10);
@@ -1624,11 +1428,9 @@ mod tests {
         assert_eq!(items[0].label, "println!");
         assert_eq!(items[0].kind, Some(CompletionItemKind::FUNCTION));
         assert_eq!(items[0].insert_text, "println!");
-        // No insertText → falls back to the label.
         assert_eq!(items[1].insert_text, "primes_below");
         assert_eq!(items[1].detail.as_deref(), Some("fn(u64) -> Vec<u64>"));
 
-        // Bare CompletionItem[] shape (result is an array).
         let arr = json!({ "result": [ { "label": "foo" } ] });
         let items = parse_completion(&arr);
         assert_eq!(items.len(), 1);
@@ -1655,11 +1457,9 @@ mod tests {
         let s = json!({ "result": { "contents": "u64" } });
         assert_eq!(parse_hover(&s).as_deref(), Some("u64"));
 
-        // Array of MarkedString (string + {value}).
         let arr = json!({ "result": { "contents": [ "line one", { "language": "rust", "value": "line two" } ] } });
         assert_eq!(parse_hover(&arr).as_deref(), Some("line one\nline two"));
 
-        // Null hover → None.
         assert_eq!(parse_hover(&json!({ "result": null })), None);
     }
 
@@ -1679,7 +1479,6 @@ mod tests {
             }
         );
 
-        // LocationLink[] (targetUri / targetSelectionRange).
         let links = json!({ "result": [ {
             "targetUri": "file:///proj/src/greeter.rs",
             "targetRange": { "start": {"line":3,"character":0}, "end": {"line":6,"character":1} },
@@ -1690,7 +1489,6 @@ mod tests {
         assert_eq!(locs[0].uri, "file:///proj/src/greeter.rs");
         assert_eq!(locs[0].range.start.line, 4);
 
-        // Null → empty.
         assert!(parse_definition(&json!({ "result": null })).is_empty());
     }
 
@@ -1718,13 +1516,8 @@ mod tests {
     }
 
     fn missing_server_binary_degrades_gracefully() {
-        // A language with a mapping but a binary that doesn't exist: `start`
-        // returns a clear error rather than panicking. We can't assert on
-        // rust-analyzer's absence portably, so drive a language whose server is
-        // exceedingly unlikely to be installed under this exact name.
         let err = LspClient::server_command(Language::Rust);
         assert!(err.is_some(), "rust has a server mapping");
-        // A language with no mapping errors clearly.
         assert!(LspClient::server_command(Language::Markdown).is_none());
     }
 }
