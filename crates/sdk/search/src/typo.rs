@@ -186,122 +186,130 @@ mod tests {
         within(&query, &word, distance)
     }
 
-    #[test]
-    fn edits_and_transpositions_count_one_each() {
-        assert!(near("terminl", "terminal", 1));
-        assert!(near("emial", "email", 1), "a swap is one edit");
-        assert!(near("calender", "calendar", 1));
-        assert!(!near("calender", "calendar", 0));
-        assert!(near("kalendar", "calendar", 1));
-        assert!(!near("netflix", "network", 2));
-        assert!(near("einstelungen", "einstellungen", 1));
-        assert!(!near("abcdef", "uvwxyz", 2));
-    }
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "fixture arithmetic in test bodies, which the lint skips in a plain test"
+        )]
+        fn a_typo_is_a_whole_word_within_a_bounded_edit_distance;
 
-    #[test]
-    fn a_dotted_name_is_mistyped_in_any_of_its_parts() {
-        let part = |query: &str, word: &str| {
-            let query: Vec<char> = query.chars().collect();
-            let word: Vec<char> = word.chars().collect();
-            matches_word(&query, &word, 1)
-        };
-        assert!(part("githbu", "github.com"), "a mistyped host");
-        assert!(part("github", "github.com"), "the host typed whole");
-        assert!(
-            !part("hello", "helligkeit.com"),
-            "a part is a whole word too"
-        );
-        assert!(!part("zzz", "abc.de"));
-    }
-
-    #[test]
-    fn a_short_word_is_not_another_short_word_with_one_letter_changed() {
-        assert!(!near("cats", "cuts", 1));
-        assert!(!near("cats", "hats", 1));
-        assert!(near("cats", "cast", 1), "a swap is still one edit");
-        assert!(near("nots", "notes", 1), "a dropped letter too");
-        assert!(near("catz", "cats", 2));
-        assert!(near("kittem", "kitten", 1), "longer words keep it");
-    }
-
-    #[test]
-    fn a_typo_is_a_whole_word_never_one_merely_beginning_alike() {
-        // "hello" is a word of its own, not a mistyping of "helligkeit"
-        // (brightness) or of "hellmodus" (light mode).
-        assert!(!near("hello", "helligkeit", 1));
-        assert!(!near("hello", "hellmodus", 1));
-        assert!(!near("yotub", "youtube", 1), "still typing, not a typo");
-        // A short word is not a longer word with its last letters left off.
-        assert!(!near("hello", "hell", 1));
-        assert!(!near("helo", "hell", 1));
-        // Mistyped words are found however the letters slipped.
-        assert!(near("helo", "hello", 1), "a letter dropped");
-        assert!(near("helloo", "hello", 1), "a letter doubled");
-        assert!(near("terminl", "termin", 1), "one letter too many");
-        assert!(near("setings", "settings", 1));
-        assert!(near("posteingnag", "posteingang", 2));
-        assert!(!near("screenshot", "scr", 2));
-    }
-
-    /// The table against a plain recursion over every alignment.
-    #[test]
-    fn the_bounded_table_agrees_with_the_definition() {
-        fn osa(a: &[char], b: &[char]) -> usize {
-            let substitution = if a.len() < SUBSTITUTION_SCALARS { 2 } else { 1 };
-            let mut table = vec![vec![0usize; b.len() + 1]; a.len() + 1];
-            for (i, row) in table.iter_mut().enumerate() {
-                row[0] = i;
-            }
-            for (j, cell) in table[0].iter_mut().enumerate() {
-                *cell = j;
-            }
-            for i in 1..=a.len() {
-                for j in 1..=b.len() {
-                    let cost = if a[i - 1] == b[j - 1] {
-                        0
-                    } else {
-                        substitution
-                    };
-                    let mut cell = (table[i - 1][j] + 1)
-                        .min(table[i][j - 1] + 1)
-                        .min(table[i - 1][j - 1] + cost);
-                    if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] {
-                        cell = cell.min(table[i - 2][j - 2] + 1);
-                    }
-                    table[i][j] = cell;
-                }
-            }
-            table[a.len()][b.len()]
+        phase edits_and_transpositions_count_one_each;
+        {
+            assert!(near("terminl", "terminal", 1));
+            assert!(near("emial", "email", 1), "a swap is one edit");
+            assert!(near("calender", "calendar", 1));
+            assert!(!near("calender", "calendar", 0));
+            assert!(near("kalendar", "calendar", 1));
+            assert!(!near("netflix", "network", 2));
+            assert!(near("einstelungen", "einstellungen", 1));
+            assert!(!near("abcdef", "uvwxyz", 2));
         }
-        let words = [
-            "screenshot",
-            "screen",
-            "scheenshot",
-            "screensh",
-            "einstellungen",
-            "einstellung",
-            "einstelungen",
-            "ab",
-            "ba",
-            "abc",
-            "acb",
-            "settings",
-            "setings",
-            "",
-            "x",
-        ];
-        for query in words {
-            for word in words {
-                let q: Vec<char> = query.chars().collect();
-                let w: Vec<char> = word.chars().collect();
-                for distance in 0..=2 {
-                    let typo = w.len().abs_diff(q.len()) <= distance
-                        && (w.len() >= q.len() || w.len() >= SUBSTITUTION_SCALARS);
-                    assert_eq!(
-                        within(&q, &w, distance),
-                        osa(&q, &w) <= distance && typo,
-                        "{query} {word} {distance}"
-                    );
+
+        phase a_dotted_name_is_mistyped_in_any_of_its_parts;
+        {
+            let part = |query: &str, word: &str| {
+                let query: Vec<char> = query.chars().collect();
+                let word: Vec<char> = word.chars().collect();
+                matches_word(&query, &word, 1)
+            };
+            assert!(part("githbu", "github.com"), "a mistyped host");
+            assert!(part("github", "github.com"), "the host typed whole");
+            assert!(
+                !part("hello", "helligkeit.com"),
+                "a part is a whole word too"
+            );
+            assert!(!part("zzz", "abc.de"));
+        }
+
+        phase a_short_word_is_not_another_short_word_with_one_letter_changed;
+        {
+            assert!(!near("cats", "cuts", 1));
+            assert!(!near("cats", "hats", 1));
+            assert!(near("cats", "cast", 1), "a swap is still one edit");
+            assert!(near("nots", "notes", 1), "a dropped letter too");
+            assert!(near("catz", "cats", 2));
+            assert!(near("kittem", "kitten", 1), "longer words keep it");
+        }
+
+        phase a_typo_is_a_whole_word_never_one_merely_beginning_alike;
+        {
+            // "hello" is a word of its own, not a mistyping of "helligkeit"
+            // (brightness) or of "hellmodus" (light mode).
+            assert!(!near("hello", "helligkeit", 1));
+            assert!(!near("hello", "hellmodus", 1));
+            assert!(!near("yotub", "youtube", 1), "still typing, not a typo");
+            // A short word is not a longer word with its last letters left off.
+            assert!(!near("hello", "hell", 1));
+            assert!(!near("helo", "hell", 1));
+            // Mistyped words are found however the letters slipped.
+            assert!(near("helo", "hello", 1), "a letter dropped");
+            assert!(near("helloo", "hello", 1), "a letter doubled");
+            assert!(near("terminl", "termin", 1), "one letter too many");
+            assert!(near("setings", "settings", 1));
+            assert!(near("posteingnag", "posteingang", 2));
+            assert!(!near("screenshot", "scr", 2));
+        }
+
+        phase the_bounded_table_agrees_with_the_definition;
+        // The table against a plain recursion over every alignment.
+        {
+            fn osa(a: &[char], b: &[char]) -> usize {
+                let substitution = if a.len() < SUBSTITUTION_SCALARS { 2 } else { 1 };
+                let mut table = vec![vec![0usize; b.len() + 1]; a.len() + 1];
+                for (i, row) in table.iter_mut().enumerate() {
+                    row[0] = i;
+                }
+                for (j, cell) in table[0].iter_mut().enumerate() {
+                    *cell = j;
+                }
+                for i in 1..=a.len() {
+                    for j in 1..=b.len() {
+                        let cost = if a[i - 1] == b[j - 1] {
+                            0
+                        } else {
+                            substitution
+                        };
+                        let mut cell = (table[i - 1][j] + 1)
+                            .min(table[i][j - 1] + 1)
+                            .min(table[i - 1][j - 1] + cost);
+                        if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] {
+                            cell = cell.min(table[i - 2][j - 2] + 1);
+                        }
+                        table[i][j] = cell;
+                    }
+                }
+                table[a.len()][b.len()]
+            }
+            let words = [
+                "screenshot",
+                "screen",
+                "scheenshot",
+                "screensh",
+                "einstellungen",
+                "einstellung",
+                "einstelungen",
+                "ab",
+                "ba",
+                "abc",
+                "acb",
+                "settings",
+                "setings",
+                "",
+                "x",
+            ];
+            for query in words {
+                for word in words {
+                    let q: Vec<char> = query.chars().collect();
+                    let w: Vec<char> = word.chars().collect();
+                    for distance in 0..=2 {
+                        let typo = w.len().abs_diff(q.len()) <= distance
+                            && (w.len() >= q.len() || w.len() >= SUBSTITUTION_SCALARS);
+                        assert_eq!(
+                            within(&q, &w, distance),
+                            osa(&q, &w) <= distance && typo,
+                            "{query} {word} {distance}"
+                        );
+                    }
                 }
             }
         }

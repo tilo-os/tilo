@@ -77,23 +77,27 @@ pub fn fold(text: &str) -> String {
 mod tests {
     use super::*;
 
-    #[test]
-    fn folds_case_diacritics_and_compatibility_forms() {
-        assert_eq!(fold("Crème Brûlée"), "creme brulee");
-        assert_eq!(fold("ÅNGSTRÖM"), "angstrom");
-        assert_eq!(fold("Ｔｏｋｙｏ ﬁle"), "tokyo file");
-        assert_eq!(fold("Ἀθῆναι"), "αθηναι");
-        assert_eq!(
-            fold("Cœur Straße Æsir Côte d’Ivoire"),
-            "coeur strasse aesir cote d'ivoire"
-        );
-        assert_eq!(fold("e\u{301}"), fold("é"));
-    }
+    tilo_test_env::scenario! {
+        fn folding_drops_case_and_accents_and_keeps_what_tells_words_apart;
 
-    #[test]
-    fn keeps_marks_that_distinguish_words() {
-        assert_eq!(fold("がか"), "がか");
-        assert_eq!(fold("한국어"), "한국어");
-        assert_eq!(fold("किताब"), "किताब");
+        phase folds_case_diacritics_and_compatibility_forms;
+        {
+            assert_eq!(fold("Crème Brûlée"), "creme brulee");
+            assert_eq!(fold("ÅNGSTRÖM"), "angstrom");
+            assert_eq!(fold("Ｔｏｋｙｏ ﬁle"), "tokyo file");
+            assert_eq!(fold("Ἀθῆναι"), "αθηναι");
+            assert_eq!(
+                fold("Cœur Straße Æsir Côte d’Ivoire"),
+                "coeur strasse aesir cote d'ivoire"
+            );
+            assert_eq!(fold("e\u{301}"), fold("é"));
+        }
+
+        phase keeps_marks_that_distinguish_words;
+        {
+            assert_eq!(fold("がか"), "がか");
+            assert_eq!(fold("한국어"), "한국어");
+            assert_eq!(fold("किताब"), "किताब");
+        }
     }
 }

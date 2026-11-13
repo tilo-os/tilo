@@ -257,53 +257,57 @@ mod tests {
         out
     }
 
-    #[test]
-    fn values_are_marked_and_every_scalar_starts_a_gram() {
-        let grams = grams("Ab-c");
-        let texts: Vec<_> = grams.iter().map(|(_, text)| text.as_str()).collect();
-        assert_eq!(
-            texts,
-            [
-                "\u{1}\u{2}a",
-                "\u{2}ab",
-                "ab\u{4}",
-                "b\u{4}-",
-                "\u{4}-\u{2}",
-                "-\u{2}c",
-                "\u{2}c\u{4}",
-                "c\u{4}\u{3}",
-                "\u{4}\u{3}\u{3}"
-            ]
-        );
-        assert!(
-            grams
-                .iter()
-                .enumerate()
-                .all(|(at, (position, _))| at == *position)
-        );
-    }
+    tilo_test_env::scenario! {
+        fn text_is_cut_into_marked_grams_and_words;
 
-    #[test]
-    fn queries_mark_inner_words_only() {
-        assert_eq!(
-            marked("e Du", false),
-            ['e', WORD_END, ' ', WORD_START, 'd', 'u']
-        );
-        assert_eq!(marked("\u{2}x", false), [' ', WORD_START, 'x']);
-        assert_eq!(marked("v2", false), ['v', WORD_END, WORD_START, '2']);
-    }
-
-    #[test]
-    fn cjk_text_without_spaces_yields_words() {
-        // The browser build carries no dictionary models for scripts
-        // written without spaces.
-        #[cfg(not(target_family = "wasm"))]
+        phase values_are_marked_and_every_scalar_starts_a_gram;
         {
-            let words = words("東京都に住んでいます");
-            assert!(words.len() >= 2, "ICU splits the sentence: {words:?}");
+            let grams = grams("Ab-c");
+            let texts: Vec<_> = grams.iter().map(|(_, text)| text.as_str()).collect();
+            assert_eq!(
+                texts,
+                [
+                    "\u{1}\u{2}a",
+                    "\u{2}ab",
+                    "ab\u{4}",
+                    "b\u{4}-",
+                    "\u{4}-\u{2}",
+                    "-\u{2}c",
+                    "\u{2}c\u{4}",
+                    "c\u{4}\u{3}",
+                    "\u{4}\u{3}\u{3}"
+                ]
+            );
+            assert!(
+                grams
+                    .iter()
+                    .enumerate()
+                    .all(|(at, (position, _))| at == *position)
+            );
         }
-        let words = super::words("msg-4411@Example.org sent");
-        assert!(words.iter().any(|word| word == "msg"), "{words:?}");
-        assert!(words.iter().any(|word| word == "sent"), "{words:?}");
+
+        phase queries_mark_inner_words_only;
+        {
+            assert_eq!(
+                marked("e Du", false),
+                ['e', WORD_END, ' ', WORD_START, 'd', 'u']
+            );
+            assert_eq!(marked("\u{2}x", false), [' ', WORD_START, 'x']);
+            assert_eq!(marked("v2", false), ['v', WORD_END, WORD_START, '2']);
+        }
+
+        phase cjk_text_without_spaces_yields_words;
+        {
+            // The browser build carries no dictionary models for scripts
+            // written without spaces.
+            #[cfg(not(target_family = "wasm"))]
+            {
+                let words = words("東京都に住んでいます");
+                assert!(words.len() >= 2, "ICU splits the sentence: {words:?}");
+            }
+            let words = super::words("msg-4411@Example.org sent");
+            assert!(words.iter().any(|word| word == "msg"), "{words:?}");
+            assert!(words.iter().any(|word| word == "sent"), "{words:?}");
+        }
     }
 }

@@ -173,28 +173,32 @@ pub const INDEXED_WEIGHTS: [FieldWeight; 9] = [
 mod tests {
     use super::*;
 
-    #[test]
-    fn weights_find_their_slot() {
-        assert_eq!(FieldWeight::TITLE.slot(), 0);
-        assert_eq!(FieldWeight::UNRANKED.slot(), 8);
-        assert_eq!(FieldWeight::new(89).slot(), 1);
-        assert_eq!(FieldWeight::KEYWORD.slot(), KEYWORD_SLOT);
-        assert_eq!(FieldWeight::new(45).slot(), 4);
-        assert_eq!(FieldWeight::new(200), FieldWeight::TITLE);
-    }
+    tilo_test_env::scenario! {
+        fn weights_find_their_slot_and_scale_each_tier;
 
-    #[test]
-    fn tiers_scale_with_weight() {
-        assert_eq!(
-            MatchTier::Exact.rank_in(FieldWeight::TITLE),
-            Some(MAX_FIELD_RANK)
-        );
-        assert_eq!(MatchTier::Contains.rank_in(FieldWeight::BODY), None);
-        assert_eq!(MatchTier::WordPrefix.rank_in(FieldWeight::BODY), Some(14));
-        assert_eq!(MatchTier::Contains.rank_in(FieldWeight::UNRANKED), Some(0));
-        assert_eq!(MatchTier::Prefix.rank_in(FieldWeight::UNRANKED), Some(0));
-        assert_eq!(MatchTier::Contains.rank_in(FieldWeight::IDENTITY), Some(30));
-        assert_eq!(MatchTier::Contains.rank_in(FieldWeight::KEYWORD), None);
-        assert_eq!(MatchTier::Contains.rank_in(FieldWeight::SUBTITLE), None);
+        phase weights_find_their_slot;
+        {
+            assert_eq!(FieldWeight::TITLE.slot(), 0);
+            assert_eq!(FieldWeight::UNRANKED.slot(), 8);
+            assert_eq!(FieldWeight::new(89).slot(), 1);
+            assert_eq!(FieldWeight::KEYWORD.slot(), KEYWORD_SLOT);
+            assert_eq!(FieldWeight::new(45).slot(), 4);
+            assert_eq!(FieldWeight::new(200), FieldWeight::TITLE);
+        }
+
+        phase tiers_scale_with_weight;
+        {
+            assert_eq!(
+                MatchTier::Exact.rank_in(FieldWeight::TITLE),
+                Some(MAX_FIELD_RANK)
+            );
+            assert_eq!(MatchTier::Contains.rank_in(FieldWeight::BODY), None);
+            assert_eq!(MatchTier::WordPrefix.rank_in(FieldWeight::BODY), Some(14));
+            assert_eq!(MatchTier::Contains.rank_in(FieldWeight::UNRANKED), Some(0));
+            assert_eq!(MatchTier::Prefix.rank_in(FieldWeight::UNRANKED), Some(0));
+            assert_eq!(MatchTier::Contains.rank_in(FieldWeight::IDENTITY), Some(30));
+            assert_eq!(MatchTier::Contains.rank_in(FieldWeight::KEYWORD), None);
+            assert_eq!(MatchTier::Contains.rank_in(FieldWeight::SUBTITLE), None);
+        }
     }
 }

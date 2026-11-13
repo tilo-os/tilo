@@ -251,119 +251,123 @@ fn a_kept_writer_answers_as_a_writer_per_commit_and_a_fresh_build() {
     );
 }
 
-#[test]
-fn one_writer_serves_every_incremental_commit_until_a_rebuild() {
-    let mut index = SearchIndex::default();
-    index.replace_all((0..100).map(|key| Document::new(key).field("row", FieldWeight::TITLE)));
-    index.commit().unwrap();
-    assert!(
-        tantivy(&mut index).writer.is_none(),
-        "a bulk build needs no writer"
-    );
-    for key in 100..130 {
-        index.upsert(Document::new(key).field(format!("new {key}"), FieldWeight::TITLE));
+tilo_test_env::scenario! {
+    fn the_kept_writer_serves_commits_through_rebuilds_failures_and_a_stale_lock;
+
+    phase one_writer_serves_every_incremental_commit_until_a_rebuild;
+    {
+        let mut index = SearchIndex::default();
+        index.replace_all((0..100).map(|key| Document::new(key).field("row", FieldWeight::TITLE)));
         index.commit().unwrap();
+        assert!(
+            tantivy(&mut index).writer.is_none(),
+            "a bulk build needs no writer"
+        );
+        for key in 100..130 {
+            index.upsert(Document::new(key).field(format!("new {key}"), FieldWeight::TITLE));
+            index.commit().unwrap();
+        }
+        assert_eq!(tantivy(&mut index).writers_opened, 1);
+        assert!(tantivy(&mut index).writer.is_some());
+        assert_eq!(index.search("new", Page::first(100)).hits.len(), 30);
+
+        // A rebuild replaces the tantivy index, and the writer bound to it.
+        index.replace_all((0..100).map(|key| Document::new(key).field("other", FieldWeight::TITLE)));
+        index.commit().unwrap();
+        assert!(tantivy(&mut index).writer.is_none());
+        index.upsert(Document::new(7).field("needle", FieldWeight::TITLE));
+        index.commit().unwrap();
+        assert_eq!(tantivy(&mut index).writers_opened, 2);
+        assert_eq!(index.search("needle", Page::first(10)).hits.len(), 1);
+        assert_eq!(index.search("other", Page::first(200)).hits.len(), 99);
     }
-    assert_eq!(tantivy(&mut index).writers_opened, 1);
-    assert!(tantivy(&mut index).writer.is_some());
-    assert_eq!(index.search("new", Page::first(100)).hits.len(), 30);
 
-    // A rebuild replaces the tantivy index, and the writer bound to it.
-    index.replace_all((0..100).map(|key| Document::new(key).field("other", FieldWeight::TITLE)));
-    index.commit().unwrap();
-    assert!(tantivy(&mut index).writer.is_none());
-    index.upsert(Document::new(7).field("needle", FieldWeight::TITLE));
-    index.commit().unwrap();
-    assert_eq!(tantivy(&mut index).writers_opened, 2);
-    assert_eq!(index.search("needle", Page::first(10)).hits.len(), 1);
-    assert_eq!(index.search("other", Page::first(200)).hits.len(), 99);
-}
+    phase a_failed_commit_keeps_its_mutations_and_the_next_one_recovers;
+    {
+        let mut index = SearchIndex::default();
+        index.replace_all((0..100).map(|key| Document::new(key).field("old row", FieldWeight::TITLE)));
+        index.commit().unwrap();
+        // A replaced record and a new one; the commit fails after the first of
+        // its two tantivy commits has deleted the old version.
+        index.upsert(Document::new(3).field("replaced row", FieldWeight::TITLE));
+        index.upsert(Document::new(500).field("new row", FieldWeight::TITLE));
+        tantivy(&mut index).fail_between_commits = true;
+        assert!(index.commit().is_err());
+        assert!(index.is_dirty(), "the mutations stay pending");
+        assert!(
+            tantivy(&mut index).writer.is_none(),
+            "the failed writer was dropped"
+        );
+        let keys = |index: &SearchIndex, query: &str| -> Vec<u64> {
+            index
+                .search(query, Page::first(200))
+                .hits
+                .iter()
+                .map(|hit| hit.key)
+                .collect()
+        };
+        assert_eq!(
+            keys(&index, "old row").len(),
+            100,
+            "searches read the last commit"
+        );
+        assert!(keys(&index, "new row").is_empty());
 
-#[test]
-fn a_failed_commit_keeps_its_mutations_and_the_next_one_recovers() {
-    let mut index = SearchIndex::default();
-    index.replace_all((0..100).map(|key| Document::new(key).field("old row", FieldWeight::TITLE)));
-    index.commit().unwrap();
-    // A replaced record and a new one; the commit fails after the first of
-    // its two tantivy commits has deleted the old version.
-    index.upsert(Document::new(3).field("replaced row", FieldWeight::TITLE));
-    index.upsert(Document::new(500).field("new row", FieldWeight::TITLE));
-    tantivy(&mut index).fail_between_commits = true;
-    assert!(index.commit().is_err());
-    assert!(index.is_dirty(), "the mutations stay pending");
-    assert!(
-        tantivy(&mut index).writer.is_none(),
-        "the failed writer was dropped"
-    );
-    let keys = |index: &SearchIndex, query: &str| -> Vec<u64> {
-        index
-            .search(query, Page::first(200))
-            .hits
-            .iter()
-            .map(|hit| hit.key)
-            .collect()
-    };
-    assert_eq!(
-        keys(&index, "old row").len(),
-        100,
-        "searches read the last commit"
-    );
-    assert!(keys(&index, "new row").is_empty());
+        index.commit().unwrap();
+        assert!(!index.is_dirty());
+        assert_eq!(
+            tantivy(&mut index).writers_opened,
+            2,
+            "the next commit opened a new writer"
+        );
+        assert_eq!(keys(&index, "replaced"), [3]);
+        assert_eq!(keys(&index, "new row"), [500]);
+        assert_eq!(keys(&index, "old row").len(), 99);
+        assert_eq!(keys(&index, "row").len(), 101, "every record once");
+    }
 
-    index.commit().unwrap();
-    assert!(!index.is_dirty());
-    assert_eq!(
-        tantivy(&mut index).writers_opened,
-        2,
-        "the next commit opened a new writer"
-    );
-    assert_eq!(keys(&index, "replaced"), [3]);
-    assert_eq!(keys(&index, "new row"), [500]);
-    assert_eq!(keys(&index, "old row").len(), 99);
-    assert_eq!(keys(&index, "row").len(), 101, "every record once");
-}
+    phase a_writer_lock_nothing_releases_falls_back_to_a_rebuild;
+    {
+        let mut index = SearchIndex::default();
+        index.replace_all((0..100).map(|key| Document::new(key).field("row", FieldWeight::TITLE)));
+        index.commit().unwrap();
+        // What a writer leaked by a panic leaves behind.
+        tantivy(&mut index)
+            .index
+            .directory()
+            .atomic_write(Path::new(&INDEX_WRITER_LOCK.filepath), b"")
+            .unwrap();
+        index.upsert(Document::new(7).field("needle", FieldWeight::TITLE));
+        index.commit().unwrap();
+        assert_eq!(index.search("needle", Page::first(10)).hits.len(), 1);
+        assert_eq!(tantivy(&mut index).writers_opened, 0);
+        // The rebuilt index has no lock: incremental commits work again.
+        index.upsert(Document::new(8).field("needle", FieldWeight::TITLE));
+        index.commit().unwrap();
+        assert_eq!(tantivy(&mut index).writers_opened, 1);
+        assert_eq!(index.search("needle", Page::first(10)).hits.len(), 2);
+    }
 
-#[test]
-fn a_writer_lock_nothing_releases_falls_back_to_a_rebuild() {
-    let mut index = SearchIndex::default();
-    index.replace_all((0..100).map(|key| Document::new(key).field("row", FieldWeight::TITLE)));
-    index.commit().unwrap();
-    // What a writer leaked by a panic leaves behind.
-    tantivy(&mut index)
-        .index
-        .directory()
-        .atomic_write(Path::new(&INDEX_WRITER_LOCK.filepath), b"")
-        .unwrap();
-    index.upsert(Document::new(7).field("needle", FieldWeight::TITLE));
-    index.commit().unwrap();
-    assert_eq!(index.search("needle", Page::first(10)).hits.len(), 1);
-    assert_eq!(tantivy(&mut index).writers_opened, 0);
-    // The rebuilt index has no lock: incremental commits work again.
-    index.upsert(Document::new(8).field("needle", FieldWeight::TITLE));
-    index.commit().unwrap();
-    assert_eq!(tantivy(&mut index).writers_opened, 1);
-    assert_eq!(index.search("needle", Page::first(10)).hits.len(), 2);
-}
+    phase a_commit_waiting_for_the_engine_is_made_by_the_first_search;
+    {
+        let mut index = SearchIndex::default();
+        index.replace_all((0..10).map(|key| Document::new(key).field("row", FieldWeight::TITLE)));
+        // What `commit` leaves while the engine's code is still to come.
+        index.state_mut().deferred = true;
+        assert!(index.is_dirty(), "the mutations wait");
+        assert_eq!(index.search("row", Page::first(20)).hits.len(), 10);
+        assert!(!index.is_dirty(), "the search made the commit");
+        index.upsert(Document::new(10).field("row", FieldWeight::TITLE));
+        assert_eq!(
+            index.search("row", Page::first(20)).hits.len(),
+            10,
+            "later searches read the last commit again"
+        );
+    }
 
-#[test]
-fn a_commit_waiting_for_the_engine_is_made_by_the_first_search() {
-    let mut index = SearchIndex::default();
-    index.replace_all((0..10).map(|key| Document::new(key).field("row", FieldWeight::TITLE)));
-    // What `commit` leaves while the engine's code is still to come.
-    index.state_mut().deferred = true;
-    assert!(index.is_dirty(), "the mutations wait");
-    assert_eq!(index.search("row", Page::first(20)).hits.len(), 10);
-    assert!(!index.is_dirty(), "the search made the commit");
-    index.upsert(Document::new(10).field("row", FieldWeight::TITLE));
-    assert_eq!(
-        index.search("row", Page::first(20)).hits.len(),
-        10,
-        "later searches read the last commit again"
-    );
-}
-
-#[test]
-fn an_index_with_a_kept_writer_is_shared_across_threads() {
-    fn shared<T: Send + Sync>() {}
-    shared::<SearchIndex>();
+    phase an_index_with_a_kept_writer_is_shared_across_threads;
+    {
+        fn shared<T: Send + Sync>() {}
+        shared::<SearchIndex>();
+    }
 }
