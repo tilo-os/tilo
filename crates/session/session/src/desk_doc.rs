@@ -25,14 +25,10 @@ use std::path::Path;
 #[cfg(target_os = "linux")]
 use tilo_session_core::desk::{Loaded, Store};
 
-/// The document beside the rest of this device's state.
-#[cfg(target_os = "linux")]
-pub(crate) const FILE: &str = "desk.automerge";
-
 /// Where the document lives under `state` , this device's state directory.
 #[cfg(target_os = "linux")]
 pub(crate) fn path(state: &Path) -> PathBuf {
-    state.join("tilo").join(FILE)
+    tilo_session_core::desk::path(state)
 }
 
 /// What became of the desk this device kept.

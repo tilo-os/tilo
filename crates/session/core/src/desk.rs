@@ -8,6 +8,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::Duration;
 use ui::time::Instant;
@@ -23,6 +24,15 @@ use ui::state::UndoLog;
 /// The key in the document that says which shape of desk it holds: a build that does not know the
 /// shape leaves the desk alone rather than guess.
 const SCHEMA_KEY: &str = "schema";
+
+/// The file a device keeps its desk in, under its state directory.
+pub const FILE: &str = "desk.automerge";
+
+/// Where a device keeps its desk, under `state`.
+#[must_use]
+pub fn path(state: &Path) -> PathBuf {
+    state.join("tilo").join(FILE)
+}
 
 /// How long a drag or a burst of switches waits for its last frame before how the desk looks is
 /// written.
@@ -124,6 +134,24 @@ pub fn relaunchable(desktop: &DesktopTree) -> DesktopTree {
 /// reads as theirs here without anything else naming it (`ui::history_source::actor_handle`).
 pub fn actor_of_person(person: &str) -> automerge::ActorId {
     automerge::ActorId::from(person.as_bytes())
+}
+
+/// Write `desktop` as the desk this device left: the one document a session opens, kept under
+/// `state` with its changes authored by `person` and dated `time`. What a session that ends leaves
+/// behind is written here, so a harness that says which desk a device left writes it the same way
+/// and the session that starts next opens it as any other.
+///
+/// # Errors
+/// The state directory cannot be made, or the desk cannot be written.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn leave(state: &Path, desktop: &DesktopTree, person: &str, time: i64) -> std::io::Result<()> {
+    let at = path(state);
+    if let Some(directory) = at.parent() {
+        std::fs::create_dir_all(directory)?;
+    }
+    let desk = Desk::new(AutoCommit::new(), person, None);
+    desk.record_now(desktop, time, &[], None);
+    std::fs::write(at, desk.document().save())
 }
 
 /// The desk's document as this device keeps it, and how the person here changed it.

@@ -46,18 +46,16 @@ fn state_of(home: &tilo_test_env::TestHome) -> PathBuf {
 
 /// Where the session reads the desk this device left.
 fn desk_file(state: &Path) -> PathBuf {
-    state.join("tilo").join("desk.json")
+    tilo_session_core::desk::path(state)
 }
+
+/// The person at this device, whose desk its sessions open.
+const PERSON: &str = "ada";
 
 /// Write `tree` as the desk this device left, where the next session reads it.
 fn save_desk(state: &Path, tree: &DesktopTree) {
-    let path = desk_file(state);
-    fs::create_dir_all(path.parent().expect("a tilo directory")).expect("the state directory");
-    fs::write(
-        &path,
-        serde_json::to_string(tree).expect("the desk is written"),
-    )
-    .expect("the desk is saved");
+    tilo_session_core::desk::leave(state, tree, PERSON, tilo_clock::unix_now_i64())
+        .expect("the desk this device left");
 }
 
 fn tab(id: u64, label: &str, app: &str) -> Tab {
@@ -345,8 +343,8 @@ fn a_restart_brings_back_the_strips_groups_widths_and_the_window_in_front() {
     );
 }
 
-/// What a restart brings back is the desk the session itself kept, with no tree file beside it: a
-/// strip renamed in one session is that strip in the next, at the width it was left.
+/// What a restart brings back is the desk the session itself kept: a strip renamed in one session
+/// is that strip in the next, at the width it was left.
 #[test]
 fn a_restart_brings_back_the_desk_the_session_kept() {
     let _settled = ui::motion::testing::settled();
@@ -367,12 +365,8 @@ fn a_restart_brings_back_the_desk_the_session_kept() {
     drop(kept);
 
     assert!(
-        !desk_file(&state).exists(),
-        "the desk is no longer kept as a tree file"
-    );
-    assert!(
-        state.join("tilo").join("desk.automerge").exists(),
-        "it is kept as its one document"
+        desk_file(&state).exists(),
+        "the desk is kept as its one document"
     );
 
     let mut next = session_keeping(&state, None);
@@ -727,7 +721,7 @@ fn a_desk_that_cannot_be_read_starts_empty_and_says_the_desk_is_still_there() {
         "and is not one that fades before it is read"
     );
     assert!(
-        path.with_extension("json.not-opened").exists(),
+        PathBuf::from(format!("{}.not-opened", path.display())).exists(),
         "the reason is left beside the desk, for anyone not looking at the screen"
     );
     assert_eq!(
