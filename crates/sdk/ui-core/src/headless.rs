@@ -9165,37 +9165,44 @@ mod tests {
     }
 
     #[test]
-    fn frame_requesters_name_the_widgets_that_ask_for_frames() {
-        let now = crate::time::now();
-        let mut spinner = DemandProbe::leaf("Spinner");
-        spinner.animating = true;
-        let mut clock = DemandProbe::leaf("Clock");
-        clock.deadline = Some(now);
-        let mut later = DemandProbe::leaf("Later");
-        later.deadline = now.checked_add(std::time::Duration::from_secs(60));
-        let mut panel = DemandProbe::leaf("Panel");
-        panel.children = vec![spinner, DemandProbe::leaf("Idle")];
-        let mut root = DemandProbe::leaf("Root");
-        root.children = vec![panel, clock, later];
-        let harness = FrameHarness::new(State::new(), Box::new(root), (200, 100));
-        let mut requesters = harness.frame_requesters();
-        requesters.compact_sort_by(|a, b| a.0.cmp(&b.0));
-        assert_eq!(
-            requesters,
-            vec![
-                ("Root/Clock".to_owned(), FrameDemand::Deadline),
-                ("Root/Panel/Spinner".to_owned(), FrameDemand::Animation),
-            ]
-        );
-    }
-
-    #[test]
-    fn an_idle_tree_has_no_frame_requesters() {
-        let mut root = DemandProbe::leaf("Root");
-        root.children = vec![DemandProbe::leaf("Idle")];
-        let harness = FrameHarness::new(State::new(), Box::new(root), (200, 100));
-        assert!(harness.frame_requesters().is_empty());
-        assert!(!harness.frame_schedule().needs_animation_frame);
+    fn frame_requesters_name_the_widgets_that_ask_for_frames_and_an_idle_tree_has_none() {
+        {
+            let now = crate::time::now();
+            let mut spinner = DemandProbe::leaf("Spinner");
+            spinner.animating = true;
+            let mut clock = DemandProbe::leaf("Clock");
+            clock.deadline = Some(now);
+            let mut later = DemandProbe::leaf("Later");
+            later.deadline = now.checked_add(std::time::Duration::from_secs(60));
+            let mut panel = DemandProbe::leaf("Panel");
+            panel.children = vec![spinner, DemandProbe::leaf("Idle")];
+            let mut root = DemandProbe::leaf("Root");
+            root.children = vec![panel, clock, later];
+            let harness = FrameHarness::new(State::new(), Box::new(root), (200, 100));
+            let mut requesters = harness.frame_requesters();
+            requesters.compact_sort_by(|a, b| a.0.cmp(&b.0));
+            assert_eq!(
+                requesters,
+                vec![
+                    ("Root/Clock".to_owned(), FrameDemand::Deadline),
+                    ("Root/Panel/Spinner".to_owned(), FrameDemand::Animation),
+                ],
+                "a tree with an animation, a due deadline and a later one"
+            );
+        }
+        {
+            let mut root = DemandProbe::leaf("Root");
+            root.children = vec![DemandProbe::leaf("Idle")];
+            let harness = FrameHarness::new(State::new(), Box::new(root), (200, 100));
+            assert!(
+                harness.frame_requesters().is_empty(),
+                "an idle tree has no frame requesters"
+            );
+            assert!(
+                !harness.frame_schedule().needs_animation_frame,
+                "an idle tree asks for no animation frame"
+            );
+        }
     }
 
     #[test]

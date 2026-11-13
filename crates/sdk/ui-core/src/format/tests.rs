@@ -450,62 +450,179 @@ fn the_locale_section_reads_key_by_key() {
     }
 }
 
+/// `day_fact` for a day by how far it is from today, with and without a time of day, through
+/// midnight and the year's end. A row with no German or no tone had none asserted before the
+/// rows were gathered here.
 #[test]
-fn the_day_fact_names_a_day_by_how_far_it_is_in_english_and_german() {
+#[allow(clippy::too_many_lines, reason = "one row per case")]
+fn the_day_fact_names_a_day_and_its_time_by_how_far_it_is_in_english_and_german() {
     let today = day(2026, 6, 30); // a Tuesday
-    speak("en-US");
-    for (when, english, _) in [
+    let (danger, neutral) = (Some(Tone::Danger), Some(Tone::Neutral));
+    // (the day, its time, today, English, German, tone)
+    let cases = [
+        // A day alone.
         (
             day(2026, 6, 20),
+            None,
+            today,
             "Overdue since Jun 20",
-            "Überfällig seit 20. Juni",
+            Some("Überfällig seit 20. Juni"),
+            None,
         ),
-        (day(2026, 6, 30), "Today", "Heute"),
-        (day(2026, 7, 1), "Tomorrow", "Morgen"),
-        (day(2026, 7, 2), "Thursday", "Donnerstag"),
-        (day(2026, 7, 6), "Monday", "Montag"),
-        (day(2026, 7, 7), "Jul 7", "7. Juli"),
-        (day(2026, 12, 31), "Dec 31", "31. Dez."),
-        (day(2027, 1, 2), "Jan 2, 2027", "2. Jan. 2027"),
-    ] {
-        assert_eq!(H24.day_fact(when, None, today).text, english, "{when:?}");
+        (day(2026, 6, 30), None, today, "Today", Some("Heute"), None),
+        (
+            day(2026, 7, 1),
+            None,
+            today,
+            "Tomorrow",
+            Some("Morgen"),
+            None,
+        ),
+        (
+            day(2026, 7, 2),
+            None,
+            today,
+            "Thursday",
+            Some("Donnerstag"),
+            None,
+        ),
+        (day(2026, 7, 6), None, today, "Monday", Some("Montag"), None),
+        (day(2026, 7, 7), None, today, "Jul 7", Some("7. Juli"), None),
+        (
+            day(2026, 12, 31),
+            None,
+            today,
+            "Dec 31",
+            Some("31. Dez."),
+            None,
+        ),
+        (
+            day(2027, 1, 2),
+            None,
+            today,
+            "Jan 2, 2027",
+            Some("2. Jan. 2027"),
+            None,
+        ),
+        // Overdue through midnight and the year's end.
+        (
+            day(2026, 6, 29),
+            Some((0, 0)),
+            today,
+            "Overdue since Jun 29 00:00",
+            None,
+            danger,
+        ),
+        (
+            day(2026, 6, 30),
+            Some((0, 0)),
+            today,
+            "Today 00:00",
+            None,
+            neutral,
+        ),
+        (
+            day(2027, 1, 1),
+            None,
+            day(2026, 12, 31),
+            "Tomorrow",
+            None,
+            neutral,
+        ),
+        (
+            day(2026, 12, 31),
+            None,
+            day(2027, 1, 1),
+            "Overdue since Dec 31, 2026",
+            None,
+            None,
+        ),
+        // A day and its time, as one fact.
+        (
+            day(2026, 6, 30),
+            Some((9, 0)),
+            today,
+            "Today 09:00",
+            Some("Heute 09:00"),
+            neutral,
+        ),
+        (
+            day(2026, 7, 1),
+            Some((9, 0)),
+            today,
+            "Tomorrow 09:00",
+            Some("Morgen 09:00"),
+            neutral,
+        ),
+        (
+            day(2026, 7, 2),
+            Some((14, 30)),
+            today,
+            "Thu 14:30",
+            Some("Do. 14:30"),
+            neutral,
+        ),
+        (
+            day(2026, 7, 8),
+            Some((9, 0)),
+            today,
+            "Jul 8 09:00",
+            Some("8. Juli 09:00"),
+            neutral,
+        ),
+        (
+            day(2025, 6, 29),
+            Some((9, 0)),
+            today,
+            "Overdue since Jun 29, 2025 09:00",
+            Some("Überfällig seit 29. Juni 2025 09:00"),
+            danger,
+        ),
+        (
+            day(2026, 6, 29),
+            Some((14, 30)),
+            today,
+            "Overdue since Jun 29 14:30",
+            Some("Überfällig seit 29. Juni 14:30"),
+            danger,
+        ),
+        (
+            day(2026, 6, 25),
+            Some((7, 5)),
+            today,
+            "Overdue since Jun 25 07:05",
+            Some("Überfällig seit 25. Juni 07:05"),
+            danger,
+        ),
+        (
+            day(2026, 6, 10),
+            Some((7, 5)),
+            today,
+            "Overdue since Jun 10 07:05",
+            Some("Überfällig seit 10. Juni 07:05"),
+            danger,
+        ),
+    ];
+    let time_of = |time: Option<(u32, u32)>| {
+        time.map(|(h, m)| chrono::NaiveTime::from_hms_opt(h, m, 0).unwrap())
+    };
+    speak("en-US");
+    for &(when, time, today, english, _, tone) in &cases {
+        let fact = H24.day_fact(when, time_of(time), today);
+        assert_eq!(fact.text, english, "{when:?} {time:?} against {today:?}");
+        if let Some(tone) = tone {
+            assert_eq!(fact.tone, tone, "{when:?} {time:?} against {today:?}");
+        }
     }
     speak("de-DE");
-    for (when, _, german) in [
-        (
-            day(2026, 6, 20),
-            "Overdue since Jun 20",
-            "Überfällig seit 20. Juni",
-        ),
-        (day(2026, 6, 30), "Today", "Heute"),
-        (day(2026, 7, 1), "Tomorrow", "Morgen"),
-        (day(2026, 7, 2), "Thursday", "Donnerstag"),
-        (day(2026, 7, 6), "Monday", "Montag"),
-        (day(2026, 7, 7), "Jul 7", "7. Juli"),
-        (day(2026, 12, 31), "Dec 31", "31. Dez."),
-        (day(2027, 1, 2), "Jan 2, 2027", "2. Jan. 2027"),
-    ] {
-        assert_eq!(H24.day_fact(when, None, today).text, german, "{when:?}");
+    for &(when, time, today, _, german, _) in &cases {
+        let Some(german) = german else { continue };
+        assert_eq!(
+            H24.day_fact(when, time_of(time), today).text,
+            german,
+            "{when:?} {time:?} against {today:?}"
+        );
     }
-}
-
-#[test]
-fn the_day_fact_is_overdue_through_midnight_and_the_years_end() {
-    let midnight = || chrono::NaiveTime::from_hms_opt(0, 0, 0).unwrap();
-    speak("en-US");
-    let fact = H24.day_fact(day(2026, 6, 29), Some(midnight()), day(2026, 6, 30));
-    assert_eq!(fact.text, "Overdue since Jun 29 00:00");
-    assert_eq!(fact.tone, crate::widget::Tone::Danger);
-    let fact = H24.day_fact(day(2026, 6, 30), Some(midnight()), day(2026, 6, 30));
-    assert_eq!(fact.text, "Today 00:00");
-    assert_eq!(fact.tone, crate::widget::Tone::Neutral);
-    let fact = H24.day_fact(day(2027, 1, 1), None, day(2026, 12, 31));
-    assert_eq!(fact.text, "Tomorrow");
-    assert_eq!(fact.tone, crate::widget::Tone::Neutral);
-    assert_eq!(
-        H24.day_fact(day(2026, 12, 31), None, day(2027, 1, 1)).text,
-        "Overdue since Dec 31, 2026"
-    );
 }
 
 #[test]
@@ -555,85 +672,6 @@ fn a_done_day_reads_as_the_day_it_happened_in_english_and_german() {
         (day(2025, 12, 31), "Dec 31, 2025", "31. Dez. 2025"),
     ] {
         assert_eq!(H24.day_done(when, today), german, "{when:?}");
-    }
-}
-
-#[test]
-fn a_day_and_its_time_read_as_one_fact_in_english_and_german() {
-    let today = day(2026, 6, 30);
-    let cases = [
-        (
-            day(2026, 6, 30),
-            (9, 0),
-            "Today 09:00",
-            "Heute 09:00",
-            Tone::Neutral,
-        ),
-        (
-            day(2026, 7, 1),
-            (9, 0),
-            "Tomorrow 09:00",
-            "Morgen 09:00",
-            Tone::Neutral,
-        ),
-        (
-            day(2026, 7, 2),
-            (14, 30),
-            "Thu 14:30",
-            "Do. 14:30",
-            Tone::Neutral,
-        ),
-        (
-            day(2026, 7, 8),
-            (9, 0),
-            "Jul 8 09:00",
-            "8. Juli 09:00",
-            Tone::Neutral,
-        ),
-        (
-            day(2025, 6, 29),
-            (9, 0),
-            "Overdue since Jun 29, 2025 09:00",
-            "Überfällig seit 29. Juni 2025 09:00",
-            Tone::Danger,
-        ),
-        (
-            day(2026, 6, 29),
-            (14, 30),
-            "Overdue since Jun 29 14:30",
-            "Überfällig seit 29. Juni 14:30",
-            Tone::Danger,
-        ),
-        (
-            day(2026, 6, 25),
-            (7, 5),
-            "Overdue since Jun 25 07:05",
-            "Überfällig seit 25. Juni 07:05",
-            Tone::Danger,
-        ),
-        (
-            day(2026, 6, 10),
-            (7, 5),
-            "Overdue since Jun 10 07:05",
-            "Überfällig seit 10. Juni 07:05",
-            Tone::Danger,
-        ),
-    ];
-    for (when, (h, m), english, _, tone) in cases {
-        speak("en-US");
-        let time = chrono::NaiveTime::from_hms_opt(h, m, 0).unwrap();
-        let fact = H24.day_fact(when, Some(time), today);
-        assert_eq!(fact.text, english, "{when:?}");
-        assert_eq!(fact.tone, tone, "{when:?}");
-    }
-    for (when, (h, m), _, german, _) in cases {
-        speak("de-DE");
-        let time = chrono::NaiveTime::from_hms_opt(h, m, 0).unwrap();
-        assert_eq!(
-            H24.day_fact(when, Some(time), today).text,
-            german,
-            "{when:?}"
-        );
     }
 }
 

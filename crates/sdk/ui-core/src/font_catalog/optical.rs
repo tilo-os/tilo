@@ -191,89 +191,233 @@ mod tests {
         ground: TextGround::Dark,
     };
 
-    fn ncm(size: f32, optical: Optical) -> Option<&'static str> {
-        cut("New Computer Modern", size, optical, false, 400)
-    }
-
+    /// `cut` for each family, size, ground, style, weight and sizing; then the family each cut
+    /// belongs to.
     #[test]
-    fn new_computer_modern_takes_the_cut_its_size_calls_for() {
-        // Footnotes and superscripts: the 8 pt design.
-        assert_eq!(ncm(10.0, LIGHT), Some("New Computer Modern 08"));
-        assert_eq!(ncm(12.0, LIGHT), Some("New Computer Modern 08"));
-        for size in [12.5, 14.0, 16.0, 19.0, 23.9] {
-            assert_eq!(ncm(size, LIGHT), Some("New Computer Modern Book"), "{size}");
-        }
-        for size in [24.0, 34.0, 48.0] {
-            assert_eq!(ncm(size, LIGHT), Some("New Computer Modern"), "{size}");
-        }
-    }
-
-    #[test]
-    fn a_dark_ground_keeps_book_to_larger_sizes() {
-        assert_eq!(ncm(26.0, LIGHT), Some("New Computer Modern"));
-        assert_eq!(ncm(26.0, DARK), Some("New Computer Modern Book"));
-        assert_eq!(ncm(31.9, DARK), Some("New Computer Modern Book"));
-        assert_eq!(ncm(32.0, DARK), Some("New Computer Modern"));
-        // Small text is the 8 pt design on either ground.
-        assert_eq!(ncm(11.0, DARK), Some("New Computer Modern 08"));
-    }
-
-    #[test]
-    fn a_cut_without_the_style_passes_it_to_the_next_smaller_cut() {
-        // The 8 pt design ships upright only: small italics are Book's.
-        assert_eq!(
-            cut("New Computer Modern", 11.0, LIGHT, true, 400),
-            Some("New Computer Modern Book")
-        );
-        // Small bold is the shared Bold, which the 8 pt family has.
-        assert_eq!(
-            cut("New Computer Modern", 11.0, LIGHT, false, 700),
-            Some("New Computer Modern 08")
-        );
-        assert_eq!(
-            cut("Libertinus Serif", 40.0, LIGHT, false, 400),
-            Some("Libertinus Serif Display")
-        );
-        assert_eq!(
-            cut("Libertinus Serif", 40.0, LIGHT, true, 400),
-            Some("Libertinus Serif")
-        );
-        assert_eq!(
-            cut("Libertinus Serif", 40.0, LIGHT, false, 700),
-            Some("Libertinus Serif")
-        );
-    }
-
-    #[test]
-    fn a_cut_name_resolves_like_its_family_and_sizing_can_pin_it() {
-        assert_eq!(
-            cut("New Computer Modern Book", 40.0, LIGHT, false, 400),
-            Some("New Computer Modern")
-        );
-        assert_eq!(
-            cut("new computer modern 08", 16.0, LIGHT, false, 400),
-            Some("New Computer Modern Book")
-        );
+    #[allow(clippy::too_many_lines, reason = "one row per case")]
+    fn a_cut_follows_its_size_ground_style_weight_and_sizing() {
+        const NCM: &str = "New Computer Modern";
+        const BOOK: &str = "New Computer Modern Book";
+        const EIGHT: &str = "New Computer Modern 08";
+        const LIBERTINUS: &str = "Libertinus Serif";
+        const DISPLAY: &str = "Libertinus Serif Display";
         let pinned = Optical {
             sizing: OpticalSizing::Value(10.0),
             ..LIGHT
         };
-        assert_eq!(ncm(48.0, pinned), Some("New Computer Modern 08"));
         let none = Optical {
             sizing: OpticalSizing::None,
             ..LIGHT
         };
-        assert_eq!(ncm(48.0, none), None);
-        assert_eq!(cut("Literata", 48.0, LIGHT, false, 400), None);
-        assert_eq!(
-            family_name("New Computer Modern 08"),
-            Some("New Computer Modern")
-        );
-        assert_eq!(
-            family_name("Libertinus Serif Display"),
-            Some("Libertinus Serif")
-        );
-        assert_eq!(family_name("Literata"), None);
+        // (case, family, size, optical, italic, weight, the cut)
+        let cases = [
+            // Footnotes and superscripts: the 8 pt design.
+            ("footnote 10", NCM, 10.0, LIGHT, false, 400, Some(EIGHT)),
+            ("footnote 12", NCM, 12.0, LIGHT, false, 400, Some(EIGHT)),
+            (
+                "just under Book",
+                NCM,
+                12.49,
+                LIGHT,
+                false,
+                400,
+                Some(EIGHT),
+            ),
+            ("size zero", NCM, 0.0, LIGHT, false, 400, Some(EIGHT)),
+            ("a negative size", NCM, -1.0, LIGHT, false, 400, Some(EIGHT)),
+            (
+                "a size that is no number",
+                NCM,
+                f32::NAN,
+                LIGHT,
+                false,
+                400,
+                Some(EIGHT),
+            ),
+            ("body 12.5", NCM, 12.5, LIGHT, false, 400, Some(BOOK)),
+            ("body 14", NCM, 14.0, LIGHT, false, 400, Some(BOOK)),
+            ("body 16", NCM, 16.0, LIGHT, false, 400, Some(BOOK)),
+            ("body 19", NCM, 19.0, LIGHT, false, 400, Some(BOOK)),
+            ("body 23.9", NCM, 23.9, LIGHT, false, 400, Some(BOOK)),
+            ("title 24", NCM, 24.0, LIGHT, false, 400, Some(NCM)),
+            ("title 34", NCM, 34.0, LIGHT, false, 400, Some(NCM)),
+            ("title 48", NCM, 48.0, LIGHT, false, 400, Some(NCM)),
+            // A dark ground keeps Book to larger sizes.
+            ("26 on light", NCM, 26.0, LIGHT, false, 400, Some(NCM)),
+            ("26 on dark", NCM, 26.0, DARK, false, 400, Some(BOOK)),
+            ("31.9 on dark", NCM, 31.9, DARK, false, 400, Some(BOOK)),
+            ("32 on dark", NCM, 32.0, DARK, false, 400, Some(NCM)),
+            // Small text is the 8 pt design on either ground.
+            ("11 on dark", NCM, 11.0, DARK, false, 400, Some(EIGHT)),
+            // The 8 pt design ships upright only: small italics are Book's.
+            ("small italic", NCM, 11.0, LIGHT, true, 400, Some(BOOK)),
+            (
+                "a negative size in italic",
+                NCM,
+                -1.0,
+                LIGHT,
+                true,
+                400,
+                Some(BOOK),
+            ),
+            // Small bold is the shared Bold, which the 8 pt family has.
+            ("small bold", NCM, 11.0, LIGHT, false, 700, Some(EIGHT)),
+            (
+                "a bold italic title",
+                NCM,
+                48.0,
+                LIGHT,
+                true,
+                700,
+                Some(NCM),
+            ),
+            (
+                "Libertinus display",
+                LIBERTINUS,
+                40.0,
+                LIGHT,
+                false,
+                400,
+                Some(DISPLAY),
+            ),
+            (
+                "Libertinus display italic",
+                LIBERTINUS,
+                40.0,
+                LIGHT,
+                true,
+                400,
+                Some(LIBERTINUS),
+            ),
+            (
+                "Libertinus display bold",
+                LIBERTINUS,
+                40.0,
+                LIGHT,
+                false,
+                700,
+                Some(LIBERTINUS),
+            ),
+            (
+                "weight 500 is not bold",
+                LIBERTINUS,
+                40.0,
+                LIGHT,
+                false,
+                500,
+                Some(DISPLAY),
+            ),
+            (
+                "weight 501 is bold",
+                LIBERTINUS,
+                40.0,
+                LIGHT,
+                false,
+                501,
+                Some(LIBERTINUS),
+            ),
+            (
+                "Libertinus 23.9",
+                LIBERTINUS,
+                23.9,
+                LIGHT,
+                false,
+                400,
+                Some(LIBERTINUS),
+            ),
+            (
+                "Libertinus 24",
+                LIBERTINUS,
+                24.0,
+                LIGHT,
+                false,
+                400,
+                Some(DISPLAY),
+            ),
+            (
+                "Libertinus 31.9 on dark",
+                LIBERTINUS,
+                31.9,
+                DARK,
+                false,
+                400,
+                Some(LIBERTINUS),
+            ),
+            (
+                "Libertinus 32 on dark",
+                LIBERTINUS,
+                32.0,
+                DARK,
+                false,
+                400,
+                Some(DISPLAY),
+            ),
+            // A cut's name resolves like its family.
+            (
+                "named by its Book cut",
+                BOOK,
+                40.0,
+                LIGHT,
+                false,
+                400,
+                Some(NCM),
+            ),
+            (
+                "named by its 8 pt cut in lower case",
+                "new computer modern 08",
+                16.0,
+                LIGHT,
+                false,
+                400,
+                Some(BOOK),
+            ),
+            (
+                "sizing pinned to 10",
+                NCM,
+                48.0,
+                pinned,
+                false,
+                400,
+                Some(EIGHT),
+            ),
+            ("sizing none", NCM, 48.0, none, false, 400, None),
+            (
+                "sizing none in italic bold",
+                NCM,
+                48.0,
+                none,
+                true,
+                700,
+                None,
+            ),
+            (
+                "a family with no cuts",
+                "Literata",
+                48.0,
+                LIGHT,
+                false,
+                400,
+                None,
+            ),
+            ("no family", "", 48.0, LIGHT, false, 400, None),
+        ];
+        for (case, family, size, optical, italic, weight, want) in cases {
+            assert_eq!(
+                cut(family, size, optical, italic, weight),
+                want,
+                "case: {case}"
+            );
+        }
+        for (name, want) in [
+            (EIGHT, Some(NCM)),
+            (DISPLAY, Some(LIBERTINUS)),
+            ("LIBERTINUS SERIF DISPLAY", Some(LIBERTINUS)),
+            (NCM, Some(NCM)),
+            ("Literata", None),
+            ("", None),
+        ] {
+            assert_eq!(family_name(name), want, "family_name({name:?})");
+        }
     }
 
     #[test]

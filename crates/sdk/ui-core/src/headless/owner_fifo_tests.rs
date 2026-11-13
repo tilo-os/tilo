@@ -613,7 +613,7 @@ fn failed_and_unvisited_snapshot_owners_precede_callback_late_owner() {
     assert_eq!(retry.unwrap(), 3);
 }
 
-fn background_gate(presentation: super::owner_background_work::Presentation) {
+fn background_gate(case: &str, presentation: super::owner_background_work::Presentation) {
     use durable_store::DurableStore;
     let backend = Rc::new(durable_store::MemoryStore::new());
     let host = memory_host(backend.clone());
@@ -677,37 +677,55 @@ fn background_gate(presentation: super::owner_background_work::Presentation) {
                 .to_owned()
         })
         .unwrap();
-    assert_eq!(forwarded, "background model write");
-    assert_eq!(persisted, "background model write");
-    assert_eq!(outcome.serviced, 1);
-    assert!(!outcome.paint_available);
-    assert_eq!(after, (before.0 + 1, before.1 + 1, before.2 + 1));
-    assert_eq!(frame.relayout_frames(), layouts);
-    assert!(!retained);
+    assert_eq!(forwarded, "background model write", "{case}");
+    assert_eq!(persisted, "background model write", "{case}");
+    assert_eq!(outcome.serviced, 1, "{case}");
+    assert!(!outcome.paint_available, "{case}");
+    assert_eq!(after, (before.0 + 1, before.1 + 1, before.2 + 1), "{case}");
+    assert_eq!(frame.relayout_frames(), layouts, "{case}");
+    assert!(!retained, "{case}");
 }
+/// An owner whose window cannot paint (hidden, suspended, no GPU, or all three) still has its
+/// model and save serviced.
 #[test]
-fn background_hidden_owner_services_original_model_and_save_without_paint() {
-    background_gate(super::owner_background_work::Presentation {
-        hidden: true,
-        suspended: false,
-        gpu_ready: true,
-    });
-}
-#[test]
-fn background_suspended_owner_services_original_model_and_save_without_paint() {
-    background_gate(super::owner_background_work::Presentation {
-        hidden: false,
-        suspended: true,
-        gpu_ready: true,
-    });
-}
-#[test]
-fn background_gpu_none_owner_services_original_model_and_save_without_paint() {
-    background_gate(super::owner_background_work::Presentation {
-        hidden: false,
-        suspended: false,
-        gpu_ready: false,
-    });
+fn background_owner_services_original_model_and_save_without_paint() {
+    use super::owner_background_work::Presentation;
+    for (case, presentation) in [
+        (
+            "hidden",
+            Presentation {
+                hidden: true,
+                suspended: false,
+                gpu_ready: true,
+            },
+        ),
+        (
+            "suspended",
+            Presentation {
+                hidden: false,
+                suspended: true,
+                gpu_ready: true,
+            },
+        ),
+        (
+            "gpu none",
+            Presentation {
+                hidden: false,
+                suspended: false,
+                gpu_ready: false,
+            },
+        ),
+        (
+            "hidden, suspended and gpu none",
+            Presentation {
+                hidden: true,
+                suspended: true,
+                gpu_ready: false,
+            },
+        ),
+    ] {
+        background_gate(case, presentation);
+    }
 }
 #[test]
 fn background_refusal_retains_original_owner_for_retry_while_paint_unavailable() {

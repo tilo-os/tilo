@@ -276,54 +276,101 @@ mod tests {
         }
     }
 
+    /// `select_output` for every target: the index it picks, or `None` to defer to the compositor.
     #[test]
-    fn largest_picks_biggest_area() {
-        let mons = vec![
+    fn select_output_resolves_each_target_or_defers_to_the_compositor() {
+        use FullscreenTarget::{Auto, Largest, Output, Primary, PrimaryExternal};
+        let three = vec![
             mon(0, 1920, 1080, true),
             mon(1, 3840, 2160, false),
             mon(2, 1280, 720, false),
         ];
-        assert_eq!(
-            select_output(&mons, FullscreenTarget::Largest),
-            Some(1),
-            "Present targets the biggest monitor, not the primary laptop panel"
-        );
-    }
-
-    #[test]
-    fn empty_list_defers_to_compositor() {
-        assert_eq!(select_output(&[], FullscreenTarget::Largest), None);
-        assert_eq!(select_output(&[], FullscreenTarget::Primary), None);
-    }
-
-    #[test]
-    fn auto_always_defers() {
-        let mons = vec![mon(0, 1920, 1080, true)];
-        assert_eq!(select_output(&mons, FullscreenTarget::Auto), None);
-    }
-
-    #[test]
-    fn primary_picks_flagged_else_first() {
-        let mons = vec![mon(0, 1280, 720, false), mon(1, 1920, 1080, true)];
-        assert_eq!(select_output(&mons, FullscreenTarget::Primary), Some(1));
+        let single = vec![mon(0, 1920, 1080, true)];
+        let flagged_second = vec![mon(0, 1280, 720, false), mon(1, 1920, 1080, true)];
         let none_primary = vec![mon(0, 1280, 720, false), mon(1, 1920, 1080, false)];
-        assert_eq!(
-            select_output(&none_primary, FullscreenTarget::Primary),
-            Some(0)
-        );
-    }
-
-    #[test]
-    fn output_index_selects_or_none_when_out_of_range() {
-        let mons = vec![mon(0, 1280, 720, false), mon(1, 1920, 1080, false)];
-        assert_eq!(select_output(&mons, FullscreenTarget::Output(1)), Some(1));
-        assert_eq!(select_output(&mons, FullscreenTarget::Output(9)), None);
-    }
-
-    #[test]
-    fn largest_ties_break_toward_primary() {
-        let mons = vec![mon(0, 1920, 1080, false), mon(1, 1920, 1080, true)];
-        assert_eq!(select_output(&mons, FullscreenTarget::Largest), Some(1));
+        let twins_second_primary = vec![mon(0, 1920, 1080, false), mon(1, 1920, 1080, true)];
+        let twins = vec![mon(0, 1920, 1080, false), mon(1, 1920, 1080, false)];
+        let flagged_tv = MonitorInfo {
+            primary: true,
+            ..television(2)
+        };
+        let cases = [
+            (
+                "Present targets the biggest monitor, not the primary laptop panel",
+                three,
+                Largest,
+                Some(1),
+            ),
+            ("an empty list defers: largest", vec![], Largest, None),
+            ("an empty list defers: primary", vec![], Primary, None),
+            ("an empty list defers: auto", vec![], Auto, None),
+            (
+                "an empty list defers: primary external",
+                vec![],
+                PrimaryExternal,
+                None,
+            ),
+            ("an empty list defers: output 0", vec![], Output(0), None),
+            ("auto always defers", single.clone(), Auto, None),
+            ("a single monitor is the largest", single, Largest, Some(0)),
+            (
+                "primary picks the flagged monitor",
+                flagged_second,
+                Primary,
+                Some(1),
+            ),
+            (
+                "primary without a flag is the first monitor",
+                none_primary.clone(),
+                Primary,
+                Some(0),
+            ),
+            (
+                "an output index selects that output",
+                none_primary.clone(),
+                Output(1),
+                Some(1),
+            ),
+            (
+                "an output index out of range defers",
+                none_primary,
+                Output(9),
+                None,
+            ),
+            (
+                "largest ties break toward primary",
+                twins_second_primary,
+                Largest,
+                Some(1),
+            ),
+            (
+                "largest ties with no primary break toward the lowest index",
+                twins,
+                Largest,
+                Some(0),
+            ),
+            (
+                "of a laptop and a television the television is the largest",
+                vec![laptop(0), television(1)],
+                Largest,
+                Some(1),
+            ),
+            (
+                "primary external is the primary-flagged television",
+                vec![laptop(0), desk_monitor(1), flagged_tv],
+                PrimaryExternal,
+                Some(2),
+            ),
+            (
+                "a lone built-in panel is the only primary external there is",
+                vec![laptop(0)],
+                PrimaryExternal,
+                Some(0),
+            ),
+        ];
+        for (case, monitors, target, want) in cases {
+            assert_eq!(select_output(&monitors, target), want, "case: {case}");
+        }
     }
 
     #[test]
@@ -342,108 +389,242 @@ mod tests {
         }
     }
 
+    /// `select_audience_output`: where the slides go, for each set of screens, target and screen
+    /// the presenter window is on.
     #[test]
-    fn laptop_and_television_put_slides_on_the_television() {
-        let mons = [laptop(0), television(1)];
-        for presenter in [None, Some(0), Some(1)] {
-            assert_eq!(
-                select_audience_output(&mons, FullscreenTarget::Largest, presenter),
-                Some(1),
-                "slides go to the external screen wherever the presenter window is ({presenter:?})"
-            );
-        }
-        assert_eq!(select_presenter_output(&mons, 1), Some(0));
-        assert_eq!(select_output(&mons, FullscreenTarget::Largest), Some(1));
-    }
-
-    #[test]
-    fn two_externals_put_slides_on_the_physically_larger_one() {
-        let mons = [desk_monitor(0), television(1)];
-        assert_eq!(
-            select_audience_output(&mons, FullscreenTarget::Largest, Some(1)),
-            Some(1),
-            "a 65-inch 1080p television beats a 27-inch 4K monitor for an audience"
-        );
-        assert_eq!(select_presenter_output(&mons, 1), Some(0));
-    }
-
-    #[test]
-    fn unknown_physical_sizes_fall_back_to_pixels_then_the_free_screen() {
-        let projector = mon(1, 1920, 1080, false);
-        let mons = [desk_monitor(0), projector];
-        assert_eq!(
-            select_audience_output(&mons, FullscreenTarget::Largest, None),
-            Some(0),
-            "a projector reports no size, so pixel area decides"
-        );
-        let twins = [mon(0, 1920, 1080, false), mon(1, 1920, 1080, false)];
-        assert_eq!(
-            select_audience_output(&twins, FullscreenTarget::Largest, Some(0)),
-            Some(1),
-            "of two identical screens the presenter keeps the one it is on"
-        );
-    }
-
-    #[test]
-    fn laptop_with_desk_monitor_and_television_keeps_presenter_on_the_laptop() {
-        let mons = [laptop(0), desk_monitor(1), television(2)];
-        assert_eq!(
-            select_audience_output(&mons, FullscreenTarget::Largest, Some(1)),
-            Some(2)
-        );
-        assert_eq!(select_presenter_output(&mons, 2), Some(0));
-    }
-
-    #[test]
-    fn a_single_screen_has_no_audience_output() {
-        for mons in [vec![laptop(0)], vec![television(0)], Vec::new()] {
-            assert_eq!(
-                select_audience_output(&mons, FullscreenTarget::Largest, None),
-                None
-            );
-            assert_eq!(select_presenter_output(&mons, 0), None);
-        }
-    }
-
-    #[test]
-    fn primary_external_skips_the_builtin_panel() {
+    #[allow(clippy::too_many_lines, reason = "one row per case")]
+    fn the_audience_output_is_chosen_for_each_set_of_screens_and_target() {
+        use FullscreenTarget::{Auto, Largest, Output, Primary, PrimaryExternal};
+        let laptop_tv = vec![laptop(0), television(1)];
+        let twins = vec![mon(0, 1920, 1080, false), mon(1, 1920, 1080, false)];
         let flagged_laptop = MonitorInfo {
             primary: true,
             ..laptop(0)
         };
-        let mons = [flagged_laptop, desk_monitor(1), television(2)];
-        assert_eq!(
-            select_audience_output(&mons, FullscreenTarget::PrimaryExternal, None),
-            Some(1),
-            "the first external display, not the primary-flagged laptop panel"
-        );
         let flagged_tv = MonitorInfo {
             primary: true,
             ..television(2)
         };
-        let mons = [laptop(0), desk_monitor(1), flagged_tv];
-        assert_eq!(
-            select_audience_output(&mons, FullscreenTarget::PrimaryExternal, None),
-            Some(2)
-        );
-        assert_eq!(
-            select_output(&mons, FullscreenTarget::PrimaryExternal),
-            Some(2)
-        );
+        let cases = [
+            (
+                "slides go to the external screen with no presenter window",
+                laptop_tv.clone(),
+                Largest,
+                None,
+                Some(1),
+            ),
+            (
+                "slides go to the external screen with the presenter on the laptop",
+                laptop_tv.clone(),
+                Largest,
+                Some(0),
+                Some(1),
+            ),
+            (
+                "slides go to the external screen with the presenter on the television",
+                laptop_tv.clone(),
+                Largest,
+                Some(1),
+                Some(1),
+            ),
+            (
+                "a 65-inch 1080p television beats a 27-inch 4K monitor for an audience",
+                vec![desk_monitor(0), television(1)],
+                Largest,
+                Some(1),
+                Some(1),
+            ),
+            (
+                "a projector reports no size, so pixel area decides",
+                vec![desk_monitor(0), mon(1, 1920, 1080, false)],
+                Largest,
+                None,
+                Some(0),
+            ),
+            (
+                "of two identical screens the presenter keeps the one it is on (0)",
+                twins.clone(),
+                Largest,
+                Some(0),
+                Some(1),
+            ),
+            (
+                "of two identical screens the presenter keeps the one it is on (1)",
+                twins.clone(),
+                Largest,
+                Some(1),
+                Some(0),
+            ),
+            (
+                "two identical screens and no presenter window: the lowest index",
+                twins,
+                Largest,
+                None,
+                Some(0),
+            ),
+            (
+                "laptop, desk monitor and television: the television",
+                vec![laptop(0), desk_monitor(1), television(2)],
+                Largest,
+                Some(1),
+                Some(2),
+            ),
+            (
+                "a single laptop has no audience output",
+                vec![laptop(0)],
+                Largest,
+                None,
+                None,
+            ),
+            (
+                "a single television has no audience output",
+                vec![television(0)],
+                Largest,
+                None,
+                None,
+            ),
+            (
+                "no screen has no audience output",
+                vec![],
+                Largest,
+                None,
+                None,
+            ),
+            (
+                "a single screen has no audience output even when it is named",
+                vec![laptop(0)],
+                Output(0),
+                None,
+                None,
+            ),
+            (
+                "the first external display, not the primary-flagged laptop panel",
+                vec![flagged_laptop, desk_monitor(1), television(2)],
+                PrimaryExternal,
+                None,
+                Some(1),
+            ),
+            (
+                "primary external is the primary-flagged television",
+                vec![laptop(0), desk_monitor(1), flagged_tv],
+                PrimaryExternal,
+                None,
+                Some(2),
+            ),
+            (
+                "the compositor moves the presenter view off an explicitly chosen screen",
+                laptop_tv.clone(),
+                Output(0),
+                Some(0),
+                Some(0),
+            ),
+            (
+                "an explicit output that does not exist is no audience output",
+                laptop_tv.clone(),
+                Output(9),
+                None,
+                None,
+            ),
+            (
+                "auto chooses as largest does",
+                laptop_tv.clone(),
+                Auto,
+                None,
+                Some(1),
+            ),
+            (
+                "primary is the flagged screen, even the smaller one",
+                vec![mon(0, 1280, 720, true), mon(1, 1920, 1080, false)],
+                Primary,
+                None,
+                Some(0),
+            ),
+            (
+                "primary without a flag chooses as largest does",
+                laptop_tv,
+                Primary,
+                None,
+                Some(1),
+            ),
+        ];
+        for (case, monitors, target, presenter, want) in cases {
+            assert_eq!(
+                select_audience_output(&monitors, target, presenter),
+                want,
+                "case: {case}"
+            );
+        }
     }
 
+    /// `select_presenter_output`: where the presenter view goes once the audience owns a screen.
     #[test]
-    fn explicit_audience_output_is_honoured_even_under_the_presenter() {
-        let mons = [laptop(0), television(1)];
-        assert_eq!(
-            select_audience_output(&mons, FullscreenTarget::Output(0), Some(0)),
-            Some(0),
-            "the compositor moves the presenter view off an explicitly chosen screen"
-        );
-        assert_eq!(select_presenter_output(&mons, 0), Some(1));
-        assert_eq!(
-            select_audience_output(&mons, FullscreenTarget::Output(9), None),
-            None
-        );
+    fn the_presenter_output_is_the_built_in_or_smallest_screen_left() {
+        let laptop_tv = vec![laptop(0), television(1)];
+        let twins = vec![mon(0, 1920, 1080, false), mon(1, 1920, 1080, false)];
+        let cases = [
+            (
+                "laptop and television: the laptop",
+                laptop_tv.clone(),
+                1,
+                Some(0),
+            ),
+            (
+                "desk monitor and television: the desk monitor",
+                vec![desk_monitor(0), television(1)],
+                1,
+                Some(0),
+            ),
+            (
+                "laptop, desk monitor and television: the presenter stays on the laptop",
+                vec![laptop(0), desk_monitor(1), television(2)],
+                2,
+                Some(0),
+            ),
+            (
+                "a single laptop has no other output",
+                vec![laptop(0)],
+                0,
+                None,
+            ),
+            (
+                "a single television has no other output",
+                vec![television(0)],
+                0,
+                None,
+            ),
+            ("no screen has no other output", vec![], 0, None),
+            (
+                "an audience explicitly on the laptop sends the presenter to the television",
+                laptop_tv.clone(),
+                0,
+                Some(1),
+            ),
+            (
+                "an audience output that is not listed leaves the built-in panel",
+                laptop_tv,
+                9,
+                Some(0),
+            ),
+            (
+                "with no built-in panel and a size unknown, the fewer pixels",
+                vec![desk_monitor(0), television(1), mon(2, 1920, 1080, false)],
+                1,
+                Some(2),
+            ),
+            (
+                "identical screens: the other one (0)",
+                twins.clone(),
+                1,
+                Some(0),
+            ),
+            ("identical screens: the other one (1)", twins, 0, Some(1)),
+        ];
+        for (case, monitors, audience, want) in cases {
+            assert_eq!(
+                select_presenter_output(&monitors, audience),
+                want,
+                "case: {case}"
+            );
+        }
     }
 }

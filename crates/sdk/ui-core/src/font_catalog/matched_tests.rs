@@ -214,6 +214,37 @@ fn kinds_resolve_to_what_each_face_supports() {
     let spans = plan_text(&fs, "Код 0451", ui(400), TextKind::Secret);
     assert_eq!(family(&spans[0].1), "Onest");
     assert!(features(&spans[0].1).starts_with(&[*b"ss02", *b"tnum"]));
+
+    // A catalog face with a serif I variant is used for it.
+    let adwaita = face_caps(&fs, "Adwaita Sans", 400, Style::Normal);
+    assert!(
+        adwaita
+            .features_for(TextKind::Identifier, false)
+            .contains(b"cv08"),
+        "Adwaita Sans: an identifier takes its serif I"
+    );
+    assert!(
+        adwaita.features_for(TextKind::Url, false).contains(b"zero"),
+        "Adwaita Sans: a link takes its slashed zero"
+    );
+    assert!(
+        adwaita.features_for(TextKind::Prose, false).is_empty(),
+        "Adwaita Sans: prose takes nothing"
+    );
+
+    // Hyperlegible is distinct by design, so distinguishing turns nothing on.
+    let hyperlegible = face_caps(&fs, UI_HYPERLEGIBLE_FAMILY, 400, Style::Normal);
+    for kind in [TextKind::Prose, TextKind::Identifier, TextKind::Url] {
+        assert!(
+            hyperlegible.features_for(kind, true).is_empty(),
+            "Hyperlegible: {kind:?}"
+        );
+    }
+    assert_eq!(
+        hyperlegible.features_for(TextKind::Secret, true),
+        [*b"tnum"],
+        "Hyperlegible: a secret keeps its tabular figures"
+    );
 }
 
 #[test]
@@ -255,18 +286,6 @@ fn a_distinct_il_set_changes_only_i_l_and_their_look_alikes() {
         only_distinguishes_il(&['I', 'Ɨ', 'І', 'Ї', 'Ι', 'Ί', 'Ἰ']),
         "the same capital I in Cyrillic and Greek, as a serif I set covers it"
     );
-}
-
-#[test]
-fn a_catalog_face_with_a_serif_i_variant_is_used_for_it() {
-    let fs = system();
-    let face = face_caps(&fs, "Adwaita Sans", 400, Style::Normal);
-    assert!(
-        face.features_for(TextKind::Identifier, false)
-            .contains(b"cv08")
-    );
-    assert!(face.features_for(TextKind::Url, false).contains(b"zero"));
-    assert!(face.features_for(TextKind::Prose, false).is_empty());
 }
 
 #[test]
@@ -334,6 +353,30 @@ fn tilo_sans_held_back_forms_apply_to_secrets_and_identifiers_once_present() {
         face.kind_features(TextKind::Identifier),
         [*b"cv01", *b"cv02", *b"ss13"]
     );
+    // A link adds the zero, and distinguishing adds every form to every kind.
+    assert_eq!(face.kind_features(TextKind::Url), ZERO_IL, "a link");
+    assert_eq!(
+        face.kind_features(TextKind::Identifier),
+        IL,
+        "an identifier"
+    );
+    for kind in [TextKind::Prose, TextKind::Identifier, TextKind::Url] {
+        assert_eq!(
+            face.features_for(kind, true),
+            ZERO_IL,
+            "{kind:?}, distinguishing"
+        );
+    }
+    assert_eq!(
+        face.features_for(TextKind::Numeric, true),
+        [*b"tnum", *b"zero", *b"cv01", *b"cv02", *b"ss13"],
+        "numeric, distinguishing"
+    );
+    assert_eq!(
+        face.features_for(TextKind::Secret, true),
+        face.kind_features(TextKind::Secret),
+        "a secret already has every form"
+    );
 
     let prose = glyph_ids(&mut fs, "Il0", TextKind::Prose);
     let identifier = glyph_ids(&mut fs, "Il0", TextKind::Identifier);
@@ -358,36 +401,6 @@ fn fixture() -> Attrs<'static> {
 
 const IL: [[u8; 4]; 3] = [*b"cv01", *b"cv02", *b"ss13"];
 const ZERO_IL: [[u8; 4]; 4] = [*b"zero", *b"cv01", *b"cv02", *b"ss13"];
-
-#[test]
-fn urls_add_the_zero_and_distinguishing_adds_every_form_to_every_kind() {
-    let fs = fixture_system();
-    let face = face_caps(&fs, FEATURES_FIXTURE_FAMILY, 400, Style::Normal);
-    assert_eq!(face.kind_features(TextKind::Url), ZERO_IL);
-    assert_eq!(face.kind_features(TextKind::Identifier), IL);
-    assert!(face.kind_features(TextKind::Prose).is_empty());
-    for kind in [TextKind::Prose, TextKind::Identifier, TextKind::Url] {
-        assert_eq!(face.features_for(kind, true), ZERO_IL, "{kind:?}");
-    }
-    assert_eq!(
-        face.features_for(TextKind::Numeric, true),
-        [*b"tnum", *b"zero", *b"cv01", *b"cv02", *b"ss13"]
-    );
-    assert_eq!(
-        face.features_for(TextKind::Secret, true),
-        face.kind_features(TextKind::Secret)
-    );
-}
-
-#[test]
-fn hyperlegible_is_distinct_by_design_so_nothing_is_turned_on() {
-    let fs = system();
-    let face = face_caps(&fs, UI_HYPERLEGIBLE_FAMILY, 400, Style::Normal);
-    for kind in [TextKind::Prose, TextKind::Identifier, TextKind::Url] {
-        assert!(face.features_for(kind, true).is_empty(), "{kind:?}");
-    }
-    assert_eq!(face.features_for(TextKind::Secret, true), [*b"tnum"]);
-}
 
 fn planned(spans: &[(&str, Attrs<'_>)]) -> Vec<(String, Vec<[u8; 4]>)> {
     spans
