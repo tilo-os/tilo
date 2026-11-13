@@ -8,13 +8,10 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock, RwLock};
 use std::time::{Duration, SystemTime};
 
-use getrandom::{SysRng, rand_core::UnwrapErr};
-use rand_core::Rng;
 use tilo_user_identity::{
     AgentScope, DeviceCapabilities, DeviceCert, IdentityPaths, RevocationEntry, RevocationReason,
-    decode_enrollment_token, device_cert_signing_digest, encode_enrollment_token,
-    mint_enrollment_token, revocation_signing_digest, verify_device_cert, verify_device_cert_at,
-    verify_revocation_entry,
+    decode_enrollment_token, device_cert_signing_digest, revocation_signing_digest,
+    verify_device_cert, verify_device_cert_at, verify_revocation_entry,
 };
 
 use super::{DeviceFleet, FLEET_SCHEMA_VERSION};
@@ -83,14 +80,7 @@ impl DeviceFleetStore {
                 "device fleet identity/schema mismatch",
             ));
         }
-        for cert in &fleet.certificates {
-            verify_device_cert(cert)
-                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-        }
-        for entry in &fleet.revocations {
-            verify_revocation_entry(entry)
-                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-        }
+        fleet.check(identity_id)?;
         // Home peers are enrolled by the privileged LAN broker rather than the
         // ordinary device-completion UI. Their root-signed certificates live
         // in the shared enrollment registry and are projected into the same
@@ -181,6 +171,11 @@ impl DeviceFleetStore {
     }
 
     /// Mint a short-lived enrollment token from this already trusted device.
+    ///
+    /// The device admits the new one on its own authority, so it must be
+    /// allowed to admit devices; a device that only introduces a certificate
+    /// the person's devices approved mints through
+    /// [`crate::enrollment::mint_token`] instead.
     pub fn mint_enrollment(
         &self,
         identity_id: &str,
@@ -189,35 +184,24 @@ impl DeviceFleetStore {
         expires_at_ns: u64,
     ) -> io::Result<String> {
         let (_, profile) = self.identity(identity_id)?;
-        let device = tilo_user_identity::persist::load_device_key(&self.identity_paths)
-            .map_err(|error| io::Error::other(error.to_string()))?;
-        let cert_path = self
-            .identity_paths
-            .device_cert_for_user(&profile.user_public_key);
-        let cert = tilo_user_identity::persist::read_device_cert(&cert_path)
-            .map_err(|error| io::Error::other(error.to_string()))?;
-        verify_device_cert_at(&cert, issued_at_ns)
-            .map_err(|error| io::Error::other(error.to_string()))?;
-        if cert.device_public_key != device.verifying_key().to_bytes()
-            || !cert.capabilities.can_admit_devices
-        {
+        let (device, cert) = crate::enrollment::device_for(
+            &self.identity_paths,
+            profile.user_public_key,
+            issued_at_ns,
+        )?;
+        if !cert.capabilities.can_admit_devices {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
                 "this device may not admit another device",
             ));
         }
-        let mut nonce = [0_u8; 16];
-        UnwrapErr(SysRng).fill_bytes(&mut nonce);
-        let token = mint_enrollment_token(
+        crate::enrollment::mint_token(
             profile.user_public_key,
             capabilities,
             issued_at_ns,
             expires_at_ns,
-            nonce,
             &device,
         )
-        .map_err(|error| io::Error::other(error.to_string()))?;
-        encode_enrollment_token(&token).map_err(|error| io::Error::other(error.to_string()))
     }
 
     /// Complete enrollment after the new device returns its public key:
@@ -337,7 +321,8 @@ impl DeviceFleetStore {
         crate::enrollment::NonceStore::under(&self.identity_root())
     }
 
-    /// Root-sign a permanent revocation and persist it with the fleet.
+    /// Root-sign a permanent revocation of an enrolled device and keep it
+    /// with the fleet.
     pub fn revoke(
         &self,
         identity_id: &str,
@@ -346,9 +331,8 @@ impl DeviceFleetStore {
         revoked_at_ns: u64,
     ) -> io::Result<RevocationEntry> {
         let (root, profile) = self.identity(identity_id)?;
-        let _fleet_lock = self.lock_fleets()?;
-        let mut fleet = self.load(identity_id)?;
-        if !fleet
+        if !self
+            .load(identity_id)?
             .certificates
             .iter()
             .any(|cert| cert.device_public_key == device_public_key)
@@ -370,11 +354,7 @@ impl DeviceFleetStore {
         entry.signature = root
             .sign(&digest)
             .map_err(|error| io::Error::other(error.to_string()))?;
-        verify_revocation_entry(&entry).map_err(|error| io::Error::other(error.to_string()))?;
-        if !fleet.is_revoked(&device_public_key) {
-            fleet.revocations.push(entry.clone());
-            self.save(&fleet)?;
-        }
+        self.record_revocation(identity_id, &entry)?;
         Ok(entry)
     }
 
@@ -498,6 +478,121 @@ impl DeviceFleetStore {
         cert: DeviceCert,
     ) -> io::Result<DeviceFleet> {
         self.insert_certificate(identity_id, cert)
+    }
+
+    /// The fleet of `identity_id` as an approving device hands it to a device
+    /// it admits, with `cert` in it: what [`Self::accept_transferred`] takes
+    /// on the joining device. Nothing is written.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::load`], when `cert` is not `identity_id`'s or is not valid
+    /// now.
+    pub fn transferred(&self, identity_id: &str, cert: &DeviceCert) -> io::Result<Vec<u8>> {
+        let now_ns = tilo_clock::try_unix_now_ns()
+            .ok_or_else(|| io::Error::other("the clock is before the unix epoch"))?;
+        verify_device_cert_at(cert, now_ns).map_err(|error| io::Error::other(error.to_string()))?;
+        if cert.user_public_key != decode_hex_32(identity_id)? {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "device certificate belongs to another identity",
+            ));
+        }
+        let mut fleet = self.load(identity_id)?;
+        fleet
+            .certificates
+            .retain(|known| known.device_public_key != cert.device_public_key);
+        fleet.certificates.push(cert.clone());
+        serde_json::to_vec_pretty(&fleet)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+    }
+
+    /// The fleet document `bytes` another device handed this one when it
+    /// joined, checked as a fleet of `identity_id`: within its bounds, every
+    /// certificate and revocation in it verified, and `enrolled` among its
+    /// certificates.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the document is larger than a fleet may be,
+    /// is no fleet of `identity_id`, does not verify, or does not list the
+    /// enrolling device.
+    pub fn accept_transferred(
+        &self,
+        identity_id: &str,
+        bytes: &[u8],
+        enrolled: [u8; 32],
+    ) -> io::Result<DeviceFleet> {
+        const MAX_FLEET_BYTES: usize = 1024 * 1024;
+        const MAX_RECORDS: usize = 256;
+        if bytes.len() > MAX_FLEET_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "transferred device fleet exceeds 1 MiB",
+            ));
+        }
+        let fleet: DeviceFleet = serde_json::from_slice(bytes)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        fleet.check(identity_id)?;
+        if fleet.certificates.len() > MAX_RECORDS
+            || fleet.revocations.len() > MAX_RECORDS
+            || !fleet
+                .certificates
+                .iter()
+                .any(|cert| cert.device_public_key == enrolled)
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "transferred device fleet violates its bounded schema",
+            ));
+        }
+        Ok(fleet)
+    }
+
+    /// Install `fleet` as this device's record of `fleet.identity_id`'s
+    /// devices: the fleet another device handed it when it joined. Written
+    /// the way every fleet write is — as the person, under the fleet lock —
+    /// so a device that joined reads the fleet it was given.
+    pub fn adopt_transferred(&self, fleet: &DeviceFleet) -> io::Result<()> {
+        fleet.check(&fleet.identity_id)?;
+        let _fleet_lock = self.lock_fleets()?;
+        self.save(fleet)
+    }
+
+    /// Record a root-signed revocation another host of `identity_id` withdrew
+    /// a device with: kept once, and refused from then on.
+    ///
+    /// # Errors
+    ///
+    /// The entry is not a revocation a verifier takes or is another
+    /// identity's, or the fleet cannot be written.
+    pub fn record_revocation(
+        &self,
+        identity_id: &str,
+        entry: &RevocationEntry,
+    ) -> io::Result<DeviceFleet> {
+        verify_revocation_entry(entry)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        if hex::encode(entry.user_public_key) != identity_id {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "revocation belongs to another identity",
+            ));
+        }
+        let _fleet_lock = self.lock_fleets()?;
+        let mut fleet = self.load(identity_id)?;
+        if fleet.is_revoked(&entry.revoked_device_public_key) {
+            return Ok(fleet);
+        }
+        fleet.revocations.push(entry.clone());
+        self.save(&fleet)?;
+        Ok(fleet)
+    }
+
+    /// The file this store keeps `identity_id`'s fleet in.
+    #[must_use]
+    pub fn fleet_file(&self, identity_id: &str) -> PathBuf {
+        self.path(identity_id)
     }
 
     fn insert_certificate(&self, identity_id: &str, cert: DeviceCert) -> io::Result<DeviceFleet> {

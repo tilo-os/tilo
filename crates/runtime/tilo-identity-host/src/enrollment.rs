@@ -1,9 +1,9 @@
-//! Redeeming an enrollment token: the one place a token becomes a device
-//! certificate.
+//! Minting and redeeming an enrollment token: the one place a token is made
+//! and the one place it becomes a device certificate.
 //!
-//! A trusted device mints a short-lived token ([`crate::device_fleet`]); the
-//! device that receives it returns its public key, and the approving device
-//! redeems the token for a root-signed certificate here. Every redeemer — the
+//! A trusted device mints a short-lived token ([`mint_token`]); the device
+//! that receives it returns its public key, and the approving device redeems
+//! the token for a root-signed certificate here. Every redeemer — the
 //! desktop's fleet and the nearby-pairing broker alike — goes through
 //! [`redeem`], so every one of them applies the same rules:
 //!
@@ -20,8 +20,11 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
 
+use getrandom::{SysRng, rand_core::UnwrapErr};
+use rand_core::Rng;
 use tilo_user_identity::{
-    DeviceCert, EnrollmentToken, verify_device_cert, verify_device_cert_at, verify_enrollment_token,
+    DeviceCapabilities, DeviceCert, EnrollmentToken, IdentityPaths, encode_enrollment_token,
+    mint_enrollment_token, verify_device_cert, verify_device_cert_at, verify_enrollment_token,
 };
 
 use crate::device_fleet::DeviceFleetStore;
@@ -29,6 +32,70 @@ pub use crate::roles::EnrollmentRole;
 
 fn refused(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::PermissionDenied, message.into())
+}
+
+/// This device's key and its certificate for the identity `user_public_key`,
+/// while that certificate is valid at `at_ns`: what lets this machine act as
+/// a device of the identity.
+///
+/// # Errors
+///
+/// This device has no key, has no certificate for that identity, the
+/// certificate is not valid at `at_ns`, or it names another device.
+pub fn device_for(
+    paths: &IdentityPaths,
+    user_public_key: [u8; 32],
+    at_ns: u64,
+) -> io::Result<(ed25519_dalek::SigningKey, DeviceCert)> {
+    let device = tilo_user_identity::persist::load_device_key(paths)
+        .map_err(|error| io::Error::new(io::ErrorKind::NotFound, error.to_string()))?;
+    let cert = tilo_user_identity::persist::read_device_cert(
+        &paths.device_cert_for_user(&user_public_key),
+    )
+    .or_else(|_| tilo_user_identity::persist::read_device_cert(&paths.device_cert))
+    .map_err(|error| io::Error::new(io::ErrorKind::NotFound, error.to_string()))?;
+    verify_device_cert_at(&cert, at_ns).map_err(|error| io::Error::other(error.to_string()))?;
+    if cert.user_public_key != user_public_key
+        || cert.device_public_key != device.verifying_key().to_bytes()
+    {
+        return Err(refused(
+            "this device is not authorised by that identity: its certificate names another",
+        ));
+    }
+    Ok((device, cert))
+}
+
+/// Mint a short-lived enrollment token from this device's key, naming
+/// `user_public_key`'s identity: a device it is offered to returns its public
+/// key and redeems the token for its certificate ([`redeem`]).
+///
+/// The token names this device as its issuer. Whether it may admit a device
+/// on its own authority is decided when the token is redeemed
+/// ([`check_issuer`]): a device that only introduces a certificate the
+/// person's devices approved need not be allowed to admit.
+///
+/// # Errors
+///
+/// The token cannot name an identity, or cannot be signed by this device.
+pub fn mint_token(
+    user_public_key: [u8; 32],
+    capabilities: DeviceCapabilities,
+    issued_at_ns: u64,
+    expires_at_ns: u64,
+    issuer: &ed25519_dalek::SigningKey,
+) -> io::Result<String> {
+    let mut nonce = [0_u8; 16];
+    UnwrapErr(SysRng).fill_bytes(&mut nonce);
+    let token = mint_enrollment_token(
+        user_public_key,
+        capabilities,
+        issued_at_ns,
+        expires_at_ns,
+        nonce,
+        issuer,
+    )
+    .map_err(|error| io::Error::other(error.to_string()))?;
+    encode_enrollment_token(&token).map_err(|error| io::Error::other(error.to_string()))
 }
 
 /// Check that `issuer` may have minted `token`: it belongs to the token's
