@@ -25,201 +25,266 @@ fn namespace(root: &Path) -> PathBuf {
     fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
     path
 }
-#[test]
-fn closed_preparation_reopens_exact_identity_photo_and_public_choices_without_secrets() {
-    let mut env = tilo_test_env::ScopedEnv::new();
-    env.set(runtime_identity::FILE_SECRETS_ENV, "1");
-    let temp = tempfile::tempdir().unwrap();
-    let root = temp.path().canonicalize().unwrap();
-    let path = namespace(&root);
-    let store = DraftStore::open(&path).unwrap();
-    assert!(matches!(store.review().unwrap(), DraftStatus::Missing));
-    let reserved = store.reserve(&choices(), IdentityKind::New).unwrap();
-    assert!(matches!(store.review().unwrap(), DraftStatus::Pending(_)));
-    let custody = reserved.identity_directory();
-    let prepared = Arc::new(
-        PreparedIdentity::create(&custody, "Ada", [1, 2, 3], IdentityStorage::Files).unwrap(),
-    );
-    let photo = runtime_identity::ProfilePhoto::new(1, 1, vec![12, 34, 56, 255]).unwrap();
-    prepared.update_photo(Some(photo.clone())).unwrap();
-    prepared.update_name("Ada").unwrap();
-    let before = runtime_identity::load_from_path(custody.join("primary.json"))
-        .unwrap()
-        .sign(b"restart-proof")
-        .unwrap();
-    store.acknowledge(&reserved, &prepared, None).unwrap();
-    let changed = PublicChoices {
-        device_label: "Another device".into(),
-        purpose: install_profile_model::default_purpose(),
-        deferred: false,
-        target: None,
-        ..choices()
-    };
-    store.update_choices_for(&prepared, &changed).unwrap();
-    drop(prepared);
-    drop(reserved);
-    drop(store);
-    let reopened = DraftStore::open(&path).unwrap();
-    let DraftStatus::Ready(ready) = reopened.review().unwrap() else {
-        panic!("acknowledged custody missing");
-    };
-    assert_eq!(ready.kind(), IdentityKind::New);
-    assert_eq!(ready.choices(), &changed);
-    let prepared = ready.resume().unwrap();
-    assert_eq!(prepared.metadata().unwrap().display_name, "Ada");
-    assert_eq!(prepared.metadata().unwrap().profile_photo, Some(photo));
-    let after = runtime_identity::load_from_path(custody.join("primary.json"))
-        .unwrap()
-        .sign(b"restart-proof")
-        .unwrap();
-    assert_eq!(before, after);
-    let draft = String::from_utf8(fs::read(path.join(INDEX)).unwrap()).unwrap();
-    for forbidden in [
-        "password",
-        "avatar_path",
-        "secret_bytes",
-        "source_file",
-        "grant",
-        "private_key",
-    ] {
-        assert!(!draft.contains(forbidden));
+tilo_test_env::scenario! {
+    fn a_draft_reopens_as_it_was_closed_and_adopts_nothing_else;
+
+    phase closed_preparation_reopens_exact_identity_photo_and_public_choices_without_secrets;
+    {
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        let path = namespace(&root);
+        let store = DraftStore::open(&path).unwrap();
+        assert!(matches!(store.review().unwrap(), DraftStatus::Missing));
+        let reserved = store.reserve(&choices(), IdentityKind::New).unwrap();
+        assert!(matches!(store.review().unwrap(), DraftStatus::Pending(_)));
+        let custody = reserved.identity_directory();
+        let prepared = Arc::new(
+            PreparedIdentity::create(&custody, "Ada", [1, 2, 3], IdentityStorage::Files).unwrap(),
+        );
+        let photo = runtime_identity::ProfilePhoto::new(1, 1, vec![12, 34, 56, 255]).unwrap();
+        prepared.update_photo(Some(photo.clone())).unwrap();
+        prepared.update_name("Ada").unwrap();
+        let before = runtime_identity::load_from_path(custody.join("primary.json"))
+            .unwrap()
+            .sign(b"restart-proof")
+            .unwrap();
+        store.acknowledge(&reserved, &prepared, None).unwrap();
+        let changed = PublicChoices {
+            device_label: "Another device".into(),
+            purpose: install_profile_model::default_purpose(),
+            deferred: false,
+            target: None,
+            ..choices()
+        };
+        store.update_choices_for(&prepared, &changed).unwrap();
+        drop(prepared);
+        drop(reserved);
+        drop(store);
+        let reopened = DraftStore::open(&path).unwrap();
+        let DraftStatus::Ready(ready) = reopened.review().unwrap() else {
+            panic!("acknowledged custody missing");
+        };
+        assert_eq!(ready.kind(), IdentityKind::New);
+        assert_eq!(ready.choices(), &changed);
+        let prepared = ready.resume().unwrap();
+        assert_eq!(prepared.metadata().unwrap().display_name, "Ada");
+        assert_eq!(prepared.metadata().unwrap().profile_photo, Some(photo));
+        let after = runtime_identity::load_from_path(custody.join("primary.json"))
+            .unwrap()
+            .sign(b"restart-proof")
+            .unwrap();
+        assert_eq!(before, after);
+        let draft = String::from_utf8(fs::read(path.join(INDEX)).unwrap()).unwrap();
+        for forbidden in [
+            "password",
+            "avatar_path",
+            "secret_bytes",
+            "source_file",
+            "grant",
+            "private_key",
+        ] {
+            assert!(!draft.contains(forbidden));
+        }
+        reopened.retire().unwrap();
+        assert!(matches!(reopened.review().unwrap(), DraftStatus::Missing));
+        assert!(custody.join("primary.json").is_file());
+        assert_ne!(
+            reopened
+                .reserve(&choices(), IdentityKind::New)
+                .unwrap()
+                .operation_directory(),
+            custody.parent().unwrap()
+        );
     }
-    reopened.retire().unwrap();
-    assert!(matches!(reopened.review().unwrap(), DraftStatus::Missing));
-    assert!(custody.join("primary.json").is_file());
-    assert_ne!(
-        reopened
-            .reserve(&choices(), IdentityKind::New)
-            .unwrap()
-            .operation_directory(),
-        custody.parent().unwrap()
-    );
-}
-#[test]
-fn pending_crash_and_changed_or_malformed_pointer_never_mint_replacement_or_repair() {
-    let mut env = tilo_test_env::ScopedEnv::new();
-    env.set(runtime_identity::FILE_SECRETS_ENV, "1");
-    let temp = tempfile::tempdir().unwrap();
-    let root = temp.path().canonicalize().unwrap();
-    let path = namespace(&root);
-    let store = DraftStore::open(&path).unwrap();
-    let reserved = store.reserve(&choices(), IdentityKind::New).unwrap();
-    let prepared = Arc::new(
-        PreparedIdentity::create(
-            &reserved.identity_directory(),
-            "Ada",
-            [1, 2, 3],
-            IdentityStorage::Files,
-        )
-        .unwrap(),
-    );
-    let identity_before = fs::read(reserved.identity_directory().join("primary.json")).unwrap();
-    drop(store);
-    let reopened = DraftStore::open(&path).unwrap();
-    let DraftStatus::Pending(pending) = reopened.review().unwrap() else {
-        panic!("pending reservation missing");
-    };
-    assert_eq!(pending.identity_directory(), reserved.identity_directory());
-    assert_eq!(pending.kind(), IdentityKind::New);
-    assert!(reopened.reserve(&choices(), IdentityKind::New).is_err());
-    drop(prepared);
-    let recovered = pending.recover_created_new().unwrap();
-    assert!(matches!(reopened.review().unwrap(), DraftStatus::Ready(_)));
-    assert_eq!(
-        recovered.public_key(),
-        runtime_identity::load_metadata_from_path(
-            &reserved.identity_directory().join("primary.json")
-        )
-        .unwrap()
-        .group_public_key
-    );
-    let index = path.join(INDEX);
-    let mut value: serde_json::Value = serde_json::from_slice(&fs::read(&index).unwrap()).unwrap();
-    value["preparation"]["root_key"] = serde_json::json!(vec![0u8; 32]);
-    fs::write(&index, serde_json::to_vec(&value).unwrap()).unwrap();
-    let tampered = fs::read(&index).unwrap();
-    let DraftStatus::Ready(ready) = reopened.review().unwrap() else {
-        panic!("typed draft missing");
-    };
-    assert!(ready.resume().is_err());
-    assert_eq!(fs::read(&index).unwrap(), tampered);
-    value["unexpected_password"] = serde_json::json!("not-permitted");
-    fs::write(&index, serde_json::to_vec(&value).unwrap()).unwrap();
-    let malformed = fs::read(&index).unwrap();
-    assert!(reopened.review().is_err());
-    assert!(reopened.retire().is_err());
-    assert_eq!(fs::read(&index).unwrap(), malformed);
-    fs::remove_file(&index).unwrap();
-    symlink(reserved.identity_directory().join("primary.json"), &index).unwrap();
-    assert!(reopened.review().is_err());
-    assert_eq!(
-        fs::read(reserved.identity_directory().join("primary.json")).unwrap(),
-        identity_before
-    );
-    let alias = root.join("alias");
-    symlink(&path, &alias).unwrap();
-    assert!(DraftStore::open(&alias).is_err());
-}
 
-#[test]
-fn authenticated_backup_retains_original_kind_and_outside_namespace_is_never_adopted() {
-    let mut env = tilo_test_env::ScopedEnv::new();
-    env.set(runtime_identity::FILE_SECRETS_ENV, "1");
-    let temp = tempfile::tempdir().unwrap();
-    let root = temp.path().canonicalize().unwrap();
-    let path = namespace(&root);
-    let origin = Arc::new(
-        PreparedIdentity::create(
-            &root.join("origin"),
-            "Original",
-            [8, 9, 10],
-            IdentityStorage::Files,
-        )
-        .unwrap(),
-    );
-    let store = DraftStore::open(&path).unwrap();
-    assert!(
+    phase pending_crash_and_changed_or_malformed_pointer_never_mint_replacement_or_repair;
+    {
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        let path = namespace(&root);
+        let store = DraftStore::open(&path).unwrap();
+        let reserved = store.reserve(&choices(), IdentityKind::New).unwrap();
+        let prepared = Arc::new(
+            PreparedIdentity::create(
+                &reserved.identity_directory(),
+                "Ada",
+                [1, 2, 3],
+                IdentityStorage::Files,
+            )
+            .unwrap(),
+        );
+        let identity_before = fs::read(reserved.identity_directory().join("primary.json")).unwrap();
+        drop(store);
+        let reopened = DraftStore::open(&path).unwrap();
+        let DraftStatus::Pending(pending) = reopened.review().unwrap() else {
+            panic!("pending reservation missing");
+        };
+        assert_eq!(pending.identity_directory(), reserved.identity_directory());
+        assert_eq!(pending.kind(), IdentityKind::New);
+        assert!(reopened.reserve(&choices(), IdentityKind::New).is_err());
+        drop(prepared);
+        let recovered = pending.recover_created_new().unwrap();
+        assert!(matches!(reopened.review().unwrap(), DraftStatus::Ready(_)));
+        assert_eq!(
+            recovered.public_key(),
+            runtime_identity::load_metadata_from_path(
+                &reserved.identity_directory().join("primary.json")
+            )
+            .unwrap()
+            .group_public_key
+        );
+        let index = path.join(INDEX);
+        let mut value: serde_json::Value = serde_json::from_slice(&fs::read(&index).unwrap()).unwrap();
+        value["preparation"]["root_key"] = serde_json::json!(vec![0u8; 32]);
+        fs::write(&index, serde_json::to_vec(&value).unwrap()).unwrap();
+        let tampered = fs::read(&index).unwrap();
+        let DraftStatus::Ready(ready) = reopened.review().unwrap() else {
+            panic!("typed draft missing");
+        };
+        assert!(ready.resume().is_err());
+        assert_eq!(fs::read(&index).unwrap(), tampered);
+        value["unexpected_password"] = serde_json::json!("not-permitted");
+        fs::write(&index, serde_json::to_vec(&value).unwrap()).unwrap();
+        let malformed = fs::read(&index).unwrap();
+        assert!(reopened.review().is_err());
+        assert!(reopened.retire().is_err());
+        assert_eq!(fs::read(&index).unwrap(), malformed);
+        fs::remove_file(&index).unwrap();
+        symlink(reserved.identity_directory().join("primary.json"), &index).unwrap();
+        assert!(reopened.review().is_err());
+        assert_eq!(
+            fs::read(reserved.identity_directory().join("primary.json")).unwrap(),
+            identity_before
+        );
+        let alias = root.join("alias");
+        symlink(&path, &alias).unwrap();
+        assert!(DraftStore::open(&alias).is_err());
+    }
+
+    phase authenticated_backup_retains_original_kind_and_outside_namespace_is_never_adopted;
+    {
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        let path = namespace(&root);
+        let origin = Arc::new(
+            PreparedIdentity::create(
+                &root.join("origin"),
+                "Original",
+                [8, 9, 10],
+                IdentityStorage::Files,
+            )
+            .unwrap(),
+        );
+        let store = DraftStore::open(&path).unwrap();
+        assert!(
+            store
+                .record_prepared(&choices(), IdentityKind::New, &origin)
+                .is_err()
+        );
+        assert!(matches!(store.review().unwrap(), DraftStatus::Missing));
+        let backup = root.join("identity.sealed");
+        let password = "several unrelated installer words";
+        origin
+            .export(&backup, zeroize::Zeroizing::new(password.into()))
+            .unwrap();
+        let reserved = store.reserve(&choices(), IdentityKind::Backup).unwrap();
+        assert!(reserved.recover_created_new().is_err());
+        let restored = Arc::new(
+            PreparedIdentity::restore_backup(
+                &reserved.identity_directory(),
+                &backup,
+                zeroize::Zeroizing::new(password.into()),
+            )
+            .unwrap(),
+        );
+        store.acknowledge(&reserved, &restored, None).unwrap();
         store
-            .record_prepared(&choices(), IdentityKind::New, &origin)
-            .is_err()
-    );
-    assert!(matches!(store.review().unwrap(), DraftStatus::Missing));
-    let backup = root.join("identity.sealed");
-    let password = "several unrelated installer words";
-    origin
-        .export(&backup, zeroize::Zeroizing::new(password.into()))
-        .unwrap();
-    let reserved = store.reserve(&choices(), IdentityKind::Backup).unwrap();
-    assert!(reserved.recover_created_new().is_err());
-    let restored = Arc::new(
-        PreparedIdentity::restore_backup(
-            &reserved.identity_directory(),
-            &backup,
-            zeroize::Zeroizing::new(password.into()),
-        )
-        .unwrap(),
-    );
-    store.acknowledge(&reserved, &restored, None).unwrap();
-    store
-        .record_prepared(&choices(), IdentityKind::Backup, &restored)
-        .unwrap();
-    drop(restored);
-    let DraftStatus::Ready(ready) = store.review().unwrap() else {
-        panic!("restored backup missing");
-    };
-    assert_eq!(ready.kind(), IdentityKind::Backup);
-    assert_eq!(ready.resume().unwrap().public_key(), origin.public_key());
-    assert!(backup.is_file());
-    assert!(
-        !String::from_utf8(fs::read(path.join(INDEX)).unwrap())
-            .unwrap()
-            .contains(password)
-    );
-    store.retire().unwrap();
-    assert!(ready.resume().is_err());
-    assert!(reserved.identity_directory().join("primary.json").is_file());
-}
+            .record_prepared(&choices(), IdentityKind::Backup, &restored)
+            .unwrap();
+        drop(restored);
+        let DraftStatus::Ready(ready) = store.review().unwrap() else {
+            panic!("restored backup missing");
+        };
+        assert_eq!(ready.kind(), IdentityKind::Backup);
+        assert_eq!(ready.resume().unwrap().public_key(), origin.public_key());
+        assert!(backup.is_file());
+        assert!(
+            !String::from_utf8(fs::read(path.join(INDEX)).unwrap())
+                .unwrap()
+                .contains(password)
+        );
+        store.retire().unwrap();
+        assert!(ready.resume().is_err());
+        assert!(reserved.identity_directory().join("primary.json").is_file());
+    }
 
+    phase queued_public_choice_update_is_bound_to_its_original_retained_preparation;
+    {
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        let store = DraftStore::open(&namespace(&root)).unwrap();
+        let first = store.reserve(&choices(), IdentityKind::New).unwrap();
+        let old = Arc::new(
+            PreparedIdentity::create(
+                &first.identity_directory(),
+                "Old",
+                [1, 2, 3],
+                IdentityStorage::Files,
+            )
+            .unwrap(),
+        );
+        store.acknowledge(&first, &old, None).unwrap();
+        let DraftStatus::Ready(inventory_preparation) = store.review().unwrap() else {
+            panic!("missing inventory preparation")
+        };
+        drop(inventory_preparation.acquire_preparation_current().unwrap());
+        store.retire().unwrap();
+        assert!(inventory_preparation.acquire_preparation_current().is_err());
+        let newest_choices = PublicChoices {
+            device_label: "Current device".into(),
+            purpose: install_profile_model::default_purpose(),
+            deferred: false,
+            target: None,
+            ..choices()
+        };
+        let second = store.reserve(&newest_choices, IdentityKind::New).unwrap();
+        let current = Arc::new(
+            PreparedIdentity::create(
+                &second.identity_directory(),
+                "Current",
+                [4, 5, 6],
+                IdentityStorage::Files,
+            )
+            .unwrap(),
+        );
+        store.acknowledge(&second, &current, None).unwrap();
+        assert!(inventory_preparation.acquire_preparation_current().is_err());
+        let before = fs::read(store.root.join(INDEX)).unwrap();
+        let stale = PublicChoices {
+            device_label: "Old queued choice".into(),
+            purpose: install_profile_model::default_purpose(),
+            deferred: false,
+            target: None,
+            ..choices()
+        };
+        assert!(store.update_choices_for(&old, &stale).is_err());
+        assert_eq!(fs::read(store.root.join(INDEX)).unwrap(), before);
+        let DraftStatus::Ready(ready) = store.review().unwrap() else {
+            panic!("current preparation missing");
+        };
+        assert_eq!(ready.choices(), &newest_choices);
+        assert_eq!(ready.resume().unwrap().public_key(), current.public_key());
+        assert!(first.identity_directory().join("primary.json").is_file());
+    }
+}
 #[cfg(target_os = "linux")]
 #[test]
 fn stale_same_operation_account_checkpoint_cannot_replace_newer_selected_generation() {
@@ -331,67 +396,6 @@ fn stale_same_operation_account_checkpoint_cannot_replace_newer_selected_generat
         .update_choices_for(&prepared, &changed_choices)
         .unwrap();
     assert_eq!(latest.resume().unwrap().public_key(), prepared.public_key());
-}
-
-#[test]
-fn queued_public_choice_update_is_bound_to_its_original_retained_preparation() {
-    let mut env = tilo_test_env::ScopedEnv::new();
-    env.set(runtime_identity::FILE_SECRETS_ENV, "1");
-    let temp = tempfile::tempdir().unwrap();
-    let root = temp.path().canonicalize().unwrap();
-    let store = DraftStore::open(&namespace(&root)).unwrap();
-    let first = store.reserve(&choices(), IdentityKind::New).unwrap();
-    let old = Arc::new(
-        PreparedIdentity::create(
-            &first.identity_directory(),
-            "Old",
-            [1, 2, 3],
-            IdentityStorage::Files,
-        )
-        .unwrap(),
-    );
-    store.acknowledge(&first, &old, None).unwrap();
-    let DraftStatus::Ready(inventory_preparation) = store.review().unwrap() else {
-        panic!("missing inventory preparation")
-    };
-    drop(inventory_preparation.acquire_preparation_current().unwrap());
-    store.retire().unwrap();
-    assert!(inventory_preparation.acquire_preparation_current().is_err());
-    let newest_choices = PublicChoices {
-        device_label: "Current device".into(),
-        purpose: install_profile_model::default_purpose(),
-        deferred: false,
-        target: None,
-        ..choices()
-    };
-    let second = store.reserve(&newest_choices, IdentityKind::New).unwrap();
-    let current = Arc::new(
-        PreparedIdentity::create(
-            &second.identity_directory(),
-            "Current",
-            [4, 5, 6],
-            IdentityStorage::Files,
-        )
-        .unwrap(),
-    );
-    store.acknowledge(&second, &current, None).unwrap();
-    assert!(inventory_preparation.acquire_preparation_current().is_err());
-    let before = fs::read(store.root.join(INDEX)).unwrap();
-    let stale = PublicChoices {
-        device_label: "Old queued choice".into(),
-        purpose: install_profile_model::default_purpose(),
-        deferred: false,
-        target: None,
-        ..choices()
-    };
-    assert!(store.update_choices_for(&old, &stale).is_err());
-    assert_eq!(fs::read(store.root.join(INDEX)).unwrap(), before);
-    let DraftStatus::Ready(ready) = store.review().unwrap() else {
-        panic!("current preparation missing");
-    };
-    assert_eq!(ready.choices(), &newest_choices);
-    assert_eq!(ready.resume().unwrap().public_key(), current.public_key());
-    assert!(first.identity_directory().join("primary.json").is_file());
 }
 
 #[cfg(target_os = "linux")]

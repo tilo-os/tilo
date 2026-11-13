@@ -248,57 +248,61 @@ mod tests {
         assert_eq!(std::fs::read_dir(state).unwrap().count(), 0);
     }
 
-    #[test]
-    fn home_permission_request_names_and_opens_the_recognized_folder() {
-        let root = tempfile::tempdir().unwrap();
-        let home = root.path().join("Recognized home");
-        std::fs::create_dir(&home).unwrap();
-        let request = super::home_permission_request(&home);
-        assert!(request.is_directory());
-        assert_eq!(request.directory_hint(), Some(home.as_path()));
-        assert!(request.title().contains(home.to_str().unwrap()));
-        assert!(!request.title().contains("reviewed"));
-        assert_eq!(
-            request.accept_label(),
-            super::super::t("installer-migration-home-allow")
-        );
-    }
+    tilo_test_env::scenario! {
+        fn home_permission_is_granted_only_for_the_reviewed_home;
 
-    #[test]
-    fn actual_grant_must_match_reviewed_home_and_never_follows_a_symlink() {
-        let root = tempfile::tempdir().unwrap();
-        let home = root.path().join("home");
-        let other = root.path().join("other");
-        std::fs::create_dir(&home).unwrap();
-        std::fs::create_dir(&other).unwrap();
-        assert!(super::validate_home_grant(&home, &home).is_ok());
-        assert!(super::validate_home_grant(&other, &home).is_err());
-        let link = root.path().join("link");
-        std::os::unix::fs::symlink(&home, &link).unwrap();
-        assert!(super::validate_home_grant(&link, &home).is_err());
-    }
+        phase home_permission_request_names_and_opens_the_recognized_folder;
+        {
+            let root = tempfile::tempdir().unwrap();
+            let home = root.path().join("Recognized home");
+            std::fs::create_dir(&home).unwrap();
+            let request = super::home_permission_request(&home);
+            assert!(request.is_directory());
+            assert_eq!(request.directory_hint(), Some(home.as_path()));
+            assert!(request.title().contains(home.to_str().unwrap()));
+            assert!(!request.title().contains("reviewed"));
+            assert_eq!(
+                request.accept_label(),
+                super::super::t("installer-migration-home-allow")
+            );
+        }
 
-    #[test]
-    fn granted_home_replacement_invalidates_both_source_pins() {
-        let root = tempfile::tempdir().unwrap();
-        let home = root.path().join("home");
-        std::fs::create_dir(&home).unwrap();
-        std::fs::write(home.join("document"), b"original").unwrap();
-        let (selected, expected) = super::validate_home_grant(&home, &home).unwrap();
-        let retained = root.path().join("retained");
-        std::fs::rename(&home, &retained).unwrap();
-        std::fs::create_dir(&home).unwrap();
-        assert!(selected.validate().is_err());
-        assert!(expected.validate().is_err());
-        assert_eq!(
-            super::reattest_grant(&selected, &expected)
-                .unwrap_err()
-                .key(),
-            "installer-migration-source-replaced"
-        );
-        assert_eq!(
-            std::fs::read(retained.join("document")).unwrap(),
-            b"original"
-        );
+        phase actual_grant_must_match_reviewed_home_and_never_follows_a_symlink;
+        {
+            let root = tempfile::tempdir().unwrap();
+            let home = root.path().join("home");
+            let other = root.path().join("other");
+            std::fs::create_dir(&home).unwrap();
+            std::fs::create_dir(&other).unwrap();
+            assert!(super::validate_home_grant(&home, &home).is_ok());
+            assert!(super::validate_home_grant(&other, &home).is_err());
+            let link = root.path().join("link");
+            std::os::unix::fs::symlink(&home, &link).unwrap();
+            assert!(super::validate_home_grant(&link, &home).is_err());
+        }
+
+        phase granted_home_replacement_invalidates_both_source_pins;
+        {
+            let root = tempfile::tempdir().unwrap();
+            let home = root.path().join("home");
+            std::fs::create_dir(&home).unwrap();
+            std::fs::write(home.join("document"), b"original").unwrap();
+            let (selected, expected) = super::validate_home_grant(&home, &home).unwrap();
+            let retained = root.path().join("retained");
+            std::fs::rename(&home, &retained).unwrap();
+            std::fs::create_dir(&home).unwrap();
+            assert!(selected.validate().is_err());
+            assert!(expected.validate().is_err());
+            assert_eq!(
+                super::reattest_grant(&selected, &expected)
+                    .unwrap_err()
+                    .key(),
+                "installer-migration-source-replaced"
+            );
+            assert_eq!(
+                std::fs::read(retained.join("document")).unwrap(),
+                b"original"
+            );
+        }
     }
 }

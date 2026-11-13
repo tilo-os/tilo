@@ -172,140 +172,144 @@ mod tests {
             .expect("recognized source")
     }
 
-    #[test]
-    fn home_sources_are_discovered_and_selection_never_broadens() {
-        let fixture = tempfile::tempdir().unwrap();
-        let home = home_fixture(fixture.path());
-        let mut selection =
-            SourceSelection::discover(&belongings(&home), &SourceSet::Home(home.clone()));
-        assert!(selection.ready());
-        assert_eq!(selection.state(), "ready");
-        let documents = top(
-            &selection,
-            Label::KnownFolder(imager_backend::setup::source_tree::KnownFolder::Documents),
-        )
-        .id
-        .clone();
-        let folders = selection
-            .tree()
-            .unwrap()
-            .node(&documents)
-            .unwrap()
-            .children
-            .iter()
-            .filter(|child| {
-                child.label == Label::Folder
-                    && child.kind == imager_backend::setup::source_tree::NodeKind::Folder
-            })
-            .map(|child| child.id.clone())
-            .collect::<Vec<_>>();
-        assert_eq!(folders.len(), 2, "both folders are selectable children");
-        selection.set(&documents, Decision::Exclude).unwrap();
-        assert_eq!(
-            selection.node_state(&documents),
-            Some(SelectionState::Excluded)
-        );
-        selection.set(&folders[1], Decision::Select).unwrap();
-        assert_eq!(
-            selection.node_state(&documents),
-            Some(SelectionState::Mixed)
-        );
-        let exclusions = selection.exclusions().unwrap();
-        assert!(
-            exclusions
-                .home()
+    tilo_test_env::scenario! {
+        fn home_sources_are_selected_only_as_discovered;
+
+        phase home_sources_are_discovered_and_selection_never_broadens;
+        {
+            let fixture = tempfile::tempdir().unwrap();
+            let home = home_fixture(fixture.path());
+            let mut selection =
+                SourceSelection::discover(&belongings(&home), &SourceSet::Home(home.clone()));
+            assert!(selection.ready());
+            assert_eq!(selection.state(), "ready");
+            let documents = top(
+                &selection,
+                Label::KnownFolder(imager_backend::setup::source_tree::KnownFolder::Documents),
+            )
+            .id
+            .clone();
+            let folders = selection
+                .tree()
+                .unwrap()
+                .node(&documents)
+                .unwrap()
+                .children
                 .iter()
-                .any(|path| path.ends_with("Private"))
-        );
-        assert!(
-            exclusions.home().iter().any(|path| path.ends_with("loose")),
-            "the folder's loose files stay excluded: {exclusions:?}"
-        );
-        assert!(
-            !exclusions
-                .home()
-                .iter()
-                .any(|path| path == std::path::Path::new("Documents"))
-        );
-        let text = selection.report().to_string();
-        assert!(!text.contains(home.to_string_lossy().as_ref()));
-        assert!(!text.contains("Private"));
-    }
+                .filter(|child| {
+                    child.label == Label::Folder
+                        && child.kind == imager_backend::setup::source_tree::NodeKind::Folder
+                })
+                .map(|child| child.id.clone())
+                .collect::<Vec<_>>();
+            assert_eq!(folders.len(), 2, "both folders are selectable children");
+            selection.set(&documents, Decision::Exclude).unwrap();
+            assert_eq!(
+                selection.node_state(&documents),
+                Some(SelectionState::Excluded)
+            );
+            selection.set(&folders[1], Decision::Select).unwrap();
+            assert_eq!(
+                selection.node_state(&documents),
+                Some(SelectionState::Mixed)
+            );
+            let exclusions = selection.exclusions().unwrap();
+            assert!(
+                exclusions
+                    .home()
+                    .iter()
+                    .any(|path| path.ends_with("Private"))
+            );
+            assert!(
+                exclusions.home().iter().any(|path| path.ends_with("loose")),
+                "the folder's loose files stay excluded: {exclusions:?}"
+            );
+            assert!(
+                !exclusions
+                    .home()
+                    .iter()
+                    .any(|path| path == std::path::Path::new("Documents"))
+            );
+            let text = selection.report().to_string();
+            assert!(!text.contains(home.to_string_lossy().as_ref()));
+            assert!(!text.contains("Private"));
+        }
 
-    #[test]
-    fn toggling_all_is_reversible_and_discovery_is_not_repeated() {
-        let fixture = tempfile::tempdir().unwrap();
-        let home = home_fixture(fixture.path());
-        let mut selection = SourceSelection::discover(&belongings(&home), &SourceSet::Home(home));
-        let sources = selection.tree().unwrap().sources.len();
-        assert_ne!(sources, 0);
-        selection.select_all(false);
-        assert!(!selection.exclusions().unwrap().is_empty());
-        assert_eq!(selection.counts().unwrap().local_bytes, 0);
-        selection.select_all(true);
-        assert!(selection.exclusions().unwrap().is_empty());
-        assert!(selection.counts().unwrap().local_bytes > 0);
-    }
+        phase toggling_all_is_reversible_and_discovery_is_not_repeated;
+        {
+            let fixture = tempfile::tempdir().unwrap();
+            let home = home_fixture(fixture.path());
+            let mut selection = SourceSelection::discover(&belongings(&home), &SourceSet::Home(home));
+            let sources = selection.tree().unwrap().sources.len();
+            assert_ne!(sources, 0);
+            selection.select_all(false);
+            assert!(!selection.exclusions().unwrap().is_empty());
+            assert_eq!(selection.counts().unwrap().local_bytes, 0);
+            selection.select_all(true);
+            assert!(selection.exclusions().unwrap().is_empty());
+            assert!(selection.counts().unwrap().local_bytes > 0);
+        }
 
-    #[test]
-    fn an_excluded_folder_survives_rediscovery_but_an_unknown_node_is_refused() {
-        let fixture = tempfile::tempdir().unwrap();
-        let home = home_fixture(fixture.path());
-        let mut previous =
-            SourceSelection::discover(&belongings(&home), &SourceSet::Home(home.clone()));
-        let documents = top(
-            &previous,
-            Label::KnownFolder(imager_backend::setup::source_tree::KnownFolder::Documents),
-        )
-        .id
-        .clone();
-        previous.set(&documents, Decision::Exclude).unwrap();
-        let mut refreshed = SourceSelection::discover(&belongings(&home), &SourceSet::Home(home));
-        refreshed.adopt(&previous);
-        assert_eq!(
-            refreshed.node_state(&documents),
-            Some(SelectionState::Excluded)
-        );
-        assert!(
-            !refreshed.exclusions().unwrap().is_empty(),
-            "the person's exclusion reaches the copy producer after a refresh"
-        );
-        assert_eq!(
-            refreshed.set("invented", Decision::Exclude),
-            Err("installer-your-data-changed")
-        );
-    }
+        phase an_excluded_folder_survives_rediscovery_but_an_unknown_node_is_refused;
+        {
+            let fixture = tempfile::tempdir().unwrap();
+            let home = home_fixture(fixture.path());
+            let mut previous =
+                SourceSelection::discover(&belongings(&home), &SourceSet::Home(home.clone()));
+            let documents = top(
+                &previous,
+                Label::KnownFolder(imager_backend::setup::source_tree::KnownFolder::Documents),
+            )
+            .id
+            .clone();
+            previous.set(&documents, Decision::Exclude).unwrap();
+            let mut refreshed = SourceSelection::discover(&belongings(&home), &SourceSet::Home(home));
+            refreshed.adopt(&previous);
+            assert_eq!(
+                refreshed.node_state(&documents),
+                Some(SelectionState::Excluded)
+            );
+            assert!(
+                !refreshed.exclusions().unwrap().is_empty(),
+                "the person's exclusion reaches the copy producer after a refresh"
+            );
+            assert_eq!(
+                refreshed.set("invented", Decision::Exclude),
+                Err("installer-your-data-changed")
+            );
+        }
 
-    #[test]
-    fn a_refused_discovery_is_a_named_state_not_an_empty_success() {
-        let selection = SourceSelection::from_tree(Err("private detail".into()));
-        assert!(!selection.ready());
-        assert_eq!(selection.state(), "failed");
-        assert!(!selection.report().to_string().contains("private detail"));
-        assert!(selection.exclusions().is_none());
-        assert_eq!(
-            selection.selected_files(),
-            None,
-            "a source that could not be read is unknown, not empty"
-        );
-    }
+        phase a_refused_discovery_is_a_named_state_not_an_empty_success;
+        {
+            let selection = SourceSelection::from_tree(Err("private detail".into()));
+            assert!(!selection.ready());
+            assert_eq!(selection.state(), "failed");
+            assert!(!selection.report().to_string().contains("private detail"));
+            assert!(selection.exclusions().is_none());
+            assert_eq!(
+                selection.selected_files(),
+                None,
+                "a source that could not be read is unknown, not empty"
+            );
+        }
 
-    #[test]
-    fn a_complete_empty_home_is_known_empty_but_a_nonempty_one_is_not() {
-        let fixture = tempfile::tempdir().unwrap();
-        let home = fixture.path().join("empty-home");
-        fs::create_dir_all(home.join(".config")).unwrap();
-        let empty = SourceSelection::discover(&belongings(&home), &SourceSet::Home(home.clone()));
-        assert!(empty.ready());
-        assert_eq!(
-            empty.selected_files(),
-            Some(false),
-            "a complete tree with nothing selected has nothing to capture"
-        );
+        phase a_complete_empty_home_is_known_empty_but_a_nonempty_one_is_not;
+        {
+            let fixture = tempfile::tempdir().unwrap();
+            let home = fixture.path().join("empty-home");
+            fs::create_dir_all(home.join(".config")).unwrap();
+            let empty = SourceSelection::discover(&belongings(&home), &SourceSet::Home(home.clone()));
+            assert!(empty.ready());
+            assert_eq!(
+                empty.selected_files(),
+                Some(false),
+                "a complete tree with nothing selected has nothing to capture"
+            );
 
-        let recognized = home_fixture(fixture.path());
-        let populated =
-            SourceSelection::discover(&belongings(&recognized), &SourceSet::Home(recognized));
-        assert_eq!(populated.selected_files(), Some(true));
+            let recognized = home_fixture(fixture.path());
+            let populated =
+                SourceSelection::discover(&belongings(&recognized), &SourceSet::Home(recognized));
+            assert_eq!(populated.selected_files(), Some(true));
+        }
     }
 }

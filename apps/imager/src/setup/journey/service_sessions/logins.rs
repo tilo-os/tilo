@@ -231,102 +231,106 @@ impl Selection {
 mod tests {
     use super::*;
 
-    #[test]
-    fn source_names_preserve_profile_boundaries_without_repeating_native_defaults() {
-        assert_eq!(source_name("Slack", "Slack · Slack", true), "Slack");
-        assert_eq!(source_name("Slack", "Slack · Work", true), "Slack · Work");
-        assert_eq!(
-            source_name("Firefox", "Firefox · Personal", false),
-            "Firefox · Personal"
-        );
-        assert_eq!(
-            source_name("Unknown", "Unknown · Work", true),
-            "Unknown · Work"
-        );
-        assert_eq!(
-            source_name("Firefox", "Firefox · Firefox", false),
-            "Firefox · Firefox"
-        );
-    }
+    tilo_test_env::scenario! {
+        fn sources_show_their_own_names_and_artwork;
 
-    #[test]
-    fn all_bundled_source_logos_load_as_vector_images() {
-        let mut row = Row::new();
-        for (application, native) in [
-            ("Google Chrome", false),
-            ("Chromium", false),
-            ("Firefox", false),
-            ("Brave", false),
-            ("Slack", true),
-            ("Discord", true),
-        ] {
-            let bytes = source_icon(application, native).unwrap();
-            let text = std::str::from_utf8(bytes).expect("artwork is text, not a binary asset");
-            assert!(text.contains("<svg"));
-            assert!(!text.contains('\r'), "artwork uses LF line endings");
-            for forbidden in ["<image", "data:", "<script", "<!ENTITY", "<!DOCTYPE"] {
-                assert!(!text.contains(forbidden), "{application}: {forbidden}");
-            }
-            let image = Image::from_svg(bytes, 32, 32)
-                .expect("every included source logo loads through the SDK vector API")
-                .with_icon_size(ui::widget::IconSize::Small)
-                .with_alt(application);
-            assert_eq!(image.intrinsic_size(), (32, 32));
-            assert_eq!(image.alt(), Some(application));
-            row = row.push(Box::new(image));
-        }
-        let theme = ui::Theme::dark().with_ui_scale(2.0);
-        let edge = f64::from(theme.tokens.metrics.icon_sm);
-        let harness = ui::headless::FrameHarness::new_with_theme(
-            ui::State::new(),
-            Box::new(row),
-            (800, 200),
-            theme,
-        );
-        let images = harness.root_widget().children();
-        assert_eq!(images.len(), 6);
-        for image in images {
-            let rect = image.get_rect();
+        phase source_names_preserve_profile_boundaries_without_repeating_native_defaults;
+        {
+            assert_eq!(source_name("Slack", "Slack · Slack", true), "Slack");
+            assert_eq!(source_name("Slack", "Slack · Work", true), "Slack · Work");
             assert_eq!(
-                rect.width(),
-                edge,
-                "artwork resolves the scaled icon token once"
+                source_name("Firefox", "Firefox · Personal", false),
+                "Firefox · Personal"
             );
-            assert_eq!(rect.height(), edge);
+            assert_eq!(
+                source_name("Unknown", "Unknown · Work", true),
+                "Unknown · Work"
+            );
+            assert_eq!(
+                source_name("Firefox", "Firefox · Firefox", false),
+                "Firefox · Firefox"
+            );
         }
-    }
 
-    #[test]
-    fn native_artwork_uses_exact_source_identity_not_destination_or_path() {
-        for aliases in [
-            ["Slack", "com.slack.Slack"],
-            ["Discord", "com.discordapp.Discord"],
-        ] {
-            let expected = source_icon(aliases[0], true).unwrap();
-            Image::from_svg(expected, 64, 64).expect("bundled native logo decodes");
-            for alias in aliases {
-                assert_eq!(source_icon(alias, true), Some(expected));
-                assert!(
-                    source_icon(alias, false).is_none(),
-                    "service is not a browser origin"
+        phase all_bundled_source_logos_load_as_vector_images;
+        {
+            let mut row = Row::new();
+            for (application, native) in [
+                ("Google Chrome", false),
+                ("Chromium", false),
+                ("Firefox", false),
+                ("Brave", false),
+                ("Slack", true),
+                ("Discord", true),
+            ] {
+                let bytes = source_icon(application, native).unwrap();
+                let text = std::str::from_utf8(bytes).expect("artwork is text, not a binary asset");
+                assert!(text.contains("<svg"));
+                assert!(!text.contains('\r'), "artwork uses LF line endings");
+                for forbidden in ["<image", "data:", "<script", "<!ENTITY", "<!DOCTYPE"] {
+                    assert!(!text.contains(forbidden), "{application}: {forbidden}");
+                }
+                let image = Image::from_svg(bytes, 32, 32)
+                    .expect("every included source logo loads through the SDK vector API")
+                    .with_icon_size(ui::widget::IconSize::Small)
+                    .with_alt(application);
+                assert_eq!(image.intrinsic_size(), (32, 32));
+                assert_eq!(image.alt(), Some(application));
+                row = row.push(Box::new(image));
+            }
+            let theme = ui::Theme::dark().with_ui_scale(2.0);
+            let edge = f64::from(theme.tokens.metrics.icon_sm);
+            let harness = ui::headless::FrameHarness::new_with_theme(
+                ui::State::new(),
+                Box::new(row),
+                (800, 200),
+                theme,
+            );
+            let images = harness.root_widget().children();
+            assert_eq!(images.len(), 6);
+            for image in images {
+                let rect = image.get_rect();
+                assert_eq!(
+                    rect.width(),
+                    edge,
+                    "artwork resolves the scaled icon token once"
                 );
+                assert_eq!(rect.height(), edge);
             }
         }
-        assert_ne!(source_icon("Slack", true), source_icon("Discord", true));
-        for browser in ["Google Chrome", "Chromium", "Firefox", "Brave"] {
-            Image::from_svg(source_icon(browser, false).unwrap(), 64, 64).unwrap();
-            assert!(source_icon(browser, true).is_none());
-        }
-        for unknown in [
-            "Unknown",
-            "slack",
-            "Discord Canary",
-            "/home/owner/Slack",
-            "Firefox · Slack",
-            "Slack · personal",
-        ] {
-            for native in [true, false] {
-                assert!(source_icon(unknown, native).is_none());
+
+        phase native_artwork_uses_exact_source_identity_not_destination_or_path;
+        {
+            for aliases in [
+                ["Slack", "com.slack.Slack"],
+                ["Discord", "com.discordapp.Discord"],
+            ] {
+                let expected = source_icon(aliases[0], true).unwrap();
+                Image::from_svg(expected, 64, 64).expect("bundled native logo decodes");
+                for alias in aliases {
+                    assert_eq!(source_icon(alias, true), Some(expected));
+                    assert!(
+                        source_icon(alias, false).is_none(),
+                        "service is not a browser origin"
+                    );
+                }
+            }
+            assert_ne!(source_icon("Slack", true), source_icon("Discord", true));
+            for browser in ["Google Chrome", "Chromium", "Firefox", "Brave"] {
+                Image::from_svg(source_icon(browser, false).unwrap(), 64, 64).unwrap();
+                assert!(source_icon(browser, true).is_none());
+            }
+            for unknown in [
+                "Unknown",
+                "slack",
+                "Discord Canary",
+                "/home/owner/Slack",
+                "Firefox · Slack",
+                "Slack · personal",
+            ] {
+                for native in [true, false] {
+                    assert!(source_icon(unknown, native).is_none());
+                }
             }
         }
     }

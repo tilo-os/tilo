@@ -1538,107 +1538,111 @@ mod tests {
         }
     }
 
-    #[test]
-    fn mixed_states_come_only_from_eligible_children() {
-        let inventory = Inventory {
-            sources: vec![source(
-                "s",
-                vec![],
-                vec![group(
-                    "g",
-                    vec![
-                        leaf("a", true, true),
-                        leaf("b", true, false),
-                        leaf("c", false, false),
-                    ],
-                    vec![],
-                )],
-            )],
-        };
-        let found = inventory.group("g").unwrap();
-        assert_eq!(found.counts(), (1, 2));
-        assert_eq!(found.toggle(), Toggle::Mixed);
-        assert_eq!(inventory.counts(), (1, 2));
-        assert_eq!(inventory.toggle(), Toggle::Mixed);
-        assert!(inventory.report()["sources"][0]["mixed"].as_bool().unwrap());
-    }
+    tilo_test_env::scenario! {
+        fn the_inventory_counts_and_names_what_can_be_chosen;
 
-    #[test]
-    fn nested_children_reach_the_source_and_the_shared_toggle() {
-        let inventory = Inventory {
-            sources: vec![source(
+        phase mixed_states_come_only_from_eligible_children;
+        {
+            let inventory = Inventory {
+                sources: vec![source(
+                    "s",
+                    vec![],
+                    vec![group(
+                        "g",
+                        vec![
+                            leaf("a", true, true),
+                            leaf("b", true, false),
+                            leaf("c", false, false),
+                        ],
+                        vec![],
+                    )],
+                )],
+            };
+            let found = inventory.group("g").unwrap();
+            assert_eq!(found.counts(), (1, 2));
+            assert_eq!(found.toggle(), Toggle::Mixed);
+            assert_eq!(inventory.counts(), (1, 2));
+            assert_eq!(inventory.toggle(), Toggle::Mixed);
+            assert!(inventory.report()["sources"][0]["mixed"].as_bool().unwrap());
+        }
+
+        phase nested_children_reach_the_source_and_the_shared_toggle;
+        {
+            let inventory = Inventory {
+                sources: vec![source(
+                    "files",
+                    vec![],
+                    vec![group(
+                        "documents",
+                        vec![],
+                        vec![group("work", vec![leaf("plan", true, true)], vec![])],
+                    )],
+                )],
+            };
+            assert!(inventory.group("work").is_some());
+            assert!(inventory.item("plan").is_some());
+            assert_eq!(inventory.counts(), (1, 1));
+            assert_eq!(inventory.toggle(), Toggle::All);
+            assert_eq!(
+                inventory.report()["sources"][0]["groups"][0]["groups"][0]["selected"],
+                1
+            );
+        }
+
+        phase a_source_without_eligible_children_has_no_invented_count;
+        {
+            let inventory = Inventory {
+                sources: vec![source("mail", vec![], vec![])],
+            };
+            assert_eq!(inventory.counts(), (0, 0));
+            assert_eq!(inventory.toggle(), Toggle::None);
+            let report = inventory.report();
+            assert_eq!(report["selected"], 0);
+            assert_eq!(report["available"], 0);
+            assert_eq!(report["sources"][0]["available"], 0);
+        }
+
+        phase an_owned_decision_is_not_rederived_from_children;
+        {
+            let mut files = source(
                 "files",
                 vec![],
-                vec![group(
-                    "documents",
-                    vec![],
-                    vec![group("work", vec![leaf("plan", true, true)], vec![])],
-                )],
-            )],
-        };
-        assert!(inventory.group("work").is_some());
-        assert!(inventory.item("plan").is_some());
-        assert_eq!(inventory.counts(), (1, 1));
-        assert_eq!(inventory.toggle(), Toggle::All);
-        assert_eq!(
-            inventory.report()["sources"][0]["groups"][0]["groups"][0]["selected"],
-            1
-        );
-    }
+                vec![group("documents", vec![leaf("a", true, true)], vec![])],
+            );
+            files.state = Some(Toggle::None);
+            let inventory = Inventory {
+                sources: vec![files],
+            };
+            assert_eq!(inventory.source("files").unwrap().toggle(), Toggle::None);
+            let mut none = source("files", vec![], vec![]);
+            none.state = Some(Toggle::None);
+            none.included = true;
+            let inventory = Inventory {
+                sources: vec![none],
+            };
+            assert_eq!(inventory.toggle(), Toggle::None);
+            assert_eq!(inventory.report()["state"], "none");
+        }
 
-    #[test]
-    fn a_source_without_eligible_children_has_no_invented_count() {
-        let inventory = Inventory {
-            sources: vec![source("mail", vec![], vec![])],
-        };
-        assert_eq!(inventory.counts(), (0, 0));
-        assert_eq!(inventory.toggle(), Toggle::None);
-        let report = inventory.report();
-        assert_eq!(report["selected"], 0);
-        assert_eq!(report["available"], 0);
-        assert_eq!(report["sources"][0]["available"], 0);
-    }
+        phase widget_names_are_stable_and_path_safe;
+        {
+            assert_eq!(slug("browser|Google Chrome"), "browser-Google-Chrome");
+            assert_eq!(slug("session|0123ab|slack"), "session-0123ab-slack");
+            assert_eq!(
+                slug("flatpak|--installation=flathub|app/x/y/z"),
+                "flatpak-installation-flathub-app-x-y-z"
+            );
+            assert!(!slug("a/b").contains('/'));
+        }
 
-    #[test]
-    fn an_owned_decision_is_not_rederived_from_children() {
-        let mut files = source(
-            "files",
-            vec![],
-            vec![group("documents", vec![leaf("a", true, true)], vec![])],
-        );
-        files.state = Some(Toggle::None);
-        let inventory = Inventory {
-            sources: vec![files],
-        };
-        assert_eq!(inventory.source("files").unwrap().toggle(), Toggle::None);
-        let mut none = source("files", vec![], vec![]);
-        none.state = Some(Toggle::None);
-        none.included = true;
-        let inventory = Inventory {
-            sources: vec![none],
-        };
-        assert_eq!(inventory.toggle(), Toggle::None);
-        assert_eq!(inventory.report()["state"], "none");
-    }
-
-    #[test]
-    fn widget_names_are_stable_and_path_safe() {
-        assert_eq!(slug("browser|Google Chrome"), "browser-Google-Chrome");
-        assert_eq!(slug("session|0123ab|slack"), "session-0123ab-slack");
-        assert_eq!(
-            slug("flatpak|--installation=flathub|app/x/y/z"),
-            "flatpak-installation-flathub-app-x-y-z"
-        );
-        assert!(!slug("a/b").contains('/'));
-    }
-
-    #[test]
-    fn a_read_size_is_never_shown_as_zero() {
-        assert_eq!(size_text(0), None);
-        assert_eq!(size_text(999).as_deref(), Some("999 B"));
-        assert_eq!(size_text(1_500).as_deref(), Some("1.5 kB"));
-        assert_eq!(size_text(3_000_000).as_deref(), Some("3 MB"));
-        assert_eq!(size_text(2_450_000_000).as_deref(), Some("2.4 GB"));
+        phase a_read_size_is_never_shown_as_zero;
+        {
+            assert_eq!(size_text(0), None);
+            assert_eq!(size_text(999).as_deref(), Some("999 B"));
+            assert_eq!(size_text(1_500).as_deref(), Some("1.5 kB"));
+            assert_eq!(size_text(3_000_000).as_deref(), Some("3 MB"));
+            assert_eq!(size_text(2_450_000_000).as_deref(), Some("2.4 GB"));
+        }
     }
 }
 

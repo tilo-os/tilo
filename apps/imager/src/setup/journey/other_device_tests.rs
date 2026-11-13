@@ -336,54 +336,58 @@ fn a_real_prepared_package_reaches_a_new_identity_and_returns_a_verified_receipt
     });
 }
 
-#[test]
-fn a_public_descriptor_never_names_a_source_path_or_token() {
-    let source = Source::bind(uuid::Uuid::new_v4().to_string(), [9; 32]).unwrap();
-    let public = PublicHandoff::from_identity(source.identity(), "a".repeat(64), 1024);
-    let text = String::from_utf8(public.encode().unwrap()).unwrap();
-    for private in ["home", "token", "password", "credential", "/root/"] {
-        assert!(
-            !text.contains(private),
-            "descriptor leaked {private}: {text}"
-        );
-    }
-    assert!(public.valid_at(source.identity().expires_at_ns - 1));
-}
+tilo_test_env::scenario! {
+    fn a_handoff_names_no_source_and_serves_only_its_person;
 
-#[test]
-fn a_handoff_for_another_person_is_refused_before_any_transfer() {
-    use std::os::unix::fs::PermissionsExt as _;
-    let fixture = tempfile::tempdir().unwrap();
-    std::fs::set_permissions(fixture.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
-    let home = fixture.path().join("destination-home");
-    let system = fixture.path().join("destination-system");
-    let identity = fixture.path().join("destination-identity");
-    let mut env = tilo_test_env::ScopedEnv::new();
-    env.set(runtime_identity::FILE_SECRETS_ENV, "1");
-    PreparedIdentity::create(
-        &identity,
-        "Destination person",
-        [4, 5, 6],
-        tilo_identity_host::provisioning::IdentityStorage::Files,
-    )
-    .unwrap();
-    env.set("TILO_IDENTITY_ROOT", &system);
-    let source = HandoffIdentity {
-        operation_id: uuid::Uuid::new_v4().to_string(),
-        ticket: "endpoint-ticket-value".into(),
-        identity_public_key: [7; 32],
-        expires_at_ns: u64::MAX,
-    };
-    let public = PublicHandoff::from_identity(&source, "a".repeat(64), 1024);
-    let result = Receiver::open(
-        public,
-        ReceiverIdentity {
-            identity_root: system,
-            identity_dir: identity,
-        },
-        home.join(".local/state/tilo/prepared-setup"),
-    );
-    assert!(result.is_err(), "another person's package must be refused");
+    phase a_public_descriptor_never_names_a_source_path_or_token;
+    {
+        let source = Source::bind(uuid::Uuid::new_v4().to_string(), [9; 32]).unwrap();
+        let public = PublicHandoff::from_identity(source.identity(), "a".repeat(64), 1024);
+        let text = String::from_utf8(public.encode().unwrap()).unwrap();
+        for private in ["home", "token", "password", "credential", "/root/"] {
+            assert!(
+                !text.contains(private),
+                "descriptor leaked {private}: {text}"
+            );
+        }
+        assert!(public.valid_at(source.identity().expires_at_ns - 1));
+    }
+
+    phase a_handoff_for_another_person_is_refused_before_any_transfer;
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let fixture = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(fixture.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let home = fixture.path().join("destination-home");
+        let system = fixture.path().join("destination-system");
+        let identity = fixture.path().join("destination-identity");
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+        PreparedIdentity::create(
+            &identity,
+            "Destination person",
+            [4, 5, 6],
+            tilo_identity_host::provisioning::IdentityStorage::Files,
+        )
+        .unwrap();
+        env.set("TILO_IDENTITY_ROOT", &system);
+        let source = HandoffIdentity {
+            operation_id: uuid::Uuid::new_v4().to_string(),
+            ticket: "endpoint-ticket-value".into(),
+            identity_public_key: [7; 32],
+            expires_at_ns: u64::MAX,
+        };
+        let public = PublicHandoff::from_identity(&source, "a".repeat(64), 1024);
+        let result = Receiver::open(
+            public,
+            ReceiverIdentity {
+                identity_root: system,
+                identity_dir: identity,
+            },
+            home.join(".local/state/tilo/prepared-setup"),
+        );
+        assert!(result.is_err(), "another person's package must be refused");
+    }
 }
 
 fn fresh_bootstrap_source(source: &PreparedIdentity) -> (Source, PublicHandoff, [u8; 32]) {

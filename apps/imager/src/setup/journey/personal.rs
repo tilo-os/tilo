@@ -548,48 +548,52 @@ mod state_root_tests {
     use super::*;
     use std::os::unix::fs::{PermissionsExt as _, symlink};
 
-    #[test]
-    fn home_alias_with_missing_state_root_opens_a_fresh_draft() {
-        let mut env = tilo_test_env::ScopedEnv::new();
-        let temp = tempfile::tempdir().unwrap();
-        let root = temp.path().canonicalize().unwrap();
-        let actual = root.join("actual-home");
-        std::fs::create_dir(&actual).unwrap();
-        std::fs::set_permissions(&actual, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let alias = root.join("home-alias");
-        symlink(&actual, &alias).unwrap();
-        env.set("HOME", &alias);
-        env.remove("XDG_STATE_HOME");
-        let custody = preparation_directory().unwrap();
-        assert!(custody.starts_with(actual.join(".local/state/tilo/installer/preparations")));
-        let store = super::super::draft::DraftStore::for_session().unwrap();
-        assert!(matches!(
-            store.review().unwrap(),
-            super::super::draft::DraftStatus::Missing
-        ));
-        assert!(!custody.exists());
-    }
+    tilo_test_env::scenario! {
+        fn the_state_root_is_reached_only_through_its_own_custody;
 
-    #[test]
-    fn explicit_state_alias_does_not_relax_custody_symlinks_or_replacement() {
-        let temp = tempfile::tempdir().unwrap();
-        let root = temp.path().canonicalize().unwrap();
-        let state = root.join("state");
-        std::fs::create_dir(&state).unwrap();
-        std::fs::set_permissions(&state, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let alias = root.join("state-alias");
-        symlink(&state, &alias).unwrap();
-        let resolved = resolve_state_root(&alias).unwrap();
-        assert_eq!(resolved, state);
-        let custody = resolved.join("tilo/installer/preparations");
-        let pin = ensure_private_tree(&custody).unwrap();
-        std::fs::rename(&custody, custody.with_file_name("retained")).unwrap();
-        std::fs::create_dir(&custody).unwrap();
-        assert!(pin.validate_destination().is_err());
-        std::fs::remove_dir(&custody).unwrap();
-        symlink(custody.with_file_name("retained"), &custody).unwrap();
-        assert!(ensure_private_tree(&custody).is_err());
-        assert!(resolve_state_root(std::path::Path::new("relative/state")).is_err());
+        phase home_alias_with_missing_state_root_opens_a_fresh_draft;
+        {
+            let mut env = tilo_test_env::ScopedEnv::new();
+            let temp = tempfile::tempdir().unwrap();
+            let root = temp.path().canonicalize().unwrap();
+            let actual = root.join("actual-home");
+            std::fs::create_dir(&actual).unwrap();
+            std::fs::set_permissions(&actual, std::fs::Permissions::from_mode(0o700)).unwrap();
+            let alias = root.join("home-alias");
+            symlink(&actual, &alias).unwrap();
+            env.set("HOME", &alias);
+            env.remove("XDG_STATE_HOME");
+            let custody = preparation_directory().unwrap();
+            assert!(custody.starts_with(actual.join(".local/state/tilo/installer/preparations")));
+            let store = super::super::draft::DraftStore::for_session().unwrap();
+            assert!(matches!(
+                store.review().unwrap(),
+                super::super::draft::DraftStatus::Missing
+            ));
+            assert!(!custody.exists());
+        }
+
+        phase explicit_state_alias_does_not_relax_custody_symlinks_or_replacement;
+        {
+            let temp = tempfile::tempdir().unwrap();
+            let root = temp.path().canonicalize().unwrap();
+            let state = root.join("state");
+            std::fs::create_dir(&state).unwrap();
+            std::fs::set_permissions(&state, std::fs::Permissions::from_mode(0o700)).unwrap();
+            let alias = root.join("state-alias");
+            symlink(&state, &alias).unwrap();
+            let resolved = resolve_state_root(&alias).unwrap();
+            assert_eq!(resolved, state);
+            let custody = resolved.join("tilo/installer/preparations");
+            let pin = ensure_private_tree(&custody).unwrap();
+            std::fs::rename(&custody, custody.with_file_name("retained")).unwrap();
+            std::fs::create_dir(&custody).unwrap();
+            assert!(pin.validate_destination().is_err());
+            std::fs::remove_dir(&custody).unwrap();
+            symlink(custody.with_file_name("retained"), &custody).unwrap();
+            assert!(ensure_private_tree(&custody).is_err());
+            assert!(resolve_state_root(std::path::Path::new("relative/state")).is_err());
+        }
     }
 }
 

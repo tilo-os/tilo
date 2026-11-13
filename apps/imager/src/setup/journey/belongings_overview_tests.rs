@@ -44,84 +44,88 @@ fn preview(config_text: &str) -> (tempfile::TempDir, InstallerPreview) {
     (fixture, preview)
 }
 
-#[test]
-fn metadata_uuid_is_absent_from_default_overview_but_provider_and_count_remain() {
-    let (_fixture, mut preview) = preview(
-        "[Accounts]\n0\\url=https://cloud.example.test\n0\\user=5e9af371-82ab-4022-964b-7f52ae345abb@cloud.example.test\n",
-    );
-    assert_eq!(preview.belongings.accounts.candidates.len(), 1);
-    let candidate = &preview.belongings.accounts.candidates[0];
-    assert_eq!(candidate.provider, account_transfer::Provider::Nextcloud);
-    assert!(super::super::accounts::candidate_label(candidate).contains("5e9af371"));
-    let before = preview.accounts.projection();
-    let text = visible_text(preview.composition(&Theme::dark()).as_ref());
-    let expected = t_args(
-        "installer-belongings-connections-found",
-        &[
-            ("provider", t("installer-accounts-nextcloud").into()),
-            ("count", 1_i64.into()),
-        ],
-    );
-    assert!(
-        text.contains(&expected),
-        "expected {expected:?} in {text:?}"
-    );
-    assert!(!text.contains("5e9af371"));
-    assert!(!text.contains("cloud.example.test"));
-    assert_eq!(preview.accounts.projection(), before);
-    assert!(preview.accounts.prepared_handle().is_none());
+tilo_test_env::scenario! {
+    fn the_overview_counts_saved_accounts_by_provider;
 
-    preview.journey.details = true;
-    let detail = visible_text(preview.composition(&Theme::dark()).as_ref());
-    assert!(detail.contains("5e9af371"));
-}
-
-#[test]
-fn multiple_saved_accounts_have_deterministic_provider_counts_and_keep_detail_identity() {
-    let (_fixture, mut preview) = preview(
-        "[Accounts]\n0\\url=https://cloud.example.test\n0\\user=ada@example.test\n1\\url=https://work.example.test\n1\\user=work@example.test\n",
-    );
-    assert_eq!(preview.belongings.accounts.candidates.len(), 2);
-    assert!(
-        preview
-            .belongings
-            .accounts
-            .candidates
-            .iter()
-            .all(|candidate| { candidate.provider == account_transfer::Provider::Nextcloud })
-    );
-    let mut dropbox = preview.belongings.accounts.candidates[0].clone();
-    dropbox.provider = account_transfer::Provider::Dropbox;
-    dropbox.label = "Private source name".into();
-    preview.belongings.accounts.candidates.push(dropbox);
-    let expected = [
-        ("installer-accounts-dropbox", 1_i64),
-        ("installer-accounts-nextcloud", 2_i64),
-    ]
-    .map(|(provider, count)| {
-        t_args(
+    phase metadata_uuid_is_absent_from_default_overview_but_provider_and_count_remain;
+    {
+        let (_fixture, mut preview) = preview(
+            "[Accounts]\n0\\url=https://cloud.example.test\n0\\user=5e9af371-82ab-4022-964b-7f52ae345abb@cloud.example.test\n",
+        );
+        assert_eq!(preview.belongings.accounts.candidates.len(), 1);
+        let candidate = &preview.belongings.accounts.candidates[0];
+        assert_eq!(candidate.provider, account_transfer::Provider::Nextcloud);
+        assert!(super::super::accounts::candidate_label(candidate).contains("5e9af371"));
+        let before = preview.accounts.projection();
+        let text = visible_text(preview.composition(&Theme::dark()).as_ref());
+        let expected = t_args(
             "installer-belongings-connections-found",
-            &[("provider", t(provider).into()), ("count", count.into())],
-        )
-    })
-    .join(", ");
-    assert_eq!(preview.belongings.accounts_overview_hint(), expected);
-    let text = visible_text(preview.composition(&Theme::light()).as_ref());
-    assert!(
-        text.contains(&expected),
-        "expected {expected:?} in {text:?}"
-    );
-    for private in [
-        "ada@example.test",
-        "work@example.test",
-        "Private source name",
-    ] {
-        assert!(!text.contains(private));
+            &[
+                ("provider", t("installer-accounts-nextcloud").into()),
+                ("count", 1_i64.into()),
+            ],
+        );
+        assert!(
+            text.contains(&expected),
+            "expected {expected:?} in {text:?}"
+        );
+        assert!(!text.contains("5e9af371"));
+        assert!(!text.contains("cloud.example.test"));
+        assert_eq!(preview.accounts.projection(), before);
+        assert!(preview.accounts.prepared_handle().is_none());
+
+        preview.journey.details = true;
+        let detail = visible_text(preview.composition(&Theme::dark()).as_ref());
+        assert!(detail.contains("5e9af371"));
     }
-    preview.belongings.accounts.candidates.reverse();
-    assert_eq!(preview.belongings.accounts_overview_hint(), expected);
-    preview.journey.details = true;
-    let detail = visible_text(preview.composition(&Theme::light()).as_ref());
-    assert!(detail.contains("ada@example.test"));
-    assert!(detail.contains("work@example.test"));
+
+    phase multiple_saved_accounts_have_deterministic_provider_counts_and_keep_detail_identity;
+    {
+        let (_fixture, mut preview) = preview(
+            "[Accounts]\n0\\url=https://cloud.example.test\n0\\user=ada@example.test\n1\\url=https://work.example.test\n1\\user=work@example.test\n",
+        );
+        assert_eq!(preview.belongings.accounts.candidates.len(), 2);
+        assert!(
+            preview
+                .belongings
+                .accounts
+                .candidates
+                .iter()
+                .all(|candidate| { candidate.provider == account_transfer::Provider::Nextcloud })
+        );
+        let mut dropbox = preview.belongings.accounts.candidates[0].clone();
+        dropbox.provider = account_transfer::Provider::Dropbox;
+        dropbox.label = "Private source name".into();
+        preview.belongings.accounts.candidates.push(dropbox);
+        let expected = [
+            ("installer-accounts-dropbox", 1_i64),
+            ("installer-accounts-nextcloud", 2_i64),
+        ]
+        .map(|(provider, count)| {
+            t_args(
+                "installer-belongings-connections-found",
+                &[("provider", t(provider).into()), ("count", count.into())],
+            )
+        })
+        .join(", ");
+        assert_eq!(preview.belongings.accounts_overview_hint(), expected);
+        let text = visible_text(preview.composition(&Theme::light()).as_ref());
+        assert!(
+            text.contains(&expected),
+            "expected {expected:?} in {text:?}"
+        );
+        for private in [
+            "ada@example.test",
+            "work@example.test",
+            "Private source name",
+        ] {
+            assert!(!text.contains(private));
+        }
+        preview.belongings.accounts.candidates.reverse();
+        assert_eq!(preview.belongings.accounts_overview_hint(), expected);
+        preview.journey.details = true;
+        let detail = visible_text(preview.composition(&Theme::light()).as_ref());
+        assert!(detail.contains("ada@example.test"));
+        assert!(detail.contains("work@example.test"));
+    }
 }
