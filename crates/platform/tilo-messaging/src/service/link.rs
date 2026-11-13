@@ -1,9 +1,9 @@
-//! One two-way call channel over a byte stream: either side calls the other
-//! and is answered by id, and either side sends events that need no answer.
+//! One two-way call channel over a byte stream: either side calls the other and is
+//! answered by id, and either side sends events that need no answer. Frames are a
+//! little-endian length, then JSON.
 //!
-//! The app socket and the session door both run on it. Frames are a
-//! little-endian length, then JSON. A call whose link closes is answered by
-//! nothing: its receiver sees the sender dropped.
+//! The app socket and the session door both run on it: a call whose link closes is
+//! answered by nothing, and its receiver sees the sender dropped.
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
@@ -15,8 +15,6 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use wire_frame::Framing;
 
-/// A frame carries at most this much; a history page or a contacts snapshot
-/// stays well below it.
 const FRAMING: Framing = Framing::little_endian(16 * 1024 * 1024).reject_empty();
 
 #[derive(Serialize, Deserialize)]
@@ -26,12 +24,9 @@ enum Frame<C, R, E> {
     Event(E),
 }
 
-/// What a link does with what the other side sends.
 pub trait Handler<C, R, E>: Send + Sync {
-    /// Answer `call` through `reply`, now or later, from any thread.
     fn call(&self, call: C, reply: Responder<C, R, E>);
     fn event(&self, event: E);
-    /// The other side is gone.
     fn closed(&self) {}
 }
 
@@ -48,7 +43,6 @@ struct Shared<C, R, E> {
     _frames: std::marker::PhantomData<fn(C, E)>,
 }
 
-/// One end of a link. Clones share it.
 pub struct Link<C, R, E> {
     shared: Arc<Shared<C, R, E>>,
 }
@@ -61,7 +55,6 @@ impl<C, R, E> Clone for Link<C, R, E> {
     }
 }
 
-/// The answer to one call, sent once.
 pub struct Responder<C, R, E> {
     id: u64,
     link: Link<C, R, E>,
@@ -85,8 +78,6 @@ where
     R: Serialize + DeserializeOwned + Send + 'static,
     E: Serialize + DeserializeOwned + Send + 'static,
 {
-    /// Start reading `reader` on a thread of its own, handing what arrives
-    /// to `handler`, and write to `writer`.
     pub fn start(
         name: &str,
         reader: impl Read + Send + 'static,
@@ -140,7 +131,6 @@ where
             }
         }
         self.shared.closed.store(true, Ordering::Release);
-        // Every waiting call learns the link is gone.
         self.shared
             .pending
             .lock()
@@ -182,8 +172,6 @@ where
             .remove(&id);
     }
 
-    /// Call the other side; the receiver resolves with its answer, or with
-    /// an error once the link closed.
     pub fn call(&self, call: C) -> tokio::sync::oneshot::Receiver<R> {
         let (sender, receiver) = tokio::sync::oneshot::channel();
         let id = self.register(Waiter::Async(sender));
@@ -193,7 +181,6 @@ where
         receiver
     }
 
-    /// Call the other side and wait up to `timeout` for its answer.
     pub fn call_blocking(&self, call: C, timeout: Duration) -> Option<R> {
         let (sender, receiver) = std::sync::mpsc::sync_channel(1);
         let id = self.register(Waiter::Blocking(sender));
@@ -206,7 +193,6 @@ where
         answer
     }
 
-    /// Tell the other side `event`; false once the link is closed.
     pub fn event(&self, event: E) -> bool {
         self.write(&Frame::Event(event))
     }
@@ -215,7 +201,6 @@ where
         self.shared.closed.load(Ordering::Acquire)
     }
 
-    /// Close the writing half: the other side reads the end.
     pub fn close(&self) {
         self.shared.closed.store(true, Ordering::Release);
         let mut writer = self

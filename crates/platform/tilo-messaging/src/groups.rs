@@ -22,7 +22,6 @@ pub enum GroupRole {
 #[derive(Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "wire", derive(serde::Serialize, serde::Deserialize))]
 pub struct GroupMember {
-    /// The service's canonical identity; not a display name or inferred contact.
     pub address: String,
     pub role: GroupRole,
 }
@@ -37,9 +36,7 @@ pub struct GroupMembership {
     pub group: GroupSummary,
     pub members: Vec<GroupMember>,
     pub announcement: bool,
-    /// Exact roster identity of the authenticated account owner.
     pub self_member: String,
-    /// Opaque, short-lived review bound to this account's exact service roster.
     pub review: String,
 }
 #[cfg_attr(feature = "wire", derive(serde::Serialize, serde::Deserialize))]
@@ -85,9 +82,9 @@ pub type GroupsFuture = Pin<Box<dyn Future<Output = Result<GroupList, SendError>
 pub type MembershipFuture =
     Pin<Box<dyn Future<Output = Result<GroupMembership, SendError>> + Send>>;
 
-/// Supplied by the original account host. Reads must recheck credential/network
-/// custody and authenticated self membership before and after service I/O.
-/// A snapshot grants neither permission to send nor membership in a workspace.
+/// Supplied by the original account host; every read rechecks credential and
+/// network custody and authenticated self membership. A snapshot grants neither
+/// permission to send nor membership in a workspace.
 pub trait GroupHost: Send + Sync {
     fn list(&self) -> GroupsFuture;
     fn read(&self, group: String) -> MembershipFuture;
@@ -138,8 +135,6 @@ impl GroupClient {
     pub fn account(&self) -> &ServiceAccount {
         &self.account
     }
-    /// # Errors
-    /// Refuses a foreign account, duplicate/invalid identities or oversized page.
     pub async fn list(&self) -> Result<GroupList, SendError> {
         self.check_identity()?;
         let page = self.host.list().await?;
@@ -159,8 +154,6 @@ impl GroupClient {
         }
         Ok(page)
     }
-    /// # Errors
-    /// Refuses another account/group, ambiguous members and oversized responses.
     pub async fn read(&self, group: String) -> Result<GroupMembership, SendError> {
         self.check_identity()?;
         if !valid_group(&group) {
@@ -190,8 +183,6 @@ impl GroupClient {
         }
         Ok(page)
     }
-    /// # Errors
-    /// Refuses invalid review/operation ids, another sender or malformed targets.
     pub async fn change(&self, request: GroupChangeRequest) -> Result<GroupReceipt, SendError> {
         self.operation(&request.group, &request.review, &request.operation)?;
         match &request.change {
@@ -212,8 +203,6 @@ impl GroupClient {
         let receipt = self.host.change(request).await?;
         self.receipt(receipt, &group, &operation)
     }
-    /// # Errors
-    /// Refuses invalid text/review/operation ids and mismatched SDK receipts.
     pub async fn send(&self, request: GroupSendRequest) -> Result<GroupReceipt, SendError> {
         self.operation(&request.group, &request.review, &request.operation)?;
         if request.text.trim().is_empty() || request.text.len() > 32 * 1024 {
@@ -223,8 +212,6 @@ impl GroupClient {
         let receipt = self.host.send(request).await?;
         self.receipt(receipt, &group, &operation)
     }
-    /// # Errors
-    /// Refuses another account/group or malformed private history projection.
     pub async fn history(&self, group: String) -> Result<GroupHistory, SendError> {
         self.check_identity()?;
         if !valid_group(&group) {
