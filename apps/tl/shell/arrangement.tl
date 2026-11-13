@@ -178,11 +178,11 @@ view viewing_settings(v: Viewing) {
     }
 }
 
-/// Shows the desk through the style `shown`: a package and a view (`so.tilo.shell:strips`).
+/// Shows the desk through the style `style`: a package and a view (`so.tilo.shell:strips`).
 /// Switching keeps the arrangement: the same places stand where they were, drawn another way.
-action show_style(v: Viewing, shown: Text) (icon: .layout_grid, label: "Show as") {
-    require v.style != shown "It is shown that way already"
-    v.style = shown
+action show_style(v: Viewing, style: Text) (icon: .layout_grid, label: "Show as") {
+    require v.style != style "It is shown that way already"
+    v.style = style
 }
 
 /// Makes the strip `strip` the one in front: what a press on a column's header does.

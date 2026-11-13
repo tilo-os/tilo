@@ -352,8 +352,8 @@ fn the_example_packages_are_in_canonical_form() {
 }
 
 /// The packages written against a native app's published types (`use so.tilo.session as
-/// session`): the compiler alone has none to compile against. `tilolang check`, which finds
-/// them, checks these.
+/// session`): the compiler alone has none to compile against. `tilolang-cli`'s tests, which
+/// have them, check that what these write is what is committed beside them.
 const NEEDS_PUBLISHED_APPS: &[&str] = &["shell"];
 
 /// The files a package's sources derive — its ids lock and its source catalogue — are what the
@@ -463,10 +463,10 @@ fn imports_are_found_among_sibling_packages_and_compiled_first() {
     );
 }
 
-// Every example package building from its directory with its committed ids is
-// `tilolang-cli`'s `native_types::every_example_package_builds_from_its_directory_with_its_committed_ids`:
-// a package may `use` a native app (the shell calls the session's actions), whose described
-// package only the catalogue reads.
+// Every example package building from its directory with the files its sources write is
+// `tilolang-cli`'s `native_types::every_example_package_builds_from_its_directory_with_the_files_it_writes`:
+// a package may `use` a native app (the shell calls the session's actions), and the native
+// app's described package, which only the catalogue reads, is what compiling it needs.
 
 #[test]
 fn a_missing_import_names_the_app_and_where_it_looked() {

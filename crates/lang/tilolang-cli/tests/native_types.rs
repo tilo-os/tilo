@@ -156,12 +156,14 @@ fn a_call_of_a_chat_action_is_checked_against_its_parameters() {
     );
 }
 
-/// Every package of `apps/tl` builds from its directory with its committed ids, after the
-/// packages it uses: tilolang ones among its siblings, and native apps by their committed
-/// descriptions (the shell `use`s `so.tilo.session`) and the platform's packages
-/// (`so.tilo.device`, `so.tilo.settings`).
+/// Every package of `apps/tl` builds from its directory, after the packages it uses: tilolang
+/// ones among its siblings, and native apps by their committed descriptions (the shell `use`s
+/// `so.tilo.session`) and the platform's packages (`so.tilo.device`, `so.tilo.settings`). The
+/// ids lock and the source catalogue it writes from them are the ones committed beside it: this
+/// is the only place the shell's are checked, since only with the native apps compiled does it
+/// write them at all.
 #[test]
-fn every_example_package_builds_from_its_directory_with_its_committed_ids() {
+fn every_example_package_builds_from_its_directory_with_the_files_it_writes() {
     let apps = repo().join("apps/tl");
     let mut dirs: Vec<PathBuf> = std::fs::read_dir(&apps)
         .expect("apps/tl reads")
@@ -185,12 +187,18 @@ fn every_example_package_builds_from_its_directory_with_its_committed_ids() {
         let built = compile_dirs(&order, &natives, &mut SeededEntropy(1))
             .unwrap_or_else(|e| panic!("{}: {e}", dir.display()));
         for b in &built {
+            let dir = b.dir.display();
             let committed = std::fs::read_to_string(b.dir.join("app.ids")).expect("app.ids");
             assert_eq!(
                 b.compiled.ids.to_text(),
                 committed,
-                "{}: app.ids is out of date",
-                b.dir.display()
+                "{dir}: app.ids is not what its sources write; write it with \
+                 `tilolang check --write-ids {dir}` and commit it with them"
+            );
+            assert!(
+                tilolang::source::catalogue_current(b),
+                "{dir}: locales/en-US.ftl is not what its sources write; write it with \
+                 `tilolang check --write-ids {dir}` and commit it with them"
             );
         }
     }

@@ -779,11 +779,15 @@ d-p4bqyuzt = Name the style
     .doc = A desk style picked before styles were views: the preset's name turned into this package's view of it (`strips` into `so.tilo.shell:strips`), so the person's choice is kept.
 
 d-7j7tzynq = Show as
-    .doc = Shows the desk through the style `shown`: a package and a view (`so.tilo.shell:strips`).
+    .doc = Shows the desk through the style `style`: a package and a view (`so.tilo.shell:strips`).
     .w-it-is-shown-that-way-already = It is shown that way already
+
+d-7j7tzynq-style = Style
 
 d-dkylvhw4 = In front
     .doc = Makes the strip `strip` the one in front: what a press on a column's header does.
+
+d-dkylvhw4-strip = Strip
 
 d-zoqbhs7o = Seed
     .doc = A shell that has never been arranged: the bar's parts and the dock's, in the order the default shell shows them.
@@ -795,7 +799,9 @@ d-g7yuomid = Drop the tasks part
     .doc = A shell that kept the retired `tasks` part loses it: what an agent does is the turn of a conversation, which Chat shows, so the bar has no running-tasks cluster.
 
 d-eanbdi6l = Use this layout
-    .doc = Uses the preset `to`: every setting it names at once.
+    .doc = Uses the preset `layout`: every setting it names at once.
+
+d-eanbdi6l-layout = Layout
 
 d-rpbpwrcy = Show the app's menus
     .doc = Puts the focused app's menus on the bar, after the system's: what the app in front can do now, on its resource.
@@ -811,66 +817,130 @@ d-2k74oe7b = Back to the preset
 d-jqwkinjd = Bar on
     .doc = Puts the bar on `edge`.
 
+d-jqwkinjd-edge = Edge
+
 d-u6k2x6mp = Set bar fit
+
+d-u6k2x6mp-fit = Fit
 
 d-i2mddhin = Set bar finish
 
+d-i2mddhin-finish = Finish
+
 d-w4d7htty = Set bar showing
 
+d-w4d7htty-showing = Showing
+
 d-fdnwo2gt = Set bar size
+
+d-fdnwo2gt-size = Size
 
 d-fcxzqnum = Show the top bar
     .doc = Shows or hides the top bar: the one control that turns it on and off, so a person sees whether it is on where they press it.
 
+d-fcxzqnum-on = On the desk
+
 d-5l5rmk47 = Dock on
     .doc = Moves the dock to `edge`, keeping how it is built.
 
+d-5l5rmk47-edge = Edge
+
 d-jllttdkc = Set dock fit
+
+d-jllttdkc-fit = Fit
 
 d-uw5xrdst = Set dock finish
 
+d-uw5xrdst-finish = Finish
+
 d-iyws3u4w = Set dock showing
 
+d-iyws3u4w-showing = Showing
+
 d-quwdhi4n = Set dock size
+
+d-quwdhi4n-size = Size
 
 d-23faedwo = Show the dock
     .doc = Shows or hides the dock: the one control that turns it on and off, so a person sees whether it is on where they press it.
 
+d-23faedwo-on = On the desk
+
 d-exyxrzml = Running apps
     .doc = Whether the dock shows the apps running that nobody pinned.
+
+d-exyxrzml-on = In the dock
 
 d-vlnaqn4u = Launcher entry
     .doc = Whether the dock has a launcher entry.
 
+d-vlnaqn4u-on = In the dock
+
 d-z2w4wlev = Magnify the dock
     .doc = Whether the dock magnifies the item under the pointer.
+
+d-z2w4wlev-on = Under the pointer
 
 d-vurzkuat = Move
     .doc = Puts a bar part with the one it comes before, wherever the part stands now: the one action a drag commits, and the same change from the settings, a shortcut or an agent.
     .w-a-part-cannot-come-before-itself = A part cannot come before itself
 
+d-vurzkuat-part = Part
+
+d-vurzkuat-before = Before
+
 d-4ljvsals = Move
-    .doc = Puts a bar part at the place `at`, counted from the leading edge: what a drag that names a place gives.
+    .doc = Puts a bar part at `position`, counted from the leading edge: what a drag that names a place gives.
+
+d-4ljvsals-part = Part
+
+d-4ljvsals-position = Position
 
 d-5esgamkb = Shown on the bar
     .doc = Shows or hides one part of the bar.
+
+d-5esgamkb-part = Part
+
+d-5esgamkb-on = On the bar
 
 d-hphul6cv = Move
     .doc = Puts a dock item with the one it comes before: the one action a drag commits.
     .w-an-item-cannot-come-before-itself = An item cannot come before itself
 
+d-hphul6cv-item = Item
+
+d-hphul6cv-before = Before
+
 d-tv7bsor6 = Move
-    .doc = Puts a dock item at the place `at`, counted from the leading edge: what a drag that names a place gives.
+    .doc = Puts a dock item at `position`, counted from the leading edge: what a drag that names a place gives.
+
+d-tv7bsor6-item = Item
+
+d-tv7bsor6-position = Position
 
 d-utk4ewgf = Pin to the dock
     .doc = Pins a resource or an app to the dock, before `next` (or at the end when no neighbour is named): what dragging one onto the dock does, and what the person does from a menu.
     .w-is-on-the-dock-already = { $title } is on the dock already
 
+d-utk4ewgf-key = App
+
+d-utk4ewgf-title = Title
+
+d-utk4ewgf-icon = Icon
+
+d-utk4ewgf-next = Before
+
 d-5yz5iwzs = Remove from the dock
     .doc = Takes an item off the dock.
 
+d-5yz5iwzs-item = Item
+
 d-aitkuflo = Open item
     .doc = What a press on a dock item does, by the app the item stands for: a window of that app on this desk comes to the front, so the desk says which window the person is in and the top bar's commands are its own; the window is the one the item was drawn for, so a press never opens a second copy.
+
+d-aitkuflo-desk = Desk
+
+d-aitkuflo-key = App
 
 d-vjnksgzm = Seed waiting
     .doc = Two notices a sender left and the person has not seen: what the shell stages on a desk it shows before the person has caught up, so the bar's bell has something to count.
@@ -881,17 +951,39 @@ d-j4ax4otm = Seed notices
 d-zm35wbjg = A workspace
     .doc = Adds a workspace, with one row, to `a`, and returns the row's key.
 
+d-zm35wbjg-name = Name
+
 d-ztflhbbf = A strip
     .doc = Adds a strip named `name` to `row`, standing at `width`, and returns its key.
+
+d-ztflhbbf-row = Row
+
+d-ztflhbbf-name = Name
+
+d-ztflhbbf-width = Width
 
 d-chvuqgur = A note place
     .doc = Adds a place showing the note at `index` of the notebook to `strip`, and returns its key.
 
+d-chvuqgur-strip = Strip
+
+d-chvuqgur-index = Index
+
 d-tnecawb6 = A foreign place
     .doc = A place of a kind this build has no record for: it stands as it is, which is what a place another shell made looks like.
 
+d-tnecawb6-strip = Strip
+
+d-tnecawb6-index = Index
+
+d-tnecawb6-title = Title
+
 d-b3rfswle = Show place
     .doc = Shows the place `place` and brings its strip forward with it: what choosing a tab does, and the same arranging action a script or an agent runs.
+
+d-b3rfswle-strip = Strip
+
+d-b3rfswle-place = Place
 
 d-i6ll2n4j = Desk view
 

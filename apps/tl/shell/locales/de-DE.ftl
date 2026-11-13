@@ -778,11 +778,15 @@ d-p4bqyuzt = Stil benennen
     .doc = Ein Schreibtischstil, gewählt, bevor Stile Ansichten waren: der Name der Vorgabe, gewendet in die Ansicht dieses Pakets davon (`strips` zu `so.tilo.shell:strips`), damit die Wahl der Person bleibt.
 
 d-7j7tzynq = Zeigen als
-    .doc = Zeigt den Schreibtisch durch den Stil `shown`: ein Paket und eine Ansicht (`so.tilo.shell:strips`).
+    .doc = Zeigt den Schreibtisch durch den Stil `style`: ein Paket und eine Ansicht (`so.tilo.shell:strips`).
     .w-it-is-shown-that-way-already = Er wird schon so gezeigt
+
+d-7j7tzynq-style = Stil
 
 d-dkylvhw4 = Nach vorn
     .doc = Macht die Leiste `strip` zur vorderen: was ein Druck auf die Kopfzeile einer Spalte tut.
+
+d-dkylvhw4-strip = Leiste
 
 d-zoqbhs7o = Einrichten
     .doc = Eine Shell, die nie angeordnet wurde: die Teile der Leiste und des Docks, in der Reihenfolge, in der die voreingestellte Shell sie zeigt.
@@ -794,7 +798,9 @@ d-g7yuomid = Das Aufgaben-Teil entfernen
     .doc = Eine Shell, die das zurückgezogene Teil `tasks` behielt, verliert es: was ein Agent tut, ist der Zug einer Unterhaltung, den Chat zeigt, also hat die Leiste keinen Haufen laufender Aufgaben.
 
 d-eanbdi6l = Dieses Layout verwenden
-    .doc = Verwendet die Vorgabe `to`: jede Einstellung, die sie nennt, auf einmal.
+    .doc = Verwendet die Vorgabe `layout`: jede Einstellung, die sie nennt, auf einmal.
+
+d-eanbdi6l-layout = Layout
 
 d-rpbpwrcy = Die Menüs der App zeigen
     .doc = Legt die Menüs der fokussierten App auf die Leiste, nach denen des Systems: was die App vorn jetzt mit ihrer Ressource tun kann.
@@ -810,66 +816,130 @@ d-2k74oe7b = Zurück zur Vorgabe
 d-jqwkinjd = Leiste an
     .doc = Setzt die Leiste an `edge`.
 
+d-jqwkinjd-edge = Kante
+
 d-u6k2x6mp = Sitz der Leiste setzen
+
+d-u6k2x6mp-fit = Sitz
 
 d-i2mddhin = Ausführung der Leiste setzen
 
+d-i2mddhin-finish = Ausführung
+
 d-w4d7htty = Zeigen der Leiste setzen
 
+d-w4d7htty-showing = Zeigen
+
 d-fdnwo2gt = Größe der Leiste setzen
+
+d-fdnwo2gt-size = Größe
 
 d-fcxzqnum = Die obere Leiste zeigen
     .doc = Zeigt oder verbirgt die obere Leiste: das eine Bedienelement, das sie ein- und ausschaltet, sodass eine Person sieht, ob sie an ist, wo sie drückt.
 
+d-fcxzqnum-on = Auf dem Schreibtisch
+
 d-5l5rmk47 = Dock an
     .doc = Verschiebt das Dock an `edge` und behält, wie es gebaut ist.
 
+d-5l5rmk47-edge = Kante
+
 d-jllttdkc = Sitz des Docks setzen
+
+d-jllttdkc-fit = Sitz
 
 d-uw5xrdst = Ausführung des Docks setzen
 
+d-uw5xrdst-finish = Ausführung
+
 d-iyws3u4w = Zeigen des Docks setzen
 
+d-iyws3u4w-showing = Zeigen
+
 d-quwdhi4n = Größe des Docks setzen
+
+d-quwdhi4n-size = Größe
 
 d-23faedwo = Das Dock zeigen
     .doc = Zeigt oder verbirgt das Dock: das eine Bedienelement, das es ein- und ausschaltet, sodass eine Person sieht, ob es an ist, wo sie drückt.
 
+d-23faedwo-on = Auf dem Schreibtisch
+
 d-exyxrzml = Laufende Apps
     .doc = Ob das Dock die laufenden Apps zeigt, die niemand angeheftet hat.
+
+d-exyxrzml-on = Im Dock
 
 d-vlnaqn4u = Launcher-Eintrag
     .doc = Ob das Dock einen Launcher-Eintrag hat.
 
+d-vlnaqn4u-on = Im Dock
+
 d-z2w4wlev = Das Dock vergrößern
     .doc = Ob das Dock den Eintrag unter dem Zeiger vergrößert.
+
+d-z2w4wlev-on = Unter dem Zeiger
 
 d-vurzkuat = Verschieben
     .doc = Setzt ein Leistenteil zu dem, vor das es kommt, wo das Teil jetzt auch steht: die eine Aktion, die ein Ziehen abschickt, und dieselbe Änderung aus den Einstellungen, einem Tastenkürzel oder von einem Agenten.
     .w-a-part-cannot-come-before-itself = Ein Teil kann nicht vor sich selbst stehen
 
+d-vurzkuat-part = Teil
+
+d-vurzkuat-before = Vor
+
 d-4ljvsals = Verschieben
-    .doc = Setzt ein Leistenteil an den Platz `at`, von der führenden Kante gezählt: was ein Ziehen gibt, das einen Platz nennt.
+    .doc = Setzt ein Leistenteil an die Position `position`, von der führenden Kante gezählt: was ein Ziehen gibt, das einen Platz nennt.
+
+d-4ljvsals-part = Teil
+
+d-4ljvsals-position = Position
 
 d-5esgamkb = Auf der Leiste gezeigt
     .doc = Zeigt oder verbirgt ein Teil der Leiste.
+
+d-5esgamkb-part = Teil
+
+d-5esgamkb-on = Auf der Leiste
 
 d-hphul6cv = Verschieben
     .doc = Setzt einen Dock-Eintrag zu dem, vor den er kommt: die eine Aktion, die ein Ziehen abschickt.
     .w-an-item-cannot-come-before-itself = Ein Eintrag kann nicht vor sich selbst stehen
 
+d-hphul6cv-item = Eintrag
+
+d-hphul6cv-before = Vor
+
 d-tv7bsor6 = Verschieben
-    .doc = Setzt einen Dock-Eintrag an den Platz `at`, von der führenden Kante gezählt: was ein Ziehen gibt, das einen Platz nennt.
+    .doc = Setzt einen Dock-Eintrag an die Position `position`, von der führenden Kante gezählt: was ein Ziehen gibt, das einen Platz nennt.
+
+d-tv7bsor6-item = Eintrag
+
+d-tv7bsor6-position = Position
 
 d-utk4ewgf = Ans Dock anheften
     .doc = Heftet eine Ressource oder eine App an das Dock, vor `next` (oder am Ende, wenn kein Nachbar genannt ist): was das Ziehen einer Sache auf das Dock tut und was die Person aus einem Menü tut.
     .w-is-on-the-dock-already = { $title } ist schon auf dem Dock
 
+d-utk4ewgf-key = App
+
+d-utk4ewgf-title = Titel
+
+d-utk4ewgf-icon = Symbol
+
+d-utk4ewgf-next = Vor
+
 d-5yz5iwzs = Vom Dock entfernen
     .doc = Nimmt einen Eintrag vom Dock.
 
+d-5yz5iwzs-item = Eintrag
+
 d-aitkuflo = Eintrag öffnen
     .doc = Was ein Druck auf einen Dock-Eintrag tut, nach der App, für die der Eintrag steht: ein Fenster dieser App auf diesem Schreibtisch kommt nach vorn, sodass der Schreibtisch sagt, in welchem Fenster die Person ist, und die Befehle der oberen Leiste seine eigenen sind; das Fenster ist das, für das der Eintrag gezeichnet wurde, sodass ein Druck nie eine zweite Kopie öffnet.
+
+d-aitkuflo-desk = Schreibtisch
+
+d-aitkuflo-key = App
 
 d-vjnksgzm = Wartendes anlegen
     .doc = Zwei Hinweise, die ein Absender hinterließ und die Person nicht gesehen hat: was die Shell auf einem Schreibtisch bereitstellt, den sie zeigt, bevor die Person aufgeholt hat, damit die Glocke der Leiste etwas zu zählen hat.
@@ -880,17 +950,39 @@ d-j4ax4otm = Hinweise anlegen
 d-zm35wbjg = Ein Arbeitsbereich
     .doc = Fügt `a` einen Arbeitsbereich mit einer Zeile hinzu und gibt den Schlüssel der Zeile zurück.
 
+d-zm35wbjg-name = Name
+
 d-ztflhbbf = Eine Leiste
     .doc = Fügt `row` eine Leiste namens `name` hinzu, stehend bei `width`, und gibt ihren Schlüssel zurück.
+
+d-ztflhbbf-row = Zeile
+
+d-ztflhbbf-name = Name
+
+d-ztflhbbf-width = Breite
 
 d-chvuqgur = Ein Notizplatz
     .doc = Fügt `strip` einen Platz hinzu, der die Notiz an `index` des Notizbuchs zeigt, und gibt seinen Schlüssel zurück.
 
+d-chvuqgur-strip = Leiste
+
+d-chvuqgur-index = Index
+
 d-tnecawb6 = Ein fremder Platz
     .doc = Ein Platz einer Art, für die dieser Stand keinen Datensatz hat: er steht, wie er ist, so wie ein Platz aussieht, den eine andere Shell gemacht hat.
 
+d-tnecawb6-strip = Leiste
+
+d-tnecawb6-index = Index
+
+d-tnecawb6-title = Titel
+
 d-b3rfswle = Platz zeigen
     .doc = Zeigt den Platz `place` und holt seine Leiste mit nach vorn: was das Wählen eines Tabs tut und dieselbe Anordnungsaktion, die ein Skript oder ein Agent ausführt.
+
+d-b3rfswle-strip = Leiste
+
+d-b3rfswle-place = Platz
 
 d-i6ll2n4j = Schreibtischansicht
 
@@ -1230,3 +1322,4 @@ d-cijhlzxf = Fensterbefehle
 
 d-yx7doxgr = Traditionelle Leiste
     .w-tilo = Tilo
+

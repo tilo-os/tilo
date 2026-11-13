@@ -147,8 +147,8 @@ view dock_running_tiles(s: Shell, d: Desk, running: List<DockItem>) {
 /// It takes the app's key and not the item: an item the shell's record holds reaches an action as
 /// a record reference, and the press names the one thing it needs, so a run's item reaches it
 /// without a `DockItem` parameter to fit.
-action open_item(s: Shell, d: Desk, key: Text) {
-    if let w = d.windows.find(w -> w.app_key == key) {
+action open_item(s: Shell, desk: Desk, key: Text (label: "App")) {
+    if let w = desk.windows.find(w -> w.app_key == key) {
         session.focus(window: window(w))
     } else if key == "launcher" {
         device.show_surface(device.desk, surface: "launcher")
