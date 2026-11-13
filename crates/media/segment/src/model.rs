@@ -12,20 +12,16 @@ use std::sync::Arc;
 
 use crate::{Error, Matte, Picture};
 
-/// How a model wants its picture: the side it sees, and how colours are
-/// scaled before it does.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Family {
-    /// U²-Net and its small sibling U²-Netp: 320 pixels a side, colours
-    /// scaled by the picture's brightest then standardised as `ImageNet`'s.
+    /// 320 pixels a side, colours scaled by the picture's brightest then
+    /// standardised as `ImageNet`'s.
     U2Net,
-    /// IS-Net (DIS): 1024 pixels a side, colours scaled by the brightest
-    /// then centred on a half.
+    /// 1024 pixels a side, colours scaled by the brightest then centred on a half.
     IsNet,
 }
 
 impl Family {
-    /// The side of the square the model sees, in pixels.
     pub const fn side(self) -> usize {
         match self {
             Self::U2Net => 320,
@@ -33,7 +29,6 @@ impl Family {
         }
     }
 
-    /// Mean and spread each channel is standardised by.
     const fn standard(self) -> ([f32; 3], [f32; 3]) {
         match self {
             Self::U2Net => ([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
@@ -42,7 +37,6 @@ impl Family {
     }
 }
 
-/// A loaded salient-object model.
 pub struct SubjectModel {
     model: Model,
     family: Family,
@@ -62,7 +56,6 @@ impl SubjectModel {
         })
     }
 
-    /// Run on `threads` threads rather than one per core.
     #[must_use]
     pub fn with_threads(mut self, threads: usize) -> Self {
         self.threads = Some(Arc::new(ThreadPool::with_num_threads(threads.max(1))));
@@ -73,8 +66,6 @@ impl SubjectModel {
         self.family
     }
 
-    /// How much of each pixel of `picture` is its subject, at the
-    /// picture's own size.
     pub fn matte(&self, picture: &Picture) -> Result<Matte, Error> {
         picture.check()?;
         let side = self.family.side();
@@ -108,7 +99,6 @@ impl SubjectModel {
         Ok(matte.resized(picture.width, picture.height))
     }
 
-    /// The picture as the model's input: `side` square, channels first.
     fn input(&self, picture: &Picture, side: usize) -> NdTensor<f32, 4> {
         let (mean, spread) = self.family.standard();
         let mut planes = Vec::with_capacity(3 * side * side);
