@@ -596,6 +596,10 @@ fn a_dump_of_findings_holds_the_frames_a_finding_came_from() {
             .args([scope, "390x844"])
             .output_locked()
             .expect("the check runs");
+        assert!(
+            !output.status.success(),
+            "the fixture whose views are broken still fails the run"
+        );
         String::from_utf8_lossy(&output.stderr)
             .lines()
             .filter(|line| line.starts_with("== ") && line.ends_with("— the frame"))
