@@ -1015,6 +1015,8 @@ mod locus_tests {
         event.anchor = tilo_actions::InteractionAnchor::ListItems {
             ids: vec!["issue-b".into()],
         };
+        // The line names the item the step changes, as the app shows it.
+        event.resource.label = "Second task".into();
         // A second in: the pointer has travelled to the check box, as the
         // capture shows it at rest on the control rather than mid-glide.
         let at = crate::time::now()
@@ -1031,7 +1033,7 @@ mod locus_tests {
             label = presence.interaction_status_label(&event);
             applied
         });
-        assert_eq!(label, "Ada: checking off");
+        assert_eq!(label, "Ada: Editing Second task");
         assert!(frame.poll_frame().unwrap());
         frame.render_png(&out.join("tasks-agent-checks-second.png"));
         assert!(

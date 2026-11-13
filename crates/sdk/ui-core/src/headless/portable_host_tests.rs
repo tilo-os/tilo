@@ -1177,7 +1177,10 @@ fn an_agents_written_text_glows_on_exactly_those_characters() {
         label = presence.interaction_status_label(&event);
         applied
     });
-    assert_eq!(label, "Ada: writing");
+    assert_eq!(
+        label, "Ada: Writing in Note",
+        "the line names the kind of work and the record it writes in"
+    );
     assert!(
         agent_frame.semantic_locus(&event).is_none(),
         "a text anchor is drawn in the document, not on a control"
