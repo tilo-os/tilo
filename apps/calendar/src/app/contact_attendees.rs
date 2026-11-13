@@ -1,8 +1,6 @@
 //! The person's shared Contacts as attendee choices for one event, in the
 //! system picker. A choice is bound to the calendar's own `invite` verb, so
 //! adding someone is checked, recorded and undone as typing their address is.
-//! Only the reviewed name and address enter the calendar; which contact they
-//! came from stays on this device.
 
 use tilo_contact_directory::{ContactDirectory, EmailHint};
 use ui::framework::{LiveRow, PersonRecord};
@@ -13,7 +11,6 @@ use super::store::{Ask, Store};
 use crate::model::{Calendar, Id};
 use crate::resource::{CalendarEffect, t, t_args};
 
-/// The picker's scope and the row its choices hang under.
 const SCOPE: &str = "calendar.contacts";
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
@@ -24,8 +21,6 @@ struct Choice {
 }
 
 impl Choice {
-    /// The reviewed facts themselves, so a changed contact or event names
-    /// another row and an earlier choice cannot rebind to it.
     fn id(&self) -> String {
         serde_json::to_vec(self).map_or_else(
             |_| String::new(),
@@ -66,8 +61,6 @@ impl Store {
         self.contact_directory = record;
     }
 
-    /// Every contact address not yet among the attendees of the event the
-    /// picker is open for.
     fn contact_choices(&self) -> Vec<Choice> {
         let (Some(id), Some(record), Some(live)) =
             (self.contact_event, &self.contact_directory, &self.live)
@@ -132,8 +125,6 @@ impl Store {
         ))
     }
 
-    /// Adding the contact a row offers, to the event it was offered for,
-    /// while both still stand as they were.
     pub(crate) fn contact_declarations(&self, row: &str) -> Vec<ActionDecl<Calendar>> {
         self.contact_choice(row)
             .and_then(|choice| choice.declaration())
@@ -153,8 +144,6 @@ impl Store {
             .collect()
     }
 
-    /// Offer the contacts to invite to `event` of `calendar`: the window
-    /// opens the picker on them next.
     pub(crate) fn open_contact_attendees(
         &mut self,
         calendar: &Calendar,
@@ -172,15 +161,12 @@ impl Store {
 }
 
 impl CalendarApp {
-    /// Open the platform search on the contacts offered for an event.
     pub(super) fn search_contacts(&mut self) {
         self.search_opener.open(ui::search::SearchRequest::within(
             ui::search::ScopeDecl::new(SCOPE, t("calendar-contact-attendees")),
         ));
     }
 
-    /// The Guests field's Contacts button asked for the picker: open it for
-    /// the event the editor shows.
     pub(crate) fn take_contacts_request(&self) {
         if !self.contacts_requested.take() {
             return;
@@ -201,8 +187,6 @@ mod tests {
     use ui::tilo_resource::Id as RecordId;
     use ui::widget::{Element, Text};
 
-    /// Contacts, the owner of the person's address book, in its own window:
-    /// Calendar reads the same record without being able to edit it.
     struct ContactsOwner;
     impl ResourceApp for ContactsOwner {
         type Resource = ContactDirectory;
@@ -299,9 +283,6 @@ mod tests {
                 .any(|entry| entry.title == "Alex"),
             "the picker finds the contact by name"
         );
-        // Inviting from the picker is the person choosing this contact, and
-        // it takes nothing away: the calendar's own verb adds them, and Undo
-        // takes the attendee back.
         calendar
             .call_on(&chosen.id(), Calendar::INVITE.id, serde_json::json!({}))
             .unwrap();

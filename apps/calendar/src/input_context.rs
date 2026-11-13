@@ -1,8 +1,6 @@
 //! Shared input capability passed through Calendar's internal components.
 //!
 //! The public UI widget contract necessarily exposes each piece separately.
-//! Calendar's nested controllers receive them as one value so their APIs can
-//! focus on domain-specific inputs rather than repeating framework plumbing.
 
 use automerge::ObjId;
 use taffy::{NodeId, TaffyTree};
@@ -21,12 +19,10 @@ pub(crate) struct InputContext<'a> {
 }
 
 impl InputContext<'_> {
-    /// The widget event context for this input, aimed at its own node.
     pub(crate) fn event_ctx(&mut self) -> ui::widget::EventCtx<'_> {
         self.event_ctx_at(self.node_id)
     }
 
-    /// The widget event context for this input, aimed at `node_id`.
     pub(crate) fn event_ctx_at(&mut self, node_id: NodeId) -> ui::widget::EventCtx<'_> {
         ui::widget::EventCtx {
             scale_factor: self.scale_factor,

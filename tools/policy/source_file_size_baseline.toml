@@ -4,7 +4,7 @@
 
 [ceilings]
 "apps/browser/src/browser_widget.rs" = 6500
-"apps/calendar/src/app.rs" = 5000
+"apps/calendar/src/app.rs" = 4500
 "apps/calendar/src/app/tests.rs" = 3500
 "apps/camera/src/app.rs" = 5500
 "apps/canvas/src/surface.rs" = 4000

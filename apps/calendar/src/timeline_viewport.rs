@@ -11,23 +11,16 @@ use ui::widget::{Scrollable, TimelineDensity};
 
 use crate::input_context::InputContext;
 
-/// The shortest an hour row gets: a list row's height, so a half-hour block
-/// still holds its title.
 #[cfg(test)]
 pub(super) const TIMELINE_MIN_HOUR_H: f64 = ui::tokens::Metrics::BASE.panel_row_height as f64;
 
-/// The text styles the timeline paints, by what each piece of text is.
 #[derive(Clone, Debug)]
 pub(super) struct TimelineType {
-    /// "Mon" over each day column.
     pub weekday: TextStyle,
     pub day: TextStyle,
-    /// An all-day event's title in its strip.
     pub strip: TextStyle,
-    /// A block's title and its time line.
     pub title: TextStyle,
     pub subtitle: TextStyle,
-    /// "08:00" in the hour gutter.
     pub hour: TextStyle,
 }
 
@@ -44,8 +37,6 @@ impl TimelineType {
     }
 }
 
-/// The measured parts of the timeline's geometry for one theme: line
-/// heights, the hour gutter and the spacing it is padded with.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct TimelineTokens {
     weekday_h: f64,
@@ -56,8 +47,6 @@ pub(super) struct TimelineTokens {
     s1: f64,
     s2: f64,
     s3: f64,
-    /// The day column width below which the grid is narrow, and the
-    /// shortest hour at each density ([`TimelineDensity`]).
     narrow_below: f64,
     min_hour_regular: f64,
     min_hour_narrow: f64,
@@ -76,8 +65,6 @@ impl TimelineTokens {
             day_h: line(text, &ty.day),
             strip_h: line(text, &ty.strip),
             title_h,
-            // The widest hour label in the person's clock: "22:00" or
-            // "10:00 PM".
             hour_w: [0, 10, 12, 22]
                 .into_iter()
                 .map(|hour| f64::from(text.measure_style(&hour_label(hour), None, &ty.hour).0))
@@ -102,22 +89,16 @@ impl Default for TimelineTokens {
 #[derive(Clone, Copy, Debug)]
 pub(super) struct TimelineGeom {
     pub gutter: f64,
-    /// Day header height (weekday label + day number).
     pub head_h: f64,
-    /// All-day strip height beneath the header.
     pub allday_h: f64,
-    /// How many all-day chips the strip stacks.
     pub allday_rows: usize,
     pub body_top: f64,
     pub body_bottom: f64,
     pub hour_h: f64,
     pub content_h: f64,
     pub grid_right: f64,
-    /// How much each day column shows (its width against the type).
     pub density: TimelineDensity,
-    /// Smallest painted block; a one-line title fits at the current scale.
     pub min_block_h: f64,
-    /// How far a block stands in from its column's edges.
     pub block_inset: f64,
 }
 
@@ -131,16 +112,9 @@ pub(super) struct TimelineViewport {
     scroll: Scrollable,
     seeded: bool,
     pinned_hour: Option<f64>,
-    /// How many day columns the last layout laid out.
     days_len: usize,
-    /// How many all-day chips the strip of the last layout stacks.
     allday_rows: usize,
-    /// The measured type and spacing of the theme of the app's last layout
-    /// pass, so header / strip / block heights follow the type they hold.
     tokens: TimelineTokens,
-    /// The hour height of the last layout, so a change of UI scale, text
-    /// size or density keeps the same hour at the top rather than the same
-    /// pixel offset.
     laid_out_hour_h: f64,
 }
 
@@ -157,38 +131,25 @@ impl TimelineViewport {
         }
     }
 
-    /// Measure the theme's type for the geometry solved in `layout`, so
-    /// reserve and paint read one set of tokens.
     pub fn set_layout_theme(&mut self, theme: &Theme) {
         self.tokens =
             ui::text_render::with_layout_renderer(theme, |text| TimelineTokens::of(theme, text));
     }
 
-    /// The geometry of the last layout over `area`.
     pub fn current_geometry(&self, area: Rect) -> TimelineGeom {
         Self::geometry_rows(area, &self.tokens, self.days_len, self.allday_rows)
     }
 
-    /// Geometry of a week in the default dark theme, used by tests.
     #[cfg(test)]
     pub fn geometry(area: Rect) -> TimelineGeom {
         Self::geometry_for(area, &TimelineTokens::default(), 7)
     }
 
-    /// Geometry from the measured `tokens`: the header holds the weekday and
-    /// the day number with `s2` above and below, the all-day strip one
-    /// caption line in its padding, the smallest block a title line, and the
-    /// gutter an hour label with `s3` either side. `days_len` columns share
-    /// the width, which decides the [`TimelineDensity`]: a narrow grid
-    /// gives a half hour two title lines and the all-day strip two.
     #[cfg(test)]
     pub fn geometry_for(area: Rect, t: &TimelineTokens, days_len: usize) -> TimelineGeom {
         Self::geometry_rows(area, t, days_len, 1)
     }
 
-    /// [`Self::geometry_for`] with an all-day strip of `rows` chips: none
-    /// leaves a hairline's room, one wraps its title over the density's
-    /// lines, more stack one line each.
     pub fn geometry_rows(
         area: Rect,
         t: &TimelineTokens,
@@ -222,7 +183,6 @@ impl TimelineViewport {
         let viewport_h = (body_bottom - body_top).max(min_hour_h);
         let hour_h = (viewport_h / 24.0).max(min_hour_h);
         let content_h = hour_h * 24.0;
-        // The scrollbar lane is one `s3` wide when the day overflows.
         let grid_right = if content_h > viewport_h + 0.5 {
             area.x1 - t.s3
         } else {
@@ -249,9 +209,6 @@ impl TimelineViewport {
     }
 
     pub fn column_at(area: Rect, days_len: usize, geom: TimelineGeom, x: f64) -> usize {
-        // An empty range has no column to land on, and `clamp(0, -1)` is a
-        // panic — `min` above `max` — not a saturating no-op. Callers read the
-        // result through `.get()`, so 0 resolves to `None` for them.
         let Some(last) = days_len.checked_sub(1) else {
             return 0;
         };
@@ -313,14 +270,8 @@ impl TimelineViewport {
         if let Some(hour) = self.pinned_hour {
             self.set_offset_y((hour * geom.hour_h) as f32);
         } else if !self.seeded && self.vertical_overflows() {
-            // Seed on a whole hour: the hour label is painted just below its
-            // rule, so a fractional seed ("now − 1 h" at 08:14 is 7.23) puts
-            // the first rule above the body and clips that label under the
-            // all-day strip. Flooring keeps the intended hour in view with
-            // its label fully inside the body — and the hour is also capped at
-            // the last whole hour the scroll range can reach, because the
-            // `Scrollable` would otherwise clamp the offset to a fractional
-            // maximum and clip the first label the same way.
+            // Seed on a whole hour: the hour label is painted just below its rule, so a fractional seed clips it
+            // under the all-day strip. Capped at the last whole hour the scroll range reaches.
             let viewport_h = geom.body_bottom - geom.body_top;
             let max_hours = ((geom.content_h - viewport_h).max(0.0) / geom.hour_h).floor();
             let hour = initial_hour.max(0.0).floor().min(max_hours);
@@ -365,8 +316,6 @@ impl TimelineViewport {
     }
 }
 
-/// The label of an hour in the gutter, in the person's clock ("09:00" or
-/// "9:00 AM"), as every other time in the calendar is.
 pub(crate) fn hour_label(hour: u32) -> String {
     chrono::NaiveTime::from_hms_opt(hour, 0, 0)
         .map(|time| ui::format::time(&time))
@@ -377,8 +326,6 @@ pub(crate) fn hour_label(hour: u32) -> String {
 mod tests {
     use super::*;
 
-    /// A change of UI scale or of the days shown keeps the hour at the top
-    /// of the grid, not the pixel offset that meant another hour before.
     #[test]
     fn changing_scale_and_density_keeps_the_hour_in_view() {
         let area = Rect::new(0.0, 60.0, 1020.0, 810.0);
@@ -428,11 +375,6 @@ mod tests {
 
     #[test]
     fn scroll_seeds_on_whole_hours_and_drives_minute_and_block_geometry() {
-        // Case `seeded_scroll_lands_on_a_whole_hour`:
-        // A fractional focus hour ("now − 1 h") seeds on the whole hour below
-        // it, so the first visible hour rule sits exactly on the body top and
-        // its label — painted just under the rule — is never clipped by the
-        // all-day strip.
         {
             let area = Rect::new(0.0, 60.0, 1000.0, 560.0);
             let geom = TimelineViewport::geometry(area);
@@ -440,19 +382,11 @@ mod tests {
             viewport.layout(area, 7.23, (7, 1));
             assert!(viewport.vertical_overflows());
             assert!((f64::from(viewport.offset_y()) - 7.0 * geom.hour_h).abs() < 0.01);
-            // The 07:00 rule is at the body top; the label below it is inside.
             let rule_y = geom.body_top + 7.0 * geom.hour_h - f64::from(viewport.offset_y());
             assert!((rule_y - geom.body_top).abs() < 0.01);
             assert_eq!(viewport.minute_at(geom, geom.body_top), 7 * 60);
         }
-        // Case `seeded_scroll_caps_at_the_last_whole_hour_the_range_allows`:
-        // When the seeded hour lies past what the scroll range can reach (a tall
-        // 2× header in a short window), the seed snaps to the last whole hour
-        // that fits instead of letting the `Scrollable` clamp the offset to a
-        // fractional maximum — which would clip the first label just the same.
         {
-            // 24 × 44 = 1056 of content in a 600-tall body: at most 456 / 44 =
-            // 10.36 hours of scroll, so hour 9 is the last whole one that fits.
             let probe = TimelineViewport::geometry(Rect::new(0.0, 0.0, 1000.0, 1000.0));
             let area = Rect::new(
                 0.0,

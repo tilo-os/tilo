@@ -1,11 +1,6 @@
 //! Transient status: the result of a sync, an import or an edit, as the
 //! window bar's notice until it is replaced or has been up for a notice's
 //! lifetime (the shared [`ui::widget::toast::Transient`] keeps it).
-//!
-//! Each message carries its own severity from where it is raised, so what
-//! the person reads as a failure is a failure in every language: the words
-//! are the catalogue's, and nothing decides a kind by looking for "failed"
-//! in them.
 
 use ui::time::Instant;
 use ui::widget::toast::{ToastKind, Transient};
@@ -13,30 +8,24 @@ use ui::window_toolbar::{ToolbarAction, ToolbarNotice};
 
 use super::CalendarApp;
 
-/// The one message the window's bar says, with the severity its reason
-/// carries.
 #[derive(Default)]
 pub(super) struct Status {
     current: Transient<(String, ToastKind)>,
 }
 
 impl Status {
-    /// Say `text` of `kind`, replacing anything already up.
     pub(super) fn show(&mut self, text: impl Into<String>, kind: ToastKind) {
         self.current.show((text.into(), kind));
     }
 
-    /// Say `text` as a failure: what the person asked for did not happen.
     pub(super) fn failed(&mut self, text: impl Into<String>) {
         self.show(text, ToastKind::Error);
     }
 
-    /// Say `text` as work under way: it stays while the work runs.
     pub(super) fn show_progress(&mut self, text: impl Into<String>) {
         self.current.show_progress((text.into(), ToastKind::Info));
     }
 
-    /// The message up, if one is.
     pub(super) fn text(&self) -> Option<&str> {
         self.current.get().map(|(text, _)| text.as_str())
     }
@@ -62,38 +51,25 @@ impl Status {
         self.current.deadline()
     }
 
-    /// Put the message up in the window's bar, `decorate` adding what the
-    /// person may do about it; call on every sync.
     fn publish(&self, decorate: impl FnOnce(ToolbarNotice) -> ToolbarNotice) {
         self.current
             .publish(|(text, kind)| decorate(ToolbarNotice::new(text.clone(), *kind)));
     }
 }
 
-/// The bar action id of a failed sync's "Sync again".
 pub(super) const SYNC_AGAIN_ACTION: &str = "calendar.notice.sync-again";
-/// The bar action id of "Open Settings" beside a status about accounts.
 pub(super) const OPEN_SETTINGS_ACTION: &str = "calendar.notice.open-settings";
-/// Where calendar accounts are added, changed and removed: Settings'
-/// External Accounts, the one place for them.
 pub(super) const ACCOUNT_SETTINGS_LINK: &str = "settings://external_accounts";
 
-/// What a status that asks the person to act lets them do from the bar.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum StatusAction {
-    /// Sync the calendars again.
     SyncAgain,
-    /// Open the accounts in Settings.
     OpenSettings,
 }
 
-/// A failed sync: try again, or fix the account first.
 pub(super) const SYNC_FAILED_ACTIONS: &[StatusAction] =
     &[StatusAction::SyncAgain, StatusAction::OpenSettings];
 
-/// What a sync that ended as `outcome` lets the person do: nothing once it
-/// synced; add an account, or sync again, when it reached no server; sync
-/// again or check the account when it failed.
 pub(super) fn after_sync(
     outcome: &crate::caldav::SyncOutcome,
     no_accounts: bool,
@@ -107,12 +83,9 @@ pub(super) fn after_sync(
     }
 }
 
-/// The actions of the status up, kept with the status they belong to, so a
-/// later status without any shows none.
 #[derive(Default)]
 pub(super) struct StatusActions {
     shown: Option<(String, Vec<StatusAction>)>,
-    /// Links opened from a notice, as the host was asked to open them.
     #[cfg(test)]
     opened_links: Vec<&'static str>,
 }
@@ -135,8 +108,6 @@ impl StatusAction {
 }
 
 impl CalendarApp {
-    /// Show `text` of `kind`, which asks the person to act, with `actions`
-    /// beside it.
     pub(super) fn show_status_with(
         &mut self,
         text: String,
@@ -148,7 +119,6 @@ impl CalendarApp {
         self.dirty = true;
     }
 
-    /// The actions of the status up.
     fn status_actions(&self) -> &[StatusAction] {
         let Some(shown) = self.status.text() else {
             return &[];
@@ -160,8 +130,6 @@ impl CalendarApp {
             .map_or(&[], |(_, actions)| actions.as_slice())
     }
 
-    /// Run an action pressed beside the status in the bar: sync again, or
-    /// open the accounts in Settings.
     pub(super) fn take_status_actions(&mut self) {
         let actions = self.status_actions().to_vec();
         for action in actions {
@@ -179,8 +147,6 @@ impl CalendarApp {
                         state.sync_requested = true;
                     }
                 }
-                // To where calendar accounts are kept, through the desktop's
-                // `settings://` handler.
                 StatusAction::OpenSettings => {
                     #[cfg(test)]
                     self.status_actions.opened_links.push(ACCOUNT_SETTINGS_LINK);
@@ -193,9 +159,8 @@ impl CalendarApp {
         }
     }
 
-    /// Say `text` of a change just submitted once it is kept: at once on
-    /// this device alone, once the workspace accepts it in a shared calendar,
-    /// and never when the workspace refuses it ([`Self::announce_answers`]).
+    /// Say `text` of a change once it is kept: at once on this device, once the workspace accepts it in a
+    /// shared calendar, and never when it refuses it ([`Self::announce_answers`]).
     pub(super) fn say_when_kept(&mut self, text: impl Into<String>) {
         if let Some(dispatcher) = &self.dispatcher {
             dispatcher.say_when_kept(text);
@@ -204,9 +169,6 @@ impl CalendarApp {
         }
     }
 
-    /// Show what the workspace answered of this window's changes: a change it
-    /// kept is said done ("Added Buy milk"), and one it refused, which the
-    /// record withdrew, says why instead.
     pub(super) fn announce_answers(&mut self) {
         let Some(dispatcher) = &self.dispatcher else {
             return;
@@ -229,7 +191,6 @@ impl CalendarApp {
         self.dirty = true;
     }
 
-    /// Whether a calendar was just shown or hidden, in words.
     pub(super) fn visibility_status(visible: bool) -> String {
         crate::resource::t(if visible {
             "calendar-visible"
@@ -238,8 +199,6 @@ impl CalendarApp {
         })
     }
 
-    /// Keep the window bar's notice saying the status while it lasts:
-    /// "Syncing calendars…" for as long as the sync runs.
     pub(super) fn publish_status(&mut self) {
         let syncing = self.syncing();
         self.status.keep_while(syncing);
@@ -257,8 +216,7 @@ impl CalendarApp {
 mod tests {
     use super::*;
 
-    /// A failure is an error notice in the window's bar because the place
-    /// that raised it said so, not because of the words it chose.
+    // A failure is an error notice because the place that raised it said so, not for its words.
     #[test]
     fn a_message_says_the_severity_it_was_raised_with() {
         let mut app = CalendarApp::new_detached();
@@ -268,7 +226,6 @@ mod tests {
         assert_eq!(notice.kind, ToastKind::Error);
         assert_eq!(notice.text, "Sync failed. Check the account.");
 
-        // The same words raised as a passing confirmation read as one.
         app.status
             .show("Sync failed. Check the account.", ToastKind::Info);
         app.publish_status();
@@ -276,8 +233,6 @@ mod tests {
         assert_eq!(notice.kind, ToastKind::Info);
     }
 
-    /// A status leaves on its own once it has been up for a notice's
-    /// lifetime, and the app wakes for it; a newer status starts its own.
     #[test]
     fn a_status_leaves_on_its_own() {
         use ui::Widget;
@@ -317,8 +272,6 @@ mod tests {
         );
     }
 
-    /// "Syncing…" stays for as long as the sync runs, past a notice's
-    /// lifetime, and goes once the sync is over.
     #[test]
     fn syncing_stays_while_the_sync_runs() {
         use ui::time::testing::with_monotonic_time;
@@ -352,7 +305,6 @@ mod tests {
 
     type Window = ui::framework::testing::TestApp<crate::resource::CalendarShell>;
 
-    /// The calendar window with a failed sync's status in its bar.
     fn failed_sync() -> Window {
         let mut window =
             Window::capture_at(Some("month"), (1280, 800)).expect("the calendar opens");
@@ -382,8 +334,6 @@ mod tests {
         (420.0, true),
     ];
 
-    /// A failed sync asks to sync again or to check the account, and carries
-    /// both, in that order, wide or compact.
     #[test]
     fn a_failed_sync_carries_sync_again_and_open_settings() {
         let mut window = failed_sync();
@@ -400,7 +350,6 @@ mod tests {
         }
     }
 
-    /// Sync again, by pointer or through its semantic action, syncs again.
     #[test]
     fn a_failed_syncs_sync_again_syncs() {
         for (width, semantic) in WAYS {
@@ -419,8 +368,6 @@ mod tests {
         }
     }
 
-    /// Open Settings, by pointer or through its semantic action, opens the
-    /// accounts in Settings.
     #[test]
     fn a_failed_syncs_open_settings_opens_the_accounts() {
         for (width, semantic) in WAYS {

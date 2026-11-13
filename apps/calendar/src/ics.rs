@@ -1,22 +1,4 @@
 //! Minimal iCalendar (RFC 5545) import/export.
-//!
-//! Import is best-effort line by line: a byte-order mark, one malformed
-//! content line or a missing `END` skips only what it spoils, where the
-//! `icalendar` crate's parser refuses the whole file. Covered:
-//!
-//! - `VEVENT`  → identity, local/UTC/TZID dates, location, organizers,
-//!   attendees/RSVPs, bounded recurrence rules, exclusions and overrides.
-//! - `VTODO`   → `SUMMARY`, `DUE`, `STATUS:COMPLETED`, `PRIORITY`.
-//!
-//! Content lines (folding, parameter quoting, TEXT escaping) go through the
-//! shared `pim-lines` codec that vCard uses too.
-//!
-//! Calendar retains TZIDs explicitly while keeping datetimes as wall time in
-//! that named zone. IANA transition data resolves folds to the earlier instant
-//! and advances gaps to their first valid minute, identically on every peer.
-//! A TZID that is no IANA name (Outlook's `W. Europe Standard Time`, or a
-//! `VTIMEZONE` the file defines) becomes the IANA zone it stands for; one that
-//! stands for none keeps its time as written, and the import says so.
 
 use std::collections::HashMap;
 use std::fmt::Write as _;
@@ -36,7 +18,6 @@ const D_ONLY: &str = "%Y%m%d";
 type RecurrenceIdentity = (NaiveDate, Option<NaiveTime>);
 type ParsedEvent = (Event, Option<RecurrenceIdentity>, bool);
 
-/// Serialise the whole model to an iCalendar string.
 #[allow(
     clippy::too_many_lines,
     reason = "the serializer mirrors one compact RFC component stream and splitting would obscure ordering"
@@ -87,18 +68,14 @@ pub fn export(model: &Calendar) -> String {
         if !e.location.is_empty() {
             line(&mut out, "LOCATION", &e.location);
         }
-        // The event's notes are its description.
         let notes = model.notes_text(e.id);
         if !notes.trim().is_empty() {
             line(&mut out, "DESCRIPTION", notes.trim_end());
         }
         let rr = recurrence_rule(e);
         if !rr.is_empty() {
-            // RRULE is a structured value — written raw (no TEXT escaping).
             raw(&mut out, "RRULE", &rr);
         }
-        // RFC 5545 matches an exclusion against DTSTART's value type: a
-        // timed series excludes the occurrence's own date-time.
         for date in e.recurrence_exdates.iter() {
             if e.all_day {
                 raw(
@@ -125,7 +102,6 @@ pub fn export(model: &Calendar) -> String {
             participant_line(&mut out, "ATTENDEE", attendee);
         }
         if let Some(m) = e.reminder_min {
-            // VALARM with a relative trigger N minutes before start.
             out.push_str("BEGIN:VALARM\r\n");
             raw(&mut out, "ACTION", "DISPLAY");
             raw(&mut out, "TRIGGER", &format!("-PT{m}M"));
@@ -219,7 +195,6 @@ pub fn export(model: &Calendar) -> String {
             raw(&mut out, "STATUS", "COMPLETED");
             raw(&mut out, "PERCENT-COMPLETE", "100");
         }
-        // RFC priority: 1 (high) .. 9 (low), 0 undefined.
         let prio = match t.priority {
             Priority::High => 1,
             Priority::Medium => 5,
@@ -267,9 +242,6 @@ fn recurrence_rule(event: &Event) -> String {
     rule
 }
 
-/// UNTIL in DTSTART's value type (RFC 5545 §3.3.10): a date for an all-day
-/// series, the last occurrence's local start for a floating one, and that
-/// start in UTC for a zoned one.
 fn series_until_value(event: &Event, until: NaiveDate) -> String {
     if event.all_day {
         return until.format(D_ONLY).to_string();
@@ -290,7 +262,6 @@ fn participant_line(out: &mut String, property: &str, attendee: &Attendee) {
         ("PARTSTAT", attendee.status.as_ical()),
     ];
     if !attendee.name.is_empty() {
-        // Parameter values are quoted (RFC 5545 §3.2), not TEXT-escaped.
         params.push(("CN", attendee.name.as_str()));
     }
     pim_lines::write_property(
@@ -301,24 +272,18 @@ fn participant_line(out: &mut String, property: &str, attendee: &Attendee) {
     );
 }
 
-/// Parse an iCalendar string into events + tasks. Best-effort: unknown
-/// properties and components are skipped.
 pub fn parse(text: &str) -> (Vec<Event>, Vec<Task>) {
     let parsed = parse_calendar(text);
     (parsed.events, parsed.tasks)
 }
 
-/// What an iCalendar file holds, and what of it Calendar could not place.
 #[derive(Debug, Default)]
 pub struct Parsed {
     pub events: Vec<Event>,
     pub tasks: Vec<Task>,
-    /// The TZIDs that name no zone Calendar knows, in the order they first
-    /// appear. Events in them keep their times as written, on no zone.
     pub unknown_zones: Vec<String>,
 }
 
-/// Parse an iCalendar string, reporting the time zones it could not place.
 pub fn parse_calendar(text: &str) -> Parsed {
     let mut events = Vec::new();
     let mut overrides = Vec::new();
@@ -328,7 +293,6 @@ pub fn parse_calendar(text: &str) -> Parsed {
         .iter()
         .map(|line| ContentLine::parse(line))
         .collect();
-    // A VTIMEZONE may follow the events that name it.
     let mut zones = Zones::defined_in(&lines);
     let mut i = 0;
     while i < lines.len() {
@@ -384,8 +348,6 @@ pub fn parse_calendar(text: &str) -> Parsed {
     }
 }
 
-/// The time zones a file defines in `VTIMEZONE` components, by TZID, and
-/// the IANA zone each TZID it names resolves to.
 #[derive(Default)]
 struct Zones {
     defined: HashMap<String, DefinedZone>,
@@ -395,7 +357,6 @@ struct Zones {
 
 #[derive(Default)]
 struct DefinedZone {
-    /// `X-LIC-LOCATION`, the IANA name libical-based publishers add.
     location: Option<String>,
     observances: Vec<Observance>,
 }
@@ -447,10 +408,6 @@ impl Zones {
         }
     }
 
-    /// The zone of a date-time property's value, in the year it falls in:
-    /// `UTC` for a `Z` value, the IANA zone its TZID stands for, and
-    /// `floating` without a TZID or for one that stands for none, which is
-    /// then noted.
     fn of(&mut self, line: &ContentLine, year: i32) -> String {
         if line.value.ends_with('Z') {
             return "UTC".into();
@@ -485,13 +442,10 @@ impl Zones {
     }
 }
 
-/// A TZID as a lookup key: Outlook quotes some parameters, and escapes the
-/// commas of the property naming one.
 fn tzid_key(tzid: &str) -> String {
     unescape(tzid.trim().trim_matches('"').trim())
 }
 
-/// Read one property of a STANDARD or DAYLIGHT observance.
 fn observance_property(observance: &mut Observance, line: &ContentLine) {
     let value = line.value.trim();
     match line.name.as_str() {
@@ -520,7 +474,6 @@ fn observance_property(observance: &mut Observance, line: &ContentLine) {
     }
 }
 
-/// An RFC 5545 UTC offset (`+0100`, `-0430`, `+053000`) in seconds.
 fn parse_utc_offset(value: &str) -> Option<i32> {
     let (sign, digits) = match value.split_at_checked(1)? {
         ("+", digits) => (1, digits),
@@ -537,8 +490,6 @@ fn parse_utc_offset(value: &str) -> Option<i32> {
     (total < 24 * 3600).then_some(sign * total)
 }
 
-/// The yearly transition rule of an observance's RRULE, if Calendar can
-/// follow it: a month, and a weekday in it or a day of it.
 fn yearly_rule(rule: &str) -> Option<YearlyRule> {
     if !rrule_value(rule, "FREQ")?.eq_ignore_ascii_case("YEARLY") {
         return None;
@@ -625,7 +576,6 @@ fn parse_vevent(
             break;
         }
         if slot.as_ref().is_some_and(|line| line.begins("VALARM")) {
-            // Scan the alarm for a TRIGGER:-PTnM.
             while let Some(slot) = lines.get(i) {
                 let Some(line) = slot else {
                     i += 1;
@@ -657,7 +607,6 @@ fn parse_vevent(
                     recurrence_interval = rrule_u32(&rrule, "INTERVAL").unwrap_or(1).max(1);
                     recurrence_count = rrule_u32(&rrule, "COUNT").filter(|value| *value > 0);
                 }
-                // Resolved once DTSTART's zone is known, which may come later.
                 "EXDATE" => exdates.extend(val.split(',').map(str::to_owned)),
                 "ATTENDEE" => {
                     if let Some(attendee) = parse_participant(line) {
@@ -714,14 +663,10 @@ fn parse_vevent(
     }) else {
         return (None, i);
     };
-    // A timed series states its end and exclusions as date-times (RFC 5545
-    // §3.3.10 requires UNTIL to match DTSTART's value type), often in UTC.
     let recurrence_until =
         rrule_value(&rrule, "UNTIL").and_then(|value| series_until(value, start, &timezone));
     let mut end_later_fold = false;
     let mut end = match (end, duration) {
-        // A flight leaves in one zone and lands in another; the event keeps
-        // its start's zone, so the end becomes that instant there.
         (Some(end), _) => match end_timezone.filter(|zone| {
             !all_day && *zone != timezone && *zone != "floating" && timezone != "floating"
         }) {
@@ -745,10 +690,6 @@ fn parse_vevent(
         }
         (None, None) => start,
     };
-    // DATE-valued DTSTART/DTEND follows RFC 5545's exclusive-end convention.
-    // A surprising number of hand-authored feeds still send the same date for
-    // both; keep that malformed-but-common input visible as one day rather
-    // than importing an event that occupies no time at all.
     if all_day && end.date() <= start.date() {
         end = (start.date() + chrono::Duration::days(1)).and_time(NaiveTime::MIN);
     }
@@ -797,7 +738,6 @@ fn parse_vevent(
 }
 
 fn parse_vtodo(lines: &[Option<ContentLine>], mut i: usize) -> (Option<Task>, usize) {
-    // Keep the same identity on repeated imports, including external UIDs.
     let mut id: Option<Id> = None;
     let mut title = String::new();
     let mut due: Option<NaiveDate> = None;
@@ -851,15 +791,12 @@ fn parse_vtodo(lines: &[Option<ContentLine>], mut i: usize) -> (Option<Task>, us
     )
 }
 
-/// Emit a TEXT-valued property (SUMMARY, LOCATION, DESCRIPTION) with the
-/// RFC 5545 character escaping applied.
 fn line(out: &mut String, key: &str, val: &str) {
     fold_into(out, &format!("{key}:{}", escape(val)));
 }
 
-/// Emit a structured / non-TEXT property (RRULE, DTSTART, TRIGGER, …)
-/// verbatim — these use `;` and `,` as syntax, so they must NOT be
-/// TEXT-escaped.
+/// Emit a structured property (RRULE, DTSTART, TRIGGER, …) verbatim: these use `;` and `,` as syntax,
+/// so they must not be TEXT-escaped.
 fn raw(out: &mut String, key: &str, val: &str) {
     fold_into(out, &format!("{key}:{val}"));
 }
@@ -893,7 +830,6 @@ fn parse_cal_datetime(line: &ContentLine) -> Option<(NaiveDateTime, bool)> {
     if let Ok(dt) = NaiveDateTime::parse_from_str(clean, DT_LOCAL) {
         return Some((dt, false));
     }
-    // Fall back to a date-only parse.
     if let Some(d) = parse_cal_date(val) {
         return Some((d.and_time(NaiveTime::MIN), true));
     }
@@ -937,8 +873,6 @@ fn parse_participant(line: &ContentLine) -> Option<Attendee> {
         .unwrap_or_else(|| stable_external_attendee_id(email));
     Some(Attendee {
         id,
-        // Earlier exports backslash-escaped CN like TEXT (`CN=Doe\, Jane`);
-        // resolving those escapes keeps such files importing as before.
         name: line
             .param_value("CN")
             .map_or_else(String::new, |name| unescape(&name)),
@@ -974,9 +908,6 @@ fn rrule_u32(rule: &str, name: &str) -> Option<u32> {
     rrule_value(rule, name)?.parse().ok()
 }
 
-/// The wall time in `zone` of an UNTIL or EXDATE value: a DATE at midnight,
-/// a local DATE-TIME as written, and a UTC one (`Z`) moved into the series'
-/// zone, so its date is the one the person sees the occurrence on.
 fn recurrence_wall(value: &str, zone: &str) -> Option<NaiveDateTime> {
     let value = value.trim();
     if let Some(date) = parse_cal_date(value) {
@@ -992,9 +923,6 @@ fn recurrence_wall(value: &str, zone: &str) -> Option<NaiveDateTime> {
     })
 }
 
-/// The last date a series starting at `start` occurs on, from its UNTIL.
-/// UNTIL is inclusive of an occurrence starting at that very instant, so a
-/// DATE-TIME before the series' time of day ends it the day before.
 fn series_until(value: &str, start: NaiveDateTime, zone: &str) -> Option<NaiveDate> {
     if let Some(date) = parse_cal_date(value) {
         return Some(date);
@@ -1011,13 +939,10 @@ fn parse_cal_date(val: &str) -> Option<NaiveDate> {
     NaiveDate::parse_from_str(val.trim(), D_ONLY).ok()
 }
 
-/// RFC 5545 event durations are positive weeks, days or time spans, not
-/// calendar months. Checked arithmetic keeps an untrusted file from overflowing.
 fn parse_event_duration(value: &str) -> Option<(i64, chrono::Duration)> {
     duration_parts(value).filter(|(days, time)| *days > 0 || *time > chrono::Duration::zero())
 }
 
-/// An RFC 5545 duration's nominal days and its elapsed time, zero included.
 fn duration_parts(value: &str) -> Option<(i64, chrono::Duration)> {
     let value = value.trim();
     let value = value.strip_prefix('+').unwrap_or(value);
@@ -1074,8 +999,6 @@ fn duration_span(
     days: i64,
     time: chrono::Duration,
 ) -> Option<(NaiveDateTime, bool)> {
-    // Days are nominal calendar days; hours/minutes/seconds are elapsed
-    // time. They differ when the event crosses a daylight-saving change.
     let wall = start.checked_add_signed(chrono::Duration::try_days(days)?)?;
     if zone == "floating" {
         return Some((wall.checked_add_signed(time)?, false));
@@ -1084,8 +1007,6 @@ fn duration_span(
     wall_in(zone, instant.checked_add_signed(time)?)
 }
 
-/// The wall time `instant` shows in `zone`, and whether it is the later of a
-/// repeated hour's two instants.
 fn wall_in(zone: &str, instant: chrono::DateTime<chrono::Utc>) -> Option<(NaiveDateTime, bool)> {
     let wall = if zone == "UTC" {
         instant.naive_utc()
@@ -1098,9 +1019,6 @@ fn wall_in(zone: &str, instant: chrono::DateTime<chrono::Utc>) -> Option<(NaiveD
     Some((wall, later_fold))
 }
 
-/// Minutes before the start a VALARM's relative TRIGGER rings: `-PT15M`,
-/// `-PT1H30M`, `-P1D`, or `PT0S` at the start itself. A trigger after the
-/// start is no reminder Calendar can hold.
 fn parse_trigger_minutes(v: &str) -> Option<i64> {
     let v = v.trim();
     let (before, duration) = match v.strip_prefix('-') {
@@ -1120,19 +1038,12 @@ fn color_from_name(name: &str) -> Palette {
         .unwrap_or(Palette::Indigo)
 }
 
-/// Default export filename, derived from the visible month.
 pub fn suggested_filename(anchor: NaiveDate) -> String {
     format!("tilo-calendar-{}-{:02}.ics", anchor.year(), anchor.month())
 }
 
-/// A small, self-contained `.ics` payload anchored near `today`, built by
-/// round-tripping a tiny [`Calendar`] through [`export`]. Backs the in-app
-/// "Import .ics" action so the import path is reachable and demoable
-/// offline (no file dialog needed) — the parser is exercised end to end.
 pub fn sample_ics(today: NaiveDate) -> String {
     let at = |date: NaiveDate, h: u32, m: u32| -> NaiveDateTime {
-        // Only ever called below with fixed, valid literals; midnight is a
-        // safe fallback for any hour/minute pair that wouldn't be.
         date.and_time(NaiveTime::from_hms_opt(h, m, 0).unwrap_or(NaiveTime::MIN))
     };
     let d = |delta: i64| today + chrono::Duration::days(delta);
@@ -1453,8 +1364,6 @@ mod tests {
         }
     }
 
-    /// Alarms as other calendars write them keep their time before the start,
-    /// through the import an action makes of them.
     #[test]
     fn imported_alarms_keep_their_time_before_the_start() {
         let reminder = |trigger: &str| {
@@ -1472,14 +1381,10 @@ mod tests {
         assert_eq!(reminder("-PT1H"), (Some(60), 60));
         assert_eq!(reminder("-P1D"), (Some(1440), 1440));
         assert_eq!(reminder("PT0S"), (Some(0), 0));
-        // Parsed, but no alert Calendar offers: the event comes without one.
         assert_eq!(reminder("-PT1H30M"), (Some(90), -1));
-        // After the start is not a reminder before it.
         assert_eq!(reminder("PT15M"), (None, -1));
     }
 
-    /// What a `CalDAV` server or an emailed invite sends for a timed series:
-    /// UNTIL and EXDATE as date-times, UTC or zoned, and a task due at a time.
     #[test]
     fn date_time_series_ends_exclusions_and_due_times_import() {
         let date = |day| NaiveDate::from_ymd_opt(2026, 10, day).expect("valid date");
@@ -1494,8 +1399,6 @@ mod tests {
             let (events, _) = parse(&payload);
             events[0].occurrences_in(date(1), date(31) + chrono::Duration::days(90))
         };
-        // UNTIL at the last occurrence's own start (09:00 in Berlin, 07:00
-        // UTC in summer time) keeps it; the zoned exclusion drops the 12th.
         assert_eq!(
             weekly(
                 "20261019T070000Z",
@@ -1503,14 +1406,10 @@ mod tests {
             ),
             vec![date(5), date(19)]
         );
-        // 07:59 UTC on the 26th is 08:59 in Berlin after the clocks went
-        // back, a minute before that day's occurrence: the series ends on
-        // the 19th. A UTC exclusion lands on its Berlin date.
         assert_eq!(
             weekly("20261026T075959Z", "EXDATE:20261005T070000Z"),
             vec![date(12), date(19)]
         );
-        // A DATE UNTIL, as Calendar writes it, still ends on that date.
         assert_eq!(
             weekly("20261026", "EXDATE;VALUE=DATE:20261019"),
             vec![date(5), date(12), date(26)]
@@ -1528,10 +1427,6 @@ mod tests {
         );
     }
 
-    /// A zoned series imports to the days and wall times RFC 5545 gives it,
-    /// as the `rrule` crate expands it: weekdays every other week across the
-    /// end of summer time, bounded by COUNT or by a UTC UNTIL, less a zoned
-    /// exclusion.
     #[test]
     fn a_zoned_series_imports_to_the_days_rfc_5545_gives_it() {
         let series = [
@@ -1580,8 +1475,6 @@ mod tests {
     )]
     fn content_lines_fold_escape_and_quote_per_rfc_5545() {
         {
-            // RFC 5545 folds by inserting CRLF + one whitespace at an arbitrary
-            // point; "Hello World" was folded mid-word here.
             let payload = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nSUMMARY:Hello Wo\r\n rld\\, again\\; line1\\nline2\r\nDTSTART:20260615T090000\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
             let (events, _) = parse(payload);
             assert_eq!(events[0].title, "Hello World, again; line1\nline2");
@@ -1684,8 +1577,6 @@ mod tests {
         }
     }
 
-    /// The VTIMEZONE Outlook and Exchange send with an invite in Central
-    /// European time, under the TZID `tzid`.
     fn outlook_zone(tzid: &str) -> String {
         format!(
             "BEGIN:VTIMEZONE\r\nTZID:{tzid}\r\n\
@@ -1698,8 +1589,6 @@ mod tests {
         )
     }
 
-    /// An invite as Exchange writes it: `zone` (a VTIMEZONE or nothing)
-    /// before the event, whose times name `tzid`.
     fn outlook_invite(zone: &str, tzid: &str, start: &str, end: &str) -> String {
         format!(
             "BEGIN:VCALENDAR\r\nMETHOD:REQUEST\r\nPRODID:Microsoft Exchange Server 2010\r\n\
@@ -1720,7 +1609,6 @@ mod tests {
         )
     }
 
-    /// The zone an imported invite's event keeps, and the instant it starts.
     fn imported_at(payload: &str) -> (String, String) {
         let parsed = parse_calendar(payload);
         assert_eq!(parsed.events.len(), 1, "the invite's event is kept");
@@ -1731,8 +1619,6 @@ mod tests {
         (event.timezone.clone(), instant)
     }
 
-    /// Outlook and Exchange name zones the Windows way; with or without the
-    /// VTIMEZONE they send, the invite imports at its instant.
     #[test]
     fn outlook_invites_import_at_their_instant() {
         let at_ten = "2026-11-03T09:00:00+00:00".to_string();
@@ -1753,7 +1639,6 @@ mod tests {
             assert_eq!(events[0].reminder, 15);
             assert!(parse_calendar(&payload).unknown_zones.is_empty());
         }
-        // Summer time, through the Windows name of US Pacific time.
         assert_eq!(
             imported_at(&outlook_invite(
                 "",
@@ -1799,7 +1684,6 @@ mod tests {
             "2026-01-15T11:00:00+00:00",
             "{zone} keeps Central European winter time"
         );
-        // Southern-hemisphere rules count weekdays from a month's start.
         let sydney = "BEGIN:VTIMEZONE\r\nTZID:Customized Time Zone 1\r\n\
              BEGIN:STANDARD\r\nDTSTART:16010101T030000\r\nTZOFFSETFROM:+1100\r\n\
              TZOFFSETTO:+1000\r\nRRULE:FREQ=YEARLY;INTERVAL=1;BYDAY=1SU;BYMONTH=4\r\n\
@@ -1819,7 +1703,6 @@ mod tests {
                 "2026-11-30T22:00:00+00:00".to_string()
             )
         );
-        // libical's VTIMEZONE says which zone it is.
         let located = "BEGIN:VTIMEZONE\r\nTZID:/citadel.org/20250101_1/Custom\r\n\
              X-LIC-LOCATION:America/New_York\r\nEND:VTIMEZONE\r\n";
         assert_eq!(
@@ -1834,9 +1717,6 @@ mod tests {
         );
     }
 
-    /// Havana keeps US Eastern offsets and moves its clocks on the same
-    /// days, two hours earlier; a customised zone with US Eastern rules is
-    /// New York, which moves them at the instants the rules give.
     #[test]
     fn a_customised_zone_is_the_one_changing_clocks_at_its_instants() {
         let eastern = "BEGIN:VTIMEZONE\r\nTZID:Customized Time Zone\r\n\
@@ -1860,8 +1740,6 @@ mod tests {
         );
     }
 
-    /// A zone nothing places keeps the event at its time as written, and
-    /// the import names the zone.
     #[test]
     fn an_unknown_zone_keeps_the_time_as_written() {
         let no_fit = "BEGIN:VTIMEZONE\r\nTZID:Lunar Standard Time\r\nBEGIN:STANDARD\r\n\
@@ -1893,8 +1771,6 @@ mod tests {
         }
     }
 
-    /// A flight leaves in one zone and lands in another: the event keeps its
-    /// departure's zone and lands at the right instant.
     #[test]
     fn an_end_in_another_zone_is_the_same_instant() {
         let payload = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:flight@example.com\r\n\
@@ -1910,8 +1786,6 @@ mod tests {
         );
     }
 
-    /// RFC 5545 has a timed series write UNTIL and EXDATE as date-times of
-    /// DTSTART's kind; the export reads back to the same series.
     #[test]
     fn a_timed_series_exports_its_end_and_exclusions_as_date_times() {
         let date = |day| NaiveDate::from_ymd_opt(2026, 10, day).unwrap();

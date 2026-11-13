@@ -1,11 +1,6 @@
 //! The calendar's items as JSON (what its verbs take: an event or a task
 //! as a server or a file gives it), the ids its items are published under,
 //! and its calendar collections as live rows.
-//!
-//! The calendar itself — its events, tasks, projects and notes, and what
-//! each server last confirmed — is the [`Calendar`] record; its fields
-//! change through field edits at their paths and its verbs
-//! ([`crate::resource`]).
 
 use chrono::{NaiveDate, NaiveDateTime, NaiveTime};
 use serde::{Deserialize, Serialize};
@@ -16,37 +11,28 @@ use crate::model::{
     Task, key,
 };
 
-/// The published id of the event `id`: an item of the calendar's events.
 pub fn event_resource_id(id: Id) -> String {
     item_resource_id::<Calendar>("events", &key(id))
 }
 
-/// The published id of the task `id`.
 pub fn task_resource_id(id: Id) -> String {
     item_resource_id::<Calendar>("tasks", &key(id))
 }
 
-/// The published id of the task project `id`.
 pub fn project_resource_id(id: Id) -> String {
     item_resource_id::<Calendar>("projects", &key(id))
 }
 
-/// The id of the calendar on this device, which holds the events that name
-/// no calendar of an account.
 pub const LOCAL_CALENDAR_ID: &str = "local";
 
-/// The id of a local or configured remote calendar collection's row.
 pub fn calendar_resource_id(id: &str) -> String {
     format!("calendar.collection:{id}")
 }
 
-/// The row of the attendee `attendee_id` of the event `event_id`.
 pub fn attendee_resource_id(event_id: Id, attendee_id: Id) -> String {
     format!("{}/attendees/{attendee_id}", event_resource_id(event_id))
 }
 
-/// What opens the occurrence of the event `event_id` originally on
-/// `original_date`: the event's id and the date.
 pub fn occurrence_resource_id(event_id: Id, original_date: NaiveDate) -> String {
     format!(
         "{}/occurrences/{}",
@@ -55,8 +41,6 @@ pub fn occurrence_resource_id(event_id: Id, original_date: NaiveDate) -> String 
     )
 }
 
-/// A calendar collection as a live row: read it, open it, show or hide it,
-/// choose its colour.
 pub(crate) fn calendar_collection_row(
     calendar: &CalendarCollectionResource,
 ) -> ui::framework::LiveRow {
@@ -90,14 +74,9 @@ pub(crate) fn calendar_collection_row(
     )
 }
 
-/// How an event's start and end are written in its JSON form.
 pub(crate) const DT_FMT: &str = "%Y-%m-%dT%H:%M";
-/// How dates are written in the JSON forms.
 pub(crate) const DATE_FMT: &str = "%Y-%m-%d";
 
-/// An event as JSON, as a verb takes one: datetimes as `YYYY-MM-DDTHH:MM`,
-/// colour as a palette index, recurrence as an RRULE body, no reminder as
-/// `-1`. [`Self::from_event`] and [`Self::to_event`] round-trip losslessly.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct EventData {
@@ -127,11 +106,8 @@ pub struct EventData {
     pub organizer: String,
     #[serde(default)]
     pub attendees: Vec<AttendeeData>,
-    /// Minutes before start for a reminder, or `-1` for none.
     pub reminder: i64,
-    /// Owning project id (string form), or `""` for none.
     pub project: String,
-    /// Source calendar id, or `""` for the local on-device calendar.
     pub calendar_id: String,
 }
 
@@ -143,8 +119,6 @@ fn default_timezone() -> String {
     "floating".into()
 }
 
-/// An event left to fill in: no times yet, on the local calendar, not
-/// repeating, no reminder.
 impl Default for EventData {
     fn default() -> Self {
         Self {
@@ -228,10 +202,8 @@ impl EventData {
                 .iter()
                 .map(AttendeeData::from_attendee)
                 .collect(),
-            // External imports may carry an alarm interval Calendar does not
-            // offer in its closed editing domain. Normalize at the action
-            // authoring boundary so replay never persists an unsupported
-            // scalar while preserving the event itself.
+            // An imported alarm interval Calendar cannot offer is normalised at authoring, so replay never
+            // persists an unsupported scalar and the event itself is kept.
             reminder: e
                 .reminder_min
                 .filter(|minutes| crate::model::REMINDERS.contains(minutes))
@@ -241,9 +213,6 @@ impl EventData {
         }
     }
 
-    /// Reconstruct the model event, or `None` when the payload is malformed (an
-    /// unparseable id or datetime) so `apply` can no-op instead of substituting a
-    /// wall-clock value, which would break replay determinism.
     pub fn to_event(&self) -> Option<Event> {
         let id = self.id.parse::<Id>().ok()?;
         let mut start = NaiveDateTime::parse_from_str(&self.start, DT_FMT).ok()?;
@@ -417,22 +386,18 @@ impl OccurrenceOverrideData {
     }
 }
 
-/// A task as JSON, as a verb takes one.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct TaskData {
     pub id: String,
     pub title: String,
     pub done: bool,
-    /// Due date (`DATE_FMT`), or `""` for none.
     pub due: String,
-    /// Priority rank (0 = highest).
     pub priority: u8,
     pub project: String,
     pub parent: String,
 }
 
-/// A task left to fill in: not done, no date, no priority.
 impl Default for TaskData {
     fn default() -> Self {
         Self {
@@ -494,14 +459,10 @@ fn parse_opt_id(s: &str) -> Option<Id> {
     }
 }
 
-/// The events and tasks of the iCalendar `source`, retaining their UID-derived
-/// identities so a repeated import also recognises locally edited items.
-/// `None` when it holds neither.
 pub fn import_payload(source: &str) -> Option<(Vec<EventData>, Vec<TaskData>)> {
     import_parsed(&crate::ics::parse_calendar(source))
 }
 
-/// [`import_payload`] of a file already parsed.
 pub(crate) fn import_parsed(
     parsed: &crate::ics::Parsed,
 ) -> Option<(Vec<EventData>, Vec<TaskData>)> {
@@ -510,9 +471,6 @@ pub(crate) fn import_parsed(
     (!events.is_empty() || !tasks.is_empty()).then_some((events, tasks))
 }
 
-/// A local or remote collection events are filed under, as the accounts
-/// configured on this device list it: its stable id, label, colour and
-/// whether it is shown.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CalendarCollectionResource {
     pub id: String,

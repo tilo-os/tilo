@@ -6,7 +6,6 @@ use tilo_document::RichTextAction;
 use ui::tilo_resource::{Invoke, Replica, Resource as _};
 use uuid::Uuid;
 
-/// The sample calendar, written through its own verbs.
 fn seeded() -> Replica<Calendar> {
     let mut calendar = Replica::<Calendar>::new();
     let sample =
@@ -36,7 +35,6 @@ fn encoded(invoke: &Invoke<Calendar>) -> EncodedAction {
     ui::tilo_resource::encode::<Calendar>(&action).unwrap()
 }
 
-/// The calendar's published tree for `doc`, with its effects.
 fn resources_for(doc: &ui::automerge::AutoCommit) -> Vec<ResourceSpec> {
     let mut root =
         ui::tilo_resource::publish::<Calendar>("calendar.calendar", "Calendar", &read(doc));
@@ -49,7 +47,6 @@ fn first_event(doc: &ui::automerge::AutoCommit) -> Event {
     read(doc).events[0].clone()
 }
 
-/// An event as its JSON form, starting at `start` for an hour.
 fn event_data(title: &str, start: &str, end: &str) -> EventData {
     EventData {
         id: Uuid::new_v4().to_string(),
@@ -64,13 +61,8 @@ ui::action_contract_tests! {
     seed: seeded_doc(),
     registry: registry(),
     resources: |doc| resources_for(doc),
-    // What a person starts from the palette, and what acts on an event it
-    // names: starting an event or a task opens their form, which is where a
-    // time, a repeat or a guest is set, so no row asks for a whole event.
     palette: ["New event", "New task", "Delete event"],
     replay: [
-        // Completion is an absolute value, so replay does not depend on the
-        // receiving replica's current task state.
         finish_task => |doc| {
             let task = read(doc).tasks.iter().find(|t| !t.done).unwrap().id;
             encoded(&Invoke::from(
@@ -106,9 +98,6 @@ ui::action_contract_tests! {
     ],
 }
 
-/// The calendar publishes its events, tasks and projects as its items, each
-/// with its verbs; an item past the published page still resolves by id,
-/// and a deleted one is refused rather than redirected.
 #[test]
 fn the_calendar_publishes_its_items_and_resolves_each_by_id() {
     let doc = seeded_doc();
@@ -167,15 +156,12 @@ fn the_calendar_publishes_its_items_and_resolves_each_by_id() {
     );
 }
 
-/// What a verb or a peer's edit may not do is refused whole, before
-/// anything is written.
 #[test]
 fn invalid_and_hostile_changes_are_refused_atomically() {
     let mut calendar = seeded();
     let before = calendar.heads();
     let event = calendar.state().unwrap().events[0].clone();
 
-    // An event filed under a project the calendar does not hold.
     let mut stray = event_data("Stray", "2026-09-06T09:00", "2026-09-06T10:00");
     stray.project = Uuid::new_v4().to_string();
     assert!(
@@ -183,7 +169,6 @@ fn invalid_and_hostile_changes_are_refused_atomically() {
             .apply(Calendar::NEW_EVENT.with(calendar::NewEvent { event: stray }))
             .is_err()
     );
-    // An end before the start, whether moved or written.
     assert!(
         calendar
             .apply(Calendar::RESCHEDULE.with((
@@ -204,7 +189,6 @@ fn invalid_and_hostile_changes_are_refused_atomically() {
             ))
             .is_err()
     );
-    // A blank project name; an email that is no address.
     let project = calendar.state().unwrap().projects[0].id;
     assert!(
         calendar
@@ -226,7 +210,6 @@ fn invalid_and_hostile_changes_are_refused_atomically() {
             )))
             .is_err()
     );
-    // A server's own records cannot be written as field edits.
     assert!(
         calendar
             .apply(Invoke::from(
@@ -239,7 +222,6 @@ fn invalid_and_hostile_changes_are_refused_atomically() {
             .is_err(),
         "what a server confirmed is written only by the server's own records"
     );
-    // An import with one bad item writes none of them.
     let (mut events, tasks) = import_payload(
         "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:batch-event\r\n\
          SUMMARY:Valid batch event\r\nDTSTART:20260919T090000\r\nDTEND:20260919T100000\r\n\
@@ -259,8 +241,6 @@ fn invalid_and_hostile_changes_are_refused_atomically() {
     assert_eq!(calendar.heads(), before, "nothing was written");
 }
 
-/// Edits on two replicas of one event — an attendee's answer, the series'
-/// time zone and repeat, a skipped date — all land on both.
 #[test]
 fn replicated_edits_of_one_event_converge() {
     let mut first = seeded();
@@ -300,7 +280,6 @@ fn replicated_edits_of_one_event_converge() {
     assert_eq!(left.recurrence_exdates.len(), 1);
     assert_eq!(left.attendees[0].status, InviteStatus::Accepted);
 
-    // A removed attendee stays removed whatever a stale replica answered.
     let mut stale = first.fork();
     first
         .apply_confirmed(Invoke::from(fields.attendees.remove(&key(attendee))))
@@ -328,8 +307,6 @@ fn replicated_edits_of_one_event_converge() {
 
 #[test]
 fn importing_a_duration_through_the_autumn_fold_keeps_actual_instants() {
-    // Both a reversed wall interval and a later-fold endpoint after the
-    // start need an unambiguous representation, not just a local-order fix.
     for (duration, expected_end) in [("PT30M", "01:15"), ("PT60M", "01:45"), ("PT65M", "01:50")] {
         let source = format!(
             "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:fold-visit@example.com\r\nSUMMARY:Visit\r\nDTSTART;TZID=Europe/Berlin:20261025T024500\r\nDURATION:{duration}\r\nEND:VEVENT\r\nBEGIN:VEVENT\r\nUID:other-visit@example.com\r\nSUMMARY:Other\r\nDTSTART:20261026T090000\r\nDTEND:20261026T100000\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
@@ -489,8 +466,6 @@ fn reimporting_a_source_uid_preserves_local_edits_and_detached_occurrences() {
     let to = NaiveDate::from_ymd_opt(2026, 6, 29).unwrap();
     assert_eq!(held.occurrences_in(from, to).len(), 2);
 
-    // Deliberate copies use the new-event action with a fresh identity;
-    // retaining import UIDs must not turn that operation into deduplication.
     let mut copy = EventData::from_event(held);
     copy.id.clear();
     calendar
@@ -525,9 +500,6 @@ fn an_import_replays_as_one_deterministic_action() {
     assert_eq!(read(a.doc()).notes_text(landed.id), "Imported from .ics");
 }
 
-/// A pulled event is adopted as its server holds it, so it needs no
-/// upload; dropping it removes it with what the server held; a confirmed
-/// delete and a sync token are recorded.
 #[test]
 fn a_pulled_event_is_adopted_without_an_upload() {
     let accounts = crate::AccountStore::sample();
@@ -646,7 +618,6 @@ fn json_forms_round_trip_events_and_tasks() {
     for event in &state.events {
         let data = EventData::from_event(event);
         let mut back = data.to_event().expect("the form reads back");
-        // A reminder the editor does not offer is dropped on the way.
         back.reminder_min = event
             .reminder_min
             .filter(|m| crate::model::REMINDERS.contains(m));
