@@ -100,4 +100,45 @@ mod tests {
             "a blank name is no name"
         );
     }
+
+    /// The number a held name is given is the first one nobody holds: past the twins already
+    /// numbered, and into the gap one of them left.
+    #[test]
+    fn a_number_already_held_is_passed_by_and_a_free_one_is_taken() {
+        let tree = held(&["Later", "Later 2", "Later 3"]);
+        assert_eq!(
+            made(Some("Later"), &tree),
+            "Later 4",
+            "every number held is passed by"
+        );
+        let gap = held(&["Later", "Later 3"]);
+        assert_eq!(
+            made(Some("Later"), &gap),
+            "Later 2",
+            "the first free number, not one past the highest"
+        );
+    }
+
+    /// The name the desk gives by number is a name like any other: the first on a desk with
+    /// nothing on it, and numbered beside the workspace that already holds it.
+    #[test]
+    fn the_desks_own_number_starts_at_one_and_is_never_a_twin() {
+        crate::i18n::ensure();
+        assert_eq!(
+            made(None, &[]),
+            "Workspace 1",
+            "the first workspace of an empty desk"
+        );
+        assert_eq!(
+            made(Some("Home"), &[]),
+            "Home",
+            "nothing is held, so the name asked for is free"
+        );
+        let tree = held(&["Home", "Workspace 3"]);
+        assert_eq!(
+            made(None, &tree),
+            "Workspace 3 2",
+            "the number the desk would give is held, so it is numbered beside that workspace"
+        );
+    }
 }
