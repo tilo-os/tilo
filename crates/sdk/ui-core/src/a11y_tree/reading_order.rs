@@ -1,15 +1,12 @@
-//! The reading order of a tree's widget and declared-resource nodes, the ids
-//! of the subtrees a refresh kept shared rather than copied.
+//! The reading order of a tree's widget and declared-resource nodes, the ids of the subtrees a refresh
+//! kept shared rather than copied.
 
 use std::sync::Arc;
 
 use super::SemanticId;
 
-/// Node ids in reading order: the ids a refresh built, in runs, between the
-/// ids of the subtrees it kept ([`RetainedSubtree`](super::RetainedSubtree)),
-/// each the very list the subtree is kept with. A keystroke keeps every
-/// block row but one, and carrying their ids costs a pointer per row, not a
-/// copy per node.
+/// Node ids in reading order: the ids a refresh built, in runs, between the ids of the subtrees it kept
+/// ([`RetainedSubtree`](super::RetainedSubtree)), each the very list the subtree is kept with.
 #[derive(Debug, Default)]
 pub(super) struct ReadingOrder {
     runs: Vec<Run>,
@@ -101,7 +98,6 @@ impl ReadingOrder {
             .flat_map(|(index, run)| {
                 let ids = run.ids();
                 if index.saturating_add(1) == mark.runs {
-                    // The run open at the mark: only what came after it.
                     match run {
                         Run::Built(_) => ids.get(mark.within..).unwrap_or_default(),
                         Run::Kept(_) => &[],

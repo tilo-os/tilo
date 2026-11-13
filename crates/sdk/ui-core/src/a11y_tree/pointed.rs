@@ -1,7 +1,6 @@
-//! The control under a point of the window: what a person points at when
-//! they say "this" (feedback about one button, an agent asked about it).
-//! Answered from the same tree assistive technology reads, naming the node
-//! by its semantic id, and never by what a field holds.
+//! The control under a point of the window: what a person points at when they say "this" (feedback
+//! about one button, an agent asked about it). Answered from the same tree assistive technology reads,
+//! naming the node by its semantic id, and never by what a field has.
 
 use vello::kurbo::Point;
 
@@ -21,13 +20,9 @@ fn pointed(node: &SemanticNode) -> PointedControl {
 }
 
 impl SemanticTree {
-    /// The deepest control under `point`, in the window's logical
-    /// coordinates, that a person could name: one with a durable identity
-    /// or an accessible name, so a bare layout box stands for nothing. Of
-    /// two at one depth the later, painted over the earlier, wins; a hidden
-    /// node and all below it are skipped, and a child is looked for even
-    /// outside its parent (a popover past its anchor). `None` where no
-    /// control is.
+    /// The deepest control under `point`, in the window's logical coordinates, that a person could
+    /// name: one with a durable identity or an accessible name, so a bare layout box is
+    /// nothing.
     #[must_use]
     pub fn pointed_at(&self, point: Point) -> Option<PointedControl> {
         let mut best = None;

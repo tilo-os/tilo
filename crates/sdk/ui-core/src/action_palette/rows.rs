@@ -1,12 +1,5 @@
-//! The rows a host feeds the palette itself, and the argument it collects for
-//! one.
-//!
-//! Rows are data: what the list shows (the shared search row model) and what
-//! choosing one needs. A host that searches somewhere the app's published
-//! actions cannot reach (the desktop's apps and windows, a launcher's own
-//! source) hands them in with [`ActionPalette::set_entries`](crate::ActionPalette::set_entries)
-//! and takes the chosen row's id back
-//! ([`ActionPalette::take_outcome`](crate::ActionPalette::take_outcome)).
+//! The rows a host feeds the palette itself, and the argument it collects for one. Rows are data: what
+//! the list shows (the shared search row model) and what choosing one needs.
 
 use crate::icons::{self, Icon};
 use crate::platform::{HostShortcut, PlatformConventions, Shortcut};
@@ -34,8 +27,8 @@ pub enum ArgumentKind {
 }
 
 impl ArgumentKind {
-    /// `value` stepped `direction` times by this kind's step, kept inside its
-    /// bounds; `None` when the kind is not a number or the value is not one.
+    /// `value` stepped `direction` times by this kind's step, kept inside its bounds; `None` when the
+    /// kind is not a number or the value is not one.
     #[must_use]
     pub fn stepped(self, value: &str, direction: f64) -> Option<String> {
         let Self::Number { min, max, step } = self else {
@@ -56,8 +49,6 @@ impl ArgumentKind {
     }
 }
 
-/// The number `value` written with the decimals `step` needs: an even step
-/// keeps none, a tenth keeps one, and so on.
 fn format_number(value: f64, step: f64) -> String {
     let mut decimals: usize = 0;
     let mut probe = step.abs().max(f64::EPSILON);
@@ -68,79 +59,68 @@ fn format_number(value: f64, step: f64) -> String {
     format!("{value:.decimals$}")
 }
 
-/// What one step of an argument asks: a heading, a field and what it holds.
+/// What one step of an argument asks: a heading, a field and what it has.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ArgumentSpec {
     pub prompt: String,
     pub placeholder: String,
     pub prefill: Option<String>,
-    /// What the field holds, which decides how it is shown and edited.
+    /// What the field has, which decides how it is shown and edited.
     pub kind: ArgumentKind,
 }
 
-/// One row a host feeds the palette: what it reads as, and what choosing it
-/// needs.
+/// One row a host feeds the palette: what it reads as, and what choosing it needs.
 #[derive(Clone)]
 pub struct CommandEntry {
     pub id: String,
     pub label: String,
     /// Rendered under the label. `None` → label only.
     pub description: Option<String>,
-    /// Short status shown as a trailing pill. Unlike a keybinding it is
-    /// descriptive and announced as part of the row.
+    /// Short status shown as a trailing pill.
     pub badge: Option<String>,
     /// Rendered right-aligned in the row. Purely informational — the palette
     /// never binds it.
     pub keybinding: Option<String>,
-    /// Preferred semantic form of a shortcut. When present, it is rendered
-    /// with the host platform's native command modifier and notation.
+    /// Preferred semantic form of a shortcut.
     pub shortcut: Option<Shortcut>,
     /// The one value choosing this row collects in the field first.
     pub argument: Option<ArgumentSpec>,
-    /// Consecutive rows sharing a group render under one header; `None` joins
-    /// whatever section precedes it.
+    /// Consecutive rows sharing a group render under one header; `None` joins whatever section precedes
+    /// it.
     pub group: Option<String>,
-    /// Real row count for this group before any host-side cap, so a capped
-    /// section reports what it's hiding instead of the painted count.
+    /// Real row count for this group before any host-side cap, so a capped section reports what it's
+    /// hiding instead of the painted count.
     pub group_total: Option<usize>,
     pub icon: Option<Icon>,
-    /// The application's own artwork, painted in place of `icon` when it
-    /// decodes.
+    /// The application artwork, painted in place of `icon` when it decodes.
     pub image: Option<icons::AppImage>,
-    /// A person as `(name, key)`: their avatar in place of `icon`, its
-    /// initials from the name and its colour from the key.
+    /// A person as `(name, key)`: their avatar in place of `icon`, its initials from the name and its
+    /// colour from the key.
     pub avatar: Option<(String, String)>,
     /// The people the row is about, as a stack of faces at its trailing end.
     pub faces: Vec<RowFace>,
-    /// What choosing the row does, shown at its trailing edge ("Join",
-    /// "Open"), for a row whose outcome is not its title.
+    /// What choosing the row does, shown at its trailing edge ("Join", "Open"), for a row whose outcome
+    /// is not its title.
     pub outcome: Option<String>,
-    /// The section the row is in ("Happening now"), above its group: a header
-    /// of its own, and a named group to assistive technology.
+    /// The section the row is in ("Happening now"), above its group: a header of it, and a named group
+    /// to assistive technology.
     pub section: Option<String>,
-    /// Other ways to activate the row, each behind a held modifier. The
-    /// selected row shows the one whose modifier is down, or the first as a
-    /// hint; the host decides what each does.
+    /// Other ways to activate the row, each behind a held modifier.
     pub alternates: Vec<Alternate>,
-    /// The description is a path, so it loses its middle rather than its end
-    /// when it doesn't fit. Prose loses its end.
+    /// The description is a path, so it loses its middle rather than its end when it doesn't fit.
     pub description_is_path: bool,
-    /// The description as separate facts, drawn as runs of their own with
-    /// space between them ([`Self::facts`]). Empty: one run.
+    /// The description as separate facts, drawn as runs of their own with space between them
+    /// ([`Self::facts`]).
     pub description_facts: Vec<String>,
-    /// Its value steps with ←/→ while the row is selected and the query's
-    /// caret is at its end ([`ActionPalette::take_adjustment`]): a volume, a
-    /// timeout, a mode.
-    ///
-    /// [`ActionPalette::take_adjustment`]: crate::ActionPalette::take_adjustment
+    /// Its value steps with ←/→ while the row is selected and the query's caret is at its end
+    /// ([`ActionPalette::take_adjustment`]): a volume, a timeout, a mode.
     pub adjustable: bool,
     /// The row a hit's app draws for it, when the host has one
     /// ([`Self::drawn`]): the palette paints that instead of the generic
     /// row. A row whose shape the palette cannot paint falls back to the
     /// generic one.
     pub row: Option<crate::search::SearchRow>,
-    /// What the hit looks like in its app, for the band under the list
-    /// ([`Self::previewed`]).
+    /// What the hit looks like in its app, for the band under the list ([`Self::previewed`]).
     pub preview: Option<crate::search::SearchPreview>,
 }
 
@@ -186,8 +166,7 @@ impl CommandEntry {
         }
     }
 
-    /// Draw the row as `row`, the shape its app draws it with
-    /// ([`crate::search::SearchRow`]).
+    /// Draw the row as `row`, the shape its app draws it with ([`crate::search::SearchRow`]).
     #[must_use]
     pub fn drawn(mut self, row: crate::search::SearchRow) -> Self {
         self.row = Some(row);
@@ -299,11 +278,9 @@ impl CommandEntry {
         self
     }
 
-    /// The row for one exported action of a resource, read as `row` says
-    /// (`tilo_actions::listed_row`): the title a person reads, what it acts
-    /// on or means under it, the action's own picture, and the shortcut it
-    /// declared. Every surface listing an action builds its row here, so the
-    /// window's own search and the desktop's palette show the same thing.
+    /// The row for one exported action of a resource, read as `row` says (`tilo_actions::listed_row`):
+    /// the title a person reads, what it acts on or means under it, the action picture, and the
+    /// shortcut it declared.
     #[must_use]
     pub fn from_flat_action_shown(fa: &FlatAction<'_>, row: ListedRow) -> Self {
         let mut entry = Self::new(fa.key.clone(), row.title);
@@ -323,12 +300,10 @@ impl CommandEntry {
         entry
     }
 
-    /// The row the palette lists for a published action: what the action says
-    /// of itself, the picture it declares (or, when it declares none, the one
-    /// its host command or its kind is listed by), and the host's own chord
-    /// where the action is one of the toolkit's commands
-    /// ([`HostShortcut::of_action`]) — the one shortcut table, so the row shows
-    /// the keys the press means.
+    /// The row the palette lists for a published action: what the action says of itself, the picture it
+    /// declares (or, when it declares none, the one its host command or its kind is listed by), and the
+    /// host chord where the action is one of the toolkit's commands ([`HostShortcut::of_action`]) — the
+    /// one shortcut table, so the row shows the keys the press means.
     #[must_use]
     pub(crate) fn of_action(
         fa: &FlatAction<'_>,
@@ -355,9 +330,8 @@ impl CommandEntry {
         Self::from_flat_action_shown(fa, fa.row())
     }
 
-    /// The row for one published action, as inert data: its label, what it
-    /// says of itself, the state it shows and the one line it asks for. The
-    /// host runs it by the action's own address when it is chosen.
+    /// The row for one published action, as inert data: its label, what it says of itself, the state it
+    /// shows and the one line it asks for.
     #[must_use]
     pub fn from_descriptor(key: impl Into<String>, action: &ActionDescriptor) -> Self {
         let mut entry = Self::new(key, action.action_label.clone());
@@ -376,12 +350,8 @@ impl CommandEntry {
         entry
     }
 
-    /// Show what an action's row shows of the state it acts on.
     fn show_state(&mut self, state: &ActionState) {
         self.badge.clone_from(&state.badge);
-        // A declared shortcut is a chord, shown the way every other shortcut is: with the
-        // platform's command modifier and in the keyboard's legends. Text that is no chord
-        // stays the free-text keybinding it is.
         let chord = state
             .shortcut
             .as_deref()
@@ -396,8 +366,7 @@ impl CommandEntry {
         self
     }
 
-    /// Adds a platform-formatted shortcut hint. Prefer this to
-    /// [`Self::keybinding`] for commands using the native command modifier.
+    /// Adds a platform-formatted shortcut hint.
     #[must_use]
     pub fn shortcut(mut self, shortcut: Shortcut) -> Self {
         self.shortcut = Some(shortcut);
@@ -441,16 +410,15 @@ impl CommandEntry {
         self
     }
 
-    /// The row already carries the value it runs with, so choosing it asks
-    /// for none: a search hit an app's `open` names its item itself.
+    /// The row already has the value it runs with, so choosing it asks for none: a search hit an app's
+    /// `open` names its item itself.
     #[must_use]
     pub fn with_preset(mut self) -> Self {
         self.argument = None;
         self
     }
 
-    /// The row's shortcut in `platform`'s notation, else its free-text
-    /// keybinding.
+    /// The row's shortcut in `platform`'s notation, else its free-text keybinding.
     #[must_use]
     pub fn keybinding_label(&self, platform: PlatformConventions) -> Option<String> {
         self.shortcut
@@ -459,9 +427,8 @@ impl CommandEntry {
             .or_else(|| self.keycap_labels(platform).map(|caps| caps.join("+")))
     }
 
-    /// Its shortcut's keycap legends in `platform`'s notation, else its
-    /// free-text keybinding split into one cap per `+`-separated part, each in
-    /// the legends of the active keyboard layout.
+    /// Its shortcut's keycap legends in `platform`'s notation, else its free-text keybinding split into
+    /// one cap per `+`-separated part, each in the legends of the active keyboard layout.
     pub(crate) fn keycap_labels(&self, platform: PlatformConventions) -> Option<Vec<String>> {
         self.shortcut
             .as_ref()
@@ -479,10 +446,8 @@ impl CommandEntry {
             })
     }
 
-    /// The result list's row for this entry: its label, what it says under it,
-    /// its picture, and its shortcut as keycaps. Whether a host handed the row
-    /// in or the palette read it from an app's own actions, the list shows it
-    /// through here.
+    /// The result list's row for this entry: its label, what it says under it, its picture, and its
+    /// shortcut as keycaps.
     pub(crate) fn result(
         &self,
         kind: impl Into<String>,
@@ -492,8 +457,6 @@ impl CommandEntry {
         result.subtitle.clone_from(&self.description);
         result.icon = self.icon;
         result.preview.clone_from(&self.preview);
-        // A row the hit's app draws is painted as that app draws it; the
-        // palette's own row is built from what the entry carries.
         result.row = Some(
             self.row
                 .clone()
@@ -502,7 +465,6 @@ impl CommandEntry {
         result
     }
 
-    /// The palette's own row for this entry, with its shortcut as keycaps.
     fn command_row(&self, platform: PlatformConventions) -> SearchRow {
         SearchRow::Command(Box::new(CommandRow {
             description_is_path: self.description_is_path,
@@ -519,9 +481,8 @@ impl CommandEntry {
     }
 }
 
-/// The result of pressing Enter on a row: its `id` plus the free-text
-/// `argument` (only `Some` for rows that asked for one). Drained via
-/// [`ActionPalette::take_outcome`](crate::ActionPalette::take_outcome).
+/// The result of pressing Enter on a row: its `id` plus the free-text `argument` (only `Some` for rows
+/// that asked for one).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CommandOutcome {
     pub id: String,
@@ -533,7 +494,6 @@ mod tests {
     use super::*;
     use crate::platform::Platform;
 
-    /// A row showing the first shortcut of an action's published state.
     fn row_with(shortcut: &str) -> CommandEntry {
         let mut entry = CommandEntry::new("check", "Complete");
         entry.show_state(&ActionState {

@@ -6,21 +6,20 @@ pub enum DragPayload {
     Custom { kind: String, blob: Vec<u8> },
 }
 
-/// Threshold in logical pixels after which a pointer press-and-move is promoted
-/// to a drag gesture. Matches macOS / GTK conventions.
+/// Threshold in logical pixels after which a pointer press-and-move is promoted to a drag gesture.
 pub const DRAG_START_THRESHOLD_PX: f64 = 4.0;
 
 // Dragging out of the app: a drag that leaves the window, for whatever
 // application the pointer is over when the button comes up (everything above
 // is a drag *inside* one process). A toolkit capability rather than an app's,
-// like the clipboard, because it needs the process's own Wayland connection.
+// like the clipboard, because it needs the process Wayland connection.
 // `App` publishes its window here at startup so any widget can drag.
 //
-// A receiving Tilo app is confined to its own mount namespace and `HOME`, so
+// A receiving Tilo app is confined to its mount namespace and `HOME`, so
 // handing it a path (`/home/you/photo.png`) would not resolve there — the
 // same reason the file-chooser portal exists rather than one that returns
-// paths. So a drag carries **content**: the compositor brokers a pipe, this
-// side writes bytes into it, and the receiver spools them into its own
+// paths. So a drag has **content**: the compositor brokers a pipe, this
+// side writes bytes into it, and the receiver spools them into its
 // runtime dir. No path crosses, no capability is granted, and the sandbox is
 // not widened by a drop. A `text/uri-list` is offered alongside for a
 // receiver that wants a name, but never as the only offer.
@@ -31,8 +30,6 @@ use std::sync::{Mutex, Weak};
 use tilo_lock::MutexRecover as _;
 use winit::window::Window;
 
-/// The window drags are started from. A `Weak` so the toolkit does not
-/// keep the window alive past the event loop that owns it.
 static DRAG_WINDOW: Mutex<Option<Weak<Window>>> = Mutex::new(None);
 
 /// Publish the window a drag out of this app is issued on.
@@ -64,9 +61,8 @@ pub fn uri_list(paths: &[PathBuf]) -> String {
     out
 }
 
-/// The [`COPIED_FILES_MIME`] body for `paths`: a first line saying whether
-/// the copy is a cut or a copy, then the [`uri_list`], as a file manager
-/// writes it.
+/// The [`COPIED_FILES_MIME`] body for `paths`: a first line saying whether the copy is a cut or a copy,
+/// then the [`uri_list`], as a file manager writes it.
 #[must_use]
 pub fn copied_files_list(paths: &[PathBuf], cut: bool) -> String {
     let mut body = String::from(if cut { "cut" } else { "copy" });
@@ -75,20 +71,18 @@ pub fn copied_files_list(paths: &[PathBuf], cut: bool) -> String {
     body
 }
 
-/// The mime type a file manager's copy of files travels as when it also says
-/// whether the copy is a cut, first line `copy` or `cut` and the URI list
-/// after it.
+/// The mime type a file manager's copy of files travels as when it also says whether the copy is a cut,
+/// first line `copy` or `cut` and the URI list after it.
 pub const COPIED_FILES_MIME: &str = "x-special/gnome-copied-files";
 
-/// Whether `mime` is one of the formats a copy of files on the clipboard
-/// travels as.
+/// Whether `mime` is one of the formats a copy of files on the clipboard travels as.
 #[must_use]
 pub fn is_file_mime(mime: &str) -> bool {
     mime == URI_LIST_MIME || mime == COPIED_FILES_MIME
 }
 
-/// The files a copy names: the paths of a [`URI_LIST_MIME`] body, or of a
-/// [`COPIED_FILES_MIME`] one with the cut it started with.
+/// The files a copy names: the paths of a [`URI_LIST_MIME`] body, or of a [`COPIED_FILES_MIME`] one
+/// with the cut it started with.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CopiedFiles {
     pub paths: Vec<PathBuf>,
@@ -106,7 +100,6 @@ pub fn copied_files(mime: &str, body: &str) -> CopiedFiles {
     let (body, cut) = if mime == COPIED_FILES_MIME {
         match body.split_once('\n') {
             Some((first, rest)) => (rest, first.trim().eq_ignore_ascii_case("cut")),
-            // A body with no second line names nothing.
             None => ("", false),
         }
     } else {
@@ -124,10 +117,6 @@ pub fn copied_files(mime: &str, body: &str) -> CopiedFiles {
 }
 
 /// The mime type to offer a file's bytes under, from its extension.
-///
-/// `None` when the extension says nothing — the drag then carries only a
-/// URI list, rather than claiming
-/// `application/octet-stream` content a receiver would have to sniff.
 pub fn mime_for_path(path: &Path) -> Option<&'static str> {
     let extension = path.extension().and_then(|extension| extension.to_str());
     TILO_TYPES
@@ -137,8 +126,6 @@ pub fn mime_for_path(path: &Path) -> Option<&'static str> {
         .or_else(|| tilo_mime::from_path(path))
 }
 
-/// The file types Tilo's own apps write, which no general table knows:
-/// their extension and media type.
 const TILO_TYPES: &[(&str, &str)] = &[
     ("artwork", "application/vnd.tilo.artwork+zip"),
     (
@@ -153,7 +140,7 @@ const TILO_TYPES: &[(&str, &str)] = &[
 /// the button is still held, so the compositor can validate the drag against
 /// that implicit grab.
 ///
-/// A single file is offered as both its own content type and a URI list;
+/// A single file is offered as both its content type and a URI list;
 /// several are offered as a URI list alone, since one pipe can't carry
 /// several files' bytes. Returns whether a drag started.
 ///
@@ -169,21 +156,17 @@ pub fn start_file_drag(paths: &[PathBuf]) -> bool {
     start_drag_with(offers)
 }
 
-/// What a drag carries for one offered mime type.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Offer {
     Bytes(Vec<u8>),
-    /// A file's content, read when the receiver asks for it.
     File(PathBuf),
 }
 
-/// The offers of a drag carrying `paths` ([`start_file_drag`]).
 fn file_offers(paths: &[PathBuf]) -> Vec<(String, Offer)> {
     if paths.is_empty() {
         return Vec::new();
     }
     let mut offers = Vec::new();
-    // Nothing here touches the disk: the content type comes from the name.
     if let [single] = paths
         && let Some(mime) = mime_for_path(single)
     {
@@ -197,9 +180,6 @@ fn file_offers(paths: &[PathBuf]) -> Vec<(String, Offer)> {
 }
 
 /// Start a drag carrying arbitrary `offers` (mime type → bytes).
-///
-/// The general form behind [`start_file_drag`], for a widget dragging out
-/// something that is not a file on disk.
 pub fn start_drag_offering(offers: Vec<(String, Vec<u8>)>) -> bool {
     start_drag_with(
         offers
@@ -209,22 +189,17 @@ pub fn start_drag_offering(offers: Vec<(String, Vec<u8>)>) -> bool {
     )
 }
 
-/// Whether apps in this process are hosted by a compositor in the same
-/// process ([`host_drags_in_process`]).
 static HOSTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// The drag a hosted app asked for and its host has not taken yet.
 static HOSTED_DRAG: Mutex<Option<Vec<(String, Vec<u8>)>>> = Mutex::new(None);
 
-/// The compositor hosts this process's apps itself (no window): a drag an
-/// app starts is kept for the host to carry ([`take_hosted_drag`]).
+/// The compositor hosts this process's apps itself (no window): a drag an app starts is kept for the
+/// host to carry ([`take_hosted_drag`]).
 pub fn host_drags_in_process() {
     HOSTED.store(true, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// The drag a hosted app asked for since the last call: bytes per format.
-/// A file offered under its own content type is left out (the host would
-/// have to read it whole); the `text/uri-list` naming it stays.
 pub fn take_hosted_drag() -> Option<Vec<(String, Vec<u8>)>> {
     HOSTED_DRAG.lock_recover().take()
 }
@@ -249,9 +224,6 @@ fn start_drag_with(offers: Vec<(String, Offer)>) -> bool {
         return true;
     }
     let Some(window) = window else {
-        // Not an error: the compositor hosts several of these widgets in its
-        // own process with no `App` and no window; reporting "no" is how it
-        // learns to promote the drag itself.
         tracing::debug!(target: "tilo_ui::dnd", "no window publishes a drag in this process");
         return false;
     };
@@ -305,8 +277,6 @@ mod outgoing_tests {
                 }
             );
             assert!(!copied_files(URI_LIST_MIME, &body).cut, "a uri list copies");
-            // The same list with the cut it started with, as a file manager
-            // writes it: the first line names the copy or the cut.
             let copied = copied_files_list(&paths, false);
             assert!(copied.starts_with("copy\r\n"), "a copy says so: {copied}");
             assert_eq!(
@@ -320,8 +290,6 @@ mod outgoing_tests {
             assert!(copied_files(COPIED_FILES_MIME, &copied_files_list(&paths, true)).cut);
         }
 
-        // Case `the_cut_of_a_file_managers_copy_is_read`:
-        // A cut removes its sources after the paste; the first line says so.
         {
             let body = "cut\r\nfile:///home/me/a.txt\r\nfile:///home/me/b.txt\r\n";
             assert_eq!(
@@ -373,9 +341,6 @@ mod outgoing_tests {
 
     #[test]
     fn outgoing_drags_encode_uri_lists_and_content_types() {
-        // Case `a_uri_list_escapes_what_a_uri_cannot_carry`:
-        // A dragged name has to survive the trip through a URI, which is the
-        // case a naive `format!("file://{}")` gets wrong.
         {
             assert_eq!(
                 uri_list(&[PathBuf::from("/home/me/my photo#1.png")]),
@@ -416,7 +381,6 @@ mod outgoing_tests {
                     ),
                 ]
             );
-            // A name that says no content type is offered as a name only.
             let folder = PathBuf::from("/home/me/Downloads");
             assert_eq!(
                 file_offers(std::slice::from_ref(&folder)),
@@ -427,8 +391,6 @@ mod outgoing_tests {
             );
         }
 
-        // Case `an_empty_selection_starts_nothing`:
-        // Nothing to drag is not a drag.
         {
             assert!(!start_file_drag(&[]));
         }

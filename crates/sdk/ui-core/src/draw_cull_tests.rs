@@ -1,4 +1,4 @@
-//! What a culled frame leaves out, and when it holds.
+//! What a culled frame leaves out, and when it has.
 
 #![allow(
     clippy::unwrap_used,
@@ -44,11 +44,8 @@ fn a_widget_is_left_out_only_wholly_inside_and_clear_of_what_repaints() {
     keeping(&mut scene, keep, |scene| {
         for (index, bounds) in [
             Rect::new(10.0, 10.0, 100.0, 30.0),
-            // Into the strip the scroll exposed.
             Rect::new(10.0, 370.0, 100.0, 390.0),
-            // Under the bar's lane.
             Rect::new(10.0, 40.0, 195.0, 60.0),
-            // Where the last copy's frame repainted.
             Rect::new(10.0, 105.0, 100.0, 115.0),
         ]
         .into_iter()
@@ -59,7 +56,6 @@ fn a_widget_is_left_out_only_wholly_inside_and_clear_of_what_repaints() {
             }
         }
     });
-    // Into any other scene, nothing is left out.
     let other = Scene::new();
     assert!(!kept(
         &other,

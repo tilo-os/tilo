@@ -1,7 +1,6 @@
-//! Marks a surface draws over the things on it while a person picks them:
-//! the band a drag sweeps out, and the ring around what is selected. One
-//! look for every surface that selects by dragging (the workspace canvas,
-//! a board, a slide), from the theme's selection colours.
+//! Marks a surface draws over the things on it while a person picks them: the band a drag sweeps out,
+//! and the ring around what is selected. One look for every surface that selects by dragging (the
+//! workspace canvas, a board, a slide), from the theme's selection colours.
 
 use vello::Scene;
 use vello::kurbo::{Affine, Rect, RoundedRect, Stroke};
@@ -9,8 +8,8 @@ use vello::peniko::Fill;
 
 use crate::theme::Theme;
 
-/// The selection band a drag sweeps out over a surface: the selection tint
-/// with an accent edge, `line` wide (the theme's drag line).
+/// The selection band a drag sweeps out over a surface: the selection tint with an accent edge, `line`
+/// wide (the theme's drag line).
 pub fn paint_selection_band(scene: &mut Scene, transform: Affine, band: Rect, theme: &Theme) {
     let colors = &theme.tokens.colors;
     let line = drag_line(theme);

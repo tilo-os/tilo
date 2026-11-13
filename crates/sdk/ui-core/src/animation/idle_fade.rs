@@ -1,19 +1,14 @@
-//! Chrome that shows on activity and fades out on its own once things are
-//! quiet: an overlay scroll bar after scrolling, a block's drag handle after
-//! the pointer moves. It is fully visible for a hold after the last activity,
-//! then fades; something that holds it (the pointer on it, a drag) keeps it
-//! visible. Its owner sleeps through the hold on
-//! [`IdleFade::fade_deadline_at`] and asks for frames only while
-//! [`IdleFade::fading_at`], so resting chrome costs no frames.
+//! Chrome that shows on activity and fades out on its once things are quiet: an overlay scroll bar
+//! after scrolling, a block's drag handle after the pointer moves.
 
 use crate::time::{Duration, Instant};
 
-/// How long fading chrome takes to go, once its hold is over: every piece of
-/// chrome that fades does so alike.
+/// How long fading chrome takes to go, once its hold is over: every piece of chrome that fades does so
+/// alike.
 pub const CHROME_FADE: Duration = Duration::from_millis(320);
 
-/// The idle fade of a piece of chrome: when it was last woken, how long it
-/// then stays fully visible, and how long it takes to fade out.
+/// The idle fade of a piece of chrome: when it was last woken, how long it then stays fully visible,
+/// and how long it takes to fade out.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct IdleFade {
     last_activity: Option<Instant>,
@@ -22,8 +17,7 @@ pub struct IdleFade {
 }
 
 impl IdleFade {
-    /// Chrome that stays for `hold` after the last activity, then fades
-    /// over `fade`. It starts hidden.
+    /// Chrome that stays for `hold` after the last activity, then fades over `fade`.
     #[must_use]
     pub const fn new(hold: Duration, fade: Duration) -> Self {
         Self {
@@ -44,8 +38,7 @@ impl IdleFade {
         self.last_activity = Some(now);
     }
 
-    /// Hide the chrome at once (the person started something it would be in
-    /// the way of).
+    /// Hide the chrome at once (the person started something it would be in the way of).
     pub fn hide(&mut self) {
         self.last_activity = None;
     }
@@ -66,7 +59,6 @@ impl IdleFade {
             return 0.0;
         };
         let elapsed = now.saturating_duration_since(activity);
-        // `checked_sub` doubles as the "still within the hold" test.
         let Some(since_hold) = elapsed.checked_sub(self.hold) else {
             return 1.0;
         };
@@ -86,8 +78,7 @@ impl IdleFade {
             })
     }
 
-    /// When the fade starts, if it is still ahead at `now`: the owner's next
-    /// wake deadline.
+    /// When the fade starts, if it is still ahead at `now`: the owner's next wake deadline.
     #[must_use]
     pub fn fade_deadline_at(&self, now: Instant, held: bool) -> Option<Instant> {
         if held {

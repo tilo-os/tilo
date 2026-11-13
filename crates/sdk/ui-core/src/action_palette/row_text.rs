@@ -1,6 +1,5 @@
-//! What the palette's rows and field read: the facets several providers
-//! merged into one, the words a row is found by, and the typed text with a
-//! facet's token taken out of it.
+//! What the palette's rows and field read: the facets several providers merged into one, the words a
+//! row is found by, and the typed text with a facet's token taken out of it.
 
 use super::{Facet, FacetFilter, ScopeDecl, SearchProvider};
 
@@ -57,20 +56,15 @@ pub(crate) fn found_by(row: &tilo_actions::ListedRow, resource: &str) -> Option<
     (!words.is_empty()).then_some(words)
 }
 
-/// Whether `action` only shows an item as picking its search hit does: the
-/// hit is the row for that, so the palette lists no second one.
+/// Whether `action` only shows an item as picking its search hit does: the hit is the row for that, so
+/// the palette lists no second one.
 pub(crate) fn shows_a_hit(action: &tilo_actions::ActionSpec) -> bool {
     action.operation_type.as_deref() == Some(tilo_actions::remote::APPLICATION_OPEN_TYPE)
 }
 
-/// Whether the palette may offer this action of `fa`'s resource to a person at
-/// all: listed for people
-/// ([`listed_for_people`](tilo_actions::listed_for_people)), available in the
-/// window's state now, and no second row for a search hit's own open.
-///
-/// What is offered may be a row ([`lists_a_row`]) or an action a control, an
-/// assistive activation or a search request names, whose arguments the field
-/// collects.
+/// Whether the palette may offer this action of `fa`'s resource to a person at all: listed for people
+/// ([`listed_for_people`](tilo_actions::listed_for_people)), available in the window's state now, and
+/// no second row for a search hit open.
 pub(crate) fn offers_a_person(fa: &tilo_actions::FlatAction<'_>) -> bool {
     fa.action.contract.availability.is_available()
         && fa.action.reaches_people()
@@ -78,14 +72,8 @@ pub(crate) fn offers_a_person(fa: &tilo_actions::FlatAction<'_>) -> bool {
         && !shows_a_hit(fa.action)
 }
 
-/// Whether the palette lists this action of `fa`'s resource as a row: what a
-/// row can take itself
+/// Whether the palette lists this action of `fa`'s resource as a row: what a row can take itself
 /// ([`a_row_a_person_can_take`](crate::search::system::a_row_a_person_can_take)).
-///
-/// An action asking more than a row supplies (several arguments, or one picked
-/// where it lives) is offered without a row: whoever knows it — the control
-/// bound to it, an assistive activation, a search request — still asks the
-/// palette for it, and the field collects its arguments.
 pub(crate) fn lists_a_row(fa: &tilo_actions::FlatAction<'_>) -> bool {
     offers_a_person(fa) && fa.action.takes_a_row_answer()
 }

@@ -1,5 +1,5 @@
-//! The semantic nodes of one bound component's published resources, kept
-//! between refreshes and updated from what changed in its resource tree.
+//! The semantic nodes of one bound component's published resources, kept between refreshes and updated
+//! from what changed in its resource tree.
 
 use std::cell::OnceCell;
 use std::collections::{HashMap, HashSet};
@@ -18,20 +18,12 @@ use crate::published::{Change, SharedChildren, SharedResource};
 
 pub(super) type BoundActions = HashMap<(SemanticId, String), BoundActionTarget>;
 
-/// What a component's nodes were built from.
 enum Source {
-    /// A shared forest, kept so the next one is diffed against it.
     Shared(Rc<[SharedResource]>),
-    /// An ordinary tree, reused while the component hands over the same one.
     Plain(Weak<Vec<ResourceSpec>>),
 }
 
-/// The semantic nodes of one bound component's published resources, and the
-/// tree they were built from. Nothing else goes into them: an id, its actions
-/// and their bound targets come from the resource tree and the component's
-/// identity alone. So while the component hands over the same tree they are
-/// exactly what a rebuild would produce, and a tree that shares all
-/// but a few subtrees with the last changes the nodes of those subtrees only.
+/// The semantic nodes of one bound component's published resources, and the tree they were built from.
 pub(super) struct ComponentNodes {
     source: Source,
     binding: CallbackBinding,
@@ -39,8 +31,7 @@ pub(super) struct ComponentNodes {
     prefix: String,
     roots: Vec<SemanticId>,
     pub(super) nodes: HashMap<SemanticId, SemanticNode>,
-    /// Reading order (each node after its children), derived on first use
-    /// after a change.
+    /// Reading order (each node after its children), derived on first use after a change.
     order: OnceCell<Vec<SemanticId>>,
     pub(super) prompted: PromptedMap,
     pub(super) bound_actions: BoundActions,
@@ -86,8 +77,8 @@ impl ComponentNodes {
         nodes
     }
 
-    /// Whether these are the nodes of `component`'s owner, in the same
-    /// captured lifetime: the only nodes `component`'s may be updated from.
+    /// Whether these are the nodes of `component`'s owner, in the same captured lifetime: the only
+    /// nodes `component`'s may be updated from.
     pub(super) fn same_owner(&self, component: &BoundResourceSnapshot) -> bool {
         self.binding.same_component(&component.binding)
             && self.binding.instance_id == component.binding.instance_id
@@ -139,10 +130,8 @@ impl ComponentNodes {
         })
     }
 
-    /// Move these nodes to `component`'s shared forest, visiting only what
-    /// differs from the forest they mirror, and answer what changed. `None`
-    /// leaves them as they were: they mirror no shared forest, or a node id
-    /// would repeat, which only a rebuild reports as the full walk does.
+    /// Move these nodes to `component`'s shared forest, visiting only what differs from the forest they
+    /// mirror, and answer what changed.
     pub(super) fn update(&mut self, component: &BoundResourceSnapshot) -> Option<TreeDelta> {
         let Source::Shared(last) = &self.source else {
             return None;
@@ -196,8 +185,6 @@ impl ComponentNodes {
             return None;
         }
         drop((gone, seen));
-        // The nodes built from here on carry the binding the component
-        // hands over now, as a rebuild's would.
         self.binding = component.binding.clone();
         #[cfg(any(test, feature = "test-support"))]
         {
@@ -212,10 +199,6 @@ impl ComponentNodes {
             }
         }
         for ((last, next), id) in heads.into_iter().zip(head_ids) {
-            // A head republished with what its node shows unchanged (a
-            // record's root, whose actions are minted afresh with every
-            // revision while a keystroke changes its body) keeps its node
-            // and its actions' targets; only its children may move.
             if self.keeps_node_of(&id, next.head()) {
                 if self.keep_head(&id, last, next) {
                     delta.updated.push(id);
@@ -281,8 +264,6 @@ impl ComponentNodes {
         SemanticId(text)
     }
 
-    /// Whether `ids` are the ids of `children`, in order, compared without
-    /// building them.
     fn same_child_ids(&self, ids: &[SemanticId], children: &SharedChildren) -> bool {
         ids.len() == children.len()
             && ids.iter().zip(children).all(|(id, child)| {
@@ -293,11 +274,6 @@ impl ComponentNodes {
             })
     }
 
-    /// Whether node `id` is the node `head` builds but for its children:
-    /// the same label and the same actions, compared without building them.
-    /// Its actions' bound targets are then the ones a rebuild records too:
-    /// they come from the resource's id, each action's id and the
-    /// component's identity alone.
     fn keeps_node_of(&self, id: &SemanticId, head: &ResourceSpec) -> bool {
         let Some(node) = self.nodes.get(id) else {
             return false;
@@ -323,9 +299,6 @@ impl ComponentNodes {
         kept
     }
 
-    /// Keep node `id` for `next`, whose head builds it ([`Self::keeps_node_of`]),
-    /// with `next`'s children and its prompted actions' builders, as a
-    /// rebuild records them. Returns whether its children changed.
     fn keep_head(&mut self, id: &SemanticId, last: &SharedResource, next: &SharedResource) -> bool {
         for spec in &next.head().actions {
             if let ActionInput::Prompted { .. } = spec.input() {
@@ -355,7 +328,6 @@ impl ComponentNodes {
         changed
     }
 
-    /// Remove node `id` and its actions' targets.
     fn remove_node(&mut self, id: &SemanticId) -> Option<SemanticNode> {
         let node = self.nodes.remove(id)?;
         for action in &node.actions {
@@ -366,7 +338,6 @@ impl ComponentNodes {
         Some(node)
     }
 
-    /// `head`'s node with `children`, its actions' targets recorded.
     fn resource_node(
         &mut self,
         id: SemanticId,
@@ -421,7 +392,6 @@ impl ComponentNodes {
         {
             self.built = self.built.saturating_add(1);
         }
-        // Actions before children, as the full walk records them.
         let actions = resource_actions(
             &id,
             resource.head(),
@@ -461,7 +431,6 @@ impl ComponentNodes {
     }
 }
 
-/// `node` and every node beneath it, each after its children.
 fn visit_subtree(node: &SharedResource, visit: &mut dyn FnMut(&SharedResource)) {
     for child in node.children() {
         visit_subtree(child, visit);
@@ -478,16 +447,16 @@ pub(super) fn bound_resource_id(binding: &CallbackBinding, id: &str) -> Semantic
     SemanticId(format!("{}{id}", id_prefix(binding)))
 }
 
-/// The resource a component's node `id` stands for ([`bound_resource_id`]),
-/// or `None` when `id` is no component's resource node.
+/// The resource a component's node `id` is ([`bound_resource_id`]), or `None` when `id` is no
+/// component's resource node.
 pub(crate) fn component_record(id: &SemanticId) -> Option<&str> {
     let mut parts = id.as_str().strip_prefix("ri:")?.splitn(3, ':');
     let (_instance, _lifetime) = (parts.next()?, parts.next()?);
     parts.next()
 }
 
-/// The affordances of `resource`'s own actions on node `id`, recording each
-/// prompted builder and, for a component's resource, each bound target.
+/// The affordances of `resource`'s own actions on node `id`, recording each prompted builder and, for a
+/// component's resource, each bound target.
 pub(super) fn resource_actions(
     id: &SemanticId,
     resource: &ResourceSpec,
@@ -515,8 +484,7 @@ pub(super) fn resource_actions(
     actions
 }
 
-/// The node of `resource` with `actions` and `children`. Only declared
-/// resources (no component) keep their identity beyond this lifetime.
+/// The node of `resource` with `actions` and `children`.
 pub(super) fn resource_semantic_node(
     id: SemanticId,
     resource: &ResourceSpec,
@@ -542,9 +510,6 @@ pub(super) fn resource_semantic_node(
     }
 }
 
-/// Whether `action` is the affordance `spec` exports on its resource's
-/// node ([`resource_action`]): the same id, label and input. A deferred
-/// action's address is its resource's id and its own, both the same here.
 fn exports_spec(action: &SemanticAction, spec: &ActionSpec) -> bool {
     let same_input = match (&action.kind, spec.input()) {
         (SemanticActionKind::App(encoded), ActionInput::Immediate(Some(next))) => {
@@ -569,7 +534,6 @@ fn exports_spec(action: &SemanticAction, spec: &ActionSpec) -> bool {
         ) => prompt == next_prompt && placeholder == next_placeholder && *collects == next_collects,
         _ => false,
     };
-    // The action is named by the spec's id.
     let named = action.name == spec.id;
     same_input && named && action.label == spec.label
 }
@@ -582,8 +546,6 @@ fn resource_action(
 ) -> SemanticAction {
     let kind = match spec.input() {
         ActionInput::Immediate(Some(enc)) => SemanticActionKind::App(enc.as_ref().clone()),
-        // Encoded for its target when it fires, resolved by address as a
-        // deferred one is: the tree holds no bytes per item.
         ActionInput::Immediate(None) | ActionInput::Deferred { .. } => {
             SemanticActionKind::AppDeferred {
                 address: tilo_actions::ActionAddress::new(resource, &spec.id),

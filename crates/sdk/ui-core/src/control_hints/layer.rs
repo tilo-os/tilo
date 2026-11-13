@@ -1,5 +1,5 @@
-//! A host's control hints on screen: the [`Coach`] deciding, the card
-//! placed beside its anchor or in the bar's room and drawn through its motion.
+//! A host's control hints on screen: the [`Coach`] deciding, the card placed beside its anchor or in
+//! the bar's room and drawn through its motion.
 
 use super::card::{self, Contents, Frame, Look};
 use super::coach::{Coach, Phase, Timing};
@@ -15,25 +15,25 @@ use vello::Scene;
 use vello::kurbo::{Affine, Line, Point, Rect, Stroke, Vec2};
 use vello::peniko::Fill;
 
-/// Where a hint stands.
+/// Where a hint is.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Stand {
-    /// Beside the control the gesture is done on: `anchor` is where it is done, `side` the side of
-    /// it the card stands on, and `points` whether the card points at the anchor.
+    /// Beside the control the gesture is done on: `anchor` is where it is done, `side` the side of it
+    /// the card sits on, and `points` whether the card points at the anchor.
     Beside {
         anchor: Rect,
         side: PopoverSide,
         points: bool,
     },
-    /// In the top bar for a gesture with no control on screen to point at: the pill stands at
-    /// `band`'s leading end, just past the bar's clock, a line tall, whole or not at all.
+    /// In the top bar for a gesture with no control on screen to point at: the pill is at `band`'s
+    /// leading end, just past the bar's clock, a line tall, whole or not at all.
     InBar { band: Rect },
 }
 
 /// How a hint shows right now, as its host places it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct HintPlace {
-    /// Where it stands.
+    /// Where it is.
     pub stand: Stand,
     /// A line the gesture takes (a window's edge, the bar it is held by, the strip's), lit in the
     /// person's colour while the hint shows.
@@ -42,26 +42,25 @@ pub struct HintPlace {
     pub words: String,
     /// The keys it names, as the keyboard spells them; empty for none.
     pub keys: Vec<String>,
-    /// The person points by touch: the picture shows a finger on the
-    /// screen rather than a pointer or a touchpad.
+    /// The person points by touch: the picture shows a finger on the screen rather than a pointer or a
+    /// touchpad.
     pub touch: bool,
     /// Another surface's content, as one rect each (a window's body, the
     /// cards standing over the desk and in a window's corners), which the
-    /// hint's card never stands over. Where there is no side of its anchor
-    /// clear of them, the hint stands in [`Self::bar`], or has nowhere to
+    /// hint's card never sits over. Where there is no side of its anchor
+    /// clear of them, the hint is in [`Self::bar`], or has nowhere to
     /// stand and does not show.
     pub clear: Vec<Rect>,
-    /// The room the top bar keeps beside its clock, for a hint beside a control whose sides are
-    /// all content (a window's bar over its own body, a window's edge between two windows, or at
-    /// the screen's): the hint stands there instead, as one for a gesture with no control on screen
-    /// does, while [`Self::edge`] lights where the gesture is done. `None`: it stands beside its
-    /// anchor or not at all.
+    /// The room the top bar keeps beside its clock, for a hint beside a control whose sides are all
+    /// content (a window's bar over its body, a window's edge between two windows, or at the screen's):
+    /// the hint is there instead, as one for a gesture with no control on screen does, while
+    /// [`Self::edge`] lights where the gesture is done.
     pub bar: Option<Rect>,
 }
 
 impl Stand {
-    /// Where the gesture is done: on the control the hint stands beside, or nowhere (a gesture
-    /// with no control on screen).
+    /// Where the gesture is done: on the control the hint sits beside, or nowhere (a gesture with no
+    /// control on screen).
     #[must_use]
     pub fn anchor(&self) -> Option<Rect> {
         match self {
@@ -74,25 +73,20 @@ impl Stand {
 /// What the host's frame says about the person and the screen.
 #[derive(Clone, Copy, Debug)]
 pub struct HintLook {
-    /// The person's own colour.
     pub colour: Option<(u8, u8, u8)>,
-    /// Where learned hints go: the person's own menu (their avatar).
+    /// Where learned hints go: the person menu (their avatar).
     pub keep_at: Option<Point>,
     /// Where cards may stand.
     pub area: Rect,
 }
 
-/// The hint on screen as last placed and drawn.
 #[derive(Clone, Debug)]
 struct Placed {
     index: usize,
     since: Instant,
     place: HintPlace,
-    /// The card as last drawn, and the side its anchor is on.
     card: Rect,
     notch: Option<(PopoverSide, f64)>,
-    /// Whether the card stands in the bar: one beside its anchor with no clear side stands in the
-    /// bar's room ([`HintPlace::bar`]).
     in_bar: bool,
 }
 
@@ -100,8 +94,8 @@ struct Placed {
 pub struct HintLayer<S: 'static> {
     coach: Coach<S>,
     placed: Option<Placed>,
-    /// Everything the last draw painted: the card with its shadow, the lit
-    /// edge, the dot and where it lands.
+    /// Everything the last draw painted: the card with its shadow, the lit edge, the dot and where it
+    /// lands.
     painted: Option<Rect>,
 }
 
@@ -124,9 +118,8 @@ impl<S: Copy + PartialEq + 'static> HintLayer<S> {
         &mut self.coach
     }
 
-    /// Advance to `now`: `holds` and `quiet` as [`Coach::tick`] takes them,
-    /// `place` how each hint would show now (`None` where its anchor is not
-    /// on screen).
+    /// Advance to `now`: `has` and `quiet` as [`Coach::tick`] takes them, `place` how each hint would
+    /// show now (`None` where its anchor is not on screen).
     pub fn update(
         &mut self,
         now: Instant,
@@ -151,7 +144,6 @@ impl<S: Copy + PartialEq + 'static> HintLayer<S> {
         let fresh = places.get(current.index).cloned().flatten();
         match (&mut self.placed, current.phase) {
             (Some(placed), Phase::Shown(_)) if placed.index == current.index => {
-                // It follows its anchor while it teaches.
                 if let Some(place) = fresh {
                     placed.place = place;
                 }
@@ -205,17 +197,15 @@ impl<S: Copy + PartialEq + 'static> HintLayer<S> {
             .filter(|card| !card.is_zero_area())
     }
 
-    /// Everything the last draw painted (the card with its shadow, a lit
-    /// edge, the dot it folds into and where that lands): while the hint
-    /// moves, the only pixels it changes are under this and the last
-    /// draw's.
+    /// Everything the last draw painted (the card with its shadow, a lit edge, the dot it folds into
+    /// and where that lands): while the hint moves, the only pixels it changes are under this and the
+    /// last draw's.
     #[must_use]
     pub fn painted_rect(&self) -> Option<Rect> {
         self.painted
     }
 
-    /// The hint for assistive technology: its words and keys, said
-    /// politely when it comes.
+    /// The hint for assistive technology: its words and keys, said politely when it comes.
     #[must_use]
     pub fn access_node(&self) -> Option<AccessNode> {
         let placed = self.placed.as_ref()?;
@@ -282,8 +272,6 @@ impl<S: Copy + PartialEq + 'static> HintLayer<S> {
             let in_bar = matches!(&spot.stand, Stand::InBar { .. });
             let size = card::size(&contents, text, theme, in_bar);
             let beside = place(&spot, size, look.area).map(|(rect, notch)| (rect, notch, in_bar));
-            // No side of its anchor is clear of content: it stands in the bar's room, and its
-            // edge lights where the gesture is done.
             let placement = beside.or_else(|| {
                 let band = spot.bar?;
                 let in_room = HintPlace {
@@ -294,9 +282,6 @@ impl<S: Copy + PartialEq + 'static> HintLayer<S> {
                 place(&in_room, size, look.area).map(|(rect, notch)| (rect, notch, true))
             });
             let Some((rect, notch, in_bar)) = placement else {
-                // Nowhere clear of another surface's content, nor room in the bar beside its clock
-                // for the pill whole: the hint has no place to stand and covers nothing, so it
-                // goes, as one whose anchor did.
                 self.placed = None;
                 self.coach.dismiss(now);
                 return;
@@ -333,7 +318,6 @@ impl<S: Copy + PartialEq + 'static> HintLayer<S> {
                     check: 0.0,
                     opacity: arrival.opacity,
                     content_opacity: 1.0,
-                    // The bar's own pill holds still: no bloom over the bar's neighbours.
                     pulse: if in_bar { None } else { arrival.pulse },
                 };
                 card::paint(scene, transform * pose, text, theme, &frame);
@@ -366,7 +350,6 @@ impl<S: Copy + PartialEq + 'static> HintLayer<S> {
                 };
                 let disc = card::dot_centre(rect, in_bar);
                 if done.fold < 0.98 {
-                    // The card folds into a dot where its check is.
                     let dot = Rect::from_center_size(disc, (DOT, DOT));
                     let folded = Rect::new(
                         rect.x0 + (dot.x0 - rect.x0) * done.fold,
@@ -391,7 +374,6 @@ impl<S: Copy + PartialEq + 'static> HintLayer<S> {
                         content_opacity,
                         pulse: None,
                     };
-                    // The check lands with a small lift of the whole card.
                     let pop = Affine::scale_about(done.pop, rect.center());
                     painted.card(pop.transform_rect_bbox(rect));
                     card::paint(scene, transform * pop, text, theme, &frame);
@@ -416,7 +398,6 @@ impl<S: Copy + PartialEq + 'static> HintLayer<S> {
                     painted.mark(Rect::from_center_size(at, (DOT * 6.0, DOT * 6.0)));
                 }
                 if let (Some((spread, strength)), Some(keep)) = (done.landing, look.keep_at) {
-                    // Where it lands, the menu it went into lights once.
                     let at = Rect::from_center_size(keep, (LANDING, LANDING));
                     painted.mark(at.inflate(LANDING * 2.0, LANDING * 2.0));
                     card::pulse(
@@ -435,14 +416,11 @@ impl<S: Copy + PartialEq + 'static> HintLayer<S> {
     }
 }
 
-/// What a draw of the hint covers, for the host's damage.
 #[derive(Default)]
 struct Painted(Option<Rect>);
 
 impl Painted {
-    /// How far a card's shadow and notch reach past its rect.
     const CARD_REACH: f64 = 40.0;
-    /// How far the lit edge's glow reaches past its line.
     const EDGE_REACH: f64 = 48.0;
 
     fn mark(&mut self, rect: Rect) {
@@ -458,20 +436,16 @@ impl Painted {
     }
 }
 
-/// The dot a done card folds into, and its size where it is kept.
 const DOT: f64 = 14.0;
 const DOT_KEPT: f64 = 7.0;
-/// The light where the dot lands, about the size of the avatar it lands in.
 const LANDING: f64 = 24.0;
-/// How far the card stands from its anchor, beyond its notch.
 const ANCHOR_GAP: f64 = 4.0;
-/// How far from the area's edges a card keeps.
 const AREA_MARGIN: f64 = 8.0;
 
-/// Where a card of `size` stands for `place` inside `area`: in the bar, at the leading end of the
+/// Where a card of `size` is `place` inside `area`: in the bar, at the leading end of the
 /// room it keeps beside its clock; or beside its anchor, on its side (the other side when there is
 /// no room), centred on it, kept inside the area. `None` where nothing can be cleared: a hint never
-/// stands over another surface's content, nor over the bar's own controls, so one with nowhere to
+/// sits over another surface's content, nor over the bar controls, so one with nowhere to
 /// stand does not show.
 fn place(
     place: &HintPlace,
@@ -482,7 +456,7 @@ fn place(
     let room = area.inset(-AREA_MARGIN);
     let clear = |rect: Rect| !place.clear.iter().any(|card| card.overlaps(rect));
     let (anchor, side, points) = match place.stand {
-        // A hint with no control on screen to point at stands in the bar, right beside the clock:
+        // A hint with no control on screen to point at is in the bar, right beside the clock:
         // the bar keeps that room clear of everything it draws, and where the room cannot hold the
         // pill whole it does not show rather than stand over the clock or another control.
         Stand::InBar { band } => {
@@ -528,20 +502,15 @@ fn place(
         .map(|side| (side, on_side(side)))
         .find(|(_, rect)| clear(*rect))
         .or_else(|| {
-            // Nowhere beside its anchor fits: it stands on its own side, kept inside the area, as
-            // long as that covers no other surface either.
             let rect = on_side(side);
             clear(rect).then_some((side, rect))
         })?;
-    // The notch is on the card's side facing the anchor.
     let notch = match side {
         PopoverSide::Below => (PopoverSide::Above, centre.x),
         PopoverSide::Above => (PopoverSide::Below, centre.x),
         PopoverSide::Right => (PopoverSide::Left, centre.y),
         PopoverSide::Left => (PopoverSide::Right, centre.y),
     };
-    // Only where the card still faces its anchor: pushed past it, a notch
-    // would point at nothing.
     let faces = match notch.0 {
         PopoverSide::Above | PopoverSide::Below => {
             centre.x > rect.x0 + card::radius(rect) && centre.x < rect.x1 - card::radius(rect)
@@ -553,8 +522,6 @@ fn place(
     Some((rect, (faces && points).then_some(notch)))
 }
 
-/// The card arriving: scaled about its notch's tip (or its centre), and
-/// standing `approach` px back from its anchor.
 fn arrival_pose(
     rect: Rect,
     notch: Option<(PopoverSide, f64)>,
@@ -568,7 +535,6 @@ fn arrival_pose(
         Some((PopoverSide::Right, y)) => (Point::new(rect.x1, y), Vec2::new(1.0, 0.0)),
         None => (rect.center(), Vec2::new(0.0, -1.0)),
     };
-    // It comes out of its anchor: from nearer it, toward where it rests.
     Affine::translate(toward * approach) * Affine::scale_about(scale, origin)
 }
 
@@ -582,8 +548,6 @@ fn drift_path(from: Point, to: Point, at: f64) -> Point {
     a.lerp(b, t)
 }
 
-/// The edge the gesture takes, lit in the person's colour along its
-/// length, as the desktop lights an edge a press would move.
 fn lit_edge(scene: &mut Scene, transform: Affine, edge: Line, look: &Look, opacity: f32) {
     if opacity <= 0.0 {
         return;
@@ -605,8 +569,6 @@ fn lit_edge(scene: &mut Scene, transform: Affine, edge: Line, look: &Look, opaci
     );
 }
 
-/// Opacity that comes in a little behind the card's, so the edge lights
-/// once the card is there to say why.
 fn stage_opacity(opacity: f32) -> f32 {
     #[allow(
         clippy::cast_possible_truncation,
@@ -650,7 +612,7 @@ mod place_tests {
         }
     }
 
-    /// A hint keeps off the cards standing over the desk: it stands on the other side of its
+    /// A hint keeps off the cards standing over the desk: it sits on the other side of its
     /// anchor when that side is free, never over a card's content.
     #[test]
     fn a_hint_stands_beside_its_anchor_clear_of_the_cards_over_the_desk() {
@@ -662,7 +624,6 @@ mod place_tests {
         )
         .expect("room beside its anchor");
         assert_eq!(free.0.x0, 700.0 + card::NOTCH_D + 4.0);
-        // A card standing where the hint would go on the right: it takes the other side.
         let card = Rect::new(700.0, 300.0, 1260.0, 740.0);
         let (rect, _) = place(
             &place_at(PopoverSide::Right, vec![card]),
@@ -672,7 +633,6 @@ mod place_tests {
         .expect("the other side is free");
         assert!(!rect.overlaps(card), "{rect:?} over the card {card:?}");
         assert!(rect.x1 <= card.x0, "beside it, not over it: {rect:?}");
-        // Cards on both sides of the anchor leave the hint nowhere to stand, so it does not.
         let left = Rect::new(0.0, 60.0, 600.0, 760.0);
         assert!(
             place(
@@ -685,18 +645,13 @@ mod place_tests {
         );
     }
 
-    /// Every placement keeps out of the content it is given, wherever it stands: in the bar at the
+    /// Every placement keeps out of the content it is given, wherever it is: in the bar at the
     /// leading end of the room beside its clock, or beside its anchor on either side. A placement
     /// that cannot is one that does not show.
     #[test]
     fn no_placement_stands_over_the_content_it_keeps_clear_of() {
         let area = Rect::new(0.0, 32.0, 1280.0, 800.0);
-        // The room the bar keeps beside its clock: from just past the clock to just before the
-        // bar's own controls on its right, the bar's height across.
         let band = Rect::new(628.0, 0.0, 1100.0, 32.0);
-        // A window's body down the right, the cards its app stands in the body's top corner, and a
-        // card standing over the desk at the strip's leading edge. The window begins below the
-        // band the bar leaves, as the desk's own windows do.
         let kept = [
             Rect::new(700.0, 72.0, 1268.0, 788.0),
             Rect::new(1120.0, 84.0, 1240.0, 136.0),
@@ -711,8 +666,6 @@ mod place_tests {
         for kept in kept {
             assert!(!rect.overlaps(kept), "{rect:?} over {kept:?}");
         }
-        // A bar with no room beside its clock holds no pill: not one over the clock, nor one over
-        // the controls on its right.
         assert!(
             place(
                 &in_bar(Rect::new(628.0, 0.0, 860.0, 32.0), kept.to_vec()),
@@ -731,7 +684,6 @@ mod place_tests {
             .is_none(),
             "a bar too shallow to hold it"
         );
-        // A card standing where the bar's pill would go keeps it away: it does not show over it.
         assert!(
             place(
                 &in_bar(band, vec![Rect::new(600.0, 0.0, 900.0, 32.0)]),
@@ -757,8 +709,6 @@ mod place_tests {
         }
     }
 
-    /// A hint with no clear place beside its anchor is not drawn at all: nothing is taught where
-    /// nothing can be taken, and no card's content is covered. It leaves, as one whose anchor went.
     #[test]
     fn a_hint_with_nowhere_to_stand_leaves_rather_than_covering_a_card() {
         static RESIZE: &[HintSpec<()>] = &[HintSpec {
@@ -805,9 +755,6 @@ mod place_tests {
         );
     }
 
-    /// A window's edge with content on both sides (the edge of a window beside another, or at the
-    /// screen's edge): the hint covers neither window. It stands in the bar's room beside the
-    /// clock, and the edge itself lights where the person drags it.
     #[test]
     fn a_hint_whose_anchor_has_no_clear_side_stands_in_the_bar_with_its_edge_lit() {
         static RESIZE: &[HintSpec<()>] = &[HintSpec {

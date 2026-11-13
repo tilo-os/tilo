@@ -1,27 +1,5 @@
-//! Script fallbacks matched to the UI face, and the features a text kind
-//! resolves to.
-//!
-//! cosmic-text falls back per glyph to whatever face covers a character, at
-//! the size and weight the run asked for. That is right for Arabic or CJK,
-//! which have no x-height to match, but Cyrillic, Greek and Vietnamese set
-//! that way sit visibly smaller or larger, lighter or heavier, than the Latin
-//! around them. Tilo Sans covers Vietnamese and Greek itself; the matched
-//! faces serve the scripts it lacks, and any other UI face's gaps. Before
-//! shaping, every run is split here into spans the shaper can set as one
-//! face:
-//!
-//! - a word in a script the run's face lacks goes to the face matched for
-//!   that script ([`MATCHED`]), at the size that gives it the primary face's
-//!   x-height and at the weight that looks like the primary's;
-//! - punctuation stays with the word it closes or opens; spaces, digits
-//!   and dashes between two faces are the primary face's;
-//! - every span gets the OpenType features its [`TextKind`] asks for that
-//!   its own face has; in prose, the links, email addresses and mentions
-//!   [`crate::text_detect`] finds are spans of their own kind.
-//!
-//! The split is a pure function of the text, the style and the faces, run on
-//! the one shaping path that both measurement and painting use, so the two
-//! can never disagree.
+//! Script fallbacks matched to the UI face, and the features a text kind resolves to. cosmic-text falls
+//! back per glyph to whatever face covers a character, at the size and weight the run asked for.
 
 use std::sync::Arc;
 
@@ -36,25 +14,18 @@ use super::faces::{FaceCaps, caps};
 use super::optical::Optical;
 use crate::text_render::TextKind;
 
-/// One face matched to the UI face for scripts it lacks.
 struct Matched {
     scripts: &'static [Script],
     family: &'static str,
-    /// Features that bring the face's shapes closer to the UI face's.
     features: &'static [[u8; 4]],
-    /// The fallback weight for a UI weight `w` is `scale * w + offset`,
-    /// clamped to the face's axis, so the stems look as heavy as the UI
-    /// face's at every weight.
     scale: f32,
     offset: f32,
-    /// Whether the face has an italic: an upright-only face is skipped for
-    /// italic text, which keeps a true italic from a later entry.
     italic: bool,
 }
 
 /// Matched fallbacks; for each script the first usable entry wins. A face is
 /// usable when the font system has it in the run's style and it covers the
-/// word. A word the run's own face covers never reaches them.
+/// word. A word the run face covers never reaches them.
 const MATCHED: [Matched; 2] = [
     // Onest's straight-armed forms (`ss02`) are the closest Cyrillic to
     // Tilo Sans' Latin; at the same x-height its stems match at about 1.2x
@@ -67,8 +38,6 @@ const MATCHED: [Matched; 2] = [
         offset: -90.0,
         italic: false,
     },
-    // Italic Cyrillic, and Greek, Vietnamese and any other Latin letters a
-    // UI face lacks (Hyperlegible has no Greek and no Vietnamese).
     Matched {
         scripts: &[Script::Cyrillic, Script::Greek, Script::Latin],
         family: "Noto Sans",
@@ -79,7 +48,6 @@ const MATCHED: [Matched; 2] = [
     },
 ];
 
-/// Which face a stretch of text is set in.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Face {
     Primary,
@@ -91,15 +59,10 @@ enum Face {
 type Resolved = Vec<Option<Option<Arc<FaceCaps>>>>;
 
 thread_local! {
-    /// The person's "Always distinguish similar letters" setting, and how
-    /// many security surfaces are being laid out or painted right now. Text
-    /// is shaped on the thread that owns the renderer, so both are per
-    /// thread; [`crate::text_render::TextRenderer`] sets them.
     static DISTINGUISH: std::cell::Cell<(bool, u32)> = const { std::cell::Cell::new((false, 0)) };
 }
 
-/// Turn the "Always distinguish similar letters" setting on or off for text
-/// shaped on this thread. Returns whether it changed.
+/// Turn the "Always distinguish similar letters" setting on or off for text shaped on this thread.
 pub(crate) fn set_distinguish_everywhere(on: bool) -> bool {
     DISTINGUISH.with(|cell| {
         let (was, depth) = cell.get();
@@ -121,8 +84,8 @@ pub(crate) fn security_surface(enter: bool) {
     });
 }
 
-/// Whether text shaped on this thread now sets every look-alike apart: the
-/// setting is on, or a security surface is being drawn.
+/// Whether text shaped on this thread now sets every look-alike apart: the setting is on, or a security
+/// surface is being drawn.
 pub(crate) fn distinguish_everywhere() -> bool {
     DISTINGUISH.with(|cell| {
         let (on, depth) = cell.get();
@@ -130,11 +93,8 @@ pub(crate) fn distinguish_everywhere() -> bool {
     })
 }
 
-/// Split `spans` into spans of one face each, each in the optical cut of its
-/// family for the size it is set at ([`super::optical`]), with features
-/// resolved for `kind`. `base` is the buffer's own metrics, used for spans
-/// that carry none. `distinguish` sets every look-alike apart whatever the
-/// kind.
+/// Split `spans` into spans of one face each, each in the optical cut of its family for the size it is
+/// set at ([`super::optical`]), with features resolved for `kind`.
 pub(crate) fn plan<'t, 'a>(
     db: &fontdb::Database,
     spans: impl IntoIterator<Item = (&'t str, Attrs<'a>)>,
@@ -153,10 +113,7 @@ pub(crate) fn plan<'t, 'a>(
     )
 }
 
-/// [`plan`] for runs that may say their own kind (a mention or a link in
-/// rich text). In `Prose`, the links, email addresses, mentions and
-/// workspace aliases [`crate::text_detect`] finds across the runs are set
-/// as what they are; a run with its own kind keeps it.
+/// [`plan`] for runs that may say their own kind (a mention or a link in rich text).
 pub(crate) fn plan_runs<'t, 'a>(
     db: &fontdb::Database,
     runs: impl IntoIterator<Item = (&'t str, Attrs<'a>, Option<TextKind>)>,
@@ -209,8 +166,6 @@ pub(crate) fn plan_runs<'t, 'a>(
     out
 }
 
-/// `attrs` in the cut of its family for the size the span is set at, when
-/// its family (named, or the generic serif) is drawn in optical cuts.
 fn in_optical_cut<'a>(
     db: &fontdb::Database,
     attrs: Attrs<'a>,
@@ -225,9 +180,6 @@ fn in_optical_cut<'a>(
     let size = attrs.metrics_opt.map_or(base, Metrics::from).font_size;
     let italic = attrs.style != Style::Normal;
     let bold = attrs.weight.0 > 500;
-    // A cut this font system lacks in the run's style and weight (the
-    // standalone catalog's missing Regular, whose family still holds the
-    // shared Bold) is served by the next smaller cut.
     let installed = |cut: &str| {
         db.faces().any(|face| {
             (face.style != fontdb::Style::Normal) == italic
@@ -262,7 +214,6 @@ fn plan_span<'t, 'a>(
     distinguish: bool,
     out: &mut Vec<(&'t str, Attrs<'a>)>,
 ) {
-    // Most UI text: nothing to split and no features to choose.
     if kind == TextKind::Prose && !distinguish && text.is_ascii() {
         out.push((text, attrs.clone()));
         return;
@@ -316,15 +267,12 @@ fn plan_span<'t, 'a>(
     }
 }
 
-/// The face of every character of `text`, as `(byte offset, face)`.
 fn assign_faces(
     db: &fontdb::Database,
     text: &str,
     attrs: &Attrs<'_>,
     primary: &FaceCaps,
 ) -> (Vec<(usize, Face)>, Resolved) {
-    // Words: a script's letters plus the marks that follow them. Everything
-    // else (spaces, punctuation, digits, symbols) is decided afterwards.
     let chars: Vec<(usize, char)> = text.char_indices().collect();
     let mut faces: Vec<Option<Face>> = vec![None; chars.len()];
     let mut resolved: Resolved = vec![None; MATCHED.len()];
@@ -377,13 +325,6 @@ fn assign_faces(
         }
         index = end;
     }
-    // Between two words of one face, everything joins that face. Between
-    // two faces, punctuation that closes the word before (a comma, a full
-    // stop, a closing quote) stays with it and punctuation that opens the
-    // word after (an opening quote or bracket) goes with it; spaces, digits,
-    // dashes and symbols between them are the primary face's, so they match
-    // across a line. A leading or trailing run joins its one neighbour. A
-    // character stays in a matched face only when that face has it.
     let mut index = 0;
     while index < chars.len() {
         if faces.get(index).copied().flatten().is_some() {
@@ -433,8 +374,6 @@ fn assign_faces(
     (faces, resolved)
 }
 
-/// Punctuation that ends what comes before it: a comma, a full stop, a
-/// closing bracket or quote.
 fn closes(c: char) -> bool {
     matches!(
         c.general_category(),
@@ -444,7 +383,6 @@ fn closes(c: char) -> bool {
     )
 }
 
-/// Punctuation that begins what comes after it: an opening bracket or quote.
 fn opens(c: char) -> bool {
     matches!(
         c.general_category(),
@@ -452,8 +390,6 @@ fn opens(c: char) -> bool {
     )
 }
 
-/// The matched face `index` in this run's style, when the font system has
-/// it.
 fn resolve(db: &fontdb::Database, index: usize, attrs: &Attrs<'_>) -> Option<Arc<FaceCaps>> {
     let entry = MATCHED.get(index)?;
     if attrs.style != Style::Normal && !entry.italic {
@@ -481,9 +417,6 @@ fn weight_of(value: f32) -> Weight {
     Weight(value.round().clamp(1.0, 1000.0) as u16)
 }
 
-/// `attrs` set in a matched fallback: its family, its mapped weight, the
-/// size that matches the primary face's x-height, its own features plus the
-/// kind's, and the run's line height unchanged.
 fn fallback_attrs<'a>(
     attrs: &Attrs<'a>,
     entry: &Matched,
@@ -522,10 +455,6 @@ fn fallback_attrs<'a>(
     ))
 }
 
-/// `attrs` with `own` and `kind` features ahead of its explicit ones, so an
-/// explicit setting still wins. A fallback face keeps only the explicit
-/// features that mean the same in every face: stylistic sets and character
-/// variants name glyphs of the face they were chosen for.
 fn with_features<'a>(
     attrs: &Attrs<'a>,
     own: &[[u8; 4]],

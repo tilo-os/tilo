@@ -1,9 +1,4 @@
-//! Reusable graph model for node/graph editors.
-//!
-//! This module intentionally owns no domain data. Image, audio, automation,
-//! and shader editors can all project their typed nodes into a [`Graph`] and
-//! receive the same cycle-free connection rules and keyboard-reachable
-//! connection targets.
+//! Reusable graph model for node/graph editors. This module intentionally owns no domain data.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
@@ -141,11 +136,6 @@ impl Graph {
     }
 
     /// Return a stable topological order for evaluation.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ConnectError::Cycle`] if the graph was deserialized from an
-    /// invalid source that bypassed [`Graph::connect`].
     pub fn evaluation_order(&self) -> Result<Vec<NodeId>, ConnectError> {
         let mut degree = self
             .nodes
@@ -201,8 +191,8 @@ impl Graph {
     }
 }
 
-/// A stable, geometry-independent connection destination used by keyboard,
-/// switch, voice, and assistive-technology interactions.
+/// A stable, geometry-independent connection destination used by keyboard, switch, voice, and
+/// assistive-technology interactions.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ConnectionTarget {
     pub node: NodeId,
@@ -328,7 +318,6 @@ mod tests {
 
     #[test]
     fn evaluation_order_follows_dependencies_not_visual_position() {
-        // Case `order_follows_dependencies_not_visual_position`.
         {
             let mut g = Graph::default();
             for n in ["output", "source", "grade"] {

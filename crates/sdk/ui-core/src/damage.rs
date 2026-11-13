@@ -1,5 +1,5 @@
-//! Damage in device pixels: the pixels a list of rectangles covers, how a long list merges
-//! into a few, and where a relayout moved widgets.
+//! Damage in device pixels: the pixels a list of rectangles covers, how a long list merges into a few,
+//! and where a relayout moved widgets.
 
 use std::cmp::Reverse;
 
@@ -37,9 +37,6 @@ pub(crate) fn damage_union(a: FineDamageRect, b: FineDamageRect) -> FineDamageRe
 }
 
 /// The pixels `rects` cover, each counted once however many rectangles overlap it.
-///
-/// Splits the plane at every left and right edge; inside each vertical slab the covering
-/// rectangles are runs of rows, whose union is a sort and one pass.
 pub fn damage_area(rects: &[FineDamageRect]) -> u64 {
     if let [only] = rects {
         return area(*only);
@@ -92,7 +89,6 @@ pub fn without_contained(rects: Vec<FineDamageRect>) -> Vec<FineDamageRect> {
         return rects;
     }
     let mut order: Vec<(usize, FineDamageRect)> = rects.iter().copied().enumerate().collect();
-    // Width and height after area put a container first among empty rectangles too.
     order.sort_unstable_by_key(|&(index, rect)| {
         (
             Reverse(area(rect)),
@@ -119,25 +115,17 @@ pub fn without_contained(rects: Vec<FineDamageRect>) -> Vec<FineDamageRect> {
         .collect()
 }
 
-/// One rectangle in the merge, with the cheapest partner it knows of. What joining them costs
-/// is kept apart, in [`Merge::costs`], so finding the cheapest merge is a scan of plain numbers.
 #[derive(Clone, Copy)]
 struct Candidate {
     rect: FineDamageRect,
     area: u64,
     live: bool,
     partner: usize,
-    /// The partner was merged away and the merged rectangle costs more: another partner may be
-    /// cheapest, and is looked for only if this one would be merged next. Its cost is then only
-    /// a lower bound.
     stale: bool,
 }
 
-/// The rectangles being merged.
 struct Merge {
     candidates: Vec<Candidate>,
-    /// The least [`growth`] joining each rectangle to another live one costs; `u64::MAX` once it
-    /// is merged away, so the scan for the cheapest merge passes over it.
     costs: Vec<u64>,
 }
 
@@ -154,7 +142,6 @@ impl Merge {
             })
             .collect();
         let mut costs = vec![u64::MAX; candidates.len()];
-        // Each pair once: the cheapest partner of both ends at the same time.
         for index in 0..candidates.len() {
             let (head, tail) = candidates.split_at_mut(index.saturating_add(1));
             let (cost_head, cost_tail) = costs.split_at_mut(index.saturating_add(1));
@@ -176,7 +163,6 @@ impl Merge {
         Self { candidates, costs }
     }
 
-    /// The cheapest live partner of the candidate at `index`: (growth, partner).
     fn cheapest_partner(&self, index: usize) -> (u64, usize) {
         let Some(own) = self.candidates.get(index) else {
             return (u64::MAX, usize::MAX);
@@ -190,7 +176,6 @@ impl Merge {
             .unwrap_or((u64::MAX, usize::MAX))
     }
 
-    /// The pair whose merge costs least, refreshing stale bounds on the way.
     fn cheapest_merge(&mut self) -> Option<(usize, usize)> {
         loop {
             let (index, &cost) = self
@@ -213,8 +198,6 @@ impl Merge {
         }
     }
 
-    /// Joins `gone` into `into`, then brings every other rectangle's cheapest partner up to
-    /// date against the merged one: one pass, not a search over every pair.
     fn join(&mut self, into: usize, gone: usize) -> Option<()> {
         let a = *self.candidates.get(into)?;
         let b = *self.candidates.get(gone)?;
@@ -270,7 +253,6 @@ impl Merge {
     }
 }
 
-/// The area joining `a` and `b` into one rectangle adds beyond their own.
 fn growth(a: &Candidate, b: &Candidate) -> u64 {
     area(damage_union(a.rect, b.rect)).saturating_sub(a.area.saturating_add(b.area))
 }
@@ -305,9 +287,8 @@ pub fn coalesce_damage(rects: Vec<FineDamageRect>, limit: usize) -> Vec<FineDama
     merge.into_rects()
 }
 
-/// Merge only overlap/touching damage whose bounding union costs no more
-/// pixels than the independent passes. The cap bounds the repeated-pair scan
-/// while preserving far-apart scrollbars and overlays.
+/// Merge only overlap/touching damage whose bounding union costs no more pixels than the independent
+/// passes.
 #[allow(
     clippy::indexing_slicing,
     reason = "the bounded two-index scan checks i < j < len before every access"
@@ -334,8 +315,8 @@ pub fn coalesce_regions(mut regions: Vec<FineDamageRect>) -> Vec<FineDamageRect>
     regions
 }
 
-/// The device pixels `rect` touches inside a `width` x `height` target, rounded out; `None`
-/// when that is empty.
+/// The device pixels `rect` touches inside a `width` x `height` target, rounded out; `None` when that
+/// is empty.
 #[allow(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
@@ -354,13 +335,9 @@ pub fn pixel_rect(rect: Rect, width: u32, height: u32) -> Option<FineDamageRect>
     })
 }
 
-// What a relayout moved, from every widget's layout box before and after:
-// the native app host's own window damage and a tile's hint for the app it
-// hosts both say where moved widgets were and are with these.
-
-/// The pixels `damage` covers in a `width` × `height` target, as regions a
-/// presentation can copy, or `None` when the list is empty, absurdly long or
-/// holds a rectangle no pixel grid can take: a host then repaints whole.
+/// The pixels `damage` covers in a `width` × `height` target, as regions a presentation can copy, or
+/// `None` when the list is empty, absurdly long or has a rectangle no pixel grid can take: a host
+/// then repaints whole.
 pub(crate) fn bounded_present_damage(
     width: u32,
     height: u32,
@@ -392,14 +369,14 @@ pub(crate) fn bounded_present_damage(
     )
 }
 
-/// A widget's identity within one tree walk: its address and its depth (a
-/// widget held at the start of its parent shares the parent's address).
+/// A widget's identity within one tree walk: its address and its depth (a widget held at the start of
+/// its parent shares the parent's address).
 pub(crate) type WidgetIdentity = (*const (), usize);
 
-/// Every widget that may paint in view, in tree order, by identity, with its
-/// layout box: in a long scrolled collection only the children near its
-/// viewport ([`crate::widget::Widget::for_each_child_in_clip`]), so the walk
-/// costs what is shown, not what is held.
+/// Every widget that may paint in view, in tree order, by identity, with its layout box: in a long
+/// scrolled collection only the children near its viewport
+/// ([`crate::widget::Widget::for_each_child_in_clip`]), so the walk costs what is shown, not what is
+/// held.
 pub(crate) fn widget_boxes(root: &dyn crate::widget::Widget) -> Vec<(WidgetIdentity, Rect)> {
     fn walk(
         widget: &dyn crate::widget::Widget,
@@ -437,10 +414,9 @@ pub(crate) fn boxes_covered_by_own_damage(
     out
 }
 
-/// The old and new box of every widget that a relayout (and any rebuild)
-/// moved, and the box of every widget that came or went, matched by
-/// identity: a row a scroll brought near the view comes, one it took away
-/// goes.
+/// The old and new box of every widget that a relayout (and any rebuild) moved, and the box of every
+/// widget that came or went, matched by identity: a row a scroll brought near the view comes, one it
+/// took away goes.
 pub(crate) fn changed_boxes(
     before: &[(WidgetIdentity, Rect)],
     after: &[(WidgetIdentity, Rect)],
@@ -464,9 +440,8 @@ pub(crate) fn changed_boxes(
     changed
 }
 
-/// [`changed_boxes`], leaving the box of a widget whose own damage this
-/// draw covers where its box was and is (a block editor that grew by a
-/// paragraph) to that damage; its children's boxes still count.
+/// [`changed_boxes`], leaving the box of a widget whose own damage this draw covers where its box was
+/// and is (a block editor that grew by a paragraph) to that damage; its children's boxes still count.
 pub(crate) fn changed_boxes_besides_own_damage(
     root: &dyn crate::widget::Widget,
     before: &[(WidgetIdentity, Rect)],

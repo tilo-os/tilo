@@ -1,5 +1,5 @@
-//! Where an app's palette stands in its window: under the window's bar,
-//! over the modal scrim that dims the rest of the window.
+//! Where an app's palette is in its window: under the window's bar, over the modal scrim that dims the
+//! rest of the window.
 
 use vello::kurbo::{Point, Rect};
 use winit::event::{ElementState, WindowEvent};
@@ -10,9 +10,7 @@ use crate::theme::Theme;
 /// How much of the height a card may give its result list: four fifths,
 /// which on an 800-pixel window still leaves the card inside it.
 const LIST_SHARE: f64 = 0.80;
-/// The tallest result list, at the theme's own text size.
 const LIST_MAX: f64 = 660.0;
-/// The shortest result list a card keeps, however little room it has.
 const LIST_MIN: f64 = 160.0;
 
 /// The width of a palette's card standing in `area`: three fifths of it,
@@ -26,9 +24,8 @@ pub fn card_width(area: Rect, theme: &Theme) -> f64 {
         .min((area.width() - 2.0 * edge).max(1.0))
 }
 
-/// The tallest a card's result list grows in `area`: a little over half
-/// its height, up to [`LIST_MAX`] at the theme's size, so a card on a tall
-/// display shows a longer list than one in a short window.
+/// The tallest a card's result list grows in `area`: a little over half its height, up to [`LIST_MAX`]
+/// at the theme's size, so a card on a tall display shows a longer list than one in a short window.
 #[must_use]
 pub fn list_cap(area: Rect, theme: &Theme) -> f64 {
     let scale = f64::from(theme.text_scale) * f64::from(theme.ui_scale);
@@ -37,7 +34,7 @@ pub fn list_cap(area: Rect, theme: &Theme) -> f64 {
         .max(LIST_MIN)
 }
 
-/// Where the palette's card stands in `window`, the part of the window it
+/// Where the palette's card is in `window`, the part of the window it
 /// belongs to under the window's bar: its top-left corner and its width.
 /// Centred across the window, a little below its top, and never wider than
 /// the window, so a palette of an app in a window narrower than the screen
@@ -59,10 +56,8 @@ pub fn placement(window: Rect, theme: &Theme) -> (Point, f64) {
 }
 
 impl ActionPalette {
-    /// Stand in `window`, the part of the app's window under its bar: the
-    /// card where [`placement`] puts it, the modal scrim over the rest of
-    /// `window`, and the bar left clear and live. Returns the card's origin
-    /// and width for [`Self::layout`].
+    /// Stand in `window`, the part of the app's window under its bar: the card where [`placement`] puts
+    /// it, the modal scrim over the rest of `window`, and the bar left clear and live.
     pub fn place_in(&mut self, window: Rect, theme: &Theme) -> (Point, f64) {
         self.scrim = Some(window);
         placement(window, theme)
@@ -74,15 +69,15 @@ impl ActionPalette {
         self.scrim.filter(|_| self.is_presented())
     }
 
-    /// The window a confirmation's sheet stands in and dims.
+    /// The window a confirmation's sheet is in and dims.
     pub(super) fn sheet_window(&self, presence: &crate::presence::PresenceCtx) -> Rect {
         self.scrim
             .or_else(|| presence.viewport.get())
             .unwrap_or(self.rect)
     }
 
-    /// Dim the window behind the card as it arrives, and at once where
-    /// motion is reduced, as the arrival itself lands.
+    /// Dim the window behind the card as it arrives, and at once where motion is reduced, as the
+    /// arrival itself lands.
     pub(super) fn paint_scrim(
         &self,
         scene: &mut vello::Scene,
@@ -100,8 +95,8 @@ impl ActionPalette {
         }
     }
 
-    /// A press on the scrim, outside the card, dismisses the palette, as
-    /// Escape does; returns whether it did.
+    /// A press on the scrim, outside the card, dismisses the palette, as Escape does; returns whether
+    /// it did.
     pub(super) fn dismissed_on_scrim(&mut self, event: &WindowEvent, scale: f64) -> bool {
         if self.pressed_on_scrim(event, scale) {
             self.close();
@@ -110,7 +105,6 @@ impl ActionPalette {
         false
     }
 
-    /// Whether `event` is a press on the scrim, outside the card.
     fn pressed_on_scrim(&mut self, event: &WindowEvent, scale: f64) -> bool {
         let Some(scrim) = self.scrim else {
             return false;

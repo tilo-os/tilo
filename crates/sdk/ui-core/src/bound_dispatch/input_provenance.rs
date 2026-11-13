@@ -1,19 +1,18 @@
-//! Where a control invocation came from: the person's input kind and origin,
-//! carried as thread-scoped provenance from the producer through the queue
-//! that drains it to the execution that records it.
+//! Where a control invocation came from: the person's input kind and origin, carried as thread-scoped
+//! provenance from the producer through the queue that drains it to the execution that records it.
 use super::Origin;
 use crate::widget::Widget;
 use std::cell::Cell;
 
-/// How a person's input produced a control invocation: the provenance that
-/// decides whether it joins the undo step before it.
+/// How a person's input produced a control invocation: the provenance that decides whether it joins the
+/// undo step before it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum Input {
-    /// Programmatic, assistive or one-off: a step of its own.
+    /// Programmatic, assistive or one-off: a step of it.
     #[default]
     Discrete,
-    /// Continues the person's gesture (typing, a drag): it joins the step
-    /// before it when the resource says it continues it.
+    /// Continues the person's gesture (typing, a drag): it joins the step before it when the resource
+    /// says it continues it.
     Continuing,
     /// Starts a gesture (the first value of a drag): it never joins the
     /// step before it, and the rest of the gesture joins it.
@@ -41,8 +40,7 @@ pub(crate) fn with_input<T>(input: Input, run: impl FnOnce() -> T) -> T {
     run()
 }
 
-/// [`with_input`] for typing: `physical` text continues the person's
-/// typing; anything else is discrete.
+/// [`with_input`] for typing: `physical` text continues the person's typing; anything else is discrete.
 pub(crate) fn with_physical_text<T>(physical: bool, run: impl FnOnce() -> T) -> T {
     with_input(
         if physical {
@@ -74,8 +72,8 @@ impl Drop for DrainTextScope {
     }
 }
 
-/// The queue that hands over the invocation being drained says who asked
-/// for it ([`Origin::App`]: the app on its own); unsaid, it is a person's.
+/// The queue that hands over the invocation being drained says who asked for it ([`Origin::App`]: the
+/// app on its); unsaid, it is a person's.
 pub(crate) fn note_drained_origin(origin: Origin) {
     DRAINED_ORIGIN.with(|flag| flag.set(origin));
 }
@@ -87,8 +85,8 @@ impl Drop for DrainOriginScope {
     }
 }
 
-/// The next invocation `widget`'s queues hand over, the effect invocation
-/// it continues, and who asked for it.
+/// The next invocation `widget`'s queues hand over, the effect invocation it continues, and who asked
+/// for it.
 pub(crate) fn take_attributed_with_origin(
     widget: &mut dyn Widget,
 ) -> Option<(
@@ -125,8 +123,8 @@ pub(super) fn with_native_text<T>(input: Input, run: impl FnOnce() -> T) -> T {
     run()
 }
 
-/// The provenance of the native text execution running on this thread:
-/// [`Input::Discrete`] outside [`with_native_text`].
+/// The provenance of the native text execution running on this thread: [`Input::Discrete`] outside
+/// [`with_native_text`].
 pub(super) fn native_text_input() -> Input {
     NATIVE_TEXT_EXECUTION.with(Cell::get)
 }

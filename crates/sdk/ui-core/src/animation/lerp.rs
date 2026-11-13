@@ -1,6 +1,5 @@
-//! Interpolation between two values of a kind, for blending colours and
-//! amounts that are not motion (a chart's colour scale, a theme blend). A
-//! value that moves over time does so through `crate::motion`.
+//! Interpolation between two values of a kind, for blending colours and amounts that are not motion (a
+//! chart's colour scale, a theme blend). A value that moves over time does so through `crate::motion`.
 
 /// Interpolation from `self` to `other` at `t` (`0..=1`).
 pub trait Lerp {

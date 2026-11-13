@@ -129,7 +129,6 @@ mod tests {
 
     #[test]
     fn packaged_font_digests_are_complete_sha256_over_every_input() {
-        // phase: same_sha256_for_empty_short_and_multichunk_inputs
         {
             for bytes in [vec![], b"abc".to_vec(), vec![0x61; 1_000_000]] {
                 assert_eq!(
@@ -138,7 +137,6 @@ mod tests {
                 );
             }
         }
-        // phase: read_failure_is_not_a_successful_partial_digest
         {
             struct Failure;
             impl Read for Failure {
@@ -154,7 +152,6 @@ mod tests {
                 io::ErrorKind::PermissionDenied
             );
         }
-        // phase: packaged_product_fonts_match_both_manifest_and_rust_sha256
         {
             let root = crate::font_catalog::checkout_root();
             let manifest = std::fs::read_to_string(root.join("manifest.toml")).unwrap();

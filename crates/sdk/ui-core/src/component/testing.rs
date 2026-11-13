@@ -1,8 +1,7 @@
-//! The probe the component tests read an instance's parts from.
-//!
-//! A described widget reads what a host gives it through [`Source`]; the probe is that host as a
-//! test gives it: values by prop, the widget state to restore, the binding it offers, the events
-//! it handles queued as intents, and the components in its slots.
+//! The probe the component tests read an instance's parts from. A described widget reads what a host
+//! gives it through [`Source`]; the probe is that host as a test gives it: values by prop, the widget
+//! state to restore, the binding it offers, the events it handles queued as intents, and the components
+//! in its slots.
 
 #![allow(
     dead_code,
@@ -16,8 +15,8 @@ use crate::headless::FrameHarness;
 use crate::theme::Theme;
 use crate::widget::Widget;
 
-/// An instance as a test gives it: values by prop, the events it handles queued on `queue`,
-/// and the components in its slots.
+/// An instance as a test gives it: values by prop, the events it handles queued on `queue`, and the
+/// components in its slots.
 pub(super) struct Node {
     kind: &'static str,
     key: String,

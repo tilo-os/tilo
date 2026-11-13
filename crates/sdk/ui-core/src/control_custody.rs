@@ -1,14 +1,5 @@
-//! Emission-time custody for registered local controls.
-//!
-//! Registration is deliberately separate from authority. Only the ordinary
-//! action doors can authorize or execute a descriptor. A control built before
-//! any host reports on a domain of its own; a host that adopts it keeps the
-//! same queue, so there is one place a report ever sits.
-//!
-//! Registered queues are sealed in installation preorder. Each producer keeps
-//! its own FIFO or replacement discipline; there is no global temporal order.
-//! Stable subtree slots preserve this order across ModelView/Tile generations.
-//! Ordinary dispatch still uses the existing owner-specific canonical doors.
+//! Emission-time custody for registered local controls. Registration is deliberately separate from
+//! authority.
 use crate::history_mode::pending_controls::PendingControlOrigin;
 use std::{
     cell::RefCell,
@@ -296,7 +287,7 @@ impl ControlDomain {
             producer,
         }
     }
-    /// Take `outbox`'s queue into this domain: the control that made its own
+    /// Take `outbox`'s queue into this domain: the control that made its
     /// domain before a host was there now reports here, keeping what it has
     /// already queued. Only a queue whose own domain has no owner can be
     /// adopted, so a report never changes hands between two hosts.
@@ -478,14 +469,13 @@ impl ControlOutbox {
 /// can sit.
 pub(crate) struct ControlHolder {
     discipline: ControlProducerDiscipline,
-    /// The control's own domain, until a host adopts the queue.
+    /// The control domain, until a host adopts the queue.
     unowned: Option<ControlDomain>,
-    /// The queue. Made on the first report while unowned, the host's own
-    /// producer once adopted.
+    /// The queue. Made on the first report while unowned, the host producer once adopted.
     queue: Option<ControlOutbox>,
     /// Whether this control reported while no host had adopted it: the
-    /// reports are the control's own, so a host attaching later cannot take
-    /// them as its own.
+    /// reports are the control, so a host attaching later cannot take
+    /// them as its.
     reported: bool,
 }
 impl ControlHolder {
@@ -509,8 +499,6 @@ impl ControlHolder {
         }
     }
 
-    /// The queue a report goes to, made on the control's own domain the
-    /// first time it is needed.
     fn queue(&mut self) -> Option<ControlOutbox> {
         if let Some(queue) = &self.queue {
             return Some(queue.clone());
@@ -618,9 +606,6 @@ impl ControlHolder {
 }
 
 /// Retained raw descriptor custody for a single last-write-wins producer.
-///
-/// A control built outside a host reports on a domain of its own; a host that
-/// adopts it keeps the same queue and drains it like any other producer.
 pub struct RawControlSlot {
     holder: ControlHolder,
 }

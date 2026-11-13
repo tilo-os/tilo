@@ -1,19 +1,7 @@
-//! Accessibility semantic model: the **data layer**. Defines the
-//! toolkit-ergonomic semantic types — [`Role`], [`AccessNode`],
-//! [`AccessState`], and [`Action`] — that every
+//! Accessibility semantic model: the **data layer**. Defines the toolkit-ergonomic semantic types —
+//! [`Role`], [`AccessNode`], [`AccessState`], and [`Action`] — that every
 //! [`Widget`](crate::widget::Widget) describes itself with via
 //! [`Widget::accessibility`](crate::widget::Widget::accessibility).
-//!
-//! Deliberately a **thin convenience layer**: the export layer maps these
-//! onto AccessKit's far richer schema (182 roles, 22 actions) and exports
-//! the assembled tree over AT-SPI2, while an in-process channel feeds the
-//! same nodes to the built-in screen reader. A widget author implements
-//! semantics once with a handful of variants.
-//!
-//! Everything here is **pure data, no behaviour** — no D-Bus, no AccessKit
-//! dependency. Each field maps cleanly onto an AccessKit concept (e.g. our
-//! [`AccessState::multiline`] + [`Role::TextInput`] →
-//! `accesskit::Role::MultilineTextInput`).
 
 use vello::kurbo::Rect;
 
@@ -60,8 +48,8 @@ pub enum Role {
     /// Use [`AccessState::checked`].
     Switch,
     Slider,
-    /// A focusable divider between two panes that moves with the arrow
-    /// keys; its value is the first pane's share in percent.
+    /// A focusable divider between two panes that moves with the arrow keys; its value is the first
+    /// pane's share in percent.
     Separator,
     SpinButton,
     /// Use [`AccessState::expanded`].
@@ -117,10 +105,7 @@ pub struct AccessState {
     /// [`focused`](Self::focused) it never moves the tree's focus.
     pub active_descendant: bool,
     pub focusable: bool,
-    /// The control owns a standard context menu.  The bridge exposes
-    /// AccessKit/AT-SPI's `ShowContextMenu` verb only when this is true, so
-    /// canvas-style apps can make a menu discoverable without claiming that
-    /// every focusable list row has one.
+    /// The control owns a standard context menu.
     pub context_menu: bool,
     pub selected: bool,
     /// `None` = not checkable; tri-state goes through [`AccessState::mixed`], not a third value here.
@@ -142,15 +127,14 @@ pub struct AccessState {
     pub multiline: bool,
     /// When set, widgets must NOT place the secret in [`AccessNode::value`].
     pub protected: bool,
-    /// What a text field asks for, so a browser or password manager can
-    /// fill it in and a page can offer passkeys on it. `None` for fields
-    /// that ask for nothing a person keeps.
+    /// What a text field asks for, so a browser or password manager can fill it in and a page can offer
+    /// passkeys on it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub autofill: Option<Autofill>,
 }
 
-/// What a text field asks for, in the terms browsers and password managers
-/// fill fields by (HTML's `autocomplete` tokens).
+/// What a text field asks for, in the terms browsers and password managers fill fields by (HTML's
+/// `autocomplete` tokens).
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize)]
 pub enum Autofill {
@@ -163,7 +147,7 @@ pub enum Autofill {
     NewPassword,
     /// A code sent to the person or shown by their authenticator.
     OneTimeCode,
-    /// The person's own full name.
+    /// The person full name.
     Name,
     /// A telephone number.
     Tel,
@@ -238,8 +222,6 @@ impl AccessState {
 }
 
 /// Requested by an assistive technology or the built-in screen reader.
-/// Consumed by the future `Widget::perform_action` hook, routed through the
-/// same CRDT-mutating path as `handle_event`.
 #[non_exhaustive]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Action {
@@ -254,8 +236,8 @@ pub enum Action {
     Collapse,
     /// Text field, spin button.
     SetValue(String),
-    /// Extended-grapheme indices into the accessible `TextRun`, matching
-    /// AccessKit's selectable-character model rather than Unicode scalars.
+    /// Extended-grapheme indices into the accessible `TextRun`, matching AccessKit's
+    /// selectable-character model rather than Unicode scalars.
     SetSelection {
         /// Where the selection started.
         anchor: usize,
@@ -266,13 +248,8 @@ pub enum Action {
     ShowContextMenu,
 }
 
-/// Whether activating a control of `role` carries a meaning of its own, so
-/// an assistive technology is offered the activation: the roles a person
-/// presses. A table's row is one of them — its activation opens what the row
-/// names, and it is only offered on a row that carries an action target (see
-/// [`AccessNode::with_action_target`]) — while a label or a plain cell is
-/// not: offering activation there makes a reader say "clickable" about text
-/// that does nothing.
+/// Whether activating a control of `role` has a meaning of it, so an assistive technology is offered
+/// the activation: the roles a person presses.
 #[must_use]
 pub(crate) const fn activation_role(role: Role) -> bool {
     matches!(
@@ -290,10 +267,8 @@ pub(crate) const fn activation_role(role: Role) -> bool {
     )
 }
 
-/// A change to the person's accessibility preferences that a control asked
-/// for, such as the sign-in screen's larger-text or high-contrast toggle.
-/// The host applies it to the whole window, exactly as the matching system
-/// preference would.
+/// A change to the person's accessibility preferences that a control asked for, such as the sign-in
+/// screen's larger-text or high-contrast toggle.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum AccessibilityRequest {
     /// Multiply text by this factor (1.0 is the default size).
@@ -302,8 +277,8 @@ pub enum AccessibilityRequest {
     ScreenReader(bool),
 }
 
-/// How urgently a [live region](AccessNode::live) narrates its own update
-/// *without moving focus* — a toast appearing, a status line changing.
+/// How urgently a [live region](AccessNode::live) narrates its update *without moving focus* — a toast
+/// appearing, a status line changing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 pub enum Politeness {
     /// Wait for a natural pause before speaking.
@@ -312,7 +287,6 @@ pub enum Politeness {
     Assertive,
 }
 
-/// Whether a flag is unset: what serde skips in an inspection patch.
 #[allow(
     clippy::trivially_copy_pass_by_ref,
     reason = "serde's skip_serializing_if passes a reference"
@@ -330,46 +304,39 @@ const fn not(value: &bool) -> bool {
 #[derive(Clone, Debug, PartialEq, serde::Serialize)]
 pub struct AccessNode {
     pub role: Role,
-    /// Stable identity of a retained actionable widget within its semantic
-    /// parent. Unlike a layout id, this survives rebuilds and sibling moves.
+    /// Stable identity of a retained actionable widget within its semantic parent.
     pub semantic_key: Option<String>,
-    /// Opaque stable identity used to route actions on a synthetic child back
-    /// to the widget that produced it. It has meaning only to that widget.
+    /// Opaque stable identity used to route actions on a synthetic child back to the widget that
+    /// produced it.
     pub action_target: Option<String>,
     /// The primary label a screen reader announces.
     pub name: Option<String>,
-    /// `name` is a fallback the widget found for itself (the value it shows)
-    /// rather than words given for it. A parent that holds the control's
-    /// words ([`Widget::accessibility_child_name`](crate::widget::Widget::accessibility_child_name))
-    /// names it instead; a widget that sets a name of its own leaves this
-    /// `false`. Sent only when it is the one case that has it, so the
-    /// inspection patch stays a keystroke's worth of bytes.
+    /// `name` is a fallback the widget found for itself (the value it shows) rather than words given
+    /// for it.
     #[serde(default, skip_serializing_if = "not")]
     pub name_found: bool,
     pub description: Option<String>,
     /// Never populated for [`protected`](AccessState::protected) elements.
     pub value: Option<String>,
     /// How many UTF-16 code units a [`protected`](AccessState::protected)
-    /// value holds, which is what the characters a person typed into it
-    /// measure in a page's own field. A host that shows the interface as
+    /// value has, which is what the characters a person typed into it
+    /// measure in a page field. A host that shows the interface as
     /// HTML keeps the person's text in that field and never receives the
     /// characters back, so this is how it learns the app cleared or replaced
-    /// them and its own field must let them go too. A masked field shows one
+    /// them and its field must let them go too. A masked field shows one
     /// dot per character, so the count of them is already on screen.
     pub value_length: Option<usize>,
     /// Direction-preserving UTF-8 byte endpoints for editable text. The
     /// AccessKit bridge converts these to grapheme indices in a `TextRun`.
     pub text_selection: Option<AccessibleTextSelection>,
     pub state: AccessState,
-    /// The `App` watches its spoken text each frame and announces changes at
-    /// the given politeness *without* moving focus. `None` = not a live region.
+    /// The `App` watches its spoken text each frame and announces changes at the given politeness
+    /// *without* moving focus.
     pub live: Option<Politeness>,
     /// Total items in the owning collection, pairs with
     /// [`pos_in_set`](Self::pos_in_set) to let the reader say "2 of 4".
     pub set_size: Option<usize>,
-    /// 1-based position within the collection. See [`set_size`](Self::set_size).
     pub pos_in_set: Option<usize>,
-    /// 1-based hierarchy depth, read out as "level N".
     pub level: Option<usize>,
     /// Stable identity of THIS node within its parent's
     /// [`children`](Self::children) list, for nodes that are **synthetic** (no
@@ -377,7 +344,7 @@ pub struct AccessNode {
     ///
     /// The export layer derives a synthetic node's assistive-technology id by
     /// chaining these keys from the owning widget downwards, so an AT that
-    /// holds a reference to "the clip named `intro`" keeps pointing at that
+    /// has a reference to "the clip named `intro`" keeps pointing at that
     /// clip across repaints — and the same key path is what comes back on
     /// [`Widget::perform_action`](crate::widget::Widget::perform_action)
     /// when the AT operates the node.
@@ -399,61 +366,42 @@ pub struct AccessNode {
     /// virtual rows and cells use this field because they have no widget of
     /// their own. The AccessKit bridge applies the window scale factor.
     pub bounds: Option<AccessBounds>,
-    /// Accessible children with no backing [`Widget`](crate::widget::Widget)
-    /// of their own — a table's rows and cells, a virtualized list's items.
-    /// The export layer emits them as this node's subtree, nested as deeply
-    /// as needed (rows containing cells).
+    /// Accessible children with no backing [`Widget`](crate::widget::Widget) of their own — a table's
+    /// rows and cells, a virtualized list's items.
     pub children: Vec<AccessNode>,
-    /// Whether [`name`](Self::name) is the app's own fixed, localized copy (a
+    /// Whether [`name`](Self::name) is the app fixed, localized copy (a
     /// button's label, a heading), the same for everyone, rather than
     /// something a person or a resource put there. Unset means content: a
     /// feedback report hides it until the reporter shows it.
     #[serde(skip)]
     pub interface_name: bool,
-    /// What kind of thing this is in the app's own words, where its role
+    /// What kind of thing this is in the app words, where its role
     /// says too little ("Message" for a chat row that is a list item), in
-    /// the reader's language. Always the app's own copy, never content.
+    /// the reader's language. Always the app copy, never content.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role_description: Option<String>,
-    /// The item of its app's collection this node shows: a note's block id, a
-    /// task's issue. What an action naming that item is drawn on, so an
-    /// invocation's target is found in the view by identity rather than by
-    /// its label or its place among its siblings.
+    /// The item of its app's collection this node shows: a note's block id, a task's issue.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub item: Option<String>,
-    /// What this control does, as a stable identity: the record kind it acts
-    /// on and the operation (`so.tilo.lang.notes.Notebook` and `new_note`, a
-    /// field's `title` for a control that edits one), written as
-    /// [`tilo_actions::ActionAddress`] writes an address. A window's
-    /// composition moves a control between its bar, its empty state and its
-    /// columns, and its language changes what it is called; this does not, so
-    /// a test, an agent or assistive technology finds the control by what it
-    /// does. Unique among the controls it stands beside is not required: two
-    /// controls of one action keep a node id each.
+    /// What this control does, as a stable identity: the record kind it acts on and the operation
+    /// (`so.tilo.lang.notes.Notebook` and `new_note`, a field's `title` for a control that edits one),
+    /// written as [`tilo_actions::ActionAddress`] writes an address.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub action: Option<String>,
 }
 
-/// A widget's [`AccessNode`] with its synthetic children shared rather than
-/// owned, from [`Widget::accessibility_shared`](crate::widget::Widget::accessibility_shared).
-///
-/// A widget that keeps its children's nodes between frames (an editor's
-/// paragraphs) hands each over as the very `Arc` it handed over last frame
-/// when that child did not change. The semantic tree then knows the child is
-/// unchanged without copying or comparing it, so a frame that changes one
-/// child costs that child, not the widget's whole subtree.
+/// A widget's [`AccessNode`] with its synthetic children shared rather than owned, from
+/// [`Widget::accessibility_shared`](crate::widget::Widget::accessibility_shared).
 #[derive(Clone, Debug, PartialEq)]
 pub struct SharedAccessNode {
-    /// The widget's node. Its own `children` are empty: they are in
-    /// [`Self::children`].
+    /// The widget's node. Its own `children` are empty: they are in [`Self::children`].
     pub node: AccessNode,
     pub children: Vec<std::sync::Arc<AccessNode>>,
 }
 
 impl SharedAccessNode {
-    /// The node as [`Widget::accessibility`](crate::widget::Widget::accessibility)
-    /// answers it, the children copied out where something else still holds
-    /// them.
+    /// The node as [`Widget::accessibility`](crate::widget::Widget::accessibility) answers it, the
+    /// children copied out where something else still has them.
     pub fn into_owned(self) -> AccessNode {
         let Self { mut node, children } = self;
         node.children
@@ -501,33 +449,26 @@ impl AccessNode {
         }
     }
 
-    /// Say what this control does ([`Self::action`]): the identity of the app
-    /// action it runs, or of the field it edits, in the language of ids.
-    ///
-    /// A control that invokes an app action says it here rather than relying
-    /// on its name: the name is in the reader's language and moves with the
-    /// window's composition, the identity does neither.
+    /// Say what this control does ([`Self::action`]): the identity of the app action it runs, or of the
+    /// field it edits, in the language of ids.
     pub fn with_action(mut self, action: impl Into<String>) -> Self {
         self.action = Some(action.into()).filter(|action| !action.is_empty());
         self
     }
 
-    /// Say which item of its collection this node shows
-    /// ([`Self::item`]).
+    /// Say which item of its collection this node shows ([`Self::item`]).
     pub fn with_item(mut self, item: impl Into<String>) -> Self {
         self.item = Some(item.into()).filter(|item| !item.is_empty());
         self
     }
 
-    /// Mark the name as the app's own fixed, localized copy
-    /// ([`Self::interface_name`]).
+    /// Mark the name as the app fixed, localized copy ([`Self::interface_name`]).
     pub fn with_interface_name(mut self, interface: bool) -> Self {
         self.interface_name = interface;
         self
     }
 
-    /// Say what kind of thing this is in the app's own words
-    /// ([`Self::role_description`]).
+    /// Say what kind of thing this is in the app words ([`Self::role_description`]).
     pub fn with_role_description(mut self, kind: impl Into<String>) -> Self {
         self.role_description = Some(kind.into()).filter(|kind| !kind.trim().is_empty());
         self
@@ -538,21 +479,17 @@ impl AccessNode {
         self
     }
 
-    /// Whether this node's id stays the same control across a rebuild: it
-    /// carries a semantic key of its own, or the key it hashed, rather than
-    /// its place among its siblings.
+    /// Whether this node's id stays the same control across a rebuild: it has a semantic key of its
+    /// own, or the key it hashed, rather than its place among its siblings.
     pub(crate) fn is_keyed(&self) -> bool {
         self.semantic_key.is_some() || self.key.is_some()
     }
 
-    /// Attach an opaque, widget-local target for actions on this synthetic
-    /// node. Prefer stable model keys over visible indices.
+    /// Attach an opaque, widget-local target for actions on this synthetic node.
     pub fn with_action_target(self, target: impl Into<String>) -> Self {
         self.with_owned_action_target(target.into())
     }
 
-    /// [`Self::with_action_target`] once the target is owned: one copy in the
-    /// toolkit rather than one in every app that names a target.
     fn with_owned_action_target(mut self, target: String) -> Self {
         // An actionable synthetic node necessarily needs stable identity for
         // agents and AT to hold across frames. Derive the existing compact key
@@ -565,10 +502,7 @@ impl AccessNode {
     }
 
     /// Route every keyed actionable descendant through its existing
-    /// [`Widget::perform_action`](crate::widget::Widget::perform_action)
-    /// implementation. This is the high-complexity custom-canvas adapter:
-    /// timeline/editor authors keep one stable keyed semantic tree instead of
-    /// duplicating an action id and handler for every painted affordance.
+    /// [`Widget::perform_action`](crate::widget::Widget::perform_action) implementation.
     pub fn with_keyed_action_routes(mut self, namespace: &str) -> Self {
         fn actionable(role: Role) -> bool {
             matches!(
@@ -622,9 +556,8 @@ impl AccessNode {
         self
     }
 
-    /// [`Self::with_name`] for a name the widget found for itself, the value
-    /// it shows: a parent that holds the control's words says its own
-    /// ([`Self::name_found`]).
+    /// [`Self::with_name`] for a name the widget found for itself, the value it shows: a parent that
+    /// has the control's words says its ([`Self::name_found`]).
     pub fn with_found_name(mut self, name: impl Into<String>) -> Self {
         self.name = Some(name.into());
         self.name_found = true;
@@ -653,8 +586,8 @@ impl AccessNode {
         self
     }
 
-    /// Publish the length of a [`protected`](AccessState::protected) value
-    /// without its characters (see [`Self::value_length`]).
+    /// Publish the length of a [`protected`](AccessState::protected) value without its characters (see
+    /// [`Self::value_length`]).
     pub fn with_value_length(mut self, value_length: usize) -> Self {
         self.value_length = Some(value_length);
         self
@@ -722,8 +655,8 @@ impl AccessNode {
         self
     }
 
-    /// Attach synthetic [`children`](Self::children) — accessible elements
-    /// with no backing widget (a table's rows/cells).
+    /// Attach synthetic [`children`](Self::children) — accessible elements with no backing widget (a
+    /// table's rows/cells).
     pub fn with_children(mut self, children: Vec<AccessNode>) -> Self {
         self.children = children;
         self
@@ -746,8 +679,7 @@ pub fn hash_key(value: &impl std::hash::Hash) -> u64 {
     std::hash::Hasher::finish(&h)
 }
 
-/// Every name and value `root` and its descendants expose to assistive
-/// technology, depth first.
+/// Every name and value `root` and its descendants expose to assistive technology, depth first.
 pub fn texts(root: &dyn crate::widget::Widget) -> Vec<String> {
     fn node(access: &AccessNode, out: &mut Vec<String>) {
         out.extend(access.name.clone());
@@ -767,9 +699,7 @@ pub fn texts(root: &dyn crate::widget::Widget) -> Vec<String> {
     out
 }
 
-/// Serializable absolute logical-pixel geometry for a synthetic
-/// [`AccessNode`]. This mirrors [`Rect`] without requiring widget authors to
-/// depend on its serialization feature.
+/// Serializable absolute logical-pixel geometry for a synthetic [`AccessNode`].
 #[derive(Clone, Copy, Debug, PartialEq, serde::Serialize)]
 pub struct AccessBounds {
     pub x0: f64,
@@ -796,9 +726,8 @@ impl From<Rect> for AccessBounds {
     }
 }
 
-/// Where a synthetic node (one of `owner`'s accessibility children, at
-/// `path` below its node) is drawn: its own bounds, else the rect the owner
-/// reports for it. A node with neither has no geometry of its own.
+/// Where a synthetic node (one of `owner`'s accessibility children, at `path` below its node) is drawn:
+/// its bounds, else the rect the owner reports for it.
 pub(crate) fn synthetic_bounds(
     access: &AccessNode,
     owner: &dyn crate::widget::Widget,
@@ -845,14 +774,10 @@ pub struct AccessibleTextSelection {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
 pub struct A11ySettings {
     /// Use a high-contrast theme track (see [`Theme::high_contrast`]).
-    ///
-    /// [`Theme::high_contrast`]: crate::theme::Theme::high_contrast
     pub high_contrast: bool,
-    /// Animations jump to their end state instead of easing. Consulted by
-    /// `crates/sdk/ui-core/src/animation` and the magnifier pan.
+    /// Animations jump to their end state instead of easing.
     pub reduce_motion: bool,
-    /// Lets apps/shell enable extra narration hooks and keep idle frames
-    /// flowing for live regions.
+    /// Lets apps/shell enable extra narration hooks and keep idle frames flowing for live regions.
     pub screen_reader: bool,
 }
 
@@ -860,10 +785,8 @@ pub struct A11ySettings {
 /// here, where accessibility code has always found them.
 pub use crate::color::{contrast_ratio, relative_luminance};
 
-/// The node `widget` states, and what a row of one is called: its own, or the
-/// first node a widget it wraps names itself with. A wrapper that adds no node
-/// of its own — a slot, a box, a toolbar floating over a row — stands where
-/// what it wraps does, so the row it draws states what that rows states.
+/// The node `widget` states, and what a row of one is called: its, or the first node a widget it wraps
+/// names itself with.
 pub(crate) fn stated_node(widget: &dyn crate::widget::Widget) -> Option<AccessNode> {
     if let Some(node) = widget.accessibility()
         && node.name.is_some()
@@ -876,9 +799,8 @@ pub(crate) fn stated_node(widget: &dyn crate::widget::Widget) -> Option<AccessNo
         .find_map(|child| stated_node(child))
 }
 
-/// The widget that states `widget`'s row ([`stated_node`]), to act on: the one
-/// whose node an owner publishing the row hands over, so the one an action on
-/// that node reaches.
+/// The widget that states `widget`'s row ([`stated_node`]), to act on: the one whose node an owner
+/// publishing the row hands over, so the one an action on that node reaches.
 pub(crate) fn stated_widget_mut(
     widget: &mut dyn crate::widget::Widget,
 ) -> Option<&mut dyn crate::widget::Widget> {
@@ -928,7 +850,6 @@ mod tests {
         assert!(s.focused);
         assert_eq!(s.checked, Some(true));
         assert!(s.disabled);
-        // Builders are independent — untouched fields stay default.
         assert_eq!(s.expanded, None);
         assert!(!s.read_only);
         assert_eq!(
@@ -1012,7 +933,6 @@ mod tests {
 
         assert!((relative_luminance(white) - 1.0).abs() < 1e-6);
         assert!(relative_luminance(black).abs() < 1e-6);
-        // Green contributes more luminance than red or blue (WCAG weights).
         let red = relative_luminance(Color::from_rgb8(255, 0, 0));
         let green = relative_luminance(Color::from_rgb8(0, 255, 0));
         let blue = relative_luminance(Color::from_rgb8(0, 0, 255));

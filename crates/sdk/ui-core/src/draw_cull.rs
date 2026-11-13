@@ -1,35 +1,14 @@
-//! Drawing only what a frame repaints.
-//!
-//! A host that presents each frame over the pixels of the one before, makes its scroll copies
-//! and repaints only its damage never shows what the scene holds outside that damage, so it
-//! draws the widgets inside a [`Frame`]. A scroller says where the frame keeps the pixels of its
-//! content ([`keeping`]): where a copy moves what it showed or, when it did not move, where it
-//! is. There a widget with nothing new to paint whose paint lies wholly inside is not drawn
-//! ([`kept`]), and one that paints a long run of rows itself paints only those outside it
-//! ([`kept_band`]), so a scroll encodes the strip it exposed and what changed, not every row in
-//! view.
-//!
-//! Damage is planned only once the widgets are drawn, so what is left undrawn rests on a guess:
-//! where the copies land, less what the last copying frame repainted besides
-//! ([`Frame::expect`]). The host checks it once the damage is planned ([`Frame::holds`]): every
-//! place left undrawn must lie outside the damage repainted from this scene, or the widgets are
-//! drawn again in full. Damage is planned exactly as for a full draw, so it is never less.
-//!
-//! Only the scene the frame is bound to is ever left short: a widget's own cache, a row's scene,
-//! a capture and any host that splits scenes into damage parts ([`crate::scene_parts`]) are
-//! drawn whole.
+//! Drawing only what a frame repaints. A host that presents each frame over the pixels of the one
+//! before, makes its scroll copies and repaints only its damage never shows what the scene has outside
+//! that damage, so it draws the widgets inside a [`Frame`].
 
 use std::cell::RefCell;
 
 use vello::Scene;
 use vello::kurbo::{Affine, Rect, Vec2};
 
-/// How far past the bounds a widget gives its paint may reach in scene
-/// pixels once rasterized (antialiasing), and how far a damage rectangle's
-/// repaint reaches past it (whole pixels).
 const RASTER_REACH: f64 = 1.0;
 
-/// How far from a whole scene pixel a scroll's step may be and still copy.
 const WHOLE_PIXEL: f64 = 1e-3;
 
 thread_local! {
@@ -38,14 +17,13 @@ thread_local! {
 
 /// The frame being drawn, while a host culls it.
 struct State {
-    /// The scene the frame's widgets draw into, by address only, while
-    /// they draw ([`bind`]): nothing drawn into another scene is left out.
+    /// The scene the frame's widgets draw into, by address only, while they draw ([`bind`]): nothing
+    /// drawn into another scene is left out.
     scene: Option<*const Scene>,
-    /// Where the last frame that copied repainted, in scene pixels: kept
-    /// pixels are not expected there.
+    /// Where the last frame that copied repainted, in scene pixels: kept pixels are not expected there.
     expected: Vec<Rect>,
-    /// The scrollers being drawn, innermost last: where each keeps its
-    /// content's pixels, or `None` where nothing is kept.
+    /// The scrollers being drawn, innermost last: where each keeps its content's pixels, or `None`
+    /// where nothing is kept.
     keeps: Vec<Option<Keep>>,
     /// What was left undrawn, in scene pixels, reach included.
     skipped: Vec<Rect>,
@@ -54,24 +32,20 @@ struct State {
 /// Where a frame keeps the pixels of a scroller's content, in scene pixels.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Keep {
-    /// Where the content shows: what it paints anywhere else is clipped
-    /// away.
+    /// Where the content shows: what it paints anywhere else is clipped away.
     clip: Rect,
     /// Where the pixels stay, or land after the copy.
     region: Rect,
-    /// What paints over the content there without moving with it, and so
-    /// repaints.
+    /// What paints over the content there without moving with it, and so repaints.
     overlays: Vec<Rect>,
     /// Whether the content moved since the frame on screen.
     moving: bool,
 }
 
 impl Keep {
-    /// The content shown in `clip` (logical pixels, drawn with
-    /// `transform`) and moved by `delta` (logical pixels, on screen) since
-    /// the frame on screen, with `overlays` (logical) painted over it
-    /// without moving. `None` when the step is not a whole number of scene
-    /// pixels, which no copy makes.
+    /// The content shown in `clip` (logical pixels, drawn with `transform`) and moved by `delta`
+    /// (logical pixels, on screen) since the frame on screen, with `overlays` (logical) painted over it
+    /// without moving.
     pub(crate) fn scrolled(
         transform: Affine,
         clip: Rect,
@@ -132,8 +106,8 @@ impl Keep {
         })
     }
 
-    /// Whether `bounds` (scene pixels, reach included) lie wholly where the
-    /// pixels are kept and meet nothing that repaints.
+    /// Whether `bounds` (scene pixels, reach included) lie wholly where the pixels are kept and meet
+    /// nothing that repaints.
     fn holds(&self, bounds: Rect, expected: &[Rect]) -> bool {
         let meets = |rect: &Rect| {
             let common = rect.intersect(bounds);
@@ -153,18 +127,15 @@ pub(crate) struct Culling {
     pub(crate) scenes: Scenes,
     /// Where the last frame that copied repainted, in scene pixels.
     expected: Vec<Rect>,
-    /// Whether the last frame showed a secret: what a frame leaves out
-    /// still shows it.
+    /// Whether the last frame showed a secret: what a frame leaves out still shows it.
     secret: bool,
-    /// How many frames left anything out, and how many of those had their
-    /// widgets drawn again in full.
+    /// How many frames left anything out, and how many of those had their widgets drawn again in full.
     #[cfg(test)]
     pub(crate) tally: (usize, usize),
 }
 
-/// The scenes of a culled frame: the widgets', and what is painted over
-/// them, apart, so the widgets can be drawn again in full before the two
-/// are composed.
+/// The scenes of a culled frame: the widgets', and what is painted over them, apart, so the widgets can
+/// be drawn again in full before the two are composed.
 #[derive(Default)]
 pub(crate) struct Scenes {
     pub(crate) widgets: Scene,
@@ -179,9 +150,8 @@ impl Culling {
         Frame::begin(&self.expected)
     }
 
-    /// The frame just drawn repainted `damage` (scene pixels), and copied
-    /// if `copied`: the next culled frame expects a copy's frame to repaint
-    /// there again.
+    /// The frame just drawn repainted `damage` (scene pixels), and copied if `copied`: the next culled
+    /// frame expects a copy's frame to repaint there again.
     pub(crate) fn repainted(&mut self, damage: &[Rect], copied: bool) {
         if copied {
             self.expected.clear();
@@ -189,8 +159,8 @@ impl Culling {
         }
     }
 
-    /// A frame that left something out (`left_out`) and whether its
-    /// widgets were drawn again in full, for tests to count.
+    /// A frame that left something out (`left_out`) and whether its widgets were drawn again in full,
+    /// for tests to count.
     #[cfg_attr(
         not(test),
         expect(clippy::needless_pass_by_ref_mut, reason = "only tests keep the count")
@@ -204,8 +174,8 @@ impl Culling {
         let _ = (left_out, redrawn);
     }
 
-    /// Whether the frame showed a secret, given that its draw saw one
-    /// (`drawn`) and whether it left anything out.
+    /// Whether the frame showed a secret, given that its draw saw one (`drawn`) and whether it left
+    /// anything out.
     pub(crate) fn shows_secret(&mut self, drawn: bool, left_out: bool) -> bool {
         self.secret = drawn || (left_out && self.secret);
         self.secret
@@ -243,10 +213,8 @@ impl Frame {
         })
     }
 
-    /// Whether this frame, repainting `damage` (scene pixels) from the
-    /// scene over its last pixels moved by its copies, shows only what was
-    /// drawn: nothing left out meets the damage. A frame repainted whole
-    /// holds only when nothing was left out.
+    /// Whether this frame, repainting `damage` (scene pixels) from the scene over its last pixels moved
+    /// by its copies, shows only what was drawn: nothing left out meets the damage.
     pub(crate) fn holds(&self, damage: Option<&[Rect]>) -> bool {
         FRAME.with_borrow(|frame| {
             let Some(state) = frame.as_ref() else {
@@ -290,8 +258,8 @@ pub(crate) fn unbind() {
     });
 }
 
-/// Whether a frame being culled draws its widgets into `scene`: a cache
-/// recorded around them then would hold what the frame leaves out.
+/// Whether a frame being culled draws its widgets into `scene`: a cache recorded around them then would
+/// hold what the frame leaves out.
 pub(crate) fn culls_into(scene: &Scene) -> bool {
     FRAME.with_borrow(|frame| frame.as_ref().is_some_and(|state| bound_to(state, scene)))
 }
@@ -301,9 +269,8 @@ fn bound_to(state: &State, scene: &Scene) -> bool {
     state.scene.is_some_and(|bound| std::ptr::eq(bound, scene))
 }
 
-/// Draw a scroller's content (`draw`) into `scene` with the frame keeping
-/// its pixels where `keep` says (`None`: nowhere, its content repaints).
-/// Outside a culled frame, or into another scene, this only draws.
+/// Draw a scroller's content (`draw`) into `scene` with the frame keeping its pixels where `keep` says
+/// (`None`: nowhere, its content repaints).
 pub(crate) fn keeping<T>(
     scene: &mut Scene,
     keep: Option<Keep>,
@@ -313,8 +280,8 @@ pub(crate) fn keeping<T>(
     draw(scene)
 }
 
-/// [`keeping`] for a scroller that draws its content itself: what it draws
-/// into `scene` while the returned scope lives.
+/// [`keeping`] for a scroller that draws its content itself: what it draws into `scene` while the
+/// returned scope lives.
 #[must_use]
 pub(crate) fn keep_scope(scene: &Scene, keep: Option<Keep>) -> Option<KeepScope> {
     FRAME.with_borrow_mut(|frame| {
@@ -355,7 +322,6 @@ pub(crate) fn kept(scene: &Scene, transform: Affine, bounds: Rect) -> bool {
         let Some(Some(keep)) = state.keeps.last() else {
             return false;
         };
-        // What the widget paints past the scroller's clip is clipped away.
         let reach = transform
             .transform_rect_bbox(bounds)
             .inflate(RASTER_REACH, RASTER_REACH)
@@ -368,11 +334,9 @@ pub(crate) fn kept(scene: &Scene, transform: Affine, bounds: Rect) -> bool {
     })
 }
 
-/// Where the frame being culled keeps the pixels of what `scene` is being
-/// drawn with `transform` inside `visible` (logical pixels), as the logical
-/// rectangle a widget that paints its own rows may leave them out in,
-/// asking for each run it leaves out ([`kept`]). `None` outside a culled
-/// frame or where nothing is kept.
+/// Where the frame being culled keeps the pixels of what `scene` is being drawn with `transform` inside
+/// `visible` (logical pixels), as the logical rectangle a widget that paints its rows may leave
+/// them out in, asking for each run it leaves out ([`kept`]).
 pub(crate) fn kept_band(scene: &Scene, transform: Affine, visible: Rect) -> Option<Rect> {
     FRAME.with_borrow(|frame| {
         let state = frame.as_ref().filter(|state| bound_to(state, scene))?;

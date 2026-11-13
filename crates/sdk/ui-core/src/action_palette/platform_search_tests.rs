@@ -1,15 +1,9 @@
-// The palette as the platform search surface: facets parsed from typed
-// tokens and picked as chips reach providers structured, a slow provider's
-// pages arrive on later frames under a loading row, and a hit's row shape
-// reaches the results list.
-
 fn platform_palette() -> ActionPalette {
     ActionPalette::with_inputs(crate::font_catalog::fixture_renderer(), || {
         SearchField::with_language("en_US")
     })
 }
 
-/// A snippet library that filters by language, recording each query.
 struct Snippets {
     seen: std::rc::Rc<std::cell::RefCell<Vec<crate::search::SearchQuery>>>,
 }
@@ -73,18 +67,15 @@ fn typed_and_picked_facets_reach_the_provider_structured() {
         [crate::search::FacetFilter::new("language", "rust")]
     );
     assert_eq!(palette.result_labels(), ["Parse JSON"]);
-    // The hit's row shape reaches the list.
     assert!(matches!(
         palette.results.selected().and_then(|hit| hit.row.as_ref()),
         Some(crate::search::SearchRow::FileHit { .. })
     ));
 
-    // Unpicking the chip removes the typed token.
     palette.toggle_facet(&crate::search::FacetFilter::new("language", "rust"));
     assert_eq!(palette.query(), "parse");
     assert_eq!(palette.result_labels().len(), 2);
 
-    // Picking a chip filters without typing.
     palette.toggle_facet(&crate::search::FacetFilter::new("language", "go"));
     assert_eq!(palette.result_labels(), ["Parse flags"]);
     assert_eq!(
@@ -93,8 +84,6 @@ fn typed_and_picked_facets_reach_the_provider_structured() {
     );
 }
 
-/// A mail server: the first page is what is cached locally, the rest is
-/// fetched and arrives when `ready` is set.
 struct SlowMail {
     ready: std::rc::Rc<std::cell::Cell<bool>>,
 }
@@ -140,7 +129,7 @@ impl SearchProvider for SlowMail {
     }
 }
 
-/// An app's own search: until the app has taken the query in, it answers
+/// An app search: until the app has taken the query in, it answers
 /// from what it showed for the query before (a row offering the previous
 /// text), then answers the whole query again.
 struct Reanswering;
@@ -228,18 +217,13 @@ fn a_slow_providers_pages_append_under_a_loading_row() {
     );
     assert!(!palette.results.is_loading());
 
-    // A new query forgets the old token.
     ready.set(false);
     palette.set_query("receipt");
     assert!(palette.results.is_loading());
 }
 
-/// A search opened on a resource of the app's
-/// (`SearchRequest::on`) puts the row that opens it under the cursor, so
-/// one Enter opens it, and leaves a search that lists none as it was.
 #[test]
 fn select_resource_puts_the_row_of_that_resource_under_the_cursor() {
-    // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();
     let mut palette = ActionPalette::with_inputs(crate::font_catalog::fixture_renderer(), || {
         SearchField::with_language("en_US")

@@ -1,21 +1,10 @@
-//! Pointer-driven selection gestures — the press → move → release state machine
-//! behind click-to-place-caret, drag-to-select, double-click-word,
-//! triple-click-line, and shift-extend. App-agnostic: it tracks the gesture and
-//! reports *intents* (extend? what granularity?); the app maps points to its own
-//! caret/selection model. Lives in `ui` so every app gets consistent selection
-//! behaviour instead of re-deriving the timing/anchor rules.
+//! Pointer-driven selection gestures — the press → move → release state machine behind
+//! click-to-place-caret, drag-to-select, double-click-word, triple-click-line, and shift-extend.
 
 use crate::time::{Duration, Instant};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use vello::kurbo::Point;
-
-// Navigation gestures (back / forward): app-agnostic recognisers for the
-// two ways a user asks to go back or forward, recognised once in the host
-// `App` and delivered to the whole widget tree via `Widget::on_nav_gesture`.
-//
-//   * two-finger horizontal swipe on a touchpad (precise/pixel scroll)
-//   * edge-pull swipe from a screen edge (the phone/tablet back gesture)
 
 /// The direction a recognised navigation gesture asks for.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -41,8 +30,8 @@ impl NavAvailability {
     }
 }
 
-/// Phase of a continuous gesture, mapped from the windowing layer's
-/// touch/scroll phases so this module stays winit-free and unit-testable.
+/// Phase of a continuous gesture, mapped from the windowing layer's touch/scroll phases so this module
+/// stays winit-free and unit-testable.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum GesturePhase {
     Begin,
@@ -69,10 +58,6 @@ const EDGE_ZONE_PX: f64 = 24.0;
 /// Inward travel (physical px) from the edge that commits an edge-pull.
 const EDGE_PULL_PX: f64 = 56.0;
 
-/// Default sign mapping: a positive horizontal scroll delta (as winit
-/// reports it) is treated as a *back* swipe — matching the Firefox/Safari
-/// touchpad convention. Flip this one constant if it feels inverted for a
-/// given natural-scroll setting.
 const POSITIVE_DX_IS_BACK: bool = true;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -81,16 +66,13 @@ enum Edge {
     Right,
 }
 
-/// One armed edge-pull touch, keyed by finger id.
 struct EdgeTouch {
     start_x: f64,
     edge: Edge,
     fired: bool,
 }
 
-/// Recognises back/forward navigation gestures from touchpad swipes and
-/// touchscreen edge pulls. One instance lives on the `App`; feed it every
-/// scroll and touch event and act on the `Some(NavDirection)` it returns.
+/// Recognises back/forward navigation gestures from touchpad swipes and touchscreen edge pulls.
 #[derive(Default)]
 pub struct NavGestureRecognizer {
     swipe_x: f64,
@@ -100,9 +82,7 @@ pub struct NavGestureRecognizer {
     touches: HashMap<u64, EdgeTouch>,
 }
 
-/// Device-independent output of the direct-touch gesture arena. Widgets use
-/// this instead of interpreting raw contact streams, so a canvas, document or
-/// game surface gets the same slop, pinch and swipe arbitration.
+/// Device-independent output of the direct-touch gesture arena.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum TouchGestureEvent {
     Tap {
@@ -396,10 +376,7 @@ impl NavGestureRecognizer {
         None
     }
 
-    /// Feed a touch sample (physical coordinates + the window's physical
-    /// width, for edge detection). A finger that starts within the edge
-    /// zone and is dragged inward past the threshold navigates once: left
-    /// edge → Back, right edge → Forward (the phone/tablet convention).
+    /// Feed a touch sample (physical coordinates + the window's physical width, for edge detection).
     pub fn on_touch(
         &mut self,
         id: u64,
@@ -486,14 +463,11 @@ pub struct PressIntent {
 static MULTI_CLICK_MS: AtomicU64 = AtomicU64::new(450);
 
 std::thread_local! {
-    // A capture may need two presses to survive slow rendering, without
-    // changing another capture's timing or the session preference.
     static CAPTURE_MULTI_CLICK_INTERVAL: std::cell::Cell<Option<Duration>> = const {
         std::cell::Cell::new(None)
     };
 }
 
-/// How far the pointer may travel between them.
 const MULTI_CLICK_DIST: f64 = 4.0;
 
 /// The current multi-click window.
@@ -527,8 +501,8 @@ pub fn set_multi_click_interval(d: Duration) {
     MULTI_CLICK_MS.store(millis, Ordering::Relaxed);
 }
 
-/// Tracks a text-selection drag gesture across press → move → release, including
-/// multi-click (word/line) and shift-extend.
+/// Tracks a text-selection drag gesture across press → move → release, including multi-click
+/// (word/line) and shift-extend.
 #[derive(Default)]
 pub struct DragSelect {
     dragging: bool,
@@ -572,9 +546,8 @@ impl DragSelect {
         }
     }
 
-    /// While dragging, the granularity to extend the selection to the current
-    /// pointer with (the app keeps the anchor and moves the caret). `None` when
-    /// no drag is in progress.
+    /// While dragging, the granularity to extend the selection to the current pointer with (the app
+    /// keeps the anchor and moves the caret).
     pub fn drag(&self) -> Option<Granularity> {
         self.dragging.then_some(self.granularity)
     }
@@ -645,7 +618,6 @@ mod tests {
 
     #[test]
     fn drag_select_escalates_clicks_extends_with_shift_and_tracks_the_drag() {
-        // Click count escalates to word then line; a far-away press resets.
         let mut g = DragSelect::new();
         assert_eq!(g.press(Point::ZERO, false).granularity, Granularity::Char);
         assert_eq!(g.press(Point::ZERO, false).granularity, Granularity::Word);
@@ -718,7 +690,6 @@ mod tests {
             }]
         );
 
-        // A three-finger stream stays shell-owned while contacts lift.
         let mut arena = TouchGestureArena::new();
         for (id, x) in [(1, 20.0), (2, 40.0), (3, 60.0)] {
             arena.on_touch(id, Point::new(x, 20.0), GesturePhase::Begin);
@@ -752,11 +723,6 @@ mod tests {
         assert!(!arena.shell_owns_current());
     }
 
-    // ── navigation gestures ────────────────────────────────────────────
-
-    /// Drive a two-finger swipe as a sequence of precise scroll samples
-    /// within one gesture (single `Begin`), returning the first direction
-    /// the recogniser commits to.
     #[allow(
         clippy::similar_names,
         reason = "total_dx/total_dy is the standard delta-x/delta-y naming convention; \

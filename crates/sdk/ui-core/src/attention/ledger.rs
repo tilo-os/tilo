@@ -1,22 +1,5 @@
-//! The ledger: what just happened, append-only, in one place.
-//!
-//! A ledger entry is an outcome the system does not need a person for
-//! ("Backup finished", "3 files moved to Trash", "Pushed to origin/main").
-//! It has an owner (who did it), what it says, when, and — when the thing can
-//! be undone — what to undo; Activities's History shows the entries beside
-//! the workspace's changes, searchable and attributable like them.
-//!
-//! Three things an entry is not:
-//!
-//! * **it does not expire.** There is no lifetime, no dismissal and no
-//!   "clears on read": the record is the record. (The registry keeps a bound
-//!   on how many entries are held in memory — [`MAX_ENTRIES`] — because a
-//!   process that ran for a month must not grow without end; the bound is a
-//!   memory limit, not a lifetime, and it holds thousands of outcomes.)
-//! * **it does not steal focus.** Nothing here opens a window, presses a
-//!   button or takes the keyboard.
-//! * **it is not a notice.** A thing that needs a decision is not an entry:
-//!   it is [`crate::attention`]'s.
+//! The ledger: what just happened, append-only, in one place. A ledger entry is an outcome the system
+//! does not need a person for ("Backup finished", "3 files moved to Trash", "Pushed to origin/main").
 
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
@@ -25,9 +8,7 @@ use crate::attention::Target;
 use crate::lock::MutexRecover as _;
 use crate::time::unix_now_ms;
 
-/// How many entries are held in memory. A bound on memory, not a lifetime:
-/// thousands of outcomes is months of use, and the record is read, not
-/// pruned.
+/// How many entries are held in memory.
 pub const MAX_ENTRIES: usize = 4096;
 
 /// One thing that happened.
@@ -80,8 +61,7 @@ impl Entry {
         self
     }
 
-    /// The verb that undoes it, when it can be undone
-    /// ([`crate::attention::Action::verb`]).
+    /// The verb that undoes it, when it can be undone ([`crate::attention::Action::verb`]).
     #[must_use]
     pub fn undoable(mut self, verb: impl Into<String>) -> Self {
         self.undo = Some(verb.into());
@@ -106,7 +86,6 @@ impl Entry {
         &self.what
     }
 
-    /// What it is about.
     #[must_use]
     pub fn about_line(&self) -> Option<&str> {
         self.about.as_deref()
@@ -136,8 +115,7 @@ impl Entry {
         self.undo.as_deref()
     }
 
-    /// The line a History row shows under the outcome: what it is about and
-    /// why, as one clause.
+    /// The line a History row shows under the outcome: what it is about and why, as one clause.
     #[must_use]
     pub fn detail_line(&self) -> String {
         match (&self.about, &self.because) {
@@ -154,8 +132,8 @@ impl Entry {
         }
     }
 
-    /// Whether it matches `query` in what it says, what it is about or who
-    /// did it: the history's search, run on the record.
+    /// Whether it matches `query` in what it says, what it is about or who did it: the history's
+    /// search, run on the record.
     #[must_use]
     pub fn matches(&self, query: &str) -> bool {
         let query = query.trim().to_lowercase();
@@ -204,14 +182,13 @@ pub fn newest_first() -> Vec<Entry> {
     entries
 }
 
-/// How many entries the ledger holds.
+/// How many entries the ledger has.
 #[must_use]
 pub fn len() -> usize {
     registry().entries.len()
 }
 
-/// The entries whose outcome, subject or author match `query`, newest
-/// first.
+/// The entries whose outcome, subject or author match `query`, newest first.
 #[must_use]
 pub fn search(query: &str) -> Vec<Entry> {
     let mut found: Vec<Entry> = registry()
@@ -224,8 +201,7 @@ pub fn search(query: &str) -> Vec<Entry> {
     found
 }
 
-/// Take every entry away: a test's clean slate, and what a session reset
-/// does.
+/// Take every entry away: a test's clean slate, and what a session reset does.
 #[doc(hidden)]
 pub fn clear() {
     let mut registry = registry();

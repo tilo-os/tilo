@@ -1,16 +1,5 @@
-//! The desktop, blurred, for surfaces that stand on it alone.
-//!
-//! A window group's docked tab strip is frosted over the desktop, and only
-//! the desktop is ever behind it: windows never overlap. So its blur needs
-//! no pass over what the frame drew before it ([`super::BackdropBlur`]),
-//! only the desktop, which changes when the wallpaper, the displays or the
-//! theme's blur do. The desktop's painter publishes it blurred once per
-//! such change ([`publish`], [`blurred_cover`]); a strip fills its body
-//! with that picture and the material's tint (`fill`). The strip is then
-//! an ordinary image fill: it encodes the same while nothing behind it
-//! changed, a hover on a tab damages only the tab, and a presenter that
-//! moves a strip's retained pixels during a pan moves its frosting with
-//! it, to be drawn again where it comes to rest.
+//! The desktop, blurred, for surfaces that stand on it alone. A window group's docked tab strip is
+//! frosted over the desktop, and only the desktop is ever behind it: windows never overlap.
 #![allow(
     clippy::arithmetic_side_effects,
     clippy::cast_possible_truncation,
@@ -30,8 +19,8 @@ use vello::peniko::{BlendMode, Brush, Color, Extend, Fill, ImageBrush, ImageData
 use crate::floating_surface::Material;
 use crate::theme::Theme;
 
-/// One display's desktop, blurred: `brush` placed by `brush_transform` over
-/// `rect`, all in the coordinates `transform` maps into the desktop's.
+/// One display's desktop, blurred: `brush` placed by `brush_transform` over `rect`, all in the
+/// coordinates `transform` maps into the desktop's.
 #[derive(Clone, Debug)]
 pub struct DesktopPiece {
     pub transform: Affine,
@@ -40,15 +29,10 @@ pub struct DesktopPiece {
     pub brush_transform: Affine,
 }
 
-/// The longest edge of a blurred desktop, in texels. Blurred, the desktop
-/// is a low-frequency picture; a few hundred texels across hold all of it.
 const MAX_EDGE: u32 = 512;
 
-/// A blur reaches three standard deviations.
 const REACH: f64 = 3.0;
 
-/// Blurred desktops already made, by wallpaper, size and radius, so a
-/// frame that draws the same desktop costs nothing.
 type CoverKey = (u64, u64, u64, u32);
 
 thread_local! {
@@ -56,10 +40,7 @@ thread_local! {
     static COVERS: RefCell<Vec<(CoverKey, ImageData)>> = const { RefCell::new(Vec::new()) };
 }
 
-/// The desktop a frame draws, blurred, in the coordinates of the scene the
-/// desktop is drawn into. The desktop's painter publishes it every time it
-/// paints; an empty list says there is no picture to frost with, and
-/// surfaces over the desktop are then opaque.
+/// The desktop a frame draws, blurred, in the coordinates of the scene the desktop is drawn into.
 pub fn publish(pieces: Vec<DesktopPiece>) {
     DESKTOP.with(|slot| *slot.borrow_mut() = pieces);
 }
@@ -70,11 +51,8 @@ pub fn published() -> bool {
     DESKTOP.with(|slot| !slot.borrow().is_empty())
 }
 
-/// Fill `shape` with `material` over the published desktop: the blurred
-/// desktop behind it, under the material's tint of `ground`.
-/// `desktop_to_scene` maps the desktop's coordinates into the scene's (a
-/// strip drawn in canvas coordinates is drawn moved by its pan). Opaque
-/// `ground` where the material does not blur or nothing is published.
+/// Fill `shape` with `material` over the published desktop: the blurred desktop behind it, under the
+/// material's tint of `ground`.
 pub(crate) fn fill(
     scene: &mut Scene,
     (transform, desktop_to_scene): (Affine, Affine),
@@ -89,9 +67,6 @@ pub(crate) fn fill(
         return;
     }
     scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, shape);
-    // The first display's picture, its edges carried on, fills all of the
-    // shape (a strip panned off a display still frosts); every other
-    // display's covers its own rect.
     for (index, piece) in pieces.iter().enumerate() {
         let to_scene = desktop_to_scene * piece.transform;
         if index == 0 {
@@ -113,8 +88,6 @@ pub(crate) fn fill(
         }
     }
     scene.pop_layer();
-    // Held in the material's band, as every blurred material is, so ink
-    // measured against the band's ends holds over any desktop.
     super::settle(scene, transform, shape, theme, ground);
     scene.fill(
         Fill::NonZero,
@@ -125,18 +98,14 @@ pub(crate) fn fill(
     );
 }
 
-/// `image` covering `rect` as a desktop paints a wallpaper (scaled to cover
-/// it, centred), blurred by `blur_px` logical pixels: the blurred picture
-/// and the transform that places it over `rect`. Made once per wallpaper,
-/// size and radius on this thread. `None` for an image whose pixels are not
-/// in memory.
+/// `image` covering `rect` as a desktop paints a wallpaper (scaled to cover it, centred), blurred by
+/// `blur_px` logical pixels: the blurred picture and the transform that places it over `rect`.
 #[must_use]
 pub fn blurred_cover(image: &ImageData, rect: Rect, blur_px: f32) -> Option<(ImageData, Affine)> {
     if rect.width() <= 0.0 || rect.height() <= 0.0 || image.width == 0 || image.height == 0 {
         return None;
     }
     let blur = f64::from(blur_px.max(0.0));
-    // A texel small enough that the blur spans a few of them.
     let texel = (blur / 3.0)
         .max(rect.width().max(rect.height()) / f64::from(MAX_EDGE))
         .max(1.0);
@@ -171,7 +140,6 @@ pub fn blurred_cover(image: &ImageData, rect: Rect, blur_px: f32) -> Option<(Ima
     let blurred = crate::raster::rgba8(to_bytes(&out), width, height);
     COVERS.with(|covers| {
         let mut covers = covers.borrow_mut();
-        // Only the desktops on screen are worth keeping.
         if covers.len() >= 8 {
             covers.remove(0);
         }
@@ -180,8 +148,8 @@ pub fn blurred_cover(image: &ImageData, rect: Rect, blur_px: f32) -> Option<(Ima
     Some((blurred, placed))
 }
 
-/// The desktop's pieces with no wallpaper: `brush` (a gradient, already as
-/// smooth as its blur) over `rect`.
+/// The desktop's pieces with no wallpaper: `brush` (a gradient, already as smooth as its blur) over
+/// `rect`.
 #[must_use]
 pub fn smooth_piece(transform: Affine, rect: Rect, brush: Brush) -> DesktopPiece {
     DesktopPiece {
@@ -207,9 +175,6 @@ pub fn image_piece(
     }
 }
 
-/// Average the wallpaper, covering `rect`, onto a `width`×`height` grid:
-/// each texel the mean of a few samples across the wallpaper pixels it
-/// covers. Linear-light averaging is not needed under a blur this wide.
 fn cover_sample(
     image: &ImageData,
     pixels: &[u8],

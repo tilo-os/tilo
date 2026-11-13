@@ -1,7 +1,5 @@
-//! Edge autoscroll: a drag resting in the band along a viewport's edge
-//! scrolls the viewport that way, from nothing at the band's inner side to
-//! full speed at the edge and beyond it. Window strips, reorderable lists
-//! and trees, block drags and text selections all scroll by this one model.
+//! Edge autoscroll: a drag resting in the band along a viewport's edge scrolls the viewport that way,
+//! from nothing at the band's inner side to full speed at the edge and beyond it.
 
 use crate::time::{Duration, Instant};
 use crate::tokens::motion::{
@@ -54,9 +52,8 @@ pub fn distance(velocity: f64, elapsed: Duration) -> f64 {
     velocity * elapsed.min(EDGE_AUTOSCROLL_MAX_STEP).as_secs_f64()
 }
 
-/// The frame clock of one edge autoscroll: the first frame in a band only
-/// starts it, each later one scrolls by the time since the last, and leaving
-/// the band stops it.
+/// The frame clock of one edge autoscroll: the first frame in a band only starts it, each later one
+/// scrolls by the time since the last, and leaving the band stops it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct EdgeAutoscroll {
     last: Option<Instant>,
@@ -97,7 +94,6 @@ mod tests {
         );
         assert_eq!(velocity_past_press(997.0, 997.0, 0.0, 1000.0, band), 0.0);
         assert!(velocity_past_press(999.0, 997.0, 0.0, 1000.0, band) > 0.0);
-        // Pressed well inside: the band is the usual one.
         assert_eq!(velocity_past_press(10.0, 500.0, 0.0, 1000.0, band), 0.0);
         assert_eq!(
             velocity_past_press(0.0, 500.0, 0.0, 1000.0, band),

@@ -7,10 +7,9 @@ use super::{
 use crate::i18n::widget_text;
 use crate::widget::SearchField;
 
-/// What names the palette's field and what its description adds, whichever
-/// rows the palette is over: a step collecting an action's argument is asked
-/// in the action's own words, which a description would only repeat; a query
-/// is the search field it is, and what the query covers is its description.
+/// What names the palette's field and what its description adds, whichever rows the palette is over: a
+/// step collecting an action's argument is asked in the action words, which a description would only
+/// repeat; a query is the search field it is, and what the query covers is its description.
 pub(crate) fn field_announcement(
     field: &SearchField,
     question: Option<&str>,
@@ -35,8 +34,6 @@ impl Widget for ActionPalette {
     fn name(&self) -> &str {
         "ActionPalette"
     }
-    /// The registry key a host resolves the card by: the query field's rect,
-    /// as the shell's overlay hosts look the search card up.
     fn test_id(&self) -> Option<&str> {
         if self.hosts_rows() {
             return Some("command_palette_input");
@@ -104,8 +101,6 @@ impl Widget for ActionPalette {
         use crate::widget::TaffyTreeExt;
         if self.hosts_rows() {
             self.host_prepare(theme);
-            // `desired_size` is the single source of truth so a hand-placed
-            // card (`set_rect`) and a laid-out one agree.
             let (width, height) = self.desired_size();
             let style = Style {
                 size: Size::from_lengths(width, height),
@@ -134,8 +129,6 @@ impl Widget for ActionPalette {
         }
         std::mem::take(&mut self.structure_dirty)
     }
-    /// Sized by its style alone: nothing a host row changes needs taffy to
-    /// measure it again.
     fn is_layout_dirty(&self) -> bool {
         !self.hosts_rows()
     }
@@ -223,9 +216,6 @@ impl Widget for ActionPalette {
             && let Some(field) = self.field.accessibility()
         {
             let target = self.target("field");
-            // A step collecting an action's argument is asked in the action's
-            // own words; the query is the search field it is, the empty
-            // field's words saying what it covers.
             let (name, description) = field_announcement(
                 &self.field,
                 self.in_argument_mode().then(|| self.field.placeholder()),
@@ -239,7 +229,6 @@ impl Widget for ActionPalette {
                     .with_bounds(self.field.get_rect()),
             );
         }
-        // A name to type is a field called by its visible label.
         if let Some(field) = self.confirm.as_ref().and_then(ConfirmState::phrase_field)
             && let Some(node) = field.accessibility()
         {

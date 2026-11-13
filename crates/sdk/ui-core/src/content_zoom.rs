@@ -1,26 +1,5 @@
-//! Content zoom: one mechanism for every app window.
-//!
-//! Ctrl+Plus, Ctrl+Minus and Ctrl+0 (⌘ on macOS), Ctrl+scroll and a
-//! touchpad pinch zoom the content of the window they reach. The window's
-//! host resolves the gesture to a [`ZoomStep`] and offers it to the widgets
-//! first: a widget whose content has a zoom of its own (a web page's
-//! per-site zoom, a PDF page) provides [`ContentZoom`] and answers it.
-//! Otherwise the step changes the window's content scale ([`WindowZoom`]):
-//! the theme is rebuilt with the factor multiplied into its UI scale, so
-//! text, spacing, icons and every layout reflow at the new size, rasterised
-//! at the display's resolution, never a bitmap stretch. The person's text
-//! size setting stays on top of it (`text_scale` is untouched), and a
-//! terminal's grid, set in the theme's code type, grows its font with it.
-//!
-//! A window's factor is remembered per app on this device, and every change
-//! is said in the window's bar for a while ("110%").
-//!
-//! An app whose content has a scale of its own — a photograph fitted to its
-//! frame, a PDF page, a board — does not invent its levels, its bounds or its
-//! percentage: it holds a [`ZoomModel`] over its own levels and draws the
-//! toolkit's own controls for it ([`controls`]). `Ctrl+0` then means the same
-//! thing in every window: the content at its own size (a page at 100 %, a
-//! picture fitted to the frame), never one app's private idea of "fit".
+//! Content zoom: one mechanism for every app window. Ctrl+Plus, Ctrl+Minus and Ctrl+0 (⌘ on macOS),
+//! Ctrl+scroll and a touchpad pinch zoom the content of the window they reach.
 
 use winit::event::{ElementState, MouseScrollDelta, TouchPhase, WindowEvent};
 use winit::keyboard::{Key, ModifiersState};
@@ -38,15 +17,11 @@ pub const MIN: f32 = 0.5;
 /// The largest content zoom.
 pub const MAX: f32 = 3.0;
 
-/// How far a pinch spreads (in the gesture's scale units) for one step.
 const PINCH_STEP: f64 = 0.12;
 
-/// How many scrolled pixels of a precise (touchpad) Ctrl+scroll make one
-/// step; a wheel notch is one step.
 const SCROLL_STEP_PX: f64 = 60.0;
 
-/// What a zoom gesture asks for, and what the window's Zoom in, Zoom out
-/// and Actual size actions carry.
+/// What a zoom gesture asks for, and what the window's Zoom in, Zoom out and Actual size actions carry.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ZoomStep {
@@ -59,16 +34,15 @@ pub enum ZoomStep {
 }
 
 impl ZoomStep {
-    /// The factor one step from `current`, between the toolkit's
-    /// [`LEVELS`], or [`ZoomModel::default_factor`] for [`Self::Reset`].
+    /// The factor one step from `current`, between the toolkit's [`LEVELS`], or
+    /// [`ZoomModel::default_factor`] for [`Self::Reset`].
     #[must_use]
     pub fn apply(self, current: f32) -> f32 {
         self.apply_in(&LEVELS, 1.0, current)
     }
 
-    /// The factor one step from `current`, between `levels` (ascending) and
-    /// back to `reset` for [`Self::Reset`]: the rule every app's own scale
-    /// follows, whatever its levels are.
+    /// The factor one step from `current`, between `levels` (ascending) and back to `reset` for
+    /// [`Self::Reset`]: the rule every app scale follows, whatever its levels are.
     #[must_use]
     pub fn apply_in(self, levels: &[f32], reset: f32, current: f32) -> f32 {
         let current = if current.is_finite() { current } else { reset };
@@ -92,7 +66,7 @@ impl ZoomStep {
 
     /// The step a pressed key means: the platform's command modifier with
     /// `+` (or `=`, its unshifted key on many layouts), `-` or `0`, from the
-    /// main row or the keypad. Alt keeps its own meaning.
+    /// main row or the keypad. Alt keeps its meaning.
     #[must_use]
     pub fn from_key(
         conventions: PlatformConventions,
@@ -118,7 +92,7 @@ impl ZoomStep {
 /// `Ctrl+0` returns to, and the factor it shows now.
 ///
 /// A window zooms its whole content ([`WindowZoom`], the theme's UI scale). A
-/// widget or an app whose content has a size of its own — a photograph, a PDF
+/// widget or an app whose content has a size of it — a photograph, a PDF
 /// page, a board — keeps a `ZoomModel` instead: the levels and bounds are its
 /// own (a picture fits a frame and magnifies to 8×; a page is 25 %–1600 %),
 /// and the *rules* are this module's, so `Ctrl+=`, `Ctrl+-` and `Ctrl+0` mean
@@ -136,15 +110,15 @@ impl ZoomStep {
 pub struct ZoomModel {
     /// The factors it steps between, ascending, all finite and above zero.
     levels: Vec<f32>,
-    /// Where [`ZoomStep::Reset`] goes: the content at its own size.
+    /// Where [`ZoomStep::Reset`] goes: the content at its size.
     reset: f32,
     /// The factor shown now.
     factor: f32,
 }
 
 impl ZoomModel {
-    /// The toolkit's levels ([`LEVELS`]): the window's own content zoom, and
-    /// the default for content with no scale of its own.
+    /// The toolkit's levels ([`LEVELS`]): the window content zoom, and the default for content with no
+    /// scale of it.
     #[must_use]
     pub fn standard() -> Self {
         Self::stepping(LEVELS, 1.0)
@@ -177,7 +151,7 @@ impl ZoomModel {
         }
     }
 
-    /// The factor the content shows at its own size: what `Ctrl+0` returns
+    /// The factor the content shows at its size: what `Ctrl+0` returns
     /// to (100 % for a page, a picture fitted to its frame).
     #[must_use]
     pub fn default_factor(&self) -> f32 {
@@ -196,27 +170,26 @@ impl ZoomModel {
         self.factor
     }
 
-    /// The factor as a whole percentage of the content's own size.
+    /// The factor as a whole percentage of the content size.
     #[must_use]
     pub fn percent(&self) -> f64 {
         (f64::from(self.factor) * 100.0).round()
     }
 
-    /// Whether the content shows at its own size.
+    /// Whether the content shows at its size.
     #[must_use]
     pub fn is_default(&self) -> bool {
         (self.factor - self.reset).abs() <= 0.001
     }
 
-    /// Take `step`, between this model's levels, and answer the factor the
-    /// content shows now.
+    /// Take `step`, between this model's levels, and answer the factor the content shows now.
     pub fn step(&mut self, step: ZoomStep) -> f32 {
         self.factor = step.apply_in(&self.levels, self.reset, self.factor);
         self.factor
     }
 
-    /// Adopt `factor` as what the content shows (a wheel notch, a pinch, a
-    /// fit computed from the frame), left inside what the levels allow.
+    /// Adopt `factor` as what the content shows (a wheel notch, a pinch, a fit computed from the
+    /// frame), left inside what the levels allow.
     pub fn set(&mut self, factor: f32) -> f32 {
         let (Some(min), Some(max)) = (self.min(), self.max()) else {
             return self.factor;
@@ -227,10 +200,9 @@ impl ZoomModel {
         self.factor
     }
 
-    /// Adopt `factor` as what the content shows, without clamping: the value
-    /// came from the content itself (a wheel notch, a fit it computed), so the
-    /// model reports what is on screen even when that is outside its own
-    /// levels.
+    /// Adopt `factor` as what the content shows, without clamping: the value came from the content
+    /// itself (a wheel notch, a fit it computed), so the model reports what is on screen even when that
+    /// is outside its levels.
     pub fn adopt(&mut self, factor: f32) -> f32 {
         if factor.is_finite() && factor > 0.0 {
             self.factor = factor;
@@ -264,7 +236,7 @@ impl ZoomModel {
     }
 
     /// What a control says about the level: `default_label` ("Fit to
-    /// window") while the content shows at its own size, else the
+    /// window") while the content shows at its size, else the
     /// percentage ("120%").
     #[must_use]
     pub fn label(&self, default_label: &str) -> String {
@@ -282,11 +254,11 @@ impl Default for ZoomModel {
     }
 }
 
-/// The toolkit's zoom controls, in the toolkit's own buttons: out, the level
-/// (which returns the content to its own size), and in. `prefix` names the
+/// The toolkit's zoom controls, in the toolkit buttons: out, the level
+/// (which returns the content to its size), and in. `prefix` names the
 /// three of them for tests and assistive technology (`.zoom-out`,
 /// `.zoom-level`, `.zoom-in`); `default_label` is what the middle one says
-/// while the content shows at its own size ("Fit to window", "Actual size").
+/// while the content shows at its size ("Fit to window", "Actual size").
 ///
 /// The caller places the buttons where its chrome keeps them — a toolbar
 /// row, a window's control cluster — and handles the step. A button whose
@@ -326,8 +298,7 @@ pub fn controls<F: FnMut(ZoomStep) + 'static>(
     ]
 }
 
-/// A zoom gesture as it arrives: a key, a Ctrl+scroll or a touchpad
-/// pinch. Scroll and pinch add up to steps ([`WindowZoom::step_of`]).
+/// A zoom gesture as it arrives: a key, a Ctrl+scroll or a touchpad pinch.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ZoomGesture {
     Step(ZoomStep),
@@ -355,32 +326,27 @@ impl ZoomGesture {
     }
 }
 
-/// Whether `modifiers` make a scroll a zoom: the platform's command
-/// modifier, without Alt.
+/// Whether `modifiers` make a scroll a zoom: the platform's command modifier, without Alt.
 #[must_use]
 pub fn is_zoom_modifier(conventions: PlatformConventions, modifiers: ModifiersState) -> bool {
     conventions.command_modifier_down(modifiers) && !modifiers.alt_key()
 }
 
-/// Whether `event` is a Ctrl+scroll, which zooms rather than scrolls: a
-/// scrolling container leaves it to the window (or to a widget whose
-/// content zooms by itself).
+/// Whether `event` is a Ctrl+scroll, which zooms rather than scrolls: a scrolling container leaves it
+/// to the window (or to a widget whose content zooms by itself).
 #[must_use]
 pub fn is_zoom_scroll(event: &WindowEvent, modifiers: &winit::event::Modifiers) -> bool {
     matches!(event, WindowEvent::MouseWheel { .. })
         && is_zoom_modifier(PlatformConventions::default(), modifiers.state())
 }
 
-/// A widget whose content zooms by itself: a web page (per site), a
-/// document page. The host offers it every zoom gesture before it zooms the
-/// window; it answers with the factor it now shows (for the indicator), or
-/// `None` to leave the gesture to the window.
+/// A widget whose content zooms by itself: a web page (per site), a document page.
 pub trait ContentZoom {
     fn zoom_content(&mut self, step: ZoomStep) -> Option<f32>;
 }
 
-/// Offer `step` to the widgets under `widget`, depth first: the factor the
-/// first one that took it now shows.
+/// Offer `step` to the widgets under `widget`, depth first: the factor the first one that took it now
+/// shows.
 pub fn offer(widget: &mut dyn crate::widget::Widget, step: ZoomStep) -> Option<f32> {
     if let Some(zoom) = crate::widget::capability::capability_mut::<dyn ContentZoom>(&mut *widget)
         && let Some(factor) = zoom.zoom_content(step)
@@ -413,9 +379,8 @@ impl crate::storage::SettingsSchema for ZoomPrefs {
     const SCOPE: crate::storage::Scope = crate::storage::Scope::DeviceLocal;
 }
 
-/// A window's content zoom: its factor, where it is remembered, the level
-/// the window's bar says after a change, and the scroll and pinch it
-/// accumulates into steps.
+/// A window's content zoom: its factor, where it is remembered, the level the window's bar says after a
+/// change, and the scroll and pinch it accumulates into steps.
 #[derive(Debug)]
 pub struct WindowZoom {
     factor: f32,
@@ -462,9 +427,8 @@ impl WindowZoom {
         self.set_factor(stored)
     }
 
-    /// Whether a window a person sees has this zoom: one was opened for an
-    /// app ([`Self::restore_for_app`]). A test's or a host worker's app has
-    /// no window to zoom.
+    /// Whether a window a person sees has this zoom: one was opened for an app
+    /// ([`Self::restore_for_app`]).
     #[must_use]
     pub fn in_window(&self) -> bool {
         self.settings.is_some()
@@ -479,8 +443,7 @@ impl WindowZoom {
         true
     }
 
-    /// Take `step` on the window's own scale: remember it and show the
-    /// indicator. Returns whether the factor changed.
+    /// Take `step` on the window scale: remember it and show the indicator.
     pub fn step(&mut self, step: ZoomStep, now: Instant) -> bool {
         let changed = self.set_factor(step.apply(self.factor));
         if changed && let Some(settings) = &self.settings {
@@ -493,9 +456,8 @@ impl WindowZoom {
         changed
     }
 
-    /// Say the level `factor` in the window's bar (a widget's own zoom
-    /// says its level the same way); the same level again (a step at a
-    /// bound) says it once more.
+    /// Say the level `factor` in the window's bar (a widget zoom says its level the same way); the same
+    /// level again (a step at a bound) says it once more.
     pub fn indicate(&mut self, factor: f32, _now: Instant) {
         let text = crate::format::percent(f64::from(factor));
         self.level.show(text);
@@ -508,9 +470,8 @@ impl WindowZoom {
         self.level.is_shown()
     }
 
-    /// Keep the window's bar saying the level while it lasts, and let it go
-    /// once its time is up; the host calls this on its frames and at
-    /// [`Self::deadline`].
+    /// Keep the window's bar saying the level while it lasts, and let it go once its time is up; the
+    /// host calls this on its frames and at [`Self::deadline`].
     pub fn publish(&mut self) {
         self.level.expire();
         self.level.publish(|level| {
@@ -536,8 +497,7 @@ impl WindowZoom {
         }
     }
 
-    /// A Ctrl+scroll: the step it adds up to, if any. A wheel notch is a
-    /// step; a touchpad's pixels add up to one.
+    /// A Ctrl+scroll: the step it adds up to, if any.
     pub fn scroll_step(&mut self, delta: &MouseScrollDelta) -> Option<ZoomStep> {
         let y = match delta {
             MouseScrollDelta::LineDelta(_, y) => {
@@ -594,14 +554,11 @@ mod tests {
         assert!((ZoomStep::In.apply(MAX) - MAX).abs() < 1e-6);
         assert!((ZoomStep::Out.apply(MIN) - MIN).abs() < 1e-6);
         assert!((ZoomStep::Reset.apply(2.5) - 1.0).abs() < 1e-6);
-        // A factor between levels steps to the next one, not past it.
         assert!((ZoomStep::In.apply(1.2) - 1.25).abs() < 1e-6);
     }
 
     #[test]
     fn a_model_steps_between_its_own_levels_and_resets_to_its_own_size() {
-        // A photograph: fitted to its frame is the default, and the levels
-        // are its own, not the toolkit's.
         let mut photo = ZoomModel::stepping([1.0, 1.5, 2.0, 4.0, 8.0], 1.0);
         assert!(photo.is_default());
         assert_eq!(photo.label("Fit to frame"), "Fit to frame");
@@ -623,8 +580,6 @@ mod tests {
         let model = ZoomModel::stepping([4.0, f32::NAN, 0.0, 1.0, 2.0, -1.0], f32::NAN);
         assert_eq!(model.levels(), [1.0, 2.0, 4.0]);
         assert!((model.default_factor() - 1.0).abs() < 1e-6);
-        // A model with no usable level keeps the toolkit's rather than an
-        // empty scale nobody can step through.
         assert_eq!(ZoomModel::stepping([], 1.0).levels(), LEVELS);
     }
 
@@ -650,7 +605,6 @@ mod tests {
             !model.can_step(ZoomStep::In),
             "already at the largest level"
         );
-        // The three controls are the toolkit's, ready for a toolbar row.
         assert_eq!(controls("photo", &model, "Fit to frame", |_| {}).len(), 3);
     }
 

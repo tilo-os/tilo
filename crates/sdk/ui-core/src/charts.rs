@@ -1,8 +1,5 @@
 #![doc = include_str!("../CHARTS.md")]
 
-//! This module is a convenience facade. Chart widgets remain available from
-//! [`crate::widget`] for consistency with the rest of the toolkit.
-
 pub use crate::chart_palette::ChartPalette;
 
 pub use crate::widget::chart_legend as legend;

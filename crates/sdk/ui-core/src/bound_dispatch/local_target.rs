@@ -1,6 +1,6 @@
-//! Which owner a local action address resolves to: the outer document or
-//! exactly one mounted component. Requests are toolkit-private and finite;
-//! no widget pointer or mutable document loan escapes a traversal.
+//! Which owner a local action address resolves to: the outer document or exactly one mounted component.
+//! Requests are toolkit-private and finite; no widget pointer or mutable document loan escapes a
+//! traversal.
 use super::{AutoCommit, BoundActionAddress, BoundActionTarget, CallbackBinding, Widget};
 use tilo_actions::{ActionAddress, DoorError, ResourceSpec};
 
@@ -14,7 +14,7 @@ fn refused(code: &str, reason: impl ToString) -> DoorError {
 
 /// [`refused`] once its reason is text. The traversals that refuse are
 /// generic over the widget they visit, and apps compile them for the
-/// toolkit's own widgets, so building the error stays here.
+/// toolkit widgets, so building the error stays here.
 fn refusal(code: &str, reason: String) -> DoorError {
     DoorError::Unavailable {
         code: code.into(),
@@ -46,9 +46,6 @@ fn owned_resources<W: Widget + ?Sized>(
 ) {
     owned_resources_at(root, None, doc, address, resources);
 }
-/// [`owned_resources`] of a component's root: only the root speaks for the
-/// component's document, what the rest of its tree publishes carries no
-/// document action.
 fn component_resources<W: Widget + ?Sized>(
     root: &W,
     doc: &AutoCommit,
@@ -57,8 +54,6 @@ fn component_resources<W: Widget + ?Sized>(
 ) {
     owned_resources_at(root, Some(true), doc, address, resources);
 }
-/// `owner` says whether `widget` is a component's root (`Some(true)`), below
-/// it (`Some(false)`), or in a tree no component owns (`None`).
 fn owned_resources_at<W: Widget + ?Sized>(
     widget: &W,
     owner: Option<bool>,
@@ -66,8 +61,6 @@ fn owned_resources_at<W: Widget + ?Sized>(
     address: Option<&ActionAddress>,
     resources: &mut Vec<ResourceSpec>,
 ) {
-    // A delivered invocation resolves against its invoker's own view,
-    // rebuilt now; outside one this is the widget's own view.
     let participant = crate::invocation_scope::current_participant();
     let mut local = crate::resources::resources_for(widget, participant.as_ref(), doc);
     if owner == Some(false) {
@@ -144,8 +137,6 @@ impl ResourceReadRequest<'_> {
                 let resources = binding
                     .read_document(&AutoCommit::new(), |doc, _| {
                         let mut resources = Vec::new();
-                        // The boundary adapter forwards its root resources and also
-                        // exposes that root as a child. Collect actual roots once.
                         root.for_each_child(&mut |child| {
                             if !child.has_separate_document_owner() {
                                 component_resources(child, doc, self.address, &mut resources);

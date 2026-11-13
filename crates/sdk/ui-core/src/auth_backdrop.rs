@@ -1,9 +1,5 @@
-//! Quiet current: the shared authentication artwork for the lock and greeter.
-//!
-//! Four curved sheets catch a narrow band of light. Their folds move slowly,
-//! leaving the clock and credentials on calm ground. Everything is vector
-//! geometry and theme color; no image, texture, shader, or frame history is
-//! needed. Callers own the clock and request frames only while visible.
+//! Quiet current: the shared authentication artwork for the lock and greeter. Four curved sheets catch
+//! a narrow band of light.
 
 use std::f64::consts::TAU;
 
@@ -17,10 +13,7 @@ use crate::{Theme, tokens::colors::mix8};
 
 const PERIOD_SECONDS: f64 = 120.0;
 
-/// The still composition the greeter and the lock screen both draw. Any
-/// phase is a valid frame; this one keeps the band of light clear of the
-/// credentials. Both hold it still, so lock and login look the same and
-/// neither repaints the output at a cadence of its own.
+/// The still composition the greeter and the lock screen both draw.
 pub const STILL_SECONDS: f64 = 0.0;
 
 /// Whether the caller should schedule animation frames for this backdrop.
@@ -108,8 +101,6 @@ pub fn draw(
         scene.fill(Fill::NonZero, unit, &silk, None, &sheet);
         scene.stroke(&Stroke::new(hairline), unit, &rim, None, &edge);
 
-        // Delicate parallel contours suggest tension along the material,
-        // instead of introducing grain or a costly blurred glow.
         for offset in [0.008, 0.017] {
             let (_, contour) = ribbon(phase, layer, offset);
             scene.stroke(&Stroke::new(hairline * 0.45), unit, &rim, None, &contour);
@@ -120,11 +111,7 @@ pub fn draw(
     scene.pop_layer();
 }
 
-/// Quiet both text columns without altering the animated sculpture.
 fn draw_readability_veils(scene: &mut Scene, transform: Affine, base: Color) {
-    // Keep the welcome copy and clock on quiet ground even when the moving
-    // fold crosses their column. The fade leaves the central sculpture lit,
-    // while the lower-left sheets remain visible as a subdued continuation.
     let intro_veil = Gradient::new_linear((0.42, 0.0), (0.66, 0.0)).with_stops(
         &[
             (0.0, base.with_alpha(0.90)),
@@ -141,8 +128,6 @@ fn draw_readability_veils(scene: &mut Scene, transform: Affine, base: Color) {
         &Rect::new(0.0, 0.0, 1.0, 1.0),
     );
 
-    // A theme-colored veil quiets the credential side without putting a
-    // bright halo behind text or requiring an opaque full-height side panel.
     let veil = Gradient::new_linear((0.42, 0.0), (0.84, 0.0)).with_stops(
         &[
             (0.0, base.with_alpha(0.0)),
@@ -159,8 +144,6 @@ fn draw_readability_veils(scene: &mut Scene, transform: Affine, base: Color) {
     );
 }
 
-/// A normalized sheet and its leading edge. The two periodic displacements
-/// change the curvature, rather than translating a wallpaper across the UI.
 fn ribbon(phase: f64, layer: f64, inset: f64) -> (BezPath, BezPath) {
     let sway = (phase + layer * 0.24).sin() * 0.018;
     let breath = (phase * 2.0 + layer * 0.18).sin() * 0.012;

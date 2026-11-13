@@ -11,7 +11,6 @@ fn rect(x: u32, y: u32, width: u32, height: u32) -> FineDamageRect {
     }
 }
 
-/// A fixed-seed xorshift: the same lists on every run and every host.
 struct Lists(u64);
 
 impl Lists {
@@ -26,7 +25,6 @@ impl Lists {
         self.next() % bound
     }
 
-    /// `count` rectangles inside a `width` x `height` canvas, empty ones included.
     fn small(&mut self, count: usize, width: u32, height: u32) -> Vec<FineDamageRect> {
         (0..count)
             .map(|_| {
@@ -83,8 +81,7 @@ fn pixels(rects: &[FineDamageRect], width: u32, height: u32) -> Vec<bool> {
     covered
 }
 
-/// Every pixel of `input` lies in `merged`: adding the input to the merged list covers nothing
-/// more.
+/// Every pixel of `input` lies in `merged`: adding the input to the merged list covers nothing more.
 fn covers_every_pixel(merged: &[FineDamageRect], input: &[FineDamageRect]) -> bool {
     let before = damage_area(merged);
     let mut both = merged.to_vec();
@@ -96,14 +93,11 @@ fn covers_every_pixel(merged: &[FineDamageRect], input: &[FineDamageRect]) -> bo
 fn the_area_counts_each_pixel_once_however_many_rectangles_overlap_it() {
     assert_eq!(damage_area(&[]), 0);
     assert_eq!(damage_area(&[rect(3, 4, 10, 20)]), 200);
-    // Two window-sized rectangles overlapping by half count their union, not their sum.
     assert_eq!(
         damage_area(&[rect(0, 0, 100, 50), rect(50, 0, 100, 50)]),
         150 * 50
     );
-    // The same rectangle repeated is its own area.
     assert_eq!(damage_area(&vec![rect(10, 10, 2, 16); 300]), 32);
-    // A cross: the centre square counted once.
     assert_eq!(
         damage_area(&[rect(10, 0, 10, 30), rect(0, 10, 30, 10)]),
         300 + 300 - 100
@@ -173,7 +167,6 @@ fn a_short_list_only_loses_the_rectangles_another_contains_and_keeps_its_order()
 
 #[test]
 fn merging_joins_the_pair_whose_union_adds_the_least_first() {
-    // Two carets side by side and one far away: the neighbours merge, the far one stays.
     let merged = coalesce_damage(
         vec![
             rect(10, 10, 2, 16),
@@ -185,10 +178,10 @@ fn merging_joins_the_pair_whose_union_adds_the_least_first() {
     assert_eq!(merged, [rect(10, 10, 5, 16), rect(1000, 900, 2, 16)]);
 }
 
-/// The merge used to search every pair for every merge: cubic, about 0.5, 3.6 and 23 ms for
-/// 128, 256 and 512 such rectangles in an optimised build on an Apple M-series laptop.
-/// Remembering each rectangle's cheapest partner brings that to about 0.07, 0.2 and 0.7 ms.
-/// The timing is printed, not asserted: a loaded runner must not fail it.
+/// The merge is quadratic only if it searches every pair: about 0.5, 3.6 and 23 ms for 128, 256 and
+/// 512 such rectangles in an optimised build on an Apple M-series laptop, against about 0.07, 0.2 and
+/// 0.7 ms when each rectangle remembers its cheapest partner. The timing is printed, not asserted: a
+/// loaded runner must not fail it.
 #[test]
 fn busy_frames_of_128_256_and_512_rectangles_merge_to_the_dispatch_limit() {
     let mut lists = Lists(0xdead_beef_cafe_f00d);

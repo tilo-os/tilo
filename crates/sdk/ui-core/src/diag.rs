@@ -1,16 +1,5 @@
-//! Diagnostic output that cannot take the application down with it.
-//!
-//! `eprintln!` ends in the standard library's `print_to`, whose last act is
-//! `panic!("failed printing to {label}: {e}")`. A Tilo application is launched
-//! with its stderr on a pipe the compositor reads, so when that reading end
-//! goes away the next write returns `EPIPE` and that panic fires — under the
-//! release profile's `panic = "abort"`, instantly and without unwinding. A
-//! diagnostic line then kills the program it was describing, and its window is
-//! left on screen with no process behind it.
-//!
-//! `diag!` is `eprintln!` with the write error dropped. Use it wherever an
-//! app or the toolkit would reach for `eprintln!`; `tracing` needs no such
-//! treatment, its writers already discard I/O errors.
+//! Diagnostic output that cannot take the application down with it. `eprintln!` ends in the standard
+//! library's `print_to`, whose last act is `panic!("failed printing to {label}: {e}")`.
 
 use std::fmt::Arguments;
 use std::io::Write;

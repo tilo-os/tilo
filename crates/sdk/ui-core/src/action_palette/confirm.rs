@@ -1,16 +1,6 @@
-//! The palette asking before an action goes ahead.
-//!
-//! While it asks, the palette is the shared [`ModalSheet`] over the window:
-//! the action's question as its title, what the action does or what is lost
-//! as its body, and the action's own button beside Cancel. An irreversible
-//! action that names what it destroys ("Erase Samsung T7?") asks for that
-//! name in a labelled field in the body ([`PromptBody::confirm_phrase`]); its
-//! button is the action's verb, drawn destructive, and stays disabled until
-//! the name is typed exactly. A destructive question starts on Cancel, and
-//! Enter in the field for the name never goes ahead, even once it matches:
-//! only the action's button does. Nothing typed here is searched.
-//!
-//! [`ModalSheet`]: crate::widget::ModalSheet
+//! The palette asking before an action goes ahead. While it asks, the palette is the shared
+//! [`ModalSheet`] over the window: the action's question as its title, what the action does or what is
+//! lost as its body, and the action button beside Cancel.
 
 use std::collections::HashMap;
 
@@ -31,7 +21,6 @@ use crate::widget::{Button, ButtonRole, PromptBody, Row, TextInput, Widget};
 /// pixels: a question and two answers, not a page.
 const POPOVER_WIDTH: f64 = 360.0;
 
-/// What an irreversible action with no description of its own loses.
 const IRREVERSIBLE: &str = "This can't be undone.";
 
 /// What the question says under an action Undo takes back: Shift skips it
@@ -51,25 +40,22 @@ pub(super) struct ConfirmState {
     /// What the action does or what is lost.
     pub(super) detail: String,
     pub(super) destructive: bool,
-    /// The action's own button: its label, or its verb where a name is typed.
+    /// The action button: its label, or its verb where a name is typed.
     pub(super) button_label: String,
-    /// Undo takes the action back, so Shift would have skipped this: the
-    /// sheet says so under its detail.
+    /// Undo takes the action back, so Shift would have skipped this: the sheet says so under its
+    /// detail.
     pub(super) skippable: bool,
     phrase: Option<PhraseField>,
 }
 
-/// The name an irreversible action asks to be typed, the labelled field for
-/// it, and where the sheet's last paint put the field.
 struct PhraseField {
     body: PromptBody,
     placed: Option<(TaffyTree<()>, NodeId)>,
 }
 
 impl ConfirmState {
-    /// Ask about `pending`, labelled `label` and described by `description`;
-    /// `asked` says who decides where a workspace's grants ask rather than the
-    /// action itself.
+    /// Ask about `pending`, labelled `label` and described by `description`; `asked` says who decides
+    /// where a workspace's grants ask rather than the action itself.
     pub(super) fn new(
         pending: PendingOperation,
         label: &str,
@@ -138,21 +124,21 @@ impl ConfirmState {
         self.phrase_field().map(PromptBody::value)
     }
 
-    /// What stands in the field for the name; it searches nothing.
+    /// What is in the field for the name; it searches nothing.
     pub(super) fn set_typed(&mut self, text: &str) {
         if let Some(body) = self.phrase_field_mut() {
             body.set_value(text);
         }
     }
 
-    /// Whether what the person typed lets the action go ahead: always for
-    /// a question, the exact name for a phrase.
+    /// Whether what the person typed lets the action go ahead: always for a question, the exact name
+    /// for a phrase.
     pub(super) fn satisfied(&self) -> bool {
         self.phrase_field().is_none_or(PromptBody::confirms)
     }
 
-    /// The keyboard's first stop when the sheet opens: Cancel where the
-    /// action destroys something, else the action's own button.
+    /// The keyboard's first stop when the sheet opens: Cancel where the action destroys something, else
+    /// the action button.
     pub(super) fn first_part(&self) -> usize {
         1 + if self.destructive { CANCEL } else { SUBMIT }
     }
@@ -166,8 +152,6 @@ pub(super) fn confirmation_text(label: &str, description: Option<&str>) -> (Stri
     } else {
         format!("{label}?")
     };
-    // Generated action docs include their heading in the description. The
-    // heading is already the dialog title, not another sentence in its body.
     let description = description.map(str::trim).map(|text| {
         text.strip_prefix(label)
             .filter(|tail| tail.is_empty() || tail.starts_with(char::is_whitespace))
@@ -192,8 +176,8 @@ pub(super) fn confirmation_evidence(policy: &ConfirmationPolicy) -> serde_json::
     }
 }
 
-/// The question for an action labelled `label`, naming `target` when it
-/// destroys one: "Erase Samsung T7?" for "Erase drive" and "Samsung T7".
+/// The question for an action labelled `label`, naming `target` when it destroys one: "Erase Samsung
+/// T7?" for "Erase drive" and "Samsung T7".
 pub(super) fn question(label: &str, target: Option<&str>) -> String {
     let label = label.trim().trim_end_matches(['.', '?', '\u{2026}']);
     match (
@@ -206,7 +190,6 @@ pub(super) fn question(label: &str, target: Option<&str>) -> String {
     }
 }
 
-/// The verb an action's label starts with: "Erase" of "Erase drive".
 fn verb(label: &str) -> String {
     label
         .trim()
@@ -217,8 +200,8 @@ fn verb(label: &str) -> String {
         .to_owned()
 }
 
-/// The answers, in [`SUBMIT`], [`CANCEL`] order: the action's button, in
-/// `role` where it is the question's own, and Cancel.
+/// The answers, in [`SUBMIT`], [`CANCEL`] order: the action's button, in `role` where it is the
+/// question, and Cancel.
 pub(super) fn controls(
     command: &std::rc::Rc<std::cell::Cell<Option<bool>>>,
     submit: &str,
@@ -235,7 +218,6 @@ pub(super) fn controls(
     ))
 }
 
-/// Lay `widget` out at `origin` in `width`, in a tree of its own.
 #[allow(
     clippy::cast_possible_truncation,
     reason = "sheet widths are logical pixels, far inside f32's range"
@@ -287,8 +269,6 @@ impl ActionPalette {
         self.controls = controls(&self.command, &state.button_label, Some(role));
         self.confirmation_sheet.reset();
         self.search_announcement = Some(format!("{} {}", state.question, state.detail));
-        // What the search field held (a query, an argument) is done with;
-        // leaving the question rebuilds it.
         self.field = self.field_source.build().control_size(super::FIELD_SIZE);
         self.results.set_groups(Vec::new());
         self.results.set_empty_text(&state.detail);
@@ -298,8 +278,8 @@ impl ActionPalette {
         self.focus_part(first);
     }
 
-    /// The answers back to Confirm and Cancel once the palette stops asking
-    /// about one action (a history review asks with them too).
+    /// The answers back to Confirm and Cancel once the palette stops asking about one action (a history
+    /// review asks with them too).
     pub(super) fn reset_controls(&mut self) {
         self.controls = controls(&self.command, "Confirm", None);
     }
@@ -326,9 +306,9 @@ impl ActionPalette {
         self.confirm.as_ref().is_none_or(ConfirmState::satisfied)
     }
 
-    /// The part Tab moves to from `focused`: for a typed name the field,
-    /// Cancel and the action in the order they stand, skipping the action
-    /// while it is disabled; for a question, between its two answers.
+    /// The part Tab moves to from `focused`: for a typed name the field, Cancel and the action in the
+    /// order they stand, skipping the action while it is disabled; for a question, between its two
+    /// answers.
     pub(super) fn next_confirmation_part(&self, focused: usize, back: bool) -> usize {
         let typed = self.confirm.as_ref().is_some_and(ConfirmState::typed);
         if !typed {
@@ -351,8 +331,8 @@ impl ActionPalette {
         order.get(next).copied().unwrap_or(0)
     }
 
-    /// Hand `event` to the field for the name, when the palette asks for
-    /// one; a click into it puts the keyboard there.
+    /// Hand `event` to the field for the name, when the palette asks for one; a click into it puts the
+    /// keyboard there.
     pub(super) fn route_to_phrase(
         &mut self,
         event: &WindowEvent,
@@ -368,8 +348,6 @@ impl ActionPalette {
         else {
             return;
         };
-        // Before the sheet's first paint the field has no place yet; keys
-        // and committed text still reach it.
         let unplaced;
         let (taffy, node) = if let Some((taffy, node)) = &phrase.placed {
             (taffy, *node)
@@ -429,13 +407,10 @@ impl ActionPalette {
             ModalAction::primary(&state.button_label)
         };
         let cancel_label = crate::i18n::widget_text("widget-dialog-cancel");
-        // In `SUBMIT`, `CANCEL` order: the sheet answers `Action(SUBMIT)`.
         let actions = [
             submit.enabled(enabled).focused(submit_focused),
             ModalAction::secondary(&cancel_label).focused(cancel_focused),
         ];
-        // Beside the control that asked, a popover as wide as a question
-        // needs; asked with no control, a sheet over the window.
         let mut spec = ModalSpec::new(&state.question)
             .actions(&actions)
             .closable(false);
@@ -445,7 +420,6 @@ impl ActionPalette {
         }
         match state.phrase.as_mut() {
             None if state.skippable => {
-                // The detail, then the hint in a quieter caption below it.
                 let width = body_width(window, spec.max_width, theme);
                 let detail = state.detail.as_str();
                 let detail_h = crate::widget::ModalSheet::message_height(
@@ -511,8 +485,6 @@ impl ActionPalette {
                 &state.detail,
             ),
             Some(phrase) => {
-                // The body is the labelled field: as tall as it lays out in
-                // the sheet's body width, placed where the sheet puts it.
                 let width = body_width(window, spec.max_width, theme);
                 let height = place(&mut phrase.body, theme, Point::ZERO, width, text_renderer)
                     .map_or(0.0, |_| phrase.body.get_rect().height());

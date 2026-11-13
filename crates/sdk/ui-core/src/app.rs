@@ -1,6 +1,3 @@
-use winit::event::{ElementState, WindowEvent};
-// The native event-loop runner (`app/native_runner.rs`) reaches these through
-// `use super::*`.
 #[cfg(feature = "native")]
 use crate::gpu::RenderContext;
 #[cfg(feature = "native")]
@@ -21,6 +18,7 @@ use taffy::AvailableSpace;
 use vello::{Renderer, RendererOptions, peniko::Color};
 #[cfg(feature = "native")]
 use vello::{Scene, kurbo::Affine, kurbo::Point};
+use winit::event::{ElementState, WindowEvent};
 #[cfg(feature = "native")]
 use winit::{
     application::ApplicationHandler,
@@ -82,11 +80,10 @@ mod native_runner;
 #[cfg(feature = "native")]
 mod slow_event;
 /// How an app's error begins when its window stopped without being closed.
-/// The shell recognises it in a failed launch's output.
 pub const WINDOW_LOST: &str = "the window stopped without being closed";
 
-/// Exit status of an app whose window stopped without being closed: the
-/// launcher reports it as a failed launch rather than a clean exit.
+/// Exit status of an app whose window stopped without being closed: the launcher reports it as a failed
+/// launch rather than a clean exit.
 pub const WINDOW_LOST_EXIT_CODE: i32 = 70;
 
 #[cfg(feature = "native")]
@@ -106,10 +103,6 @@ mod embedded;
 #[cfg(feature = "native")]
 pub use embedded::EmbeddedApp;
 
-/// Main-thread-only state behind an opaque `ActionDirectory` cursor. Search
-/// providers own their retained indexes; this retains just the provider slot
-/// and its bounded continuation token, so no full app resource tree is ever
-/// copied into the broker bridge.
 #[derive(Clone)]
 struct ActionDirectoryCursor {
     revision: String,
@@ -150,9 +143,8 @@ const ACTION_DIRECTORY_MAX_DEPTH: u16 = ::collaboration::action_directory::MAX_D
 const ACTION_DIRECTORY_MAX_CURSORS: usize = 256;
 const MAX_PENDING_APPLICATION_LAUNCHES: usize = 256;
 
-/// Synthetic input for `EventLoopProxy`: each variant becomes the real
-/// `WindowEvent`(s) and routes through the same handler, so injected and
-/// real-hardware events take the identical code path.
+/// Synthetic input for `EventLoopProxy`: each variant becomes the real `WindowEvent`(s) and routes
+/// through the same handler, so injected and real-hardware events take the identical code path.
 #[derive(Debug, Clone)]
 pub enum UserEvent {
     Hover {
@@ -173,24 +165,21 @@ pub enum UserEvent {
     /// Opt-in workload input with an absolute schedule and stable input identity.
     NativeScenarioInput(crate::native_scenario::Packet),
     RenderReady(winit::window::WindowId),
-    /// Delivered to [`crate::widget::Widget::on_external_event`] rather than
-    /// translated to a `WindowEvent` (e.g. installer progress).
+    /// Delivered to [`crate::widget::Widget::on_external_event`] rather than translated to a
+    /// `WindowEvent` (e.g.
     External(String),
-    /// A host command chosen in the operating system's own chrome (a menu
-    /// item), entering the same door as the palette.
+    /// A host command chosen in the operating system chrome (a menu item), entering the same door as
+    /// the palette.
     HostCommand(tilo_actions::ControlInvocation),
-    /// Text typed into the host's title-bar search field; search continues
-    /// in the palette.
+    /// Text typed into the host's title-bar search field; search continues in the palette.
     HostSearch(String),
     /// Synchronize and redraw after typed state was changed by a worker.
-    /// Created automatically by [`crate::LocalStateWriter`].
     Wake(crate::wake::WakeEvent),
     /// `tilo-app dev` is replacing this process. Flush the document and write
     /// the route and caret, then leave the event loop so the next process can
     /// read them.
     DevSessionStop,
-    /// `tilo-app dev` rebuilt the app. Swap the contents of the windows this
-    /// process already has. Do not open or close any of them.
+    /// `tilo-app dev` rebuilt the app.
     DevSessionReload,
     /// No `WindowEvent` analogue, so accesskit events get their own variant.
     #[cfg(feature = "native")]
@@ -201,12 +190,10 @@ pub enum UserEvent {
     /// The soft keyboard queued edits for the focused field.
     #[cfg(all(feature = "native", target_os = "android"))]
     PlatformTextInput,
-    /// The system bars, cutout or soft keyboard now cover a different part
-    /// of the window. Android reports it (`launch::android::safe_area_insets`).
+    /// The system bars, cutout or soft keyboard now cover a different part of the window.
     #[cfg(feature = "native")]
     SafeAreaChanged,
-    /// The shell opens one more window of the app in this process
-    /// ([`crate::window_door`]).
+    /// The shell opens one more window of the app in this process ([`crate::window_door`]).
     #[cfg(feature = "native")]
     OpenWindow(crate::window_door::PendingWindow),
 }
@@ -319,12 +306,9 @@ fn prev_boundary(s: &str, byte: usize) -> usize {
     }
 }
 
-/// `None` when the caret is in whitespace / at a gap with no adjacent word.
 #[cfg(feature = "native")]
 fn word_at(s: &str, byte: usize) -> Option<String> {
     let b = byte.min(s.len());
-    // On a boundary (between words or at the end), prefer the word to the
-    // left so Home/End reads a real word.
     let is_ws = |c: char| c.is_whitespace();
     let char_at = |i: usize| s.get(i..).and_then(|t| t.chars().next());
     let on_word = char_at(b).is_some_and(|c| !is_ws(c));
@@ -376,8 +360,7 @@ struct DirectedInvocation {
     authorization: Option<crate::invocation_scope::ResourceInvocationScope>,
 }
 
-/// Public-in-crate so the throttle decision is unit-testable without a real
-/// event loop.
+/// Public-in-crate so the throttle decision is unit-testable without a real event loop.
 #[cfg(feature = "native")]
 pub(crate) fn pointer_broadcast_allowed(
     last: Option<Instant>,
@@ -401,8 +384,6 @@ pub(crate) fn fullscreen_request_decision(requested: bool, want: Option<bool>) -
     }
 }
 
-/// Lets a nested settings/appearance pane drive the app's global appearance
-/// without a back-channel.
 #[cfg(feature = "native")]
 fn find_appearance_intent(w: &dyn Widget) -> Option<crate::theme::AppearanceIntent> {
     let _entry = crate::bound_dispatch::enter_widget(w).ok()?;
@@ -418,8 +399,6 @@ fn find_appearance_intent(w: &dyn Widget) -> Option<crate::theme::AppearanceInte
     found
 }
 
-/// Fans cursor moves out to Iroh peers too, alongside the Unix-socket
-/// send. Invoked after the throttle gate.
 type PresenceBroadcastSink = Box<dyn Fn(&PresenceKey, &PresencePayload) + Send + Sync>;
 type ResolvedResourceInvocation<'a> = (
     Option<serde_json::Map<String, serde_json::Value>>,
@@ -427,30 +406,21 @@ type ResolvedResourceInvocation<'a> = (
     &'a tilo_actions::ActionSpec,
 );
 
-/// Exact host-side mutation key for the resource/action surface. Every route
-/// that can mutate document or presentation-only widget state bumps it. This
-/// deliberately avoids `AutoCommit::get_heads()`, which closes an open
-/// transaction and could split a pending undo unit during a read-only query.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct ResourceCacheKey {
     mutation_generation: u64,
-    /// The locale what was declared reads in: a resource's, an action's and
-    /// a row's labels are resolved when they are materialised, so a language
-    /// the person changes declares its resources again.
     locale: u64,
 }
 
 struct ResourceCache {
     key: ResourceCacheKey,
     declared: Vec<tilo_actions::ResourceSpec>,
-    // None is deferred; Some(empty) is a completed, rejected surface.
     complete: Option<Vec<tilo_actions::ResourceSpec>>,
 }
 
 struct LocalResourceCache {
     key: ResourceCacheKey,
     permission_generation: u64,
-    // Control availability can exist before the complete local catalogue.
     resources: Option<Vec<tilo_actions::ResourceSpec>>,
     allowed: std::collections::HashSet<tilo_actions::ActionAddress>,
 }
@@ -468,8 +438,8 @@ use crate::bound_dispatch::find_action_resource;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ControlBindingStatus {
     Resolved,
-    /// A high-frequency framework-owned CRDT editing stream with automatic
-    /// collaboration/history semantics rather than a discrete action address.
+    /// A high-frequency framework-owned CRDT editing stream with automatic collaboration/history
+    /// semantics rather than a discrete action address.
     CollaborativeDocument,
     SemanticAction,
     /// Multiple affordances intentionally invoke the same operation.
@@ -528,8 +498,8 @@ pub struct App {
     /// on it replaces every node id, and a name is what finds the same control
     /// again when nothing in the new tree reports itself as focused.
     focus_anchor: Option<String>,
-    /// Opt-in: focuses the first focusable widget after initial layout, so
-    /// the app is keyboard-usable without a click.
+    /// Opt-in: focuses the first focusable widget after initial layout, so the app is keyboard-usable
+    /// without a click.
     pub autofocus_first: bool,
     /// Opt-in: re-establishes keyboard focus on every structural rebuild.
     /// [`crate::widget::Widget::take_focus_reset`] jumps to the first
@@ -540,12 +510,11 @@ pub struct App {
     /// tree each tick for [`crate::widget::Widget::appearance_intent`] and
     /// re-themes live.
     pub appearance_reconcile: bool,
-    /// Shared settings-file watcher for OS-wide theme changes made by Theme
-    /// Studio. Throttled so the render loop does not stat the file per frame.
+    /// Shared settings-file watcher for OS-wide theme changes made by Theme Studio.
     theme_store_stamp: Option<settings_store::SettingsStamp>,
     last_theme_store_check: Instant,
-    /// The schedule an "Automatic" theme follows and whether it was night
-    /// when last applied: sunrise and sunset re-theme without a file change.
+    /// The schedule an "Automatic" theme follows and whether it was night when last applied: sunrise
+    /// and sunset re-theme without a file change.
     theme_schedule: Option<(settings_store::day_schedule::Scheduled, bool)>,
     input: InputRuntime,
 
@@ -556,19 +525,17 @@ pub struct App {
     native_workspace_route: Option<crate::collaboration::RouteSpec>,
     pub presence_ctx: PresenceCtx,
     pub permission_ctx: PermissionContext,
-    /// [`crate::permissions::shared_revision`] as the last frame painted
-    /// with it: what widgets paint follows permissions that can change with
-    /// nothing in the tree marking it, so a frame draws again from cleared
-    /// drawings after it moves.
+    /// [`crate::permissions::shared_revision`] as the last frame painted with it: what widgets paint
+    /// follows permissions that can change with nothing in the tree marking it, so a frame draws again
+    /// from cleared drawings after it moves.
     painted_permissions: u64,
 
     presence: PresenceRuntime,
 
     accessibility: Box<AccessibilityRuntime>,
 
-    /// Compared against [`crate::widget::Widget::fullscreen_intent`] each
-    /// frame so a steady desired state issues one `set_fullscreen` call —
-    /// see [`fullscreen_request_decision`].
+    /// Compared against [`crate::widget::Widget::fullscreen_intent`] each frame so a steady desired
+    /// state issues one `set_fullscreen` call — see [`fullscreen_request_decision`].
     window: WindowRuntime,
     committed_documents: Vec<(
         crate::collaboration::RouteSpec,
@@ -579,8 +546,7 @@ pub struct App {
     document_routes: crate::history_mode::routes::OwnerDocumentRoutes,
 
     actions: Box<ActionRuntime>,
-    /// The window presents search itself (its palette), rather than a
-    /// shell hosting the app.
+    /// The window presents search itself (its palette), rather than a shell hosting the app.
     search_presented: bool,
     native_document_chrome: bool,
     continuation: ContinuationRuntime,
@@ -589,14 +555,10 @@ pub struct App {
     profiler: Option<crate::profiling::FrameProfiler>,
     native_input_probe: Option<Box<dyn Fn() -> serde_json::Value>>,
 
-    /// Optional app → shell lifecycle channel for detachable surfaces. It is
-    /// discovered from the launcher-provided service fd and absent outside a
-    /// Tilo session, where apps simply keep their overlays attached.
+    /// Optional app → shell lifecycle channel for detachable surfaces.
     floating: Box<FloatingRuntime>,
 }
 
-/// Lazy private inputs keep discovery at the original initializer/callback boundary.
-/// Constructing this provider itself performs no discovery beyond its supplied manager.
 enum ConstructionValue<T> {
     Lazy(fn() -> T),
     Ready(T),
@@ -675,8 +637,6 @@ impl AppConstructionInputs {
         binding: &crate::bound_dispatch::CallbackBinding,
         mut services: Self,
     ) -> Self {
-        // Keep the explicit presentation and canonical author. Only the native
-        // runner supplies process services; the application factory stays pure.
         services.configured_theme = ConstructionValue::Ready(inputs.theme);
         services.text_renderer = ConstructionValue::Ready(inputs.text_renderer);
         services.palette_source = PaletteSource::Host;
@@ -726,8 +686,6 @@ impl AppConstructionInputs {
         // process that never installed any gets the native desktop's.
         #[cfg(feature = "native")]
         crate::host::native::install_default_if_unset(None);
-        // A live window keeps the person's emoji recents on the device, so the
-        // picker opens with what they picked last time.
         #[cfg(feature = "native")]
         crate::emoji_catalogue::keep_recents_on_the_device();
         Self {
@@ -818,8 +776,6 @@ impl AppConstructionInputs {
 
 impl App {
     /// Install a read-only workload observer for scheduled native inputs.
-    /// Snapshots verify fixture state changes; they do not prove pixel presentation.
-    /// Keep this callback inexpensive: it executes on the UI thread.
     pub fn set_native_input_probe(&mut self, probe: impl Fn() -> serde_json::Value + 'static) {
         self.native_input_probe = Some(Box::new(probe));
     }
@@ -844,8 +800,6 @@ impl App {
     }
 
     /// Mount a checked component on an explicitly admitted collaboration manager.
-    /// The manager retains the certified SDK route; no ambient identity or service
-    /// lookup is added. Component authority and record custody remain unchanged.
     pub fn from_component_with_collaboration(
         component: crate::application::AppComponent,
         inputs: crate::application::ComponentRunnerInputs,
@@ -858,11 +812,8 @@ impl App {
         })
     }
 
-    /// Mount a standalone native component with the process's existing system
-    /// services, including record-scoped collaboration and accessibility.
-    /// Presentation, identity, storage and authority still belong to the host.
-    /// # Errors
-    /// Preserves the component's recovery owners on mount or route mismatch.
+    /// Mount a standalone native component with the process's existing system services, including
+    /// record-scoped collaboration and accessibility.
     pub fn from_component_with_native_services(
         component: crate::application::AppComponent,
         inputs: crate::application::ComponentRunnerInputs,
@@ -895,8 +846,6 @@ impl App {
         }
         let binding = component.callback_binding();
         let inputs = construction(inputs, &binding);
-        // The manager may still be connecting; the route it announced is the
-        // only one the broker can acknowledge, so check that one now.
         if let Some(route) = inputs.collab_manager.requested_primary_route()
             && !binding.matches_route(route)
         {
@@ -923,8 +872,6 @@ impl App {
             screen_reader: None,
             values: Default::default(),
         };
-        // Validation can call app code; keep a negative guard declared after the
-        // concrete root so unwind retires before that root's destructor.
         let validation = retirement_assembly::ValidationRetirement(&root_custody.retirement, true);
         if let Some(registration) = &history
             && let Err(error) = registration.validate_root(root.as_ref())
@@ -990,8 +937,8 @@ impl App {
         }
     }
 
-    /// The window's root widget: what a host or a test drives the window
-    /// through when it looks at what the app mounted.
+    /// The window's root widget: what a host or a test drives the window through when it looks at what
+    /// the app mounted.
     pub fn root_widget_mut(&mut self) -> &mut dyn Widget {
         self.root_widget.as_mut()
     }
@@ -1032,8 +979,6 @@ impl App {
         std::mem::take(&mut self.component_close_reports)
     }
 
-    /// Where focus starts in a live window: a terminal, else the first
-    /// control.
     fn initial_live_focus_target(&self) -> Option<taffy::NodeId> {
         self.focusable_order
             .iter()
@@ -1046,14 +991,9 @@ impl App {
     }
 
     fn initial_presence_context() -> PresenceCtx {
-        // Own identity: this person's id. Anything else is somebody else and
-        // gets painted.
         let mut context = PresenceCtx::empty();
         let own = crate::collaboration::local_user_id().0;
         context.set_own_identity(std::iter::once(own.clone()));
-        // The colour they chose, where they chose one: their own face, caret
-        // and byline wear it here from the window's first frame, as the member
-        // list says it to every other app.
         if let Some(hue) = crate::local_identity::own_colour() {
             context.set_presence_hue(crate::permissions::UserId(own), hue);
         }
@@ -1091,7 +1031,6 @@ impl App {
         root: crate::history_mode::ManagedRoot,
         construct: impl FnOnce(State, Box<dyn Widget>) -> Self,
     ) -> Result<Self, crate::history_mode::HistoryRegistrationError> {
-        // Reject custody before evaluating any production or fixture inputs.
         root.history.validate_root(root.widget.as_ref())?;
         let mut app = construct(state, root.widget);
         app.install_history(root.history)?;
@@ -1112,12 +1051,10 @@ impl App {
         registration.validate_root(self.root_widget.as_ref())?;
         #[cfg(any(test, feature = "test-support"))]
         let controlled_definition = registration.definition;
-        // A native window links its History; only a page fetches it later.
         let host = tilo_startup_metrics::span("history-install", || {
             crate::history_mode::host::HistoryHost::new(registration, &self.state.doc)
         })?;
         self.history = Some(Box::new(host));
-        // What the frame's walks found held for the window without it.
         self.layout.walks = runtime::TreeWalks::default();
         if let Some(history) = &mut self.history {
             history.set_control_domain(&self.control_domain);
@@ -1137,18 +1074,13 @@ impl App {
     }
 
     /// Construct an explicitly detached app for headless or test execution.
-    /// This masks any ambient host while setup runs; native launchers use
-    /// [`Self::from_factory`], [`Self::try_from_factory`] or [`Self::from_scoped_parts`].
     pub fn new(state: State, root_widget: Box<dyn Widget>) -> Self {
         let _entry = crate::wake::WakeScope::enter_detached();
         Self::with_collaboration_manager(state, root_widget, CollaborationManager::new())
     }
 
-    /// Construct an explicitly detached app with a connected collaboration
-    /// manager for headless or test execution.
-    ///
-    /// The detached context applies during App setup only. It does not adopt
-    /// handles captured earlier by `state`, `root_widget`, or the manager.
+    /// Construct an explicitly detached app with a connected collaboration manager for headless or test
+    /// execution.
     pub fn with_collaboration_manager(
         state: State,
         root_widget: Box<dyn Widget>,
@@ -1169,10 +1101,8 @@ impl App {
         })
     }
 
-    /// A window showing `factory`'s root that joins no workspace: what a
-    /// launch shows while the record it opens arrives with the workspace's
-    /// join ([`crate::launch::window`]). It takes the process's other system
-    /// services as any window does; collaboration waits for the join.
+    /// A window showing `factory`'s root that joins no workspace: what a launch shows while the record
+    /// it opens arrives with the workspace's join ([`crate::launch::window`]).
     #[cfg(feature = "native")]
     pub(crate) fn without_workspace(factory: impl FnOnce() -> Box<dyn Widget>) -> Self {
         Self::from_factory_with_inputs(State::new(), factory, || {
@@ -1204,8 +1134,7 @@ impl App {
         Self::from_factory_with_inputs(state, factory, AppConstructionInputs::controlled)
     }
 
-    /// Fallible form of [`Self::from_factory`]. A failed factory closes all
-    /// capabilities it created before returning the error.
+    /// Fallible form of [`Self::from_factory`].
     pub fn try_from_factory<E>(
         state: State,
         factory: impl FnOnce() -> Result<Box<dyn Widget>, E>,
@@ -1293,8 +1222,8 @@ impl App {
         )
     }
 
-    /// Whether the shared permissions moved since the last frame painted
-    /// them: the drawings the tree holds were made from the ones before.
+    /// Whether the shared permissions moved since the last frame painted them: the drawings the tree
+    /// has were made from the ones before.
     #[cfg_attr(
         not(feature = "native"),
         allow(
@@ -1320,7 +1249,6 @@ impl App {
     }
 
     fn close_wake_scope(&mut self) {
-        // Nothing lands for a closing window: what it held is answered.
         self.send_held_answers(true);
         self.retire_semantic_root();
         if let Some(scope) = self.wake_scope.as_mut() {
@@ -1380,16 +1308,13 @@ impl App {
                 } else {
                     base
                 };
-                // The window's content zoom multiplies the person's UI
-                // scale: everything reflows at the new size, and their text
-                // size stays on top of it.
                 let theme = base
                     .with_component_scales(
                         self.accessibility.text_scale,
                         self.accessibility.ui_scale * self.accessibility.zoom.factor(),
                     )
                     .with_reduce_motion(self.accessibility.a11y.reduce_motion);
-                // The person's own scale as the theme took it (the zoom is
+                // The person scale as the theme took it (the zoom is
                 // kept apart, so taking it out never drifts).
                 self.accessibility.ui_scale = if self.accessibility.ui_scale.is_finite() {
                     self.accessibility.ui_scale.clamp(0.5, 3.0)
@@ -1409,16 +1334,11 @@ impl App {
                     self.accessibility.ui_scale * self.accessibility.zoom.factor(),
                 ),
         };
-        // A window floating as a card draws on the card's ground.
         if crate::window_toolbar::floats() {
             self.theme = self.theme.clone().as_card();
         }
         self.text_renderer
             .apply_typography(&self.theme.tokens.typography);
-        // Deliver motion policy before the event loop consults
-        // `needs_animation_frame`. This lets custom roots settle their own
-        // transitions immediately and prevents a forgotten app-local curve
-        // from keeping the compositor awake under reduced motion.
         self.root_widget
             .set_motion_reduced(self.theme.reduce_motion);
     }
@@ -1436,7 +1356,6 @@ impl App {
         )
     }
 
-    /// Materialize declarations without walking the semantic catalogue.
     fn ensure_declared_resource_cache(&self) -> ResourceCacheKey {
         use crate::profiling::resource_trace::{CacheResult, Stage};
         let key = self.resource_cache_key();
@@ -1463,7 +1382,6 @@ impl App {
             declared,
             complete: None,
         });
-        // A new declaration generation invalidates both local projections.
         self.actions.local_resource_cache.borrow_mut().take();
         key
     }
@@ -1522,29 +1440,6 @@ impl App {
         (key, permission_generation)
     }
 
-    /// The complete machine-driveable surface: domain resources declared by
-    /// the app plus ordinary controls projected from its retained semantic
-    /// tree. Ctrl+K, scripts, and agents therefore consume one catalogue.
-
-    /// Audit every retained control binding against the fresh resource tree.
-    /// This is public so development tooling can turn remaining explicit
-    /// legacy controls and stale/duplicate action addresses into a coverage
-    /// report without inspecting widget implementation details.
-
-    /// Locate every on-screen affordance for one canonical action and rank
-    /// usable, visible, short paths first. Agents still invoke `address`
-    /// directly; the chosen route makes the resulting interaction project
-    /// into the same UI a person sees without fragile coordinate clicking.
-
-    /// Transport-only projection. Each component is validated with its own
-    /// registry before its domain resource is assigned an opaque publication alias.
-
-    /// Publish the live resource/action tree through the session broker.
-    /// Level-triggered at the wire, diffed here so an unchanged frame emits
-    /// nothing; publishing an empty list explicitly withdraws a closed tree.
-
-    /// [`Self::directory_explicit_visibility`] of `resources` and everything
-    /// under them, by resource id, found in one walk of the widget tree.
     fn directory_explicit_visibilities(
         &self,
         resources: &[tilo_actions::ResourceSpec],
@@ -1676,7 +1571,7 @@ impl App {
     /// app closes, so the app's content stays findable whether or not it
     /// runs.
     ///
-    /// Any acknowledged primary route carries it, whatever keeps the workspace's
+    /// Any acknowledged primary route has it, whatever keeps the workspace's
     /// records: the broker files it under the app, workspace and record that
     /// route certifies, so it needs no private window binding, which a workspace
     /// whose records are sealed channels never hands out.
@@ -1689,7 +1584,6 @@ impl App {
         let Some(witness) = self.collaboration.manager.primary_route().cloned() else {
             return;
         };
-        // A new route starts from nothing: the whole set crosses again.
         if self.continuation.search_index_route.as_ref() != Some(&witness) {
             self.continuation.search_index.reset();
             self.continuation.search_index_route = Some(witness.clone());
@@ -1767,10 +1661,6 @@ pub(crate) fn monitor_info(
 }
 
 impl App {
-    /// Reconciles both directions, idempotently: app-driven (push
-    /// `fullscreen_intent` to the window on change) and compositor-driven
-    /// (read the actual state back and notify the root on a transition, e.g.
-    /// a global un-fullscreen keybind or a denied request).
     #[cfg(feature = "native")]
     fn reconcile_fullscreen(&mut self, window: &Window) -> bool {
         let mut changed = false;
@@ -1779,8 +1669,6 @@ impl App {
         if let Some(new_state) = fullscreen_request_decision(self.window.fullscreen_requested, want)
         {
             if new_state {
-                // An empty monitor list falls back to `Borderless(None)`,
-                // still a full-output surface.
                 let params = self.root_widget.fullscreen_params();
                 let monitors: Vec<winit::monitor::MonitorHandle> =
                     window.available_monitors().collect();
@@ -1807,8 +1695,6 @@ impl App {
         changed
     }
 
-    /// Split from [`Self::reconcile_fullscreen`] so the App→root notification
-    /// wiring is unit-testable without a live winit window.
     #[cfg(feature = "native")]
     fn note_actual_fullscreen(&mut self, actual: bool) -> bool {
         if actual == self.window.fullscreen_active {
@@ -1855,10 +1741,9 @@ impl App {
         self.accessibility.window
     }
 
-    /// The shape of this window's surface, laid out over `window` (logical)
-    /// and drawn with `transform`: rounded at the radius the shell draws
-    /// the window with, square while it is fullscreen or drawn edge to
-    /// edge. `None` when no shell said how it draws the window.
+    /// The shape of this window's surface, laid out over `window` (logical) and drawn with `transform`:
+    /// rounded at the radius the shell draws the window with, square while it is fullscreen or drawn
+    /// edge to edge.
     #[cfg(feature = "native")]
     #[must_use]
     pub fn window_surface(
@@ -1876,7 +1761,7 @@ impl App {
 
     /// What a standalone app read from its host OS, through the same door as
     /// a settings pane's intent. The caller applies each host change once, so
-    /// a contrast toggle made in the app holds until the host changes again.
+    /// a contrast toggle made in the app has until the host changes again.
     #[cfg(feature = "native")]
     pub(crate) fn apply_host_appearance(
         &mut self,
@@ -1901,7 +1786,6 @@ impl App {
     fn apply_appearance_intent(&mut self, intent: crate::theme::AppearanceIntent) -> bool {
         let mut changed = false;
         let base = &self.accessibility.base_theme;
-        // Same name, other temperature or other person: still a new theme.
         if intent.base_theme.name != base.name
             || intent.base_theme.tokens.colors.surfaces.content
                 != base.tokens.colors.surfaces.content
@@ -1975,7 +1859,6 @@ impl App {
         stamp: impl FnOnce() -> Option<settings_store::SettingsStamp>,
         apply: impl FnOnce(&mut Self),
     ) -> bool {
-        // Only an explicitly native service host watches process settings.
         if !self.watch_system_settings {
             return false;
         }
@@ -1997,21 +1880,13 @@ impl App {
 
     #[cfg(feature = "native")]
     fn apply_configured_theme(&mut self) {
-        // Region & Formats change with the same settings stamp: dates and
-        // numbers re-render in the new formats (the i18n revision moves).
         crate::format::region::refresh();
-        // So does the interface language: the copy relabels in it.
         crate::i18n::follow_configured_language();
         self.accessibility.base_theme = self
             .floating
             .host_theme
             .clone()
             .unwrap_or_else(Theme::configured);
-        // The comforts the base theme leaves to its host: contrast, text
-        // size, interface scale and motion, as the person set them now, not
-        // as the launcher passed them when the window opened.
-        // A comfort the document does not name keeps the value this window
-        // has (one an app or a pane set).
         let comforts = Theme::configured_comforts();
         if let Some(on) = comforts.high_contrast {
             self.accessibility.a11y.high_contrast = on;
@@ -2027,9 +1902,6 @@ impl App {
         }
         self.theme_schedule = Theme::automatic_schedule_from(&settings_store::load())
             .map(|schedule| (schedule, schedule.is_night(crate::theme::local_moment())));
-        // Screen reader is a device/personal setting, not a per-application
-        // opt-in. Every Tilo app watches the same file and changes its real
-        // narrator lifecycle when Personal Settings changes it.
         let settings = settings_store::accessibility::ScreenReaderSettings::load();
         self.set_screen_reader_enabled(
             settings.enabled || crate::host::environment().accessibility.screen_reader,
@@ -2040,9 +1912,6 @@ impl App {
         self.accessibility.a11y.screen_reader = self.accessibility.screen_reader.is_some();
     }
 
-    /// [`crate::widget::cursor`]'s rule over every laid-out widget. Works
-    /// off `node_map` rather than walking `children` so it still reaches
-    /// widgets nested under containers with private child storage.
     #[cfg(feature = "native")]
     fn resolve_cursor(&self, point: Point) -> Option<CursorIcon> {
         self.tree().cursor_pick_at(point).icon()
@@ -2050,55 +1919,6 @@ impl App {
 }
 
 impl App {
-    /// Called once per event-loop wakeup, so it must be cheap and
-    /// non-blocking.
-
-    /// Decides *whether* to publish and under what scope, not what space the
-    /// pointer is in — see [`Self::set_pointer_space`].
-
-    /// A miss leaves the current follow target untouched.
-
-    /// The server attributes the broadcast to this user's id automatically,
-    /// so callers only specify what changed.
-
-    /// Publish the collaboration rail's current status through the real workspace
-    /// presence path. `None` is an explicit clear. Only workspace keys are
-    /// accepted, preventing an intention from being accidentally scoped to a
-    /// single widget and disappearing as the participant navigates.
-
-    /// Live-edit path (the late-join handshake still ships a full snapshot).
-
-    /// The workspace index is a distinct document from the live record.  Keep its
-    /// incremental cursor and route separate so an annotation/document delta
-    /// can never be merged into the index (or vice versa).
-
-    /// Unlike focus presence, this is polled on the root regardless of
-    /// focus.
-
-    /// The subset has no `PresencePayload` variant of its own — it rides the
-    /// existing presence frame inside a
-    /// [`PresenceKey::view`](crate::presence::PresenceKey::view) key with an
-    /// inert paired payload; the receiver recognises the key and decodes the
-    /// subset instead.
-
-    /// Following a peer who hasn't published a View yet latches the intent
-    /// without moving anything; the viewport snaps to them once their first
-    /// View arrives.
-
-    /// Lets integration tests drive the collab pump without a real winit
-    /// event loop.
-
-    /// Apply a document envelope received on the unqualified workspace route.
-    /// The broker authenticated the route; discovery still validates and
-    /// bounds its names before exposing them to the app.
-
-    /// Drain only document traffic on the workspace-index route. Actions and
-    /// presence are record scoped, so an index update cannot alter the app's
-    /// resource/action namespace or presentation state.
-
-    /// Shared by the per-frame tick and the headless test path. Returns
-    /// `true` iff at least one event was processed.
-
     fn collab_event_may_change_action_surface(event: &CollabEvent) -> bool {
         !matches!(
             event,
@@ -2134,75 +1954,6 @@ impl App {
         &mut self.state
     }
 
-    /// The decode lives on [`crate::presence::PresenceCtx`] so the
-    /// compositor reads presence the same way an app does; what stays here
-    /// is what only a document holder can do (follow a peer's viewport,
-    /// answer a late joiner with full state).
-
-    /// Unique admitted node visits keep child reports and requests off shell history.
-
-    /// Finalize the document boundary for a handled native event. Shared host
-    /// controls only change presentation and must not close pending app typing.
-
-    /// The platform IME contract for the focused widget. A field opts in via
-    /// [`Widget::ime_content`]; buttons and other focusable controls therefore
-    /// never activate `text-input-v3` accidentally.
-
-    /// Only fires if focus did NOT move — a move is narrated separately by
-    /// [`set_focused_node`].
-
-    /// Typing is left to the widget's own echo so this never double-speaks
-    /// an edit.
-
-    /// Announces changed [live regions](crate::a11y::AccessNode::live)
-    /// without moving focus.
-
-    /// Gated on the focus-trap signal, not `modal_capture`: that governs only
-    /// pointer click-through — gating Tab on it instead either froze focus
-    /// inside a dialog or let it escape with no capture.
-
-    /// Tab normally belongs to the host's focus order. A focused editor-like
-    /// widget may explicitly claim it first (for indentation or completion),
-    /// without broadening that exception to arbitrary widgets or escaping an
-    /// active focus trap.
-
-    /// Shared native Tab admission, preserving text-input and modal capture.
-
-    /// `scale` is the window scale factor so bounds land in physical pixels
-    /// (what AT-SPI expects).
-
-    /// Resolves both retained AccessKit nodes and synthetic semantic children
-    /// (virtual rows/cells) to their owning widget. The widget gets first
-    /// refusal; synthetic children additionally carry an opaque stable target
-    /// produced by that widget. If a retained widget declines, `Action::Focus`
-    /// moves keyboard focus and activation returns click coordinates.
-
-    /// Complete an accessibility activation for legacy hand-hit-tested
-    /// controls that do not implement `perform_action` yet. The semantic
-    /// target has already resolved to this exact point; routing the usual
-    /// move/press/release sequence through the widget tree preserves the same
-    /// behavior as hardware input instead of reporting a false success.
-
-    /// Node identity is preserved for everything that recurred, so a
-    /// consumer reacts to just the diff.
-
-    /// A [`Verb`](crate::a11y_tree::SemanticActionKind::Verb) routes through
-    /// the same [`dispatch_a11y_action`](Self::dispatch_a11y_action) path an
-    /// AccessKit `ActionRequest` takes; an
-    /// [`App`](crate::a11y_tree::SemanticActionKind::App) affordance
-    /// dispatches through [`tilo_actions::dispatch`], the same audited path
-    /// the Ctrl+K palette uses. Call
-    /// [`refresh_semantic_tree`](Self::refresh_semantic_tree) first so the
-    /// ids are current.
-    ///
-    /// # Errors
-    ///
-    /// Returns `Err` when the underlying app action fails to decode or
-    /// dispatch (see [`Self::dispatch_encoded_semantic`]).
-
-    /// Byte-for-byte the same path as a Ctrl+K palette selection
-    /// ([`Self::action_palette_handle_key`]).
-
     /// Replace the framework view inside the windows this process already has.
     ///
     /// Returns whether the running root accepted it. A root that is not the
@@ -2228,11 +1979,9 @@ impl App {
         self.init_layout_with_dev_view(dev_view);
     }
 
-    /// Headless and dev-reload startup. `dev_view` is the presentation captured
-    /// from the previous process; shell continuation still wins when both exist.
+    /// Headless and dev-reload startup.
     pub(crate) fn init_layout_with_dev_view(&mut self, dev_view: Option<crate::view::View>) {
         let _entry = self.enter_wake_scope();
-        // Startup marks name each step, so a slow first layout says which one.
         tilo_startup_metrics::span("init-layout-actions", || {
             self.refresh_control_action_availability();
         });
@@ -2269,8 +2018,7 @@ impl App {
         });
     }
 
-    /// Exposed so headless tests can drive modal open/close without a winit
-    /// loop.
+    /// Exposed so headless tests can drive modal open/close without a winit loop.
     #[doc(hidden)]
     pub fn refresh_focus_order(&mut self) {
         let _entry = self.enter_wake_scope();
@@ -2293,10 +2041,9 @@ impl App {
         root || history
     }
 
-    /// Whether the root's widgets changed their structure since the last
-    /// call; a change they do not describe
-    /// ([`crate::widget::StructureChange::Rebuild`]) leaves the rebuild that
-    /// follows undescribed.
+    /// Whether the root's widgets changed their structure since the last call; a change they do not
+    /// describe ([`crate::widget::StructureChange::Rebuild`]) leaves the rebuild that follows
+    /// undescribed.
     #[track_caller]
     pub(crate) fn take_root_structure_dirty(&mut self) -> bool {
         let change = self.root_widget.take_structure_change();
@@ -2309,8 +2056,6 @@ impl App {
         }
         // A widget that replaced children without saying so is found here.
         let stale = self.layout_maps_stale();
-        // A change the widgets carry out in place leaves every admitted
-        // pointer valid: the next layout pass remounts it.
         if change == crate::widget::StructureChange::Children && !stale {
             self.layout.remount = true;
             self.layout.layout_dirty = true;
@@ -2319,8 +2064,8 @@ impl App {
         change.rebuilds() || stale
     }
 
-    /// How many times the layout tree was rebuilt, and how many times widgets
-    /// changed it in place: a test asks whether a change kept the tree.
+    /// How many times the layout tree was rebuilt, and how many times widgets changed it in place: a
+    /// test asks whether a change kept the tree.
     #[doc(hidden)]
     pub fn layout_tree_changes(&self) -> (u64, u64) {
         (self.layout.rebuilds, self.layout.remounts)
@@ -2337,9 +2082,6 @@ impl App {
         self.rebuild_structure_placing_focus();
     }
 
-    /// The name the control at `node` answers to in this tree, when it still
-    /// holds one: what tells a rebuilt modal that the same answer is still
-    /// where the person left it.
     fn answer_name(&self, node: NodeId) -> Option<String> {
         let mut name = None;
         // SAFETY: the caller owns this tree; nothing borrows the widget.
@@ -2354,7 +2096,6 @@ impl App {
         name
     }
 
-    /// Whether the control at `node` still answers to `name`.
     fn answers_to(&self, node: NodeId, name: &str) -> bool {
         let mut answers = false;
         // SAFETY: the caller owns this tree; nothing borrows the widget.
@@ -2369,9 +2110,6 @@ impl App {
         answers
     }
 
-    /// The one control among the focusable ones that answers to `name`, when
-    /// exactly one does: a rebuilt tree that put it somewhere else still holds
-    /// the answer the person was on.
     fn unique_answering(&self, name: &str) -> Option<NodeId> {
         let mut answering = self
             .focusable_order
@@ -2393,22 +2131,12 @@ impl App {
         // The header the rebuild builds hears whether the window's bar
         // presents search, so it never shows a second search control.
         self.offer_window_bar_to_header();
-        // What the rebuild builds hears how the person reaches the window: a
-        // control made since the input last changed (a view a press opened)
-        // is sized for a finger as the others are. A widget that already has
-        // it keeps it.
         self.root_widget
             .set_interaction_environment(self.input.interaction);
-        // A reported mutation can already have invalidated old widget pointers.
-        // Always take the widgets' report, so it is not mistaken later for a
-        // change after the map this rebuild makes.
         let reported = self.take_composition_dirty();
         let topology_changed = self.layout.structure_dirty || reported;
-        // Whether this rebuild is one the widgets describe, for a frame that
-        // compares itself with the last; none is outstanding after it.
         self.layout.frame_rebuilds_described &= self.layout.rebuild_described;
         self.layout.rebuild_described = true;
-        // Node ids below are about to be invalidated.
         let (prev_focus_idx, prev_focus_state, focus_reset) = if self.autofocus_on_structure_change
         {
             let idx = self
@@ -2428,11 +2156,11 @@ impl App {
             (None, None, false)
         };
 
-        // A modal holds the keyboard where the person put it: what it shows
+        // A modal has the keyboard where the person put it: what it shows
         // changing under their hands, a countdown or a line of status, is not
         // them leaving their place. Its answer is remembered by what it is
         // and, failing that, by where in the answers it stood: a control that
-        // was told it lost focus while the tree was replaced still stands in
+        // was told it lost focus while the tree was replaced still is in
         // the same place after it is built again.
         let trapped_focus = self
             .accessibility
@@ -2451,7 +2179,7 @@ impl App {
                 // replaced along with everything the sheet drew: the name it
                 // went by is all that is left of where they were, and it finds
                 // that answer again wherever the new tree put it. While the
-                // tree still holds the answer, its name at its own place
+                // tree still has the answer, its name at its place
                 // decides, as it always has.
                 let remembered = live.is_none().then(|| self.focus_anchor.clone()).flatten();
                 (at, identity, live, remembered)
@@ -2464,9 +2192,7 @@ impl App {
         // replacement control at the same id still receives set_focus(true).
         self.focused_node = None;
         self.layout.rebuilds = self.layout.rebuilds.wrapping_add(1);
-        // The widgets carry out a change pending in place in this build.
         self.layout.remount = false;
-        // Fresh controls have not seen where the pointer is.
         self.input.pointer_replay.mark_unsettled();
         self.layout.taffy = TaffyTree::new();
         self.layout.unsolved = true;
@@ -2479,10 +2205,6 @@ impl App {
         #[cfg(test)]
         let probe = crate::profiling::frame_probe::span("rebuild.build");
         self.build_history_presentation();
-        // A widget the build just made heard nothing yet: a container hands the environment
-        // down as it builds, but a control that builds its faces later (a drag run's items) is
-        // made after the tell above. Tell the whole tree once it exists, so every target is
-        // sized for how the person reaches the window from the first frame.
         self.root_widget
             .set_interaction_environment(self.input.interaction);
         #[cfg(test)]
@@ -2497,7 +2219,7 @@ impl App {
         if let Some((at, identity, live, remembered)) = trapped_focus
             && self.accessibility.focus_trap_active
         {
-            // The same answer holds the keyboard after the rebuild. When the
+            // The same answer has the keyboard after the rebuild. When the
             // tree no longer reports that answer, a control that still answers
             // to the same name at the same place may take the keyboard: a
             // rebuilt modal can show different answers, and the person's place
@@ -2524,8 +2246,6 @@ impl App {
             }
         }
 
-        // A focus trap already placed focus inside its subtree in
-        // `update_focusable_order`; don't let it escape the modal.
         if self.autofocus_on_structure_change
             && !self.accessibility.focus_trap_active
             && self.history.is_none()
@@ -2571,10 +2291,6 @@ impl App {
             }
         }
 
-        // A part its owner rebuilt (a page, a list showing other rows) holds
-        // the answer the keyboard was on when the control itself survives:
-        // it answers to the same name, alone in the new tree, and the
-        // keyboard goes back to it rather than to nothing.
         if self.focused_node.is_none()
             && let Some(name) = self.focus_anchor.clone()
             && let Some(node) = self.unique_answering(&name)
@@ -2590,8 +2306,6 @@ impl App {
         #[cfg(test)]
         drop(probe);
         self.needs_sync = false;
-        // This rebuild's frame presents a durability the sync just took up;
-        // it is not another structure change.
         let _ =
             crate::component_lifecycle::take_save_status_presentation(self.root_widget.as_mut());
         // A sync that replaced delegates without saying so is found too.
@@ -2616,35 +2330,22 @@ impl App {
                     )
                 };
             }
-            // The tree this rebuild made is the one a control asked focus in.
             requested = self.apply_focus_request();
             crate::host_core::KeyHost::hand_owed_keyboard(self);
         }
         self.invalidate_widget_resource_cache();
-        // What the window's layout needs follows the tree and the theme it
-        // was built with; asked once per build, not per frame. The size it
-        // wants follows its layout, and is asked after each layout pass.
         self.window.minimum_width = crate::widget::minimum_window_width(self.root_widget.as_ref());
         requested
     }
 
-    /// The narrowest the window's layout works at, in logical pixels, as of
-    /// the last build of its tree ([`crate::widget::Widget::minimum_window_width`]).
+    /// The narrowest the window's layout works at, in logical pixels, as of the last build of its tree
+    /// ([`crate::widget::Widget::minimum_window_width`]).
     pub fn minimum_window_width(&self) -> Option<f64> {
         self.window.minimum_width
     }
 
-    /// Tell the window system the size the window may be, when it changed:
-    /// Wayland's `xdg_toplevel.set_min_size`/`set_max_size`, so the desktop
-    /// stops a resize at the app's compact layout instead of squeezing it.
-    /// An app that is the whole window and knows its own size (the on-screen
-    /// keyboard, parked to a strip) states it as the minimum *and* the
-    /// maximum, so the surface shrinks to it rather than leaving its empty
-    /// part over whatever is behind.
     #[cfg(feature = "native")]
     fn reconcile_minimum_size(&mut self, window: &Window) {
-        // A window that wants a size of its own may want another at every frame: a panel whose
-        // height follows its page moves there on a spring.
         if self.window.preferred_size.is_some() {
             self.window.preferred_size =
                 crate::widget::preferred_window_size(self.root_widget.as_ref());
@@ -2661,9 +2362,6 @@ impl App {
                 let _ = window.request_inner_size(size);
             }
         }
-        // The narrowest the layout works at, when the app states no size of
-        // its own. Height stays unconstrained (winit's own floor of one
-        // pixel).
         if self.window.preferred_size.is_some() {
             return;
         }
@@ -2684,11 +2382,9 @@ impl App {
         self
     }
 
-    /// Name the window by what it shows, for the desktop to name it by too: the page, the record,
-    /// the place its content says it is ([`crate::component_lifecycle::WindowTitle`]), and the
-    /// title this window states where its content says nothing. The desktop reads the window's
-    /// title, so a tab, the switcher and assistive technology all say what the window shows.
-    /// Returns whether the window was retitled.
+    /// Name the window by what it shows, for the desktop to name it by too: the page, the record, the
+    /// place its content says it is ([`crate::component_lifecycle::WindowTitle`]), and the title this
+    /// window states where its content says nothing.
     #[cfg(feature = "native")]
     pub(crate) fn refresh_window_title(&mut self, window: &Window) -> bool {
         let shown = crate::component_lifecycle::window_title(self.root_widget.as_ref())
@@ -2711,9 +2407,8 @@ impl App {
         self
     }
 
-    /// The Wayland application id the window announces when it is not the
-    /// process's own package id: an input surface's, or one set with
-    /// [`Self::with_window_app_id`].
+    /// The Wayland application id the window announces when it is not the process package id: an input
+    /// surface's, or one set with [`Self::with_window_app_id`].
     pub fn window_app_id(&self) -> Option<&str> {
         self.window.app_id.as_deref()
     }
@@ -2727,7 +2422,6 @@ impl Drop for App {
         self.layout.node_map.clear();
         self.close_wake_scope();
         let _entry = self.enter_wake_scope();
-        // Its widgets go for good: they leave no motion for a rebuild.
         let _closing = crate::motion::closing_window();
         let root = std::mem::replace(
             &mut self.root_widget,
@@ -2737,8 +2431,6 @@ impl Drop for App {
     }
 }
 
-/// Take the keyboard from every focusable control in `widget`'s tree, so the
-/// one the app then focuses is the only one that draws as focused.
 fn clear_stray_focus(widget: &mut dyn crate::widget::Widget) {
     if widget.is_focusable() && widget.is_focused() {
         widget.set_focus(false);
@@ -2917,7 +2609,6 @@ mod generic_floating_activity_tests {
     }
 }
 
-/// See [`resolve_title_from`] for the precedence.
 #[cfg(feature = "native")]
 fn resolve_window_title(explicit: Option<&str>) -> String {
     let environment = crate::host::environment();
@@ -2946,9 +2637,6 @@ pub fn local_surface_id() -> String {
     resolve_app_id(app_id.as_deref(), binary.as_deref())
 }
 
-/// A shared generic id would collapse every id-keyed compositor lookup (tab
-/// label, launch placement, "is this document already open") onto every
-/// other app; it's a last resort for no-package, no-binary-name.
 fn resolve_app_id(package_id: Option<&str>, binary: Option<&str>) -> String {
     let non_blank = |s: &str| {
         let t = s.trim();
@@ -2963,8 +2651,6 @@ fn resolve_app_id(package_id: Option<&str>, binary: Option<&str>) -> String {
     "org.tilo.app".to_string()
 }
 
-/// Pure, so the precedence is unit-testable without touching the process
-/// environment. First non-blank candidate wins.
 #[cfg(feature = "native")]
 fn resolve_title_from(
     explicit: Option<&str>,
@@ -3498,10 +3184,6 @@ pub(crate) mod ordinary_confirmation_tests {
         )
     }
     pub(crate) fn layout(app: &mut App) {
-        // The passes a frame runs before it lays out, as the window's runner
-        // runs them: model notifications drained, the tree synced. A frame
-        // that drew the window has taken the state passes it owed, so the
-        // window it leaves behind owes none of its own.
         app.update_native_model();
         app.sync_model(false);
         // Match native redraw: capture the pending structural change before
@@ -3595,7 +3277,6 @@ pub(crate) mod ordinary_confirmation_tests {
         fn activate(&mut self, label: &str) {
             self.act(label, crate::a11y::Action::Activate);
         }
-        /// Type `value` into the field for the name, called by its label.
         fn value(&mut self, value: &str) {
             let label = match self {
                 Self::Native(app) => {
@@ -3658,7 +3339,6 @@ pub(crate) mod ordinary_confirmation_tests {
                     .and_then(|(_, node)| node.label().map(str::to_owned)),
             }
         }
-        /// Whether a node labelled `label` is published.
         fn published(&mut self, label: &str) -> bool {
             let nodes = match self {
                 Self::Native(app) => app.build_a11y_tree_update(1.0).nodes,
@@ -3668,7 +3348,6 @@ pub(crate) mod ordinary_confirmation_tests {
                 .into_iter()
                 .any(|(_, node)| node.label() == Some(label))
         }
-        /// Whether the published button labelled `label` is disabled.
         fn disabled(&mut self, label: &str) -> bool {
             let nodes = match self {
                 Self::Native(app) => app.build_a11y_tree_update(1.0).nodes,
@@ -3679,8 +3358,6 @@ pub(crate) mod ordinary_confirmation_tests {
                 .find(|(_, node)| node.label() == Some(label))
                 .is_some_and(|(_, node)| node.is_disabled())
         }
-        /// The button that goes ahead: Confirm for a question, the
-        /// action's own verb ("Run") where a name is typed.
         fn submit_id(&mut self) -> accesskit::NodeId {
             let nodes = match self {
                 Self::Native(app) => app.build_a11y_tree_update(1.0).nodes,
@@ -3777,12 +3454,8 @@ pub(crate) mod ordinary_confirmation_tests {
         let Host::Native(app) = &mut host else {
             unreachable!()
         };
-        // Opening a confirmation records no edit: history has nothing to say,
-        // so neither the History bar nor the window changes.
         assert_eq!(app.document_sync_status(), None);
         assert_eq!(app.root_widget.get_rect(), original);
-        // An edit actually recorded without an authenticated publication is
-        // still the person's change, saved here: nothing to say.
         let input = app.begin_local_input_capture();
         crate::local_dispatch::LocalDispatch::new()
             .try_dispatch(&mut app.state.doc, "fixture.edit", &FixtureEdit)
@@ -3790,8 +3463,6 @@ pub(crate) mod ordinary_confirmation_tests {
         drop(input);
         app.drain_local_input_capture();
         assert_eq!(app.document_sync_status(), None);
-        // A change that definitively could not be saved to the history says
-        // so, in the existing History bar.
         app.local_input_capture_failed("refused for the test");
         layout(app);
         let status = app
@@ -3813,7 +3484,6 @@ pub(crate) mod ordinary_confirmation_tests {
         assert!(ledger.borrow().is_empty());
     }
 
-    /// Whether `label` names the labelled field for a name to type.
     fn confirmation_field(label: &str) -> bool {
         label.starts_with("Type ") && label.ends_with(" to confirm")
     }
@@ -3916,8 +3586,6 @@ pub(crate) mod ordinary_confirmation_tests {
                 host.activate("Emit request");
                 assert!(ledger.borrow().is_empty());
                 let stale = host.submit_id();
-                // A question goes ahead with its button; a name to type goes
-                // ahead only once it is typed exactly, with the action's verb.
                 let submit = if phrase == "CONFIRM" {
                     "Run fixture"
                 } else {
@@ -4213,7 +3881,6 @@ pub(crate) mod ordinary_confirmation_tests {
     #[test]
     fn ordinary_confirmation_native_immediate_and_text_use_original_representation() {
         use tilo_actions::*;
-        // The step that collects the argument is named by the prompt it shows.
         const PROMPT: &str = "Enter original text";
         for text in [false, true] {
             let (root, ledger, resources) = fixture(ConfirmationPolicy::Confirm);
@@ -4452,7 +4119,6 @@ pub(crate) mod ordinary_confirmation_tests {
             let (root, ledger, _) = fixture(tilo_actions::ConfirmationPolicy::Confirm);
             let mut host = Host::new(native, root);
             host.activate("Emit request");
-            // The question opens on Confirm; one Tab reaches Cancel.
             let event = crate::synthetic_input::key_input(
                 &Key::Named(NamedKey::Tab),
                 ElementState::Pressed,
@@ -4524,8 +4190,6 @@ pub(crate) mod ordinary_confirmation_tests {
                 host.activate("History");
                 assert!(ledger.borrow().is_empty());
                 host.stale(stale);
-                // Back from History the question is asked again; going ahead
-                // runs the original request once, however Confirm is reached.
                 if ledger.borrow().is_empty() {
                     host.activate("Run fixture");
                 }
@@ -4533,7 +4197,6 @@ pub(crate) mod ordinary_confirmation_tests {
                     &*ledger.borrow(),
                     &[serde_json::json!({"payload":"original"})]
                 );
-                // Fresh action deliberately has no History resolver.
                 let mut fresh = resources.borrow()[0].actions[0].clone();
                 fresh = fresh.with_continuation_identity(|_| None);
                 resources.borrow_mut()[0].actions[0] = fresh;
@@ -4607,7 +4270,6 @@ pub(crate) mod ordinary_confirmation_tests {
             app.actions.ordinary_palette_return_focus.is_some(),
             "the modal actually retained the opener identity before removal"
         );
-        // Retire the old custody map before removing its retained owner.
         app.bindings.clear();
         app.layout.node_map.clear();
         app.focused_node = None;

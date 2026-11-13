@@ -61,8 +61,7 @@ fn publication_retains_original_typed_identity_not_a_supplied_alias() {
     );
 }
 
-/// A mount of `checkout` for `author`, as `HostContext::callback_binding`
-/// makes one.
+/// A mount of `checkout` for `author`, as `HostContext::callback_binding` makes one.
 pub(super) fn mount(
     records: &RecordStore,
     checkout: &RecordCheckout,
@@ -157,7 +156,6 @@ fn checked_record_preview_attribution_uses_admitted_actor_and_restores_on_unwind
     let checkout = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
     records.create_record(&checkout).unwrap();
     let (mut binding, _scope, _owner) = mount(&records, &checkout, "person", 1, true);
-    // Descriptive context is not the identity lent by the checked callback.
     std::rc::Rc::make_mut(&mut binding.operation_context).invoker =
         Some(ActionInvoker::actor("untrusted-label"));
     let mut outer = AutoCommit::new();
@@ -198,7 +196,6 @@ fn checked_record_preview_attribution_uses_admitted_actor_and_restores_on_unwind
     assert_eq!(ActionCx::for_apply(&outer, b"preview", 0).author(), None);
 }
 
-/// The actors of the changes `write` adds to the record.
 fn writers_of(
     records: &RecordStore,
     id: &RecordId,
@@ -216,9 +213,6 @@ fn writers_of(
         .unwrap()
 }
 
-/// Mounts of one profile and device share a record's document; each writes
-/// as its author's own actor, and the record keeps its page's writer for
-/// everything else and for storage.
 #[test]
 fn per_author_mounts_write_as_their_authors_and_the_record_keeps_its_pages_writer() {
     let cache = PortableStorage::new("profile", "device").unwrap();
@@ -282,8 +276,6 @@ fn per_author_mounts_write_as_their_authors_and_the_record_keeps_its_pages_write
                 assert!(doc.get(ROOT, "agent").unwrap().is_some());
             })
             .unwrap();
-        // The page's cache takes the bytes and its host acknowledges them in
-        // its own time: what this test waits for is the hand-over.
         records.try_flush_written().unwrap();
         writer
     };

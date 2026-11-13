@@ -1,10 +1,9 @@
-//! Reusable *chrome* — the framed UI around content. Two layers, not the
-//! same thing: **application chrome** ([`page`], [`status_bar`] and the
-//! [`crate::widget::Toolbar`]) is the frame an app draws around its own content (the app
-//! owns button specs and click handling, the toolkit owns the look);
-//! **shell chrome** ([`shell`]) is the vocabulary the *OS* paints in
-//! around and between apps — top bar, window decorations, workspace disc,
-//! quick settings, collaborator surfaces (see `crates/sdk/ui-core/HIG.md` §9).
+//! Reusable *chrome* — the framed UI around content. Two layers, not the same thing: **application
+//! chrome** ([`page`], [`status_bar`] and the [`crate::widget::Toolbar`]) is the frame an app draws
+//! around its content (the app owns button specs and click handling, the toolkit owns the look);
+//! **shell chrome** ([`shell`]) is the vocabulary the *OS* paints in around and between apps — top bar,
+//! window decorations, workspace disc, quick settings, collaborator surfaces (see
+//! `crates/sdk/ui-core/HIG.md` §9).
 
 pub mod header_row;
 pub mod marks;

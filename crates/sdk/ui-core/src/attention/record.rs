@@ -1,17 +1,6 @@
-//! The waiting stack: what wants a person, and the one thing to do about
-//! each.
-//!
-//! An [`Item`] cannot be built without an [`Action`]: the type is what keeps
-//! "rows that cannot act are not rows" true, rather than a rule somebody has
-//! to remember. An item has an owner with a face (icon *and* name), what it
-//! is about, why (when there is a why), since when, how urgent it is, and
-//! the verb it waits on.
-//!
-//! Three states, deliberately distinct ([`State`]): **unseen** (it counts on
-//! the bar), **seen** (the row stays, the count does not), and **deferred**
-//! (it is out of the way but counted — a quiet system is still honest about
-//! what it is holding back). Nothing expires: an item leaves when it is
-//! acted on, or when the app that raised it takes it back.
+//! The waiting stack: what wants a person, and the one thing to do about each. An [`Item`] cannot be
+//! built without an [`Action`]: the type is what keeps "rows that cannot act are not rows" true, rather
+//! than a rule somebody has to remember.
 
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
@@ -24,18 +13,15 @@ use crate::wake::WakeHandle;
 /// oldest of that app's, so one app cannot flood the stack.
 const MAX_PER_OWNER: usize = 12;
 
-/// The most items the stack holds at all.
 const MAX_ITEMS: usize = 64;
 
-/// Who is asking: an app's identity, as the row carries it. A row always
-/// names the app as well as showing its icon.
+/// Who is asking: an app's identity, as the row has it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Owner {
     /// The app's id (`so.tilo.store`).
     pub app: String,
     /// The app's name as the bar shows it ("Store").
     pub name: String,
-    /// The app's icon.
     pub icon: Icon,
 }
 
@@ -58,11 +44,11 @@ impl Owner {
     }
 }
 
-/// The one thing a person can do about an item: a verb the app knows, and
-/// the words the button shows ("Print again").
+/// The one thing a person can do about an item: a verb the app knows, and the words the button shows
+/// ("Print again").
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Action {
-    /// The verb, in the app's own vocabulary; what acting reports back.
+    /// The verb, in the app vocabulary; what acting reports back.
     pub verb: String,
     /// The button's words.
     pub label: String,
@@ -79,7 +65,7 @@ impl Action {
     }
 }
 
-/// The verb a failed job's row carries: open the job's subject.
+/// The verb a failed job's row has: open the job's subject.
 pub const SHOW_JOB: &str = "jobs.show";
 
 /// How much it costs to leave an item waiting.
@@ -115,7 +101,7 @@ pub enum Target {
     Record(u64),
 }
 
-/// Where an item stands.
+/// Where an item is.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum State {
     /// Nobody has looked at it: it counts.
@@ -156,9 +142,6 @@ pub struct Item {
 
 impl Item {
     /// An item `owner` raises, titled `title`, waiting on `action`.
-    ///
-    /// This is the only way to make one: an item without an action would be
-    /// a log line pretending to be a decision.
     #[must_use]
     pub fn new(owner: Owner, title: impl Into<String>, action: Action) -> Self {
         Self {
@@ -221,7 +204,6 @@ impl Item {
         &self.title
     }
 
-    /// What it is about.
     #[must_use]
     pub fn about_line(&self) -> Option<&str> {
         self.about.as_deref()
@@ -257,7 +239,7 @@ impl Item {
         self.target
     }
 
-    /// Where it stands.
+    /// Where it is.
     #[must_use]
     pub const fn state(&self) -> State {
         self.state
@@ -290,12 +272,7 @@ pub enum Published {
     Recorded(u64),
 }
 
-/// What the system has to say: a piece of news, and whether it needs a
-/// person.
-///
-/// [`Notice::needs`] carries the action it waits on and goes to the waiting
-/// stack; [`Notice::did`] carries none and is recorded in the ledger. There
-/// is no third place.
+/// What the system has to say: a piece of news, and whether it needs a person.
 #[derive(Clone, Debug)]
 pub struct Notice {
     owner: Owner,
@@ -336,7 +313,6 @@ impl Notice {
         }
     }
 
-    /// What it is about.
     #[must_use]
     pub fn about(mut self, about: impl Into<String>) -> Self {
         self.about = Some(about.into());
@@ -365,12 +341,8 @@ impl Notice {
     }
 }
 
-/// Say it once: an outcome goes to the waiting stack if it needs a person,
-/// or to the ledger if it does not.
-///
-/// Raising the same news twice (the same app, about the same thing, titled
-/// the same way) does not stack two rows: the one waiting takes the newer
-/// why, and is unseen again if it had been seen.
+/// Say it once: an outcome goes to the waiting stack if it needs a person, or to the ledger if it does
+/// not.
 pub fn publish(notice: Notice) -> Published {
     if let Some(action) = notice.action.clone() {
         let mut item = Item::new(notice.owner, notice.title, action).urgent(notice.urgency);
@@ -437,8 +409,8 @@ pub fn raise(item: Item) -> ItemId {
     id
 }
 
-/// Every item waiting, ordered by urgency and then by age: the first row is
-/// the one that costs most to leave.
+/// Every item waiting, ordered by urgency and then by age: the first row is the one that costs most to
+/// leave.
 #[must_use]
 pub fn items() -> Vec<Item> {
     let registry = registry();
@@ -487,8 +459,7 @@ pub fn deferred() -> usize {
         .count()
 }
 
-/// Note that the stack was shown: everything in it stops counting, and the
-/// rows stay. Seeing is not dismissing.
+/// Note that the stack was shown: everything in it stops counting, and the rows stay.
 pub fn seen() {
     let wakes = {
         let mut registry = registry();
@@ -514,7 +485,7 @@ pub fn defer(id: ItemId) {
     change(id, |item| item.state = State::Deferred);
 }
 
-/// Take item `id` out of the stack: it was answered, or no longer holds.
+/// Take item `id` out of the stack: it was answered, or no longer has.
 pub fn dismiss(id: ItemId) {
     let wakes = {
         let mut registry = registry();
@@ -531,8 +502,8 @@ pub fn dismiss(id: ItemId) {
     }
 }
 
-/// Take back every item about `target`: the thing that raised it was
-/// answered somewhere else (a job's row was read, its failure with it).
+/// Take back every item about `target`: the thing that raised it was answered somewhere else (a job's
+/// row was read, its failure with it).
 pub fn dismissed(target: Target) {
     let wakes = {
         let mut registry = registry();
@@ -550,7 +521,6 @@ pub fn dismissed(target: Target) {
 }
 
 /// Answer item `id`: the action it waited on, which the app now performs.
-/// The item leaves the stack.
 #[must_use]
 pub fn act(id: ItemId) -> Option<Action> {
     let (action, wakes) = {
@@ -597,8 +567,7 @@ pub fn take(id: ItemId) -> Option<Acted> {
     })
 }
 
-/// Take every item away: a test's clean slate, and what a session reset
-/// does.
+/// Take every item away: a test's clean slate, and what a session reset does.
 pub fn clear() {
     let mut registry = registry();
     registry.items.clear();
@@ -638,8 +607,6 @@ impl Registry {
         self.watchers.iter().map(|(_, wake)| wake.clone()).collect()
     }
 
-    /// Keep the stack bounded: the oldest item of an app that has too many,
-    /// and the oldest item at all past the cap.
     fn trim(&mut self) {
         let over: Vec<String> = {
             let mut per_owner: Vec<(String, usize)> = Vec::new();

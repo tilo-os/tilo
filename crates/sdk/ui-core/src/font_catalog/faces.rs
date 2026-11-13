@@ -1,11 +1,7 @@
-//! What a face can do, read from its own tables.
-//!
-//! Every decision the toolkit makes about a face — whether it covers a
-//! character, which OpenType features a [`TextKind`] turns on, how large a
-//! fallback must be set to share its x-height — is answered here, from the
-//! face's `cmap`, `GSUB`/`GPOS` feature lists, `fvar` axes and `OS/2`/`MVAR`
-//! metrics. Nothing names a font: a face that gains a feature (Tilo Sans'
-//! distinct I and l, a slashed zero) is used for it with no code change.
+//! What a face can do, read from its tables. Every decision the toolkit makes about a face — whether it
+//! covers a character, which OpenType features a [`TextKind`] turns on, how large a fallback must be
+//! set to share its x-height — is answered here, from the face's `cmap`, `GSUB`/`GPOS` feature lists,
+//! `fvar` axes and `OS/2`/`MVAR` metrics.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -39,11 +35,10 @@ pub(crate) struct FaceCaps {
     codepoints: Vec<u32>,
     /// `GSUB` and `GPOS` feature tags, sorted.
     features: Vec<[u8; 4]>,
-    /// Stylistic sets and character variants that only make I and l (and
-    /// their look-alikes) distinct.
+    /// Stylistic sets and character variants that only make I and l (and their look-alikes) distinct.
     distinct_il: Vec<[u8; 4]>,
-    /// x-height in em at sampled `wght` positions (the default location for
-    /// a face without a weight axis), for interpolation.
+    /// x-height in em at sampled `wght` positions (the default location for a face without a weight
+    /// axis), for interpolation.
     x_height: Vec<(f32, f32)>,
     /// The `wght` axis range, when the face is variable in weight.
     weight_axis: Option<(f32, f32)>,
@@ -138,17 +133,13 @@ impl FaceCaps {
             .map_or(weight, |(min, max)| weight.clamp(min, max))
     }
 
-    /// The features `kind` asks for that this face has, in application
-    /// order.
+    /// The features `kind` asks for that this face has, in application order.
     #[cfg(test)]
     pub(crate) fn kind_features(&self, kind: TextKind) -> Vec<[u8; 4]> {
         self.features_for(kind, false)
     }
 
-    /// The features `kind` asks for that this face has, in application
-    /// order. `distinguish` (a security surface, or the person's "Always
-    /// distinguish similar letters" setting) adds the distinct zero, I and l
-    /// to every kind.
+    /// The features `kind` asks for that this face has, in application order.
     pub(crate) fn features_for(&self, kind: TextKind, distinguish: bool) -> Vec<[u8; 4]> {
         let figures: &[[u8; 4]] = match kind {
             TextKind::Numeric | TextKind::Secret => &[*b"tnum", *b"lnum"],
@@ -259,9 +250,8 @@ fn distinct_il_features(font: &FontRef<'_>) -> Vec<[u8; 4]> {
     out
 }
 
-/// Whether a feature that substitutes these encoded characters is a
-/// "distinct I and l" set: it changes I or l and nothing but their
-/// look-alikes.
+/// Whether a feature that substitutes these encoded characters is a "distinct I and l" set: it changes
+/// I or l and nothing but their look-alikes.
 pub(crate) fn only_distinguishes_il(substituted: &[char]) -> bool {
     substituted.iter().any(|c| matches!(c, 'I' | 'l'))
         && substituted
@@ -269,14 +259,12 @@ pub(crate) fn only_distinguishes_il(substituted: &[char]) -> bool {
             .all(|c| CONFUSABLE_IL.contains(*c) || private_use(*c))
 }
 
-/// A private-use code point: a face's own encoding of an alternate, which
+/// A private-use code point: a face encoding of an alternate, which
 /// means nothing outside it and cannot appear in text that means something.
 fn private_use(c: char) -> bool {
     matches!(u32::from(c), 0xE000..=0xF8FF | 0xF_0000..=0x10_FFFF)
 }
 
-/// PostScript name, collection index, first family name and style: the same
-/// face loaded into another database (a clone, a browser bundle) shares it.
 type CapsKey = (String, u32, String, bool);
 
 /// The capabilities of `id` in `db`, read once per face per process.

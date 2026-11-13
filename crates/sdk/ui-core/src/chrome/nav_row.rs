@@ -1,38 +1,7 @@
-//! One navigation row and one navigation section header, painted the same everywhere.
-//!
-//! `NavList` paints every row through [`paint_nav_row`] and every section header through
-//! [`paint_nav_section`]; a painted app that cannot host a `NavList` calls the same two functions
-//! with the same faces, so a sidebar drawn by hand is pixel-for-pixel the widget's. The geometry
-//! ([`nav_row_layout`], [`nav_section_layout`]) is public so a painted host hit-tests exactly what
-//! was painted.
-//!
-//! A row is the list's `s2` inset from both edges; its selection is the neutral lift of the ground
-//! it stands on ([`super::paint_row_selection`]), with primary ink. Counts are `Caption` tabular
-//! figures in tertiary ink; a [`NavCount::Live`] count (unread, needs attention) is the one filled
-//! badge, in the person's own colour. Section headers are sentence-case `Subheading` in secondary
-//! ink.
-//!
-//! Every part a row can show, leading to trailing:
-//!
-//! | Part | Face | Look |
-//! |---|---|---|
-//! | check | [`NavRowFace::checked`] | a [`crate::widget::CheckboxFace`]; the whole row toggles it |
-//! | icon, swatch or avatar | [`NavRowFace::icon`], [`NavRowFace::swatch`], [`NavRowFace::avatar`] | a `ui::icons` glyph, the content colour the row stands for, or the person it stands for |
-//! | badge | [`NavRowFace::badge`] | a short classifying code on a quiet pill, in a column shared by its section |
-//! | label | [`NavRowFace::new`] | `Body`; `Body.strong()` while selected |
-//! | secondary | [`NavRowFace::secondary`] | one `Caption` line under the label, in secondary ink |
-//! | level | [`NavRowFace::level`] | a usage bar under the text, on the progress bar's track and fill |
-//! | presence | [`NavRowFace::presence`] | the people on it, as marks in their colour |
-//! | status label | [`NavRowFace::status_label`] | a quiet tinted badge ("Active") |
-//! | meta | [`NavRowFace::meta`] | a tertiary `Caption` figure (a size) |
-//! | count | [`NavRowFace::count`] | quiet tabular figures, or the live badge |
-//! | status | [`NavRowFace::status`] | a dot at the trailing edge |
-//!
-//! Hover and focus swap the trailing parts for the row's actions.
-//!
-//! Draw with the theme of the ground the rows stand on
-//! (`theme.in_region(Region::Sidebar)` in a sidebar, `theme.on_ground(..)` elsewhere): the painter
-//! reads that ground from `surfaces.content`.
+//! One navigation row and one navigation section header, painted the same everywhere. `NavList` paints
+//! every row through [`paint_nav_row`] and every section header through [`paint_nav_section`]; a
+//! painted app that cannot host a `NavList` calls the same two functions with the same faces, so a
+//! sidebar drawn by hand is pixel-for-pixel the widget's.
 
 use crate::num::f32_of_f64;
 use crate::num::f64_of_usize;
@@ -47,14 +16,14 @@ use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::{AvatarFace, BadgeFace, ChipStyle, RowStatus, Tone};
 
-/// How many items a navigation row stands for, beside its label.
+/// How many items a navigation row is, beside its label.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NavCount {
-    /// A plain count (messages in a folder, tracks in a playlist): quiet
-    /// tabular figures in tertiary ink.
+    /// A plain count (messages in a folder, tracks in a playlist): quiet tabular figures in tertiary
+    /// ink.
     Neutral(u32),
-    /// Something that wants attention (unread, mentions): the one filled
-    /// badge in a navigation list, in the person's own colour.
+    /// Something that wants attention (unread, mentions): the one filled badge in a navigation list, in
+    /// the person colour.
     Live(u32),
 }
 
@@ -82,12 +51,10 @@ pub enum NavRowStyle {
     Rail,
 }
 
-/// Everything a navigation row shows. Build with [`NavRowFace::new`] and
-/// paint with [`paint_nav_row`].
+/// Everything a navigation row shows.
 #[derive(Clone, Debug)]
 pub struct NavRowFace<'a> {
-    /// The row's full band, edge to edge of the list. The painter applies
-    /// the list inset itself.
+    /// The row's full band, edge to edge of the list.
     pub rect: Rect,
     pub label: &'a str,
     pub icon: Option<Icon>,
@@ -102,8 +69,7 @@ pub struct NavRowFace<'a> {
     pub state: SelectionState,
     /// Keyboard focus is on this row.
     pub focused: bool,
-    /// Trailing actions shown on hover or focus, in order. While they show,
-    /// they take the place of the trailing parts.
+    /// Trailing actions shown on hover or focus, in order.
     pub actions: &'a [Icon],
     pub action_hover: Option<usize>,
     pub style: NavRowStyle,
@@ -117,29 +83,24 @@ pub struct NavRowFace<'a> {
     pub status_label: Option<(&'a str, Tone)>,
     /// A short leading code that classifies the row (`GET`).
     pub badge: Option<&'a str>,
-    /// The width of the badge column the row's section shares; `None`
-    /// sizes the column to this row's own badge.
+    /// The width of the badge column the row's section shares; `None` sizes the column to this row's
+    /// own badge.
     pub badge_column: Option<f64>,
-    /// The content colour the row stands for (a calendar, a project), in
-    /// the icon's place.
+    /// The content colour the row is (a calendar, a project), in the icon's place.
     pub swatch: Option<Color>,
-    /// The person the row stands for (a participant in a call), as a small
-    /// avatar in the icon's place.
+    /// The person the row is (a participant in a call), as a small avatar in the icon's place.
     pub avatar: Option<AvatarFace<'a>>,
-    /// `Some(checked)`: a checkbox in the leading slot. The whole row is
-    /// its target.
+    /// `Some(checked)`: a checkbox in the leading slot.
     pub checked: Option<bool>,
-    /// Where that checkbox's fill and mark are this frame
-    /// ([`crate::widget::FaceMotions::check`]); at rest on `checked` when
-    /// unset.
+    /// Where that checkbox's fill and mark are this frame ([`crate::widget::FaceMotions::check`]); at
+    /// rest on `checked` when unset.
     pub check_pose: Option<crate::widget::CheckPose>,
     /// A usage bar under the text, `0.0..=1.0`.
     pub level: Option<f32>,
-    /// The people on this row's place, by identity, each a mark in their
-    /// presence colour.
+    /// The people on this row's place, by identity, each a mark in their presence colour.
     pub presence: &'a [String],
-    /// Something new waits behind the row (an unread conversation): its
-    /// label stands out at rest, in primary ink and the strong weight.
+    /// Something new waits behind the row (an unread conversation): its label shows at rest, in primary
+    /// ink and the strong weight.
     pub unread: bool,
 }
 
@@ -181,16 +142,15 @@ impl<'a> NavRowFace<'a> {
         self
     }
 
-    /// A quiet count the row holds, or the one live badge of its list. Zero shows nothing: a
-    /// number says something wants attention, and nothing does.
+    /// A quiet count the row has, or the one live badge of its list.
     #[must_use]
     pub fn count(mut self, count: NavCount) -> Self {
         self.count = (count.value() > 0).then_some(count);
         self
     }
 
-    /// Give rows beneath a labelled section a quiet leading inset without
-    /// changing tree depth, selection bounds or pointer targets.
+    /// Give rows beneath a labelled section a quiet leading inset without changing tree depth,
+    /// selection bounds or pointer targets.
     #[must_use]
     pub fn under_section(mut self) -> Self {
         self.under_section = true;
@@ -274,9 +234,7 @@ impl<'a> NavRowFace<'a> {
         self
     }
 
-    /// A short leading code that classifies the row (an HTTP method). Pass
-    /// the section's [`nav_badge_column`] to [`Self::badge_column`] so the
-    /// labels of its rows line up.
+    /// A short leading code that classifies the row (an HTTP method).
     #[must_use]
     pub fn badge(mut self, code: &'a str) -> Self {
         self.badge = Some(code);
@@ -290,14 +248,14 @@ impl<'a> NavRowFace<'a> {
         self
     }
 
-    /// The content colour the row stands for, in the icon's place.
+    /// The content colour the row is, in the icon's place.
     #[must_use]
     pub fn swatch(mut self, color: Color) -> Self {
         self.swatch = Some(color);
         self
     }
 
-    /// The person the row stands for, as a small avatar in the icon's place.
+    /// The person the row is, as a small avatar in the icon's place.
     #[must_use]
     pub fn avatar(mut self, avatar: AvatarFace<'a>) -> Self {
         self.avatar = Some(avatar);
@@ -343,8 +301,7 @@ impl<'a> NavRowFace<'a> {
     }
 }
 
-/// Where each part of a navigation row lands. Painting and hit-testing
-/// both read it.
+/// Where each part of a navigation row lands.
 #[derive(Clone, Debug, PartialEq)]
 pub struct NavRowLayout {
     /// The selection lift (and the focus ring) of the row.
@@ -379,8 +336,8 @@ pub struct NavRowLayout {
     pub actions: Vec<Rect>,
 }
 
-/// Height of one list row: [`crate::tokens::Metrics::nav_row_height`],
-/// grown with the body line at large text.
+/// Height of one list row: [`crate::tokens::Metrics::nav_row_height`], grown with the body line at
+/// large text.
 #[must_use]
 pub fn nav_row_height(theme: &Theme) -> f64 {
     crate::widget::text_control_height(
@@ -389,7 +346,7 @@ pub fn nav_row_height(theme: &Theme) -> f64 {
     )
 }
 
-/// Height of a list row that carries a secondary line and/or a usage bar
+/// Height of a list row that has a secondary line and/or a usage bar
 /// under its label: the stacked text inside the row's `s2` padding, never
 /// shorter than [`nav_row_height`].
 #[must_use]
@@ -416,18 +373,15 @@ fn text_block_height(theme: &Theme, secondary: bool, level: bool) -> f64 {
     block
 }
 
-/// The usage bar's thickness: one `s1` step.
 fn level_height(theme: &Theme) -> f64 {
     f64::from(theme.tokens.spacing.s1)
 }
 
-/// The space between the text and the usage bar under it.
 fn level_gap(theme: &Theme) -> f64 {
     f64::from(theme.tokens.spacing.s1)
 }
 
-/// Height of one rail tile: the icon over a caption line inside the row
-/// padding.
+/// Height of one rail tile: the icon over a caption line inside the row padding.
 #[must_use]
 pub fn nav_rail_row_height(theme: &Theme) -> f64 {
     let tokens = &theme.tokens;
@@ -438,8 +392,8 @@ pub fn nav_rail_row_height(theme: &Theme) -> f64 {
         + 2.0 * f64::from(tokens.spacing.s2)
 }
 
-/// Height of the rail tile for `label` in a rail `width` wide: one caption
-/// line more than [`nav_rail_row_height`] when the caption wraps.
+/// Height of the rail tile for `label` in a rail `width` wide: one caption line more than
+/// [`nav_rail_row_height`] when the caption wraps.
 #[must_use]
 pub fn nav_rail_item_height(
     theme: &Theme,
@@ -457,9 +411,6 @@ pub fn nav_rail_item_height(
     nav_rail_row_height(theme) + caption * f64_of_usize(lines.len().saturating_sub(1))
 }
 
-/// The run a rail caption is set in, inside a tile `width` wide: the tile's
-/// selection inset and the caption's own inset on each side, `s1` each, as
-/// [`rail_layout`] places it.
 fn rail_caption_width(theme: &Theme, width: f64) -> f64 {
     (width - 4.0 * f64::from(theme.tokens.spacing.s1)).max(0.0)
 }
@@ -526,7 +477,7 @@ pub fn nav_list_width_fitting<'a>(
     labels: impl IntoIterator<Item = &'a str>,
 ) -> f64 {
     // The padding around the label of a plain icon-led row, read off the
-    // row's own layout so it can never disagree with what paints.
+    // row layout so it can never disagree with what paints.
     let probe_width = 1000.0;
     let probe = NavRowFace::new(Rect::new(0.0, 0.0, probe_width, 32.0), "").icon(Icon::Home);
     let layout = list_layout(theme, text_renderer, &probe);
@@ -539,7 +490,7 @@ pub fn nav_list_width_fitting<'a>(
     (longest + pad).ceil()
 }
 
-/// Whether `label` stands whole in a rail tile `width` wide: on at most two
+/// Whether `label` is whole in a rail tile `width` wide: on at most two
 /// caption lines, broken only at spaces, with nothing elided.
 #[must_use]
 pub fn rail_caption_fits(
@@ -580,7 +531,6 @@ pub fn rail_caption_lines(
         return vec![label.to_owned()];
     }
     let words: Vec<&str> = label.split_whitespace().collect();
-    // The most whole words that fit on the first line.
     let mut first = String::new();
     let mut taken = 0;
     for word in &words {
@@ -612,8 +562,7 @@ pub fn rail_caption_lines(
     vec![first, second]
 }
 
-/// Height of a section header. Every section after the first is separated
-/// from the rows above it by `s3` of space, not by a line.
+/// Height of a section header.
 #[must_use]
 pub fn nav_section_height(theme: &Theme, first: bool) -> f64 {
     let lead = if first {
@@ -631,9 +580,7 @@ pub fn nav_badge_column(theme: &Theme, text_renderer: &mut TextRenderer, codes: 
     crate::widget::badge_column_width(text_renderer, theme, codes)
 }
 
-/// The style a row's label is set in: `Body`, or `Body.strong()` while the
-/// row is selected. Measure elision with [`label_measure_style`] so the
-/// label does not jump when the weight changes.
+/// The style a row's label is set in: `Body`, or `Body.strong()` while the row is selected.
 #[must_use]
 pub fn label_style(theme: &Theme, face: &NavRowFace<'_>) -> TextStyle {
     let role = match face.style {
@@ -648,8 +595,8 @@ pub fn label_style(theme: &Theme, face: &NavRowFace<'_>) -> TextStyle {
     }
 }
 
-/// The heavier of a row's two weights: elision is measured with it, so a
-/// label that fits selected also fits unselected.
+/// The heavier of a row's two weights: elision is measured with it, so a label that fits selected also
+/// fits unselected.
 #[must_use]
 pub fn label_measure_style(theme: &Theme, style: NavRowStyle) -> TextStyle {
     let role = match style {
@@ -688,12 +635,10 @@ pub fn nav_row_layout(
     }
 }
 
-/// A square of `side` centred on `mid` with its leading edge at `x`.
 fn slot(x: f64, mid: f64, side: f64) -> Rect {
     Rect::new(x, mid - side / 2.0, x + side, mid + side / 2.0)
 }
 
-/// A rect `w` × `h` ending at `trailing`, centred on `mid`.
 fn trailing_rect(trailing: f64, mid: f64, w: f64, h: f64) -> Rect {
     Rect::new(trailing - w, mid - h / 2.0, trailing, mid + h / 2.0)
 }
@@ -742,7 +687,6 @@ fn list_layout(
     });
     let label_x0 = x;
 
-    // The stacked text block: the label, the secondary line, the bar.
     let label_line = f64::from(theme.text(TextRole::Body).line_height_px());
     let stacked = face.secondary.is_some() || face.level.is_some();
     let (label_top, secondary_top, level_top) = if stacked {
@@ -760,7 +704,6 @@ fn list_layout(
             face.level.map(|_| text_bottom + level_gap(theme)),
         )
     } else {
-        // One line, centred on the measured line box as before.
         let (_, line_h) = text_renderer.measure_style("Ag", None, &label_style(theme, face));
         (
             crate::text_metrics::centered_text_top(
@@ -832,7 +775,6 @@ fn list_layout(
         rect
     });
     let presence = if quiet && !face.presence.is_empty() {
-        // Marks overlap by an `s1` step, the trailing one on top.
         let side = f64::from(tokens.spacing.s3);
         let step = side - s1;
         let total = side + step * f64_of_usize(face.presence.len().saturating_sub(1));
@@ -885,7 +827,6 @@ fn rail_layout(theme: &Theme, face: &NavRowFace<'_>) -> NavRowLayout {
     let top = selection.y0 + s2;
     let cx = selection.center().x;
     let icon = Rect::new(cx - side / 2.0, top, cx + side / 2.0, top + side);
-    // A live count sits on the icon's trailing shoulder.
     let count = face.count.and_then(|count| match count {
         NavCount::Live(_) => {
             let dot = s2;
@@ -918,8 +859,6 @@ fn rail_layout(theme: &Theme, face: &NavRowFace<'_>) -> NavRowLayout {
     }
 }
 
-/// Paint one navigation row. `theme` is the theme of the ground the row
-/// stands on; its `surfaces.content` is that ground.
 #[allow(
     clippy::too_many_lines,
     reason = "every part of a row paints in one ordered pass, leading to trailing"
@@ -946,8 +885,6 @@ pub fn paint_nav_row(
     if face.focused {
         paint_focus(scene, transform, theme, layout.selection);
     }
-    // Primary ink once the row is chosen or under the pointer; secondary at
-    // rest, so the selected row reads by ink as well as by its lift.
     let ink = if face.lifted() || face.state.hover || face.unread {
         colors.text_primary
     } else {
@@ -967,8 +904,6 @@ pub fn paint_nav_row(
     }
     if let Some(rect) = layout.icon {
         if let Some(avatar) = face.avatar {
-            // The icon slot is the small avatar's side, so a person's row
-            // lines its label up with the icon rows around it.
             avatar.paint(
                 &mut crate::paint::PaintCtx::new(scene, transform, text_renderer, theme),
                 rect,
@@ -1067,7 +1002,6 @@ pub fn paint_nav_row(
             None,
             &circle,
         );
-        // Each mark is cut out of the one beside it by the row's own ground.
         scene.stroke(
             &Stroke::new(f64::from(tokens.metrics.chrome_rule_px) * 1.5),
             transform,
@@ -1119,7 +1053,6 @@ pub fn paint_nav_row(
                 transform,
                 *rect,
                 SelectionState::new(false, true, false),
-                // The action lifts off the row it sits on.
                 lift,
                 theme,
             );
@@ -1138,8 +1071,6 @@ pub fn paint_nav_row(
     }
 }
 
-/// A content colour in the icon's place: a rounded square inside the icon
-/// slot, edged so a white swatch on paper keeps its outline.
 fn paint_swatch(scene: &mut Scene, transform: Affine, theme: &Theme, slot: Rect, color: Color) {
     let side = f64::from(theme.tokens.metrics.icon_sm);
     let rect = Rect::from_center_size(slot.center(), (side, side));
@@ -1155,8 +1086,8 @@ fn paint_swatch(scene: &mut Scene, transform: Affine, theme: &Theme, slot: Rect,
     );
 }
 
-/// The spoken form of a row's extra parts, for its accessible description:
-/// the secondary line, the meta, the state.
+/// The spoken form of a row's extra parts, for its accessible description: the secondary line, the
+/// meta, the state.
 #[must_use]
 pub fn nav_row_description(face: &NavRowFace<'_>) -> Option<String> {
     let parts: Vec<String> = [
@@ -1183,7 +1114,6 @@ fn paint_count(
 ) {
     let colors = &theme.tokens.colors;
     if style == NavRowStyle::Rail {
-        // The rail has room for a mark only.
         scene.fill(
             Fill::NonZero,
             transform,
@@ -1222,9 +1152,7 @@ fn paint_count(
     );
 }
 
-/// The keyboard focus ring around a row: the person's own colour.
 fn paint_focus(scene: &mut Scene, transform: Affine, theme: &Theme, rect: Rect) {
-    // Keyboard focus only: a clicked row shows its selection, not a ring.
     if !crate::focus_visible::shown() {
         return;
     }
@@ -1243,8 +1171,8 @@ fn paint_focus(scene: &mut Scene, transform: Affine, theme: &Theme, rect: Rect) 
 /// A section header in a navigation list.
 #[derive(Clone, Debug)]
 pub struct NavSectionFace<'a> {
-    /// The header's full band, edge to edge of the list, including the
-    /// space above it ([`nav_section_height`]).
+    /// The header's full band, edge to edge of the list, including the space above it
+    /// ([`nav_section_height`]).
     pub rect: Rect,
     /// Sentence case; painted as written.
     pub title: &'a str,
@@ -1252,8 +1180,7 @@ pub struct NavSectionFace<'a> {
     pub collapsible: Option<bool>,
     /// A trailing action (usually [`Icon::Plus`] for "new …").
     pub action: Option<Icon>,
-    /// The pointer is over the header; a collapsible section shows its
-    /// chevron then.
+    /// The pointer is over the header; a collapsible section shows its chevron then.
     pub hover: bool,
     pub action_hover: bool,
     pub focused: bool,
@@ -1444,7 +1371,6 @@ mod tests {
             layout.label_x1 < count.x0,
             "the label elides before the count"
         );
-        // Nesting indents by s4.
         let nested = nav_row_layout(&theme, &mut text, &face.clone().depth(1));
         let s4 = f64::from(theme.tokens.spacing.s4);
         assert!((nested.label_x0 - layout.label_x0 - s4).abs() < 1e-9);
@@ -1549,8 +1475,6 @@ mod tests {
         assert!((rail_width_fitting(&stock, &mut text, ["Channels"]) - floor).abs() < 1e-9);
     }
 
-    /// A selected row is a visible lift, tinted only by the accent's faint
-    /// hue (design language, "Lifts"); monochrome keeps it colourless.
     #[test]
     fn a_selected_row_is_a_visible_lift_in_the_accents_faint_tint() {
         for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {

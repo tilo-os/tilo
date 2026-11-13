@@ -1,9 +1,8 @@
-//! Controls bound to another provider's actions
-//! ([`tilo_actions::ActionSpec::run_by`]): the component neither publishes
-//! nor runs them, and its host invokes them at that provider.
+//! Controls bound to another provider's actions ([`tilo_actions::ActionSpec::run_by`]): the component
+//! neither publishes nor runs them, and its host invokes them at that provider.
 
-/// An invocation of another provider's action a view bound its control to,
-/// resolved and confirmed here, for the host to invoke at that provider.
+/// An invocation of another provider's action a view bound its control to, resolved and confirmed here,
+/// for the host to invoke at that provider.
 #[derive(Clone, Debug)]
 pub(crate) struct HostedInvocation {
     pub(crate) provider: String,
@@ -17,8 +16,8 @@ pub(crate) struct HostedInvocation {
 }
 
 impl HostedInvocation {
-    /// The invocation at `address` of `spec`, when another provider runs
-    /// it, with its typed `arguments` or text `argument`.
+    /// The invocation at `address` of `spec`, when another provider runs it, with its typed `arguments`
+    /// or text `argument`.
     pub(crate) fn of(
         spec: &tilo_actions::ActionSpec,
         address: &tilo_actions::ActionAddress,
@@ -30,8 +29,6 @@ impl HostedInvocation {
         let run = spec.run_by_provider()?;
         let resource = run.resource.as_deref().unwrap_or(&address.resource);
         let (action, argument) = match &run.invokes {
-            // Offered here as another: the provider's own action, with what
-            // this one fixes and what was given beside it.
             Some((action, fixed)) => {
                 let mut arguments = arguments.cloned().unwrap_or_default();
                 arguments.extend(fixed.clone());
@@ -63,9 +60,8 @@ impl HostedInvocation {
     }
 }
 
-/// `resource` as its component publishes it: without the actions another
-/// provider runs, which that provider publishes itself. `None` where nothing
-/// of it is left to publish.
+/// `resource` as its component publishes it: without the actions another provider runs, which that
+/// provider publishes itself.
 pub(crate) fn published_here(
     mut resource: tilo_actions::ResourceSpec,
 ) -> Option<tilo_actions::ResourceSpec> {

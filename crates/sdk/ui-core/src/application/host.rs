@@ -1,6 +1,5 @@
-//! Explicit process-host services shared by standalone application runners.
-//! Apps supply their definition and migration; this owner supplies storage,
-//! identity, authority and local presentation. No ambient profile discovery.
+//! Explicit process-host services shared by standalone application runners. Apps supply their
+//! definition and migration; this owner supplies storage, identity, authority and local presentation.
 use super::{
     ApplicationDefinition, ApplicationLocalView, ComponentRunnerInputs, HostContext,
     HostContextInputs, InstanceId, InstanceViewStore, LaunchError, LaunchTarget, PermissionContext,
@@ -14,16 +13,13 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 const PERSONAL_WORKSPACE: &str = "personal";
-/// Names the directory the launcher keeps the person's own records of an
-/// app in ([`crate::record::person`]): one per app, bound into its launches
-/// in every workspace, so a record of the person's is one record on the
-/// device.
+/// Names the directory the launcher keeps the person records of an app in ([`crate::record::person`]):
+/// one per app, bound into its launches in every workspace, so a record of the person's is one record
+/// on the device.
 pub const PERSON_DIR_ENV: &str = "TILO_PERSON_DIR";
 const DEVICE_ID_FILE: &str = ".tilo-device-id";
 
-/// The host inputs a normal application process receives from the trusted
-/// launcher. Storage and presentation identity are resolved once, before an
-/// application factory is allowed to open a record.
+/// The host inputs a normal application process receives from the trusted launcher.
 pub struct NativeProcessHost {
     host: ApplicationHost,
     instance_id: InstanceId,
@@ -36,7 +32,7 @@ impl NativeProcessHost {
     ///
     /// A workspace launch fails closed to viewer authority when the launcher
     /// does not explicitly mark it as an author. A standalone launch receives
-    /// owner authority over its own app data, without gaining filesystem or
+    /// owner authority over its app data, without gaining filesystem or
     /// network capabilities outside the process sandbox.
     ///
     /// # Errors
@@ -58,10 +54,6 @@ impl NativeProcessHost {
         let launcher_instance = environment.continuity_instance.is_some();
         let resolved = environment.resolve(definition.app_id(), &author)?;
         let permissions = crate::permissions::SharedPermissions::new(resolved.permissions);
-        // A workspace launch's participation follows the workspace's
-        // grants, as the shell tells the window (`crate::workspace_sync`):
-        // read-only becomes writable the moment the app's authorship
-        // arrives, and back.
         if resolved.workspace_scoped {
             crate::workspace_sync::follow_participation(&permissions);
         }
@@ -75,18 +67,8 @@ impl NativeProcessHost {
         )?;
         host.package_id = Some(resolved.package_id);
         if let Some(person) = resolved.person_dir {
-            // The launcher binds the person's directory into the sandbox.
             host.keep_person_records_in(Rc::new(app_state::FsStore::provisioned(person)));
         }
-        // Where a window that names no record gets its fallback. Every app
-        // the framework builds keeps one record per workspace
-        // (`ApplicationDefinition::workspace_record`): `prepare_default` opens the
-        // workspace's package primary for every window of it, so they all
-        // show the same data across closing, reopening and restarts, and the
-        // first creates it (adopting what per-window records held before, see
-        // `HostContext::window_records`). A window keeps only its view of it.
-        // A definition that keeps no workspace record (a fixture) gets a record per
-        // launcher-issued window.
         Ok(Self {
             host,
             instance_id: resolved.instance_id,
@@ -116,7 +98,7 @@ impl NativeProcessHost {
     }
 
     /// Prepare this native window's named record or saved continuation.
-    /// A launcher-issued fresh instance has its own durable fallback record;
+    /// A launcher-issued fresh instance has its durable fallback record;
     /// standalone profiles retain the workspace default. Workspace-record applications
     /// still use their package primary through the normal host policy.
     ///
@@ -150,18 +132,8 @@ impl NativeProcessHost {
         self.workspace_scoped
     }
 
-    /// Prepare a window of this process: its first, or one the shell opened
-    /// in it later (`crate::window_door`). Every window is prepared on the
-    /// one host the process opens for its first, so all of them read and
-    /// write the app's records through one store and one writer; a second
-    /// host would contend for the store the first holds.
-    ///
-    /// A window the shell opened later is the instance it names, with a
-    /// record of its own where the app keeps one per window, as a launch
-    /// with that instance would have been.
-    ///
-    /// # Errors
-    /// As [`Self::open`] for the first window, and [`Self::prepare_launch`].
+    /// Prepare a window of this process: its first, or one the shell opened in it later
+    /// (`crate::window_door`).
     pub fn prepare_window(
         definition: &ApplicationDefinition,
         named: Option<RecordId>,
@@ -190,8 +162,6 @@ impl NativeProcessHost {
         })
     }
 
-    /// [`Self::prepare_launch`] for the window `instance` the shell opened in
-    /// this process.
     fn prepare_instance(
         &mut self,
         definition: &ApplicationDefinition,
@@ -218,10 +188,6 @@ impl NativeProcessHost {
     }
 }
 
-/// A record a launch would create (`target`) is not made while the launch's
-/// manager is still joining its workspace: the workspace may hold it already, and a
-/// copy made here would diverge from it. The launch builds once the join is
-/// over, from the workspace's committed history ([`LaunchError::RecordNotHere`]).
 fn refuse_copy_while_joining(target: &LaunchTarget) -> Result<(), LaunchError> {
     if matches!(target, LaunchTarget::New | LaunchTarget::PrimaryNew)
         && crate::collaboration::native_initial::joining()
@@ -234,8 +200,6 @@ fn refuse_copy_while_joining(target: &LaunchTarget) -> Result<(), LaunchError> {
 #[derive(Default)]
 struct NativeProcessEnvironment {
     package_id: Option<String>,
-    /// The app's `surface.toml` whoever started it named
-    /// ([`crate::app_surface::SURFACE_FILE_ENV`]), and its hex hash.
     surface: Option<PathBuf>,
     surface_hash: Option<String>,
     quick_app_id: Option<String>,
@@ -250,8 +214,6 @@ struct NativeProcessEnvironment {
     action_authority: Option<HostAuthority>,
 }
 
-/// Where the host's view of the person's authority over the app's actions
-/// is read, and how a change of it is heard.
 #[derive(Clone)]
 struct HostAuthority {
     read: tilo_host::action_authority::AuthoritySource,
@@ -272,8 +234,6 @@ struct ResolvedNativeProcessHost {
     workspace_scoped: bool,
     instance_id: InstanceId,
     permissions: PermissionContext,
-    /// Where the launcher keeps the person's own records of this app,
-    /// shared by its launches in every workspace.
     person_dir: Option<PathBuf>,
 }
 
@@ -418,8 +378,6 @@ impl NativeProcessEnvironment {
     }
 }
 
-/// The storage workspace a launcher names: its canonical uuid,
-/// or the personal workspace when the launch has none.
 fn launcher_workspace(workspace: Option<&str>) -> Result<(String, bool), LaunchError> {
     match workspace {
         Some(value) => {
@@ -457,11 +415,9 @@ impl HostContext {
     }
 }
 
-/// One app's launcher-owned profile in one workspace, opened by the trusted
-/// host from outside the app's sandbox: the same store, device identity and
-/// storage workspace [`NativeProcessHost`] resolves inside it. The shell
-/// uses it to carry a window's record and presentation to another workspace
-/// ([`crate::record::transfer`]); it grants nothing the app itself lacks.
+/// One app's launcher-owned profile in one workspace, opened by the trusted host from outside the app's
+/// sandbox: the same store, device identity and storage workspace [`NativeProcessHost`] resolves inside
+/// it.
 pub struct NativeProfile {
     store: Rc<dyn durable_store::DurableStore>,
     views: InstanceViewStore,
@@ -470,11 +426,8 @@ pub struct NativeProfile {
 }
 
 impl NativeProfile {
-    /// `profile_root` is the directory the launcher points the app's
-    /// `XDG_DATA_HOME` at; `workspace` is its launcher workspace id.
-    ///
-    /// # Errors
-    /// A relative root, a malformed workspace or corrupt device identity.
+    /// `profile_root` is the directory the launcher points the app's `XDG_DATA_HOME` at; `workspace` is
+    /// its launcher workspace id.
     pub fn open(profile_root: &Path, workspace: Option<&str>) -> Result<Self, LaunchError> {
         if !profile_root.is_absolute() {
             return Err(LaunchError::Operation(
@@ -509,9 +462,6 @@ impl NativeProfile {
     }
 
     /// The presentation one instance last saved here, naming the record it shows.
-    ///
-    /// # Errors
-    /// Unreadable, malformed or foreign presentation.
     pub fn saved_view(
         &self,
         instance: InstanceId,
@@ -631,7 +581,6 @@ impl FollowedAuthority {
             current: std::sync::RwLock::new(Err("host action policy is unread".into())),
         });
         let changed = std::sync::Arc::downgrade(&state);
-        // Heard before the first read, so a change during it is read again.
         let watch = (authority.watch)(Box::new(move || {
             if let Some(state) = changed.upgrade() {
                 state.read();
@@ -656,8 +605,6 @@ impl FollowedAuthority {
         })
     }
 
-    /// The host's view as last read (as it is now, when no change of it can be
-    /// heard), judged now.
     fn current(&self) -> Result<PermissionContext, String> {
         if self.watch.is_none() {
             self.state.read();
@@ -674,9 +621,8 @@ impl FollowedAuthority {
     }
 }
 
-/// `context` deciding `app`'s actions by the host's view `read` gives of
-/// its person's authority in `workspace`, read again whenever `watch` reports a
-/// change.
+/// `context` deciding `app`'s actions by the host's view `read` gives of its person's authority in
+/// `workspace`, read again whenever `watch` reports a change.
 #[cfg(test)]
 pub(crate) fn follow_host_authority(
     context: PermissionContext,
@@ -724,8 +670,6 @@ fn action_authority_context(
     app: &str,
     person: &UserId,
 ) -> Result<PermissionContext, String> {
-    // Current for as long as the host holds it: the source reads a policy
-    // the host let go of as absent.
     let projection = read_action_authority_projection(source, workspace, app, person)?;
     let mut standing = crate::permissions::Standing::person(projection.policy, person.0.clone());
     if projection.foreign {
@@ -796,8 +740,6 @@ fn persistent_device_id(profile_root: &Path) -> Result<String, LaunchError> {
             )));
         }
     };
-    // The handle closed as the arm above ended, so removing the path here does
-    // not leave a page's half-written file behind.
     if let Err(error) = written {
         let _ = std::fs::remove_file(&path);
         return Err(LaunchError::Operation(format!(
@@ -825,9 +767,8 @@ fn validate_device_id(value: &str) -> Result<String, LaunchError> {
 }
 
 pub struct ApplicationHost {
-    /// The launcher-bound package id of a native process; only that app's
-    /// definition may open records through this host. Explicit/capture hosts
-    /// take the app id from the definition passed to `records_for`.
+    /// The launcher-bound package id of a native process; only that app's definition may open records
+    /// through this host.
     package_id: Option<String>,
     models: crate::models::Models,
     owners: RecordOwners,
@@ -836,23 +777,20 @@ pub struct ApplicationHost {
     permissions: crate::permissions::SharedPermissions,
     author: UserId,
     action_context: tilo_actions::ActionContext,
-    /// Where the person's own records are kept: the host's store unless the
+    /// Where the person records are kept: the host's store unless the
     /// host names another ([`Self::keep_person_records_in`]).
     person: RecordOwners,
 }
 
 impl ApplicationHost {
     /// Use the model capability authorized for this host's authenticated session.
-    /// Every subsequently prepared component receives the same session, without
-    /// installing a process-wide client.
     #[must_use]
     pub fn with_models(mut self, models: crate::models::Models) -> Self {
         self.models = models;
         self
     }
 
-    /// The view store this host keeps: where a saved view of an instance is
-    /// read and written.
+    /// The view store this host keeps: where a saved view of an instance is read and written.
     #[must_use]
     pub fn views(&self) -> &Rc<InstanceViewStore> {
         &self.views
@@ -904,8 +842,6 @@ impl ApplicationHost {
     }
 
     /// A host persisting under a local profile directory.
-    /// # Errors
-    /// Rejects invalid explicit profile and identity inputs. No files are opened.
     pub fn new(
         profile_root: PathBuf,
         device_id: String,
@@ -956,14 +892,12 @@ impl ApplicationHost {
         })
     }
 
-    /// Keep the person's own records ([`crate::record::person`]) in `store`
-    /// rather than the host's: the directory a launcher shares between an
-    /// app's launches in every workspace.
+    /// Keep the person records ([`crate::record::person`]) in `store` rather than the host's: the
+    /// directory a launcher shares between an app's launches in every workspace.
     pub fn keep_person_records_in(&mut self, store: Rc<dyn durable_store::DurableStore>) {
         self.person = RecordOwners::with_store(store);
     }
 
-    /// Hand `context` the person's own records of `definition`'s app.
     fn with_person_records(
         &mut self,
         definition: &ApplicationDefinition,
@@ -978,8 +912,6 @@ impl ApplicationHost {
             Ok(records) => context.provide_person_records(records),
             Err(error) => tracing::warn!(%error, "the person's records are unavailable"),
         }
-        // The records every app of the workspace opens, kept beside the app's
-        // own in the same owners: one writer per app and workspace here.
         context.provide_workspace_records(
             crate::record::workspace::WorkspaceRecords::in_workspace(
                 self.owners.clone(),
@@ -1040,11 +972,9 @@ impl ApplicationHost {
         Ok(saved)
     }
 
-    /// The record this instance's saved presentation names, when it names
-    /// one of `definition`'s kind: a window carried in from another workspace
-    /// arrives showing its own record rather than the workspace's default.
-    /// # Errors
-    /// Unreadable or foreign presentation.
+    /// The record this instance's saved presentation names, when it names one of `definition`'s kind: a
+    /// window carried in from another workspace arrives showing its record rather than the workspace's
+    /// default.
     pub fn saved_record(
         &self,
         definition: &ApplicationDefinition,
@@ -1084,15 +1014,12 @@ impl ApplicationHost {
         initial_view: Option<ApplicationLocalView>,
         runner_inputs: ComponentRunnerInputs,
     ) -> Result<PreparedComponentInputs, LaunchError> {
-        // An app that keeps each member's own opens the person's own record of the workspace.
         if let Some(own) = definition.member_record_of(&self.author) {
             return self.prepare_record(definition, instance_id, own, runner_inputs);
         }
         let records = self.records_for(definition)?;
         if definition.keeps_workspace_record() {
             let primary = RecordCheckout::package_primary(definition.record_kind.clone());
-            // A window that shows before the workspace's record opens the record this device holds
-            // off the frame; the component takes it in (`HostContext::record_opening`).
             let target = if definition.opens_before_record
                 && records
                     .begin_opening(&primary)
@@ -1122,10 +1049,6 @@ impl ApplicationHost {
                 &target,
             )?;
             context.provide_models(self.models.clone());
-            // Every window shares the workspace's record, but each keeps its own
-            // presentation: this instance reopens where it was left (the
-            // note it showed), when what it saved is of the workspace's record.
-            // A view of a record it kept per window before is not restored.
             let package_id = self.package_id.as_deref().unwrap_or(definition.app_id());
             let saved = if matches!(target, LaunchTarget::Record { .. }) {
                 self.views
@@ -1211,7 +1134,6 @@ impl ApplicationHost {
         })
     }
 
-    /// The checked construction the default and the named record share.
     fn prepare_checkout(
         &self,
         definition: &ApplicationDefinition,
@@ -1221,8 +1143,6 @@ impl ApplicationHost {
         mut saved: Option<SavedInstanceView>,
         initial_view: Option<ApplicationLocalView>,
     ) -> Result<(HostContext, LaunchTarget, RestoreInput), LaunchError> {
-        /// Retired records followed before giving up: each move out of a workspace
-        /// retires one, so this only bounds a pathological history.
         const MAX_SUCCESSORS: usize = 64;
         let mut successors = 0;
         let target = loop {
@@ -1505,10 +1425,6 @@ mod native_process_tests {
         assert!(matches!(prepared.target, LaunchTarget::PrimaryNew));
     }
 
-    /// While a launch's manager joins its workspace, a record this device
-    /// does not hold is not created: the workspace may hold it, and a copy made
-    /// here would diverge. The launch is told it is not here and builds
-    /// once the join is over; a record it holds opens at once.
     #[test]
     #[cfg(all(unix, feature = "broker-transport"))]
     fn a_record_not_here_is_not_created_while_the_workspace_joins() {
@@ -1557,7 +1473,6 @@ mod native_process_tests {
                 Err(LaunchError::RecordNotHere)
             ));
             drop(construction);
-            // Nothing was made: outside the join the record is still new.
             let prepared = host
                 .prepare_launch(definition, None, probe::runner_inputs())
                 .unwrap();
@@ -1567,8 +1482,6 @@ mod native_process_tests {
             ));
         }
 
-        // The workspace's record, once this device holds it, opens at once while
-        // the workspace joins.
         let mut host = launch();
         let mut created = host
             .prepare_launch(&per_workspace, None, probe::runner_inputs())
@@ -1585,11 +1498,8 @@ mod native_process_tests {
         assert!(prepared.context.record().id.is_package_primary());
     }
 
-    /// A window that shows before the workspace's record (a tilolang app) opens
-    /// the record this device holds off the frame. Launched again while its
-    /// workspace joins (after a session restart, or closed and opened once
-    /// more), its component is admitted on the workspace's route while the record
-    /// is still decoding, every time, and shows the record once taken in.
+    /// A window that shows before the workspace's record (a tilolang app) opens the record this device
+    /// has off the frame.
     #[test]
     #[cfg(all(unix, feature = "broker-transport"))]
     fn a_window_opening_its_workspace_record_off_the_frame_is_admitted_on_every_launch() {
@@ -1614,7 +1524,6 @@ mod native_process_tests {
             )
             .unwrap()
         };
-        // The first launch creates the workspace's record on this device.
         let mut host = launch(61);
         let mut created = host
             .prepare_launch(&definition, None, probe::runner_inputs())
@@ -1703,7 +1612,6 @@ mod native_process_tests {
                 _ => None,
             }
         };
-        // Two windows from before: each kept its own record.
         for (instance, text) in [(42, "second"), (41, "first")] {
             let mut window = launch(&per_window, instance);
             let mut prepared = window
@@ -1721,8 +1629,6 @@ mod native_process_tests {
                 })
                 .unwrap();
         }
-        // The first window of the workspace record creates it, and sees what the
-        // per-window ones hold, in id order, without taking them over.
         let mut first = launch(&per_workspace, 43);
         let mut created = first
             .prepare_launch(&per_workspace, None, probe::runner_inputs())
@@ -1759,7 +1665,6 @@ mod native_process_tests {
             reopened.context.read_record(note).unwrap(),
             Some("shared".into())
         );
-        // The per-window records are still there, unchanged.
         assert_eq!(reopened.context.window_records().len(), 2);
         drop(reopened);
         drop(second);
@@ -1909,7 +1814,6 @@ mod native_process_tests {
             }),
             ..environment(temp.path())
         };
-        // The host changes what it holds, and the watch reports it.
         let publish = |value: Option<Vec<u8>>| {
             *bytes.lock().unwrap() = value;
             changed();
@@ -1980,7 +1884,6 @@ mod native_process_tests {
             let bytes = bytes.clone();
             Arc::new(move || Ok(bytes.lock().unwrap().clone()))
         };
-        // The process has no watch left (EMFILE): nothing will report a change.
         let watch: AuthorityWatcher =
             Arc::new(|_| Err("Too many open files (os error 24)".to_owned()));
         let environment = NativeProcessEnvironment {

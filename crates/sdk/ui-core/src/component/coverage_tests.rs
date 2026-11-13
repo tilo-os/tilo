@@ -1,6 +1,6 @@
-//! Every public widget of the toolkit is a described component, which tilolang reaches as
-//! `ui.<Name>` the day it is written, or says where it is declared why it is not
-//! (`#[not_a_component(kind, "why")]`). A public widget that does neither fails here.
+//! Every public widget of the toolkit is a described component, which tilolang reaches as `ui.<Name>`
+//! the day it is written, or says where it is declared why it is not (`#[not_a_component(kind,
+//! "why")]`).
 
 #[path = "../../component_scan.rs"]
 #[allow(
@@ -20,7 +20,6 @@ fn scan() -> component_scan::Scan {
 /// shrinks: a widget described since must leave it, and no widget may join it.
 const NOT_YET_DESCRIBED: &str = include_str!("not_yet_described.txt");
 
-/// An entry of [`NOT_YET_DESCRIBED`]: `Name — why it is not described yet`.
 fn owed() -> Vec<(String, String)> {
     NOT_YET_DESCRIBED
         .lines()
@@ -98,8 +97,6 @@ fn a_described_widget_does_not_also_say_it_is_not_one() {
     }
 }
 
-/// The scan reads what the sources declare: the registry it generates is the catalogue, and
-/// the widgets it finds include those every app uses, so the checks above are not vacuous.
 #[test]
 fn the_scan_finds_the_toolkits_declarations() {
     let scan = scan();
@@ -138,8 +135,6 @@ fn the_gallery_shows_every_described_component() {
     let coverage = super::gallery::coverage(&sources);
     let problems = coverage.problems();
     assert!(problems.is_empty(), "{}", problems.join("\n"));
-    // The gallery was read: the components every view places are found in it by the same
-    // reading that found the gaps.
     for name in ["Button", "Section", "Text"] {
         assert!(
             super::gallery::names(&sources, name),
@@ -148,7 +143,6 @@ fn the_gallery_shows_every_described_component() {
     }
 }
 
-/// The tilolang sources of the gallery app, all together.
 fn gallery_sources() -> String {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/tl/gallery");
     let mut entries: Vec<_> = std::fs::read_dir(&dir)

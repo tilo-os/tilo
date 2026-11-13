@@ -84,7 +84,6 @@ fn cyrillic_words_are_set_in_onest_at_the_ui_x_height() {
     let (_, cyrillic) = &spans[1];
     assert_eq!(family(cyrillic), "Onest");
     assert!(features(cyrillic).contains(b"ss02"));
-    // Regular maps to the Onest weight whose stems match the UI face's.
     assert_eq!(cyrillic.weight, Weight(390));
     let metrics = Metrics::from(cyrillic.metrics_opt.unwrap());
     assert_eq!(
@@ -167,7 +166,6 @@ fn hyperlegible_gets_the_same_fallbacks_matched_to_its_own_x_height() {
     let expected =
         BASE.font_size * primary.x_height_em(400.0).unwrap() / onest.x_height_em(390.0).unwrap();
     assert!((size - expected).abs() < 0.01);
-    // Hyperlegible has no Greek: Noto Sans sets it, at Hyperlegible's x-height.
     let spans = plan_text(&fs, "Atkinson Γεια", attrs, TextKind::Prose);
     let (_, greek) = &spans[1];
     assert_eq!(family(greek), "Noto Sans");
@@ -194,7 +192,6 @@ fn kinds_resolve_to_what_each_face_supports() {
     let ui_face = face_caps(&fs, UI_SANS_FAMILY, 400, Style::Normal);
     assert!(ui_face.kind_features(TextKind::Prose).is_empty());
     assert_eq!(ui_face.kind_features(TextKind::Numeric), [*b"tnum"]);
-    // The shipped Tilo Sans has a slashed zero and a distinct I and l.
     assert_eq!(
         ui_face.kind_features(TextKind::Secret),
         [*b"tnum", *b"zero", *b"cv01", *b"cv02", *b"ss13"]
@@ -262,8 +259,6 @@ fn a_distinct_il_set_changes_only_i_l_and_their_look_alikes() {
 
 #[test]
 fn a_catalog_face_with_a_serif_i_variant_is_used_for_it() {
-    // Adwaita Sans' cv08 serifs I and the Cyrillic and Greek capitals that
-    // share its shape.
     let fs = system();
     let face = face_caps(&fs, "Adwaita Sans", 400, Style::Normal);
     assert!(
@@ -294,8 +289,6 @@ fn planned_paragraphs_keep_their_final_empty_line() {
     assert_eq!(buffer.lines.len(), plain.lines.len());
 }
 
-/// Tilo Sans' full build with its held-back distinct I and l and slashed
-/// zero (`scripts/toolkit_fixture.py` in tilo/tilo-sans).
 const FEATURES_FIXTURE: &[u8] = include_bytes!(concat!(
     env!("OUT_DIR"),
     "/TiloSansFeaturesFixture-Regular.ttf"
@@ -333,9 +326,6 @@ fn tilo_sans_held_back_forms_apply_to_secrets_and_identifiers_once_present() {
     let face = face_caps(&fs, FEATURES_FIXTURE_FAMILY, 400, Style::Normal);
     assert!(face.kind_features(TextKind::Prose).is_empty());
     assert_eq!(face.kind_features(TextKind::Numeric), [*b"tnum"]);
-    // ss13 turns both I and l, cv01 the I and cv02 the l: all three are
-    // "distinct I and l" sets, and the Dutch IJ under ss13 and cv01 does not
-    // disqualify them.
     assert_eq!(
         face.kind_features(TextKind::Secret),
         [*b"tnum", *b"zero", *b"cv01", *b"cv02", *b"ss13"]
@@ -437,7 +427,6 @@ fn identifiers_in_prose_are_spans_of_their_own_kind() {
             (".", &[]),
         ])
     );
-    // Text that already says what it is is not split.
     let secret = plan(
         fs.db(),
         [(text, fixture())],

@@ -1,8 +1,7 @@
-//! Private, bounded persistence for the pinned HAL's DXC shader cache.
-//! Only compiled shaders are reused: normal WGSL/Naga validation and layout
-//! translation still happen, and native PSOs are still created by the driver.
+//! Private, bounded persistence for the pinned HAL's DXC shader cache. Only compiled shaders are
+//! reused: normal WGSL/Naga validation and layout translation still happen, and native PSOs are still
+//! created by the driver.
 
-// Bump whenever HAL cache semantics, compiler arguments or the codec change.
 #[cfg(all(windows, feature = "dx12-shader-cache"))]
 const ABI: &[u8] = b"tilo-dxc-cache-v1/wgpu-hal-29.0.3/naga-29.0.3";
 

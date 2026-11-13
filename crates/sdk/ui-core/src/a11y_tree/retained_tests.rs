@@ -1,12 +1,11 @@
-//! A widget's synthetic children are retained between refreshes: a refresh
-//! moves over the nodes of the children it is handed again unchanged, builds
-//! the rest, and answers exactly what a refresh that keeps nothing answers.
+//! A widget's synthetic children are retained between refreshes: a refresh moves over the nodes of the
+//! children it is handed again unchanged, builds the rest, and answers exactly what a refresh that
+//! keeps nothing answers.
 
 use super::*;
 use crate::theme::Theme;
 use taffy::TaffyTree;
 
-/// A list whose rows have no widgets of their own, as an editor's paragraphs.
 struct Rows {
     name: &'static str,
     rows: Vec<AccessNode>,
@@ -49,7 +48,6 @@ fn layout(root: &mut Rows) -> HashMap<TaffyNodeId, *mut dyn Widget> {
     nodes
 }
 
-/// Every node in reading order, and the ids repeated.
 fn frame(tree: &SemanticTree) -> (Vec<SemanticNode>, Vec<SemanticId>) {
     (
         tree.iter().cloned().collect(),
@@ -57,8 +55,6 @@ fn frame(tree: &SemanticTree) -> (Vec<SemanticNode>, Vec<SemanticId>) {
     )
 }
 
-/// What a tree that keeps nothing between refreshes answers for `next` after
-/// `last`.
 fn rebuilt(last: &mut Rows, next: &mut Rows) -> (TreeDelta, (Vec<SemanticNode>, Vec<SemanticId>)) {
     let mut tree = SemanticTree::new();
     let nodes = layout(last);
@@ -69,9 +65,6 @@ fn rebuilt(last: &mut Rows, next: &mut Rows) -> (TreeDelta, (Vec<SemanticNode>, 
     (delta, frame(&tree))
 }
 
-/// Where the value of the text node of row `key` lives: the same place after
-/// a refresh only when that refresh moved the node over rather than building
-/// it again from the widget's fresh copy.
 fn text_at(tree: &SemanticTree, key: &str) -> *const u8 {
     let target = format!("text:{key}");
     tree.iter()
@@ -88,7 +81,6 @@ fn a_refresh_moves_unchanged_rows_over_and_answers_as_a_full_rebuild_does() {
         vec![row("a", "alpha"), row("b", "betaa"), row("c", "gamma")],
         vec![row("a", "alpha"), row("c", "gamma")],
         vec![row("c", "gamma"), row("a", "alpha"), row("b", "betaa")],
-        // Two rows with one key: a repeat only the full walk reports.
         vec![row("a", "alpha"), row("a", "alpha"), row("c", "gamma")],
         vec![row("a", "alpha"), row("c", "gamma")],
         vec![],

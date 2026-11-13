@@ -1,23 +1,5 @@
-//! The Unicode emoji the toolkit offers: the shared picker's and reaction
-//! strip's catalogue, the names and keywords a text field resolves
-//! `:shortcode:` with, and the person's recently used emoji.
-//!
-//! The catalogue is the toolkit's own dependency: every program that uses
-//! `ui` has it, so an app never names a catalogue crate simply to have
-//! emoji, and every text field can resolve `:name:` without knowing that a
-//! catalogue exists. A workspace's own emoji are *added* to it
-//! ([`crate::workspace_emoji`]), never a replacement for it; a program may
-//! still hand over a catalogue of its own before first use ([`CATALOGUE`]),
-//! which then wins over the built-in one. A program built with
-//! `lazy-emoji` fetches the built-in one on first use instead
-//! ([`CATALOGUE`]'s loader, handing over [`builtin_catalogue`]); until it is
-//! in, [`catalogue`] is `None`.
-//!
-//! Recents are the person's own and stay on the device ([`EmojiRecents`]):
-//! a workspace emoji (`:name:`) is remembered like any other. A program hands
-//! over where they live ([`keep_recents_in`]); one that keeps nothing else
-//! gets [`DeviceRecents`] in its state directory, which every live window
-//! installs as it starts.
+//! The Unicode emoji the toolkit offers: the shared picker's and reaction strip's catalogue, the names
+//! and keywords a text field resolves `:shortcode:` with, and the person's recently used emoji.
 
 use std::cell::RefCell;
 use std::io::Read as _;
@@ -38,7 +20,7 @@ pub struct CatalogueGroup {
 }
 
 /// What an emoji is: its name in the catalogue's language and the skin
-/// tone it carries (`0` lightest to `4` darkest).
+/// tone it has (`0` lightest to `4` darkest).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct EmojiInfo {
     pub name: &'static str,
@@ -61,8 +43,7 @@ pub trait EmojiCatalogue: Sync {
     /// What `emoji` (with or without a tone) is, when the catalogue has it.
     fn info(&self, emoji: &str) -> Option<EmojiInfo>;
 
-    /// `emoji` in each of its forms: without a tone, then each tone from
-    /// the lightest. Empty for an emoji that takes no tone.
+    /// `emoji` in each of its forms: without a tone, then each tone from the lightest.
     fn tones(&self, emoji: &str) -> Vec<&'static str>;
 }
 
@@ -70,7 +51,7 @@ pub trait EmojiCatalogue: Sync {
 pub type CatalogueFor = fn(&str) -> &'static dyn EmojiCatalogue;
 
 /// A catalogue a program handed over before first use, where it has one;
-/// otherwise the toolkit's own is read.
+/// otherwise the toolkit is read.
 pub static CATALOGUE: Deferred<CatalogueFor> = Deferred::new();
 
 /// One `:shortcode:` the catalogue offers for what was typed.
@@ -78,13 +59,10 @@ pub static CATALOGUE: Deferred<CatalogueFor> = Deferred::new();
 pub struct Shortcode {
     /// The name as a shortcode, without colons (`thumbs_up`).
     pub name: String,
-    /// What accepting it puts in the text: the emoji character, or a
-    /// workspace emoji written `:name:`.
+    /// What accepting it puts in the text: the emoji character, or a workspace emoji written `:name:`.
     pub emoji: String,
 }
 
-/// The toolkit's catalogue in one language: the `emoji` crate's names and
-/// keywords, wrapped as the picker's [`EmojiCatalogue`].
 struct Builtin(&'static emoji::Catalogue);
 
 impl EmojiCatalogue for Builtin {
@@ -144,8 +122,8 @@ impl EmojiCatalogue for Builtin {
     }
 }
 
-/// The toolkit's catalogue in a language, one wrapper per locale ever asked
-/// for (a handful), kept for the process like the catalogues themselves.
+/// The toolkit's catalogue in a language, one wrapper per locale ever asked for (a handful), kept for
+/// the process like the catalogues themselves.
 #[must_use]
 pub fn builtin_catalogue(tag: &str) -> &'static dyn EmojiCatalogue {
     static SHARED: Mutex<Vec<&'static Builtin>> = Mutex::new(Vec::new());
@@ -162,7 +140,7 @@ pub fn builtin_catalogue(tag: &str) -> &'static dyn EmojiCatalogue {
 }
 
 /// The catalogue in the language the interface speaks now: the one a program
-/// handed over, or the toolkit's own. Always present, so a text field's
+/// handed over, or the toolkit. Always present, so a text field's
 /// `:name:` completion and the picker never wait for a catalogue.
 #[cfg(not(feature = "lazy-emoji"))]
 #[must_use]
@@ -174,9 +152,8 @@ pub fn catalogue() -> Option<&'static dyn EmojiCatalogue> {
     })
 }
 
-/// The catalogue in the language the interface speaks now, or `None` while
-/// its code is still to come (and then fetched); what was drawn without it
-/// is drawn again once [`CATALOGUE`]'s generation moved.
+/// The catalogue in the language the interface speaks now, or `None` while its code is still to come
+/// (and then fetched); what was drawn without it is drawn again once [`CATALOGUE`]'s generation moved.
 #[cfg(feature = "lazy-emoji")]
 #[must_use]
 pub fn catalogue() -> Option<&'static dyn EmojiCatalogue> {
@@ -184,8 +161,6 @@ pub fn catalogue() -> Option<&'static dyn EmojiCatalogue> {
     Some(for_locale(&crate::i18n::I18nManager::current_locale()))
 }
 
-/// `name` as a shortcode writes it: lowercase, runs of anything that is not
-/// a letter or digit folded to one `_`.
 fn shortcode(name: &str) -> String {
     let mut out = String::with_capacity(name.len());
     for character in name.chars() {
@@ -198,9 +173,8 @@ fn shortcode(name: &str) -> String {
     out.trim_matches('_').to_owned()
 }
 
-/// The emoji `name` (written between colons, with `_`, `-` or spaces)
-/// resolves to: a workspace emoji first, then the catalogue's own name.
-/// `None` for a name neither has.
+/// The emoji `name` (written between colons, with `_`, `-` or spaces) resolves to: a workspace emoji
+/// first, then the catalogue name.
 #[must_use]
 pub fn shortcode_emoji(name: &str) -> Option<String> {
     let name = shortcode(name);
@@ -227,9 +201,7 @@ pub fn shortcode_emoji(name: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
-/// Up to `limit` emoji whose name matches what was typed after the `:`, best
-/// first. A workspace's own emoji come first, as they do in the picker's
-/// search; the catalogue's follow in its own ranking.
+/// Up to `limit` emoji whose name matches what was typed after the `:`, best first.
 #[must_use]
 pub fn shortcode_matches(query: &str, limit: usize) -> Vec<Shortcode> {
     let typed = shortcode(query);
@@ -262,9 +234,9 @@ pub fn shortcode_matches(query: &str, limit: usize) -> Vec<Shortcode> {
     found
 }
 
-/// The name of `emoji` in the interface's language: a workspace emoji's
-/// `:name:` as written, a Unicode emoji's name from the catalogue (with its
-/// skin tone), or the emoji itself while the catalogue is not in.
+/// The name of `emoji` in the interface's language: a workspace emoji's `:name:` as written, a Unicode
+/// emoji's name from the catalogue (with its skin tone), or the emoji itself while the catalogue is not
+/// in.
 #[must_use]
 pub fn emoji_name(emoji: &str) -> String {
     if tilo_resource::custom_emoji_name(emoji).is_some() {
@@ -297,18 +269,13 @@ fn tone_key(tone: u8) -> Option<&'static str> {
 }
 
 /// Recently used emoji, most recent first, deduplicated and capped.
-///
-/// Two spellings of one emoji (another skin tone, with or without
-/// U+FE0F) count as one entry, and the latest spelling wins.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct EmojiRecents {
     items: tilo_resource::Recents<String, RECENT_EMOJI>,
 }
 
-/// Four rows of the picker's grid.
 const RECENT_EMOJI: usize = 32;
 
-/// Identity for dedup: no tone modifiers, no presentation selectors.
 fn identity(text: &str) -> impl Iterator<Item = char> + '_ {
     text.chars()
         .filter(|&c| c != '\u{FE0F}' && !('\u{1F3FB}'..='\u{1F3FF}').contains(&c))
@@ -340,7 +307,6 @@ impl EmojiRecents {
     }
 
     /// Forget `emoji`, whatever its spelling: it was not used after all.
-    /// Returns whether it was there.
     pub fn forget(&mut self, emoji: &str) -> bool {
         self.items
             .retain(|item| !identity(item).eq(identity(emoji)))
@@ -364,9 +330,8 @@ pub trait RecentsStore {
 }
 
 /// The recents as a private file in the person's state directory
-/// (`$XDG_STATE_HOME/tilo/emoji-recents.json`): what a program that keeps
-/// nothing else gets, so the emoji someone picked yesterday lead today's
-/// picker. Only the emoji are written, most recent first.
+/// (`$XDG_STATE_HOME/tilo/emoji-recents.json`): what a program that keeps nothing else gets, so the
+/// emoji someone picked yesterday lead today's picker.
 pub struct DeviceRecents {
     path: PathBuf,
 }
@@ -424,7 +389,7 @@ thread_local! {
 }
 
 /// Keep the recents in [`DeviceRecents::on_the_device`], unless the program
-/// handed its own store over already. A program calls this once as it starts;
+/// handed its store over already. A program calls this once as it starts;
 /// every picker then opens with the emoji used last time.
 pub fn keep_recents_on_the_device() {
     if STORE.with(|kept| kept.borrow().is_some()) {
@@ -435,15 +400,14 @@ pub fn keep_recents_on_the_device() {
     }
 }
 
-/// Keep the recents in `store` from now on, reading what it holds.
+/// Keep the recents in `store` from now on, reading what it has.
 pub fn keep_recents_in(store: Box<dyn RecentsStore>) {
     let items = store.load();
     RECENTS.with(|recents| *recents.borrow_mut() = Some(EmojiRecents::from_items(items)));
     STORE.with(|kept| *kept.borrow_mut() = Some(store));
 }
 
-/// The person's recently used emoji, most recent first: every picker of the
-/// program shares them.
+/// The person's recently used emoji, most recent first: every picker of the program shares them.
 #[must_use]
 pub fn recents() -> Vec<String> {
     RECENTS.with(|recents| {
@@ -462,15 +426,14 @@ pub fn record_recent(emoji: &str) {
     });
 }
 
-/// `emoji` was not used after all — a pick that reached a field keeping its
-/// content secret — so it is not remembered.
+/// `emoji` was not used after all — a pick that reached a field keeping its content secret — so it is
+/// not remembered.
 pub fn forget_recent(emoji: &str) {
     change_recent(|recents| {
         recents.forget(emoji);
     });
 }
 
-/// Change the recents and keep what they became.
 fn change_recent(change: impl FnOnce(&mut EmojiRecents)) {
     let items = RECENTS.with(|recents| {
         let mut recents = recents.borrow_mut();
@@ -521,8 +484,6 @@ mod tests {
         assert_eq!(restored, recents, "a kept list reads back in its order");
     }
 
-    /// A pick that reached a secret field is taken back in the spelling the
-    /// person last used, and in any other it has.
     #[test]
     fn a_forgotten_emoji_is_gone_in_every_spelling() {
         let mut recents = EmojiRecents::default();
@@ -560,9 +521,6 @@ mod tests {
         assert_eq!(emoji_name(":party_parrot:"), ":party_parrot:");
     }
 
-    /// A program that keeps its recents where the toolkit does has them
-    /// again next time: the same emoji, in the same order, in a file only the
-    /// person can read.
     #[test]
     fn the_recents_kept_on_the_device_come_back_next_time() {
         let dir = tempfile::tempdir().expect("a temporary directory");

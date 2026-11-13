@@ -1,14 +1,5 @@
-//! Where the floating layer's cards stand, as plain arithmetic.
-//!
-//! The session hosts one floating layer: every activity the person keeps over
-//! the windows is a card in it. This module is the layer's placement as a pure
-//! function, so what a frame draws can be proven from numbers alone: cards
-//! never overlap each other, never sit under the bar, inside the notification
-//! column while a banner shows, or in the band the hardware readout stands in,
-//! and always keep a reachable strip inside the work area.
-//!
-//! Apps describe, the session places: nothing here knows what an activity is
-//! beyond its [`Summary`].
+//! Where the floating layer's cards stand, as plain arithmetic. The session hosts one floating layer:
+//! every activity the person keeps over the windows is a card in it.
 
 use vello::kurbo::{Point, Rect, Size};
 
@@ -19,65 +10,37 @@ use crate::tokens::Metrics;
 pub const EDGE_INSET: f64 = 16.0;
 /// The space between two docked cards.
 pub const CARD_GAP: f64 = 8.0;
-/// The least a card keeps inside the work area, whatever the person dragged
-/// it to: enough to grab it again.
+/// The least a card keeps inside the work area, whatever the person dragged it to: enough to grab it
+/// again.
 pub const REACHABLE: f64 = 44.0;
 /// Below this width a display is phone-width: the pill is the only resting
 /// form and a card only drops when the person expands it.
 pub const NARROW_PX: f64 = 720.0;
-/// The most cards expanded at once; the least recently touched folds into the
-/// pill when another arrives.
+/// The most cards expanded at once; the least recently touched folds into the pill when another
+/// arrives.
 pub const MAX_CARDS: usize = 3;
 
-/// A card's inside margin.
 const CARD_PADDING: f64 = 14.0;
-/// Its header row: the app's glyph, the title, the collapse and the close.
 const CARD_HEADER: f64 = 24.0;
-/// The glyph that heads a card, square.
 const CARD_ICON: f64 = 16.0;
-/// What stands between the glyph and the title.
 const CARD_TITLE_GAP: f64 = 8.0;
-/// Its hero line: the reading, or the title when it has none.
 const CARD_HERO: f64 = 36.0;
-/// The line under the hero: an artist, who is speaking.
 const CARD_SUBTITLE: f64 = 18.0;
-/// Between a card's hero and the line under it.
 const CARD_LINE_GAP: f64 = 2.0;
-/// The artwork that heads a song's card, square: as tall as its title and
-/// artist together, so the song reads as one block.
 const CARD_ART: f64 = 56.0;
-/// The shape of a picture that heads its card over the lines: the card's
-/// whole width at nine sixteenths, as a screenshot's own frame is.
 const CARD_HERO_ART: f64 = 9.0 / 16.0;
-/// How wide a card headed with a picture stands: wide enough for its three
-/// controls to say what each one does beside its glyph ("Copy", "Open", "Show
-/// in folder"), and for the picture to be worth looking at.
 const CARD_HERO_WIDTH: f64 = 380.0;
-/// Between a song's artwork and its title.
 const CARD_ART_GAP: f64 = 12.0;
-/// A progress bar's time label, one at each end of it.
 const CARD_TIME_LABEL: f64 = 40.0;
-/// The least the bar keeps between a time label and itself.
 const CARD_TIME_GAP: f64 = 8.0;
-/// The row a song's progress stands in: its time labels' line.
 const CARD_PROGRESS_ROW: f64 = 14.0;
-/// Its progress bar.
 const CARD_PROGRESS: f64 = 6.0;
-/// Its row of controls.
 const CARD_CONTROLS: f64 = 30.0;
-/// A media transport's row: the side of its play/pause circle, and of the
-/// smaller previous and next marks beside it, which are the toolkit's
-/// [`crate::widget::TransportFace`] sizes.
 const CARD_TRANSPORT: f64 = 40.0;
 const CARD_TRANSPORT_MARK: f64 = 32.0;
-/// The space between a transport's controls.
 const CARD_TRANSPORT_GAP: f64 = 12.0;
-/// The space between the rows of a card.
 const CARD_ROW_GAP: f64 = 10.0;
-/// A header control: the collapse and the close, square.
 const CARD_HEADER_CONTROL: f64 = 24.0;
-/// How far the field round a caret reaches above and below it: the box a person types in stands
-/// this much proud of the line they type on, and no card covers any of it.
 const FIELD_REACH: f64 = 16.0;
 
 /// Which corner of the work area the cards dock in. It is the person's choice
@@ -98,16 +61,15 @@ impl Corner {
         matches!(self, Self::TopLeft | Self::TopRight)
     }
 
-    /// Whether the column stands by the work area's left edge.
+    /// Whether the column is by the work area's left edge.
     #[must_use]
     pub const fn from_left(self) -> bool {
         matches!(self, Self::TopLeft | Self::BottomLeft)
     }
 }
 
-/// The screen the cards stand on, in the layer's own coordinates: the work
-/// area under the bar, the bar itself, the notification column while a banner
-/// shows, and the band the readout stands in while it does.
+/// The screen the cards stand on, in the layer coordinates: the work area under the bar, the bar
+/// itself, the notification column while a banner shows, and the band the readout is in while it does.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Placement {
     /// The display's work area: where windows and cards may stand.
@@ -116,29 +78,25 @@ pub struct Placement {
     pub bar: Rect,
     /// The notification column, while a banner shows.
     pub banners: Option<Rect>,
-    /// The band the hardware readout stands in, while it is up.
+    /// The band the hardware readout is in, while it is up.
     pub readout: Option<Rect>,
-    /// The caret of the field the person types into, when it stands outside every card: the
-    /// cards keep clear of the line it is on.
+    /// The caret of the field the person types into, when it is outside every card: the cards keep
+    /// clear of the line it is on.
     pub caret: Option<Rect>,
 }
 
-/// One activity the layer holds, and where the person left it when they
-/// dragged it loose.
+/// One activity the layer has, and where the person left it when they dragged it loose.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Card {
     pub app: String,
     pub summary: Summary,
-    /// The rect the person dragged it to: `None` docks it in the corner
-    /// column.
+    /// The rect the person dragged it to: `None` docks it in the corner column.
     pub loose: Option<Rect>,
-    /// The app draws this card itself, in a window of its own
-    /// ([`crate::floating_surface::FLOATING_SURFACE_APP_ID_PREFIX`]): the
-    /// layer reserves the card's place and draws nothing of it.
+    /// The app draws this card itself, in a window of it
+    /// ([`crate::floating_surface::FLOATING_SURFACE_APP_ID_PREFIX`]): the layer reserves the card's
+    /// place and draws nothing of it.
     pub rich: bool,
-    /// The size the card's app asked for; `None` is the size the summary's
-    /// rows take. A card with a size is one its app draws, whether or not
-    /// its window is up yet.
+    /// The size the card's app asked for; `None` is the size the summary's rows take.
     pub size: Option<Size>,
 }
 
@@ -191,7 +149,7 @@ pub struct Layer {
 }
 
 /// How big an activity's card is on `work`: one token's width (a hero picture
-/// takes its own), never wider than the display, and the height of the rows
+/// takes its), never wider than the display, and the height of the rows
 /// the summary has, so a card is as tall as what it says and no taller.
 #[must_use]
 pub fn card_size(work: Rect, summary: &Summary) -> Size {
@@ -205,17 +163,12 @@ pub fn card_size(work: Rect, summary: &Summary) -> Size {
     Size::new(width, card_parts(probe(width), summary).height)
 }
 
-/// A card of `width` tall enough for every row a summary can have: what
-/// [`card_size`] measures its rows on.
 fn probe(width: f64) -> Rect {
     Rect::from_origin_size((0.0, 0.0), Size::new(width, 4096.0))
 }
 
-/// How big `card` stands on `work`: every card in a column is as wide as the
-/// layer's one column, so the cards share a width and an edge, and the layer's
-/// place wins over what its app asked for. A card its app draws keeps the
-/// height its app asked for; every other card the height its summary's rows
-/// take. The app lays its body out at the width the layer's place gives it.
+/// How big `card` sits on `work`: every card in a column is as wide as the layer's one column, so the
+/// cards share a width and an edge, and the layer's place wins over what its app asked for.
 #[must_use]
 pub fn card_extent(work: Rect, card: &Card) -> Size {
     let column = card_size(work, &card.summary);
@@ -236,8 +189,8 @@ pub fn narrow(work: Rect) -> bool {
 pub struct Parts {
     /// The app's glyph at the header's leading edge, tinted by the tone.
     pub icon: Rect,
-    /// The line on the header beside the app's glyph: the title, when the
-    /// hero is the card's reading, else the app the activity belongs to.
+    /// The line on the header beside the app's glyph: the title, when the hero is the card's reading,
+    /// else the app the activity belongs to.
     pub title: Option<Rect>,
     /// The header's two controls, right-aligned.
     pub collapse: Rect,
@@ -246,27 +199,27 @@ pub struct Parts {
     pub hero: Rect,
     /// The line under the hero, where the summary has one.
     pub subtitle: Option<Rect>,
-    /// The artwork: beside the song's lines, or over them at nine sixteenths
-    /// of the card's width when the summary says it heads the card.
+    /// The artwork: beside the song's lines, or over them at nine sixteenths of the card's width when
+    /// the summary says it heads the card.
     pub artwork: Option<Rect>,
-    /// Where it is in the song, and what is left of it, at the ends of the
-    /// progress bar, where the summary has a length.
+    /// Where it is in the song, and what is left of it, at the ends of the progress bar, where the
+    /// summary has a length.
     pub elapsed: Option<Rect>,
     pub remaining: Option<Rect>,
-    /// The card's progress bar, where the summary has one, and the row of
-    /// controls it offers, in the order they stand below the header.
+    /// The card's progress bar, where the summary has one, and the row of controls it offers, in the
+    /// order they stand below the header.
     pub progress: Option<Rect>,
     /// The row the offered controls stand in, where the summary has any.
     pub controls_row: Option<Rect>,
-    /// Each control's place: its square on a media transport (a circle of its
-    /// own size), its slot on any other card.
+    /// Each control's place: its square on a media transport (a circle of it size), its slot on any
+    /// other card.
     pub controls: Vec<(String, Rect)>,
     /// The card's height: every row above, and the margin at its foot.
     pub height: f64,
 }
 
-/// Where each of `summary`'s parts stands on a card in `card`: the rows
-/// [`card_size`] reserves, laid out whatever the card's real height.
+/// Where each of `summary`'s parts sits on a card in `card`: the rows [`card_size`] reserves, laid out
+/// whatever the card's real height.
 #[must_use]
 pub fn card_parts(card: Rect, summary: &Summary) -> Parts {
     let inside = card.inflate(-CARD_PADDING, -CARD_PADDING);
@@ -311,8 +264,6 @@ pub fn card_parts(card: Rect, summary: &Summary) -> Parts {
         cursor += height;
         rect
     };
-    // A song's lines stand beside its artwork, centred on it; everything
-    // else's use the card's whole width.
     let lines = CARD_HERO
         + if summary.subtitle.is_empty() {
             0.0
@@ -322,8 +273,6 @@ pub fn card_parts(card: Rect, summary: &Summary) -> Parts {
     let (artwork, lines_x0, lines_top) = if summary.artwork.is_empty() {
         (None, inside.x0, None)
     } else if summary.art == Art::Hero {
-        // The picture stands over the lines, the card's whole width at nine
-        // sixteenths: what it shows is the card's point.
         let side = (inside.width().max(0.0) * CARD_HERO_ART).max(0.0);
         (Some(row(side, CARD_ROW_GAP)), inside.x0, None)
     } else {
@@ -341,9 +290,6 @@ pub fn card_parts(card: Rect, summary: &Summary) -> Parts {
         ),
         None => row(CARD_HERO, CARD_ROW_GAP),
     };
-    // The line under the hero: beside a song's artwork it follows the hero,
-    // and anywhere else it is a row of its own, so what stands under it
-    // starts below it.
     let subtitle = (!summary.subtitle.is_empty()).then(|| match lines_top {
         Some(top) => {
             let top = top + CARD_HERO.min(inside.height()) + CARD_LINE_GAP;
@@ -384,8 +330,6 @@ pub fn card_parts(card: Rect, summary: &Summary) -> Parts {
     let mut controls = Vec::with_capacity(shown.len());
     if let Some(controls_row) = controls_row {
         if let Some(steps) = &transport {
-            // A transport's controls are circles of their own sizes, centred
-            // as one row: play/pause stands a size up from its neighbours.
             let side = |step: &crate::widget::TransportControl| {
                 if step.is_play() {
                     CARD_TRANSPORT
@@ -441,9 +385,8 @@ pub fn card_parts(card: Rect, summary: &Summary) -> Parts {
     }
 }
 
-/// Where the cards stand: `corner`'s column, in priority order from the
-/// corner, or — phone-width and `expanded` — one full-width card under the
-/// bar.
+/// Where the cards stand: `corner`'s column, in priority order from the corner, or — phone-width and
+/// `expanded` — one full-width card under the bar.
 #[must_use]
 pub fn place(placement: &Placement, corner: Corner, cards: &[Card], expanded: bool) -> Layer {
     let work = placement.work;
@@ -472,7 +415,7 @@ pub fn place(placement: &Placement, corner: Corner, cards: &[Card], expanded: bo
     }
     if narrow(work) {
         // The pill is the only resting form on a phone, but a card its app
-        // presents is the activity's own surface: it stands, full width,
+        // presents is the activity surface: it is, full width,
         // whether or not the person pulled anything out of the bar — and
         // whether or not its window has come up yet, which the place this
         // gives it is what brings about. Anything else drops only when the
@@ -545,9 +488,6 @@ pub fn place(placement: &Placement, corner: Corner, cards: &[Card], expanded: bo
     layer
 }
 
-/// The strip of the work area the cards may dock in: between the bar, the
-/// notification column while a banner shows, the readout band while it is up
-/// and the bottom or top inset.
 struct Column {
     x: f64,
     top: f64,
@@ -575,8 +515,6 @@ fn column(placement: &Placement, corner: Corner, docked: &[&Card]) -> Column {
     {
         top = top.max(banners.y1 + CARD_GAP);
     }
-    // The readout is momentary feedback, and the field the person types in is what they look at:
-    // the cards step around both, above a band in the lower half and below one in the upper.
     let field = placement.caret.map(|caret| caret.inflate(0.0, FIELD_REACH));
     for band in [placement.readout, field].into_iter().flatten() {
         if !overlaps_lane(&lane, band) {
@@ -591,8 +529,6 @@ fn column(placement: &Placement, corner: Corner, docked: &[&Card]) -> Column {
     Column { x, top, bottom }
 }
 
-/// Whether `band` lies across the cards' lane at all: a band beside the
-/// column (the readout's pill, not its full-width surface) leaves it alone.
 fn overlaps_lane(lane: &Rect, band: Rect) -> bool {
     band.x0 < lane.x1 && band.x1 > lane.x0 && band.y0 < lane.y1 && band.y1 > lane.y0
 }
@@ -603,7 +539,7 @@ fn drop_from_the_bar(placement: &Placement, card: &Card) -> Rect {
     let width = (work.width() - 2.0 * EDGE_INSET).max(0.0);
     let height = card_extent(work, card).height;
     let below_bar = (work.y0 + EDGE_INSET).max(placement.bar.y1 + EDGE_INSET);
-    // It drops below a banner, and below the field the person types in when that stands where
+    // It drops below a banner, and below the field the person types in when that is where
     // it would land.
     let field = placement.caret.map(|caret| caret.inflate(0.0, FIELD_REACH));
     let top = [placement.banners, field]
@@ -616,8 +552,6 @@ fn drop_from_the_bar(placement: &Placement, card: &Card) -> Rect {
                 top
             }
         });
-    // A card taller than what is left starts from the top and goes no lower
-    // than the work area's bottom inset.
     let y = clamp_axis(top, height, below_bar, work.y1 - EDGE_INSET, height);
     Rect::from_origin_size((work.x0 + EDGE_INSET, y), Size::new(width, height))
 }
@@ -646,15 +580,14 @@ fn clamp_axis(origin: f64, length: f64, low: f64, high: f64, reachable: f64) -> 
 }
 
 /// An activity the bar's pill names: the app that shows it and its summary.
-/// An activity's id is its own app's, so the app is part of what names it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Named {
     pub app: String,
     pub summary: Summary,
 }
 
-/// What the bar's pill shows: the activity that stands first, and how many
-/// others are waiting behind it (one dot each).
+/// What the bar's pill shows: the activity that is first, and how many others are waiting behind it
+/// (one dot each).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Pill {
     pub heading: Option<Named>,
@@ -677,7 +610,7 @@ impl Pill {
             .unwrap_or_default()
     }
 
-    /// The ink the reading stands in: the heading activity's tone.
+    /// The ink the reading is in: the heading activity's tone.
     #[must_use]
     pub fn ink(&self, theme: &crate::theme::Theme) -> vello::peniko::Color {
         self.heading.as_ref().map_or_else(
@@ -686,8 +619,8 @@ impl Pill {
         )
     }
 
-    /// The picture the pill shows beside its words, when the activity that
-    /// heads it has artwork: a song reads as its cover and its title.
+    /// The picture the pill shows beside its words, when the activity that heads it has artwork: a song
+    /// reads as its cover and its title.
     #[must_use]
     pub fn artwork(&self) -> Option<crate::widget::PictureSource> {
         let summary = &self.heading.as_ref()?.summary;
@@ -697,9 +630,7 @@ impl Pill {
     }
 }
 
-/// The bar's pill: the most urgent activity, and how many others wait behind
-/// it. A call stands before directions, directions before a timer that is due
-/// within a minute, that timer before any other timer, timers before music.
+/// The bar's pill: the most urgent activity, and how many others wait behind it.
 #[must_use]
 pub fn pill(activities: &[(String, Summary)]) -> Pill {
     let mut sorted: Vec<&(String, Summary)> = activities.iter().collect();

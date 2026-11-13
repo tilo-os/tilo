@@ -1,13 +1,6 @@
-//! A described component's slot sizes a view as the view asked: a view that says `fill` fills
-//! the slot it is put in, for every component with a body slot, never only for the layout
-//! primitives whose slots are the view's own arguments.
-//!
-//! A card's body, a window's content and a nav shell's column put what the view gave them where
-//! the component decides, and the fit a view wrote on its node only reaches a slot that takes
-//! it: the host wraps each view in a [`Fitted`] carrying that fit, and
-//! [`Slot::new`](crate::widget::arrange::Slot::new) takes it. Without the wrapper the view
-//! stands in the component's own stack hugging its content, so a mailbox or a note placed in a
-//! strip came out one line tall.
+//! A described component's slot sizes a view as the view asked: a view that says `fill` fills the slot
+//! it is put in, for every component with a body slot, never only for the layout primitives whose slots
+//! are the view arguments.
 
 #![allow(
     clippy::unwrap_used,
@@ -24,7 +17,6 @@ use crate::theme::Theme;
 use crate::widget::arrange::{Fit, Sizing};
 use crate::widget::{Card, CardProps, Element, Fitted};
 
-/// An instance as a test gives it: values by prop, and the views in its slots.
 struct Node {
     key: String,
     props: BTreeMap<String, Value>,
@@ -80,11 +72,8 @@ impl Source for Node {
     }
 }
 
-/// The view the tests put in a card's body, by its stable id: its own column, one line tall
-/// whatever room it is given.
 const SUBJECT: &str = "subject";
 
-/// The view's own column.
 fn subject() -> Element {
     Box::new(
         crate::widget::arrange::Stack::stack()
@@ -95,12 +84,10 @@ fn subject() -> Element {
     )
 }
 
-/// The same view saying `fill` on its height, as a view call with `fill` does.
 fn filling_view() -> Element {
     Box::new(Fitted::new(subject(), Fit::hug().height(Sizing::fill(1.0))))
 }
 
-/// The height the card gave the view in its body.
 fn body_height(card: Card, height: u32) -> f64 {
     let harness = FrameHarness::for_root(crate::State::new(), card, (600, height), Theme::light());
     crate::widget::find_test_id(harness.root_widget(), SUBJECT)
@@ -109,8 +96,6 @@ fn body_height(card: Card, height: u32) -> f64 {
         .height()
 }
 
-/// A view that says `fill` fills the slot it is in: a card's body grows to the room the card
-/// has, rather than hugging the one line the view draws.
 #[test]
 fn a_body_slot_child_that_fills_gets_the_slots_size() {
     let mut node = Node::new("card").holding("body", filling_view());
@@ -123,8 +108,6 @@ fn a_body_slot_child_that_fills_gets_the_slots_size() {
     );
 }
 
-/// The same view in a card that stands in a hugging stack keeps the room the card has: the
-/// rule is the slot's, not a height written into the card.
 #[test]
 fn the_fill_is_the_slots_and_scales_with_it() {
     for (height, least) in [(300u32, 200.0), (500u32, 400.0)] {
@@ -136,8 +119,6 @@ fn the_fill_is_the_slots_and_scales_with_it() {
     }
 }
 
-/// A view that asks for nothing keeps hugging its content: the rule fills what says `fill`
-/// and nothing else.
 #[test]
 fn a_view_that_asks_for_nothing_hugs_its_content() {
     let mut node = Node::new("card").holding("body", subject());

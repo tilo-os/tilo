@@ -1,5 +1,5 @@
-//! The media and surface components: a picture read from its address, a card's art, a band's
-//! controls reporting the view's events, and the surfaces presented in the window's top layer.
+//! The media and surface components: a picture read from its address, a card's art, a band's controls
+//! reporting the view's events, and the surfaces presented in the window's top layer.
 
 #![allow(
     clippy::unwrap_used,
@@ -25,14 +25,11 @@ fn picture(src: &str) -> Value {
     })
 }
 
-/// A served pictures store, so a test's picture address answers from its own bytes rather than
-/// reaching for a content store.
 fn pictures_with(png: Vec<u8>) -> crate::pictures::Pictures {
     let fetch: crate::image_store::Fetcher = Arc::new(move |_| Some(png.clone()));
     crate::pictures::Pictures::new(crate::ImageStore::new(&fetch))
 }
 
-/// The card `props` describe, built by the grid component.
 fn card_of(props: MediaCardProps) -> crate::widget::MediaCard {
     let mut grid = MediaGrid::from_props(
         "library",
@@ -62,8 +59,6 @@ fn an_image_is_a_picture_by_its_address_and_shows_its_bytes_when_they_arrive() {
         Some("data:image/png;base64,x"),
         "the picture keeps its address"
     );
-    // Reading the picture through its store queues the decode; once it settles the same
-    // read answers the decoded image, which is what the widget paints.
     let store = picture.store().clone();
     let _ = picture.get(image.picture().expect("a picture"));
     store.block_until_idle(std::time::Duration::from_secs(5));
@@ -93,8 +88,6 @@ fn a_picture_answers_a_served_store_and_nothing_else_loads() {
         shown.waiting(),
         "it asks for a frame until the bytes are in"
     );
-    // The store's first get queues the load; the fetch runs on its own background, so the test
-    // reads through the fetch directly to prove the address is the one it loads.
     assert!(crate::pictures::data_bytes("tilo-blob://only").is_none());
     assert!(crate::pictures::data_bytes("data:image/png;base64,AA==").is_some());
 }
@@ -193,7 +186,6 @@ fn a_drop_zone_settles_its_layout_with_a_message_and_an_action() {
     let host = harness(DropZone::from_props("import", props));
     let rect = host.root::<DropZone>().get_rect();
     assert!(rect.width() > 0.0 && rect.height() > 0.0);
-    // The one with an action, at the gallery's width.
     let wide = FrameHarness::for_root(
         crate::State::new(),
         {

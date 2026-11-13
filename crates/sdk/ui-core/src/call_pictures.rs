@@ -1,18 +1,6 @@
-//! A call's pictures, decoded for the tiles that show them.
-//!
-//! The app says which pictures it shows (`native_media::Command::Show`) and
-//! collects them as they arrive (`native_media::Command::Pictures`), coded
-//! (tilo-video/1). [`CallPictures`] decodes them off the UI thread, hardware
-//! first (`media::RealtimeDecoder`), one decoder per stream, and keeps each
-//! person's newest camera and screen picture for their tile. A stream whose
-//! pictures had to be dropped starts over at its next keyframe, so a tile
-//! never shows a picture decoded against a reference it lacks.
-//!
-//! A build without real-time media decodes nothing: tiles keep showing the
-//! person, never a made-up picture. In a browser the decoder is the page's
-//! (WebCodecs), which finishes pictures on its own schedule: [`CallPictures::poll`]
-//! collects them. A page may also decode pictures itself and hand them over
-//! with [`CallPictures::insert`].
+//! A call's pictures, decoded for the tiles that show them. The app says which pictures it shows
+//! (`native_media::Command::Show`) and collects them as they arrive
+//! (`native_media::Command::Pictures`), coded (tilo-video/1).
 
 use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, Mutex, TryLockError};
@@ -29,10 +17,8 @@ const QUEUED: usize = 32;
 
 #[derive(Default)]
 struct Decoded {
-    /// The newest picture of each person's camera and screen.
     shown: HashMap<(String, PictureSource), ImageData>,
     changed: bool,
-    /// Pictures handed to the decoder and not yet decoded.
     pending: usize,
 }
 
@@ -45,10 +31,6 @@ pub struct CallPictures {
     wake: WakeHandle,
 }
 
-/// The pictures waiting for the decoder and its decoders: decoded by a
-/// background job that runs while there are any, and ends when there are
-/// none, so a quiet call holds no thread. In a page the job runs on the
-/// page's one thread, after the frame that queued the pictures.
 #[derive(Default)]
 struct Work {
     queue: Mutex<std::collections::VecDeque<Picture>>,
@@ -61,7 +43,6 @@ struct Work {
 #[derive(Default)]
 struct Decoders {
     by_person: HashMap<(String, PictureSource), (String, media::RealtimeDecoder)>,
-    /// Streams whose decoder could not be built: not tried again.
     refused: BTreeSet<(String, PictureSource)>,
 }
 
@@ -72,8 +53,7 @@ impl Default for CallPictures {
 }
 
 impl CallPictures {
-    /// A decoder that wakes the component being built (or handling an event)
-    /// when a picture is ready.
+    /// A decoder that wakes the component being built (or handling an event) when a picture is ready.
     pub fn new() -> Self {
         Self {
             decoded: Arc::new(Mutex::new(Decoded::default())),
@@ -101,7 +81,6 @@ impl CallPictures {
                 self.behind.insert(key);
                 continue;
             }
-            // Counted before it is queued: a running job may decode it at once.
             self.decoded.lock_recover().pending += 1;
             queue.push_back(picture);
             drop(queue);
@@ -110,8 +89,8 @@ impl CallPictures {
     }
 
     /// Collect pictures a decoder finished after the unit that completed
-    /// them was handed over (a page's decoder works on its own schedule; a
-    /// quiet stream's last picture). Skipped while the decoding job holds
+    /// them was handed over (a page's decoder works on its schedule; a
+    /// quiet stream's last picture). Skipped while the decoding job has
     /// the decoders: the UI thread never waits for it, and the job hands
     /// over what it decodes itself.
     pub fn poll(&mut self) {
@@ -157,18 +136,14 @@ impl CallPictures {
         }
     }
 
-    /// Pictures handed over and still being decoded: a screenshot waits for
-    /// them.
+    /// Pictures handed over and still being decoded: a screenshot waits for them.
     pub fn pending(&self) -> usize {
         self.decoded.lock_recover().pending
     }
 
-    /// Code a short run of a moving test picture (colour bars with a block
-    /// sweeping across, shaded by `variant`) exactly as a call codes a
-    /// camera or screen, and decode it for `person`'s `source`: screenshots
-    /// and tests show pictures that went through the real encoder and
-    /// decoder. False when this build or machine has no encoder (a page
-    /// has none).
+    /// Code a short run of a moving test picture (colour bars with a block sweeping across, shaded by
+    /// `variant`) exactly as a call codes a camera or screen, and decode it for `person`'s `source`:
+    /// screenshots and tests show pictures that went through the real encoder and decoder.
     pub fn feed_test_pattern(
         &mut self,
         person: &str,
@@ -222,8 +197,7 @@ impl CallPictures {
         fed
     }
 
-    /// Put a picture decoded elsewhere in place (a browser's page decodes
-    /// its own).
+    /// Put a picture decoded elsewhere in place (a browser's page decodes its).
     pub fn insert(&mut self, person: &str, source: PictureSource, image: ImageData) {
         let mut decoded = self.decoded.lock_recover();
         decoded.shown.insert((person.to_owned(), source), image);
@@ -253,8 +227,8 @@ impl CallPictures {
         std::mem::take(&mut self.decoded.lock_recover().changed)
     }
 
-    /// Keep only the pictures `keep` still shows (a camera turned off, a
-    /// person who left): their tiles go back to showing the person.
+    /// Keep only the pictures `keep` still shows (a camera turned off, a person who left): their tiles
+    /// go back to showing the person.
     pub fn retain(&mut self, keep: impl Fn(&str, PictureSource) -> bool) {
         let mut decoded = self.decoded.lock_recover();
         let before = decoded.shown.len();
@@ -278,17 +252,12 @@ impl CallPictures {
     }
 }
 
-/// The decoding job: every queued picture through its person's decoder,
-/// the newest picture of each person's source kept, the component woken for
-/// each; it ends once nothing is queued.
 fn decode(work: &Work, decoded: &Mutex<Decoded>, wake: &WakeHandle) {
     use std::sync::atomic::Ordering;
     loop {
         let next = work.queue.lock_recover().pop_front();
         let Some(picture) = next else {
             work.running.store(false, Ordering::Release);
-            // A picture queued after the queue read empty, before this job
-            // said it ended, is taken here rather than left waiting.
             if work.queue.lock_recover().is_empty() || work.running.swap(true, Ordering::AcqRel) {
                 return;
             }
@@ -306,8 +275,6 @@ fn decode(work: &Work, decoded: &Mutex<Decoded>, wake: &WakeHandle) {
     }
 }
 
-/// Decode `picture` with its person's decoder (made for its stream when
-/// needed): the picture it completes, if any.
 fn decode_one(picture: &Picture, decoders: &mut Decoders) -> Option<ImageData> {
     let Decoders {
         by_person: decoders,
@@ -354,7 +321,6 @@ fn decode_one(picture: &Picture, decoders: &mut Decoders) -> Option<ImageData> {
     image_of(decoder.decode(unit.payload, Some(unit.keyframe)).ok()??)
 }
 
-/// A decoded picture as a tile paints it.
 fn image_of(decoded: media::DecodedPicture) -> Option<ImageData> {
     let rgba = decoded.frame.to_rgba()?;
     Some(ImageData {
@@ -366,8 +332,8 @@ fn image_of(decoded: media::DecodedPicture) -> Option<ImageData> {
     })
 }
 
-/// One frame of the moving test picture: colour bars, shaded by `variant`,
-/// with a light block sweeping across by `frame`.
+/// One frame of the moving test picture: colour bars, shaded by `variant`, with a light block sweeping
+/// across by `frame`.
 fn test_pattern(width: u16, height: u16, variant: u8, frame: u8) -> Vec<u8> {
     const BARS: [[u8; 3]; 7] = [
         [192, 192, 192],
@@ -423,9 +389,7 @@ mod tests {
         let first = test_pattern(70, 40, 0, 0);
         let later = test_pattern(70, 40, 0, 4);
         assert_eq!(first.len(), 70 * 40 * 4);
-        // The top-left pixel is the first bar, light grey.
         assert_eq!(&first[..4], &[192, 192, 192, 255]);
-        // The last bar is blue.
         let last = 69 * 4;
         assert_eq!(&first[last..last + 4], &[0, 0, 192, 255]);
         assert_ne!(first, later, "the block moves");
@@ -451,7 +415,6 @@ mod tests {
         };
         let mut pictures = CallPictures::new();
         pictures.behind.insert(("s".into(), PictureSource::Camera));
-        // A picture that is not a keyframe is not even handed over.
         pictures.receive(vec![Picture {
             person: "ab".repeat(32),
             stream: "s".into(),

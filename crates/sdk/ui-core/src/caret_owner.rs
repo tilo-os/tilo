@@ -1,25 +1,14 @@
-//! Who the keyboard belongs to: the one rule every caret follows.
-//!
-//! A field's text and selection stay where the person left them when another
-//! surface takes the keyboard; its caret is what says "typing lands here", so
-//! only the surface holding the keyboard paints one. Hosts say which surface
-//! they are drawing for: [`holding`] around a tree's frame, from the fact the
-//! host already answers for typing (`SurfaceHost::wants_keyboard` for the
-//! session's own surfaces, `WindowEvent::Focused` for a window). Painters of a
-//! caret ask [`shown`]; nothing else has to know about the surface above them.
-//!
-//! A tree drawn without a host saying anything keeps its carets: capturing a
-//! widget on its own, and a tool that draws one frame, is not a surface losing
-//! the keyboard.
+//! Who the keyboard belongs to: the one rule every caret follows. A field's text and selection stay
+//! where the person left them when another surface takes the keyboard; its caret is what says "typing
+//! lands here", so only the surface holding the keyboard paints one.
 
 use std::cell::Cell;
 
 thread_local! {
-    /// Whether the tree being drawn holds the keyboard.
     static HELD: Cell<bool> = const { Cell::new(true) };
 }
 
-/// Whether the tree being drawn holds the keyboard, and so paints carets.
+/// Whether the tree being drawn has the keyboard, and so paints carets.
 #[must_use]
 pub fn shown() -> bool {
     HELD.with(Cell::get)

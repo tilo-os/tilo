@@ -1,24 +1,5 @@
-//! Shared fullscreen / presentation mechanism.
-//!
-//! A root widget expresses a [`FullscreenRequest`] via
-//! `crate::widget::Widget::fullscreen_request`. The App
-//! ([`crate::app::App`]) polls it each frame, runs [`select_output`] over
-//! the live monitors, and drives `winit::window::Window::set_fullscreen` —
-//! a genuine borderless full-output surface, not a maximized window.
-//! [`select_output`] is pure over [`MonitorInfo`] so it's unit-tested
-//! without a live window.
-//!
-//! A headless session or a compositor which cannot expose its output globals
-//! yields an empty monitor list; that degrades to `Borderless(None)`, placed by
-//! the compositor. Multi-output presentation is activated only after a distinct
-//! monitor is enumerated.
-//!
-//! The ranking behind [`FullscreenTarget::Largest`] is what a presenter
-//! expects from a laptop plugged into a television: the slides go to the
-//! external screen, the physically biggest one if there are several, and
-//! the presenter view stays on the built-in panel ([`select_presenter_output`]).
-//! The compositor runs the same functions, so a client that could not name
-//! an output still lands where the app would have put it.
+//! Shared fullscreen / presentation mechanism. A root widget expresses a [`FullscreenRequest`] via
+//! `crate::widget::Widget::fullscreen_request`.
 
 /// Which output an app wants its fullscreen surface promoted onto.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -40,8 +21,8 @@ pub enum FullscreenTarget {
     Output(u32),
 }
 
-/// A monitor as the App enumerated it from winit, reduced to the fields the
-/// output-selection needs. Pure data so [`select_output`] is unit-testable.
+/// A monitor as the App enumerated it from winit, reduced to the fields the output-selection needs.
+/// Pure data so [`select_output`] is unit-testable.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MonitorInfo {
     /// Position of this monitor in the enumerated list.
@@ -50,8 +31,7 @@ pub struct MonitorInfo {
     pub height: u32,
     pub primary: bool,
     pub scale: f64,
-    /// The laptop's own panel rather than a plugged-in display — see
-    /// [`connector_is_builtin`].
+    /// The laptop panel rather than a plugged-in display — see [`connector_is_builtin`].
     pub builtin: bool,
     /// Physical extent in millimetres, when the display reports one.
     pub physical_mm: Option<(u32, u32)>,
@@ -117,16 +97,14 @@ fn primary_external(monitors: &[MonitorInfo]) -> Option<u32> {
 /// What the fullscreen surface should show.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FullscreenView {
-    /// The app's own window becomes the full-output surface (immersive video).
+    /// The app window becomes the full-output surface (immersive video).
     Mirror,
-    /// A *distinct* view — the presentation case, where the fullscreen surface
-    /// shows something other than the app's windowed (editor) view.
+    /// A *distinct* view — the presentation case, where the fullscreen surface shows something other
+    /// than the app's windowed (editor) view.
     Distinct,
 }
 
-/// A fullscreen request a root widget expresses. Level-triggered: the App
-/// compares it against the live state each frame, so returning a steady request
-/// for the whole duration of a slideshow / immersive playback is correct.
+/// A fullscreen request a root widget expresses.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FullscreenRequest {
     pub target: FullscreenTarget,
@@ -152,7 +130,7 @@ impl AudiencePresentationRequest {
 }
 
 impl FullscreenRequest {
-    /// A request to fullscreen the app's own window on `target` (immersive).
+    /// A request to fullscreen the app window on `target` (immersive).
     pub fn mirror(target: FullscreenTarget) -> Self {
         Self {
             target,
@@ -174,9 +152,9 @@ impl FullscreenRequest {
     }
 }
 
-/// Pure output selection: given the enumerated monitors and a target, return the
-/// **index** of the chosen monitor, or `None` to defer output choice to the
-/// compositor (`Auto`, an empty monitor list, or an out-of-range `Output`).
+/// Pure output selection: given the enumerated monitors and a target, return the **index** of the
+/// chosen monitor, or `None` to defer output choice to the compositor (`Auto`, an empty monitor list,
+/// or an out-of-range `Output`).
 pub fn select_output(monitors: &[MonitorInfo], target: FullscreenTarget) -> Option<u32> {
     if monitors.is_empty() {
         return None;
@@ -344,7 +322,6 @@ mod tests {
 
     #[test]
     fn largest_ties_break_toward_primary() {
-        // Two identical-area monitors: the primary wins the tie deterministically.
         let mons = vec![mon(0, 1920, 1080, false), mon(1, 1920, 1080, true)];
         assert_eq!(select_output(&mons, FullscreenTarget::Largest), Some(1));
     }
@@ -367,8 +344,6 @@ mod tests {
 
     #[test]
     fn laptop_and_television_put_slides_on_the_television() {
-        // The television has fewer pixels than the laptop's HiDPI panel;
-        // pixel count alone would keep the slides on the laptop.
         let mons = [laptop(0), television(1)];
         for presenter in [None, Some(0), Some(1)] {
             assert_eq!(

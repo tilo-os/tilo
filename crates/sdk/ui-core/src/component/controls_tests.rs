@@ -1,5 +1,5 @@
-//! The controls: their props read from a view, taken in place, and what a person does to them
-//! reported as their events.
+//! The controls: their props read from a view, taken in place, and what a person does to them reported
+//! as their events.
 
 #![allow(
     clippy::unwrap_used,
@@ -26,7 +26,6 @@ fn a_checkbox_shows_what_it_binds_and_reports_a_press_of_the_whole_row() {
     let mut host = harness(Checkbox::from_props("email", props));
     assert!(!host.root::<Checkbox>().is_checked());
     let rect = host.root::<Checkbox>().get_rect();
-    // The labelled row is one target: a press on the label marks the box.
     host.click_at(rect.x1 - 4.0, rect.center().y);
     assert!(host.root::<Checkbox>().is_checked());
     assert_eq!(

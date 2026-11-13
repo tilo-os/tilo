@@ -3,7 +3,6 @@ use std::collections::BTreeMap;
 use super::*;
 use crate::widget::ListRowProps;
 
-/// The shipped catalogue is the toolkit's: tools that read it see the widgets as they are.
 #[test]
 fn the_shipped_catalogue_is_the_one_the_toolkit_generates() {
     let shipped = tilo_ui_graph::component::SHIPPED;
@@ -18,7 +17,6 @@ fn the_shipped_catalogue_is_the_one_the_toolkit_generates() {
     );
 }
 
-/// Every described part has its doc text, and the names a description uses are its own.
 #[test]
 fn every_description_is_documented_and_consistent() {
     let catalogue = catalogue();
@@ -70,8 +68,6 @@ fn every_description_is_documented_and_consistent() {
     }
 }
 
-/// An instance as a test gives it: values by prop, events queued on `queue`, and `views` views
-/// in every slot it asks for.
 struct Given {
     key: String,
     props: BTreeMap<String, Value>,
@@ -129,7 +125,6 @@ fn given(key: &str, props: &[(&str, Value)]) -> Given {
     }
 }
 
-/// `key` with `props` where every slot the widget asks for holds `views` views.
 fn given_with_views(key: &str, props: &[(&str, Value)], views: usize) -> Given {
     Given {
         views,
@@ -137,10 +132,8 @@ fn given_with_views(key: &str, props: &[(&str, Value)], views: usize) -> Given {
     }
 }
 
-/// A value of `ty` for a required prop.
 fn sample(ty: &Type) -> Value {
     match ty {
-        // Text, and a case a binding holds, travel as their words.
         Type::Text | Type::Enum => Value::Text("x".into()),
         Type::Int => Value::Int(1),
         Type::Float => Value::Float(1.0),
@@ -165,7 +158,6 @@ fn sample(ty: &Type) -> Value {
         Type::List(_) | Type::Set(_) => Value::List(Vec::new()),
         Type::Map { .. } => Value::Map(Vec::new()),
         Type::Action => Value::Action(tilo_ui_graph::component::Offered::default()),
-        // The first case of the closed set, each field without a default given a sample.
         Type::Cases { name } => {
             let described = crate::component::catalogue()
                 .enums
@@ -205,17 +197,10 @@ fn every_described_widget_builds_from_its_required_props() {
     }
 }
 
-/// The children a widget lists read-only, the ones it walks without allocating, and the ones
-/// it hands out to change are the same children, in the same order. A route that reaches a
-/// child by its index — an assistive technology's `tilo.child:` target, an agent's — is read
-/// from one list and dispatched through another, so a child missing from either side sends the
-/// action down to another widget, or to none.
 #[test]
 fn every_described_widget_lists_the_children_it_hands_out() {
     use crate::widget::Widget;
 
-    /// Who each child is, by address, and what it calls itself: the identity a route's index
-    /// has to keep from the walk to the dispatch.
     type Child = (*const (), String);
 
     fn child(widget: &dyn Widget) -> Child {
@@ -225,8 +210,6 @@ fn every_described_widget_lists_the_children_it_hands_out() {
         )
     }
 
-    /// What `widget` says of its children: how many it has, and what tells its lists apart
-    /// (`None` when they agree).
     fn children(widget: &mut dyn Widget) -> (usize, Option<String>) {
         let listed: Vec<Child> = widget.children().into_iter().map(child).collect();
         let mut walked = Vec::new();
@@ -304,12 +287,6 @@ fn every_described_widget_lists_the_children_it_hands_out() {
     );
 }
 
-/// Every described widget takes its props where it stands: the adapter reaches it as its own
-/// type ([`crate::described!`]) and sets them, so an instance outlives a change to it and keeps
-/// what the person was doing with it — the focus in a field, a drag under a finger, the menu a
-/// press opened. A widget that answers no type of its own, or refuses every change, is built
-/// again each time its props are told to it.
-
 #[test]
 fn every_described_widget_takes_its_props_where_it_stands() {
     let mut no_type = Vec::new();
@@ -360,9 +337,9 @@ fn every_described_widget_takes_its_props_where_it_stands() {
 }
 
 /// Props given in place carry no built views, so a widget that shows its parts' views — a map's
-/// pins, a board's cards — keeps each part's view where it stands and takes from the props only
+/// pins, a board's cards — keeps each part's view where it is and takes from the props only
 /// what it says *around* them. It therefore takes the props in place only while they name the
-/// parts it already holds, and is built again when they name others.
+/// parts it already has, and is built again when they name others.
 ///
 /// The alternative is what left a stale node behind after `5fab1bdd584`: a map patched the pins
 /// it recognised and kept the pin of a place the arrangement had closed, so a closed window's
@@ -394,8 +371,6 @@ fn a_widget_holding_parts_takes_other_parts_only_by_being_built_again() {
         )
     }
 
-    /// The names a widget lays out for assistive technology, its parts' views included: read
-    /// from the widget as it is laid out, so what its views say stands in its tree.
     fn said(root: &dyn crate::widget::Widget) -> Vec<String> {
         fn walk(w: &dyn crate::widget::Widget, out: &mut Vec<String>) {
             if let Some(node) = w.accessibility() {
@@ -410,7 +385,6 @@ fn a_widget_holding_parts_takes_other_parts_only_by_being_built_again() {
         out
     }
 
-    /// `widget`, laid out as the window lays it out, with the names it says once it is.
     fn laid_out<W: crate::widget::Widget + 'static>(
         widget: W,
     ) -> (crate::headless::FrameHarness, Vec<String>) {
@@ -558,8 +532,6 @@ fn a_changed_text_is_taken_in_place_and_another_role_is_built_again() {
     assert_eq!(text.test_id(), Some("t"));
 }
 
-/// An item of a list as a host renders it: a row titled `title` showing `resource`,
-/// with an avatar when `avatar`, its menu one destructive command.
 struct Item {
     key: String,
     title: String,
@@ -567,7 +539,6 @@ struct Item {
     avatar: bool,
 }
 
-/// An instance of an item, its parts read as components.
 struct ItemSource<'a> {
     item: &'a Item,
     queue: crate::Intents<Fired>,
@@ -637,7 +608,6 @@ impl Source for ItemSource<'_> {
     }
 }
 
-/// A row whose avatar slot holds one when asked.
 struct AvatarRow {
     row: Given,
     avatar: bool,
@@ -682,7 +652,6 @@ struct Rendered {
     items: Vec<Item>,
     asked: Vec<std::ops::Range<usize>>,
     queue: crate::Intents<Fired>,
-    /// Rows the host renders anew, reported at the list's next poll.
     changed: Vec<String>,
 }
 
@@ -743,7 +712,6 @@ impl RowSource for Rendered {
     }
 }
 
-/// A list's instance whose rows a host renders.
 struct ListSource {
     rows: SharedRows,
     queue: crate::Intents<Fired>,
@@ -786,7 +754,6 @@ impl Source for ListSource {
     }
 }
 
-/// A list whose items a test gives whole, each a `ui.ListItem` of the props it names.
 struct WholeList {
     props: BTreeMap<String, Value>,
     items: Vec<Given>,
@@ -828,8 +795,6 @@ impl Source for WholeList {
     }
 }
 
-/// The list `title` heads the rows that name no group with, over the items of `items`, each a
-/// key and the group it names.
 fn grouped_list(title: Option<&str>, items: &[(&str, &str)]) -> crate::widget::DescribedList {
     let mut props = BTreeMap::new();
     props.insert("in_column".to_owned(), Value::Bool(true));
@@ -850,7 +815,6 @@ fn rendered_list(items: Vec<Item>) -> (crate::widget::DescribedList, crate::Inte
     (list, queue)
 }
 
-/// [`rendered_list`], with the rows its host renders, to change.
 fn rendered_list_and_rows(
     items: Vec<Item>,
 ) -> (
@@ -910,7 +874,6 @@ fn a_list_of_rendered_rows_reads_them_from_its_host_and_its_menu_from_the_row() 
         .map(crate::widget::MenuItem::label)
         .collect();
     assert_eq!(labels, vec![Some("Delete")]);
-    // Opening the menu selects its row, reported with the resource it shows.
     assert!(queue.take().iter().any(|fired| fired.event == "select"
         && fired.value == Some(Value::Resource("doc/notes:b".into()))));
     area.choose(0);
@@ -921,7 +884,6 @@ fn a_list_of_rendered_rows_reads_them_from_its_host_and_its_menu_from_the_row() 
             .any(|fired| fired.key == "delete" && fired.event == "choose"),
         "choosing it fires the command's event"
     );
-    // The list's selection is the row of the resource shown beside it.
     assert!(list.select_presenting(Some("doc/notes:a")));
     let selected: Vec<String> = list
         .list()
@@ -934,8 +896,6 @@ fn a_list_of_rendered_rows_reads_them_from_its_host_and_its_menu_from_the_row() 
     assert!(!list.select_presenting(Some("doc/notes:a")), "already so");
 }
 
-/// A row its host renders anew (an item's title as it is typed) is mounted again where it
-/// stood: the described list says what its list says, and the window keeps its tree.
 #[test]
 fn a_rendered_row_that_changes_keeps_the_windows_tree() {
     let (list, _queue, rows) = rendered_list_and_rows(vec![
@@ -980,9 +940,6 @@ fn a_rendered_row_that_changes_keeps_the_windows_tree() {
     );
 }
 
-/// A conversation read from its first row: its rows stand at the width a page's blocks are
-/// read at, under the top of the column, rather than across a wide window or under a band the
-/// window's foot left.
 #[test]
 fn a_page_column_holds_the_readable_measure_from_its_first_row() {
     fn pages<'a>(
@@ -1056,11 +1013,9 @@ fn rows_that_name_no_group_stand_under_their_own_heading() {
         Some(RowGroup::heading("No date")),
         "a row whose item names no group is not the last group's"
     );
-    // A list given no heading for them leaves those rows among the others, as before.
     let list = grouped_list(None, &[("a", "Jul 1"), ("b", "")]);
     let model = list.list().expect("the list").model();
     assert_eq!(crate::widget::ListModel::group_at(model, 1), None);
-    // A row standing in for an item removed unseen stays out of every fold, headed or not.
     let mut props = BTreeMap::new();
     props.insert("ungrouped_title".to_owned(), Value::Text("No date".into()));
     let mut source = WholeList {

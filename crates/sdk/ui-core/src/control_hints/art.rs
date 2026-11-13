@@ -1,9 +1,5 @@
-//! The little looping pictures of the gestures hints teach, drawn with
-//! vector shapes in the card's own ink, so they stay crisp at any scale and
-//! follow the card's colour in every theme.
-//!
-//! Each is drawn in a 64 × 40 design box fitted into the card's picture
-//! tile, at a phase of its loop (`0..1`, [`crate::motion::Beckon`]).
+//! The little looping pictures of the gestures hints teach, drawn with vector shapes in the card ink,
+//! so they stay crisp at any scale and follow the card's colour in every theme.
 
 use super::Gesture;
 use super::card::Contents;
@@ -14,13 +10,10 @@ use vello::kurbo::{
 };
 use vello::peniko::{BlendMode, Color, Fill};
 
-/// The design box every picture is drawn in.
 const ART_W: f64 = 64.0;
 const ART_H: f64 = 40.0;
-/// A mini window's corner and the height of its bar.
 const WINDOW_RADIUS: f64 = 3.0;
 const BAR_H: f64 = 5.5;
-/// The pointer's size against a full-size one.
 const POINTER_SCALE: f64 = 0.62;
 
 /// The colours a picture is drawn in.
@@ -38,8 +31,7 @@ impl Ink {
     }
 }
 
-/// Paint the gesture `contents` shows at `phase` of its loop into `tile`,
-/// whole at `alpha`.
+/// Paint the gesture `contents` shows at `phase` of its loop into `tile`, whole at `alpha`.
 pub(super) fn paint(
     scene: &mut Scene,
     transform: Affine,
@@ -59,8 +51,6 @@ pub(super) fn paint(
         tile.y0 + (tile.height() - ART_H * scale) / 2.0,
     );
     let t = transform * Affine::translate(origin) * Affine::scale(scale);
-    // A picture that does not come back to where it started on its own
-    // fades out and in again round its loop.
     let loop_alpha = match gesture {
         Gesture::OpenFromSearch => {
             Beckon::stroke(phase, 0.0, 0.04) * (1.0 - Beckon::stroke(phase, 0.86, 0.96))
@@ -89,8 +79,7 @@ pub(super) fn paint(
     scene.pop_layer();
 }
 
-/// A mini window: a rounded frame with its bar, `pressed` brightening the
-/// bar as a hand holds it.
+/// A mini window: a rounded frame with its bar, `pressed` brightening the bar as a hand has it.
 fn window(scene: &mut Scene, t: Affine, rect: Rect, ink: Ink, pressed: f64) {
     let frame = RoundedRect::from_rect(rect, WINDOW_RADIUS);
     scene.fill(Fill::NonZero, t, ink.soft(0.16), None, &frame);
@@ -107,7 +96,6 @@ fn window(scene: &mut Scene, t: Affine, rect: Rect, ink: Ink, pressed: f64) {
     scene.stroke(&Stroke::new(1.6), t, ink.line, None, &frame);
 }
 
-/// The pointer, its tip at `tip`, a little smaller while `pressed`.
 fn pointer(scene: &mut Scene, t: Affine, tip: Point, pressed: f64, ink: Ink) {
     let size = POINTER_SCALE * (1.0 - 0.1 * pressed.clamp(0.0, 1.0));
     let at = t * Affine::translate(tip.to_vec2()) * Affine::scale(size);
@@ -122,7 +110,6 @@ fn pointer(scene: &mut Scene, t: Affine, tip: Point, pressed: f64, ink: Ink) {
     scene.fill(Fill::NonZero, at, ink.line, None, &arrow);
 }
 
-/// The sideways resize pointer, centred on `at`.
 fn resize_pointer(scene: &mut Scene, t: Affine, at: Point, ink: Ink) {
     let mut path = BezPath::new();
     let (x, y) = (at.x, at.y);
@@ -147,17 +134,15 @@ fn resize_pointer(scene: &mut Scene, t: Affine, at: Point, ink: Ink) {
     scene.fill(Fill::NonZero, t, ink.line, None, &path);
 }
 
-/// Along the straight line from `a` to `b`, `at` of the way.
 fn between(a: Point, b: Point, at: f64) -> Point {
     a.lerp(b, at.clamp(0.0, 1.0))
 }
 
-/// How hard the hand holds between `down` and `up` (`0..=1`).
+/// How hard the hand has between `down` and `up` (`0..=1`).
 fn held(phase: f64, down: f64, up: f64) -> f64 {
     Beckon::stroke(phase, down - 0.04, down) - Beckon::stroke(phase, up, up + 0.04)
 }
 
-/// A key chord brings up search; something typed; a window comes up.
 fn open_from_search(scene: &mut Scene, t: Affine, phase: f64, ink: Ink) {
     let shown = Beckon::stroke(phase, 0.04, 0.18);
     let pill = Rect::new(12.0, 5.0, 52.0, 15.0);
@@ -197,13 +182,11 @@ fn open_from_search(scene: &mut Scene, t: Affine, phase: f64, ink: Ink) {
         None,
         &Line::new((19.7, 11.3), (21.2, 12.8)),
     );
-    // What is typed: a word's worth of ink growing along the field.
     let typed = Beckon::stroke(phase, 0.2, 0.44);
     if typed > 0.0 {
         let word = RoundedRect::from_rect(Rect::new(24.0, 8.8, 24.0 + 18.0 * typed, 11.2), 1.2);
         scene.fill(Fill::NonZero, t, ink.soft(0.85), None, &word);
     }
-    // The window it opens, coming up under the field.
     let open = Beckon::stroke(phase, 0.48, 0.64);
     if open > 0.0 {
         let rect = Rect::new(17.0, 19.0, 47.0, 37.0);
@@ -226,13 +209,11 @@ fn open_from_search(scene: &mut Scene, t: Affine, phase: f64, ink: Ink) {
     }
 }
 
-/// A hand takes a window by its bar and carries it across, and back.
 fn move_window(scene: &mut Scene, t: Affine, phase: f64, ink: Ink) {
     let home = Rect::new(9.0, 13.0, 35.0, 33.0);
     let travel = 18.0 * (Beckon::stroke(phase, 0.24, 0.52) - Beckon::stroke(phase, 0.62, 0.88));
     let pressed = held(phase, 0.2, 0.9);
     if travel > 0.5 {
-        // Where it came from, faintly.
         let slot = RoundedRect::from_rect(home, WINDOW_RADIUS);
         scene.stroke(&Stroke::new(1.0), t, ink.soft(0.3), None, &slot);
     }
@@ -250,13 +231,11 @@ fn move_window(scene: &mut Scene, t: Affine, phase: f64, ink: Ink) {
     pointer(scene, t, tip, pressed, ink);
 }
 
-/// A hand draws a window's edge out, and back.
 fn resize_edge(scene: &mut Scene, t: Affine, phase: f64, ink: Ink) {
     let pressed = held(phase, 0.2, 0.9);
     let reach = 16.0 * (Beckon::stroke(phase, 0.24, 0.52) - Beckon::stroke(phase, 0.62, 0.88));
     let rect = Rect::new(8.0, 10.0, 32.0 + reach, 32.0);
     window(scene, t, rect, ink, 0.0);
-    // The edge lit along its length, as the desktop lights it.
     let on_edge = Beckon::stroke(phase, 0.12, 0.2) - Beckon::stroke(phase, 0.92, 0.98);
     if on_edge > 0.0 {
         #[allow(
@@ -288,9 +267,6 @@ fn resize_edge(scene: &mut Scene, t: Affine, phase: f64, ink: Ink) {
     }
 }
 
-/// The windows slide sideways under the person's fingers, and back: two
-/// fingers scrolling on a touchpad, or, on a touchscreen, one finger
-/// swiping a window's bar.
 fn pan_view(scene: &mut Scene, t: Affine, phase: f64, ink: Ink, touch: bool) {
     let down = held(phase, 0.2, 0.9);
     let stroke = Beckon::stroke(phase, 0.24, 0.54) - Beckon::stroke(phase, 0.62, 0.88);
@@ -305,7 +281,6 @@ fn pan_view(scene: &mut Scene, t: Affine, phase: f64, ink: Ink, touch: bool) {
         );
     }
     if touch {
-        // The finger rides the bar it swipes.
         fingertip(
             scene,
             t,
@@ -316,7 +291,6 @@ fn pan_view(scene: &mut Scene, t: Affine, phase: f64, ink: Ink, touch: bool) {
         );
         return;
     }
-    // A touchpad under the windows, two fingers scrolling across it.
     let pad = RoundedRect::from_rect(Rect::new(20.0, 30.0, 44.0, 39.5), 2.5);
     scene.stroke(&Stroke::new(1.0), t, ink.soft(0.45), None, &pad);
     let x = 35.0 - 8.0 * stroke;

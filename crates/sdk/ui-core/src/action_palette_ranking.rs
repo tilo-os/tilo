@@ -1,19 +1,11 @@
-//! Ranking and grouping the palette's search hits.
-//!
-//! Every provider's rows compete for the same overlay, so they are scored by
-//! one shared comparator and bucketed by kind before the palette renders
-//! them. Kept apart from the palette's dispatch flow because relevance is a
-//! self-contained order over [`SearchResult`]s, not a step in resolving an
-//! action.
+//! Ranking and grouping the palette's search hits. Every provider's rows compete for the same overlay,
+//! so they are scored by one shared comparator and bucketed by kind before the palette renders them.
 
 use super::{ACTIONS_KIND, PER_GROUP_CAP};
 use crate::search::{SearchGroup, SearchResult, result_relevance};
 
-/// Rank `rows` by fit against `query` and bucket by kind. Uses the shared
-/// [`result_relevance`] ranker so a hit from one source is comparable to a
-/// hit from another. Caps each group so no single source floods the overlay.
+/// Rank `rows` by fit against `query` and bucket by kind.
 pub(super) fn rank_and_group(query: &str, rows: Vec<SearchResult>) -> Vec<SearchGroup> {
-    /// A provider bias notch is worth this many query-match points.
     const BIAS_WEIGHT: i32 = 4;
     let key = |r: &SearchResult| -> i32 {
         r.score
@@ -32,8 +24,6 @@ pub(super) fn rank_and_group(query: &str, rows: Vec<SearchResult>) -> Vec<Search
             groups.push(SearchGroup::new(r.kind.clone(), vec![r]));
         }
     }
-    // An app's search is about what the app holds: its resources lead, and
-    // what can be done follows them, however well an action's name matched.
     let (actions, mut held): (Vec<SearchGroup>, Vec<SearchGroup>) = groups
         .into_iter()
         .partition(|group| group.kind == ACTIONS_KIND);

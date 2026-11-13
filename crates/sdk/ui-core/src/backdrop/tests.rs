@@ -8,8 +8,8 @@ fn panel() -> RoundedRect {
     RoundedRect::from_rect(PANEL, 12.0)
 }
 
-/// Eight-pixel black and white columns: the busiest backdrop there is, and
-/// one whose blur has a known value.
+/// Eight-pixel black and white columns: the busiest backdrop there is, and one whose blur has a known
+/// value.
 fn stripes(width: u32, height: u32) -> Scene {
     let mut scene = Scene::new();
     for column in 0..width / 8 {
@@ -62,7 +62,6 @@ fn a_recording_registers_each_floating_surface_with_what_is_below_it() {
     let recording = BackdropRecording::begin();
     layer_scene(&scene, 2);
     floating(&mut scene, Affine::translate((10.0, 5.0)), &theme);
-    // A scratch scene nobody named has no known backdrop.
     let mut scratch = Scene::new();
     floating(&mut scratch, Affine::IDENTITY, &theme);
     fill(
@@ -87,7 +86,6 @@ fn a_recording_registers_each_floating_surface_with_what_is_below_it() {
         scratch.encoding().resources.patches.is_empty(),
         "an unnamed scene paints the opaque material"
     );
-    // Once the recording ends, surfaces paint opaque again.
     let mut after = Scene::new();
     floating(&mut after, Affine::IDENTITY, &theme);
     assert!(after.encoding().resources.patches.is_empty());
@@ -137,7 +135,6 @@ fn a_continued_recording_keeps_the_frames_regions_distinct() {
     layer_scene(&scene, 0);
     floating(&mut scene, Affine::IDENTITY, &theme);
     let main_pass = first.finish();
-    // The top layer, drawn later into the same scene.
     let second = BackdropRecording::continuing(main_pass);
     layer_scene(&scene, 0);
     floating(&mut scene, Affine::IDENTITY, &theme);
@@ -150,9 +147,9 @@ fn a_continued_recording_keeps_the_frames_regions_distinct() {
     );
 }
 
-/// A subtree cache (a `Column`'s) is drawn on its own and appended later: a
-/// surface inside it takes what the frame held before the cache, plus the
-/// cache's content under it, at the cache's place in the frame.
+/// A subtree cache (a `Column`'s) is drawn on its and appended later: a surface inside it takes
+/// what the frame held before the cache, plus the cache's content under it, at the cache's place in the
+/// frame.
 #[test]
 fn a_surface_in_a_nested_cache_lands_where_the_cache_is_appended() {
     let theme = Theme::dark();
@@ -182,7 +179,6 @@ fn a_surface_in_a_nested_cache_lands_where_the_cache_is_appended() {
         1,
         "a cache inside a cache carries its child's surface up"
     );
-    // A cache appended into a scene nobody records stays opaque.
     let mut lost = Scene::new();
     nest_scene(&lost);
     floating(&mut lost, Affine::IDENTITY, &theme);
@@ -198,7 +194,6 @@ fn a_surface_in_a_nested_cache_lands_where_the_cache_is_appended() {
         frame_len + inner_len,
         "below is the frame so far plus the cache's own content"
     );
-    // Outside a recording a cache carries nothing.
     let mut plain = Scene::new();
     assert_eq!(append_nested(&mut plain, &inner, Affine::IDENTITY), 0);
 }
@@ -206,7 +201,7 @@ fn a_surface_in_a_nested_cache_lands_where_the_cache_is_appended() {
 /// The render service draws a backdrop's scene by itself and refuses a frame
 /// whose backdrop leaves a clip open ("invalid scene: a clip is left open"),
 /// which froze every window showing a menu, toast or notice drawn inside a
-/// clip or a fade. What lies below a surface must pass the service's own
+/// clip or a fade. What lies below a surface must pass the service
 /// validator, wherever the surface was drawn.
 #[test]
 fn what_lies_below_a_surface_drawn_inside_open_layers_is_a_balanced_scene() {
@@ -218,7 +213,6 @@ fn what_lies_below_a_surface_drawn_inside_open_layers_is_a_balanced_scene() {
     let mut frame = stripes(256, 192);
     let recording = BackdropRecording::begin();
     layer_scene(&frame, 0);
-    // A surface inside the window's clip and its own fade-in layer.
     frame.push_clip_layer(
         Fill::NonZero,
         Affine::IDENTITY,
@@ -233,7 +227,6 @@ fn what_lies_below_a_surface_drawn_inside_open_layers_is_a_balanced_scene() {
     );
     floating(&mut frame, Affine::IDENTITY, &theme);
     frame.pop_layer();
-    // A surface in a cache that is itself drawn and appended inside a clip.
     let mut cache = Scene::new();
     nest_scene(&cache);
     cache.push_clip_layer(
@@ -290,10 +283,6 @@ fn an_unchanged_surface_encodes_identically_frame_to_frame() {
     assert!(frame().encoding_eq(&frame()));
 }
 
-/// The floating material over high-contrast stripes: the stripes are gone,
-/// and what is left is the panel ground at the tint's opacity over the
-/// stripes' average. Without the blur pass the same scene is the opaque
-/// panel ground.
 #[test]
 fn the_blur_pass_shows_the_tinted_average_of_the_backdrop() {
     let theme = Theme::dark();
@@ -317,8 +306,6 @@ fn the_blur_pass_shows_the_tinted_average_of_the_backdrop() {
         "without the pass the placeholder is the opaque ground"
     );
     let tint = f64::from(theme.tokens.colors.surfaces.material_opacity);
-    // The stripes blur to mid grey, which the material then holds inside
-    // its band before tinting it.
     let (dark_end, light_end) = material_band(&theme, crate::chrome::panel_ground(&theme));
     let (dark_end, light_end) = (
         dark_end.to_rgba8().to_u8_array(),
@@ -358,7 +345,6 @@ fn the_blur_pass_shows_the_tinted_average_of_the_backdrop() {
         spread <= 6,
         "stripes still visible through the material: {row:?}"
     );
-    // Outside the panel nothing changes.
     for (x, y) in [(8, 8), (20, 180), (250, 100)] {
         assert!(close(
             pixel(&opaque, width, x, y),
@@ -368,8 +354,6 @@ fn the_blur_pass_shows_the_tinted_average_of_the_backdrop() {
     }
 }
 
-/// Median wall time, GPU completion included, of `run` over `samples`
-/// iterations after a warm-up.
 fn median_us(device: &wgpu::Device, samples: usize, mut run: impl FnMut()) -> u128 {
     for _ in 0..5 {
         run();
@@ -496,10 +480,6 @@ fn cost_at_1080p() {
     );
 }
 
-/// A docked strip frosts with the desktop its painter published: the
-/// blurred picture under the tint, an ordinary image fill that encodes the
-/// same while the desktop does. Nothing published, or reduced
-/// transparency, is the opaque ground.
 #[test]
 fn a_surface_over_the_published_desktop_is_an_image_fill_under_the_tint() {
     let theme = Theme::dark();
@@ -705,7 +685,6 @@ fn a_provided_backdrop_of_the_right_size_is_drawn_in_place_of_the_placeholder() 
         "the provided image, not the opaque placeholder"
     );
 
-    // One of another size is not used.
     provide_backdrops(vec![(
         0,
         crate::raster::rgba8_premultiplied(vec![0; 4], 1, 1),
@@ -751,15 +730,12 @@ fn a_blocky_surface_asks_for_one_texel_per_cell() {
         requested,
         "the texels the host is asked for are the placeholder's own"
     );
-    // And it is the cell grid's size, not the smooth sample's.
     let smooth = backdrop_texels(surface.bounds, Sampling::Smooth, 0.0);
     assert!(
         requested.0 * 2 <= smooth.0,
         "one texel per {cell} px cell ({requested:?}) is coarser than a smooth \
          sample ({smooth:?})"
     );
-    // Handed back at that size, the provided image takes the placeholder's
-    // place: the cells are drawn from what the host blurred.
     let image = crate::raster::rgba8_premultiplied(
         [90_u8, 140, 200, 255].repeat((requested.0 * requested.1) as usize),
         requested.0,
@@ -779,12 +755,9 @@ fn a_blocky_surface_asks_for_one_texel_per_cell() {
     provide_backdrops(Vec::new());
 }
 
-/// Render the stripes with one floating panel drawn in `theme`'s floating
-/// finish over them, with the backdrop pass.
 fn render_floating_over_stripes(theme: &Theme) -> Vec<u8> {
     let (width, height) = (256, 192);
     let mut scene = stripes(width, height);
-    // A hard edge under the panel's left rim, which a lens moves.
     scene.fill(
         Fill::NonZero,
         Affine::IDENTITY,
@@ -812,23 +785,19 @@ fn brightness(p: [u8; 4]) -> u16 {
     u16::from(p[0]) + u16::from(p[1]) + u16::from(p[2])
 }
 
-/// A glass panel bends what is under it at its rim and leaves its middle
-/// as the blur shows it, lights its top edge, and holds every pixel of its
-/// body inside the band ink is measured against.
+/// A glass panel bends what is under it at its rim and leaves its middle as the blur shows it, lights
+/// its top edge, and has every pixel of its body inside the band ink is measured against.
 #[test]
 fn a_glass_panel_bends_and_lights_its_rim_and_stays_legible() {
     let width = 256;
     let flat = render_floating_over_stripes(&glass_theme(0.0));
     let bent = render_floating_over_stripes(&glass_theme(16.0));
-    // The middle is untouched by the lens.
     let centre = (128, 96);
     assert!(close(
         pixel(&flat, width, centre.0, centre.1),
         pixel(&bent, width, centre.0, centre.1),
         2
     ));
-    // Near the rim the backdrop is displaced: some pixel along a row a few
-    // pixels inside the left edge differs.
     let moved = (66..90).any(|x| {
         !close(
             pixel(&flat, width, x, centre.1),
@@ -838,7 +807,6 @@ fn a_glass_panel_bends_and_lights_its_rim_and_stays_legible() {
     });
     assert!(moved, "the rim shows the backdrop where it was");
 
-    // The top edge is lit: its outermost row is lighter than the row below.
     let theme = glass_theme(16.0);
     let top = pixel(&bent, width, 128, 48);
     let below = pixel(&bent, width, 128, 51);
@@ -847,8 +815,6 @@ fn a_glass_panel_bends_and_lights_its_rim_and_stays_legible() {
         "lit rim {top:?} over body {below:?}"
     );
 
-    // Every body pixel, wherever the stripes put black or white, keeps
-    // secondary ink at body-text contrast.
     let ink = theme.tokens.colors.text_dim;
     for y in (54..140).step_by(4) {
         for x in (70..186).step_by(3) {
@@ -881,9 +847,8 @@ fn liquid_theme(refraction: f32, dispersion: f32) -> Theme {
     Theme::from_document(&document).unwrap()
 }
 
-/// A lens moves what a pixel shows inward along the outline's normal: by
-/// nearly its whole strength at the rim, easing to nothing at the band's
-/// inner side, and not at all in the flat middle.
+/// A lens moves what a pixel shows inward along the outline's normal: by nearly its whole strength at
+/// the rim, easing to nothing at the band's inner side, and not at all in the flat middle.
 #[test]
 fn a_lens_displaces_at_the_rim_and_leaves_the_middle_straight() {
     let lens = Refraction {
@@ -897,14 +862,11 @@ fn a_lens_displaces_at_the_rim_and_leaves_the_middle_straight() {
     let near = |a: Vec2, b: Vec2| (a - b).hypot() < 1e-9;
     // Half a pixel in from the left rim: 0.975² of the strength, inward.
     assert!(near(at(0.5, 50.0), Vec2::new(10.0 * 0.975 * 0.975, 0.0)));
-    // From the right and the top, inward from those sides.
     assert!(near(at(199.5, 50.0), Vec2::new(-10.0 * 0.975 * 0.975, 0.0)));
     assert!(near(at(100.0, 0.5), Vec2::new(0.0, 10.0 * 0.975 * 0.975)));
-    // Halfway across the band a quarter of it; past the band, nothing.
     assert!(near(at(10.0, 50.0), Vec2::new(2.5, 0.0)));
     assert!(near(at(25.0, 50.0), Vec2::ZERO));
     assert!(near(at(100.0, 50.0), Vec2::ZERO));
-    // Round a corner the bend points at the corner's centre.
     let corner = at(3.0, 3.0);
     assert!(
         corner.x > 0.0 && (corner.x - corner.y).abs() < 1e-9,
@@ -920,7 +882,6 @@ fn a_lens_displaces_at_the_rim_and_leaves_the_middle_straight() {
         ..Lens::default()
     };
     assert!((Refraction::of(lens, 4.0).band - 20.0).abs() < 1e-9);
-    // At twice the pixels the bend is twice as far; dispersion is a ratio.
     let doubled = Refraction {
         dispersion: 0.2,
         ..Refraction::of(lens, 4.0)
@@ -930,8 +891,8 @@ fn a_lens_displaces_at_the_rim_and_leaves_the_middle_straight() {
     assert!((doubled.dispersion - 0.2).abs() < 1e-9);
 }
 
-/// A Liquid panel records its lens with the backdrop it samples, in the
-/// recording's pixels, and a frame's region carries it to the pass.
+/// A Liquid panel records its lens with the backdrop it samples, in the recording's pixels, and a
+/// frame's region has it to the pass.
 #[test]
 fn a_liquid_panel_records_its_lens_with_its_backdrop() {
     let theme = liquid_theme(14.0, 0.1);
@@ -954,7 +915,6 @@ fn a_liquid_panel_records_its_lens_with_its_backdrop() {
         .into_region(PANEL, 2.0, |below| below);
     assert!((region.refraction.strength - 28.0).abs() < 1e-6);
     assert!((region.refraction.band - 44.0).abs() < 1e-6);
-    // A finish with no lens bends nothing.
     let mut scene = stripes(256, 192);
     let recording = BackdropRecording::begin();
     layer_scene(&scene, 0);
@@ -974,8 +934,6 @@ fn a_liquid_panel_records_its_lens_with_its_backdrop() {
     assert!(!surfaces[0].refraction.bends());
 }
 
-/// The shipped Liquid Glass panel, bar and window show what lies below:
-/// across the stripes their middles are not one flat colour.
 #[test]
 fn the_shipped_liquid_glass_shows_what_lies_below() {
     let width = 256;
@@ -988,9 +946,9 @@ fn the_shipped_liquid_glass_shows_what_lies_below() {
     assert!(spread >= 20, "the panel shows nothing below: {row:?}");
 }
 
-/// The bar, a window and a panel over it, under Liquid Glass in one frame,
-/// all show the stripes below them: every region of the frame is
-/// substituted, not only the first, and the window's ground is glass too.
+/// The bar, a window and a panel over it, under Liquid Glass in one frame, all show the stripes below
+/// them: every region of the frame is substituted, not only the first, and the window's ground is glass
+/// too.
 #[test]
 fn a_liquid_bar_window_and_panel_in_one_frame_all_show_what_lies_below() {
     let (width, height) = (256, 192);
@@ -1037,8 +995,8 @@ fn a_liquid_bar_window_and_panel_in_one_frame_all_show_what_lies_below() {
     assert!(spread(130..180, 100) >= 12, "the panel shows nothing below");
 }
 
-/// Glass and Pixelated keep a window's ground their fill: only their
-/// floating chrome and bars sample what lies below.
+/// Glass and Pixelated keep a window's ground their fill: only their floating chrome and bars sample
+/// what lies below.
 #[test]
 fn a_glass_or_pixelated_window_ground_samples_nothing() {
     for preset in [crate::theme::Preset::Glass, crate::theme::Preset::Pixelated] {
@@ -1060,9 +1018,6 @@ fn a_glass_or_pixelated_window_ground_samples_nothing() {
     }
 }
 
-/// The legible range compresses luminance evenly in contrast and keeps
-/// colour: black and white land on its ends, order is kept, a red stays
-/// red and a green green, and the whole range leaves colours as they are.
 #[test]
 fn the_legible_range_compresses_luminance_and_keeps_hue() {
     let theme = Theme::preset(crate::theme::Preset::LiquidGlass);
@@ -1083,19 +1038,14 @@ fn the_legible_range_compresses_luminance_and_keeps_hue() {
     let [r, g, b] = legible.tone([0.1, 0.8, 0.2]);
     assert!(g > 2.0 * r && g > 2.0 * b, "green became {r} {g} {b}");
     assert_eq!(Legible::ANY.tone([0.9, 0.1, 0.3]), [0.9, 0.1, 0.3]);
-    // Lifted into a light theme's range, a near-black page with a faint
-    // blue cast stays a near-grey, not a lavender.
     let light = Theme::preset(crate::theme::Preset::LiquidGlassLight);
     let lifted = Legible::of(&light, crate::chrome::panel_ground(&light));
     let [r, g, b] = lifted.tone([14.0 / 255.0, 16.0 / 255.0, 22.0 / 255.0]);
     assert!(b - r < 0.03 && b - g < 0.03, "the page turned {r} {g} {b}");
-    // A red lifted stays red.
     let [r, g, b] = lifted.tone([0.9, 0.1, 0.1]);
     assert!(r > g + 0.1 && r > b + 0.1, "red became {r} {g} {b}");
 }
 
-/// Wide columns of saturated colour and white: a bright, photo-like
-/// backdrop with hue to keep.
 fn colour_stripes(width: u32, height: u32) -> Scene {
     let colours = [
         Color::from_rgb8(230, 40, 40),
@@ -1118,7 +1068,6 @@ fn colour_stripes(width: u32, height: u32) -> Scene {
     scene
 }
 
-/// A white page with lines of dark text on it.
 fn white_page(width: u32, height: u32) -> Scene {
     let mut scene = Scene::new();
     let page = Rect::new(0.0, 0.0, f64::from(width), f64::from(height));
@@ -1136,8 +1085,6 @@ fn white_page(width: u32, height: u32) -> Scene {
     scene
 }
 
-/// `below` with a window filling most of it and a floating panel over that,
-/// in `theme`, rendered with the backdrop pass.
 fn render_over(theme: &Theme, mut scene: Scene) -> Vec<u8> {
     let (width, height) = (256, 192);
     let recording = BackdropRecording::begin();
@@ -1158,10 +1105,9 @@ fn render_over(theme: &Theme, mut scene: Scene) -> Vec<u8> {
     renderer.render(&scene, Color::BLACK)
 }
 
-/// Over a white page and over bright colour, text on every translucent
-/// finish's panel (and, under Liquid Glass, on its window) keeps the
-/// theme's contrast floor at every pixel, while what lies below still
-/// shows: compressed, not flattened.
+/// Over a white page and over bright colour, text on every translucent finish's panel (and, under
+/// Liquid Glass, on its window) keeps the theme's contrast floor at every pixel, while what lies below
+/// still shows: compressed, not flattened.
 #[test]
 fn text_over_a_white_page_and_bright_colour_stays_legible_on_every_translucent_finish() {
     use crate::theme::Preset;
@@ -1198,7 +1144,6 @@ fn text_over_a_white_page_and_bright_colour_stays_legible_on_every_translucent_f
                 }
             }
         }
-        // Over the colour, the panel still shows it: not one flat colour.
         let seen = render_over(&theme, colour_stripes(256, 192));
         let row: Vec<u16> = (100..160)
             .map(|x| brightness(pixel(&seen, width, x, 96)))
@@ -1208,8 +1153,6 @@ fn text_over_a_white_page_and_bright_colour_stays_legible_on_every_translucent_f
     }
 }
 
-/// Under Liquid Glass, a red column shows red through the panel and a green
-/// one green: the compression dims what lies below without greying it.
 #[test]
 fn liquid_glass_keeps_the_colour_of_what_lies_below() {
     let width = 256;
@@ -1223,18 +1166,15 @@ fn liquid_glass_keeps_the_colour_of_what_lies_below() {
     assert!(g > r + 12, "green shows as {r} {g}");
 }
 
-/// Over the stripes, a Liquid panel's rim shows what lies further in (the
-/// pixel at its right rim shows a stripe from about a lens's strength in),
-/// its middle shows the stripes exactly as an unbent panel does, sharp,
-/// and dispersion sets red and blue apart where the stripes' edges bend.
+/// Over the stripes, a Liquid panel's rim shows what lies further in (the pixel at its right rim shows
+/// a stripe from about a lens's strength in), its middle shows the stripes exactly as an unbent panel
+/// does, sharp, and dispersion sets red and blue apart where the stripes' edges bend.
 #[test]
 fn a_liquid_panel_bends_its_rim_and_leaves_its_middle_sharp() {
     let width = 256;
     let flat = render_floating_over_stripes(&liquid_theme(0.0, 0.0));
     let bent = render_floating_over_stripes(&liquid_theme(14.0, 0.0));
     let row = 96;
-    // The middle is the same, and the stripes there are sharp: a white
-    // column beside a black one, flat across each column.
     for x in [120, 124, 128, 132] {
         assert!(
             close(pixel(&flat, width, x, row), pixel(&bent, width, x, row), 2),
@@ -1259,10 +1199,7 @@ fn a_liquid_panel_bends_its_rim_and_leaves_its_middle_sharp() {
         (176..=181).any(|x| close(rim, pixel(&flat, width, x, row), 8)),
         "the rim shows {rim:?}, nothing from a lens's strength in"
     );
-    // Dispersion sets red and blue apart where a stripe's edge is bent.
     let split = render_floating_over_stripes(&liquid_theme(14.0, 0.4));
-    // The ground's own hue tints both alike, so the fringe is red against
-    // blue beyond what the undispersed lens shows.
     let warmth = |seen: &[u8], x: u32| {
         let [r, _, b, _] = pixel(seen, width, x, row);
         i16::from(r) - i16::from(b)
@@ -1277,8 +1214,6 @@ fn a_liquid_panel_bends_its_rim_and_leaves_its_middle_sharp() {
     }
 }
 
-/// Block's floating panel is its opaque ground with the strong border: no
-/// blur, no hairline, no shadow.
 #[test]
 fn a_block_panel_is_flat_and_bordered() {
     let width = 256;
@@ -1293,7 +1228,6 @@ fn a_block_panel_is_flat_and_bordered() {
         "the top row is the border: {:?} vs {border:?}",
         pixel(&seen, width, 128, 48)
     );
-    // Outside, the stripes are untouched: no shadow darkens them.
     let stripes_only = {
         let mut renderer = OffscreenRenderer::new(width, 192);
         renderer.render(&stripes(width, 192), Color::BLACK)
@@ -1307,10 +1241,8 @@ fn a_block_panel_is_flat_and_bordered() {
     }
 }
 
-/// Pixelated's floating panel shows what lies below it as cells: one colour
-/// across each cell, and the stripes still there from cell to cell, not
-/// blurred away and not the opaque placeholder. An unblurred finish still
-/// runs the backdrop pass.
+/// Pixelated's floating panel shows what lies below it as cells: one colour across each cell, and the
+/// stripes still there from cell to cell, not blurred away and not the opaque placeholder.
 #[test]
 fn a_pixelated_panel_shows_what_lies_below_as_cells() {
     let width = 256;
@@ -1345,13 +1277,9 @@ fn a_pixelated_panel_shows_what_lies_below_as_cells() {
             pixel(&seen, width, x0 + dx, y0 + dy)
         );
     }
-    // Across a row of cells the stripes below still read: what the pass
-    // sampled, not the placeholder's flat ground.
     let row: Vec<u16> = (0..12)
         .map(|i| brightness(pixel(&seen, width, 96 + i * cell + 1, y0)))
         .collect();
-    // The cells are held in the material's band under the ground at
-    // `cover`, so the stripes read faintly but plainly, cell by cell.
     let spread = row.iter().max().unwrap() - row.iter().min().unwrap();
     assert!(
         spread >= 6,
@@ -1365,8 +1293,6 @@ fn a_pixelated_panel_shows_what_lies_below_as_cells() {
     );
 }
 
-/// Under Liquid Glass: the stripes, the bar, a window at `window_x`, then
-/// `mark` (drawn over the window, under the panel) and the panel.
 fn liquid_desk(window_x: f64, mark: Option<Rect>) -> (Scene, BackdropFrame) {
     let theme = Theme::preset(crate::theme::Preset::LiquidGlass);
     let ground = theme.tokens.colors.surfaces.base;
@@ -1404,10 +1330,9 @@ fn liquid_desk(window_x: f64, mark: Option<Rect>) -> (Scene, BackdropFrame) {
     (scene, BackdropFrame::from_single_scene(recording.finish()))
 }
 
-/// A frame whose backdrops have not changed shows every region from the
-/// sample it kept, with no pass; a region whose backdrop changed (a window
-/// moved, something drawn under the panel) is taken anew, the others kept,
-/// and the frame matches one rendered from scratch.
+/// A frame whose backdrops have not changed shows every region from the sample it kept, with no pass; a
+/// region whose backdrop changed (a window moved, something drawn under the panel) is taken anew, the
+/// others kept, and the frame matches one rendered from scratch.
 #[test]
 fn an_unchanged_backdrop_is_shown_from_the_sample_it_kept() {
     let (width, height) = (256, 192);
@@ -1432,23 +1357,16 @@ fn an_unchanged_backdrop_is_shown_from_the_sample_it_kept() {
     );
     assert_eq!(first, again);
 
-    // Something new under the panel only: the bar and the window keep
-    // their samples.
     let mark = Some(Rect::new(120.0, 60.0, 180.0, 120.0));
     let (marked, stats) = show(&mut renderer, liquid_desk(8.0, mark));
     assert_eq!((stats.substituted, stats.reused), (3, 2));
     assert_eq!(marked, fresh(liquid_desk(8.0, mark)));
 
-    // The window moves: the bar keeps its sample; the window, and the
-    // panel showing it, are taken anew.
     let (moved, stats) = show(&mut renderer, liquid_desk(20.0, mark));
     assert_eq!((stats.substituted, stats.reused), (3, 1));
     assert_eq!(moved, fresh(liquid_desk(20.0, mark)));
 }
 
-/// Light Liquid Glass is clear bright glass: over a white page its panel is
-/// nearly white, the page's dark lines still show through it, and a red
-/// column shows red.
 #[test]
 fn light_liquid_glass_is_clear_and_bright() {
     let width = 256;

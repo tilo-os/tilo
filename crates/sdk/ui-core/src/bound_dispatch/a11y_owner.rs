@@ -6,8 +6,7 @@
 use super::*;
 use crate::accesskit_bridge::A11yTarget;
 
-/// The live, admitted nodes exported to the AT bridge. A target resolves back
-/// only through the current admission.
+/// The live, admitted nodes exported to the AT bridge.
 pub(crate) struct ExportedNodes {
     pub(crate) nodes: HashMap<NodeId, *mut dyn Widget>,
     pub(crate) names: crate::a11y_tree::AdmittedNodeNames,

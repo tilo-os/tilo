@@ -1,18 +1,8 @@
-//! Reaching a retained widget that has no layout node of the window's own.
-//!
-//! A widget that paints its own surface may lay out retained widgets itself
-//! (an [`Embedded`](crate::widget::Embedded) row of buttons, a grid of
-//! cards): they are its [`children`](crate::widget::Widget::children), and
-//! it says so ([`lays_out_child`](crate::widget::Widget::lays_out_child)),
-//! but the window's layout never gave them a node, so an assistive technology's
-//! or an agent's action had nothing to be dispatched to. The accessibility
-//! walk addresses such a widget through the nearest ancestor that has a
-//! node: that ancestor's semantic target `tilo.child:<i>/<j>…` names the
-//! path of child indices down to it, and what follows a `>` names a node of
-//! the widget's own synthetic tree (its semantic target, or `#` and its key
-//! path). The host dispatches the action to the ancestor's node and
-//! [`perform`] carries it down, so the widget acts exactly as it does for a
-//! node of its own.
+//! Reaching a retained widget that has no layout node of the window. A widget that paints its surface
+//! may lay out retained widgets itself (an [`Embedded`](crate::widget::Embedded) row of buttons, a grid
+//! of cards): they are its [`children`](crate::widget::Widget::children), and it says so
+//! ([`lays_out_child`](crate::widget::Widget::lays_out_child)), but the window's layout never gave them
+//! a node, so an assistive technology's or an agent's action had nothing to be dispatched to.
 
 use std::collections::HashMap;
 
@@ -23,8 +13,8 @@ use crate::widget::Widget;
 
 const PREFIX: &str = "tilo.child:";
 
-/// The target that reaches the widget at child `path` below a node, and
-/// within it `inner` (a semantic target, or `#` and a key path).
+/// The target that reaches the widget at child `path` below a node, and within it `inner` (a semantic
+/// target, or `#` and a key path).
 pub(crate) fn encode(path: &[usize], inner: Option<&str>) -> String {
     let path = path
         .iter()
@@ -47,13 +37,9 @@ pub(crate) fn keys(keys: &[u64]) -> String {
     format!("#{keys}")
 }
 
-/// What reaches a node of a reached widget's own.
 enum Inner<'a> {
-    /// The widget itself.
     Widget,
-    /// A synthetic node it routes by its semantic target.
     Semantic(&'a str),
-    /// A synthetic node it routes by key path.
     Keys(Vec<u64>),
 }
 
@@ -98,9 +84,8 @@ fn descend_ref<'w>(widget: &'w dyn Widget, path: &[usize]) -> Option<&'w dyn Wid
     descend_ref(child, rest)
 }
 
-/// Perform `action` addressed to `owner` by `target`: a child route acts on
-/// the widget it reaches, any other target is the owner's own
-/// ([`Widget::perform_semantic_action`]).
+/// Perform `action` addressed to `owner` by `target`: a child route acts on the widget it reaches, any
+/// other target is the owner ([`Widget::perform_semantic_action`]).
 pub(crate) fn perform(
     owner: &mut dyn Widget,
     target: &str,
@@ -121,19 +106,18 @@ pub(crate) fn perform(
     }
 }
 
-/// Where the widget a child route reaches stands, for an activation it
-/// declines to be pressed there. `None` for any other target.
+/// Where the widget a child route reaches is, for an activation it declines to be pressed there.
 pub(crate) fn rect(owner: &dyn Widget, target: &str) -> Option<Rect> {
     let (route, _) = decode(target)?;
     descend_ref(owner, &route).map(Widget::get_rect)
 }
 
-/// How a widget with no layout node of its own is reached: the nearest
-/// laid-out ancestor and the child indices from it.
+/// How a widget with no layout node of it is reached: the nearest laid-out ancestor and the child
+/// indices from it.
 pub(crate) type ChildRoute = (TaffyNodeId, Vec<usize>);
 
-/// The route of `w`'s child at `index`, from `w`'s own layout node `own` when
-/// it lays that child out, else extending `w`'s own `route`.
+/// The route of `w`'s child at `index`, from `w`'s own layout node `own` when it lays that child out,
+/// else extending `w`'s own `route`.
 pub(crate) fn child_route(
     w: &dyn Widget,
     own: Option<TaffyNodeId>,
@@ -147,14 +131,14 @@ pub(crate) fn child_route(
     }
 }
 
-/// The routes an accessibility walk hands down: each widget's is set by its
-/// parent before the widget is visited.
+/// The routes an accessibility walk hands down: each widget's is set by its parent before the widget is
+/// visited.
 #[derive(Default)]
 pub(crate) struct Routes(HashMap<*const (), ChildRoute>);
 
 impl Routes {
-    /// `w`'s own route when it has no layout node (`own`), after routing every
-    /// child from it, hosted ones included, before any child is visited.
+    /// `w`'s own route when it has no layout node (`own`), after routing every child from it, hosted
+    /// ones included, before any child is visited.
     pub(crate) fn enter(&mut self, w: &dyn Widget, own: Option<TaffyNodeId>) -> Option<ChildRoute> {
         let route = if own.is_some() {
             None
@@ -179,9 +163,6 @@ mod tests {
 
     use crate::widget::{Button, Embedded, TaffyTreeExt};
 
-    /// A surface that paints a retained button where it chooses, as a
-    /// painted page places its parts: the button is its child, but the
-    /// window's layout gives the button no node.
     struct Painter {
         button: Embedded<Button>,
         rect: Rect,
@@ -244,9 +225,6 @@ mod tests {
         }
     }
 
-    /// An assistive technology reaches a button a painted surface lays out
-    /// itself through the window's own walk: it is exported where it is
-    /// drawn, and activating it presses it.
     #[test]
     fn a_painted_surfaces_retained_button_is_operated_through_the_walk() {
         let pressed = Rc::new(Cell::new(0));

@@ -53,11 +53,9 @@ pub(crate) fn next(
 use crate::widget::Widget;
 use taffy::TaffyTree;
 
-/// Whether `widget` and what it holds stay out of the focus order: the
-/// `hidden` flag of its accessibility node, read through
-/// [`Widget::accessibility_hidden`] so traversal does not build each node
-/// (and resolve its translated name) for one flag. Debug builds build the
-/// node anyway and check that the two agree.
+/// Whether `widget` and what it has stay out of the focus order: the `hidden` flag of its accessibility
+/// node, read through [`Widget::accessibility_hidden`] so traversal does not build each node (and
+/// resolve its translated name) for one flag.
 pub(crate) fn hidden(widget: &dyn Widget) -> bool {
     let hidden = widget.accessibility_hidden();
     debug_assert_eq!(
@@ -70,14 +68,8 @@ pub(crate) fn hidden(widget: &dyn Widget) -> bool {
     );
     hidden
 }
-/// Which widget registered each layout node (`build_layout`'s node map).
 type NodeOwners = std::collections::HashMap<NodeId, *mut dyn Widget>;
 
-/// Each child of `widget` with the layout node it lays out as. A widget
-/// that lays out as its only child, handing that child's node up as its own
-/// (the node is registered to the child, not to it), has no node of its
-/// own: the child is met under the same node, and the walk stays aligned
-/// with the layout below it.
 fn laid_out_children<'w>(
     node_id: NodeId,
     widget: &'w dyn Widget,
@@ -113,7 +105,6 @@ fn collect_focusable(
         collect_focusable(child_node, child_widget, taffy, owners, order);
     }
 }
-// The deepest trapping widget wins (a modal opened from within one).
 fn find_trap_focusables(
     node_id: NodeId,
     widget: &dyn Widget,
@@ -123,7 +114,6 @@ fn find_trap_focusables(
     let Ok(_entry) = crate::bound_dispatch::enter_widget(widget) else {
         return None;
     };
-    // Recurse first so a nested trap takes precedence.
     for (child_widget, child_node) in laid_out_children(node_id, widget, taffy, owners) {
         if let Some(inner) = find_trap_focusables(child_node, child_widget, taffy, owners) {
             return Some(inner);
@@ -137,8 +127,8 @@ fn find_trap_focusables(
     None
 }
 
-/// Whether any widget [`order`] would visit traps focus: when none does,
-/// `order` reports no trap without its walk having to run.
+/// Whether any widget [`order`] would visit traps focus: when none does, `order` reports no trap
+/// without its walk having to run.
 pub(crate) fn any_trap(widget: &dyn Widget) -> bool {
     let Ok(_entry) = crate::bound_dispatch::enter_widget(widget) else {
         return false;
@@ -166,8 +156,7 @@ pub(crate) fn order(
     (order, false)
 }
 
-/// The same deepest-trap policy through an admitted composition map. History
-/// and component roots add layout nodes that are not Widget children.
+/// The same deepest-trap policy through an admitted composition map.
 pub(crate) fn mapped_order(
     root: NodeId,
     taffy: &TaffyTree<()>,
@@ -189,8 +178,6 @@ pub(crate) fn mapped_order(
         }
         traps.then_some(node)
     }
-    // Trap discovery and order collection describe one immutable composition.
-    // Inspect a node once even when both walks reach it.
     let mut inspected = std::collections::HashMap::new();
     let mut inspect_once = |node| *inspected.entry(node).or_insert_with(|| inspect(node));
     let trapped = trap(root, taffy, &mut inspect_once);
@@ -208,10 +195,6 @@ pub(crate) fn mapped_order(
     }
     (order, trapped.is_some())
 }
-/// None means keep focus; Some(None) means blur all controls.
-///
-/// `entry` is the control of the trap the person types into, where it has one: what a dialog
-/// opens on, over its first control, so the words they type reach the form it asks.
 #[expect(
     clippy::option_option,
     reason = "the outer Option is whether focus changes; the inner one is the new, possibly empty, focus"
@@ -247,11 +230,9 @@ pub(crate) fn reconcile_trap(
     *active = trapped;
     change
 }
-/// Keyboard travel (Tab, Shift+Tab, directional focus) outside a trap stays
-/// inside the laid-out keyboard scope ([`Widget::scopes_keyboard_focus`]):
-/// `order` narrowed to the scope's subtree, empty when the scope holds no
-/// control (travel then moves nowhere rather than onto the chrome around
-/// it). Without a scope `order` is returned as it is.
+/// Keyboard travel (Tab, Shift+Tab, directional focus) outside a trap stays inside the laid-out
+/// keyboard scope ([`Widget::scopes_keyboard_focus`]): `order` narrowed to the scope's subtree, empty
+/// when the scope has no control (travel then moves nowhere rather than onto the chrome around it).
 pub(crate) fn within_keyboard_scope(
     order: Vec<NodeId>,
     scopes: &[NodeId],
@@ -282,7 +263,7 @@ pub(crate) fn hosts_components(widget: &dyn Widget) -> bool {
 
 /// What the focus walk asks of one node: whether it takes focus, whether it
 /// traps it, and whether it is hidden from assistive technology (which
-/// hides its subtree from focus too). Reads the node's own `hidden` flag
+/// hides its subtree from focus too). Reads the node `hidden` flag
 /// ([`hidden`]), never its accessibility node or the subtree a document
 /// exports.
 pub(crate) fn probe(widget: &dyn Widget) -> (bool, bool, bool) {
@@ -307,8 +288,6 @@ pub(crate) fn layout_map_order(
     inspect: impl Fn(NodeId) -> Option<(bool, bool, bool)>,
 ) -> (Vec<NodeId>, bool) {
     use tilo_sort::CompactSort as _;
-    // History's owned nodes, walked once for this recomputation: both the
-    // capture filter and the History-last sort ask it of every node.
     let owned = history
         .map(|history| history.owned_nodes(taffy))
         .unwrap_or_default();
@@ -454,8 +433,6 @@ mod hidden_tests {
     use crate::widget::popover::Popover;
     use crate::widget::{Column, ContextMenu, ModalDialog, Tooltip};
 
-    /// `widget` answers [`Widget::accessibility_hidden`] as its accessibility
-    /// node's `hidden` flag says; returns the flag.
     fn agreed(widget: &dyn Widget) -> bool {
         let hidden = widget.accessibility_hidden();
         assert_eq!(

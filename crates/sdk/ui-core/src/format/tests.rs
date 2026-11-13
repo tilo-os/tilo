@@ -4,10 +4,6 @@ use crate::i18n::I18nManager;
 use crate::widget::Tone;
 use chrono::NaiveDate;
 
-/// Speak `locale` on this thread, the toolkit's catalogue loaded.
-/// The window speaks `locale`: its own catalogue is in it and the person
-/// selected it. Formats follow the window's language, so a process whose own
-/// copy is English keeps English dates whatever the device's locale says.
 fn speak(locale: &str) {
     let mut catalogues = vec![("en-US", "")];
     if locale != "en-US" {
@@ -158,12 +154,10 @@ fn without_a_chosen_format_dates_and_clocks_follow_the_language() {
         "a chosen 12-hour clock holds in German"
     );
     assert_eq!(DateStyle::Language.example(super::words()), "15.03.2023");
-    // ISO stays an explicit choice, the same in every language.
     assert_eq!(
         formats(DateStyle::Iso, TimeStyle::H24).timestamp(moment),
         "2026-06-30 13:42"
     );
-    // A spreadsheet cell that follows the language does so under any choice.
     assert_eq!(
         formats(DateStyle::Iso, TimeStyle::H24).language_date(day(2026, 6, 30)),
         "30.06.2026"
@@ -322,7 +316,6 @@ fn counts_group_digits_by_language_until_a_number_style_is_chosen() {
     assert_eq!(H24.items(12), "12 Objekte");
     assert_eq!(H24.decimal(1234.5, 1), "1.234,5");
 
-    // A chosen number style wins over the language's convention.
     let point = Formats::with(RegionFormats {
         number: Some(NumberStyle::DecimalPoint),
         ..RegionFormats::default()
@@ -408,8 +401,6 @@ fn relative_times_bucket_at_their_boundaries() {
     assert_eq!(compact_count(12_300), "12,3 Tsd.");
 }
 
-/// A Region & Formats change reaches every formatter and moves the
-/// revision views re-render on, without a restart.
 #[test]
 fn a_formats_change_applies_live_and_moves_the_i18n_revision() {
     speak("en-US");
@@ -459,8 +450,6 @@ fn the_locale_section_reads_key_by_key() {
     }
 }
 
-/// The day fact across its boundaries: a day gone, today, tomorrow, the week ahead, the rest of
-/// the year and another year, in both languages.
 #[test]
 fn the_day_fact_names_a_day_by_how_far_it_is_in_english_and_german() {
     let today = day(2026, 6, 30); // a Tuesday
@@ -500,8 +489,6 @@ fn the_day_fact_names_a_day_by_how_far_it_is_in_english_and_german() {
     }
 }
 
-/// A day gone by is the only day read in the overdue tone, and it is read so across midnight,
-/// the end of the week and the end of the year, saying which day it was.
 #[test]
 fn the_day_fact_is_overdue_through_midnight_and_the_years_end() {
     let midnight = || chrono::NaiveTime::from_hms_opt(0, 0, 0).unwrap();
@@ -521,9 +508,6 @@ fn the_day_fact_is_overdue_through_midnight_and_the_years_end() {
     );
 }
 
-/// A moment told beside words that name its day reads as the time of day, the short weekday
-/// before it when the day is not today, and the date further out: the fact a choice shows at its
-/// trailing edge.
 #[test]
 fn the_moment_fact_tells_the_time_beside_the_words_that_name_its_day() {
     let today = day(2026, 6, 30); // a Tuesday
@@ -547,9 +531,6 @@ fn the_moment_fact_tells_the_time_beside_the_words_that_name_its_day() {
     }
 }
 
-/// A day something was done on reads as the day it happened: today, yesterday, the weekday
-/// within the week gone by, the month and day of this year and the date of another. It is
-/// history, so no day of it reads as overdue.
 #[test]
 fn a_done_day_reads_as_the_day_it_happened_in_english_and_german() {
     let today = day(2026, 6, 30); // a Tuesday
@@ -577,8 +558,6 @@ fn a_done_day_reads_as_the_day_it_happened_in_english_and_german() {
     }
 }
 
-/// A day and the time of it are one fact: today's time stands with "Today", the week ahead's
-/// with its weekday, and a day gone by says its date under the overdue tone.
 #[test]
 fn a_day_and_its_time_read_as_one_fact_in_english_and_german() {
     let today = day(2026, 6, 30);

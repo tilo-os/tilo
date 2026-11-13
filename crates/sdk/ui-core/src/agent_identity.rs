@@ -1,9 +1,5 @@
-//! A single, non-human identity silhouette for agents across Tilo.
-//!
-//! People keep the shared circular [`crate::widget::Avatar`]. Agents use this
-//! rounded processor tile with a circuit-shaped centre. The distinction is
-//! geometric rather than textual, so it remains visible when a label is
-//! elided, in monochrome, and at live-presence sizes.
+//! A single, non-human identity silhouette for agents across Tilo. People keep the shared circular
+//! [`crate::widget::Avatar`].
 
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Rect, RoundedRect, Stroke};
@@ -11,9 +7,7 @@ use vello::peniko::{Color, Fill};
 
 use crate::{ColorCompat, theme::Theme};
 
-/// Whether the principal is present or only represented by an unaccepted
-/// invitation. An invited identity stays hollow instead of pretending to be
-/// a live collaborator.
+/// Whether the principal is present or only represented by an unaccepted invitation.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub enum AgentIdentityStyle {
     #[default]
@@ -49,9 +43,6 @@ pub fn draw_agent_identity_mark(
     let ink = match style {
         AgentIdentityStyle::Solid => {
             scene.fill(Fill::NonZero, transform, color, None, &tile);
-            // The mark is inked as a person's initials are on their face (`initial_ink`): one
-            // direction per theme, tinted with the tile's own hue, so software and people read at
-            // the same weight on a light ground or a dark one.
             crate::widget::avatar::initial_ink(color, theme)
         }
         AgentIdentityStyle::Outline { alpha } => {
@@ -67,9 +58,6 @@ pub fn draw_agent_identity_mark(
         }
     };
 
-    // A circuit diamond and its two traces read as a synthetic identity at
-    // roster scale, while the strong horizontal centre still survives the
-    // antialiasing footprint of a compact presence badge.
     let center = rect.center();
     let diamond_radius = size * 0.21;
     let inset = size * 0.14;

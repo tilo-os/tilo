@@ -84,12 +84,9 @@ pub(crate) fn surface_tree_update(
     }
 }
 
-/// Publish `part`, a part of the window its host draws rather than any
-/// widget (a window of its own's row of slots), in the window's `update`:
-/// first among the window's children, in logical pixels times `scale`. A
-/// node of it that holds the keyboard holds the window's focus. Its nodes'
-/// ids are the ones [`surface_action_target`] resolves against `part`; give
-/// `part` a [`key`](AccessNode::key) no other part of the window uses.
+/// Publish `part`, a part of the window its host draws rather than any widget (a window of it's
+/// row of slots), in the window's `update`: first among the window's children, in logical pixels times
+/// `scale`.
 pub(crate) fn publish_host_part(update: &mut TreeUpdate, part: &AccessNode, scale: f64) {
     let mut walk = SurfaceWalk {
         nodes: Vec::new(),

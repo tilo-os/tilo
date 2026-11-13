@@ -1,28 +1,6 @@
-//! TalkBack for the NativeActivity runner: the AccessKit tree through a node
-//! provider injected into the activity's window.
-//!
-//! `accesskit_winit`'s Android glue reads GameActivity's `mSurfaceView`,
-//! which a NativeActivity does not have, so the injecting adapter is driven
-//! here. Its requests arrive as the same [`accesskit_winit::Event`]s as on
-//! every other platform, so the runner answers them in one place.
-//!
-//! The provider sits on the decor view: NativeActivity draws into the whole
-//! window surface, and the adapter places node bounds relative to its host
-//! view's position on screen.
-//!
-//! NativeActivity takes the window's input queue, so the hover events
-//! TalkBack's explore-by-touch produces reach native code first. The
-//! vendored winit leaves them unhandled, which sends them on to the view
-//! hierarchy and the provider's hover listener on the decor view.
-//!
-//! The framework throws when an accessibility event is sent from the UI
-//! thread while no service is enabled, and accesskit_android 0.8 raises its
-//! events there unchecked (0.9 checks, but needs a newer `accesskit` than the
-//! workspace's fork). Updates are therefore sent only while a service is
-//! enabled. A provider that has asked for its tree keeps what it was given,
-//! or a placeholder, until the next update, and nothing redraws when a
-//! service is enabled again; so such a provider is replaced while no service
-//! listens, and the next query asks for the whole tree afresh.
+//! TalkBack for the NativeActivity runner: the AccessKit tree through a node provider injected into the
+//! activity's window. `accesskit_winit`'s Android glue reads GameActivity's `mSurfaceView`, which a
+//! NativeActivity does not have, so the injecting adapter is driven here.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -61,8 +39,6 @@ impl Adapter {
         // SAFETY: android-activity owns the process's `JavaVM*` and the
         // activity's global reference for as long as the event loop runs.
         let vm = unsafe { JavaVM::from_raw(app.vm_as_ptr().cast()) }.map_err(|e| e.to_string())?;
-        // Permanent: the adapter looks the environment up again on every
-        // update.
         let mut env = vm
             .attach_current_thread_permanently()
             .map_err(|e| e.to_string())?;
