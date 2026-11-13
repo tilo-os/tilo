@@ -443,143 +443,147 @@ impl SpeakerReply {
 mod tests {
     use super::*;
 
-    #[test]
-    fn commands_round_trip_and_reject_node_shaped_identifiers() {
-        let create = SpeakerCommand::Create {
-            name: "Living room".into(),
-            members: vec![SpeakerMemberSpec {
-                device: "desk".into(),
-                output: "ab".repeat(16),
-                role: SpeakerRoleSpec::Room {
-                    x_mm: -1500,
-                    y_mm: 2000,
-                    z_mm: 0,
-                },
-            }],
-        };
-        assert!(create.valid());
-        let json = serde_json::to_vec(&create).unwrap();
-        assert_eq!(
-            serde_json::from_slice::<SpeakerCommand>(&json).unwrap(),
-            create
-        );
-        let node_name = SpeakerCommand::Identify {
-            device: "desk".into(),
-            output: "alsa_output.pci-0000_00_1f.3.analog-stereo".into(),
-        };
-        assert!(!node_name.valid());
-        assert!(
-            !SpeakerCommand::Create {
-                name: " ".into(),
-                members: Vec::new()
-            }
-            .valid()
-        );
-        assert!(
-            serde_json::from_str::<SpeakerCommand>(
-                r#"{"command":"identify","device":"desk","output":"00","node":57}"#
-            )
-            .is_err()
-        );
-    }
+    tilo_test_env::scenario! {
+        fn speaker_wire;
 
-    #[test]
-    fn calibration_commands_name_devices_not_nodes() {
-        let start = SpeakerCommand::StartCalibration {
-            group: "0f".repeat(16),
-            excluded: vec!["phone".into()],
-            listening: Some("desk".into()),
-        };
-        assert!(start.valid());
-        let json = serde_json::to_vec(&start).unwrap();
-        assert_eq!(
-            serde_json::from_slice::<SpeakerCommand>(&json).unwrap(),
-            start
-        );
-        assert!(
-            !SpeakerCommand::StartCalibration {
-                group: "0f".repeat(16),
-                excluded: vec!["alsa input 57".into()],
-                listening: None,
-            }
-            .valid()
-        );
-        assert!(
-            !SpeakerCommand::StartCalibration {
-                group: "0f".repeat(16),
-                excluded: Vec::new(),
-                listening: Some(String::new()),
-            }
-            .valid()
-        );
-    }
-
-    #[test]
-    fn snapshots_with_microphones_round_trip() {
-        let snapshot = SpeakerSnapshot {
-            media_enabled: true,
-            devices: Vec::new(),
-            groups: vec![SpeakerGroupInfo {
-                id: "0f".repeat(16),
+        phase commands_round_trip_and_reject_node_shaped_identifiers;
+        {
+            let create = SpeakerCommand::Create {
                 name: "Living room".into(),
-                leader_label: "Desk".into(),
-                led_here: true,
-                members: Vec::new(),
-                playback: None,
-                microphones: vec![CalibrationMicrophoneInfo {
-                    device: "phone".into(),
-                    device_label: "Phone".into(),
-                    label: "Microphone".into(),
-                    local: false,
-                    status: MicrophoneStatus::AwaitingConsent,
-                }],
-                output_here: false,
-            }],
-            calibrations: vec![CalibrationInfo {
-                group: "0f".repeat(16),
-                phase: CalibrationPhaseInfo::WaitingForMicrophones,
-                members: Vec::new(),
-                microphones: vec![CalibrationMicrophoneRun {
-                    device: "phone".into(),
-                    label: "Phone".into(),
-                    listening: true,
-                    state: CalibrationMicrophoneState::Used {
-                        heard: 2,
-                        rejected: 1,
+                members: vec![SpeakerMemberSpec {
+                    device: "desk".into(),
+                    output: "ab".repeat(16),
+                    role: SpeakerRoleSpec::Room {
+                        x_mm: -1500,
+                        y_mm: 2000,
+                        z_mm: 0,
                     },
                 }],
-                listening_label: Some("Phone".into()),
-                message: None,
-            }],
-        };
-        let reply = SpeakerReply::Snapshot { snapshot };
-        assert!(reply.valid());
-        let json = serde_json::to_vec(&reply).unwrap();
-        assert_eq!(
-            serde_json::from_slice::<SpeakerReply>(&json).unwrap(),
-            reply
-        );
-    }
+            };
+            assert!(create.valid());
+            let json = serde_json::to_vec(&create).unwrap();
+            assert_eq!(
+                serde_json::from_slice::<SpeakerCommand>(&json).unwrap(),
+                create
+            );
+            let node_name = SpeakerCommand::Identify {
+                device: "desk".into(),
+                output: "alsa_output.pci-0000_00_1f.3.analog-stereo".into(),
+            };
+            assert!(!node_name.valid());
+            assert!(
+                !SpeakerCommand::Create {
+                    name: " ".into(),
+                    members: Vec::new()
+                }
+                .valid()
+            );
+            assert!(
+                serde_json::from_str::<SpeakerCommand>(
+                    r#"{"command":"identify","device":"desk","output":"00","node":57}"#
+                )
+                .is_err()
+            );
+        }
 
-    #[test]
-    fn replies_are_bounded() {
-        assert!(
-            !SpeakerReply::Rejected {
-                reason: String::new()
-            }
-            .valid()
-        );
-        assert!(
-            SpeakerReply::Done {
-                group: Some("0f".repeat(16))
-            }
-            .valid()
-        );
-        assert!(
-            !SpeakerReply::Done {
-                group: Some("group".into())
-            }
-            .valid()
-        );
+        phase calibration_commands_name_devices_not_nodes;
+        {
+            let start = SpeakerCommand::StartCalibration {
+                group: "0f".repeat(16),
+                excluded: vec!["phone".into()],
+                listening: Some("desk".into()),
+            };
+            assert!(start.valid());
+            let json = serde_json::to_vec(&start).unwrap();
+            assert_eq!(
+                serde_json::from_slice::<SpeakerCommand>(&json).unwrap(),
+                start
+            );
+            assert!(
+                !SpeakerCommand::StartCalibration {
+                    group: "0f".repeat(16),
+                    excluded: vec!["alsa input 57".into()],
+                    listening: None,
+                }
+                .valid()
+            );
+            assert!(
+                !SpeakerCommand::StartCalibration {
+                    group: "0f".repeat(16),
+                    excluded: Vec::new(),
+                    listening: Some(String::new()),
+                }
+                .valid()
+            );
+        }
+
+        phase snapshots_with_microphones_round_trip;
+        {
+            let snapshot = SpeakerSnapshot {
+                media_enabled: true,
+                devices: Vec::new(),
+                groups: vec![SpeakerGroupInfo {
+                    id: "0f".repeat(16),
+                    name: "Living room".into(),
+                    leader_label: "Desk".into(),
+                    led_here: true,
+                    members: Vec::new(),
+                    playback: None,
+                    microphones: vec![CalibrationMicrophoneInfo {
+                        device: "phone".into(),
+                        device_label: "Phone".into(),
+                        label: "Microphone".into(),
+                        local: false,
+                        status: MicrophoneStatus::AwaitingConsent,
+                    }],
+                    output_here: false,
+                }],
+                calibrations: vec![CalibrationInfo {
+                    group: "0f".repeat(16),
+                    phase: CalibrationPhaseInfo::WaitingForMicrophones,
+                    members: Vec::new(),
+                    microphones: vec![CalibrationMicrophoneRun {
+                        device: "phone".into(),
+                        label: "Phone".into(),
+                        listening: true,
+                        state: CalibrationMicrophoneState::Used {
+                            heard: 2,
+                            rejected: 1,
+                        },
+                    }],
+                    listening_label: Some("Phone".into()),
+                    message: None,
+                }],
+            };
+            let reply = SpeakerReply::Snapshot { snapshot };
+            assert!(reply.valid());
+            let json = serde_json::to_vec(&reply).unwrap();
+            assert_eq!(
+                serde_json::from_slice::<SpeakerReply>(&json).unwrap(),
+                reply
+            );
+        }
+
+        phase replies_are_bounded;
+        {
+            assert!(
+                !SpeakerReply::Rejected {
+                    reason: String::new()
+                }
+                .valid()
+            );
+            assert!(
+                SpeakerReply::Done {
+                    group: Some("0f".repeat(16))
+                }
+                .valid()
+            );
+            assert!(
+                !SpeakerReply::Done {
+                    group: Some("group".into())
+                }
+                .valid()
+            );
+        }
     }
 }

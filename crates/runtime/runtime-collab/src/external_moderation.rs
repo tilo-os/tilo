@@ -170,120 +170,128 @@ mod tests {
         .to_string()
     }
 
-    #[test]
-    fn store_actions_bind_exact_nested_operations_not_protocol_labels() {
-        let report = operation();
-        let mut appeal = report.clone();
-        appeal.mutation = ModerationMutation::PublisherAppeal {
-            case_id: "case-one".into(),
-            reason: "The report has been addressed".into(),
-            evidence_digest_hex: None,
-        };
-        for (action, operation) in [("submit-report", report), ("appeal", appeal)] {
-            let argument = arguments(&operation);
-            validate_action(action, &argument, &operation).unwrap();
-            for wrong in [
-                operation.action(),
-                "registry.publisher_reply",
-                "report",
-                "submit",
-                "",
-            ] {
-                assert!(
-                    validate_action(wrong, &argument, &operation).is_err(),
-                    "{wrong}"
-                );
-            }
-            let alternate = if action == "appeal" {
-                "submit-report"
-            } else {
-                "appeal"
-            };
-            assert!(validate_action(alternate, &argument, &operation).is_err());
-            for field in [
-                "destination",
-                "owner",
-                "mutation",
-                "request",
-                "issued",
-                "expires",
-            ] {
-                let mut changed = operation.clone();
-                match field {
-                    "destination" => changed.destination.base_url.push('/'),
-                    "owner" => changed.destination.owner_pubkey_hex = "ef".repeat(32),
-                    "mutation" => match &mut changed.mutation {
-                        ModerationMutation::FileReport { summary, .. } => summary.push('!'),
-                        ModerationMutation::PublisherAppeal { reason, .. } => reason.push('!'),
-                        _ => unreachable!(),
-                    },
-                    "request" => changed.request_id.push('x'),
-                    "issued" => changed.issued_at_unix += 1,
-                    "expires" => changed.expires_at_unix += 1,
-                    _ => unreachable!(),
-                }
-                assert!(
-                    validate_action(action, &argument, &changed).is_err(),
-                    "{field}"
-                );
-                assert!(
-                    validate_action(action, &arguments(&changed), &operation).is_err(),
-                    "{field}"
-                );
-            }
-        }
-    }
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+        )]
+        fn store_moderation_actions;
 
-    #[test]
-    fn store_action_arguments_reject_nonexact_and_malformed_payloads() {
-        let operation = operation();
-        let valid: serde_json::Value = serde_json::from_str(&arguments(&operation)).unwrap();
-        let mut invalid = vec![
-            serde_json::to_string(&operation).unwrap(),
-            "null".into(),
-            "{}".into(),
-        ];
-        for app in [
-            serde_json::json!(""),
-            serde_json::json!("  "),
-            serde_json::json!(7),
-        ] {
-            let mut value = valid.clone();
-            value["app"] = app;
+        phase store_actions_bind_exact_nested_operations_not_protocol_labels;
+        {
+            let report = operation();
+            let mut appeal = report.clone();
+            appeal.mutation = ModerationMutation::PublisherAppeal {
+                case_id: "case-one".into(),
+                reason: "The report has been addressed".into(),
+                evidence_digest_hex: None,
+            };
+            for (action, operation) in [("submit-report", report), ("appeal", appeal)] {
+                let argument = arguments(&operation);
+                validate_action(action, &argument, &operation).unwrap();
+                for wrong in [
+                    operation.action(),
+                    "registry.publisher_reply",
+                    "report",
+                    "submit",
+                    "",
+                ] {
+                    assert!(
+                        validate_action(wrong, &argument, &operation).is_err(),
+                        "{wrong}"
+                    );
+                }
+                let alternate = if action == "appeal" {
+                    "submit-report"
+                } else {
+                    "appeal"
+                };
+                assert!(validate_action(alternate, &argument, &operation).is_err());
+                for field in [
+                    "destination",
+                    "owner",
+                    "mutation",
+                    "request",
+                    "issued",
+                    "expires",
+                ] {
+                    let mut changed = operation.clone();
+                    match field {
+                        "destination" => changed.destination.base_url.push('/'),
+                        "owner" => changed.destination.owner_pubkey_hex = "ef".repeat(32),
+                        "mutation" => match &mut changed.mutation {
+                            ModerationMutation::FileReport { summary, .. } => summary.push('!'),
+                            ModerationMutation::PublisherAppeal { reason, .. } => reason.push('!'),
+                            _ => unreachable!(),
+                        },
+                        "request" => changed.request_id.push('x'),
+                        "issued" => changed.issued_at_unix += 1,
+                        "expires" => changed.expires_at_unix += 1,
+                        _ => unreachable!(),
+                    }
+                    assert!(
+                        validate_action(action, &argument, &changed).is_err(),
+                        "{field}"
+                    );
+                    assert!(
+                        validate_action(action, &arguments(&changed), &operation).is_err(),
+                        "{field}"
+                    );
+                }
+            }
+        }
+
+        phase store_action_arguments_reject_nonexact_and_malformed_payloads;
+        {
+            let operation = operation();
+            let valid: serde_json::Value = serde_json::from_str(&arguments(&operation)).unwrap();
+            let mut invalid = vec![
+                serde_json::to_string(&operation).unwrap(),
+                "null".into(),
+                "{}".into(),
+            ];
+            for app in [
+                serde_json::json!(""),
+                serde_json::json!("  "),
+                serde_json::json!(7),
+            ] {
+                let mut value = valid.clone();
+                value["app"] = app;
+                invalid.push(value.to_string());
+            }
+            for payload in [serde_json::json!(operation), serde_json::json!("not JSON")] {
+                let mut value = valid.clone();
+                value["operation"] = payload;
+                invalid.push(value.to_string());
+            }
+            let mut extra = valid.clone();
+            extra["unexpected"] = true.into();
+            invalid.push(extra.to_string());
+            let mut nested = serde_json::to_value(&operation).unwrap();
+            nested["unexpected"] = true.into();
+            let mut value = valid;
+            value["operation"] = nested.to_string().into();
             invalid.push(value.to_string());
+            invalid.push(format!(
+                "{{\"app\":\"duplicate\",{}",
+                &arguments(&operation)[1..]
+            ));
+            for argument in invalid {
+                assert!(
+                    validate_action("submit-report", &argument, &operation).is_err(),
+                    "{argument}"
+                );
+            }
+            let mut malformed = operation.clone();
+            malformed.expires_at_unix = malformed.issued_at_unix;
+            assert!(validate_action("submit-report", &arguments(&malformed), &malformed).is_err());
+            let mut unsupported = operation;
+            unsupported.mutation = ModerationMutation::PublisherReply {
+                case_id: "case-one".into(),
+                message: "Reply".into(),
+                evidence_digest_hex: None,
+            };
+            assert!(validate_action("appeal", &arguments(&unsupported), &unsupported).is_err());
         }
-        for payload in [serde_json::json!(operation), serde_json::json!("not JSON")] {
-            let mut value = valid.clone();
-            value["operation"] = payload;
-            invalid.push(value.to_string());
-        }
-        let mut extra = valid.clone();
-        extra["unexpected"] = true.into();
-        invalid.push(extra.to_string());
-        let mut nested = serde_json::to_value(&operation).unwrap();
-        nested["unexpected"] = true.into();
-        let mut value = valid;
-        value["operation"] = nested.to_string().into();
-        invalid.push(value.to_string());
-        invalid.push(format!(
-            "{{\"app\":\"duplicate\",{}",
-            &arguments(&operation)[1..]
-        ));
-        for argument in invalid {
-            assert!(
-                validate_action("submit-report", &argument, &operation).is_err(),
-                "{argument}"
-            );
-        }
-        let mut malformed = operation.clone();
-        malformed.expires_at_unix = malformed.issued_at_unix;
-        assert!(validate_action("submit-report", &arguments(&malformed), &malformed).is_err());
-        let mut unsupported = operation;
-        unsupported.mutation = ModerationMutation::PublisherReply {
-            case_id: "case-one".into(),
-            message: "Reply".into(),
-            evidence_digest_hex: None,
-        };
-        assert!(validate_action("appeal", &arguments(&unsupported), &unsupported).is_err());
     }
 }

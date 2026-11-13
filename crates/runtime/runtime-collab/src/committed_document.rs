@@ -265,191 +265,199 @@ impl Reply {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn busy_is_a_tag_of_its_own_after_every_earlier_reply() {
-        assert_eq!(Reply::Absent.encode().unwrap(), [11]);
-        assert_eq!(Reply::Busy.encode().unwrap(), [12]);
-        assert_eq!(Reply::decode(&[12]).unwrap(), Reply::Busy);
-        assert_eq!(Request::Leave.encode().unwrap(), [8]);
-        assert_eq!(Request::decode(&[8]).unwrap(), Request::Leave);
-    }
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+        )]
+        fn committed_document_wire;
 
-    #[test]
-    fn connection_snapshot_is_bounded_and_keeps_original_principal_and_route() {
-        assert_eq!(Request::ConnectionSnapshot.encode().unwrap(), [7]);
-        let snapshot = ConnectionSnapshot {
-            root: [1; 32],
-            device: [2; 32],
-            agent: Some("agent".into()),
-            app_id: "notes".into(),
-            room: "workspace".into(),
-            document: "document".into(),
-        };
-        let reply = Reply::ConnectionSnapshot(snapshot.clone());
-        assert_eq!(Reply::decode(&reply.encode().unwrap()).unwrap(), reply);
-        for field in 0..5 {
-            let mut invalid = snapshot.clone();
-            match field {
-                0 => invalid.root = [0; 32],
-                1 => invalid.device = [0; 32],
-                2 => invalid.agent = Some(String::new()),
-                3 => invalid.document = "x".repeat(4097),
-                _ => invalid.room = "bad\nworkspace".into(),
-            }
-            assert!(Reply::ConnectionSnapshot(invalid).encode().is_err());
+        phase busy_is_a_tag_of_its_own_after_every_earlier_reply;
+        {
+            assert_eq!(Reply::Absent.encode().unwrap(), [11]);
+            assert_eq!(Reply::Busy.encode().unwrap(), [12]);
+            assert_eq!(Reply::decode(&[12]).unwrap(), Reply::Busy);
+            assert_eq!(Request::Leave.encode().unwrap(), [8]);
+            assert_eq!(Request::decode(&[8]).unwrap(), Request::Leave);
         }
-        let mut trailing = reply.encode().unwrap();
-        trailing.push(0);
-        assert!(Reply::decode(&trailing).is_err());
-    }
 
-    #[test]
-    fn private_binding_wire_is_bounded_append_only_and_has_no_selected_identity() {
-        assert_eq!(
-            Request::Open {
-                known_revision: None
+        phase connection_snapshot_is_bounded_and_keeps_original_principal_and_route;
+        {
+            assert_eq!(Request::ConnectionSnapshot.encode().unwrap(), [7]);
+            let snapshot = ConnectionSnapshot {
+                root: [1; 32],
+                device: [2; 32],
+                agent: Some("agent".into()),
+                app_id: "notes".into(),
+                room: "workspace".into(),
+                document: "document".into(),
+            };
+            let reply = Reply::ConnectionSnapshot(snapshot.clone());
+            assert_eq!(Reply::decode(&reply.encode().unwrap()).unwrap(), reply);
+            for field in 0..5 {
+                let mut invalid = snapshot.clone();
+                match field {
+                    0 => invalid.root = [0; 32],
+                    1 => invalid.device = [0; 32],
+                    2 => invalid.agent = Some(String::new()),
+                    3 => invalid.document = "x".repeat(4097),
+                    _ => invalid.room = "bad\nworkspace".into(),
+                }
+                assert!(Reply::ConnectionSnapshot(invalid).encode().is_err());
             }
-            .encode()
-            .unwrap(),
-            [0, 0]
-        );
-        assert_eq!(Request::PrivateWindowBinding.encode().unwrap(), [4]);
-        assert_eq!(Reply::Legacy.encode().unwrap(), [0]);
-        assert_eq!(
-            Reply::PrivateWindowBinding { instance: None }
-                .encode()
-                .unwrap(),
-            [7, 0]
-        );
-        let reply = Reply::PrivateWindowBinding { instance: Some(42) };
-        assert_eq!(Reply::decode(&reply.encode().unwrap()).unwrap(), reply);
-        assert!(
-            Reply::PrivateWindowBinding { instance: Some(0) }
-                .encode()
-                .is_err()
-        );
-        // A caller cannot append an instance or identity selector to the unit request.
-        assert!(Request::decode(&[4, 42]).is_err());
-        assert!(Reply::decode(&[7, 1, 0]).is_err());
-    }
-
-    #[test]
-    fn await_and_stale_are_appended_and_carry_no_bytes() {
-        // Appended after every existing variant: older peers' encodings keep
-        // their tags, and an older broker refuses the unknown request.
-        let request = Request::Await {
-            known_revision: Some([5; 32]),
-        };
-        let encoded = request.encode().unwrap();
-        assert_eq!(encoded[0], 5);
-        assert_eq!(Request::decode(&encoded).unwrap(), request);
-        assert_eq!(
-            Request::Await {
-                known_revision: None
-            }
-            .encode()
-            .unwrap(),
-            [5, 0]
-        );
-        assert_eq!(Reply::RetiredStale.encode().unwrap(), [8]);
-        assert_eq!(Reply::decode(&[8]).unwrap(), Reply::RetiredStale);
-        assert!(Reply::decode(&[8, 0]).is_err());
-    }
-
-    #[test]
-    fn open_changes_and_changes_are_appended_and_bounded() {
-        // Appended after every existing variant: older peers keep their
-        // tags, and an older broker refuses the unknown request.
-        let request = Request::OpenChanges {
-            known_revision: [5; 32],
-        };
-        let encoded = request.encode().unwrap();
-        assert_eq!(encoded[0], 6);
-        assert_eq!(Request::decode(&encoded).unwrap(), request);
-        let reply = |base: usize, first: usize, total: u32| Reply::Changes {
-            capture: 1,
-            revision: [7; 32],
-            base: vec![[3; 32]; base],
-            total,
-            bytes: vec![9; first],
-            token: [4; 16],
-        };
-        let largest = reply(
-            MAX_CHANGES_BASE,
-            CHANGES_FIRST_BYTES,
-            u32::try_from(MAX_DOCUMENT_BYTES).unwrap(),
-        );
-        let encoded = largest.encode().unwrap();
-        assert_eq!(encoded[0], 9);
-        assert!(
-            encoded.len() <= MAX_WIRE_BYTES,
-            "the largest first piece fits the wire like a chunk: {} bytes",
-            encoded.len()
-        );
-        assert_eq!(Reply::decode(&encoded).unwrap(), largest);
-        for refused in [
-            reply(0, 1, 1),
-            reply(MAX_CHANGES_BASE + 1, 1, 1),
-            reply(1, CHANGES_FIRST_BYTES + 1, u32::MAX),
-            reply(1, 0, 1),
-            reply(1, 2, 1),
-            reply(1, 1, 0),
-            reply(1, 1, u32::try_from(MAX_DOCUMENT_BYTES).unwrap() + 1),
-        ] {
-            assert!(refused.encode().is_err(), "{refused:?}");
+            let mut trailing = reply.encode().unwrap();
+            trailing.push(0);
+            assert!(Reply::decode(&trailing).is_err());
         }
-        let mut zero = reply(1, 1, 1);
-        if let Reply::Changes { token, .. } = &mut zero {
-            *token = [0; 16];
-        }
-        assert!(zero.encode().is_err());
-    }
 
-    #[test]
-    fn committed_read_codec_roundtrip_and_bounds() {
-        let request = Request::Open {
-            known_revision: None,
-        };
-        assert_eq!(
-            Request::decode(&request.encode().unwrap()).unwrap(),
-            request
-        );
-        let reply = Reply::Chunk {
-            capture: 1,
-            revision: [7; 32],
-            total: u32::try_from(CHUNK_BYTES).unwrap(),
-            offset: 0,
-            bytes: vec![9; CHUNK_BYTES],
-            token: [3; 16],
-        };
-        assert_eq!(Reply::decode(&reply.encode().unwrap()).unwrap(), reply);
-        let mut extra = request.encode().unwrap();
-        extra.push(0);
-        assert!(Request::decode(&extra).is_err());
-        for (total, offset, len, capture) in [
-            (0, 0, 0, 1),
-            (1, 0, 2, 1),
-            (u32::try_from(MAX_DOCUMENT_BYTES).unwrap() + 1, 0, 1, 1),
-            (1, 0, 1, 0),
-            (
-                u32::try_from(CHUNK_BYTES).unwrap() + 1,
-                0,
-                CHUNK_BYTES + 1,
-                1,
-            ),
-        ] {
-            assert!(
-                Reply::Chunk {
-                    capture,
-                    revision: [0; 32],
-                    total,
-                    offset,
-                    bytes: vec![0; len],
-                    token: [3; 16]
+        phase private_binding_wire_is_bounded_append_only_and_has_no_selected_identity;
+        {
+            assert_eq!(
+                Request::Open {
+                    known_revision: None
                 }
                 .encode()
-                .is_err()
+                .unwrap(),
+                [0, 0]
             );
+            assert_eq!(Request::PrivateWindowBinding.encode().unwrap(), [4]);
+            assert_eq!(Reply::Legacy.encode().unwrap(), [0]);
+            assert_eq!(
+                Reply::PrivateWindowBinding { instance: None }
+                    .encode()
+                    .unwrap(),
+                [7, 0]
+            );
+            let reply = Reply::PrivateWindowBinding { instance: Some(42) };
+            assert_eq!(Reply::decode(&reply.encode().unwrap()).unwrap(), reply);
+            assert!(
+                Reply::PrivateWindowBinding { instance: Some(0) }
+                    .encode()
+                    .is_err()
+            );
+            // A caller cannot append an instance or identity selector to the unit request.
+            assert!(Request::decode(&[4, 42]).is_err());
+            assert!(Reply::decode(&[7, 1, 0]).is_err());
+        }
+
+        phase await_and_stale_are_appended_and_carry_no_bytes;
+        {
+            // Appended after every existing variant: older peers' encodings keep
+            // their tags, and an older broker refuses the unknown request.
+            let request = Request::Await {
+                known_revision: Some([5; 32]),
+            };
+            let encoded = request.encode().unwrap();
+            assert_eq!(encoded[0], 5);
+            assert_eq!(Request::decode(&encoded).unwrap(), request);
+            assert_eq!(
+                Request::Await {
+                    known_revision: None
+                }
+                .encode()
+                .unwrap(),
+                [5, 0]
+            );
+            assert_eq!(Reply::RetiredStale.encode().unwrap(), [8]);
+            assert_eq!(Reply::decode(&[8]).unwrap(), Reply::RetiredStale);
+            assert!(Reply::decode(&[8, 0]).is_err());
+        }
+
+        phase open_changes_and_changes_are_appended_and_bounded;
+        {
+            // Appended after every existing variant: older peers keep their
+            // tags, and an older broker refuses the unknown request.
+            let request = Request::OpenChanges {
+                known_revision: [5; 32],
+            };
+            let encoded = request.encode().unwrap();
+            assert_eq!(encoded[0], 6);
+            assert_eq!(Request::decode(&encoded).unwrap(), request);
+            let reply = |base: usize, first: usize, total: u32| Reply::Changes {
+                capture: 1,
+                revision: [7; 32],
+                base: vec![[3; 32]; base],
+                total,
+                bytes: vec![9; first],
+                token: [4; 16],
+            };
+            let largest = reply(
+                MAX_CHANGES_BASE,
+                CHANGES_FIRST_BYTES,
+                u32::try_from(MAX_DOCUMENT_BYTES).unwrap(),
+            );
+            let encoded = largest.encode().unwrap();
+            assert_eq!(encoded[0], 9);
+            assert!(
+                encoded.len() <= MAX_WIRE_BYTES,
+                "the largest first piece fits the wire like a chunk: {} bytes",
+                encoded.len()
+            );
+            assert_eq!(Reply::decode(&encoded).unwrap(), largest);
+            for refused in [
+                reply(0, 1, 1),
+                reply(MAX_CHANGES_BASE + 1, 1, 1),
+                reply(1, CHANGES_FIRST_BYTES + 1, u32::MAX),
+                reply(1, 0, 1),
+                reply(1, 2, 1),
+                reply(1, 1, 0),
+                reply(1, 1, u32::try_from(MAX_DOCUMENT_BYTES).unwrap() + 1),
+            ] {
+                assert!(refused.encode().is_err(), "{refused:?}");
+            }
+            let mut zero = reply(1, 1, 1);
+            if let Reply::Changes { token, .. } = &mut zero {
+                *token = [0; 16];
+            }
+            assert!(zero.encode().is_err());
+        }
+
+        phase committed_read_codec_roundtrip_and_bounds;
+        {
+            let request = Request::Open {
+                known_revision: None,
+            };
+            assert_eq!(
+                Request::decode(&request.encode().unwrap()).unwrap(),
+                request
+            );
+            let reply = Reply::Chunk {
+                capture: 1,
+                revision: [7; 32],
+                total: u32::try_from(CHUNK_BYTES).unwrap(),
+                offset: 0,
+                bytes: vec![9; CHUNK_BYTES],
+                token: [3; 16],
+            };
+            assert_eq!(Reply::decode(&reply.encode().unwrap()).unwrap(), reply);
+            let mut extra = request.encode().unwrap();
+            extra.push(0);
+            assert!(Request::decode(&extra).is_err());
+            for (total, offset, len, capture) in [
+                (0, 0, 0, 1),
+                (1, 0, 2, 1),
+                (u32::try_from(MAX_DOCUMENT_BYTES).unwrap() + 1, 0, 1, 1),
+                (1, 0, 1, 0),
+                (
+                    u32::try_from(CHUNK_BYTES).unwrap() + 1,
+                    0,
+                    CHUNK_BYTES + 1,
+                    1,
+                ),
+            ] {
+                assert!(
+                    Reply::Chunk {
+                        capture,
+                        revision: [0; 32],
+                        total,
+                        offset,
+                        bytes: vec![0; len],
+                        token: [3; 16]
+                    }
+                    .encode()
+                    .is_err()
+                );
+            }
         }
     }
 }

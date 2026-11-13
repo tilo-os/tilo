@@ -625,100 +625,104 @@ mod tests {
     use super::*;
     use collab_types::PeerPresencePayload;
 
-    #[test]
-    fn frames_round_trip_through_the_framing() {
-        let call = Call {
-            id: 7,
-            request: Operation::Publish {
-                channel: Handle(3),
-                publication: Publication::Presence(PeerPresence {
-                    key: vec![1, 2],
-                    payload: PeerPresencePayload::Caret { pos: 9 },
-                }),
-            },
-        };
-        let bytes = FRAMING.encode_value(&call).unwrap();
-        let read: Call = FRAMING.read_value(&mut bytes.as_slice()).unwrap().unwrap();
-        assert_eq!(read, call);
+    tilo_test_env::scenario! {
+        fn wire_frames_and_session_calls;
 
-        let event = HostFrame::Event {
-            subscription: 7,
-            event: Event::Presence {
-                user_id: "peer".into(),
-                presence: PeerPresence {
-                    key: vec![],
-                    payload: PeerPresencePayload::Left,
+        phase frames_round_trip_through_the_framing;
+        {
+            let call = Call {
+                id: 7,
+                request: Operation::Publish {
+                    channel: Handle(3),
+                    publication: Publication::Presence(PeerPresence {
+                        key: vec![1, 2],
+                        payload: PeerPresencePayload::Caret { pos: 9 },
+                    }),
                 },
-            },
-        };
-        let bytes = FRAMING.encode_value(&event).unwrap();
-        let read: HostFrame = FRAMING.read_value(&mut bytes.as_slice()).unwrap().unwrap();
-        assert_eq!(read, event);
-    }
-
-    #[test]
-    fn the_session_calls_and_their_answers_round_trip() {
-        let invoke = Call {
-            id: 4,
-            request: Operation::Invoke {
-                services: Handle(1),
-                resource: "sound".into(),
-                action: "set-volume".into(),
-                arguments: br#"{"level":0.4}"#.to_vec(),
-            },
-        };
-        let bytes = FRAMING.encode_value(&invoke).unwrap();
-        let read: Call = FRAMING.read_value(&mut bytes.as_slice()).unwrap().unwrap();
-        assert_eq!(read, invoke);
-
-        let reading = HostFrame::Event {
-            subscription: 4,
-            event: Event::Reading {
-                resource: "sound".into(),
-                revision: 9,
-                reading: Some(b"{}".to_vec()),
-            },
-        };
-        let bytes = FRAMING.encode_value(&reading).unwrap();
-        let read: HostFrame = FRAMING.read_value(&mut bytes.as_slice()).unwrap().unwrap();
-        assert_eq!(read, reading);
-
-        let receipt = HostFrame::Reply {
-            id: 4,
-            result: Ok(Reply::Receipt(Receipt::Refused {
-                code: "unavailable".into(),
-                message: "there is no sound output".into(),
-            })),
-        };
-        let bytes = FRAMING.encode_value(&receipt).unwrap();
-        let read: HostFrame = FRAMING.read_value(&mut bytes.as_slice()).unwrap().unwrap();
-        assert_eq!(read, receipt);
-    }
-
-    /// A roster row without a role, avatar, join time or self mark reaches the endpoint as it
-    /// was sent: postcard reads fields by position, so a row that left one out would not decode
-    /// and the endpoint would take it for the host hanging up.
-    #[test]
-    fn a_roster_of_rows_without_their_optional_parts_round_trips() {
-        let bare = collab_types::Member::of_person(&collab_types::Person::new("p-1", "Ada"), None);
-        let full = collab_types::Member::of_person(
-            &collab_types::Person::new("p-2", "Grace"),
-            Some(collab_types::Role::Owner),
-        )
-        .joined_at(Some(5))
-        .claiming_self();
-        for members in [vec![bare.clone()], vec![full.clone()], vec![bare, full]] {
-            let frame = HostFrame::Event {
-                subscription: 2,
-                event: Event::Context(ContextUpdate::Snapshot {
-                    members,
-                    permissions: vec!["edit".into()],
-                    apps: Vec::new(),
-                }),
             };
-            let bytes = FRAMING.encode_value(&frame).unwrap();
+            let bytes = FRAMING.encode_value(&call).unwrap();
+            let read: Call = FRAMING.read_value(&mut bytes.as_slice()).unwrap().unwrap();
+            assert_eq!(read, call);
+
+            let event = HostFrame::Event {
+                subscription: 7,
+                event: Event::Presence {
+                    user_id: "peer".into(),
+                    presence: PeerPresence {
+                        key: vec![],
+                        payload: PeerPresencePayload::Left,
+                    },
+                },
+            };
+            let bytes = FRAMING.encode_value(&event).unwrap();
             let read: HostFrame = FRAMING.read_value(&mut bytes.as_slice()).unwrap().unwrap();
-            assert_eq!(read, frame);
+            assert_eq!(read, event);
+        }
+
+        phase the_session_calls_and_their_answers_round_trip;
+        {
+            let invoke = Call {
+                id: 4,
+                request: Operation::Invoke {
+                    services: Handle(1),
+                    resource: "sound".into(),
+                    action: "set-volume".into(),
+                    arguments: br#"{"level":0.4}"#.to_vec(),
+                },
+            };
+            let bytes = FRAMING.encode_value(&invoke).unwrap();
+            let read: Call = FRAMING.read_value(&mut bytes.as_slice()).unwrap().unwrap();
+            assert_eq!(read, invoke);
+
+            let reading = HostFrame::Event {
+                subscription: 4,
+                event: Event::Reading {
+                    resource: "sound".into(),
+                    revision: 9,
+                    reading: Some(b"{}".to_vec()),
+                },
+            };
+            let bytes = FRAMING.encode_value(&reading).unwrap();
+            let read: HostFrame = FRAMING.read_value(&mut bytes.as_slice()).unwrap().unwrap();
+            assert_eq!(read, reading);
+
+            let receipt = HostFrame::Reply {
+                id: 4,
+                result: Ok(Reply::Receipt(Receipt::Refused {
+                    code: "unavailable".into(),
+                    message: "there is no sound output".into(),
+                })),
+            };
+            let bytes = FRAMING.encode_value(&receipt).unwrap();
+            let read: HostFrame = FRAMING.read_value(&mut bytes.as_slice()).unwrap().unwrap();
+            assert_eq!(read, receipt);
+        }
+
+        phase a_roster_of_rows_without_their_optional_parts_round_trips;
+        // A roster row without a role, avatar, join time or self mark reaches the endpoint as it
+        // was sent: postcard reads fields by position, so a row that left one out would not decode
+        // and the endpoint would take it for the host hanging up.
+        {
+            let bare = collab_types::Member::of_person(&collab_types::Person::new("p-1", "Ada"), None);
+            let full = collab_types::Member::of_person(
+                &collab_types::Person::new("p-2", "Grace"),
+                Some(collab_types::Role::Owner),
+            )
+            .joined_at(Some(5))
+            .claiming_self();
+            for members in [vec![bare.clone()], vec![full.clone()], vec![bare, full]] {
+                let frame = HostFrame::Event {
+                    subscription: 2,
+                    event: Event::Context(ContextUpdate::Snapshot {
+                        members,
+                        permissions: vec!["edit".into()],
+                        apps: Vec::new(),
+                    }),
+                };
+                let bytes = FRAMING.encode_value(&frame).unwrap();
+                let read: HostFrame = FRAMING.read_value(&mut bytes.as_slice()).unwrap().unwrap();
+                assert_eq!(read, frame);
+            }
         }
     }
 }

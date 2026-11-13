@@ -283,73 +283,77 @@ impl LiveActivityServer {
 mod tests {
     use super::*;
 
-    #[test]
-    fn the_board_keeps_each_apps_activity_and_hands_back_its_controls_once() {
-        let board = LiveActivities::default();
-        let before = board.revision();
-        board.show("so.tilo.clocks", Some(serde_json::json!({"label": "Tea"})));
-        assert_ne!(board.revision(), before);
-        assert_eq!(
-            board.activity("so.tilo.clocks"),
-            Some(serde_json::json!({"label": "Tea"}))
-        );
-        assert_eq!(board.activity("so.tilo.other"), None);
+    tilo_test_env::scenario! {
+        fn the_live_activity_board;
 
-        assert_eq!(board.controls_after("so.tilo.clocks", 0), None);
-        board.press("so.tilo.clocks", serde_json::json!({"command": "pause"}));
-        board.press("so.tilo.clocks", serde_json::json!({"command": "resume"}));
-        let (serial, controls) = board.controls_after("so.tilo.clocks", 0).unwrap();
-        assert_eq!(controls.len(), 2);
-        assert_eq!(board.controls_after("so.tilo.clocks", serial), None);
+        phase the_board_keeps_each_apps_activity_and_hands_back_its_controls_once;
+        {
+            let board = LiveActivities::default();
+            let before = board.revision();
+            board.show("so.tilo.clocks", Some(serde_json::json!({"label": "Tea"})));
+            assert_ne!(board.revision(), before);
+            assert_eq!(
+                board.activity("so.tilo.clocks"),
+                Some(serde_json::json!({"label": "Tea"}))
+            );
+            assert_eq!(board.activity("so.tilo.other"), None);
 
-        board.show("so.tilo.clocks", None);
-        assert_eq!(board.activity("so.tilo.clocks"), None);
-    }
+            assert_eq!(board.controls_after("so.tilo.clocks", 0), None);
+            board.press("so.tilo.clocks", serde_json::json!({"command": "pause"}));
+            board.press("so.tilo.clocks", serde_json::json!({"command": "resume"}));
+            let (serial, controls) = board.controls_after("so.tilo.clocks", 0).unwrap();
+            assert_eq!(controls.len(), 2);
+            assert_eq!(board.controls_after("so.tilo.clocks", serial), None);
 
-    /// The host an activity belongs to takes its controls up from the board,
-    /// for an activity that has no collaboration channel of its own: the
-    /// session's own capture says what it caught and what it is doing with it.
-    #[test]
-    fn an_activitys_host_takes_its_controls_up_itself() {
-        let board = LiveActivities::default();
-        board.show(
-            "so.tilo.capture-studio",
-            Some(serde_json::json!({"title": "Shot"})),
-        );
-        board.press(
-            "so.tilo.capture-studio",
-            serde_json::json!({"command": "copy"}),
-        );
-        let (serial, controls) = board
-            .pressed_controls("so.tilo.capture-studio", 0)
-            .expect("the press is there for its host");
-        assert_eq!(controls, vec![serde_json::json!({"command": "copy"})]);
-        assert_eq!(
-            board.pressed_controls("so.tilo.capture-studio", serial),
-            None,
-            "a control taken once is not pressed again"
-        );
-    }
+            board.show("so.tilo.clocks", None);
+            assert_eq!(board.activity("so.tilo.clocks"), None);
+        }
 
-    /// The host presenting the board is woken by an activity moving and by
-    /// a pressed control, so a timer starting in the background is drawn
-    /// without waiting for the next frame the host would have run.
-    #[test]
-    fn the_board_wakes_the_host_presenting_it() {
-        let board = LiveActivities::default();
-        let woken = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let counter = Arc::clone(&woken);
-        board.set_host_wake(Arc::new(move || {
-            counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        }));
-        board.show("so.tilo.clocks", Some(serde_json::json!({"label": "Tea"})));
-        assert_eq!(woken.load(std::sync::atomic::Ordering::Relaxed), 1);
-        // The same activity again moves nothing and wakes no one.
-        board.show("so.tilo.clocks", Some(serde_json::json!({"label": "Tea"})));
-        assert_eq!(woken.load(std::sync::atomic::Ordering::Relaxed), 1);
-        board.press("so.tilo.clocks", serde_json::json!({"command": "toggle"}));
-        assert_eq!(woken.load(std::sync::atomic::Ordering::Relaxed), 2);
-        board.show("so.tilo.clocks", None);
-        assert_eq!(woken.load(std::sync::atomic::Ordering::Relaxed), 3);
+        phase an_activitys_host_takes_its_controls_up_itself;
+        // The host an activity belongs to takes its controls up from the board,
+        // for an activity that has no collaboration channel of its own: the
+        // session's own capture says what it caught and what it is doing with it.
+        {
+            let board = LiveActivities::default();
+            board.show(
+                "so.tilo.capture-studio",
+                Some(serde_json::json!({"title": "Shot"})),
+            );
+            board.press(
+                "so.tilo.capture-studio",
+                serde_json::json!({"command": "copy"}),
+            );
+            let (serial, controls) = board
+                .pressed_controls("so.tilo.capture-studio", 0)
+                .expect("the press is there for its host");
+            assert_eq!(controls, vec![serde_json::json!({"command": "copy"})]);
+            assert_eq!(
+                board.pressed_controls("so.tilo.capture-studio", serial),
+                None,
+                "a control taken once is not pressed again"
+            );
+        }
+
+        phase the_board_wakes_the_host_presenting_it;
+        // The host presenting the board is woken by an activity moving and by
+        // a pressed control, so a timer starting in the background is drawn
+        // without waiting for the next frame the host would have run.
+        {
+            let board = LiveActivities::default();
+            let woken = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let counter = Arc::clone(&woken);
+            board.set_host_wake(Arc::new(move || {
+                counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }));
+            board.show("so.tilo.clocks", Some(serde_json::json!({"label": "Tea"})));
+            assert_eq!(woken.load(std::sync::atomic::Ordering::Relaxed), 1);
+            // The same activity again moves nothing and wakes no one.
+            board.show("so.tilo.clocks", Some(serde_json::json!({"label": "Tea"})));
+            assert_eq!(woken.load(std::sync::atomic::Ordering::Relaxed), 1);
+            board.press("so.tilo.clocks", serde_json::json!({"command": "toggle"}));
+            assert_eq!(woken.load(std::sync::atomic::Ordering::Relaxed), 2);
+            board.show("so.tilo.clocks", None);
+            assert_eq!(woken.load(std::sync::atomic::Ordering::Relaxed), 3);
+        }
     }
 }

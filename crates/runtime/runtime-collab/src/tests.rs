@@ -21,76 +21,120 @@ fn published_with_identity(identity: Option<(&str, &str)>) -> Result<ExportedAct
     Ok(action)
 }
 
-#[test]
-fn action_semantic_identity_is_optional_bounded_and_kind_exact() {
-    let decode = published_with_identity;
-    assert!(decode(None).unwrap().semantic_identity.is_none());
-    let decoded = decode(Some(("store.app", "app:so.tilo.chat"))).unwrap();
-    assert_eq!(decoded.resource, "opaque-alias");
-    assert_eq!(decoded.semantic_identity.unwrap().key, "app:so.tilo.chat");
-    assert!(decode(Some(("person", "app:so.tilo.chat"))).is_err());
-    assert!(decode(Some(("store.app", ""))).is_err());
-    assert!(decode(Some(("store.app", "key\nsecret"))).is_err());
-    assert!(decode(Some(("store.app", &"x".repeat(4097)))).is_err());
-    assert!(decode(Some((&"x".repeat(129), "key"))).is_err());
-    assert!(decode(Some(("store.app", &"x".repeat(4096)))).is_ok());
+tilo_test_env::scenario! {
+    fn action_directory_and_view_metadata_round_trip;
+
+    phase action_semantic_identity_is_optional_bounded_and_kind_exact;
+    {
+        let decode = published_with_identity;
+        assert!(decode(None).unwrap().semantic_identity.is_none());
+        let decoded = decode(Some(("store.app", "app:so.tilo.chat"))).unwrap();
+        assert_eq!(decoded.resource, "opaque-alias");
+        assert_eq!(decoded.semantic_identity.unwrap().key, "app:so.tilo.chat");
+        assert!(decode(Some(("person", "app:so.tilo.chat"))).is_err());
+        assert!(decode(Some(("store.app", ""))).is_err());
+        assert!(decode(Some(("store.app", "key\nsecret"))).is_err());
+        assert!(decode(Some(("store.app", &"x".repeat(4097)))).is_err());
+        assert!(decode(Some((&"x".repeat(129), "key"))).is_err());
+        assert!(decode(Some(("store.app", &"x".repeat(4096)))).is_ok());
+    }
+
+    phase action_directory_resource_presentation_round_trips;
+    {
+        let page = serde_json::json!({
+            "revision": "r1",
+            "exhausted": true,
+            "next_cursor": [],
+            "stale_cursor": false,
+            "budget_exhausted": false,
+            "rows": [{
+                "parent_resource": "",
+                "resource": "totp:mail",
+                "resource_kind": "totp",
+                "resource_label": "Mail code",
+                "presentation": {"detail": "expires in 18 s", "badge": "438 291"},
+                "action": null,
+                "descriptor": null,
+                "has_children": false,
+                "visibility": null,
+            }],
+        });
+        let decoded: ActionDirectoryPage =
+            read_directory_answer(&page.to_string(), 1 << 20, |page: &ActionDirectoryPage| {
+                page.rows.iter().collect()
+            })
+            .expect("page decodes");
+        assert_eq!(
+            decoded.rows[0].presentation,
+            Some(tilo_actions::ResourcePresentation {
+                detail: Some("expires in 18 s".into()),
+                badge: Some("438 291".into()),
+                preview: None,
+            })
+        );
+    }
+
+    phase exported_view_metadata_round_trips;
+    {
+        let mut action = published_with_identity(None).unwrap();
+        action.view = Some(ExportedView {
+            id: "editor".into(),
+            label: "Editor".into(),
+            description: Some("Edit this note".into()),
+            open_action: "show-editor".into(),
+            primary: true,
+            desktop: false,
+            range: Some(ExportedViewRange {
+                action: "show-range".into(),
+                start_param: "start".into(),
+                end_param: "end".into(),
+                unit_param: "unit".into(),
+            }),
+            mount: Some(ExportedViewMount {
+                action: "mount-editor".into(),
+                capability_param: "slot_capability".into(),
+                view_param: "slot_view".into(),
+            }),
+        });
+        let json = serde_json::to_string(&action).unwrap();
+        let decoded: ExportedAction = serde_json::from_str(&json).expect("action decodes");
+        assert_eq!(decoded, action);
+    }
 }
 
-#[test]
-fn airdrop_extension_preserves_old_json_and_accepts_no_application_trust_claim() {
-    use super::{NearbyTransferCommand as Command, NearbyTransferReply as Reply};
-    assert_eq!(
-        serde_json::to_string(&Command::Snapshot).unwrap(),
-        r#"{"command":"snapshot"}"#
-    );
-    assert_eq!(
-        serde_json::to_string(&Reply::Accepted).unwrap(),
-        r#"{"result":"accepted"}"#
-    );
-    let command = r#"{"command":"send-air-drop","source_path":[47,116,109,112,47,102],"address":"127.0.0.1","port":443}"#;
-    let parsed = serde_json::from_str::<Command>(command).unwrap();
-    assert!(parsed.valid());
-    for claimed in ["certificate_sha256", "verified", "person", "remember"] {
-        let value = command.strip_suffix('}').unwrap().to_owned()
-            + &format!(",\"{claimed}\":\"claimed\"}}");
-        assert!(serde_json::from_str::<Command>(&value).is_err());
-    }
-    for address in ["receiver.example", "0.0.0.0", "239.1.1.1", "::"] {
+tilo_test_env::scenario! {
+    fn nearby_transfer_contract_is_bounded_and_rejects_impossible_progress;
+
+    phase airdrop_extension_preserves_old_json_and_accepts_no_application_trust_claim;
+    {
+        use super::{NearbyTransferCommand as Command, NearbyTransferReply as Reply};
+        assert_eq!(
+            serde_json::to_string(&Command::Snapshot).unwrap(),
+            r#"{"command":"snapshot"}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&Reply::Accepted).unwrap(),
+            r#"{"result":"accepted"}"#
+        );
+        let command = r#"{"command":"send-air-drop","source_path":[47,116,109,112,47,102],"address":"127.0.0.1","port":443}"#;
+        let parsed = serde_json::from_str::<Command>(command).unwrap();
+        assert!(parsed.valid());
+        for claimed in ["certificate_sha256", "verified", "person", "remember"] {
+            let value = command.strip_suffix('}').unwrap().to_owned()
+                + &format!(",\"{claimed}\":\"claimed\"}}");
+            assert!(serde_json::from_str::<Command>(&value).is_err());
+        }
+        for address in ["receiver.example", "0.0.0.0", "239.1.1.1", "::"] {
+            let mut value = serde_json::from_str::<serde_json::Value>(command).unwrap();
+            value["address"] = address.into();
+            assert!(!serde_json::from_value::<Command>(value).unwrap().valid());
+        }
         let mut value = serde_json::from_str::<serde_json::Value>(command).unwrap();
-        value["address"] = address.into();
+        value["port"] = 0.into();
         assert!(!serde_json::from_value::<Command>(value).unwrap().valid());
     }
-    let mut value = serde_json::from_str::<serde_json::Value>(command).unwrap();
-    value["port"] = 0.into();
-    assert!(!serde_json::from_value::<Command>(value).unwrap().valid());
-}
-use super::*;
-use std::env;
 
-fn clear_tilo_env() -> tilo_test_env::ScopedEnv {
-    let mut scoped = tilo_test_env::ScopedEnv::new();
-    for (key, _) in env::vars() {
-        if key.starts_with("TILO_") {
-            scoped.remove(&key);
-        }
-    }
-    scoped
-}
-
-#[test]
-fn try_connect_without_env_returns_service_fd_missing() {
-    let _env = clear_tilo_env();
-    // `CollabClient` is not `Debug`, so no `expect_err`.
-    match try_connect() {
-        Err(NotAvailable::ServiceFdMissing) => {}
-        Err(other) => panic!("unexpected error: {other:?}"),
-        Ok(_) => panic!("expected ServiceFdMissing"),
-    }
-}
-
-#[test]
-fn nearby_transfer_contract_is_bounded_and_rejects_impossible_progress() {
-    // phase: nearby_transfer_contract_is_bounded_and_path_bytes_are_opaque
+    phase nearby_transfer_contract_is_bounded_and_path_bytes_are_opaque;
     {
         let command = NearbyTransferCommand::Send {
             target: NearbyTargetHandle::from_issued_bytes([7; 16]),
@@ -137,7 +181,8 @@ fn nearby_transfer_contract_is_bounded_and_rejects_impossible_progress() {
             .valid()
         );
     }
-    // phase: nearby_transfer_snapshot_rejects_unbounded_or_impossible_progress
+
+    phase nearby_transfer_snapshot_rejects_unbounded_or_impossible_progress;
     {
         let target = NearbyTransferTarget {
             handle: NearbyTargetHandle::from_issued_bytes([3; 16]),
@@ -180,10 +225,34 @@ fn nearby_transfer_contract_is_bounded_and_rejects_impossible_progress() {
         );
     }
 }
+use super::*;
+use std::env;
+
+fn clear_tilo_env() -> tilo_test_env::ScopedEnv {
+    let mut scoped = tilo_test_env::ScopedEnv::new();
+    for (key, _) in env::vars() {
+        if key.starts_with("TILO_") {
+            scoped.remove(&key);
+        }
+    }
+    scoped
+}
 
 #[test]
-fn wifi_continuity_is_bounded_redacted_and_bound_to_a_local_profile() {
-    // phase: wifi_continuity_contract_is_bounded_and_redacts_secrets
+fn try_connect_without_env_returns_service_fd_missing() {
+    let _env = clear_tilo_env();
+    // `CollabClient` is not `Debug`, so no `expect_err`.
+    match try_connect() {
+        Err(NotAvailable::ServiceFdMissing) => {}
+        Err(other) => panic!("unexpected error: {other:?}"),
+        Ok(_) => panic!("expected ServiceFdMissing"),
+    }
+}
+
+tilo_test_env::scenario! {
+    fn wifi_continuity_is_bounded_redacted_and_bound_to_a_local_profile;
+
+    phase wifi_continuity_contract_is_bounded_and_redacts_secrets;
     {
         let command = WifiContinuityCommand::Share {
             ssid: "Studio".into(),
@@ -215,7 +284,8 @@ fn wifi_continuity_is_bounded_redacted_and_bound_to_a_local_profile() {
             .valid()
         );
     }
-    // phase: saved_wifi_profile_reference_requires_an_exact_local_uuid
+
+    phase saved_wifi_profile_reference_requires_an_exact_local_uuid;
     {
         assert!(
             WifiContinuityCommand::ShareSavedProfile {
@@ -235,70 +305,6 @@ fn wifi_continuity_is_bounded_redacted_and_bound_to_a_local_profile() {
                 .valid()
             );
         }
-    }
-}
-
-#[test]
-fn action_directory_and_view_metadata_round_trip() {
-    // phase: action_directory_resource_presentation_round_trips
-    {
-        let page = serde_json::json!({
-            "revision": "r1",
-            "exhausted": true,
-            "next_cursor": [],
-            "stale_cursor": false,
-            "budget_exhausted": false,
-            "rows": [{
-                "parent_resource": "",
-                "resource": "totp:mail",
-                "resource_kind": "totp",
-                "resource_label": "Mail code",
-                "presentation": {"detail": "expires in 18 s", "badge": "438 291"},
-                "action": null,
-                "descriptor": null,
-                "has_children": false,
-                "visibility": null,
-            }],
-        });
-        let decoded: ActionDirectoryPage =
-            read_directory_answer(&page.to_string(), 1 << 20, |page: &ActionDirectoryPage| {
-                page.rows.iter().collect()
-            })
-            .expect("page decodes");
-        assert_eq!(
-            decoded.rows[0].presentation,
-            Some(tilo_actions::ResourcePresentation {
-                detail: Some("expires in 18 s".into()),
-                badge: Some("438 291".into()),
-                preview: None,
-            })
-        );
-    }
-    // phase: exported_view_metadata_round_trips
-    {
-        let mut action = published_with_identity(None).unwrap();
-        action.view = Some(ExportedView {
-            id: "editor".into(),
-            label: "Editor".into(),
-            description: Some("Edit this note".into()),
-            open_action: "show-editor".into(),
-            primary: true,
-            desktop: false,
-            range: Some(ExportedViewRange {
-                action: "show-range".into(),
-                start_param: "start".into(),
-                end_param: "end".into(),
-                unit_param: "unit".into(),
-            }),
-            mount: Some(ExportedViewMount {
-                action: "mount-editor".into(),
-                capability_param: "slot_capability".into(),
-                view_param: "slot_view".into(),
-            }),
-        });
-        let json = serde_json::to_string(&action).unwrap();
-        let decoded: ExportedAction = serde_json::from_str(&json).expect("action decodes");
-        assert_eq!(decoded, action);
     }
 }
 
