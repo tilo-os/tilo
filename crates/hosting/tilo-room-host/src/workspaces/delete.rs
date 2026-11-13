@@ -121,8 +121,8 @@ impl Workspaces {
     }
 
     /// Forget everything this host keeps of `workspace` (`workspace_id`),
-    /// deleted: who owns it and what it took, who it listed, its place in
-    /// the directory, and its files.
+    /// deleted: who owns it and what it took, who it listed, and its files. Its
+    /// door went with its governance.
     fn forget_deleted(&self, workspace: &str, workspace_id: u64) {
         if let Some(own) = self.own()
             && let Err(error) = own.forget(workspace)
@@ -130,9 +130,6 @@ impl Workspaces {
             tracing::warn!(%workspace, %error, "a deleted workspace stays in the record of whose workspaces are whose");
         }
         self.inner.memberships.forget(workspace);
-        if let Err(error) = self.inner.listings.set(workspace, None) {
-            tracing::warn!(%workspace, %error, "a deleted workspace stays listed");
-        }
         self.inner.channel_notices.lock_recover().remove(workspace);
         self.inner
             .queued_admissions

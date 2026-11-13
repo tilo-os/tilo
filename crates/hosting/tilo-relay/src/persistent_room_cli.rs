@@ -125,8 +125,9 @@ pub struct PersistentArgs {
     )]
     pub person_storage_gb: u64,
     /// List the workspace in the public directory with this description, so
-    /// anyone may join it through its door at `--default-role`. Settled at
-    /// every start; without it the workspace is not listed.
+    /// anyone may join it through its door at `--default-role`. Asked once: the
+    /// listing is then the workspace's own setting, and a start that names none
+    /// leaves it as the workspace's people settled it.
     #[arg(
         long = "listing-description",
         value_name = "TEXT",
@@ -151,8 +152,9 @@ pub struct PersistentArgs {
     /// List the workspace, its door admitting only people invited or
     /// pre-admitted: a member's invitation, or the one this door issued a
     /// person it let in. Anyone else is told the workspace is joined by
-    /// invitation instead of being handed one. Settled at every start; goes
-    /// with --listing-description, which --members-only cannot.
+    /// invitation instead of being handed one. Asked once: the door is then
+    /// the workspace's own setting. Goes with --listing-description, which
+    /// --members-only cannot.
     #[arg(
         long = "invitation-only",
         requires = "listing_description",
@@ -164,7 +166,7 @@ pub struct PersistentArgs {
     /// without an invitation leaves, on the workspace's wait list for whoever
     /// may invite until they take it off. `0`: the door keeps none. It is the
     /// door taking people by invitation that turns them away, so it is that
-    /// door this goes with.
+    /// door this goes with, and the workspace holds it from then on.
     #[arg(
         long = "wait-list-max",
         value_name = "COUNT",
@@ -303,6 +305,18 @@ pub(crate) struct PersistentRoom {
     pub workspace: String,
     pub host_cert: DeviceCert,
     pub web: WebHandle,
+}
+
+impl PersistentRoom {
+    /// The workspace's door as its governance holds it: whether a directory
+    /// lists it, whether it takes people by invitation, and how many requests
+    /// it keeps.
+    async fn door(&self) -> tilo_action_policy::DoorPolicy {
+        self.workspaces
+            .door_policy(&self.workspace)
+            .await
+            .unwrap_or_default()
+    }
 }
 
 /// The workspace name people see for the persistent workspace `name` (a lowercase
@@ -609,11 +623,7 @@ struct WaitListAsk {
 
 /// Keep the request someone left at the door without an invitation, while
 /// the workspace takes people by invitation and keeps a wait list.
-async fn answer_wait_list(
-    context: &PersistentRoom,
-    governance: &Governance,
-    ask: WaitListAsk,
-) -> OperatorEvent {
+async fn answer_wait_list(context: &PersistentRoom, ask: WaitListAsk) -> OperatorEvent {
     let WaitListAsk {
         request,
         contact,
@@ -626,7 +636,8 @@ async fn answer_wait_list(
         reason,
         full,
     };
-    if !governance.invitation_only || governance.wait_list_max == 0 {
+    let door = context.door().await;
+    if !door.keeps_requests() {
         return refused("the workspace keeps no wait list".into(), false);
     }
     let Some(removal) = hex32(&removal_sha256) else {
@@ -650,7 +661,7 @@ async fn answer_wait_list(
             &contact,
             secrets,
             &language,
-            governance.wait_list_max,
+            door.wait_list_max,
         )
         .await
     {
@@ -756,7 +767,6 @@ async fn answer_standing(
 /// The answer to a command about the wait list.
 async fn answer_wait_list_command(
     context: &PersistentRoom,
-    governance: &Governance,
     command: OperatorCommand,
 ) -> OperatorEvent {
     match command {
@@ -774,7 +784,7 @@ async fn answer_wait_list_command(
                 confirm_sha256,
                 language,
             };
-            answer_wait_list(context, governance, ask).await
+            answer_wait_list(context, ask).await
         }
         OperatorCommand::Unlist {
             request,
@@ -795,41 +805,15 @@ async fn answer_wait_list_command(
     }
 }
 
-/// Who the operator declared owners: the door holds them for the day they
-/// arrive, and their place in the workspace's governance follows as soon as
-/// they are members. Shared by the operator's command and the workspace's own
-/// changes, so a declaration made before someone joins still lands.
-#[derive(Clone, Default)]
-struct DeclaredOwners {
-    people: Arc<std::sync::Mutex<BTreeSet<[u8; 32]>>>,
-}
-
-impl DeclaredOwners {
-    fn lock(&self) -> std::sync::MutexGuard<'_, BTreeSet<[u8; 32]>> {
-        self.people
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
-
-    fn insert(&self, user: [u8; 32]) -> BTreeSet<[u8; 32]> {
-        let mut people = self.lock();
-        people.insert(user);
-        people.clone()
-    }
-
-    fn people(&self) -> BTreeSet<[u8; 32]> {
-        self.lock().clone()
-    }
-}
-
 /// Declare the person `key` (their user root, hex) an owner of the workspace:
-/// its door lets them in from here on, and its governance makes them an
-/// administrator once they are a member. Answers what the operator hears.
+/// its governance holds them as a member with every governance action, so the
+/// door lets them in even when it takes people by invitation, and they govern
+/// from the moment their device arrives — or after the workspace restarts.
+/// Answers what the operator hears.
 async fn declare_owner(
     workspaces: &Workspaces,
     workspace: &str,
     host: &DeviceCert,
-    declared: &DeclaredOwners,
     key: &str,
 ) -> String {
     let Some(user) = hex32(key) else {
@@ -839,63 +823,25 @@ async fn declare_owner(
         }
         .to_line();
     };
-    let people = declared.insert(user);
-    if let Err(error) = workspaces.admit_declared(workspace, host, people).await {
-        return OperatorEvent::OwnerRefused {
-            user_public_key: key.to_owned(),
-            reason: format!("the door could not be told: {error}"),
-        }
-        .to_line();
-    }
-    match promote_declared_owners(workspaces, workspace, host, declared).await {
-        Ok(()) => OperatorEvent::OwnerDeclared {
+    match workspaces
+        .set_member_administrator(
+            workspace,
+            host,
+            request_id(b"owner", &user, tilo_clock::unix_now_ns()),
+            user,
+        )
+        .await
+    {
+        Ok(_) => OperatorEvent::OwnerDeclared {
             user_public_key: key.to_owned(),
         }
         .to_line(),
         Err(error) => OperatorEvent::OwnerRefused {
             user_public_key: key.to_owned(),
-            reason: error,
+            reason: error.to_string(),
         }
         .to_line(),
     }
-}
-
-/// Make every declared person who is a member an administrator, as the desk
-/// makes one: an ordinary governance change by the workspace's own device. A
-/// person who has not joined waits; the workspace's change of their join calls
-/// this again. The workspace's own person holds its seat by being it, so no
-/// declaration touches it.
-async fn promote_declared_owners(
-    workspaces: &Workspaces,
-    workspace: &str,
-    host: &DeviceCert,
-    declared: &DeclaredOwners,
-) -> Result<(), String> {
-    let people = declared.people();
-    if people.is_empty() {
-        return Ok(());
-    }
-    let members = workspaces
-        .summary(workspace)
-        .await
-        .map_err(|error| format!("the member list: {error}"))?
-        .members;
-    for member in members.iter().filter(|member| !member.removed) {
-        let key = member.user_public_key;
-        if member.administrator || key == host.user_public_key || !people.contains(&key) {
-            continue;
-        }
-        workspaces
-            .set_member_administrator(
-                workspace,
-                host,
-                request_id(b"owner", &key, tilo_clock::unix_now_ns()),
-                key,
-            )
-            .await
-            .map_err(|error| format!("the owner {}: {error}", hex::encode(key)))?;
-    }
-    Ok(())
 }
 
 /// A fresh administration request id per decision: the same person can be
@@ -1206,37 +1152,53 @@ fn settled(workspace: &str, result: anyhow::Result<()>) {
     }
 }
 
-/// List the workspace in the public directory as the host configured it, or
-/// take it out when the host asks for no listing. Settled at every start: the
-/// listing is the host's word, and a person who joined yesterday stays a
-/// member either way.
+/// List the workspace in the public directory as the operator configured it,
+/// and take people by invitation only if it says so. The operator's word is
+/// asked once: the listing and the door are the workspace's governance from
+/// then on, so an operator that names neither leaves them as the workspace's
+/// own people settled them, and a restart changes nothing.
 async fn settle_listing(
     workspaces: &Workspaces,
     workspace: &str,
     host_cert: &DeviceCert,
     persistent: &PersistentArgs,
 ) -> anyhow::Result<()> {
-    match &persistent.listing_description {
-        Some(description) => {
-            workspaces
-                .publish(
-                    workspace,
-                    host_cert,
-                    Listing {
-                        description: description.clone(),
-                        default_role: persistent.default_role.unwrap_or(WorkspaceRole::Viewer),
-                    },
-                )
-                .await
-                .map_err(|error| anyhow::anyhow!("list the workspace in the directory: {error}"))?;
-        }
-        None => {
-            workspaces
-                .unpublish(workspace, host_cert)
-                .await
-                .map_err(|error| anyhow::anyhow!("unlist the workspace: {error}"))?;
-        }
+    let Some(description) = &persistent.listing_description else {
+        return Ok(());
+    };
+    workspaces
+        .publish(
+            workspace,
+            host_cert,
+            Listing {
+                description: description.clone(),
+                default_role: persistent.default_role.unwrap_or(WorkspaceRole::Viewer),
+            },
+        )
+        .await
+        .map_err(|error| anyhow::anyhow!("list the workspace in the directory: {error}"))?;
+    Ok(())
+}
+
+/// Take people by invitation only, and keep the wait list the operator sized,
+/// when it says so.
+async fn settle_invitation_only(
+    workspaces: &Workspaces,
+    workspace: &str,
+    host_cert: &DeviceCert,
+    persistent: &PersistentArgs,
+) -> anyhow::Result<()> {
+    if !persistent.invitation_only {
+        return Ok(());
     }
+    workspaces
+        .list_invitation_only(workspace, host_cert, true)
+        .await
+        .map_err(|error| anyhow::anyhow!("{error}"))?;
+    workspaces
+        .list_wait_list_max(workspace, host_cert, persistent.wait_list_max)
+        .await
+        .map_err(|error| anyhow::anyhow!("{error}"))?;
     Ok(())
 }
 
@@ -1393,8 +1355,7 @@ pub(crate) async fn run(
             &workspace,
             settle_listing(&workspaces, &workspace, &host_cert, &persistent).await,
         );
-        workspaces
-            .list_invitation_only(&workspace, &host_cert, persistent.invitation_only)
+        settle_invitation_only(&workspaces, &workspace, &host_cert, &persistent)
             .await
             .map_err(|error| anyhow::anyhow!("settle the workspace's door: {error}"))?;
         seed_apps(
@@ -1448,9 +1409,14 @@ pub(crate) async fn run(
         refound_records(&workspaces, &workspace, &persistent.refound, &state).await?;
         // The wait list, when the workspace takes people by invitation and
         // keeps one: the addresses' windows and the mail the door sends from
-        // its page (the web entry, or the door `--wait-list-mail` names).
+        // its page (the web entry, or the door `--wait-list-mail` names). What
+        // the workspace's door keeps is its governance's, settled above.
+        let door_policy = workspaces
+            .door_policy(&workspace)
+            .await
+            .unwrap_or_default();
         let settings = door::WaitListSettings::from_env(
-            persistent.wait_list_max,
+            door_policy.wait_list_max,
             persistent
                 .wait_list_mail
                 .clone()
@@ -1602,10 +1568,6 @@ pub(crate) async fn run(
                 .to_line()
             );
         }
-        let governance = Governance {
-            invitation_only: persistent.invitation_only,
-            wait_list_max: persistent.wait_list_max,
-        };
         // The operator's door to the running workspace, for a deployment whose
         // workspace has no stdin: a socket the state volume carries.
         let owner_socket = match &persistent.operator_socket {
@@ -1635,7 +1597,6 @@ pub(crate) async fn run(
             runners,
             attachments,
             requested,
-            governance,
             context,
             management,
             wait_list: door,
@@ -1648,7 +1609,6 @@ pub(crate) async fn run(
         runners,
         attachments,
         requested,
-        governance,
         context,
         management: _management,
         wait_list,
@@ -1667,7 +1627,7 @@ pub(crate) async fn run(
         .as_ref()
         .and_then(|door| door.invitations(&context.workspaces));
     let result = tokio::select! {
-        result = serve_operator(&context, &governance, &mut operator, invitations.as_mut(), owner_socket.as_ref()) => result,
+        result = serve_operator(&context, &mut operator, invitations.as_mut(), owner_socket.as_ref()) => result,
         result = shutdown => result,
     };
     for runner in moderator
@@ -1693,8 +1653,6 @@ struct Serving {
     attachments: Option<tokio::task::JoinHandle<()>>,
     /// The task serving the bots members ask for.
     requested: tokio::task::JoinHandle<()>,
-    /// What the operator declared of the workspace's door.
-    governance: Governance,
     /// The workspace the operator's loop serves.
     context: PersistentRoom,
     /// The deployment's own routes, which stop when dropped.
@@ -1704,16 +1662,6 @@ struct Serving {
     wait_list: Option<std::sync::Arc<door::WaitListDoor>>,
     /// The socket the operator declares owners through, when it named one.
     owner_socket: Option<tokio::net::UnixListener>,
-}
-
-/// What the operator declares of the workspace's door: settled at start, and
-/// changed only through the workspace's own governance from then on.
-struct Governance {
-    /// The door lists the workspace and takes only people invited or
-    /// pre-admitted (`--invitation-only`).
-    invitation_only: bool,
-    /// Requests left at the door it keeps (`--wait-list-max`).
-    wait_list_max: usize,
 }
 
 async fn summary(
@@ -1728,8 +1676,8 @@ async fn summary(
 
 /// Addresses left at the door and not confirmed in time are let go, also
 /// while nobody touches the wait list.
-async fn expire_wait_list(context: &PersistentRoom, governance: &Governance) {
-    if governance.wait_list_max == 0 {
+async fn expire_wait_list(context: &PersistentRoom) {
+    if context.door().await.wait_list_max == 0 {
         return;
     }
     if let Err(error) = context
@@ -1788,11 +1736,7 @@ async fn accept_operator(
 /// Answer one operator line on the socket: the same command its stdin takes,
 /// for a deployment whose workspace runs in a container and so has no stdin to
 /// write to.
-async fn answer_operator_socket(
-    context: &PersistentRoom,
-    declared: &DeclaredOwners,
-    stream: tokio::net::UnixStream,
-) {
+async fn answer_operator_socket(context: &PersistentRoom, stream: tokio::net::UnixStream) {
     use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _};
     let (reading, mut writing) = stream.into_split();
     let mut line = String::new();
@@ -1805,7 +1749,6 @@ async fn answer_operator_socket(
                     &context.workspaces,
                     &context.workspace,
                     &context.host_cert,
-                    declared,
                     &user_public_key,
                 )
                 .await
@@ -1837,14 +1780,12 @@ async fn answer_operator_socket(
 
 async fn serve_operator(
     context: &PersistentRoom,
-    governance: &Governance,
     operator: &mut tokio::sync::mpsc::Receiver<Result<OperatorCommand, String>>,
     mail: Option<&mut door::InvitationMail>,
     owner_socket: Option<&tokio::net::UnixListener>,
 ) -> anyhow::Result<()> {
     let mut changes = context.workspaces.governance_changes();
     let removals = Removals::load(&summary(context).await?.members);
-    let declared = DeclaredOwners::default();
     let mut presence = OnlineWatch { last_online: None };
     let mut online_tick = tokio::time::interval(Duration::from_secs(operator::ONLINE_EVERY_SECS));
     let mut sweep_tick = tokio::time::interval(Duration::from_secs(WAIT_LIST_SWEEP_SECS));
@@ -1863,7 +1804,7 @@ async fn serve_operator(
             _ = online_tick.tick() => {
                 presence.observe(context).await?;
             }
-            _ = sweep_tick.tick() => expire_wait_list(context, governance).await,
+            _ = sweep_tick.tick() => expire_wait_list(context).await,
             changed = changes.recv() => {
                 match changed {
                     Ok(workspace) if workspace != context.workspace => continue,
@@ -1876,21 +1817,10 @@ async fn serve_operator(
                     // removal is a plain removal. The service treats both alike.
                     println!("{}", OperatorEvent::MemberRemoved { user_public_key: hex::encode(user), banned: false }.to_line());
                 }
-                // A declared owner who joined with this change governs now.
-                if let Err(error) = promote_declared_owners(
-                    &context.workspaces,
-                    &context.workspace,
-                    &context.host_cert,
-                    &declared,
-                )
-                .await
-                {
-                    tracing::warn!("{error}");
-                }
             }
             accepted = accept_operator(owner_socket) => {
                 if let Some(stream) = accepted {
-                    answer_operator_socket(context, &declared, stream).await;
+                    answer_operator_socket(context, stream).await;
                 }
             }
             line = operator.recv(), if operator_open => match line {
@@ -1904,7 +1834,7 @@ async fn serve_operator(
                 | OperatorCommand::Unlist { .. }
                 | OperatorCommand::Confirm { .. }
                 | OperatorCommand::Standing { .. }))) => {
-                    println!("{}", answer_wait_list_command(context, governance, command).await.to_line());
+                    println!("{}", answer_wait_list_command(context, command).await.to_line());
                 }
                 // An invitation the door mailed itself is acknowledged here:
                 // nothing else in the workspace hears of it.
@@ -1916,7 +1846,6 @@ async fn serve_operator(
                             &context.workspaces,
                             &context.workspace,
                             &context.host_cert,
-                            &declared,
                             &user_public_key,
                         )
                         .await
@@ -2302,10 +2231,11 @@ mod tests {
     }
 
     /// An owner the operator declares gets in through a door that takes
-    /// people by invitation, and governs the workspace once they are a member;
-    /// one declared before they joined governs as soon as they do.
+    /// people by invitation, and governs the workspace: the declaration is the
+    /// workspace's own governance, so it is there before their device arrives
+    /// and stays after a restart.
     #[tokio::test]
-    async fn a_declared_owner_is_let_in_and_governs_once_they_joined() {
+    async fn a_declared_owner_is_let_in_and_governs_from_the_start() {
         let dir = tempfile::tempdir().unwrap();
         let (relay, workspaces, host_cert, workspace) = plaza(dir.path()).await;
         ensure_guest_policy(&workspaces, &workspace, &host_cert)
@@ -2325,37 +2255,47 @@ mod tests {
             )
             .await
             .unwrap();
-        workspaces
-            .list_invitation_only(&workspace, &host_cert, true)
-            .await
-            .unwrap();
+        settle_invitation_only(
+            &workspaces,
+            &workspace,
+            &host_cert,
+            &PersistentArgs {
+                invitation_only: true,
+                ..PersistentArgs::default()
+            },
+        )
+        .await
+        .unwrap();
 
         // Nobody is in the workspace yet, so this is how its first person
         // gets in: the door takes people by invitation, and the operator
         // declares them.
         let owner = guest(31);
-        let declared = DeclaredOwners::default();
         let answered = declare_owner(
             &workspaces,
             &workspace,
             &host_cert,
-            &declared,
             &hex::encode(owner.1.user_public_key),
         )
         .await;
         assert!(answered.contains("owner_declared"), "{answered}");
+        // A stranger is turned away: the door takes people by invitation, and
+        // the declaration is what the workspace holds of the person it named.
+        let (_, stranger) = guest(32);
         assert!(
-            !workspaces
-                .summary(&workspace)
+            workspaces
+                .admit_listed(
+                    &workspace,
+                    &tilo_relay_protocol::directory::DoorJoin {
+                        user_public_key: hex::encode(stranger.user_public_key),
+                        display_name: "Eve".into(),
+                    },
+                )
                 .await
-                .unwrap()
-                .members
-                .iter()
-                .any(|member| member.user_public_key == owner.1.user_public_key),
-            "a declaration does not add a member nobody has met"
+                .is_err(),
+            "a stranger holds no invitation and is in no declaration"
         );
-        // In they walk, through the invitation-only door, as the declared
-        // person the operator named.
+        // In they walk, through the invitation-only door.
         let (issued, token) = workspaces
             .admit_listed(
                 &workspace,
@@ -2370,9 +2310,6 @@ mod tests {
             walk_in(&workspaces, &owner, issued.signed_invitation, &token).await,
             "the door lets a declared person in"
         );
-        promote_declared_owners(&workspaces, &workspace, &host_cert, &declared)
-            .await
-            .unwrap();
         let members = workspaces.summary(&workspace).await.unwrap().members;
         assert!(
             members
@@ -2380,10 +2317,10 @@ mod tests {
                 .any(|member| member.user_public_key == owner.1.user_public_key
                     && member.administrator
                     && !member.removed),
-            "the declared owner governs the workspace"
+            "the declared owner governs the workspace once their device is in"
         );
         // What the operator cannot declare is nothing at all.
-        let refused = declare_owner(&workspaces, &workspace, &host_cert, &declared, "Ada").await;
+        let refused = declare_owner(&workspaces, &workspace, &host_cert, "Ada").await;
         assert!(refused.contains("owner_refused"), "{refused}");
         relay.shutdown().await;
     }

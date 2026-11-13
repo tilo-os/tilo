@@ -2380,15 +2380,15 @@ async fn a_listed_room_keeps_sharing_its_windows_after_a_restart() {
     );
     // Listed in the directory: anyone may come in as an editor.
     workspaces
-        .inner
-        .listings
-        .set(
+        .publish(
             &workspace,
-            Some(tilo_relay_protocol::directory::Listing {
+            &cert,
+            tilo_relay_protocol::directory::Listing {
                 description: "Come in".into(),
                 default_role: tilo_relay_protocol::workspaces::WorkspaceRole::Editor,
-            }),
+            },
         )
+        .await
         .unwrap();
     drop(workspaces);
     relay.shutdown().await;

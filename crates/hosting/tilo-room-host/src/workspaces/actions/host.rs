@@ -515,7 +515,7 @@ impl Workspaces {
         if !self.inner.memberships.holds_any(&person)
             && !self.let_in(&person, tilo_clock::unix_now_ns()).await
         {
-            return Err(refused(&self.not_let_in().to_reason()));
+            return Err(refused(&self.not_let_in().await.to_reason()));
         }
         let kept = self
             .keep_personal(device, list)
@@ -696,7 +696,7 @@ impl Workspaces {
             // A new workspace is for a person the site let in. Anyone can
             // make a root, so a certificate alone is nobody's way past the
             // door: they hear the door's own refusal, with its wait list.
-            return Err(refused(&self.not_let_in().to_reason()));
+            return Err(refused(&self.not_let_in().await.to_reason()));
         } else {
             // Another one: there is no bound on how many a person keeps.
             let name = name.unwrap_or(OWN_WORKSPACE_NAME);

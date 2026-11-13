@@ -67,7 +67,7 @@ pub(crate) fn follow_published(
             std::collections::HashMap::new();
         loop {
             let published: std::collections::BTreeSet<String> =
-                workspaces.published_rooms().into_iter().collect();
+                workspaces.published_rooms().await.into_iter().collect();
             running.retain(|workspace, bot| {
                 let listed = published.contains(workspace);
                 if !listed {
