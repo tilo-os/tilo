@@ -275,7 +275,8 @@ impl Parts {
                 .json(&entry, PLACE)
                 .and_then(|value| serde_json::from_value::<CanvasPlace>(value).ok())
             {
-                parts.places.insert(id, place);
+                // A window's place is a window's size, whoever wrote a smaller one.
+                parts.places.insert(id, place.window());
             }
             if let Some(float) = at
                 .json(&entry, FLOAT)

@@ -462,7 +462,7 @@ fn read_arrangement(doc: &AutoCommit, entry: &ObjId) -> Arrangement {
         places: read_keyed_blob_map::<CanvasPlace>(doc, entry, CANVAS_KEY)
             .unwrap_or_default()
             .into_iter()
-            .filter_map(|(group, place)| Some((group.parse().ok()?, place)))
+            .filter_map(|(group, place)| Some((group.parse().ok()?, place.window())))
             .collect(),
         floats: read_keyed_blob_map::<FloatPlace>(doc, entry, FLOATS_KEY)
             .unwrap_or_default()
