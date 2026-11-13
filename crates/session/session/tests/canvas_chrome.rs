@@ -23,17 +23,10 @@
 
 mod common;
 
-use std::time::Duration;
-
 use tilo_service::Questions;
 use tilo_session::{ActionPlane, Options, Session};
 
-use common::{
-    CANVAS_ENTRY, PERSON, arrangement, on_screen, private_home, show_preset, until, wait_for,
-};
-
-/// Enter.
-const KEY_ENTER: u32 = 28;
+use common::{CANVAS, PERSON, arrangement, on_screen, private_home, show_preset, until, wait_for};
 
 /// A headless session with the shell as the whole screen and the apps a development session seeds,
 /// the framed canvas in front.
@@ -50,25 +43,16 @@ fn session(root: &std::path::Path) -> Session {
     });
     show_preset(&mut session, "Frames");
     until(&mut session, "the canvas", |session| {
-        on_screen(session, CANVAS_ENTRY).is_some()
+        on_screen(session, CANVAS).is_some()
     });
     session
 }
 
-/// Type `text` on the canvas entry and press Enter.
-fn enter_text(session: &mut Session, text: &str) {
-    common::press(session, CANVAS_ENTRY);
-    common::type_text(session, text);
-    for pressed in [true, false] {
-        session
-            .compositor()
-            .input(tilo_compositor::InputEvent::Key {
-                keycode: KEY_ENTER,
-                pressed,
-            })
-            .expect("a key");
-        session.step(Duration::from_millis(1)).expect("a frame");
-    }
+/// Point at the canvas's free ground at the fraction `at` of its width and height, and say `text`
+/// there: the person finding or asking where they pointed.
+fn enter_text(session: &mut Session, at: (f64, f64), text: &str) {
+    let (x, y, w, h) = wait_for(session, "the canvas", |session| on_screen(session, CANVAS));
+    common::point_and_say(session, (x + w * at.0, y + h * at.1), text);
 }
 
 /// Every placed strip's canvas box, by the resource its place shows: `(x, y, w, h)`, as the desk
@@ -106,7 +90,7 @@ fn opening_a_place_beside_another_keeps_the_sizes_of_what_stands() {
     let mut session = session(root.path());
 
     // The person's mails on the canvas: the inbox, at its own frame size.
-    enter_text(&mut session, "my mails");
+    enter_text(&mut session, (0.05, 0.08), "my mails");
     let inbox = wait_for(&mut session, "the inbox on the canvas", |session| {
         place_showing(session, "so.tilo.lang.mail")
     });
@@ -116,15 +100,15 @@ fn opening_a_place_beside_another_keeps_the_sizes_of_what_stands() {
         "the inbox takes the canvas's frame size: {inbox:?}"
     );
 
-    // An agent's question places the conversation it is with, beside the inbox.
-    enter_text(&mut session, "what is on my task list?");
+    // An agent's question stands its turn where it was asked.
+    enter_text(&mut session, (0.7, 0.08), "what is on my task list?");
     let conversation = wait_for(&mut session, "the conversation on the canvas", |session| {
-        place_showing(session, "/channels/")
+        place_showing(session, "chat.workspace/turns/")
     });
     assert_eq!(
         (conversation.3, conversation.4),
-        (720, 520),
-        "the conversation takes the canvas's frame size: {conversation:?}"
+        (520, 240),
+        "the turn takes an answer's own size: {conversation:?}"
     );
 
     // The agent opens Tasks beside the conversation it was asked in, as a turn's step.
@@ -161,7 +145,7 @@ fn opening_a_place_beside_another_keeps_the_sizes_of_what_stands() {
         "the inbox keeps where it stood and how big it was: {after:?} against {inbox:?}"
     );
     let conversation_after =
-        place_showing(&session, "/channels/").expect("the conversation still stands");
+        place_showing(&session, "chat.workspace/turns/").expect("the conversation still stands");
     assert_eq!(
         (
             conversation_after.1,
@@ -203,7 +187,7 @@ fn opening_a_third_place_never_shrinks_what_the_person_is_reading() {
     let mut session = session(root.path());
 
     // The inbox, lain on the canvas: the frame its title names it by, as wide as the place.
-    enter_text(&mut session, "my mails");
+    enter_text(&mut session, (0.05, 0.08), "my mails");
     let inbox = wait_for(&mut session, "the inbox on the canvas", |session| {
         place_showing(session, "so.tilo.lang.mail")
     });
@@ -227,9 +211,9 @@ fn opening_a_third_place_never_shrinks_what_the_person_is_reading() {
     let inbox_width = wait_for(&mut session, "the inbox drawn", &mut drawn_width);
 
     // The question, then the agent opening Tasks beside it: two more places arrive.
-    enter_text(&mut session, "what is on my task list?");
+    enter_text(&mut session, (0.7, 0.08), "what is on my task list?");
     let conversation = wait_for(&mut session, "the conversation on the canvas", |session| {
-        place_showing(session, "/channels/")
+        place_showing(session, "chat.workspace/turns/")
     });
     let resource = session
         .service_resources()
@@ -282,7 +266,9 @@ fn the_desk_style_menu_has_no_empty_band_above_its_rows() {
         .press_action("Showing Frames", TargetAction::Activate)
         .expect("the style menu opens");
     for _ in 0..4 {
-        session.step(Duration::from_millis(16)).expect("step");
+        session
+            .step(std::time::Duration::from_millis(16))
+            .expect("step");
     }
     // The menu's first row, Strips, and the button it hangs under.
     let (_, button_y, _, button_h) = on_screen(&session, "Showing Frames").expect("the button");

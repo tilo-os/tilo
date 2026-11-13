@@ -45,7 +45,9 @@ pub struct PlaceProps {
 /// See the module docs.
 pub struct CanvasPlace {
     toolbar: HoverToolbar,
-    name: Option<String>,
+    /// The name its handle shows, and the resource the handle carries: what it was built with.
+    name: String,
+    carries: String,
 }
 
 fn empty() -> Element {
@@ -62,7 +64,9 @@ impl Described for CanvasPlace {
             controls,
             body,
         } = props;
-        let title = name.clone().unwrap_or_default();
+        let props_name = name.clone();
+        let props_carries = carries.clone().unwrap_or_default();
+        let title = title_of(&name);
         let mut label = Text::new(&title).with_role(TextRole::Label).dimmed();
         label = label.with_truncate(true);
         let handle = Stack::row()
@@ -84,6 +88,7 @@ impl Described for CanvasPlace {
         let mut slot = Slot::new(body.unwrap_or_else(empty));
         slot.fit = Fit::fill(1.0);
         let ground = PlaceGround {
+            name,
             column: Stack::stack()
                 .fill_width()
                 .fill_height()
@@ -92,9 +97,24 @@ impl Described for CanvasPlace {
         };
         Self {
             toolbar: HoverToolbar::filling(Box::new(ground), vec![handle]),
-            name,
+            name: title_of(&props_name),
+            carries: props_carries,
         }
     }
+
+    /// The same place told it again keeps its view, its handle and the hover it is in: only
+    /// another name, another resource or new views in its slots build it again.
+    fn set_props(&mut self, props: PlaceProps) -> bool {
+        props.controls.is_none()
+            && props.body.is_none()
+            && title_of(&props.name) == self.name
+            && props.carries.unwrap_or_default() == self.carries
+    }
+}
+
+/// The name a place's handle shows.
+fn title_of(name: &Option<String>) -> String {
+    name.clone().unwrap_or_default()
 }
 
 impl Decorator for CanvasPlace {
@@ -111,19 +131,13 @@ impl Decorator for CanvasPlace {
     fn name(&self) -> &'static str {
         "Place"
     }
-
-    /// A place is a group named for what it shows, and its view is read inside it.
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        Some(
-            crate::a11y::AccessNode::new(crate::a11y::Role::Group)
-                .with_optional_name(self.name.clone()),
-        )
-    }
 }
 
 /// The place's ground: the window surface under its view, which is cut at the surface's rounded
-/// edge so nothing it holds is seen past it.
+/// edge so nothing it holds is seen past it. It is the place's own layout node, so it is the group
+/// assistive technology reads the place as, named for what it shows.
 struct PlaceGround {
+    name: Option<String>,
     column: Stack,
 }
 
@@ -140,6 +154,13 @@ impl Decorator for PlaceGround {
 
     fn name(&self) -> &'static str {
         "PlaceGround"
+    }
+
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        Some(
+            crate::a11y::AccessNode::new(crate::a11y::Role::Group)
+                .with_optional_name(self.name.clone()),
+        )
     }
 
     fn child_clip_rect(&self) -> Option<Rect> {
@@ -172,3 +193,7 @@ impl Decorator for PlaceGround {
         scene.pop_layer();
     }
 }
+
+#[cfg(test)]
+#[path = "canvas_place_tests.rs"]
+mod tests;

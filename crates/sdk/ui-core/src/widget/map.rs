@@ -302,6 +302,8 @@ pub struct Map {
     /// drag that started in one of its pins never lands back on the map it came from, and two
     /// maps never answer each other's drops.
     key: String,
+    /// What the map is, as assistive technology names it ("Canvas").
+    name: Option<String>,
     /// The pins this map has already brought into view: a place that arrived off screen comes
     /// into view once, and a place the person panned away from is left where their look left it.
     arrived: std::collections::HashSet<String>,
@@ -341,6 +343,7 @@ impl Map {
             context: Event::None,
             key: String::new(),
             arrived: std::collections::HashSet::new(),
+            name: None,
         }
     }
 
@@ -632,7 +635,7 @@ impl Described for Map {
 
     fn from_props(key: &str, props: MapProps) -> Self {
         let MapProps {
-            name: _,
+            name,
             ground,
             pins,
             drop,
@@ -641,6 +644,7 @@ impl Described for Map {
             context,
         } = props;
         let mut map = Self::new();
+        map.name = name;
         map.key = format!("map\u{1f}{key}");
         // The lens the person left this map looking through on this device: a map built again
         // around a place opened, closed or moved looks where they were looking, so the place they
@@ -677,7 +681,7 @@ impl Described for Map {
     /// place the arrangement closed standing on screen and in the accessibility tree.
     fn set_props(&mut self, props: MapProps) -> bool {
         let MapProps {
-            name: _,
+            name,
             ground,
             pins,
             drop,
@@ -685,6 +689,7 @@ impl Described for Map {
             frame,
             context,
         } = props;
+        self.name = name;
         self.drop = drop;
         self.press = press;
         self.frame = frame;
@@ -1141,6 +1146,14 @@ impl Map {
 impl Widget for Map {
     fn needs_redraw(&self) -> bool {
         crate::widget::redraw_or_children(self.dirty, self)
+    }
+
+    /// The map is a group named for what it is ("Canvas"), its places read inside it.
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        Some(
+            crate::a11y::AccessNode::new(crate::a11y::Role::Group)
+                .with_optional_name(self.name.clone()),
+        )
     }
 
     /// A finger on the canvas's free space points as the pointer does (`canvas.md` §2, "Touch"):

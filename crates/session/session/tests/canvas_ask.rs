@@ -1,14 +1,14 @@
 //! Text typed on the canvas that asks (`docs/designs/app-language/shell.md` §8.1,
 //! "Asking from the canvas").
 //!
-//! The canvas entry reads "Find something, or ask". A line that finds something
-//! places it, as it always did (`arrangement_placing.rs`). A line that is a
-//! question, or that names nothing, is not refused: the session posts it as the
-//! person into their ask conversation with the agent the workspace keeps, and
-//! that conversation stands where they typed, so the person sees what they asked
-//! in the place that asked it.
+//! The person points at the canvas and says something there (canvas.md §1). A
+//! line that finds something places it (`arrangement_placing.rs`). A line that is
+//! a question, or that names nothing, is not refused: the session posts it as the
+//! person into their ask conversation with the agent the workspace keeps, and the
+//! turn it opened stands where they pointed (canvas.md §3); the conversation
+//! itself stays underneath and opens as content when asked for.
 //!
-//! Every step here is the production path: the canvas entry's own
+//! Every step here is the production path: the caret's own
 //! `place-found` action on `shell:arrangement`, the session's Chat record opened
 //! through the same store every app of the workspace opens, and Chat's own
 //! `create-channel-with-id` and `post` on it. Nothing here writes Chat's state by
@@ -34,7 +34,6 @@ mod common;
 use std::time::Duration;
 
 use chat::Chat;
-use tilo_compositor::InputEvent;
 use tilo_service::Questions;
 use tilo_session::{ActionPlane, Options, Session};
 
@@ -201,8 +200,8 @@ fn reply_in_page(session: &Session, channel: &str, reply: &str) -> serde_json::V
         .clone()
 }
 
-/// A question typed into the canvas entry posts into the person's ask conversation with the agent
-/// the workspace keeps, and that conversation stands on the canvas where they typed.
+/// A question said at the caret posts into the person's ask conversation with the agent the
+/// workspace keeps, and the turn it opened stands on the canvas where they pointed.
 #[test]
 fn a_question_typed_on_the_canvas_asks_the_kept_agent() {
     let _settled = ui::motion::testing::settled();
@@ -214,30 +213,14 @@ fn a_question_typed_on_the_canvas_asks_the_kept_agent() {
 
     ask(&mut session, "what is on my task list?");
 
-    // A place stands that was not there, showing a channel of Chat's record: the
-    // ask conversation. The arrangement is read from the session's own desk,
-    // which is never a store read, so this wait never touches the store the
-    // session is writing through.
-    until(
-        &mut session,
-        "the ask conversation on the canvas",
-        |session| {
-            arrangement(session)
-                .places
-                .into_iter()
-                .any(|place| place.record.contains("/channels/"))
-        },
-    );
-    let placed = arrangement(&session)
-        .places
-        .into_iter()
-        .find(|place| place.record.contains("/channels/"))
-        .expect("a place shows a channel");
-    let channel = placed
-        .record
+    // A place stands that was not there, showing the turn the question opened. The arrangement
+    // is read from the session's own desk, which is never a store read, so this wait never
+    // touches the store the session is writing through.
+    turn_place(&mut session);
+    let channel = conversation(&session)
         .rsplit('/')
         .next()
-        .expect("the place shows a channel")
+        .expect("the conversation is a channel")
         .to_owned();
     assert!(
         !before.contains(&channel),
@@ -258,6 +241,49 @@ fn a_question_typed_on_the_canvas_asks_the_kept_agent() {
         participants.contains(&format!("person:{PERSON}")),
         "the person the conversation is with is a participant: {participants:?}"
     );
+}
+
+/// The place the turn of the last question stands in, once it stands.
+fn turn_place(session: &mut Session) -> tilo_session::arrangement::PlaceReading {
+    wait_for(session, "the turn on the canvas", |session| {
+        arrangement(session)
+            .places
+            .into_iter()
+            .filter(|place| place.record.starts_with("chat.workspace/turns/"))
+            .last()
+    })
+}
+
+/// The person's ask conversation, by the address the session publishes it under.
+fn conversation(session: &Session) -> String {
+    session
+        .service_resources()
+        .into_iter()
+        .map(|spec| spec.id.as_str().to_owned())
+        .find(|id| id.starts_with("chat.workspace/channels/"))
+        .expect("the ask conversation is published")
+}
+
+/// Open the whole conversation as content, as the turn's "Whole conversation" does: the system's
+/// `open` of the channel. The place it stands in.
+fn open_the_conversation(session: &mut Session) -> tilo_session::arrangement::PlaceReading {
+    turn_place(session);
+    let address = conversation(session);
+    session
+        .invoke(
+            "shell:arrangement",
+            "open",
+            serde_json::json!({"resource": address})
+                .as_object()
+                .expect("arguments"),
+        )
+        .unwrap_or_else(|error| panic!("the conversation opens: {error:?}"));
+    wait_for(session, "the conversation placed", |session| {
+        arrangement(session)
+            .places
+            .into_iter()
+            .find(|place| place.record.contains("/channels/"))
+    })
 }
 
 /// The ask is the person's own arranging step, attributed to them.
@@ -314,120 +340,50 @@ fn the_ask_gives_the_kept_agent_a_turn() {
     assert!(turn.active, "the person's message waits for its answer");
 }
 
-/// A second ask brings the conversation's place forward instead of standing a second place of it
-/// (`shell.md` §8.1).
+/// A second question stands a second turn, where it was asked, in the same conversation: each
+/// answer stands where it was asked, and the conversation itself is not placed (canvas.md §3).
 #[test]
-fn a_second_ask_brings_the_conversation_forward() {
+fn a_second_ask_stands_its_own_turn_in_the_same_conversation() {
     let _settled = ui::motion::testing::settled();
     let root = private_home();
     let mut session = session(root.path());
     ask(&mut session, "what is on my task list?");
-    let first = wait_for(&mut session, "the conversation placed", |session| {
-        arrangement(session)
-            .places
-            .into_iter()
-            .find(|place| place.record.contains("/channels/"))
-    });
-    let count = arrangement(&session).places.len();
-
-    ask(&mut session, "and what is due today?");
-
-    let places = arrangement(&session).places;
-    assert_eq!(
-        places.len(),
-        count,
-        "the second ask added no place: {places:?}"
+    let first = turn_place(&mut session);
+    let (x, y, w, h) = on_screen(&session, common::CANVAS).expect("the canvas");
+    common::point_and_say(
+        &mut session,
+        (x + w * 0.1, y + h * 0.1),
+        "and what is due today?",
     );
-    assert!(
-        places.iter().any(|place| place.key == first.key),
-        "the conversation's own place is the one it stands in"
-    );
-}
-
-/// An ask while the conversation is already the place in front: the message is posted, and asking
-/// is not refused because the place it belongs in is where it already stands (`shell.md` §8.1).
-///
-/// The first ask leaves its conversation as the place in front — the place it made is the strip's
-/// active tab, so bringing it forward is the activation that would refuse "that place is in front
-/// already". The second ask succeeds all the same: the turn is delivered, and the action that
-/// typed it is not answered with `nothing_to_place`.
-#[test]
-fn an_ask_in_front_already_is_posted_and_not_refused() {
-    let _settled = ui::motion::testing::settled();
-    let root = private_home();
-    let mut session = session(root.path());
-    ask(&mut session, "what is on my task list?");
-    let first = wait_for(&mut session, "the conversation placed", |session| {
-        let place = arrangement(session)
-            .places
-            .into_iter()
-            .find(|place| place.record.contains("/channels/"))?;
-        let in_front = arrangement(session)
-            .strips
-            .iter()
-            .any(|strip| strip.key == place.strip && strip.active == place.key);
-        in_front.then_some(place)
+    let second = wait_for(&mut session, "the second turn", |session| {
+        arrangement(session).places.into_iter().find(|place| {
+            place.record.starts_with("chat.workspace/turns/") && place.key != first.key
+        })
     });
-    let channel = first
-        .record
-        .rsplit('/')
-        .next()
-        .expect("the place shows a channel")
-        .to_owned();
-    let messages = |session: &Session| -> usize {
-        session
-            .read(&first.record)
-            .and_then(|reading| reading["messages"].as_array().map(Vec::len))
-            .unwrap_or_default()
-    };
-    let before = messages(&session);
-
-    // The second ask through the same action the canvas entry's typing runs: the ask is the
-    // person's, and the conversation it belongs in already stands in front.
-    let asked = "and what is due today?";
-    session
-        .invoke(
-            "shell:arrangement",
-            "place-found",
-            serde_json::json!({"text": asked, "x": 0, "y": 0})
-                .as_object()
-                .expect("arguments"),
-        )
-        .unwrap_or_else(|error| {
-            panic!("an ask whose conversation is in front already succeeds: {error:?}")
-        });
-
-    // The message was posted: the reading the place draws holds the second question.
-    let after = session
-        .read(&first.record)
-        .unwrap_or_else(|| panic!("the session serves the channel's reading: {}", first.record));
-    let texts: Vec<&str> = after["messages"]
-        .as_array()
-        .map(|messages| messages.iter().filter_map(|m| m["text"].as_str()).collect())
+    assert_ne!(first.record, second.record, "each question is its own turn");
+    let texts: Vec<String> = session
+        .read(&conversation(&session))
+        .and_then(|page| {
+            page["messages"].as_array().map(|messages| {
+                messages
+                    .iter()
+                    .filter_map(|m| m["text"].as_str().map(str::to_owned))
+                    .collect()
+            })
+        })
         .unwrap_or_default();
     assert!(
-        texts.contains(&asked),
-        "the ask in front already is posted: {texts:?}"
-    );
-    assert_eq!(
-        messages(&session),
-        before + 1,
-        "it adds the one message, in the conversation's one place: {texts:?}"
+        texts.iter().any(|text| text == "what is on my task list?")
+            && texts.iter().any(|text| text == "and what is due today?"),
+        "both questions are in the one conversation: {texts:?}"
     );
     assert!(
-        channel_has_one_place(&session, &channel),
-        "the conversation keeps the place it stood in"
+        !arrangement(&session)
+            .places
+            .iter()
+            .any(|place| place.record.contains("/channels/")),
+        "the conversation stays underneath, unplaced"
     );
-}
-
-/// Whether the conversation `channel` stands in exactly one place of the desk.
-fn channel_has_one_place(session: &Session, channel: &str) -> bool {
-    arrangement(session)
-        .places
-        .into_iter()
-        .filter(|place| place.record.rsplit('/').next() == Some(channel))
-        .count()
-        == 1
 }
 
 /// The conversation the canvas places is usable in a real session, not only in a development one:
@@ -440,12 +396,7 @@ fn the_conversations_page_posts_through_the_sessions_own_channel() {
     let root = private_home();
     let mut session = session(root.path());
     ask(&mut session, "what is on my task list?");
-    let place = wait_for(&mut session, "the conversation placed", |session| {
-        arrangement(session)
-            .places
-            .into_iter()
-            .find(|place| place.record.contains("/channels/"))
-    });
+    let place = open_the_conversation(&mut session);
     // The channel the ask placed, as the session publishes it (`chat.workspace/channels/<id>`).
     let address = place.record;
     assert!(
@@ -514,21 +465,16 @@ fn the_conversations_page_posts_through_the_sessions_own_channel() {
     );
 }
 
-/// The ask places the conversation as the resource Chat publishes: its channel, shown through
+/// The whole conversation opens as the resource Chat publishes: its channel, shown through
 /// Chat's own default `page` view. A place that named no view would stand the app's window —
 /// a blank frame — instead of the conversation the person asked in (shell.md §8.1, "The view").
 #[test]
-fn the_ask_places_the_channels_page_not_the_apps_window() {
+fn the_whole_conversation_opens_as_the_channels_page_not_the_apps_window() {
     let _settled = ui::motion::testing::settled();
     let root = private_home();
     let mut session = session(root.path());
     ask(&mut session, "what is on my task list?");
-    let place = wait_for(&mut session, "the conversation placed", |session| {
-        arrangement(session)
-            .places
-            .into_iter()
-            .find(|place| place.record.contains("/channels/"))
-    });
+    let place = open_the_conversation(&mut session);
     assert_eq!(
         place.shown_as, "page",
         "the place shows the channel's own page, drawn by Chat's view: {place:?}"
@@ -557,12 +503,7 @@ fn the_conversations_place_draws_the_page_from_the_sessions_own_service() {
     let root = private_home();
     let mut session = session(root.path());
     ask(&mut session, "what is on my task list?");
-    let place = wait_for(&mut session, "the conversation placed", |session| {
-        arrangement(session)
-            .places
-            .into_iter()
-            .find(|place| place.record.contains("/channels/"))
-    });
+    let place = open_the_conversation(&mut session);
     until(&mut session, "the page's transcript", |session| {
         session.shell_says("what is on my task list?")
     });
@@ -587,12 +528,7 @@ fn the_conversations_page_names_its_people_never_by_a_key() {
     let root = private_home();
     let mut session = session(root.path());
     ask(&mut session, "what is on my task list?");
-    let place = wait_for(&mut session, "the conversation placed", |session| {
-        arrangement(session)
-            .places
-            .into_iter()
-            .find(|place| place.record.contains("/channels/"))
-    });
+    let place = open_the_conversation(&mut session);
     until(&mut session, "the page's transcript", |session| {
         session.shell_says("what is on my task list?")
     });
@@ -933,11 +869,7 @@ fn a_served_resources_open_stands_it_beside_the_conversation_that_asked() {
     let mut session = session(root.path());
     ask(&mut session, "what is on my task list?");
     // The conversation the ask placed: the place a resource the turn opens stands beside.
-    let conversation = wait_for(&mut session, "the ask placed", |session| {
-        common::places(session)
-            .into_iter()
-            .find(|place| place.record.contains("/channels/"))
-    });
+    let conversation = turn_place(&mut session);
     let workspace = workspace(&session);
     let runs = session.conversation_runs();
     let turns = wait_for(&mut session, "the agent's turn", |_session| {
@@ -1163,11 +1095,7 @@ fn an_agents_place_without_a_point_stands_beside_the_conversation() {
     let root = private_home();
     let mut session = session(root.path());
     let asked = asked(&mut session, "which of my tasks are due this week?");
-    let conversation = wait_for(&mut session, "the ask placed", |session| {
-        common::places(session)
-            .into_iter()
-            .find(|place| place.record.contains("/channels/"))
-    });
+    let conversation = turn_place(&mut session);
     let notes = served_root(&session, "so.tilo.lang.notes");
 
     let place = |session: &mut Session| {
@@ -1224,11 +1152,7 @@ fn a_place_positioned_beside_another_stands_next_to_it() {
     let root = private_home();
     let mut session = session(root.path());
     let asked = asked(&mut session, "put my notes next to the inbox");
-    let conversation = wait_for(&mut session, "the ask placed", |session| {
-        common::places(session)
-            .into_iter()
-            .find(|place| place.record.contains("/channels/"))
-    });
+    let conversation = turn_place(&mut session);
     let notes = served_root(&session, "so.tilo.lang.notes");
     let mail = served_root(&session, "so.tilo.lang.mail");
     // Mail beside the conversation, notes far off at a point of their own.

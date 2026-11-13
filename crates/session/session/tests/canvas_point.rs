@@ -45,6 +45,24 @@ fn near(a: f64, b: f64) -> bool {
     (a - b).abs() <= NEAR
 }
 
+/// Where the place `place` stands on screen: the group its view stands in, named for what it shows
+/// (the widest box named so — its handle's label is named the same).
+fn place_on_screen(
+    session: &Session,
+    place: &tilo_session::arrangement::PlaceReading,
+) -> Option<(f64, f64, f64, f64)> {
+    let title = if place.name.is_empty() {
+        &place.title
+    } else {
+        &place.name
+    };
+    session
+        .shell_controls(title)
+        .into_iter()
+        .filter(|(_, _, w, h)| *w > 0.0 && *h > 0.0)
+        .max_by(|a, b| (a.2 * a.3).total_cmp(&(b.2 * b.3)))
+}
+
 /// The caret's field on screen, once it stands.
 fn caret(session: &mut Session) -> (f64, f64, f64, f64) {
     wait_for(session, "the caret", |session| {
@@ -181,12 +199,13 @@ fn a_dragged_rectangle_is_filled_by_what_is_found() {
             .find(|place| place.record.contains("so.tilo.lang.mail"))
     });
     let (px, py, pw, ph) = wait_for(&mut session, "the inbox on screen", |session| {
-        on_screen(session, &inbox.key)
+        place_on_screen(session, &inbox)
     });
     assert!(
         near(px, from.0) && near(py, from.1),
-        "the inbox stands at the rectangle's corner: {:?} for {from:?}",
-        (px, py)
+        "the inbox stands at the rectangle's corner: {:?} for {from:?}; {inbox:?} named {:?}",
+        (px, py, pw, ph),
+        session.shell_controls(&inbox.name)
     );
     assert!(
         near(pw, to.0 - from.0) && near(ph, to.1 - from.1),
@@ -225,7 +244,7 @@ fn a_question_stands_its_turn_at_the_caret() {
         places(&session)
     );
     let (px, py, _, _) = wait_for(&mut session, "the turn on screen", |session| {
-        on_screen(session, &turn.key)
+        place_on_screen(session, &turn)
     });
     assert!(
         near(px, at.0) && near(py, at.1),
@@ -263,7 +282,7 @@ fn an_agents_place_in_the_turn_fills_the_dragged_rectangle() {
             .find(|place| place.record.starts_with("chat.workspace/turns/"))
     });
     let (_, ty, _, th) = wait_for(&mut session, "the turn on screen", |session| {
-        on_screen(session, &turn.key)
+        place_on_screen(session, &turn)
     });
     let conversation = session
         .service_resources()
@@ -294,7 +313,7 @@ fn an_agents_place_in_the_turn_fills_the_dragged_rectangle() {
             .find(|place| place.record == notes)
     });
     let (nx, ny, nw, nh) = wait_for(&mut session, "the notes on screen", |session| {
-        on_screen(session, &shown.key)
+        place_on_screen(session, &shown)
     });
     assert!(
         near(nx, from.0) && near(nw, to.0 - from.0),
@@ -327,7 +346,7 @@ fn a_place_has_no_frame_and_its_handle_shows_on_hover() {
             .find(|place| place.record.contains("so.tilo.lang.mail"))
     });
     let (px, py, pw, ph) = wait_for(&mut session, "the inbox on screen", |session| {
-        on_screen(session, &inbox.key)
+        place_on_screen(session, &inbox)
     });
     // The pointer away from it: nothing of a handle is drawn over the place's top edge.
     point_to(&mut session, (x + w * 0.9, y + h * 0.9));
@@ -349,7 +368,7 @@ fn a_place_has_no_frame_and_its_handle_shows_on_hover() {
         for row in top..(py as u32 + 24) {
             for col in left..right {
                 let at = ((row * shot.width + col) * 4) as usize;
-                out.extend_from_slice(&shot.pixels[at..at + 4]);
+                out.extend_from_slice(&shot.rgba[at..at + 4]);
             }
         }
         out
