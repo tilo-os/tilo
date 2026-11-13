@@ -197,20 +197,17 @@ def toolkit_word(name: str, key: str) -> str:
     return say("crates/sdk/ui-core", key, window_language(name))
 
 
-def doing(name: str, ty: str | None, action: str, on: str | None = None) -> str:
-    """What the app `name`'s action `action` is known by: the kind of the resource the app publishes
-    it on, and the operation, in the app's own ids, which no composition and no language changes.
+def doing(name: str, ty: str, action: str, on: str | None = None) -> str:
+    """What the app `name`'s action `action`, run on records of the app `on`'s type `ty`, is known
+    by: the record kind it acts on and the operation, in the apps' own ids, which no composition
+    and no language changes.
 
-    `ty` is the type as its app declares it (`Tasks`, `Notebook`) when the action acts on records of
-    a type its app declares: the kind those records are published under is `tl.` and the app's id
-    before it. `on` names the app holding those records, when it is not the one declaring the
-    action. An action that takes another app's record is published on the app's own resource
-    (`today`'s cleanup runs on `tasks`' tasks), whose kind is `tl.` and the app's id: pass `None`
-    for `ty`.
-    `action` is looked up in the ids lock of the app that declares it (`apps/tl/<name>/app.ids`),
-    as every declaration there is named (`new_task = qymo5lg2`)."""
-    app = app_id(on or name)
-    kind = f"tl.{app}" if ty is None else f"tl.{app}.{ty}"
+    `ty` is the type as its app declares it (`Tasks`, `Notebook`): the kind that app publishes the
+    records under is `tl.` and the app's id before it. `on` names the app holding those records,
+    when it is not the one declaring the action (`today`'s cleanup runs on `tasks`' tasks). `action`
+    is looked up in the ids lock of the app that declares it (`apps/tl/<name>/app.ids`), as every
+    declaration there is named (`new_task = qymo5lg2`)."""
+    kind = f"tl.{app_id(on or name)}.{ty}"
     return "\x1f".join((kind, app_id_of(name, action)))
 
 
@@ -512,7 +509,10 @@ def check_windows(session: Session, processes: dict, session_pid: int, out: Path
             time.sleep(1.0)
             if name is None:
                 continue
-            rect = next(w["rect"] for w in session.windows() if w.get("tab") == window["tab"])
+            # Read once the session says the window is drawn: a window the compositor has not
+            # mapped yet has no rect to capture.
+            rect = until(f"window {window['tab']} to be drawn",
+                         lambda: drawn_window(session, window["tab"]), 30)["rect"]
             path = out / f"tasks-window-{i}-{name}.png"
             session.control_cmd("snapshot", str(path))
             seen.append(window_pixels(png_rgb(path), rect))
@@ -740,7 +740,7 @@ def check_today(session: Session, out: Path, before: bytes) -> dict:
     focus(session, next(w for w in session.windows() if w.get("app_id") == today))
     until("Tasks' tasks in Today's card", lambda: (lambda shown: shown if all(
         title in shown for title in held) else None)(named(session)), 30)
-    cleanup = doing("today", None, "morning_cleanup")
+    cleanup = doing("today", "Tasks", "morning_cleanup", on="tasks")
     session.wait_doing(cleanup)
     done = mark_done(session, held[0])
     menu = menu_complete(session, held[1])
