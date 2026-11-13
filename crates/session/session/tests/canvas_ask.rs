@@ -1141,3 +1141,158 @@ fn pressing_the_rows_retry_asks_the_agent_again_on_the_same_message() {
         "a reply already asked again offers no Retry: {failed_row}"
     );
 }
+
+/// The served root of the tilolang app `app` (`so.tilo.lang.notes`): a resource an agent shows.
+fn served_root(session: &Session, app: &str) -> String {
+    session
+        .service_resources()
+        .into_iter()
+        .find(|spec| spec.id.as_str().starts_with(&format!("tl:{app}:root-")))
+        .map(|spec| spec.id.as_str().to_owned())
+        .unwrap_or_else(|| panic!("{app}'s root is published"))
+}
+
+/// The canvas point of the strip `place` stands in, and its workspace.
+fn canvas_point(
+    session: &Session,
+    place: &tilo_session::arrangement::PlaceReading,
+) -> (i64, i64, String) {
+    let strip =
+        common::strip(session, common::number(&place.strip)).expect("the place has its strip");
+    (
+        strip.canvas_x.into(),
+        strip.canvas_y.into(),
+        strip.workspace,
+    )
+}
+
+/// An agent's `place` that names no point stands what it shows beside the conversation it was
+/// asked in — the turn's conversation is the `beside` the session fills in for its steps — and a
+/// second `place` of the same resource brings that place forward rather than standing another
+/// (`shell.md` §8.1: answer in words, and place the views that show it).
+#[test]
+fn an_agents_place_without_a_point_stands_beside_the_conversation() {
+    let _settled = ui::motion::testing::settled();
+    let root = private_home();
+    let mut session = session(root.path());
+    let asked = asked(&mut session, "which of my tasks are due this week?");
+    let conversation = wait_for(&mut session, "the ask placed", |session| {
+        common::places(session)
+            .into_iter()
+            .find(|place| place.record.contains("/channels/"))
+    });
+    let notes = served_root(&session, "so.tilo.lang.notes");
+
+    let place = |session: &mut Session| {
+        session
+            .invoke_with_actor(
+                &asked.agent,
+                "shell:arrangement",
+                "place",
+                &serde_json::json!({"resource": notes, "beside": conversation.record}),
+            )
+            .unwrap_or_else(|error| panic!("the place runs: {error}"));
+    };
+    place(&mut session);
+    let placed = wait_for(&mut session, "the resource placed", |session| {
+        common::places(session)
+            .into_iter()
+            .find(|place| place.record == notes)
+    });
+    let (x, y, workspace) = canvas_point(&session, &placed);
+    let (cx, cy, asked_in) = canvas_point(&session, &conversation);
+    assert_eq!(
+        workspace, asked_in,
+        "it stands in the conversation's workspace"
+    );
+    assert_eq!(y, cy, "it stands at the conversation's line");
+    assert!(
+        x > cx,
+        "it stands to the conversation's right: {x} against {cx}"
+    );
+    let (who, verb) = session
+        .arrangement()
+        .borrow_mut()
+        .last_step()
+        .expect("a step of the history");
+    assert_eq!(who, asked.agent, "attributed to the agent");
+    assert_eq!(verb, "place");
+
+    // Placing it again brings the place showing it forward: still one place of it.
+    place(&mut session);
+    session.step(Duration::from_millis(1)).expect("a frame");
+    let shown = common::places(&session)
+        .into_iter()
+        .filter(|place| place.record == notes)
+        .count();
+    assert_eq!(shown, 1, "one place shows it");
+}
+
+/// A place moved beside another (`position` with `beside`, no point) stands in the free space next
+/// to it: "put my notes next to the inbox". One that names neither a point nor anything to stand
+/// beside is refused rather than sent to the canvas' origin.
+#[test]
+fn a_place_positioned_beside_another_stands_next_to_it() {
+    let _settled = ui::motion::testing::settled();
+    let root = private_home();
+    let mut session = session(root.path());
+    let asked = asked(&mut session, "put my notes next to the inbox");
+    let conversation = wait_for(&mut session, "the ask placed", |session| {
+        common::places(session)
+            .into_iter()
+            .find(|place| place.record.contains("/channels/"))
+    });
+    let notes = served_root(&session, "so.tilo.lang.notes");
+    let mail = served_root(&session, "so.tilo.lang.mail");
+    // Mail beside the conversation, notes far off at a point of their own.
+    for (resource, at) in [
+        (
+            mail.as_str(),
+            serde_json::json!({"beside": conversation.record}),
+        ),
+        (notes.as_str(), serde_json::json!({"x": 6000, "y": 4000})),
+    ] {
+        let mut arguments = at;
+        arguments["resource"] = resource.into();
+        session
+            .invoke_with_actor(&asked.agent, "shell:arrangement", "place", &arguments)
+            .unwrap_or_else(|error| panic!("the place runs: {error}"));
+    }
+    let (inbox, note) = wait_for(&mut session, "both placed", |session| {
+        let places = common::places(session);
+        let of = |record: &str| places.iter().find(|place| place.record == record).cloned();
+        Some((of(&mail)?, of(&notes)?))
+    });
+    let (ix, iy, _) = canvas_point(&session, &inbox);
+    let (nx, ny, _) = canvas_point(&session, &note);
+    assert!(
+        nx >= 6000 && ny >= 4000,
+        "the note stands far off first: {nx},{ny}"
+    );
+
+    let refused = session.invoke_with_actor(
+        &asked.agent,
+        &format!("shell:place:{}", note.key),
+        "position",
+        &serde_json::json!({}),
+    );
+    assert!(refused.is_err(), "no point and nothing beside is refused");
+
+    session
+        .invoke_with_actor(
+            &asked.agent,
+            &format!("shell:place:{}", note.key),
+            "position",
+            &serde_json::json!({"beside": format!("shell:place:{}", inbox.key)}),
+        )
+        .unwrap_or_else(|error| panic!("the position runs: {error}"));
+    let moved = wait_for(&mut session, "the note moved", |session| {
+        let place = common::places(session)
+            .into_iter()
+            .find(|place| place.record == notes)?;
+        let (x, y, _) = canvas_point(session, &place);
+        (x < 6000).then_some((x, y))
+    });
+    assert_eq!(moved.1, iy, "it stands at the inbox's line: {moved:?}");
+    assert!(moved.0 > ix, "to the inbox's right: {moved:?} against {ix}");
+}

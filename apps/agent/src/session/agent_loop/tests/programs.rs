@@ -5,6 +5,10 @@
 
 use super::*;
 
+/// A task asked on the canvas, whose programs read what its answer then shows there.
+#[path = "canvas.rs"]
+mod canvas;
+
 const BOARD_PEER: u64 = 21;
 const VIEWS_PEER: u64 = 22;
 const CHAT_PEER: u64 = 23;

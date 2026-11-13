@@ -69,6 +69,7 @@ use serde_json::{Value, json};
 use crate::plan;
 use crate::surface::{self, APPLICATION_KIND, Catalogue, Offer};
 
+pub mod canvas;
 mod schema;
 mod summary;
 mod wait;

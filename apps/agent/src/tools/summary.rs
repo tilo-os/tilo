@@ -219,7 +219,7 @@ pub fn catalogue_summary_with(
 
 /// One offer's line in a summary: its id, label, what an open does, why it
 /// is unavailable, whether the person is asked first, and its parameters.
-fn summary_line(catalogue: &Catalogue, offer: &Offer) -> String {
+pub(super) fn summary_line(catalogue: &Catalogue, offer: &Offer) -> String {
     let mut line = format!("  {} — {}", offer.id(), offer.descriptor.action_label);
     if let Some(opened) = opened_app(offer) {
         line.push_str(&open_note(catalogue, offer, opened));
