@@ -1,15 +1,11 @@
-//! What a boot has to prove before a PIN-less keyslot may open the volume.
-//!
-//! These build a firmware description on disk: an efivarfs with a `SecureBoot` value and a
-//! `db` signature database, plus a lockdown report. That is the whole input — everything
-//! below decides from those bytes alone, so the decision is exercised without a TPM, a
-//! firmware, or a machine in a particular Secure Boot state.
+//! What a boot has to prove before a PIN-less keyslot may open the volume: each test writes an
+//! efivarfs with a `SecureBoot` value, a `db` signature database and a lockdown report, and the
+//! decision is made from those bytes alone.
 
 use super::*;
 
-/// One minimal DER certificate. The parser here walks EFI signature lists, not X.509, so the
-/// payload only has to be distinguishable; `describe_certificate` reports a digest for
-/// anything that is not a certificate.
+/// A minimal DER certificate. The parser walks EFI signature lists, not X.509, so the payload
+/// only has to be distinguishable.
 fn cert(tag: u8) -> Vec<u8> {
     vec![0x30, 0x03, 0x02, 0x01, tag]
 }
@@ -118,7 +114,7 @@ fn a_boot_is_verified_only_with_secure_boot_a_readable_db_and_lockdown() {
         "lockdown not active is not a verified boot even with Secure Boot on"
     );
 
-    // An empty db trusts nothing: every image is refused, so it is not evidence of trust.
+    // An empty db trusts nothing, so it is not evidence of trust.
     assert!(matches!(
         verified_boot(&Firmware::new(Some(true), Some(&[]), Some("integrity")).facts()),
         Err(Unverified::DatabaseUnreadable(_))
@@ -147,12 +143,12 @@ fn the_anchor_digest_covers_authorities_and_ignores_their_order() {
         "splitting one authority into its own list does not change what is trusted"
     );
 
-    // The third-party CA case: a db that keeps its own authority and adds another refuses to
-    // match the recorded one, which is the whole reason the digest is recorded.
+    // The third-party CA case: adding an authority stops the digest matching the recorded one,
+    // which is why the digest is recorded.
     let grown = x509_list(&[cert(1), cert(2), cert(3)]);
     assert_ne!(anchor_digest(&grown).unwrap(), anchor_digest(&a).unwrap());
 
-    // An image hash can admit exactly one binary and names no authority, so it is neither a
+    // An image hash names no authority, so it is neither a trusted key nor a way around one.
     // trusted key nor a way around one.
     let mut with_hash = x509_list(&[cert(1)]);
     with_hash.extend_from_slice(&sha256_list(&[0x11; 32]));
@@ -194,7 +190,6 @@ fn a_pin_less_slot_opens_only_on_the_boot_that_was_approved() {
 
     assert!(AutomaticUnlock::decide(&facts, Some(&recorded)).is_yes());
 
-    // Nothing recorded means nothing to compare against, so the slot is not opened.
     let decision = AutomaticUnlock::decide(&facts, None);
     assert!(!decision.is_yes());
     assert!(

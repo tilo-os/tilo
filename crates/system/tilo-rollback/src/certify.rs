@@ -1,21 +1,11 @@
-//! Making the rollback floor attestable to someone else.
+//! Making the rollback floor attestable: `TPM2_NV_Certify` signs the counter with a loaded key,
+//! so a peer holding that key's public half can verify the floor without trusting anything the
+//! machine says about itself. Carrying the statement to a peer, and binding the key to a device
+//! certificate, are separate work.
 //!
-//! `TPM2_NV_Certify` signs the contents of an NV index with a loaded key, so a peer holding
-//! that key's public half can verify "this machine's rollback floor is at generation N"
-//! without trusting anything the machine says about itself.
-//!
-//! This module deliberately stops at *producing* the signed statement — the protocol that
-//! carries it to a peer, the trust decisions a peer makes about the attestation key, and the
-//! binding of the key to a device certificate are a separate concern with its own design.
-//!
-//! What it does guarantee: the floor is exposed in a form that makes the rest possible — a
-//! `TPMS_ATTEST` structure and a signature over it, with the counter value and NV index Name
-//! inside, plus a caller-supplied qualifying nonce so a verifier can defeat replay.
-//!
-//! The attestation key is created under the endorsement hierarchy and is restricted
-//! (`sign` + `restricted`), which is what makes a `TPM2_NV_Certify` signature meaningful: a
-//! restricted signing key cannot be used to sign arbitrary attacker-chosen data, so a valid
-//! signature really does mean the TPM produced the attestation itself.
+//! The key lives under the endorsement hierarchy and is `sign` + `restricted`: a restricted
+//! signing key refuses externally supplied data, so its signature really does mean the TPM
+//! produced the attestation itself.
 
 use crate::argv;
 use crate::exec::{Runner, require};
@@ -23,48 +13,37 @@ use crate::policy::{self, Workspace};
 use anyhow::{Context, Result};
 use std::path::Path;
 
-/// A signed statement about the counter.
 #[derive(Debug, Clone)]
 pub struct FloorAttestation {
     /// `TPMS_ATTEST` structure, marshalled.
     pub attestation: Vec<u8>,
     pub signature: Vec<u8>,
-    /// Attestation key's public area, so a verifier can check the signature and see that the
-    /// key is restricted.
+    /// Public area of the attestation key, so a verifier can check the signature and see that
+    /// the key is restricted.
     pub key_public: Vec<u8>,
-    /// The counter value the attestation covers, for convenience. The authoritative copy is
-    /// inside `attestation`.
     pub counter: u64,
-    /// Floor generation implied by that counter and the recorded base.
     pub floor_generation: u64,
 }
 
-/// Create (or recreate) the attestation key. Returns the loaded key's context path and its
-/// public area.
+/// Create (or recreate) the attestation key; returns its context path and public area.
 ///
-/// Deterministic in the same way the sealing parent is: same owner-hierarchy seed, same
-/// template, same key — nothing to persist, and clearing the owner hierarchy is the only
-/// thing that changes the identity.
+/// Deterministic like the sealing parent: same owner-hierarchy seed and template, same key,
+/// so nothing is persisted. Clearing the owner hierarchy changes the identity.
 ///
-/// Two deliberate choices, worth stating because a reader will expect the conventional ones:
+/// The parent is the owner primary, not the EK: the endorsement primary carries the standard
+/// EK auth policy, so every operation on its child needs an endorsement-auth session. Binding
+/// the key to a device certificate by credential activation belongs with the attestation
+/// protocol.
 ///
-/// * **The parent is the owner primary, not the EK.** The endorsement primary carries the
-///   standard EK auth policy, so using it as a parent means running an endorsement-auth
-///   policy session for every operation. A production deployment does want an EK-rooted key
-///   bound to a device certificate by credential activation — that belongs with the
-///   attestation protocol, a separate workstream. This key proves "one specific TPM produced
-///   this attestation", which is what the floor statement needs.
-/// * **`restricted` is not optional.** A restricted signing key is one the TPM refuses to
-///   use on externally supplied data beginning with `TPM_GENERATED_VALUE`. Without it,
-///   anyone holding the key could sign a hand-written structure that looks exactly like a
-///   TPM attestation, with no way for a verifier to tell. The algorithm specifier must name
-///   the scheme *and* an explicit null symmetric algorithm (`ecc256:ecdsa-sha256:null`) —
-///   leave the symmetric part off and tpm2-tools fills in a default a signing key can't
-///   carry, which the TPM rejects as "unsupported symmetric algorithm".
+/// `restricted` is not optional: a restricted signing key refuses externally supplied data
+/// beginning with `TPM_GENERATED_VALUE`, so nobody holding it can sign a hand-written
+/// structure that looks like a TPM attestation. The algorithm must name an explicit null
+/// symmetric algorithm (`ecc256:ecdsa-sha256:null`); tpm2-tools otherwise fills in a default a
+/// signing key cannot carry, which the TPM rejects as "unsupported symmetric algorithm".
+///
 /// # Errors
 ///
-/// Returns an error if any `tpm2_*` step (creating the parent, creating or loading the
-/// attestation key) fails, or if the key's public area cannot be read back.
+/// Any `tpm2_*` step fails, or the key's public area cannot be read back.
 pub fn attestation_key(
     runner: &dyn Runner,
     ws: &Workspace,
@@ -107,9 +86,8 @@ pub fn attestation_key(
         ],
         "creating the floor attestation key",
     )?;
-    // Reload from the blobs rather than reusing tpm2_create's saved context: on a TPM with no
-    // resource manager the parent and freshly created key already occupy the transient slots,
-    // and the next tool's context load fails with a message that reads like a corrupt file.
+    // Reload from the blobs rather than reusing tpm2_create's context: on a TPM with no
+    // resource manager the parent and the new key already fill the transient slots.
     policy::flush(runner);
     let akctx = ws.path("ak.ctx");
     require(
@@ -131,14 +109,13 @@ pub fn attestation_key(
     Ok((akctx, pubbytes))
 }
 
-/// Sign the counter's current contents. `qualification` is the verifier's nonce; it lands
-/// in the attestation's `extraData` and is what stops a captured attestation being replayed.
+/// Sign the counter's current contents. `qualification` is the verifier's nonce: it lands in
+/// the attestation's `extraData`, which stops a captured attestation from being replayed.
 ///
 /// # Errors
 ///
-/// Returns an error if the attestation key cannot be created/loaded, if `tpm2_nvcertify`
-/// fails, if the counter has never been incremented, or if the resulting attestation/signature
-/// files cannot be read back.
+/// The attestation key cannot be created or loaded, `tpm2_nvcertify` fails, the counter has
+/// never been incremented, or the attestation or signature cannot be read back.
 pub fn certify_floor(
     runner: &dyn Runner,
     ws: &Workspace,
