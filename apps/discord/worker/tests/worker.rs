@@ -819,6 +819,68 @@ async fn read_only_changes_nothing() {
     let webhook = host.webhook(CHANNEL_GENERAL);
     let outcome = host.perform(&send(&webhook, "nope")).await;
     assert!(matches!(outcome, Outcome::Refused { .. }), "{outcome:?}");
+    // Whatever an op would change (a reaction, a webhook, a member), it is
+    // refused for the same reason, before anything reaches Discord.
+    let react = || ReactOp {
+        channel: CHANNEL_GENERAL.to_owned(),
+        message: "1".to_owned(),
+        emoji: "tilo_hello:55".to_owned(),
+    };
+    let changing = [
+        ("react", DiscordOp::React(react())),
+        ("unreact", DiscordOp::Unreact(react())),
+        (
+            "create-webhook",
+            DiscordOp::CreateWebhook(discord_wire::op::CreateWebhookOp {
+                channel: CHANNEL_GENERAL.to_owned(),
+                tilo: "workspace".to_owned(),
+            }),
+        ),
+        (
+            "ban",
+            DiscordOp::Ban(MemberOp {
+                user: "3001".to_owned(),
+                reason: "spam".to_owned(),
+            }),
+        ),
+    ];
+    for (what, op) in &changing {
+        let outcome = host.perform(op).await;
+        let Outcome::Refused { reason } = &outcome else {
+            panic!("{what}: {outcome:?}");
+        };
+        assert_eq!(
+            reason.as_str(),
+            "the Discord worker runs read-only and changes nothing in Discord",
+            "{what}"
+        );
+    }
+    for (method, path) in [
+        ("PUT", "/channels/"),
+        ("POST", "/channels/"),
+        ("PUT", "/guilds/"),
+    ] {
+        assert!(
+            host.fake.requests_to(method, path).is_empty(),
+            "{method} {path}"
+        );
+    }
+    // Fetching changes nothing in Discord: it is the one op still done.
+    let url = host
+        .fake
+        .put_cdn("avatars/3001/abc.png", "image/png", b"png bytes");
+    let fetched = host
+        .perform(&DiscordOp::FetchAsset(FetchAssetOp {
+            url,
+            max_bytes: 1_000,
+            attachment: None,
+            inline: false,
+        }))
+        .await;
+    let Outcome::Done { result } = fetched else {
+        panic!("{fetched:?}")
+    };
+    assert_eq!(result["blob"], blake3::hash(b"png bytes").to_hex().as_str());
     let ada = User::new("3001", "ada");
     let interaction = host.fake.slash(&ada, "link");
     host.event(source::COMMAND, &event_id::command(&interaction))
