@@ -245,6 +245,7 @@ fn report(workspace: &str, devices: &[&Device]) -> String {
                         "waits for",
                         "was not reached",
                         "refus",
+                        "turned away",
                     ]
                     .iter()
                     .any(|word| line.contains(word))
@@ -1178,6 +1179,125 @@ fn a_window_a_copied_machine_shares_stays_live_while_a_second_copy_comes_and_goe
         &tab,
         "the window shared before",
         None,
+    );
+    the_share_stays_live(
+        "the window was shared a second time",
+        Duration::from_secs(15),
+        &share,
+        &mut window,
+        &[],
+    );
+}
+
+/// The three machines in the order they were made and started: the desktop makes the workspace and
+/// hosts it; a copy of it is taken in and stays on from then; the desktop is stopped once more and
+/// copied again, as it is by then, with the first copy among the workspace's devices and its
+/// channels moved on; the second copy starts while the desktop is still off, then the desktop, and
+/// both start their sessions once more. Only then does the first copy share a window, with the
+/// second copy on, and the share stays live while it goes off, through its end and a second share.
+#[test]
+fn a_window_shared_after_the_host_was_copied_again_stays_live() {
+    log_sessions_at(LOGGED);
+    let ada = Person::new("Ada");
+    let mut desktop = ada.device("Ada's desktop");
+    desktop.start();
+    tilo_test_env::wait_until("the desktop shows the workspace its desk made", || {
+        desktop.showing().is_some()
+    });
+    let workspace = desktop.showing().expect("the workspace the desk made");
+    desktop.stop();
+    let (mut copy, _) = ada.branch(&desktop);
+    share_the_fleet(&ada, &[&desktop, &copy]);
+    desktop.start();
+    desktop.wait_holding(&workspace);
+    copy.start();
+    let taken_in = |device: &Device| {
+        let row = hosting_of(device, &workspace);
+        row["awaiting_host"] == json!(false) && row["hosted_here"] == json!(false)
+    };
+    eventually(
+        &format!("{} holds {workspace} and its host took it in", copy.label),
+        Duration::from_secs(120),
+        &workspace,
+        &[&desktop, &copy],
+        || taken_in(&copy),
+    );
+    keys_at_rest(&workspace, &desktop, &copy);
+
+    // The desktop is copied a second time, as it is now. The first copy stays on.
+    desktop.stop();
+    let (mut later, _) = ada.branch(&desktop);
+    // Two copies of one machine are called alike but for their keys' first letters, and a device
+    // logs under what it is called.
+    later.label = format!("{} made later", later.label);
+    share_the_fleet(&ada, &[&desktop, &copy, &later]);
+    later.start();
+    std::thread::sleep(Duration::from_secs(8));
+    desktop.start();
+    desktop.wait_holding(&workspace);
+    // Both start their sessions again on the network they now share.
+    desktop.stop();
+    desktop.start();
+    desktop.wait_holding(&workspace);
+    later.stop();
+    later.start();
+    let all = [&desktop, &copy, &later];
+    eventually(
+        &format!("{} holds {workspace} and its host took it in", later.label),
+        Duration::from_secs(120),
+        &workspace,
+        &all,
+        || taken_in(&later),
+    );
+    for device in all {
+        eventually(
+            &format!(
+                "{} says the live plane of {workspace} is open, with three devices in it",
+                device.label
+            ),
+            Duration::from_secs(90),
+            &workspace,
+            &all,
+            || plane_of(device, &workspace)["state"] == json!("open"),
+        );
+    }
+
+    let (mut window, tab) = the_window_shared(&workspace, &copy, &desktop, "Shared by the copy");
+    let share = Running {
+        workspace: &workspace,
+        tab: &tab,
+        sharer: &copy,
+        viewer: &desktop,
+    };
+    the_share_stays_live(
+        "the window was received, with the second copy on",
+        Duration::from_secs(40),
+        &share,
+        &mut window,
+        &[&later],
+    );
+    later.stop();
+    the_share_stays_live(
+        "the second copy went off",
+        Duration::from_secs(15),
+        &share,
+        &mut window,
+        &[],
+    );
+    the_share_stops(&share);
+    the_planes_stay_open(
+        "the share was stopped",
+        Duration::from_secs(5),
+        &workspace,
+        &[&desktop, &copy],
+    );
+    share_tab(&copy, &tab, "the window shared before");
+    the_share_arrives(
+        &workspace,
+        &copy,
+        &desktop,
+        &tab,
+        "the window shared before",
     );
     the_share_stays_live(
         "the window was shared a second time",
