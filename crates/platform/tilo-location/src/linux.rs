@@ -14,8 +14,8 @@ impl crate::LocationProvider for PortalLocation {
     }
 }
 
-/// How long to wait for the first fix: GeoClue can take seconds, and past this
-/// the answer is unavailable.
+/// How long to wait for the first fix: `GeoClue` can take seconds, and past
+/// this the answer is unavailable.
 const FIX_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// Start the request on the app runtime: the D-Bus round trip and the host's
