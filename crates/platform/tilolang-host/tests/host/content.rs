@@ -42,7 +42,7 @@ fn body_of(host: &TilolangHost, target: &patch::ResourceRef) -> String {
 /// The heads of the record's own document, as the instance holds it.
 fn record_heads(host: &TilolangHost) -> Vec<automerge::ChangeHash> {
     let record = host.instances().next().unwrap().record();
-    record.doc().clone().get_heads()
+    record.doc().get_heads()
 }
 
 /// The body field of the note the window shows beside the list, and that note.
