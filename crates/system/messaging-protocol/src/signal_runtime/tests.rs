@@ -62,6 +62,7 @@ const ANSWERED_BUDGET: Duration = MAX_OPERATION_TIMEOUT;
 
 tilo_test_env::scenario! {
     /// `SignalRuntime` over a socket pair, each case with its own journal and peer.
+    #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is")]
     fn signal_runtime;
 
     phase socket_send_maps_registry_account_to_signal_and_restart_refuses_duplicates;

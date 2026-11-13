@@ -35,6 +35,7 @@ fn root() -> (tempfile::TempDir, PathBuf) {
 
 tilo_test_env::scenario! {
     /// `EncryptedSignalProfile`, each case on a profile in its own directory.
+    #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is")]
     fn encrypted_signal_profile;
 
     phase private_profile_visit_stops_on_original_retirement_or_storage_failure;
