@@ -525,6 +525,12 @@ fn document_apps(inner: &Inner, caller: &Caller, path: &str) -> ToolReply {
     let documents = crate::documents::candidates(&launches, &lists)
         .into_iter()
         .take(MAX_LISTED_APPS)
+        .map(|mut app| {
+            // This thread may read the disk: the menu has the app's own icon the first time it opens.
+            app.artwork =
+                crate::app_icons::app_png(&app.id, runtime_portal::tools::DOCUMENT_APP_ARTWORK_PX);
+            app
+        })
         .collect();
     ToolReply {
         accepted: true,

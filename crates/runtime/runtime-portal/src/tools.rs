@@ -211,7 +211,16 @@ pub struct DocumentApp {
     /// Where this device got the app.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<AppKind>,
+    /// The app's own icon as PNG bytes, [`DOCUMENT_APP_ARTWORK_PX`] square, where it has one:
+    /// the session reads the icon themes an app in its sandbox cannot. Its glyph stands in
+    /// without it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artwork: Option<Vec<u8>>,
 }
+
+/// The edge, in device pixels, of the artwork [`DocumentApp::artwork`] carries: a menu row's icon
+/// on a display of up to three times the density.
+pub const DOCUMENT_APP_ARTWORK_PX: u32 = 48;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DriveEntry {

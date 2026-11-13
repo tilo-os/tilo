@@ -55,6 +55,9 @@ pub enum MenuItem {
         /// Optional leading icon for command recognition. Icons are visual
         /// reinforcement only; `label` remains the accessible name.
         icon: Option<Icon>,
+        /// The app's own artwork, painted in the icon's place once it has pixels: a row that
+        /// names an app ([`MenuItem::with_image`]).
+        image: Option<crate::icons::AppImage>,
         /// `Some` reserves the leading selection gutter and publishes a
         /// semantic checked state. `None` is an ordinary command row.
         checked: Option<bool>,
@@ -122,6 +125,7 @@ impl MenuItem {
             label,
             action,
             icon: None,
+            image: None,
             checked: None,
             destructive: false,
             enabled: true,
@@ -188,6 +192,19 @@ impl MenuItem {
         } = &mut self
         {
             *item_icon = Some(icon);
+        }
+        self
+    }
+
+    /// Paint the app `image` names in the row's icon place, its glyph ([`Self::with_icon`]) until
+    /// the artwork has pixels: a row that opens or names an app.
+    #[must_use]
+    pub fn with_image(mut self, image: crate::icons::AppImage) -> Self {
+        if let MenuItem::Action {
+            image: item_image, ..
+        } = &mut self
+        {
+            *item_image = Some(image);
         }
         self
     }

@@ -143,6 +143,7 @@ mod open_with_tests {
                 name: "Evince".into(),
                 icon: Some("file".into()),
                 source: Some(runtime_portal::tools::AppKind::System),
+                artwork: Some(ui::png::encode_rgba8(1, 1, &[200, 30, 30, 255]).expect("a png")),
                 is_default: true,
             },
             DocumentApp {
@@ -150,6 +151,7 @@ mod open_with_tests {
                 name: "PDF Viewer".into(),
                 icon: Some("file".into()),
                 source: None,
+                artwork: None,
                 is_default: false,
             },
         ]
@@ -404,23 +406,35 @@ mod open_with_tests {
         );
         // Each row wears the app's own glyph, and a row two apps share a name with says where the
         // machine got it.
-        let rows: Vec<(Option<ui::icons::Icon>, Option<String>)> = w
+        // An app the session handed artwork for wears it, its glyph standing by.
+        let rows: Vec<(Option<ui::icons::Icon>, Option<String>, Option<String>)> = w
             .chrome()
             .submenu
             .items()
             .iter()
             .map(|item| match item {
-                ui::widget::context_menu::MenuItem::Action { icon, detail, .. } => {
-                    (*icon, detail.clone())
-                }
-                _ => (None, None),
+                ui::widget::context_menu::MenuItem::Action {
+                    icon,
+                    detail,
+                    image,
+                    ..
+                } => (
+                    *icon,
+                    detail.clone(),
+                    image.as_ref().map(|image| image.key().to_owned()),
+                ),
+                _ => (None, None, None),
             })
             .collect();
         assert_eq!(
             rows[0],
-            (Some(ui::icons::Icon::File), Some("System".into()))
+            (
+                Some(ui::icons::Icon::File),
+                Some("System".into()),
+                Some("app:org.gnome.Evince.desktop".into())
+            )
         );
-        assert_eq!(rows[1], (Some(ui::icons::Icon::File), None));
+        assert_eq!(rows[1], (Some(ui::icons::Icon::File), None, None));
         w.state().apply_command(viewer);
         settle_opens(&w);
         assert_eq!(asks(), vec!["/docs/slides.pdf so.tilo.pdf-viewer"]);

@@ -1,7 +1,16 @@
 //! Raster application icons: an app's own artwork, where a lucide glyph stands for a Tilo app. The
 //! toolkit does not know where artwork comes from — an icon theme, a Wayland client, a tray item.
+//!
+//! Every surface that shows an app — a search row, a menu row, the switcher, a tab — asks one
+//! place for its artwork, [`app_artwork`], and paints the app's glyph while that has no pixels. What
+//! answers is the host the process runs in ([`set_app_artwork`]): the session reads the person's
+//! icon themes and the icons installed packages signed, off its loop and cached per app and device
+//! size. A sandboxed app reads no theme: the session hands it the pixels with the rows it asks for
+//! ([`AppImage::from_png`]), and a process with no host to answer (the web build) shows glyphs.
 
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
+
+use tilo_lock::RwLockRecover as _;
 
 use vello::Scene;
 use vello::kurbo::{Affine, Rect};
@@ -20,6 +29,35 @@ pub trait AppImageSource: Send + Sync {
     fn pixels(&self, device_px: u32) -> Option<ImageData>;
 }
 
+/// The most bytes of a handed-over icon [`AppImage::from_png`] decodes: an icon is kilobytes.
+pub const MAX_PNG_BYTES: usize = 64 * 1024;
+/// The most pixels a handed-over icon decodes to.
+pub const MAX_PNG_PIXELS: u32 = 128 * 128;
+
+/// What answers [`app_artwork`] in this process.
+pub type ArtworkResolver = Arc<dyn Fn(&str) -> Option<AppImage> + Send + Sync>;
+
+static RESOLVER: RwLock<Option<ArtworkResolver>> = RwLock::new(None);
+
+/// Answer [`app_artwork`] in this process with `resolver`: set once by the host that can read
+/// artwork (the session), which must answer without touching the disk on the caller's thread.
+pub fn set_app_artwork(resolver: ArtworkResolver) {
+    *RESOLVER.write_recover() = Some(resolver);
+}
+
+/// The artwork of the app `app_id`, as every surface that lists it paints it: `None` where this
+/// process has no host that reads artwork, or the app has none, and the app wears its glyph. The
+/// image may have no pixels yet the first frames it is painted; the glyph shows until it has.
+#[must_use]
+pub fn app_artwork(app_id: &str) -> Option<AppImage> {
+    let app_id = app_id.trim();
+    if app_id.is_empty() {
+        return None;
+    }
+    let resolver = RESOLVER.read_recover().clone()?;
+    resolver(app_id)
+}
+
 /// A shareable handle to an application's artwork.
 #[derive(Clone)]
 pub struct AppImage(Arc<dyn AppImageSource>);
@@ -35,6 +73,23 @@ impl AppImage {
 
     pub fn pixels(&self, device_px: u32) -> Option<ImageData> {
         self.0.pixels(device_px.clamp(1, MAX_DEVICE_PX))
+    }
+
+    /// Artwork handed over as PNG bytes, decoded once: what a sandboxed app is given for the apps
+    /// it lists, since it reads no icon theme. `key` names the app it is the artwork of. `None` for
+    /// bytes that are empty, larger than [`MAX_PNG_BYTES`], or not a PNG of at most
+    /// [`MAX_PNG_PIXELS`].
+    #[must_use]
+    pub fn from_png(key: impl Into<String>, png: &[u8]) -> Option<Self> {
+        if png.is_empty() || png.len() > MAX_PNG_BYTES {
+            return None;
+        }
+        let decoded = crate::png::decode_rgba8_within(png, u64::from(MAX_PNG_PIXELS)).ok()?;
+        let pixels = crate::raster::rgba8(decoded.rgba, decoded.width, decoded.height);
+        Some(Self::new(Decoded {
+            key: key.into(),
+            pixels,
+        }))
     }
 
     /// The image at `url` in `store`: a media row's thumbnail, a cover. The store loads it off the UI
@@ -64,6 +119,22 @@ impl AppImageSource for StoreImage {
 
     fn pixels(&self, _device_px: u32) -> Option<ImageData> {
         self.store.get(&self.url)
+    }
+}
+
+/// Pixels decoded once, the same at every size: the source scales them to the slot.
+struct Decoded {
+    key: String,
+    pixels: ImageData,
+}
+
+impl AppImageSource for Decoded {
+    fn key(&self) -> &str {
+        &self.key
+    }
+
+    fn pixels(&self, _device_px: u32) -> Option<ImageData> {
+        Some(self.pixels.clone())
     }
 }
 
@@ -152,6 +223,36 @@ mod tests {
         assert!(draw_app_image(&mut scene, Affine::scale(2.0), rect, &image));
         assert!(draw_app_image(&mut scene, Affine::scale(1.5), rect, &image));
         assert_eq!(*source.1.lock().unwrap(), vec![14, 28, 21]);
+    }
+
+    /// A PNG one red pixel wide and tall.
+    fn png() -> Vec<u8> {
+        crate::png::encode_rgba8(1, 1, &[255, 0, 0, 255]).unwrap()
+    }
+
+    #[test]
+    fn handed_over_artwork_is_decoded_once_and_bounded() {
+        let image = AppImage::from_png("app:files", &png()).expect("a png");
+        assert_eq!(image.key(), "app:files");
+        let pixels = image.pixels(32).expect("its pixels");
+        assert_eq!((pixels.width, pixels.height), (1, 1));
+        assert!(AppImage::from_png("app:x", b"not a png").is_none());
+        assert!(AppImage::from_png("app:x", &[]).is_none());
+        assert!(AppImage::from_png("app:x", &vec![0; MAX_PNG_BYTES + 1]).is_none());
+    }
+
+    #[test]
+    fn the_host_answers_artwork_and_no_host_is_the_glyph() {
+        assert!(app_artwork("so.tilo.notes").is_none(), "no host: the glyph");
+        set_app_artwork(Arc::new(|app: &str| {
+            (app == "so.tilo.notes").then(|| AppImage::from_png("app:notes", &png()))?
+        }));
+        assert_eq!(
+            app_artwork(" so.tilo.notes ").map(|image| image.key().to_owned()),
+            Some("app:notes".to_owned())
+        );
+        assert!(app_artwork("org.example.None").is_none());
+        assert!(app_artwork("").is_none());
     }
 
     #[test]

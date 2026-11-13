@@ -12,7 +12,10 @@ pub use tilo_mark::paint_tilo_mark;
 pub use app_glyph::app_glyph;
 pub use service_mark::{ServiceMark, service_mark};
 
-pub use app_image::{AppImage, AppImageSource, MAX_DEVICE_PX, device_px, draw_app_image};
+pub use app_image::{
+    AppImage, AppImageSource, ArtworkResolver, MAX_DEVICE_PX, MAX_PNG_BYTES, MAX_PNG_PIXELS,
+    app_artwork, device_px, draw_app_image, set_app_artwork,
+};
 
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Cap, Circle, Join, Point, Rect, RoundedRect, Shape, Stroke};

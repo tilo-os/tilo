@@ -141,8 +141,8 @@ pub(super) fn always_shown(kind: &ResourceKind) -> bool {
         || *kind == crate::providers::ask_kind()
 }
 
-/// One hit as a palette row: an application wears its own glyph, the one
-/// its windows wear, never the generic grid every app shared.
+/// One hit as a palette row: an application wears its own artwork, else its
+/// own glyph, the one its windows wear, never the generic grid every app shared.
 pub(super) fn entry_for(hit: &Hit, id: String) -> CommandEntry {
     let (mut entry, icon) = match &hit.target {
         Target::Action(action) => {
@@ -257,6 +257,12 @@ pub(super) fn entry_for(hit: &Hit, id: String) -> CommandEntry {
     }
     if let Some(preview) = &hit.preview {
         entry = entry.previewed(preview.clone());
+    }
+    // An app's row wears the app's own artwork where it has some, its glyph until then.
+    if let Target::Launch { app, .. } | Target::Window { app: Some(app), .. } = &hit.target
+        && let Some(image) = ui::icons::app_artwork(app)
+    {
+        entry = entry.image(image);
     }
     entry.icon(icon)
 }
