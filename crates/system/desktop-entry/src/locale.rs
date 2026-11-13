@@ -1,30 +1,22 @@
 //! The locale preference list a `Name[xx]=` lookup is resolved against.
 //!
-//! The spec's matching rule for `lang_COUNTRY.ENCODING@MODIFIER` is to
-//! try, in order: `lang_COUNTRY@MODIFIER`, `lang_COUNTRY`,
-//! `lang@MODIFIER`, `lang`. The encoding is never part of a key in the
-//! file, so it is stripped before matching.
-//!
-//! The list is always the caller's, never this crate's: every caller asks
-//! [`language_candidates`] for the interface language the desktop resolves
-//! (the settings' language, else the device's locale, which that one answer
-//! reads for itself), so an English session on a German machine lists English
-//! names and a German one lists German names. Nothing here reads the process
-//! environment.
+//! The spec tries, in order, `lang_COUNTRY@MODIFIER`, `lang_COUNTRY`,
+//! `lang@MODIFIER`, `lang`; the encoding is never part of a key in the file,
+//! so it is stripped before matching. The list is always the caller's, never
+//! this crate's: [`language_candidates`] answers for the interface language
+//! the desktop resolved, and nothing here reads the process environment.
 
 /// The `Name[xx]` key candidates for the interface language `preferred`: a
-/// BCP 47 tag (`en-US`) or the POSIX locale it came from (`en_US.UTF-8`), both
-/// accepted. `None` means no language is named (`C`), so the unlocalised keys
-/// are the ones read.
+/// BCP 47 tag (`en-US`) or the POSIX locale it came from (`en_US.UTF-8`).
+/// `None` means no language is named (`C`), so the unlocalised keys are read.
 #[must_use]
 pub fn language_candidates(preferred: Option<&str>) -> Vec<String> {
     preferred.map_or_else(Vec::new, candidates_for)
 }
 
-/// The candidate list for one locale string. Public so it is testable without
-/// the process environment, and so both spellings of the same language — the
-/// POSIX `de_DE.UTF-8@euro` and the BCP 47 `de-DE` the settings store keeps —
-/// expand the same way.
+/// The candidate list for one locale string. Public so both spellings of the
+/// same language — the POSIX `de_DE.UTF-8@euro` and the BCP 47 `de-DE` — expand
+/// the same way.
 #[must_use]
 pub fn candidates_for(locale: &str) -> Vec<String> {
     if !tilo_paths::names_language(locale) {
