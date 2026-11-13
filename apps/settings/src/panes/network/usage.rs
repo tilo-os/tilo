@@ -1,9 +1,9 @@
 //! Data usage: what this device moved over each connection, as the session
-//! counts it into the `network_usage` section. The page shows the days of
-//! a span as stacked bars, one colour per connection (the exact amounts
-//! under the pointer), and every connection's total with a way to forget
-//! it; the modem's page shows the mobile data period against its reset day
-//! and the plan's allowance.
+//! counts it into the `network_usage` section. The page shows the days of a
+//! span as stacked bars, one colour per connection (the exact amounts under the
+//! pointer), and every connection's total with a way to forget it; the modem's
+//! page shows the mobile data period against its reset day and the plan's
+//! allowance.
 
 use chrono::NaiveDate;
 use provider_settings_ui::bound::{SettingRows as _, record_item};
@@ -22,18 +22,15 @@ use crate::i18n::{t, t_args};
 use crate::prefs::{ConnectionKind, NetworkUsage};
 use settings_sections::network_usage::{Bytes, ConnectionUsage};
 
-/// The days the chart shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Span {
     Days7,
     Days30,
-    /// The mobile data period, from its reset day.
     Period,
 }
 
 impl Span {
     pub(super) const ALL: [Self; 3] = [Self::Days7, Self::Days30, Self::Period];
-    /// The span shown first.
     pub(crate) const FIRST: usize = 1;
 
     fn of(index: usize) -> Self {
@@ -48,7 +45,6 @@ impl Span {
         })
     }
 
-    /// The first and last day shown on `today`.
     fn days(self, usage: &NetworkUsage, today: NaiveDate) -> (NaiveDate, NaiveDate) {
         let back = |days: u64| {
             today
@@ -64,12 +60,10 @@ impl Span {
     }
 }
 
-/// Today, on this device's clock.
 fn today() -> NaiveDate {
     ui::clock::local_now().date_naive()
 }
 
-/// How many connections the chart shows by themselves; the rest are one.
 const SHOWN: usize = 5;
 
 /// A connection's name as the person knows it: a wired profile's own name
@@ -95,8 +89,6 @@ fn icon_of(kind: ConnectionKind) -> Icon {
     }
 }
 
-/// The connections with traffic from `from` to `to`, the most first, each
-/// with its key and what it moved then.
 fn ranked(
     usage: &NetworkUsage,
     from: NaiveDate,
@@ -114,7 +106,6 @@ fn ranked(
     ranked
 }
 
-/// What one bar says under the pointer.
 fn detail(bytes: Bytes) -> String {
     t_args(
         "net-usage-detail",
@@ -126,7 +117,6 @@ fn detail(bytes: Bytes) -> String {
     )
 }
 
-/// A day's label under its bar: the weekday in a week, else the date.
 fn day_label(day: NaiveDate, days: usize) -> String {
     if days <= 7 {
         ui::format::weekday_short(chrono::Datelike::weekday(&day))
@@ -135,8 +125,6 @@ fn day_label(day: NaiveDate, days: usize) -> String {
     }
 }
 
-/// The days from `from` to `to` as stacked bars, one series per connection
-/// (the [`SHOWN`] that moved the most, the rest as one).
 pub(super) fn chart(
     usage: &NetworkUsage,
     from: NaiveDate,
@@ -203,7 +191,6 @@ pub(super) fn chart(
         .with_height(if single { 200.0 } else { 240.0 })
 }
 
-/// A large figure with what it measures under it.
 fn figure(value: &str, caption: &str) -> El {
     Box::new(
         Column::new()
@@ -219,7 +206,6 @@ fn figure(value: &str, caption: &str) -> El {
     )
 }
 
-/// The overview: the span's total, the span switch and the chart.
 fn overview(cx: &ViewCx<NetworkUsage>, span: &LocalState<usize>) -> Item {
     let usage = cx.value(|usage: &NetworkUsage| usage.clone());
     let span = span.clone();
@@ -272,8 +258,6 @@ fn overview(cx: &ViewCx<NetworkUsage>, span: &LocalState<usize>) -> Item {
     }))
 }
 
-/// Every connection with traffic in the span, the most first: its total,
-/// what came in and went out, and forgetting it.
 fn connections(cx: &ViewCx<NetworkUsage>, span: &LocalState<usize>) -> Item {
     let usage = cx.value(|usage: &NetworkUsage| usage.clone());
     let span = span.clone();
@@ -321,7 +305,6 @@ fn connections(cx: &ViewCx<NetworkUsage>, span: &LocalState<usize>) -> Item {
 }
 
 impl Page<'_> {
-    /// The data usage page: the overview, then each connection.
     pub(super) fn usage_page(&self) -> Vec<SettingsSection> {
         let record = self.cx.settings::<NetworkUsage>();
         let span = &self.usage_span;
@@ -346,7 +329,6 @@ impl Page<'_> {
         ]
     }
 
-    /// What the data usage row says on the first page: the last 30 days.
     pub(super) fn usage_summary(&self) -> Option<String> {
         let usage = self.reach.storage.settings::<NetworkUsage>().get();
         let (from, to) = Span::Days30.days(&usage, today());
@@ -357,8 +339,6 @@ impl Page<'_> {
         (total > 0).then(|| ui::format::size(total))
     }
 
-    /// What one saved network or wired profile moved in the last 30 days,
-    /// as a row of its page.
     pub(super) fn usage_row(&self, connection: &str) -> Option<Item> {
         let usage = self.reach.storage.settings::<NetworkUsage>().get();
         let counted = usage.connections.get(connection)?;
@@ -378,9 +358,6 @@ impl Page<'_> {
     }
 }
 
-/// The mobile data period on the modem's page: what was used since the
-/// period started against the plan's allowance, the days as bars, starting
-/// the count again, the day the period starts on and the allowance.
 pub(super) fn mobile_rows(cx: &ViewCx<crate::prefs::DeviceVpnPrefs>) -> Vec<Item> {
     let record = cx.settings::<NetworkUsage>();
     [

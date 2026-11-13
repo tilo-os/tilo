@@ -1,6 +1,6 @@
 //! The system preferences Settings' panes edit: the section models are
-//! [`settings_sections`]', which the session keeps as records too; what is
-//! here words them for the panes.
+//! [`settings_sections`]', which the session keeps as records too; what is here
+//! words them for the panes.
 
 pub use settings_sections::agent_door::AgentDoorDevice;
 pub use settings_sections::desktop::*;
@@ -11,7 +11,6 @@ pub use settings_sections::osk::{KEYBOARD_APP_ID, OskSourceSettings};
 pub use settings_sections::prefs::*;
 pub use settings_sections::providers::{AgentProviders, HostedAgentProviders};
 
-/// The catalogue key naming the mute duration `english`.
 fn mute_ftl(english: &str) -> &'static str {
     match english {
         "For 1 hour" => "notif-mute-1h",
@@ -21,7 +20,6 @@ fn mute_ftl(english: &str) -> &'static str {
     }
 }
 
-/// The mute duration `english` in the person's language.
 pub fn mute_shown(english: &str) -> String {
     crate::i18n::t(mute_ftl(english))
 }
@@ -38,10 +36,7 @@ pub fn mute_shown(english: &str) -> String {
 /// unwinding from a failed assertion. `HOME` and the cache directory stay put
 /// so the text stack keeps its font cache instead of rebuilding it per test.
 pub mod test_env {
-    /// Holds the redirected environment for a test's duration.
     pub struct ConfigGuard {
-        // Field order is drop order: restore the environment before the
-        // directory it points at disappears.
         _env: tilo_test_env::ScopedEnv,
         _dir: tempfile::TempDir,
     }
@@ -74,7 +69,6 @@ mod tests {
 
     use ui::storage::SettingsSchema;
 
-    /// A profile whose settings hold the sections of the document `text`.
     fn seeded(text: &str) -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
         let store = settings_store::profile(dir.path());
@@ -86,15 +80,12 @@ mod tests {
         dir
     }
 
-    /// The settings of the profile at `root`.
     fn document(root: &std::path::Path) -> serde_json::Value {
         serde_json::Value::Object(settings_store::SettingsSource::load(
             &settings_store::profile(root),
         ))
     }
 
-    /// The settings of the profile at `root` after storing `value` as its
-    /// section, as the panes and the door store it.
     fn store<T: SettingsSchema>(root: &std::path::Path, value: &T) -> serde_json::Value {
         crate::area::AreaContext::in_profile(root.to_owned())
             .storage
@@ -126,13 +117,11 @@ mod tests {
         document(root)
     }
 
-    /// The settings holding `existing` after storing `value` as its section.
     fn stored<T: SettingsSchema>(existing: &str, value: &T) -> serde_json::Value {
         let dir = seeded(existing);
         store(dir.path(), value)
     }
 
-    /// Section `T` as read from settings holding `text`.
     fn read<T: SettingsSchema>(text: &str) -> T {
         let dir = seeded(text);
         crate::area::AreaContext::in_profile(dir.path().to_owned())
@@ -141,12 +130,10 @@ mod tests {
             .get()
     }
 
-    /// `value` stored and read back.
     fn round_trip<T: SettingsSchema>(value: &T) -> T {
         read(&stored("{}", value).to_string())
     }
 
-    /// Every default is sensible and every owned leaf has a continuity policy.
     #[cfg(feature = "tilo-os")]
     #[test]
     fn prefs_defaults_are_sensible_and_classified() {
@@ -420,7 +407,6 @@ mod tests {
             prefs.choose_theme(theme);
             prefs
         };
-        // (case, prefs, resolved name, text scale, reduced motion)
         let cases = [
             ("default resolves to dark, unscaled", p, "Dark", 1.0, false),
             (
@@ -430,7 +416,6 @@ mod tests {
                 1.5,
                 true,
             ),
-            // high_contrast wins over the named preset.
             (
                 "high contrast overrides the preset",
                 prefs("Dark graphite", true, false, 1.0, 1.0),
@@ -530,11 +515,6 @@ mod tests {
         assert_eq!(out["accessibility"]["sticky_keys"], true);
     }
 
-    /// The `power` section serialises to exactly the keys and lowercase action
-    /// labels the compositor's `tilo_power_mgmt::config` reader parses. This is
-    /// the write side of the cross-crate JSON contract (the read side is
-    /// pinned in that crate's `settings_json_parses_power_sections_and_falls_back_to_defaults` test); if either drifts
-    /// this test — or that one — fails.
     #[test]
     fn power_section_matches_the_compositor_contract() {
         let power = PowerPrefs {

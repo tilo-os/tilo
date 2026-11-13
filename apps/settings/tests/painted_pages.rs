@@ -1,11 +1,7 @@
-//! Every Settings page as the window paints it: the frame is rendered and
-//! read back pixel by pixel, in both looks and at both device scales.
-//!
-//! A block of pure black where a page's own surface should be is a region
-//! no paint reached — the frame left it at the buffer's zero value instead
-//! of the page's colour. Not one page carries one, so a page that starts to
-//! is a paint or a frame-size regression, not a palette choice: the darkest
-//! a page's ground gets is the theme's content colour, which is never black.
+//! Every Settings page as the window paints it: the frame is rendered and read
+//! back pixel by pixel, in both looks and at both device scales. A block of
+//! pure black where a page's own surface should be is a region no paint reached
+//! — the frame left it at the buffer's zero value instead of the page's colour.
 
 #![allow(
     clippy::expect_used,
@@ -20,11 +16,8 @@
 use settings::categories::Category;
 use ui::Theme;
 
-/// The laptop's window at scale 2 is 1472x920 logical pixels; the pages are
-/// laid out there and at the smaller window a strip gives them.
 const VIEWPORTS: [(f32, f32); 2] = [(1200.0, 760.0), (640.0, 400.0)];
 
-/// The device scales a display runs the window at: 1 and 2.
 const SCALES: [u32; 2] = [1, 2];
 
 /// The largest run of pure black a page paints on purpose, in logical
@@ -33,9 +26,6 @@ const SCALES: [u32; 2] = [1, 2];
 /// colours, never black, so anything past this is a region nothing painted.
 const PAINTED_BLACK: usize = 200;
 
-/// The largest run of pure black 4-byte pixels in `rgba` laid out `width`
-/// pixels to a row, as `(pixels, x, y)`: the flood fill starts at every
-/// black pixel no earlier run covered.
 fn largest_black_block(rgba: &[u8], width: usize) -> (usize, usize, usize) {
     let height = rgba.len() / 4 / width.max(1);
     let black = |x: usize, y: usize| {
@@ -76,7 +66,6 @@ fn largest_black_block(rgba: &[u8], width: usize) -> (usize, usize, usize) {
     largest
 }
 
-/// A page's frame, without a region that nothing painted it.
 #[test]
 fn no_page_shows_a_block_nothing_painted() {
     let mut worst = (0, String::from("no page"));

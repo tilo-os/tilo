@@ -1,25 +1,13 @@
 //! The areas of Settings, as the window holds them without naming them.
-//!
-//! An area is what one pane reads of the device and keeps between visits:
-//! the printers and their queue, the accounts, the audio graph. The window
-//! ([`crate::settings_app::SettingsApp`]) holds every area in [`Areas`] and reaches each through
-//! [`PaneArea`] alone: it polls them, starts their reads and offers their
-//! live rows; each pane's view reads its area. Which areas there are is the
-//! panes' business (their [`Part`]s, brought together in [`registry`]), so
-//! the window's code names none of them.
 
 use std::any::Any;
 use std::rc::Rc;
 
 use crate::categories::Category;
 
-/// One area of Settings: what its pane reads and keeps.
 pub trait PaneArea: Any {
-    /// Take in what the area's background work produced since the last
-    /// frame.
     fn poll(&self) {}
 
-    /// Read what the area's pane opens on, after every area read once.
     fn warm(&self) {}
 
     /// Whether the area still waits for something its pane shows in part
@@ -28,8 +16,6 @@ pub trait PaneArea: Any {
         false
     }
 
-    /// Whether a pane shows the area's first reading of the device as on
-    /// its way: a capture waits for it.
     fn first_read(&self) -> bool {
         false
     }
@@ -47,59 +33,39 @@ pub trait PaneArea: Any {
         false
     }
 
-    /// When the area next wants to look at the device again while nothing
-    /// else happens (a page that re-reads it on a timer).
     fn next_wake(&self) -> Option<ui::time::Instant> {
         None
     }
 
-    /// The effects of the area that differ from their declaration on this
-    /// device now.
     fn statuses(&self) -> Vec<ui::framework::EffectStatus> {
         Vec::new()
     }
 
-    /// What the area asks the host to do with the window, once.
     fn take_host_intent(&self) -> Option<ui::widget::AppHostIntent> {
         None
     }
 
-    /// Collaboration requests of the area's host actions.
     fn take_collab_requests(&self) -> Vec<ui::collaboration::CollabRequest> {
         Vec::new()
     }
 
-    /// A collaboration event for the area's host actions.
     fn handle_collab_event(&self, _event: &ui::collaboration::CollabEvent) {}
 
-    /// What the window bar's search queries while `category`'s pane is
-    /// shown, when the pane lists the answer to a query (models on Hugging
-    /// Face) rather than a page the search narrows. `None`: the search
-    /// narrows the sidebar.
     fn query(&self, _category: Category) -> Option<&dyn PaneQuery> {
         None
     }
 
-    /// The area, to find it by its type.
     fn as_any(&self) -> &dyn Any;
 
-    /// The area, to replace it by its type.
     fn as_any_mut(&mut self) -> &mut dyn Any;
 }
 
-/// A pane's query over what lies beyond the window (models on Hugging
-/// Face), driven by the window bar's search: what is typed there is the
-/// query, and the pane draws no field of its own ([`ui::widget::Queryable`]).
 pub trait PaneQuery {
-    /// What is typed is now `text` (empty when nothing is yet).
     fn set_query_text(&self, text: &str);
 
-    /// The search closed: the pane shows what it showed before it opened.
     fn query_closed(&self);
 }
 
-/// Implement [`PaneArea`]'s conversions for an area type, with any hooks it
-/// overrides: `pane_area!(Area)`, or `pane_area! { Area; fn poll(&self) {..} }`.
 #[macro_export]
 macro_rules! pane_area {
     ($ty:ty $(; $($hook:item)*)?) => {
@@ -118,13 +84,10 @@ macro_rules! pane_area {
 }
 pub use crate::pane_area;
 
-/// Every area of a window, each found by its type.
 #[derive(Default)]
 pub struct Areas(Vec<Box<dyn PaneArea>>);
 
 impl Areas {
-    /// The areas the registry ([`registry`]) makes in `context`, in order: an
-    /// area made later may use one made before it.
     pub fn of(context: &AreaContext) -> Self {
         let mut areas = Self::default();
         for make in &registry().areas {
@@ -134,8 +97,6 @@ impl Areas {
         areas
     }
 
-    /// The area of type `A`: every window holds one of each type
-    /// the registry ([`registry`]) makes, from when it is made.
     #[must_use]
     pub fn find<A: PaneArea>(&self) -> Option<&A> {
         self.0
@@ -143,7 +104,6 @@ impl Areas {
             .find_map(|area| area.as_any().downcast_ref::<A>())
     }
 
-    /// Put `area` in place of the area of its type.
     #[cfg(test)]
     fn replace(&mut self, area: Box<dyn PaneArea>) {
         let wanted = area.as_any().type_id();
@@ -158,8 +118,6 @@ impl Areas {
         }
     }
 
-    /// Put the areas a test asked for ([`replace_in_next_window`]) in place
-    /// of the areas of their types.
     #[cfg(test)]
     pub(crate) fn take_replacements(&mut self, context: &AreaContext) {
         for make in REPLACEMENTS.with(std::cell::RefCell::take) {
@@ -167,13 +125,11 @@ impl Areas {
         }
     }
 
-    /// Every area, in the order they were made.
     pub fn iter(&self) -> impl Iterator<Item = &dyn PaneArea> {
         self.0.iter().map(|area| &**area)
     }
 }
 
-/// What makes an area in place of one a window would make, for a test.
 #[cfg(test)]
 type Replacement = Box<dyn FnOnce(&AreaContext) -> Box<dyn PaneArea>>;
 
@@ -183,9 +139,6 @@ thread_local! {
         std::cell::RefCell::default();
 }
 
-/// Make the next window this thread attaches hold the area `make` makes in
-/// its context, in place of the area of its type: a stand-in a test drives
-/// (a daemon that stalls).
 #[cfg(test)]
 pub fn replace_in_next_window<A: PaneArea>(make: impl FnOnce(&AreaContext) -> A + 'static) {
     REPLACEMENTS.with(|replacements| {
@@ -195,13 +148,8 @@ pub fn replace_in_next_window<A: PaneArea>(make: impl FnOnce(&AreaContext) -> A 
     });
 }
 
-/// What an area is made in: the window's settings document and what it
-/// reaches of the device and the person. An area keeps the parts it uses.
 pub struct AreaContext {
-    /// The app's storage: its settings document, files and secrets.
     pub storage: ui::storage::AppStorage,
-    /// The stand-ins a screenshot shows in place of this device's hardware
-    /// and accounts; `None` in a live window.
     pub scene: Option<Rc<crate::scenarios::CaptureScene>>,
     /// Whether the areas probe and drive this device's hardware and
     /// services, rather than the stand-ins a screenshot shows. The crate's
@@ -210,23 +158,15 @@ pub struct AreaContext {
     pub devices: bool,
     /// The radios this device has; never read when it reaches no device.
     pub radios: crate::radios::Radios,
-    /// The pages the panes drilled into, shared with the window.
     pub pages: crate::pages::PanePages,
-    /// The password prompt the window shows for the panes.
     pub secrets: crate::secrets::SecretAsks,
-    /// The administration of the agent providers the launcher granted.
     pub provider_admin: ui::models::ProviderAdministration,
-    /// The person's accounts with the services the workspace is connected
-    /// to, when the host lent them.
     pub linked: ui::linked_accounts::LinkedAccounts,
-    /// The settings sections' actions, for an area invoking them.
     pub sections: crate::sections::Sections,
-    /// Where the person's accounts are kept.
     pub account_root: crate::accounts::AccountRoot,
 }
 
 impl AreaContext {
-    /// The stand-ins a screenshot shows; `None` in a live window.
     #[must_use]
     pub fn scene(&self) -> Option<&crate::scenarios::CaptureScene> {
         self.scene.as_deref()
@@ -258,7 +198,6 @@ impl AreaContext {
     }
 }
 
-/// What makes one area in a window's context, given the areas made before.
 pub type MakeArea = fn(&AreaContext, &Areas) -> Box<dyn PaneArea>;
 
 /// Why an effect could not reach its area: the window holds every area from
@@ -274,27 +213,21 @@ pub fn missing() -> String {
 /// brings them). The settings sections are the session's, kept whether or
 /// not Settings is open ([`settings_sections`]).
 pub struct Part {
-    /// What makes each area, by place.
     pub areas: &'static [(u16, MakeArea)],
     pub families: &'static [(u16, &'static crate::effects::EffectFamily)],
     pub live_areas: &'static [(u16, crate::effects::LiveArea)],
-    /// The rows of the settings its panes show, as search shows them too.
     pub settings: &'static [crate::setting::SettingEntry],
 }
 
-/// Everything the parts of Settings bring, in place order.
 #[derive(Default)]
 pub struct Registry {
-    /// What makes each area.
     pub areas: Vec<MakeArea>,
     pub families: Vec<&'static crate::effects::EffectFamily>,
     pub live_areas: Vec<&'static crate::effects::LiveArea>,
-    /// Every setting's row.
     pub settings: Vec<&'static crate::setting::SettingEntry>,
 }
 
 impl Registry {
-    /// What `parts` bring together, each kind in place order.
     #[must_use]
     pub fn of(parts: &[&'static Part]) -> Self {
         fn ordered<T: ?Sized + 'static>(mut items: Vec<(u16, &'static T)>) -> Vec<&'static T> {
@@ -329,7 +262,6 @@ impl Registry {
     }
 }
 
-/// What Settings is made of: every part ([`crate::panes::PARTS`]).
 #[must_use]
 pub fn registry() -> &'static Registry {
     static REGISTRY: std::sync::OnceLock<Registry> = std::sync::OnceLock::new();

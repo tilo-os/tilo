@@ -1,12 +1,4 @@
 //! End-to-end control-interaction proofs.
-//!
-//! `category_nav.rs` proves a click navigates to each panel and the panel
-//! renders. This file goes one step further for the panes whose controls
-//! MUST drive real hardware actions: it navigates via a real pointer click,
-//! then drives the panel's primary control (also via the production event
-//! path or its CRDT key) and asserts the effect actually lands — the narrow
-//! content screen's back arrow returning to the list, and a per-panel primary
-//! control mutating the document the way its dispatcher hook reads.
 
 #![allow(
     clippy::expect_used,
@@ -16,20 +8,13 @@
 
 use settings::categories::Category;
 
-// Wide navigation tests address every category directly; keep each target
-// visible. Short-viewport sidebar scrolling is exercised separately.
 const H: f32 = 1800.0;
 
-/// The back button returns to the list and the Wi-Fi toggle stays pane-local.
 #[test]
 fn back_button_and_wifi_toggle_drive_pane_state() {
-    // Case `clicking_back_button_returns_to_list`.
-    // The narrow content screen's back-arrow button, clicked through the
-    // production event path, navigates back to the standalone list screen.
     {
         const NW: f32 = 440.0;
         const NH: f32 = 820.0;
-        // Start drilled into a category's content screen (narrow layout).
         let mut app = crate::support::window_on(Category::Network, (NW, NH));
         let shell = crate::support::shell(&mut app);
         assert!(shell.narrow, "440px resolves to the narrow layout");
@@ -56,9 +41,6 @@ fn back_button_and_wifi_toggle_drive_pane_state() {
         );
     }
 
-    // Case `network_wifi_toggle_drives_state`.
-    // Network hardware state is pane-local. Neither initialisation nor a hostile
-    // remote scalar may turn the collaborative document into a radio command.
     {
         let mut app = crate::support::window((1200, 1800));
         assert_eq!(
@@ -72,10 +54,6 @@ fn back_button_and_wifi_toggle_drive_pane_state() {
     }
 }
 
-/// Every category is reachable by a real click and renders a non-empty
-/// content pane — the per-panel navigation guard. (Complements
-/// `category_nav.rs`'s deeper per-panel assertions.) Panes render from their
-/// models and never write the window's record.
 #[test]
 fn all_panels_navigate_and_leave_the_record_alone() {
     for &target in Category::ALL {

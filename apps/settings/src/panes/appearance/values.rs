@@ -1,5 +1,4 @@
-//! What the appearance settings found by search are set to, as the page
-//! reads them from the person's appearance preferences.
+//! Values the appearance settings show, read from the person's preferences.
 
 use super::{AppearancePrefs, ThemeTiles, schedule_label, ui_scale_label};
 use crate::setting::Follows;

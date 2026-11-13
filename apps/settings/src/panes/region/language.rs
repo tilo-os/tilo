@@ -1,14 +1,8 @@
-//! The person's language: the languages the desktop has, the ones the
-//! device's repositories offer a language pack for, and choosing one.
+//! The person's language: the languages the desktop can show and the language
+//! packs this device's repositories offer.
 //!
-//! A language is named as its pack is ([`tilo_paths::language_of`]): `de` for
-//! the catalogues tagged `de-DE` and the `language-packs/de` directory. One
-//! whose pack is installed is chosen at once (`appearance.language`, which every
-//! app and the shell follow). One the
-//! repositories offer is installed first, by the installer service the launcher
-//! hands Settings for that alone (`runtime_portal::runtime_request`), and
-//! chosen when its pack has landed, so every app finds its catalogues when it
-//! switches.
+//! One whose pack is installed is chosen at once; one the repositories offer is
+//! installed first, through the host's package portal.
 
 use std::sync::Mutex;
 
@@ -32,12 +26,10 @@ crate::area::pane_area! {
     }
 }
 
-/// The window's [`LanguageArea`].
 pub fn area(app: &SettingsApp) -> Option<&LanguageArea> {
     app.areas().find()
 }
 
-/// Choosing the person's language.
 #[derive(Clone, Debug, PartialEq, tilo_resource::Effect)]
 #[effect(operation = "settings.effect")]
 pub enum LanguageEffect {
@@ -50,8 +42,6 @@ pub enum LanguageEffect {
     },
 }
 
-/// The languages the device's repositories offer a pack for, as the host
-/// last answered.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Offered {
     pub languages: Vec<OfferedLanguage>,
@@ -59,18 +49,12 @@ pub struct Offered {
     pub unavailable: Option<String>,
 }
 
-/// What [`LanguageArea`] knows of the person's languages.
 pub struct LanguageArea {
-    /// What the repositories offer, read when Region & formats opens.
     pub offered: Reading<Offered>,
-    /// The language whose pack is being installed.
     pub installing: LocalState<Option<String>>,
     /// Why the last install failed.
     pub failed: LocalState<Option<String>>,
-    /// Moves whenever what the Language card shows does: what the
-    /// repositories offer, an install starting or stopping.
     pub shown: LocalState<u64>,
-    /// The revisions [`Self::shown`] last moved for.
     seen: std::cell::Cell<(u64, u64, u64)>,
 }
 
@@ -93,7 +77,6 @@ impl LanguageArea {
         }
     }
 
-    /// Move [`Self::shown`] when what the Language card shows moved.
     fn poll(&self) {
         let now = (
             self.offered.revision(),
@@ -113,9 +96,6 @@ impl LanguageArea {
     }
 }
 
-/// Every language a person can choose, named as its pack is
-/// ([`tilo_paths::language_of`]): the ones this desktop shows, then the offered
-/// ones, each language once.
 #[must_use]
 pub fn choices(installed: &[&str], offered: &Offered) -> Vec<String> {
     let shown = installed.iter().copied();
@@ -133,10 +113,8 @@ pub fn choices(installed: &[&str], offered: &Offered) -> Vec<String> {
     choices
 }
 
-/// The value that follows the device's language.
 pub const DEVICE: &str = "device";
 
-/// The language the desktop is shown in, as the Language card says it.
 pub(crate) fn value(app: &SettingsApp, follows: &crate::setting::Follows) -> String {
     name(
         follows
@@ -146,7 +124,6 @@ pub(crate) fn value(app: &SettingsApp, follows: &crate::setting::Follows) -> Str
     )
 }
 
-/// `language` as Region & formats names it.
 #[must_use]
 pub fn name(language: Option<&str>) -> String {
     language.map_or_else(
@@ -155,7 +132,6 @@ pub fn name(language: Option<&str>) -> String {
     )
 }
 
-/// The connection to the installer service the launcher handed Settings.
 fn with_host<T>(ask: impl FnOnce(&mut Client) -> std::io::Result<T>) -> Result<T, String> {
     static HOST: std::sync::OnceLock<Option<Mutex<Client>>> = std::sync::OnceLock::new();
     let host = HOST
@@ -207,18 +183,12 @@ fn install(locale: &str) -> Result<(), String> {
     }
 }
 
-/// What a person chose.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Chosen {
-    /// The device's own language.
     Device,
-    /// A language, named as its pack is.
     Language(String),
 }
 
-/// What `language` names: the language of a tag among `choices` (in any
-/// spelling a tag takes: `de`, `de-DE`, `de_DE`), a choice's name, or the
-/// device's own.
 fn resolve(language: &str, choices: &[String]) -> Option<Chosen> {
     if language == DEVICE || language == name(None) {
         return Some(Chosen::Device);
@@ -234,8 +204,6 @@ fn resolve(language: &str, choices: &[String]) -> Option<Chosen> {
         .map(|choice| Chosen::Language(choice.clone()))
 }
 
-/// Whether this desktop shows `language`, whatever tag names it: its own
-/// catalogue or an installed pack carries it.
 fn installed(language: &str) -> bool {
     let language = tilo_paths::language_of(language);
     crate::i18n::CATALOG
@@ -244,8 +212,6 @@ fn installed(language: &str) -> bool {
         .any(|tag| tilo_paths::language_of(tag) == language)
 }
 
-/// Answer `effect`: choose an installed language at once, or install an
-/// offered one first.
 pub(crate) fn answer(
     app: &SettingsApp,
     effect: LanguageEffect,
@@ -284,7 +250,6 @@ pub(crate) fn answer(
             match outcome {
                 Ok(()) => {
                     area.offered.refresh();
-                    // The pack is on disk: this window reads it too.
                     ui::i18n::refresh_language_packs();
                     app.sections()
                         .invoke::<AppearancePrefs>(
@@ -304,8 +269,6 @@ pub(crate) fn answer(
 mod tests {
     use super::*;
 
-    /// German from a catalogue tagged `de-DE` and from the offered `de` pack
-    /// is one choice, named as the pack is.
     #[test]
     fn german_is_one_choice_named_as_its_pack_is() {
         let offered = Offered {

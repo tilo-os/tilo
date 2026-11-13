@@ -1,7 +1,7 @@
-//! What the display settings found by search are set to, as the page
-//! reads them: the display comforts as stored, and the selected display
-//! (the primary one unless another was chosen) as last read. Nothing of
-//! the displays until the area has read them.
+//! What the display settings found by search are set to, as the page reads
+//! them: the display comforts as stored, and the selected display (the primary
+//! one unless another was chosen) as last read. Nothing of the displays until
+//! the area has read them.
 
 use super::{
     DisplayModel, DisplayOutput, OutputConfig, area, refresh_label, resolution_label, scale_label,
@@ -16,8 +16,6 @@ fn prefs(app: &SettingsApp, follows: &Follows) -> DisplayPrefs {
     follows.get::<DisplayPrefs>(app.storage())
 }
 
-/// `read` of the selected display and how it is set, once the displays
-/// were read.
 fn selected<V>(
     app: &SettingsApp,
     read: impl FnOnce(&DisplayModel, &DisplayOutput, &OutputConfig) -> Option<V>,
@@ -42,8 +40,6 @@ pub(crate) fn night_light_warmth(app: &SettingsApp, follows: &Follows) -> String
     )
 }
 
-/// Automatic brightness, a switch once the displays were read and one has
-/// a light sensor.
 pub(crate) fn auto_brightness(app: &SettingsApp, follows: &Follows) -> Read {
     let on = prefs(app, follows).auto_brightness;
     match area(app).and_then(super::DisplayArea::read) {

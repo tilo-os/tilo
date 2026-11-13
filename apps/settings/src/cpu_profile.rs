@@ -54,8 +54,6 @@ fn dirty_leaves(widget: &dyn ui::Widget, out: &mut Vec<serde_json::Value>) {
     }
 }
 
-/// What a measured interaction does to the published resource, which decides
-/// whether the framework publishes it again inside the measured frames.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Publication {
     /// It changes what the resource holds or offers: the framework publishes
@@ -226,7 +224,6 @@ fn mounted_settings_cpu_interactions_observe_canonical_panes_and_shared_controls
                 app.harness().native_input_snapshot().unwrap()["sidebar_open"],
                 true
             );
-            // The next pane's row is clicked where the opened sidebar shows it.
             settle(&mut app);
         }
     }

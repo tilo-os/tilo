@@ -1,5 +1,5 @@
-//! Drawing tablets: one card per tablet, holding its pen's mapping, feel
-//! and buttons and the pad buttons, rings and strips of the same device.
+//! Drawing tablets: one card per tablet, holding its pen's mapping, feel and
+//! buttons and the pad buttons, rings and strips of the same device.
 
 use settings_store::hardware::{
     EraserAction, InputDeviceKind, InputDeviceSnapshot, PadDial, PadDialAction, StylusButtonAction,
@@ -24,18 +24,14 @@ use crate::prefs::tablet_choices::{
     WHOLE_DESKTOP, dial_id, eraser_id, pad_button_id, shortcut_id, stylus_button_id,
 };
 
-/// Resource id of a tablet's card and actions.
 pub fn tablet_resource_id(device: &str) -> String {
     format!("settings.tablet:{device}")
 }
 
-/// Resource id of a tablet pad's card and actions.
 pub fn pad_resource_id(device: &str) -> String {
     format!("settings.tablet-pad:{device}")
 }
 
-/// Map-to choices: the whole desktop, then each connected display by the
-/// name a person recognises.
 pub fn tablet_output_choices() -> Vec<(String, String)> {
     let mut choices = vec![(WHOLE_DESKTOP.to_string(), t("input-tablet-whole-desktop"))];
     if let Some(snapshot) = settings_store::hardware::DisplayHardwareSnapshot::load() {
@@ -81,7 +77,6 @@ pub(super) fn shortcut_choices() -> impl Iterator<Item = (String, String)> {
         .map(|(action, label)| (shortcut_id(action), label))
 }
 
-/// Stylus button choices as `(id, label key, action)`, before the shortcuts.
 pub(super) const STYLUS_BUTTON_CHOICES: [(&str, &str, StylusButtonAction); 7] = [
     (
         "default",
@@ -108,7 +103,6 @@ pub(super) const STYLUS_BUTTON_CHOICES: [(&str, &str, StylusButtonAction); 7] = 
     ),
 ];
 
-/// What a pen button can do: a mouse button, nothing, or any shortcut.
 pub fn stylus_button_choices() -> Vec<(String, String)> {
     localized_choices(&STYLUS_BUTTON_CHOICES)
         .into_iter()
@@ -116,7 +110,6 @@ pub fn stylus_button_choices() -> Vec<(String, String)> {
         .collect()
 }
 
-/// Eraser choices as `(id, label key, action)`, before the shortcuts.
 pub(super) const ERASER_CHOICES: [(&str, &str, EraserAction); 6] = [
     ("native", "input-eraser-native", EraserAction::Native),
     ("left", "input-pen-button-left", EraserAction::Left),
@@ -126,7 +119,6 @@ pub(super) const ERASER_CHOICES: [(&str, &str, EraserAction); 6] = [
     ("forward", "input-pen-button-forward", EraserAction::Forward),
 ];
 
-/// What the eraser end can do: erase, click a mouse button, or any shortcut.
 pub fn eraser_choices() -> Vec<(String, String)> {
     localized_choices(&ERASER_CHOICES)
         .into_iter()
@@ -134,7 +126,6 @@ pub fn eraser_choices() -> Vec<(String, String)> {
         .collect()
 }
 
-/// Ring and strip choices as `(id, label key, action)`.
 pub(super) const DIAL_CHOICES: [(&str, &str, PadDialAction); 6] = [
     ("nothing", "input-pad-dial-nothing", PadDialAction::Nothing),
     ("scroll", "input-pad-dial-scroll", PadDialAction::Scroll),
@@ -152,12 +143,10 @@ pub(super) const DIAL_CHOICES: [(&str, &str, PadDialAction); 6] = [
     ),
 ];
 
-/// What a ring or strip does in apps without tablet support.
 pub fn dial_choices() -> Vec<(String, String)> {
     localized_choices(&DIAL_CHOICES)
 }
 
-/// The resource action id of a ring or strip in one mode.
 pub fn dial_action_id(dial: PadDial, mode: u32) -> String {
     match dial {
         PadDial::Ring(index) => format!("ring-{index}-mode-{mode}"),
@@ -165,7 +154,6 @@ pub fn dial_action_id(dial: PadDial, mode: u32) -> String {
     }
 }
 
-/// A pad's rings then strips, each with how many modes Settings offers.
 pub fn pad_dials(device: &InputDeviceSnapshot) -> Vec<(PadDial, u32)> {
     let offered = |controls: &[u32]| {
         (0..MAX_PAD_DIALS)
@@ -184,7 +172,6 @@ pub fn pad_dials(device: &InputDeviceSnapshot) -> Vec<(PadDial, u32)> {
         .collect()
 }
 
-/// What a pad button can do: nothing, show the pad's map, or any shortcut.
 pub fn pad_button_choices() -> Vec<(String, String)> {
     [
         (PAD_BUTTON_NONE.to_string(), t("input-pad-button-none")),
@@ -198,7 +185,6 @@ pub fn pad_button_choices() -> Vec<(String, String)> {
     .collect()
 }
 
-/// "Ring 1", or "Ring 1, mode 2" when its group has several modes.
 pub(super) fn dial_label(dial: PadDial, mode: u32, modes: u32) -> String {
     let (key, index) = match dial {
         PadDial::Ring(index) => ("input-pad-ring", index),
@@ -232,16 +218,12 @@ pub(super) fn device_title(device: &InputDeviceSnapshot) -> String {
     }
 }
 
-/// A drawing tablet as the person knows it: its pen and the button pad
-/// that is part of the same device. A pad no tablet claims (a remote) is a
-/// device of its own.
 pub(super) struct TabletDevice<'a> {
     pub(super) pen: Option<&'a InputDeviceSnapshot>,
     pub(super) pad: Option<&'a InputDeviceSnapshot>,
 }
 
 impl TabletDevice<'_> {
-    /// The tablet's name, without the kernel's "Pen"/"Pad" suffix.
     pub(super) fn title(&self) -> String {
         self.pen.or(self.pad).map_or_else(String::new, |device| {
             let name = device.name.trim();
@@ -253,13 +235,10 @@ impl TabletDevice<'_> {
     }
 }
 
-/// The attached tablets, each with its own pad, then any pad that belongs
-/// to no attached tablet.
 pub(super) fn tablet_devices<'a>(
     tablets: &'a [InputDeviceSnapshot],
     pads: &'a [InputDeviceSnapshot],
 ) -> Vec<TabletDevice<'a>> {
-    // Each pad goes to the first tablet of its device, at most once.
     let mut unclaimed: Vec<&'a InputDeviceSnapshot> = pads.iter().collect();
     let mut devices: Vec<TabletDevice<'a>> = tablets
         .iter()
@@ -298,7 +277,6 @@ pub(super) fn same_physical_device(a: &InputDeviceSnapshot, b: &InputDeviceSnaps
     ids(a) == ids(b)
 }
 
-/// The ring or strip, its index and mode a [`dial_action_id`] names.
 #[cfg(test)]
 pub(super) fn parse_dial_action_id(id: &str) -> Option<(&'static str, u32, u32)> {
     let (dial, rest) = if let Some(rest) = id.strip_prefix("ring-") {
@@ -344,8 +322,6 @@ pub(super) fn tablet_cards(
         .collect()
 }
 
-/// A dropdown over stable ids for one of a tablet's or pad's choices, its
-/// id the device's resource and the choice: `settings.tablet:<key>.eraser`.
 fn device_dropdown(
     resource: &str,
     action: &str,
@@ -361,7 +337,6 @@ fn device_dropdown(
     )
 }
 
-/// A tablet pen's rows: where it maps, how it feels, its buttons.
 #[allow(
     clippy::too_many_lines,
     reason = "one declarative row list mirroring the visible pen settings"
@@ -498,9 +473,6 @@ fn pen_rows(
     ]
 }
 
-/// A tablet pad's rows: a shortcut for each of its buttons, then what
-/// each ring and strip does in each mode. Tablet-aware apps get the
-/// unmapped buttons, rings and strips themselves.
 fn pad_rows(
     cx: &ViewCx<InputDevicePrefs>,
     device: &InputDeviceSnapshot,
@@ -573,8 +545,6 @@ fn pad_rows(
     items
 }
 
-/// What a tablet's live row offers, bound to the tablet `device`: its
-/// aspect, hand, feel, pen buttons and eraser.
 pub(super) fn pen_operations(
     device: &str,
 ) -> Vec<Option<tilo_resource::ActionDecl<InputDevicePrefs>>> {
@@ -613,8 +583,6 @@ pub(super) fn pen_operations(
     ]
 }
 
-/// What a pad's live row offers, bound to the pad `device`: its buttons,
-/// rings and strips.
 pub(super) fn pad_operations(
     device: &str,
 ) -> Vec<Option<tilo_resource::ActionDecl<InputDevicePrefs>>> {

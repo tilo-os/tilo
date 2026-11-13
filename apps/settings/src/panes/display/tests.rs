@@ -2,10 +2,8 @@ use super::*;
 use crate::dispatcher::testing::RecordingDispatcher;
 use ui::widget::Widget;
 
-/// The window, mounted headlessly.
 pub(super) type App = ui::framework::testing::TestApp<crate::SettingsShell>;
 
-/// The window, on the Displays page.
 pub(super) fn on_displays() -> App {
     ui::i18n::I18nManager::init("en-US");
     let mut app = App::new().unwrap();
@@ -14,7 +12,6 @@ pub(super) fn on_displays() -> App {
     app
 }
 
-/// Change the window's display model as the displays or an effect would.
 pub(super) fn change_model(app: &mut App, change: impl FnOnce(&mut DisplayModel) + 'static) {
     app.with_widget::<crate::window::Inspected, _>(move |settings| {
         let mut model = area(settings).unwrap().model().borrow_mut();
@@ -24,7 +21,6 @@ pub(super) fn change_model(app: &mut App, change: impl FnOnce(&mut DisplayModel)
     .expect("the Settings window is mounted");
 }
 
-/// Read the window's display model.
 pub(super) fn read_model<V: 'static>(
     app: &mut App,
     read: impl FnOnce(&DisplayModel) -> V + 'static,
@@ -35,12 +31,10 @@ pub(super) fn read_model<V: 'static>(
     .expect("the Settings window is mounted")
 }
 
-/// A dispatcher for building the page's controls outside the window.
 pub(super) fn dispatcher() -> ui::framework::Dispatcher<crate::resource::Settings> {
     ui::framework::testing::dispatcher(settings_sections::APP_ID)
 }
 
-/// Let the window take in what changed and draw it.
 pub(super) fn frame(app: &mut App) {
     for _ in 0..4 {
         app.settle();
@@ -48,7 +42,6 @@ pub(super) fn frame(app: &mut App) {
     }
 }
 
-/// The compositor's exact output is the shared control and automation target.
 #[test]
 fn peer_drag_exports_the_same_exact_request_without_editing_local_outputs() {
     let _guard = crate::prefs::test_env::ConfigGuard::new();
@@ -358,7 +351,6 @@ fn connected_display_controls_publish_their_parameter_actions() {
     assert!(app.harness().component_contract_violations().is_empty());
 }
 
-/// Only the asked value is caller-controlled; the row owns the output identity.
 #[test]
 fn display_inspection_and_staging_share_the_production_door() {
     let mut app = ui::framework::testing::TestApp::<crate::SettingsShell>::new()
@@ -560,8 +552,6 @@ fn model(outputs: Vec<DisplayOutput>) -> DisplayModel {
     DisplayModel::detached(cx.storage, cx.sections).with_outputs(outputs)
 }
 
-/// An output named after the DRM connector `conn` (`card0-eDP-1`, with the
-/// `cardN-` prefix dropped); eDP/LVDS/DSI panels are built in.
 fn classify_connector(conn: &str, status: &str) -> DisplayOutput {
     // Strip the leading `cardN-` so we're left with the connector, e.g.
     // `eDP-1`, `HDMI-A-1`, `DP-2`.
@@ -617,9 +607,6 @@ fn panel() -> DisplayOutput {
     )
 }
 
-/// A shown pane reads the compositor's display snapshot when its watch
-/// says it changed, never on a timer; a pane whose snapshots cannot all
-/// be watched, or whose change awaits confirmation, looks each second.
 #[test]
 fn followed_displays_are_read_on_a_change_not_on_a_timer() {
     let _config = crate::prefs::test_env::ConfigGuard::new();
@@ -686,9 +673,6 @@ fn followed_displays_are_read_on_a_change_not_on_a_timer() {
     );
 }
 
-/// A brightness that could not be read is shown as that failure, not as
-/// a slider resting at a made-up level; a probe that lands asks for a
-/// rebuild once.
 #[test]
 fn the_brightness_probe_lands_once_and_a_failure_is_shown() {
     let mut model = model(vec![panel()]);
@@ -788,7 +772,6 @@ fn relative_positions_use_the_neighbour_s_logical_extent() {
     place("Below of Built-in display", &mut cfg).unwrap();
     assert_eq!((cfg.x, cfg.y), (0, 800));
 
-    // A monitor rotated to portrait is 1080 wide on the left.
     let mut portrait = OutputConfig {
         transform: OutputTransform::Rotate90,
         ..Default::default()
@@ -850,11 +833,8 @@ fn identical_monitors_are_named_apart_by_number_in_settings() {
     assert_eq!(outputs_from_snapshot(&alone)[0].label, "Dell U2720Q");
 }
 
-/// Distinct duplicate labels, staging per connector and virtual
-/// connector filtering.
 #[test]
 fn display_connectors_are_labelled_and_filtered() {
-    // Case `qualified_duplicate_connectors_stage_apart`.
     {
         let first = OutputDescriptor {
             connector: "pci:0000:01:00.0/HDMI-A-1".into(),
@@ -879,7 +859,6 @@ fn display_connectors_are_labelled_and_filtered() {
         );
     }
 
-    // Case `duplicate_connectors_are_staged_apart_and_keep_the_old_key`.
     {
         let first = "pci:0000:01:00.0/HDMI-A-1";
         let second = "pci:0000:03:00.0/HDMI-A-1";
@@ -912,7 +891,6 @@ fn display_connectors_are_labelled_and_filtered() {
         assert!(!staged.outputs[first].primary);
     }
 
-    // Case `virtual_connectors_are_filtered`.
     // The compositor's writeback connector and other virtual connectors are
     // not displays a user plugs into, so they are filtered from the list.
     {
@@ -925,8 +903,6 @@ fn display_connectors_are_labelled_and_filtered() {
     }
 }
 
-/// The panel's slider sets its brightness; an external monitor's sets
-/// that monitor's, and only a monitor that has a control gets one.
 #[test]
 fn brightness_reaches_the_panel_and_each_monitor() {
     let (mut pane, rec) = recording(vec![panel()]);
@@ -989,7 +965,6 @@ fn brightness_reaches_the_panel_and_each_monitor() {
     );
 }
 
-/// Mirroring picks a shared mode; extending again keeps the origin.
 #[test]
 fn mirroring_and_extending_are_staged() {
     let full_hd_60 = OutputMode {
@@ -1135,7 +1110,6 @@ fn preview_and_keep_preserve_the_staged_refresh_rate() {
     pane.settle(&kept);
     assert_eq!(pane.staged().outputs["eDP-1"].mode, Some(requested));
 
-    // The compositor commits the kept arrangement before acknowledging it.
     kept.candidate.save_for(&kept.set).unwrap();
     kept.state = DisplayTransactionState::Confirmed;
     kept.deadline_unix_ms = None;
@@ -1267,8 +1241,6 @@ fn the_arrangement_numbers_and_sizes_displays_like_identify() {
 #[test]
 fn the_arrangement_draws_mixed_dpi_displays_at_their_logical_size() {
     use super::super::display_arrangement::placement::{Placement, settle};
-    // A 2x panel of 2560x1600 is 1280x800 on the desktop the pointer
-    // moves through; a 1x monitor beside it starts at x = 1280.
     let panel_mode = OutputMode {
         width: 2560,
         height: 1600,
@@ -1489,7 +1461,6 @@ fn test_ids(widget: &dyn Widget, ids: &mut Vec<String>) {
     }
 }
 
-/// Every control id the window shows once it took in what changed.
 fn page_ids(app: &mut App) -> Vec<String> {
     frame(app);
     let mut ids = Vec::new();
@@ -1497,7 +1468,6 @@ fn page_ids(app: &mut App) -> Vec<String> {
     ids
 }
 
-/// The window on the Displays page over the laptop and its monitor.
 fn laptop_on_displays() -> App {
     let mut app = on_displays();
     change_model(&mut app, |model| {
@@ -1511,7 +1481,6 @@ fn laptop_on_displays() -> App {
     app
 }
 
-/// Where the tile named `name` is drawn on the mounted canvas.
 fn tile(host: &ui::headless::FrameHarness, name: &str) -> ui::vello::kurbo::Rect {
     let node = host
         .root::<super::super::display_arrangement::DisplayArrangement>()
@@ -1542,8 +1511,6 @@ fn the_canvas_is_the_one_display_selection() {
         Some("eDP-1"),
         "the main display is selected when the page opens"
     );
-    // Chosen from the keyboard or by a screen reader: the canvas sets the
-    // page's selection.
     pane.selected.set("HDMI-A-1".into());
     assert!(pane.poll(), "the page shows the newly chosen display");
     assert_eq!(
@@ -1563,7 +1530,6 @@ fn the_canvas_is_the_one_display_selection() {
     assert!(chosen[0].contains("Desk monitor"), "{chosen:?}");
     drop(connected);
 
-    // Chosen on the canvas by pointer.
     let connected = pane.connected_outputs();
     let canvas = pane.arrangement_canvas(&dispatcher(), &connected);
     drop(connected);
@@ -1614,7 +1580,6 @@ fn only_the_selected_displays_settings_show() {
         "no second place to choose than the canvas: {ids:?}"
     );
 
-    // The monitor has no brightness control: no slider at all.
     change_model(&mut app, |model| model.selected.set("HDMI-A-1".into()));
     let ids = page_ids(&mut app);
     assert!(of(&ids, "HDMI-A-1") > 0);
@@ -1644,8 +1609,6 @@ fn a_virtual_or_disconnected_connector_appears_nowhere() {
     let mut pane = laptop_with_monitor();
     pane.outputs
         .push(classify_connector("card0-HDMI-A-2", "disconnected"));
-    // The brightness service also knows a development VM's virtual
-    // connector; the compositor shows no such display.
     let level = |connector: &str| os_actions::MonitorLevel {
         connector: connector.into(),
         level: 0.5,
@@ -1696,7 +1659,6 @@ fn choosing_or_dragging_a_display_shows_nothing_on_the_screens() {
     let _guard = crate::prefs::test_env::ConfigGuard::new();
     let mut pane = laptop_with_monitor();
     pane.normalize_selection();
-    // Point at the monitor, press it and drag it on the mounted canvas.
     let connected = pane.connected_outputs();
     let canvas = pane.arrangement_canvas(&dispatcher(), &connected);
     drop(connected);
@@ -1810,9 +1772,6 @@ fn resolution_and_refresh_rate_each_choose_one_mode() {
     assert_eq!(mode_for_refresh(&modes, modes[2], "59.94 Hz"), None);
 }
 
-/// The window on the Displays page over this device's laptop and monitor,
-/// and the settings document the shell writes the pending display change
-/// to.
 fn device_on_displays() -> (App, ui::storage::SettingsDocument) {
     let mut app = laptop_on_displays();
     change_model(&mut app, |model| model.of_device = true);
@@ -1823,8 +1782,6 @@ fn device_on_displays() -> (App, ui::storage::SettingsDocument) {
     (app, document)
 }
 
-/// Write `transaction` where the shell writes the pending display change,
-/// in its stored form.
 fn shell_writes(document: &ui::storage::SettingsDocument, transaction: &DisplayTransaction) {
     let section = serde_json::to_value(transaction).unwrap();
     document
@@ -1835,9 +1792,6 @@ fn shell_writes(document: &ui::storage::SettingsDocument, transaction: &DisplayT
         .unwrap();
 }
 
-/// Settings reads the pending display change through its settings document,
-/// the channel to the shell, never by watching the session's file: a change
-/// the shell writes reaches the page, which asks to keep or revert it.
 #[test]
 fn the_pending_display_change_is_read_through_the_settings_document() {
     let _guard = crate::prefs::test_env::ConfigGuard::new();
@@ -1860,7 +1814,6 @@ fn the_pending_display_change_is_read_through_the_settings_document() {
     }
 }
 
-/// Every name, description and value the page's widgets say.
 fn page_words(widget: &dyn Widget, words: &mut Vec<String>) {
     if let Some(node) = widget.accessibility() {
         words.extend(
@@ -1875,8 +1828,6 @@ fn page_words(widget: &dyn Widget, words: &mut Vec<String>) {
     }
 }
 
-/// The compositor's diagnostic is for the inspection, in its own terms; the
-/// page says what happened to the person's change in their words.
 #[test]
 fn a_refused_or_settled_display_change_is_said_in_the_persons_words() {
     let _guard = crate::prefs::test_env::ConfigGuard::new();
@@ -1916,7 +1867,6 @@ fn a_refused_or_settled_display_change_is_said_in_the_persons_words() {
             notice.then(|| t(said)),
             "{state:?}: the page follows the document"
         );
-        // The window's page, over the change as the compositor answered it.
         let answered = transaction.clone();
         change_model(&mut app, move |model| {
             model.host_state = Some(settings_store::display_control::DisplayReply {
@@ -1950,8 +1900,6 @@ fn a_refused_or_settled_display_change_is_said_in_the_persons_words() {
     );
 }
 
-/// A display's switch is named by its row, so a reader hears which display
-/// it turns on and how it stands rather than landing on a switch of no name.
 #[test]
 fn a_display_switch_is_named_by_the_row_it_stands_in() {
     use ui::accesskit::Toggled;

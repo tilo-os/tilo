@@ -1,31 +1,4 @@
-//! Appearance pane — the editor for the **shared appearance preferences**.
-//!
-//! This panel edits [`crate::prefs::AppearancePrefs`], the `appearance`
-//! section of the person's settings. The OS theming layer resolves those
-//! preferences into the concrete [`ui::Theme`] every app draws against (see
-//! [`crate::prefs::AppearancePrefs::resolve_theme`]) — so choosing a theme
-//! here is the single source of truth the rest of the system follows,
-//! exactly like Region & Formats owns the locale.
-//!
-//! Controls:
-//! - **Wallpaper** — one of the pictures the system ships, shown the moment
-//!   it is chosen, or a picture of the person's own, chosen through the
-//!   file-chooser portal and applied through the Wallpaper portal, on this
-//!   workspace or every one.
-//! - **Theme** — a named preset ([`crate::prefs::AppearancePrefs::THEMES`]),
-//!   or "Automatic": light by day, dark by night.
-//! - **Day and night** — when "Automatic" and a scheduled Night Light switch:
-//!   at sunset and sunrise, or at custom times.
-//!
-//! High contrast, reduce motion and text size are Accessibility's: they
-//! live in that pane alone, where people look for them, and this page links
-//! there with one row instead of a second copy of the controls.
-//!
-//! The page is view code over the section ([`view`]): a control that sets
-//! one field is bound to that field, the theme tiles to its verb, and the
-//! page shows what the section holds, whoever changed it. Choosing a
-//! picture of the person's own goes through the portals, an
-//! [`AppearanceEffect`].
+//! Appearance: the editor for the person's `appearance` settings.
 
 use std::rc::Rc;
 
@@ -50,28 +23,19 @@ use theme_tiles::ThemeTiles;
 
 crate::effects::effect_family!(AppearanceEffect => answer);
 
-/// The shape of the wallpaper thumbnails: the laptop panel's 16:10.
 const WALLPAPER_ASPECT: f64 = 16.0 / 10.0;
 
-/// A shipped wallpaper with its decoded thumbnail.
 type Thumbnail = (
     &'static tilo_wallpapers::Wallpaper,
     vello::peniko::ImageData,
 );
 
-/// The thumbnails, once decoded: read off the UI thread once per process
-/// ([`read_thumbnails`]).
 static THUMBNAILS: std::sync::OnceLock<Vec<Thumbnail>> = std::sync::OnceLock::new();
 
-/// The shipped wallpapers whose thumbnails this system has installed, with
-/// those thumbnails; none until [`read_thumbnails`] has decoded them.
 fn installed_thumbnails() -> &'static [Thumbnail] {
     THUMBNAILS.get().map_or(&[], Vec::as_slice)
 }
 
-/// Decode the installed thumbnails unless they have been: a read of every
-/// thumbnail file from the data directories and its decode, too slow for
-/// the UI thread.
 fn read_thumbnails() {
     THUMBNAILS.get_or_init(|| {
         crate::device_read::off_ui_thread();
@@ -88,15 +52,12 @@ fn read_thumbnails() {
     });
 }
 
-/// The persisted values of `table`, each `(label, value)`.
 fn values(table: &[(&str, &str)]) -> impl Iterator<Item = String> {
     table.iter().map(|(_, value)| (*value).to_owned())
 }
 
-/// `(label, persisted value)` of each day/night schedule.
 pub const SCHEDULES: [(&str, &str); 2] = [("Sunset to sunrise", "sun"), ("Custom times", "custom")];
 pub use crate::prefs::{WALLPAPER_SCOPES, WALLPAPER_TARGETS};
-/// The offered custom sunrise and sunset times.
 pub const TIMES: [&str; 48] = [
     "00:00", "00:30", "01:00", "01:30", "02:00", "02:30", "03:00", "03:30", "04:00", "04:30",
     "05:00", "05:30", "06:00", "06:30", "07:00", "07:30", "08:00", "08:30", "09:00", "09:30",
@@ -105,7 +66,6 @@ pub const TIMES: [&str; 48] = [
     "20:00", "20:30", "21:00", "21:30", "22:00", "22:30", "23:00", "23:30",
 ];
 
-/// The spacing densities offered, `(ftl key, density)`.
 const DENSITIES: [(&str, f32); 3] = [
     (
         "settings-appearance-density-compact",
@@ -121,7 +81,6 @@ const DENSITIES: [(&str, f32); 3] = [
     ),
 ];
 
-/// The label of the offered density nearest `density`.
 fn density_label(density: f64) -> String {
     DENSITIES
         .iter()
@@ -134,7 +93,6 @@ fn density_label(density: f64) -> String {
         .unwrap_or_default()
 }
 
-/// The label of a persisted schedule value.
 pub fn schedule_label(value: &str) -> String {
     t(match value {
         "custom" => "settings-appearance-schedule-custom",
@@ -142,7 +100,6 @@ pub fn schedule_label(value: &str) -> String {
     })
 }
 
-/// The label of a persisted wallpaper scope.
 pub fn scope_label(value: &str) -> String {
     t(match value {
         "all" => "settings-appearance-scope-all",
@@ -158,10 +115,6 @@ pub fn target_label(value: &str) -> String {
     })
 }
 
-/// The offered global UI-scale steps as `(display label, factor)`. The factor is
-/// what [`AppearancePrefs::ui_scale`] persists; it grows the whole design system
-/// (spacing, radii, and type together) and composes with the per-output
-/// fractional device scale. Spans the daily-driver-comfortable 90 %–150 % range.
 pub const UI_SCALES: &[(&str, f64)] = &[
     ("90%", 0.90),
     ("100%", 1.0),
@@ -170,7 +123,6 @@ pub const UI_SCALES: &[(&str, f64)] = &[
     ("150%", 1.50),
 ];
 
-/// Map a UI-scale factor to the closest offered label (defaults to "100%").
 pub(crate) fn ui_scale_label(scale: f64) -> &'static str {
     // `total_cmp`, not `partial_cmp().unwrap()`: a hand-edited setting
     // could hold a non-finite scale, and this must degrade to "100%" rather
@@ -181,28 +133,19 @@ pub(crate) fn ui_scale_label(scale: f64) -> &'static str {
         .map_or("100%", |(label, _)| *label)
 }
 
-/// The value a choice shows while the person follows the theme's own.
 const THEME_CHOICE: &str = "theme";
 
-/// The interface faces offered beyond following the theme, as
-/// `(stored face name, ftl label key)`. Any family a theme may name is
-/// admitted; these are the ones the system ships, so the list stays short
-/// enough to choose from.
 const UI_FACES: [(&str, &str); 2] = [
     ("Default", "settings-appearance-face-default"),
     ("Hyperlegible", "settings-appearance-face-hyperlegible"),
 ];
 
-/// The offered translucency steps as `(stored choice, ftl label key, value)`,
-/// over following the theme's own.
 const TRANSLUCENCIES: [(&str, &str, f64); 3] = [
     ("full", "settings-appearance-translucency-full", 1.0),
     ("subtle", "settings-appearance-translucency-subtle", 0.4),
     ("opaque", "settings-appearance-translucency-opaque", 0.0),
 ];
 
-/// The face chooser's choices as `(stored value, label)`: following the
-/// theme first, then the faces the system ships.
 fn face_choices() -> Vec<(String, String)> {
     let mut choices = vec![(THEME_CHOICE.to_owned(), t("settings-appearance-face-theme"))];
     choices.extend(
@@ -213,7 +156,6 @@ fn face_choices() -> Vec<(String, String)> {
     choices
 }
 
-/// The translucency chooser's choices as `(stored value, label)`.
 fn translucency_choices() -> Vec<(String, String)> {
     let mut choices = vec![(
         THEME_CHOICE.to_owned(),
@@ -227,9 +169,6 @@ fn translucency_choices() -> Vec<(String, String)> {
     choices
 }
 
-/// The accent chooser's choices as `(stored value, label)`: following the
-/// theme first, then the hues the presence palette names, as the colour the
-/// person wears offers them.
 fn accent_choices() -> Vec<(String, String)> {
     let mut choices = vec![(
         THEME_CHOICE.to_owned(),
@@ -243,7 +182,6 @@ fn accent_choices() -> Vec<(String, String)> {
     choices
 }
 
-/// The accent the chooser persists for `key`.
 fn accent_of(key: &str) -> Result<Option<String>, String> {
     if key == THEME_CHOICE {
         return Ok(None);
@@ -253,7 +191,6 @@ fn accent_of(key: &str) -> Result<Option<String>, String> {
         .ok_or_else(|| format!("`{key}` is not an accent colour"))
 }
 
-/// The face name the chooser persists for `choice`.
 fn ui_face_of(choice: String) -> Result<Option<String>, String> {
     if choice == THEME_CHOICE {
         return Ok(None);
@@ -264,8 +201,6 @@ fn ui_face_of(choice: String) -> Result<Option<String>, String> {
     Err(format!("`{choice}` is not an interface face"))
 }
 
-/// The translucency key the chooser shows for a record: the step nearest what
-/// it stores, or [`THEME_CHOICE`] when it follows the theme's own.
 fn translucency_key(prefs: &AppearancePrefs) -> String {
     match prefs.translucency {
         None => THEME_CHOICE.to_owned(),
@@ -279,7 +214,6 @@ fn translucency_key(prefs: &AppearancePrefs) -> String {
     }
 }
 
-/// The translucency the chooser persists for `key`.
 fn translucency_of(key: &str) -> Result<Option<f64>, String> {
     if key == THEME_CHOICE {
         return Ok(None);
@@ -291,9 +225,6 @@ fn translucency_of(key: &str) -> Result<Option<f64>, String> {
         .ok_or_else(|| format!("`{key}` is not a translucency"))
 }
 
-/// The person's current appearance selectors and controls, before the OS
-/// resolves Automatic mode. Theme documents and their private content are not
-/// part of this read surface.
 #[derive(serde::Serialize)]
 struct AppearanceInspection<'a> {
     schema: &'static str,
@@ -311,7 +242,6 @@ struct AppearanceInspection<'a> {
     sunset: &'a str,
     wallpaper_scope: &'a str,
     wallpaper_target: &'a str,
-    /// The wallpaper the desktop shows, as `appearance.wallpaper` names it.
     wallpaper: &'a str,
 }
 
@@ -339,8 +269,6 @@ impl<'a> From<&'a AppearancePrefs> for AppearanceInspection<'a> {
     }
 }
 
-/// The look of the desktop and every app: theme, scale, contrast, motion,
-/// the day-and-night schedule and the wallpaper.
 #[derive(Clone, Copy, Debug, PartialEq, tilo_resource::Effect)]
 #[effect(operation = "settings.effect")]
 pub enum AppearanceEffect {
@@ -354,7 +282,6 @@ pub enum AppearanceEffect {
     ChooseWallpaper,
 }
 
-/// Answer `effect`.
 pub(crate) fn answer(
     app: &SettingsApp,
     effect: AppearanceEffect,
@@ -376,9 +303,6 @@ pub(crate) fn answer(
     }
 }
 
-/// Ask for a picture through the file-chooser portal, then hand it to the
-/// Wallpaper portal, which previews it and asks before applying it. The
-/// pane shows where the request stands.
 fn choose_wallpaper(app: &SettingsApp, cx: &mut EffectCx<Settings>) -> EffectAnswer {
     if !app.reaches_devices() {
         return Err("only a window someone uses opens the file chooser".into());
@@ -451,12 +375,7 @@ fn choose_wallpaper(app: &SettingsApp, cx: &mut EffectCx<Settings>) -> EffectAns
     ))
 }
 
-/// The Appearance page as view code over the person's appearance section,
-/// with this device's top bar and the desk widgets: each control bound to
-/// its field or verb, the page following every change of them.
 pub(crate) fn view(cx: &ViewCx<Settings>, app: &Rc<SettingsApp>) -> Option<Element> {
-    // The picker shows the person's own picture until the shipped ones are
-    // decoded; their landing shows them.
     let decoded = LocalState::new(THUMBNAILS.get().is_some());
     if !decoded.get() {
         let writer = decoded.writer();
@@ -500,9 +419,6 @@ pub(crate) fn view(cx: &ViewCx<Settings>, app: &Rc<SettingsApp>) -> Option<Eleme
     })
 }
 
-/// The colour the person wears: their focus ring, caret and selection, and
-/// the mark collaborators see on their cursor. Following their identity is
-/// the default, so a desktop looks like them before they choose anything.
 fn colour_card(cx: &ViewCx<crate::prefs::IdentityPrefs>) -> Element {
     let mut choices = vec![(String::new(), t("settings-appearance-colour-identity"))];
     choices.extend(
@@ -523,11 +439,8 @@ fn colour_card(cx: &ViewCx<crate::prefs::IdentityPrefs>) -> Element {
     section(&t("settings-appearance-colour-card"), rows(vec![row])).into_element()
 }
 
-/// The theme, the density and the interface scale, and the way to the
-/// accessibility options.
 fn theme_card(cx: &ViewCx<AppearancePrefs>, actions: &Actions<Settings>) -> Element {
     let paths = AppearancePrefs::paths();
-    // Each theme drawn in its own colours, the chosen one ringed.
     let tiles = cx.switch(&cx.value(AppearancePrefs::theme_choice), |cx, theme| {
         Box::new(
             cx.actions()
@@ -592,7 +505,6 @@ fn theme_card(cx: &ViewCx<AppearancePrefs>, actions: &Actions<Settings>) -> Elem
                     translucency_key,
                     |key: String| translucency_of(&key),
                 ),
-            // Contrast, motion and text size are Accessibility's alone.
             cx.setting(t("settings-appearance-accessibility"))
                 .described(t("settings-appearance-accessibility-desc"))
                 .id("appearance.accessibility")
@@ -604,8 +516,6 @@ fn theme_card(cx: &ViewCx<AppearancePrefs>, actions: &Actions<Settings>) -> Elem
     .into_element()
 }
 
-/// The wallpapers, where the chosen one is used and shown, and where the
-/// last request for a picture of the person's own stands (`status`).
 fn wallpaper_card(
     cx: &ViewCx<AppearancePrefs>,
     actions: &Actions<Settings>,
@@ -651,8 +561,6 @@ fn wallpaper_card(
     section(&t("settings-appearance-wallpaper-card"), rows(body)).into_element()
 }
 
-/// The shipped pictures this system has installed, each choosing itself the
-/// moment it is pressed, then the person's own picture.
 fn wallpaper_picker(
     cx: &ViewCx<AppearancePrefs>,
     actions: &Actions<Settings>,
@@ -685,8 +593,6 @@ fn wallpaper_picker(
     ui::widget::MediaGrid::new(bound).with_size(ui::widget::MediaSize::Small)
 }
 
-/// The picker's cards, unbound: one per shipped picture in `thumbnails`,
-/// then the person's own, the one `chosen` names marked.
 fn wallpaper_cards(chosen: Option<&str>, thumbnails: &[Thumbnail]) -> Vec<ui::widget::MediaCard> {
     let chosen = tilo_wallpapers::choice(chosen);
     let mut cards: Vec<ui::widget::MediaCard> = thumbnails
@@ -715,8 +621,6 @@ fn wallpaper_cards(chosen: Option<&str>, thumbnails: &[Thumbnail]) -> Vec<ui::wi
     cards
 }
 
-/// What the day-and-night card shows other than through its controls: the
-/// schedule and its times, whose change builds the card again.
 fn schedule_shown(cx: &ViewCx<AppearancePrefs>) -> LocalState<[String; 3]> {
     cx.value(|prefs: &AppearancePrefs| {
         [
@@ -727,8 +631,6 @@ fn schedule_shown(cx: &ViewCx<AppearancePrefs>) -> LocalState<[String; 3]> {
     })
 }
 
-/// When the day and the night begin: at sunset and sunrise, or at the
-/// times chosen; and today's.
 fn schedule_card(cx: &ViewCx<AppearancePrefs>) -> SettingsSection {
     let paths = AppearancePrefs::paths();
     let times = || TIMES.iter().map(|time| (*time).to_owned());
@@ -782,8 +684,6 @@ fn schedule_card(cx: &ViewCx<AppearancePrefs>) -> SettingsSection {
 
 pub(crate) mod values;
 
-/// "Hide the top bar": this device's desktop control, as the page and the
-/// settings search show it.
 pub(crate) fn hide_top_bar(cx: &ViewCx<DesktopControlsDevice>) -> Item {
     cx.setting(t("settings-appearance-hide-top-bar"))
         .described(t("settings-appearance-hide-top-bar-desc"))
@@ -791,9 +691,6 @@ pub(crate) fn hide_top_bar(cx: &ViewCx<DesktopControlsDevice>) -> Item {
         .toggle(DesktopControlsDevice::paths().hide_top_bar)
 }
 
-/// The look the person chose, for the window to show itself in while the
-/// page that changes it is open: the toolkit folds in the contrast, the
-/// interface scale and the text scale.
 pub(crate) fn intent(
     prefs: &AppearancePrefs,
     device: &AppearanceDevicePrefs,
@@ -819,9 +716,6 @@ mod tests {
     use crate::prefs::IdentityPrefs;
     use crate::testing::{APPEARANCE, IDENTITY, edit_field, invoke_section};
 
-    /// Every appearance control's effect writes the person's `appearance`
-    /// section, where the compositor and every app read it; a value outside
-    /// the offered ones is refused and changes nothing.
     #[test]
     fn appearance_effects_write_the_shared_section() {
         let mut app = TestApp::<SettingsShell>::new().unwrap();
@@ -877,10 +771,6 @@ mod tests {
         assert_eq!(app.settings::<AppearancePrefs>().get(), prefs);
     }
 
-    /// The interface face and the translucency are the person's over the
-    /// theme: a choice made in the page is stored in the appearance section
-    /// and the theme every app resolves wears it, while following the theme
-    /// leaves the theme's own.
     #[test]
     fn the_interface_face_and_translucency_are_the_persons_over_the_theme() {
         let mut app = TestApp::<SettingsShell>::new().unwrap();
@@ -909,7 +799,6 @@ mod tests {
         assert!(chosen.tokens.colors.surfaces.material_blur_px.abs() < f32::EPSILON);
         assert!((chosen.tokens.colors.surfaces.material_opacity - 1.0).abs() < 1e-6);
 
-        // Following the theme again gives the theme's own face and blur back.
         edit_field(&mut app, APPEARANCE, "ui_face", serde_json::Value::Null).unwrap();
         edit_field(
             &mut app,
@@ -930,17 +819,11 @@ mod tests {
                 < 1e-4
         );
 
-        // A name that is no face name and a share outside the band are
-        // refused and change nothing.
         assert!(edit_field(&mut app, APPEARANCE, "ui_face", "   ").is_err());
         assert!(edit_field(&mut app, APPEARANCE, "translucency", 2.0).is_err());
         assert_eq!(app.settings::<AppearancePrefs>().get(), following);
     }
 
-    /// The accent is the person's over the theme too: a choice made in the
-    /// page recolours the theme every app resolves, is written to the
-    /// appearance section, and is there again when the document is read from
-    /// scratch.
     #[test]
     fn an_accent_colour_recolours_the_theme_and_survives_a_restart() {
         let mut app = TestApp::<SettingsShell>::new().unwrap();
@@ -973,8 +856,6 @@ mod tests {
             "the accent keeps every contrast floor"
         );
 
-        // Read back from scratch: the leaf the chrome reads out of the
-        // document, and the theme a fresh process resolves from it alone.
         let document = app.settings::<AppearancePrefs>().document().load();
         assert_eq!(
             settings_store::appearance::ACCENT
@@ -985,8 +866,6 @@ mod tests {
         let text = serde_json::to_string(&document).unwrap();
         let restarted = Theme::resolved_from_settings(&text);
         assert_eq!(restarted.tokens.colors.intent.accent, accent);
-        // The live desktop reads it through the path the shell applies on
-        // every settings change, not only when opening the document anew.
         assert_eq!(
             Theme::configured_from(&document)
                 .tokens
@@ -996,8 +875,6 @@ mod tests {
             accent
         );
 
-        // A name the presence palette does not have is refused and changes
-        // nothing; following the theme again gives the theme's accent back.
         assert!(edit_field(&mut app, APPEARANCE, "accent", "chartreuse").is_err());
         assert_eq!(
             app.settings::<AppearancePrefs>().get().accent.as_deref(),
@@ -1012,10 +889,6 @@ mod tests {
         );
     }
 
-    /// The colour the person wears is a setting of theirs: choosing one
-    /// stores it in the shared `identity` section, where the toolkit and
-    /// every app read it (`PresenceHue::chosen_in`), and following their
-    /// identity again writes none.
     #[test]
     fn the_colour_the_person_wears_is_stored_where_the_theme_reads_it() {
         let mut app = TestApp::<SettingsShell>::new().unwrap();
@@ -1044,8 +917,6 @@ mod tests {
         assert_eq!(app.settings::<IdentityPrefs>().get().colour, None);
     }
 
-    /// The page follows the section, whoever changes it, and while it is
-    /// open the window shows itself in the look the person chose.
     #[test]
     fn the_page_follows_the_section_and_the_window_takes_its_look() {
         let mut app = TestApp::<SettingsShell>::new().unwrap();
@@ -1091,10 +962,6 @@ mod tests {
         );
     }
 
-    /// "Hide the top bar" is this device's desktop control: the toggle
-    /// writes the `desktop_controls_device` section the shell reloads live,
-    /// leaves the person's controls alone, and the pane follows a change made
-    /// elsewhere.
     #[test]
     fn the_top_bar_toggle_writes_the_desktop_controls_and_follows_them() {
         let mut app = TestApp::<SettingsShell>::new().unwrap();
@@ -1180,7 +1047,6 @@ mod tests {
         }
     }
 
-    /// The ids of the controls the open pane of `app` shows.
     fn shown_ids(app: &mut TestApp<SettingsShell>) -> Vec<String> {
         fn walk(widget: &dyn Widget, ids: &mut Vec<String>) {
             if let Some(id) = widget.test_id() {
@@ -1300,9 +1166,6 @@ mod tests {
         }
     }
 
-    /// Choosing a shipped wallpaper writes `appearance.wallpaper`, where the
-    /// compositor reads it; a picture the system does not ship is refused
-    /// and changes nothing.
     #[test]
     fn choosing_a_shipped_wallpaper_writes_the_shared_section() {
         let mut app = TestApp::<SettingsShell>::new().unwrap();
@@ -1323,9 +1186,6 @@ mod tests {
         );
     }
 
-    /// The picker offers every shipped picture and the person's own, and
-    /// marks the one the desktop shows: the default before anything is
-    /// chosen, then whatever the section names.
     #[test]
     fn the_wallpaper_picker_marks_the_chosen_picture() {
         let thumbnails: Vec<_> = tilo_wallpapers::all()
@@ -1370,8 +1230,6 @@ mod tests {
         assert_eq!(chosen, vec!["appearance.wallpaper.choose".to_owned()]);
     }
 
-    /// The picker names every shipped picture in every language Settings
-    /// speaks.
     #[test]
     fn every_shipped_wallpaper_has_a_name_in_every_language() {
         for (locale, text) in [
@@ -1389,7 +1247,6 @@ mod tests {
         }
     }
 
-    /// Without a person at the window nothing opens the file chooser.
     #[test]
     fn only_a_window_someone_uses_chooses_a_wallpaper() {
         let mut app = TestApp::<SettingsShell>::new().unwrap();

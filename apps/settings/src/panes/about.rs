@@ -1,25 +1,4 @@
 //! About: the facts of this device.
-//!
-//! Reads real system facts where they're cheap: `/etc/os-release`
-//! (`PRETTY_NAME`), `/proc/sys/kernel/osrelease` (kernel),
-//! `/proc/uptime` (uptime), the hostname, the processor (`/proc/cpuinfo`,
-//! or the system-on-chip's own name in `/sys/devices/soc0` where the CPU
-//! reports no model, as on Arm) and the memory. A fact that cannot be read
-//! has no row.
-//!
-//! Below the facts, the problems this computer recorded: the desktop
-//! stopping or stopping responding, a part of it restarting, the computer
-//! itself stopping, a fault the system's core went on from. The session
-//! keeps the records in the person's private crash directory and publishes
-//! them as its `crash-records` resources, which About reads as an app
-//! reads any of the session's: the list without a stack, and one record's
-//! text only when its page opens. An agent reaches the same readings.
-//! Nothing leaves the computer.
-//!
-//! Who the person is lives in Users, which reads the identities from the
-//! one place that keeps them; About shows no second copy that could
-//! disagree with it. Backing up the identity is offered there too; its
-//! action stays [`AboutEffect::BackUpIdentity`].
 
 use std::cell::{OnceCell, RefCell};
 use std::fs;
@@ -47,7 +26,6 @@ use provider_settings_ui::widgets::{
 
 crate::effects::effect_family!(AboutEffect => answer);
 
-/// What About offers to do with this device's identity.
 #[derive(Clone, Debug, PartialEq, Eq, tilo_resource::Effect)]
 #[effect(operation = "settings.effect")]
 pub enum AboutEffect {
@@ -63,7 +41,6 @@ pub enum AboutEffect {
     },
 }
 
-/// Answer `effect` by opening the tool or the page it names.
 pub(crate) fn answer(
     app: &SettingsApp,
     effect: AboutEffect,
@@ -88,7 +65,6 @@ pub(crate) fn answer(
     }
 }
 
-/// A fact's row, when the fact could be read.
 fn fact_row(label: &str, value: &str) -> Option<provider_settings_ui::widgets::Item> {
     (value != "unknown").then(|| value_row(label, value))
 }
@@ -99,7 +75,6 @@ pub(crate) fn portable_identity_backup_intent() -> os_actions::ToolIntent {
     os_actions::ToolIntent::IdentityBackup
 }
 
-/// Snapshot of the data the About pane reads at construction time.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AboutInfo {
     pub pretty_name: String,
@@ -158,8 +133,6 @@ impl AboutInfo {
             .ok()
             .and_then(|s| parse_mem_total_kb(&s))
             .map_or_else(|| "unknown".to_string(), format_memory);
-        // Compile-time target arch equals the running machine's arch — an
-        // honest fact that needs no syscall.
         let arch = std::env::consts::ARCH.to_string();
         Self {
             pretty_name,
@@ -174,7 +147,6 @@ impl AboutInfo {
 }
 
 fn fact_sections(info: &AboutInfo) -> Vec<SettingsSection> {
-    // The device's name in the accent, the OS beneath: said once.
     let mut hero_column = ui::widget::Column::new()
         .with_no_padding()
         .push(hero(ui::icons::Icon::Monitor, &info.hostname));
@@ -221,25 +193,17 @@ crate::area::pane_area! {
     }
 }
 
-/// The window's [`AboutArea`].
 pub fn area(app: &SettingsApp) -> Option<&AboutArea> {
     app.areas().find()
 }
 
-/// A read of the problems, answering on its state once it has read them.
 type RecordsCall<T> = ui::Arriving<T, String>;
 
-/// What lists the problems this computer recorded and reads one. Each read
-/// runs off the UI thread and answers on the state it returns; nothing here
-/// waits.
 pub trait ProblemRecords {
     fn list(&self) -> RecordsCall<Vec<CrashRecord>>;
     fn read(&self, id: &str) -> RecordsCall<CrashRecordText>;
 }
 
-/// The records as the session publishes them, which Settings reads as an
-/// app: [`records::RESOURCE`] is every record without its text, and each
-/// record's own resource is its text.
 struct SessionRecords;
 
 impl ProblemRecords for SessionRecords {
@@ -252,8 +216,6 @@ impl ProblemRecords for SessionRecords {
     }
 }
 
-/// What the session's resource `resource` reads as, read on the background
-/// worker.
 fn published<T: serde::de::DeserializeOwned + Send + Sync + 'static>(
     resource: &str,
 ) -> RecordsCall<T> {
@@ -276,15 +238,10 @@ fn settled<T: Clone>(call: &RecordsCall<T>) -> Option<Result<T, String>> {
     }
 }
 
-/// What the about area keeps for the window: the model, made when the pane
-/// or an effect first needs it.
 pub struct AboutArea {
-    /// Whether it asks the host for the problems this device recorded.
     devices: bool,
-    /// The pages the panes drilled into: a problem's page among them.
     pages: crate::pages::PanePages,
     model: OnceCell<Rc<RefCell<AboutModel>>>,
-    /// Moves whenever what the page shows of the model does.
     shown: LocalState<u64>,
 }
 
@@ -298,7 +255,6 @@ impl AboutArea {
         }
     }
 
-    /// The area over `model` in place of the one it would make: a test's.
     #[cfg(test)]
     fn over(cx: &AreaContext, model: AboutModel) -> Self {
         let area = Self::new(cx);
@@ -306,8 +262,6 @@ impl AboutArea {
         area
     }
 
-    /// The model: this device's facts, and the problems it recorded when
-    /// the window reaches the device.
     pub fn model(&self) -> &Rc<RefCell<AboutModel>> {
         self.model.get_or_init(|| {
             let source = self
@@ -321,8 +275,6 @@ impl AboutArea {
         })
     }
 
-    /// Take in what the host answered, if the model exists, and move what
-    /// the page is keyed by when what it shows changed.
     pub(crate) fn poll(&self) {
         if let Some(model) = self.model.get()
             && let Ok(mut model) = model.try_borrow_mut()
@@ -341,7 +293,6 @@ impl AboutArea {
     }
 }
 
-/// The problems as far as they have been read.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Problems {
     Reading,
@@ -349,7 +300,6 @@ enum Problems {
     Unreadable,
 }
 
-/// The record a problem's page shows, as far as it has been read.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Shown {
     Reading,
@@ -357,23 +307,19 @@ enum Shown {
     Unreadable,
 }
 
-/// The problem whose page is open.
 struct Opened {
     id: String,
     call: Option<RecordsCall<CrashRecordText>>,
     shown: Shown,
 }
 
-/// The most problems the page lists, newest first; an agent lists them all.
 const LISTED: usize = 50;
 
-/// The key of the page of the record `id`.
 fn page_key(id: &str) -> String {
     format!("problem:{id}")
 }
 
 pub struct AboutModel {
-    /// The pages the panes drilled into: a problem's page among them.
     pages: crate::pages::PanePages,
     info: AboutInfo,
     source: Option<Rc<dyn ProblemRecords>>,
@@ -385,8 +331,6 @@ pub struct AboutModel {
 }
 
 impl AboutModel {
-    /// The model over `info`, asking `source` for the problems; without one
-    /// (a screenshot, a test of the facts) there are none.
     pub fn new(
         pages: crate::pages::PanePages,
         info: AboutInfo,
@@ -411,7 +355,6 @@ impl AboutModel {
         }
     }
 
-    /// The problems listed, once read.
     fn records(&self) -> &[CrashRecord] {
         match &self.problems {
             Problems::Read(records) => records,
@@ -419,11 +362,6 @@ impl AboutModel {
         }
     }
 
-    /// Open the page of the problem `id`.
-    ///
-    /// # Errors
-    ///
-    /// No problem listed is called `id`.
     pub fn open_problem(&mut self, id: &str) -> Result<(), String> {
         let record = self
             .records()
@@ -436,8 +374,6 @@ impl AboutModel {
         Ok(())
     }
 
-    /// Read the record of the problem whose page is open, and forget the
-    /// one whose page closed.
     fn follow_page(&mut self) {
         let wanted = self
             .pages
@@ -454,7 +390,6 @@ impl AboutModel {
         });
     }
 
-    /// Take in what the records answered and follow the page shown.
     fn take_answers(&mut self) {
         if let Some(answer) = self.listing.as_ref().and_then(settled) {
             self.listing = None;
@@ -495,7 +430,6 @@ impl AboutModel {
         section(&t("settings-about-problems-card"), rows(items))
     }
 
-    /// The page of the problem `opened`: what happened, then the record.
     fn problem_page(&self, opened: &Opened) -> Box<dyn Widget> {
         let listed = self.records().iter().find(|record| record.id == opened.id);
         let record = match &opened.shown {
@@ -528,7 +462,6 @@ impl AboutModel {
     }
 }
 
-/// A problem's row, opening its page.
 fn problem_row(cx: &ViewCx<Settings>, record: &CrashRecord) -> provider_settings_ui::widgets::Item {
     let line = thing_row(
         &format!("settings.about.problem.{}", record.id),
@@ -544,12 +477,10 @@ fn problem_row(cx: &ViewCx<Settings>, record: &CrashRecord) -> provider_settings
     )))
 }
 
-/// When `record` happened, as the person's formats write it.
 fn when(record: &CrashRecord) -> String {
     ui::format::timestamp(&ui::format::UnixSecs(record.at))
 }
 
-/// What happened, in the person's words.
 fn kind_label(kind: CrashKind) -> String {
     t(match kind {
         CrashKind::Froze => "settings-about-problem-froze",
@@ -568,7 +499,6 @@ fn reason_label(reason: StopReason) -> String {
     })
 }
 
-/// The facts of `record`, each it knows on a row of its own.
 fn facts(record: &CrashRecord) -> Vec<provider_settings_ui::widgets::Item> {
     let mut facts = vec![
         value_row(&t("settings-about-problem-what"), &kind_label(record.kind)),
@@ -590,8 +520,6 @@ fn facts(record: &CrashRecord) -> Vec<provider_settings_ui::widgets::Item> {
 }
 
 impl AboutModel {
-    /// The page as the model shows it now: the facts and the problems, or
-    /// the page of the problem opened.
     fn page(&self, cx: &ViewCx<Settings>) -> Element {
         if let Some(opened) = &self.opened {
             return self.problem_page(opened);
@@ -601,8 +529,6 @@ impl AboutModel {
         provider_settings_ui::widgets::page(sections)
     }
 
-    /// Take in the host's answers and follow the page shown; whether what
-    /// the page shows changed.
     fn poll(&mut self) -> bool {
         self.take_answers();
         std::mem::take(&mut self.changed)
@@ -618,8 +544,6 @@ impl AboutModel {
     }
 }
 
-/// The About page as view code over what the area reads: built again
-/// whenever what it shows changes ([`AboutArea::poll`]).
 pub(crate) fn view(cx: &ViewCx<Settings>, app: &Rc<SettingsApp>) -> Option<Element> {
     let held = area(app)?;
     let model = Rc::clone(held.model());
@@ -657,7 +581,6 @@ pub(crate) fn parse_os_release_pretty_name(contents: &str) -> Option<String> {
     None
 }
 
-/// Pull the CPU model from `/proc/cpuinfo` — the first `model name` line.
 pub(crate) fn parse_cpu_model(contents: &str) -> Option<String> {
     for line in contents.lines() {
         if let Some((key, val)) = line.split_once(':')
@@ -672,7 +595,6 @@ pub(crate) fn parse_cpu_model(contents: &str) -> Option<String> {
     None
 }
 
-/// Pull total memory (in kB) from `/proc/meminfo`'s `MemTotal` line.
 pub(crate) fn parse_mem_total_kb(contents: &str) -> Option<u64> {
     for line in contents.lines() {
         if let Some(rest) = line.strip_prefix("MemTotal:") {
@@ -685,8 +607,6 @@ pub(crate) fn parse_mem_total_kb(contents: &str) -> Option<u64> {
     None
 }
 
-/// Format a memory size reported in KiB (as `/proc/meminfo` does) with
-/// binary units, `15.6 GiB`.
 pub(crate) fn format_memory(kb: u64) -> String {
     ui::format::memory(kb.saturating_mul(1024))
 }
@@ -717,8 +637,6 @@ pub(crate) fn format_uptime(seconds: f64) -> String {
 mod tests {
     use super::*;
 
-    /// The /etc/os-release, /proc/uptime, /proc/cpuinfo and /proc/meminfo
-    /// parsers and their display formats.
     #[test]
     fn system_facts_parse_and_format() {
         for (input, want) in [
@@ -742,12 +660,10 @@ mod tests {
             assert_eq!(format_uptime(seconds), want, "{seconds}s");
         }
 
-        // The first model name wins.
         let s = "processor\t: 0\nvendor_id\t: AuthenticAMD\nmodel name\t: AMD Ryzen 7 7840U\nprocessor\t: 1\nmodel name\t: AMD Ryzen 7 7840U\n";
         assert_eq!(parse_cpu_model(s).as_deref(), Some("AMD Ryzen 7 7840U"));
         assert!(parse_cpu_model("no model here\n").is_none());
 
-        // 16 GiB in kB.
         assert_eq!(
             parse_mem_total_kb("MemTotal:       16330124 kB\n"),
             Some(16_330_124)
@@ -757,8 +673,6 @@ mod tests {
         assert_eq!(format_memory(512 * 1024), "512 MiB");
     }
 
-    /// Missing system files fall back to honest placeholders; the backup
-    /// action is a shell-owned typed intent.
     #[test]
     fn about_info_falls_back_when_nothing_can_be_read() {
         let missing = Path::new("/nonexistent/tilo/settings/test/path");
@@ -776,7 +690,6 @@ mod tests {
         assert_eq!(info.hostname, "this-device");
         assert_eq!(info.cpu, "unknown");
         assert_eq!(info.memory, "unknown");
-        // Architecture is a compile-time fact, always present.
         assert!(!info.arch.is_empty());
 
         let intent = portable_identity_backup_intent();
@@ -788,7 +701,6 @@ mod tests {
     fn about_names_the_real_processor_or_no_processor_and_no_identity() {
         let dir = tempfile::tempdir().unwrap();
         let cpuinfo = dir.path().join("cpuinfo");
-        // An Arm CPU reports no model name.
         std::fs::write(
             &cpuinfo,
             "processor\t: 0\nCPU implementer\t: 0x51\nCPU part\t: 0x001\n",
@@ -834,14 +746,11 @@ mod tests {
                 "a fact that cannot be read has no row: {gone} in {text:#?}"
             );
         }
-        // Who the person is is Users' to say; About keeps no second copy.
         for gone in ["Person", "Not connected", "Workspace identity", "Identity"] {
             assert!(!text.iter().any(|line| line == gone), "{gone}: {text:#?}");
         }
     }
 
-    /// The session's records, as fixtures: a desktop that stopped
-    /// responding and the computer stopping, as the session publishes them.
     struct FixtureRecords {
         reads: std::cell::RefCell<Vec<String>>,
     }
@@ -906,8 +815,6 @@ mod tests {
         )
     }
 
-    /// A Settings window on About, whose area shows the model `model`
-    /// makes in the window's context.
     fn window_on(
         model: impl FnOnce(crate::pages::PanePages) -> AboutModel + 'static,
     ) -> ui::prelude::TestApp<crate::resource::SettingsShell> {
@@ -919,8 +826,6 @@ mod tests {
         app
     }
 
-    /// The window's About model, changed by `change`; the page shows the
-    /// change once the window settles.
     fn change_model<T: 'static>(
         app: &mut ui::prelude::TestApp<crate::resource::SettingsShell>,
         change: impl FnOnce(&mut AboutModel) -> T + 'static,
@@ -934,7 +839,6 @@ mod tests {
         changed
     }
 
-    /// What About's page announces for a device with the facts `info`.
     fn page_shown(info: AboutInfo) -> Vec<String> {
         let mut app = window_on(move |cx| AboutModel::new(cx, info, None));
         provider_settings_ui::widgets::announced_text(crate::effects::page_of(
@@ -942,7 +846,6 @@ mod tests {
         ))
     }
 
-    /// What the window announces.
     fn shown(app: &mut ui::prelude::TestApp<crate::resource::SettingsShell>) -> Vec<String> {
         provider_settings_ui::widgets::announced_text(app.harness().root_widget())
     }
@@ -1015,8 +918,6 @@ mod tests {
         );
     }
 
-    /// Without the host's records (a screenshot) About says none were
-    /// recorded rather than inventing any.
     #[test]
     fn about_without_records_says_none_were_recorded() {
         let mut app = window_on(|cx| AboutModel::new(cx, info(), None));

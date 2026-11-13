@@ -1,12 +1,6 @@
-//! The theme picker: each theme drawn as a small window in its own colours
-//! (the desktop ground, a sidebar with the selected row, a heading and text
-//! lines, a primary button in the accent and a switch that is on), named
-//! underneath. Automatic is the light theme beside the dark one. Clicking a
-//! tile, or Enter and the arrow keys on it, chooses that theme.
-//!
-//! Each tile is painted with the real theme it names, so what the person
-//! picks is what they get: the surfaces' separation, the ink, the accent
-//! and the on colour are the tokens every app draws with.
+//! The theme picker: each theme drawn as a small window in its own colours (the
+//! desktop ground, a sidebar with the selected row, a heading and text lines, a
+//! primary button in the accent and a switch that is on), named underneath.
 
 use std::cell::OnceCell;
 use std::collections::HashMap;
@@ -23,8 +17,6 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 use crate::i18n::t;
 use crate::prefs::AppearancePrefs;
 
-/// One tile: the theme's name as stored and the themes it is painted with
-/// (two for Automatic, light then dark).
 struct Tile {
     name: &'static str,
     themes: Vec<Theme>,
@@ -58,13 +50,8 @@ fn tiles() -> Rc<[Tile]> {
     })
 }
 
-/// A tile's height as a share of its width.
 const TILE_ASPECT: f64 = 0.66;
 
-/// How the tiles lay out across `width`, by the card grid's reflow: as many
-/// on a line as fit at their narrowest, rounded down to a count that fills
-/// every line alike, the columns sharing the whole line. `(columns, width,
-/// height)`.
 fn tile_geometry(width: f64, tiles: usize, gap: f64, narrowest: f64) -> (usize, f64, f64) {
     let tiles = tiles.max(1);
     let fit = card_columns(width, narrowest, gap).min(tiles);
@@ -79,7 +66,6 @@ fn tile_geometry(width: f64, tiles: usize, gap: f64, narrowest: f64) -> (usize, 
 pub struct ThemeTiles {
     tiles: Rc<[Tile]>,
     chosen: String,
-    /// The tile under the pointer and the keyboard's tile.
     hover: Option<usize>,
     cursor: usize,
     focused: bool,
@@ -87,15 +73,11 @@ pub struct ThemeTiles {
     last_cursor: Point,
     action: Option<ui::widget::ActionEmitter<String>>,
     rect: Rect,
-    /// The theme's narrowest and asked-for tile widths, gap between tiles
-    /// and room for a name.
     narrowest: f64,
     preferred: f64,
     gap: f64,
     label: f64,
 
-    /// Input or a new document value changed what this widget paints: it
-    /// repaints once, and rests after the frame draws it.
     dirty: bool,
 }
 
@@ -134,12 +116,10 @@ impl ThemeTiles {
         )
     }
 
-    /// How many tiles stand on a line at the laid-out width.
     fn columns(&self) -> usize {
         self.geometry().0
     }
 
-    /// Tile `index`'s picture (without its name).
     fn tile_rect(&self, index: usize) -> Rect {
         let (columns, width, height) = self.geometry();
         let (column, line) = (index % columns, index / columns);
@@ -196,11 +176,9 @@ impl ui::framework::ActionControl<String> for ThemeTiles {
 fn paint_window(scene: &mut Scene, transform: Affine, area: Rect, theme: &Theme, radius: f64) {
     let colors = &theme.tokens.colors;
     let surfaces = &colors.surfaces;
-    // ratchet-allow(raw_paint): a theme tile is a miniature of that theme, drawn in its own colours
     scene.fill(
         Fill::NonZero,
         transform,
-        // ratchet-allow(desktop_ground): a theme tile is a miniature of that theme, drawn in its own colours
         surfaces.base,
         None,
         &RoundedRect::from_rect(area, radius),
@@ -208,7 +186,6 @@ fn paint_window(scene: &mut Scene, transform: Affine, area: Rect, theme: &Theme,
     let inset = (area.height() * 0.12).round();
     let window = Rect::new(area.x0 + inset, area.y0 + inset, area.x1, area.y1);
     let corner = (radius * 0.6).max(3.0);
-    // ratchet-allow(raw_paint): a theme tile is a miniature of that theme, drawn in its own colours
     scene.fill(
         Fill::NonZero,
         transform,
@@ -227,8 +204,6 @@ fn paint_window(scene: &mut Scene, transform: Affine, area: Rect, theme: &Theme,
     paint_tile_content(scene, transform, theme, window, sidebar, unit);
 }
 
-/// A theme tile's sidebar: the recessed region down the window's leading
-/// side with three rows, the second selected. Where it ends.
 fn paint_sidebar(
     scene: &mut Scene,
     transform: Affine,
@@ -238,15 +213,12 @@ fn paint_sidebar(
 ) -> Rect {
     let colors = &theme.tokens.colors;
     let surfaces = &colors.surfaces;
-    // The sidebar: the recessed region with three rows, the second
-    // selected.
     let sidebar = Rect::new(
         window.x0,
         window.y0,
         window.x0 + window.width() * 0.32,
         window.y1,
     );
-    // ratchet-allow(raw_paint): a theme tile is a miniature of that theme, drawn in its own colours
     scene.fill(
         Fill::NonZero,
         transform,
@@ -263,7 +235,6 @@ fn paint_sidebar(
     for row in 0..3 {
         let y = sidebar.y0 + unit * (1.2 + f64::from(row) * 1.6);
         if row == 1 {
-            // ratchet-allow(raw_paint): a theme tile is a miniature of that theme, drawn in its own colours
             scene.fill(
                 Fill::NonZero,
                 transform,
@@ -285,15 +256,12 @@ fn paint_sidebar(
             sidebar.x0 + unit,
             y,
             sidebar.width() * 0.55,
-            // ratchet-allow(literal_alpha): a theme tile is a miniature of that theme, drawn in its own colours
             colors.text_dim.multiply_alpha(0.7),
         );
     }
     sidebar
 }
 
-/// A theme tile's content beside its sidebar: a heading, two lines of
-/// text, a primary button and a switch that is on.
 fn paint_tile_content(
     scene: &mut Scene,
     transform: Affine,
@@ -303,8 +271,6 @@ fn paint_tile_content(
     unit: f64,
 ) {
     let colors = &theme.tokens.colors;
-    // The content: a heading, two lines of text, a primary button and a
-    // switch that is on.
     let left = sidebar.x1 + unit * 1.2;
     let width = window.x1 - left - unit * 1.2;
     tile_bar(
@@ -323,7 +289,6 @@ fn paint_tile_content(
         left,
         window.y0 + unit * 2.8,
         width * 0.9,
-        // ratchet-allow(literal_alpha): a theme tile is a miniature of that theme, drawn in its own colours
         colors.text_dim.multiply_alpha(0.6),
     );
     tile_bar(
@@ -333,12 +298,10 @@ fn paint_tile_content(
         left,
         window.y0 + unit * 4.0,
         width * 0.7,
-        // ratchet-allow(literal_alpha): a theme tile is a miniature of that theme, drawn in its own colours
         colors.text_dim.multiply_alpha(0.6),
     );
     let control = unit * 1.6;
     let bottom = window.y1 - unit * 1.2;
-    // ratchet-allow(raw_paint): a theme tile is a miniature of that theme, drawn in its own colours
     scene.fill(
         Fill::NonZero,
         transform,
@@ -358,7 +321,6 @@ fn paint_tile_content(
         window.x1 - unit * 1.2,
         bottom,
     );
-    // ratchet-allow(raw_paint): a theme tile is a miniature of that theme, drawn in its own colours
     scene.fill(
         Fill::NonZero,
         transform,
@@ -366,7 +328,6 @@ fn paint_tile_content(
         None,
         &RoundedRect::from_rect(track, control / 2.0),
     );
-    // ratchet-allow(raw_paint): a theme tile is a miniature of that theme, drawn in its own colours
     scene.fill(
         Fill::NonZero,
         transform,
@@ -379,7 +340,6 @@ fn paint_tile_content(
     );
 }
 
-/// One bar of a theme tile's miniature text, `unit` tall at most.
 fn tile_bar(
     scene: &mut Scene,
     transform: Affine,
@@ -389,7 +349,6 @@ fn tile_bar(
     width: f64,
     color: vello::peniko::Color,
 ) {
-    // ratchet-allow(raw_paint): a theme tile is a miniature of that theme, drawn in its own colours
     scene.fill(
         Fill::NonZero,
         transform,
@@ -462,8 +421,6 @@ impl Widget for ThemeTiles {
             let area = self.tile_rect(index);
             match tile.themes.as_slice() {
                 [light, dark] => {
-                    // Automatic: the light theme on the left, the dark on
-                    // the right, split down the middle.
                     let half = Rect::new(area.x0, area.y0, area.center().x, area.y1);
                     scene.push_layer(
                         Fill::NonZero,
@@ -491,11 +448,8 @@ impl Widget for ThemeTiles {
             let chosen = tile.name == self.chosen;
             let edge = RoundedRect::from_rect(area, radius);
             if chosen {
-                // The chosen theme: its own edge, heavier and in the accent,
-                // in the same place (the design system's selected edge).
                 ui::surface::selected_edge(scene, transform, area, radius, theme);
             } else {
-                // ratchet-allow(raw_paint): a theme tile is a miniature of that theme, drawn in its own colours
                 scene.stroke(
                     &Stroke::new(1.0),
                     transform,
@@ -505,7 +459,6 @@ impl Widget for ThemeTiles {
                 );
             }
             if self.hover == Some(index) && !chosen {
-                // ratchet-allow(raw_paint): a theme tile is a miniature of that theme, drawn in its own colours
                 scene.fill(
                     Fill::NonZero,
                     transform,
@@ -515,7 +468,6 @@ impl Widget for ThemeTiles {
                 );
             }
             if self.focused && self.cursor == index {
-                // ratchet-allow(raw_paint): a theme tile is a miniature of that theme, drawn in its own colours
                 scene.stroke(
                     &Stroke::new(2.0),
                     transform,
@@ -681,8 +633,6 @@ impl ui::widget::controls::ActionControls for ThemeTiles {
 mod tests {
     use super::*;
 
-    /// Every theme Settings offers has a tile painted in that theme, and
-    /// Automatic is painted in both.
     #[test]
     fn every_offered_theme_has_a_tile_in_its_own_colours() {
         let tiles = tiles();
@@ -714,9 +664,6 @@ mod tests {
         }
     }
 
-    /// The tiles fill even lines across the width they get: every line
-    /// holds as many tiles as the others, more on a desktop pane than on a
-    /// phone, and two on a phone.
     #[test]
     fn the_tiles_fill_even_lines() {
         let offered = AppearancePrefs::THEMES.len();

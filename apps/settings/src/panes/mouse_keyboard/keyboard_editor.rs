@@ -727,9 +727,6 @@ impl PageOf<'_> {
         drawn.map(|drawn| drawn.map(|map| map.with_input(self.map_input.clone())))
     }
 
-    /// One row per layout for a keyboard that types several: its name (and
-    /// whether it is the one in use) with, on the trailing edge, buttons to
-    /// use it, move it in the switching order and remove it.
     fn source_items(&self, profile: &KeyboardProfile) -> Vec<Item> {
         let small = ui::widget::ControlSize::Small;
         let last = profile.sources.len().saturating_sub(1);
@@ -806,16 +803,11 @@ impl PageOf<'_> {
             .collect()
     }
 
-    /// The Keyboard page, top to bottom: the layouts (what people come here
-    /// to change), with a warning above them when the keyboard types
-    /// something else; the typing options; and the selected layout drawn as
-    /// its keycaps, for looking up where a symbol is.
     pub(super) fn keyboard_page(&self) -> Vec<SettingsSection> {
         let profile = self.editor_profile();
         let shown = self.selected_source();
         let osk = self.area.editor.get().scope == OSK;
         let mut page = Vec::new();
-        // `None` while the drawing is being compiled.
         let map = if osk {
             Some(Err(String::new()))
         } else {
@@ -827,9 +819,6 @@ impl PageOf<'_> {
         {
             page.push(self.layout_mismatch_section(&profile));
         }
-        // The layout drawn as its keys first, lighting up as they are
-        // pressed; then the layouts to choose from and how keys behave,
-        // with a field to try them in.
         page.push(self.layout_preview_section(&shown, &profile, map));
         page.push(self.layouts_section(&profile));
         if !osk {
@@ -854,7 +843,6 @@ impl PageOf<'_> {
         )]))
     }
 
-    /// The layout in use, drawn as its real keycaps, one layer at a time.
     fn layout_preview_section(
         &self,
         shown: &str,
@@ -943,8 +931,6 @@ impl PageOf<'_> {
         block_section(Box::new(body))
     }
 
-    /// The configured layouts: one row for a single layout, a reorderable
-    /// list for several, and an inline searchable chooser to add another.
     fn layouts_section(&self, profile: &KeyboardProfile) -> SettingsSection {
         let scope = self.area.editor.get().scope;
         let mut content = Vec::new();
@@ -982,7 +968,6 @@ impl PageOf<'_> {
             content.push(note(&t("input-sources-unavailable")));
         }
         if let [only] = profile.sources.as_slice() {
-            // One layout is one row: its name, to change in place.
             let mut options = choices.clone();
             options.insert(0, (only.clone(), self.source_name(only)));
             let from = only.clone();
@@ -1033,7 +1018,6 @@ impl PageOf<'_> {
                             "input.source.add_picker",
                             &t("input-source-add-title"),
                         )
-                        // window-bar: picker, type-ahead over the layouts the dropdown offers
                         .with_placeholder(&t("input-source-add-placeholder")),
                         effect(InputEffect::ADD_SOURCE),
                     ),
@@ -1043,8 +1027,6 @@ impl PageOf<'_> {
         section(&t("input-layouts-title"), rows(content))
     }
 
-    /// Typing options, flat: the physical model, the compose and Caps Lock
-    /// keys, how held keys repeat, and a field to try them in.
     fn keyboard_options_section(&self, shown: &str) -> SettingsSection {
         let mut items = self.selected_source_options(shown);
         items.push(self.key_repeat_row());
@@ -1138,8 +1120,6 @@ impl PageOf<'_> {
     }
 }
 
-/// The name of a modifier layer: XKB levels run base, Shift, `AltGr`,
-/// Shift + `AltGr`.
 fn layer_key(level: usize) -> &'static str {
     match level {
         0 => "input-layer-base",
@@ -1184,8 +1164,6 @@ fn osk_profile(document: &ui::storage::SettingsDocument) -> KeyboardProfile {
     }
 }
 
-/// Store `profile` as the on-screen keyboard's layouts, through its
-/// section's verb.
 fn store_osk(sections: &crate::sections::Sections, profile: &KeyboardProfile) -> EffectAnswer {
     sections
         .invoke::<OskSourceSettings>(

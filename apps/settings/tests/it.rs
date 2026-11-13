@@ -14,8 +14,6 @@ mod support {
     use ui::widget::Widget;
     use vello::kurbo::Rect;
 
-    /// One row of the sidebar's navigation list as the accessibility tree
-    /// publishes it.
     #[derive(Clone, Debug)]
     pub struct NavRow {
         pub label: String,
@@ -77,8 +75,6 @@ mod support {
         window_themed(category, viewport, ui::Theme::dark())
     }
 
-    /// [`window_on`] in `theme`: large text is a theme's text scale, as the
-    /// live host hands it to the window.
     pub fn window_themed(
         category: settings::categories::Category,
         (w, h): (f32, f32),
@@ -110,9 +106,6 @@ mod support {
         app
     }
 
-    /// Where the window's shell is: whether it is narrow (one screen at a
-    /// time), whether the list screen (or the docked list) shows, and the
-    /// content screen's back arrow.
     #[derive(Clone, Copy, Debug, PartialEq)]
     pub struct Shell {
         pub narrow: bool,
@@ -120,7 +113,6 @@ mod support {
         pub back: Rect,
     }
 
-    /// The window's shell, as laid out now.
     pub fn shell(app: &mut Window) -> Shell {
         app.with_widget::<ui::widget::NavShell, _>(|shell| {
             let geometry = shell.geometry();
@@ -133,7 +125,6 @@ mod support {
         .expect("settings shows its shell")
     }
 
-    /// The navigation rows the window's accessibility tree exports.
     pub fn window_rows(app: &mut Window) -> Vec<NavRow> {
         app.harness()
             .a11y_nodes()
@@ -151,12 +142,10 @@ mod support {
             .collect()
     }
 
-    /// The window's row labelled `label`, if its list shows one.
     pub fn window_row(app: &mut Window, label: &str) -> Option<NavRow> {
         window_rows(app).into_iter().find(|row| row.label == label)
     }
 
-    /// Click `category`'s sidebar row with the pointer, as a person does.
     pub fn click_category(app: &mut Window, category: settings::categories::Category) {
         let row = window_row(app, &category.label())
             .unwrap_or_else(|| panic!("no sidebar row for {category:?}"));
@@ -165,7 +154,6 @@ mod support {
         app.settle();
     }
 
-    /// The pane the window shows: the one its sidebar's list selects.
     pub fn selected(app: &mut Window) -> settings::categories::Category {
         app.with_widget::<ui::widget::NavList, _>(|list| list.selected_id())
             .flatten()
@@ -174,8 +162,6 @@ mod support {
             .expect("the sidebar selects the pane shown")
     }
 
-    /// Type `query` into the window bar's search, as the bar hands it to the
-    /// app, and lay the window out again.
     pub fn bar_search(app: &mut Window, search: &mut ui::widget::SearchDriver, query: &str) {
         let root = app.harness().root_widget_mut();
         if search.in_place() == ui::widget::InPlace::Nothing {

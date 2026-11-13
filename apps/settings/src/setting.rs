@@ -1,21 +1,4 @@
 //! Each setting as the row that changes it, wherever it is shown.
-//!
-//! A setting the index names ([`settings_store::index`]) is shown by one
-//! function: the row its pane shows, with its label, its explanation and its
-//! control bound to the section's field edit. The pane builds its row with
-//! that function, and so does Settings' search: typing in the window bar
-//! lists the settings that match as those same rows, operable where they
-//! are found ([`found`]), each page's group opening its page. A yes-or-no
-//! that only the device can switch (a radio, the sound server) is the
-//! switch its pane shows once the window has read it can be switched. A
-//! setting whose pane draws it some other way (a layout, a schedule, a
-//! picker) is listed by name, and showing it takes the person to it in its
-//! page; the row says what it is set to, read where its pane reads it.
-//!
-//! A pane brings its settings' rows in its [`crate::area::Part`] with
-//! [`setting_row!`], its device switches with [`setting_bound_switch!`] or
-//! [`setting_view_switch!`], and what the others are set to with
-//! [`setting_value!`].
 
 use std::any::Any;
 use std::cell::RefCell;
@@ -32,17 +15,12 @@ use crate::i18n::t;
 use crate::resource::Settings;
 use provider_settings_ui::widgets::{Item, rows, section_action};
 
-/// One setting, as search shows it.
 pub struct SettingEntry {
-    /// The setting's id in the index.
     pub id: &'static str,
     pub shown: Shown,
 }
 
-/// How search shows a setting.
 pub enum Shown {
-    /// The row its page shows, as view code over its section
-    /// ([`setting_row!`]); `None` where the section cannot be held.
     Bound(fn(&ui::framework::ViewCx<crate::resource::Settings>) -> Option<Item>),
     /// What it is set to, as its pane reads it in the window: its section,
     /// followed in `follows`, or what its area last read of the device
@@ -59,28 +37,18 @@ pub enum Shown {
         fn(&crate::settings_app::SettingsApp, &Follows) -> Read,
         fn(&ui::framework::ViewCx<crate::resource::Settings>) -> Option<Item>,
     ),
-    /// [`Shown::BoundSwitch`] whose switch is the device's: the second function
-    /// builds it in the window's view, showing whether it is on, bound to
-    /// the effect that switches the device ([`setting_view_switch!`]).
     ViewSwitch(
         fn(&crate::settings_app::SettingsApp, &Follows) -> Read,
         fn(&ui::framework::ViewCx<crate::resource::Settings>, bool) -> Item,
     ),
 }
 
-/// What search reads of a setting it shows by name or as a switch of the
-/// device.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Read {
-    /// What it is set to, shown beside its name; `None` while unknown.
     Value(Option<String>),
-    /// A switch, on or off.
     Switch(bool),
 }
 
-/// The [`SettingEntry`] of the setting `$id`, whose row `$row(cx)` builds
-/// as view code over the section `$section`: the function its page builds
-/// the row with.
 #[macro_export]
 macro_rules! setting_row {
     ($id:literal, $section:ty => $row:path) => {
@@ -95,9 +63,6 @@ macro_rules! setting_row {
 }
 pub use crate::setting_row;
 
-/// The [`SettingEntry`] of the setting `$id`, which search shows by name
-/// with what `$value(app, follows)` says it is set to; `known` when that is
-/// always at hand.
 #[macro_export]
 macro_rules! setting_value {
     ($id:literal => known $value:path) => {
@@ -115,9 +80,6 @@ macro_rules! setting_value {
 }
 pub use crate::setting_value;
 
-/// The [`SettingEntry`] of the setting `$id`, which search shows as the
-/// switch `$row(cx)` builds as view code over the section `$section` while
-/// `$read(app, follows)` says it can be switched ([`Shown::BoundSwitch`]).
 #[macro_export]
 macro_rules! setting_bound_switch {
     ($id:literal => $read:path, $section:ty => $row:path) => {
@@ -132,10 +94,6 @@ macro_rules! setting_bound_switch {
 }
 pub use crate::setting_bound_switch;
 
-/// The [`SettingEntry`] of the setting `$id`, which search shows as the
-/// switch `$row(cx, on)` builds as view code while `$read(app, follows)`
-/// says it can be switched ([`Shown::ViewSwitch`]): a switch of the device,
-/// its pane's own.
 #[macro_export]
 macro_rules! setting_view_switch {
     ($id:literal => $read:path, $row:path) => {
@@ -147,8 +105,6 @@ macro_rules! setting_view_switch {
 }
 pub use crate::setting_view_switch;
 
-/// A chooser of every value the field at `field` offers, by its label:
-/// `row` bound to it.
 pub fn choose<R, V>(
     row: provider_settings_ui::bound::Setting<'_, R>,
     field: ui::tilo_resource::Path<R, V>,
@@ -167,8 +123,6 @@ where
     })
 }
 
-/// What each of `settings` is set to, where search shows it by name or as
-/// a switch of the device.
 #[must_use]
 pub fn reads(
     app: &crate::settings_app::SettingsApp,
@@ -189,7 +143,6 @@ pub fn reads(
         .collect()
 }
 
-/// "On" or "Off", as a yes-or-no setting reads.
 #[must_use]
 pub fn on_off(on: bool) -> String {
     t(if on {
@@ -203,11 +156,9 @@ pub fn on_off(on: bool) -> String {
 /// only when the settings document changed.
 #[derive(Default)]
 pub struct Follows {
-    /// Each section read, as a `RefCell<SettingsCache<T>>`.
     held: RefCell<Vec<Rc<dyn Any>>>,
 }
 
-/// A section of the settings that can be followed.
 pub trait Followable: ui::storage::SettingsSchema + Clone + PartialEq + 'static {}
 
 impl<T: ui::storage::SettingsSchema + Clone + PartialEq + 'static> Followable for T {}
@@ -231,7 +182,6 @@ impl Follows {
     }
 }
 
-/// Every setting's row the parts of Settings bring, by the setting's id.
 #[must_use]
 pub fn entry(id: &str) -> Option<&'static SettingEntry> {
     crate::area::registry()
@@ -241,9 +191,6 @@ pub fn entry(id: &str) -> Option<&'static SettingEntry> {
         .find(|entry| entry.id == id)
 }
 
-/// The settings that match `query`, best first: found by their names and
-/// the words people use for them, in every language, as the desktop palette
-/// finds them.
 #[must_use]
 pub fn matching(query: &str) -> Vec<&'static Setting> {
     let query = query.trim();
@@ -281,9 +228,6 @@ pub fn matching(query: &str) -> Vec<&'static Setting> {
         .collect()
 }
 
-/// The rows of `settings` whose pages are view code, built in `cx`, by
-/// their place, `reads` saying which switches can be switched: what
-/// [`found`] shows for them.
 #[must_use]
 pub fn bound_rows(
     cx: &ui::framework::ViewCx<crate::resource::Settings>,
@@ -304,16 +248,9 @@ pub fn bound_rows(
         .collect()
 }
 
-/// What Settings' search found, as the view `cx` shows it in place of a
-/// pane: the matching settings, best first, grouped by the page each is on,
-/// as the rows that change them. A setting whose page is view code is its
-/// row ([`bound_rows`]); any other is listed by name with what `reads` says
-/// it is set to and a button showing it in its page. Each group's button
-/// opens its page, as an agent's `open` does.
 pub fn found(cx: &ViewCx<Settings>, settings: &[&'static Setting], reads: &[Read]) -> Element {
     let mut bound = bound_rows(cx, settings, reads);
     let actions = cx.actions();
-    // Each page with where its settings are in `settings`.
     let mut pages: Vec<(&'static str, Vec<usize>)> = Vec::new();
     for (at, setting) in settings.iter().enumerate() {
         match pages.iter_mut().find(|(page, _)| *page == setting.page) {
@@ -359,8 +296,6 @@ pub fn found(cx: &ViewCx<Settings>, settings: &[&'static Setting], reads: &[Read
     )
 }
 
-/// A setting found whose page draws it some other way: its name, what it is
-/// set to (`value`), and a button showing it in its page.
 fn found_row(actions: &Actions<Settings>, setting: &'static Setting, value: Option<&str>) -> Item {
     let name = t(&setting.name_key());
     let show = navigating(
@@ -380,8 +315,6 @@ fn found_row(actions: &Actions<Settings>, setting: &'static Setting, value: Opti
     }))
 }
 
-/// A button `id` reading `label`, running `effect`: Settings' own
-/// navigation, as an agent's `open` runs it.
 fn navigating(
     actions: &Actions<Settings>,
     id: &str,

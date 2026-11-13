@@ -1,11 +1,7 @@
-//! The battery's charge over the last day or week: the charge as a line
-//! over time with the area under it, the stretches spent plugged in marked
-//! along the bottom, hours or days along the time axis, and the charge at
-//! any moment under the pointer.
-//!
-//! The history is the shell's power monitor's (`power-history.json`: one
-//! point per quarter hour at most). Where the machine was off or asleep
-//! there are no points, and the line breaks rather than inventing a slope.
+//! The battery's charge over the last day or week: the charge as a line over
+//! time with the area under it, the stretches spent plugged in marked along the
+//! bottom, hours or days along the time axis, and the charge at any moment
+//! under the pointer.
 
 use std::collections::HashMap;
 
@@ -21,7 +17,6 @@ use winit::event::WindowEvent;
 use crate::i18n::{t, t_args};
 use ui::i18n::ArgValue;
 
-/// How far back the chart looks.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Span {
     Day,
@@ -46,26 +41,17 @@ impl Span {
     }
 }
 
-/// A gap between two points longer than this is time the machine was off
-/// or asleep: the line breaks there.
 const GAP_MINUTES: u64 = 50;
-/// The chart's height at the default text size.
 const HEIGHT: f32 = ui::tokens::Metrics::BASE.chart_height;
 
-/// The charge chart.
 pub struct HistoryChart {
     points: Vec<BatteryHistoryPoint>,
     span: Span,
-    /// Now, in minutes since the Unix epoch: the chart's right edge.
     now: u64,
-    /// This device's offset from UTC in seconds, for the hour and day
-    /// labels.
     local_offset: i64,
     rect: Rect,
     hover: Option<Point>,
 
-    /// Input or a new document value changed what this widget paints: it
-    /// repaints once, and rests after the frame draws it.
     dirty: bool,
 }
 
@@ -87,9 +73,6 @@ impl HistoryChart {
         }
     }
 
-    /// Where the plot sits: the reading under the pointer takes a line
-    /// above it, the time labels a line under it and the charge labels a
-    /// column on its right.
     fn plot(&self, theme: &Theme) -> Rect {
         let caption = f64::from(theme.text(ui::TextRole::Caption).line_height_px());
         let gutter = f64::from(theme.tokens.spacing.s8) + f64::from(theme.tokens.spacing.s2);
@@ -111,7 +94,6 @@ impl HistoryChart {
         plot.y1 - f64::from(capacity.min(100)) / 100.0 * plot.height()
     }
 
-    /// The runs of points with no gap between them.
     fn runs(&self) -> Vec<&[BatteryHistoryPoint]> {
         let mut runs = Vec::new();
         let mut start = 0;
@@ -128,8 +110,6 @@ impl HistoryChart {
         runs
     }
 
-    /// The time-axis ticks: `(minute, label)` at every sixth hour of the
-    /// local day, or at every local midnight.
     fn ticks(&self) -> Vec<(u64, String)> {
         let from = self.now.saturating_sub(self.span.minutes());
         let offset_minutes = self.local_offset / 60;
@@ -157,7 +137,6 @@ impl HistoryChart {
         ticks
     }
 
-    /// The point nearest the pointer, while it is over the plot.
     fn hovered(&self, theme: &Theme) -> Option<&BatteryHistoryPoint> {
         let pointer = self.hover?;
         let plot = self.plot(theme);
@@ -194,7 +173,6 @@ impl HistoryChart {
         }
     }
 
-    /// What the chart says to someone who cannot see it.
     fn summary(&self) -> String {
         let (Some(low), Some(high), Some(last)) = (
             self.points.iter().map(|point| point.capacity).min(),
@@ -223,8 +201,6 @@ impl HistoryChart {
     }
 }
 
-/// The short name of the weekday of local day `day` (days since 1970-01-01,
-/// a Thursday).
 fn weekday_label(day: i64) -> String {
     let from_monday = u32::try_from((day + 3).rem_euclid(7)).unwrap_or_default();
     ui::format::week()
@@ -234,7 +210,6 @@ fn weekday_label(day: i64) -> String {
         .unwrap_or_default()
 }
 
-/// What one frame of the chart paints with.
 struct Painter<'a> {
     scene: &'a mut Scene,
     transform: Affine,
@@ -249,7 +224,6 @@ impl Painter<'_> {
     }
 
     fn rule(&mut self, from: (f64, f64), to: (f64, f64), color: vello::peniko::Color) {
-        // ratchet-allow(raw_paint): the charge chart draws measured battery data, content rather than chrome
         self.scene.stroke(
             &Stroke::new(1.0),
             self.transform,
@@ -293,8 +267,6 @@ impl Painter<'_> {
 }
 
 impl HistoryChart {
-    /// The charge scale (rules at empty, half and full, labelled on the
-    /// right) and the time axis.
     fn draw_scale(&self, painter: &mut Painter<'_>) {
         let colors = &painter.theme.tokens.colors;
         let (subtle, tertiary) = (colors.overlay_border_subtle, colors.text_tertiary);
@@ -316,14 +288,11 @@ impl HistoryChart {
         }
     }
 
-    /// The stretches plugged in along the bottom, then the area under each
-    /// run of the charge and its line.
     fn draw_charge(&self, painter: &mut Painter<'_>) {
         let colors = &painter.theme.tokens.colors;
         let (plugged, ink, content) = (
             colors.semantic.success,
             colors.text_primary,
-            // ratchet-allow(literal_alpha): the charge chart draws measured battery data, content rather than chrome
             colors.text_primary.multiply_alpha(0.10),
         );
         let plot = painter.plot;
@@ -369,7 +338,6 @@ impl HistoryChart {
             area.close_path();
             painter.fill(&area, content);
         }
-        // ratchet-allow(raw_paint): the charge chart draws measured battery data, content rather than chrome
         painter.scene.stroke(
             &Stroke::new(1.75)
                 .with_join(vello::kurbo::Join::Round)
@@ -381,8 +349,6 @@ impl HistoryChart {
         );
     }
 
-    /// The charge at the moment under the pointer: a rule and a dot on the
-    /// line, and the charge and the time in the line above the plot.
     fn draw_reading(&self, painter: &mut Painter<'_>, point: &BatteryHistoryPoint) {
         let colors = &painter.theme.tokens.colors;
         let (strong, content, ink) = (
@@ -550,7 +516,6 @@ mod tests {
 
     #[test]
     fn the_time_axis_ticks_fall_on_local_hours_and_midnights() {
-        // 2026-03-20 13:05 UTC, in a zone two hours ahead.
         let now = 1_774_011_900 / 60;
         let day = HistoryChart::new(&[], Span::Day, now, 7200);
         let ticks = day.ticks();
@@ -565,7 +530,6 @@ mod tests {
         for (minute, _) in &ticks {
             assert_eq!((minute + 120) % (24 * 60), 0, "a local midnight: {minute}");
         }
-        // 1970-01-01 was a Thursday; 2026-03-20 is a Friday.
         assert_eq!(weekday_label(0), weekday_label(7));
         assert_ne!(weekday_label(0), weekday_label(1));
     }

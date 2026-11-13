@@ -1,14 +1,9 @@
 //! Cloud storage end to end, for every provider: the person connects the
 //! account in Settings (through the fake authorization server, or Apple's
 //! sign-in on the fake iCloud), custody publishes the short-lived handoff
-//! credential, the storage daemon's cloud service mounts the account
-//! against the provider's fake server, a file is written and read back, and
-//! removing the account in Settings unmounts it and deletes its cache.
-//!
-//! Settings and the daemon meet only on disk: the account store, the vault
-//! (Settings' side) and the handoff store (the daemon's side), all under
-//! one private config root. The daemon's credential refresher is the same
-//! custodian the credential helper runs.
+//! credential, the storage daemon's cloud service mounts the account against
+//! the provider's fake server, a file is written and read back, and removing
+//! the account in Settings unmounts it and deletes its cache.
 
 #![allow(
     clippy::unwrap_used,
@@ -39,8 +34,6 @@ use {
 };
 
 #[cfg(target_os = "linux")]
-/// Plays the system browser, following redirects back to the loopback
-/// listener.
 struct Browser;
 
 #[cfg(target_os = "linux")]
@@ -69,21 +62,16 @@ impl BrowserOpener for Recorder {
 }
 
 #[cfg(target_os = "linux")]
-/// One provider's fakes and how the person signs in to it.
 struct Case {
     kind: AccountKind,
     custodian: Custodian,
-    /// Apple ID, password and code for iCloud; `None` for `OAuth`.
     icloud: Option<(&'static str, &'static str, &'static str)>,
     /// A file already on the server, when the fake can hold one.
     seeded: Option<(&'static str, &'static [u8])>,
-    /// Keeps the fake servers running.
     _servers: Box<dyn std::any::Any>,
 }
 
 #[cfg(target_os = "linux")]
-/// The fake authorization server, this app's registration with it, and the
-/// storage configuration pointing at the provider's fake.
 struct OAuthFake {
     auth: FakeAuthorizationServer,
     registration: Registration,
@@ -172,8 +160,6 @@ fn dropbox(root: &AccountRoot) -> Case {
     dropbox.put("/hello.txt", b"from Dropbox");
     let auth = FakeAuthorizationServer::start();
     auth.issue_access_token(cloud_source_dropbox::fake::TOKEN);
-    // Dropbox matches redirect URIs exactly: the listener takes one of the
-    // registered ports.
     let port = std::net::TcpListener::bind(("127.0.0.1", 0))
         .unwrap()
         .local_addr()
@@ -223,7 +209,6 @@ fn command(pane: &mut AccountsPane, command: AccountViewCommand) {
 }
 
 #[cfg(target_os = "linux")]
-/// Connect the account through the Settings pane, as the controls do.
 fn sign_in(case: &Case, pane: &mut AccountsPane) {
     command(pane, AccountViewCommand::Add(case.kind));
     assert!(pane.sign_in_open());
@@ -273,8 +258,6 @@ fn write_file(volume: &CloudVolume, name: &str, bytes: &[u8]) {
 }
 
 #[cfg(target_os = "linux")]
-/// What another device sees on the server: the file read through a fresh
-/// connection with the account's stored configuration.
 fn on_server(
     account: &accounts::Account,
     credential: cloud_source::Credential,
@@ -372,7 +355,6 @@ fn run(case: &Case, root_dir: &Path, root: &AccountRoot) {
     );
     service.pump();
 
-    // Removing the account in Settings unmounts it and drops its cache.
     let state_dir = home.path().join("state");
     assert!(state_dir.read_dir().unwrap().next().is_some());
     pane.remove(account.id.as_str()).unwrap();
@@ -458,7 +440,6 @@ fn a_dropbox_code_can_be_pasted_when_every_registered_port_is_taken() {
         !url.contains("redirect_uri"),
         "Dropbox shows the code: {url}"
     );
-    // The person reads the code off Dropbox's page and pastes it.
     let code = tilo_oauth::fake::browse(&url).unwrap();
     pane.set_sign_in_code_for_test(&code);
     command(&mut pane, AccountViewCommand::Submit);

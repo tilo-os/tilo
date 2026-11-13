@@ -1,19 +1,12 @@
-//! Which radios this device has: a Bluetooth adapter, a Wi-Fi radio, a
-//! mobile broadband modem.
-//!
-//! Settings offers a radio's actions only while the device has the radio:
-//! with no Bluetooth adapter, "turn Bluetooth on" is published unavailable
-//! with the reason, not as a switch that can only fail. What the device has
-//! is read from the kernel's device classes on a thread of its own, never
-//! on the UI thread, and read again every few seconds, so a dongle plugged
-//! in while Settings runs makes its actions available. The window is woken
-//! only when the answer changes.
+//! Which radios this device has: a Bluetooth adapter, a Wi-Fi radio, a mobile
+//! broadband modem. Settings offers a radio's actions only while the device has
+//! the radio: with no Bluetooth adapter, "turn Bluetooth on" is published
+//! unavailable with the reason, not as a switch that can only fail.
 
 use std::sync::mpsc::{RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-/// How often the device's radios are read again.
 const EVERY: Duration = Duration::from_secs(3);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -31,7 +24,6 @@ impl Present {
         wwan: true,
     };
 
-    /// No radio at all: a desktop or a VM without a dongle.
     #[cfg(test)]
     pub const NONE: Self = Self {
         bluetooth: false,
@@ -39,8 +31,6 @@ impl Present {
         wwan: false,
     };
 
-    /// What the kernel lists on this device now: a few directory listings,
-    /// no D-Bus and no subprocess.
     #[cfg(feature = "tilo-os")]
     fn of_device() -> Self {
         Self {
@@ -50,7 +40,6 @@ impl Present {
         }
     }
 
-    /// No radio: a build without the device panes (`tilo-os`) reaches none.
     #[cfg(not(feature = "tilo-os"))]
     fn of_device() -> Self {
         Self {
@@ -61,16 +50,10 @@ impl Present {
     }
 }
 
-/// What the window knows of the device's radios. Cheap to clone; clones
-/// share one reading, and the thread reading the device ends with the
-/// last clone.
 #[derive(Clone)]
 pub struct Radios {
     latest: Arc<Mutex<Option<Present>>>,
-    /// What the window took in of `latest`: a frame being laid out reads
-    /// what the frame began with ([`Self::now`]).
     taken: Arc<Mutex<Option<Present>>>,
-    /// Asks the reading thread to look again now; `None` for a fixed answer.
     again: Option<Arc<Sender<()>>>,
 }
 
@@ -86,7 +69,6 @@ impl Radios {
         }
     }
 
-    /// This device's radios, read off the UI thread.
     pub fn of_device() -> Self {
         Self::watching(Present::of_device, EVERY)
     }
@@ -121,8 +103,6 @@ impl Radios {
             }),
         );
         if let Err(error) = started {
-            // Unknown radios keep every action offered, as before Settings
-            // could tell.
             tracing::warn!(target: "tilo::settings", %error, "the device's radios cannot be watched");
         }
         Self {
@@ -146,15 +126,12 @@ impl Radios {
         *taken
     }
 
-    /// Read the device again now rather than at the next interval.
     pub fn look_again(&self) {
         if let Some(again) = &self.again {
             let _ = again.send(());
         }
     }
 
-    /// Say the device has `present` from now on, as a dongle plugged in or
-    /// pulled out would.
     #[cfg(test)]
     pub fn set(&self, present: Present) {
         if let Ok(mut latest) = self.latest.lock() {
@@ -167,7 +144,6 @@ impl Radios {
 mod tests {
     use super::*;
 
-    /// Whether `radios` comes to say `expected`; a hang fails the test.
     fn settles_on(radios: &Radios, expected: Present) -> bool {
         tilo_test_env::wait_until(format!("the radios to read {expected:?}"), || {
             radios.now() == Some(expected)
@@ -175,8 +151,6 @@ mod tests {
         true
     }
 
-    /// The device is read off the calling thread; an adapter plugged in
-    /// later is seen when asked, and again on the interval without asking.
     #[test]
     fn a_radio_plugged_in_later_is_seen_without_a_restart() {
         let device = Arc::new(Mutex::new(Present::NONE));

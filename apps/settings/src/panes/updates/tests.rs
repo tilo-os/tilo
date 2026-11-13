@@ -2,7 +2,6 @@ use super::*;
 use std::sync::Arc;
 use std::sync::Mutex;
 
-/// A model's sections, kept nowhere.
 fn test_cx() -> crate::sections::Sections {
     crate::sections::Sections::default()
 }
@@ -40,8 +39,6 @@ fn pane_with(staged: Option<&str>, rebooter: Arc<RecordingRebooter>) -> UpdatesM
     )
 }
 
-/// A pane whose codec runner rewrites a fake status file the way the
-/// helper does and returns `outcome`; `status` is what the watcher reads.
 fn codec_pane(
     status: Arc<Mutex<String>>,
     runs: Arc<Mutex<Vec<CodecAction>>>,
@@ -71,7 +68,6 @@ fn shared_status(json: &str) -> Arc<Mutex<String>> {
     Arc::new(Mutex::new(json.to_string()))
 }
 
-/// Press a codec control, then wait for the unit to return (no polling).
 fn press_and_finish(pane: &mut UpdatesModel, effect: UpdatesEffect) {
     pane.poll();
     pane.run(effect, None);
@@ -163,7 +159,6 @@ fn the_watcher_updates_the_card_while_the_helper_works() {
     let status = shared_status(r#"{"state":"waiting-for-network","desired":true}"#);
     let mut pane = codec_pane(Arc::clone(&status), runs, Ok(()));
     pane.poll();
-    // The device came online and the helper installed in the background.
     *status.lock().unwrap() =
             r#"{"state":"installed","parts":{"tilo-codecs":"enabled","tilo-codecs-mesa":"enabled"},"desired":true}"#.to_string();
     pane.poll();
@@ -271,8 +266,6 @@ fn remove_returns_to_not_installed() {
     );
 }
 
-/// A pane whose Windows-support runner returns `outcome`; `readiness` is
-/// what the card reads next.
 fn windows_pane(
     readiness: Arc<Mutex<WindowsReadiness>>,
     runs: Arc<Mutex<Vec<WindowsSupportAction>>>,
@@ -291,7 +284,6 @@ fn windows_pane(
     pane
 }
 
-/// The sizes this image's own catalogue entry declares.
 fn disclosure() -> crate::windows_compat::SizeDisclosure {
     crate::windows_compat::SizeDisclosure::parse(include_str!(
         "../../../../../os/usr/share/tilo/system-extensions/sysext.d/windows-compat.json"
@@ -303,7 +295,6 @@ fn needs_install() -> WindowsReadiness {
     WindowsReadiness::NeedsInstall(disclosure())
 }
 
-/// Press a Windows-support control, then wait for the unit to return.
 fn press_windows(pane: &mut UpdatesModel, effect: UpdatesEffect) {
     pane.poll();
     pane.run(effect, None);
@@ -324,8 +315,6 @@ fn windows_card_discloses_the_download_before_it_installs() {
     );
     let lines = pane.windows_support_card_lines();
     assert_eq!(lines.first().map(String::as_str), Some("Run Windows apps"));
-    // The figure is the catalogue's, in the person's words, on the line
-    // that also says nothing is there yet.
     assert!(
         lines.iter().any(|line| line
             .starts_with("Status: Not installed. Windows support is a separate download")
@@ -448,10 +437,8 @@ fn a_cancelled_install_offers_only_starting_it_again() {
     );
 }
 
-/// os-release, bootc staged/rollback, release notes and journal history parsing.
 #[test]
 fn update_status_parsers_accept_only_trusted_shapes() {
-    // Case `parse_bootc_staged_detects_and_ignores`.
     {
         let staged = r#"{"status":{"staged":{"version":"Tilo 2026.07"},"booted":{"version":"Tilo 2026.06"}}}"#;
         assert_eq!(parse_bootc_staged(staged).as_deref(), Some("Tilo 2026.07"));
@@ -467,7 +454,6 @@ fn update_status_parsers_accept_only_trusted_shapes() {
         );
     }
 
-    // Case `parse_bootc_rollback_detects_and_ignores`.
     {
         let has = r#"{"status":{"rollback":{"image":{"image":{"image":"tilo:gen41"}}}}}"#;
         assert_eq!(parse_bootc_rollback(has).as_deref(), Some("tilo:gen41"));
@@ -488,7 +474,6 @@ fn update_status_parsers_accept_only_trusted_shapes() {
         );
     }
 
-    // Case `release_notes_only_accept_https_image_metadata`.
     {
         let json = r#"{"status":{"staged":{"image":{"annotations":{"org.opencontainers.image.documentation":"https://updates.example.test/releases/42"}}}}}"#;
         assert_eq!(
@@ -499,17 +484,14 @@ fn update_status_parsers_accept_only_trusted_shapes() {
         assert_eq!(parse_bootc_release_notes(unsafe_url), None);
     }
 
-    // Case `journal_history_is_bounded_and_control_free`.
     {
         let history = parse_update_history("2026-01-01 update complete\nline\u{0007} two\n");
         assert_eq!(history, ["2026-01-01 update complete", "line two"]);
     }
 }
 
-/// Checks and firmware refresh return promptly, stamp only on success, dedupe, and ignore replicated latches.
 #[test]
 fn update_checks_run_promptly_and_stamp_only_on_completion() {
-    // Case `check_requeries_and_stamps_last_checked`.
     // Check for updates re-queries the system and stamps a real
     // last-checked time — proving the button acts, not no-ops.
     {
@@ -519,7 +501,6 @@ fn update_checks_run_promptly_and_stamp_only_on_completion() {
         pane.poll();
         assert_eq!(pane.prefs().last_checked, "Never");
         assert_eq!(pane.status().staged_version, None);
-        // Press Check.
         pane.run(UpdatesEffect::CheckForUpdates, None);
         pane.poll();
         settle(&mut pane, |pane| pane.check_pending);
@@ -535,7 +516,6 @@ fn update_checks_run_promptly_and_stamp_only_on_completion() {
         );
     }
 
-    // Case `blocking_update_check_returns_promptly_and_stamps_only_on_completion`.
     {
         let _cfg = crate::prefs::test_env::ConfigGuard::new();
         let control = Arc::new(FakeControl::new(None, None));
@@ -558,7 +538,6 @@ fn update_checks_run_promptly_and_stamp_only_on_completion() {
         assert!(pane.notice().is_none());
     }
 
-    // Case `failed_async_update_check_does_not_stamp_last_checked`.
     {
         let _cfg = crate::prefs::test_env::ConfigGuard::new();
         let control = Arc::new(FakeControl::new(None, None).failing_check());
@@ -573,7 +552,6 @@ fn update_checks_run_promptly_and_stamp_only_on_completion() {
         );
     }
 
-    // Case `blocking_firmware_refresh_returns_promptly_and_reports_success_or_failure`.
     {
         let _cfg = crate::prefs::test_env::ConfigGuard::new();
         let control = Arc::new(FakeControl::new(None, None));
@@ -607,7 +585,6 @@ fn update_checks_run_promptly_and_stamp_only_on_completion() {
         assert_eq!(pane.notice(), Some(expected.as_str()), "with the reason");
     }
 
-    // Case `duplicate_update_checks_are_cleared_while_one_is_pending`.
     {
         let _cfg = crate::prefs::test_env::ConfigGuard::new();
         let control = Arc::new(FakeControl::new(None, None));
@@ -643,11 +620,8 @@ fn settle(pane: &mut UpdatesModel, pending: impl Fn(&UpdatesModel) -> bool) {
     }
 }
 
-/// Restart reboots once; rollback is confirmed, reported, honestly described and absent without an image.
 #[test]
 fn restart_and_rollback_are_confirmed_and_reported() {
-    // Case `restart_reboots_once`.
-    // Restart & update reboots exactly once via the injected rebooter.
     {
         let reb = Arc::new(RecordingRebooter::default());
         let mut pane = pane_with(Some("Tilo 2026.07"), reb.clone());
@@ -661,7 +635,6 @@ fn restart_and_rollback_are_confirmed_and_reported() {
         assert_eq!(*reb.calls.lock().unwrap(), 1);
     }
 
-    // Case `rolling_back_needs_a_confirmation_and_then_acts`.
     // Rolling back takes two clicks, and the first one only shows what a
     // rollback does not undo.
     {
@@ -671,7 +644,6 @@ fn restart_and_rollback_are_confirmed_and_reported() {
         pane.poll();
         assert_eq!(pane.rollback_target(), Some("tilo:gen41"));
 
-        // First click: nothing happens to the machine.
         pane.run(UpdatesEffect::ReviewRollback, None);
         pane.poll();
         assert_eq!(
@@ -681,8 +653,6 @@ fn restart_and_rollback_are_confirmed_and_reported() {
              by accident"
         );
 
-        // The confirmation view has to actually carry the caveats, or the
-        // second click is uninformed.
         let shown = pane.rollback_card_lines().join("\n");
         for phrase in ["do not revert", "next app update"] {
             assert!(
@@ -692,7 +662,6 @@ fn restart_and_rollback_are_confirmed_and_reported() {
             );
         }
 
-        // Second click: it acts.
         pane.run(UpdatesEffect::RollBack, None);
         pane.poll();
         settle(&mut pane, UpdatesModel::working);
@@ -704,7 +673,6 @@ fn restart_and_rollback_are_confirmed_and_reported() {
         );
     }
 
-    // Case `a_failed_rollback_is_reported_in_the_pane`.
     // A failed rollback says so where the person is looking.
     {
         let _cfg = crate::prefs::test_env::ConfigGuard::new();
@@ -721,7 +689,6 @@ fn restart_and_rollback_are_confirmed_and_reported() {
         );
     }
 
-    // Case `the_help_text_does_not_promise_what_is_not_offered`.
     // The help text must never promise a capability the pane does not offer
     // — assert on what the pane renders, not on a comment.
     {
@@ -746,7 +713,6 @@ fn restart_and_rollback_are_confirmed_and_reported() {
         );
     }
 
-    // Case `no_previous_image_is_stated_rather_than_offered`.
     // A machine with nothing to go back to says so, rather than offering a
     // button that would fail.
     {
@@ -761,9 +727,6 @@ fn restart_and_rollback_are_confirmed_and_reported() {
     }
 }
 
-// ---- timer + rollback control -------------------------------------------
-
-/// A machine, recorded. `timer` is what `systemctl is-enabled` would say.
 struct FakeControl {
     timer: Mutex<Option<bool>>,
     set_calls: Mutex<Vec<bool>>,
@@ -779,8 +742,6 @@ struct FakeControl {
     gate_timed_out: std::sync::atomic::AtomicBool,
 }
 
-/// How long a gated fake waits for its release before giving up and
-/// recording that the caller held the UI thread.
 const GATE_TIMEOUT: Duration = Duration::from_secs(30);
 
 impl FakeControl {
@@ -899,9 +860,6 @@ impl UpdateControl for FakeControl {
     }
 }
 
-/// `bootc` that cannot be asked (not root, absent, refused) is reported
-/// as that failure. "Your system is up to date" is a claim about the
-/// machine and is never made from a failed read.
 #[test]
 fn an_unreadable_bootc_status_is_not_reported_as_up_to_date() {
     let mut app = ui::prelude::TestApp::<crate::resource::SettingsShell>::new().unwrap();
@@ -956,15 +914,12 @@ fn pane_with_control(control: Arc<FakeControl>) -> UpdatesModel {
     )
 }
 
-/// The switch mirrors the timer, disables it, snaps back on refusal and is absent when unreadable.
 #[test]
 fn automatic_update_switch_follows_the_timer() {
-    // Case `the_switch_opens_showing_what_the_timer_actually_is`.
     // The switch shows the timer, not a stored preference, even when the two
     // disagree.
     {
         let _cfg = crate::prefs::test_env::ConfigGuard::new();
-        // A preferences file that says "off" and a timer that is on.
         let control = Arc::new(FakeControl::new(Some(true), None));
         let pane = UpdatesModel::with_parts_and_control(
             test_cx(),
@@ -994,8 +949,6 @@ fn automatic_update_switch_follows_the_timer() {
         assert_eq!(pane.timer_enabled(), Some(true));
     }
 
-    // Case `turning_automatic_updates_off_disables_the_timer`.
-    // Turning the switch off turns the timer off.
     {
         let _cfg = crate::prefs::test_env::ConfigGuard::new();
         let control = Arc::new(FakeControl::new(Some(true), None));
@@ -1023,7 +976,6 @@ fn automatic_update_switch_follows_the_timer() {
         );
     }
 
-    // Case `a_refused_switch_snaps_back_and_is_reported_in_the_pane`.
     // When the system refuses, the switch goes back and the pane says so on
     // screen. A warning in the journal is, for a settings switch, the same as
     // failing silently.
@@ -1056,7 +1008,6 @@ fn automatic_update_switch_follows_the_timer() {
         );
     }
 
-    // Case `an_unreadable_timer_is_not_rendered_as_off`.
     // A machine that cannot be asked gets no switch at all. Rendering "off"
     // for a timer that could not be read is the same class of lie.
     {
@@ -1071,8 +1022,6 @@ fn automatic_update_switch_follows_the_timer() {
     }
 }
 
-/// What the machine reported after a check or a change of the timer is
-/// kept in the update preferences, through the section's verbs.
 #[test]
 fn a_check_and_the_timer_are_kept_in_the_update_preferences() {
     use crate::effects::SettingsEffect;
@@ -1113,8 +1062,6 @@ fn a_check_and_the_timer_are_kept_in_the_update_preferences() {
     assert!(!kept.auto, "the timer the machine reports is kept");
 }
 
-/// The effects reach the model the app keeps; a capture's reaches no
-/// system tool and says why it did nothing.
 #[test]
 fn effects_reach_the_model_and_report_how_they_end() {
     use crate::effects::SettingsEffect;
@@ -1182,9 +1129,6 @@ impl UpdateControl for GatedControl {
     }
 }
 
-/// The pane opens at once over a device that has not answered, says it
-/// is reading, and a request made meanwhile runs once the read lands. A
-/// change the device takes long to make never holds the window either.
 #[test]
 #[allow(
     clippy::too_many_lines,
@@ -1274,7 +1218,6 @@ fn a_stalled_update_control_never_holds_the_window() {
     );
     assert_eq!(*control.set_calls.lock().unwrap(), vec![false]);
 
-    // A rollback the device takes long to make.
     gate.hold();
     let clicked = std::time::Instant::now();
     model.borrow_mut().run(UpdatesEffect::RollBack, None);

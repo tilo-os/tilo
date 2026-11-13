@@ -51,7 +51,6 @@ fn away_from_network(app: &mut ui::framework::testing::TestApp<crate::SettingsSh
     crate::effects::show_pane(app, Category::Appearance);
 }
 
-/// The next window's modem: none.
 fn without_a_modem() {
     crate::area::replace_in_next_window(|context| {
         mobile::MobileArea::over(
@@ -64,11 +63,6 @@ fn without_a_modem() {
     });
 }
 
-/// What `read` finds in a Settings window showing `model` on its Network
-/// page as the model is now: the page the window builds over it, its
-/// controls bound to the actions the window publishes. The model is lent
-/// to the window's Network area meanwhile and handed back as the window
-/// left it, but for the modem the window hosts and a scan it would start.
 fn rendered<T>(model: &mut NetworkModel, read: impl FnOnce(&dyn Widget) -> T) -> T {
     without_a_modem();
     let mut app = ui::framework::testing::TestApp::<crate::SettingsShell>::new().unwrap();
@@ -133,8 +127,6 @@ fn network_editor_retains_caret_through_window_resize() -> Result<(), String> {
     let mut network = model(&fake);
     network.open_page(PAGE_ADVANCED, t("net-advanced"));
     network.enterprise_setup.set_open(true);
-    // The networks were just looked for: no periodic scan rebuilds the
-    // page between the keys.
     network.scanned_at = Some(ui::time::now());
     let profile = network.enterprise.profile.clone();
     let (mut app, _network) = window_showing(network, (1200, 1800));
@@ -269,14 +261,9 @@ fn completed_network_read_wakes_the_owner_and_updates_the_pane() -> Result<(), S
     Ok(())
 }
 
-/// A device whose `NetworkManager` answers from what the test sets,
-/// recording each change and keeping each saved profile's settings as the
-/// changes leave them.
 #[derive(Default)]
 struct FakeNetwork {
     networks: Mutex<Vec<WifiNetworkInfo>>,
-    /// Whether the device runs a network service; `None` leaves the
-    /// snapshot as one read from a service says nothing of.
     service_present: Mutex<Option<bool>>,
     unreadable: Mutex<Option<String>>,
     refuse: Mutex<Option<String>>,
@@ -285,25 +272,18 @@ struct FakeNetwork {
     continuity: Mutex<Vec<WifiContinuityCommand>>,
     vpns: Mutex<Vec<VpnInfo>>,
     vpn_settings: Mutex<HashMap<String, VpnProfileSettings>>,
-    /// The VPNs set up, as `kind name-or-file`.
     created: Mutex<Vec<String>>,
     profiles: Mutex<Vec<SavedNetworkProfile>>,
     settings: Mutex<HashMap<String, os_actions::ConnectionProfileSettings>>,
     snapshot_gate: Mutex<Option<SnapshotGate>>,
     snapshot_reads: std::sync::atomic::AtomicUsize,
     connectivity_rechecks: std::sync::atomic::AtomicUsize,
-    /// Scans, each recorded with the snapshot reads made before it.
     scans: Mutex<Vec<usize>>,
     scan_refusal: Mutex<Option<String>>,
-    /// What the session publishes of the person's devices as VPNs.
     device_vpn: Mutex<Option<settings_store::device_vpn::DeviceVpnStatus>>,
-    /// Whether the device can be followed, as `NetworkManager` can.
     follows: std::sync::atomic::AtomicBool,
-    /// What tells the model of a change, while it follows the device.
     follower: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     status_reads: std::sync::atomic::AtomicUsize,
-    /// The action an enterprise join was asked through, with the arguments
-    /// the resource door would take: what the fake device stands in for.
     enterprise_call: Mutex<Option<(String, serde_json::Map<String, serde_json::Value>)>>,
 }
 
@@ -660,8 +640,6 @@ fn model(fake: &Arc<FakeNetwork>) -> NetworkModel {
     )
 }
 
-/// A model over `service` in `app`'s window, its controls bound to the
-/// actions the window publishes.
 fn hosted_model(
     app: &mut ui::framework::testing::TestApp<crate::SettingsShell>,
     service: Arc<dyn NetworkService>,
@@ -674,9 +652,6 @@ fn hosted_model(
     NetworkModel::loaded_from(cx, service)
 }
 
-/// Put `observed` in place of the window's Network model, the window
-/// away from Network meanwhile: the page is built over it, and follows its
-/// device, once Network opens.
 fn mount_network(
     app: &mut ui::framework::testing::TestApp<crate::SettingsShell>,
     observed: NetworkModel,
@@ -911,8 +886,6 @@ fn network_inspection_does_not_initialize_an_unopened_area_and_bounds_private_re
     assert_eq!(bounded["networks_truncated"], true);
 }
 
-/// Begin `effect` and run its work here, as a worker would; what it
-/// answered.
 fn run(model: &mut NetworkModel, effect: NetworkEffect) -> Result<Option<String>, String> {
     finish(model, |model| model.begin(effect))
 }
@@ -936,8 +909,6 @@ fn finish(
     }
 }
 
-/// The ordinary worker completion must honor the action a caller invoked,
-/// while keeping its human-readable outcome in the pane.
 #[test]
 fn network_workers_complete_their_published_unit_jobs() -> Result<(), String> {
     let fake = Arc::new(FakeNetwork::default());
@@ -992,7 +963,6 @@ fn shown(model: &mut NetworkModel) -> Vec<String> {
     rendered(model, provider_settings_ui::widgets::announced_text)
 }
 
-/// The titles of the network rows shown, top to bottom.
 fn network_rows(model: &mut NetworkModel) -> Vec<String> {
     fn walk(widget: &dyn Widget, out: &mut Vec<String>) {
         if let Some(id) = widget.test_id()
@@ -1020,7 +990,6 @@ fn network_rows(model: &mut NetworkModel) -> Vec<String> {
     })
 }
 
-/// Wait for the read a landed change started, as the pane's poll does.
 fn settle(model: &mut NetworkModel) {
     let deadline = tilo_test_env::hang_deadline();
     loop {
@@ -1036,8 +1005,6 @@ fn settle(model: &mut NetworkModel) {
     }
 }
 
-/// The Wi-Fi switch as shown: whether it is on, and whether it can be
-/// used.
 fn wifi_switch(model: &mut NetworkModel) -> (Option<bool>, bool) {
     let node = rendered(model, |root| {
         ui::widget::find_test_id(root, "network.wifi").and_then(Widget::accessibility)
@@ -1046,9 +1013,6 @@ fn wifi_switch(model: &mut NetworkModel) -> (Option<bool>, bool) {
     (node.state.checked, !node.state.disabled)
 }
 
-/// `NetworkManager`'s flag and the kernel's kill switch, as far as Wi-Fi on
-/// and off goes: turning on fails while a hardware switch holds the radio
-/// off, and every read says how the radio stands.
 #[derive(Default)]
 struct NmRadio {
     on: Mutex<bool>,
@@ -1100,10 +1064,6 @@ impl NetworkService for NmRadio {
     }
 }
 
-/// The Wi-Fi switch is the radio as `NetworkManager` and the kernel report
-/// it, read back after every change: off and on again lands each time, and
-/// a radio a hardware switch holds off shows off, with the switch unusable
-/// and the reason in place of the networks.
 #[test]
 fn the_wifi_switch_follows_the_radio_and_not_the_request() {
     let nm = Arc::new(NmRadio::default());
@@ -1149,9 +1109,6 @@ fn the_wifi_switch_follows_the_radio_and_not_the_request() {
     );
 }
 
-/// The first page lists the network in use, every known network in range
-/// and the five strongest others, in that order; Show all counts every
-/// network in range and opens them all, narrowed by the window's search.
 #[test]
 fn the_wifi_list_shows_the_known_and_five_others_and_show_all_counts_the_rest() {
     let fake = Arc::new(FakeNetwork::default());
@@ -1196,15 +1153,11 @@ fn the_wifi_list_shows_the_known_and_five_others_and_show_all_counts_the_rest() 
     assert!(model.filter.is_empty(), "leaving the page drops its search");
 }
 
-/// While the pointer is over the list, a network that grows stronger keeps
-/// its place; let go, it moves.
 #[test]
 fn a_held_list_keeps_its_rows_until_the_pointer_leaves() {
     let fake = Arc::new(FakeNetwork::default());
     *fake.networks.lock().unwrap() = networks();
     let mut model = model(&fake);
-    // The networks were just looked for: no periodic scan reads them again
-    // between the looks.
     model.scanned_at = Some(ui::time::now());
     let before = network_rows(&mut model);
     model.held_short.set(true);
@@ -1223,8 +1176,6 @@ fn a_held_list_keeps_its_rows_until_the_pointer_leaves() {
     );
 }
 
-/// A network's page shows its status and, saved, its settings; each change
-/// there is its action on the network's row, and Forget closes the page.
 #[test]
 fn a_network_page_shows_its_status_and_settings_and_forget_closes_it() {
     let fake = Arc::new(FakeNetwork::default());
@@ -1300,12 +1251,9 @@ fn a_network_page_shows_its_status_and_settings_and_forget_closes_it() {
     )
     .unwrap();
     assert!(model.revealed.is_none(), "the shown password goes with it");
-    // In range, the page stays to join it again.
     assert_eq!(model.page_key().as_deref(), Some("wifi:Home_Network"));
 }
 
-/// Every setting of a saved network round-trips through the effect layer:
-/// invoked by id, carried out by the device, and read back.
 #[test]
 fn profile_settings_round_trip_through_the_effect_layer() {
     let fake = Arc::new(FakeNetwork::default());
@@ -1386,9 +1334,6 @@ fn rendered_enabled(widget: &dyn ui::widget::Widget, id: &str) -> Option<bool> {
         .find_map(|child| rendered_enabled(child, id))
 }
 
-/// A saved network's page and a VPN's page are live: every setting there
-/// is a control bound to its row's action, and changing one reaches the
-/// device.
 #[test]
 fn the_settings_on_a_network_and_a_vpn_page_change_the_device() {
     let fake = Arc::new(FakeNetwork::default());
@@ -1471,9 +1416,6 @@ fn the_settings_on_a_network_and_a_vpn_page_change_the_device() {
     );
 }
 
-/// A VPN's MTU is chosen automatically or set by the person, its size
-/// field shown only then; its name servers are a list, each added and
-/// removed on its own, and what is no address is refused.
 #[test]
 fn a_vpns_mtu_and_name_servers_are_set_on_its_page() {
     let fake = Arc::new(FakeNetwork::default());
@@ -1546,8 +1488,6 @@ fn a_vpns_mtu_and_name_servers_are_set_on_its_page() {
     assert_eq!(held(&fake).dns, ["9.9.9.9", "2620:fe::fe"]);
 }
 
-/// The known networks list every saved Wi-Fi network, the last joined first,
-/// and forgets one from its row.
 #[test]
 fn known_networks_list_every_saved_network_by_last_use_and_forget_one() {
     let fake = Arc::new(FakeNetwork::default());
@@ -1598,8 +1538,6 @@ fn known_networks_list_every_saved_network_by_last_use_and_forget_one() {
     );
 }
 
-/// A wired-only machine names its missing adapter without treating it as a
-/// read failure or offering a radio switch.
 #[test]
 fn a_machine_without_wifi_says_so_instead_of_reporting_a_read_error() {
     let radios = Ok(os_actions::RadioState::default());
@@ -1629,8 +1567,6 @@ fn a_machine_without_wifi_says_so_instead_of_reporting_a_read_error() {
     assert!(!text.contains(&t("net-wifi-off")), "{text:#?}");
 }
 
-/// A status that could not be read is shown as that failure, never as a
-/// state; a later successful read clears it.
 #[test]
 fn unreadable_network_state_is_shown_as_an_error_not_as_a_state() {
     let fake = Arc::new(FakeNetwork::default());
@@ -1665,9 +1601,6 @@ fn unreadable_network_state_is_shown_as_an_error_not_as_a_state() {
     );
 }
 
-/// Opening Network shows the connected network from what `NetworkManager`
-/// already knows; it never waits for a radio scan. Only Refresh scans,
-/// before it reads, and a failed scan leaves the status and list readable.
 #[test]
 fn network_status_never_waits_for_a_scan_and_refresh_scans_first() {
     let fake = Arc::new(FakeNetwork::default());
@@ -1712,7 +1645,6 @@ fn network_status_never_waits_for_a_scan_and_refresh_scans_first() {
     assert!(!text.contains("Can't read network status"), "{text}");
 }
 
-/// The window's Network pane over `fake`, open on its first page.
 fn hosted_network(
     fake: &Arc<FakeNetwork>,
 ) -> ui::framework::testing::TestApp<crate::SettingsShell> {
@@ -1726,10 +1658,6 @@ fn hosted_network(
     app
 }
 
-/// A secure network the person's devices share no password for asks for
-/// it with the window's password prompt; Cancel closes it and joins
-/// nothing, and what is typed the next time joins, closes the prompt and is
-/// sealed for the person's devices.
 #[test]
 fn joining_a_secure_network_asks_with_the_password_prompt() {
     let fake = Arc::new(FakeNetwork::default());
@@ -1776,7 +1704,6 @@ fn joining_a_secure_network_asks_with_the_password_prompt() {
     );
 }
 
-/// A known network joins at once with what this device saved for it.
 #[test]
 fn a_known_network_joins_without_asking() {
     let fake = Arc::new(FakeNetwork::default());
@@ -1799,8 +1726,6 @@ fn a_known_network_joins_without_asking() {
     assert!(model.asking.is_none());
 }
 
-/// A password the person's devices share joins without a prompt; an open
-/// network joins at once.
 #[test]
 fn a_shared_password_or_an_open_network_joins_directly() {
     let fake = Arc::new(FakeNetwork::default());
@@ -1839,8 +1764,6 @@ fn a_shared_password_or_an_open_network_joins_directly() {
     );
 }
 
-/// A network that hides its name is asked for with the password prompt:
-/// its name, then its password; joined, the prompt closes.
 #[test]
 fn a_hidden_network_is_joined_from_the_password_prompt() {
     let fake = Arc::new(FakeNetwork::default());
@@ -1861,8 +1784,6 @@ fn a_hidden_network_is_joined_from_the_password_prompt() {
     );
 }
 
-/// A switch shows the requested state at once and puts it back when the
-/// device refuses.
 #[test]
 fn a_refused_switch_is_put_back() {
     let fake = Arc::new(FakeNetwork::default());
@@ -1890,8 +1811,6 @@ fn work_vpn() -> VpnInfo {
     }
 }
 
-/// Each Wi-Fi network (in range or saved), other saved profile and VPN is a
-/// row offering what can be done with it.
 #[test]
 fn networks_saved_profiles_and_vpns_are_rows() {
     let fake = Arc::new(FakeNetwork::default());
@@ -2021,8 +1940,6 @@ fn supported_network_wake_is_named_and_routes_through_the_worker() {
     );
 }
 
-/// The hotspot starts from its form, and a password shorter than eight
-/// characters is refused before anything reaches the device.
 #[test]
 fn the_hotspot_starts_from_its_form() {
     let fake = Arc::new(FakeNetwork::default());
@@ -2074,15 +1991,11 @@ MIIB
 </ca>
 ";
 
-/// Import a file through the pane, as a picked file is, and wait for it.
 fn import(model: &mut NetworkModel, path: std::path::PathBuf, kind: Option<&'static str>) {
     model.import_vpn_path(path, kind);
     settle(model);
 }
 
-/// `WireGuard` and `OpenVPN` files are checked before anything is set up:
-/// a good file becomes a VPN, whose page opens; a file missing what its
-/// tunnel needs, or of the other kind, is refused with why.
 #[test]
 fn vpn_files_are_checked_and_imported() {
     let fake = Arc::new(FakeNetwork::default());
@@ -2158,8 +2071,6 @@ fn vpn_files_are_checked_and_imported() {
     );
 }
 
-/// A pasted `WireGuard` configuration and a tunnel made from generated keys
-/// are set up from their text; the form's secrets are zeroed.
 #[test]
 fn a_wireguard_tunnel_is_made_from_generated_keys_or_a_pasted_file() {
     let fake = Arc::new(FakeNetwork::default());
@@ -2219,8 +2130,6 @@ fn a_wireguard_tunnel_is_made_from_generated_keys_or_a_pasted_file() {
 
 const WIREGUARD_PEER: &str = "kP8x2yQ1mZ7vR3nL9fH0sJtW6cB4dE5gA1iU2oXyz0E=";
 
-/// A VPN is switched from its row, edited on its page — each setting its
-/// action — and deleted there, which closes the page.
 #[test]
 fn a_vpn_is_switched_edited_and_deleted() {
     let fake = Arc::new(FakeNetwork::default());
@@ -2292,9 +2201,6 @@ fn a_vpn_is_switched_edited_and_deleted() {
     assert_eq!(changes.last().map(String::as_str), Some("vpn-delete Work"));
 }
 
-/// While what the device made of a change is read back, a VPN's page keeps
-/// its settings and its row keeps offering them, so a second change can
-/// follow the first at once; what is read back last holds both.
 #[test]
 fn a_vpns_settings_stay_offered_while_a_change_is_read_back() {
     let fake = Arc::new(FakeNetwork::default());
@@ -2350,8 +2256,6 @@ fn a_vpns_settings_stay_offered_while_a_change_is_read_back() {
     );
 }
 
-/// A plugin's tunnel is called by the protocol its service type names,
-/// before its page is opened and without its plugin installed here.
 #[test]
 fn a_plugin_vpn_is_called_by_its_protocol() {
     let fake = Arc::new(FakeNetwork::default());
@@ -2367,8 +2271,6 @@ fn a_plugin_vpn_is_called_by_its_protocol() {
     assert!(model.vpn.settings.is_empty(), "no profile was read for it");
 }
 
-/// What asked the VPN app to import, connect, disconnect or delete finds
-/// the same action in Settings.
 #[test]
 fn the_vpn_apps_actions_resolve_in_settings() {
     for (id, arguments, expected) in [
@@ -2431,8 +2333,6 @@ fn the_vpn_apps_actions_resolve_in_settings() {
     );
 }
 
-/// The availability Settings publishes for `id`, as agents, the palette
-/// and assistive technology read it.
 fn published(
     app: &mut ui::framework::testing::TestApp<crate::SettingsShell>,
     id: &str,
@@ -2453,9 +2353,6 @@ fn unavailable(code: &str, reason: &str) -> ui::tilo_actions::Availability {
     }
 }
 
-/// A wired-only machine publishes Wi-Fi, the hotspot, mobile broadband and
-/// airplane mode unavailable with why, and refuses them; a Wi-Fi dongle
-/// plugged in is offered at once, before `NetworkManager` is read again.
 #[test]
 fn without_a_wifi_radio_wifi_is_unavailable_until_one_is_plugged_in() {
     use crate::radios::Present;
@@ -2518,9 +2415,6 @@ fn without_a_wifi_radio_wifi_is_unavailable_until_one_is_plugged_in() {
     );
 }
 
-/// Either the kernel or `NetworkManager` seeing a radio is enough. Neither
-/// having said offers everything, and the area's model is never read for
-/// it.
 #[test]
 fn a_radio_either_source_sees_is_offered() {
     use crate::radios::Present;
@@ -2593,7 +2487,6 @@ fn ipv6_settings_apply_from_their_form() {
     );
 }
 
-/// The VPN tool opens Settings: its list, a profile's page, or its import.
 #[test]
 fn the_vpn_tool_opens_settings_where_it_asks() {
     use os_actions::{ToolIntent, VpnRoute};
@@ -2627,7 +2520,6 @@ fn the_vpn_tool_opens_settings_where_it_asks() {
         Some("so.tilo.settings")
     );
 
-    // Asked for before the VPNs were read, the page opens once they are.
     let fake = Arc::new(FakeNetwork::default());
     *fake.vpns.lock().unwrap() = vec![work_vpn()];
     let profile = tempfile::tempdir().unwrap().keep();
@@ -2652,11 +2544,6 @@ fn the_vpn_tool_opens_settings_where_it_asks() {
     );
 }
 
-/// A change the device reports while Network is shown is read at once: a
-/// VPN brought up or down from quick settings or `nmcli` shows without
-/// reopening the page, and only the status is read again, not every saved
-/// profile's settings. Showing the page reads what changed while nothing
-/// followed; once no pane shows the model, nothing is read.
 #[test]
 fn a_change_the_device_reports_shows_while_network_is_open() {
     let fake = Arc::new(FakeNetwork::default());
@@ -2664,7 +2551,6 @@ fn a_change_the_device_reports_shows_while_network_is_open() {
     fake.follows
         .store(true, std::sync::atomic::Ordering::Relaxed);
     let mut network = model(&fake);
-    // The networks were just looked for: no periodic scan comes between.
     network.scanned_at = Some(ui::time::now());
     assert_eq!(network.vpn_summary(), t("net-vpn-off"));
     let snapshots = fake
@@ -2687,7 +2573,6 @@ fn a_change_the_device_reports_shows_while_network_is_open() {
         recomposed
     };
 
-    // Brought up while no pane showed the model.
     fake.vpns.lock().unwrap()[0].active = true;
     let following = network.follow();
     let changed = fake
@@ -2699,7 +2584,6 @@ fn a_change_the_device_reports_shows_while_network_is_open() {
     assert!(poll_until(&mut network, "Work"), "the pane shows it");
     assert_eq!(status_reads(), 1, "showing the page reads the status once");
 
-    // Brought down while the page is open.
     fake.vpns.lock().unwrap()[0].active = false;
     changed();
     assert!(
@@ -2721,11 +2605,6 @@ fn a_change_the_device_reports_shows_while_network_is_open() {
     assert_eq!(status_reads(), 2);
 }
 
-/// A network joined from quick settings or forgotten with `nmcli` while
-/// Network is open is listed and forgotten here too: a saved profile added
-/// or removed elsewhere has the page read everything again, its settings
-/// with it, so the new network's page offers them and the known list drops
-/// the forgotten one. The same profiles read nothing more than the status.
 #[test]
 fn a_network_saved_or_forgotten_elsewhere_shows_while_network_is_open() {
     let fake = Arc::new(FakeNetwork::default());
@@ -2733,7 +2612,6 @@ fn a_network_saved_or_forgotten_elsewhere_shows_while_network_is_open() {
     fake.follows
         .store(true, std::sync::atomic::Ordering::Relaxed);
     let mut network = model(&fake);
-    // The networks were just looked for: no periodic scan comes between.
     network.scanned_at = Some(ui::time::now());
     let _following = network.follow();
     let changed = fake
@@ -2760,8 +2638,6 @@ fn a_network_saved_or_forgotten_elsewhere_shows_while_network_is_open() {
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
     };
-    // Showing the page reads the status once; the same profiles read
-    // nothing more.
     network.poll();
     poll_until(&mut network, &["Home_Network"]);
     let whole_reads = || {
@@ -2770,7 +2646,6 @@ fn a_network_saved_or_forgotten_elsewhere_shows_while_network_is_open() {
     };
     let before = whole_reads();
 
-    // Joined from quick settings: NetworkManager saves a profile for it.
     fake.profiles
         .lock()
         .unwrap()
@@ -2791,7 +2666,6 @@ fn a_network_saved_or_forgotten_elsewhere_shows_while_network_is_open() {
         "the new network's settings are read with it"
     );
 
-    // Forgotten elsewhere.
     fake.profiles
         .lock()
         .unwrap()
@@ -2825,8 +2699,6 @@ fn a_network_saved_or_forgotten_elsewhere_shows_while_network_is_open() {
     );
 }
 
-/// Data usage is the session's count, charted per connection on its page
-/// (opened from the first page's row) and forgotten from its row's verb.
 #[test]
 fn data_usage_is_charted_per_connection_and_forgotten() {
     use crate::prefs::NetworkUsage;
@@ -2884,8 +2756,6 @@ fn data_usage_is_charted_per_connection_and_forgotten() {
     assert!(app.settings::<NetworkUsage>().get().connections.is_empty());
 }
 
-/// The cable's details are its own page: the first page says how it
-/// stands and opens it.
 #[test]
 fn the_wired_connection_opens_its_page() {
     let fake = Arc::new(FakeNetwork::default());
