@@ -502,6 +502,30 @@ mod tests {
         assert_eq!(text("<div style=\"display:none\">never closed"), "");
         assert_eq!(text("a<!-- never closed <b>b</b>"), "a");
         assert_eq!(text("a<script>never closed</p>b"), "a");
+        // Nothing at all, and markup that ends where it begins.
+        assert!(render("").is_empty());
+        assert_eq!(text(" \n\t "), "");
+        assert_eq!(text("<"), "<");
+        assert_eq!(text("&"), "&");
+    }
+
+    /// A mail longer than the reader takes is read up to the bound, and the
+    /// cut never splits a character.
+    #[test]
+    fn an_oversized_mail_is_read_up_to_the_bound() {
+        for (case, html, kept) in [
+            ("at the bound", "a".repeat(MAX_INPUT), MAX_INPUT),
+            ("one past it", "a".repeat(MAX_INPUT) + "b", MAX_INPUT),
+            (
+                "a character across it",
+                "a".repeat(MAX_INPUT - 1) + "\u{e9}b",
+                MAX_INPUT - 1,
+            ),
+        ] {
+            let shown = text(&html);
+            assert_eq!(shown.len(), kept, "{case}");
+            assert!(shown.bytes().all(|byte| byte == b'a'), "{case}");
+        }
     }
 
     #[test]
