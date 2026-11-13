@@ -169,21 +169,19 @@ impl TiloStore {
         for doc in &changed.nested {
             inner.nested.forget(doc);
         }
-        // What the index held before the change, when the change may have moved it: a change
-        // that only writes fields of resources it holds leaves it as it is, and it is not copied.
-        let before =
-            (changed.structure || changed.unplaced || changed.layout).then(|| inner.index.clone());
+        // What the index held before the change, when every resource it held and holds now is
+        // derived again: a change that writes fields of resources leaves it uncopied.
+        let before = (changed.unplaced || changed.layout).then(|| inner.index.clone());
         if changed.structure || changed.unplaced {
             inner.rescan();
         }
-        let reached = if let Some(before) = before.filter(|_| changed.unplaced || changed.layout) {
-            everything(&before, &inner.index)
-        } else {
-            Reached {
+        let reached = before.map_or_else(
+            || Reached {
                 docs: changed.docs.clone(),
                 placed: changed.placed.clone(),
-            }
-        };
+            },
+            |before| everything(&before, &inner.index),
+        );
         let (moved, wholes, notified) = inner.derive_all(&reached, Some((&from, &ends, &placed)));
         // A write routed to a chunk above the record whose document this sync does not carry —
         // a record kept as one document that the store also routes by its manifest, or a caller
