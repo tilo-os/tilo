@@ -1030,36 +1030,129 @@ fn deck_look_of(theme: &str) -> (PaletteKind, DeckLook) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn a_bold_word_in_a_text_box_survives_the_round_trip() {
-        use ui::widget::marks::{Mark, MarkSpan};
-        let content = ContentStore::memory();
-        let mut deck = crate::model::seed_deck();
-        let mut first = ui::widget::BlockContent::paragraph("", "plain bold");
-        first.marks = vec![MarkSpan::new(6..10, Mark::Bold)];
-        let mut second = ui::widget::BlockContent::paragraph("", "slanted");
-        second.marks = vec![MarkSpan::new(0..7, Mark::Italic)];
-        let element = deck.slides[0]
-            .elements
-            .iter_mut()
-            .find(|element| element.kind == crate::model::ElementKind::Text)
-            .unwrap();
-        element.set_blocks(vec![first, second]);
-        let id = element.id.clone();
-        let written = element.clone();
-        let bytes = write_pptx(&deck, &content).expect("write");
-        let back = read_pptx(&bytes, &content).expect("read");
-        let read = back.slides[0]
-            .elements
-            .iter()
-            .find(|element| element.id == id || element.text == written.text)
-            .expect("the text box comes back");
-        assert_eq!(read.text, "plain bold\nslanted");
-        assert_eq!(
-            read.rich_blocks(),
-            written.rich_blocks(),
-            "runs keep their marks"
-        );
+    tilo_test_env::scenario! {
+        fn words_and_notes_survive_the_pptx_round_trip;
+
+        phase a_bold_word_in_a_text_box_survives_the_round_trip;
+        {
+            use ui::widget::marks::{Mark, MarkSpan};
+            let content = ContentStore::memory();
+            let mut deck = crate::model::seed_deck();
+            let mut first = ui::widget::BlockContent::paragraph("", "plain bold");
+            first.marks = vec![MarkSpan::new(6..10, Mark::Bold)];
+            let mut second = ui::widget::BlockContent::paragraph("", "slanted");
+            second.marks = vec![MarkSpan::new(0..7, Mark::Italic)];
+            let element = deck.slides[0]
+                .elements
+                .iter_mut()
+                .find(|element| element.kind == crate::model::ElementKind::Text)
+                .unwrap();
+            element.set_blocks(vec![first, second]);
+            let id = element.id.clone();
+            let written = element.clone();
+            let bytes = write_pptx(&deck, &content).expect("write");
+            let back = read_pptx(&bytes, &content).expect("read");
+            let read = back.slides[0]
+                .elements
+                .iter()
+                .find(|element| element.id == id || element.text == written.text)
+                .expect("the text box comes back");
+            assert_eq!(read.text, "plain bold\nslanted");
+            assert_eq!(
+                read.rich_blocks(),
+                written.rich_blocks(),
+                "runs keep their marks"
+            );
+        }
+
+        phase pptx_notes_and_text_escaping_round_trip;
+        {
+            {
+                let content = ContentStore::memory();
+                let mut with_notes = Slide::new(Layout::Blank);
+                with_notes.notes = "Open with the decision.\nPause for questions.".into();
+                let without_notes = Slide::new(Layout::Blank);
+                let deck = Deck {
+                    title: "Notes fidelity".into(),
+                    palette: PaletteKind::Indigo,
+                    look: DeckLook::default(),
+                    slides: vec![with_notes, without_notes],
+                };
+
+                let bytes = write_pptx(&deck, &content).expect("pptx export");
+                let mut archive = crate::odp::open_package(&bytes).expect("pptx zip");
+                let types = read_zip_text(&mut archive, "[Content_Types].xml").expect("content types");
+                let notes = read_zip_text(&mut archive, "ppt/notesSlides/notesSlide1.xml")
+                    .expect("notes slide");
+                assert!(types.contains("presentationml.notesSlide+xml"));
+                assert!(notes.contains(r#"<p:ph type="body" idx="1"/>"#));
+                assert!(notes.contains("Open with the decision."));
+                assert!(
+                    !archive
+                        .file_names()
+                        .any(|name| name == "ppt/notesSlides/notesSlide2.xml"),
+                    "slides without notes do not gain empty note pages"
+                );
+                drop(archive);
+
+                let got = read_pptx(&bytes, &content).expect("pptx import");
+                assert_eq!(
+                    got.slides[0].notes,
+                    "Open with the decision.\nPause for questions."
+                );
+                assert!(got.slides[1].notes.is_empty());
+            }
+
+            {
+                let notes = parse_notes(
+                    r#"<p:notes xmlns:a="a" xmlns:p="p"><p:cSld><p:spTree><p:sp><p:nvSpPr><p:nvPr><p:ph type="dt"/></p:nvPr></p:nvSpPr><p:txBody><a:p><a:r><a:t>2026-01-01</a:t></a:r></a:p></p:txBody></p:sp><p:sp><p:nvSpPr><p:nvPr><p:ph type="body"/></p:nvPr></p:nvSpPr><p:txBody><a:p><a:r><a:t>Keep this</a:t></a:r></a:p></p:txBody></p:sp></p:spTree></p:cSld></p:notes>"#,
+                );
+                assert_eq!(notes, "Keep this");
+            }
+
+            {
+                let content = ContentStore::memory();
+                let mut slide = Slide::new(Layout::Blank);
+                slide.add(Element::text(
+                    "R&D <b> & \u{1F600}",
+                    10.0,
+                    20.0,
+                    500.0,
+                    100.0,
+                    36.0,
+                ));
+                slide.notes = "a < b && c > d".into();
+                let deck = Deck {
+                    title: "Q&A <live>".into(),
+                    palette: PaletteKind::Indigo,
+                    look: DeckLook::default(),
+                    slides: vec![slide],
+                };
+                let got = read_pptx(&write_pptx(&deck, &content).unwrap(), &content).unwrap();
+                assert_eq!(got.title, "Q&A <live>");
+                assert_eq!(got.slides[0].elements[0].text, "R&D <b> & \u{1F600}");
+                assert_eq!(got.slides[0].notes, "a < b && c > d");
+            }
+
+            {
+                let notes = parse_notes(&format!(
+                    r#"<p:notes xmlns:a="a" xmlns:p="p"><p:cSld><p:spTree><p:sp><p:nvSpPr><p:nvPr><p:ph type="body"/></p:nvPr></p:nvSpPr><p:txBody><a:p><a:r><a:t>{RAW_REFS}</a:t></a:r></a:p></p:txBody></p:sp></p:spTree></p:cSld></p:notes>"#
+                ));
+                assert_eq!(notes, REFS_TEXT);
+                let title = first_text(
+                    &format!("<cp:coreProperties><dc:title>{RAW_REFS}</dc:title></cp:coreProperties>"),
+                    b"dc:title",
+                );
+                assert_eq!(title.as_deref(), Some(REFS_TEXT));
+                let rels = parse_rels(
+                    r#"<Relationships><Relationship Id="rId1" Target="../media/R&amp;D&#x20;chart.png"/></Relationships>"#,
+                );
+                assert_eq!(
+                    rels.get("rId1").map(String::as_str),
+                    Some("../media/R&D chart.png")
+                );
+            }
+        }
     }
 
     #[test]
@@ -1183,95 +1276,6 @@ mod tests {
                     .starts_with(b"\x89PNG")
             );
             let _ = std::fs::remove_file(p);
-        }
-    }
-
-    #[test]
-    fn pptx_notes_and_text_escaping_round_trip() {
-        {
-            let content = ContentStore::memory();
-            let mut with_notes = Slide::new(Layout::Blank);
-            with_notes.notes = "Open with the decision.\nPause for questions.".into();
-            let without_notes = Slide::new(Layout::Blank);
-            let deck = Deck {
-                title: "Notes fidelity".into(),
-                palette: PaletteKind::Indigo,
-                look: DeckLook::default(),
-                slides: vec![with_notes, without_notes],
-            };
-
-            let bytes = write_pptx(&deck, &content).expect("pptx export");
-            let mut archive = crate::odp::open_package(&bytes).expect("pptx zip");
-            let types = read_zip_text(&mut archive, "[Content_Types].xml").expect("content types");
-            let notes = read_zip_text(&mut archive, "ppt/notesSlides/notesSlide1.xml")
-                .expect("notes slide");
-            assert!(types.contains("presentationml.notesSlide+xml"));
-            assert!(notes.contains(r#"<p:ph type="body" idx="1"/>"#));
-            assert!(notes.contains("Open with the decision."));
-            assert!(
-                !archive
-                    .file_names()
-                    .any(|name| name == "ppt/notesSlides/notesSlide2.xml"),
-                "slides without notes do not gain empty note pages"
-            );
-            drop(archive);
-
-            let got = read_pptx(&bytes, &content).expect("pptx import");
-            assert_eq!(
-                got.slides[0].notes,
-                "Open with the decision.\nPause for questions."
-            );
-            assert!(got.slides[1].notes.is_empty());
-        }
-
-        {
-            let notes = parse_notes(
-                r#"<p:notes xmlns:a="a" xmlns:p="p"><p:cSld><p:spTree><p:sp><p:nvSpPr><p:nvPr><p:ph type="dt"/></p:nvPr></p:nvSpPr><p:txBody><a:p><a:r><a:t>2026-01-01</a:t></a:r></a:p></p:txBody></p:sp><p:sp><p:nvSpPr><p:nvPr><p:ph type="body"/></p:nvPr></p:nvSpPr><p:txBody><a:p><a:r><a:t>Keep this</a:t></a:r></a:p></p:txBody></p:sp></p:spTree></p:cSld></p:notes>"#,
-            );
-            assert_eq!(notes, "Keep this");
-        }
-
-        {
-            let content = ContentStore::memory();
-            let mut slide = Slide::new(Layout::Blank);
-            slide.add(Element::text(
-                "R&D <b> & \u{1F600}",
-                10.0,
-                20.0,
-                500.0,
-                100.0,
-                36.0,
-            ));
-            slide.notes = "a < b && c > d".into();
-            let deck = Deck {
-                title: "Q&A <live>".into(),
-                palette: PaletteKind::Indigo,
-                look: DeckLook::default(),
-                slides: vec![slide],
-            };
-            let got = read_pptx(&write_pptx(&deck, &content).unwrap(), &content).unwrap();
-            assert_eq!(got.title, "Q&A <live>");
-            assert_eq!(got.slides[0].elements[0].text, "R&D <b> & \u{1F600}");
-            assert_eq!(got.slides[0].notes, "a < b && c > d");
-        }
-
-        {
-            let notes = parse_notes(&format!(
-                r#"<p:notes xmlns:a="a" xmlns:p="p"><p:cSld><p:spTree><p:sp><p:nvSpPr><p:nvPr><p:ph type="body"/></p:nvPr></p:nvSpPr><p:txBody><a:p><a:r><a:t>{RAW_REFS}</a:t></a:r></a:p></p:txBody></p:sp></p:spTree></p:cSld></p:notes>"#
-            ));
-            assert_eq!(notes, REFS_TEXT);
-            let title = first_text(
-                &format!("<cp:coreProperties><dc:title>{RAW_REFS}</dc:title></cp:coreProperties>"),
-                b"dc:title",
-            );
-            assert_eq!(title.as_deref(), Some(REFS_TEXT));
-            let rels = parse_rels(
-                r#"<Relationships><Relationship Id="rId1" Target="../media/R&amp;D&#x20;chart.png"/></Relationships>"#,
-            );
-            assert_eq!(
-                rels.get("rId1").map(String::as_str),
-                Some("../media/R&D chart.png")
-            );
         }
     }
 

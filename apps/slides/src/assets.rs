@@ -381,144 +381,148 @@ mod tests {
         }
     }
 
-    /// A picture whose bytes are still on their way from another device
-    /// shows as loading, and appears once they are here.
-    #[test]
-    fn a_picture_still_arriving_loads_and_then_appears() {
-        let arrived = Arc::new(AtomicBool::new(false));
-        let backend = Arriving {
-            store: MemoryBackend::default(),
-            arrived: Arc::clone(&arrived),
-        };
-        let image = image::DynamicImage::ImageRgba8(image::RgbaImage::new(3, 2));
-        let mut bytes = std::io::Cursor::new(Vec::new());
-        image.write_to(&mut bytes, image::ImageFormat::Png).unwrap();
-        let hash = backend
-            .store
-            .put(&mut bytes.get_ref().as_slice(), "image/png")
-            .unwrap()
-            .hash;
-        let src = format!("{ASSET_PREFIX}{hash}");
-        let mut images = ImageStore::new(ContentStore::from_backend(Arc::new(backend)));
-        let settle = |images: &mut ImageStore| {
-            tilo_test_env::wait_for("the decode to settle", || {
+    tilo_test_env::scenario! {
+        fn a_decks_pictures_arrive_decode_within_bounds_and_stay_sealed;
+
+        phase a_picture_still_arriving_loads_and_then_appears;
+        // A picture whose bytes are still on their way from another device
+        // shows as loading, and appears once they are here.
+        {
+            let arrived = Arc::new(AtomicBool::new(false));
+            let backend = Arriving {
+                store: MemoryBackend::default(),
+                arrived: Arc::clone(&arrived),
+            };
+            let image = image::DynamicImage::ImageRgba8(image::RgbaImage::new(3, 2));
+            let mut bytes = std::io::Cursor::new(Vec::new());
+            image.write_to(&mut bytes, image::ImageFormat::Png).unwrap();
+            let hash = backend
+                .store
+                .put(&mut bytes.get_ref().as_slice(), "image/png")
+                .unwrap()
+                .hash;
+            let src = format!("{ASSET_PREFIX}{hash}");
+            let mut images = ImageStore::new(ContentStore::from_backend(Arc::new(backend)));
+            let settle = |images: &mut ImageStore| {
+                tilo_test_env::wait_for("the decode to settle", || {
+                    images.pump();
+                    let state = images.get(&src);
+                    (!images.arriving.borrow().is_empty() || !matches!(state, ImageState::Loading))
+                        .then_some(state)
+                })
+            };
+            assert!(
+                matches!(settle(&mut images), ImageState::Loading),
+                "bytes on their way are loading, not a broken picture"
+            );
+            arrived.store(true, Ordering::SeqCst);
+            let ready = tilo_test_env::wait_for("the picture to appear", || {
                 images.pump();
-                let state = images.get(&src);
-                (!images.arriving.borrow().is_empty() || !matches!(state, ImageState::Loading))
-                    .then_some(state)
-            })
-        };
-        assert!(
-            matches!(settle(&mut images), ImageState::Loading),
-            "bytes on their way are loading, not a broken picture"
-        );
-        arrived.store(true, Ordering::SeqCst);
-        let ready = tilo_test_env::wait_for("the picture to appear", || {
-            images.pump();
-            match images.get(&src) {
-                ImageState::Ready(ready) => Some(ready),
-                _ => None,
+                match images.get(&src) {
+                    ImageState::Ready(ready) => Some(ready),
+                    _ => None,
+                }
+            });
+            assert_eq!((ready.width, ready.height), (3, 2));
+        }
+
+        phase image_decoding_is_bounded_and_never_left_loading;
+        // Frozen/live decode budgets and limits, and failed worker requests never stay loading.
+        {
+            {
+                let image = image::DynamicImage::ImageRgba8(image::RgbaImage::new(2, 2));
+                let mut bytes = std::io::Cursor::new(Vec::new());
+                image.write_to(&mut bytes, image::ImageFormat::Png).unwrap();
+                assert!(matches!(
+                    ui::rt::block_on(decode_bytes_with_budget(bytes.get_ref(), 15)).unwrap(),
+                    ImageState::Failed
+                ));
+                assert!(matches!(
+                    ui::rt::block_on(decode_bytes_with_budget(bytes.get_ref(), 16)).unwrap(),
+                    ImageState::Ready(_)
+                ));
             }
-        });
-        assert_eq!((ready.width, ready.height), (3, 2));
-    }
 
-    /// Frozen/live decode budgets and limits, and failed worker requests never stay loading.
-    #[test]
-    fn image_decoding_is_bounded_and_never_left_loading() {
-        {
-            let image = image::DynamicImage::ImageRgba8(image::RgbaImage::new(2, 2));
-            let mut bytes = std::io::Cursor::new(Vec::new());
-            image.write_to(&mut bytes, image::ImageFormat::Png).unwrap();
-            assert!(matches!(
-                ui::rt::block_on(decode_bytes_with_budget(bytes.get_ref(), 15)).unwrap(),
-                ImageState::Failed
-            ));
-            assert!(matches!(
-                ui::rt::block_on(decode_bytes_with_budget(bytes.get_ref(), 16)).unwrap(),
-                ImageState::Ready(_)
-            ));
+            {
+                assert!(matches!(
+                    ui::rt::block_on(decode_bytes(&vec![0; MAX_IMAGE_FILE_BYTES + 1])).unwrap(),
+                    ImageState::Failed
+                ));
+                assert!(matches!(
+                    ui::rt::block_on(decode_bytes(b"corrupt")).unwrap(),
+                    ImageState::Failed
+                ));
+                let image =
+                    image::DynamicImage::ImageRgba8(image::RgbaImage::new(1, MAX_IMAGE_DIMENSION + 1));
+                let mut bytes = std::io::Cursor::new(Vec::new());
+                image.write_to(&mut bytes, image::ImageFormat::Png).unwrap();
+                assert!(matches!(
+                    ui::rt::block_on(decode_bytes(bytes.get_ref())).unwrap(),
+                    ImageState::Failed
+                ));
+            }
+
+            {
+                let path =
+                    std::env::temp_dir().join(format!("slides-oversize-{}.bin", uuid::Uuid::new_v4()));
+                std::fs::write(&path, vec![0_u8; MAX_IMAGE_FILE_BYTES + 1])
+                    .expect("write oversize source");
+                assert!(matches!(
+                    ui::rt::block_on(decode(
+                        ContentStore::memory(),
+                        path.to_str().expect("utf-8 path").to_owned()
+                    ))
+                    .unwrap(),
+                    ImageState::Failed
+                ));
+                let _ = std::fs::remove_file(path);
+            }
+
+            // Case `image_store_never_leaves_a_refused_request_loading`: with as
+            // many decodes under way as it runs, a new picture is a settled
+            // failure, not a spinner nothing will end.
+            {
+                let store = ImageStore::new(ContentStore::memory());
+                store
+                    .decoding
+                    .store(DECODE_QUEUE_CAPACITY, std::sync::atomic::Ordering::SeqCst);
+                let src = format!("{ASSET_PREFIX}{}", "0".repeat(64));
+                assert!(matches!(store.get(&src), ImageState::Failed));
+                assert!(matches!(store.get(&src), ImageState::Failed));
+            }
         }
 
+        phase a_picture_is_kept_sealed_and_its_asset_id_opens_it_for_a_member;
+        // A picture kept in a workspace that seals is ciphertext in the store,
+        // and the deck's asset id is the reference that carries its key: a
+        // member whose device holds only the ciphertext opens it by the id, and
+        // a picture named by a plain hash, as decks wrote before content was
+        // sealed, still reads.
         {
-            assert!(matches!(
-                ui::rt::block_on(decode_bytes(&vec![0; MAX_IMAGE_FILE_BYTES + 1])).unwrap(),
-                ImageState::Failed
-            ));
-            assert!(matches!(
-                ui::rt::block_on(decode_bytes(b"corrupt")).unwrap(),
-                ImageState::Failed
-            ));
-            let image =
-                image::DynamicImage::ImageRgba8(image::RgbaImage::new(1, MAX_IMAGE_DIMENSION + 1));
-            let mut bytes = std::io::Cursor::new(Vec::new());
-            image.write_to(&mut bytes, image::ImageFormat::Png).unwrap();
-            assert!(matches!(
-                ui::rt::block_on(decode_bytes(bytes.get_ref())).unwrap(),
-                ImageState::Failed
-            ));
+            let png = ui::png::encode_rgba8(8, 6, &[230, 30, 20, 255].repeat(48)).expect("encodes");
+            let writer = ContentStore::memory_in_workspace().sealing();
+            let id = store_asset(&writer, &png).expect("the picture is kept");
+            let reference = id.strip_prefix(ASSET_PREFIX).expect("an asset id");
+            assert!(tilo_content::is_sealed(reference), "{id}");
+            assert!(
+                !writer.has(&tilo_content::hash_bytes(&png)),
+                "the store holds no plaintext"
+            );
+
+            let address = tilo_content::content_address(reference).expect("a reference");
+            let carried = writer.read(&address).expect("the ciphertext");
+            assert_ne!(carried, png, "the ciphertext is not the picture");
+            let member = ContentStore::memory_in_workspace();
+            member.put_public(&carried).expect("kept as carried");
+            assert_eq!(read_asset(&member, &id), Some(png.clone()));
+
+            // A deck that names a plain hash, as one written before content was
+            // sealed does, reads the bytes the same device kept under it.
+            let plain = member.put(&png).expect("kept in the clear");
+            assert_eq!(
+                read_asset(&member, &format!("{ASSET_PREFIX}{plain}")),
+                Some(png)
+            );
         }
-
-        {
-            let path =
-                std::env::temp_dir().join(format!("slides-oversize-{}.bin", uuid::Uuid::new_v4()));
-            std::fs::write(&path, vec![0_u8; MAX_IMAGE_FILE_BYTES + 1])
-                .expect("write oversize source");
-            assert!(matches!(
-                ui::rt::block_on(decode(
-                    ContentStore::memory(),
-                    path.to_str().expect("utf-8 path").to_owned()
-                ))
-                .unwrap(),
-                ImageState::Failed
-            ));
-            let _ = std::fs::remove_file(path);
-        }
-
-        // Case `image_store_never_leaves_a_refused_request_loading`: with as
-        // many decodes under way as it runs, a new picture is a settled
-        // failure, not a spinner nothing will end.
-        {
-            let store = ImageStore::new(ContentStore::memory());
-            store
-                .decoding
-                .store(DECODE_QUEUE_CAPACITY, std::sync::atomic::Ordering::SeqCst);
-            let src = format!("{ASSET_PREFIX}{}", "0".repeat(64));
-            assert!(matches!(store.get(&src), ImageState::Failed));
-            assert!(matches!(store.get(&src), ImageState::Failed));
-        }
-    }
-
-    /// A picture kept in a workspace that seals is ciphertext in the store,
-    /// and the deck's asset id is the reference that carries its key: a
-    /// member whose device holds only the ciphertext opens it by the id, and
-    /// a picture named by a plain hash, as decks wrote before content was
-    /// sealed, still reads.
-    #[test]
-    fn a_picture_is_kept_sealed_and_its_asset_id_opens_it_for_a_member() {
-        let png = ui::png::encode_rgba8(8, 6, &[230, 30, 20, 255].repeat(48)).expect("encodes");
-        let writer = ContentStore::memory_in_workspace().sealing();
-        let id = store_asset(&writer, &png).expect("the picture is kept");
-        let reference = id.strip_prefix(ASSET_PREFIX).expect("an asset id");
-        assert!(tilo_content::is_sealed(reference), "{id}");
-        assert!(
-            !writer.has(&tilo_content::hash_bytes(&png)),
-            "the store holds no plaintext"
-        );
-
-        let address = tilo_content::content_address(reference).expect("a reference");
-        let carried = writer.read(&address).expect("the ciphertext");
-        assert_ne!(carried, png, "the ciphertext is not the picture");
-        let member = ContentStore::memory_in_workspace();
-        member.put_public(&carried).expect("kept as carried");
-        assert_eq!(read_asset(&member, &id), Some(png.clone()));
-
-        // A deck that names a plain hash, as one written before content was
-        // sealed does, reads the bytes the same device kept under it.
-        let plain = member.put(&png).expect("kept in the clear");
-        assert_eq!(
-            read_asset(&member, &format!("{ASSET_PREFIX}{plain}")),
-            Some(png)
-        );
     }
 }

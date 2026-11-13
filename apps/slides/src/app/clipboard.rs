@@ -68,33 +68,37 @@ mod tests {
         crate::model::Element::text("Copied words", 100.0, 120.0, 400.0, 80.0, 40.0)
     }
 
-    #[test]
-    fn what_is_copied_is_what_is_pasted_beside_it() {
-        let copied = element();
-        let clip = Clip::of(&copied);
-        let text = clip.text();
-        let read = Clip::read(&text).expect("the clipboard holds a slide element");
-        let pasted = read.pasted(|| "fresh-id".to_string());
-        assert_eq!(pasted.len(), 1);
-        let paste = &pasted[0];
-        assert_eq!(paste.id, "fresh-id", "a copy is an element of its own");
-        assert!((paste.x - (copied.x + PASTE_OFFSET)).abs() < f64::EPSILON);
-        assert!((paste.y - (copied.y + PASTE_OFFSET)).abs() < f64::EPSILON);
-        assert!(
-            (paste.w - copied.w).abs() < f64::EPSILON,
-            "the box travels whole"
-        );
-        assert_eq!(
-            paste.kind, copied.kind,
-            "a text box stays a text box, with its words"
-        );
-        assert!(!paste.blocks.is_empty(), "its words came with it");
-    }
+    tilo_test_env::scenario! {
+        fn the_clipboard_carries_slide_elements_and_nothing_else;
 
-    #[test]
-    fn another_apps_clipboard_is_not_a_slide() {
-        assert!(Clip::read("Copied words from somewhere else").is_none());
-        assert!(Clip::read(r#"{"tilo-canvas":{"marks":[]}}"#).is_none());
-        assert!(Clip::read(r#"{"tilo-slides":{"elements":[]}}"#).is_none());
+        phase what_is_copied_is_what_is_pasted_beside_it;
+        {
+            let copied = element();
+            let clip = Clip::of(&copied);
+            let text = clip.text();
+            let read = Clip::read(&text).expect("the clipboard holds a slide element");
+            let pasted = read.pasted(|| "fresh-id".to_string());
+            assert_eq!(pasted.len(), 1);
+            let paste = &pasted[0];
+            assert_eq!(paste.id, "fresh-id", "a copy is an element of its own");
+            assert!((paste.x - (copied.x + PASTE_OFFSET)).abs() < f64::EPSILON);
+            assert!((paste.y - (copied.y + PASTE_OFFSET)).abs() < f64::EPSILON);
+            assert!(
+                (paste.w - copied.w).abs() < f64::EPSILON,
+                "the box travels whole"
+            );
+            assert_eq!(
+                paste.kind, copied.kind,
+                "a text box stays a text box, with its words"
+            );
+            assert!(!paste.blocks.is_empty(), "its words came with it");
+        }
+
+        phase another_apps_clipboard_is_not_a_slide;
+        {
+            assert!(Clip::read("Copied words from somewhere else").is_none());
+            assert!(Clip::read(r#"{"tilo-canvas":{"marks":[]}}"#).is_none());
+            assert!(Clip::read(r#"{"tilo-slides":{"elements":[]}}"#).is_none());
+        }
     }
 }

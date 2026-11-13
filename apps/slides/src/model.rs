@@ -1196,76 +1196,80 @@ mod tests {
         }
     }
 
-    /// Every text element a template creates clears WCAG AA on every background,
-    /// under every accent palette, in both looks: 4.5:1 for body, 3:1 for
-    /// titles.
-    #[test]
-    fn template_text_contrasts_with_every_background_in_both_themes() {
-        let mut templates: Vec<(String, Element)> = Vec::new();
-        for (name, deck) in [("starter deck", starter_deck())] {
-            for slide in deck.slides {
-                for element in slide.elements {
-                    templates.push((format!("{name}: {:?}", element.text), element));
+    tilo_test_env::scenario! {
+        fn text_contrasts_with_every_slide_background;
+
+        phase template_text_contrasts_with_every_background_in_both_themes;
+        // Every text element a template creates clears WCAG AA on every background,
+        // under every accent palette, in both looks: 4.5:1 for body, 3:1 for
+        // titles.
+        {
+            let mut templates: Vec<(String, Element)> = Vec::new();
+            for (name, deck) in [("starter deck", starter_deck())] {
+                for slide in deck.slides {
+                    for element in slide.elements {
+                        templates.push((format!("{name}: {:?}", element.text), element));
+                    }
                 }
             }
-        }
-        for element in crate::actions::new_slide_template().elements {
-            templates.push((format!("new slide: {:?}", element.text), element));
-        }
-        templates.push((
-            "inserted text box".into(),
-            crate::actions::inserted_element_template(ElementKind::Text),
-        ));
-        let texts: Vec<&(String, Element)> = templates
-            .iter()
-            .filter(|(_, element)| element.kind == ElementKind::Text)
-            .collect();
-        assert!(
-            texts.len() >= 5,
-            "the templates carry their text: {texts:?}"
-        );
+            for element in crate::actions::new_slide_template().elements {
+                templates.push((format!("new slide: {:?}", element.text), element));
+            }
+            templates.push((
+                "inserted text box".into(),
+                crate::actions::inserted_element_template(ElementKind::Text),
+            ));
+            let texts: Vec<&(String, Element)> = templates
+                .iter()
+                .filter(|(_, element)| element.kind == ElementKind::Text)
+                .collect();
+            assert!(
+                texts.len() >= 5,
+                "the templates carry their text: {texts:?}"
+            );
 
-        let mut failures = Vec::new();
-        for look in DeckLook::ALL {
-            let theme_name = look.as_str();
-            for kind in PaletteKind::ALL {
-                let palette = Palette::resolve(kind, look);
-                for background in Background::ALL {
-                    let on = palette.on(background);
-                    let ground = on.slide_bg(background);
-                    for (name, element) in &texts {
-                        let ink = on.resolve_role(&element.fill).unwrap_or(on.text);
-                        let ratio = ui::color::contrast_ratio(ink, ground);
-                        let title = element.bold && element.font_size >= 24.0;
-                        let minimum = if title { 3.0 } else { 4.5 };
-                        if ratio < minimum {
-                            failures.push(format!(
-                                "{name} on {} ({}, {theme_name}): {ratio:.2}:1 < {minimum}:1",
-                                background.as_str(),
-                                kind.as_str(),
-                            ));
+            let mut failures = Vec::new();
+            for look in DeckLook::ALL {
+                let theme_name = look.as_str();
+                for kind in PaletteKind::ALL {
+                    let palette = Palette::resolve(kind, look);
+                    for background in Background::ALL {
+                        let on = palette.on(background);
+                        let ground = on.slide_bg(background);
+                        for (name, element) in &texts {
+                            let ink = on.resolve_role(&element.fill).unwrap_or(on.text);
+                            let ratio = ui::color::contrast_ratio(ink, ground);
+                            let title = element.bold && element.font_size >= 24.0;
+                            let minimum = if title { 3.0 } else { 4.5 };
+                            if ratio < minimum {
+                                failures.push(format!(
+                                    "{name} on {} ({}, {theme_name}): {ratio:.2}:1 < {minimum}:1",
+                                    background.as_str(),
+                                    kind.as_str(),
+                                ));
+                            }
                         }
                     }
                 }
             }
+            assert!(failures.is_empty(), "{failures:#?}");
         }
-        assert!(failures.is_empty(), "{failures:#?}");
-    }
 
-    /// The theme's text role on a slide switched to the deep background, in the
-    /// light look.
-    #[test]
-    fn theme_text_on_a_deep_slide_is_light_in_the_light_look() {
-        let palette = Palette::resolve(PaletteKind::Indigo, DeckLook::Light);
-        let deep = palette.slide_bg(Background::Deep);
-        assert!(ui::color::contrast_ratio(palette.text, deep) < 1.5);
-        let on = palette.on(Background::Deep);
-        for role in ["text", "text-dim"] {
-            let ink = on.resolve_role(role).unwrap();
-            assert!(ui::color::contrast_ratio(ink, deep) >= 4.5, "{role}");
+        phase theme_text_on_a_deep_slide_is_light_in_the_light_look;
+        // The theme's text role on a slide switched to the deep background, in the
+        // light look.
+        {
+            let palette = Palette::resolve(PaletteKind::Indigo, DeckLook::Light);
+            let deep = palette.slide_bg(Background::Deep);
+            assert!(ui::color::contrast_ratio(palette.text, deep) < 1.5);
+            let on = palette.on(Background::Deep);
+            for role in ["text", "text-dim"] {
+                let ink = on.resolve_role(role).unwrap();
+                assert!(ui::color::contrast_ratio(ink, deep) >= 4.5, "{role}");
+            }
+            let surface = palette.on(Background::Surface);
+            assert_eq!(surface.text, palette.text);
+            assert_eq!(surface.text_dim, palette.text_dim);
         }
-        let surface = palette.on(Background::Surface);
-        assert_eq!(surface.text, palette.text);
-        assert_eq!(surface.text_dim, palette.text_dim);
     }
 }

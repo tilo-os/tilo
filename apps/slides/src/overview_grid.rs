@@ -267,23 +267,27 @@ pub(crate) fn headline(slide: &Slide) -> Option<String> {
 #[allow(clippy::float_cmp, reason = "tests intentionally assert exact values")]
 mod tests {
     use super::*;
-    #[test]
-    fn geometry_reflows_and_scroll_clamps() {
-        let mut grid = OverviewGrid::new();
-        grid.set_scroll(1.0e6);
-        grid.clamp(Rect::new(0.0, 0.0, 700.0, 500.0), 20);
-        let (_, cards, max) = grid.geometry(Rect::new(0.0, 0.0, 700.0, 500.0), 20);
-        assert_eq!(cards.len(), 20);
-        assert_eq!(grid.scroll(), max);
-    }
+    tilo_test_env::scenario! {
+        fn the_overview_lays_out_its_cards_and_names_them;
 
-    #[test]
-    fn a_slide_is_named_by_its_largest_text() {
-        let deck = crate::model::seed_deck();
-        let first = deck.slides.first().expect("a cover slide");
-        assert_eq!(
-            headline(first).as_deref(),
-            Some("Riverside Park renewal plan")
-        );
+        phase geometry_reflows_and_scroll_clamps;
+        {
+            let mut grid = OverviewGrid::new();
+            grid.set_scroll(1.0e6);
+            grid.clamp(Rect::new(0.0, 0.0, 700.0, 500.0), 20);
+            let (_, cards, max) = grid.geometry(Rect::new(0.0, 0.0, 700.0, 500.0), 20);
+            assert_eq!(cards.len(), 20);
+            assert_eq!(grid.scroll(), max);
+        }
+
+        phase a_slide_is_named_by_its_largest_text;
+        {
+            let deck = crate::model::seed_deck();
+            let first = deck.slides.first().expect("a cover slide");
+            assert_eq!(
+                headline(first).as_deref(),
+                Some("Riverside Park renewal plan")
+            );
+        }
     }
 }
