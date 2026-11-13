@@ -241,6 +241,73 @@ fn a_right_press_reports_the_place_under_it_and_the_canvas_point() {
     );
 }
 
+/// What a place holds that takes right presses itself — a field's copy and paste, a row's own
+/// menu — stood for by a probe that takes them.
+struct TakesRightPress {
+    inner: crate::widget::Spacer,
+    took: std::rc::Rc<std::cell::Cell<u32>>,
+}
+
+impl crate::widget::Decorator for TakesRightPress {
+    type Inner = crate::widget::Spacer;
+
+    fn inner(&self) -> &crate::widget::Spacer {
+        &self.inner
+    }
+
+    fn inner_mut(&mut self) -> &mut crate::widget::Spacer {
+        &mut self.inner
+    }
+
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        if let WindowEvent::MouseInput {
+            state: ElementState::Pressed,
+            button: MouseButton::Right,
+            ..
+        } = event
+        {
+            self.took.set(self.took.get() + 1);
+            *ctx.handled = true;
+        }
+    }
+}
+
+/// A right press on a place whose content has a menu of its own goes to that content — a field
+/// keeps its copy and paste — and the map reports nothing; free space is still the map's.
+#[test]
+fn a_right_press_on_content_with_its_own_menu_is_the_contents() {
+    let queue = crate::Intents::default();
+    let took = std::rc::Rc::new(std::cell::Cell::new(0));
+    let mut map = pointing_map(&queue, MapCamera::default());
+    map = map.pin(
+        "field",
+        PinPlace {
+            x: 100.0,
+            y: 100.0,
+            width: 240.0,
+            height: Some(200.0),
+        },
+        Box::new(TakesRightPress {
+            inner: crate::widget::Spacer::new(),
+            took: std::rc::Rc::clone(&took),
+        }),
+    );
+    let mut host = laid_out(map);
+    right_click(&mut host, Point::new(220.0, 200.0));
+    assert_eq!(took.get(), 1, "the content took its right press");
+    assert_eq!(
+        reported(&queue),
+        Vec::new(),
+        "the map reports no pointing for a press its content took"
+    );
+    right_click(&mut host, Point::new(650.0, 500.0));
+    assert_eq!(
+        reported(&queue).len(),
+        1,
+        "a right press on free space is still the map's"
+    );
+}
+
 /// A left press on a place is the place's, not the canvas's: the map never reports a click or a
 /// frame for a press that landed on a pin.
 #[test]
@@ -299,4 +366,94 @@ fn a_middle_press_and_a_wheel_report_nothing() {
         });
     }
     assert_eq!(reported(&queue), Vec::new(), "a middle press pans");
+}
+
+/// Touch points as the pointer does (`canvas.md` §2, "Touch"): a tap on free space reports its
+/// point, a hold reports the secondary press there, and a one-finger drag across free space
+/// reports the frame it covered rather than scrolling.
+#[test]
+fn a_finger_points_as_the_pointer_does() {
+    let queue = crate::Intents::default();
+    let camera = shifted();
+    let mut host = harness(&queue, camera);
+
+    let at = Point::new(400.0, 300.0);
+    host.tap_at(at.x, at.y);
+    let (x, y) = canvas_point(camera, at);
+    assert_eq!(
+        reported(&queue),
+        [Fired {
+            key: CANVAS.into(),
+            event: "press".into(),
+            value: Some(Value::List(vec![Value::Int(x), Value::Int(y)])),
+        }],
+        "a tap is a click on the canvas"
+    );
+
+    host.touch_hold_at(at.x, at.y);
+    let fired = reported(&queue);
+    assert!(
+        fired.iter().any(|fired| fired.event == "context"),
+        "a hold is the secondary press: {fired:?}"
+    );
+
+    let (from, to) = (Point::new(200.0, 150.0), Point::new(520.0, 430.0));
+    host.swipe_at((from.x, from.y), (to.x, to.y));
+    let fired = reported(&queue);
+    let frames: Vec<&Fired> = fired
+        .iter()
+        .filter(|fired| fired.event == "frame")
+        .collect();
+    assert_eq!(
+        frames.len(),
+        1,
+        "a drag across free space is one frame: {fired:?}"
+    );
+    let Some(Value::List(rect)) = &frames[0].value else {
+        panic!("a frame carries its rectangle: {fired:?}");
+    };
+    let (fx, fy, fw, fh) = canvas_rect(camera, from, to);
+    let near = |a: &Value, b: i64| matches!(a, Value::Int(v) if (v - b).abs() <= 24);
+    assert!(
+        near(&rect[0], fx) && near(&rect[1], fy) && near(&rect[2], fw) && near(&rect[3], fh),
+        "the frame is the rectangle the finger covered, past the tap's slop: {rect:?} for {:?}",
+        (fx, fy, fw, fh)
+    );
+}
+
+/// Two fingers over free space pan the canvas and a pinch zooms it: the lens moves, and nothing is
+/// pointed at.
+#[test]
+fn two_fingers_pan_and_a_pinch_zooms() {
+    let queue = crate::Intents::default();
+    let mut host = harness(&queue, MapCamera::default());
+    let device = winit::event::DeviceId::dummy();
+    host.dispatch_to_root(&WindowEvent::CursorMoved {
+        device_id: device,
+        position: winit::dpi::PhysicalPosition::new(400.0, 300.0),
+    });
+    host.dispatch_to_root(&WindowEvent::MouseWheel {
+        device_id: device,
+        delta: winit::event::MouseScrollDelta::PixelDelta(winit::dpi::PhysicalPosition::new(
+            -40.0, 25.0,
+        )),
+        phase: winit::event::TouchPhase::Moved,
+    });
+    host.dispatch_to_root(&WindowEvent::PinchGesture {
+        device_id: device,
+        delta: 0.25,
+        phase: winit::event::TouchPhase::Moved,
+    });
+    let map = host
+        .root_widget_mut()
+        .as_any_mut()
+        .and_then(|any| any.downcast_mut::<Map>())
+        .expect("the root is the map");
+    let camera = map.camera();
+    assert!(
+        camera.origin != Point::ORIGIN,
+        "two fingers panned the lens: {camera:?}"
+    );
+    assert!(camera.zoom > 1.0, "the pinch zoomed in: {camera:?}");
+    assert_eq!(reported(&queue), Vec::new(), "nothing was pointed at");
 }

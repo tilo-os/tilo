@@ -508,6 +508,19 @@ impl Map {
             .map(|(key, _)| key.clone())
     }
 
+    /// Report a right press at the pointer: the pin `pin` it pointed at (empty for free space)
+    /// and the canvas point under it.
+    fn point_at_context(&self, pin: String) {
+        let at = self.camera.to_canvas(self.rect.origin(), self.cursor);
+        self.context.fire(Some(crate::component::Value::List(vec![
+            crate::component::Value::Text(pin),
+            crate::component::Value::List(vec![
+                crate::component::Value::Int(at.x.round() as i64),
+                crate::component::Value::Int(at.y.round() as i64),
+            ]),
+        ])));
+    }
+
     /// The smallest canvas rect holding every pin: what [`Self::show`] fits the camera to.
     #[must_use]
     pub fn bounds(&self) -> Rect {
@@ -899,14 +912,44 @@ impl Map {
     }
 
     /// The camera's own gestures: a wheel with Ctrl zooms about the pointer, a middle drag pans,
-    /// the arrow keys pan, a finger pans and two fingers pinch. It moves the lens and nothing in
+    /// the arrow keys pan, and two fingers pan and pinch. It moves the lens and nothing in
     /// the arrangement; the views' own presses fall through to the pins.
     fn camera_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         match event {
-            WindowEvent::MouseWheel { delta, .. } => {
-                if !ctx.modifiers.state().control_key() {
+            // Two fingers on a touchscreen or a touchpad, and a wheel, over the canvas's free
+            // space pan it (`canvas.md` §6); over a place they are the place's own scrolling.
+            WindowEvent::MouseWheel { delta, .. } if !ctx.modifiers.state().control_key() => {
+                if self.over_pin(self.cursor - self.rect.origin().to_vec2()) {
                     return;
                 }
+                let by = match delta {
+                    winit::event::MouseScrollDelta::LineDelta(x, y) => {
+                        Vec2::new(f64::from(*x) * self.key_pan, f64::from(*y) * self.key_pan)
+                    }
+                    winit::event::MouseScrollDelta::PixelDelta(p) => Vec2::new(p.x, p.y),
+                };
+                if by == Vec2::ZERO {
+                    return;
+                }
+                let mut camera = self.camera;
+                camera.pan_by(by);
+                self.set_camera(camera);
+                *ctx.handled = true;
+            }
+            // A pinch, on a touchscreen or a touchpad, zooms about the fingers, as Ctrl and a
+            // wheel zoom about the pointer.
+            WindowEvent::PinchGesture { delta, .. } => {
+                if *delta == 0.0 {
+                    return;
+                }
+                let corner = self.rect.origin();
+                let about = self.cursor;
+                let mut camera = self.camera;
+                camera.zoom_about(corner, about, 1.0 + *delta);
+                self.set_camera(camera);
+                *ctx.handled = true;
+            }
+            WindowEvent::MouseWheel { delta, .. } => {
                 let notches = match delta {
                     winit::event::MouseScrollDelta::LineDelta(_, y) => f64::from(*y),
                     winit::event::MouseScrollDelta::PixelDelta(p) => p.y / 50.0,
@@ -990,24 +1033,23 @@ impl Map {
                     *ctx.handled = true;
                 }
             }
-            // A right press on the map points at the place under it, or at the canvas's own
-            // free space: the map reports which and where, and the view opens what the person
-            // pointed at (`canvas.md` §1, §6). It takes the press, so a right click is the map's
-            // own pointing rather than a menu of whatever the place carries.
+            // A right press on the map's free space points at the canvas: the map reports it
+            // with the point, and the view opens what belongs there (`canvas.md` §1, §6). One on
+            // a place goes to the place first, so what it holds keeps its own menu — a field's
+            // copy and paste, a row's actions — and only a press the place leaves is the map's
+            // pointing at the place (`Map::handle_event`).
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Right,
                 ..
             } => {
-                let at = self.camera.to_canvas(self.rect.origin(), self.cursor);
-                let pin = self.pin_under(self.cursor - self.rect.origin().to_vec2());
-                self.context.fire(Some(crate::component::Value::List(vec![
-                    crate::component::Value::Text(pin.unwrap_or_default()),
-                    crate::component::Value::List(vec![
-                        crate::component::Value::Int(at.x.round() as i64),
-                        crate::component::Value::Int(at.y.round() as i64),
-                    ]),
-                ])));
+                if self
+                    .pin_under(self.cursor - self.rect.origin().to_vec2())
+                    .is_some()
+                {
+                    return;
+                }
+                self.point_at_context(String::new());
                 *ctx.handled = true;
             }
             WindowEvent::MouseInput {
@@ -1077,7 +1119,8 @@ impl Map {
                 );
                 for gesture in self.touch.on_touch(touch.id, at, phase) {
                     match gesture {
-                        TouchGestureEvent::Pan { delta, .. } => {
+                        // One finger points (a tap, a hold, a frame: `touch_claim`); two pan.
+                        TouchGestureEvent::Pan { fingers, delta } if fingers >= 2 => {
                             let mut camera = self.camera;
                             camera.pan_by(Vec2::new(delta.0, delta.1));
                             self.set_camera(camera);
@@ -1102,6 +1145,18 @@ impl Map {
 impl Widget for Map {
     fn needs_redraw(&self) -> bool {
         crate::widget::redraw_or_children(self.dirty, self)
+    }
+
+    /// A finger on the canvas's free space points as the pointer does (`canvas.md` §2, "Touch"):
+    /// a tap is a click (`press`), a hold is the secondary press (`context`), and a drag is a
+    /// left drag that draws a frame (`frame`), never a scroll. Two fingers pan and pinch. On a
+    /// place, the place's own content says what a finger does.
+    fn touch_claim(&self, point: Point) -> crate::interaction::TouchClaim {
+        if self.rect.contains(point) && !self.over_pin(point - self.rect.origin().to_vec2()) {
+            crate::interaction::TouchClaim::Drag
+        } else {
+            crate::interaction::TouchClaim::Pointer
+        }
     }
 
     /// Whether a pin is arriving, leaving or gliding: what asks for frames while it does,
@@ -1421,6 +1476,19 @@ impl Widget for Map {
             if *ctx.handled {
                 break;
             }
+        }
+        // A right press on a place that nothing in it took — no field, no row with a menu of its
+        // own — is the person pointing at the place: the map reports it with the place's key.
+        if !*ctx.handled
+            && let WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Right,
+                ..
+            } = event
+            && let Some(pin) = self.pin_under(self.cursor - self.rect.origin().to_vec2())
+        {
+            self.point_at_context(pin);
+            *ctx.handled = true;
         }
     }
 }

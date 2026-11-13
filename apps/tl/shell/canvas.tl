@@ -29,23 +29,13 @@
 /// stands on an empty canvas but its ground.
 view canvas(a: Arrangement, name: Text, framed: Bool, lists: Bool) {
     state typed: Text = ""
-    state pointing: Bool = false
-    state caret_x: Int = 0
-    state caret_y: Int = 0
-    state caret_width: Int = 0
-    state caret_height: Int = 0
+    // Where the person pointed, in canvas pixels: a point (`x`, `y`) for a click, a rectangle
+    // (`x`, `y`, width, height) for a drag, and nothing while no caret stands.
+    state pointed: List<Int> = []
     ui.Map(name: name, ground: true, fill) {
         on drop(target: host.Resource, at: List<Int>): place_dropped(target, at)
-        on press(at: List<Int>): set(caret_x, at.at(0) ?? 0)
-            .then(set(caret_y, at.at(1) ?? 0))
-            .then(set(caret_width, 0))
-            .then(set(caret_height, 0))
-            .then(set(pointing, true))
-        on frame(at: List<Int>): set(caret_x, at.at(0) ?? 0)
-            .then(set(caret_y, at.at(1) ?? 0))
-            .then(set(caret_width, at.at(2) ?? 0))
-            .then(set(caret_height, at.at(3) ?? 0))
-            .then(set(pointing, true))
+        on press(at: List<Int>): set(pointed, at)
+        on frame(at: List<Int>): set(pointed, at)
         for s in a.strips {
             if s.placed {
                 for p in places_of(a, s.key) {
@@ -65,22 +55,27 @@ view canvas(a: Arrangement, name: Text, framed: Bool, lists: Bool) {
                 }
             }
         }
-        if pointing {
-            ui.MapPin(name: "Caret", x: caret_x, y: caret_y, width: caret_room(caret_width)) {
+        if pointed.len() > 0 {
+            ui.MapPin(
+                name: "Caret",
+                x: pointed.at(0) ?? 0,
+                y: pointed.at(1) ?? 0,
+                width: caret_room(pointed.at(2) ?? 0),
+            ) {
                 ui.TextInput(bind: typed, placeholder: "Find or ask", autofocus: true) {
                     on submit: session
                         .place_found(
                             text: typed,
                             view: .none,
                             strip: .none,
-                            x: caret_x,
-                            y: caret_y,
-                            width: caret_width,
-                            height: caret_height,
+                            x: pointed.at(0) ?? 0,
+                            y: pointed.at(1) ?? 0,
+                            width: pointed.at(2) ?? 0,
+                            height: pointed.at(3) ?? 0,
                         )
                         .then(set(typed, ""))
-                        .then(set(pointing, false))
-                    on cancel: set(pointing, false)
+                        .then(set(pointed, []))
+                    on cancel: set(pointed, [])
                 }
             }
         }

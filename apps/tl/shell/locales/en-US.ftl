@@ -991,7 +991,10 @@ d-fniigjed = Viewing settings
 d-gapwwnqc = Show style~present
 
 d-s7yqm7cb = Canvas
-    .w-find-something-or-ask = Find something, or ask
+    .w-caret = Caret
+    .w-find-or-ask = Find or ask
+
+d-c2hxqs52 = Canvas place
 
 d-t3cux3yd = Framed place
 
