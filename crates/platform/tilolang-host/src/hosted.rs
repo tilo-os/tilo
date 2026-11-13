@@ -781,6 +781,33 @@ pub struct Hosted {
         reason = "held open, never read: the connection signs through it"
     )]
     identity: Option<std::os::fd::OwnedFd>,
+    /// The scope the instance's code runs in, its record's content store registered for it.
+    scope: RecordScope,
+}
+
+/// The wake scope a record's code runs in, the record's content store registered for it: an
+/// action committed to the record that is too large to record whole keeps its large parts there,
+/// sealed, and every read of a recorded action reads them back from there, as a native window's
+/// actions do ([`tilo_actions::content::register`]). Work the code starts off its thread takes
+/// the store along.
+struct RecordScope(tilo_wake::WakeScope);
+
+impl RecordScope {
+    /// The scope of `record`'s code, whose wakes wake the host through `wake`.
+    fn of(record: &InstanceRecord, wake: &Waker) -> Self {
+        let mut scope = tilo_wake::WakeScope::new();
+        let sink = Arc::clone(wake);
+        if let Err(error) = scope.bind(move |_| sink()) {
+            tracing::warn!(?error, "the record's wake scope did not bind");
+        }
+        tilo_actions::content::register(&scope.handle(), record.content().clone());
+        Self(scope)
+    }
+
+    /// Run the record's code from here until the guard drops.
+    fn enter(&self) -> tilo_wake::WakeScopeGuard {
+        self.0.enter()
+    }
 }
 
 impl Hosted {
@@ -832,6 +859,8 @@ impl Hosted {
         // window speaks, whatever language the workspace's people are named in.
         collaboration::history_source::authors::set_names_language(&phrases.locale());
         let mut record = record.speaking(phrases.locale());
+        let scope = RecordScope::of(&record, &wake);
+        let in_scope = scope.enter();
         let used = used_apps(&spec, &bundle, &mut record);
         let platform = HostPlatform {
             bundle: Arc::clone(&bundle),
@@ -862,7 +891,9 @@ impl Hosted {
         // The device that governs the workspace is its records' origin: the package's migrations
         // run there, once.
         instance.set_origin(record.governs());
-        let registry = ActionRegistry::with(tilolang_tilo::history::register);
+        let mut registry = ActionRegistry::with(tilolang_tilo::history::register);
+        registry.connect_content(record.content().clone());
+        drop(in_scope);
         Self {
             spec,
             bundle,
@@ -890,6 +921,7 @@ impl Hosted {
             asks: Rc::default(),
             asking: false,
             identity: None,
+            scope,
         }
     }
 
@@ -964,12 +996,14 @@ impl Hosted {
 
     /// Keep the package's types with an origin in step with `origin`'s service.
     pub fn add_origin(&mut self, origin: tilolang_tilo::origin::SharedOrigin) {
+        let _code = self.scope.enter();
         self.instance.add_origin(origin);
     }
 
     /// The person's environment changed — their formats, or the name the window calls someone:
     /// every view that shows what only the window knows runs again, and its window shows it.
     pub fn person_changed(&mut self) {
+        let _code = self.scope.enter();
         self.instance.person_changed();
     }
 
@@ -980,6 +1014,7 @@ impl Hosted {
         if !self.phrases.speak(language) {
             return false;
         }
+        let _code = self.scope.enter();
         let locale = self.phrases.locale();
         collaboration::history_source::authors::set_names_language(&locale);
         self.record.speak(locale.clone());
@@ -994,6 +1029,7 @@ impl Hosted {
     /// Run the package's scenario `scenario` in the instance on its next frame, as a capture
     /// stages one: its changes are the person's steps on the instance's record.
     pub fn stage(&mut self, scenario: &str) {
+        let _code = self.scope.enter();
         self.instance.stage(Some(scenario));
     }
 
@@ -1001,6 +1037,7 @@ impl Hosted {
     /// what the person did run, what was planned committed and sent, what the broker delivered
     /// run, and the surface published. Whether anything changed.
     pub fn turn(&mut self) -> bool {
+        let _code = self.scope.enter();
         let mut events = Vec::new();
         let mut changed = self
             .record
@@ -1076,6 +1113,7 @@ impl Hosted {
     /// Take the step the person asked to undo back in this unit alone, when no other unit of
     /// the workspace holds a change of its action.
     pub fn undo_here(&mut self) -> bool {
+        let _code = self.scope.enter();
         self.take_step(&tilolang_tilo::instance::HistoryAsk::Undo)
     }
 
@@ -1105,6 +1143,7 @@ impl Hosted {
         change: &[u8; 32],
         ambient: &ActionContext,
     ) -> Result<(), RecordError> {
+        let _code = self.scope.enter();
         let (resource, kind) = &self.resource;
         let invoker = ActionInvoker::actor(self.spec.person.clone());
         self.record
@@ -1134,6 +1173,7 @@ impl Hosted {
     /// Send this instance's unsent change on its own: the workspace takes it as this unit's
     /// action. What the workspace refused for good, it says to the window.
     pub fn share(&mut self) {
+        let _code = self.scope.enter();
         let unshared = self.record.share();
         self.took_share(unshared);
     }
@@ -1141,6 +1181,7 @@ impl Hosted {
     /// Send this instance's unsent change as its part of `commit`, the action across every unit
     /// it wrote. What the workspace refused for good, it says to the window.
     pub fn share_under(&mut self, commit: &WorkspaceCommit) {
+        let _code = self.scope.enter();
         let unshared = self.record.share_under(commit);
         self.took_share(unshared);
     }
@@ -2124,6 +2165,7 @@ impl Hosted {
 
     /// Write what the record holds to its on-disk copy, as the instance ends.
     pub fn flush(&mut self) {
+        let _code = self.scope.enter();
         self.record.flush();
     }
 }
@@ -2386,6 +2428,8 @@ pub struct Applier {
     /// Whether the answer carries the whole record: the root this change needed was made for
     /// it.
     whole: bool,
+    /// The scope the change's code runs in, the record's content store registered for it.
+    scope: RecordScope,
 }
 
 impl Applier {
@@ -2398,6 +2442,8 @@ impl Applier {
         wake: Waker,
         connection: std::os::fd::OwnedFd,
     ) -> Result<Self, String> {
+        let scope = RecordScope::of(&record, &wake);
+        let _code = scope.enter();
         let host = Host::new(
             record.doc(),
             tilolang_tilo::runtime::Principal::new(spec.person.clone()),
@@ -2431,6 +2477,7 @@ impl Applier {
             connection,
             applying: Applying::Awaiting(Vec::new()),
             whole: false,
+            scope,
         })
     }
 
@@ -2468,6 +2515,7 @@ impl Applier {
     /// One step: take in what the workspace sent and what came on the connection, run the change
     /// once it can, and answer once the workspace was handed what it wrote. Whether anything changed.
     pub fn turn(&mut self) -> bool {
+        let _code = self.scope.enter();
         let mut changed = self.record.take_in_record();
         if changed {
             sync_record(&self.host, &self.record);

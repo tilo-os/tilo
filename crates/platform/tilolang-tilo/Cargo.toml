@@ -24,6 +24,10 @@ toml.workspace = true
 tracing.workspace = true
 tilo-automerge.workspace = true
 tilo-actions = { version = "0.1.0", path = "../../collab/actions" }
+# The record's content store, where an action too large to record whole keeps its parts, and
+# the wake scope of the window whose code records them.
+tilo-content = { version = "0.1.0", path = "../../system/content" }
+tilo-wake.workspace = true
 tilo-service = { path = "../../session/service" }
 # The one notice type, and the seam a device shows it through.
 tilo-session-core = { path = "../../session/core" }

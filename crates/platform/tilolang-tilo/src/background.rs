@@ -31,9 +31,18 @@ impl<T: Send + 'static> Pending<T> {
         let job: Arc<Mutex<Option<Job<T>>>> = Arc::new(Mutex::new(Some(Box::new(work))));
         let taken = Arc::clone(&job);
         let worker_send = send.clone();
+        // The work reads what the window's record keeps as content (an action too large to
+        // record whole), through the store the window registered, as the window's code does.
+        let content = tilo_actions::content::current();
         let spawned = std::thread::Builder::new()
             .name("tilolang-read".to_owned())
             .spawn(move || {
+                let scope = content.map(|store| {
+                    let scope = tilo_wake::WakeScope::new();
+                    tilo_actions::content::register(&scope.handle(), store);
+                    scope
+                });
+                let _in_the_window = scope.as_ref().map(tilo_wake::WakeScope::enter);
                 crate::index::read_off_frame();
                 let work = taken.lock().ok().and_then(|mut slot| slot.take());
                 if let Some(work) = work {

@@ -14,7 +14,7 @@ use super::{
     mirror_of, name_version_changes, note_derived, note_versions, record_splices, told_differently,
     write_as_a_known_actor,
 };
-use crate::action::{DynAction, DynEdit};
+use crate::action::DynEdit;
 use crate::chunk::{self, ChunkNo};
 use crate::index::derive::Reached;
 use crate::index::overlay::Overlay;
@@ -202,9 +202,8 @@ impl Inner {
         let arrived = doc
             .committed_document()
             .get_changes(self.chunks.seen(chunk));
-        let (committed, every_one_an_action) = committed_edits(&arrived, &self.sent);
+        let (committed, every_one_an_action) = committed_edits(&arrived);
         let taken = self.drop_committed_local(chunk, &committed);
-        self.forget_sent();
         self.rollback(chunk);
         let (changed, ends, placed) = self.apply_new_changes(chunk, &arrived);
         self.chunks.set_seen(chunk, heads);
@@ -418,54 +417,22 @@ impl Inner {
 
 /// The edits `changes` carry, in order, each with the change carrying it: what the store's own
 /// writes are the record's by ([`Inner::drop_committed_local`]). Every change of a tilolang
-/// action records the action it made, and so the edits it wrote; a change that records none —
-/// the record's own genesis, a merge — took none of the store's writes. A change whose action
-/// keeps its large parts as content carries references where the store wrote what they stand
-/// for, so it reads here as the action the store handed over ([`sent_as`]). Also whether every
+/// action records the action it made, and so the edits it wrote, whole or with its large parts in
+/// the record's content store, where this device's own are always kept; a change that records
+/// none — the record's own genesis, a merge — took none of the store's writes. Also whether every
 /// one of `changes` records some.
 pub(super) fn committed_edits(
     changes: &[automerge::Change],
-    sent: &[DynAction],
 ) -> (Vec<(automerge::ChangeHash, DynEdit)>, bool) {
     let mut every = true;
     let mut out = Vec::new();
     for change in changes {
         let hash = change.hash();
-        // The action the store handed over first: a recorded action that keeps its large parts
-        // as content reads differently from what the store wrote whether or not the rest of its
-        // payload decodes — a rich text's operations are JSON, so its action does decode, with a
-        // reference standing where the body was — and only the action as it ran names the write.
-        let edits = match sent_as(change, sent) {
-            Some(action) => action.edits.clone(),
-            None => idx::reflect::edits_of(change),
-        };
+        let edits = idx::reflect::edits_of(change);
         every &= !edits.is_empty();
         out.extend(edits.into_iter().map(|edit| (hash, edit)));
     }
     (out, every)
-}
-
-/// The action of `sent` the change `change` records with its large parts kept as content: the
-/// recorded action does not read as the action that ran without that content, which may never
-/// reach this device, but it reads as the action this store handed over with those parts taken
-/// out. Without this the store would not know its own write in the record, and would write it
-/// again over every change that arrives after it: a pasted body, over a peer's edit of it.
-fn sent_as<'a>(change: &automerge::Change, sent: &'a [DynAction]) -> Option<&'a DynAction> {
-    if sent.is_empty() {
-        return None;
-    }
-    let context = change
-        .message()
-        .and_then(tilo_actions::ActionContext::from_change_message)?;
-    let recorded = context.action?;
-    if recorded.type_id != crate::action::ACTION_TYPE || recorded.content_parts().is_empty() {
-        return None;
-    }
-    sent.iter().find(|action| {
-        action
-            .encode()
-            .is_ok_and(|ran| recorded.recorded_parts_of(&ran).is_some())
-    })
 }
 
 /// The documents a sync tells those who read the mirror of, per document: the fields the

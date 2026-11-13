@@ -34,6 +34,9 @@ use tilolang_tilo::bundle::Bundle;
 use tilolang_tilo::instance::record::InstanceRecord;
 use tilolang_tilo::runtime::Value;
 
+/// What an action too large to record whole keeps as content, on its device and its peer's.
+#[path = "host/content.rs"]
+mod content;
 #[path = "host/indexes.rs"]
 mod indexes;
 /// Tasks in a hosted window, and Today reading it from Tasks' own record.
@@ -331,6 +334,24 @@ fn instance_on(
     actions: Actions,
     doc: automerge::AutoCommit,
 ) -> (Window, Sent, Inbox) {
+    let content = tilo_content::ContentStore::memory();
+    instance_keeping(
+        host, attributes, bundle, route, directory, actions, doc, content,
+    )
+}
+
+/// [`instance_on`], the record's content kept in `content`, as the device's content store keeps
+/// it.
+fn instance_keeping(
+    host: &mut TilolangHost,
+    attributes: Spec,
+    bundle: Bundle,
+    route: &RouteSpec,
+    directory: Rc<RefCell<Directory>>,
+    actions: Actions,
+    doc: automerge::AutoCommit,
+    content: tilo_content::ContentStore,
+) -> (Window, Sent, Inbox) {
     let _ = tracing_subscriber::fmt().with_test_writer().try_init();
     let (sent, inbox): (Sent, Inbox) = (Rc::default(), Rc::default());
     let mut manager = CollaborationManager::with_peer_transport(Broker {
@@ -350,7 +371,8 @@ fn instance_on(
         handle: Some(attributes.person.clone()),
     }));
     let _ = manager.poll();
-    let record = InstanceRecord::new(doc, manager, route.clone(), &attributes.person);
+    let record = InstanceRecord::new(doc, manager, route.clone(), &attributes.person)
+        .keeping_content_in(content);
     let kept = host.kept(&attributes.app).unwrap();
     let (ours, theirs) = Channel::pair().unwrap();
     let watched = ours.as_fd().try_clone_to_owned().unwrap();

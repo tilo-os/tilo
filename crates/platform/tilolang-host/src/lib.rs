@@ -653,13 +653,17 @@ impl TilolangHost {
             .kept(&records)
             .map_err(|error| AdmitError::Join(error.to_string()))?;
         let _scope = self.scope.enter();
+        // What the record's actions keep as content lives in the device's content store, as a
+        // native window's record content does: it outlives the instance and reaches the record's
+        // other readers on its route.
         let record = InstanceRecord::open_read(
             manager,
             read,
             &kept.documents,
             spec.person.clone(),
             bundle.meta.record_kind(),
-        )?;
+        )?
+        .keeping_content_in(tilo_content_device::for_app());
         if let Some(change) = opening.change.take() {
             // A change at the record's origin: the record and the package, no instance.
             let applier = hosted::Applier::open(

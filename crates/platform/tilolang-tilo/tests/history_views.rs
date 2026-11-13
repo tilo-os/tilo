@@ -1140,6 +1140,9 @@ fn pasted_body() -> Vec<String> {
 /// the post's length, and that is not the entry's read.
 fn entry_work(paragraphs: usize) -> (u64, u64, usize) {
     use tilolang_runtime::store::Store as _;
+    // Its writing is one window's: a note past a mebibyte keeps its body in the window's store.
+    let window = Window::new();
+    let _in_the_window = window.scope.enter();
     let mut post = LongPost::new(paragraphs);
     let chars = PARAGRAPH.chars().count().saturating_mul(paragraphs);
     // Bo types one word in the first paragraph, in his own replica, and it reaches Ada's.
@@ -1217,6 +1220,9 @@ fn entry_work(paragraphs: usize) -> (u64, u64, usize) {
 fn two_people_typing_into_different_paragraphs_of_a_long_note_at_once_both_keep_their_words() {
     // A note past a hundred thousand characters, whose editor hands over the whole body on each
     // keystroke: what the keystroke records is the paragraph it typed into, never the note.
+    // Its writing is one window's: a note past a mebibyte keeps its body in the window's store.
+    let window = Window::new();
+    let _in_the_window = window.scope.enter();
     let mut post = LongPost::new(1_571);
     // Each types into their own copy before either hears of the other.
     for recorded in [
@@ -1341,7 +1347,7 @@ fn a_paste_over_a_mebibyte_reads_back_whole_and_decodes_on_the_peers_replica() {
     // The record returns to Ada, through Bo's replica, which now holds the paste too. She then
     // types into the paragraph she pasted: the store knows the record already holds her paste,
     // so it never writes the pasted body over the record's, and her word reads back at once.
-    post.ada.sync_with(&mut post.bo);
+    ada_window.run(|| post.ada.sync_with(&mut post.bo));
     let mut lines = post.reads(&post.ada);
     lines[0] = lines[0].replacen("Pasted", "Typed", 1);
     ada_window.run(|| post.write(false, &lines));
@@ -1389,7 +1395,7 @@ fn a_paste_over_a_mebibyte_reads_back_whole_and_decodes_on_the_peers_replica() {
     let mut lines = post.reads(&post.bo);
     lines[10] = lines[10].replacen("Pasted", "Pasted by Bo", 1);
     post.write(true, &lines);
-    post.ada.sync_with(&mut post.bo);
+    ada_window.run(|| post.ada.sync_with(&mut post.bo));
     both_read(
         &post,
         pasted.len(),

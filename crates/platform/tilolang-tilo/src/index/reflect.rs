@@ -446,8 +446,9 @@ struct Parsed {
     context: Option<tilo_actions::ActionContext>,
     read: Option<(Stamp, DynAction, Option<Run>)>,
     /// The version a package action's change made whose edits its entry keeps as content
-    /// ([`tilo_actions::CONTENT_PART_THRESHOLD`]): what the action says of itself beside them.
-    /// What it changed is read off what it wrote ([`stepped`]).
+    /// ([`tilo_actions::CONTENT_PART_THRESHOLD`]) that has not reached this device yet: what the
+    /// action says of itself beside them. What it changed is read off what it wrote
+    /// ([`stepped`]).
     apart: Option<Stamp>,
 }
 
@@ -517,40 +518,48 @@ impl Parsed {
         else {
             return parsed;
         };
-        match serde_json::from_slice::<DynAction>(&encoded.payload) {
+        // An action too large to record whole keeps its large parts in the record's content
+        // store: read back from there, it is the action as it ran. Until they reach this device,
+        // what the entry says beside them is its version, and what it changed is read off what
+        // it wrote ([`Parsed::apart`]).
+        let read = if encoded.content_parts().is_empty() {
+            serde_json::from_slice::<DynAction>(&encoded.payload)
+        } else {
+            let Ok(Ok(whole)) = tilo_actions::ActionRegistry::default().resolve(encoded) else {
+                match without_parts(encoded) {
+                    Ok(action) => parsed.apart = Some(stamp_of_action(change, context, &action).0),
+                    Err(error) => tracing::warn!(
+                        change = %change.hash(),
+                        %error,
+                        "a tilolang action's change carries an action that does not decode"
+                    ),
+                }
+                return parsed;
+            };
+            serde_json::from_slice::<DynAction>(&whole.payload)
+        };
+        match read {
             Ok(action) => {
                 let (stamp, run) = stamp_of_action(change, context, &action);
                 parsed.read = Some((stamp, action, run));
             }
-            Err(error) => match without_parts(encoded, error) {
-                Ok(action) => parsed.apart = Some(stamp_of_action(change, context, &action).0),
-                Err(error) => {
-                    // A tilolang action's change whose action does not read: the change is
-                    // still the record's, but no version stamps it.
-                    tracing::warn!(
-                        change = %change.hash(),
-                        %error,
-                        "a tilolang action's change carries an action that does not decode"
-                    );
-                }
-            },
+            Err(error) => {
+                // A tilolang action's change whose action does not read: the change is still the
+                // record's, but no version stamps it.
+                tracing::warn!(
+                    change = %change.hash(),
+                    %error,
+                    "a tilolang action's change carries an action that does not decode"
+                );
+            }
         }
         parsed
     }
 }
 
 /// The action `encoded` records with its edits and arguments kept as content, read without
-/// them: who invoked it, when, and which action it was stay in the entry. Its edits read back
-/// only once the content travelled here, apart from the change; what the change wrote says
-/// what it changed meanwhile. `error` is why it did not read whole, answered when no part of it
-/// is kept as content.
-fn without_parts(
-    encoded: &tilo_actions::EncodedAction,
-    error: serde_json::Error,
-) -> Result<DynAction, serde_json::Error> {
-    if encoded.content_parts().is_empty() {
-        return Err(error);
-    }
+/// them: who invoked it, when, and which action it was stay in the entry.
+fn without_parts(encoded: &tilo_actions::EncodedAction) -> Result<DynAction, serde_json::Error> {
     let mut value: Json = serde_json::from_slice(&encoded.payload)?;
     if let Some(object) = value.as_object_mut() {
         object.insert("edits".to_owned(), Json::Array(Vec::new()));

@@ -552,8 +552,39 @@ fn an_import_of_ten_thousand_items_reads_as_what_it_made() {
         (built, versions)
     };
     let imported = |n: usize| {
-        let doc = tilolang_tilo::bench::seeded_record_in_one_action(&packages, n)
+        // The window that runs the import keeps its large parts in its record's content store,
+        // and opening the record there reads the import back as it ran.
+        let window = tilo_wake::WakeScope::new();
+        let store = tilo_content::ContentStore::memory().sealing();
+        tilo_actions::content::register(&window.handle(), store.clone());
+        let _in_the_window = window.enter();
+        let mut doc = tilolang_tilo::bench::seeded_record_in_one_action(&packages, n)
             .unwrap_or_else(|e| panic!("{n} tasks: {e}"));
+        let import = doc
+            .get_changes(&[])
+            .iter()
+            .map(automerge::Change::hash)
+            .find(|hash| {
+                tilo_actions::entry_of(doc.document(), *hash)
+                    .and_then(|entry| entry.action)
+                    .is_some_and(|action| !action.content_parts().is_empty())
+            })
+            .unwrap_or_else(|| panic!("at {n}, the import keeps its items as content"));
+        // Read on a thread of its own, through the store alone, the import reproduces its change.
+        let mut replay = doc.clone();
+        let verified = std::thread::spawn(move || {
+            let mut registry = tilo_actions::ActionRegistry::new();
+            tilolang_tilo::history::register(&mut registry);
+            registry.connect_content(store);
+            tilo_actions::verify_change(&mut replay, import, &registry).unwrap()
+        })
+        .join()
+        .unwrap();
+        assert_eq!(
+            verified,
+            tilo_actions::Verified::Reproduced,
+            "at {n}, the import decodes from the record's store"
+        );
         open(n, doc)
     };
     let (small, at_small) = imported(SMALL);
