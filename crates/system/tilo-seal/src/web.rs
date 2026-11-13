@@ -2,11 +2,6 @@
 //! derived with HKDF-SHA256, so native code opens what a page sealed and the
 //! page unwraps straight into a non-extractable `CryptoKey`.
 //!
-//! - key: `HKDF-SHA256(ikm, salt, info = label)`, 256 bits;
-//! - nonce: 96 random bits, stored beside the ciphertext;
-//! - associated data: the [`Context`] (label and record, each
-//!   length-prefixed, as for [`crate::envelope`]) with no header.
-//!
 //! In `WebCrypto` terms: `deriveKey({name: 'HKDF', hash: 'SHA-256', salt,
 //! info}, ikm, {name: 'AES-GCM', length: 256})`, then `wrapKey`/`unwrapKey`
 //! or `encrypt`/`decrypt` with `{name: 'AES-GCM', iv: nonce,
@@ -20,10 +15,8 @@ use crate::envelope::Context;
 use crate::error::{Error, Result};
 use crate::keys::{SymmetricKey, fill_random};
 
-/// AES-GCM nonce length.
 pub const NONCE_LEN: usize = 12;
 const KEY_LEN: usize = 32;
-/// Shortest accepted input keying material.
 pub const MIN_IKM_LEN: usize = 16;
 
 /// The wrapping key for `ikm` and `salt` under `context`'s label.

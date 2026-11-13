@@ -26,9 +26,6 @@
 //! Every operation takes a [`Label`] from one closed registry, so each
 //! ciphertext is bound to a single purpose. Secret key types zeroize on
 //! drop, compare in constant time and redact themselves from `Debug`.
-//!
-//! No other workspace crate may depend on raw AEAD/KEM crates;
-//! deny.toml's `[bans]` enforces that.
 
 #![cfg_attr(
     test,

@@ -1,8 +1,6 @@
 //! At-rest envelopes: XChaCha20-Poly1305 under a symmetric key or a
 //! password, with a self-describing, versioned header.
 //!
-//! Layout (version 1, all integers little-endian):
-//!
 //! ```text
 //! 0..5    magic  "TSEAL"
 //! 5       format version = 0x01
@@ -15,13 +13,6 @@
 //! ..      nonce (24 random bytes)
 //! ..      ciphertext + 16-byte tag
 //! ```
-//!
-//! The AEAD associated data is the whole header (magic through nonce),
-//! then the [`Label`] string and caller context, each length-prefixed.
-//! Every header field is therefore authenticated, and an envelope moved to
-//! another purpose or record (a different [`Context`]) fails to open.
-//! Nonces are 192-bit random values, so no counter state is needed and
-//! collisions are negligible for any realistic number of writes per key.
 
 use argon2::{Algorithm, Argon2, Params, Version};
 use chacha20poly1305::aead::{Aead as _, KeyInit as _, Payload};
@@ -34,7 +25,6 @@ use crate::label::Label;
 
 /// Magic prefix of every at-rest envelope.
 pub const MAGIC: &[u8; 5] = b"TSEAL";
-/// Current envelope format version.
 pub const FORMAT_VERSION: u8 = 1;
 const ALG_XCHACHA20POLY1305: u8 = 1;
 const SOURCE_RAW_KEY: u8 = 1;
@@ -53,12 +43,10 @@ pub struct Context<'a> {
 }
 
 impl<'a> Context<'a> {
-    /// Bind to `label` and the record identifier `record`.
     pub const fn new(label: Label, record: &'a [u8]) -> Self {
         Self { label, record }
     }
 
-    /// The purpose this context names.
     pub const fn label(&self) -> Label {
         self.label
     }
@@ -97,9 +85,7 @@ impl<'a> Context<'a> {
 pub struct PasswordParams {
     /// Memory cost in KiB.
     pub m_cost_kib: u32,
-    /// Number of passes.
     pub t_cost: u32,
-    /// Degree of parallelism.
     pub p_cost: u32,
 }
 
@@ -113,9 +99,7 @@ impl PasswordParams {
     /// Upper bounds accepted when *opening*, so a crafted header cannot
     /// make the reader allocate or spin without limit.
     pub const MAX_M_COST_KIB: u32 = 4 * 1024 * 1024;
-    /// Maximum passes accepted when opening.
     pub const MAX_T_COST: u32 = 64;
-    /// Maximum lanes accepted when opening.
     pub const MAX_P_COST: u32 = 64;
 
     fn to_argon2(self) -> Result<Params> {
@@ -139,7 +123,6 @@ impl Default for PasswordParams {
     }
 }
 
-/// Minimum and default salt length for password envelopes.
 pub const SALT_LEN: usize = 16;
 const MAX_SALT_LEN: usize = 64;
 
@@ -236,27 +219,21 @@ pub fn seal_with_password(
     seal_with_header(&key, header, context, plaintext)
 }
 
-/// How a parsed envelope's key is obtained.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum KeySource {
-    /// A raw symmetric key with this id.
     Key(KeyId),
-    /// A password stretched with these parameters and salt.
     Password {
-        /// Argon2id parameters.
         params: PasswordParams,
         /// Salt bytes.
         salt: Vec<u8>,
     },
 }
 
-/// A parsed, not yet authenticated envelope.
 #[derive(Debug)]
 pub struct Envelope<'a> {
     header: &'a [u8],
     nonce: [u8; NONCE_LEN],
     ciphertext: &'a [u8],
-    /// Where the key comes from.
     pub source: KeySource,
 }
 
