@@ -13,7 +13,6 @@ pub struct Plymouth {
 }
 
 impl Plymouth {
-    /// Plymouth, if it is running.
     pub fn running(program: PathBuf) -> Option<Self> {
         let pinged = Command::new(&program)
             .arg("--ping")
@@ -29,12 +28,10 @@ impl Plymouth {
         self.command(&["display-message", &format!("--text={text}")]);
     }
 
-    /// Let go of the display, so another program may take it.
     pub fn deactivate(&self) {
         self.command(&["deactivate"]);
     }
 
-    /// Take the display back and draw the splash again.
     pub fn reactivate(&self) {
         self.command(&["reactivate"]);
     }

@@ -16,7 +16,6 @@ pub struct CliAuth {
     pub program: PathBuf,
     pub device: PathBuf,
     pub volume: String,
-    /// A private directory on the initramfs tmpfs for the one secret file.
     pub runtime: PathBuf,
 }
 
@@ -282,7 +281,6 @@ esac
                 wait_seconds: Some(120)
             })
         );
-        // The time to win back a try is no wait while tries are left.
         assert_eq!(
             limit(r#"{"error":"wrong","tries_left":9,"retry_in_s":7200}"#),
             Some(Limit {
@@ -295,7 +293,6 @@ esac
         assert_eq!(limit("{not json"), None);
     }
 
-    /// Types the scripted entries, then leaves the field empty.
     struct Typist {
         entries: Vec<&'static str>,
         notes: Vec<String>,
