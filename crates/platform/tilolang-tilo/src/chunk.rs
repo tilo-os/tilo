@@ -372,6 +372,24 @@ impl Chunks {
     }
 
     /// The chunks the store holds, the record first and the rest by number.
+    /// The chunk holding the item `item`, by the `$items` map its id is kept in: chunk [`FIRST`]
+    /// when no chunk holds it (an item an action is about to make).
+    #[must_use]
+    pub fn chunk_of_item(&self, item: &str) -> ChunkNo {
+        for (chunk, held) in self.docs() {
+            for record in crate::reads::resource_objects(held) {
+                for items in
+                    crate::containers::maps(held, &record, tilolang_runtime::place::ITEMS_KEY)
+                {
+                    if held.get(&items, item).is_ok_and(|held| held.is_some()) {
+                        return chunk;
+                    }
+                }
+            }
+        }
+        FIRST
+    }
+
     pub fn docs(&self) -> impl Iterator<Item = (ChunkNo, &Doc)> {
         let first = self.first.as_deref().map(|doc| (FIRST, doc));
         first

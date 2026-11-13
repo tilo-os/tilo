@@ -1474,7 +1474,7 @@ mod tests {
     #[test]
     fn a_native_apps_verb_is_its_own_on_the_record_it_publishes() {
         let meta = chat();
-        let app = meta.app.clone();
+        let app = tilolang_runtime::ids::AppId::from(meta.app.as_str());
         let door = Rc::new(Asked::default());
         let (invoker, steps) = invoker_of(meta, Rc::clone(&door) as Rc<dyn TaskDoor>);
         let record = ResourceRef {
@@ -1527,7 +1527,7 @@ mod tests {
         let door = Rc::new(Asked::default());
         let (invoker, _) = invoker_of(meta, Rc::clone(&door) as Rc<dyn TaskDoor>);
         let invocation = Invocation::Edit {
-            app: "so.tilo.chat".to_owned(),
+            app: tilolang_runtime::ids::AppId::from("so.tilo.chat"),
             target: ResourceRef {
                 doc: "chat.workspace".to_owned(),
                 item: None,

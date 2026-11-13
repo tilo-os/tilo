@@ -655,7 +655,8 @@ fn a_notice_from_an_app_with_its_own_records_opens_the_persons_own() {
     let place = place(&shown[0]);
     assert_eq!(
         place.record,
-        tilolang_tilo::member_record_of(&person).expect("their own record of the workspace")
+        tilolang_tilo::member_record_of("so.tilo.test.own", &person)
+            .expect("their own record of the workspace")
     );
     assert_eq!(place.resource, note.as_str());
     assert_eq!(

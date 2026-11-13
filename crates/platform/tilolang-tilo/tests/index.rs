@@ -1508,7 +1508,7 @@ fn create(replica: &mut Replica, id: &str) {
         .create_with_id(
             &tilolang_runtime::store::NewRecord {
                 ty: list,
-                app: APP.to_owned(),
+                app: tilolang_runtime::ids::AppId::from(APP),
                 fields: Vec::new(),
             },
             id,

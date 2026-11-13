@@ -209,7 +209,7 @@ impl Inner {
             self.clock.read(),
         );
         if let Err(error) = derive.changes(&mut sink, &write.app, &write.reached()) {
-            tracing::warn!(app = write.app, %error, "a change was not indexed");
+            tracing::warn!(app = %write.app, %error, "a change was not indexed");
         }
         for keys in derive.notified.into_values() {
             for key in keys {
@@ -329,7 +329,7 @@ impl Inner {
                     std::slice::from_ref(&write.edit),
                     &write.seed,
                 ) {
-                    tracing::error!(app = write.app, %error, "a pending write did not apply again");
+                    tracing::error!(app = %write.app, %error, "a pending write did not apply again");
                 }
             }
         }
@@ -410,7 +410,7 @@ impl Inner {
                     std::slice::from_ref(&write.edit),
                     &write.seed,
                 ) {
-                    tracing::error!(app = write.app, %error, "a write did not apply again");
+                    tracing::error!(app = %write.app, %error, "a write did not apply again");
                 }
             }
         }
@@ -459,12 +459,12 @@ impl Inner {
                 let mut derive =
                     Derive::new(&self.chunks, &self.index, &self.nested, self.clock.read());
                 if let Err(error) = derive.changes(&mut sink, &write.app, &write.reached()) {
-                    tracing::warn!(app = write.app, %error, "a change was not indexed");
+                    tracing::warn!(app = %write.app, %error, "a change was not indexed");
                 }
                 if let Some(ends) = &write.versions
                     && let Err(error) = derive.versions(&mut sink, &write.app, ends)
                 {
-                    tracing::warn!(app = write.app, %error, "a change's versions were not indexed");
+                    tracing::warn!(app = %write.app, %error, "a change's versions were not indexed");
                 }
                 if let Some(ends) = &write.versions {
                     derive_removed(&mut derive, &mut sink, &write.app, ends, &write.items);

@@ -196,7 +196,7 @@ impl Store for TiloStore {
         if state
             .app
             .as_deref()
-            .is_some_and(|held| held != app && held != tilolang::HOST_APP && !own)
+            .is_some_and(|held| held != app.as_str() && held != tilolang::HOST_APP && !own)
         {
             return Err(invalid("a transaction cannot write resources of two apps"));
         }
@@ -301,7 +301,7 @@ impl Store for TiloStore {
         }
         if state.derived > 0 {
             tracing::error!(
-                app,
+                app = %app,
                 saved = state.saved,
                 derived = state.derived,
                 "an action wrote both the record's resources and derived ones: the derived ones stay unsaved"
@@ -318,7 +318,7 @@ impl Store for TiloStore {
         let gesture = (inner.trials == 0)
             .then(|| inner.burst_gesture(&state, note))
             .flatten();
-        let versioned = app.clone();
+        let versioned = app.to_string();
         let (action_id, args) = published_name(note);
         // A change is one app's, and the record stores each edit under the app its resource is
         // of: what the change wrote of another — a notice of the host's, riding in the change
@@ -331,7 +331,7 @@ impl Store for TiloStore {
             })
             .collect();
         let action = DynAction {
-            app,
+            app: app.to_string(),
             kind,
             action_id,
             args,
@@ -458,7 +458,7 @@ impl Store for TiloStore {
         self.refresh(ty);
         let inner = self.held();
         let schema = lookup(ty).ok_or_else(|| not_found(format!("type {ty}")))?;
-        let Some(view) = inner.view(&schema.app) else {
+        let Some(view) = inner.view(schema.app.as_str()) else {
             return Err(StoreError::Backend(format!(
                 "the index of {} is being built",
                 schema.app
@@ -483,7 +483,7 @@ impl Store for TiloStore {
         self.refresh(ty);
         let inner = self.held();
         let schema = lookup(ty).ok_or_else(|| not_found(format!("type {ty}")))?;
-        let Some(view) = inner.view(&schema.app) else {
+        let Some(view) = inner.view(schema.app.as_str()) else {
             return Err(StoreError::Backend(format!(
                 "the index of {} is being built",
                 schema.app

@@ -20,6 +20,7 @@ use std::collections::BTreeMap;
 
 use crate::chunk::{ChunkNo, Chunks, FIRST};
 use crate::record::DynRecord;
+use tilolang_runtime::ids::AppId;
 use tilolang_runtime::place::{AT_KEY, ITEMS_KEY, Placement};
 use tilolang_runtime::store::VersionKind;
 
@@ -296,6 +297,23 @@ impl DynEdit {
             Self::Chunk { chunk, .. } => Some(*chunk),
             Self::RunChunk { .. } => Some(FIRST),
             Self::In { edit, .. } => edit.chunk(),
+            _ => None,
+        }
+    }
+
+    /// The item this edit writes, when it writes one: the item of a path
+    /// ([`Self::Edit`]), or the item it inserts, places or removes.
+    #[must_use]
+    pub fn item(&self) -> Option<&str> {
+        match self {
+            Self::Edit { edit, .. } => edit.path().iter().find_map(|segment| match segment {
+                Segment::Item(item) => Some(item.as_str()),
+                Segment::Field(_) | Segment::Key(_) | Segment::Cell { .. } => None,
+            }),
+            Self::Insert { item, .. }
+            | Self::Place { item, .. }
+            | Self::RemoveItem { item, .. } => Some(item),
+            Self::Chunk { edit, .. } | Self::In { edit, .. } => edit.item(),
             _ => None,
         }
     }
@@ -1443,7 +1461,7 @@ impl DynAction {
         let located = crate::reads::locate_ref(
             doc,
             None,
-            (&self.app, &root_ty),
+            (&AppId::from(self.app.as_str()), &root_ty),
             &at,
             &crate::items::Nested::default(),
         )

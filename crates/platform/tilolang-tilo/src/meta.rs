@@ -87,6 +87,10 @@ pub trait MetaExt {
 
     /// The kind a package-level action (one with no record parameter) is published under.
     fn package_kind(&self) -> String;
+
+    /// The kind of the record a package keeps its resources in: its first root type's, which its
+    /// surface publishes (`tl.<app>.<Root>`), else the package's own.
+    fn record_kind(&self) -> String;
 }
 
 /// Whether a field's declared type names a resource: a record, or one inside an option.
@@ -355,6 +359,16 @@ impl MetaExt for Meta {
 
     fn package_kind(&self) -> String {
         format!("tl.{}", self.app)
+    }
+
+    fn record_kind(&self) -> String {
+        let root = self.roots.first().and_then(|id| {
+            self.types
+                .iter()
+                .find(|declared| declared.id == *id)
+                .map(|declared| declared.name.as_str())
+        });
+        root.map_or_else(|| self.package_kind(), |name| self.kind_of(name))
     }
 }
 

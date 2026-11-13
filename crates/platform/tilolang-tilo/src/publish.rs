@@ -1045,7 +1045,7 @@ impl Publications {
     fn declared(host: &crate::host::Host, doc: &str) -> Option<(String, String, String)> {
         let (app, type_id) = host.store().resource_of(doc)?;
         host.find_in_packages(|package| {
-            if package.meta.app != app {
+            if *package.meta.app != *app {
                 return None;
             }
             package
@@ -1053,7 +1053,7 @@ impl Publications {
                 .types
                 .iter()
                 .find(|t| t.id == type_id)
-                .map(|t| (app.clone(), t.name.clone(), type_id.clone()))
+                .map(|t| (app.to_string(), t.name.clone(), type_id.clone()))
         })
     }
 

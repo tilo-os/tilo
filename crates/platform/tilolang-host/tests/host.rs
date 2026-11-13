@@ -457,7 +457,7 @@ fn opened_from_own_copy_in(
         handle: Some(person.to_owned()),
     }));
     let _ = manager.poll();
-    let record = InstanceRecord::open_read(manager, None, documents, person).unwrap();
+    let record = InstanceRecord::open_read(manager, None, documents, person, "tl.test").unwrap();
     let mut host = TilolangHost::new(None, wake());
     let kept = host.kept(APP).unwrap();
     let (ours, theirs) = Channel::pair().unwrap();

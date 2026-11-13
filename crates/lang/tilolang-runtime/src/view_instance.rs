@@ -17,7 +17,7 @@ use crate::host_ui::{
     CHOOSE_ACTION, KEEP_ACTION, MARK_SEEN_ACTION, OPEN_ACTION, REVIEW_ACTION, SAVE_ACTION,
     SET_ACTION, THEN_ACTION, UNDO_ACTION,
 };
-use crate::ids::{DocId, ModuleHash, Principal};
+use crate::ids::{AppId, DocId, ModuleHash, Principal};
 use crate::live::{Live, LiveStats};
 use crate::meta::{EffectClass, FieldKind};
 use crate::meta::{Ty, parse_ty};
@@ -940,7 +940,7 @@ impl ViewInstance {
     ) -> Result<EditOutcome, RuntimeError> {
         use crate::delegate::{Invocation, Invoked};
         let invocation = Invocation::Edit {
-            app,
+            app: AppId::from(app),
             target: target.clone(),
             field: field.name.clone(),
             field_id: field.id.clone(),
@@ -1017,7 +1017,7 @@ impl ViewInstance {
             &ctx,
             &ActionInfo {
                 action: "$edit".into(),
-                app: pkg.meta.app.clone(),
+                app: AppId::from(pkg.meta.app.as_str()),
                 class: EffectClass::Undoable,
                 own: view_module == pkg.hash,
                 module: pkg.hash.clone(),

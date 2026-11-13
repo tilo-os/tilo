@@ -5,6 +5,7 @@ use serde_json::json;
 use tilo_actions::{ActionKind, ActionRegistry};
 use tilolang_runtime::{Meta, SourceWords};
 use tilolang_tilo::action::{ACTION_TYPE, DynAction, register_actions};
+use tilolang_tilo::meta::MetaExt as _;
 use tilolang_tilo::publish::{
     ActionTypes, PlanRequest, Planner, publish_package, publish_record, resource_id,
 };
@@ -684,4 +685,72 @@ fields = [{ name = "name", type = "text" }]
         .map(|field| (field.name.as_str(), field.ty.as_str()))
         .collect();
     assert_eq!(fields, [("file", "Text"), ("fields", "List<FormField>")]);
+}
+
+const TASKS_IDS: &str = include_str!("../../../../apps/tl/tasks/app.ids");
+const DISCUSSION: &str = include_str!("../../../../apps/tl/discussion/app.tl");
+const DISCUSSION_IDS: &str = include_str!("../../../../apps/tl/discussion/app.ids");
+
+/// What a window plans is what the workspace must admit: every change an action of the app makes
+/// names a kind and a verb its surface publishes, or the workspace refuses the change and the app
+/// keeps none of it.
+#[test]
+fn the_workspace_admits_what_a_tasks_window_plans() {
+    let (mut replica, packages) = Replica::new(
+        "ada",
+        AutoCommit::new(),
+        &[(DISCUSSION, DISCUSSION_IDS), (TASKS_SOURCE, TASKS_IDS)],
+    );
+    let meta = packages
+        .iter()
+        .find(|package| package.meta.app == "so.tilo.lang.tasks")
+        .expect("the tasks package compiles")
+        .meta
+        .clone();
+    let root = replica.host.root_of(&meta.app).unwrap().id_string();
+    replica.commit();
+    collaboration::app_surface::register_package(&meta.app, &surface_toml(&[&meta]).unwrap());
+    let record = collab_types::Record {
+        room: "workspace",
+        app: &meta.app,
+        record: "r",
+    };
+    let refuse = |replica: &mut Replica, start: &[automerge::ChangeHash]| {
+        let change = replica.doc.save_after(start);
+        collaboration::app_surface::refusal(
+            &record,
+            &collab_types::DocumentMutation::Incremental(change),
+        )
+    };
+    let kinds = package_surfaces(&meta);
+    let new_task = meta
+        .actions
+        .iter()
+        .find(|action| action.name == "new_task")
+        .expect("the tasks publish new_task");
+    let tasks_kind = meta.kind_of("Tasks");
+    assert!(
+        kinds
+            .iter()
+            .find(|surface| surface.kind == tasks_kind)
+            .is_some_and(|surface| surface.verb(&new_task.id).is_some()),
+        "the surface of {tasks_kind} publishes {}",
+        new_task.id
+    );
+    let planned = replica
+        .host
+        .plan(&PlanRequest {
+            app: &meta.app,
+            kind: &tasks_kind,
+            action_id: &new_task.id,
+            resource: Some(&root),
+            args: &serde_json::Map::new(),
+            caller: None,
+            from: None,
+        })
+        .unwrap();
+    replica.commit();
+    let start = replica.doc.get_heads();
+    replica.apply(&planned);
+    assert_eq!(refuse(&mut replica, &start), None);
 }

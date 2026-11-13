@@ -12,6 +12,7 @@
 
 use crate::error::RuntimeError;
 use crate::host_res::to_scalar;
+use crate::ids::AppId;
 use crate::meta::FieldKind;
 use crate::registry::TypeInfo;
 use crate::runtime::Runtime;
@@ -253,7 +254,7 @@ impl Runtime {
                 let info = self.type_of(&ty)?;
                 let new = NewRecord {
                     ty: info.id.clone(),
-                    app: String::new(),
+                    app: AppId::default(),
                     fields: info.specs(),
                 };
                 let applied = self.core.store.borrow_mut().apply(

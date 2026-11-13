@@ -590,7 +590,13 @@ impl Session {
             handle: Some(spec.person.clone()),
         }));
         let _ = manager.poll();
-        let record = InstanceRecord::of(chunks, manager, route.clone(), spec.person.clone());
+        let record = InstanceRecord::of(
+            chunks,
+            manager,
+            route.clone(),
+            spec.person.clone(),
+            "tl.test",
+        );
         let woken = Arc::new(Woken::default());
         let wake: tilolang_tilo::background::Waker = woken.waker();
         let mut host = TilolangHost::new(storage, Arc::clone(&wake));

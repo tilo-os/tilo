@@ -45,13 +45,11 @@ use tilo_render_protocol::channel::Channel;
 use tilo_render_protocol::patch::unix::ChannelTransport;
 use tilolang_tilo::background::Waker;
 use tilolang_tilo::bundle::Bundle;
+use tilolang_tilo::meta::MetaExt as _;
 
 use hosted::{Hosted, Kept, Spec};
 use phrases::Phrases;
 use tilolang_tilo::instance::record::InstanceRecord;
-
-/// The record kind of an app's workspace record: every tilolang package keeps its resources in it.
-pub const RECORD_KIND: &str = tilolang_tilo::RECORD_KIND;
 
 /// The route an instance of `meta`'s package for `person` in `workspace` joins: the person's own
 /// record of the workspace for an app whose records are each member's own (`records: .own`),
@@ -610,7 +608,7 @@ impl TilolangHost {
         }
         let _scope = self.scope.enter();
         let manager = collaboration::CollaborationManager::join_instance(
-            &collaboration::record::RecordKind::new(RECORD_KIND),
+            &collaboration::record::RecordKind::new(bundle.meta.record_kind()),
             broker,
             identity.as_fd(),
             route,
@@ -655,8 +653,13 @@ impl TilolangHost {
             .kept(&records)
             .map_err(|error| AdmitError::Join(error.to_string()))?;
         let _scope = self.scope.enter();
-        let record =
-            InstanceRecord::open_read(manager, read, &kept.documents, spec.person.clone())?;
+        let record = InstanceRecord::open_read(
+            manager,
+            read,
+            &kept.documents,
+            spec.person.clone(),
+            bundle.meta.record_kind(),
+        )?;
         if let Some(change) = opening.change.take() {
             // A change at the record's origin: the record and the package, no instance.
             let applier = hosted::Applier::open(

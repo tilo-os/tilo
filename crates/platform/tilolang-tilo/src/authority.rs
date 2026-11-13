@@ -265,13 +265,17 @@ impl Authority for TiloAuthority {
             .get(&action.action)
             .cloned()
             .unwrap_or_else(|| format!("tl.{}", action.app));
-        let node = TreePath::workspace(workspace).app(&action.app).kind(kind);
+        let node = TreePath::workspace(workspace)
+            .app(&action.app.to_string())
+            .kind(kind);
         // An app whose records are each member's own acts on the record of the person at the
         // window: whoever else invokes is decided as on anyone's own record, refused.
         let own = standing
             .as_ref()
-            .filter(|_| state.own.contains(&action.app))
-            .and_then(|standing| crate::member_record_of(standing.person_id().unwrap_or_default()));
+            .filter(|_| state.own.contains(action.app.as_str()))
+            .and_then(|standing| {
+                crate::member_record_of(&action.app, standing.person_id().unwrap_or_default())
+            });
         let node = match own {
             Some(record) => node.resource(record),
             None => node,
@@ -366,6 +370,8 @@ impl Authority for TiloAuthority {
 
 #[cfg(test)]
 mod tests {
+    use tilolang_runtime::ids::AppId;
+
     use super::*;
     use tilo_action_policy::agent_answers::{self, AnswerScope};
     use tilo_action_policy::{ActionKind, WorkspacePolicy};
@@ -382,7 +388,7 @@ mod tests {
     fn info(class: EffectClass, own: bool) -> ActionInfo {
         ActionInfo {
             action: "remove".to_owned(),
-            app: APP.to_owned(),
+            app: AppId::from(APP),
             class,
             own,
             module: module(),
@@ -550,7 +556,7 @@ mod tests {
         let tasks = ModuleHash("tasks-v2".to_owned());
         let action = |class| ActionInfo {
             action: "remove".to_owned(),
-            app: TASKS.to_owned(),
+            app: AppId::from(TASKS),
             class,
             own: true,
             module: tasks.clone(),
@@ -628,7 +634,7 @@ mod tests {
         );
         // Another app of the workspace is not Todo's.
         let notes = ActionInfo {
-            app: "so.tilo.lang.notes".to_owned(),
+            app: AppId::from("so.tilo.lang.notes"),
             ..action(EffectClass::Undoable)
         };
         assert_eq!(

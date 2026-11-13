@@ -290,7 +290,7 @@ fn window(
         Rc::new(Alone),
         Box::new(app_end),
     );
-    let workspace = InstanceRecord::of(chunks, manager, route.clone(), me);
+    let workspace = InstanceRecord::of(chunks, manager, route.clone(), me, "tl.test");
     Window {
         instance,
         workspace,
@@ -434,6 +434,7 @@ fn a_hundred_thousand_cards_open_and_list_across_their_chunks() {
         }),
         route,
         "ada",
+        "tl.test",
     );
     let per = usize::try_from(chunk::ITEMS).unwrap();
     let numbers: Vec<ChunkNo> = record.chunks().numbers().collect();
@@ -1262,7 +1263,7 @@ fn opened_from_disk(
         handle: Some(me.to_owned()),
     }));
     let _ = manager.poll();
-    InstanceRecord::open(manager, documents, me).unwrap()
+    InstanceRecord::open(manager, documents, me, "tl.test").unwrap()
 }
 
 #[test]
@@ -1401,4 +1402,64 @@ fn a_hundred_thousand_cards_open_over_their_index() {
          opened over the index in {warm:?} holding {held:?}"
     );
     assert!(warm < Duration::from_secs(10), "opened in {warm:?}");
+}
+
+/// A field edited by its id alone, as the door's `edit-text` and a bound input write it: the
+/// edit names the card, not the chunk it is in, and is written where the card is.
+#[test]
+fn a_direct_edit_of_a_card_in_a_chunk_is_written_in_that_chunk() {
+    let (_host, mut docs, meta, root, ids) = board();
+    let inserted = bulk(&mut docs, &meta, &root, 4200);
+    let route = RouteSpec::app(BOARD_APP, uuid::Uuid::new_v4());
+    let wire = Wire::default();
+    let platform = Rc::new(Board {
+        ids: RefCell::new(ids),
+    });
+    let mut ada = window("ada", &route, &platform, &wire, docs.chunks());
+    catch_up(&mut ada);
+
+    let before = ada.workspace.marks();
+    let card = inserted[4150].clone();
+    let text = serde_json::json!("directly edited");
+    let action = tilolang_tilo::publish::edit_action(
+        &meta,
+        "Card",
+        &format!("{root}/{card}"),
+        "text",
+        &text,
+    )
+    .unwrap();
+    assert_eq!(
+        action
+            .edits
+            .iter()
+            .filter_map(DynEdit::chunk)
+            .collect::<Vec<_>>(),
+        Vec::<ChunkNo>::new(),
+        "the edit names no chunk: the record routes it"
+    );
+    assert_eq!(
+        ada.workspace.chunks().chunk_of_item(&card),
+        2,
+        "the card is in chunk 2, where its run put it"
+    );
+    ada.workspace
+        .apply_invoked(
+            &mut ada.instance,
+            &action,
+            &ActionInvoker::actor("ada"),
+            None,
+        )
+        .unwrap();
+    catch_up(&mut ada);
+
+    assert_eq!(moved(&before, &ada.workspace.marks()), [2]);
+    let host = ada.instance.host().unwrap();
+    let left_field = field_id(&meta, "Board", "left");
+    assert_eq!(left(&host, &root, &left_field), inserted);
+    let card_at = ResourceRef::root(&root, board_schema(&meta).id).item(&card, card_type(&meta));
+    assert_eq!(
+        host.store().first_text(&card_at).map(|(text, _)| text),
+        Some("directly edited".to_owned()),
+    );
 }

@@ -64,10 +64,6 @@ pub use tilolang::HOST_APP;
 /// The runtime, for hosts that drive views and read values.
 pub use tilolang_runtime as runtime;
 
-/// The record kind of an app's record in a workspace: every tilolang package keeps its resources
-/// in one. The spelling is what records already on disk carry, so it stays.
-pub const RECORD_KIND: &str = "tilolang.room";
-
 /// Where `meta`'s package keeps its resources for `person` (the lowercase hex of their user root
 /// key): their own record of the workspace when the app declares `records: .own`
 /// (`tilo_action_policy::member_record`), which only that person's devices read or change and
@@ -76,14 +72,16 @@ pub const RECORD_KIND: &str = "tilolang.room";
 /// workspace, so nobody else reads what they keep.
 #[must_use]
 pub fn own_record(meta: &tilolang::PackageMeta, person: &str) -> Option<String> {
-    meta.own_records.then(|| member_record_of(person)).flatten()
+    meta.own_records
+        .then(|| member_record_of(&meta.app, person))
+        .flatten()
 }
 
-/// `person`'s own record of the workspace, the one an app with `records: .own` keeps theirs in;
-/// `None` for a person without a root identity.
+/// `person`'s own record of the app `app` in the workspace; `None` for a person without a root
+/// identity.
 #[must_use]
-pub fn member_record_of(person: &str) -> Option<String> {
-    let id = tilo_action_policy::member_record_id(&person.to_ascii_lowercase(), RECORD_KIND);
+pub fn member_record_of(app: &str, person: &str) -> Option<String> {
+    let id = tilo_action_policy::member_record_id(&person.to_ascii_lowercase(), app);
     tilo_action_policy::member_record(&id)
         .is_some()
         .then_some(id)

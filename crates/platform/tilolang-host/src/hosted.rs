@@ -751,7 +751,12 @@ impl Hosted {
         formats: &Formats,
         wake: Waker,
     ) -> Result<Self, RecordError> {
-        let record = InstanceRecord::open(manager, &kept.documents, spec.person.clone())?;
+        let record = InstanceRecord::open(
+            manager,
+            &kept.documents,
+            spec.person.clone(),
+            bundle.meta.record_kind(),
+        )?;
         Ok(Self::with_record(
             spec, record, bundle, kept, window, phrases, formats, wake,
         ))
@@ -2099,7 +2104,7 @@ fn used_apps(spec: &Spec, bundle: &Bundle, record: &mut InstanceRecord) -> Vec<U
                 .ok()?;
             let route = crate::route_under(&import.meta, records, workspace, &spec.person);
             Some(Used {
-                record: ReadRecord::join(route, record.manager_mut()),
+                record: ReadRecord::join(route, record.manager_mut(), &import.meta.record_kind()),
                 app,
                 moved: false,
             })
@@ -2181,7 +2186,7 @@ fn door_ask(
             }
             // The app's door takes it by the name it publishes it under.
             Some((
-                app.clone(),
+                app.to_string(),
                 subject.id_string(),
                 name.clone(),
                 tilo_actions::remote::InvokeArgument::Json(arguments),
@@ -2206,7 +2211,7 @@ fn door_ask(
                 ("value".to_owned(), value),
             ]);
             Some((
-                app.clone(),
+                app.to_string(),
                 target.id_string(),
                 action.to_owned(),
                 tilo_actions::remote::InvokeArgument::Json(arguments),

@@ -52,6 +52,26 @@ pub fn resource_obj(doc: &Doc, app: &str, id: &str) -> Option<ObjId> {
     })
 }
 
+/// Every resource object of the document `doc`, under every copy of the levels above them a
+/// replica made.
+#[must_use]
+pub fn resource_objects(doc: &Doc) -> Vec<ObjId> {
+    let mut out = Vec::new();
+    for records in crate::containers::reach(doc, &automerge::ROOT, &[RECORDS_KEY]) {
+        for stored in doc.keys(&records) {
+            for app in crate::containers::maps(doc, &records, &stored) {
+                for id in doc.keys(&app) {
+                    if let Ok(Some((automerge::Value::Object(_), obj))) = doc.get(&app, id.as_str())
+                    {
+                        out.push(obj);
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
 /// The ids of the resources the document `doc` holds: the keys below the levels above the
 /// records, under every copy of them a replica made. A chunk of a record's items holds the items
 /// of a few resources of the app, never all of them, so a step of a build reads the items of the

@@ -350,11 +350,11 @@ fn mail_is_each_members_own_record_of_the_workspace() {
     // admitted to; an app that shares its records stays on the workspace's record of the app.
     assert_eq!(
         ada.route.record.as_deref(),
-        Some(format!("member:{ADA}:tilolang.room").as_str())
+        Some(format!("member:{ADA}:so.tilo.lang.mail").as_str())
     );
     assert_eq!(
         bo.route.record.as_deref(),
-        Some(format!("member:{BO}:tilolang.room").as_str())
+        Some(format!("member:{BO}:so.tilo.lang.mail").as_str())
     );
     let counter = compiled(
         "counter",

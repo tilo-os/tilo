@@ -1193,7 +1193,7 @@ impl TiloStore {
         let seed = inner.fresh("migrated:").into_bytes();
         inner.write(&app, vec![edit.clone()], &seed, &[], Moves::default())?;
         let action = DynAction {
-            app: app.clone(),
+            app: app.to_string(),
             kind: format!("tl.{app}.{}", schema.name),
             action_id: migration.to_owned(),
             args: Json::String(doc.to_owned()),
@@ -1249,7 +1249,7 @@ impl TiloStore {
         let seed = inner.fresh("seen:").into_bytes();
         inner.write(&app, edits.clone(), &seed, &touched, (items, placed))?;
         let action = DynAction {
-            app: app.clone(),
+            app: app.to_string(),
             kind: format!("tl.{app}.{}", schema.name),
             action_id: crate::notices::SEEN_ACTION.to_owned(),
             args: Json::Object(
@@ -1520,7 +1520,7 @@ impl TiloStore {
         // and gone at the next start, when the origin writes it again.
         if !schema.derived() {
             let action = DynAction {
-                app: record.app.clone(),
+                app: record.app.to_string(),
                 kind: format!("tl.{}.{}", record.app, schema.name),
                 action_id: crate::action::CREATE_ACTION.to_owned(),
                 args: Json::String(id.to_owned()),
@@ -1830,7 +1830,7 @@ impl Inner {
                     // The index is built anew from the record: what the failed derivation read
                     // of the index it replaces is not what the new one holds, so every resource
                     // of the package is derived again whole, and what a window read of it again.
-                    tracing::warn!(app, %error, "the index of a change was not derived");
+                    tracing::warn!(app = %app, %error, "the index of a change was not derived");
                     wholes.extend(
                         self.index
                             .iter()
@@ -1960,7 +1960,7 @@ impl Inner {
             self.chunks.reread_placement();
         }
         let mut write = LocalWrite {
-            app: app.to_owned(),
+            app: AppId::from(app),
             chunk,
             edit,
             seed: seed.to_vec(),

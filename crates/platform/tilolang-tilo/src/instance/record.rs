@@ -81,6 +81,8 @@ pub struct InstanceRecord {
     chunks: Chunks,
     manager: CollaborationManager,
     route: RouteSpec,
+    /// The kind of the record, as its app publishes it: what every route of it is joined as.
+    kind: String,
     person: String,
     /// The heads of what the workspace was handed, per chunk: a commit sends what follows them.
     /// They move only once the collab client took the change; what it could not take yet (its
@@ -181,7 +183,8 @@ impl InstanceRecord {
         route: RouteSpec,
         person: impl Into<String>,
     ) -> Self {
-        Self::of(Chunks::of(doc), manager, route, person)
+        let kind = format!("tl.{}", route.app_id);
+        Self::of(Chunks::of(doc), manager, route, person, kind)
     }
 
     /// The record `chunks` (the record's own document, chunk [`FIRST`], and whatever else this
@@ -192,8 +195,9 @@ impl InstanceRecord {
         manager: CollaborationManager,
         route: RouteSpec,
         person: impl Into<String>,
+        kind: impl Into<String>,
     ) -> Self {
-        let mut record = Self::holding(chunks, None, manager, route, person.into());
+        let mut record = Self::holding(chunks, None, manager, route, kind.into(), person.into());
         record.join_chunks();
         record
     }
@@ -203,6 +207,7 @@ impl InstanceRecord {
         writers: Option<Writers>,
         manager: CollaborationManager,
         route: RouteSpec,
+        kind: String,
         person: String,
     ) -> Self {
         let mut chunks = chunks;
@@ -218,6 +223,7 @@ impl InstanceRecord {
             chunks,
             manager,
             route,
+            kind,
             person,
             sent,
             joined: BTreeSet::new(),
@@ -263,8 +269,9 @@ impl InstanceRecord {
         manager: CollaborationManager,
         documents: &Rc<dyn DurableStore>,
         person: impl Into<String>,
+        kind: impl Into<String>,
     ) -> Result<Self, RecordError> {
-        Self::open_with(manager, Read::Here, documents, person)
+        Self::open_with(manager, Read::Here, documents, person, kind)
     }
 
     /// [`Self::open`], with the broker's committed read taken off this thread: `read` is what
@@ -282,8 +289,15 @@ impl InstanceRecord {
         )>,
         documents: &Rc<dyn DurableStore>,
         person: impl Into<String>,
+        kind: impl Into<String>,
     ) -> Result<Self, RecordError> {
-        Self::open_with(manager, Read::Taken(read.map(Box::new)), documents, person)
+        Self::open_with(
+            manager,
+            Read::Taken(read.map(Box::new)),
+            documents,
+            person,
+            kind,
+        )
     }
 
     fn open_with(
@@ -291,6 +305,7 @@ impl InstanceRecord {
         read: Read,
         documents: &Rc<dyn DurableStore>,
         person: impl Into<String>,
+        kind: impl Into<String>,
     ) -> Result<Self, RecordError> {
         use collaboration::native_initial::{self, NativeConstruction};
         use collaboration::record::save::{
@@ -363,7 +378,7 @@ impl InstanceRecord {
                 writers.chunks.insert(chunk, writer);
             }
         }
-        let mut record = Self::holding(chunks, Some(writers), manager, route, person);
+        let mut record = Self::holding(chunks, Some(writers), manager, route, kind.into(), person);
         record.governs = governs;
         if handed_nothing {
             record.sent.clear();
@@ -1122,7 +1137,7 @@ impl InstanceRecord {
             }
             self.manager.join_route(
                 self.chunk_route(chunk),
-                collaboration::record::RecordKind::new(crate::RECORD_KIND),
+                collaboration::record::RecordKind::new(self.kind.clone()),
             );
         }
     }
@@ -1339,9 +1354,14 @@ impl InstanceRecord {
     fn parts_of(&self, action: &DynAction) -> BTreeMap<ChunkNo, Vec<DynEdit>> {
         let mut parts: BTreeMap<ChunkNo, Vec<DynEdit>> = BTreeMap::new();
         for edit in &action.edits {
-            let chunk = edit
-                .chunk()
-                .unwrap_or_else(|| self.chunks.chunk(edit.resource()));
+            // An edit that names no chunk is applied where the resource it writes is: an item's,
+            // which its run's chunk holds, else where the manifest places the record.
+            let chunk = edit.chunk().unwrap_or_else(|| {
+                edit.item().map_or_else(
+                    || self.chunks.placement().chunk(edit.resource()),
+                    |item| self.chunks.chunk_of_item(item),
+                )
+            });
             parts.entry(chunk).or_default().push(edit.clone());
         }
         parts
@@ -1653,19 +1673,19 @@ fn chunk_route(route: &RouteSpec, chunk: ChunkNo) -> RouteSpec {
 /// manifest names, and what the workspace committed of it is taken in as it arrives.
 pub struct ReadRecord {
     route: RouteSpec,
+    /// The kind of the record, as its app publishes it.
+    kind: String,
     chunks: Chunks,
     joined: BTreeSet<ChunkNo>,
 }
 
 impl ReadRecord {
     /// The record on `route`, joined through `manager`: held empty until the workspace sends it.
-    pub fn join(route: RouteSpec, manager: &mut CollaborationManager) -> Self {
-        manager.join_route(
-            route.clone(),
-            collaboration::record::RecordKind::new(crate::RECORD_KIND),
-        );
+    pub fn join(route: RouteSpec, manager: &mut CollaborationManager, kind: &str) -> Self {
+        manager.join_route(route.clone(), collaboration::record::RecordKind::new(kind));
         Self {
             route,
+            kind: kind.to_owned(),
             chunks: Chunks::of(Doc::new()),
             joined: BTreeSet::from([FIRST]),
         }
@@ -1744,7 +1764,7 @@ impl ReadRecord {
             }
             manager.join_route(
                 chunk_route(&self.route, chunk),
-                collaboration::record::RecordKind::new(crate::RECORD_KIND),
+                collaboration::record::RecordKind::new(self.kind.clone()),
             );
         }
     }

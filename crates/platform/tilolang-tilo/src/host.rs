@@ -19,6 +19,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use serde_json::Value as Json;
 use tilo_actions::EncodedAction;
 use tilolang::{IdsLock, PackageMeta};
+use tilolang_runtime::ids::AppId;
 use tilolang_runtime::meta::{Meta, Ty, parse_ty};
 use tilolang_runtime::store::NewRecord;
 use tilolang_runtime::value::{ResourceRef, Value, from_json};
@@ -1484,7 +1485,7 @@ impl Host {
         }
         let record = NewRecord {
             ty: ty.to_owned(),
-            app: app.to_owned(),
+            app: AppId::from(app),
             fields: Vec::new(),
         };
         Ok(self.inner.store.create_with_id(&record, &id)?)

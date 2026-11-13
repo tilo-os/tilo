@@ -90,7 +90,11 @@ impl TiloStore {
         };
         let clock = self.clock();
         let inside = self.held();
-        match inside.apps.get(&schema.app).filter(|held| held.ready()) {
+        match inside
+            .apps
+            .get(schema.app.as_str())
+            .filter(|held| held.ready())
+        {
             Some(held) => held
                 .index
                 .next_change(&schema.id, fields, clock, &inside.overlay)
@@ -111,7 +115,7 @@ impl TiloStore {
             let mut inner = self.mutate();
             match inner
                 .apps
-                .get(&schema.app)
+                .get(schema.app.as_str())
                 .filter(|held| held.ready())
                 .map(|held| held.index.refresh(schema, clock))
             {
@@ -131,11 +135,11 @@ impl TiloStore {
         inner.changed();
         match inner
             .apps
-            .get(&schema.app)
+            .get(schema.app.as_str())
             .map(|held| held.index.snapshot())
         {
             Some(Ok(snapshot)) if !snapshot.stats().is_corrupt() => {
-                if let Some(held) = inner.apps.get_mut(&schema.app) {
+                if let Some(held) = inner.apps.get_mut(schema.app.as_str()) {
                     held.snapshot = snapshot;
                 }
             }

@@ -14,8 +14,6 @@ use tilolang::source::{write_catalogue, write_ids};
 use tilolang::{OsEntropy, PackageMeta};
 use tilolang_tilo::bundle::{Bundle, ICON_FILE};
 
-/// The record kind of every tilolang app's workspace record.
-pub const RECORD_KIND: &str = "tilolang.room";
 /// The binary of the tilolang runtime bundle, relative to the bundle.
 pub const RUNTIME_BIN: &str = "bin/tilolang-app";
 /// The tilolang runtime bundle a package built by this tool runs on.
@@ -162,6 +160,7 @@ pub fn manifest_text(
     publisher: &str,
 ) -> String {
     let category = meta.category.as_deref().map_or("Utility", menu_category);
+    let record_kind = tilolang_tilo::meta::MetaExt::record_kind(meta);
     let origins = origins_of(meta);
     let (capabilities, namespaces, net) = sandbox(&origins);
     let mut extra = if meta.icon.is_some() {
@@ -254,7 +253,7 @@ ext = []
         // The app's workspace record, and the workspace's record of each person's own state
         // of it, which every app of the language opens.
         record_kinds = [
-            toml_string(RECORD_KIND),
+            toml_string(&record_kind),
             toml_string(tilolang::PERSONAL_RECORD_KIND),
         ]
         .join(", "),

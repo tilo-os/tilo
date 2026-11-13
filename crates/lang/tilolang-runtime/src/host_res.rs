@@ -15,7 +15,7 @@ use crate::core::{Args, Core, HResult, ret_f64, ret_i32, ret_i64, ret_void, trap
 use crate::engine::Wasm;
 use crate::error::RuntimeError;
 use crate::handles::FrameKind;
-use crate::ids::{ModuleHash, Principal};
+use crate::ids::{AppId, ModuleHash, Principal};
 use crate::meta::{FieldKind, Ty};
 use crate::num::{counter_to_float, float_to_counter};
 use crate::registry::{FieldInfo, TypeInfo};
@@ -866,7 +866,7 @@ impl Core {
         };
         let new = crate::store::NewRecord {
             ty: item_ty.id.clone(),
-            app: String::new(),
+            app: AppId::default(),
             fields: item_ty.specs(),
         };
         // The id it is given is a read like any other: a run that is run again after it waited
