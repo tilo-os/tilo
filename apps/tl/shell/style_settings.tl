@@ -81,8 +81,8 @@ view style_panel(d: Desk) {
     }
 }
 
-/// The chosen style's settings, taking a phone's desk: too little room stands beside a panel
-/// there, so the settings take the desk and close back to it.
+/// The chosen style's settings, taking a phone's desk: a phone's desk has no room beside a panel, so
+/// the settings take the desk and close back to it.
 view style_sheet(d: Desk) {
     let s = shell
     stack(fill, padding: .section) {
