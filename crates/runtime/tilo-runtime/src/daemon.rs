@@ -819,50 +819,12 @@ fn serve_profile<S: RuntimeServices + Send + Sync + 'static>(
         }
     });
     let host = session.action_host()?;
-    let mcp = crate::mcp_http::Config::from_env()?;
-    let search = crate::os_search::start(host.clone(), session.workspace(), session.actor())?;
+    let search = crate::os_search::start(host, session.workspace(), session.actor())?;
     let path = profile.join("native.sock");
     // Session already owns runtime.lock. Only that owner may remove a stale
     // endpoint, and a second --daemon cannot reach this point.
     stages.enter("binding the native endpoint");
     let listener = tilo_files::native::private::bind_socket(&path)?;
-    if let Some(config) = mcp {
-        stages.enter("binding the MCP HTTP endpoint");
-        // What the bearer token alone reaches: the configured workspace on a
-        // self-hosted agent host, and nothing on a hosted deployment.
-        let served = match config.grants {
-            crate::mcp_http::Grants::Optional => {
-                Some(session.mcp_workspace(config.workspace.as_deref())?)
-            }
-            crate::mcp_http::Grants::Required => None,
-        };
-        // Viewer and media are scoped to this profile's private desktop. A
-        // shared-workspace endpoint has only the semantic action door.
-        let private = served.as_deref() == Some(session.workspace());
-        let viewer = if private {
-            crate::viewer::start_from_env(profile)?
-        } else {
-            None
-        };
-        let endpoint = crate::mcp_http::Endpoint::hosted(
-            host,
-            session.actor().to_owned(),
-            served,
-            config.token.clone(),
-            session.persons_devices(),
-            session.joiner(),
-        );
-        endpoint.serve_viewer(viewer);
-        if private {
-            endpoint.serve_media(session.media());
-        }
-        let resolving = Arc::clone(&session);
-        endpoint.serve_workspaces(Arc::new(move |workspace: &str| {
-            resolving.mcp_session_factory(workspace)
-        }))?;
-        let bound = crate::mcp_http::spawn(&config, endpoint)?;
-        tracing::info!(%bound, "MCP HTTP endpoint listening");
-    }
     stages.enter("answering the status probe");
     drop(stages);
     let status = Status {

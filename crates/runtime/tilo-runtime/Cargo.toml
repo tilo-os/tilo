@@ -58,9 +58,6 @@ ed25519-dalek.workspace = true
 # The random key sealing the channel state.
 getrandom.workspace = true
 hex.workspace = true
-http-body-util = "0.1.3"
-hyper = { version = "1.8.1", features = ["http1", "server"] }
-hyper-util = { version = "0.1.20", features = ["tokio"] }
 futures-util.workspace = true
 # The endpoint joined rooms sync over, keyed by this device's key.
 iroh.workspace = true

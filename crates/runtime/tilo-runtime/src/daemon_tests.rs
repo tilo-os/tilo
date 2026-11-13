@@ -851,7 +851,7 @@ fn a_result_another_process_was_handed_opens_through_the_action_host() {
 /// answer while two invokes of the same connection wait.
 #[test]
 fn native_socket_serves_parallel_requests() {
-    use crate::mcp_http::tests::settle_tests::{GatedHost, overlapping_lines};
+    use crate::mcp_test_hosts::{GatedHost, overlapping_lines};
     let host = GatedHost::default();
     let search = std::sync::Arc::new(tilo_os_search::OsSearch::new(
         std::sync::Arc::new(host.clone()),

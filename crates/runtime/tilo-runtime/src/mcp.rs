@@ -666,10 +666,6 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         Ok(Self::from_caller(host, workspace, actor, caller))
     }
 
-    pub(crate) fn audience_matches(&self, workspace: &str, actor: &str) -> bool {
-        self.workspace == workspace && self.actor == actor
-    }
-
     fn from_caller(host: H, workspace: String, actor: String, caller: Caller) -> Self {
         Self {
             host: std::sync::Arc::new(host),
@@ -3489,6 +3485,12 @@ fn tilo_tools() -> Vec<Value> {
 #[cfg(test)]
 #[path = "mcp_open_tests.rs"]
 mod open_tests;
+#[cfg(test)]
+#[path = "mcp_serve_tests.rs"]
+mod serve_tests;
+#[cfg(test)]
+#[path = "mcp_settle_tests.rs"]
+mod settle_tests;
 #[cfg(test)]
 #[path = "mcp_tests.rs"]
 mod tests;

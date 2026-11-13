@@ -102,10 +102,6 @@ pub struct Standalone {
     /// The agent doors of the person's other devices, dialed from this
     /// runtime's endpoint as the device its store certifies.
     remote_doors: Arc<crate::remote_door::Doors>,
-    /// The person's devices, as this runtime's store of them holds them: who a
-    /// grant certificate must belong to for the MCP endpoint, and whether it
-    /// still holds.
-    persons_devices: Arc<dyn crate::remote_door::PersonsDevices>,
     _lock: advisory_lock::FileLock,
 }
 
@@ -266,7 +262,6 @@ impl Standalone {
             policy_origin,
             broker,
             remote_doors: remote_doors(&joined, &personal.sync),
-            persons_devices: Arc::new(PersonalDevices::new(personal.sync.clone())),
             joined,
             _channels: channel_keys,
             _identity: identity_broker,
@@ -548,10 +543,6 @@ impl RuntimeServices for Standalone {
 
     fn remote_doors(&self) -> Option<Arc<crate::remote_door::Doors>> {
         Some(Arc::clone(&self.remote_doors))
-    }
-
-    fn persons_devices(&self) -> Option<Arc<dyn crate::remote_door::PersonsDevices>> {
-        Some(Arc::clone(&self.persons_devices))
     }
 }
 

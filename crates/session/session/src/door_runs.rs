@@ -1,6 +1,6 @@
 //! The runs the agent door's connections work in.
 //!
-//! An agent acts only inside a run its person started (`docs/architecture/agent-host.md`): a turn
+//! An agent acts only inside a run its person started: a turn
 //! of a conversation it takes part in ([`crate::conversations`]), or — for a client the person
 //! admitted at the agent door — the run that admission starts. Each admitted connection (a
 //! program of this login, one inside an environment, an agent from another of the person's

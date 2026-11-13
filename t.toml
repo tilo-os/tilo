@@ -2700,17 +2700,6 @@ outputs = ["/target/publish/relay/binaries/**"]
 timeout_secs = 7200
 default = false
 
-# The agent host's programs, its own check so a change to one image's crates leaves the other's
-# image keyed as it was: the agent host's image packages what this leaves, too.
-[[check]]
-name = "agent-host-binaries"
-run = "bash tools/ci/publish/server-binaries.sh agent-host /target/publish/agent-host/binaries"
-env = { CARGO_BUILD_JOBS = "8" }
-requires = ["arch=x86_64"]
-outputs = ["/target/publish/agent-host/binaries/**"]
-timeout_secs = 7200
-default = false
-
 [[check]]
 name = "image-relay"
 run = "bash tools/ci/publish/relay-build.sh /target/publish/rpm-snapshot/x86_64 /target/publish/rpms/x86_64 /target/publish/relay/binaries /target/publish/relay"
@@ -2720,19 +2709,6 @@ requires = ["arch=x86_64"]
 isolation = "vm"
 git = true
 outputs = ["/target/publish/relay/image.oci.tar", "/target/publish/relay/digest", "/target/publish/relay/rpms-source"]
-default = false
-
-# The agent host's image (os/containers/tilo-agent-host): the member and its enroll program on the
-# same base and snapshot as the relay, which it runs beside. Like the relay's it is packaging only.
-[[check]]
-name = "image-agent-host"
-run = "bash tools/ci/publish/agent-host-build.sh /target/publish/rpm-snapshot/x86_64 /target/publish/rpms/x86_64 /target/publish/agent-host/binaries /target/publish/agent-host"
-needs = ["agent-host-binaries", "rpm-snapshot-x86_64", "image-rpms-x86_64"]
-image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
-requires = ["arch=x86_64"]
-isolation = "vm"
-git = true
-outputs = ["/target/publish/agent-host/image.oci.tar", "/target/publish/agent-host/digest", "/target/publish/agent-host/rpms-source"]
 default = false
 
 [[check]]
@@ -3057,7 +3033,7 @@ id_token = ["registry.tilo.so"]
 # and needs no node, build or tag of the other, and an architecture publishes later — dispatched on
 # a node of its own — without republishing what is already published.
 #
-# Every image that installs from RPMs (the relay, the agent host, the servers, the environment
+# Every image that installs from RPMs (the relay, the servers, the environment
 # runtime, the OS image) installs from the published set of its own architecture: rpm-snapshot-ARCH
 # resolves it, verifies its signature, its provenance for that architecture's package set and the
 # image's own architecture, and the build records which set it installed from. An image built from

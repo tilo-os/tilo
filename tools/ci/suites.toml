@@ -280,7 +280,6 @@ inputs = ["os/", ".forgejo/workflows/", "tools/ci/publish/"]
 suites = [
   "os/tests/test_ci_fast_images.py",
   "os/containers/tilo-relay/test-contract.sh",
-  "os/containers/tilo-agent-host/test-contract.sh",
   "os/containers/tilo-lounge/test-entrypoint.sh",
   "os/tests/rpm_snapshot_invariants.sh",
   "os/tests/test_rpm_snapshot_fingerprint.py",
