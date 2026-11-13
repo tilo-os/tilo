@@ -1368,8 +1368,10 @@ mod tests {
         );
 
         // A source outside the marked range is not needed by this export,
-        // even when its bytes are completely unavailable. What the file then
-        // holds is decoded in `tests/export_fidelity.rs`.
+        // even when its bytes are completely unavailable. The destination is
+        // the one the failed export wrote part of and removed, so what it
+        // holds now is counted here; `tests/export_fidelity.rs` decodes the
+        // same export into a destination nothing had written to.
         project.media[1].path = dir
             .path()
             .join("missing.mp4")
@@ -1379,6 +1381,11 @@ mod tests {
         let status = start_export(&project, &settings, output.clone()).join();
         assert!(matches!(status, ExportStatus::Done { .. }), "{status:?}");
         assert!(output.exists(), "the destination took the later export");
+        assert_eq!(
+            decoded_video_frames(&output),
+            9,
+            "0.3 seconds is nine frames, and nothing of the failed export is among them"
+        );
     }
 
     #[test]
@@ -2620,6 +2627,68 @@ mod tests {
             c.out_point = in_point + len;
         }
         p
+    }
+
+    /// How many video frames `path` decodes to, every sample counted to the end of the
+    /// stream: a container's own duration cannot show a duplicated frame or a padded tail.
+    /// The decode graph is the one `tests/export_fidelity.rs` counts with.
+    #[cfg(feature = "gst")]
+    fn decoded_video_frames(path: &std::path::Path) -> usize {
+        use gstreamer::prelude::*;
+
+        struct Stop(gstreamer::Pipeline);
+        impl Drop for Stop {
+            fn drop(&mut self) {
+                let _ = self.0.set_state(gstreamer::State::Null);
+            }
+        }
+
+        let uri = gstreamer::glib::filename_to_uri(path, None).expect("absolute video URI");
+        let pipeline = gstreamer::parse::launch(&format!(
+            "uridecodebin uri=\"{uri}\" ! videoconvert ! videoscale ! \
+             video/x-raw,format=RGBA,width=160,height=90,pixel-aspect-ratio=1/1 ! \
+             appsink name=frames sync=false max-buffers=2"
+        ))
+        .expect("video decode graph")
+        .downcast::<gstreamer::Pipeline>()
+        .expect("decode pipeline");
+        let _stop = Stop(pipeline.clone());
+        let sink = pipeline
+            .by_name("frames")
+            .expect("the graph's sink")
+            .downcast::<gstreamer_app::AppSink>()
+            .expect("the sink is an appsink");
+        let bus = pipeline.bus().expect("the pipeline's bus");
+        pipeline
+            .set_state(gstreamer::State::Playing)
+            .expect("decode video");
+        let deadline = tilo_test_env::hang_deadline();
+        let mut frames = 0_usize;
+        loop {
+            assert!(
+                ui::time::now() < deadline,
+                "video decode stalled: {}",
+                path.display()
+            );
+            if sink
+                .try_pull_sample(gstreamer::ClockTime::from_mseconds(200))
+                .is_some()
+            {
+                frames += 1;
+            } else if sink.is_eos() {
+                break;
+            }
+            while let Some(message) = bus.pop() {
+                if let gstreamer::MessageView::Error(error) = message.view() {
+                    panic!(
+                        "video decode failed: {} ({:?})",
+                        error.error(),
+                        error.debug()
+                    );
+                }
+            }
+        }
+        frames
     }
 
     /// Decode `path` and return the picture at `at_secs`, downscaled to a
