@@ -31,31 +31,36 @@ fn assert_finite_rects(widget: &dyn Widget, path: &str) {
     );
 }
 
+/// The first control named `label` on a page ends above `limit`.
+fn assert_first_control_above(root: &dyn Widget, category: Category, label: &str, limit: f64) {
+    let mut targets = Vec::new();
+    named(root, label, &mut targets);
+    let first = targets.first().expect("visible first control");
+    assert!(
+        first.y1 < limit,
+        "{category:?}: first control {first:?} below {limit}"
+    );
+}
+
 #[test]
 fn compact_heading_and_region_layout_stay_balanced() {
     // Each page is laid out once and only read: every check below takes the
-    // window's widget tree by shared reference.
-    let mut accounts = crate::support::window_on(Category::ExternalAccounts, (W, H));
-    let mut region = crate::support::window_on(Category::RegionFormats, (W, H));
-    for (app, category, label, limit) in [
-        (
-            &mut accounts,
+    // window's widget tree by shared reference. One window is open at a
+    // time, so neither page is read beside another window's profile.
+    {
+        let mut app = crate::support::window_on(Category::ExternalAccounts, (W, H));
+        assert_first_control_above(
+            app.harness().root_widget(),
             Category::ExternalAccounts,
             "Add Email",
             370.0,
-        ),
-        (&mut region, Category::RegionFormats, "Language", 220.0),
-    ] {
-        let mut targets = Vec::new();
-        named(app.harness().root_widget(), label, &mut targets);
-        let first = targets.first().expect("visible first control");
-        assert!(
-            first.y1 < limit,
-            "{category:?}: first control {first:?} below {limit}"
         );
     }
 
-    let root = region.harness().root_widget();
+    let mut app = crate::support::window_on(Category::RegionFormats, (W, H));
+    let root = app.harness().root_widget();
+    assert_first_control_above(root, Category::RegionFormats, "Language", 220.0);
+
     let mut last = Vec::new();
     named(root, "First day of week", &mut last);
     let mut preview = Vec::new();
