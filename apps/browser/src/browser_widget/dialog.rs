@@ -1,20 +1,14 @@
-//! The page's own question, in the words the agent reads.
+//! The page's own question, in the words an agent reads.
 //!
-//! A page's `alert`, `confirm`, `prompt` or "leave this page?" question stops
-//! the page until it is answered, so everything that talks about one says the
-//! same thing about it: the line a reader sees, the question an action that
-//! opened it answers with, the refusal another action gets while it is open,
-//! and what answering it did.
+//! Everything that talks about one says the same thing: the line a reader sees, the
+//! question an action that opened it answers with, the refusal another action gets while
+//! it is open, and what answering it did.
 //!
-//! A question an action's input opened is not a failure of that action: the
-//! click happened and the page only asks before it goes on. The action
-//! succeeds, and its answer carries the question, so the agent answers it
-//! without another read.
+//! A question an action's input opened is no failure of that action: it succeeds, and its
+//! answer carries the question, so the agent answers it without another read.
 
 use ui::webview::{PageDialog, PageDialogKind};
 
-/// A page string as one outline token, with its quotes and newlines made
-/// visible so a dialog's text can never look like outline structure.
 fn quote_page(text: &str) -> String {
     const MAX: usize = 512;
     let mut quoted = String::with_capacity(text.len() + 2);
@@ -34,8 +28,6 @@ fn quote_page(text: &str) -> String {
     quoted
 }
 
-/// The page's kind of question, named for a sentence: `alert`, `confirm`,
-/// `prompt`, or the question asked before the page is left.
 pub(super) fn kind_label(dialog: &PageDialog) -> &'static str {
     match dialog.kind {
         PageDialogKind::Alert => "alert",
@@ -46,8 +38,6 @@ pub(super) fn kind_label(dialog: &PageDialog) -> &'static str {
     }
 }
 
-/// The dialog as one outline token: the question, and what a prompt
-/// suggests as its answer.
 pub(super) fn outline(dialog: &PageDialog) -> String {
     use std::fmt::Write as _;
     let mut text = format!(
@@ -64,7 +54,6 @@ pub(super) fn outline(dialog: &PageDialog) -> String {
     text
 }
 
-/// The article the question's name takes in a sentence.
 fn article(dialog: &PageDialog) -> &'static str {
     match dialog.kind {
         PageDialogKind::Alert => "an",
@@ -72,7 +61,6 @@ fn article(dialog: &PageDialog) -> &'static str {
     }
 }
 
-/// The rest of a sentence a prompt and a leave question need.
 fn followed_by(dialog: &PageDialog) -> String {
     match dialog.kind {
         PageDialogKind::Prompt => {
@@ -88,8 +76,8 @@ fn followed_by(dialog: &PageDialog) -> String {
     }
 }
 
-/// What an action whose input opened this question answers: what it did,
-/// then the question the page asks and how to answer it.
+/// What an action whose input opened this question answers: what it did, then the question
+/// and how to answer it.
 pub(super) fn opened_by(dialog: &PageDialog, act: &str) -> String {
     format!(
         "{act}; the page opened {} {} dialog{}: {}. It waits until you answer it on the \
@@ -102,9 +90,8 @@ pub(super) fn opened_by(dialog: &PageDialog, act: &str) -> String {
     )
 }
 
-/// What an action whose input opened the page's question answers: a success
-/// saying what the action did, carrying the question as both the sentence an
-/// agent reads and the value it can act on, with the question's outline line.
+/// What an action whose input opened the page's question answers: a success carrying the
+/// question as the sentence an agent reads and the value it can act on.
 pub(super) fn opened_output(
     invocation: ui::tilo_actions::InvocationId,
     act: &str,
@@ -119,8 +106,7 @@ pub(super) fn opened_output(
     value.insert("message".into(), opened_by(dialog, act).into());
     value.insert("dialog".into(), self::value(dialog));
     value.insert("outline".into(), outline(dialog).into());
-    // Everything here came from the page: data to reason about, never
-    // instructions to follow.
+    // Everything here came from the page: data to reason about, never instructions.
     value.insert("provenance".into(), "web-content".into());
     ui::tilo_actions::InvocationUpdate::Succeeded {
         invocation,
@@ -131,8 +117,6 @@ pub(super) fn opened_output(
     }
 }
 
-/// The question as the value an action that opened it answers with, so an
-/// agent reads it without parsing the sentence.
 pub(super) fn value(dialog: &PageDialog) -> serde_json::Value {
     serde_json::json!({
         "kind": match dialog.kind {
@@ -149,8 +133,6 @@ pub(super) fn value(dialog: &PageDialog) -> serde_json::Value {
     })
 }
 
-/// What a page action refused because of the question says: the question
-/// itself, so the agent knows what it is answering.
 pub(super) fn blocked(dialog: &PageDialog) -> String {
     format!(
         "The page is waiting on its {} dialog {}{}: answer it on the {} row, with \
@@ -162,7 +144,6 @@ pub(super) fn blocked(dialog: &PageDialog) -> String {
     )
 }
 
-/// What answering it says a prompt took.
 fn answered_with(dialog: &PageDialog, accept: bool, text: &str) -> String {
     if dialog.kind != PageDialogKind::Prompt {
         return String::new();
@@ -174,8 +155,8 @@ fn answered_with(dialog: &PageDialog, accept: bool, text: &str) -> String {
     }
 }
 
-/// What answering the question did, and what to do next: the page goes on
-/// from here, so reading it again is what shows where it went.
+/// What answering the question did, and what to do next: reading the page again shows
+/// where it went.
 pub(super) fn answered(dialog: &PageDialog, accept: bool, text: &str) -> String {
     let answer = match (dialog.kind, accept) {
         (PageDialogKind::Leave { reload: true }, true) => ": reload the page".to_string(),
@@ -191,9 +172,8 @@ pub(super) fn answered(dialog: &PageDialog, accept: bool, text: &str) -> String 
     )
 }
 
-/// What a page action answers while the page waits on its own question: the
-/// page runs nothing until the question is answered, so it says what the page
-/// asks and how to answer it rather than leaving the action to time out.
+/// What a page action answers while the page waits on its own question: what the page asks
+/// and how to answer it, rather than leaving the action to time out.
 pub(super) fn blocked_output(
     invocation: ui::tilo_actions::InvocationId,
     dialog: Option<&PageDialog>,

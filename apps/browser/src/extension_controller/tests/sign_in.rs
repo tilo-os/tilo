@@ -17,7 +17,6 @@ fn an_extension_signs_in_on_a_page_shown_over_the_window() {
         interactive: true,
         flow: 1,
     };
-    // Only an extension that runs.
     assert!(!controller.on_engine_event(sign_in("stranger"), &shared));
     assert!(window.created_tabs().is_empty());
 
@@ -48,7 +47,6 @@ fn an_extension_signs_in_on_a_page_shown_over_the_window() {
         Some(Panel::Popup { site, .. }) => site.clone(),
         _ => None,
     };
-    // It is as large as a panel gets, and names the site it is on.
     assert_eq!(controller.page_width(2000.0), Some(POPUP_MAX.0));
     assert_eq!(site(&controller).as_deref(), Some("accounts.example"));
     created[0].push_event(WebViewEvent::UriChanged(
@@ -56,12 +54,10 @@ fn an_extension_signs_in_on_a_page_shown_over_the_window() {
     ));
     assert!(controller.sync(&shared, ""));
     assert_eq!(site(&controller).as_deref(), Some("login.example"));
-    // The sign-in ended: the engine closed its page, and the panel goes.
     created[0].push_event(WebViewEvent::TabClosed);
     assert!(controller.sync(&shared, ""));
     assert!(controller.panel.is_none());
 
-    // One that may not ask the person loads out of sight: no panel.
     let quiet = |flow: u32| WebViewEvent::ExtensionSignIn {
         id: "signer".into(),
         url: page.into(),
@@ -82,7 +78,6 @@ fn an_extension_signs_in_on_a_page_shown_over_the_window() {
             WebViewCommand::Navigate(page.into()),
         ]
     );
-    // A few at most; the engine closes each as its sign-in ends.
     for flow in 3..8 {
         controller.on_engine_event(quiet(flow), &shared);
     }
@@ -126,11 +121,9 @@ fn the_page_that_asked_for_a_sign_in_waits_beneath_it_and_shows_again() {
     assert!(controller.on_engine_event(sign_in("signer", 1), &shared));
     let first: SharedEngine = window.created_tabs()[0].clone();
     assert!(shows(&controller, &first));
-    // A second sign-in of the extension shows over the same page.
     assert!(controller.on_engine_event(sign_in("signer", 2), &shared));
     let second: SharedEngine = window.created_tabs()[1].clone();
     assert!(shows(&controller, &second));
-    // What it asks for meanwhile is still the window's.
     settings.push_new_tab_request("https://signer.example/welcome");
     controller.sync(&shared, "");
     let beneath: SharedEngine = settings.clone();
@@ -139,12 +132,10 @@ fn the_page_that_asked_for_a_sign_in_waits_beneath_it_and_shows_again() {
         "drained, not piling up"
     );
     assert!(shows(&controller, &second));
-    // The sign-in ended and its page closed: the settings page shows again.
     window.created_tabs()[1].push_event(WebViewEvent::TabClosed);
     assert!(controller.sync(&shared, ""));
     assert!(shows(&controller, &beneath), "the settings page that asked");
 
-    // A page that closed itself while the person signed in stays closed.
     assert!(controller.on_engine_event(sign_in("signer", 3), &shared));
     settings.push_event(WebViewEvent::TabClosed);
     controller.sync(&shared, "");
@@ -165,7 +156,6 @@ fn the_page_that_asked_for_a_sign_in_waits_beneath_it_and_shows_again() {
     assert!(controller.panel.is_none());
 }
 
-/// Whether the panel shows `page`.
 fn shows(controller: &ExtensionController, page: &SharedEngine) -> bool {
     match &controller.panel {
         Some(Panel::Popup { engine, .. }) => Arc::ptr_eq(engine, page),

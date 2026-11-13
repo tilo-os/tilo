@@ -79,7 +79,6 @@ pub fn selection(
     }
 }
 
-/// Private admission stays pending until both the broker and native startup settle.
 pub struct PendingView {
     pub opening: ui::LocalState<Option<String>>,
     id: String,
@@ -136,8 +135,8 @@ impl PendingView {
             if anchor != crate::service_destinations::anchor(&self.id, self.destination.as_ref()) {
                 return Some(Err("This account could not be opened".into()));
             }
-            // A stale public anchor still challenges private Resolve. The
-            // non-authorizing binding cannot grant custody for an absent row.
+            // A stale public anchor still challenges private Resolve: a non-authorizing
+            // binding cannot grant custody for an absent row.
             let binding = selections.iter().find(|v| v.id == self.id).map_or_else(
                 || "unavailable-selection".into(),
                 |selected| selected.binding.clone(),
@@ -321,7 +320,7 @@ impl ServiceView {
         let Some(session) = self.session.clone() else {
             return false;
         };
-        // Retain selected credentials only through initial restart verification;
+        // Retain selected credentials only through the initial restart verification;
         // FlushStore alone does not complete the held destination profile.
         self.status = "importing";
         self.deadline = Some(ui::time::now() + ui::time::Duration::from_secs(45));
@@ -388,8 +387,8 @@ impl ServiceView {
             .as_mut()
             .is_some_and(|profile| profile.complete().is_ok())
         {
-            // Request 2 is the readonly reply from the actual replacement
-            // engine. Cached profile reuse in poll_open never sets this.
+            // The second request's read-only reply comes from the replacement engine; a
+            // reused cached profile in poll_open never sets this.
             self.native_restart_readback_verified = true;
             self.status = "imported-unverified";
             self.engine.send(WebViewCommand::Navigate(
@@ -404,8 +403,7 @@ impl ServiceView {
         }
         true
     }
-    /// Replace the `WebView` engine only after the off-frame restart has settled.
-    /// The verification reply belongs to that replacement engine's event queue.
+    /// Replace the engine only after the off-frame restart has settled.
     pub fn poll_engine(&mut self) -> Option<SharedEngine> {
         let restart = self.restart.as_mut()?;
         if let Ok((engine, profile)) = restart.poll()? {
@@ -510,7 +508,6 @@ impl ServiceView {
         };
         cleanup.finish()
     }
-    /// A public observation of the engine's navigation, not remote login success.
     pub fn destination_navigation_observed(&self, engine_uri: &str) -> bool {
         self.status == "imported-unverified"
             && self
@@ -619,8 +616,8 @@ fn cleanup_after_native_exit(
     native::cleanup_after_native_exit(engine, profile, done, native_wake(waker))
 }
 
-/// Exercise the consumer's actual private-secret and public-action codecs.
-/// Native engine persistence is qualified separately against its signed host.
+/// Exercise the consumer's private-secret and public-action codecs. Native engine
+/// persistence is qualified against its signed host separately.
 pub fn service_session_capability() -> Result<serde_json::Value, String> {
     let failure = || "Selected account consumer contract failed".to_owned();
     for selection in tilo_browser_sessions::probe_service_session_codecs()? {
@@ -768,9 +765,8 @@ mod lifecycle_tests {
     struct ReapFixture(std::sync::Arc<ui::webview::chromium::ChromiumEngine>);
     impl Drop for ReapFixture {
         fn drop(&mut self) {
-            // A receiver assertion can unwind while its cleanup worker owns the
-            // supervisor join. Preserve TempDir until the public stop operation
-            // observes actual reaping, without replacing the original failure.
+            // A receiver assertion can unwind while its cleanup worker owns the supervisor
+            // join: preserve the TempDir until the public stop operation observes reaping.
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(40);
             while self.0.shutdown_service_session().is_err() && std::time::Instant::now() < deadline
             {
@@ -792,8 +788,8 @@ mod lifecycle_tests {
         }
     }
 
-    // Fallible lifecycle tests report failed checks as errors, including the
-    // compared values, so fixture errors and invariant failures share one path.
+    // Fallible lifecycle tests report failed checks as errors, with the compared values, so
+    // fixture errors and invariant failures share one path.
     macro_rules! require {
         ($condition:expr $(, $message:literal)? $(,)?) => {
             if !$condition {
@@ -849,8 +845,8 @@ mod lifecycle_tests {
         receipt_requires_restart_verification(Service::Slack, false)
     }
 
-    // Exercises the real Browser lifecycle and real owned subprocess/restart.
-    // The wire peer is a fixture, not proof of native CEF/provider acceptance.
+    // Exercises the real lifecycle, subprocess and restart. The wire peer is a fixture, not
+    // proof of native acceptance.
     fn receipt_requires_restart_verification(
         service: Service,
         verify_imported: bool,
@@ -1012,8 +1008,8 @@ while True:
                 });
             first.is_some()
         });
-        // The old child is held in its shutdown: applying the receipt returns
-        // while it is still alive, so it never waits on the restart.
+        // The old child is held in its shutdown: applying the receipt returns while it is
+        // still alive, so it never waits on the restart.
         let hold = path
             .parent()
             .ok_or("profile has no parent")?
@@ -1335,8 +1331,8 @@ while True:
                 });
             reply.is_some()
         });
-        // The child is held in its shutdown: the receiver answers while it
-        // is still alive, so it never blocks paint on native shutdown.
+        // The child is held in its shutdown: the receiver answers while it is still alive,
+        // so paint never blocks on native shutdown.
         let hold = path
             .parent()
             .ok_or("profile has no parent")?
@@ -1369,7 +1365,6 @@ while True:
             "close admitted before native child exited"
         );
         let doc = ui::automerge::AutoCommit::new();
-        // Still held: a sync that waited for the child would never return.
         window.0.sync(&doc, &ui::automerge::ROOT);
         std::fs::remove_file(&hold)?;
         let reports = window.0.close_components();

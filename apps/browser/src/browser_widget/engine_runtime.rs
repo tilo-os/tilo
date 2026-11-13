@@ -1,24 +1,17 @@
-//! The engine this window browses with: which runtime is live, and what the
-//! page area shows a person when it did not start.
+//! The engine this window browses with: which runtime is live, and what the page area
+//! shows a person when it did not start.
 //!
-//! There is no simulated page: live browsing runs the Chromium engine runtime,
-//! and a window without one says so instead of inventing pixels. The engine
-//! is a runtime Browser requires: it installs and updates with Browser, and
-//! the launcher refuses to start Browser without it. So a window without a
-//! running engine is an engine that failed to start, or a broken install;
-//! either way what a developer needs goes to the log.
+//! There is no simulated page. The engine is a runtime Browser requires, so a window
+//! without a running engine is one that failed to start or a broken install; either way
+//! what a developer needs goes to the log.
 
 use super::{BrowsingMode, SharedEngine};
 use crate::CATALOG;
 use ui::icons::Icon;
 use ui::widget::{Column, EmptyState, Widget};
 
-/// Live browsing runs the Chromium engine runtime
-/// ([`ui::webview::chromium::runtime`]); there is no other engine and no
-/// simulated page. `TILO_BROWSER_PAINT=1` draws its pages from the paint
-/// stream (the engine's layout as a display list, drawn by this toolkit)
-/// instead of its pixels: what a web client of this host sees. Either way the
-/// session can share the page as that stream.
+/// Live browsing runs the Chromium engine runtime ([`ui::webview::chromium::runtime`]);
+/// `TILO_BROWSER_PAINT=1` draws its pages from the paint stream instead of its pixels.
 ///
 /// Returns the engine and whether it failed to start.
 pub(super) fn default_engine(mode: BrowsingMode) -> (SharedEngine, bool) {
@@ -33,16 +26,14 @@ pub(super) fn default_engine(mode: BrowsingMode) -> (SharedEngine, bool) {
     if std::env::var("TILO_BROWSER_PAINT").as_deref() == Ok("1") {
         return (ui::webview::paint::PaintEngine::new(engine), false);
     }
-    // Drawn from pixels here; captured as a display list only while the
-    // session shares the window with someone watching (a web member).
+    // Drawn from pixels here; captured as a display list only while the session shares the
+    // window with someone watching.
     (ui::webview::paint::PaintEngine::streaming(engine), false)
 }
 
-/// Deterministic rendering is confined to `new_headless`.
 fn native_engine(mode: BrowsingMode) -> (SharedEngine, bool) {
     if let Err(missing) = ui::webview::chromium::runtime::locate() {
-        // Browser requires the engine, so installing or updating it brought
-        // the engine and the launcher would not have started it without:
+        // Browser requires the engine, and the launcher would not have started it without:
         // this is a broken install or a run outside the launcher.
         tracing::error!(
             hint = %missing.developer_hint(),
@@ -69,11 +60,9 @@ fn native_engine(mode: BrowsingMode) -> (SharedEngine, bool) {
     engine_or_error(started)
 }
 
-/// The fresh profile a window of `mode` browses on, its own and removed
-/// with it: a private window's is the process's private root, which also
-/// holds what else it keeps until it closes; a visitor window's is one made
-/// for its engine alone, beside the person's own profile and sharing
-/// nothing with it, so none of their cookies or sign-ins reach its pages.
+/// The fresh profile a window of `mode` browses on, its own and removed with it: a private
+/// window's is the process's private root; a visitor window's is made for its engine
+/// alone, beside the person's profile and sharing nothing with it.
 fn own_profile_root(mode: BrowsingMode) -> Result<std::path::PathBuf, String> {
     match mode {
         BrowsingMode::Private => crate::storage::explicit_root()
@@ -84,8 +73,7 @@ fn own_profile_root(mode: BrowsingMode) -> Result<std::path::PathBuf, String> {
     }
 }
 
-/// The started engine, or one that answers with the failure, and whether it
-/// failed.
+/// The started engine, or one that answers with the failure, and whether it failed.
 pub(super) fn engine_or_error(result: Result<SharedEngine, String>) -> (SharedEngine, bool) {
     match result {
         Ok(engine) => (engine, false),
@@ -102,9 +90,8 @@ fn failed_engine() -> SharedEngine {
     )
 }
 
-/// An engine that renders nothing and answers navigation with the failure.
-/// A private window's disposable root is released at once: nothing will
-/// ever write to it.
+/// An engine that renders nothing and answers navigation with the failure. A private
+/// window's disposable root is released at once.
 pub(super) fn unavailable_engine(mode: BrowsingMode) -> SharedEngine {
     if mode.is_private()
         && let Some(root) = crate::storage::explicit_root()
@@ -114,8 +101,6 @@ pub(super) fn unavailable_engine(mode: BrowsingMode) -> SharedEngine {
     failed_engine()
 }
 
-/// The page area while the engine is not running: what happened, and what a
-/// person can do about it.
 pub(super) fn engine_failed_state() -> Box<dyn Widget> {
     let state = EmptyState::new(ui::webview::chromium::runtime::FAILED_MESSAGE)
         .with_icon(Icon::Info)
@@ -129,9 +114,8 @@ pub(super) fn engine_failed_state() -> Box<dyn Widget> {
     )
 }
 
-/// The engine a test's next live window drives instead of the native one,
-/// so a test can run Browser in its real app host without starting a
-/// browser process.
+/// The engine a test's next live window drives instead of the native one, so a test can
+/// run Browser in its real app host without starting a browser process.
 #[cfg(test)]
 pub(crate) mod test_window_engine {
     use std::cell::RefCell;
@@ -142,7 +126,6 @@ pub(crate) mod test_window_engine {
         static NEXT: RefCell<Option<SharedEngine>> = const { RefCell::new(None) };
     }
 
-    /// The next live window on this thread drives `engine`.
     pub(crate) fn install(engine: SharedEngine) {
         NEXT.with_borrow_mut(|next| *next = Some(engine));
     }
@@ -156,10 +139,6 @@ pub(crate) mod test_window_engine {
 mod tests {
     use super::*;
 
-    /// A window opened for an agent browses on a profile made for it alone:
-    /// a fresh directory Browser owns and removes, never the person's
-    /// profile, so none of their cookies or sign-ins reach its pages, and
-    /// never another window's.
     #[test]
     fn a_visitor_window_browses_on_a_fresh_profile_of_its_own() {
         let first = own_profile_root(BrowsingMode::Visitor).expect("a visitor's profile");

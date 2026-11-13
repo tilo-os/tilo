@@ -1,14 +1,10 @@
-//! Extensions in the browser window: the Web Store install offer, the
-//! toolbar's action buttons and popups, and the Library page's manager.
+//! Extensions in the window: the Web Store install offer, the toolbar's action
+//! buttons and popups, and the Library page's manager.
 //!
-//! The controller owns no widget state the document needs; it is the
-//! window's local, device-only view of the profile's extensions. Interface
-//! closures queue `Command`s, `sync` runs them and starts the slow parts
-//! (download, verify, unpack) on worker threads whose results come back
-//! through `Outcome`s, so nothing here blocks a frame. The profile itself
-//! (which extensions are installed, approved and pinned, their manifests and
-//! icons) is read and written on one worker of its own, in order, since the
-//! window may be drawn on the compositor's frame loop.
+//! The controller holds only this device's view of the profile's extensions.
+//! Closures queue a `Command`, `sync` runs it and starts the slow parts on worker
+//! threads whose results come back as `Outcome`s, so nothing blocks a frame. The
+//! profile itself is read and written on one worker of its own.
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -43,34 +39,29 @@ mod side_panel;
 use side_panel::SidePanel;
 pub use side_panel::{SIDE_PANEL_PAGE, SidePanelWidths, side_panel_bounds};
 
-/// Copy with one name in it, as `key` says it.
 fn named(key: &str, name: &str) -> String {
     CATALOG.t_args(key, &[("name", ui::i18n::ArgValue::Text(name.to_owned()))])
 }
 
-/// What the person reads when adding an extension failed, with the
-/// failure's detail kept for the log.
+/// What the person reads when adding an extension failed; the detail is logged.
 fn add_failed(error: &ExtensionError) -> String {
     tracing::warn!(%error, "an extension could not be added");
     error.message()
 }
 
-/// A refused change to an extension as the person reads it: `key`, with
-/// `args`. The failure's detail goes to the log, not the sentence.
+/// A refused change as the person reads it: `key` with `args`; the detail is
+/// logged, not shown.
 fn refusal(error: &ExtensionError, key: &str, args: &[(&str, ui::i18n::ArgValue)]) -> String {
     tracing::warn!(%error, key, "a change to an extension failed");
     CATALOG.t_args(key, args)
 }
 
-/// An extension popup's size before its page says how big it is, in
-/// logical pixels: as wide as a panel, and short, because a page reports at
-/// least the view it is laid out in, so a popup can only grow to its page.
+/// An extension popup's size before its page says, in logical pixels: a page
+/// reports at least the view it is laid out in, so a popup only ever grows.
 const POPUP_SIZE: (f32, f32) = (360.0, 120.0);
-/// The largest popup, as in Chrome.
 const POPUP_MAX: (f32, f32) = (800.0, 600.0);
-/// How wide an extension's side panel beside the page stands in `theme`: a
-/// list panel's width, about as wide as Chrome's, which extensions lay their
-/// panels out for.
+/// How wide an extension's side panel sits: a list panel's width, about Chrome's,
+/// which extensions lay their panels out for.
 #[must_use]
 pub fn side_panel_width(theme: &ui::theme::Theme) -> f32 {
     theme.tokens.metrics.panel_width_list
@@ -79,49 +70,35 @@ pub fn side_panel_width(theme: &ui::theme::Theme) -> f32 {
 const ADD_BUTTON: &str = "browser.extension.add";
 const MENU_BUTTON: &str = "browser.extensions.menu";
 
-/// The window bar's action ids: the Web Store offer, the prefix of an item
-/// opening one extension's popup, and of an item of one extension's button
-/// menu (followed by the extension's id and the item's key).
 const BAR_ADD: &str = "extension-add";
 const BAR_OPEN: &str = "extension-open:";
 const BAR_MENU: &str = "extension-menu:";
 /// Chrome's extension ids: 32 letters.
 const EXTENSION_ID_LEN: usize = 32;
-/// The prefix of an item showing or hiding one extension's side panel.
 const BAR_SIDE_PANEL: &str = "extension-side-panel:";
 
-/// Something the interface asked for.
 #[derive(Debug, Clone)]
 enum Command {
-    /// Fetch a Web Store item and show its permissions.
     Fetch(String),
-    /// Read a package file and show its permissions.
     StageFile(PathBuf),
-    /// Install what is being offered.
     Confirm,
     Cancel,
     Enable(String),
     Disable(String),
     Remove(String),
-    /// Take back what the person allowed the extension after it was added.
     Revoke(String),
     Pin(String, bool),
     OpenAction(String),
-    /// Show an extension's settings page.
     OpenSettings(String),
-    /// Words for an extension's keyword in the address, as Enter sends them.
     Send(String, String),
     ClosePanel,
-    /// Choose an item of an extension's button menu: (extension, key).
     ChooseMenuItem(String, String),
-    /// Show an extension's side panel beside the page, or close it.
     OpenSidePanel(String),
     CloseSidePanel(String),
 }
 
 /// The commands of a button menu, depth first, each with whether it can be
-/// chosen now: the rows of a menu one level deep. A disabled submenu's
-/// commands cannot be.
+/// chosen now; a disabled submenu's cannot.
 fn menu_commands<'a>(
     items: &'a [ExtensionMenuItem],
     enabled: bool,
@@ -140,9 +117,9 @@ fn menu_commands<'a>(
     }
 }
 
-/// The extensions whose badges the window shows, so whose state is read:
-/// in a Tilo window's bar every extension with an action is an item with its
-/// badge; a window of its own shows only the pinned ones in its row.
+/// The extensions whose badges the window shows, and so whose state it reads: in
+/// a Tilo window every extension with an action; in a window of its own only the
+/// pinned ones.
 fn badges_shown(installed: &[Installed], hosted: bool) -> Vec<String> {
     installed
         .iter()
@@ -152,10 +129,7 @@ fn badges_shown(installed: &[Installed], hosted: bool) -> Vec<String> {
         .collect()
 }
 
-/// One of an extension's own pages the panel shows.
 enum ExtensionPage {
-    /// Its toolbar button's popup at `url`; `clicked` when the person's
-    /// click opened it, which lets the extension script the page.
     Popup {
         id: String,
         url: String,
@@ -165,10 +139,6 @@ enum ExtensionPage {
         id: String,
         url: String,
     },
-    /// A web page it asked the person to sign in on
-    /// (`identity.launchWebAuthFlow`), which the engine watches: the
-    /// sign-in ends, and the page closes, once it goes to the extension's
-    /// own address.
     SignIn {
         id: String,
         url: String,
@@ -176,28 +146,26 @@ enum ExtensionPage {
     },
 }
 
-/// The most sign-ins loaded out of sight at once: an extension checking
-/// whether the person is still signed in, which takes a moment.
+/// The most sign-ins loaded out of sight at once.
 const QUIET_SIGN_INS: usize = 4;
 
-/// The extension a panel's page belongs to, by the key it is shown under:
-/// its popup's is its id, its settings' and a sign-in's carry a prefix.
+/// The extension a panel's page belongs to, by the key it is shown under.
 fn panel_owner(key: &str) -> &str {
     key.strip_prefix("settings:")
         .or_else(|| key.strip_prefix("sign-in:"))
         .unwrap_or(key)
 }
 
-/// The site a sign-in page is on, as the panel names it above the page:
-/// the person types a password there, so they see whose page it is.
+/// The site a sign-in page is on, named above it: the person types a password
+/// there, so they see whose page it is.
 fn sign_in_site(url: &str) -> Option<String> {
     url::Url::parse(url)
         .ok()
         .and_then(|url| url.host_str().map(str::to_owned))
 }
 
-/// What an extension's page in the panel opens (its dashboard, a help page)
-/// opens beside the window, as Chrome opens it in a tab.
+/// What an extension's page opens (its dashboard, a help page) opens beside the
+/// window, as Chrome opens it in a tab.
 fn open_beside(page: &SharedEngine) {
     for (url, background) in page.take_new_tab_requests() {
         if url.starts_with("https://") || url.starts_with("http://") {
@@ -206,32 +174,21 @@ fn open_beside(page: &SharedEngine) {
     }
 }
 
-/// An icon an extension gave its button through `chrome.action.setIcon`.
 #[derive(Clone)]
 enum ActionIcon {
-    /// Its file at this path, read once a read of the profile says where the
-    /// extension's files are: a window opened beside running extensions is
-    /// told their icons as its page opens, before it knows them.
     Unread(String),
-    /// Its file at this path is being read.
     Reading(String),
-    /// What could be drawn of it: nothing when it is no PNG of its own.
     Ready(Option<vello::peniko::ImageData>),
 }
 
-/// A slow step's result.
 enum Outcome {
     Staged(Result<StagedPackage, String>),
     Installed(Result<ExtensionInfo, String>),
-    /// A profile job ran: the change it made refused, if it did, and the
-    /// profile as it then was.
     Profile {
         refused: Option<String>,
         profile: Profile,
     },
-    /// An extension the daily check brought up to date.
     Updated(extensions::Updated),
-    /// An icon file an extension gave its button, read.
     ActionIcon {
         id: String,
         path: String,
@@ -239,28 +196,24 @@ enum Outcome {
     },
 }
 
-/// A change to the profile, made on the profile's worker.
 type ProfileChange = Box<dyn FnOnce() -> Result<(), String> + Send>;
 
-/// One job for the profile's worker: a change to make, if any, then a read
-/// of the profile, reading the icons of extensions not in `known`.
+/// One job for the profile's worker: a change to make, if any, then a read of the
+/// profile that also reads the icons of extensions not in `known`.
 struct ProfileJob {
     change: Option<ProfileChange>,
     known: HashSet<String>,
 }
 
-/// The profile's extensions as one read found them.
 struct Profile {
     infos: Vec<ExtensionInfo>,
     installed: Vec<Installed>,
     wanted: Vec<Wanted>,
-    /// Icons of extensions the read was told it did not know yet.
     icons: Vec<(String, Option<vello::peniko::ImageData>)>,
 }
 
-/// The extensions as the toolbar knows them, beside their records, paired
-/// so the Library's row for each shows its own buttons: one Chromium could
-/// not name (a broken `key`) is left out of both.
+/// The extensions as the toolbar knows them beside their records, so each Library
+/// row shows its own buttons; one Chromium could not name is left out of both.
 fn paired(infos: Vec<ExtensionInfo>) -> (Vec<ExtensionInfo>, Vec<Installed>) {
     infos
         .into_iter()
@@ -275,10 +228,8 @@ fn paired(infos: Vec<ExtensionInfo>) -> (Vec<ExtensionInfo>, Vec<Installed>) {
         .unzip()
 }
 
-/// Read the profile, with the icons of the extensions not in `known`.
 fn read_profile(known: &HashSet<String>) -> Profile {
     let infos = extensions::list_installed();
-    // Each worker runs the tab script before the engine loads it.
     for info in &infos {
         extensions::prepare_tabs(&info.path);
     }
@@ -312,43 +263,35 @@ fn read_profile(known: &HashSet<String>) -> Profile {
     }
 }
 
-/// How often a window asks for the day's update check, which one Browser
-/// on the profile is given each day: an ad blocker's rules come with its
-/// updates, and the one that checked may since have closed.
+/// How often a window asks for the day's update check, which one Browser on the
+/// profile is given each day: the one that checked may since have closed.
 const UPDATE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60 * 60);
 
-/// What the anchored panel shows.
 enum Panel {
     Offer(Box<StagedPackage>),
     Message(String),
     Popup {
         id: String,
         engine: SharedEngine,
-        /// The size its page asked for, once it said.
         size: Option<(f32, f32)>,
-        /// For a sign-in page, the site it is on now.
         site: Option<String>,
-        /// Under a sign-in page, the extension's own page that asked for it
-        /// (its settings, its popup): it goes on out of sight to hear how
-        /// the sign-in ended, and shows again once the sign-in page closes.
+        /// Under a sign-in page, the extension's own page that asked for it: it
+        /// goes on out of sight to hear how the sign-in ended.
         beneath: Option<Box<Panel>>,
     },
 }
 
 pub struct ExtensionController {
-    /// Whether this window manages extensions: not a private or headless one.
     active: bool,
     commands: Arc<Mutex<Vec<Command>>>,
     outcomes: Arc<Mutex<Vec<Outcome>>>,
-    /// The profile's worker, once started.
     profile_jobs: Option<Sender<ProfileJob>>,
     host: ExtensionHost,
     installed: Vec<Installed>,
     infos: Vec<ExtensionInfo>,
     icons: HashMap<String, Option<vello::peniko::ImageData>>,
-    /// Icons extensions set for their buttons, by extension and whether for
-    /// every tab (`true`) or this window's page; and each icon file read,
-    /// by extension and path, since an extension sets the same few again.
+    /// Icons extensions set for their buttons, by extension and whether for every
+    /// tab; and each icon file read, by extension and path.
     action_icons: HashMap<(String, bool), ActionIcon>,
     icon_files: HashMap<(String, String), Option<vello::peniko::ImageData>>,
     refresh: bool,
@@ -358,43 +301,29 @@ pub struct ExtensionController {
     side_panel: Option<SidePanel>,
     file_path: ui::LocalState<String>,
     chromium_version: String,
-    /// Extensions to turn on (`true`) or off through the manager extension.
     switches: Vec<(String, bool)>,
-    /// What this session turned on or off, so each is asked once.
     switched: HashMap<String, bool>,
-    /// What the engine was told each extension may do with the Browser's
-    /// tabs, and which extension is the Browser's own.
     access_told: HashMap<String, toolbar::Access>,
     identity_told: Option<String>,
-    /// The manager pages at work, and when each was opened.
     switching: Vec<(SharedEngine, ui::time::Instant)>,
-    /// When the store was last asked for updates.
     updated_at: Option<ui::time::Instant>,
-    /// Extensions an update left off until the person allows more access.
     awaiting: Vec<String>,
     /// What each extension's button menu holds, as the engine told it: the
-    /// `chrome.contextMenus` items the extension made for its button.
+    /// `chrome.contextMenus` items it made for its button.
     menus: HashMap<String, Vec<ExtensionMenuItem>>,
-    /// Extensions' requests for more access, for the window to ask the
-    /// person ([`Self::take_questions`]).
     questions: Vec<ExtensionQuestion>,
-    /// Pages extensions sign in on out of sight, until the engine closes
-    /// each as its sign-in ends.
     quiet_sign_ins: Vec<SharedEngine>,
-    /// The extension typed to after its keyword in the address, if any.
     omnibox: ExtensionOmnibox,
-    /// The widths the person dragged side panels to, by extension, and
-    /// where they are kept on this device (none: a private or headless
-    /// window keeps them for its life only).
+    /// The widths the person dragged side panels to, by extension, and where they
+    /// are kept on this device; a private or headless window keeps them for its
+    /// life only.
     side_panel_widths: HashMap<String, f32>,
     side_panel_store: Option<ui::storage::Settings<SidePanelWidths>>,
-    /// The keys extensions' commands hold, as the engine told them.
     shortcuts: Vec<ui::webview::ExtensionShortcut>,
 }
 
-/// The switches `installed` asks for that this session has not made yet,
-/// noting them as made: an extension is turned on or off once a session,
-/// and again each time the person changes it.
+/// The switches `installed` asks for that this session has not made yet, noted as
+/// made: each is turned once a session, and again when the person changes it.
 fn switches_for(
     installed: &[Installed],
     switched: &mut HashMap<String, bool>,
@@ -408,7 +337,6 @@ fn switches_for(
         .collect()
 }
 
-/// The manager page that makes `switches`.
 fn manager_url(manager: &str, switches: &[(String, bool)]) -> String {
     let list = |on: bool| {
         switches
@@ -425,9 +353,8 @@ fn manager_url(manager: &str, switches: &[(String, bool)]) -> String {
     )
 }
 
-/// What the person allowed an extension after it was added, in their
-/// words: the access Chrome would have warned of, or that it has more when
-/// none of it is; none when it has nothing more.
+/// What the person allowed an extension after it was added, in their words: the
+/// access Chrome would have warned of, or that it has more when none of it is.
 fn granted_line(granted: &ExtensionPermissionSet) -> Option<String> {
     if granted.is_empty() {
         return None;
@@ -443,11 +370,8 @@ fn granted_line(granted: &ExtensionPermissionSet) -> Option<String> {
     })
 }
 
-/// The longest words an extension's keyword takes, as the engine carries
-/// them.
 const MAX_KEYWORD_TEXT_BYTES: usize = 2048;
 
-/// How long a manager page may take before it is let go.
 const SWITCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 impl ExtensionController {
@@ -487,24 +411,20 @@ impl ExtensionController {
         }
     }
 
-    /// Extensions as installed, for a test of the window around them; a
-    /// window's own come from the profile.
     #[doc(hidden)]
     pub fn use_installed_for_tests(&mut self, installed: Vec<Installed>) {
         self.refresh = false;
         self.installed = installed;
     }
 
-    /// The requests for more access extensions made since asked, which the
-    /// window asks the person in its shared prompt.
     pub fn take_questions(&mut self) -> Vec<ExtensionQuestion> {
         std::mem::take(&mut self.questions)
     }
 
-    /// An extension asks for more access (`chrome.permissions.request`):
-    /// the person is asked what it could then do, as when it was added.
-    /// Access Chrome asks nobody about (`storage`) is granted at once, as
-    /// there; one asked of an extension that is off, refused.
+    /// An extension asks for more access (`chrome.permissions.request`): the
+    /// person is asked what it could then do, as when it was added. Access Chrome
+    /// asks nobody about is granted at once; one asked of an extension that is
+    /// off is refused.
     fn permission_request(
         &mut self,
         request: u32,
@@ -538,9 +458,8 @@ impl ExtensionController {
         });
     }
 
-    /// What an extension holds of what it may ask for changed: kept with
-    /// the extension, so it holds it in the next run too. The engine holds
-    /// it already and is not told it again.
+    /// What an extension holds of what it may ask for changed: kept with it, so it
+    /// holds it in the next run too.
     fn keep_granted(&mut self, id: &str, granted: ExtensionPermissionSet) {
         if let Some(told) = self.access_told.get_mut(id) {
             told.granted.clone_from(&granted);
@@ -560,10 +479,9 @@ impl ExtensionController {
         });
     }
 
-    /// The person takes back what they allowed the extension after it was
-    /// added: the engine holds it to what its manifest requires at once, and
-    /// the extension hears of what it lost, as when it gives access up
-    /// itself; the Browser keeps that it holds none of it.
+    /// The person takes back what they allowed the extension after it was added:
+    /// the engine holds it to its manifest at once, and the extension hears what
+    /// it lost.
     fn revoke(&mut self, id: &str, engine: &SharedEngine) {
         let Some(optional) = self
             .installed
@@ -590,24 +508,19 @@ impl ExtensionController {
         }
     }
 
-    /// The panel was dismissed by a click outside or Escape.
     pub fn dismiss(&mut self) {
         self.panel = None;
     }
 
-    /// The engine runs `id` no more, or will run a new version of it: what it
-    /// set for its button is gone.
     fn forget(&mut self, id: &str) {
         self.host.forget(id);
         self.action_icons.retain(|(icon, _), _| icon != id);
         self.icon_files.retain(|(icon, _), _| icon != id);
     }
 
-    /// What the engine says of extensions' toolbar buttons on this window's
-    /// page: one changed, the page's own values went with its document, one
-    /// asks to open its popup, or the person pressed its keyboard shortcut;
-    /// or of an extension's notification, which the system shows.
-    /// Returns whether the interface changed.
+    /// What the engine says of the page's extension buttons (one changed, one asks
+    /// for its popup, its shortcut was pressed) or of an extension's
+    /// notification. Whether the interface changed.
     pub fn on_engine_event(&mut self, event: WebViewEvent, engine: &SharedEngine) -> bool {
         if !self.active {
             return false;
@@ -656,7 +569,7 @@ impl ExtensionController {
                 );
                 true
             }
-            // Its button's keyboard shortcut: as a click on the button.
+            // Its keyboard shortcut: as a click on the button.
             WebViewEvent::ExtensionExecuteAction { id } => {
                 self.open_action(&id, engine);
                 true
@@ -665,8 +578,8 @@ impl ExtensionController {
                 self.shortcuts = shortcuts;
                 false
             }
-            // Shown by the system, named for the extension; one taken away
-            // goes also for an extension no longer installed.
+            // The system shows it, named for the extension; one taken away goes
+            // for an extension no longer installed.
             WebViewEvent::ExtensionNotification {
                 id,
                 notification,
@@ -698,8 +611,7 @@ impl ExtensionController {
                 false
             }
             // It asks the person to sign in: the page shows where its popup
-            // would, in place of whatever the panel showed. One that may
-            // not ask them loads out of sight, as in Chrome.
+            // would. One that may not ask them loads out of sight, as in Chrome.
             WebViewEvent::ExtensionSignIn {
                 id,
                 url,
@@ -720,7 +632,6 @@ impl ExtensionController {
                 if let Ok(page) = engine.create_tab() {
                     page.send(WebViewCommand::ExtensionSignInPanel { id, flow });
                     page.send(WebViewCommand::Navigate(url));
-                    // The oldest goes for a new one: its sign-in ends.
                     if self.quiet_sign_ins.len() >= QUIET_SIGN_INS {
                         self.quiet_sign_ins.remove(0);
                     }
@@ -737,8 +648,8 @@ impl ExtensionController {
         }
     }
 
-    /// Show `icon` on the extension's button, for every tab or this page;
-    /// `None` takes it back. A file is read off the window's thread.
+    /// Show `icon` on the extension's button, for every tab or this page; `None`
+    /// takes it back. A file is read off the window's thread.
     fn set_icon(&mut self, id: String, global: bool, icon: Option<ExtensionActionIcon>) {
         let key = (id.clone(), global);
         let Some(icon) = icon else {
@@ -777,8 +688,8 @@ impl ExtensionController {
         self.action_icons.insert(key, icon);
     }
 
-    /// Read the icon file at `path` among the extension's files off the
-    /// window's thread; `false` while the profile has not said where they are.
+    /// Read the icon at `path` among the extension's files off the window's
+    /// thread; `false` while the profile has not said where they are.
     fn read_action_icon(&self, id: String, path: String) -> bool {
         let Some(root) = self
             .installed
@@ -799,8 +710,7 @@ impl ExtensionController {
         true
     }
 
-    /// The icon the extension set for its button on this page, else for
-    /// every tab; `None` when it set none, and the manifest's stands.
+    /// The icon the extension set for its button on this page, else for every tab.
     fn action_icon(&self, id: &str) -> Option<&vello::peniko::ImageData> {
         [false, true].iter().find_map(|global| {
             match self.action_icons.get(&(id.to_owned(), *global))? {
@@ -921,8 +831,7 @@ impl ExtensionController {
         }) = &mut self.panel
         {
             // The popup is a tab of its own: its page events are not the
-            // window's, but they must not pile up. What it asks for is the
-            // window's to ask.
+            // window's, but they must not pile up, and what it asks for is.
             let mut closed = false;
             for event in popup.drain_events() {
                 match event {
@@ -930,8 +839,8 @@ impl ExtensionController {
                     | ui::webview::WebViewEvent::ExtensionPermissions { .. }) => {
                         permissions.push(event);
                     }
-                    // Its page closed it (a password filled, a choice made),
-                    // or a sign-in reached its end.
+                    // Its page closed it (a password filled, a choice made), or
+                    // a sign-in reached its end.
                     ui::webview::WebViewEvent::TabClosed => closed = true,
                     // A sign-in page names the site it moved on to.
                     ui::webview::WebViewEvent::UriChanged(url) if shown_site.is_some() => {
@@ -956,8 +865,8 @@ impl ExtensionController {
                 }
             }
             open_beside(popup);
-            // The page under a sign-in asks the window for what it needs,
-            // and is gone once it closes itself.
+            // The page under a sign-in asks the window for what it needs, and is
+            // gone once it closes itself.
             if let Some(Panel::Popup { engine: under, .. }) = beneath.as_deref() {
                 let mut gone = false;
                 for event in under.drain_events() {
@@ -986,12 +895,10 @@ impl ExtensionController {
         changed
     }
 
-    /// Have the profile's worker read the profile.
     fn read_profile(&mut self) {
         self.profile_job(None);
     }
 
-    /// Have the profile's worker make `change`, then read the profile.
     fn change_profile(&mut self, change: impl FnOnce() -> Result<(), String> + Send + 'static) {
         self.profile_job(Some(Box::new(change)));
     }
@@ -1033,17 +940,17 @@ impl ExtensionController {
     /// Bring the engine and the window in line with a read of the profile.
     fn apply_profile(&mut self, profile: Profile) {
         self.host.reconcile(&profile.wanted, &[], ui::time::now());
-        // On and off through the manager, which keeps an extension's data:
-        // each once a session, so one Chromium remembers from an earlier
-        // run is in the state the person chose.
+        // On and off through the manager, which keeps an extension's data: once
+        // a session, so one Chromium remembers from an earlier run ends in the
+        // state the person chose.
         for (id, enabled) in switches_for(&profile.installed, &mut self.switched) {
             if !enabled {
                 self.forget(&id);
             }
             self.switches.push((id, enabled));
         }
-        // A page of an extension turned off or removed closes with it, and
-        // an update waits for the person only while its extension is off.
+        // A page of an extension turned off or removed closes with it, and an
+        // update waits for the person only while its extension is off.
         if let Some(Panel::Popup { id, .. }) = &self.panel {
             let owner = panel_owner(id);
             if !profile
@@ -1096,9 +1003,8 @@ impl ExtensionController {
         }
     }
 
-    /// An extension the daily check brought up to date: the engine runs the
-    /// new version once it loads it again, which the next read of the
-    /// profile asks of it, and the Library shows the new version.
+    /// An extension the daily check brought up to date: the next read of the
+    /// profile loads it again, and the Library shows the new version.
     fn on_updated(&mut self, updated: extensions::Updated) {
         let (info, awaits) = match updated {
             extensions::Updated::Installed(info) => (info, false),
@@ -1113,8 +1019,8 @@ impl ExtensionController {
         self.refresh = true;
     }
 
-    /// Ask the Web Store for newer versions of its extensions, on a worker,
-    /// when this Browser is given the day's check.
+    /// Ask the Web Store for newer versions, on a worker, when this Browser is
+    /// given the day's check.
     fn check_for_updates(&mut self, now: ui::time::Instant) {
         if self.busy
             || self.infos.is_empty()
@@ -1150,15 +1056,15 @@ impl ExtensionController {
     }
 
     /// Tell the engine which extension is the Browser's own, and what each
-    /// installed extension may do with the Browser's tabs, as it changes.
+    /// installed extension may do with the Browser's tabs.
     fn tell_access(&mut self, engine: &SharedEngine) {
         if self.identity_told.is_none()
             && let Some(dir) = extensions::manager_dir()
             && let Some(id) = extensions::manager_id(&dir)
         {
             engine.send(WebViewCommand::ExtensionIdentity { id: id.clone() });
-            // Its worker tells the engine what extensions' rules acted on in
-            // the tabs, which it counts for each page.
+            // Its worker tells the engine what extensions' rules acted on in the
+            // tabs, which it counts for each page.
             if let Some(token) = extensions::manager_token(&dir) {
                 engine.send(WebViewCommand::ExtensionAccess {
                     id: id.clone(),
@@ -1172,9 +1078,8 @@ impl ExtensionController {
             }
             self.identity_told = Some(id);
         }
-        // A turned-off extension does not run, so its keyboard shortcuts are
-        // no one's: the page keeps those keys, and another extension may
-        // have them. Turned on again, it gets them back in its place.
+        // A turned-off extension does not run, so its keyboard shortcuts are no
+        // one's: the page keeps those keys, and another extension may have them.
         let effective = |extension: &Installed| {
             let mut access = extension.access.clone();
             if !extension.enabled {
@@ -1187,8 +1092,8 @@ impl ExtensionController {
             .iter()
             .map(|extension| (extension.id.clone(), effective(extension)))
             .collect();
-        // In the order they were installed: of two extensions suggesting
-        // one keyboard shortcut, the engine gives it to the one told first.
+        // In the order they were installed: of two extensions suggesting one
+        // shortcut, the engine gives it to the one told first.
         for extension in &self.installed {
             let (id, access) = (&extension.id, &effective(extension));
             let told = self.access_told.get(id);
@@ -1202,8 +1107,7 @@ impl ExtensionController {
                     token: access.token.clone(),
                     commands: access.commands.clone(),
                 });
-                // What it may ask for later, and was granted: told when it
-                // has any, or had before.
+                // What it may ask for later, and was granted.
                 let asks = |access: &toolbar::Access| {
                     !access.optional.is_empty() || !access.granted.is_empty()
                 };
@@ -1224,8 +1128,8 @@ impl ExtensionController {
         self.access_told = current;
     }
 
-    /// Open one manager page for the switches asked for, and let go of the
-    /// pages that are done. Returns whether anything changed.
+    /// Open one manager page for the switches asked for, and let go of the pages
+    /// that are done. Whether anything changed.
     fn switch(&mut self, engine: &SharedEngine, now: ui::time::Instant) -> bool {
         let before = self.switching.len();
         self.switching.retain(|(page, opened)| {
@@ -1256,8 +1160,8 @@ impl ExtensionController {
         changed
     }
 
-    /// The record of the extension Chromium knows as `id`, from the last
-    /// read of the profile: never the disk, since this runs on the frame.
+    /// The record of the extension Chromium knows as `id` from the last read; never
+    /// the disk, since this runs on the frame.
     fn info_of(&self, id: &str) -> Option<&ExtensionInfo> {
         self.infos
             .iter()
@@ -1366,7 +1270,6 @@ impl ExtensionController {
             }),
             Command::OpenSidePanel(id) => self.open_side_panel(id, engine),
             Command::CloseSidePanel(id) => self.close_side_panel(&id),
-            // Busy: ignore a second fetch until the first settles.
             Command::Fetch(_) | Command::StageFile(_) => {}
         }
     }
@@ -1410,8 +1313,8 @@ impl ExtensionController {
             return;
         }
         let Some(url) = button.popup else {
-            // A button without a popup acts on the page itself: the
-            // extension hears of the click, as in Chrome.
+            // A button without a popup acts on the page itself: the extension
+            // hears of the click, as in Chrome.
             self.panel = None;
             engine.send(WebViewCommand::ExtensionClick { id: id.to_owned() });
             return;
@@ -1430,8 +1333,8 @@ impl ExtensionController {
         );
     }
 
-    /// Show an extension's settings page, as large as the window allows up
-    /// to Chrome's largest panel: an ad blocker's lists need the room.
+    /// Show an extension's settings page, as large as the window allows up to
+    /// Chrome's largest panel: an ad blocker's lists need the room.
     fn open_settings(&mut self, id: &str, engine: &SharedEngine) {
         let Some(url) = self
             .installed
@@ -1450,12 +1353,12 @@ impl ExtensionController {
         );
     }
 
-    /// Open one of an extension's own pages, or a page it asks the person to
-    /// sign in on, in the panel, in a tab of its own.
+    /// Open one of an extension's own pages, or a page it asks the person to sign
+    /// in on, in the panel, in a tab of its own.
     fn open_page(&mut self, kind: ExtensionPage, engine: &SharedEngine) {
-        // Its "current tab" is the page it opened over, which the extension
-        // may script when its button opened it. A sign-in page keeps the
-        // size it is given: it is a site's, sized for a window.
+        // Its "current tab" is the page it opened over, which the extension may
+        // script when its button opened it. A sign-in page keeps the size it is
+        // given: it is a site's, sized for a window.
         let (key, url, mark, size, heading) = match kind {
             ExtensionPage::Popup { id, url, clicked } => (
                 id.clone(),
@@ -1512,10 +1415,9 @@ impl ExtensionController {
         }
     }
 
-    /// The page in the panel that extension `asker`'s sign-in shows over,
-    /// to keep beneath it: the extension's own page, which asked for it
-    /// and waits to hear how it ends, or the page under its earlier
-    /// sign-in. Another extension's page closes, as Chrome's popup closes.
+    /// The page an extension's sign-in shows over, to keep beneath it: its own
+    /// page, which asked for it and waits to hear how it ends. Another
+    /// extension's page closes, as Chrome's popup closes.
     fn asked_from(&mut self, asker: &str) -> Option<Box<Panel>> {
         let Some(Panel::Popup {
             id,
@@ -1542,8 +1444,8 @@ impl ExtensionController {
         }))
     }
 
-    /// The width an open extension page asks for, within `room`; `None`
-    /// when the panel shows no page. The panel is as wide as its page.
+    /// The width an open extension page asks for, within `room`; `None` when the
+    /// panel shows no page.
     pub fn page_width(&self, room: f32) -> Option<f32> {
         match &self.panel {
             Some(Panel::Popup { size, .. }) => Some(size.unwrap_or(POPUP_SIZE).0.min(room)),
@@ -1555,8 +1457,8 @@ impl ExtensionController {
         toolbar::model(&self.installed, |id| self.host.action_state(id))
     }
 
-    /// The buttons this controller adds to the toolbar row, in order: the
-    /// Web Store offer, pinned actions, and the Extensions menu.
+    /// The buttons this controller adds to the toolbar row, in order: the Web
+    /// Store offer, pinned actions, and the Extensions menu.
     pub fn toolbar_buttons(&self) -> Vec<Element> {
         if !self.active {
             return Vec::new();
@@ -1605,8 +1507,8 @@ impl ExtensionController {
         buttons
     }
 
-    /// The Web Store offer as a slot of the window's bar, which stands for
-    /// the toolbar row in a Tilo session: on a store item not yet added.
+    /// The Web Store offer as a slot of the window's bar, on a store item not yet
+    /// added.
     pub fn bar_offer(&self) -> Option<ToolbarAction> {
         if !self.active {
             return None;
@@ -1627,11 +1529,9 @@ impl ExtensionController {
         Some(ToolbarAction::new(BAR_ADD, "download", name).enabled(!self.busy))
     }
 
-    /// The bar's Extensions items: one per enabled extension with an action,
-    /// which opens its popup, as the Extensions menu's rows do, each followed
-    /// by what its button menu offers, as far as the bar's menu has room
-    /// beside its last item. The bar's menu is one level deep: a submenu's
-    /// items stand in its place.
+    /// The bar's Extensions items: one per enabled extension with an action, each
+    /// followed by what its button menu offers as far as the bar's menu has room.
+    /// The bar's menu is one level deep, so a submenu's items stand in its place.
     pub fn bar_items(&self) -> Vec<ToolbarAction> {
         if !self.active {
             return Vec::new();
@@ -1683,8 +1583,8 @@ impl ExtensionController {
         items
     }
 
-    /// Run a bar action from [`Self::bar_offer`] or [`Self::bar_items`] on
-    /// the next `sync`. Returns whether `id` was one of them.
+    /// Run a bar action from [`Self::bar_offer`] or [`Self::bar_items`] on the
+    /// next `sync`. Whether `id` was one of them.
     pub fn bar_action(&mut self, id: &str) -> bool {
         let command = if id == BAR_ADD {
             match &self.store_item {
@@ -1746,8 +1646,8 @@ impl ExtensionController {
             .aligned(PanelAlign::Trailing)
     }
 
-    /// An extension's button menu as rows: check marks on its checkbox and
-    /// radio items, its submenus nested, its disabled items greyed.
+    /// An extension's button menu as rows: check marks on its checkbox and radio
+    /// items, its submenus nested, its disabled items greyed.
     fn menu_rows(&self, extension: &str, items: &[ExtensionMenuItem]) -> Vec<MenuItem> {
         items
             .iter()
@@ -1779,8 +1679,8 @@ impl ExtensionController {
             .collect()
     }
 
-    /// The anchored panel: what to show, and the controls to open beside,
-    /// nearest first.
+    /// The anchored panel: what to show, and the controls to open beside, nearest
+    /// first.
     pub fn panel(&self, width: f32, max_height: f32) -> Option<(Element, Vec<String>)> {
         let panel = self.panel.as_ref()?;
         let text = |line: &str| -> Element {
@@ -1901,8 +1801,8 @@ impl ExtensionController {
         })
     }
 
-    /// The Library page's Extensions section: an install-from-file row, the
-    /// notice, and one row per installed extension.
+    /// The Library page's Extensions section: an install-from-file row, the notice,
+    /// and one row per installed extension.
     pub fn library_rows(&self, matches: impl Fn(&[&str]) -> bool) -> Vec<Element> {
         let mut rows: Vec<Element> = Vec::new();
         for (info, extension) in self.infos.iter().zip(&self.installed) {
@@ -1923,8 +1823,8 @@ impl ExtensionController {
             |lines| lines.into_iter().next().unwrap_or_default(),
         );
         let mut buttons = Vec::new();
-        // What the person allowed it after it was added, which they can take
-        // back here.
+        // What the person allowed it after it was added, which they can take back
+        // here.
         let granted = granted_line(&extension.access.granted);
         let mut lines = vec![format!("{status}. {permissions}")];
         lines.extend(granted.clone());
@@ -1993,7 +1893,6 @@ impl ExtensionController {
         ))
     }
 
-    /// Whether an extension runs, as its Library row and its resource say.
     fn status(&self, info: &ExtensionInfo, extension: &Installed) -> String {
         CATALOG.t(if info.manifest_version != 3 {
             "browser-extension-unsupported"
@@ -2006,9 +1905,9 @@ impl ExtensionController {
         })
     }
 
-    /// The installed extensions as resources, each with what its Library
-    /// row offers, so a screen reader, a script or an agent manages them as
-    /// the person does.
+    /// The installed extensions as resources, each with what its Library row
+    /// offers, so a screen reader, a script or an agent manages them as the person
+    /// does.
     pub fn resources(&self) -> Vec<ResourceSpec> {
         use crate::effects::BrowserEffect as E;
         use ui::tilo_resource::Effect as _;
@@ -2025,7 +1924,6 @@ impl ExtensionController {
                 )
                 .with_presentation(ResourcePresentation {
                     detail: Some(self.status(info, extension)),
-                    // What the person allowed it later, as its row says.
                     preview: granted
                         .as_ref()
                         .filter(|line| line.len() <= ResourcePresentation::MAX_PREVIEW_BYTES)
@@ -2075,8 +1973,8 @@ impl ExtensionController {
             .collect()
     }
 
-    /// Do what an extension's action asks, on the next `sync`, as its
-    /// Library row's button does.
+    /// Do what an extension's action asks, on the next `sync`, as its Library row's
+    /// button does.
     pub fn request(&mut self, request: &ExtensionRequest) -> Result<(), String> {
         if !self.active {
             return Err(CATALOG.t("browser-extension-window-none"));
@@ -2140,9 +2038,8 @@ impl ExtensionController {
         Ok(())
     }
 
-    /// Adding the Web Store item on the page, as the extensions' resource
-    /// offers it: available on an item not added yet; none in a window that
-    /// manages no extensions.
+    /// Adding the Web Store item on the page: available on an item not added yet,
+    /// and none in a window that manages no extensions.
     pub fn add_action(&self) -> Option<ui::tilo_actions::ActionSpec> {
         use ui::tilo_resource::Effect as _;
         let add = crate::effects::BrowserEffect::AddExtension.bound();
@@ -2152,12 +2049,12 @@ impl ExtensionController {
         })
     }
 
-    /// Show what the Web Store item on the page may do, on the next `sync`,
-    /// as Add to Tilo Browser does: the person adds it from the offer.
+    /// Show what the Web Store item on the page may do, on the next `sync`, as Add
+    /// to Tilo Browser does.
     ///
     /// # Errors
-    /// When there is no Web Store item on the page, it is added already or
-    /// another is being added.
+    /// When there is no Web Store item on the page, it is added already, or another
+    /// is being added.
     pub fn offer_store_item(&self) -> Result<(), String> {
         if !self.active {
             return Err(CATALOG.t("browser-extension-window-none"));
@@ -2171,10 +2068,8 @@ impl ExtensionController {
         Ok(())
     }
 
-    /// The Web Store item on the page, when it can be added now; otherwise
-    /// why not, as a stable code and the reason a person or agent reads.
-    /// The action's availability and its invocation share it, so an agent
-    /// is never told to open a store page while it is on one.
+    /// The Web Store item on the page when it can be added now, otherwise why not
+    /// as a stable code. The action's availability and its invocation share it.
     fn store_item_to_add(&self) -> Result<&web_store::Item, (&'static str, String)> {
         let item = self.store_item.as_ref().ok_or_else(|| {
             (
@@ -2195,7 +2090,6 @@ impl ExtensionController {
         Ok(item)
     }
 
-    /// The header of the Extensions section: how to add one.
     pub fn library_header(&self) -> Element {
         let file_path = self.file_path.clone();
         let install = {
@@ -2258,8 +2152,8 @@ impl ExtensionController {
     }
 }
 
-/// The package file at `path`, or what the person reads when it cannot be
-/// read: no such file, one they may not read, or one too large.
+/// The package file at `path`, or what the person reads when it cannot be read: no
+/// such file, one they may not read, or one too large.
 fn read_package_file(path: &std::path::Path) -> Result<Vec<u8>, String> {
     use std::io::Read as _;
     const LIMIT: u64 = 256 * 1024 * 1024;

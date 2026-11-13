@@ -4,8 +4,7 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 
-/// Launch a separate browser process with isolated private storage, showing
-/// `url` when given.
+/// Start a separate browser process with private storage, showing `url`.
 pub fn launch(url: Option<&str>) -> Result<(), String> {
     let executable = std::env::current_exe().map_err(|error| error.to_string())?;
     launch_executable(&executable, url)
@@ -59,8 +58,6 @@ mod tests {
     #[cfg(unix)]
     use tilo_test_env::SpawnUnderEnvLock as _;
 
-    /// This test module's test `name` as libtest names it in whichever
-    /// crate compiles the module in: its path without the crate's name.
     fn own_test(name: &str) -> String {
         let path = module_path!();
         let path = path.split_once("::").map_or(path, |(_, path)| path);

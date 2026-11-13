@@ -381,10 +381,6 @@ fn live_personal_bookmark_folder_rasterizes_in_both_themes_and_scaled_viewports(
     }
 }
 
-/// A library as Browser kept it before it was a record: its adds, a
-/// tombstone, an import receipt, an imported tree and a removed placement as
-/// prefixed keys at the document's root. Opened now, it holds the same
-/// bookmarks and trees, and nothing stays under the old keys.
 #[test]
 fn a_library_kept_before_the_record_opens_with_its_bookmarks_and_trees() {
     use automerge::ReadDoc as _;

@@ -1,11 +1,10 @@
-//! The person's browsing history and the device-local downloads as the
-//! search entries the browser surface contributes to the app's one search
-//! source. Bookmarks are the browser resource's own search entries.
+//! The person's browsing history and the device-local downloads as the search entries the
+//! browser surface contributes to the app's one search source. Bookmarks are the browser
+//! resource's own search entries.
 //!
-//! The entries are rebuilt only after a durable corpus revision, so opening
-//! global search does not remap the full browser library. A hit's row is
-//! resolved against the current entries, which refuses an address that went
-//! stale after the result was rendered.
+//! Entries are rebuilt only after a durable corpus revision, so opening global search does
+//! not remap the whole library. A hit's row is resolved against the current entries, which
+//! refuses an address that went stale after the result was rendered.
 
 use ui::icons::Icon;
 use ui::lock::RwLockRecover as _;
@@ -17,12 +16,10 @@ struct Row {
     resource_id: String,
     title: String,
     url: String,
-    /// The exact resource kind published in Browser's hierarchy, not a
-    /// search-only proxy type.  A search result must be interchangeable with
-    /// opening the same row from Library.
+    /// The exact resource kind published in Browser's hierarchy, not a search-only proxy: a
+    /// search result must be interchangeable with opening the same row from the Library.
     resource_kind: &'static str,
     search_kind: &'static str,
-    /// The download a hit shows; `None` for a page it opens.
     download: Option<String>,
     icon: Icon,
     score: i32,
@@ -52,9 +49,8 @@ pub struct BrowserSearchIndex {
 }
 
 impl BrowserSearchIndex {
-    /// Force the next [`Self::sync`] to rebuild after a model replacement
-    /// whose source does not carry this process-local revision token (for
-    /// example an incoming CRDT bookmark projection).
+    /// Force the next [`Self::sync`] to rebuild after a model replacement whose source does
+    /// not carry this process-local revision token.
     pub fn invalidate(&self) {
         let mut state = self.state.write_recover();
         state.history_revision = u64::MAX;
@@ -148,13 +144,12 @@ impl BrowserSearchIndex {
         rows.insert(row.resource_id.clone(), row);
     }
 
-    /// Every history page and download as a search entry.
     pub fn entries(&self) -> Vec<SearchEntry> {
         self.state.read_recover().entries.clone()
     }
 
-    /// What opening the hit anchored at `id` runs: the history page opens,
-    /// the download shows. `None` once the entry is gone.
+    /// What opening the hit anchored at `id` runs: the history page opens, the download
+    /// shows. `None` once the entry is gone.
     pub fn opened(&self, id: &str) -> Option<crate::effects::BrowserEffect> {
         let row = self.state.read_recover().rows.get(id).cloned()?;
         Some(match &row.download {
@@ -165,8 +160,8 @@ impl BrowserSearchIndex {
         })
     }
 
-    /// The row a hit opens: the same row, with the same effect, the window
-    /// publishes for it. `None` once the entry is gone.
+    /// The row a hit opens: the same row and effect the window publishes. `None` once the
+    /// entry is gone.
     pub fn resource(&self, id: &str) -> Option<ResourceSpec> {
         use ui::tilo_resource::Effect as _;
         let action = self.opened(id)?.bound();
@@ -174,8 +169,8 @@ impl BrowserSearchIndex {
         Some(ResourceSpec::new(&row.resource_id, row.resource_kind, &row.title).with_action(action))
     }
 
-    /// The search source the framework builds over these entries, resolving
-    /// hits the way the browser surface does.
+    /// The search source the framework builds over these entries, resolving hits the way
+    /// the browser surface does.
     #[cfg(test)]
     pub fn provider(&self) -> TestSearch {
         TestSearch {
@@ -241,7 +236,6 @@ mod tests {
     use ui::search::SearchProvider;
     use ui::search::SearchQuery;
 
-    /// Cursor paging, stale addresses, identity and downloads.
     #[test]
     #[allow(
         clippy::too_many_lines,

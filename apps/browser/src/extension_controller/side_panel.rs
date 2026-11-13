@@ -1,7 +1,7 @@
-//! An extension's side panel (`chrome.sidePanel`) beside the window's page:
-//! what the extension asks of it, the window's controls that show and close
-//! it, and the width the person drags it to. Also the extensions' keyboard
-//! shortcuts the window runs while its own field has the keyboard.
+//! An extension's side panel (`chrome.sidePanel`) beside the window's page: what the
+//! extension asks of it, the window's controls that show and close it, and the width
+//! the person drags it to; and the extensions' keyboard shortcuts the window runs while
+//! its own field has the keyboard.
 
 use ui::icons::Icon;
 use ui::webview::{
@@ -17,22 +17,19 @@ use crate::effects::ExtensionRequest;
 use crate::extension_toolbar::Installed;
 
 const SIDE_PANEL_BUTTON: &str = "browser.extension.side-panel";
-/// The side panel's page beside the window's page, by its test id.
 pub const SIDE_PANEL_PAGE: &str = "browser.extension.side-panel.page";
-/// The bar's button closing the side panel that shows.
 const BAR_CLOSE_SIDE_PANEL: &str = "extension-side-panel-close";
 
-/// An extension's own page beside the window's page (`chrome.sidePanel`):
-/// no tab of its own, and that page is its window.
+/// An extension's own page beside the window's page (`chrome.sidePanel`): no tab of its
+/// own, and that page is its window.
 pub(super) struct SidePanel {
     pub(super) id: String,
     pub(super) url: String,
     pub(super) engine: SharedEngine,
 }
 
-/// The widths the person dragged extensions' side panels to, in logical
-/// pixels, by extension: kept in the app's settings on this device, since a
-/// width suits a screen.
+/// The widths the person dragged side panels to, in logical pixels, by extension; kept
+/// in this device's settings, since a width suits a screen.
 #[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct SidePanelWidths {
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
@@ -43,9 +40,8 @@ impl ui::storage::SettingsSchema for SidePanelWidths {
     const SCOPE: ui::storage::Scope = ui::storage::Scope::DeviceLocal;
 }
 
-/// How narrow and how wide the person may drag a side panel in `theme`: from
-/// a utility panel's width, about as narrow as Chrome lets a side panel go,
-/// to a readable column's.
+/// How narrow and how wide a side panel may be dragged in `theme`: from a utility
+/// panel's width, about Chrome's narrowest, to a readable column.
 #[must_use]
 pub fn side_panel_bounds(theme: &ui::theme::Theme) -> (f32, f32) {
     let metrics = &theme.tokens.metrics;
@@ -53,7 +49,6 @@ pub fn side_panel_bounds(theme: &ui::theme::Theme) -> (f32, f32) {
     (narrowest, metrics.readable_width.max(narrowest))
 }
 
-/// What an extension's side panel is called: "Notes side panel".
 fn side_panel_name(name: &str) -> String {
     CATALOG.t_args(
         "browser-extension-side-panel",
@@ -61,8 +56,7 @@ fn side_panel_name(name: &str) -> String {
     )
 }
 
-/// The bar's items showing or hiding each side panel, from
-/// [`ExtensionController::side_panel_entries`].
+/// The bar's items showing or hiding each side panel.
 pub(super) fn bar_items(
     entries: Vec<(String, String, bool)>,
 ) -> impl Iterator<Item = ToolbarAction> {
@@ -76,8 +70,8 @@ pub(super) fn bar_items(
     })
 }
 
-/// What a script's or an agent's request to open or close the side panel
-/// of `extension` does.
+/// What a script's or an agent's request to open or close the side panel of `extension`
+/// does.
 pub(super) fn command(
     request: &ExtensionRequest,
     extension: &Installed,
@@ -92,8 +86,8 @@ pub(super) fn command(
 }
 
 impl ExtensionController {
-    /// What an extension asked of its side panel beside this window's page.
-    /// Returns whether the window's layout changed.
+    /// What an extension asked of its side panel beside this page. Whether the window's
+    /// layout changed.
     pub(super) fn side_panel_changed(
         &mut self,
         id: String,
@@ -120,8 +114,8 @@ impl ExtensionController {
         if !self.running(&id) {
             return false;
         }
-        // Its popup gave way to it, as a popup closes in Chrome once the
-        // person turns to the page or the panel.
+        // Its popup gave way to it, as a popup closes in Chrome once the person turns to
+        // the page or the panel.
         if matches!(&self.panel, Some(Panel::Popup { id: open, .. }) if *open == id) {
             self.panel = None;
         }
@@ -134,8 +128,8 @@ impl ExtensionController {
         }
         match engine.create_tab() {
             Ok(page) => {
-                // Its "current tab" is the page beside it, and the
-                // extension hears of the panel opening and closing.
+                // Its "current tab" is the page beside it, and the extension hears of the
+                // panel opening and closing.
                 page.send(WebViewCommand::ExtensionSidePanelPage { id: id.clone() });
                 page.send(WebViewCommand::Navigate(url.clone()));
                 self.side_panel = Some(SidePanel {
@@ -149,27 +143,24 @@ impl ExtensionController {
         true
     }
 
-    /// Whether the extension `id` is installed and on.
     pub(super) fn running(&self, id: &str) -> bool {
         self.installed
             .iter()
             .any(|extension| extension.id == id && extension.enabled)
     }
 
-    /// Whether the extension `id` may have a side panel and is on.
     pub(super) fn has_side_panel(&self, id: &str) -> bool {
         self.installed
             .iter()
             .any(|extension| extension.id == id && extension.enabled && extension.side_panel())
     }
 
-    /// The extension whose side panel shows beside this window's page.
     pub fn side_panel_shown(&self) -> Option<&str> {
         self.side_panel.as_ref().map(|panel| panel.id.as_str())
     }
 
-    /// Keep the widths the person drags side panels to in `store`, starting
-    /// from those kept there.
+    /// Keep the widths the person drags side panels to in `store`, starting from those
+    /// kept there.
     pub fn attach_side_panel_widths(&mut self, store: ui::storage::Settings<SidePanelWidths>) {
         self.side_panel_widths = store
             .get()
@@ -180,10 +171,9 @@ impl ExtensionController {
         self.side_panel_store = Some(store);
     }
 
-    /// How wide the side panel that shows stands beside the page of a
-    /// window `room` wide in `theme`: as wide as the person dragged its
-    /// extension's panel, else the theme's width, within the bounds
-    /// ([`side_panel_bounds`]) and leaving the page a readable column.
+    /// How wide the panel stands beside the page of a window `room` wide in `theme`: as
+    /// wide as the person dragged it, else the theme's width, within
+    /// [`side_panel_bounds`] and leaving the page a readable column.
     #[must_use]
     pub fn side_panel_extent(&self, theme: &ui::theme::Theme, room: f32) -> f32 {
         let (narrowest, widest) = side_panel_bounds(theme);
@@ -197,9 +187,8 @@ impl ExtensionController {
             .clamp(narrowest, widest)
     }
 
-    /// The person dragged the side panel that shows to `width` logical
-    /// pixels, which the window's edge keeps within the bounds. Returns
-    /// whether it changed.
+    /// The person dragged the panel to `width`, which the window's edge keeps within the
+    /// bounds. Whether it changed.
     pub fn set_side_panel_width(&mut self, width: f32) -> bool {
         let Some(id) = self.side_panel_shown().map(str::to_owned) else {
             return false;
@@ -211,8 +200,6 @@ impl ExtensionController {
         before.is_none_or(|before| (before - width).abs() >= 0.5)
     }
 
-    /// The person let go of the side panel's edge: its extension's panel
-    /// keeps that width, also in the windows to come.
     pub fn remember_side_panel_width(&self) {
         let (Some(store), Some(id)) = (&self.side_panel_store, self.side_panel_shown()) else {
             return;
@@ -227,10 +214,9 @@ impl ExtensionController {
         }
     }
 
-    /// A key the person pressed while the window's own field (the address)
-    /// has the keyboard: when one of extensions' commands holds it, the
-    /// command runs over the window's page, as in Chrome, and the field
-    /// never sees the key. Returns whether a command took it.
+    /// A key pressed while the address field has the keyboard: when one of the
+    /// extensions' commands holds it, the command runs over the page, as in Chrome, and
+    /// the field never sees the key. Whether a command took it.
     pub fn command_key(
         &self,
         key: &KeyInput,
@@ -248,8 +234,7 @@ impl ExtensionController {
         held
     }
 
-    /// The bar's button closing the side panel that shows, as a slot of the
-    /// window's bar in a Tilo session.
+    /// The bar's button closing the side panel that shows.
     pub fn bar_side_panel(&self) -> Option<ToolbarAction> {
         self.side_panel.as_ref()?;
         Some(
@@ -262,8 +247,7 @@ impl ExtensionController {
         )
     }
 
-    /// The side panel beside the window's page, `width` wide: the
-    /// extension's page, which the person uses beside the page it is for.
+    /// The side panel beside the page, `width` wide.
     pub fn side_panel(&self, width: f32) -> Option<Element> {
         let panel = self.side_panel.as_ref()?;
         let name = self
@@ -283,8 +267,6 @@ impl ExtensionController {
         ))
     }
 
-    /// The extensions that may show a side panel, each with its name and
-    /// whether its panel shows beside this page.
     pub(super) fn side_panel_entries(&self) -> Vec<(String, String, bool)> {
         self.installed
             .iter()
@@ -296,8 +278,7 @@ impl ExtensionController {
             .collect()
     }
 
-    /// Show the side panel of `id` beside the page, or close it where it
-    /// shows.
+    /// Show `id`'s side panel beside the page, or close it where it shows.
     pub(super) fn toggle_side_panel(&self, id: &str) -> Command {
         if self.side_panel_shown() == Some(id) {
             Command::CloseSidePanel(id.to_owned())
@@ -306,11 +287,8 @@ impl ExtensionController {
         }
     }
 
-    /// What the side panel's page did since the last frame: closed itself
-    /// (`window.close()`), asked for more access (`permissions.request`,
-    /// which the host puts to the page that asks), or opened pages, which
-    /// open beside the window as from a popup. Returns whether the window
-    /// changed.
+    /// What the side panel's page did since the last frame: closed itself, asked for more
+    /// access, or opened pages that open beside the window. Whether the window changed.
     pub(super) fn sync_side_panel(&mut self, engine: &SharedEngine) -> bool {
         let Some(panel) = &self.side_panel else {
             return false;
@@ -348,8 +326,6 @@ impl ExtensionController {
         }
     }
 
-    /// Ask the extension which of its pages its panel shows beside this
-    /// page; the engine answers with it.
     pub(super) fn open_side_panel(&self, id: String, engine: &SharedEngine) {
         if self.has_side_panel(&id) {
             engine.send(WebViewCommand::ExtensionOpenSidePanel { id });
@@ -362,7 +338,6 @@ impl ExtensionController {
         }
     }
 
-    /// The toolbar row's button closing the side panel that shows.
     pub(super) fn side_panel_button(&self) -> Option<Element> {
         let panel = self.side_panel.as_ref()?;
         let close = CATALOG.t("browser-extension-side-panel-close");
@@ -373,7 +348,6 @@ impl ExtensionController {
         ))
     }
 
-    /// The Extensions menu's items showing or hiding each side panel.
     pub(super) fn side_panel_menu_items(&self) -> Vec<MenuItem> {
         self.side_panel_entries()
             .into_iter()
@@ -385,7 +359,6 @@ impl ExtensionController {
             .collect()
     }
 
-    /// The bar action `id` when it shows or hides a side panel.
     pub(super) fn side_panel_bar_command(&self, id: &str) -> Option<Command> {
         if let Some(extension) = id.strip_prefix(BAR_SIDE_PANEL) {
             return Some(self.toggle_side_panel(extension));
@@ -396,8 +369,6 @@ impl ExtensionController {
         })
     }
 
-    /// The extension's resource action opening its side panel beside this
-    /// page, or closing it where it shows.
     pub(super) fn side_panel_action(
         &self,
         extension: &Installed,

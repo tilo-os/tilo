@@ -1,12 +1,11 @@
-//! The person's own bookmark library. Importing it never edits the workspace's Browser record.
+//! The person's own bookmark library. Importing it never edits the workspace's
+//! Browser record.
 //!
-//! A bookmark is an add under the tag minted when it was made; removing it
-//! tombstones the adds of it that were seen, so an add made concurrently on
-//! another device survives the remove (an observed-remove set). An import
-//! keeps a receipt per source, so retrying it changes nothing and a
-//! different import from the same source is refused; the folder trees it
-//! brings are kept whole per source, and removing a folder or placement
-//! tombstones it beside its tree.
+//! A bookmark is an add under a tag minted when it was made; removing it tombstones
+//! the adds of it that were seen, so an add made meanwhile on another device survives
+//! (an observed-remove set). An import keeps a receipt per source, so a retry changes
+//! nothing and a different import from one source is refused; the folder trees it
+//! brings are kept whole per source.
 
 use crate::continuity::{ImportBatch, ImportBundle, MAX_BUNDLE_ENTRIES, MAX_IMPORT_BYTES};
 use crate::continuity_library::{Bookmark, Bookmarks};
@@ -16,48 +15,36 @@ use ui::tilo_resource::{self, ActionCx, Atom, Map, Model, ModelError, Refusal, S
 
 pub const SCOPE: &str = "browser.bookmarks/personal";
 
-/// The longest bookmark title kept, in bytes.
 const MAX_BOOKMARK_TITLE_BYTES: usize = 4 * 1024;
-/// The most import sources whose receipts a library keeps.
 const MAX_RECEIPTS: usize = 1024;
-/// The most imported trees a library keeps.
 const MAX_TREES: usize = 128;
 
-/// One bookmark added: the address and the title it was added with.
 #[derive(Model, Default, Clone, Debug, PartialEq, Eq)]
 pub struct Added {
-    /// The normalized address.
     #[model(atom)]
     pub url: String,
-    /// The title it shows.
     #[model(atom)]
     pub title: String,
 }
 
-/// The person's own bookmark library. See the module docs.
 #[derive(Model, Default, Clone, Debug, PartialEq)]
 pub struct PersonalBookmarks {
-    /// Every bookmark added, by the tag minted when it was.
     #[model(readonly)]
     pub added: Map<Added>,
-    /// The tags of the adds removed.
     #[model(readonly)]
     pub removed: Set<String>,
-    /// What each import source brought, by the source in hex: the digest of
-    /// its batch.
+    /// What each import source brought, by the source in hex: the digest of its
+    /// batch.
     #[model(readonly)]
     pub receipts: Map<Atom>,
-    /// The folder trees imported, by their source in hex.
     #[model(readonly)]
     pub trees: Map<ImportedTree>,
-    /// The imported folders and placements removed
-    /// ([`crate::imported_folders::node_key`]).
     #[model(readonly)]
     pub hidden: Set<String>,
 }
 
-/// The library as the window shows it: its bookmarks, one row per address,
-/// and its imported trees without what was removed from them.
+/// The library as the window shows it: its bookmarks, one row per address, and its
+/// imported trees without what was removed from them.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct PersonalBookmarkState {
     pub bookmarks: Bookmarks,
@@ -77,12 +64,8 @@ fn url_refused() -> Refusal {
 }
 
 impl PersonalBookmarks {
-    /// What the record holds: the person's own bookmarks, by the tag each was added under.
-    ///
-    /// It answers through [`fields`](tilo_resource::read::fields): a caller
-    /// with no window open reads the record as it reads any app's record, and
-    /// a named item is read from the record's table or by the read its own
-    /// type gives it.
+    /// What the record holds: the person's own bookmarks, by the tag each was added
+    /// under.
     pub fn read_document(
         &self,
         item: Option<&tilo_resource::Id>,
@@ -99,9 +82,6 @@ impl PersonalBookmarks {
 )]
 impl PersonalBookmarks {
     /// Bookmark a page.
-    ///
-    /// Adds the page under a tag minted now, titled `title` (its address
-    /// when none).
     #[action]
     pub fn add_bookmark(
         &mut self,
@@ -124,9 +104,6 @@ impl PersonalBookmarks {
     }
 
     /// Remove a bookmark.
-    ///
-    /// Tombstones the adds of the page that were seen (`observed_tags`), so
-    /// one made meanwhile on another device stays.
     #[action]
     pub fn remove_bookmark(
         &mut self,
@@ -144,10 +121,6 @@ impl PersonalBookmarks {
     }
 
     /// Import bookmarks.
-    ///
-    /// A reviewed import (its JSON) added beside what the library holds: a
-    /// retry changes nothing, a different import from the same source is
-    /// refused.
     #[action]
     pub fn import_bookmarks(
         &mut self,
@@ -159,9 +132,6 @@ impl PersonalBookmarks {
     }
 
     /// Remove an imported folder or placement.
-    ///
-    /// Hides it, and everything in a folder, from the tree imported from
-    /// `source` (hex); the tree itself stays as it was imported.
     #[action]
     pub fn remove_imported_node(&mut self, source: String, id: String) -> Result<(), Refusal> {
         let tree = self.trees.get(&source).ok_or_else(tree_refused)?;
@@ -178,14 +148,12 @@ impl PersonalBookmarks {
 }
 
 impl PersonalBookmarks {
-    /// Add `url` under `tag`, unless that tag was added already.
     fn add(&mut self, tag: &str, url: String, title: String) {
         if !self.added.contains_key(tag) {
             self.added.insert(tag, Added { url, title });
         }
     }
 
-    /// The library as the window shows it.
     #[must_use]
     pub fn projected(&self) -> PersonalBookmarkState {
         PersonalBookmarkState {
@@ -194,8 +162,8 @@ impl PersonalBookmarks {
         }
     }
 
-    /// The bookmarks: every add not removed, one row per address with the
-    /// tags still adding it.
+    /// The bookmarks: every add not removed, one row per address with the tags still
+    /// adding it.
     #[must_use]
     pub fn bookmarks(&self) -> Bookmarks {
         let mut rows: Vec<Bookmark> = self
@@ -235,9 +203,9 @@ impl PersonalBookmarks {
         Bookmarks::from_entries(merged)
     }
 
-    /// The imported trees, each without the folders and placements removed
-    /// from it. A tree kept under another source than its own, or that does
-    /// not hold together, is left out.
+    /// The imported trees, each without the folders and placements removed from it. A
+    /// tree kept under another source than its own, or that does not hold together, is
+    /// left out.
     #[must_use]
     pub fn imported_trees(&self) -> Vec<ImportedTree> {
         self.trees
@@ -258,8 +226,8 @@ impl PersonalBookmarks {
             .collect()
     }
 
-    /// The receipt `batch` would leave, `None` when an identical import
-    /// from its source was taken already.
+    /// The receipt `batch` would leave, `None` when an identical import from its source
+    /// was taken already.
     fn receipt(&self, batch: &ImportBatch) -> Result<Option<(String, String)>, Refusal> {
         batch.validate().map_err(|_| refused())?;
         let key = crate::imported_folders::source_id(&batch.source);
@@ -280,8 +248,6 @@ impl PersonalBookmarks {
         }
     }
 
-    /// Check every chunk and tree of `bundle` and the library's capacity
-    /// before anything is written.
     fn preflight(&self, bundle: &ImportBundle) -> Result<(), Refusal> {
         bundle.validate().map_err(|_| refused())?;
         let mut additions = 0usize;
@@ -306,8 +272,8 @@ impl PersonalBookmarks {
         Ok(())
     }
 
-    /// Whether `tree` may be kept: whole and the same as a tree from its
-    /// source kept already, or within what the library keeps.
+    /// Whether `tree` may be kept: whole and the same as a tree from its source kept
+    /// already, or within what the library keeps.
     fn preflight_tree(&self, tree: &ImportedTree) -> Result<(), Refusal> {
         tree.validate().map_err(|_| tree_refused())?;
         match self
@@ -373,9 +339,8 @@ mod legacy {
     pub const REMOVED_NODE: &str = "browser.imported-tree-removed:";
 }
 
-/// Bring a library of version 1, which kept its adds, tombstones, receipts
-/// and trees as prefixed keys at the document's root, up to the record:
-/// each moves into its field, under the same tag, source or node key.
+/// Bring a library of version 1, which kept its adds, tombstones, receipts and trees
+/// as prefixed keys at the document's root, up to the record.
 fn upgrade(doc: &mut ui::tilo_resource::Doc, from: u32) -> Result<(), ModelError> {
     use automerge::transaction::Transactable as _;
     use automerge::{ObjType, ROOT, ReadDoc as _, Value};
@@ -415,8 +380,8 @@ fn upgrade(doc: &mut ui::tilo_resource::Doc, from: u32) -> Result<(), ModelError
         } else if let Some(source) = key.strip_prefix(legacy::TREE) {
             let text = scalar(doc, &ROOT, &key)
                 .ok_or_else(|| ModelError::invalid("an imported tree is no text").at(&key))?;
-            // Read the way the record reads a kept tree (`json_model!`): as
-            // JSON first, then the tree, so the app compiles one reader of it.
+            // Read the way the record reads a kept tree (`json_model!`): as JSON first,
+            // then the tree.
             let tree: ImportedTree = serde_json::from_str(&text)
                 .and_then(serde_json::from_value)
                 .map_err(|error: serde_json::Error| {

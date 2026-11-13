@@ -1,12 +1,9 @@
-//! Browser's document: the bookmarks, the preferences that follow the
-//! person to every browser window, and the sites tracker protection is off
-//! for. Bookmarking a page and turning protection off for a site are
-//! verbs; a bookmark's title and every preference are field edits at their
-//! paths. What only this window knows (the page, navigation, downloads,
-//! extensions) is published from the view's live rows and effects; the
-//! visit log and address book are the person's own records
-//! ([`BrowsingHistory`](crate::history::BrowsingHistory),
-//! [`AddressBook`](crate::autofill::AddressBook)).
+//! Browser's document: the bookmarks, the preferences that follow the person to
+//! every window, and the sites tracker protection is off for.
+//!
+//! What only this window knows (the page, navigation, downloads, extensions) is
+//! published from the view's live rows and effects; the visit log and address book
+//! are the person's own records.
 
 use std::rc::Rc;
 
@@ -28,8 +25,6 @@ use crate::settings::Settings;
 
 pub(crate) use crate::CATALOG;
 
-/// The browser's document: collaborative bookmarks, the preferences, and
-/// the origins tracker protection is off for.
 #[derive(Model, Clone, Debug, Default, PartialEq)]
 pub struct Browser {
     /// Bookmarks
@@ -37,8 +32,6 @@ pub struct Browser {
     /// Preferences
     pub preferences: Settings,
     /// Sites without tracker protection, by exact origin
-    /// (`https://example.org`). Only turning protection on or off for a
-    /// site changes them.
     #[model(readonly)]
     pub site_exceptions: Set<String>,
 }
@@ -46,11 +39,6 @@ pub struct Browser {
 impl Browser {
     /// What the record holds: the bookmarks, the preferences that follow the person to every
     /// window, and the sites tracker protection is off for.
-    ///
-    /// It answers through [`fields`](tilo_resource::read::fields): a caller
-    /// with no window open reads the record as it reads any app's record, and
-    /// a named item is read from the record's table or by the read its own
-    /// type gives it.
     pub fn read_document(
         &self,
         item: Option<&tilo_resource::Id>,
@@ -128,13 +116,11 @@ impl Browser {
     }
 }
 
-/// The resource id of the bookmark `id`: its item of the document.
 pub fn bookmark_resource_id(id: &Id) -> String {
     tilo_resource::items::item_resource_id::<Browser>("bookmarks", id)
 }
 
 impl Browser {
-    /// The library's sections a search can be narrowed to.
     fn scopes(_: &Self) -> Vec<ScopeDecl> {
         vec![
             ScopeDecl::new(
@@ -152,8 +138,6 @@ impl Browser {
         ]
     }
 
-    /// Each site tracker protection is off for, as a place that turns it
-    /// back on.
     fn sites(&self) -> Vec<Derived<Self>> {
         self.site_exceptions
             .iter()
@@ -171,8 +155,8 @@ impl Browser {
             .collect()
     }
 
-    /// Turning tracker protection for `origin` to the other state from
-    /// `protected`, as the row of a page on that site offers it.
+    /// Turning tracker protection for `origin` to the other state from `protected`, as
+    /// the row of a page on that site offers it.
     pub(crate) fn site_switch(origin: &str, protected: bool) -> Option<ActionDecl<Self>> {
         let params = browser::SetSiteProtection::paths();
         Self::SET_SITE_PROTECTION
@@ -188,15 +172,13 @@ impl Browser {
             )
     }
 
-    /// The origins tracker protection is off for.
     pub fn exceptions(&self) -> std::collections::BTreeSet<String> {
         self.site_exceptions.iter().cloned().collect()
     }
 }
 
-/// The screenshot scenarios: the page, the chrome's states, the library's
-/// sections and the tab strip. `page` is the deterministic page as it opens,
-/// nothing staged over it.
+/// The screenshot scenarios: the page, the chrome's states, the library's sections
+/// and the tab strip.
 const SCENARIOS: &[&str] = &[
     "page",
     "pip-active",
@@ -218,9 +200,8 @@ const SCENARIOS: &[&str] = &[
     "downloads-empty",
 ];
 
-/// The page a launch names: one absolute http(s) URL, the only schemes the
-/// browser claims. Anything else (a file, `javascript:`, `data:`) is not
-/// handed to the engine.
+/// The page a launch names: one absolute http(s) URL, the only schemes the browser
+/// claims. Anything else (a file, `javascript:`, `data:`) is not handed to the engine.
 fn launch_target(arguments: &[String]) -> Option<String> {
     arguments
         .iter()
@@ -234,13 +215,12 @@ fn launch_target(arguments: &[String]) -> Option<String> {
         .cloned()
 }
 
-/// The scheme desktop search hands the browser a web search under:
-/// `web+search:<percent-encoded query>`. The browser, not the desktop,
-/// knows which search engine the person chose.
+/// The scheme desktop search hands a web search under: `web+search:<percent-encoded
+/// query>`. The browser, not the desktop, knows which engine the person chose.
 pub const WEB_SEARCH_SCHEME: &str = "web+search";
 
-/// The web search a launch names (`web+search:cats%20videos`), decoded;
-/// `None` for anything else or an empty query.
+/// The web search a launch names (`web+search:cats%20videos`), decoded; `None` for
+/// anything else or an empty query.
 fn launch_search(arguments: &[String]) -> Option<String> {
     arguments.iter().find_map(|arg| {
         let (scheme, rest) = arg.split_once(':')?;
@@ -253,8 +233,8 @@ fn launch_search(arguments: &[String]) -> Option<String> {
     })
 }
 
-/// How the window `cx` shows browses: private, as a visitor (a window the
-/// desktop opened for an agent), or as the person.
+/// How the window `cx` shows browses: private, a visitor (a window the desktop opened
+/// for an agent), or the person.
 fn window_mode(cx: &ViewCx<Browser>) -> BrowsingMode {
     BrowsingMode::of_launch(
         cx.is_private(),
@@ -262,7 +242,6 @@ fn window_mode(cx: &ViewCx<Browser>) -> BrowsingMode {
     )
 }
 
-/// Framework app: the browser window is a view of [`Browser`].
 pub struct BrowserShell;
 
 impl ResourceApp for BrowserShell {
@@ -327,8 +306,8 @@ impl ResourceApp for BrowserShell {
     }
 
     fn view(cx: &mut ViewCx<Browser>) -> Element {
-        // Only a window someone uses reaches the web: a past version and a
-        // screenshot show the deterministic page of the test engine.
+        // Only a window someone uses reaches the web: a past version and a screenshot
+        // show the test engine's deterministic page.
         let live = cx.mode().is_live();
         let mode = window_mode(cx);
         let widget = if live {
@@ -350,9 +329,8 @@ impl ResourceApp for BrowserShell {
         } else {
             BrowserWidget::new_headless_in(mode)
         };
-        // One window, one page. A launch without a page to show starts in
-        // the address field; other pages are other windows, in the
-        // desktop's tabs.
+        // One window, one page; a launch without one starts in the address field.
+        // Other pages are other windows, in the desktop's tabs.
         let target = launch_target(cx.launch_arguments());
         let search = launch_search(cx.launch_arguments());
         let focus_address = live && target.is_none() && search.is_none();
@@ -361,7 +339,6 @@ impl ResourceApp for BrowserShell {
             (None, Some(query)) => widget.with_initial_search(query),
             (None, None) => widget,
         };
-        // A search hit on a bookmark, or an agent's `open`, shows its page.
         let (live, dispatch) = (cx.live().clone(), cx.dispatcher());
         cx.on_open_item(move |bookmark| {
             let url = live
@@ -370,7 +347,6 @@ impl ResourceApp for BrowserShell {
             dispatch.effect(&BrowserEffect::Open { url });
             Ok(())
         });
-        // A history or download hit opens its page or shows the download.
         let index = widget.search_index();
         let personal_open = widget.personal_open_handle();
         let dispatch = cx.dispatcher();
@@ -398,9 +374,9 @@ impl ResourceApp for BrowserShell {
     }
 }
 
-/// The browser `window` as a view of the document: it follows the document,
-/// answers the browser's effects on its page, and its page's rows, bound
-/// edits and search entries are published beside the resource.
+/// The browser `window` as a view of the document: it follows the document, answers
+/// the browser's effects on its page, and publishes the page's rows, bound edits and
+/// search entries beside the resource.
 pub(crate) fn browser_view(cx: &ViewCx<Browser>, mut window: BrowserWindow) -> Element {
     attach(cx, &mut window);
     window.follow(cx.live().clone());
@@ -433,17 +409,14 @@ pub(crate) fn browser_view(cx: &ViewCx<Browser>, mut window: BrowserWindow) -> E
                     .published()
                     .map_or_else(Vec::new, |page| page.rows.clone())
             })
-            // A history page or download a search hit names, past the
-            // published page of rows.
+            // A history page or download a search hit names, past the published rows.
             .live_row(move |id| row.borrow().published().and_then(|page| page.row(id)))
-            // The page row turns tracker protection on or off for its site.
             .row_edits(move |row| {
                 edits
                     .borrow()
                     .published()
                     .map_or_else(Vec::new, |page| page.row_edits(row))
             })
-            // The person's browsing history and this device's downloads.
             .search_entries(move || {
                 entries
                     .borrow()
@@ -454,14 +427,13 @@ pub(crate) fn browser_view(cx: &ViewCx<Browser>, mut window: BrowserWindow) -> E
     )
 }
 
-/// Lend `window` what it keeps from the host: the door for its edits, the
-/// content store, and in a live window the person's records, this device's
-/// settings and the engine's wakes.
+/// Lend `window` what it keeps from the host: the door for its edits, the content
+/// store, and in a live window the person's records, this device's settings and the
+/// engine's wakes.
 fn attach(cx: &ViewCx<Browser>, window: &mut BrowserWindow) {
-    // The person's account custody (their website accounts, saved
-    // addresses, the profile handed over from another device) is lent only
-    // to their own window: a window opened for an agent browses as a
-    // visitor.
+    // The person's account custody (their website accounts, saved addresses, the
+    // profile handed over from another device) is lent only to their own window: a
+    // window opened for an agent browses as a visitor.
     let custody = window_mode(cx).holds_account_custody();
     window.attach_dispatcher(cx.dispatcher(), cx.actions());
     window.attach_services(
@@ -470,14 +442,9 @@ fn attach(cx: &ViewCx<Browser>, window: &mut BrowserWindow) {
             .filter(|_| custody),
         cx.waker(),
     );
-    // A picture of the page is content: the store keeps its bytes, and the
-    // answer names them, so the reader who can see it does. It is the
-    // store the host lent this window (`RecordEnv::content`), not the one
-    // `tilo_resource::content::current()` answers: that answers for the
-    // wake scope entered now, and an action applying outside the window's
-    // own scope found none — so a capture was kept by a store the
-    // runtime's content service never held, and the answer's picture was
-    // an address that read back empty.
+    // A picture of the page is content: the store the host lent this window
+    // (`RecordEnv::content`), not what `content::current()` answers, which is the wake
+    // scope entered now and holds nothing for an action applying outside the window.
     if let Some(content) = cx.content() {
         window.page_mut().attach_content(content);
     }
@@ -492,11 +459,9 @@ fn attach(cx: &ViewCx<Browser>, window: &mut BrowserWindow) {
     {
         window.page_mut().attach_service_catalog(cx.waker());
     }
-    // Visits and addresses are the person's own: they follow them to
-    // their other devices and never reach a collaborator. A private
-    // window keeps none.
-    // Downloads stay on this device, in its settings, as do the
-    // widths side panels are dragged to.
+    // Visits and addresses are the person's own: they follow them to their other
+    // devices and never reach a collaborator; a private window keeps none. Downloads
+    // and side panel widths stay on this device.
     if !cx.is_private() {
         window.attach_downloads(cx.storage().settings());
         window.attach_side_panel_widths(cx.storage().settings());
@@ -519,9 +484,8 @@ fn attach(cx: &ViewCx<Browser>, window: &mut BrowserWindow) {
     if custody && let Some(book) = cx.person::<crate::autofill::AddressBook>() {
         window.attach_address_book(book);
     }
-    // The engine publishes frames and navigation from its own
-    // threads; each wakes the window so pages paint and finish
-    // loading without waiting for input.
+    // The engine publishes frames and navigation from its own threads; each wakes the
+    // window so pages paint and finish loading without waiting for input.
     let waker = cx.waker();
     window.page_mut().attach_service_waker(waker.clone());
     window
@@ -558,9 +522,6 @@ mod tests {
         assert!(include_str!("../tilo-app.toml").contains(&expected));
     }
 
-    /// The window's host asks the root widget each frame whether the app
-    /// wants the OS window fullscreen; a page in fullscreen must reach it
-    /// through the framework's root, not only through the bare window.
     #[test]
     fn page_fullscreen_reaches_the_root_the_host_polls() {
         use ui::widget::FullscreenWidgetExt as _;
@@ -718,10 +679,6 @@ mod tests {
         );
     }
 
-    /// The page's question is the window's row while the page waits on it,
-    /// with the dialog's answers bound to it; answered in the dialog, both
-    /// go. (An agent's answer through the row runs in the widget's tests:
-    /// a capture takes no effects.)
     #[test]
     fn a_pages_question_is_answered_through_its_row() {
         let mut app = TestApp::<BrowserShell>::capture(Some("page-dialog")).unwrap();
@@ -743,7 +700,6 @@ mod tests {
             "the dialog stands over the page"
         );
 
-        // A person answers in the dialog, and the row goes with it.
         app.harness()
             .click_named(&format!("{}.secondary", crate::page_dialogs::ROW))
             .unwrap();
@@ -802,11 +758,6 @@ mod tests {
         }
     }
 
-    /// The window the desktop opens for an agent is launched with the
-    /// visitor switch: its page actions are published for a visitor's
-    /// page, reading it takes no confirmation, and the person's website
-    /// accounts are not in it. A window launched without it is the
-    /// person's own, where reading asks first.
     #[test]
     fn a_window_launched_as_a_visitor_holds_none_of_the_persons_custody() {
         use ui::permissions::policy::Answer::{Allow, Ask};
@@ -848,9 +799,6 @@ mod tests {
         assert_eq!(own, [Ask, Ask, Ask]);
     }
 
-    /// The person typing into a password field of a visitor's window signs
-    /// it in: from that key on, reading its page asks first. Typing into
-    /// any other field does not.
     #[test]
     fn typing_a_password_into_a_visitors_window_makes_its_reads_ask_first() {
         use ui::permissions::policy::Answer::{Allow, Ask};
@@ -912,13 +860,6 @@ mod tests {
         assert_eq!(read_page(&mut app), Ask, "and stays signed in");
     }
 
-    /// What an agent can reach of a Browser window with a loaded page: the
-    /// action directory the window publishes, walked as the broker lists it
-    /// to an agent. A resource disclosed through a private UI view (one that
-    /// only changes what its caller sees, and neither reads the document nor
-    /// is the caller's own view) is never listed to an agent, and nothing
-    /// below it is either; any other resource is listed, or its actions are
-    /// listed in its place.
     fn reachable_by_an_agent(app: &mut TestApp<BrowserShell>) -> Vec<(String, String)> {
         use ui::collaboration::action_directory::ActionDirectorySnapshot;
         use ui::tilo_actions::OperationKind;
@@ -950,10 +891,6 @@ mod tests {
         reached
     }
 
-    /// A Browser window that has loaded its page offers an agent the page's
-    /// own actions, read-page among them: the window it opened as a visitor
-    /// and the person's own alike. The page used to be disclosed only
-    /// through Stop, a private view, which hid it and everything on it.
     #[test]
     fn a_window_with_a_loaded_page_offers_an_agent_read_page() {
         let url = "https://github.com/ada";

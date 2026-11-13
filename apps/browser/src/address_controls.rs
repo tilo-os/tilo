@@ -1,5 +1,4 @@
-//! Editor of the person's address book; no collaborative actions or password
-//! fields.
+//! Editor of the person's address book; no collaborative actions or password fields.
 use crate::{
     autofill::{AddressBook, AddressProfile, AutofillStore},
     browsing_mode::BrowsingMode,
@@ -103,7 +102,7 @@ impl AddressControls {
         }
     }
     pub fn selected_fields(&mut self) -> Option<AddressFields> {
-        // Reload before fill so another tab disabling or deleting a profile takes effect.
+        // Reload before fill so another tab's disable or delete takes effect.
         let store = match self.store() {
             Ok(store) => store,
             Err(error) => {
@@ -123,7 +122,6 @@ impl AddressControls {
             country: profile.country.clone(),
         })
     }
-    /// Review fixture: autofill on, with two saved profiles, one chosen.
     pub fn stage_for_review(&mut self) {
         self.private = false;
         self.enabled = true;
@@ -279,15 +277,12 @@ impl AddressControls {
             false
         }
     }
-    /// Open the saved address `profile` in the editor.
     pub fn edit_profile(&mut self, profile: String) {
         self.act(Action::Edit(profile));
     }
-    /// Ask whether to delete the saved address `profile`.
     pub fn ask_delete(&mut self, profile: String) {
         self.act(Action::Delete(profile));
     }
-    /// A button of this panel, its words from `key`, a catalogue message.
     fn button(&self, id: &str, key: &str, action: Action) -> Button {
         Button::new(id, &crate::CATALOG.t(key)).on_effect(self.command(action))
     }
@@ -295,7 +290,6 @@ impl AddressControls {
         let pending = self.action.clone();
         move || pending.set(Some(action.clone()))
     }
-    /// The editor, its rows' Edit and Delete running Browser's `actions`.
     pub fn panel(&self, actions: Option<&ui::framework::Actions<Browser>>) -> Box<dyn Widget> {
         let mut column = Column::new().with_no_padding().with_intrinsic_height();
         if self.private {

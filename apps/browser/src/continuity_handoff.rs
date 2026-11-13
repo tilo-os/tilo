@@ -1,5 +1,4 @@
-//! Browser-owned consumer of an authenticated, identity-bound host selection.
-//! Native source acquisition stays behind the platform boundary.
+//! Browser's consumer of an authenticated, identity-bound host selection.
 
 mod native;
 pub(crate) use native::Controller;
@@ -15,7 +14,6 @@ pub(crate) enum Status {
     Failed,
 }
 
-/// Whether this platform can consume the host's selected-profile projection.
 pub(crate) fn supported() -> bool {
     browser_continuity::handoff::supported()
 }

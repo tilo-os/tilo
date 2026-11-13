@@ -11,8 +11,6 @@ fn effect_operation(payload: &[u8]) -> BrowserOperation {
         .operation()
 }
 
-/// Zoom is the page's to do for anyone: the menu's zoom rows are actions
-/// on the page, each offered while it would change the page's size.
 #[test]
 fn the_page_zooms_through_its_actions() {
     let engine = ui::webview::test_engine::TestEngine::new();

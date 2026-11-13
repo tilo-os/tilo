@@ -1,8 +1,7 @@
 //! The Library page: history, bookmarks, downloads and extensions.
 //!
-//! The page is a title, a section switcher and one list of rows. Finding an
-//! item is the platform search, narrowed to the section on screen by the
-//! magnifier button in the header; the page draws no field of its own.
+//! The page is a title, a section switcher and one list of rows. Finding an item is the
+//! platform search, narrowed to the section on screen by the header's magnifier.
 
 use ui::icons::Icon;
 use ui::search::{ScopeDecl, SearchRequest, search_button};
@@ -18,12 +17,12 @@ use crate::actions::{BOOKMARKS_SCOPE, DOWNLOADS_SCOPE, HISTORY_SCOPE, history_re
 use crate::downloads::DownloadStatus;
 use crate::resource::{Browser, CATALOG, bookmark_resource_id};
 
-/// How many rows a section materialises. The rest stay reachable through
-/// search, which is bounded by its own pages.
+/// How many rows a section materialises; the rest stay reachable through search, which is
+/// bounded by its own pages.
 const ROW_LIMIT: usize = 50;
 
-/// The library's sections in tab order, with the copy that names each one and
-/// the resource it shows.
+/// The library's sections in tab order, each with the copy naming it and the resource it
+/// shows.
 const SECTIONS: [(LibrarySection, &str, &str); 4] = [
     (
         LibrarySection::History,
@@ -47,8 +46,6 @@ const SECTIONS: [(LibrarySection, &str, &str); 4] = [
     ),
 ];
 
-/// A row's name for assistive technology: a sentence from the catalogue with
-/// the thing it acts on interpolated.
 fn named(key: &str, title: &str) -> String {
     CATALOG.t_args(
         key,
@@ -56,17 +53,14 @@ fn named(key: &str, title: &str) -> String {
     )
 }
 
-/// A download row's name for assistive technology.
 fn named_download(key: &str, name: &str) -> String {
     CATALOG.t_args(key, &[("name", ui::i18n::ArgValue::Text(name.to_owned()))])
 }
 
-/// What the window bar's location commits for the Library itself.
 pub(super) const LIBRARY_LOCATION: &str = "browser:library";
 
 impl BrowserWidget {
-    /// Where the window bar puts the Library: the Library, then the section
-    /// on screen, each committing its place (the section, its resource).
+    /// Where the window bar puts the Library: the Library, then the section on screen.
     pub(super) fn library_segments(&self) -> Vec<(String, &'static str)> {
         let mut segments = vec![(CATALOG.t("browser-library-title"), LIBRARY_LOCATION)];
         segments.extend(
@@ -78,8 +72,7 @@ impl BrowserWidget {
         segments
     }
 
-    /// The Library's section whose resource is `place`, as a bar segment
-    /// commits it.
+    /// The Library's section whose resource is `place`, as a bar segment commits it.
     pub(super) fn library_section_at(place: &str) -> Option<&'static str> {
         SECTIONS
             .iter()
@@ -87,9 +80,8 @@ impl BrowserWidget {
             .map(|(_, _, resource)| *resource)
     }
 
-    /// The visited pages, newest first, in one group per day: Today,
-    /// Yesterday, the days of the past week by name, then dates. Each row
-    /// says where the page is and when it was last open.
+    /// The visited pages, newest first, in one group per day. Each row says where the page
+    /// is and when it was last open.
     fn history_groups(&self) -> Vec<Element> {
         let today = ui::clock::today();
         let mut entries: Vec<&crate::history::HistoryEntry> = self
@@ -128,10 +120,8 @@ impl BrowserWidget {
             if let Some(binding) = self.unit_binding(&id, "open") {
                 row = row.on_action(binding);
             }
-            // One page can be forgotten without losing the rest, through the
-            // same verb that clears all of them. A window that keeps no
-            // history record of its own publishes no such row, and offers no
-            // removal.
+            // One page can be forgotten without losing the rest, through the same verb that
+            // clears all of them. A window that keeps no history record offers no removal.
             let forget: Vec<Button> = self
                 .unit_binding(&id, "forget-visit")
                 .map(|binding| {
@@ -163,10 +153,8 @@ impl BrowserWidget {
             .collect()
     }
 
-    /// Forget one visited page in the person's record, and show the history
-    /// it leaves: the same verb the Settings row clears all of them with,
-    /// for one page. A window that keeps no record of its own has nothing to
-    /// forget from.
+    /// Forget one visited page in the person's record, and show the history it leaves: the
+    /// same verb the Settings row clears all of them with, for one page.
     pub(super) fn forget_visit(&mut self, url: &str) -> Result<(), String> {
         let record = self
             .person_history
@@ -199,7 +187,6 @@ impl BrowserWidget {
             })
             .take(ROW_LIMIT)
             .map(|entry| {
-                // The bookmark's item resource, which this window's row joins.
                 let id = bookmark_resource_id(&entry.id);
                 let title = if entry.title.trim().is_empty() {
                     entry.url.as_str()
@@ -325,7 +312,6 @@ impl BrowserWidget {
             .library_rows(|fields| library_filter_matches(&filter, fields))
     }
 
-    /// What the section shows when it has no rows: one sentence.
     fn library_empty_state(&self) -> EmptyState {
         if !self.library_filter.get().is_empty() {
             return EmptyState::new(CATALOG.t("browser-library-no-match")).with_icon(Icon::Search);
@@ -418,11 +404,9 @@ impl BrowserWidget {
         Box::new(body.push(list))
     }
 
-    /// The Library's own header outside a Tilo session: its title, Pause
-    /// history, Clear filter, search and Done. While the desktop's bar
-    /// hosts the window, the bar's location names the Library, Clear filter
-    /// is its action, Pause history is in its menu, its search is the bar's
-    /// and its Library button closes it.
+    /// The Library's own header outside a Tilo session: its title, Pause history, Clear
+    /// filter, search and Done. While the desktop's bar hosts the window, the bar names the
+    /// Library and offers the rest itself.
     fn library_header(&self, current: usize) -> Row {
         let mut header = Row::new().no_wrap().push(Box::new(
             Text::new(&CATALOG.t("browser-library-title"))
@@ -453,13 +437,11 @@ impl BrowserWidget {
                 "clear-library-filter",
             )));
         }
-        // Search is the platform's: the button opens it narrowed to the
-        // section on screen. Extensions are not a search scope, so that page
-        // has no button.
+        // Search is the platform's: the button opens it narrowed to the section on screen.
+        // Extensions are not a search scope, so that page has no button.
         if let Some((_, label, scope)) = SECTIONS.get(current)
             && self.library_section != LibrarySection::Extensions
         {
-            // window-bar: fallback, the bar's search while it hosts the window
             header = header.push(Box::new(search_button(SearchRequest::within(
                 ScopeDecl::new(*scope, CATALOG.t(label)),
             ))));
@@ -528,9 +510,8 @@ fn visit_time(unix_secs: u64) -> Option<chrono::DateTime<chrono::Local>> {
     chrono::DateTime::from_timestamp(secs, 0).map(|utc| utc.with_timezone(&chrono::Local))
 }
 
-/// The heading of the day a visit falls on, seen from `today`: Today and
-/// Yesterday, a weekday within the past week, otherwise the date (with the
-/// year once it is not this year's).
+/// The heading of the day a visit falls on, seen from `today`: Today and Yesterday, a
+/// weekday within the past week, otherwise the date.
 fn day_heading(day: chrono::NaiveDate, today: chrono::NaiveDate) -> String {
     use chrono::Datelike as _;
     let days = (day - today).num_days();

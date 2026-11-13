@@ -1,20 +1,11 @@
-//! The browser's toolbar is slots in the window's bar
-//! ([`ui::window_toolbar`]): back and forward, the address as the window's
-//! editable location (the site's domain at rest, the whole address while
-//! edited, Enter or the go button navigating), and reload, bookmark and the
-//! library. The page's favicon is the location's picture, standing where
-//! the app's icon would. While the address is edited in the bar the browser
-//! hears what is typed and answers with the omnibox's rows (pages visited
-//! before, the engine's searches), which the bar lists under the field: the
-//! only list of them, as the window draws none of its own while hosted.
-//! Choosing a row commits where it goes (a search commits its engine's
-//! address, never the words, which could read as an address).
-//! Everything else the window's own row offers is in the bar too: the Web
-//! Store offer and the downloads in progress as buttons, and the More menu's
-//! commands and the extensions' popups in the bar's overflow menu, grouped
-//! as menus so they stay within the bar's [`ui::window_toolbar::MAX_DECLARED_ACTIONS`].
-//! While the desktop's bar shows them the window draws no toolbar row of
-//! its own (`build_composition`); outside a Tilo session it keeps its row.
+//! The browser's toolbar is slots in the window's bar ([`ui::window_toolbar`]): back and
+//! forward, the address as the window's editable location, and reload, bookmark and the
+//! library, with the page's favicon as the location's picture.
+//!
+//! While the address is edited there the browser answers with the omnibox's rows, which
+//! the bar lists under the field. Everything else the window's own row offers is in the
+//! bar too; while the desktop's bar shows them the window draws no toolbar row of its own
+//! (`build_composition`).
 
 use ui::window_toolbar::{
     LocationSegment, LocationSuggestion, ToolbarAction, ToolbarEvent, ToolbarImage,
@@ -25,25 +16,19 @@ use crate::omnibox::{Row, RowKind};
 
 use super::BrowserWidget;
 
-/// What an entry of the window's bar runs: the command its row in the
-/// window's own More menu runs.
 #[derive(Clone, Debug, PartialEq)]
 pub(super) enum BarCommand {
-    /// The resource's operation with no arguments.
     Unit(&'static str, &'static str),
     Bookmark,
     Library,
     DeveloperTools,
-    /// Zoom in, out (by the step) or back to 100 % (0).
     Zoom(i32),
-    /// The site's information, or its ads and trackers.
     Site {
         information: bool,
     },
     PrivateWindow,
     Settings,
-    /// The page again, in a window of the person's own: with their
-    /// sign-ins.
+    /// The page again, in a window of the person's own: with their sign-ins.
     OwnWindow,
 }
 
@@ -51,8 +36,6 @@ fn t(key: &str) -> String {
     crate::resource::CATALOG.t(key)
 }
 
-/// What the bar shows of `uri` at rest: its site, without the scheme or a
-/// leading `www.`. Empty for no page.
 pub(super) fn site_label(uri: &str) -> String {
     let uri = uri.trim();
     if uri.is_empty() {
@@ -67,29 +50,24 @@ pub(super) fn site_label(uri: &str) -> String {
         )
 }
 
-/// Everything the slots are made from: the window declares them again only
-/// when one of these changed.
+/// Everything the slots are made from, so they are declared again only when one changed.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct BarInputs {
     uri: String,
-    /// The bar's back and forward slots, exactly as declared.
     navigation: ToolbarNavigation,
-    /// Its buttons and menus, exactly as declared.
     actions: Vec<ToolbarAction>,
-    /// What it says after back and forward: whether the window browses as
-    /// a visitor, which changes once a credential is entered in it.
+    /// What it says after back and forward: whether the window browses as a visitor.
     leading: Vec<ToolbarAction>,
     favicon: Option<Vec<u8>>,
     suggestions: Vec<LocationSuggestion>,
-    /// The Library's place while it is shown: its name, then its section's,
-    /// each with the place it commits.
+    /// The Library's place while it is shown: its name, then its section's, each with the
+    /// place it commits.
     library: Option<Vec<(String, &'static str)>>,
 }
 
-/// The address field's mark for how the page arrived: a lock over
-/// `https://`, an open lock over `http://` from another machine, which
-/// anyone on the way can read or change. This machine's own pages are
-/// neither.
+/// The address field's mark for how the page arrived: a lock over `https://`; over
+/// `http://` from another machine an open one, since anyone on the way can read or change
+/// it. This machine's own pages are neither.
 fn connection_icon(uri: &str) -> Option<&'static str> {
     let url = url::Url::parse(uri).ok()?;
     match url.scheme() {
@@ -99,8 +77,8 @@ fn connection_icon(uri: &str) -> Option<&'static str> {
     }
 }
 
-/// Whether `url` names this machine: `localhost`, a `.localhost` name or a
-/// loopback address.
+/// Whether `url` names this machine: `localhost`, a `.localhost` name or a loopback
+/// address.
 fn this_machine(url: &url::Url) -> bool {
     match url.host() {
         Some(url::Host::Domain(name)) => {
@@ -114,28 +92,22 @@ fn this_machine(url: &url::Url) -> bool {
     }
 }
 
-/// One omnibox row as the bar lists it: what it says, the line under it,
-/// what choosing it commits (where the row goes: an address, or the search
-/// engine's address for the words) and its kind's icon.
+/// One omnibox row as the bar lists it: what it says, the line under it, and what choosing
+/// it commits.
 fn suggestion(row: &Row, engine: &str) -> LocationSuggestion {
     let icon = match row.kind {
         RowKind::Go => "globe",
         RowKind::History => "history",
-        // The toolbar's mark for a saved page.
         RowKind::Bookmark => "star",
         RowKind::Search | RowKind::Suggestion => "search",
         RowKind::Extension => "box",
     };
     let detail = match row.kind {
-        // A visited page's address under its title; the extension a
-        // keyword's row goes to.
         RowKind::History | RowKind::Extension => row.detail.clone(),
-        // A saved page says it is one, and where it leads.
         RowKind::Bookmark => crate::resource::CATALOG.t_args(
             "browser-suggestion-bookmark",
             &[("url", ui::i18n::ArgValue::Text(row.detail.clone()))],
         ),
-        // The typed words: which engine they go to.
         RowKind::Search => crate::resource::CATALOG.t_args(
             "browser-suggestion-search",
             &[(
@@ -143,12 +115,9 @@ fn suggestion(row: &Row, engine: &str) -> LocationSuggestion {
                 ui::i18n::ArgValue::Text(crate::settings::search_engine_name(engine)),
             )],
         ),
-        // An address as typed, and the engine's own searches, say it all.
         RowKind::Go | RowKind::Suggestion => String::new(),
     };
     LocationSuggestion {
-        // A visited page by its title (its address when it has none), a
-        // search by its words, an address as typed.
         label: row.title.clone(),
         value: super::row_destination(row, engine),
         icon: Some(icon.to_owned()),
@@ -169,7 +138,6 @@ impl BrowserWidget {
         }
     }
 
-    /// Which of back and forward can go.
     fn bar_navigation(&self) -> ToolbarNavigation {
         ToolbarNavigation {
             back: self.can_go_back,
@@ -177,8 +145,7 @@ impl BrowserWidget {
         }
     }
 
-    /// What the bar lists under its edited address: the omnibox's rows for
-    /// what the bar said is typed there, nothing while it is not edited.
+    /// What the bar lists under its edited address; nothing while it is not edited.
     pub(super) fn bar_suggestions(&self) -> Vec<LocationSuggestion> {
         if self.bar_query.is_none() {
             return Vec::new();
@@ -190,8 +157,6 @@ impl BrowserWidget {
             .collect()
     }
 
-    /// Whether the page shown is bookmarked, in whichever bookmarks this
-    /// window keeps.
     pub(super) fn page_bookmarked(&self) -> bool {
         if self.person_bookmarks.is_some() {
             self.personal_bookmarks
@@ -202,8 +167,8 @@ impl BrowserWidget {
         }
     }
 
-    /// The bar's buttons, then its menus: what the window's own row and its
-    /// More menu offer outside a Tilo session.
+    /// The bar's buttons, then its menus: what the window's own row and its More menu offer
+    /// outside a Tilo session.
     fn bar_actions(&self) -> Vec<ToolbarAction> {
         let loading = self.progress < 1.0;
         let page = !self.current_uri.trim().is_empty();
@@ -211,7 +176,6 @@ impl BrowserWidget {
         let mut actions = Vec::new();
         // On a Web Store item: the reason to be on the page, first in the row.
         actions.extend(self.extensions.bar_offer());
-        // An extension's side panel beside the page closes from the row.
         actions.extend(self.extensions.bar_side_panel());
         let bar = &self.bar_entries;
         let entry = |icon: &str, key: &str, command| bar.entry(icon, t(key), command);
@@ -344,8 +308,7 @@ impl BrowserWidget {
     /// The slots this window shows in its bar.
     pub(super) fn window_toolbar(&self) -> WindowToolbar {
         let icon = if self.browsing_mode.is_private() {
-            // What marks a private window, now that it has no toolbar of
-            // its own to tint.
+            // What marks a private window, now that it has no toolbar of its own to tint.
             Some("eye-off".to_owned())
         } else {
             connection_icon(&self.current_uri).map(str::to_owned)
@@ -365,12 +328,10 @@ impl BrowserWidget {
         }
     }
 
-    /// What says, right after back and forward, that the window was opened
-    /// for an agent and browses as a visitor, without the person's
-    /// sign-ins: a button saying so, whose menu opens the page in a window
-    /// of the person's own. Their own window says nothing: it is the
-    /// ordinary one; nor does a visitor's once a credential was entered in
-    /// it, since its page may then hold a sign-in.
+    /// What says, right after back and forward, that the window was opened for an agent
+    /// and browses as a visitor: a button whose menu opens the page in a window of the
+    /// person's own. Their own window says nothing, nor does a visitor's once a credential
+    /// was entered in it.
     pub(super) fn custody_leading(&self) -> Vec<ToolbarAction> {
         if self.browsing_mode != crate::browsing_mode::BrowsingMode::Visitor
             || self.page_holds_sign_in()
@@ -393,7 +354,6 @@ impl BrowserWidget {
         ]
     }
 
-    /// The Library in the bar's location: the Library, then its section.
     fn library_location(&self) -> ToolbarLocation {
         let segments: Vec<LocationSegment> = self
             .library_segments()
@@ -414,7 +374,6 @@ impl BrowserWidget {
         }
     }
 
-    /// The page's address in the bar's location.
     fn address_location(&self, icon: Option<String>) -> ToolbarLocation {
         ToolbarLocation {
             label: site_label(&self.current_uri),
@@ -436,9 +395,8 @@ impl BrowserWidget {
         }
     }
 
-    /// Tell the window's bar the slots as they are now, and run what the
-    /// person did with them: the same canonical actions the browser's own
-    /// toolbar runs. Events invalidate composition only when they change it.
+    /// Tell the window's bar the slots as they are now, and run what the person did with
+    /// them: the same canonical actions the browser's own toolbar runs.
     pub(super) fn sync_window_toolbar(&mut self) {
         self.declare_window_toolbar();
         for event in ui::window_toolbar::take_events() {
@@ -446,8 +404,8 @@ impl BrowserWidget {
         }
     }
 
-    /// Tell the window's bar the slots, when what they are made from
-    /// changed, or the window they are declared on did.
+    /// Tell the bar the slots, when what they are made from changed, or the window they
+    /// are declared on did.
     pub(super) fn declare_window_toolbar(&mut self) {
         let inputs = (ui::window_toolbar::current_window(), self.bar_inputs());
         if self.declared_bar.as_ref() != Some(&inputs) {
@@ -456,11 +414,9 @@ impl BrowserWidget {
         }
     }
 
-    /// Run one thing the person did in the bar.
     pub(super) fn run_window_toolbar_event(&mut self, event: ToolbarEvent) {
         let pressed = self.bar_entries.pressed(&event);
         match event {
-            // The browser declares no sidebar toggle.
             ToolbarEvent::ToggleSidebar => {}
             ToolbarEvent::Back => self.queue_unit_operation("browser.page", "back"),
             ToolbarEvent::Forward => self.queue_unit_operation("browser.page", "forward"),
@@ -471,20 +427,19 @@ impl BrowserWidget {
                 }
             }
             ToolbarEvent::Commit { text } => {
-                // Exactly what Enter in the window's own address field does;
-                // a chosen suggestion commits its address or its search.
+                // Exactly what Enter in the window's own address field does; a chosen
+                // suggestion commits its address or its search.
                 self.bar_query = None;
                 self.address.set(text);
                 self.navigate_to_input();
                 self.reset_omnibox();
             }
             ToolbarEvent::Edit { text } => {
-                // The omnibox answers on this frame's suggestion pass. The
-                // page's own address is the field put back: no query, so
-                // nothing abandoned is suggested for again.
+                // The omnibox answers on this frame's suggestion pass. The page's own
+                // address is the field put back: no query.
                 self.bar_query = (text.trim() != self.current_uri.trim()).then_some(text);
-                // Suggestions belong to the host's bar. Rebuilding the page
-                // here discards its retained image and input state per key.
+                // Suggestions belong to the host's bar. Rebuilding the page here discards
+                // its retained image and input state per key.
                 return;
             }
             ToolbarEvent::Action { id } => match pressed {
@@ -512,8 +467,6 @@ impl BrowserWidget {
                 }
                 Some(BarCommand::Site { information }) => (self.site.open_command(information))(),
                 Some(BarCommand::PrivateWindow) => self.private_window_request.set(true),
-                // A window of the person's own is an ordinary Browser launch
-                // of the page: the desktop's tab beside this one.
                 Some(BarCommand::OwnWindow) => {
                     ui::shell_tabs::open_beside(Some(self.current_uri.clone()), false);
                 }
@@ -525,9 +478,6 @@ impl BrowserWidget {
                     self.extensions.bar_action(&id);
                 }
             },
-            // The bar's own search and History control are run by the
-            // framework on the app's widgets, and whether the window floats
-            // is the framework's to keep: neither is handed to its slots.
             ToolbarEvent::Search { .. }
             | ToolbarEvent::SearchStep { .. }
             | ToolbarEvent::SearchClose
@@ -592,7 +542,6 @@ mod more_menu_tests {
             .collect()
     }
 
-    /// Press the entry named by `key` (a menu's item too) in the bar.
     fn press(widget: &mut BrowserWidget, key: &str) {
         let name = t(key);
         let id = widget
@@ -611,8 +560,6 @@ mod more_menu_tests {
         let widget = BrowserWidget::new_headless();
         let declared = widget.window_toolbar();
         let bounded = declared.clone().bounded();
-        // Nothing is cut: no action past the bar's limit, no item whose icon
-        // the bar does not know.
         assert_eq!(names(&bounded.actions), names(&declared.actions));
         for key in [
             "browser-menu-reader-view",
@@ -631,7 +578,6 @@ mod more_menu_tests {
             assert!(names(&bounded.actions).contains(&name), "{name}");
         }
         assert!(names(&bounded.actions).contains(&widget.daily.zoom_label()));
-        // The row keeps reload, bookmark and the library.
         let row: Vec<_> = bounded
             .actions
             .iter()
@@ -680,7 +626,6 @@ mod more_menu_tests {
             &t("browser-menu-developer-tools"),
             WebViewCommand::ShowDeveloperTools,
         );
-        // The rest queue the canonical action the More menu's row queues.
         for (key, resource, action) in [
             ("browser-menu-reader-view", "browser.page", "reader-view"),
             (
@@ -718,9 +663,6 @@ mod more_menu_tests {
         assert!(page.private_window_request.get());
     }
 
-    /// On the Library the bar names it and its section, and the section
-    /// segment shows that section rather than loading it as an address;
-    /// the bar's search narrows the section and closing it clears that.
     #[test]
     fn the_bar_names_the_library_and_its_search_narrows_it() {
         let mut widget = BrowserWidget::new_headless();

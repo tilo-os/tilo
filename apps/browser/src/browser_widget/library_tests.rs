@@ -14,7 +14,6 @@ use ui::webview::WebViewEngine;
     reason = "one scenario test keeps each merged phase and its fresh fixture visible"
 )]
 fn history_privacy_effects_are_local_truthful_and_recoverable() {
-    // Phase `sensitive_local_effects_publish_truthful_contracts_and_completed_results`.
     {
         let engine = TestEngine::new();
         let mut w = BrowserWidget::with_engine(engine.clone(), true);
@@ -89,7 +88,6 @@ fn history_privacy_effects_are_local_truthful_and_recoverable() {
         );
     }
 
-    // Phase `history_pause_is_local_and_keeps_existing_history_searchable_and_clearable`.
     {
         let mut w = BrowserWidget::with_engine(TestEngine::new(), true);
         let (mut doc, root) = synced(&mut w);
@@ -150,10 +148,8 @@ fn history_privacy_effects_are_local_truthful_and_recoverable() {
     }
 }
 
-/// Bookmark removal and row control identities.
 #[test]
 fn bookmark_rows_are_reversible_uniquely_addressed_actions() {
-    // Phase `bookmark_row_controls_use_unique_normalized_identities`.
     {
         fn test_ids(widget: &dyn Widget, into: &mut Vec<String>) {
             if let Some(id) = widget.test_id() {
@@ -202,14 +198,12 @@ fn bookmark_rows_are_reversible_uniquely_addressed_actions() {
     }
 }
 
-/// Download portal cancellation, worker failure, duplicate ids and scheme rejection.
 #[test]
 #[allow(
     clippy::too_many_lines,
     reason = "one scenario test keeps each merged phase and its fresh fixture visible"
 )]
 fn downloads_cancel_reject_and_keep_stable_actions() {
-    // Phase `portal_cancel_cancels_the_paused_engine_download`.
     {
         ui::host::install_default(ui::host::HostServices::recording().0);
         let engine = TestEngine::new();
@@ -230,7 +224,6 @@ fn downloads_cancel_reject_and_keep_stable_actions() {
         )));
     }
 
-    // Phase `portal_worker_failure_cancels_webkit_but_preserves_the_actionable_error`.
     {
         ui::host::install_default(ui::host::HostServices::recording().0);
         let engine = TestEngine::new();
@@ -261,7 +254,6 @@ fn downloads_cancel_reject_and_keep_stable_actions() {
         )));
     }
 
-    // Phase `duplicate_engine_ids_are_cancelled_without_replacing_history`.
     {
         let engine = TestEngine::new();
         let mut widget = BrowserWidget::with_engine(engine.clone(), true);
@@ -284,7 +276,6 @@ fn downloads_cancel_reject_and_keep_stable_actions() {
         )));
     }
 
-    // Phase `download_operations_reject_non_web_schemes_and_materialize_stable_actions`.
     {
         let engine = TestEngine::new();
         let mut widget = BrowserWidget::with_engine(engine.clone(), true);
@@ -321,14 +312,12 @@ fn downloads_cancel_reject_and_keep_stable_actions() {
     }
 }
 
-/// Private mode personal state, indicator and discovery-failure cleanup.
 #[test]
 #[allow(
     clippy::too_many_lines,
     reason = "one scenario test keeps each merged phase and its fresh fixture visible"
 )]
 fn private_mode_is_empty_indicated_and_leaves_no_root() {
-    // Phase `private_mode_has_empty_personal_state_and_no_continuation_channel`.
     {
         let mut widget = BrowserWidget::with_engine_mode(
             TestEngine::new(),
@@ -360,7 +349,6 @@ fn private_mode_is_empty_indicated_and_leaves_no_root() {
         ));
     }
 
-    // Phase `private_indicator_action_stays_visible_in_compact_chrome`.
     {
         let mut widget = BrowserWidget::with_engine_mode(
             TestEngine::new(),
@@ -382,7 +370,6 @@ fn private_mode_is_empty_indicated_and_leaves_no_root() {
         );
     }
 
-    // Phase `private_discovery_failure_filter_worker_keeps_removed_root_absent`.
     #[cfg(unix)]
     {
         use std::io::{Read, Write};

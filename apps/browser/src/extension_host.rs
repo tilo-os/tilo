@@ -1,12 +1,9 @@
-//! Loading and unloading extensions in the running engine, and reading their
-//! toolbar state, over the engine's `DevTools` bridge.
+//! Loading and unloading extensions in the running engine, and reading their toolbar
+//! state, over the engine's `DevTools` bridge.
 //!
-//! CEF's Chrome runtime has no extension API, but Chromium's `Extensions`
-//! `DevTools` domain loads and unloads an unpacked extension with no restart
-//! (`Extensions.loadUnpacked` returns the identifier, `Extensions.uninstall`
-//! removes it; both are idempotent for our purposes). Everything is
-//! asynchronous: [`ExtensionHost`] queues requests, the caller sends them
-//! with [`ExtensionHost::flush`], and each reply comes back through
+//! Chromium's `Extensions` domain loads and unloads an unpacked extension with no
+//! restart. Everything is asynchronous: [`ExtensionHost`] queues requests, the caller
+//! sends them with [`ExtensionHost::flush`], and each reply comes back through
 //! [`ExtensionHost::on_result`]. It holds no engine, so it is testable alone.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
@@ -22,10 +19,8 @@ pub const PROBE_INTERVAL: ui::time::Duration = ui::time::Duration::from_secs(4);
 /// A reply that never comes (the engine restarted) must not wedge the queue.
 const STALE_AFTER: ui::time::Duration = ui::time::Duration::from_secs(20);
 
-/// An extension the person wants running.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Wanted {
-    /// The identifier Chromium will give it.
     pub id: String,
     pub path: PathBuf,
     pub name: String,
@@ -49,12 +44,9 @@ pub struct Request {
     pub session: Option<String>,
 }
 
-/// What a reply changed that the interface shows.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Update {
-    /// The set of running extensions or an action's state changed.
     pub changed: bool,
-    /// A failure to tell the person about.
     pub notice: Option<String>,
 }
 
@@ -63,16 +55,11 @@ pub struct ExtensionHost {
     next: u32,
     pending: HashMap<u32, (Step, ui::time::Instant)>,
     outbox: Vec<Request>,
-    /// Identifiers Chromium confirmed running.
     loaded: BTreeSet<String>,
-    /// What the last `reconcile` asked for, so an unchanged call sends nothing.
     asked: BTreeMap<String, bool>,
     state: HashMap<String, toolbar::ActionState>,
-    /// What each extension set for its button on this window's page alone.
     page: HashMap<String, toolbar::PageValues>,
-    /// Running extensions the current probe was started for.
     candidates: Vec<String>,
-    /// (extension, service-worker target) pairs the probe still has to read.
     probe: VecDeque<(String, String)>,
     probing: bool,
     last_probe: Option<ui::time::Instant>,
@@ -88,7 +75,6 @@ impl ExtensionHost {
         self.loaded.contains(id)
     }
 
-    /// The live action state of a running extension on this window's page.
     pub fn action_state(&self, id: &str) -> Option<toolbar::ActionState> {
         let state = self.state.get(id).cloned();
         match self.page.get(id) {
@@ -97,8 +83,8 @@ impl ExtensionHost {
         }
     }
 
-    /// The extension changed its button, for every tab (`global`) or for this
-    /// window's page alone. Returns whether what the button shows changed.
+    /// The extension changed its button, for every tab (`global`) or for this window's page
+    /// alone. Whether what the button shows changed.
     pub fn action_changed(
         &mut self,
         id: &str,
@@ -114,8 +100,8 @@ impl ExtensionHost {
         self.action_state(id) != before
     }
 
-    /// A new document in this window: what extensions set for the page
-    /// before is gone. Returns whether there was any.
+    /// A new document in this window: what extensions set for the page before is gone.
+    /// Whether there was any.
     pub fn page_changed(&mut self) -> bool {
         let had = !self.page.is_empty();
         self.page.clear();
@@ -168,9 +154,9 @@ impl ExtensionHost {
         );
     }
 
-    /// Make the engine run exactly `wanted`, and stop `unwanted`: extensions
-    /// that are installed but disabled, which Chromium may remember from an
-    /// earlier run. Unchanged requests are not repeated.
+    /// Make the engine run exactly `wanted`, and stop `unwanted`: installed but disabled
+    /// extensions, which Chromium may remember from an earlier run. Unchanged requests are
+    /// not repeated.
     pub fn reconcile(&mut self, wanted: &[Wanted], unwanted: &[String], now: ui::time::Instant) {
         for extension in wanted {
             if self.asked.insert(extension.id.clone(), true) != Some(true) {
@@ -184,7 +170,6 @@ impl ExtensionHost {
         }
     }
 
-    /// An extension was removed from disk: forget it.
     pub fn forget(&mut self, id: &str) {
         self.asked.remove(id);
         self.loaded.remove(id);
@@ -192,7 +177,6 @@ impl ExtensionHost {
         self.page.remove(id);
     }
 
-    /// Start a toolbar refresh for `extensions` when one is due.
     pub fn probe(&mut self, extensions: &[String], now: ui::time::Instant) {
         self.pending
             .retain(|_, (_, sent)| now.saturating_duration_since(*sent) < STALE_AFTER);
@@ -236,8 +220,7 @@ impl ExtensionHost {
                 } else {
                     // A failed load is not asked again until something changes.
                     self.asked.remove(&wanted.id);
-                    // The engine's reason is for the log; the person is told
-                    // what to do.
+                    // The engine's reason is for the log; the person is told what to do.
                     tracing::warn!(
                         extension = %wanted.name,
                         reason = %failure(body),
@@ -250,8 +233,8 @@ impl ExtensionHost {
                 }
             }
             Step::Unload(id) => {
-                // "Could not find extension" is the normal answer for one
-                // that was never running; either way it is not running now.
+                // "Could not find extension" is the normal answer for one that was never
+                // running; either way it is not running now.
                 update.changed = self.loaded.remove(&id);
                 self.state.remove(&id);
                 self.page.remove(&id);
@@ -308,7 +291,6 @@ impl ExtensionHost {
         }
     }
 
-    /// Queued requests, for tests.
     #[cfg(test)]
     pub fn take_outbox(&mut self) -> Vec<Request> {
         std::mem::take(&mut self.outbox)
@@ -354,20 +336,16 @@ mod tests {
         assert_eq!(sent[1].method, "Extensions.uninstall");
         assert_eq!(sent[1].params["id"], id('b'));
 
-        // Unchanged intent sends nothing; a flip sends the opposite.
         host.reconcile(&[wanted(&id('a'))], &[id('b')], now);
         assert!(host.take_outbox().is_empty());
 
-        // phase: replies_update_the_running_set
         let loaded = json!({"id": id('a')}).to_string();
         let update = host.on_result(sent[0].id, true, &loaded, now);
         assert!(update.changed && update.notice.is_none());
         assert!(host.is_loaded(&id('a')));
-        // An unload of something that never ran is not a failure.
         let update = host.on_result(sent[1].id, false, r#"{"message":"could not find"}"#, now);
         assert_eq!(update, Update::default());
 
-        // phase: disabling_unloads_and_enabling_reloads
         host.reconcile(&[], &[id('a')], now);
         let unload = host.take_outbox();
         assert_eq!(unload[0].method, "Extensions.uninstall");
@@ -376,7 +354,6 @@ mod tests {
         host.reconcile(&[wanted(&id('a'))], &[], now);
         assert_eq!(host.take_outbox()[0].method, "Extensions.loadUnpacked");
 
-        // phase: failed_load_reports_and_can_be_retried
         let failed = host.take_outbox();
         assert!(failed.is_empty());
         let mut host = ExtensionHost::new();
@@ -403,7 +380,6 @@ mod tests {
         host.reconcile(&[wanted(&id('c'))], &[], now);
         assert_eq!(host.take_outbox().len(), 1, "asked again after a failure");
 
-        // phase: unknown_replies_are_ignored
         assert_eq!(host.on_result(999, true, "{}", now), Update::default());
     }
 
@@ -423,12 +399,10 @@ mod tests {
             !host.action_changed(&a, false, &badge("7")),
             "the same again"
         );
-        // Every page's badge changes under the page's own.
         assert!(!host.action_changed(&a, true, &badge("off")));
         assert!(host.page_changed());
         assert_eq!(host.action_state(&a).unwrap().badge, "off");
         assert!(!host.page_changed(), "nothing left to take back");
-        // Turned off, it shows nothing of what it set.
         host.action_changed(&a, false, &badge("9"));
         host.forget(&a);
         assert_eq!(host.action_state(&a), None);
@@ -446,7 +420,6 @@ mod tests {
         }
         let ids = vec![id('a'), id('b'), id('c')];
 
-        // phase: probe_starts_once_per_interval
         host.probe(&ids, now);
         let sent = host.take_outbox();
         assert_eq!(sent.len(), 1);
@@ -454,7 +427,6 @@ mod tests {
         host.probe(&ids, now + ui::time::Duration::from_secs(1));
         assert!(host.take_outbox().is_empty(), "one probe at a time");
 
-        // phase: only_extensions_with_a_running_worker_are_read
         let targets = json!({"targetInfos":[
             {"targetId":"W-A","type":"service_worker","url":format!("chrome-extension://{}/sw.js", id('a'))},
         ]})
@@ -477,7 +449,6 @@ mod tests {
         assert_eq!(host.action_state(&id('a')).unwrap().badge, "7");
         assert_eq!(host.action_state(&id('b')), None);
 
-        // phase: an_unchanged_reading_is_not_a_change_and_the_next_probe_is_due_later
         let later = now + PROBE_INTERVAL;
         host.probe(&ids, later);
         let sent = host.take_outbox();
@@ -492,7 +463,6 @@ mod tests {
                 .changed
         );
 
-        // phase: a_lost_reply_does_not_wedge_the_probe
         let much_later = later + STALE_AFTER + PROBE_INTERVAL;
         host.take_outbox();
         host.probe(&ids, much_later);

@@ -1,28 +1,21 @@
 //! Immutable per-window browsing policy.
 
-/// The catalogue message saying why a window opened without the person's
-/// account custody refuses their website accounts.
+/// Catalogue message: why a window without account custody refuses the
+/// person's website accounts.
 pub(crate) const NO_ACCOUNT_CUSTODY: &str = "browser-no-account-custody";
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum BrowsingMode {
-    /// The person's own window: their profile, with its cookies, sign-ins,
-    /// saved passwords and website accounts.
     #[default]
     Normal,
-    /// Nothing from it is kept after it closes, and it is nobody's runtime
-    /// participant.
     Private,
-    /// A window opened for an agent ([`ui::webview::VISITOR_WINDOW_FLAG`]):
-    /// it browses as any visitor would, on a fresh profile of its own that
-    /// is thrown away with it. It holds none of the person's account
-    /// custody (no cookies, sign-ins, saved passwords or website accounts),
-    /// and is otherwise the workspace's window like any other.
+    /// A window opened for an agent ([`ui::webview::VISITOR_WINDOW_FLAG`]): a
+    /// fresh profile thrown away with it, and none of the person's account
+    /// custody.
     Visitor,
 }
 
 impl BrowsingMode {
-    /// The mode a launch asks for: private, a visitor, or the person's own.
     pub const fn of_launch(private: bool, visitor: bool) -> Self {
         if private {
             Self::Private
@@ -41,24 +34,17 @@ impl BrowsingMode {
         matches!(self, Self::Normal | Self::Visitor)
     }
 
-    /// Whether the window holds the person's account custody: their
-    /// profile's cookies and sign-ins, saved passwords and addresses, and
-    /// their website accounts. Reading a page that holds it takes the
-    /// authority to operate it; reading one without takes only a
-    /// visitor's.
+    /// Whether the window holds the person's cookies and sign-ins, saved
+    /// passwords and website accounts.
     pub const fn holds_account_custody(self) -> bool {
         matches!(self, Self::Normal)
     }
 
-    /// Whether the engine browses on a fresh profile of the window's own,
-    /// removed when the window is done.
     pub const fn has_own_profile(self) -> bool {
         matches!(self, Self::Private | Self::Visitor)
     }
 
-    /// Whether nothing the page reaches leaves without the person's answer:
-    /// a window an agent operates holds every departure, while the person's
-    /// own window sends what they click on.
+    /// Whether every departure waits for the person's answer.
     pub const fn holds_departures(self) -> bool {
         matches!(self, Self::Visitor)
     }
@@ -88,8 +74,6 @@ mod tests {
         assert_eq!(BrowsingMode::of_launch(false, false), BrowsingMode::Normal);
     }
 
-    /// Only the window an agent operates holds what its page sends; the
-    /// person's own clicks in their own window leave as they are made.
     #[test]
     fn only_the_window_an_agent_operates_holds_what_the_page_sends() {
         assert!(BrowsingMode::Visitor.holds_departures());
