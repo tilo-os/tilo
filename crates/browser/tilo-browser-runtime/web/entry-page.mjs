@@ -1069,7 +1069,8 @@ export async function startEntryPage({mode}) {
     // workspace: made and listed through that workspace's host, in links
     // that open this page.
     invite: ({peer, entry}) => peer?.workspace && !embed ? {base: entry.base, origin: peer.origin,
-      workspace: peer.workspace, name: displayName ?? '', user: peer.userPublicKey ?? ''} : null,
+      workspace: peer.workspace, name: displayName ?? '', user: peer.userPublicKey ?? '',
+      host: hex(peer.host?.hostCert?.user_public_key ?? [])} : null,
     confirmInvitation: offer => {
       workspaceName = offer.workspaceName || workspaceName;
       invitedTo = offer.workspaceName || null;
@@ -1381,16 +1382,9 @@ export async function startEntryPage({mode}) {
       lobby: async origin => connectPeer({origin, identity: await rootOfThisPage(page.peer), runtime, displayName, live: false}),
       // The invitation's short link, sealed onto this site's shelf, as the
       // sheet makes it: the site keeps ciphertext it cannot read and the key
-      // rides in the link's fragment. A shelf that answers with nothing
-      // leaves the invitation's own text, which joins just the same.
-      inviteLink: async invitation => {
-        try {
-          return await runtime.sealedInvitationLink(page.entry.base, page.peer.origin, invitation);
-        } catch (error) {
-          console.warn('invitation not shelved:', error?.message ?? error);
-          return invitation;
-        }
-      },
+      // rides in the link's fragment. It is the one link a person hands
+      // over: a shelf that keeps nothing is said, not worked around.
+      inviteLink: invitation => runtime.sealedInvitationLink(page.entry.base, page.peer.origin, invitation),
       open: async ({origin, room, name, hostDevice: holder}) => {
         keepJoinedHost({origin, room, userPublicKey: (await rootOfThisPage(page.peer)).userPublicKey});
         remembering(() => rememberEntered(runtime, {origin, room, name, hostDevice: holder}));
@@ -1402,11 +1396,6 @@ export async function startEntryPage({mode}) {
         chooseMachine: origins => card('Create the workspace on', [...origins.map(origin => [new URL(origin).host, origin]), ['Cancel', null]]),
         share: shareCard,
         copy: text => navigator.clipboard.writeText(text).then(() => true, () => false),
-        // What the page says of the invitation it keeps ready for one press
-        // (`data-invite-link`): making it, ready to hand over, or failed.
-        said: (what, state) => {
-          if (what === 'invite-link') document.documentElement.dataset.inviteLink = state;
-        },
         waitingList: waitingCard,
         fail: text => card(text, [['Close', null]]),
       },

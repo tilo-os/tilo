@@ -435,12 +435,12 @@ impl Store {
     /// Hand over the link `invite` names, whose text is `text`: `brings` says
     /// who it brings in and how long it works. `site` is the shelf to keep it
     /// — the community a computer is set up with, the site a page comes from —
-    /// and `host` the origin the workspace is served from; with no shelf, as
-    /// with one that refuses it, the invitation's own text is what the person
-    /// hands over.
+    /// and `host` the origin the workspace is served from. The sheet shows the
+    /// site's short link once the site keeps it ([`Self::follow_shelf`]): it
+    /// is the one link a person hands over.
     ///
     /// # Errors
-    /// `text` is not an invitation's bytes, so no code could carry it.
+    /// `text` is not an invitation's bytes, or there is no site to keep it.
     pub fn hand_over(
         &self,
         made: &mut sheet::Making,
@@ -452,28 +452,19 @@ impl Store {
         host: Option<&str>,
     ) -> Result<(), String> {
         let bytes = tilo_workspace_join::invitation_bytes(text)?;
-        let shelving = site.is_some_and(|site| {
-            self.shelve(invite, bytes.clone(), expires_at_ns, site, host)
-                .inspect_err(
-                    |error| tracing::warn!(%error, "the invitation was not left on its site"),
-                )
-                .is_ok()
-        });
-        made.show(
-            sheet::made(invite, text, bytes, brings, expires_at_ns),
-            shelving,
-        );
+        let site = site.ok_or_else(|| "there is no site to keep the link on".to_owned())?;
+        self.shelve(invite, bytes, expires_at_ns, site, host)?;
+        made.shelving(sheet::made(invite, brings, expires_at_ns));
         Ok(())
     }
 
-    /// Take what a shelf answered since the sheet last looked: the link it
-    /// shows becomes the site's short one, or stays the invitation's own text
-    /// where the site kept nothing. Whether one answered.
+    /// Take what a shelf answered since the sheet last looked: the site's
+    /// short link to show, or why it kept nothing. Whether one answered.
     pub fn follow_shelf(&self, made: &mut sheet::Making) -> bool {
         let answers = self.take_shelved();
         let answered = !answers.is_empty();
         for (invite, answer) in answers {
-            made.shelved(&invite, answer.ok().map(|shelved| shelved.link));
+            made.shelved(&invite, answer.map(|shelved| shelved.link));
         }
         answered
     }
@@ -684,9 +675,7 @@ impl Store {
                     .borrow_mut()
                     .insert(invite.to_owned(), shelved.clone());
             }
-            // The invitation still works in its own text, which the caller
-            // hands over instead: a shelf that refused costs the person a
-            // shorter link, not the link.
+            // The caller says why: no link is handed over without the site.
             Err(reason) => {
                 tracing::warn!(invite = %invite, %reason, "an invitation was not left on its site");
             }

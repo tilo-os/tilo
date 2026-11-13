@@ -171,7 +171,7 @@ test('a person on a host that keeps workspaces of people’s own makes their nex
   assert.deepEqual(opened, [{origin, room: 'studio-room', name: 'Studio', hostDevice: 'cd'.repeat(32)}]);
 });
 
-test('one press hands over an invite link: it was made before the press, and copied in it', async () => {
+test('an invite link is made when it is pressed for, and never before', async () => {
   const {peer, calls} = adasRoom({owner: false, letsIn: true});
   const copied = [];
   const shared = [];
@@ -181,34 +181,26 @@ test('one press hands over an invite link: it was made before the press, and cop
       share: async offer => { shared.push(offer); },
       fail: async text => assert.fail(text)}});
   await actions.attach(mount);
-  assert.ok(ids(shown.at(-1)).includes(INVITE_LINK.id), 'whoever may invite is handed a link');
-  // Made when the page attached, so the press copies it inside the gesture.
   await new Promise(resolve => setTimeout(resolve, 0));
-  assert.deepEqual(calls.filter(call => call[0] === 'invite').length, 1);
+  assert.ok(ids(shown.at(-1)).includes(INVITE_LINK.id), 'whoever may invite is offered a link');
+  assert.equal(calls.filter(call => call[0] === 'invite').length, 0, 'opening the page invites nobody');
   await actions.perform(INVITE_LINK.id);
-  assert.deepEqual(copied, [SEALED], 'the press copied the link, and nothing was asked');
+  assert.deepEqual(copied, [SEALED], 'the press copied the short link it made');
   assert.equal(shared.length, 0, 'a copy that took needs no card');
-  // Another is made for the next press, without anyone asking for it.
   await new Promise(resolve => setTimeout(resolve, 0));
-  assert.equal(calls.filter(call => call[0] === 'invite').length, 2);
+  assert.equal(calls.filter(call => call[0] === 'invite').length, 1, 'one press, one invitation');
 });
 
-test('a press while the link is still being made hands over that link, not a second invitation', async () => {
-  const {peer, calls} = adasRoom({owner: false, letsIn: true});
-  const shared = [];
-  let shelve;
-  const shelved = new Promise(resolve => { shelve = resolve; });
-  const actions = createWorkspaceActions({peer, inviteLink: async text => { await shelved; return sealedLink(text); },
-    ui: {copy: async () => assert.fail('a link made after the press is not copied outside it'),
-      share: async offer => { shared.push(offer); }, fail: async text => assert.fail(text)}});
+test('a site that keeps no link hands over no invitation text: the press says why', async () => {
+  const {peer} = adasRoom({owner: false, letsIn: true});
+  const failed = [];
+  const actions = createWorkspaceActions({peer, inviteLink: async () => { throw new Error('the site kept nothing'); },
+    onError: () => {},
+    ui: {copy: async () => assert.fail('nothing to copy'), share: async () => assert.fail('nothing to share'),
+      fail: async text => { failed.push(text); }}});
   await actions.attach(desktop().mount);
-  const pressed = actions.perform(INVITE_LINK.id);
-  await new Promise(resolve => setTimeout(resolve, 0));
-  shelve();
-  await pressed;
-  assert.equal(shared.length, 1, 'the card shows the link the press waited for');
-  assert.equal(shared[0].link, SEALED);
-  assert.equal(calls.filter(call => call[0] === 'invite').length, 2, 'that one, and the next made ready after it');
+  await actions.perform(INVITE_LINK.id);
+  assert.deepEqual(failed, ['That did not work: the site kept nothing']);
 });
 
 test('a press whose copy the browser refuses shows the link to copy by hand', async () => {
@@ -218,7 +210,6 @@ test('a press whose copy the browser refuses shows the link to copy by hand', as
     ui: {copy: async () => false, share: async offer => { shared.push(offer); },
       fail: async text => assert.fail(text)}});
   await actions.attach(desktop().mount);
-  await new Promise(resolve => setTimeout(resolve, 0));
   await actions.perform(INVITE_LINK.id);
   assert.equal(shared.length, 1, 'the link is shown when the clipboard did not take it');
   assert.equal(shared[0].link, SEALED);

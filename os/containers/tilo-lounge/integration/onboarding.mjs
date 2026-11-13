@@ -81,7 +81,6 @@ const state = tab => tab.evaluate(`JSON.stringify({
   waitList: document.documentElement.dataset.waitList ?? null,
   entry: document.documentElement.dataset.entry ?? null,
   firstRun: document.documentElement.dataset.firstRun ?? null,
-  inviteLink: document.documentElement.dataset.inviteLink ?? null,
   title: document.title,
 })`).then(JSON.parse).catch(() => ({}));
 
