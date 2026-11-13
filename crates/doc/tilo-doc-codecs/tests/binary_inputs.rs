@@ -89,12 +89,28 @@ fn round_trip(codec: &dyn FormatProvider, package: &[u8], part_name: &str) {
     assert_eq!(part(&exported, part_name), None);
 }
 
-#[test]
 fn a_docx_font_part_is_a_binary_input_that_round_trips() {
     round_trip(&DocxCodec, SAMPLE_DOCX, "word/fonts/font1.odttf");
 }
 
-#[test]
 fn an_odt_binary_part_is_a_binary_input_that_round_trips() {
     round_trip(&OdtCodec, SAMPLE_ODT, "Thumbnails/thumbnail.png");
+}
+
+#[test]
+fn a_binary_part_of_an_office_package_is_a_binary_input_that_round_trips() {
+    let cases: [(&str, fn()); 2] = [
+        (
+            "a docx font part is a binary input that round trips",
+            a_docx_font_part_is_a_binary_input_that_round_trips,
+        ),
+        (
+            "an odt binary part is a binary input that round trips",
+            an_odt_binary_part_is_a_binary_input_that_round_trips,
+        ),
+    ];
+    for (case, run) in cases {
+        eprintln!("case: {case}");
+        run();
+    }
 }

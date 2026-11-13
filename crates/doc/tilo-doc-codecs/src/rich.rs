@@ -97,7 +97,6 @@ mod tests {
         .expect("Markdown reads")
     }
 
-    #[test]
     fn a_document_reads_as_the_blocks_an_editor_draws() {
         let blocks = document();
         let kinds: Vec<&str> = blocks.iter().map(|block| block.kind.as_str()).collect();
@@ -143,7 +142,6 @@ mod tests {
         assert_eq!(blocks[6].text, "![a fox](fox.png)");
     }
 
-    #[test]
     fn a_documents_blocks_write_as_the_markdown_they_were_read_from() {
         let markdown = concat!(
             "# Groceries\n",
@@ -173,5 +171,23 @@ mod tests {
             markdown,
             "a round trip keeps the document"
         );
+    }
+
+    #[test]
+    fn a_document_reads_as_blocks_and_writes_back_as_its_markdown() {
+        let cases: [(&str, fn()); 2] = [
+            (
+                "a document reads as the blocks an editor draws",
+                a_document_reads_as_the_blocks_an_editor_draws,
+            ),
+            (
+                "a documents blocks write as the markdown they were read from",
+                a_documents_blocks_write_as_the_markdown_they_were_read_from,
+            ),
+        ];
+        for (case, run) in cases {
+            eprintln!("case: {case}");
+            run();
+        }
     }
 }

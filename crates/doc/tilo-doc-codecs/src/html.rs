@@ -1033,7 +1033,6 @@ mod tests {
         assert_eq!(tilo_doc::model::blocks_in_order(&doc, &c).len(), 1);
     }
 
-    #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "each phase keeps one former test's body verbatim"
@@ -1133,7 +1132,6 @@ mod tests {
         }
     }
 
-    #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "each phase keeps one former test's body verbatim"
@@ -1252,7 +1250,6 @@ mod tests {
         }
     }
 
-    #[test]
     fn html_import_lists_carry_kind_and_level() {
         {
             let snap = import("<ul><li>one</li><li>two</li></ul><ol><li>first</li></ol>");
@@ -1290,7 +1287,6 @@ mod tests {
         }
     }
 
-    #[test]
     #[allow(
         clippy::literal_string_with_formatting_args,
         reason = "the embedded CSS `p{color:red}` is opaque test fixture text, not a format string"
@@ -1307,7 +1303,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn html_import_images_decode_data_uris_and_keep_remote_src() {
         {
             assert_eq!(base64_decode("Zm9vYg==").as_deref(), Some(&b"foob"[..]));
@@ -1359,6 +1354,30 @@ mod tests {
                 img.attrs.get("src"),
                 Some(&tilo_doc::AttrVal::Str("https://example.com/p.png".into()))
             );
+        }
+    }
+
+    #[test]
+    fn html_imports_blocks_marks_lists_and_images_and_skips_script_and_style() {
+        let cases: [(&str, fn()); 5] = [
+            (
+                "html import block structure and tolerance",
+                html_import_block_structure_and_tolerance,
+            ),
+            ("html import marks and styles", html_import_marks_and_styles),
+            (
+                "html import lists carry kind and level",
+                html_import_lists_carry_kind_and_level,
+            ),
+            ("script and style are skipped", script_and_style_are_skipped),
+            (
+                "html import images decode data uris and keep remote src",
+                html_import_images_decode_data_uris_and_keep_remote_src,
+            ),
+        ];
+        for (case, run) in cases {
+            eprintln!("case: {case}");
+            run();
         }
     }
 }

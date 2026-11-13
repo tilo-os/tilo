@@ -590,7 +590,6 @@ mod tests {
         d.materialize()
     }
 
-    #[test]
     fn rtf_import_paragraphs_text_and_destinations() {
         {
             let snap = import("{\\rtf1\\ansi\\deff0\n{\\pard\\fs22 Hello world\\par}}");
@@ -675,7 +674,6 @@ mod tests {
         }
     }
 
-    #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "each phase keeps one former test's body verbatim"
@@ -788,6 +786,24 @@ mod tests {
                 "{:?}",
                 p.marks
             );
+        }
+    }
+
+    #[test]
+    fn rtf_imports_paragraphs_destinations_and_marks() {
+        let cases: [(&str, fn()); 2] = [
+            (
+                "rtf import paragraphs text and destinations",
+                rtf_import_paragraphs_text_and_destinations,
+            ),
+            (
+                "rtf import control words become marks",
+                rtf_import_control_words_become_marks,
+            ),
+        ];
+        for (case, run) in cases {
+            eprintln!("case: {case}");
+            run();
         }
     }
 }

@@ -1390,7 +1390,6 @@ mod tests {
     use crate::FormatProvider;
     use tilo_doc::{AttrVal, Document};
 
-    #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "each phase keeps one former test's body verbatim"
@@ -1716,7 +1715,6 @@ mod tests {
         }
     }
 
-    #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "each phase keeps one former test's body verbatim"
@@ -1884,7 +1882,6 @@ mod tests {
         0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
     ];
 
-    #[test]
     fn imports_inline_images_with_alt_text_and_surrounding_text() {
         {
             use crate::package::ZipPackage;
@@ -1979,7 +1976,6 @@ mod tests {
         }
     }
 
-    #[test]
     fn imports_and_roundtrips_document_and_run_language() {
         {
             use tilo_doc::document::MarkValue;
@@ -2045,7 +2041,6 @@ mod tests {
         }
     }
 
-    #[test]
     fn keeps_unmodeled_paragraph_content_inline_through_export() {
         use crate::package::ZipPackage;
         let field = r#"<text:page-number text:select-page="current">3</text:page-number>"#;
@@ -2121,5 +2116,35 @@ mod tests {
             !xml.contains("text:page-number") && xml.contains("Page 4 of"),
             "{xml}"
         );
+    }
+
+    #[test]
+    fn odt_content_imports_as_blocks_marks_images_language_and_kept_markup() {
+        let cases: [(&str, fn()); 5] = [
+            (
+                "imports block structure lists tables and fidelity atoms",
+                imports_block_structure_lists_tables_and_fidelity_atoms,
+            ),
+            (
+                "imports spans links and colors as marks",
+                imports_spans_links_and_colors_as_marks,
+            ),
+            (
+                "imports inline images with alt text and surrounding text",
+                imports_inline_images_with_alt_text_and_surrounding_text,
+            ),
+            (
+                "imports and roundtrips document and run language",
+                imports_and_roundtrips_document_and_run_language,
+            ),
+            (
+                "keeps unmodeled paragraph content inline through export",
+                keeps_unmodeled_paragraph_content_inline_through_export,
+            ),
+        ];
+        for (case, run) in cases {
+            eprintln!("case: {case}");
+            run();
+        }
     }
 }

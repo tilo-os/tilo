@@ -140,7 +140,6 @@ fn assert_sample(snap: &WorkbookSnapshot, fmt: &str, a2_formula: &str, formula_c
     );
 }
 
-#[test]
 #[allow(
     clippy::too_many_lines,
     reason = "each phase keeps one former test's body verbatim"
@@ -337,7 +336,10 @@ fn hostile_spreadsheet_inputs_are_rejected() {
     }
 }
 
-#[test]
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "a test's counters, which the lint passes over in a #[test] function"
+)]
 fn large_workbook_parse_and_serialize_keeps_every_cell() {
     use std::time::Instant;
 
@@ -429,7 +431,6 @@ fn xlsx_with(sheet_xml: &str, styles_xml: Option<&str>) -> Vec<u8> {
     zip_of(&entries)
 }
 
-#[test]
 #[allow(
     clippy::too_many_lines,
     reason = "each phase keeps one former test's body verbatim"
@@ -539,6 +540,28 @@ fn spreadsheet_formulas_formats_and_repeats_expand_and_export() {
             .read_to_string(&mut manifest)
             .unwrap();
         assert!(manifest.contains(r#"manifest:full-path="styles.xml""#));
+    }
+}
+
+#[test]
+fn spreadsheets_roundtrip_edit_and_expand_at_any_size() {
+    let cases: [(&str, fn()); 3] = [
+        (
+            "real spreadsheets parse roundtrip and edit as crdt",
+            real_spreadsheets_parse_roundtrip_and_edit_as_crdt,
+        ),
+        (
+            "large workbook parse and serialize keeps every cell",
+            large_workbook_parse_and_serialize_keeps_every_cell,
+        ),
+        (
+            "spreadsheet formulas formats and repeats expand and export",
+            spreadsheet_formulas_formats_and_repeats_expand_and_export,
+        ),
+    ];
+    for (case, run) in cases {
+        eprintln!("case: {case}");
+        run();
     }
 }
 

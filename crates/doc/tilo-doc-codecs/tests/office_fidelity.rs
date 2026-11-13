@@ -651,7 +651,6 @@ fn rewritten(name: &str) -> bool {
 
 const DOCX_REGENERATED: &[&str] = &[];
 
-#[test]
 fn docx_fixtures_keep_unmodeled_content_through_edit_and_export() {
     let mut problems = Vec::new();
     for fx in DOCX_FIXTURES {
@@ -668,7 +667,6 @@ fn docx_fixtures_keep_unmodeled_content_through_edit_and_export() {
     assert!(problems.is_empty(), "{}", problems.join("\n"));
 }
 
-#[test]
 fn odt_fixtures_keep_unmodeled_content_through_edit_and_export() {
     let mut problems = Vec::new();
     for fx in ODT_FIXTURES {
@@ -683,6 +681,24 @@ fn odt_fixtures_keep_unmodeled_content_through_edit_and_export() {
         );
     }
     assert!(problems.is_empty(), "{}", problems.join("\n"));
+}
+
+#[test]
+fn office_fixtures_keep_unmodeled_content_through_edit_and_export() {
+    let cases: [(&str, fn()); 2] = [
+        (
+            "docx fixtures keep unmodeled content through edit and export",
+            docx_fixtures_keep_unmodeled_content_through_edit_and_export,
+        ),
+        (
+            "odt fixtures keep unmodeled content through edit and export",
+            odt_fixtures_keep_unmodeled_content_through_edit_and_export,
+        ),
+    ];
+    for (case, run) in cases {
+        eprintln!("case: {case}");
+        run();
+    }
 }
 
 #[test]
