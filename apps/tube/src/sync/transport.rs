@@ -1053,253 +1053,294 @@ mod tests {
     use std::net::{TcpListener, TcpStream};
     use std::thread;
 
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "merged scenario: each former test is a labelled case block with its own fixture"
-    )]
-    fn noise_transport_frames_pairs_and_streams_payloads() {
-        {
-            let mut wire = Vec::new();
-            write_frame(&mut wire, b"noise").unwrap();
-            assert_eq!(wire, [5, 0, 0, 0, b'n', b'o', b'i', b's', b'e']);
-            assert_eq!(read_frame(&mut wire.as_slice()).unwrap(), b"noise");
-            assert!(read_frame(&mut [0_u8, 0, 1, 0].as_slice()).is_err());
-            assert!(write_frame(&mut Vec::new(), &vec![0; 65_536]).is_err());
-        }
-        {
-            let responder_key = DeviceKey::generate().unwrap();
-            let initiator_key = DeviceKey::generate().unwrap();
-            let responder_pub = responder_key.public_base64();
-            let initiator_pub = initiator_key.public_base64();
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::too_many_lines,
+            reason = "merged scenario: each former test is a labelled case block with its own fixture"
+        )]
+        fn the_noise_transport_frames_pairs_streams_and_bounds_payloads;
 
-            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-            let addr = listener.local_addr().unwrap();
+        phase noise_transport_frames_pairs_and_streams_payloads;
+        {
+            {
+                let mut wire = Vec::new();
+                write_frame(&mut wire, b"noise").unwrap();
+                assert_eq!(wire, [5, 0, 0, 0, b'n', b'o', b'i', b's', b'e']);
+                assert_eq!(read_frame(&mut wire.as_slice()).unwrap(), b"noise");
+                assert!(read_frame(&mut [0_u8, 0, 1, 0].as_slice()).is_err());
+                assert!(write_frame(&mut Vec::new(), &vec![0; 65_536]).is_err());
+            }
+            {
+                let responder_key = DeviceKey::generate().unwrap();
+                let initiator_key = DeviceKey::generate().unwrap();
+                let responder_pub = responder_key.public_base64();
+                let initiator_pub = initiator_key.public_base64();
 
-            let rkey = responder_key;
-            let expect_initiator = initiator_pub;
-            let (frame_read, read_back) = std::sync::mpsc::channel::<()>();
-            let handle = thread::spawn(move || {
-                let (stream, _) = listener.accept().unwrap();
+                let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+                let addr = listener.local_addr().unwrap();
+
+                let rkey = responder_key;
+                let expect_initiator = initiator_pub;
+                let (frame_read, read_back) = std::sync::mpsc::channel::<()>();
+                let handle = thread::spawn(move || {
+                    let (stream, _) = listener.accept().unwrap();
+                    stream
+                        .set_read_timeout(Some(tilo_test_env::hang_bound()))
+                        .unwrap();
+                    let mut session = GrayjaySession::accept_responder(
+                        stream,
+                        &rkey,
+                        "responder",
+                        |peer_key, _code| peer_key == expect_initiator,
+                    )
+                    .unwrap();
+
+                    let deadline = tilo_test_env::hang_deadline();
+                    session.complete_authorization(deadline).unwrap();
+
+                    let mut asked = false;
+                    for _ in 0..8 {
+                        if let Incoming::Data {
+                            sub_opcode,
+                            payload,
+                        } = session.recv().unwrap()
+                            && sub_opcode == sync_opcode::SYNC_STATE_EXCHANGE
+                        {
+                            let _req: SyncSessionData = serde_json::from_slice(&payload).unwrap();
+                            asked = true;
+                            break;
+                        }
+                    }
+                    assert!(asked, "responder never received the state-exchange request");
+
+                    let pkg = SyncSubscriptionsPackage {
+                        subscriptions: vec![
+                            Subscription {
+                                channel: SerializedChannel::from_url("https://youtube.com/@alice"),
+                                creation_time: 111,
+                            },
+                            Subscription {
+                                channel: SerializedChannel::from_url("https://youtube.com/@bob"),
+                                creation_time: 222,
+                            },
+                        ],
+                        subscription_removals: BTreeMap::new(),
+                    };
+                    let json = serde_json::to_string(&pkg).unwrap();
+                    session
+                        .send_data(sync_opcode::SYNC_SUBSCRIPTIONS, &json)
+                        .unwrap();
+                    let _ = read_back.recv_timeout(tilo_test_env::hang_bound());
+                });
+
+                let stream = TcpStream::connect(addr).unwrap();
                 stream
                     .set_read_timeout(Some(tilo_test_env::hang_bound()))
                     .unwrap();
-                let mut session = GrayjaySession::accept_responder(
+                let mut session = GrayjaySession::connect_initiator(
                     stream,
-                    &rkey,
-                    "responder",
-                    |peer_key, _code| peer_key == expect_initiator,
+                    &initiator_key,
+                    &responder_pub,
+                    None,
+                    "initiator",
                 )
                 .unwrap();
+                assert_eq!(session.remote_public_key(), responder_pub);
+                assert_eq!(session.remote_version(), PROTOCOL_VERSION);
 
                 let deadline = tilo_test_env::hang_deadline();
-                session.complete_authorization(deadline).unwrap();
+                let name = session.complete_authorization(deadline).unwrap();
+                assert_eq!(name, "responder");
 
-                let mut asked = false;
+                request_all_subscriptions(&mut session, &initiator_key);
+
+                let mut urls = Vec::new();
                 for _ in 0..8 {
                     if let Incoming::Data {
                         sub_opcode,
                         payload,
                     } = session.recv().unwrap()
-                        && sub_opcode == sync_opcode::SYNC_STATE_EXCHANGE
+                        && sub_opcode == sync_opcode::SYNC_SUBSCRIPTIONS
                     {
-                        let _req: SyncSessionData = serde_json::from_slice(&payload).unwrap();
-                        asked = true;
+                        let pkg: SyncSubscriptionsPackage = serde_json::from_slice(&payload).unwrap();
+                        urls = pkg
+                            .subscriptions
+                            .into_iter()
+                            .map(|s| s.channel.url)
+                            .collect();
                         break;
                     }
                 }
-                assert!(asked, "responder never received the state-exchange request");
+                drop(frame_read);
+                handle.join().unwrap();
+                assert_eq!(
+                    urls,
+                    vec![
+                        "https://youtube.com/@alice".to_string(),
+                        "https://youtube.com/@bob".to_string()
+                    ]
+                );
+            }
+            {
+                let responder_key = DeviceKey::generate().unwrap();
+                let initiator_key = DeviceKey::generate().unwrap();
+                let responder_pub = responder_key.public_base64();
 
+                let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+                let addr = listener.local_addr().unwrap();
+
+                let rkey = responder_key;
+                let handle = thread::spawn(move || {
+                    let (stream, _) = listener.accept().unwrap();
+                    stream
+                        .set_read_timeout(Some(tilo_test_env::hang_bound()))
+                        .unwrap();
+                    let mut session =
+                        GrayjaySession::accept_responder(stream, &rkey, "responder", |_peer, code| {
+                            code == Some("SECRET42")
+                        })
+                        .unwrap();
+                    let deadline = tilo_test_env::hang_deadline();
+                    session.complete_authorization(deadline).unwrap();
+                });
+
+                let stream = TcpStream::connect(addr).unwrap();
+                stream
+                    .set_read_timeout(Some(tilo_test_env::hang_bound()))
+                    .unwrap();
+                let mut session = GrayjaySession::connect_initiator(
+                    stream,
+                    &initiator_key,
+                    &responder_pub,
+                    Some("SECRET42"),
+                    "initiator",
+                )
+                .unwrap();
+                let deadline = tilo_test_env::hang_deadline();
+                session.complete_authorization(deadline).unwrap();
+                handle.join().unwrap();
+            }
+            {
+                let responder_key = DeviceKey::generate().unwrap();
+                let initiator_key = DeviceKey::generate().unwrap();
+                let responder_pub = responder_key.public_base64();
+                let initiator_pub = initiator_key.public_base64();
+
+                let mut subs = Vec::new();
+                for i in 0..4000 {
+                    subs.push(Subscription {
+                        channel: SerializedChannel::from_url(format!(
+                            "https://youtube.com/channel/UC{i:08}xxxxxxxx"
+                        )),
+                        creation_time: i64::from(i),
+                    });
+                }
                 let pkg = SyncSubscriptionsPackage {
-                    subscriptions: vec![
-                        Subscription {
-                            channel: SerializedChannel::from_url("https://youtube.com/@alice"),
-                            creation_time: 111,
-                        },
-                        Subscription {
-                            channel: SerializedChannel::from_url("https://youtube.com/@bob"),
-                            creation_time: 222,
-                        },
-                    ],
+                    subscriptions: subs,
                     subscription_removals: BTreeMap::new(),
                 };
                 let json = serde_json::to_string(&pkg).unwrap();
-                session
-                    .send_data(sync_opcode::SYNC_SUBSCRIPTIONS, &json)
-                    .unwrap();
-                let _ = read_back.recv_timeout(tilo_test_env::hang_bound());
-            });
+                assert!(
+                    json.len() > MAXIMUM_PACKET_SIZE,
+                    "test payload must exceed one packet"
+                );
+                let expected_len = pkg.subscriptions.len();
 
-            let stream = TcpStream::connect(addr).unwrap();
-            stream
-                .set_read_timeout(Some(tilo_test_env::hang_bound()))
-                .unwrap();
-            let mut session = GrayjaySession::connect_initiator(
-                stream,
-                &initiator_key,
-                &responder_pub,
-                None,
-                "initiator",
-            )
-            .unwrap();
-            assert_eq!(session.remote_public_key(), responder_pub);
-            assert_eq!(session.remote_version(), PROTOCOL_VERSION);
+                let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+                let addr = listener.local_addr().unwrap();
 
-            let deadline = tilo_test_env::hang_deadline();
-            let name = session.complete_authorization(deadline).unwrap();
-            assert_eq!(name, "responder");
-
-            request_all_subscriptions(&mut session, &initiator_key);
-
-            let mut urls = Vec::new();
-            for _ in 0..8 {
-                if let Incoming::Data {
-                    sub_opcode,
-                    payload,
-                } = session.recv().unwrap()
-                    && sub_opcode == sync_opcode::SYNC_SUBSCRIPTIONS
-                {
-                    let pkg: SyncSubscriptionsPackage = serde_json::from_slice(&payload).unwrap();
-                    urls = pkg
-                        .subscriptions
-                        .into_iter()
-                        .map(|s| s.channel.url)
-                        .collect();
-                    break;
-                }
-            }
-            drop(frame_read);
-            handle.join().unwrap();
-            assert_eq!(
-                urls,
-                vec![
-                    "https://youtube.com/@alice".to_string(),
-                    "https://youtube.com/@bob".to_string()
-                ]
-            );
-        }
-        {
-            let responder_key = DeviceKey::generate().unwrap();
-            let initiator_key = DeviceKey::generate().unwrap();
-            let responder_pub = responder_key.public_base64();
-
-            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-            let addr = listener.local_addr().unwrap();
-
-            let rkey = responder_key;
-            let handle = thread::spawn(move || {
-                let (stream, _) = listener.accept().unwrap();
-                stream
-                    .set_read_timeout(Some(tilo_test_env::hang_bound()))
-                    .unwrap();
-                let mut session =
-                    GrayjaySession::accept_responder(stream, &rkey, "responder", |_peer, code| {
-                        code == Some("SECRET42")
-                    })
-                    .unwrap();
-                let deadline = tilo_test_env::hang_deadline();
-                session.complete_authorization(deadline).unwrap();
-            });
-
-            let stream = TcpStream::connect(addr).unwrap();
-            stream
-                .set_read_timeout(Some(tilo_test_env::hang_bound()))
-                .unwrap();
-            let mut session = GrayjaySession::connect_initiator(
-                stream,
-                &initiator_key,
-                &responder_pub,
-                Some("SECRET42"),
-                "initiator",
-            )
-            .unwrap();
-            let deadline = tilo_test_env::hang_deadline();
-            session.complete_authorization(deadline).unwrap();
-            handle.join().unwrap();
-        }
-        {
-            let responder_key = DeviceKey::generate().unwrap();
-            let initiator_key = DeviceKey::generate().unwrap();
-            let responder_pub = responder_key.public_base64();
-            let initiator_pub = initiator_key.public_base64();
-
-            let mut subs = Vec::new();
-            for i in 0..4000 {
-                subs.push(Subscription {
-                    channel: SerializedChannel::from_url(format!(
-                        "https://youtube.com/channel/UC{i:08}xxxxxxxx"
-                    )),
-                    creation_time: i64::from(i),
+                let rkey = responder_key;
+                let expect_initiator = initiator_pub;
+                let json_for_thread = json;
+                let (frame_read, read_back) = std::sync::mpsc::channel::<()>();
+                let handle = thread::spawn(move || {
+                    let (stream, _) = listener.accept().unwrap();
+                    stream
+                        .set_read_timeout(Some(tilo_test_env::hang_bound()))
+                        .unwrap();
+                    let mut session =
+                        GrayjaySession::accept_responder(stream, &rkey, "responder", |peer, _code| {
+                            peer == expect_initiator
+                        })
+                        .unwrap();
+                    let deadline = tilo_test_env::hang_deadline();
+                    session.complete_authorization(deadline).unwrap();
+                    session
+                        .send_data(sync_opcode::SYNC_SUBSCRIPTIONS, &json_for_thread)
+                        .unwrap();
+                    let _ = read_back.recv_timeout(tilo_test_env::hang_bound());
                 });
-            }
-            let pkg = SyncSubscriptionsPackage {
-                subscriptions: subs,
-                subscription_removals: BTreeMap::new(),
-            };
-            let json = serde_json::to_string(&pkg).unwrap();
-            assert!(
-                json.len() > MAXIMUM_PACKET_SIZE,
-                "test payload must exceed one packet"
-            );
-            let expected_len = pkg.subscriptions.len();
 
-            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-            let addr = listener.local_addr().unwrap();
-
-            let rkey = responder_key;
-            let expect_initiator = initiator_pub;
-            let json_for_thread = json;
-            let (frame_read, read_back) = std::sync::mpsc::channel::<()>();
-            let handle = thread::spawn(move || {
-                let (stream, _) = listener.accept().unwrap();
+                let stream = TcpStream::connect(addr).unwrap();
                 stream
                     .set_read_timeout(Some(tilo_test_env::hang_bound()))
                     .unwrap();
-                let mut session =
-                    GrayjaySession::accept_responder(stream, &rkey, "responder", |peer, _code| {
-                        peer == expect_initiator
-                    })
-                    .unwrap();
+                let mut session = GrayjaySession::connect_initiator(
+                    stream,
+                    &initiator_key,
+                    &responder_pub,
+                    None,
+                    "initiator",
+                )
+                .unwrap();
                 let deadline = tilo_test_env::hang_deadline();
                 session.complete_authorization(deadline).unwrap();
-                session
-                    .send_data(sync_opcode::SYNC_SUBSCRIPTIONS, &json_for_thread)
-                    .unwrap();
-                let _ = read_back.recv_timeout(tilo_test_env::hang_bound());
-            });
 
-            let stream = TcpStream::connect(addr).unwrap();
-            stream
-                .set_read_timeout(Some(tilo_test_env::hang_bound()))
-                .unwrap();
-            let mut session = GrayjaySession::connect_initiator(
-                stream,
-                &initiator_key,
-                &responder_pub,
-                None,
-                "initiator",
-            )
-            .unwrap();
-            let deadline = tilo_test_env::hang_deadline();
-            session.complete_authorization(deadline).unwrap();
-
-            let mut got = 0usize;
-            for _ in 0..4 {
-                if let Incoming::Data {
-                    sub_opcode,
-                    payload,
-                } = session.recv().unwrap()
-                    && sub_opcode == sync_opcode::SYNC_SUBSCRIPTIONS
-                {
-                    let received: SyncSubscriptionsPackage =
-                        serde_json::from_slice(&payload).unwrap();
-                    got = received.subscriptions.len();
-                    break;
+                let mut got = 0usize;
+                for _ in 0..4 {
+                    if let Incoming::Data {
+                        sub_opcode,
+                        payload,
+                    } = session.recv().unwrap()
+                        && sub_opcode == sync_opcode::SYNC_SUBSCRIPTIONS
+                    {
+                        let received: SyncSubscriptionsPackage =
+                            serde_json::from_slice(&payload).unwrap();
+                        got = received.subscriptions.len();
+                        break;
+                    }
                 }
+                drop(frame_read);
+                handle.join().unwrap();
+                assert_eq!(got, expected_len);
             }
-            drop(frame_read);
-            handle.join().unwrap();
-            assert_eq!(got, expected_len);
+        }
+
+        phase transport_payloads_parse_and_stay_bounded;
+        {
+            {
+                let json = serde_json::to_string(&SyncDeviceInfo {
+                    public_key: b64_encode(&[3; 32]),
+                    addresses: vec!["10.0.0.2".into()],
+                    port: 12315,
+                    pairing_code: Some("Xy".into()),
+                })
+                .unwrap();
+                let a = GrayjaySyncTransport::parse_blob(&json).unwrap();
+                assert_eq!(a.port, 12315);
+
+                let wrapped = format!("grayjay://sync/{}", b64_encode(json.as_bytes()));
+                let b = GrayjaySyncTransport::parse_blob(&wrapped).unwrap();
+                assert_eq!(a, b);
+            }
+            {
+                assert!(
+                    GrayjaySyncTransport::parse_blob(&"x".repeat(MAX_PAIRING_BLOB_BYTES + 1)).is_err()
+                );
+                let too_many_addresses = serde_json::to_string(&SyncDeviceInfo {
+                    public_key: b64_encode(&[4; 32]),
+                    addresses: vec!["127.0.0.1".into(); MAX_PEER_ADDRESSES + 1],
+                    port: 12315,
+                    pairing_code: Some("ok".into()),
+                })
+                .unwrap();
+                assert!(GrayjaySyncTransport::parse_blob(&too_many_addresses).is_err());
+            }
+            {
+                let compressed = gzip_compress(&vec![0; MAX_SYNC_PAYLOAD_BYTES + 1]).unwrap();
+                let error = gzip_decompress(&compressed).unwrap_err();
+                assert!(error.to_string().contains("exceeds resource bound"));
+            }
         }
     }
 
@@ -1309,42 +1350,5 @@ mod tests {
         session
             .send_data(sync_opcode::SYNC_STATE_EXCHANGE, &json)
             .unwrap();
-    }
-
-    #[test]
-    fn transport_payloads_parse_and_stay_bounded() {
-        {
-            let json = serde_json::to_string(&SyncDeviceInfo {
-                public_key: b64_encode(&[3; 32]),
-                addresses: vec!["10.0.0.2".into()],
-                port: 12315,
-                pairing_code: Some("Xy".into()),
-            })
-            .unwrap();
-            let a = GrayjaySyncTransport::parse_blob(&json).unwrap();
-            assert_eq!(a.port, 12315);
-
-            let wrapped = format!("grayjay://sync/{}", b64_encode(json.as_bytes()));
-            let b = GrayjaySyncTransport::parse_blob(&wrapped).unwrap();
-            assert_eq!(a, b);
-        }
-        {
-            assert!(
-                GrayjaySyncTransport::parse_blob(&"x".repeat(MAX_PAIRING_BLOB_BYTES + 1)).is_err()
-            );
-            let too_many_addresses = serde_json::to_string(&SyncDeviceInfo {
-                public_key: b64_encode(&[4; 32]),
-                addresses: vec!["127.0.0.1".into(); MAX_PEER_ADDRESSES + 1],
-                port: 12315,
-                pairing_code: Some("ok".into()),
-            })
-            .unwrap();
-            assert!(GrayjaySyncTransport::parse_blob(&too_many_addresses).is_err());
-        }
-        {
-            let compressed = gzip_compress(&vec![0; MAX_SYNC_PAYLOAD_BYTES + 1]).unwrap();
-            let error = gzip_decompress(&compressed).unwrap_err();
-            assert!(error.to_string().contains("exceeds resource bound"));
-        }
     }
 }

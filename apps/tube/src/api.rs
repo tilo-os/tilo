@@ -962,129 +962,133 @@ mod tests {
         (format!("http://{address}"), handle)
     }
 
-    #[test]
-    fn sponsorblock_categories_and_segments_parse() {
-        {
-            let j = category_json();
-            assert!(j.contains("sponsor"));
-            assert!(j.contains("music_offtopic"));
-        }
-        {
-            let resp = serde_json::json!([
-                {"category": "outro", "segment": [590.0, 600.0], "votes": 2},
-                {"category": "sponsor", "segment": [30.5, 45.0], "votes": 10},
-                {"category": "not_a_real_category", "segment": [1.0, 2.0], "votes": 0},
-                {"category": "intro", "segment": [0.0, 12.0], "votes": 1}
-            ]);
-            let segs = parse_skip_segments(&resp);
-            assert_eq!(segs.len(), 3, "unknown category dropped");
-            assert_eq!(segs[0].category, Category::Intro);
-            assert_eq!(segs[1].category, Category::Sponsor);
-            assert!((segs[1].start - 30.5).abs() < 1e-9);
-            assert_eq!(segs[2].category, Category::Outro);
-            assert_eq!(segs[1].votes, 10);
-        }
-        {
-            assert!(parse_skip_segments(&serde_json::json!({})).is_empty());
-        }
-    }
+    tilo_test_env::scenario! {
+        fn live_sources_are_parsed_queried_and_classified;
 
-    #[test]
-    fn api_workers_queue_and_query_branding_endpoints() {
+        phase sponsorblock_categories_and_segments_parse;
         {
-            let (tx, _hold_queue) = std::sync::mpsc::sync_channel(1);
-            let (_unused_tx, rx) = std::sync::mpsc::sync_channel(1);
-            let worker = Worker {
-                tx,
-                rx,
-                suggest: None,
-            };
-            assert!(worker.request(Request::Feed).is_ok());
-            let error = worker
-                .request(Request::Search {
-                    query: "latest intent".into(),
-                })
-                .expect_err("saturation must be observable to the app");
-            let rejected = match error {
-                std::sync::mpsc::TrySendError::Full(request)
-                | std::sync::mpsc::TrySendError::Disconnected(request) => request,
-            };
-            assert!(matches!(
-                rejected,
-                Request::Search { query } if query == "latest intent"
-            ));
+            {
+                let j = category_json();
+                assert!(j.contains("sponsor"));
+                assert!(j.contains("music_offtopic"));
+            }
+            {
+                let resp = serde_json::json!([
+                    {"category": "outro", "segment": [590.0, 600.0], "votes": 2},
+                    {"category": "sponsor", "segment": [30.5, 45.0], "votes": 10},
+                    {"category": "not_a_real_category", "segment": [1.0, 2.0], "votes": 0},
+                    {"category": "intro", "segment": [0.0, 12.0], "votes": 1}
+                ]);
+                let segs = parse_skip_segments(&resp);
+                assert_eq!(segs.len(), 3, "unknown category dropped");
+                assert_eq!(segs[0].category, Category::Intro);
+                assert_eq!(segs[1].category, Category::Sponsor);
+                assert!((segs[1].start - 30.5).abs() < 1e-9);
+                assert_eq!(segs[2].category, Category::Outro);
+                assert_eq!(segs[1].votes, 10);
+            }
+            {
+                assert!(parse_skip_segments(&serde_json::json!({})).is_empty());
+            }
         }
-        {
-            let (base, server) = serve_http(vec![
-                (
-                    "/api/skipSegments?videoID=fixture&categories=",
-                    200,
-                    r#"[{"category":"outro","segment":[9.0,10.0],"votes":2},{"category":"sponsor","segment":[1.0,3.0],"votes":7}]"#,
-                ),
-                (
-                    "/api/branding?videoID=fixture",
-                    200,
-                    r#"{"titles":[{"title":"Accurate title","votes":5,"original":false}],"thumbnails":[{"timestamp":12.5,"votes":4,"original":false}]}"#,
-                ),
-                (
-                    "/votes?videoId=fixture",
-                    200,
-                    r#"{"likes":900,"dislikes":42}"#,
-                ),
-                ("/api/skipSegments?videoID=none&categories=", 404, ""),
-            ]);
-            let c = client().expect("an HTTP client");
-            let segments = block(fetch_sponsor_at(
-                &c,
-                &format!("{base}/api/skipSegments"),
-                "fixture",
-            ))
-            .expect("SponsorBlock response");
-            assert_eq!(segments.len(), 2);
-            assert_eq!(segments[0].category, Category::Sponsor);
-            assert_eq!(segments[0].votes, 7);
 
-            let (title, thumbnail) = block(fetch_dearrow_at(
-                &c,
-                &format!("{base}/api/branding"),
-                "fixture",
-            ))
-            .expect("DeArrow response");
-            assert_eq!(title.as_deref(), Some("Accurate title"));
-            assert!(thumbnail.is_some_and(|url| url.contains("time=12.5")));
-            assert_eq!(
-                block(fetch_votes_at(&c, &format!("{base}/votes"), "fixture"))
-                    .expect("votes response"),
-                Votes {
-                    dislikes: 42,
-                    likes: Some(900),
-                }
-            );
-            assert!(
-                block(fetch_sponsor_at(
+        phase api_workers_queue_and_query_branding_endpoints;
+        {
+            {
+                let (tx, _hold_queue) = std::sync::mpsc::sync_channel(1);
+                let (_unused_tx, rx) = std::sync::mpsc::sync_channel(1);
+                let worker = Worker {
+                    tx,
+                    rx,
+                    suggest: None,
+                };
+                assert!(worker.request(Request::Feed).is_ok());
+                let error = worker
+                    .request(Request::Search {
+                        query: "latest intent".into(),
+                    })
+                    .expect_err("saturation must be observable to the app");
+                let rejected = match error {
+                    std::sync::mpsc::TrySendError::Full(request)
+                    | std::sync::mpsc::TrySendError::Disconnected(request) => request,
+                };
+                assert!(matches!(
+                    rejected,
+                    Request::Search { query } if query == "latest intent"
+                ));
+            }
+            {
+                let (base, server) = serve_http(vec![
+                    (
+                        "/api/skipSegments?videoID=fixture&categories=",
+                        200,
+                        r#"[{"category":"outro","segment":[9.0,10.0],"votes":2},{"category":"sponsor","segment":[1.0,3.0],"votes":7}]"#,
+                    ),
+                    (
+                        "/api/branding?videoID=fixture",
+                        200,
+                        r#"{"titles":[{"title":"Accurate title","votes":5,"original":false}],"thumbnails":[{"timestamp":12.5,"votes":4,"original":false}]}"#,
+                    ),
+                    (
+                        "/votes?videoId=fixture",
+                        200,
+                        r#"{"likes":900,"dislikes":42}"#,
+                    ),
+                    ("/api/skipSegments?videoID=none&categories=", 404, ""),
+                ]);
+                let c = client().expect("an HTTP client");
+                let segments = block(fetch_sponsor_at(
                     &c,
                     &format!("{base}/api/skipSegments"),
-                    "none"
+                    "fixture",
                 ))
-                .expect("404 means no segments")
-                .is_empty()
-            );
-            server.join().expect("HTTP fixture completed");
-        }
-    }
+                .expect("SponsorBlock response");
+                assert_eq!(segments.len(), 2);
+                assert_eq!(segments[0].category, Category::Sponsor);
+                assert_eq!(segments[0].votes, 7);
 
-    #[test]
-    fn sources_that_fail_while_online_are_not_offline() {
+                let (title, thumbnail) = block(fetch_dearrow_at(
+                    &c,
+                    &format!("{base}/api/branding"),
+                    "fixture",
+                ))
+                .expect("DeArrow response");
+                assert_eq!(title.as_deref(), Some("Accurate title"));
+                assert!(thumbnail.is_some_and(|url| url.contains("time=12.5")));
+                assert_eq!(
+                    block(fetch_votes_at(&c, &format!("{base}/votes"), "fixture"))
+                        .expect("votes response"),
+                    Votes {
+                        dislikes: 42,
+                        likes: Some(900),
+                    }
+                );
+                assert!(
+                    block(fetch_sponsor_at(
+                        &c,
+                        &format!("{base}/api/skipSegments"),
+                        "none"
+                    ))
+                    .expect("404 means no segments")
+                    .is_empty()
+                );
+                server.join().expect("HTTP fixture completed");
+            }
+        }
+
+        phase sources_that_fail_while_online_are_not_offline;
         {
-            let classify = |online, relay, unreadable| {
-                Unreached::classify(online, relay, unreadable, "HTTP 503".into())
-            };
-            assert_eq!(classify(false, false, true), Unreached::Offline);
-            assert_eq!(classify(false, true, false), Unreached::Offline);
-            assert_eq!(classify(true, false, true), Unreached::NoRelay);
-            let failed = Unreached::Failed("HTTP 503".into());
-            assert_eq!(classify(true, true, true), failed, "a relay was tried");
-            assert_eq!(classify(true, false, false), failed);
+            {
+                let classify = |online, relay, unreadable| {
+                    Unreached::classify(online, relay, unreadable, "HTTP 503".into())
+                };
+                assert_eq!(classify(false, false, true), Unreached::Offline);
+                assert_eq!(classify(false, true, false), Unreached::Offline);
+                assert_eq!(classify(true, false, true), Unreached::NoRelay);
+                let failed = Unreached::Failed("HTTP 503".into());
+                assert_eq!(classify(true, true, true), failed, "a relay was tried");
+                assert_eq!(classify(true, false, false), failed);
+            }
         }
     }
 }

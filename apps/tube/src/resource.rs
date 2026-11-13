@@ -160,155 +160,397 @@ mod tests {
         app.harness().relayout();
     }
 
-    #[test]
-    fn the_watch_page_controls_change_the_shared_library() {
-        let mut app = TestApp::<TubeShell>::capture_at(Some("watch"), (1280, 1200)).unwrap();
-        let liked = |app: &TestApp<TubeShell>| app.state().likes.contains(&"vid_donut".to_owned());
-        click(&mut app, "watch_like");
-        assert!(liked(&app));
-        click(&mut app, "watch_like");
-        assert!(
-            !liked(&app),
-            "the second click unlikes what the first liked"
-        );
+    tilo_test_env::scenario! {
+        fn the_library_resource_takes_edits_and_keeps_personal_state_apart;
 
-        click(&mut app, "watch_queue");
-        assert!(app.state().queue.contains(&"vid_donut".to_owned()));
+        phase the_watch_page_controls_change_the_shared_library;
+        {
+            let mut app = TestApp::<TubeShell>::capture_at(Some("watch"), (1280, 1200)).unwrap();
+            let liked = |app: &TestApp<TubeShell>| app.state().likes.contains(&"vid_donut".to_owned());
+            click(&mut app, "watch_like");
+            assert!(liked(&app));
+            click(&mut app, "watch_like");
+            assert!(
+                !liked(&app),
+                "the second click unlikes what the first liked"
+            );
 
-        let channel = crate::sample::model()
-            .video("vid_donut")
-            .unwrap()
-            .channel_id
-            .clone();
-        let subscribed = |app: &TestApp<TubeShell>| app.state().subscriptions.contains(&channel);
-        let before = subscribed(&app);
-        click(&mut app, "subscribe_btn");
-        assert_eq!(
-            subscribed(&app),
-            !before,
-            "the subscribe pill flips the subscription"
-        );
+            click(&mut app, "watch_queue");
+            assert!(app.state().queue.contains(&"vid_donut".to_owned()));
 
-        assert!(app.undo());
-        assert_eq!(subscribed(&app), before);
-    }
+            let channel = crate::sample::model()
+                .video("vid_donut")
+                .unwrap()
+                .channel_id
+                .clone();
+            let subscribed = |app: &TestApp<TubeShell>| app.state().subscriptions.contains(&channel);
+            let before = subscribed(&app);
+            click(&mut app, "subscribe_btn");
+            assert_eq!(
+                subscribed(&app),
+                !before,
+                "the subscribe pill flips the subscription"
+            );
 
-    #[test]
-    fn the_settings_controls_change_the_persons_preferences_not_the_library() {
-        use crate::model::{Category, Settings, SkipMode};
-        let mut app = TestApp::<TubeShell>::for_person(&"ad".repeat(32)).unwrap();
-        app.effect(&TubeEffect::ShowScreen {
-            screen: "settings".into(),
-        })
-        .unwrap();
-        app.harness().relayout();
-        let preferences = app.settings::<Settings>();
-        let autoplay = preferences.get().autoplay;
-        let library = app.peer_document().save();
-        click(&mut app, "switch_autoplay");
-        app.settle();
-        assert_eq!(preferences.get().autoplay, !autoplay);
-        let sponsor = crate::i18n::t(Category::Sponsor.message());
-        let category = app.harness().a11y_node_named(&sponsor).unwrap();
-        app.harness()
-            .perform_a11y_action(
-                category,
-                &ui::a11y::Action::SetValue(crate::i18n::t(SkipMode::Show.message())),
+            assert!(app.undo());
+            assert_eq!(subscribed(&app), before);
+        }
+
+        phase the_settings_controls_change_the_persons_preferences_not_the_library;
+        {
+            use crate::model::{Category, Settings, SkipMode};
+            let mut app = TestApp::<TubeShell>::for_person(&"ad".repeat(32)).unwrap();
+            app.effect(&TubeEffect::ShowScreen {
+                screen: "settings".into(),
+            })
+            .unwrap();
+            app.harness().relayout();
+            let preferences = app.settings::<Settings>();
+            let autoplay = preferences.get().autoplay;
+            let library = app.peer_document().save();
+            click(&mut app, "switch_autoplay");
+            app.settle();
+            assert_eq!(preferences.get().autoplay, !autoplay);
+            let sponsor = crate::i18n::t(Category::Sponsor.message());
+            let category = app.harness().a11y_node_named(&sponsor).unwrap();
+            app.harness()
+                .perform_a11y_action(
+                    category,
+                    &ui::a11y::Action::SetValue(crate::i18n::t(SkipMode::Show.message())),
+                )
+                .unwrap();
+            app.settle();
+            assert_eq!(
+                preferences.get().mode_of(Category::Sponsor),
+                SkipMode::Show,
+                "the shared mode selector changes Auto-skip to Show"
+            );
+            assert_eq!(
+                preferences.scope(),
+                ui::storage::Scope::Personal,
+                "they follow the person to their devices"
+            );
+            assert_eq!(
+                app.peer_document().save(),
+                library,
+                "collaborators on the library never see them"
+            );
+
+            app.effect(&TubeEffect::SetPreferredQuality {
+                quality: "720p".into(),
+            })
+            .unwrap();
+            assert_eq!(preferences.get().preferred_quality, "720p");
+            assert!(
+                app.effect(&TubeEffect::SetPreferredQuality {
+                    quality: "8k".into()
+                })
+                .is_err(),
+                "a quality Tube cannot play is refused"
+            );
+            app.effect(&TubeEffect::SetPreference {
+                preference: "dearrow".into(),
+                enabled: false,
+            })
+            .unwrap();
+            assert!(!preferences.get().dearrow_enabled);
+            app.effect(&TubeEffect::SetSegmentHandling {
+                category: Category::Filler.api_key().into(),
+                mode: "skip".into(),
+            })
+            .unwrap();
+            assert_eq!(preferences.get().mode_of(Category::Filler), SkipMode::Skip);
+        }
+
+        phase what_was_watched_is_kept_in_a_record_of_its_own_not_the_library;
+        {
+            use crate::history::WatchHistory;
+            let person = "ad".repeat(32);
+            let room = "00000000-0000-4000-8000-0000000000ad";
+            let mut app = TestApp::<TubeShell>::for_person_in(&person, room).unwrap();
+            app.effect(&TubeEffect::MarkWatched {
+                video: "vid_donut".into(),
+            })
+            .unwrap();
+            app.effect(&TubeEffect::MarkWatched {
+                video: "vid_tea".into(),
+            })
+            .unwrap();
+            let watched = |history: &ui::framework::PersonRecord<WatchHistory>| {
+                let mut videos = history.with(WatchHistory::videos);
+                videos.sort();
+                videos
+            };
+            let history = app.person::<WatchHistory>().unwrap();
+            assert_eq!(watched(&history), ["vid_donut", "vid_tea"]);
+            assert!(history.syncs(), "it syncs with the workspace");
+            let route = history.record().route().unwrap();
+            assert_eq!(
+                route.cluster_id.to_string(),
+                room,
+                "in the workspace Tube is open in"
+            );
+            let library = app.peer_document().save();
+            assert!(
+                !library
+                    .windows(b"vid_tea".len())
+                    .any(|window| window == b"vid_tea"),
+                "the shared library holds nothing of what the person watched"
+            );
+
+            app.effect(&TubeEffect::ForgetWatched {
+                video: "vid_donut".into(),
+            })
+            .unwrap();
+            assert_eq!(watched(&history), ["vid_tea"]);
+            assert!(history.undo());
+            assert_eq!(watched(&history), ["vid_donut", "vid_tea"]);
+
+            drop(history);
+            let mut app = app.reopen().unwrap();
+            let history = app.person::<WatchHistory>().unwrap();
+            assert_eq!(watched(&history), ["vid_donut", "vid_tea"]);
+            app.effect_confirmed(&TubeEffect::ClearHistory).unwrap();
+            assert!(history.with(WatchHistory::videos).is_empty());
+        }
+
+        phase comments_are_liked_and_answered_through_the_library;
+        {
+            let mut app = TestApp::<TubeShell>::capture(Some("watch")).unwrap();
+            let video = crate::sample::model().video("vid_donut").unwrap().clone();
+            let comment = crate::actions::comment_key("vid_donut", &video.comments[0]);
+            app.call(
+                "field-edit",
+                serde_json::json!({ "edit": Library::like_comment(&comment, true) }),
             )
             .unwrap();
-        app.settle();
-        assert_eq!(
-            preferences.get().mode_of(Category::Sponsor),
-            SkipMode::Show,
-            "the shared mode selector changes Auto-skip to Show"
-        );
-        assert_eq!(
-            preferences.scope(),
-            ui::storage::Scope::Personal,
-            "they follow the person to their devices"
-        );
-        assert_eq!(
-            app.peer_document().save(),
-            library,
-            "collaborators on the library never see them"
-        );
+            app.call(
+                "field-edit",
+                serde_json::json!({ "edit": Library::enqueue("vid_donut", true) }),
+            )
+            .unwrap();
+            let reply = || {
+                Library::REPLY_TO_COMMENT.with(ReplyToComment {
+                    comment: NonBlank::parse(&comment).unwrap(),
+                    text: NonBlank::parse(" Agreed ").unwrap(),
+                })
+            };
+            app.invoke(reply()).unwrap();
+            app.invoke(reply()).unwrap();
+            let state = app.state();
+            assert!(state.queue.contains(&"vid_donut".to_owned()));
+            assert!(state.comment_likes.contains(&comment));
+            let replies: Vec<(&Id, &Reply)> = state.replies.iter().collect();
+            assert_eq!(replies.len(), 1, "a retried reply is kept once");
+            assert_eq!(
+                replies[0].1,
+                &Reply {
+                    comment: comment.clone(),
+                    text: "Agreed".into(),
+                }
+            );
+            assert!(
+                serde_json::from_value::<ReplyToComment>(
+                    serde_json::json!({"comment": comment, "text": "   "})
+                )
+                .is_err(),
+                "a blank reply is refused where the arguments are read"
+            );
 
-        app.effect(&TubeEffect::SetPreferredQuality {
-            quality: "720p".into(),
-        })
-        .unwrap();
-        assert_eq!(preferences.get().preferred_quality, "720p");
-        assert!(
-            app.effect(&TubeEffect::SetPreferredQuality {
-                quality: "8k".into()
-            })
-            .is_err(),
-            "a quality Tube cannot play is refused"
-        );
-        app.effect(&TubeEffect::SetPreference {
-            preference: "dearrow".into(),
-            enabled: false,
-        })
-        .unwrap();
-        assert!(!preferences.get().dearrow_enabled);
-        app.effect(&TubeEffect::SetSegmentHandling {
-            category: Category::Filler.api_key().into(),
-            mode: "skip".into(),
-        })
-        .unwrap();
-        assert_eq!(preferences.get().mode_of(Category::Filler), SkipMode::Skip);
-    }
+            let item = item_resource_id::<Library>("replies", replies[0].0);
+            let resources = app.harness().resources();
+            let retract = ui::tilo_actions::flatten(&resources)
+                .into_iter()
+                .find(|flat| flat.resource_id.0 == item && flat.action.id == "retract")
+                .expect("the reply is published with its retraction");
+            assert_eq!(retract.action.kind, OperationKind::Document);
+            app.call_on(&item, "retract", serde_json::json!({}))
+                .unwrap();
+            assert!(app.state().replies.is_empty());
+            assert!(app.undo(), "a retraction is one step");
+            assert_eq!(app.state().replies.len(), 1);
+        }
 
-    #[test]
-    fn what_was_watched_is_kept_in_a_record_of_its_own_not_the_library() {
-        use crate::history::WatchHistory;
-        let person = "ad".repeat(32);
-        let room = "00000000-0000-4000-8000-0000000000ad";
-        let mut app = TestApp::<TubeShell>::for_person_in(&person, room).unwrap();
-        app.effect(&TubeEffect::MarkWatched {
-            video: "vid_donut".into(),
-        })
-        .unwrap();
-        app.effect(&TubeEffect::MarkWatched {
-            video: "vid_tea".into(),
-        })
-        .unwrap();
-        let watched = |history: &ui::framework::PersonRecord<WatchHistory>| {
-            let mut videos = history.with(WatchHistory::videos);
-            videos.sort();
-            videos
-        };
-        let history = app.person::<WatchHistory>().unwrap();
-        assert_eq!(watched(&history), ["vid_donut", "vid_tea"]);
-        assert!(history.syncs(), "it syncs with the workspace");
-        let route = history.record().route().unwrap();
-        assert_eq!(
-            route.cluster_id.to_string(),
-            room,
-            "in the workspace Tube is open in"
-        );
-        let library = app.peer_document().save();
-        assert!(
-            !library
-                .windows(b"vid_tea".len())
-                .any(|window| window == b"vid_tea"),
-            "the shared library holds nothing of what the person watched"
-        );
+        phase the_published_tree_carries_document_edits_only_on_the_resource;
+        {
+            let mut app = TestApp::<TubeShell>::capture(Some("watch")).unwrap();
+            let resources = app.harness().resources();
+            let flat = ui::tilo_actions::flatten(&resources);
+            let at = |resource: &str, action: &str| {
+                flat.iter()
+                    .find(|flat| flat.resource_id.0 == resource && flat.action.id == action)
+                    .map(|flat| flat.action.kind)
+            };
+            let root = flat
+                .iter()
+                .find(|flat| flat.action.id == "reply-to-comment")
+                .map(|flat| flat.resource_id.0.clone())
+                .expect("the library's verbs are the resource's");
+            for edit in ["reply-to-comment", "field-edit"] {
+                assert_eq!(at(&root, edit), Some(OperationKind::Document), "{edit}");
+            }
+            for prefix in [
+                "tube.current:",
+                "tube.video:",
+                "tube.comment:",
+                "tube.channel:",
+            ] {
+                assert!(
+                    flat.iter()
+                        .any(|flat| flat.resource_id.0.starts_with(prefix))
+                        || resources_have(&resources, prefix),
+                    "a {prefix} row is published"
+                );
+            }
+            for row in flat.iter().filter(|flat| {
+                [
+                    "tube.video:",
+                    "tube.current:",
+                    "tube.comment:",
+                    "tube.channel:",
+                    "tube.history:",
+                ]
+                .iter()
+                .any(|prefix| flat.resource_id.0.starts_with(prefix))
+            }) {
+                assert_ne!(
+                    row.action.kind,
+                    OperationKind::Document,
+                    "{} {} is a document edit on a live row",
+                    row.resource_id.0,
+                    row.action.id
+                );
+            }
+        }
 
-        app.effect(&TubeEffect::ForgetWatched {
-            video: "vid_donut".into(),
-        })
-        .unwrap();
-        assert_eq!(watched(&history), ["vid_tea"]);
-        assert!(history.undo());
-        assert_eq!(watched(&history), ["vid_donut", "vid_tea"]);
+        phase concurrent_edits_converge;
+        {
+            let mut ours = Replica::<Library>::new();
+            ours.apply(Invoke::edit(&Library::like("vid_a", true)).unwrap())
+                .unwrap();
+            let mut theirs = ours.fork();
+            ours.apply(Invoke::edit(&Library::like("vid_b", true)).unwrap())
+                .unwrap();
+            ours.apply(Invoke::edit(&Library::enqueue("vid_a", true)).unwrap())
+                .unwrap();
+            theirs
+                .apply(Invoke::edit(&Library::like("vid_a", false)).unwrap())
+                .unwrap();
+            theirs
+                .apply(Invoke::edit(&Library::subscribe("UC_A", true)).unwrap())
+                .unwrap();
+            theirs
+                .apply(Library::REPLY_TO_COMMENT.with(ReplyToComment {
+                    comment: NonBlank::parse("c1").unwrap(),
+                    text: NonBlank::parse("Nice").unwrap(),
+                }))
+                .unwrap();
+            ours.sync_with(&mut theirs).unwrap();
+            let merged = ours.state().unwrap();
+            assert_eq!(merged, theirs.state().unwrap());
+            assert_eq!(
+                merged.likes.iter().cloned().collect::<Vec<_>>(),
+                ["vid_b"],
+                "one unliked a video while the other liked another"
+            );
+            assert!(merged.queue.contains(&"vid_a".to_owned()));
+            assert!(merged.subscriptions.contains(&"UC_A".to_owned()));
+            assert_eq!(merged.replies.len(), 1);
+        }
 
-        drop(history);
-        let mut app = app.reopen().unwrap();
-        let history = app.person::<WatchHistory>().unwrap();
-        assert_eq!(watched(&history), ["vid_donut", "vid_tea"]);
-        app.effect_confirmed(&TubeEffect::ClearHistory).unwrap();
-        assert!(history.with(WatchHistory::videos).is_empty());
+        phase history_entries_render_as_the_apps_sentences;
+        {
+            use ui::tilo_actions::{ActionInvoker, ActorKind};
+
+            let mut app = TestApp::<TubeShell>::capture(Some("watch")).unwrap();
+            let agent = ActionInvoker::actor("agent:claude")
+                .with_kind(ActorKind::Agent)
+                .acting_for("ada");
+            let kind = <Library as ui::tilo_resource::Resource>::KIND;
+            for edit in [
+                Library::like("vid_donut", true),
+                Library::like("vid_donut", false),
+                Library::enqueue("vid_donut", true),
+                Library::enqueue("vid_donut", false),
+                Library::subscribe("UC_A", true),
+                Library::subscribe("UC_A", false),
+                Library::like_comment("c1", true),
+                Library::like_comment("c1", false),
+            ] {
+                app.call_by(
+                    agent.clone(),
+                    kind,
+                    "field-edit",
+                    serde_json::json!({ "edit": edit }),
+                )
+                .unwrap();
+            }
+            app.call_by(
+                agent.clone(),
+                kind,
+                "reply-to-comment",
+                serde_json::json!({"comment": "c1", "text": "Agreed"}),
+            )
+            .unwrap();
+            let reply = app.state().replies.ids().next().unwrap().clone();
+            app.call_by(
+                agent,
+                &item_resource_id::<Library>("replies", &reply),
+                "retract",
+                serde_json::json!({}),
+            )
+            .unwrap();
+
+            let sentences = app.sentences(app.history().iter().filter(|entry| {
+                entry
+                    .invoker
+                    .as_ref()
+                    .is_some_and(|invoker| invoker.actor == "agent:claude")
+            }));
+            assert_eq!(
+                sentences,
+                [
+                    "Liked a video",
+                    "Took back a like",
+                    "Added a video to the shared queue",
+                    "Removed a video from the shared queue",
+                    "Subscribed to a creator",
+                    "Unsubscribed from a creator",
+                    "Liked a comment",
+                    "Took back a comment like",
+                    "Replied Agreed",
+                    "Retracted the reply Agreed",
+                ]
+            );
+        }
+
+        phase effects_declare_their_contracts;
+        {
+            use ui::tilo_resource::Effect;
+            let specs = TubeEffect::specs();
+            let spec = |id: &str| specs.iter().find(|spec| spec.id == id).unwrap();
+            assert_eq!(
+                spec("pair-device").params()[0].ty,
+                ui::tilo_actions::ParamType::Secret,
+                "a pairing invite is kept out of logs and history"
+            );
+            for confirmed in [
+                "clear-history",
+                "pair-device",
+                "approve-device",
+                "revoke-device",
+            ] {
+                assert_eq!(
+                    spec(confirmed).contract.confirmation,
+                    ui::tilo_actions::ConfirmationPolicy::Confirm,
+                    "{confirmed}"
+                );
+            }
+            assert_eq!(
+                spec("open-video").contract.kind,
+                ui::tilo_actions::ActionKind::Read
+            );
+        }
     }
 
     #[test]
@@ -333,248 +575,10 @@ mod tests {
         );
     }
 
-    #[test]
-    fn comments_are_liked_and_answered_through_the_library() {
-        let mut app = TestApp::<TubeShell>::capture(Some("watch")).unwrap();
-        let video = crate::sample::model().video("vid_donut").unwrap().clone();
-        let comment = crate::actions::comment_key("vid_donut", &video.comments[0]);
-        app.call(
-            "field-edit",
-            serde_json::json!({ "edit": Library::like_comment(&comment, true) }),
-        )
-        .unwrap();
-        app.call(
-            "field-edit",
-            serde_json::json!({ "edit": Library::enqueue("vid_donut", true) }),
-        )
-        .unwrap();
-        let reply = || {
-            Library::REPLY_TO_COMMENT.with(ReplyToComment {
-                comment: NonBlank::parse(&comment).unwrap(),
-                text: NonBlank::parse(" Agreed ").unwrap(),
-            })
-        };
-        app.invoke(reply()).unwrap();
-        app.invoke(reply()).unwrap();
-        let state = app.state();
-        assert!(state.queue.contains(&"vid_donut".to_owned()));
-        assert!(state.comment_likes.contains(&comment));
-        let replies: Vec<(&Id, &Reply)> = state.replies.iter().collect();
-        assert_eq!(replies.len(), 1, "a retried reply is kept once");
-        assert_eq!(
-            replies[0].1,
-            &Reply {
-                comment: comment.clone(),
-                text: "Agreed".into(),
-            }
-        );
-        assert!(
-            serde_json::from_value::<ReplyToComment>(
-                serde_json::json!({"comment": comment, "text": "   "})
-            )
-            .is_err(),
-            "a blank reply is refused where the arguments are read"
-        );
-
-        let item = item_resource_id::<Library>("replies", replies[0].0);
-        let resources = app.harness().resources();
-        let retract = ui::tilo_actions::flatten(&resources)
-            .into_iter()
-            .find(|flat| flat.resource_id.0 == item && flat.action.id == "retract")
-            .expect("the reply is published with its retraction");
-        assert_eq!(retract.action.kind, OperationKind::Document);
-        app.call_on(&item, "retract", serde_json::json!({}))
-            .unwrap();
-        assert!(app.state().replies.is_empty());
-        assert!(app.undo(), "a retraction is one step");
-        assert_eq!(app.state().replies.len(), 1);
-    }
-
-    #[test]
-    fn the_published_tree_carries_document_edits_only_on_the_resource() {
-        let mut app = TestApp::<TubeShell>::capture(Some("watch")).unwrap();
-        let resources = app.harness().resources();
-        let flat = ui::tilo_actions::flatten(&resources);
-        let at = |resource: &str, action: &str| {
-            flat.iter()
-                .find(|flat| flat.resource_id.0 == resource && flat.action.id == action)
-                .map(|flat| flat.action.kind)
-        };
-        let root = flat
-            .iter()
-            .find(|flat| flat.action.id == "reply-to-comment")
-            .map(|flat| flat.resource_id.0.clone())
-            .expect("the library's verbs are the resource's");
-        for edit in ["reply-to-comment", "field-edit"] {
-            assert_eq!(at(&root, edit), Some(OperationKind::Document), "{edit}");
-        }
-        for prefix in [
-            "tube.current:",
-            "tube.video:",
-            "tube.comment:",
-            "tube.channel:",
-        ] {
-            assert!(
-                flat.iter()
-                    .any(|flat| flat.resource_id.0.starts_with(prefix))
-                    || resources_have(&resources, prefix),
-                "a {prefix} row is published"
-            );
-        }
-        for row in flat.iter().filter(|flat| {
-            [
-                "tube.video:",
-                "tube.current:",
-                "tube.comment:",
-                "tube.channel:",
-                "tube.history:",
-            ]
-            .iter()
-            .any(|prefix| flat.resource_id.0.starts_with(prefix))
-        }) {
-            assert_ne!(
-                row.action.kind,
-                OperationKind::Document,
-                "{} {} is a document edit on a live row",
-                row.resource_id.0,
-                row.action.id
-            );
-        }
-    }
-
     fn resources_have(resources: &[ui::tilo_actions::ResourceSpec], prefix: &str) -> bool {
         resources.iter().any(|resource| {
             resource.id.0.starts_with(prefix) || resources_have(&resource.children, prefix)
         })
-    }
-
-    #[test]
-    fn concurrent_edits_converge() {
-        let mut ours = Replica::<Library>::new();
-        ours.apply(Invoke::edit(&Library::like("vid_a", true)).unwrap())
-            .unwrap();
-        let mut theirs = ours.fork();
-        ours.apply(Invoke::edit(&Library::like("vid_b", true)).unwrap())
-            .unwrap();
-        ours.apply(Invoke::edit(&Library::enqueue("vid_a", true)).unwrap())
-            .unwrap();
-        theirs
-            .apply(Invoke::edit(&Library::like("vid_a", false)).unwrap())
-            .unwrap();
-        theirs
-            .apply(Invoke::edit(&Library::subscribe("UC_A", true)).unwrap())
-            .unwrap();
-        theirs
-            .apply(Library::REPLY_TO_COMMENT.with(ReplyToComment {
-                comment: NonBlank::parse("c1").unwrap(),
-                text: NonBlank::parse("Nice").unwrap(),
-            }))
-            .unwrap();
-        ours.sync_with(&mut theirs).unwrap();
-        let merged = ours.state().unwrap();
-        assert_eq!(merged, theirs.state().unwrap());
-        assert_eq!(
-            merged.likes.iter().cloned().collect::<Vec<_>>(),
-            ["vid_b"],
-            "one unliked a video while the other liked another"
-        );
-        assert!(merged.queue.contains(&"vid_a".to_owned()));
-        assert!(merged.subscriptions.contains(&"UC_A".to_owned()));
-        assert_eq!(merged.replies.len(), 1);
-    }
-
-    #[test]
-    fn history_entries_render_as_the_apps_sentences() {
-        use ui::tilo_actions::{ActionInvoker, ActorKind};
-
-        let mut app = TestApp::<TubeShell>::capture(Some("watch")).unwrap();
-        let agent = ActionInvoker::actor("agent:claude")
-            .with_kind(ActorKind::Agent)
-            .acting_for("ada");
-        let kind = <Library as ui::tilo_resource::Resource>::KIND;
-        for edit in [
-            Library::like("vid_donut", true),
-            Library::like("vid_donut", false),
-            Library::enqueue("vid_donut", true),
-            Library::enqueue("vid_donut", false),
-            Library::subscribe("UC_A", true),
-            Library::subscribe("UC_A", false),
-            Library::like_comment("c1", true),
-            Library::like_comment("c1", false),
-        ] {
-            app.call_by(
-                agent.clone(),
-                kind,
-                "field-edit",
-                serde_json::json!({ "edit": edit }),
-            )
-            .unwrap();
-        }
-        app.call_by(
-            agent.clone(),
-            kind,
-            "reply-to-comment",
-            serde_json::json!({"comment": "c1", "text": "Agreed"}),
-        )
-        .unwrap();
-        let reply = app.state().replies.ids().next().unwrap().clone();
-        app.call_by(
-            agent,
-            &item_resource_id::<Library>("replies", &reply),
-            "retract",
-            serde_json::json!({}),
-        )
-        .unwrap();
-
-        let sentences = app.sentences(app.history().iter().filter(|entry| {
-            entry
-                .invoker
-                .as_ref()
-                .is_some_and(|invoker| invoker.actor == "agent:claude")
-        }));
-        assert_eq!(
-            sentences,
-            [
-                "Liked a video",
-                "Took back a like",
-                "Added a video to the shared queue",
-                "Removed a video from the shared queue",
-                "Subscribed to a creator",
-                "Unsubscribed from a creator",
-                "Liked a comment",
-                "Took back a comment like",
-                "Replied Agreed",
-                "Retracted the reply Agreed",
-            ]
-        );
-    }
-
-    #[test]
-    fn effects_declare_their_contracts() {
-        use ui::tilo_resource::Effect;
-        let specs = TubeEffect::specs();
-        let spec = |id: &str| specs.iter().find(|spec| spec.id == id).unwrap();
-        assert_eq!(
-            spec("pair-device").params()[0].ty,
-            ui::tilo_actions::ParamType::Secret,
-            "a pairing invite is kept out of logs and history"
-        );
-        for confirmed in [
-            "clear-history",
-            "pair-device",
-            "approve-device",
-            "revoke-device",
-        ] {
-            assert_eq!(
-                spec(confirmed).contract.confirmation,
-                ui::tilo_actions::ConfirmationPolicy::Confirm,
-                "{confirmed}"
-            );
-        }
-        assert_eq!(
-            spec("open-video").contract.kind,
-            ui::tilo_actions::ActionKind::Read
-        );
     }
 }
 

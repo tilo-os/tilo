@@ -697,57 +697,61 @@ mod tests {
         }
     }
 
-    #[test]
-    fn device_identity_uses_the_injected_store_and_rejects_corrupt_seeds() {
-        let store = tilo_secrets::SecretStore::memory("so.tilo.tube");
-        let first = device_seed(&store).unwrap();
-        assert_eq!(*device_seed(&store).unwrap(), *first);
-        let another_host = tilo_secrets::SecretStore::memory("so.tilo.tube");
-        assert_ne!(*device_seed(&another_host).unwrap(), *first);
-        store
-            .put_blocking(DEVICE_SEED, b"bad", tilo_secrets::PutOptions::default())
-            .unwrap();
-        assert!(device_seed(&store).is_err());
-        assert_eq!(
-            store.get_blocking(DEVICE_SEED).unwrap().unwrap().expose(),
-            b"bad"
-        );
-    }
+    tilo_test_env::scenario! {
+        fn device_sync_keeps_its_identity_keys_and_peers;
 
-    #[test]
-    fn device_sync_lifecycle_persists_keys_peers_and_merges_additively() {
+        phase device_identity_uses_the_injected_store_and_rejects_corrupt_seeds;
         {
-            let dir = tempfile::tempdir().unwrap();
-            let document = dir.path().to_path_buf();
-            let store = PeerStore::new(Settings::for_app("so.tilo.tube").in_profile(&document));
-            let record = PeerRecord {
-                id: "public-key".into(),
-                name: "Phone".into(),
-                descriptor: descriptor("public-key"),
-                approved_at: 7,
-                pending_approval: false,
-                revoked_at: Some(9),
-                last_sync_at: None,
-                last_error: None,
-            };
-            store.save(std::slice::from_ref(&record)).unwrap();
-            assert_eq!(store.load().unwrap(), vec![record]);
-            let text = serde_json::Value::Object(ui::storage::settings_at(&document)).to_string();
-            assert!(text.contains("public-key"), "the peer is kept: {text}");
-            assert!(!text.contains("private"));
-            assert!(!text.contains("pairingCode"));
+            let store = tilo_secrets::SecretStore::memory("so.tilo.tube");
+            let first = device_seed(&store).unwrap();
+            assert_eq!(*device_seed(&store).unwrap(), *first);
+            let another_host = tilo_secrets::SecretStore::memory("so.tilo.tube");
+            assert_ne!(*device_seed(&another_host).unwrap(), *first);
+            store
+                .put_blocking(DEVICE_SEED, b"bad", tilo_secrets::PutOptions::default())
+                .unwrap();
+            assert!(device_seed(&store).is_err());
             assert_eq!(
-                ui::storage::Scope::DeviceLocal.section(),
-                PairedDevices::SCOPE.section(),
-                "the paired devices never leave this device"
+                store.get_blocking(DEVICE_SEED).unwrap().unwrap().expose(),
+                b"bad"
             );
         }
+
+        phase device_sync_lifecycle_persists_keys_peers_and_merges_additively;
         {
-            let a = DeviceKey::from_private(&[1; 32]).unwrap();
-            let a_restart = DeviceKey::from_private(&[1; 32]).unwrap();
-            let b = DeviceKey::from_private(&[2; 32]).unwrap();
-            assert_eq!(a.public_base64(), a_restart.public_base64());
-            assert_ne!(a.public_base64(), b.public_base64());
+            {
+                let dir = tempfile::tempdir().unwrap();
+                let document = dir.path().to_path_buf();
+                let store = PeerStore::new(Settings::for_app("so.tilo.tube").in_profile(&document));
+                let record = PeerRecord {
+                    id: "public-key".into(),
+                    name: "Phone".into(),
+                    descriptor: descriptor("public-key"),
+                    approved_at: 7,
+                    pending_approval: false,
+                    revoked_at: Some(9),
+                    last_sync_at: None,
+                    last_error: None,
+                };
+                store.save(std::slice::from_ref(&record)).unwrap();
+                assert_eq!(store.load().unwrap(), vec![record]);
+                let text = serde_json::Value::Object(ui::storage::settings_at(&document)).to_string();
+                assert!(text.contains("public-key"), "the peer is kept: {text}");
+                assert!(!text.contains("private"));
+                assert!(!text.contains("pairingCode"));
+                assert_eq!(
+                    ui::storage::Scope::DeviceLocal.section(),
+                    PairedDevices::SCOPE.section(),
+                    "the paired devices never leave this device"
+                );
+            }
+            {
+                let a = DeviceKey::from_private(&[1; 32]).unwrap();
+                let a_restart = DeviceKey::from_private(&[1; 32]).unwrap();
+                let b = DeviceKey::from_private(&[2; 32]).unwrap();
+                assert_eq!(a.public_base64(), a_restart.public_base64());
+                assert_ne!(a.public_base64(), b.public_base64());
+            }
         }
     }
 }

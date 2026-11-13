@@ -121,51 +121,55 @@ mod tests {
         00:00:09.000 --> 00:00:11.000\n\
         Third cue, out of order\n";
 
-    #[test]
-    fn webvtt_reads_the_cues_without_its_blocks_or_its_markup() {
-        let cues = parse_vtt(SAMPLE);
-        assert_eq!(cues.len(), 3);
-        assert_eq!(cues[0].start_ms, 1_000);
-        assert_eq!(cues[0].end_ms, 4_500);
-        assert_eq!(cues[0].text, "Hello, and welcome\nto the show.");
-        assert_eq!(cues[1].text, "Sponsor break & more");
-        assert_eq!(cues[2].start_ms, 9_000);
-    }
+    tilo_test_env::scenario! {
+        fn webvtt_captions_are_read_and_found_by_the_playhead;
 
-    #[test]
-    fn the_playhead_finds_the_line_it_is_inside() {
-        let cues = parse_vtt(SAMPLE);
-        assert_eq!(active_cue(&cues, 0).map(|cue| cue.text.as_str()), None);
-        assert_eq!(
-            active_cue(&cues, 2_000).map(|cue| cue.start_ms),
-            Some(1_000)
-        );
-        assert_eq!(
-            active_cue(&cues, 4_500).map(|cue| cue.start_ms),
-            Some(4_500),
-            "a cue's end is the next one's start"
-        );
-        assert_eq!(
-            active_cue(&cues, 7_000).map(|cue| cue.text.as_str()),
-            None,
-            "nothing is said between cues"
-        );
-        assert_eq!(
-            active_cue(&cues, 10_000).map(|cue| cue.start_ms),
-            Some(9_000)
-        );
-    }
+        phase webvtt_reads_the_cues_without_its_blocks_or_its_markup;
+        {
+            let cues = parse_vtt(SAMPLE);
+            assert_eq!(cues.len(), 3);
+            assert_eq!(cues[0].start_ms, 1_000);
+            assert_eq!(cues[0].end_ms, 4_500);
+            assert_eq!(cues[0].text, "Hello, and welcome\nto the show.");
+            assert_eq!(cues[1].text, "Sponsor break & more");
+            assert_eq!(cues[2].start_ms, 9_000);
+        }
 
-    #[test]
-    fn short_and_broken_timings_are_read_or_left_out() {
-        let cues = parse_vtt(
-            "WEBVTT\n\n01:02.500 --> 01:05.000\nShort form\n\n\
+        phase the_playhead_finds_the_line_it_is_inside;
+        {
+            let cues = parse_vtt(SAMPLE);
+            assert_eq!(active_cue(&cues, 0).map(|cue| cue.text.as_str()), None);
+            assert_eq!(
+                active_cue(&cues, 2_000).map(|cue| cue.start_ms),
+                Some(1_000)
+            );
+            assert_eq!(
+                active_cue(&cues, 4_500).map(|cue| cue.start_ms),
+                Some(4_500),
+                "a cue's end is the next one's start"
+            );
+            assert_eq!(
+                active_cue(&cues, 7_000).map(|cue| cue.text.as_str()),
+                None,
+                "nothing is said between cues"
+            );
+            assert_eq!(
+                active_cue(&cues, 10_000).map(|cue| cue.start_ms),
+                Some(9_000)
+            );
+        }
+
+        phase short_and_broken_timings_are_read_or_left_out;
+        {
+            let cues = parse_vtt(
+                "WEBVTT\n\n01:02.500 --> 01:05.000\nShort form\n\n\
              not a timing line\n\n\
              00:00:09.000 --> 00:00:09.000\nempty\n\n\
              00:00:99.000 --> 00:01:01.000\nimpossible seconds\n",
-        );
-        assert_eq!(cues.len(), 1);
-        assert_eq!((cues[0].start_ms, cues[0].end_ms), (62_500, 65_000));
-        assert_eq!(cues[0].text, "Short form");
+            );
+            assert_eq!(cues.len(), 1);
+            assert_eq!((cues[0].start_ms, cues[0].end_ms), (62_500, 65_000));
+            assert_eq!(cues[0].text, "Short form");
+        }
     }
 }

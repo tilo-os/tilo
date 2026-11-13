@@ -315,85 +315,89 @@ mod client_tests {
         InnerTube::at(client, base)
     }
 
-    #[test]
-    fn search_asks_as_the_web_client_and_carries_the_visitor_id_after() {
-        let search = include_str!("fixtures/search.json").to_string();
-        let (base, asked) = serve(vec![(200, search.clone()), (200, search)]);
-        let youtube = reader(&base);
+    tilo_test_env::scenario! {
+        fn the_innertube_client_asks_keeps_and_refuses_as_youtube_answers;
 
-        let found = block(youtube.search("nbc news")).expect("an answer");
-        assert_eq!(found.videos.len(), 4);
-        let first = asked.recv().expect("the search request");
-        assert!(
-            first.line.starts_with("post /search?prettyprint=false"),
-            "{}",
-            first.line
-        );
-        assert!(first.head.contains("x-youtube-client-name: 1"));
-        assert_eq!(first.body["query"], "nbc news");
-        assert_eq!(first.body["context"]["client"]["clientName"], "WEB");
-        assert!(first.body["context"]["client"].get("visitorData").is_none());
+        phase search_asks_as_the_web_client_and_carries_the_visitor_id_after;
+        {
+            let search = include_str!("fixtures/search.json").to_string();
+            let (base, asked) = serve(vec![(200, search.clone()), (200, search)]);
+            let youtube = reader(&base);
 
-        block(youtube.popular("news")).expect("an answer");
-        let second = asked.recv().expect("the popular request");
-        assert_eq!(
-            second.body["context"]["client"]["visitorData"],
-            "CgtleGFtcGxlVmlzaXRvcg%3D%3D"
-        );
-        assert!(
-            second
-                .head
-                .contains("x-goog-visitor-id: cgtlegftcgxlvmlzaxrvcg%3d%3d")
-        );
-    }
+            let found = block(youtube.search("nbc news")).expect("an answer");
+            assert_eq!(found.videos.len(), 4);
+            let first = asked.recv().expect("the search request");
+            assert!(
+                first.line.starts_with("post /search?prettyprint=false"),
+                "{}",
+                first.line
+            );
+            assert!(first.head.contains("x-youtube-client-name: 1"));
+            assert_eq!(first.body["query"], "nbc news");
+            assert_eq!(first.body["context"]["client"]["clientName"], "WEB");
+            assert!(first.body["context"]["client"].get("visitorData").is_none());
 
-    #[test]
-    fn a_watch_page_keeps_the_stream_its_player_answer_named() {
-        let (base, asked) = serve(vec![
-            (200, include_str!("fixtures/player.json").to_string()),
-            (200, include_str!("fixtures/next.json").to_string()),
-        ]);
-        let youtube = reader(&base);
-        let (video, related) = block(youtube.video("n61ULEU7CO0")).expect("a watch page");
-        assert_eq!(video.duration, 22_258);
-        assert_eq!(related.len(), 3);
-        let player = asked.recv().expect("the player request");
-        assert!(player.line.starts_with("post /player"));
-        assert_eq!(player.body["context"]["client"]["clientName"], "ANDROID");
-        assert!(
-            player
-                .head
-                .contains("user-agent: com.google.android.youtube/")
-        );
-        assert!(
-            asked
-                .recv()
-                .expect("the next request")
-                .line
-                .starts_with("post /next")
-        );
+            block(youtube.popular("news")).expect("an answer");
+            let second = asked.recv().expect("the popular request");
+            assert_eq!(
+                second.body["context"]["client"]["visitorData"],
+                "CgtleGFtcGxlVmlzaXRvcg%3D%3D"
+            );
+            assert!(
+                second
+                    .head
+                    .contains("x-goog-visitor-id: cgtlegftcgxlvmlzaxrvcg%3d%3d")
+            );
+        }
 
-        let stream = block(youtube.stream("n61ULEU7CO0", None)).expect("the kept stream");
-        assert_eq!(stream.quality, "360p");
-    }
+        phase a_watch_page_keeps_the_stream_its_player_answer_named;
+        {
+            let (base, asked) = serve(vec![
+                (200, include_str!("fixtures/player.json").to_string()),
+                (200, include_str!("fixtures/next.json").to_string()),
+            ]);
+            let youtube = reader(&base);
+            let (video, related) = block(youtube.video("n61ULEU7CO0")).expect("a watch page");
+            assert_eq!(video.duration, 22_258);
+            assert_eq!(related.len(), 3);
+            let player = asked.recv().expect("the player request");
+            assert!(player.line.starts_with("post /player"));
+            assert_eq!(player.body["context"]["client"]["clientName"], "ANDROID");
+            assert!(
+                player
+                    .head
+                    .contains("user-agent: com.google.android.youtube/")
+            );
+            assert!(
+                asked
+                    .recv()
+                    .expect("the next request")
+                    .line
+                    .starts_with("post /next")
+            );
 
-    #[test]
-    fn a_refused_player_answer_is_an_error_naming_why() {
-        let (base, _asked) = serve(vec![(
-            200,
-            include_str!("fixtures/player-bot-check.json").to_string(),
-        )]);
-        let error = block(reader(&base).stream("n61ULEU7CO0", None)).expect_err("a bot check");
-        assert_eq!(
-            refusal(&error).as_deref(),
-            Some("Sign in to confirm you\u{2019}re not a bot"),
-            "{error:#}"
-        );
-    }
+            let stream = block(youtube.stream("n61ULEU7CO0", None)).expect("the kept stream");
+            assert_eq!(stream.quality, "360p");
+        }
 
-    #[test]
-    fn a_server_error_is_an_error() {
-        let (base, _asked) = serve(vec![(500, "{}".into())]);
-        assert!(block(reader(&base).search("x")).is_err());
+        phase a_refused_player_answer_is_an_error_naming_why;
+        {
+            let (base, _asked) = serve(vec![(
+                200,
+                include_str!("fixtures/player-bot-check.json").to_string(),
+            )]);
+            let error = block(reader(&base).stream("n61ULEU7CO0", None)).expect_err("a bot check");
+            assert_eq!(
+                refusal(&error).as_deref(),
+                Some("Sign in to confirm you\u{2019}re not a bot"),
+                "{error:#}"
+            );
+        }
+
+        phase a_server_error_is_an_error;
+        {
+            let (base, _asked) = serve(vec![(500, "{}".into())]);
+            assert!(block(reader(&base).search("x")).is_err());
+        }
     }
 }

@@ -161,78 +161,82 @@ fn percent_decode(text: &str) -> Option<String> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_launch_names_a_search_by_its_uri() {
-        assert_eq!(
-            launch_search(&["tube:search?q=cats".into()]).as_deref(),
-            Some("cats")
-        );
-        assert_eq!(
-            launch_search(&["tube:search?q=lo-fi+k%C3%B6ln%20mix".into()]).as_deref(),
-            Some("lo-fi köln mix")
-        );
-        for value in [
-            "tube:search?q=",
-            "tube:search?q=%2",
-            "tube:video?v=1",
-            "cats",
-        ] {
-            assert_eq!(launch_search(&[value.into()]), None, "{value}");
-        }
-    }
+    tilo_test_env::scenario! {
+        fn searches_are_named_offered_and_opened_by_their_uris;
 
-    #[test]
-    fn a_typed_query_offers_to_search_youtube_for_it() {
-        let entry = query_entry(" lo-fi mix ").expect("a query gets its row");
-        assert_eq!(entry.title, "Search YouTube for “lo-fi mix”");
-        let provider =
-            ui::framework::testing::search_source::<crate::resource::Library>(vec![entry]);
-        let hits = ui::search::SearchProvider::search(&provider, "lo-fi mix");
-        let hit = hits.first().expect("the query finds its own row");
-        assert_eq!(
-            opened(&hit.action_id),
-            Some(crate::actions::TubeEffect::Search {
-                query: ui::tilo_resource::NonBlank::parse("lo-fi mix").unwrap()
-            })
-        );
-        assert!(query_entry("  ").is_none());
-        assert!(query_entry("a\u{7}b").is_none());
-    }
-
-    #[test]
-    fn host_search_hits_open_videos_playlists_and_history() {
-        let mut model = crate::sample::model();
-        let video_id = model.videos[0].id.clone();
-        model.history.push(video_id.clone());
-        model.playlists.push(crate::model::Playlist {
-            id: "playlist-rust".into(),
-            title: "Rust watchlist".into(),
-            channel_id: model.videos[0].channel_id.clone(),
-            channel_name: model.videos[0].channel_name.clone(),
-            thumbnail_url: String::new(),
-            seed: "playlist-rust".into(),
-            video_count: 1,
-            video_ids: vec![video_id],
-        });
-        let provider = ui::framework::testing::search_source::<crate::resource::Library>(
-            model_entries(&model),
-        );
-        for (query, resource, open) in [
-            ("compositor", "tube.video:", "open-video"),
-            ("watchlist", "tube.playlist:", "open-playlist"),
-            ("compositor", "tube.history:", "open-video"),
-        ] {
-            assert!(
-                ui::search::SearchProvider::search(&provider, query)
-                    .iter()
-                    .any(|hit| {
-                        hit.action_id.starts_with(resource)
-                            && opened(&hit.action_id).is_some_and(|effect| {
-                                ui::tilo_resource::Effect::id(&effect) == open
-                            })
-                    }),
-                "{query:?} finds a {resource} hit that opens with {open}"
+        phase a_launch_names_a_search_by_its_uri;
+        {
+            assert_eq!(
+                launch_search(&["tube:search?q=cats".into()]).as_deref(),
+                Some("cats")
             );
+            assert_eq!(
+                launch_search(&["tube:search?q=lo-fi+k%C3%B6ln%20mix".into()]).as_deref(),
+                Some("lo-fi köln mix")
+            );
+            for value in [
+                "tube:search?q=",
+                "tube:search?q=%2",
+                "tube:video?v=1",
+                "cats",
+            ] {
+                assert_eq!(launch_search(&[value.into()]), None, "{value}");
+            }
+        }
+
+        phase a_typed_query_offers_to_search_youtube_for_it;
+        {
+            let entry = query_entry(" lo-fi mix ").expect("a query gets its row");
+            assert_eq!(entry.title, "Search YouTube for “lo-fi mix”");
+            let provider =
+                ui::framework::testing::search_source::<crate::resource::Library>(vec![entry]);
+            let hits = ui::search::SearchProvider::search(&provider, "lo-fi mix");
+            let hit = hits.first().expect("the query finds its own row");
+            assert_eq!(
+                opened(&hit.action_id),
+                Some(crate::actions::TubeEffect::Search {
+                    query: ui::tilo_resource::NonBlank::parse("lo-fi mix").unwrap()
+                })
+            );
+            assert!(query_entry("  ").is_none());
+            assert!(query_entry("a\u{7}b").is_none());
+        }
+
+        phase host_search_hits_open_videos_playlists_and_history;
+        {
+            let mut model = crate::sample::model();
+            let video_id = model.videos[0].id.clone();
+            model.history.push(video_id.clone());
+            model.playlists.push(crate::model::Playlist {
+                id: "playlist-rust".into(),
+                title: "Rust watchlist".into(),
+                channel_id: model.videos[0].channel_id.clone(),
+                channel_name: model.videos[0].channel_name.clone(),
+                thumbnail_url: String::new(),
+                seed: "playlist-rust".into(),
+                video_count: 1,
+                video_ids: vec![video_id],
+            });
+            let provider = ui::framework::testing::search_source::<crate::resource::Library>(
+                model_entries(&model),
+            );
+            for (query, resource, open) in [
+                ("compositor", "tube.video:", "open-video"),
+                ("watchlist", "tube.playlist:", "open-playlist"),
+                ("compositor", "tube.history:", "open-video"),
+            ] {
+                assert!(
+                    ui::search::SearchProvider::search(&provider, query)
+                        .iter()
+                        .any(|hit| {
+                            hit.action_id.starts_with(resource)
+                                && opened(&hit.action_id).is_some_and(|effect| {
+                                    ui::tilo_resource::Effect::id(&effect) == open
+                                })
+                        }),
+                    "{query:?} finds a {resource} hit that opens with {open}"
+                );
+            }
         }
     }
 }

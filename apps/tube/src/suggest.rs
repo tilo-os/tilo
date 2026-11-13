@@ -103,58 +103,62 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_burst_of_typing_asks_once_for_the_latest_query_one_at_a_time() {
-        let suggesting = Suggesting::default();
-        assert!(suggesting.want("c"), "the first query starts the asking");
-        assert!(!suggesting.want("ca"), "later ones join it");
-        assert!(!suggesting.want("cat"));
-        let asked = Arc::new(Mutex::new(Vec::<String>::new()));
-        let posted = Arc::new(Mutex::new(Vec::<(String, usize)>::new()));
-        let fetch = {
-            let (asked, typing) = (Arc::clone(&asked), suggesting.clone());
-            move |query: String| {
-                let (asked, typing) = (Arc::clone(&asked), typing.clone());
-                async move {
-                    asked.lock().unwrap().push(query.clone());
-                    if query == "cat" {
-                        assert!(!typing.want("cats"), "one request in flight");
-                    }
-                    (0..8).map(|at| video(&format!("{query}{at}"))).collect()
-                }
-            }
-        };
-        let post = {
-            let posted = Arc::clone(&posted);
-            move |update: Update| {
-                if let Update::Suggestions { query, videos } = update {
-                    posted.lock().unwrap().push((query, videos.len()));
-                }
-            }
-        };
-        ui::rt::app()
-            .block_on(ask_youtube(suggesting.clone(), fetch, post))
-            .unwrap();
-        assert_eq!(*asked.lock().unwrap(), ["cat", "cats"]);
-        assert_eq!(
-            *posted.lock().unwrap(),
-            [
-                ("cat".to_owned(), SUGGESTED_VIDEOS),
-                ("cats".to_owned(), SUGGESTED_VIDEOS)
-            ]
-        );
-        assert!(suggesting.want("dogs"), "the asking ended with the typing");
-    }
+    tilo_test_env::scenario! {
+        fn suggestions_ask_once_and_answer_only_their_own_query;
 
-    #[test]
-    fn an_answer_is_held_only_for_its_own_query() {
-        let held = Suggested {
-            query: "cats".into(),
-            videos: vec![video("a")],
-            awaiting: false,
-        };
-        assert_eq!(held.videos_for("cats").len(), 1);
-        assert!(held.videos_for("cat").is_empty());
-        assert!(!Suggested::default().answered(""));
+        phase a_burst_of_typing_asks_once_for_the_latest_query_one_at_a_time;
+        {
+            let suggesting = Suggesting::default();
+            assert!(suggesting.want("c"), "the first query starts the asking");
+            assert!(!suggesting.want("ca"), "later ones join it");
+            assert!(!suggesting.want("cat"));
+            let asked = Arc::new(Mutex::new(Vec::<String>::new()));
+            let posted = Arc::new(Mutex::new(Vec::<(String, usize)>::new()));
+            let fetch = {
+                let (asked, typing) = (Arc::clone(&asked), suggesting.clone());
+                move |query: String| {
+                    let (asked, typing) = (Arc::clone(&asked), typing.clone());
+                    async move {
+                        asked.lock().unwrap().push(query.clone());
+                        if query == "cat" {
+                            assert!(!typing.want("cats"), "one request in flight");
+                        }
+                        (0..8).map(|at| video(&format!("{query}{at}"))).collect()
+                    }
+                }
+            };
+            let post = {
+                let posted = Arc::clone(&posted);
+                move |update: Update| {
+                    if let Update::Suggestions { query, videos } = update {
+                        posted.lock().unwrap().push((query, videos.len()));
+                    }
+                }
+            };
+            ui::rt::app()
+                .block_on(ask_youtube(suggesting.clone(), fetch, post))
+                .unwrap();
+            assert_eq!(*asked.lock().unwrap(), ["cat", "cats"]);
+            assert_eq!(
+                *posted.lock().unwrap(),
+                [
+                    ("cat".to_owned(), SUGGESTED_VIDEOS),
+                    ("cats".to_owned(), SUGGESTED_VIDEOS)
+                ]
+            );
+            assert!(suggesting.want("dogs"), "the asking ended with the typing");
+        }
+
+        phase an_answer_is_held_only_for_its_own_query;
+        {
+            let held = Suggested {
+                query: "cats".into(),
+                videos: vec![video("a")],
+                awaiting: false,
+            };
+            assert_eq!(held.videos_for("cats").len(), 1);
+            assert!(held.videos_for("cat").is_empty());
+            assert!(!Suggested::default().answered(""));
+        }
     }
 }
