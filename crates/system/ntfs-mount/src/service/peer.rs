@@ -82,46 +82,51 @@ mod tests {
         }
     }
 
-    #[test]
-    fn only_the_seats_compositor_is_the_shell() {
-        let dir = tempfile::tempdir().unwrap();
-        let policy = policy(dir.path(), Some(1000));
-        assert_eq!(policy.decide(&shell(1000)), Ok(Caller::Shell { uid: 1000 }));
-        let sandboxed = PeerFacts {
-            host_namespaces: false,
-            ..shell(1000)
-        };
-        assert_eq!(policy.decide(&sandboxed), Ok(Caller::Person { uid: 1000 }));
-        let other_program = PeerFacts {
-            exe: Some(PathBuf::from("/usr/bin/python3")),
-            ..shell(1000)
-        };
-        assert_eq!(
-            policy.decide(&other_program),
-            Ok(Caller::Person { uid: 1000 })
-        );
-        let exited = PeerFacts {
-            exe: None,
-            ..shell(1000)
-        };
-        assert_eq!(policy.decide(&exited), Ok(Caller::Person { uid: 1000 }));
-    }
+    tilo_test_env::scenario! {
+        /// Who `PeerPolicy` takes a caller for, read from the seat and logind files.
+        fn peer_policy;
 
-    #[test]
-    fn nobody_but_the_person_at_the_seat_is_answered() {
-        let dir = tempfile::tempdir().unwrap();
-        assert!(policy(dir.path(), Some(1000)).decide(&shell(1001)).is_err());
-        let empty = tempfile::tempdir().unwrap();
-        assert!(policy(empty.path(), None).decide(&shell(1000)).is_err());
-    }
+        phase only_the_seats_compositor_is_the_shell;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let policy = policy(dir.path(), Some(1000));
+            assert_eq!(policy.decide(&shell(1000)), Ok(Caller::Shell { uid: 1000 }));
+            let sandboxed = PeerFacts {
+                host_namespaces: false,
+                ..shell(1000)
+            };
+            assert_eq!(policy.decide(&sandboxed), Ok(Caller::Person { uid: 1000 }));
+            let other_program = PeerFacts {
+                exe: Some(PathBuf::from("/usr/bin/python3")),
+                ..shell(1000)
+            };
+            assert_eq!(
+                policy.decide(&other_program),
+                Ok(Caller::Person { uid: 1000 })
+            );
+            let exited = PeerFacts {
+                exe: None,
+                ..shell(1000)
+            };
+            assert_eq!(policy.decide(&exited), Ok(Caller::Person { uid: 1000 }));
+        }
 
-    #[test]
-    fn sessions_are_read_from_logind() {
-        let dir = tempfile::tempdir().unwrap();
-        let policy = policy(dir.path(), Some(1000));
-        assert!(!policy.has_session(1000));
-        fs::create_dir_all(dir.path().join("users")).unwrap();
-        fs::write(dir.path().join("users/1000"), "STATE=active\n").unwrap();
-        assert!(policy.has_session(1000));
+        phase nobody_but_the_person_at_the_seat_is_answered;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            assert!(policy(dir.path(), Some(1000)).decide(&shell(1001)).is_err());
+            let empty = tempfile::tempdir().unwrap();
+            assert!(policy(empty.path(), None).decide(&shell(1000)).is_err());
+        }
+
+        phase sessions_are_read_from_logind;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let policy = policy(dir.path(), Some(1000));
+            assert!(!policy.has_session(1000));
+            fs::create_dir_all(dir.path().join("users")).unwrap();
+            fs::write(dir.path().join("users/1000"), "STATE=active\n").unwrap();
+            assert!(policy.has_session(1000));
+        }
     }
 }

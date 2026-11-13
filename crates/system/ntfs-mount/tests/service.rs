@@ -230,209 +230,214 @@ fn consent(mode: Mode, remember: bool) -> Option<Consent> {
     Some(Consent { mode, remember })
 }
 
-#[test]
-fn the_windows_partition_is_asked_about_once_then_opens_lazily() {
-    let service = Running::start(vec![windows_partition()]);
-    let id = "nvme0n1p3:1";
+tilo_test_env::scenario! {
+    /// The service over its socket, each case on its own server, socket and grant store.
+    fn consent_gated_service;
 
-    let drive = service.drive(id);
-    assert_eq!(drive.placement, Placement::Internal);
-    assert!(
-        drive.needs_consent,
-        "consent is needed even for the internal disk"
-    );
-    assert_eq!(
-        drive.preselect,
-        Mode::Open,
-        "pre-selected for the install's own disk"
-    );
-    assert_eq!(drive.can_remember, protocol::RememberOffer::AnyMode);
-    assert!(
-        service.world.lock().unwrap().mounted.is_empty(),
-        "listing mounts nothing"
-    );
+    phase the_windows_partition_is_asked_about_once_then_opens_lazily;
+    {
+        let service = Running::start(vec![windows_partition()]);
+        let id = "nvme0n1p3:1";
 
-    assert!(matches!(
-        service.open(id, None),
-        Response::NeedsConsent { .. }
-    ));
-    assert!(
-        matches!(
-            service.as_person(Request::Open {
-                drive: id.into(),
-                consent: consent(Mode::Open, true),
+        let drive = service.drive(id);
+        assert_eq!(drive.placement, Placement::Internal);
+        assert!(
+            drive.needs_consent,
+            "consent is needed even for the internal disk"
+        );
+        assert_eq!(
+            drive.preselect,
+            Mode::Open,
+            "pre-selected for the install's own disk"
+        );
+        assert_eq!(drive.can_remember, protocol::RememberOffer::AnyMode);
+        assert!(
+            service.world.lock().unwrap().mounted.is_empty(),
+            "listing mounts nothing"
+        );
+
+        assert!(matches!(
+            service.open(id, None),
+            Response::NeedsConsent { .. }
+        ));
+        assert!(
+            matches!(
+                service.as_person(Request::Open {
+                    drive: id.into(),
+                    consent: consent(Mode::Open, true),
+                }),
+                Response::Refused { .. }
+            ),
+            "only the shell, which draws the prompt, may open"
+        );
+        assert!(service.world.lock().unwrap().mounted.is_empty());
+
+        let Response::Opened { mounted } = service.open(id, consent(Mode::Open, true)) else {
+            panic!("consented open failed");
+        };
+        assert_eq!(mounted.mode, Mode::Open);
+        assert_eq!(mounted.read_only, None);
+        assert_eq!(service.drive(id).mounted.as_ref(), Some(&mounted));
+        assert!(matches!(
+            service.as_person(Request::Close { drive: id.into() }),
+            Response::Done
+        ));
+        assert!(service.world.lock().unwrap().mounted.is_empty());
+
+        let drive = service.drive(id);
+        assert!(!drive.needs_consent, "remembered: no prompt");
+        assert!(drive.mounted.is_none(), "remembered does not mean mounted");
+        let Response::Opened { mounted } = service.open(id, None) else {
+            panic!("remembered drive did not open on demand");
+        };
+        assert_eq!(mounted.mode, Mode::Open);
+        let remembered = service.remembered();
+        assert_eq!(remembered.len(), 1);
+        assert_eq!(remembered[0].placement, Placement::Internal);
+        assert_eq!(
+            remembered[0].mounted.as_deref(),
+            Some(mounted.path.as_str())
+        );
+
+        let grant = remembered[0].grant.clone();
+        assert!(matches!(
+            service.as_person(Request::SetMode {
+                grant: grant.clone(),
+                mode: Mode::OpenSafely
+            }),
+            Response::Done
+        ));
+        assert_eq!(service.world.lock().unwrap().mounted[0].1, Mode::Open);
+        assert!(matches!(
+            service.as_person(Request::Close { drive: id.into() }),
+            Response::Done
+        ));
+        let Response::Opened { mounted } = service.open(id, None) else {
+            panic!("reopen failed");
+        };
+        assert_eq!(mounted.mode, Mode::OpenSafely);
+
+        assert!(matches!(
+            service.as_person(Request::Forget { grant }),
+            Response::Done
+        ));
+        assert!(service.world.lock().unwrap().mounted.is_empty());
+        assert!(service.remembered().is_empty());
+        assert!(service.drive(id).needs_consent);
+    }
+
+    phase a_stick_that_copies_the_windows_ids_is_still_asked_about;
+    {
+        let service = Running::start(vec![windows_partition()]);
+        assert!(matches!(
+            service.open("nvme0n1p3:1", consent(Mode::Open, true)),
+            Response::Opened { .. }
+        ));
+
+        service.world.lock().unwrap().drives.push(forged_stick(7));
+        let stick = service.drive("sdb1:7");
+        assert_eq!(stick.placement, Placement::External);
+        assert!(stick.hot_added, "the shell asks as it arrives");
+        assert!(stick.needs_consent);
+        assert_eq!(stick.preselect, Mode::OpenSafely);
+        assert!(
+            stick.remembered.is_none(),
+            "copied IDs do not inherit the internal grant"
+        );
+        assert!(matches!(
+            service.open("sdb1:7", None),
+            Response::NeedsConsent { .. }
+        ));
+
+        let Response::Opened { mounted } = service.open("sdb1:7", consent(Mode::Open, true)) else {
+            panic!("consented open of the stick failed");
+        };
+        assert_eq!(mounted.mode, Mode::Open);
+        let external = service
+            .remembered()
+            .into_iter()
+            .find(|drive| drive.placement == Placement::External)
+            .unwrap();
+        assert_eq!(external.mode, Mode::OpenSafely);
+        assert!(matches!(
+            service.as_person(Request::SetMode {
+                grant: external.grant,
+                mode: Mode::Open
             }),
             Response::Refused { .. }
-        ),
-        "only the shell, which draws the prompt, may open"
-    );
-    assert!(service.world.lock().unwrap().mounted.is_empty());
+        ));
 
-    let Response::Opened { mounted } = service.open(id, consent(Mode::Open, true)) else {
-        panic!("consented open failed");
-    };
-    assert_eq!(mounted.mode, Mode::Open);
-    assert_eq!(mounted.read_only, None);
-    assert_eq!(service.drive(id).mounted.as_ref(), Some(&mounted));
-    assert!(matches!(
-        service.as_person(Request::Close { drive: id.into() }),
-        Response::Done
-    ));
-    assert!(service.world.lock().unwrap().mounted.is_empty());
-
-    let drive = service.drive(id);
-    assert!(!drive.needs_consent, "remembered: no prompt");
-    assert!(drive.mounted.is_none(), "remembered does not mean mounted");
-    let Response::Opened { mounted } = service.open(id, None) else {
-        panic!("remembered drive did not open on demand");
-    };
-    assert_eq!(mounted.mode, Mode::Open);
-    let remembered = service.remembered();
-    assert_eq!(remembered.len(), 1);
-    assert_eq!(remembered[0].placement, Placement::Internal);
-    assert_eq!(
-        remembered[0].mounted.as_deref(),
-        Some(mounted.path.as_str())
-    );
-
-    let grant = remembered[0].grant.clone();
-    assert!(matches!(
-        service.as_person(Request::SetMode {
-            grant: grant.clone(),
-            mode: Mode::OpenSafely
-        }),
-        Response::Done
-    ));
-    assert_eq!(service.world.lock().unwrap().mounted[0].1, Mode::Open);
-    assert!(matches!(
-        service.as_person(Request::Close { drive: id.into() }),
-        Response::Done
-    ));
-    let Response::Opened { mounted } = service.open(id, None) else {
-        panic!("reopen failed");
-    };
-    assert_eq!(mounted.mode, Mode::OpenSafely);
-
-    assert!(matches!(
-        service.as_person(Request::Forget { grant }),
-        Response::Done
-    ));
-    assert!(service.world.lock().unwrap().mounted.is_empty());
-    assert!(service.remembered().is_empty());
-    assert!(service.drive(id).needs_consent);
-}
-
-#[test]
-fn a_stick_that_copies_the_windows_ids_is_still_asked_about() {
-    let service = Running::start(vec![windows_partition()]);
-    assert!(matches!(
-        service.open("nvme0n1p3:1", consent(Mode::Open, true)),
-        Response::Opened { .. }
-    ));
-
-    service.world.lock().unwrap().drives.push(forged_stick(7));
-    let stick = service.drive("sdb1:7");
-    assert_eq!(stick.placement, Placement::External);
-    assert!(stick.hot_added, "the shell asks as it arrives");
-    assert!(stick.needs_consent);
-    assert_eq!(stick.preselect, Mode::OpenSafely);
-    assert!(
-        stick.remembered.is_none(),
-        "copied IDs do not inherit the internal grant"
-    );
-    assert!(matches!(
-        service.open("sdb1:7", None),
-        Response::NeedsConsent { .. }
-    ));
-
-    let Response::Opened { mounted } = service.open("sdb1:7", consent(Mode::Open, true)) else {
-        panic!("consented open of the stick failed");
-    };
-    assert_eq!(mounted.mode, Mode::Open);
-    let external = service
-        .remembered()
-        .into_iter()
-        .find(|drive| drive.placement == Placement::External)
-        .unwrap();
-    assert_eq!(external.mode, Mode::OpenSafely);
-    assert!(matches!(
-        service.as_person(Request::SetMode {
-            grant: external.grant,
-            mode: Mode::Open
-        }),
-        Response::Refused { .. }
-    ));
-
-    service
-        .world
-        .lock()
-        .unwrap()
-        .drives
-        .retain(|drive| drive.id != "sdb1:7");
-    service.wait_until("the unplugged stick is closed", |world| {
-        world.mounted.iter().all(|(id, ..)| id != "sdb1:7")
-    });
-    service.world.lock().unwrap().drives.push(forged_stick(8));
-    let again = service.drive("sdb1:8");
-    assert!(again.needs_consent);
-    assert_eq!(again.preselect, Mode::OpenSafely);
-    assert!(
-        again.remembered.is_some(),
-        "remembered, so it pre-selects Open safely"
-    );
-}
-
-#[test]
-fn an_unclean_volume_opens_read_only_in_either_mode() {
-    let service = Running::start(vec![windows_partition()]);
-    service.world.lock().unwrap().health = Some(ReadOnlyReason::WindowsHibernated);
-    for mode in [Mode::Open, Mode::OpenSafely] {
-        let Response::Opened { mounted } = service.open("nvme0n1p3:1", consent(mode, false)) else {
-            panic!("open failed");
-        };
-        assert_eq!(mounted.read_only, Some(ReadOnlyReason::WindowsHibernated));
+        service
+            .world
+            .lock()
+            .unwrap()
+            .drives
+            .retain(|drive| drive.id != "sdb1:7");
+        service.wait_until("the unplugged stick is closed", |world| {
+            world.mounted.iter().all(|(id, ..)| id != "sdb1:7")
+        });
+        service.world.lock().unwrap().drives.push(forged_stick(8));
+        let again = service.drive("sdb1:8");
+        assert!(again.needs_consent);
+        assert_eq!(again.preselect, Mode::OpenSafely);
         assert!(
-            service.world.lock().unwrap().mounted[0].2,
-            "mounted read-only"
+            again.remembered.is_some(),
+            "remembered, so it pre-selects Open safely"
         );
+    }
+
+    phase an_unclean_volume_opens_read_only_in_either_mode;
+    {
+        let service = Running::start(vec![windows_partition()]);
+        service.world.lock().unwrap().health = Some(ReadOnlyReason::WindowsHibernated);
+        for mode in [Mode::Open, Mode::OpenSafely] {
+            let Response::Opened { mounted } = service.open("nvme0n1p3:1", consent(mode, false)) else {
+                panic!("open failed");
+            };
+            assert_eq!(mounted.read_only, Some(ReadOnlyReason::WindowsHibernated));
+            assert!(
+                service.world.lock().unwrap().mounted[0].2,
+                "mounted read-only"
+            );
+            assert!(matches!(
+                service.as_person(Request::Close {
+                    drive: "nvme0n1p3:1".into()
+                }),
+                Response::Done
+            ));
+        }
+    }
+
+    phase mounts_end_with_the_session_and_busy_drives_stay_open;
+    {
+        let service = Running::start(vec![windows_partition()]);
+        assert!(matches!(
+            service.open("nvme0n1p3:1", consent(Mode::Open, true)),
+            Response::Opened { .. }
+        ));
+        service.world.lock().unwrap().busy = true;
         assert!(matches!(
             service.as_person(Request::Close {
                 drive: "nvme0n1p3:1".into()
             }),
-            Response::Done
+            Response::Failed { .. }
         ));
+        let grant = service.remembered()[0].grant.clone();
+        let Response::Failed { message } = service.as_person(Request::Forget { grant }) else {
+            panic!("forgetting a busy drive must say it is still open");
+        };
+        assert!(message.contains("still open"));
+        assert!(
+            service.remembered().is_empty(),
+            "the grant is gone regardless"
+        );
+
+        let mut world = service.world.lock().unwrap();
+        world.busy = false;
+        world.logged_out = true;
+        drop(world);
+        service.wait_until("the logged-out person's drive is closed", |world| {
+            world.mounted.is_empty()
+        });
     }
-}
-
-#[test]
-fn mounts_end_with_the_session_and_busy_drives_stay_open() {
-    let service = Running::start(vec![windows_partition()]);
-    assert!(matches!(
-        service.open("nvme0n1p3:1", consent(Mode::Open, true)),
-        Response::Opened { .. }
-    ));
-    service.world.lock().unwrap().busy = true;
-    assert!(matches!(
-        service.as_person(Request::Close {
-            drive: "nvme0n1p3:1".into()
-        }),
-        Response::Failed { .. }
-    ));
-    let grant = service.remembered()[0].grant.clone();
-    let Response::Failed { message } = service.as_person(Request::Forget { grant }) else {
-        panic!("forgetting a busy drive must say it is still open");
-    };
-    assert!(message.contains("still open"));
-    assert!(
-        service.remembered().is_empty(),
-        "the grant is gone regardless"
-    );
-
-    let mut world = service.world.lock().unwrap();
-    world.busy = false;
-    world.logged_out = true;
-    drop(world);
-    service.wait_until("the logged-out person's drive is closed", |world| {
-        world.mounted.is_empty()
-    });
 }

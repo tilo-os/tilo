@@ -368,67 +368,72 @@ mod tests {
         read(dir.path(), name).unwrap()
     }
 
-    #[test]
-    fn onboard_drives_are_internal() {
-        let nvme = topology(Sys::onboard_nvme, "nvme0n1p3");
-        assert_eq!(nvme.controller, Some(Controller::NvmeRootPort));
-        assert_eq!(nvme.disk, "nvme0n1");
-        assert!(nvme.device_path.ends_with("nvme0n1/nvme0n1p3"));
-        assert!(nvme.is_internal());
+    tilo_test_env::scenario! {
+        /// `read` over a fixture sysfs tree, and what `is_internal` makes of each kind of drive.
+        fn which_drives_count_as_internal;
 
-        let sata = topology(Sys::onboard_sata, "sda2");
-        assert_eq!(sata.controller, Some(Controller::Ahci));
-        assert!(sata.is_internal());
-    }
+        phase onboard_drives_are_internal;
+        {
+            let nvme = topology(Sys::onboard_nvme, "nvme0n1p3");
+            assert_eq!(nvme.controller, Some(Controller::NvmeRootPort));
+            assert_eq!(nvme.disk, "nvme0n1");
+            assert!(nvme.device_path.ends_with("nvme0n1/nvme0n1p3"));
+            assert!(nvme.is_internal());
 
-    #[test]
-    fn hot_pluggable_links_are_never_internal() {
-        let usb = topology(|sys| sys.usb_stick(false), "sdb1");
-        assert_eq!(usb.hotplug_link, Some(Link::Usb));
-        assert!(
-            !usb.removable,
-            "a USB disk that claims removable=0 is still on USB"
-        );
-        assert!(!usb.is_internal());
+            let sata = topology(Sys::onboard_sata, "sda2");
+            assert_eq!(sata.controller, Some(Controller::Ahci));
+            assert!(sata.is_internal());
+        }
 
-        let sd = topology(Sys::sd_card, "mmcblk0p1");
-        assert_eq!(sd.hotplug_link, Some(Link::SdMmc));
-        assert!(!sd.is_internal());
-    }
+        phase hot_pluggable_links_are_never_internal;
+        {
+            let usb = topology(|sys| sys.usb_stick(false), "sdb1");
+            assert_eq!(usb.hotplug_link, Some(Link::Usb));
+            assert!(
+                !usb.removable,
+                "a USB disk that claims removable=0 is still on USB"
+            );
+            assert!(!usb.is_internal());
 
-    #[test]
-    fn a_thunderbolt_enclosure_is_not_an_onboard_nvme() {
-        // Even where the firmware does not mark the port external, the drive
-        // sits behind bridges rather than on a root port.
-        let unmarked = topology(|sys| sys.thunderbolt_nvme(false), "nvme1n1p1");
-        assert_eq!(unmarked.controller, Some(Controller::NvmeBehindBridge));
-        assert!(!unmarked.is_internal());
+            let sd = topology(Sys::sd_card, "mmcblk0p1");
+            assert_eq!(sd.hotplug_link, Some(Link::SdMmc));
+            assert!(!sd.is_internal());
+        }
 
-        let marked = topology(|sys| sys.thunderbolt_nvme(true), "nvme1n1p1");
-        assert_eq!(marked.hotplug_link, Some(Link::ExternalPci));
-        assert!(!marked.is_internal());
-    }
+        phase a_thunderbolt_enclosure_is_not_an_onboard_nvme;
+        {
+            // Even where the firmware does not mark the port external, the drive
+            // sits behind bridges rather than on a root port.
+            let unmarked = topology(|sys| sys.thunderbolt_nvme(false), "nvme1n1p1");
+            assert_eq!(unmarked.controller, Some(Controller::NvmeBehindBridge));
+            assert!(!unmarked.is_internal());
 
-    #[test]
-    fn removable_and_virtual_devices_are_not_internal() {
-        let removable = topology(
-            |sys| {
-                sys.onboard_sata();
-                std::fs::write(
-                    sys.root.join(
-                        "devices/pci0000:00/0000:00:17.0/ata1/host0/target0:0:0/0:0:0:0/block/sda/removable",
-                    ),
-                    "1\n",
-                )
-                .unwrap();
-            },
-            "sda2",
-        );
-        assert!(removable.removable);
-        assert!(!removable.is_internal());
+            let marked = topology(|sys| sys.thunderbolt_nvme(true), "nvme1n1p1");
+            assert_eq!(marked.hotplug_link, Some(Link::ExternalPci));
+            assert!(!marked.is_internal());
+        }
 
-        let looped = topology(Sys::loop_device, "loop0p1");
-        assert!(looped.virtual_device);
-        assert!(!looped.is_internal());
+        phase removable_and_virtual_devices_are_not_internal;
+        {
+            let removable = topology(
+                |sys| {
+                    sys.onboard_sata();
+                    std::fs::write(
+                        sys.root.join(
+                            "devices/pci0000:00/0000:00:17.0/ata1/host0/target0:0:0/0:0:0:0/block/sda/removable",
+                        ),
+                        "1\n",
+                    )
+                    .unwrap();
+                },
+                "sda2",
+            );
+            assert!(removable.removable);
+            assert!(!removable.is_internal());
+
+            let looped = topology(Sys::loop_device, "loop0p1");
+            assert!(looped.virtual_device);
+            assert!(!looped.is_internal());
+        }
     }
 }
