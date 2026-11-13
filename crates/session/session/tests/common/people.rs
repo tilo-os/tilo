@@ -1013,9 +1013,11 @@ impl Person {
             )
             .expect("the boot settles which device this is")
         };
+        // The source's first boot on this build records its machine, and it is that machine
+        // from then on: a disk may be copied more than once.
         assert!(matches!(
             boot(&source.identity(), &source_machine),
-            Settled::Recorded
+            Settled::Recorded | Settled::Same
         ));
 
         let home = tempfile::tempdir().expect("a directory for the copy");
