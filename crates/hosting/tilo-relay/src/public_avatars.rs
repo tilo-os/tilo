@@ -77,32 +77,36 @@ mod tests {
 
     const PNG: &[u8] = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR";
 
-    #[test]
-    fn an_avatar_is_published_once_under_its_hash() {
-        let dir = tempfile::tempdir().unwrap();
-        let avatars =
-            PublicAvatars::new(dir.path().join("avatars"), "https://rooms.example/avatars")
-                .unwrap();
-        let url = avatars.publish(PNG).unwrap();
-        let name = blake3::hash(PNG).to_hex().to_string();
-        assert_eq!(url, format!("https://rooms.example/avatars/{name}"));
-        assert_eq!(
-            std::fs::read(dir.path().join("avatars").join(&name)).unwrap(),
-            PNG
-        );
-        assert_eq!(avatars.publish(PNG).unwrap(), url);
-    }
+    tilo_test_env::scenario! {
+        fn an_avatar_is_published_under_its_hash_or_refused;
 
-    #[test]
-    fn oversized_or_non_image_avatars_are_refused() {
-        let dir = tempfile::tempdir().unwrap();
-        let avatars = PublicAvatars::new(dir.path().to_owned(), "https://x/avatars").unwrap();
-        let mut big = PNG.to_vec();
-        big.resize(MAX_AVATAR_BYTES + 1, 0);
-        assert!(matches!(avatars.publish(&big), Err(AvatarError::TooLarge)));
-        assert!(matches!(
-            avatars.publish(b"<svg/>"),
-            Err(AvatarError::NotAnImage)
-        ));
+        phase an_avatar_is_published_once_under_its_hash;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let avatars =
+                PublicAvatars::new(dir.path().join("avatars"), "https://rooms.example/avatars")
+                    .unwrap();
+            let url = avatars.publish(PNG).unwrap();
+            let name = blake3::hash(PNG).to_hex().to_string();
+            assert_eq!(url, format!("https://rooms.example/avatars/{name}"));
+            assert_eq!(
+                std::fs::read(dir.path().join("avatars").join(&name)).unwrap(),
+                PNG
+            );
+            assert_eq!(avatars.publish(PNG).unwrap(), url);
+        }
+
+        phase oversized_or_non_image_avatars_are_refused;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let avatars = PublicAvatars::new(dir.path().to_owned(), "https://x/avatars").unwrap();
+            let mut big = PNG.to_vec();
+            big.resize(MAX_AVATAR_BYTES + 1, 0);
+            assert!(matches!(avatars.publish(&big), Err(AvatarError::TooLarge)));
+            assert!(matches!(
+                avatars.publish(b"<svg/>"),
+                Err(AvatarError::NotAnImage)
+            ));
+        }
     }
 }

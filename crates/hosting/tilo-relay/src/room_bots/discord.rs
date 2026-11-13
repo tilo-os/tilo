@@ -333,103 +333,107 @@ mod tests {
             .collect()
     }
 
-    /// The bridge's posts point at the avatars the host publishes and at
-    /// the workspace's resources on its web entry, and at neither when it
-    /// serves neither.
-    #[test]
-    fn the_bridge_context_names_what_the_host_serves() {
-        let (_, cert) = crate::workspaces::fixtures::governor();
-        assert_eq!(Served::default().context("lounge", &cert), None);
-        let served = Served {
-            avatars_url: Some("https://rooms.example/avatars".into()),
-            web_entry: Some("https://tilo.example/".into()),
-            origin: Some("https://host.example:9764".into()),
-            ..Served::default()
-        };
-        assert_eq!(
-            served.context("lounge", &cert),
-            Some(serde_json::json!({
-                "avatars": "https://rooms.example/avatars/",
-                "links": {
-                    "web_entry": "https://tilo.example/",
-                    "origin": "https://host.example:9764",
-                    "workspace": "lounge",
-                    "host_device": hex::encode(cert.device_public_key),
-                },
-            }))
-        );
-        let without_web = Served {
-            web_entry: None,
-            ..served
-        };
-        assert!(
-            without_web
-                .context("lounge", &cert)
+    tilo_test_env::scenario! {
+        fn the_discord_bridge_is_configured_from_what_the_host_serves_and_its_inputs;
+
+        phase the_bridge_context_names_what_the_host_serves;
+        // The bridge's posts point at the avatars the host publishes and at
+        // the workspace's resources on its web entry, and at neither when it
+        // serves neither.
+        {
+            let (_, cert) = crate::workspaces::fixtures::governor();
+            assert_eq!(Served::default().context("lounge", &cert), None);
+            let served = Served {
+                avatars_url: Some("https://rooms.example/avatars".into()),
+                web_entry: Some("https://tilo.example/".into()),
+                origin: Some("https://host.example:9764".into()),
+                ..Served::default()
+            };
+            assert_eq!(
+                served.context("lounge", &cert),
+                Some(serde_json::json!({
+                    "avatars": "https://rooms.example/avatars/",
+                    "links": {
+                        "web_entry": "https://tilo.example/",
+                        "origin": "https://host.example:9764",
+                        "workspace": "lounge",
+                        "host_device": hex::encode(cert.device_public_key),
+                    },
+                }))
+            );
+            let without_web = Served {
+                web_entry: None,
+                ..served
+            };
+            assert!(
+                without_web
+                    .context("lounge", &cert)
+                    .unwrap()
+                    .get("links")
+                    .is_none()
+            );
+        }
+
+        phase a_named_api_base_points_the_bridge_worker_at_it;
+        // A deployment that names another Discord hands the bridge's worker the
+        // REST and CDN bases under that origin — the values a fake Discord prints
+        // — and lets it reach loopback only when the origin is this machine.
+        {
+            let env = |base: Option<&str>| -> BTreeMap<String, String> {
+                api_env(base).into_iter().collect()
+            };
+            assert!(env(None).is_empty(), "production reaches Discord's own API");
+            assert!(env(Some("")).is_empty());
+            assert!(env(Some("https://discord.com")).is_empty());
+            assert!(env(Some("https://discord.com/")).is_empty());
+            assert_eq!(
+                env(Some("http://127.0.0.1:8090")),
+                inputs(&[
+                    ("DISCORD_API_BASE", "http://127.0.0.1:8090/api/v10"),
+                    ("DISCORD_CDN_BASE", "http://127.0.0.1:8090/cdn"),
+                    ("DISCORD_ALLOW_LOOPBACK", "1"),
+                ])
+            );
+            assert_eq!(
+                env(Some("http://127.0.0.1:8090/")),
+                env(Some("http://127.0.0.1:8090"))
+            );
+            let loopback = |base: &str| env(Some(base)).contains_key("DISCORD_ALLOW_LOOPBACK");
+            assert!(loopback("http://localhost:8090"));
+            assert!(loopback("http://[::1]:8090"));
+            assert!(!loopback("https://discord.test"));
+            assert!(!loopback("http://10.0.0.5:8090"));
+        }
+
+        phase a_bridge_names_its_server_and_maybe_one_channel_in_its_inputs;
+        {
+            assert_eq!(DiscordLink::from_inputs(&inputs(&[])).unwrap(), None);
+            let link = DiscordLink::from_inputs(&inputs(&[("guild", "12"), ("channel", "34")]))
                 .unwrap()
-                .get("links")
-                .is_none()
-        );
-    }
-
-    /// A deployment that names another Discord hands the bridge's worker the
-    /// REST and CDN bases under that origin — the values a fake Discord prints
-    /// — and lets it reach loopback only when the origin is this machine.
-    #[test]
-    fn a_named_api_base_points_the_bridge_worker_at_it() {
-        let env = |base: Option<&str>| -> BTreeMap<String, String> {
-            api_env(base).into_iter().collect()
-        };
-        assert!(env(None).is_empty(), "production reaches Discord's own API");
-        assert!(env(Some("")).is_empty());
-        assert!(env(Some("https://discord.com")).is_empty());
-        assert!(env(Some("https://discord.com/")).is_empty());
-        assert_eq!(
-            env(Some("http://127.0.0.1:8090")),
-            inputs(&[
-                ("DISCORD_API_BASE", "http://127.0.0.1:8090/api/v10"),
-                ("DISCORD_CDN_BASE", "http://127.0.0.1:8090/cdn"),
-                ("DISCORD_ALLOW_LOOPBACK", "1"),
-            ])
-        );
-        assert_eq!(
-            env(Some("http://127.0.0.1:8090/")),
-            env(Some("http://127.0.0.1:8090"))
-        );
-        let loopback = |base: &str| env(Some(base)).contains_key("DISCORD_ALLOW_LOOPBACK");
-        assert!(loopback("http://localhost:8090"));
-        assert!(loopback("http://[::1]:8090"));
-        assert!(!loopback("https://discord.test"));
-        assert!(!loopback("http://10.0.0.5:8090"));
-    }
-
-    #[test]
-    fn a_bridge_names_its_server_and_maybe_one_channel_in_its_inputs() {
-        assert_eq!(DiscordLink::from_inputs(&inputs(&[])).unwrap(), None);
-        let link = DiscordLink::from_inputs(&inputs(&[("guild", "12"), ("channel", "34")]))
+                .unwrap();
+            assert_eq!(
+                link.worker_env(),
+                [
+                    ("DISCORD_GUILD_ID".to_owned(), "12".to_owned()),
+                    ("DISCORD_CHANNEL_ID".to_owned(), "34".to_owned())
+                ]
+            );
+            assert!(
+                !link.mirror_channels && !link.map_roles,
+                "opt-ins default off"
+            );
+            let opted = DiscordLink::from_inputs(&inputs(&[
+                ("guild", "12"),
+                ("mirror-channels", "yes"),
+                ("map-roles", "yes"),
+            ]))
             .unwrap()
             .unwrap();
-        assert_eq!(
-            link.worker_env(),
-            [
-                ("DISCORD_GUILD_ID".to_owned(), "12".to_owned()),
-                ("DISCORD_CHANNEL_ID".to_owned(), "34".to_owned())
-            ]
-        );
-        assert!(
-            !link.mirror_channels && !link.map_roles,
-            "opt-ins default off"
-        );
-        let opted = DiscordLink::from_inputs(&inputs(&[
-            ("guild", "12"),
-            ("mirror-channels", "yes"),
-            ("map-roles", "yes"),
-        ]))
-        .unwrap()
-        .unwrap();
-        assert!(opted.mirror_channels && opted.map_roles);
-        assert!(DiscordLink::from_inputs(&inputs(&[("guild", "12"), ("map-roles", "y")])).is_err());
-        assert!(DiscordLink::from_inputs(&inputs(&[("guild", "x")])).is_err());
-        assert!(DiscordLink::from_inputs(&inputs(&[("channel", "34")])).is_err());
+            assert!(opted.mirror_channels && opted.map_roles);
+            assert!(DiscordLink::from_inputs(&inputs(&[("guild", "12"), ("map-roles", "y")])).is_err());
+            assert!(DiscordLink::from_inputs(&inputs(&[("guild", "x")])).is_err());
+            assert!(DiscordLink::from_inputs(&inputs(&[("channel", "34")])).is_err());
+        }
     }
 
     #[tokio::test(flavor = "multi_thread")]

@@ -847,364 +847,368 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_setup_code_names_the_request_its_computer_makes_until_it_is_gone() {
-        let codes = LoginCodes::new(Some("https://eu1.tilo.sh".into()));
-        let (user, invite) = ([0xab; 32], [0x7f; 16]);
-        let created = kept(&codes, Some(link()), NOW);
-        // Written but not typed yet: no computer made anything.
-        assert!(!codes.sets_up(&user, &invite, NOW));
-        codes.resolve(&created.code, None, NOW + 1).unwrap();
-        assert!(codes.sets_up(&user, &invite, NOW + 2));
-        assert!(
-            !codes.sets_up(&user, &[0x7e; 16], NOW + 2),
-            "another invite"
-        );
-        assert!(
-            !codes.sets_up(&[0xac; 32], &invite, NOW + 2),
-            "another person"
-        );
-        // The host forgets the code, and the request it named with it.
-        assert!(!codes.sets_up(&user, &invite, NOW + 1 + FOLLOW_LIFETIME_MS));
-        // A sign-in code names no link, so no request of its own.
-        let sign_in = kept(&codes, None, NOW);
-        codes.resolve(&sign_in.code, None, NOW + 1).unwrap();
-        assert!(!codes.sets_up(&user, &invite, NOW + 2));
-    }
+    tilo_test_env::scenario! {
+        fn login_codes_resolve_once_expire_and_bound_guessing;
 
-    #[test]
-    fn a_code_resolves_once_and_its_tab_follows_each_step_once() {
-        let codes = LoginCodes::new(Some("https://eu1.tilo.sh".into()));
-        let created = kept(&codes, Some(link()), NOW);
-        assert_eq!(created.expires_at_ms, NOW + CODE_LIFETIME_MS);
-        let polled = codes.follow(&created.follow, None, None, NOW).unwrap();
-        assert!(!polled.resolved && !polled.expired);
+        phase a_setup_code_names_the_request_its_computer_makes_until_it_is_gone;
+        {
+            let codes = LoginCodes::new(Some("https://eu1.tilo.sh".into()));
+            let (user, invite) = ([0xab; 32], [0x7f; 16]);
+            let created = kept(&codes, Some(link()), NOW);
+            // Written but not typed yet: no computer made anything.
+            assert!(!codes.sets_up(&user, &invite, NOW));
+            codes.resolve(&created.code, None, NOW + 1).unwrap();
+            assert!(codes.sets_up(&user, &invite, NOW + 2));
+            assert!(
+                !codes.sets_up(&user, &[0x7e; 16], NOW + 2),
+                "another invite"
+            );
+            assert!(
+                !codes.sets_up(&[0xac; 32], &invite, NOW + 2),
+                "another person"
+            );
+            // The host forgets the code, and the request it named with it.
+            assert!(!codes.sets_up(&user, &invite, NOW + 1 + FOLLOW_LIFETIME_MS));
+            // A sign-in code names no link, so no request of its own.
+            let sign_in = kept(&codes, None, NOW);
+            codes.resolve(&sign_in.code, None, NOW + 1).unwrap();
+            assert!(!codes.sets_up(&user, &invite, NOW + 2));
+        }
 
-        let typed = created.code.to_ascii_lowercase().replace('-', " ");
-        let resolved = codes.resolve(&typed, None, NOW + 1).unwrap();
-        assert_eq!(resolved.link, Some(link()));
-        assert!(!resolved.sign_in);
-        assert_eq!(
-            codes.resolve(&created.code, None, NOW + 2),
-            Err(Refusal::Unknown),
-            "spent"
-        );
+        phase a_code_resolves_once_and_its_tab_follows_each_step_once;
+        {
+            let codes = LoginCodes::new(Some("https://eu1.tilo.sh".into()));
+            let created = kept(&codes, Some(link()), NOW);
+            assert_eq!(created.expires_at_ms, NOW + CODE_LIFETIME_MS);
+            let polled = codes.follow(&created.follow, None, None, NOW).unwrap();
+            assert!(!polled.resolved && !polled.expired);
 
-        let mut logged_in = report(&resolved.report, Step::LoggedIn);
-        logged_in.agent = Some("Claude Code".into());
-        codes.report(&logged_in, NOW + 3).unwrap();
-        codes.report(&logged_in, NOW + 4).unwrap();
-        codes
-            .report(&report(&resolved.report, Step::ToolsAdded), NOW + 5)
-            .unwrap();
-        assert_eq!(
-            codes.report(&report(&hex::encode([1; 32]), Step::Entered), NOW),
-            Err(Refusal::Unknown)
-        );
-        assert!(matches!(
-            codes.report(&report(&resolved.report, Step::Approved), NOW),
-            Err(Refusal::Malformed(_))
-        ));
-        let polled = codes.follow(&created.follow, None, None, NOW + 6).unwrap();
-        assert!(polled.resolved);
-        assert_eq!(polled.agent.as_deref(), Some("Claude Code"));
-        assert_eq!(
-            polled.steps,
-            [Step::Resolved, Step::LoggedIn, Step::ToolsAdded]
-        );
-
-        let later = NOW + 1 + FOLLOW_LIFETIME_MS;
-        assert!(
-            codes
-                .follow(&created.follow, None, None, later)
-                .unwrap()
-                .expired
-        );
-        assert_eq!(
-            codes.report(&report(&resolved.report, Step::Entered), later),
-            Err(Refusal::Unknown)
-        );
-    }
-
-    #[test]
-    fn codes_outlive_a_restart_of_the_host_and_expire_as_they_would_have() {
-        use std::os::unix::fs::PermissionsExt as _;
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("login-codes.json");
-        let host = || Some("https://eu1.tilo.sh".to_owned());
-        let codes = LoginCodes::kept(host(), path.clone(), NOW);
-        let shown = kept(&codes, Some(link()), NOW);
-        let typed = kept(&codes, None, NOW);
-        // Offered before the restart, and followed only after it.
-        let offered = codes.create(None, NOW).unwrap();
-        let resolved = codes.resolve(&typed.code, None, NOW + 1).unwrap();
-        codes
-            .report(&report(&resolved.report, Step::LoggedIn), NOW + 2)
-            .unwrap();
-        let soon = kept(&codes, None, NOW - CODE_LIFETIME_MS + 10);
-        drop(codes);
-        assert_eq!(
-            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
-            0o600,
-            "the secrets are the host's alone"
-        );
-
-        // The host restarts: the code its tab still shows resolves, and the
-        // tab follows the one an agent resolved before it.
-        let codes = LoginCodes::kept(host(), path.clone(), NOW + 20);
-        let polled = codes.follow(&typed.follow, None, None, NOW + 20).unwrap();
-        assert!(polled.resolved && !polled.expired);
-        assert_eq!(polled.steps, vec![Step::Resolved, Step::LoggedIn]);
-        assert_eq!(
-            codes.resolve(&typed.code, None, NOW + 20),
-            Err(Refusal::Unknown),
-            "a code resolves once, restart or not"
-        );
-        let resolved = codes.resolve(&shown.code, None, NOW + 21).unwrap();
-        assert_eq!(resolved.link, Some(link()));
-        assert!(codes.sets_up(&[0xab; 32], &[0x7f; 16], NOW + 22));
-        assert!(
-            codes
-                .follow(&soon.follow, None, None, NOW + 22)
-                .unwrap()
-                .expired
-        );
-        let offer = offer_of(&offered, None);
-        let polled = codes
-            .follow(&offered.follow, Some(&offer), None, NOW + 23)
-            .unwrap();
-        assert!(
-            !polled.resolved && !polled.expired,
-            "an offer outlives a restart"
-        );
-        codes.resolve(&offered.code, None, NOW + 24).unwrap();
-
-        // A file the host cannot read is no reason not to start.
-        std::fs::write(&path, b"{").unwrap();
-        let codes = LoginCodes::kept(host(), path, NOW + 30);
-        assert!(
-            codes
-                .follow(&shown.follow, None, None, NOW + 30)
-                .unwrap()
-                .expired
-        );
-        kept(&codes, None, NOW + 31);
-    }
-
-    #[test]
-    fn a_code_nobody_resolves_expires() {
-        let codes = LoginCodes::new(None);
-        let created = kept(&codes, None, NOW);
-        let expired = NOW + CODE_LIFETIME_MS;
-        assert_eq!(
-            codes.resolve(&created.code, None, expired),
-            Err(Refusal::Unknown)
-        );
-        assert!(
-            codes
-                .follow(&created.follow, None, None, expired)
-                .unwrap()
-                .expired
-        );
-    }
-
-    #[test]
-    fn guessing_codes_runs_out_of_tries() {
-        let codes = LoginCodes::new(None);
-        let created = kept(&codes, None, NOW);
-        let guesser = Some(IpAddr::from([203, 0, 113, 9]));
-        for _ in 0..MISSES_PER_ADDRESS {
+            let typed = created.code.to_ascii_lowercase().replace('-', " ");
+            let resolved = codes.resolve(&typed, None, NOW + 1).unwrap();
+            assert_eq!(resolved.link, Some(link()));
+            assert!(!resolved.sign_in);
             assert_eq!(
-                codes.resolve("222-2222", guesser, NOW),
+                codes.resolve(&created.code, None, NOW + 2),
+                Err(Refusal::Unknown),
+                "spent"
+            );
+
+            let mut logged_in = report(&resolved.report, Step::LoggedIn);
+            logged_in.agent = Some("Claude Code".into());
+            codes.report(&logged_in, NOW + 3).unwrap();
+            codes.report(&logged_in, NOW + 4).unwrap();
+            codes
+                .report(&report(&resolved.report, Step::ToolsAdded), NOW + 5)
+                .unwrap();
+            assert_eq!(
+                codes.report(&report(&hex::encode([1; 32]), Step::Entered), NOW),
+                Err(Refusal::Unknown)
+            );
+            assert!(matches!(
+                codes.report(&report(&resolved.report, Step::Approved), NOW),
+                Err(Refusal::Malformed(_))
+            ));
+            let polled = codes.follow(&created.follow, None, None, NOW + 6).unwrap();
+            assert!(polled.resolved);
+            assert_eq!(polled.agent.as_deref(), Some("Claude Code"));
+            assert_eq!(
+                polled.steps,
+                [Step::Resolved, Step::LoggedIn, Step::ToolsAdded]
+            );
+
+            let later = NOW + 1 + FOLLOW_LIFETIME_MS;
+            assert!(
+                codes
+                    .follow(&created.follow, None, None, later)
+                    .unwrap()
+                    .expired
+            );
+            assert_eq!(
+                codes.report(&report(&resolved.report, Step::Entered), later),
                 Err(Refusal::Unknown)
             );
         }
-        assert_eq!(
-            codes.resolve(&created.code, guesser, NOW),
-            Err(Refusal::TooMany),
-            "even a right code is not looked up past the budget"
-        );
-        let other = Some(IpAddr::from([198, 51, 100, 1]));
-        assert!(codes.resolve(&created.code, other, NOW).is_ok());
-        assert_eq!(
-            codes.resolve("222-2222", guesser, NOW + WINDOW_MS),
-            Err(Refusal::Unknown),
-            "the next minute has a budget again"
-        );
 
-        let codes = LoginCodes::new(None);
-        for index in 0..MISSES_IN_ALL {
-            let client = IpAddr::from(index.to_be_bytes());
-            let _ = codes.resolve("222-2222", Some(client), NOW);
-        }
-        assert_eq!(
-            codes.resolve("222-2222", Some(IpAddr::from([9, 9, 9, 9])), NOW),
-            Err(Refusal::TooMany),
-            "misses from many addresses share one budget"
-        );
-    }
+        phase codes_outlive_a_restart_of_the_host_and_expire_as_they_would_have;
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("login-codes.json");
+            let host = || Some("https://eu1.tilo.sh".to_owned());
+            let codes = LoginCodes::kept(host(), path.clone(), NOW);
+            let shown = kept(&codes, Some(link()), NOW);
+            let typed = kept(&codes, None, NOW);
+            // Offered before the restart, and followed only after it.
+            let offered = codes.create(None, NOW).unwrap();
+            let resolved = codes.resolve(&typed.code, None, NOW + 1).unwrap();
+            codes
+                .report(&report(&resolved.report, Step::LoggedIn), NOW + 2)
+                .unwrap();
+            let soon = kept(&codes, None, NOW - CODE_LIFETIME_MS + 10);
+            drop(codes);
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600,
+                "the secrets are the host's alone"
+            );
 
-    /// Thousands of visitors who are shown a code and do nothing leave nothing on the host, and
-    /// none of them stops the next visitor from getting one: offering keeps no state and has no
-    /// ceiling. Keeping one, which a tab does once its person uses the code, is budgeted per
-    /// client address, never in all.
-    #[test]
-    fn offered_codes_keep_nothing_until_their_tab_follows_them() {
-        let codes = LoginCodes::new(Some("https://eu1.tilo.sh".into()));
-        let offers: Vec<Created> = (0..10_000)
-            .map(|_| codes.create(Some(&link()), NOW).unwrap())
-            .collect();
-        assert!(
-            codes.lock().entries.is_empty(),
-            "nothing is kept for a visitor who does nothing"
-        );
-        assert_eq!(
-            codes.resolve(&offers[0].code, None, NOW),
-            Err(Refusal::Unknown),
-            "an offer nobody kept resolves nothing"
-        );
-        // Thousands who use theirs, from as many addresses, are all kept.
-        for (index, created) in offers.iter().enumerate().take(5_000) {
-            let client = IpAddr::from(u32::try_from(index).unwrap().to_be_bytes());
+            // The host restarts: the code its tab still shows resolves, and the
+            // tab follows the one an agent resolved before it.
+            let codes = LoginCodes::kept(host(), path.clone(), NOW + 20);
+            let polled = codes.follow(&typed.follow, None, None, NOW + 20).unwrap();
+            assert!(polled.resolved && !polled.expired);
+            assert_eq!(polled.steps, vec![Step::Resolved, Step::LoggedIn]);
+            assert_eq!(
+                codes.resolve(&typed.code, None, NOW + 20),
+                Err(Refusal::Unknown),
+                "a code resolves once, restart or not"
+            );
+            let resolved = codes.resolve(&shown.code, None, NOW + 21).unwrap();
+            assert_eq!(resolved.link, Some(link()));
+            assert!(codes.sets_up(&[0xab; 32], &[0x7f; 16], NOW + 22));
+            assert!(
+                codes
+                    .follow(&soon.follow, None, None, NOW + 22)
+                    .unwrap()
+                    .expired
+            );
+            let offer = offer_of(&offered, None);
             let polled = codes
+                .follow(&offered.follow, Some(&offer), None, NOW + 23)
+                .unwrap();
+            assert!(
+                !polled.resolved && !polled.expired,
+                "an offer outlives a restart"
+            );
+            codes.resolve(&offered.code, None, NOW + 24).unwrap();
+
+            // A file the host cannot read is no reason not to start.
+            std::fs::write(&path, b"{").unwrap();
+            let codes = LoginCodes::kept(host(), path, NOW + 30);
+            assert!(
+                codes
+                    .follow(&shown.follow, None, None, NOW + 30)
+                    .unwrap()
+                    .expired
+            );
+            kept(&codes, None, NOW + 31);
+        }
+
+        phase a_code_nobody_resolves_expires;
+        {
+            let codes = LoginCodes::new(None);
+            let created = kept(&codes, None, NOW);
+            let expired = NOW + CODE_LIFETIME_MS;
+            assert_eq!(
+                codes.resolve(&created.code, None, expired),
+                Err(Refusal::Unknown)
+            );
+            assert!(
+                codes
+                    .follow(&created.follow, None, None, expired)
+                    .unwrap()
+                    .expired
+            );
+        }
+
+        phase guessing_codes_runs_out_of_tries;
+        {
+            let codes = LoginCodes::new(None);
+            let created = kept(&codes, None, NOW);
+            let guesser = Some(IpAddr::from([203, 0, 113, 9]));
+            for _ in 0..MISSES_PER_ADDRESS {
+                assert_eq!(
+                    codes.resolve("222-2222", guesser, NOW),
+                    Err(Refusal::Unknown)
+                );
+            }
+            assert_eq!(
+                codes.resolve(&created.code, guesser, NOW),
+                Err(Refusal::TooMany),
+                "even a right code is not looked up past the budget"
+            );
+            let other = Some(IpAddr::from([198, 51, 100, 1]));
+            assert!(codes.resolve(&created.code, other, NOW).is_ok());
+            assert_eq!(
+                codes.resolve("222-2222", guesser, NOW + WINDOW_MS),
+                Err(Refusal::Unknown),
+                "the next minute has a budget again"
+            );
+
+            let codes = LoginCodes::new(None);
+            for index in 0..MISSES_IN_ALL {
+                let client = IpAddr::from(index.to_be_bytes());
+                let _ = codes.resolve("222-2222", Some(client), NOW);
+            }
+            assert_eq!(
+                codes.resolve("222-2222", Some(IpAddr::from([9, 9, 9, 9])), NOW),
+                Err(Refusal::TooMany),
+                "misses from many addresses share one budget"
+            );
+        }
+
+        phase offered_codes_keep_nothing_until_their_tab_follows_them;
+        // Thousands of visitors who are shown a code and do nothing leave nothing on the host, and
+        // none of them stops the next visitor from getting one: offering keeps no state and has no
+        // ceiling. Keeping one, which a tab does once its person uses the code, is budgeted per
+        // client address, never in all.
+        {
+            let codes = LoginCodes::new(Some("https://eu1.tilo.sh".into()));
+            let offers: Vec<Created> = (0..10_000)
+                .map(|_| codes.create(Some(&link()), NOW).unwrap())
+                .collect();
+            assert!(
+                codes.lock().entries.is_empty(),
+                "nothing is kept for a visitor who does nothing"
+            );
+            assert_eq!(
+                codes.resolve(&offers[0].code, None, NOW),
+                Err(Refusal::Unknown),
+                "an offer nobody kept resolves nothing"
+            );
+            // Thousands who use theirs, from as many addresses, are all kept.
+            for (index, created) in offers.iter().enumerate().take(5_000) {
+                let client = IpAddr::from(u32::try_from(index).unwrap().to_be_bytes());
+                let polled = codes
+                    .follow(
+                        &created.follow,
+                        Some(&offer_of(created, Some(link()))),
+                        Some(client),
+                        NOW,
+                    )
+                    .unwrap();
+                assert!(!polled.expired);
+            }
+            assert_eq!(codes.lock().entries.len(), 5_000);
+            assert!(codes.resolve(&offers[4_999].code, None, NOW + 1).is_ok());
+            // Following again keeps nothing twice.
+            codes
                 .follow(
-                    &created.follow,
-                    Some(&offer_of(created, Some(link()))),
-                    Some(client),
+                    &offers[0].follow,
+                    Some(&offer_of(&offers[0], Some(link()))),
+                    None,
                     NOW,
                 )
                 .unwrap();
-            assert!(!polled.expired);
-        }
-        assert_eq!(codes.lock().entries.len(), 5_000);
-        assert!(codes.resolve(&offers[4_999].code, None, NOW + 1).is_ok());
-        // Following again keeps nothing twice.
-        codes
-            .follow(
-                &offers[0].follow,
-                Some(&offer_of(&offers[0], Some(link()))),
-                None,
-                NOW,
-            )
-            .unwrap();
-        assert_eq!(codes.lock().entries.len(), 5_000);
-        // An offer altered on its way back is not one the host made.
-        let mut altered = offer_of(&offers[6_000], Some(link()));
-        altered.link = Some(link().replace("ab", "ac"));
-        assert_eq!(
-            codes.follow(&offers[6_000].follow, Some(&altered), None, NOW),
-            Err(Refusal::Unknown)
-        );
-        // One that ran out is heard as expired, and kept no more.
-        let late = &offers[7_000];
-        assert!(
-            codes
-                .follow(
-                    &late.follow,
-                    Some(&offer_of(late, Some(link()))),
-                    None,
-                    late.expires_at_ms
-                )
-                .unwrap()
-                .expired
-        );
-        // One address keeps only so many a minute.
-        let client = Some(IpAddr::from([1, 1, 1, 1]));
-        let codes = LoginCodes::new(None);
-        for _ in 0..CREATES_PER_ADDRESS {
+            assert_eq!(codes.lock().entries.len(), 5_000);
+            // An offer altered on its way back is not one the host made.
+            let mut altered = offer_of(&offers[6_000], Some(link()));
+            altered.link = Some(link().replace("ab", "ac"));
+            assert_eq!(
+                codes.follow(&offers[6_000].follow, Some(&altered), None, NOW),
+                Err(Refusal::Unknown)
+            );
+            // One that ran out is heard as expired, and kept no more.
+            let late = &offers[7_000];
+            assert!(
+                codes
+                    .follow(
+                        &late.follow,
+                        Some(&offer_of(late, Some(link()))),
+                        None,
+                        late.expires_at_ms
+                    )
+                    .unwrap()
+                    .expired
+            );
+            // One address keeps only so many a minute.
+            let client = Some(IpAddr::from([1, 1, 1, 1]));
+            let codes = LoginCodes::new(None);
+            for _ in 0..CREATES_PER_ADDRESS {
+                let created = codes.create(None, NOW).unwrap();
+                codes
+                    .follow(
+                        &created.follow,
+                        Some(&offer_of(&created, None)),
+                        client,
+                        NOW,
+                    )
+                    .unwrap();
+            }
             let created = codes.create(None, NOW).unwrap();
-            codes
-                .follow(
+            assert_eq!(
+                codes.follow(
                     &created.follow,
                     Some(&offer_of(&created, None)),
                     client,
-                    NOW,
-                )
-                .unwrap();
+                    NOW
+                ),
+                Err(Refusal::TooMany)
+            );
         }
-        let created = codes.create(None, NOW).unwrap();
-        assert_eq!(
-            codes.follow(
-                &created.follow,
-                Some(&offer_of(&created, None)),
-                client,
-                NOW
-            ),
-            Err(Refusal::TooMany)
-        );
-    }
 
-    #[test]
-    fn a_sign_in_claim_mints_one_invite_approved_once() {
-        let codes = LoginCodes::new(None);
-        let created = kept(&codes, None, NOW);
-        let resolved = codes.resolve(&created.code, None, NOW).unwrap();
-        assert!(resolved.sign_in && resolved.link.is_none());
-        let user = [5; 32];
-        codes
-            .claim(&resolved.report, user, "Claude Code on box".into(), NOW)
-            .unwrap();
-        assert_eq!(
-            codes.claimable(&resolved.report, NOW),
-            Err(Refusal::Conflict("this code is claimed already"))
-        );
-        let claimed = codes
-            .follow(&created.follow, None, None, NOW)
-            .unwrap()
-            .claimed
-            .unwrap();
-        assert_eq!(claimed.user, hex::encode(user));
-        assert_eq!(claimed.by, "Claude Code on box");
-        let mut invite = [0; 16];
-        hex::decode_to_slice(&claimed.invite, &mut invite).unwrap();
-        assert!(!codes.claimed(&[6; 32], &invite, NOW), "another person");
-        assert!(codes.claimed(&user, &invite, NOW));
-        assert!(codes.take_claim(&user, &invite, NOW));
-        assert!(!codes.take_claim(&user, &invite, NOW), "once");
-        codes.approved(&user, &invite);
-        assert_eq!(
+        phase a_sign_in_claim_mints_one_invite_approved_once;
+        {
+            let codes = LoginCodes::new(None);
+            let created = kept(&codes, None, NOW);
+            let resolved = codes.resolve(&created.code, None, NOW).unwrap();
+            assert!(resolved.sign_in && resolved.link.is_none());
+            let user = [5; 32];
             codes
+                .claim(&resolved.report, user, "Claude Code on box".into(), NOW)
+                .unwrap();
+            assert_eq!(
+                codes.claimable(&resolved.report, NOW),
+                Err(Refusal::Conflict("this code is claimed already"))
+            );
+            let claimed = codes
                 .follow(&created.follow, None, None, NOW)
                 .unwrap()
-                .steps,
-            [Step::Resolved, Step::Approved]
-        );
-    }
+                .claimed
+                .unwrap();
+            assert_eq!(claimed.user, hex::encode(user));
+            assert_eq!(claimed.by, "Claude Code on box");
+            let mut invite = [0; 16];
+            hex::decode_to_slice(&claimed.invite, &mut invite).unwrap();
+            assert!(!codes.claimed(&[6; 32], &invite, NOW), "another person");
+            assert!(codes.claimed(&user, &invite, NOW));
+            assert!(codes.take_claim(&user, &invite, NOW));
+            assert!(!codes.take_claim(&user, &invite, NOW), "once");
+            codes.approved(&user, &invite);
+            assert_eq!(
+                codes
+                    .follow(&created.follow, None, None, NOW)
+                    .unwrap()
+                    .steps,
+                [Step::Resolved, Step::Approved]
+            );
+        }
 
-    #[test]
-    fn a_setup_code_is_not_claimed() {
-        let codes = LoginCodes::new(None);
-        let created = kept(&codes, Some(link()), NOW);
-        let resolved = codes.resolve(&created.code, None, NOW).unwrap();
-        assert!(matches!(
-            codes.claimable(&resolved.report, NOW),
-            Err(Refusal::Conflict(_))
-        ));
-    }
+        phase a_setup_code_is_not_claimed;
+        {
+            let codes = LoginCodes::new(None);
+            let created = kept(&codes, Some(link()), NOW);
+            let resolved = codes.resolve(&created.code, None, NOW).unwrap();
+            assert!(matches!(
+                codes.claimable(&resolved.report, NOW),
+                Err(Refusal::Conflict(_))
+            ));
+        }
 
-    #[test]
-    fn a_code_names_only_a_pairing_link_for_this_host() {
-        let ours = Some("https://eu1.tilo.sh");
-        let named = Ok(([0xab; 32], [0x7f; 16]));
-        assert_eq!(pairing_link(&link(), ours), named);
-        assert_eq!(pairing_link(&link(), None), named);
-        assert!(pairing_link(&link(), Some("https://us1.tilo.sh")).is_err());
-        let own = link().replace("tilo.sh/#/@eu1.tilo.sh/", "eu1.tilo.sh/#/");
-        assert_eq!(pairing_link(&own, ours), named);
-        // A loopback host, written with its scheme as the link grammar writes it.
-        let loopback = link().replace(
-            "tilo.sh/#/@eu1.tilo.sh/",
-            "127.0.0.1:19782/#/@https:127.0.0.1:9781/",
-        );
-        assert_eq!(
-            pairing_link(&loopback, Some("https://127.0.0.1:9781")),
-            named
-        );
-        assert!(pairing_link(&loopback, Some("https://127.0.0.1:9782")).is_err());
-        assert!(pairing_link(&link().replace("pair=", "invite="), ours).is_err());
-        assert!(pairing_link(&link()[..link().len() - 2], ours).is_err());
-        assert!(pairing_link("javascript:alert(1)", None).is_err());
-        let long = format!("{}&x={}", link(), "a".repeat(MAX_LINK_CHARS));
-        assert!(pairing_link(&long, None).is_err());
+        phase a_code_names_only_a_pairing_link_for_this_host;
+        {
+            let ours = Some("https://eu1.tilo.sh");
+            let named = Ok(([0xab; 32], [0x7f; 16]));
+            assert_eq!(pairing_link(&link(), ours), named);
+            assert_eq!(pairing_link(&link(), None), named);
+            assert!(pairing_link(&link(), Some("https://us1.tilo.sh")).is_err());
+            let own = link().replace("tilo.sh/#/@eu1.tilo.sh/", "eu1.tilo.sh/#/");
+            assert_eq!(pairing_link(&own, ours), named);
+            // A loopback host, written with its scheme as the link grammar writes it.
+            let loopback = link().replace(
+                "tilo.sh/#/@eu1.tilo.sh/",
+                "127.0.0.1:19782/#/@https:127.0.0.1:9781/",
+            );
+            assert_eq!(
+                pairing_link(&loopback, Some("https://127.0.0.1:9781")),
+                named
+            );
+            assert!(pairing_link(&loopback, Some("https://127.0.0.1:9782")).is_err());
+            assert!(pairing_link(&link().replace("pair=", "invite="), ours).is_err());
+            assert!(pairing_link(&link()[..link().len() - 2], ours).is_err());
+            assert!(pairing_link("javascript:alert(1)", None).is_err());
+            let long = format!("{}&x={}", link(), "a".repeat(MAX_LINK_CHARS));
+            assert!(pairing_link(&long, None).is_err());
+        }
     }
 }

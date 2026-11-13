@@ -292,45 +292,49 @@ mod tests {
         }
     }
 
-    #[test]
-    fn sign_in_is_off_without_a_client_id_and_needs_its_secret_with_one() {
-        assert!(SignIn::from_args(&args(None, None)).unwrap().is_none());
-        let Err(error) = SignIn::from_args(&args(Some("123"), None)) else {
-            panic!("a client id without its secret file started the sign-in");
-        };
-        assert!(error.to_string().contains("--discord-client-secret-file"));
+    tilo_test_env::scenario! {
+        fn discord_sign_in_is_configured_by_its_arguments_and_returns_with_a_link_secret;
 
-        let dir = tempfile::tempdir().unwrap();
-        let secret = dir.path().join("discord-client-secret");
-        std::fs::write(&secret, "s3cret\n").unwrap();
-        let sign_in = SignIn::from_args(&args(Some("123"), Some(secret.to_str().unwrap())))
-            .unwrap()
-            .unwrap();
-        assert_eq!(sign_in.client_id, "123");
-        assert_eq!(sign_in.base, "https://discord.com");
-        assert_eq!(sign_in.redirect_url, "https://eu1.example/discord/callback");
+        phase sign_in_is_off_without_a_client_id_and_needs_its_secret_with_one;
+        {
+            assert!(SignIn::from_args(&args(None, None)).unwrap().is_none());
+            let Err(error) = SignIn::from_args(&args(Some("123"), None)) else {
+                panic!("a client id without its secret file started the sign-in");
+            };
+            assert!(error.to_string().contains("--discord-client-secret-file"));
 
-        std::fs::write(&secret, "two words").unwrap();
-        assert!(
-            SignIn::from_args(&args(Some("123"), Some(secret.to_str().unwrap()))).is_err(),
-            "a secret with whitespace in it is not a secret"
-        );
-        assert!(
-            SignIn::from_args(&args(Some("not-a-number"), Some(secret.to_str().unwrap()))).is_err(),
-            "the client id is Discord's numeric one"
-        );
-    }
+            let dir = tempfile::tempdir().unwrap();
+            let secret = dir.path().join("discord-client-secret");
+            std::fs::write(&secret, "s3cret\n").unwrap();
+            let sign_in = SignIn::from_args(&args(Some("123"), Some(secret.to_str().unwrap())))
+                .unwrap()
+                .unwrap();
+            assert_eq!(sign_in.client_id, "123");
+            assert_eq!(sign_in.base, "https://discord.com");
+            assert_eq!(sign_in.redirect_url, "https://eu1.example/discord/callback");
 
-    #[test]
-    fn the_browser_goes_back_with_the_token_as_a_link_secret() {
-        assert_eq!(
-            back_to_tilo("https://tilo.example/#/x", Some("ab")),
-            "https://tilo.example/#?link=ab"
-        );
-        assert_eq!(
-            back_to_tilo("https://tilo.example/", None),
-            "https://tilo.example/"
-        );
+            std::fs::write(&secret, "two words").unwrap();
+            assert!(
+                SignIn::from_args(&args(Some("123"), Some(secret.to_str().unwrap()))).is_err(),
+                "a secret with whitespace in it is not a secret"
+            );
+            assert!(
+                SignIn::from_args(&args(Some("not-a-number"), Some(secret.to_str().unwrap()))).is_err(),
+                "the client id is Discord's numeric one"
+            );
+        }
+
+        phase the_browser_goes_back_with_the_token_as_a_link_secret;
+        {
+            assert_eq!(
+                back_to_tilo("https://tilo.example/#/x", Some("ab")),
+                "https://tilo.example/#?link=ab"
+            );
+            assert_eq!(
+                back_to_tilo("https://tilo.example/", None),
+                "https://tilo.example/"
+            );
+        }
     }
 
     #[tokio::test]

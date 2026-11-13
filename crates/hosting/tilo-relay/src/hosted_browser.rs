@@ -1975,126 +1975,137 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_windows_page_action_is_the_one_addressed_to_that_window() {
-        assert!(page_action(
-            &page("browser@42", PAGE_RESOURCE),
-            "browser@42"
-        ));
-        assert!(
-            !page_action(&page("browser@42", PAGE_RESOURCE), "browser@7"),
-            "another window's page is another device's action"
-        );
-        assert!(
-            !page_action(&page("browser@42", "browser.tab"), "browser@42"),
-            "the record's own actions are the host's, not the window's"
-        );
-    }
+    tilo_test_env::scenario! {
+        fn the_host_recognises_the_page_actions_and_opens_addressed_to_it;
 
-    #[test]
-    fn an_open_of_browser_is_the_one_that_places_a_session() {
-        use tilo_actions::remote::{APPLICATION_OPEN_ACTION, workspace_provider};
-        let open = |resource: &str, action: &str| InvokeRequest {
-            invocation: tilo_actions::InvocationId::new(),
-            on_behalf_of: None,
-            target: RemoteActionTarget {
-                provider: workspace_provider("ws"),
-                address: ActionAddress::new(resource, action),
-            },
-            argument: tilo_actions::remote::InvokeArgument::None,
-            context: None,
-            confirmation: None,
-            revision: None,
-            wait_ms: None,
-            appearance: None,
-        };
-        assert!(opens_browser(&open(
-            "app.so.tilo.browser",
-            APPLICATION_OPEN_ACTION
-        )));
-        assert!(!opens_browser(&open(
-            "app.so.tilo.notes",
-            APPLICATION_OPEN_ACTION
-        )));
-    }
-
-    /// An open of the workspace's Linux apps names the app by its desktop
-    /// file; one that names none, or something that is not one, is refused
-    /// in words before anything is placed, and an open of another app is
-    /// not one at all.
-    #[test]
-    fn an_open_of_a_linux_app_names_its_desktop_file() {
-        use tilo_actions::remote::{APPLICATION_OPEN_ACTION, workspace_provider};
-        let open = |resource: &str, app: Option<&str>| InvokeRequest {
-            invocation: tilo_actions::InvocationId::new(),
-            on_behalf_of: None,
-            target: RemoteActionTarget {
-                provider: workspace_provider("ws"),
-                address: ActionAddress::new(resource, APPLICATION_OPEN_ACTION),
-            },
-            argument: app.map_or(tilo_actions::remote::InvokeArgument::None, |app| {
-                tilo_actions::remote::InvokeArgument::Json(serde_json::Map::from_iter([(
-                    linux_apps::APP_ARGUMENT.to_owned(),
-                    app.into(),
-                )]))
-            }),
-            context: None,
-            confirmation: None,
-            revision: None,
-            wait_ms: None,
-            appearance: None,
-        };
-        assert_eq!(
-            opens_linux_app(&open("app.so.tilo.linux", Some("org.gnome.TextEditor"))),
-            Some(Ok(AppLaunch::new("org.gnome.TextEditor").unwrap()))
-        );
-        for named in [None, Some(""), Some("xterm -e sh"), Some("../xterm")] {
+        phase a_windows_page_action_is_the_one_addressed_to_that_window;
+        {
+            assert!(page_action(
+                &page("browser@42", PAGE_RESOURCE),
+                "browser@42"
+            ));
             assert!(
-                matches!(
-                    opens_linux_app(&open("app.so.tilo.linux", named)),
-                    Some(Err(_))
-                ),
-                "{named:?}"
+                !page_action(&page("browser@42", PAGE_RESOURCE), "browser@7"),
+                "another window's page is another device's action"
+            );
+            assert!(
+                !page_action(&page("browser@42", "browser.tab"), "browser@42"),
+                "the record's own actions are the host's, not the window's"
             );
         }
-        assert_eq!(
-            opens_linux_app(&open("app.so.tilo.browser", Some("xterm"))),
-            None
-        );
-        assert!(!opens_browser(&open("app.so.tilo.linux", Some("xterm"))));
-        // phase: a refusal by the plans travels typed, so the caller reads
-        // what lets it through
-        let refusal = no_payment_method(0);
-        let RemoteActionMessage::Receipt(receipt) =
-            refused_by_plan(tilo_actions::InvocationId::new(), &refusal)
-        else {
-            panic!("a refusal is a receipt");
-        };
-        let tilo_actions::remote::ReceiptStatus::Rejected {
-            error: ActionHostError::Refused { reason },
-        } = receipt.status
-        else {
-            panic!("refused");
-        };
-        assert_eq!(Refusal::from_reason(&reason), Some(refusal));
-    }
 
-    #[test]
-    fn an_open_that_made_a_record_answers_it_by_its_id() {
-        let made = RemoteActionMessage::Receipt(tilo_actions::remote::InvocationReceipt {
-            invocation: tilo_actions::InvocationId::new(),
-            status: tilo_actions::remote::ReceiptStatus::Completed {
-                output: ActionOutput {
-                    value: Some(
-                        serde_json::json!({"provider": "record:so.tilo.browser:abc", "record": "abc"}),
-                    ),
-                    resources: Vec::new(),
+        phase an_open_of_browser_is_the_one_that_places_a_session;
+        {
+            use tilo_actions::remote::{APPLICATION_OPEN_ACTION, workspace_provider};
+            let open = |resource: &str, action: &str| InvokeRequest {
+                invocation: tilo_actions::InvocationId::new(),
+                on_behalf_of: None,
+                target: RemoteActionTarget {
+                    provider: workspace_provider("ws"),
+                    address: ActionAddress::new(resource, action),
                 },
-            },
-        });
-        assert_eq!(opened_record(&made).as_deref(), Some("abc"));
-        let refused = refused(tilo_actions::InvocationId::new(), unplaced());
-        assert_eq!(opened_record(&refused), None);
+                argument: tilo_actions::remote::InvokeArgument::None,
+                context: None,
+                confirmation: None,
+                revision: None,
+                wait_ms: None,
+                appearance: None,
+            };
+            assert!(opens_browser(&open(
+                "app.so.tilo.browser",
+                APPLICATION_OPEN_ACTION
+            )));
+            assert!(!opens_browser(&open(
+                "app.so.tilo.notes",
+                APPLICATION_OPEN_ACTION
+            )));
+        }
+
+        phase an_open_of_a_linux_app_names_its_desktop_file;
+        // An open of the workspace's Linux apps names the app by its desktop
+        // file; one that names none, or something that is not one, is refused
+        // in words before anything is placed, and an open of another app is
+        // not one at all.
+        {
+            use tilo_actions::remote::{APPLICATION_OPEN_ACTION, workspace_provider};
+            let open = |resource: &str, app: Option<&str>| InvokeRequest {
+                invocation: tilo_actions::InvocationId::new(),
+                on_behalf_of: None,
+                target: RemoteActionTarget {
+                    provider: workspace_provider("ws"),
+                    address: ActionAddress::new(resource, APPLICATION_OPEN_ACTION),
+                },
+                argument: app.map_or(tilo_actions::remote::InvokeArgument::None, |app| {
+                    tilo_actions::remote::InvokeArgument::Json(serde_json::Map::from_iter([(
+                        linux_apps::APP_ARGUMENT.to_owned(),
+                        app.into(),
+                    )]))
+                }),
+                context: None,
+                confirmation: None,
+                revision: None,
+                wait_ms: None,
+                appearance: None,
+            };
+            assert_eq!(
+                opens_linux_app(&open("app.so.tilo.linux", Some("org.gnome.TextEditor"))),
+                Some(Ok(AppLaunch::new("org.gnome.TextEditor").unwrap()))
+            );
+            for named in [None, Some(""), Some("xterm -e sh"), Some("../xterm")] {
+                assert!(
+                    matches!(
+                        opens_linux_app(&open("app.so.tilo.linux", named)),
+                        Some(Err(_))
+                    ),
+                    "{named:?}"
+                );
+            }
+            assert_eq!(
+                opens_linux_app(&open("app.so.tilo.browser", Some("xterm"))),
+                None
+            );
+            assert!(!opens_browser(&open("app.so.tilo.linux", Some("xterm"))));
+            // phase: a refusal by the plans travels typed, so the caller reads
+            // what lets it through
+            let refusal = no_payment_method(0);
+            let RemoteActionMessage::Receipt(receipt) =
+                refused_by_plan(tilo_actions::InvocationId::new(), &refusal)
+            else {
+                panic!("a refusal is a receipt");
+            };
+            let tilo_actions::remote::ReceiptStatus::Rejected {
+                error: ActionHostError::Refused { reason },
+            } = receipt.status
+            else {
+                panic!("refused");
+            };
+            assert_eq!(Refusal::from_reason(&reason), Some(refusal));
+        }
+
+        phase an_open_that_made_a_record_answers_it_by_its_id;
+        {
+            let made = RemoteActionMessage::Receipt(tilo_actions::remote::InvocationReceipt {
+                invocation: tilo_actions::InvocationId::new(),
+                status: tilo_actions::remote::ReceiptStatus::Completed {
+                    output: ActionOutput {
+                        value: Some(
+                            serde_json::json!({"provider": "record:so.tilo.browser:abc", "record": "abc"}),
+                        ),
+                        resources: Vec::new(),
+                    },
+                },
+            });
+            assert_eq!(opened_record(&made).as_deref(), Some("abc"));
+            let refused = refused(tilo_actions::InvocationId::new(), unplaced());
+            assert_eq!(opened_record(&refused), None);
+        }
+
+        phase a_host_that_places_nothing_says_why_instead_of_naming_an_unknown_app;
+        {
+            let words = unplaced();
+            assert!(words.contains("browser session"), "{words}");
+            assert!(!words.contains("no app"), "{words}");
+        }
     }
 
     #[test]
@@ -2143,12 +2154,5 @@ mod tests {
         );
         env.set(RELAY_ENV, format!("{key}@127.0.0.1:7704"));
         assert!(HostedBrowsers::from_env().unwrap().is_some());
-    }
-
-    #[test]
-    fn a_host_that_places_nothing_says_why_instead_of_naming_an_unknown_app() {
-        let words = unplaced();
-        assert!(words.contains("browser session"), "{words}");
-        assert!(!words.contains("no app"), "{words}");
     }
 }

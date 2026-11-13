@@ -245,176 +245,184 @@ pub(super) fn publish(acl: &Path) -> Result<()> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_device_grant_never_substitutes_for_files_authorization() {
-        use collab_types::{Access, CapOverride, Effect, Expiry, Scope};
-        use tilo_action_policy::Grantee;
-        let person = [41; 32];
-        let mut grant = CapOverride {
-            id: String::default(),
-            grantee: Grantee::person(hex::encode(person)),
-            app: None,
-            scope: Scope::Device("camera".into()),
-            access: Access::Write,
-            effect: Effect::Grant,
-            expiry: Expiry::Never,
-            granted_by: None,
-        };
-        assert!(require_files_access(person, std::slice::from_ref(&grant)).is_err());
-        grant.scope = Scope::FsPath("/".into());
-        require_files_access(person, std::slice::from_ref(&grant))
-            .expect("explicit existing Files grant");
-        assert!(require_files_access([42; 32], &[grant]).is_err());
+    tilo_test_env::scenario! {
+        fn files_access_needs_an_exact_signed_files_grant;
+
+        phase a_device_grant_never_substitutes_for_files_authorization;
+        {
+            use collab_types::{Access, CapOverride, Effect, Expiry, Scope};
+            use tilo_action_policy::Grantee;
+            let person = [41; 32];
+            let mut grant = CapOverride {
+                id: String::default(),
+                grantee: Grantee::person(hex::encode(person)),
+                app: None,
+                scope: Scope::Device("camera".into()),
+                access: Access::Write,
+                effect: Effect::Grant,
+                expiry: Expiry::Never,
+                granted_by: None,
+            };
+            assert!(require_files_access(person, std::slice::from_ref(&grant)).is_err());
+            grant.scope = Scope::FsPath("/".into());
+            require_files_access(person, std::slice::from_ref(&grant))
+                .expect("explicit existing Files grant");
+            assert!(require_files_access([42; 32], &[grant]).is_err());
+        }
+
+        phase normal_files_scope_authorizes_namespace_without_host_root_grant;
+        {
+            use collab_types::{Access, CapOverride, Effect, Expiry, Scope};
+            use tilo_action_policy::Grantee;
+            let person = [41; 32];
+            let read = CapOverride::grant(
+                Grantee::person(hex::encode(person)),
+                Scope::FsPath("/var/workspace".into()),
+                Access::Read,
+            );
+            assert!(require_files_access(person, std::slice::from_ref(&read)).is_err());
+            let mut write = read.clone();
+            write.access = Access::Write;
+            require_files_access(person, std::slice::from_ref(&write))
+                .expect("normal Edit files includes Read without Admin");
+            let mut ui_person = write.clone();
+            ui_person.grantee = Grantee::person(hex::encode(person));
+            require_files_access(person, &[ui_person])
+                .expect("normal Permissions member subject matches certified person");
+            let policy = vec![read, write.clone()];
+            require_files_access(person, &policy).expect("normal scoped Read/Write choice");
+            assert!(require_files_access([42; 32], &policy).is_err());
+            assert!(
+                policy
+                    .iter()
+                    .all(|cap| cap.scope == Scope::FsPath("/var/workspace".into()))
+            );
+            write.scope = Scope::FsPath("/var/workspace/documents".into());
+            assert!(require_files_access(person, std::slice::from_ref(&write)).is_err());
+            write.scope = Scope::FsPath("/var/workspace-other".into());
+            assert!(require_files_access(person, std::slice::from_ref(&write)).is_err());
+            write.scope = Scope::FsPath("/var/workspace".into());
+            write.expiry = Expiry::AtUnix(1);
+            assert!(require_files_access(person, std::slice::from_ref(&write)).is_err());
+            let mut restricted = policy;
+            write.expiry = Expiry::Never;
+            write.scope = Scope::FsPath("/var".into());
+            write.effect = Effect::Restrict;
+            write.access = Access::Read;
+            restricted.push(write);
+            assert!(require_files_access(person, &restricted).is_err());
+        }
+
+        phase certified_saved_workspace_check_requires_exact_signed_files_access;
+        {
+            use collab_types::{Access, CapOverride, Effect, Expiry, Scope};
+            use tilo_action_policy::Grantee;
+            use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
+            let temp = tempfile::tempdir().unwrap();
+            let paths = IdentityPaths::under(temp.path().join("identity"));
+            paths.ensure_directories().unwrap();
+            let root = ed25519_dalek::SigningKey::from_bytes(&[51; 32]);
+            let device = ed25519_dalek::SigningKey::from_bytes(&[52; 32]);
+            let person = root.verifying_key().to_bytes();
+            persist::write_public_key(&paths.user_pubkey, &person).unwrap();
+            persist::write_device_key(&paths.device_privkey, &device).unwrap();
+            let mut cert = DeviceCert {
+                user_public_key: person,
+                device_public_key: device.verifying_key().to_bytes(),
+                device_label: "isolated source fixture".into(),
+                capabilities: DeviceCapabilities::primary(),
+                issued_at_ns: 1,
+                expires_at_ns: None,
+                signature: [0; 64],
+                issuer: None,
+            };
+            sign_device_cert(&mut cert, &root).unwrap();
+            persist::write_device_cert(&paths.device_cert, &cert).unwrap();
+            let grant = CapOverride {
+                id: String::default(),
+                grantee: Grantee::person(hex::encode(person)),
+                app: None,
+                scope: Scope::FsPath("/var/workspace".into()),
+                access: Access::Write,
+                effect: Effect::Grant,
+                expiry: Expiry::Never,
+                granted_by: None,
+            };
+            let workspace = fs::Ticket::workspace_id_for_topic(device.verifying_key().to_bytes());
+            let envelope =
+                WorkspaceAuthorityEnvelope::sign(workspace, 1, vec![grant], false, &root).unwrap();
+            let cache = temp.path().join("files");
+            prepare_new(&cache, device.verifying_key().to_bytes(), envelope.clone()).unwrap();
+            check(&temp.path().join("identity"), &cache).expect("existing certified Files primary");
+            assert!(!paths.user_privkey.exists(), "no root export is required");
+            let mut revoked = envelope.capabilities;
+            revoked[0].effect = Effect::Restrict;
+            let denied = WorkspaceAuthorityEnvelope::sign(workspace, 2, revoked, false, &root).unwrap();
+            let authority = WorkspaceAuthority::open(
+                cache.join("workspace-authority.bin"),
+                workspace,
+                person,
+                person,
+                Vec::new(),
+            )
+            .unwrap();
+            authority.apply(denied).unwrap();
+            assert!(check(&temp.path().join("identity"), &cache).is_err());
+            assert!(!cache.join("namespace.bin").exists());
+            assert!(!cache.join("mount").exists());
+            assert!(!cache.join("workspace-ticket").exists());
+            cert.signature[0] ^= 1;
+            persist::write_device_cert(&paths.device_cert, &cert).unwrap();
+            assert!(existing_person(&paths).is_err());
+        }
     }
 
-    #[test]
-    fn normal_files_scope_authorizes_namespace_without_host_root_grant() {
-        use collab_types::{Access, CapOverride, Effect, Expiry, Scope};
-        use tilo_action_policy::Grantee;
-        let person = [41; 32];
-        let read = CapOverride::grant(
-            Grantee::person(hex::encode(person)),
-            Scope::FsPath("/var/workspace".into()),
-            Access::Read,
-        );
-        assert!(require_files_access(person, std::slice::from_ref(&read)).is_err());
-        let mut write = read.clone();
-        write.access = Access::Write;
-        require_files_access(person, std::slice::from_ref(&write))
-            .expect("normal Edit files includes Read without Admin");
-        let mut ui_person = write.clone();
-        ui_person.grantee = Grantee::person(hex::encode(person));
-        require_files_access(person, &[ui_person])
-            .expect("normal Permissions member subject matches certified person");
-        let policy = vec![read, write.clone()];
-        require_files_access(person, &policy).expect("normal scoped Read/Write choice");
-        assert!(require_files_access([42; 32], &policy).is_err());
-        assert!(
-            policy
-                .iter()
-                .all(|cap| cap.scope == Scope::FsPath("/var/workspace".into()))
-        );
-        write.scope = Scope::FsPath("/var/workspace/documents".into());
-        assert!(require_files_access(person, std::slice::from_ref(&write)).is_err());
-        write.scope = Scope::FsPath("/var/workspace-other".into());
-        assert!(require_files_access(person, std::slice::from_ref(&write)).is_err());
-        write.scope = Scope::FsPath("/var/workspace".into());
-        write.expiry = Expiry::AtUnix(1);
-        assert!(require_files_access(person, std::slice::from_ref(&write)).is_err());
-        let mut restricted = policy;
-        write.expiry = Expiry::Never;
-        write.scope = Scope::FsPath("/var".into());
-        write.effect = Effect::Restrict;
-        write.access = Access::Read;
-        restricted.push(write);
-        assert!(require_files_access(person, &restricted).is_err());
-    }
+    tilo_test_env::scenario! {
+        fn a_files_workspace_is_prepared_only_from_signed_policy_or_an_explicit_choice;
 
-    #[test]
-    fn prepared_workspace_resumes_existing_signed_policy_without_root_export() {
-        let temp = tempfile::tempdir().expect("isolated fixture");
-        let cache = temp.path().join("files");
-        let root = ed25519_dalek::SigningKey::from_bytes(&[41; 32]);
-        let device = [42; 32];
-        let workspace = fs::Ticket::workspace_id_for_topic(device);
-        let envelope = WorkspaceAuthorityEnvelope::sign(workspace, 1, Vec::new(), false, &root)
-            .expect("signed existing policy");
-        prepare_new(&cache, device, envelope.clone()).expect("explicit new fixture");
-        assert!(!cache.join("namespace.bin").exists());
-        let authority = WorkspaceAuthority::open(
-            cache.join("workspace-authority.bin"),
-            workspace,
-            envelope.governor,
-            envelope.governor,
-            Vec::new(),
-        )
-        .expect("verified authority");
-        assert_eq!(authority.current(), Some(envelope.clone()));
-        assert!(!cache.join("user-identity").exists());
-        let written = std::fs::read(cache.join("workspace-authority.bin")).unwrap();
-        assert!(prepare_new(&cache, device, envelope).is_err());
-        assert_eq!(
-            std::fs::read(cache.join("workspace-authority.bin")).unwrap(),
-            written
-        );
-    }
+        phase prepared_workspace_resumes_existing_signed_policy_without_root_export;
+        {
+            let temp = tempfile::tempdir().expect("isolated fixture");
+            let cache = temp.path().join("files");
+            let root = ed25519_dalek::SigningKey::from_bytes(&[41; 32]);
+            let device = [42; 32];
+            let workspace = fs::Ticket::workspace_id_for_topic(device);
+            let envelope = WorkspaceAuthorityEnvelope::sign(workspace, 1, Vec::new(), false, &root)
+                .expect("signed existing policy");
+            prepare_new(&cache, device, envelope.clone()).expect("explicit new fixture");
+            assert!(!cache.join("namespace.bin").exists());
+            let authority = WorkspaceAuthority::open(
+                cache.join("workspace-authority.bin"),
+                workspace,
+                envelope.governor,
+                envelope.governor,
+                Vec::new(),
+            )
+            .expect("verified authority");
+            assert_eq!(authority.current(), Some(envelope.clone()));
+            assert!(!cache.join("user-identity").exists());
+            let written = std::fs::read(cache.join("workspace-authority.bin")).unwrap();
+            assert!(prepare_new(&cache, device, envelope).is_err());
+            assert_eq!(
+                std::fs::read(cache.join("workspace-authority.bin")).unwrap(),
+                written
+            );
+        }
 
-    #[test]
-    fn certified_saved_workspace_check_requires_exact_signed_files_access() {
-        use collab_types::{Access, CapOverride, Effect, Expiry, Scope};
-        use tilo_action_policy::Grantee;
-        use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
-        let temp = tempfile::tempdir().unwrap();
-        let paths = IdentityPaths::under(temp.path().join("identity"));
-        paths.ensure_directories().unwrap();
-        let root = ed25519_dalek::SigningKey::from_bytes(&[51; 32]);
-        let device = ed25519_dalek::SigningKey::from_bytes(&[52; 32]);
-        let person = root.verifying_key().to_bytes();
-        persist::write_public_key(&paths.user_pubkey, &person).unwrap();
-        persist::write_device_key(&paths.device_privkey, &device).unwrap();
-        let mut cert = DeviceCert {
-            user_public_key: person,
-            device_public_key: device.verifying_key().to_bytes(),
-            device_label: "isolated source fixture".into(),
-            capabilities: DeviceCapabilities::primary(),
-            issued_at_ns: 1,
-            expires_at_ns: None,
-            signature: [0; 64],
-            issuer: None,
-        };
-        sign_device_cert(&mut cert, &root).unwrap();
-        persist::write_device_cert(&paths.device_cert, &cert).unwrap();
-        let grant = CapOverride {
-            id: String::default(),
-            grantee: Grantee::person(hex::encode(person)),
-            app: None,
-            scope: Scope::FsPath("/var/workspace".into()),
-            access: Access::Write,
-            effect: Effect::Grant,
-            expiry: Expiry::Never,
-            granted_by: None,
-        };
-        let workspace = fs::Ticket::workspace_id_for_topic(device.verifying_key().to_bytes());
-        let envelope =
-            WorkspaceAuthorityEnvelope::sign(workspace, 1, vec![grant], false, &root).unwrap();
-        let cache = temp.path().join("files");
-        prepare_new(&cache, device.verifying_key().to_bytes(), envelope.clone()).unwrap();
-        check(&temp.path().join("identity"), &cache).expect("existing certified Files primary");
-        assert!(!paths.user_privkey.exists(), "no root export is required");
-        let mut revoked = envelope.capabilities;
-        revoked[0].effect = Effect::Restrict;
-        let denied = WorkspaceAuthorityEnvelope::sign(workspace, 2, revoked, false, &root).unwrap();
-        let authority = WorkspaceAuthority::open(
-            cache.join("workspace-authority.bin"),
-            workspace,
-            person,
-            person,
-            Vec::new(),
-        )
-        .unwrap();
-        authority.apply(denied).unwrap();
-        assert!(check(&temp.path().join("identity"), &cache).is_err());
-        assert!(!cache.join("namespace.bin").exists());
-        assert!(!cache.join("mount").exists());
-        assert!(!cache.join("workspace-ticket").exists());
-        cert.signature[0] ^= 1;
-        persist::write_device_cert(&paths.device_cert, &cert).unwrap();
-        assert!(existing_person(&paths).is_err());
-    }
-
-    #[test]
-    fn initialization_requires_explicit_choice_before_any_identity_or_storage_access() {
-        let temp = tempfile::tempdir().expect("isolated fixture");
-        let options = InitializeOptions {
-            cache_dir: temp.path().join("files"),
-            identity_root: temp.path().join("identity"),
-            identity_dir: temp.path().join("records"),
-            acl: temp.path().join("acl"),
-            confirm_new_workspace: false,
-            acknowledge_unavailable_recovery: false,
-        };
-        assert!(initialize(&options).is_err());
-        assert!(!options.cache_dir.exists());
-        assert!(!options.identity_root.exists());
+        phase initialization_requires_explicit_choice_before_any_identity_or_storage_access;
+        {
+            let temp = tempfile::tempdir().expect("isolated fixture");
+            let options = InitializeOptions {
+                cache_dir: temp.path().join("files"),
+                identity_root: temp.path().join("identity"),
+                identity_dir: temp.path().join("records"),
+                acl: temp.path().join("acl"),
+                confirm_new_workspace: false,
+                acknowledge_unavailable_recovery: false,
+            };
+            assert!(initialize(&options).is_err());
+            assert!(!options.cache_dir.exists());
+            assert!(!options.identity_root.exists());
+        }
     }
 }

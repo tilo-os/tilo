@@ -1495,56 +1495,60 @@ mod tests {
         }
     }
 
-    #[test]
-    fn pairing_code_collision_does_not_certify_stranger() {
-        let mut admissions = Admissions::new(Duration::from_secs(60));
-        let now = tokio::time::Instant::now();
-        admissions.admit("123456".into(), now);
-        let (guest, stranger, unrelated) =
-            (pending("123456"), pending("123456"), pending("654321"));
-        let decisions = admissions.decide(&[guest.clone(), unrelated, stranger.clone()], &[], now);
-        assert_eq!(
-            decisions,
-            vec![Admission::Refuse {
-                pairing_code: "123456".into(),
-                reason: RefusalReason::AmbiguousCode,
-                deny: vec![guest.request_digest, stranger.request_digest],
-            }],
-            "neither request showing the shared code is certified"
-        );
-        assert!(admissions.codes.is_empty(), "the ambiguous code is spent");
-    }
+    tilo_test_env::scenario! {
+        fn admissions_certify_only_the_browser_a_code_admitted;
 
-    #[test]
-    fn an_admitted_code_certifies_its_one_browser_and_is_refused_after_the_bound() {
-        let wait = Duration::from_secs(60);
-        let mut admissions = Admissions::new(wait);
-        let now = tokio::time::Instant::now();
-        for code in ["111111", "222222", "333333"] {
-            admissions.admit(code.into(), now);
+        phase pairing_code_collision_does_not_certify_stranger;
+        {
+            let mut admissions = Admissions::new(Duration::from_secs(60));
+            let now = tokio::time::Instant::now();
+            admissions.admit("123456".into(), now);
+            let (guest, stranger, unrelated) =
+                (pending("123456"), pending("123456"), pending("654321"));
+            let decisions = admissions.decide(&[guest.clone(), unrelated, stranger.clone()], &[], now);
+            assert_eq!(
+                decisions,
+                vec![Admission::Refuse {
+                    pairing_code: "123456".into(),
+                    reason: RefusalReason::AmbiguousCode,
+                    deny: vec![guest.request_digest, stranger.request_digest],
+                }],
+                "neither request showing the shared code is certified"
+            );
+            assert!(admissions.codes.is_empty(), "the ambiguous code is spent");
         }
-        let (guest, agent) = (pending("111111"), pending("333333"));
-        let listed = [guest.clone(), agent.clone()];
-        let agents = [agent.request_digest];
-        assert_eq!(
-            admissions.decide(&listed, &agents, now),
-            vec![Admission::Certify(Box::new(guest))],
-            "the guest's code certifies it; an unseen code and an agent's code wait"
-        );
-        let almost = now.checked_add(wait / 2).unwrap();
-        assert_eq!(admissions.decide(&listed[1..], &agents, almost), vec![]);
-        let later = now.checked_add(wait).unwrap();
-        let refused = |code: &str| Admission::Refuse {
-            pairing_code: code.into(),
-            reason: RefusalReason::NoMatchingRequest,
-            deny: Vec::new(),
-        };
-        assert_eq!(
-            admissions.decide(&listed[1..], &agents, later),
-            vec![refused("222222"), refused("333333")],
-            "agents are never approved, so an agent's code is refused like an unseen one"
-        );
-        assert!(admissions.codes.is_empty());
+
+        phase an_admitted_code_certifies_its_one_browser_and_is_refused_after_the_bound;
+        {
+            let wait = Duration::from_secs(60);
+            let mut admissions = Admissions::new(wait);
+            let now = tokio::time::Instant::now();
+            for code in ["111111", "222222", "333333"] {
+                admissions.admit(code.into(), now);
+            }
+            let (guest, agent) = (pending("111111"), pending("333333"));
+            let listed = [guest.clone(), agent.clone()];
+            let agents = [agent.request_digest];
+            assert_eq!(
+                admissions.decide(&listed, &agents, now),
+                vec![Admission::Certify(Box::new(guest))],
+                "the guest's code certifies it; an unseen code and an agent's code wait"
+            );
+            let almost = now.checked_add(wait / 2).unwrap();
+            assert_eq!(admissions.decide(&listed[1..], &agents, almost), vec![]);
+            let later = now.checked_add(wait).unwrap();
+            let refused = |code: &str| Admission::Refuse {
+                pairing_code: code.into(),
+                reason: RefusalReason::NoMatchingRequest,
+                deny: Vec::new(),
+            };
+            assert_eq!(
+                admissions.decide(&listed[1..], &agents, later),
+                vec![refused("222222"), refused("333333")],
+                "agents are never approved, so an agent's code is refused like an unseen one"
+            );
+            assert!(admissions.codes.is_empty());
+        }
     }
 
     #[tokio::test]

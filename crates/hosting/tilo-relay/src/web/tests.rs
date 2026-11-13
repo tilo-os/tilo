@@ -171,67 +171,71 @@ async fn post(addr: SocketAddr, path: &str, body: Vec<u8>) -> (u16, Vec<u8>) {
     }
 }
 
-#[test]
-fn a_link_origin_naming_port_zero_takes_the_port_the_listener_bound() {
-    assert_eq!(
-        named_port("https://127.0.0.1:0", 43123),
-        "https://127.0.0.1:43123"
-    );
-    assert_eq!(
-        named_port("https://[::1]:0/some/path", 443),
-        "https://[::1]:443/some/path"
-    );
-    // A published origin is reached exactly as written, whatever port the
-    // listener behind the ingress bound.
-    assert_eq!(
-        named_port("https://link.tilo.so", 43123),
-        "https://link.tilo.so"
-    );
-    assert_eq!(
-        named_port("https://link.tilo.so:8443", 43123),
-        "https://link.tilo.so:8443"
-    );
-}
+tilo_test_env::scenario! {
+    fn the_web_listener_names_its_origin_from_what_is_configured;
 
-#[test]
-fn resource_locator_uses_configured_https_host_and_refuses_wildcards() {
-    let files = |host| TlsSource::Files {
-        certificate_chain: "unused.pem".into(),
-        private_key: "unused.key".into(),
-        host,
-    };
-    let wildcard: SocketAddr = "0.0.0.0:443".parse().unwrap();
-    assert_eq!(
-        browser_locator_origin(&files(None), wildcard).unwrap(),
-        None
-    );
-    assert_eq!(
-        browser_locator_origin(&files(Some("0.0.0.0".into())), wildcard).unwrap(),
-        None
-    );
-    assert_eq!(
-        browser_locator_origin(&files(Some("workspace.example".into())), wildcard).unwrap(),
-        Some("https://workspace.example".into())
-    );
-    assert_eq!(
-        browser_locator_origin(&files(None), "[::1]:8443".parse().unwrap()).unwrap(),
-        Some("https://[::1]:8443".into())
-    );
-    for host in [
-        "user@workspace.example",
-        "workspace.example/path",
-        "bad host",
-    ] {
-        assert!(browser_locator_origin(&files(Some(host.into())), wildcard).is_err());
+    phase a_link_origin_naming_port_zero_takes_the_port_the_listener_bound;
+    {
+        assert_eq!(
+            named_port("https://127.0.0.1:0", 43123),
+            "https://127.0.0.1:43123"
+        );
+        assert_eq!(
+            named_port("https://[::1]:0/some/path", 443),
+            "https://[::1]:443/some/path"
+        );
+        // A published origin is reached exactly as written, whatever port the
+        // listener behind the ingress bound.
+        assert_eq!(
+            named_port("https://link.tilo.so", 43123),
+            "https://link.tilo.so"
+        );
+        assert_eq!(
+            named_port("https://link.tilo.so:8443", 43123),
+            "https://link.tilo.so:8443"
+        );
     }
-    let development = TlsSource::Development {
-        hosts: vec!["0.0.0.0".into(), "workspace.example".into()],
-        store: None,
-    };
-    assert_eq!(
-        browser_locator_origin(&development, wildcard).unwrap(),
-        Some("https://workspace.example".into())
-    );
+
+    phase resource_locator_uses_configured_https_host_and_refuses_wildcards;
+    {
+        let files = |host| TlsSource::Files {
+            certificate_chain: "unused.pem".into(),
+            private_key: "unused.key".into(),
+            host,
+        };
+        let wildcard: SocketAddr = "0.0.0.0:443".parse().unwrap();
+        assert_eq!(
+            browser_locator_origin(&files(None), wildcard).unwrap(),
+            None
+        );
+        assert_eq!(
+            browser_locator_origin(&files(Some("0.0.0.0".into())), wildcard).unwrap(),
+            None
+        );
+        assert_eq!(
+            browser_locator_origin(&files(Some("workspace.example".into())), wildcard).unwrap(),
+            Some("https://workspace.example".into())
+        );
+        assert_eq!(
+            browser_locator_origin(&files(None), "[::1]:8443".parse().unwrap()).unwrap(),
+            Some("https://[::1]:8443".into())
+        );
+        for host in [
+            "user@workspace.example",
+            "workspace.example/path",
+            "bad host",
+        ] {
+            assert!(browser_locator_origin(&files(Some(host.into())), wildcard).is_err());
+        }
+        let development = TlsSource::Development {
+            hosts: vec!["0.0.0.0".into(), "workspace.example".into()],
+            store: None,
+        };
+        assert_eq!(
+            browser_locator_origin(&development, wildcard).unwrap(),
+            Some("https://workspace.example".into())
+        );
+    }
 }
 
 /// No route hands a page the content keys of a record's channel. A page takes

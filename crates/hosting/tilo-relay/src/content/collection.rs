@@ -347,40 +347,49 @@ mod tests {
 
     use super::*;
 
-    #[test]
-    fn a_record_names_the_content_any_version_of_it_held() {
-        let first = "a1".repeat(32);
-        let second = "B2".repeat(32);
-        let typed = "c3".repeat(32);
-        let raw = [7_u8; 32];
-        let mut doc = AutoCommit::new();
-        doc.put(ROOT, "file", first.as_str()).unwrap();
-        doc.commit();
-        doc.put(ROOT, "file", format!("tilo.content:{second}"))
-            .unwrap();
-        doc.put(ROOT, "thumbnail", raw.to_vec()).unwrap();
-        let note = doc.put_object(ROOT, "note", ObjType::Text).unwrap();
-        doc.commit();
-        for (at, character) in typed.chars().enumerate() {
-            doc.splice_text(&note, at, 0, &character.to_string())
-                .unwrap();
-            doc.commit();
-        }
-        let mut live = BTreeSet::new();
-        named_in(&doc.save(), &mut live).unwrap();
-        for address in [first, second.to_ascii_lowercase(), typed, hex::encode(raw)] {
-            assert!(live.contains(&address), "{address} is named: {live:?}");
-        }
-    }
+    tilo_test_env::scenario! {
+        fn a_record_names_only_the_whole_addresses_it_holds;
 
-    #[test]
-    fn only_whole_addresses_are_names() {
-        let mut live = BTreeSet::new();
-        addresses_in(
-            format!("{} and {}", "d4".repeat(31), "e5".repeat(32)).as_bytes(),
-            &mut live,
-        );
-        assert_eq!(live, BTreeSet::from(["e5".repeat(32)]));
+        phase a_record_names_the_content_any_version_of_it_held;
+        {
+            let first = "a1".repeat(32);
+            let second = "B2".repeat(32);
+            let typed = "c3".repeat(32);
+            let raw = [7_u8; 32];
+            let mut doc = AutoCommit::new();
+            doc.put(ROOT, "file", first.as_str()).unwrap();
+            doc.commit();
+            doc.put(ROOT, "file", format!("tilo.content:{second}"))
+                .unwrap();
+            doc.put(ROOT, "thumbnail", raw.to_vec()).unwrap();
+            let note = doc.put_object(ROOT, "note", ObjType::Text).unwrap();
+            doc.commit();
+            for (at, character) in typed.chars().enumerate() {
+                doc.splice_text(&note, at, 0, &character.to_string())
+                    .unwrap();
+                doc.commit();
+            }
+            let mut live = BTreeSet::new();
+            named_in(&doc.save(), &mut live).unwrap();
+            for address in [first, second.to_ascii_lowercase(), typed, hex::encode(raw)] {
+                assert!(live.contains(&address), "{address} is named: {live:?}");
+            }
+        }
+
+        phase only_whole_addresses_are_names;
+        {
+            let mut live = BTreeSet::new();
+            addresses_in(
+                format!("{} and {}", "d4".repeat(31), "e5".repeat(32)).as_bytes(),
+                &mut live,
+            );
+            assert_eq!(live, BTreeSet::from(["e5".repeat(32)]));
+        }
+
+        phase a_record_that_does_not_load_names_nothing_and_says_so;
+        {
+            assert!(named_in(b"not a document", &mut BTreeSet::new()).is_err());
+        }
     }
 
     /// A workspace host as tilo.sh runs one, under `state`.
@@ -481,11 +490,6 @@ mod tests {
         );
         assert!(!store.has(&stray));
         relay.shutdown().await;
-    }
-
-    #[test]
-    fn a_record_that_does_not_load_names_nothing_and_says_so() {
-        assert!(named_in(b"not a document", &mut BTreeSet::new()).is_err());
     }
 
     /// The store a page keeps its content in: the profile's app files, which

@@ -133,58 +133,62 @@ mod tests {
             .collect()
     }
 
-    /// A workspace without a desktop starts one: the workspace itself, by its id, with its
-    /// name and the listed strips.
-    #[test]
-    fn a_room_without_a_desktop_starts_with_the_listed_strips() {
-        let mut doc = automerge::AutoCommit::new();
-        assert!(settle_strips(&mut doc, ROOM, "Hangout", &names(&["Main", "Games"])).unwrap());
-        assert_eq!(strips(&doc), ["Main", "Games"]);
-        let tree: DesktopTree = desktop(&doc).tree;
-        assert_eq!(tree.workspaces[0].name, "Hangout");
-        assert_eq!(tree.workspaces[0].id().to_string(), ROOM);
-        assert_eq!(tree.active, tree.workspaces[0].slot);
-    }
+    tilo_test_env::scenario! {
+        fn settling_strips_adds_only_the_listed_ones_that_are_missing;
 
-    /// Settling again changes nothing; a newly listed strip is added after
-    /// what is there, and the strips people made and who made them are kept.
-    #[test]
-    fn settling_adds_only_what_is_missing() {
-        let mut doc = automerge::AutoCommit::new();
-        settle_strips(&mut doc, ROOM, "Hangout", &names(&["Main"])).unwrap();
-        let mut value = desktop(&doc);
-        value.tree.workspaces[0]
-            .strips
-            .push(Strip::new(StripId(77), "Someone's"));
-        value.authors.insert(77, "alice".into());
-        shared_record::write(&mut doc, &value).unwrap();
+        phase a_room_without_a_desktop_starts_with_the_listed_strips;
+        // A workspace without a desktop starts one: the workspace itself, by its id, with its
+        // name and the listed strips.
+        {
+            let mut doc = automerge::AutoCommit::new();
+            assert!(settle_strips(&mut doc, ROOM, "Hangout", &names(&["Main", "Games"])).unwrap());
+            assert_eq!(strips(&doc), ["Main", "Games"]);
+            let tree: DesktopTree = desktop(&doc).tree;
+            assert_eq!(tree.workspaces[0].name, "Hangout");
+            assert_eq!(tree.workspaces[0].id().to_string(), ROOM);
+            assert_eq!(tree.active, tree.workspaces[0].slot);
+        }
 
-        assert!(!settle_strips(&mut doc, ROOM, "Hangout", &names(&["Main"])).unwrap());
-        assert!(settle_strips(&mut doc, ROOM, "Hangout", &names(&["Main", "Quiet"])).unwrap());
-        assert_eq!(strips(&doc), ["Main", "Someone's", "Quiet"]);
-        let value = desktop(&doc);
-        assert_eq!(value.authors.get(&77).map(String::as_str), Some("alice"));
-        let ids: std::collections::HashSet<_> = value.tree.workspaces[0]
-            .strips
-            .iter()
-            .map(|s| s.id)
-            .collect();
-        assert_eq!(ids.len(), 3, "a new strip never reuses an id");
-    }
+        phase settling_adds_only_what_is_missing;
+        // Settling again changes nothing; a newly listed strip is added after
+        // what is there, and the strips people made and who made them are kept.
+        {
+            let mut doc = automerge::AutoCommit::new();
+            settle_strips(&mut doc, ROOM, "Hangout", &names(&["Main"])).unwrap();
+            let mut value = desktop(&doc);
+            value.tree.workspaces[0]
+                .strips
+                .push(Strip::new(StripId(77), "Someone's"));
+            value.authors.insert(77, "alice".into());
+            shared_record::write(&mut doc, &value).unwrap();
 
-    /// No listed strips leaves the record alone, even an absent one.
-    #[test]
-    fn no_strips_writes_nothing() {
-        let mut doc = automerge::AutoCommit::new();
-        assert!(!settle_strips(&mut doc, ROOM, "Hangout", &[]).unwrap());
-        assert!(shared_record::read(&doc, None).is_none());
-    }
+            assert!(!settle_strips(&mut doc, ROOM, "Hangout", &names(&["Main"])).unwrap());
+            assert!(settle_strips(&mut doc, ROOM, "Hangout", &names(&["Main", "Quiet"])).unwrap());
+            assert_eq!(strips(&doc), ["Main", "Someone's", "Quiet"]);
+            let value = desktop(&doc);
+            assert_eq!(value.authors.get(&77).map(String::as_str), Some("alice"));
+            let ids: std::collections::HashSet<_> = value.tree.workspaces[0]
+                .strips
+                .iter()
+                .map(|s| s.id)
+                .collect();
+            assert_eq!(ids.len(), 3, "a new strip never reuses an id");
+        }
 
-    #[test]
-    fn strip_names_are_trimmed_and_bounded() {
-        assert_eq!(strip_name("  Games night ").unwrap(), "Games night");
-        assert!(strip_name("   ").is_err());
-        assert!(strip_name(&"x".repeat(49)).is_err());
-        assert!(strip_name(&"é".repeat(48)).is_ok());
+        phase no_strips_writes_nothing;
+        // No listed strips leaves the record alone, even an absent one.
+        {
+            let mut doc = automerge::AutoCommit::new();
+            assert!(!settle_strips(&mut doc, ROOM, "Hangout", &[]).unwrap());
+            assert!(shared_record::read(&doc, None).is_none());
+        }
+
+        phase strip_names_are_trimmed_and_bounded;
+        {
+            assert_eq!(strip_name("  Games night ").unwrap(), "Games night");
+            assert!(strip_name("   ").is_err());
+            assert!(strip_name(&"x".repeat(49)).is_err());
+            assert!(strip_name(&"é".repeat(48)).is_ok());
+        }
     }
 }

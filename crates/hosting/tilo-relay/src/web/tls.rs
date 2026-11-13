@@ -372,91 +372,95 @@ fn save_stored(path: &std::path::Path, identity: &Identity) -> Result<(), String
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_pem_pair_loads_into_an_https_config_and_an_empty_chain_is_refused() {
-        let generated = rcgen::generate_simple_self_signed(vec!["rooms.internal".into()]).unwrap();
-        let dir = tempfile::tempdir().unwrap();
-        let (chain, key, empty) = (
-            dir.path().join("chain.pem"),
-            dir.path().join("key.pem"),
-            dir.path().join("empty.pem"),
-        );
-        std::fs::write(&chain, generated.cert.pem()).unwrap();
-        std::fs::write(&key, generated.signing_key.serialize_pem()).unwrap();
-        std::fs::write(&empty, "").unwrap();
+    tilo_test_env::scenario! {
+        fn tls_identities_load_renew_and_are_replaced_when_names_change;
 
-        let (certificates, private_key) = load_pem(&chain, &key).unwrap();
-        assert_eq!(certificates, vec![generated.cert.der().clone()]);
-        let config =
-            https_server_config(fixed_certificate(certificates, private_key).unwrap()).unwrap();
-        assert_eq!(
-            config.alpn_protocols,
-            vec![b"h2".to_vec(), b"http/1.1".to_vec()]
-        );
-        assert!(load_pem(&empty, &key).unwrap_err().contains("is empty"));
-    }
-
-    #[test]
-    fn a_renewed_pair_on_disk_is_presented_without_a_restart() {
-        let dir = tempfile::tempdir().unwrap();
-        let (chain, key) = (dir.path().join("tls.crt"), dir.path().join("tls.key"));
-        // Each write stamps its own modification time, so a change never
-        // hides inside the filesystem's timestamp granularity.
-        let stamp = |path: &Path, second: u64| {
-            std::fs::File::options()
-                .write(true)
-                .open(path)
-                .unwrap()
-                .set_modified(SystemTime::UNIX_EPOCH + Duration::from_secs(second))
-                .unwrap();
-        };
-        let write = |name: &str, second: u64| {
-            let generated = rcgen::generate_simple_self_signed(vec![name.into()]).unwrap();
+        phase a_pem_pair_loads_into_an_https_config_and_an_empty_chain_is_refused;
+        {
+            let generated = rcgen::generate_simple_self_signed(vec!["rooms.internal".into()]).unwrap();
+            let dir = tempfile::tempdir().unwrap();
+            let (chain, key, empty) = (
+                dir.path().join("chain.pem"),
+                dir.path().join("key.pem"),
+                dir.path().join("empty.pem"),
+            );
             std::fs::write(&chain, generated.cert.pem()).unwrap();
             std::fs::write(&key, generated.signing_key.serialize_pem()).unwrap();
-            stamp(&chain, second);
-            stamp(&key, second);
-            generated.cert.der().clone()
-        };
-        let first = write("live.example", 1);
-        let files = FileCertificate::with_recheck(&chain, &key, Duration::ZERO).unwrap();
-        assert_eq!(files.current().cert[0], first);
+            std::fs::write(&empty, "").unwrap();
 
-        std::fs::write(&key, "").unwrap();
-        stamp(&key, 2);
-        assert_eq!(files.current().cert[0], first);
+            let (certificates, private_key) = load_pem(&chain, &key).unwrap();
+            assert_eq!(certificates, vec![generated.cert.der().clone()]);
+            let config =
+                https_server_config(fixed_certificate(certificates, private_key).unwrap()).unwrap();
+            assert_eq!(
+                config.alpn_protocols,
+                vec![b"h2".to_vec(), b"http/1.1".to_vec()]
+            );
+            assert!(load_pem(&empty, &key).unwrap_err().contains("is empty"));
+        }
 
-        let renewed = write("live.example", 3);
-        assert_ne!(renewed, first);
-        assert_eq!(files.current().cert[0], renewed);
-    }
+        phase a_renewed_pair_on_disk_is_presented_without_a_restart;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let (chain, key) = (dir.path().join("tls.crt"), dir.path().join("tls.key"));
+            // Each write stamps its own modification time, so a change never
+            // hides inside the filesystem's timestamp granularity.
+            let stamp = |path: &Path, second: u64| {
+                std::fs::File::options()
+                    .write(true)
+                    .open(path)
+                    .unwrap()
+                    .set_modified(SystemTime::UNIX_EPOCH + Duration::from_secs(second))
+                    .unwrap();
+            };
+            let write = |name: &str, second: u64| {
+                let generated = rcgen::generate_simple_self_signed(vec![name.into()]).unwrap();
+                std::fs::write(&chain, generated.cert.pem()).unwrap();
+                std::fs::write(&key, generated.signing_key.serialize_pem()).unwrap();
+                stamp(&chain, second);
+                stamp(&key, second);
+                generated.cert.der().clone()
+            };
+            let first = write("live.example", 1);
+            let files = FileCertificate::with_recheck(&chain, &key, Duration::ZERO).unwrap();
+            assert_eq!(files.current().cert[0], first);
 
-    /// A stored development certificate is reused while it names every host
-    /// this start needs, and replaced when a host starts serving a new name:
-    /// pages pin the certificate for the origin they dial.
-    #[test]
-    fn a_stored_development_certificate_is_replaced_when_a_start_needs_a_new_name() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = Some(dir.path().join("web-dev-identity"));
-        let source = |hosts: &[&str]| TlsSource::Development {
-            hosts: hosts.iter().map(|host| (*host).to_string()).collect(),
-            store: store.clone(),
-        };
-        let first = Identity::load(&source(&["localhost", "127.0.0.1"])).unwrap();
-        assert_eq!(
-            first.hosts.as_deref(),
-            Some(&["localhost".to_string(), "127.0.0.1".to_string()][..])
-        );
-        let again = Identity::load(&source(&["127.0.0.1"])).unwrap();
-        assert_eq!(again.chain, first.chain, "names it covers are reused");
-        let wider = Identity::load(&source(&["127.0.0.1", "live.example"])).unwrap();
-        assert_ne!(
-            wider.chain, first.chain,
-            "a start that needs a new name replaces the certificate"
-        );
-        assert_eq!(
-            wider.hosts.unwrap(),
-            vec!["127.0.0.1".to_string(), "live.example".to_string()]
-        );
+            std::fs::write(&key, "").unwrap();
+            stamp(&key, 2);
+            assert_eq!(files.current().cert[0], first);
+
+            let renewed = write("live.example", 3);
+            assert_ne!(renewed, first);
+            assert_eq!(files.current().cert[0], renewed);
+        }
+
+        phase a_stored_development_certificate_is_replaced_when_a_start_needs_a_new_name;
+        // A stored development certificate is reused while it names every host
+        // this start needs, and replaced when a host starts serving a new name:
+        // pages pin the certificate for the origin they dial.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let store = Some(dir.path().join("web-dev-identity"));
+            let source = |hosts: &[&str]| TlsSource::Development {
+                hosts: hosts.iter().map(|host| (*host).to_string()).collect(),
+                store: store.clone(),
+            };
+            let first = Identity::load(&source(&["localhost", "127.0.0.1"])).unwrap();
+            assert_eq!(
+                first.hosts.as_deref(),
+                Some(&["localhost".to_string(), "127.0.0.1".to_string()][..])
+            );
+            let again = Identity::load(&source(&["127.0.0.1"])).unwrap();
+            assert_eq!(again.chain, first.chain, "names it covers are reused");
+            let wider = Identity::load(&source(&["127.0.0.1", "live.example"])).unwrap();
+            assert_ne!(
+                wider.chain, first.chain,
+                "a start that needs a new name replaces the certificate"
+            );
+            assert_eq!(
+                wider.hosts.unwrap(),
+                vec!["127.0.0.1".to_string(), "live.example".to_string()]
+            );
+        }
     }
 }

@@ -151,42 +151,46 @@ pub(super) fn run(
 mod tests {
     use super::*;
 
-    #[test]
-    fn missing_credentials_do_not_create_an_identity_or_registry() {
-        let dir = tempfile::tempdir().expect("isolated profile");
-        let root = dir.path().join("identity");
-        assert!(
-            run(
-                &root,
-                &hex::encode([1_u8; 32]),
-                &hex::encode([2_u8; 32]),
-                WorkspaceId::from_u128(3),
-                None
-            )
-            .is_err()
-        );
-        assert!(!root.exists());
-    }
+    tilo_test_env::scenario! {
+        fn the_files_probe_creates_nothing_and_prints_only_public_metadata;
 
-    #[test]
-    fn output_contains_only_public_binding_metadata() {
-        let endpoint = iroh_base::EndpointAddr::new(iroh::SecretKey::from_bytes(&[7; 32]).public());
-        let ticket = fs::Ticket {
-            node: endpoint.clone(),
-            workspace: [8; 32],
-        };
-        let encoded = ticket.encode().expect("fixture ticket");
-        let registration = tilo_relay::transport::ContentPeerRegistration {
-            endpoint,
-            ticket: encoded.clone(),
-            relay_service_id: [9; 32],
-        };
-        let status = public_status(&registration, WorkspaceId::from_u128(10), [9; 32])
-            .expect("matching service");
-        assert_eq!(status.files_workspace_id, ticket.workspace_id());
-        let json = serde_json::to_string(&status).expect("public JSON");
-        assert!(!json.contains(&encoded));
-        assert!(!json.contains("ticket"));
-        assert!(public_status(&registration, WorkspaceId::from_u128(10), [11; 32]).is_err());
+        phase missing_credentials_do_not_create_an_identity_or_registry;
+        {
+            let dir = tempfile::tempdir().expect("isolated profile");
+            let root = dir.path().join("identity");
+            assert!(
+                run(
+                    &root,
+                    &hex::encode([1_u8; 32]),
+                    &hex::encode([2_u8; 32]),
+                    WorkspaceId::from_u128(3),
+                    None
+                )
+                .is_err()
+            );
+            assert!(!root.exists());
+        }
+
+        phase output_contains_only_public_binding_metadata;
+        {
+            let endpoint = iroh_base::EndpointAddr::new(iroh::SecretKey::from_bytes(&[7; 32]).public());
+            let ticket = fs::Ticket {
+                node: endpoint.clone(),
+                workspace: [8; 32],
+            };
+            let encoded = ticket.encode().expect("fixture ticket");
+            let registration = tilo_relay::transport::ContentPeerRegistration {
+                endpoint,
+                ticket: encoded.clone(),
+                relay_service_id: [9; 32],
+            };
+            let status = public_status(&registration, WorkspaceId::from_u128(10), [9; 32])
+                .expect("matching service");
+            assert_eq!(status.files_workspace_id, ticket.workspace_id());
+            let json = serde_json::to_string(&status).expect("public JSON");
+            assert!(!json.contains(&encoded));
+            assert!(!json.contains("ticket"));
+            assert!(public_status(&registration, WorkspaceId::from_u128(10), [11; 32]).is_err());
+        }
     }
 }

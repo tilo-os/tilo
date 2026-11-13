@@ -273,66 +273,70 @@ mod tests {
     use ed25519_dalek::SigningKey;
     use tilo_relay_protocol::certify::PageDeparture;
 
-    /// What a page writes for a person, and what this program opens: the
-    /// envelope a page keeps and the recovery key it showed, nothing else.
-    #[test]
-    fn a_page_person_opens_into_an_identity_root() {
-        let directory = tempfile::tempdir().unwrap();
-        let page = directory.path().join("person.json");
-        let root = directory.path().join("root");
-        let signing = SigningKey::from_bytes(&[7; 32]);
-        let recovery = RecoveryKey::generate().unwrap();
-        let envelope = RootEnvelope::create(&signing, &recovery).unwrap();
-        std::fs::write(
-            &page,
-            serde_json::to_vec(&serde_json::json!({
-                "person": hex::encode(signing.verifying_key().to_bytes()),
-                "recovery_key": recovery.display().to_string(),
-                "envelope": envelope,
-            }))
-            .unwrap(),
-        )
-        .unwrap();
+    tilo_test_env::scenario! {
+        fn a_page_person_opens_only_with_its_own_recovery_key;
 
-        let public = open_person(&page, &root).unwrap();
+        phase a_page_person_opens_into_an_identity_root;
+        // What a page writes for a person, and what this program opens: the
+        // envelope a page keeps and the recovery key it showed, nothing else.
+        {
+            let directory = tempfile::tempdir().unwrap();
+            let page = directory.path().join("person.json");
+            let root = directory.path().join("root");
+            let signing = SigningKey::from_bytes(&[7; 32]);
+            let recovery = RecoveryKey::generate().unwrap();
+            let envelope = RootEnvelope::create(&signing, &recovery).unwrap();
+            std::fs::write(
+                &page,
+                serde_json::to_vec(&serde_json::json!({
+                    "person": hex::encode(signing.verifying_key().to_bytes()),
+                    "recovery_key": recovery.display().to_string(),
+                    "envelope": envelope,
+                }))
+                .unwrap(),
+            )
+            .unwrap();
 
-        assert_eq!(
-            public,
-            signing.verifying_key().to_bytes(),
-            "the person the page made"
-        );
-        let kept = tilo_user_identity::persist::read_owned_signing_key(
-            &IdentityPaths::under(&root).user_privkey,
-        )
-        .unwrap();
-        assert_eq!(
-            kept.to_bytes(),
-            signing.to_bytes(),
-            "the root, kept where every program reads it"
-        );
-    }
+            let public = open_person(&page, &root).unwrap();
 
-    /// A recovery key of somebody else's does not open a person.
-    #[test]
-    fn another_persons_recovery_key_opens_nothing() {
-        let directory = tempfile::tempdir().unwrap();
-        let page = directory.path().join("person.json");
-        let signing = SigningKey::from_bytes(&[9; 32]);
-        let envelope = RootEnvelope::create(&signing, &RecoveryKey::generate().unwrap()).unwrap();
-        std::fs::write(
-            &page,
-            serde_json::to_vec(&serde_json::json!({
-                "recovery_key": RecoveryKey::generate().unwrap().display().to_string(),
-                "envelope": envelope,
-            }))
-            .unwrap(),
-        )
-        .unwrap();
+            assert_eq!(
+                public,
+                signing.verifying_key().to_bytes(),
+                "the person the page made"
+            );
+            let kept = tilo_user_identity::persist::read_owned_signing_key(
+                &IdentityPaths::under(&root).user_privkey,
+            )
+            .unwrap();
+            assert_eq!(
+                kept.to_bytes(),
+                signing.to_bytes(),
+                "the root, kept where every program reads it"
+            );
+        }
 
-        assert!(
-            open_person(&page, &directory.path().join("root")).is_err(),
-            "a wrong key opens no root"
-        );
+        phase another_persons_recovery_key_opens_nothing;
+        // A recovery key of somebody else's does not open a person.
+        {
+            let directory = tempfile::tempdir().unwrap();
+            let page = directory.path().join("person.json");
+            let signing = SigningKey::from_bytes(&[9; 32]);
+            let envelope = RootEnvelope::create(&signing, &RecoveryKey::generate().unwrap()).unwrap();
+            std::fs::write(
+                &page,
+                serde_json::to_vec(&serde_json::json!({
+                    "recovery_key": RecoveryKey::generate().unwrap().display().to_string(),
+                    "envelope": envelope,
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+
+            assert!(
+                open_person(&page, &directory.path().join("root")).is_err(),
+                "a wrong key opens no root"
+            );
+        }
     }
 
     /// The question a person reads names what it is about, and a page it

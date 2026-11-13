@@ -439,29 +439,33 @@ mod tests {
         doc.save()
     }
 
-    #[test]
-    fn a_tree_names_the_content_of_the_files_it_holds() {
-        let report = "b1".repeat(32);
-        let build = "c2".repeat(32);
-        let record = tree_of(&[
-            ("report.txt", &report, 300_000, ROOT_ID),
-            ("build.bin", &build, 3_145_728, ROOT_ID),
-        ]);
-        let files = referenced(&Tree::of_record(&record).unwrap());
-        assert_eq!(files, [report, build]);
-    }
+    tilo_test_env::scenario! {
+        fn a_tree_references_only_the_content_of_its_live_files;
 
-    #[test]
-    fn a_trashed_file_is_no_content_to_keep() {
-        let deleted = "d3".repeat(32);
-        let record = tree_of(&[("gone.txt", &deleted, 12, TRASH_ID)]);
-        assert!(referenced(&Tree::of_record(&record).unwrap()).is_empty());
-    }
+        phase a_tree_names_the_content_of_the_files_it_holds;
+        {
+            let report = "b1".repeat(32);
+            let build = "c2".repeat(32);
+            let record = tree_of(&[
+                ("report.txt", &report, 300_000, ROOT_ID),
+                ("build.bin", &build, 3_145_728, ROOT_ID),
+            ]);
+            let files = referenced(&Tree::of_record(&record).unwrap());
+            assert_eq!(files, [report, build]);
+        }
 
-    #[test]
-    fn a_tree_no_mount_wrote_references_nothing() {
-        let mut doc = AutoCommit::new();
-        doc.put_object(ROOT, NODES_KEY, ObjType::Map).unwrap();
-        assert!(referenced(&Tree::of_record(&doc.save()).unwrap()).is_empty());
+        phase a_trashed_file_is_no_content_to_keep;
+        {
+            let deleted = "d3".repeat(32);
+            let record = tree_of(&[("gone.txt", &deleted, 12, TRASH_ID)]);
+            assert!(referenced(&Tree::of_record(&record).unwrap()).is_empty());
+        }
+
+        phase a_tree_no_mount_wrote_references_nothing;
+        {
+            let mut doc = AutoCommit::new();
+            doc.put_object(ROOT, NODES_KEY, ObjType::Map).unwrap();
+            assert!(referenced(&Tree::of_record(&doc.save()).unwrap()).is_empty());
+        }
     }
 }

@@ -156,97 +156,101 @@ mod tests {
         path
     }
 
-    #[test]
-    fn the_count_survives_a_reopen_and_rolls_over_with_the_period() {
-        let dir = tempfile::tempdir().unwrap();
-        let plans = plans(dir.path(), Some(2));
-        let ledger = dir.path().join("browser-actions.jsonl");
+    tilo_test_env::scenario! {
+        fn the_browser_meter_counts_each_accounts_page_actions;
+
+        phase the_count_survives_a_reopen_and_rolls_over_with_the_period;
         {
-            let meter = BrowserMeter::new(plans.clone(), ledger.clone());
+            let dir = tempfile::tempdir().unwrap();
+            let plans = plans(dir.path(), Some(2));
+            let ledger = dir.path().join("browser-actions.jsonl");
+            {
+                let meter = BrowserMeter::new(plans.clone(), ledger.clone());
+                assert_eq!(meter.admit("acct-1", NOW_MS), Ok(()));
+                meter.record("acct-1", "ws1", NOW_MS).unwrap();
+                meter.record("acct-1", "ws2", NOW_MS).unwrap();
+            }
+            // phase: a new meter on the same ledger counts what the old one did
+            {
+                let meter = BrowserMeter::new(plans.clone(), ledger.clone());
+                let refusal = meter.admit("acct-1", NOW_MS).unwrap_err();
+                assert_eq!(
+                    refusal.message,
+                    "Browser runs 2 page actions a month free on tilo.sh, and this account used \
+                 them. Add a card to continue."
+                );
+                assert_eq!(
+                    refusal
+                        .step(host_account::NextStepKind::AddPaymentMethod)
+                        .and_then(|step| step.url.as_deref()),
+                    Some("https://tilo.sh/billing/card?account=acct-1")
+                );
+                assert_eq!(refusal.reason, host_account::Reason::NoPaymentMethod);
+            }
+            // phase: a new period counts nothing
+            {
+                let meter = BrowserMeter::new(plans, ledger);
+                let next_month = MONTH_START_MS + 31 * 86_400_000;
+                assert_eq!(meter.admit("acct-1", next_month), Ok(()));
+            }
+        }
+
+        phase accounts_record_concurrently_without_losing_counts;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let meter = std::sync::Arc::new(BrowserMeter::new(
+                plans(dir.path(), Some(201)),
+                dir.path().join("browser-actions.jsonl"),
+            ));
+            let threads: Vec<_> = (0..8)
+                .map(|thread| {
+                    let meter = std::sync::Arc::clone(&meter);
+                    std::thread::spawn(move || {
+                        for action in 0..25 {
+                            meter
+                                .record("acct-1", &format!("ws{action}"), NOW_MS)
+                                .unwrap();
+                            meter
+                                .record("acct-2", &format!("ws{thread}"), NOW_MS)
+                                .unwrap();
+                        }
+                    })
+                })
+                .collect();
+            for thread in threads {
+                thread.join().unwrap();
+            }
+            let ledger = Ledger::new(dir.path().join("browser-actions.jsonl"));
+            let (from_ms, to_ms) = (MONTH_START_MS, MONTH_START_MS + 30 * 86_400_000);
+            assert_eq!(ledger.count("acct-1", from_ms, to_ms), 200);
+            assert_eq!(ledger.count("acct-2", from_ms, to_ms), 200);
+            assert_eq!(meter.admit("acct-1", NOW_MS), Ok(()));
+            assert_eq!(meter.admit("acct-2", NOW_MS), Ok(()));
+        }
+
+        phase a_host_that_sells_nothing_counts_nothing;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let ledger = dir.path().join("browser-actions.jsonl");
+            let meter = BrowserMeter::new(dir.path().join("plans.json"), ledger.clone());
             assert_eq!(meter.admit("acct-1", NOW_MS), Ok(()));
             meter.record("acct-1", "ws1", NOW_MS).unwrap();
-            meter.record("acct-1", "ws2", NOW_MS).unwrap();
-        }
-        // phase: a new meter on the same ledger counts what the old one did
-        {
-            let meter = BrowserMeter::new(plans.clone(), ledger.clone());
-            let refusal = meter.admit("acct-1", NOW_MS).unwrap_err();
-            assert_eq!(
-                refusal.message,
-                "Browser runs 2 page actions a month free on tilo.sh, and this account used \
-                 them. Add a card to continue."
-            );
-            assert_eq!(
-                refusal
-                    .step(host_account::NextStepKind::AddPaymentMethod)
-                    .and_then(|step| step.url.as_deref()),
-                Some("https://tilo.sh/billing/card?account=acct-1")
-            );
-            assert_eq!(refusal.reason, host_account::Reason::NoPaymentMethod);
-        }
-        // phase: a new period counts nothing
-        {
+            assert_eq!(meter.admit("acct-1", NOW_MS), Ok(()));
+            // and an account the file names has a card, so it is never stopped
+            let plans = plans(dir.path(), Some(0));
             let meter = BrowserMeter::new(plans, ledger);
-            let next_month = MONTH_START_MS + 31 * 86_400_000;
-            assert_eq!(meter.admit("acct-1", next_month), Ok(()));
+            assert!(meter.admit("acct-1", NOW_MS).is_err());
+            let mut file: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(dir.path().join("plans.json")).unwrap()).unwrap();
+            file["accounts"] = serde_json::json!({
+                "acct-1": {"max_running": 1, "max_vms": 3, "sizes": ["small"]}
+            });
+            std::fs::write(
+                dir.path().join("plans.json"),
+                serde_json::to_vec(&file).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(meter.admit("acct-1", NOW_MS), Ok(()));
         }
-    }
-
-    #[test]
-    fn accounts_record_concurrently_without_losing_counts() {
-        let dir = tempfile::tempdir().unwrap();
-        let meter = std::sync::Arc::new(BrowserMeter::new(
-            plans(dir.path(), Some(201)),
-            dir.path().join("browser-actions.jsonl"),
-        ));
-        let threads: Vec<_> = (0..8)
-            .map(|thread| {
-                let meter = std::sync::Arc::clone(&meter);
-                std::thread::spawn(move || {
-                    for action in 0..25 {
-                        meter
-                            .record("acct-1", &format!("ws{action}"), NOW_MS)
-                            .unwrap();
-                        meter
-                            .record("acct-2", &format!("ws{thread}"), NOW_MS)
-                            .unwrap();
-                    }
-                })
-            })
-            .collect();
-        for thread in threads {
-            thread.join().unwrap();
-        }
-        let ledger = Ledger::new(dir.path().join("browser-actions.jsonl"));
-        let (from_ms, to_ms) = (MONTH_START_MS, MONTH_START_MS + 30 * 86_400_000);
-        assert_eq!(ledger.count("acct-1", from_ms, to_ms), 200);
-        assert_eq!(ledger.count("acct-2", from_ms, to_ms), 200);
-        assert_eq!(meter.admit("acct-1", NOW_MS), Ok(()));
-        assert_eq!(meter.admit("acct-2", NOW_MS), Ok(()));
-    }
-
-    #[test]
-    fn a_host_that_sells_nothing_counts_nothing() {
-        let dir = tempfile::tempdir().unwrap();
-        let ledger = dir.path().join("browser-actions.jsonl");
-        let meter = BrowserMeter::new(dir.path().join("plans.json"), ledger.clone());
-        assert_eq!(meter.admit("acct-1", NOW_MS), Ok(()));
-        meter.record("acct-1", "ws1", NOW_MS).unwrap();
-        assert_eq!(meter.admit("acct-1", NOW_MS), Ok(()));
-        // and an account the file names has a card, so it is never stopped
-        let plans = plans(dir.path(), Some(0));
-        let meter = BrowserMeter::new(plans, ledger);
-        assert!(meter.admit("acct-1", NOW_MS).is_err());
-        let mut file: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(dir.path().join("plans.json")).unwrap()).unwrap();
-        file["accounts"] = serde_json::json!({
-            "acct-1": {"max_running": 1, "max_vms": 3, "sizes": ["small"]}
-        });
-        std::fs::write(
-            dir.path().join("plans.json"),
-            serde_json::to_vec(&file).unwrap(),
-        )
-        .unwrap();
-        assert_eq!(meter.admit("acct-1", NOW_MS), Ok(()));
     }
 }

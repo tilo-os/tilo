@@ -587,61 +587,65 @@ fn nearest_rank(sorted: &[f64], percentile: usize) -> f64 {
 mod tests {
     use super::*;
 
-    #[test]
-    fn nearest_rank_matches_record_py() {
-        let values = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0];
-        assert!((nearest_rank(&values, 50) - 5.0).abs() < f64::EPSILON);
-        assert!((nearest_rank(&values, 99) - 10.0).abs() < f64::EPSILON);
-        assert!(nearest_rank(&[], 50).is_nan());
-    }
+    tilo_test_env::scenario! {
+        fn the_load_report_computes_its_figures_per_window;
 
-    #[test]
-    fn a_window_is_divided_by_its_own_length() {
-        let before = Sample::default();
-        let after = Sample {
-            cpu_ns: 3_000_000_000,
-            bytes_sent: 1_000,
-            transport_bytes_sent: 1_500,
-            ..Sample::default()
-        };
-        let window = Window::between(
-            &before,
-            &after,
-            Packets::default(),
-            Duration::from_secs(1_800),
-        );
-        assert!((window.cpu_s - 3.0).abs() < 1e-9);
-        assert!((window.hours - 0.5).abs() < 1e-9);
-        assert_eq!(window.transport_bytes, 1_500);
-    }
+        phase nearest_rank_matches_record_py;
+        {
+            let values = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0];
+            assert!((nearest_rank(&values, 50) - 5.0).abs() < f64::EPSILON);
+            assert!((nearest_rank(&values, 99) - 10.0).abs() < f64::EPSILON);
+            assert!(nearest_rank(&[], 50).is_nan());
+        }
 
-    #[test]
-    fn packets_are_counted_per_window_and_acks_are_what_carried_nothing_else() {
-        let before = Packets {
-            client: 1_000,
-            client_data: 400,
-            relay: 900,
-            relay_eliciting: 600,
-        };
-        let after = Packets {
-            client: 1_250,
-            client_data: 500,
-            relay: 1_200,
-            relay_eliciting: 780,
-        };
-        let window = after.since(before);
-        assert_eq!(
-            window,
-            Packets {
-                client: 250,
-                client_data: 100,
-                relay: 300,
-                relay_eliciting: 180,
-            }
-        );
-        assert_eq!(window.relay_ack_only(), 120);
-        // Counters never run backwards; if a reading did, nothing goes negative.
-        assert_eq!(before.since(after), Packets::default());
-        assert_eq!(Packets::default().relay_ack_only(), 0);
+        phase a_window_is_divided_by_its_own_length;
+        {
+            let before = Sample::default();
+            let after = Sample {
+                cpu_ns: 3_000_000_000,
+                bytes_sent: 1_000,
+                transport_bytes_sent: 1_500,
+                ..Sample::default()
+            };
+            let window = Window::between(
+                &before,
+                &after,
+                Packets::default(),
+                Duration::from_secs(1_800),
+            );
+            assert!((window.cpu_s - 3.0).abs() < 1e-9);
+            assert!((window.hours - 0.5).abs() < 1e-9);
+            assert_eq!(window.transport_bytes, 1_500);
+        }
+
+        phase packets_are_counted_per_window_and_acks_are_what_carried_nothing_else;
+        {
+            let before = Packets {
+                client: 1_000,
+                client_data: 400,
+                relay: 900,
+                relay_eliciting: 600,
+            };
+            let after = Packets {
+                client: 1_250,
+                client_data: 500,
+                relay: 1_200,
+                relay_eliciting: 780,
+            };
+            let window = after.since(before);
+            assert_eq!(
+                window,
+                Packets {
+                    client: 250,
+                    client_data: 100,
+                    relay: 300,
+                    relay_eliciting: 180,
+                }
+            );
+            assert_eq!(window.relay_ack_only(), 120);
+            // Counters never run backwards; if a reading did, nothing goes negative.
+            assert_eq!(before.since(after), Packets::default());
+            assert_eq!(Packets::default().relay_ack_only(), 0);
+        }
     }
 }

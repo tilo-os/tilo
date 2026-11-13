@@ -150,81 +150,85 @@ mod tests {
         .into_bytes()
     }
 
-    #[test]
-    fn a_page_error_is_one_line_naming_its_workspace_and_page() {
-        let line = logged(|reports| reports.report("coffee", &report()));
-        let lines: Vec<&str> = line.lines().collect();
-        assert_eq!(lines.len(), 1, "{line}");
-        for said in [
-            "WARN",
-            "workspace=\"coffee\"",
-            "kind=\"unhandledrejection\"",
-            "cannot read 'name'",
-            "page=\"/\"",
-            "build=\"7\"",
-            "line=12",
-        ] {
-            assert!(lines[0].contains(said), "no {said} in {line}");
+    tilo_test_env::scenario! {
+        fn page_errors_reach_the_log_as_bounded_single_lines;
+
+        phase a_page_error_is_one_line_naming_its_workspace_and_page;
+        {
+            let line = logged(|reports| reports.report("coffee", &report()));
+            let lines: Vec<&str> = line.lines().collect();
+            assert_eq!(lines.len(), 1, "{line}");
+            for said in [
+                "WARN",
+                "workspace=\"coffee\"",
+                "kind=\"unhandledrejection\"",
+                "cannot read 'name'",
+                "page=\"/\"",
+                "build=\"7\"",
+                "line=12",
+            ] {
+                assert!(lines[0].contains(said), "no {said} in {line}");
+            }
         }
-    }
 
-    #[test]
-    fn a_page_that_stopped_says_its_cause_and_the_host_it_could_not_reach() {
-        let failed = serde_json::json!({
-            "kind": "failed", "message": "unreachable: TypeError: Failed to fetch",
-            "source": "https://127.0.0.1:24100", "page": "/", "build": "7",
-        })
-        .to_string()
-        .into_bytes();
-        let line = logged(|reports| reports.report("coffee", &failed));
-        let lines: Vec<&str> = line.lines().collect();
-        assert_eq!(lines.len(), 1, "{line}");
-        for said in [
-            "WARN",
-            "a page could not open its workspace",
-            "workspace=\"coffee\"",
-            "cause=\"unreachable: TypeError: Failed to fetch\"",
-            "host=\"https://127.0.0.1:24100\"",
-            "build=\"7\"",
-        ] {
-            assert!(lines[0].contains(said), "no {said} in {line}");
-        }
-    }
-
-    #[test]
-    fn nothing_that_is_not_a_report_reaches_the_log() {
-        let line = logged(|reports| {
-            reports.report("coffee", b"not json");
-            reports.report("coffee", &vec![b' '; 8192]);
-        });
-        assert_eq!(line, "");
-    }
-
-    #[test]
-    fn a_line_carries_no_more_than_a_field_and_the_relay_its_fill() {
-        let long = serde_json::json!({"kind": "error", "message": "x".repeat(3000)})
+        phase a_page_that_stopped_says_its_cause_and_the_host_it_could_not_reach;
+        {
+            let failed = serde_json::json!({
+                "kind": "failed", "message": "unreachable: TypeError: Failed to fetch",
+                "source": "https://127.0.0.1:24100", "page": "/", "build": "7",
+            })
             .to_string()
             .into_bytes();
-        let line = logged(|reports| {
-            reports.report("coffee", &long);
-            for _ in 0..200 {
-                reports.report("coffee", &report());
+            let line = logged(|reports| reports.report("coffee", &failed));
+            let lines: Vec<&str> = line.lines().collect();
+            assert_eq!(lines.len(), 1, "{line}");
+            for said in [
+                "WARN",
+                "a page could not open its workspace",
+                "workspace=\"coffee\"",
+                "cause=\"unreachable: TypeError: Failed to fetch\"",
+                "host=\"https://127.0.0.1:24100\"",
+                "build=\"7\"",
+            ] {
+                assert!(lines[0].contains(said), "no {said} in {line}");
             }
-        });
-        let lines: Vec<&str> = line.lines().collect();
-        let reported = lines
-            .iter()
-            .filter(|line| line.contains("a page reported"))
-            .count();
-        assert!(
-            (50..=51).contains(&reported),
-            "the burst, then nothing: {reported} of {} lines",
-            lines.len()
-        );
-        assert!(
-            lines[0].len() < 4096,
-            "one report, one bounded line: {} bytes",
-            lines[0].len()
-        );
+        }
+
+        phase nothing_that_is_not_a_report_reaches_the_log;
+        {
+            let line = logged(|reports| {
+                reports.report("coffee", b"not json");
+                reports.report("coffee", &vec![b' '; 8192]);
+            });
+            assert_eq!(line, "");
+        }
+
+        phase a_line_carries_no_more_than_a_field_and_the_relay_its_fill;
+        {
+            let long = serde_json::json!({"kind": "error", "message": "x".repeat(3000)})
+                .to_string()
+                .into_bytes();
+            let line = logged(|reports| {
+                reports.report("coffee", &long);
+                for _ in 0..200 {
+                    reports.report("coffee", &report());
+                }
+            });
+            let lines: Vec<&str> = line.lines().collect();
+            let reported = lines
+                .iter()
+                .filter(|line| line.contains("a page reported"))
+                .count();
+            assert!(
+                (50..=51).contains(&reported),
+                "the burst, then nothing: {reported} of {} lines",
+                lines.len()
+            );
+            assert!(
+                lines[0].len() < 4096,
+                "one report, one bounded line: {} bytes",
+                lines[0].len()
+            );
+        }
     }
 }

@@ -403,74 +403,78 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_new_request_starts_its_bot_and_a_withdrawn_one_stops_it() {
-        let running = BTreeMap::from([("so.tilo.bots.digest".to_owned(), "1.0.0".to_owned())]);
-        let plan = plan(
-            &[asked("so.tilo.bots.standup", "1.2.0")],
-            &running,
-            &BTreeSet::new(),
-        );
-        assert_eq!(plan.start, vec![asked("so.tilo.bots.standup", "1.2.0")]);
-        assert_eq!(plan.stop, vec!["so.tilo.bots.digest".to_owned()]);
-    }
+    tilo_test_env::scenario! {
+        fn requested_bots_are_planned_against_what_runs;
 
-    #[test]
-    fn a_request_for_another_version_replaces_the_running_bot() {
-        let running = BTreeMap::from([("so.tilo.bots.standup".to_owned(), "1.2.0".to_owned())]);
-        let same = plan(
-            &[asked("so.tilo.bots.standup", "1.2.0")],
-            &running,
-            &BTreeSet::new(),
-        );
-        assert_eq!(
-            same,
-            Plan::default(),
-            "a bot that runs as asked is left alone"
-        );
-        let newer = plan(
-            &[asked("so.tilo.bots.standup", "1.3.0")],
-            &running,
-            &BTreeSet::new(),
-        );
-        assert!(newer.stop.is_empty(), "the same bot carries on");
-        assert!(newer.start.is_empty());
-        assert_eq!(newer.replace, vec![asked("so.tilo.bots.standup", "1.3.0")]);
-        // A developer's program pushed again at the same version is
-        // another release all the same.
-        let mut pushed = asked("so.tilo.bots.standup", "1.2.0");
-        pushed.request.program = Some("{}".into());
-        assert_eq!(
-            plan(&[pushed.clone()], &running, &BTreeSet::new()).replace,
-            vec![pushed]
-        );
-    }
+        phase a_new_request_starts_its_bot_and_a_withdrawn_one_stops_it;
+        {
+            let running = BTreeMap::from([("so.tilo.bots.digest".to_owned(), "1.0.0".to_owned())]);
+            let plan = plan(
+                &[asked("so.tilo.bots.standup", "1.2.0")],
+                &running,
+                &BTreeSet::new(),
+            );
+            assert_eq!(plan.start, vec![asked("so.tilo.bots.standup", "1.2.0")]);
+            assert_eq!(plan.stop, vec!["so.tilo.bots.digest".to_owned()]);
+        }
 
-    #[test]
-    fn the_operators_bots_are_never_started_or_stopped_by_requests() {
-        let operator = BTreeSet::from(["so.tilo.bots.bridge".to_owned()]);
-        let running = BTreeMap::from([("so.tilo.bots.bridge".to_owned(), "2.0.0".to_owned())]);
-        assert_eq!(plan(&[], &running, &operator), Plan::default());
-        assert_eq!(
-            plan(
-                &[asked("so.tilo.bots.bridge", "3.0.0")],
-                &BTreeMap::new(),
-                &operator
-            ),
-            Plan::default()
-        );
-    }
+        phase a_request_for_another_version_replaces_the_running_bot;
+        {
+            let running = BTreeMap::from([("so.tilo.bots.standup".to_owned(), "1.2.0".to_owned())]);
+            let same = plan(
+                &[asked("so.tilo.bots.standup", "1.2.0")],
+                &running,
+                &BTreeSet::new(),
+            );
+            assert_eq!(
+                same,
+                Plan::default(),
+                "a bot that runs as asked is left alone"
+            );
+            let newer = plan(
+                &[asked("so.tilo.bots.standup", "1.3.0")],
+                &running,
+                &BTreeSet::new(),
+            );
+            assert!(newer.stop.is_empty(), "the same bot carries on");
+            assert!(newer.start.is_empty());
+            assert_eq!(newer.replace, vec![asked("so.tilo.bots.standup", "1.3.0")]);
+            // A developer's program pushed again at the same version is
+            // another release all the same.
+            let mut pushed = asked("so.tilo.bots.standup", "1.2.0");
+            pushed.request.program = Some("{}".into());
+            assert_eq!(
+                plan(&[pushed.clone()], &running, &BTreeSet::new()).replace,
+                vec![pushed]
+            );
+        }
 
-    #[test]
-    fn every_requested_bot_keeps_its_installation_in_a_directory_of_its_own() {
-        let state = Path::new("/var/lib/workspace");
-        assert_eq!(
-            bot_dir(state, "so.tilo.bots.standup"),
-            Path::new("/var/lib/workspace/requested-bots/so.tilo.bots.standup")
-        );
-        assert_ne!(
-            bot_dir(state, "so.tilo.bots.standup"),
-            bot_dir(state, "so.tilo.bots.digest")
-        );
+        phase the_operators_bots_are_never_started_or_stopped_by_requests;
+        {
+            let operator = BTreeSet::from(["so.tilo.bots.bridge".to_owned()]);
+            let running = BTreeMap::from([("so.tilo.bots.bridge".to_owned(), "2.0.0".to_owned())]);
+            assert_eq!(plan(&[], &running, &operator), Plan::default());
+            assert_eq!(
+                plan(
+                    &[asked("so.tilo.bots.bridge", "3.0.0")],
+                    &BTreeMap::new(),
+                    &operator
+                ),
+                Plan::default()
+            );
+        }
+
+        phase every_requested_bot_keeps_its_installation_in_a_directory_of_its_own;
+        {
+            let state = Path::new("/var/lib/workspace");
+            assert_eq!(
+                bot_dir(state, "so.tilo.bots.standup"),
+                Path::new("/var/lib/workspace/requested-bots/so.tilo.bots.standup")
+            );
+            assert_ne!(
+                bot_dir(state, "so.tilo.bots.standup"),
+                bot_dir(state, "so.tilo.bots.digest")
+            );
+        }
     }
 }

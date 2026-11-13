@@ -391,34 +391,38 @@ mod tests {
         Namespace::new(&Scope::workspace("ws-1"), device)
     }
 
-    #[test]
-    fn a_member_hears_every_participant_of_its_workspace() {
-        let grant = Grant::new(WorkspaceId::from_u128(7), "ws-1", peer([1; 32]), false);
-        assert_eq!(grant.subscription_prefix(), Some(grant.scope.as_str()));
-        assert!(grant.current(Direction::Subscribe, &names([2; 32]).path()));
-        assert!(grant.current(Direction::Publish, &names([1; 32]).path()));
-        assert!(
-            !grant.current(Direction::Publish, &names([2; 32]).path()),
-            "nobody publishes in another participant's name"
-        );
-    }
+    tilo_test_env::scenario! {
+        fn a_grant_names_what_its_holder_publishes_and_hears;
 
-    #[test]
-    fn a_browser_environment_publishes_its_window_and_hears_nobody() {
-        let grant = Grant::new(WorkspaceId::from_u128(7), "ws-1", peer([1; 32]), true);
-        assert_eq!(
-            grant.publication(),
-            Some(names([1; 32]).path().as_str()),
-            "it publishes its own window's page"
-        );
-        assert!(grant.subscriptions().is_empty());
-        assert_eq!(
-            grant.subscription_prefix(),
-            None,
-            "no track of the workspace is offered to it: no call, camera, screen or other window"
-        );
-        assert!(!grant.current(Direction::Subscribe, &names([2; 32]).path()));
-        assert!(!grant.current(Direction::Subscribe, &names([1; 32]).path()));
-        assert!(grant.current(Direction::Publish, &names([1; 32]).path()));
+        phase a_member_hears_every_participant_of_its_workspace;
+        {
+            let grant = Grant::new(WorkspaceId::from_u128(7), "ws-1", peer([1; 32]), false);
+            assert_eq!(grant.subscription_prefix(), Some(grant.scope.as_str()));
+            assert!(grant.current(Direction::Subscribe, &names([2; 32]).path()));
+            assert!(grant.current(Direction::Publish, &names([1; 32]).path()));
+            assert!(
+                !grant.current(Direction::Publish, &names([2; 32]).path()),
+                "nobody publishes in another participant's name"
+            );
+        }
+
+        phase a_browser_environment_publishes_its_window_and_hears_nobody;
+        {
+            let grant = Grant::new(WorkspaceId::from_u128(7), "ws-1", peer([1; 32]), true);
+            assert_eq!(
+                grant.publication(),
+                Some(names([1; 32]).path().as_str()),
+                "it publishes its own window's page"
+            );
+            assert!(grant.subscriptions().is_empty());
+            assert_eq!(
+                grant.subscription_prefix(),
+                None,
+                "no track of the workspace is offered to it: no call, camera, screen or other window"
+            );
+            assert!(!grant.current(Direction::Subscribe, &names([2; 32]).path()));
+            assert!(!grant.current(Direction::Subscribe, &names([1; 32]).path()));
+            assert!(grant.current(Direction::Publish, &names([1; 32]).path()));
+        }
     }
 }

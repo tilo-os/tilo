@@ -194,92 +194,96 @@ mod tests {
             .collect()
     }
 
-    /// A published text's thread is a channel named the text, about its
-    /// address, under the id its slug makes.
-    #[test]
-    fn a_published_text_opens_a_thread_named_it() {
-        let mut doc = chat_doc();
-        let essay =
-            Published::new("https://tilo.so/blog/quiet-software", "Quiet software").unwrap();
-        assert_eq!(essay.thread_id().unwrap(), "c_quiet_software");
-        assert!(settle_threads(&mut doc, &[essay]).unwrap());
-        assert_eq!(
-            channels(&doc),
-            [(
-                "c_quiet_software".to_owned(),
-                "Quiet software".to_owned(),
-                "https://tilo.so/blog/quiet-software".to_owned()
-            )]
-        );
-    }
+    tilo_test_env::scenario! {
+        fn a_published_text_has_one_thread_under_its_address;
 
-    /// Announcing the same text again leaves its thread alone, and the
-    /// wording a person may have given it stays.
-    #[test]
-    fn announcing_a_text_twice_keeps_one_thread() {
-        let mut doc = chat_doc();
-        let quiet =
-            Published::new("https://tilo.so/blog/quiet-software", "Quiet software").unwrap();
-        assert!(settle_threads(&mut doc, std::slice::from_ref(&quiet)).unwrap());
-        let mut chat = Chat::read_fields(&doc, &automerge::ROOT).unwrap();
-        chat.channels.insert(
-            0,
-            Id::from_raw("c_quiet_software"),
-            Conversation {
-                name: "Quiet software, discussed".into(),
-                topic: "https://tilo.so/blog/quiet-software".into(),
-                ..Conversation::default()
-            },
-        );
-        chat.write_fields(&mut doc, &automerge::ROOT).unwrap();
-        assert!(!settle_threads(&mut doc, &[quiet]).unwrap());
-        assert_eq!(
-            channels(&doc)[0].1,
-            "Quiet software, discussed",
-            "a thread the workspace already keeps is left as it is"
-        );
-    }
-
-    /// The address is the thread's id: two spellings of one address, and a
-    /// trailing slash, are one thread.
-    #[test]
-    fn one_address_is_one_thread() {
-        let a = Published::new("HTTPS://Tilo.SO/blog/a-post/", "A post").unwrap();
-        let b = Published::new("https://tilo.so/blog/a-post", "Another wording").unwrap();
-        assert_eq!(a.thread_id().unwrap(), b.thread_id().unwrap());
-        assert_eq!(a.address.as_str(), "https://tilo.so/blog/a-post/");
-    }
-
-    /// An announcement nothing could thread is refused, and the flag says
-    /// what it got.
-    #[test]
-    fn an_unusable_announcement_is_refused() {
-        for bad in [
-            "https://tilo.so/blog/a-post",
-            "tilo.so/blog/a-post=A post",
-            "https:///blog/a-post=A post",
-            "https://tilo.so/blog/a-post=   ",
-        ] {
-            assert!(parse(bad).is_err(), "{bad}");
+        phase a_published_text_opens_a_thread_named_it;
+        // A published text's thread is a channel named the text, about its
+        // address, under the id its slug makes.
+        {
+            let mut doc = chat_doc();
+            let essay =
+                Published::new("https://tilo.so/blog/quiet-software", "Quiet software").unwrap();
+            assert_eq!(essay.thread_id().unwrap(), "c_quiet_software");
+            assert!(settle_threads(&mut doc, &[essay]).unwrap());
+            assert_eq!(
+                channels(&doc),
+                [(
+                    "c_quiet_software".to_owned(),
+                    "Quiet software".to_owned(),
+                    "https://tilo.so/blog/quiet-software".to_owned()
+                )]
+            );
         }
-        assert!(parse("https://tilo.so/blog/a-post=A post").is_ok());
-        assert!(Published::new("https://tilo.so/blog/a-post", &"x".repeat(TITLE_MAX + 1)).is_err());
-        assert!(
-            Published::new(
-                &format!("https://tilo.so/{}", "x".repeat(ADDRESS_MAX)),
-                "A post"
-            )
-            .is_err()
-        );
-    }
 
-    /// A title may hold an `=`, and its address ends where the query does.
-    #[test]
-    fn a_title_may_hold_the_separator() {
-        let published = parse("https://tilo.so/blog/a-post=Lessons from x = y").unwrap();
-        assert_eq!(published.title.as_str(), "Lessons from x = y");
-        let queried =
-            Published::new("https://tilo.so/blog/a-post?ref=elsewhere", "A post").unwrap();
-        assert_eq!(queried.thread_id().unwrap(), "c_a_post");
+        phase announcing_a_text_twice_keeps_one_thread;
+        // Announcing the same text again leaves its thread alone, and the
+        // wording a person may have given it stays.
+        {
+            let mut doc = chat_doc();
+            let quiet =
+                Published::new("https://tilo.so/blog/quiet-software", "Quiet software").unwrap();
+            assert!(settle_threads(&mut doc, std::slice::from_ref(&quiet)).unwrap());
+            let mut chat = Chat::read_fields(&doc, &automerge::ROOT).unwrap();
+            chat.channels.insert(
+                0,
+                Id::from_raw("c_quiet_software"),
+                Conversation {
+                    name: "Quiet software, discussed".into(),
+                    topic: "https://tilo.so/blog/quiet-software".into(),
+                    ..Conversation::default()
+                },
+            );
+            chat.write_fields(&mut doc, &automerge::ROOT).unwrap();
+            assert!(!settle_threads(&mut doc, &[quiet]).unwrap());
+            assert_eq!(
+                channels(&doc)[0].1,
+                "Quiet software, discussed",
+                "a thread the workspace already keeps is left as it is"
+            );
+        }
+
+        phase one_address_is_one_thread;
+        // The address is the thread's id: two spellings of one address, and a
+        // trailing slash, are one thread.
+        {
+            let a = Published::new("HTTPS://Tilo.SO/blog/a-post/", "A post").unwrap();
+            let b = Published::new("https://tilo.so/blog/a-post", "Another wording").unwrap();
+            assert_eq!(a.thread_id().unwrap(), b.thread_id().unwrap());
+            assert_eq!(a.address.as_str(), "https://tilo.so/blog/a-post/");
+        }
+
+        phase an_unusable_announcement_is_refused;
+        // An announcement nothing could thread is refused, and the flag says
+        // what it got.
+        {
+            for bad in [
+                "https://tilo.so/blog/a-post",
+                "tilo.so/blog/a-post=A post",
+                "https:///blog/a-post=A post",
+                "https://tilo.so/blog/a-post=   ",
+            ] {
+                assert!(parse(bad).is_err(), "{bad}");
+            }
+            assert!(parse("https://tilo.so/blog/a-post=A post").is_ok());
+            assert!(Published::new("https://tilo.so/blog/a-post", &"x".repeat(TITLE_MAX + 1)).is_err());
+            assert!(
+                Published::new(
+                    &format!("https://tilo.so/{}", "x".repeat(ADDRESS_MAX)),
+                    "A post"
+                )
+                .is_err()
+            );
+        }
+
+        phase a_title_may_hold_the_separator;
+        // A title may hold an `=`, and its address ends where the query does.
+        {
+            let published = parse("https://tilo.so/blog/a-post=Lessons from x = y").unwrap();
+            assert_eq!(published.title.as_str(), "Lessons from x = y");
+            let queried =
+                Published::new("https://tilo.so/blog/a-post?ref=elsewhere", "A post").unwrap();
+            assert_eq!(queried.thread_id().unwrap(), "c_a_post");
+        }
     }
 }

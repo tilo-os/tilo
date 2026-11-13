@@ -952,50 +952,99 @@ mod tests {
         assert!(outbox.state.lock_recover().items.is_empty());
     }
 
-    #[test]
-    fn a_retry_waits_as_long_as_the_service_asks_and_keeps_the_mail() {
-        let scripted = Scripted::new([]);
-        let outbox = Outbox::in_memory(
-            mailer(&scripted),
-            Limits {
-                retry_ms: &[1_000],
-                max_wait_ms: 5_000,
-                ..Limits::DEFAULT
-            },
-        );
-        assert!(outbox.enqueue(Kind::Invite, a_mail()));
-        let now = tilo_clock::unix_now_ms();
-        let taken = outbox.take_due(now).expect("the queued mail is due");
-        outbox.settle(
-            now,
-            &taken.id,
-            taken.kind,
-            Err(SendError::Retry {
-                after: Some(Duration::from_secs(3)),
-                reason: "the mail service answered 429".into(),
-            }),
-        );
-        let state = outbox.state.lock_recover();
-        let item = state.items.first().expect("kept for another attempt");
-        assert_eq!(item.attempts, 1);
-        assert_eq!(item.next_at_ms, now.saturating_add(3_000), "Retry-After");
-        drop(state);
-        assert_eq!(scripted.count(), 0, "nothing was sent yet");
-    }
+    tilo_test_env::scenario! {
+        fn an_outbox_bounds_what_it_keeps_and_forgets_what_is_removed;
 
-    #[test]
-    fn an_outbox_with_no_room_keeps_no_more_mail() {
-        let scripted = Scripted::new([]);
-        let outbox = Outbox::in_memory(
-            mailer(&scripted),
-            Limits {
-                max_items: 1,
-                ..Limits::DEFAULT
-            },
-        );
-        assert!(outbox.enqueue(Kind::Confirm, a_mail()));
-        assert!(!outbox.enqueue(Kind::Confirm, a_mail()));
-        assert_eq!(outbox.state.lock_recover().items.len(), 1);
+        phase a_retry_waits_as_long_as_the_service_asks_and_keeps_the_mail;
+        {
+            let scripted = Scripted::new([]);
+            let outbox = Outbox::in_memory(
+                mailer(&scripted),
+                Limits {
+                    retry_ms: &[1_000],
+                    max_wait_ms: 5_000,
+                    ..Limits::DEFAULT
+                },
+            );
+            assert!(outbox.enqueue(Kind::Invite, a_mail()));
+            let now = tilo_clock::unix_now_ms();
+            let taken = outbox.take_due(now).expect("the queued mail is due");
+            outbox.settle(
+                now,
+                &taken.id,
+                taken.kind,
+                Err(SendError::Retry {
+                    after: Some(Duration::from_secs(3)),
+                    reason: "the mail service answered 429".into(),
+                }),
+            );
+            let state = outbox.state.lock_recover();
+            let item = state.items.first().expect("kept for another attempt");
+            assert_eq!(item.attempts, 1);
+            assert_eq!(item.next_at_ms, now.saturating_add(3_000), "Retry-After");
+            drop(state);
+            assert_eq!(scripted.count(), 0, "nothing was sent yet");
+        }
+
+        phase an_outbox_with_no_room_keeps_no_more_mail;
+        {
+            let scripted = Scripted::new([]);
+            let outbox = Outbox::in_memory(
+                mailer(&scripted),
+                Limits {
+                    max_items: 1,
+                    ..Limits::DEFAULT
+                },
+            );
+            assert!(outbox.enqueue(Kind::Confirm, a_mail()));
+            assert!(!outbox.enqueue(Kind::Confirm, a_mail()));
+            assert_eq!(outbox.state.lock_recover().items.len(), 1);
+        }
+
+        phase json_escaping_cannot_make_an_acknowledged_mail_unrecoverable;
+        {
+            let root = tempfile::tempdir().unwrap();
+            let scripted = Scripted::new([]);
+            let outbox = Outbox::durable(root.path(), mailer(&scripted), Limits::DEFAULT).unwrap();
+            let mut mail = a_mail();
+            mail.text = format!("link{}", "\u{0000}".repeat(200_000));
+            assert!(u64::try_from(mail.weight()).unwrap() < MAX_ENTRY_BYTES);
+            assert!(!outbox.enqueue(Kind::Confirm, mail));
+            assert!(files(root.path()).is_empty());
+            assert!(outbox.state.lock_recover().items.is_empty());
+        }
+
+        phase alternate_removal_clears_pending_mail_and_receipts_by_protocol_contact_key;
+        {
+            let root = tempfile::tempdir().unwrap();
+            let scripted = Scripted::new([]);
+            let outbox = Outbox::durable(root.path(), mailer(&scripted), Limits::DEFAULT).unwrap();
+            let mut mail = a_mail();
+            mail.to = "Äda@Example.org".into();
+            assert!(outbox.enqueue_for(Kind::Confirm, mail, Some("aa".repeat(32))));
+            assert!(outbox.confirmation_receipt(" ÄDA@example.org ", true));
+            assert!(outbox.confirmation_kept("äda@example.org"));
+            let hash = receipt_key("äda@example.org");
+            outbox.cancel(&"bb".repeat(32), Some(&hash));
+            assert!(outbox.state.lock_recover().items.is_empty());
+            assert!(!outbox.confirmation_kept("ÄDA@example.org"));
+            let restored = Outbox::durable(root.path(), mailer(&scripted), Limits::DEFAULT).unwrap();
+            assert!(restored.state.lock_recover().items.is_empty());
+            assert!(!restored.confirmation_kept("äda@example.org"));
+            assert_eq!(scripted.count(), 0);
+        }
+
+        phase removal_keeps_the_receipt_of_a_confirmation_already_delivered;
+        {
+            let root = tempfile::tempdir().unwrap();
+            let scripted = Scripted::new([]);
+            let outbox = Outbox::durable(root.path(), mailer(&scripted), Limits::DEFAULT).unwrap();
+            assert!(outbox.confirmation_receipt("ada@example.org", true));
+            outbox.cancel(&"aa".repeat(32), Some(&receipt_key("ada@example.org")));
+            assert!(outbox.confirmation_kept("ada@example.org"));
+            let restored = Outbox::durable(root.path(), mailer(&scripted), Limits::DEFAULT).unwrap();
+            assert!(restored.confirmation_kept("ada@example.org"));
+        }
     }
 
     /// Writes an outbox file by hand, as a previous run would have.
@@ -1079,19 +1128,6 @@ mod tests {
         let restored = Outbox::durable(&dir, mailer(&scripted), bytes_only).unwrap();
         assert_eq!(restored.state.lock_recover().items.len(), 1);
         assert_eq!(files(&dir).len(), 1);
-    }
-
-    #[test]
-    fn json_escaping_cannot_make_an_acknowledged_mail_unrecoverable() {
-        let root = tempfile::tempdir().unwrap();
-        let scripted = Scripted::new([]);
-        let outbox = Outbox::durable(root.path(), mailer(&scripted), Limits::DEFAULT).unwrap();
-        let mut mail = a_mail();
-        mail.text = format!("link{}", "\u{0000}".repeat(200_000));
-        assert!(u64::try_from(mail.weight()).unwrap() < MAX_ENTRY_BYTES);
-        assert!(!outbox.enqueue(Kind::Confirm, mail));
-        assert!(files(root.path()).is_empty());
-        assert!(outbox.state.lock_recover().items.is_empty());
     }
 
     #[tokio::test]
@@ -1263,38 +1299,6 @@ mod tests {
             remaining.is_empty(),
             "remaining outbox files: {remaining:?}"
         );
-    }
-
-    #[test]
-    fn alternate_removal_clears_pending_mail_and_receipts_by_protocol_contact_key() {
-        let root = tempfile::tempdir().unwrap();
-        let scripted = Scripted::new([]);
-        let outbox = Outbox::durable(root.path(), mailer(&scripted), Limits::DEFAULT).unwrap();
-        let mut mail = a_mail();
-        mail.to = "Äda@Example.org".into();
-        assert!(outbox.enqueue_for(Kind::Confirm, mail, Some("aa".repeat(32))));
-        assert!(outbox.confirmation_receipt(" ÄDA@example.org ", true));
-        assert!(outbox.confirmation_kept("äda@example.org"));
-        let hash = receipt_key("äda@example.org");
-        outbox.cancel(&"bb".repeat(32), Some(&hash));
-        assert!(outbox.state.lock_recover().items.is_empty());
-        assert!(!outbox.confirmation_kept("ÄDA@example.org"));
-        let restored = Outbox::durable(root.path(), mailer(&scripted), Limits::DEFAULT).unwrap();
-        assert!(restored.state.lock_recover().items.is_empty());
-        assert!(!restored.confirmation_kept("äda@example.org"));
-        assert_eq!(scripted.count(), 0);
-    }
-
-    #[test]
-    fn removal_keeps_the_receipt_of_a_confirmation_already_delivered() {
-        let root = tempfile::tempdir().unwrap();
-        let scripted = Scripted::new([]);
-        let outbox = Outbox::durable(root.path(), mailer(&scripted), Limits::DEFAULT).unwrap();
-        assert!(outbox.confirmation_receipt("ada@example.org", true));
-        outbox.cancel(&"aa".repeat(32), Some(&receipt_key("ada@example.org")));
-        assert!(outbox.confirmation_kept("ada@example.org"));
-        let restored = Outbox::durable(root.path(), mailer(&scripted), Limits::DEFAULT).unwrap();
-        assert!(restored.confirmation_kept("ada@example.org"));
     }
 
     #[tokio::test]

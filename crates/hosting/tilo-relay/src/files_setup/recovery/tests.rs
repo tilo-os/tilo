@@ -90,93 +90,97 @@ fn fixture_state(governor: &ed25519_dalek::SigningKey) -> JoinedNamespace {
     }
 }
 
-#[test]
-fn private_recovery_preserves_replica_binding_and_signed_authority() {
-    use std::os::unix::fs::PermissionsExt;
-    let temp = tempfile::tempdir().unwrap();
-    let governor = ed25519_dalek::SigningKey::from_bytes(&[73; 32]);
-    let person = governor.verifying_key().to_bytes();
-    let joined = fixture_state(&governor);
-    let workspace = joined.authority.workspace;
-    let cache = temp.path().join("recovered");
-    prepare_join(&cache, workspace, person, joined).unwrap();
-    assert_eq!(
-        cache.metadata().unwrap().permissions().mode() & 0o777,
-        0o700
-    );
-    for file in [
-        "content-peers.json",
-        "workspace-ticket",
-        "workspace-authority.bin",
-    ] {
+tilo_test_env::scenario! {
+    fn recovery_keeps_signed_authority_and_leaves_nothing_behind_on_refusal;
+
+    phase private_recovery_preserves_replica_binding_and_signed_authority;
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempfile::tempdir().unwrap();
+        let governor = ed25519_dalek::SigningKey::from_bytes(&[73; 32]);
+        let person = governor.verifying_key().to_bytes();
+        let joined = fixture_state(&governor);
+        let workspace = joined.authority.workspace;
+        let cache = temp.path().join("recovered");
+        prepare_join(&cache, workspace, person, joined).unwrap();
         assert_eq!(
-            cache.join(file).metadata().unwrap().permissions().mode() & 0o777,
-            0o600
+            cache.metadata().unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        for file in [
+            "content-peers.json",
+            "workspace-ticket",
+            "workspace-authority.bin",
+        ] {
+            assert_eq!(
+                cache.join(file).metadata().unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+        // The tree is the workspace's Files record, not a file recovery wrote.
+        assert!(!cache.join("namespace.bin").exists());
+        let peers = fs::workspace_authority::load_persisted_content_peers(&cache).unwrap();
+        assert_ne!(
+            peers[0].endpoint.id,
+            peers[0].decoded_ticket().unwrap().unwrap().node.id
+        );
+        assert_eq!(
+            peers[0].decoded_ticket().unwrap().unwrap().workspace_id(),
+            workspace
+        );
+        let before = std::fs::read(cache.join("workspace-authority.bin")).unwrap();
+        assert!(prepare_join(&cache, workspace, person, fixture_state(&governor)).is_err());
+        assert_eq!(
+            std::fs::read(cache.join("workspace-authority.bin")).unwrap(),
+            before
         );
     }
-    // The tree is the workspace's Files record, not a file recovery wrote.
-    assert!(!cache.join("namespace.bin").exists());
-    let peers = fs::workspace_authority::load_persisted_content_peers(&cache).unwrap();
-    assert_ne!(
-        peers[0].endpoint.id,
-        peers[0].decoded_ticket().unwrap().unwrap().node.id
-    );
-    assert_eq!(
-        peers[0].decoded_ticket().unwrap().unwrap().workspace_id(),
-        workspace
-    );
-    let before = std::fs::read(cache.join("workspace-authority.bin")).unwrap();
-    assert!(prepare_join(&cache, workspace, person, fixture_state(&governor)).is_err());
-    assert_eq!(
-        std::fs::read(cache.join("workspace-authority.bin")).unwrap(),
-        before
-    );
-}
 
-#[test]
-fn recovery_refusals_leave_no_cache() {
-    let temp = tempfile::tempdir().unwrap();
-    let governor = ed25519_dalek::SigningKey::from_bytes(&[73; 32]);
-    let person = governor.verifying_key().to_bytes();
-    let cache = temp.path().join("recovery");
-    let joined = fixture_state(&governor);
-    assert!(prepare_join(&cache, uuid::Uuid::nil(), person, joined).is_err());
-    assert!(!cache.exists());
-    let joined = fixture_state(&governor);
-    let workspace = joined.authority.workspace;
-    assert!(prepare_join(&cache, workspace, [72; 32], joined).is_err());
-    assert!(!cache.exists());
-    let mut joined = fixture_state(&governor);
-    joined.authority =
-        WorkspaceAuthorityEnvelope::sign(workspace, 9, Vec::new(), false, &governor).unwrap();
-    assert!(prepare_join(&cache, workspace, person, joined).is_err());
-    assert!(!cache.exists());
-    let options = JoinOptions {
-        cache_dir: cache.clone(),
-        identity_root: temp.path().join("absent-identity"),
-        acl: temp.path().join("absent-acl"),
-        device: String::new(),
-        service: String::new(),
-        workspace_id: WorkspaceId::from_u128(1),
-        files_workspace_id: workspace,
-        registry: None,
-        confirm_existing_files_access: false,
-    };
-    assert!(join(&options).is_err());
-    assert!(!options.identity_root.exists());
-    assert!(!cache.exists());
-}
+    phase recovery_refusals_leave_no_cache;
+    {
+        let temp = tempfile::tempdir().unwrap();
+        let governor = ed25519_dalek::SigningKey::from_bytes(&[73; 32]);
+        let person = governor.verifying_key().to_bytes();
+        let cache = temp.path().join("recovery");
+        let joined = fixture_state(&governor);
+        assert!(prepare_join(&cache, uuid::Uuid::nil(), person, joined).is_err());
+        assert!(!cache.exists());
+        let joined = fixture_state(&governor);
+        let workspace = joined.authority.workspace;
+        assert!(prepare_join(&cache, workspace, [72; 32], joined).is_err());
+        assert!(!cache.exists());
+        let mut joined = fixture_state(&governor);
+        joined.authority =
+            WorkspaceAuthorityEnvelope::sign(workspace, 9, Vec::new(), false, &governor).unwrap();
+        assert!(prepare_join(&cache, workspace, person, joined).is_err());
+        assert!(!cache.exists());
+        let options = JoinOptions {
+            cache_dir: cache.clone(),
+            identity_root: temp.path().join("absent-identity"),
+            acl: temp.path().join("absent-acl"),
+            device: String::new(),
+            service: String::new(),
+            workspace_id: WorkspaceId::from_u128(1),
+            files_workspace_id: workspace,
+            registry: None,
+            confirm_existing_files_access: false,
+        };
+        assert!(join(&options).is_err());
+        assert!(!options.identity_root.exists());
+        assert!(!cache.exists());
+    }
 
-#[test]
-fn recovery_identity_loader_never_creates_missing_credentials() {
-    let temp = tempfile::tempdir().unwrap();
-    let root = temp.path().join("absent");
-    let paths = IdentityPaths::under(&root);
-    assert!(
-        fs::identity::load_existing_certified_mount_identity(&paths, tilo_clock::unix_now_ns())
-            .is_err()
-    );
-    assert!(!root.exists());
+    phase recovery_identity_loader_never_creates_missing_credentials;
+    {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("absent");
+        let paths = IdentityPaths::under(&root);
+        assert!(
+            fs::identity::load_existing_certified_mount_identity(&paths, tilo_clock::unix_now_ns())
+                .is_err()
+        );
+        assert!(!root.exists());
+    }
 }
 
 struct NativeHost {

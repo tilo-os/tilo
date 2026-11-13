@@ -688,97 +688,101 @@ mod tests {
     use super::*;
     use std::os::unix::process::ExitStatusExt;
 
-    #[test]
-    fn the_requesting_account_comes_from_polkit_or_sudo() {
-        assert_eq!(invoking_uid_from(Some("1000"), Some("1001")).unwrap(), 1000);
-        assert_eq!(invoking_uid_from(None, Some("1001")).unwrap(), 1001);
-        assert!(invoking_uid_from(None, None).is_err());
-        assert!(invoking_uid_from(None, Some("person")).is_err());
-    }
+    tilo_test_env::scenario! {
+        fn the_broker_acts_as_the_account_that_asked;
 
-    #[test]
-    fn enrollment_requests_run_as_the_invoking_user_with_bounded_diagnostics() {
+        phase the_requesting_account_comes_from_polkit_or_sudo;
         {
-            let passwd = "root:x:0:0:root:/root:/bin/bash\ntilouser:x:42424:31337::/home/tilouser:/sbin/nologin\n";
-            assert_eq!(
-                account_from_passwd(passwd, 42_424),
-                Some(Account {
-                    name: "tilouser".into(),
-                    gid: 31_337,
-                    home: PathBuf::from("/home/tilouser"),
-                })
-            );
-            assert_eq!(account_from_passwd(passwd, 7), None);
+            assert_eq!(invoking_uid_from(Some("1000"), Some("1001")).unwrap(), 1000);
+            assert_eq!(invoking_uid_from(None, Some("1001")).unwrap(), 1001);
+            assert!(invoking_uid_from(None, None).is_err());
+            assert!(invoking_uid_from(None, Some("person")).is_err());
         }
-        {
-            let error = enrollment_command_result(
-                &bounded_command::Output {
-                    status: std::process::ExitStatus::from_raw(1 << 8),
-                    stdout: Vec::new(),
-                    stderr: b"requester lease expired\n".to_vec(),
-                },
-                "personal-device enrollment was not completed",
-            )
-            .unwrap_err();
-            assert_eq!(
-                error.to_string(),
-                "personal-device enrollment was not completed: requester lease expired"
-            );
-        }
-        {
-            let error = enrollment_command_result(
-                &bounded_command::Output {
-                    status: std::process::ExitStatus::from_raw(2 << 8),
-                    stdout: Vec::new(),
-                    stderr: Vec::new(),
-                },
-                "home-server enrollment was not completed",
-            )
-            .unwrap_err();
-            assert_eq!(
-                error.to_string(),
-                "home-server enrollment was not completed (exit status: 2)"
-            );
-        }
-        // Phase `personal_device_ids_are_exact_ed25519_width_hex`.
-        {
-            assert!(validate_peer_ids(&"11".repeat(32), &"22".repeat(32)).is_ok());
-            assert!(validate_peer_ids("11", &"22".repeat(32)).is_err());
-            assert!(validate_peer_ids(&"zz".repeat(32), &"22".repeat(32)).is_err());
-        }
-        {
-            let request = ApplyRequest {
-                identity_root: PathBuf::from("/var/lib/tilo"),
-                work: WorkSetting::own_person(),
-                workspace_ids: vec![
-                    tilo_relay_protocol::WorkspaceId::from_u128(9),
-                    tilo_relay_protocol::WorkspaceId::from_u128(2),
-                    tilo_relay_protocol::WorkspaceId::from_u128(9),
-                ],
-                full_content_replication: true,
-                inbound_relay: true,
-                remote_control_relay: false,
-                app_serving: false,
-                compute: false,
-            };
-            let config = desired_config(&request).unwrap();
-            assert!(!config.work.takes_nothing());
-            assert!(config.services.full_content_replication);
-        }
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let home = dir.path().join("home");
-            let identity = home.join(".local/share/tilo");
-            std::fs::create_dir_all(&identity).unwrap();
-            let uid = std::fs::metadata("/proc/self").unwrap().uid();
-            assert_eq!(
-                validate_identity_root(&identity, uid, &home).unwrap(),
-                identity.canonicalize().unwrap()
-            );
 
-            let outside = dir.path().join("outside/tilo");
-            std::fs::create_dir_all(&outside).unwrap();
-            assert!(validate_identity_root(&outside, uid, &home).is_err());
+        phase enrollment_requests_run_as_the_invoking_user_with_bounded_diagnostics;
+        {
+            {
+                let passwd = "root:x:0:0:root:/root:/bin/bash\ntilouser:x:42424:31337::/home/tilouser:/sbin/nologin\n";
+                assert_eq!(
+                    account_from_passwd(passwd, 42_424),
+                    Some(Account {
+                        name: "tilouser".into(),
+                        gid: 31_337,
+                        home: PathBuf::from("/home/tilouser"),
+                    })
+                );
+                assert_eq!(account_from_passwd(passwd, 7), None);
+            }
+            {
+                let error = enrollment_command_result(
+                    &bounded_command::Output {
+                        status: std::process::ExitStatus::from_raw(1 << 8),
+                        stdout: Vec::new(),
+                        stderr: b"requester lease expired\n".to_vec(),
+                    },
+                    "personal-device enrollment was not completed",
+                )
+                .unwrap_err();
+                assert_eq!(
+                    error.to_string(),
+                    "personal-device enrollment was not completed: requester lease expired"
+                );
+            }
+            {
+                let error = enrollment_command_result(
+                    &bounded_command::Output {
+                        status: std::process::ExitStatus::from_raw(2 << 8),
+                        stdout: Vec::new(),
+                        stderr: Vec::new(),
+                    },
+                    "home-server enrollment was not completed",
+                )
+                .unwrap_err();
+                assert_eq!(
+                    error.to_string(),
+                    "home-server enrollment was not completed (exit status: 2)"
+                );
+            }
+            // Phase `personal_device_ids_are_exact_ed25519_width_hex`.
+            {
+                assert!(validate_peer_ids(&"11".repeat(32), &"22".repeat(32)).is_ok());
+                assert!(validate_peer_ids("11", &"22".repeat(32)).is_err());
+                assert!(validate_peer_ids(&"zz".repeat(32), &"22".repeat(32)).is_err());
+            }
+            {
+                let request = ApplyRequest {
+                    identity_root: PathBuf::from("/var/lib/tilo"),
+                    work: WorkSetting::own_person(),
+                    workspace_ids: vec![
+                        tilo_relay_protocol::WorkspaceId::from_u128(9),
+                        tilo_relay_protocol::WorkspaceId::from_u128(2),
+                        tilo_relay_protocol::WorkspaceId::from_u128(9),
+                    ],
+                    full_content_replication: true,
+                    inbound_relay: true,
+                    remote_control_relay: false,
+                    app_serving: false,
+                    compute: false,
+                };
+                let config = desired_config(&request).unwrap();
+                assert!(!config.work.takes_nothing());
+                assert!(config.services.full_content_replication);
+            }
+            {
+                let dir = tempfile::tempdir().unwrap();
+                let home = dir.path().join("home");
+                let identity = home.join(".local/share/tilo");
+                std::fs::create_dir_all(&identity).unwrap();
+                let uid = std::fs::metadata("/proc/self").unwrap().uid();
+                assert_eq!(
+                    validate_identity_root(&identity, uid, &home).unwrap(),
+                    identity.canonicalize().unwrap()
+                );
+
+                let outside = dir.path().join("outside/tilo");
+                std::fs::create_dir_all(&outside).unwrap();
+                assert!(validate_identity_root(&outside, uid, &home).is_err());
+            }
         }
     }
 

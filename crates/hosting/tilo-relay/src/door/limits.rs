@@ -147,70 +147,74 @@ mod tests {
         text.parse().unwrap()
     }
 
-    #[test]
-    fn ipv6_addresses_share_their_slash_64() {
-        let hasher = IpHasher::new([7; 32]);
-        assert_eq!(
-            hasher.hash(ip("2001:db8:1:2::1")),
-            hasher.hash(ip("2001:db8:1:2:ffff::9"))
-        );
-        assert_ne!(
-            hasher.hash(ip("2001:db8:1:2::1")),
-            hasher.hash(ip("2001:db8:1:3::1"))
-        );
-        assert_ne!(hasher.hash(ip("192.0.2.1")), hasher.hash(ip("192.0.2.2")));
-        assert_ne!(
-            IpHasher::new([8; 32]).hash(ip("192.0.2.1")),
-            hasher.hash(ip("192.0.2.1"))
-        );
-        assert_eq!(hasher.hash(ip("192.0.2.1")).len(), 64);
-    }
+    tilo_test_env::scenario! {
+        fn the_doors_limits_count_asks_per_network_and_window;
 
-    #[test]
-    fn five_addresses_per_ten_minutes_and_twenty_per_day() {
-        let mut limits = JoinLimits::new(JoinRates::WAIT_LIST);
-        for minute in 0..5 {
-            limits.check_and_record("h", minute * 60_000).unwrap();
+        phase ipv6_addresses_share_their_slash_64;
+        {
+            let hasher = IpHasher::new([7; 32]);
+            assert_eq!(
+                hasher.hash(ip("2001:db8:1:2::1")),
+                hasher.hash(ip("2001:db8:1:2:ffff::9"))
+            );
+            assert_ne!(
+                hasher.hash(ip("2001:db8:1:2::1")),
+                hasher.hash(ip("2001:db8:1:3::1"))
+            );
+            assert_ne!(hasher.hash(ip("192.0.2.1")), hasher.hash(ip("192.0.2.2")));
+            assert_ne!(
+                IpHasher::new([8; 32]).hash(ip("192.0.2.1")),
+                hasher.hash(ip("192.0.2.1"))
+            );
+            assert_eq!(hasher.hash(ip("192.0.2.1")).len(), 64);
         }
-        let retry = limits.check_and_record("h", 5 * 60_000).unwrap_err();
-        assert_eq!(retry, 300, "the oldest ask leaves the window at minute 10");
-        limits.check_and_record("other", 5 * 60_000).unwrap();
-        let mut day = JoinLimits::new(JoinRates::WAIT_LIST);
-        for index in 0..20 {
-            day.check_and_record("h", index * 11 * 60_000).unwrap();
-        }
-        assert!(day.check_and_record("h", 20 * 11 * 60_000).is_err());
-    }
 
-    #[test]
-    fn a_forgotten_ask_frees_its_place_in_the_window() {
-        let mut limits = JoinLimits::new(JoinRates::WAIT_LIST);
-        for minute in 0..5 {
-            limits.check_and_record("h", minute * 60_000).unwrap();
+        phase five_addresses_per_ten_minutes_and_twenty_per_day;
+        {
+            let mut limits = JoinLimits::new(JoinRates::WAIT_LIST);
+            for minute in 0..5 {
+                limits.check_and_record("h", minute * 60_000).unwrap();
+            }
+            let retry = limits.check_and_record("h", 5 * 60_000).unwrap_err();
+            assert_eq!(retry, 300, "the oldest ask leaves the window at minute 10");
+            limits.check_and_record("other", 5 * 60_000).unwrap();
+            let mut day = JoinLimits::new(JoinRates::WAIT_LIST);
+            for index in 0..20 {
+                day.check_and_record("h", index * 11 * 60_000).unwrap();
+            }
+            assert!(day.check_and_record("h", 20 * 11 * 60_000).is_err());
         }
-        limits.forget("h", 4 * 60_000);
-        limits.check_and_record("h", 5 * 60_000).unwrap();
-        assert!(limits.check_and_record("h", 5 * 60_000).is_err());
-        // Forgetting what was never recorded changes nothing.
-        limits.forget("h", 1);
-        limits.forget("nobody", 0);
-        assert!(limits.check_and_record("h", 5 * 60_000).is_err());
-    }
 
-    #[test]
-    fn lookups_get_thirty_per_ten_minutes_and_three_hundred_per_day() {
-        let mut limits = JoinLimits::new(JoinRates::WAIT_LIST_LOOKUPS);
-        for second in 0..30 {
-            limits.check_and_record("h", second * 1_000).unwrap();
+        phase a_forgotten_ask_frees_its_place_in_the_window;
+        {
+            let mut limits = JoinLimits::new(JoinRates::WAIT_LIST);
+            for minute in 0..5 {
+                limits.check_and_record("h", minute * 60_000).unwrap();
+            }
+            limits.forget("h", 4 * 60_000);
+            limits.check_and_record("h", 5 * 60_000).unwrap();
+            assert!(limits.check_and_record("h", 5 * 60_000).is_err());
+            // Forgetting what was never recorded changes nothing.
+            limits.forget("h", 1);
+            limits.forget("nobody", 0);
+            assert!(limits.check_and_record("h", 5 * 60_000).is_err());
         }
-        assert_eq!(limits.check_and_record("h", 30_000).unwrap_err(), 570);
-        let mut day = JoinLimits::new(JoinRates::WAIT_LIST_LOOKUPS);
-        for index in 0..300 {
-            day.check_and_record("h", index * 130_000).unwrap();
+
+        phase lookups_get_thirty_per_ten_minutes_and_three_hundred_per_day;
+        {
+            let mut limits = JoinLimits::new(JoinRates::WAIT_LIST_LOOKUPS);
+            for second in 0..30 {
+                limits.check_and_record("h", second * 1_000).unwrap();
+            }
+            assert_eq!(limits.check_and_record("h", 30_000).unwrap_err(), 570);
+            let mut day = JoinLimits::new(JoinRates::WAIT_LIST_LOOKUPS);
+            for index in 0..300 {
+                day.check_and_record("h", index * 130_000).unwrap();
+            }
+            assert!(
+                day.check_and_record("h", 300 * 130_000).is_err(),
+                "the three hundredth of the day is the last"
+            );
         }
-        assert!(
-            day.check_and_record("h", 300 * 130_000).is_err(),
-            "the three hundredth of the day is the last"
-        );
     }
 }

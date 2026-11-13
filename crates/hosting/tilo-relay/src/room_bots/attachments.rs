@@ -556,105 +556,109 @@ mod tests {
 
     use super::*;
 
-    /// The pictures and recordings of the reports filed in the Chat's
-    /// record are the files the host keeps for them, each for whoever filed
-    /// it; a report without either references nothing.
-    #[test]
-    fn a_filed_reports_picture_and_recording_are_kept_for_its_reporter() {
-        let mut doc = AutoCommit::new();
-        chat::demo::seed(&mut doc).unwrap();
-        let picture = "ab".repeat(32);
-        let recording = "cd".repeat(32);
-        let file = |id: &str, screenshot: Option<serde_json::Value>| {
-            let mut feedback = serde_json::json!({
-                "text": "The picker misses a row",
-                "context": [],
-            });
-            if let Some(screenshot) = screenshot {
-                feedback["screenshot"] = screenshot;
-            }
-            if id == "c" {
-                feedback["recording"] = serde_json::json!({
-                    "hash": recording,
-                    "app": "so.tilo.notes",
-                    "app_name": "Notes",
-                    "kind": "notes.note",
-                    "from_ms": 1_000,
-                    "to_ms": 2_000,
-                    "steps": 3,
-                    "bytes": 4_096,
-                });
-            }
-            serde_json::json!({
-                "id": id.repeat(32),
-                "destination": {
-                    "room": "room",
-                    "provider": "record:so.tilo.chat:",
-                    "channel": "c_general",
-                },
-                "feedback": feedback,
-            })
-        };
-        let with_picture = serde_json::json!({
-            "hash": picture.to_ascii_uppercase(),
-            "width": 4,
-            "height": 3,
-        });
-        for (author, submission) in [
-            ("visitor:one", file("a", Some(with_picture))),
-            ("visitor:two", file("b", None)),
-            ("visitor:three", file("c", None)),
-        ] {
-            chat::demo::apply_as(
-                &mut doc,
-                author,
-                chat::Chat::SUBMIT_FEEDBACK.with(chat::record::chat::SubmitFeedback {
-                    channel: tilo_resource::Id::from_raw("c_general"),
-                    submission,
-                }),
-            )
-            .unwrap();
-        }
-        let mut kept = reported(&doc.save());
-        kept.sort_by(|a, b| a.member.cmp(&b.member));
-        assert_eq!(
-            kept,
-            [
-                Referenced {
-                    hash: picture,
-                    member: "visitor:one".into(),
-                    size: None,
-                },
-                Referenced {
-                    hash: recording,
-                    member: "visitor:three".into(),
-                    size: Some(4_096),
-                },
-            ]
-        );
-        assert!(reported(b"not a record").is_empty());
-    }
+    tilo_test_env::scenario! {
+        fn the_host_keeps_reported_files_for_their_reporters_within_a_quota;
 
-    #[test]
-    fn the_oldest_files_go_first_past_a_quota() {
-        let mut ledger = Ledger::default();
-        for (hash, member, order) in [("a", "ada", 0), ("b", "bo", 1), ("c", "ada", 2)] {
-            ledger.kept.insert(
-                hash.into(),
-                Kept {
-                    member: member.into(),
-                    bytes: 10,
-                    order,
-                },
+        phase a_filed_reports_picture_and_recording_are_kept_for_its_reporter;
+        // The pictures and recordings of the reports filed in the Chat's
+        // record are the files the host keeps for them, each for whoever filed
+        // it; a report without either references nothing.
+        {
+            let mut doc = AutoCommit::new();
+            chat::demo::seed(&mut doc).unwrap();
+            let picture = "ab".repeat(32);
+            let recording = "cd".repeat(32);
+            let file = |id: &str, screenshot: Option<serde_json::Value>| {
+                let mut feedback = serde_json::json!({
+                    "text": "The picker misses a row",
+                    "context": [],
+                });
+                if let Some(screenshot) = screenshot {
+                    feedback["screenshot"] = screenshot;
+                }
+                if id == "c" {
+                    feedback["recording"] = serde_json::json!({
+                        "hash": recording,
+                        "app": "so.tilo.notes",
+                        "app_name": "Notes",
+                        "kind": "notes.note",
+                        "from_ms": 1_000,
+                        "to_ms": 2_000,
+                        "steps": 3,
+                        "bytes": 4_096,
+                    });
+                }
+                serde_json::json!({
+                    "id": id.repeat(32),
+                    "destination": {
+                        "room": "room",
+                        "provider": "record:so.tilo.chat:",
+                        "channel": "c_general",
+                    },
+                    "feedback": feedback,
+                })
+            };
+            let with_picture = serde_json::json!({
+                "hash": picture.to_ascii_uppercase(),
+                "width": 4,
+                "height": 3,
+            });
+            for (author, submission) in [
+                ("visitor:one", file("a", Some(with_picture))),
+                ("visitor:two", file("b", None)),
+                ("visitor:three", file("c", None)),
+            ] {
+                chat::demo::apply_as(
+                    &mut doc,
+                    author,
+                    chat::Chat::SUBMIT_FEEDBACK.with(chat::record::chat::SubmitFeedback {
+                        channel: tilo_resource::Id::from_raw("c_general"),
+                        submission,
+                    }),
+                )
+                .unwrap();
+            }
+            let mut kept = reported(&doc.save());
+            kept.sort_by(|a, b| a.member.cmp(&b.member));
+            assert_eq!(
+                kept,
+                [
+                    Referenced {
+                        hash: picture,
+                        member: "visitor:one".into(),
+                        size: None,
+                    },
+                    Referenced {
+                        hash: recording,
+                        member: "visitor:three".into(),
+                        size: Some(4_096),
+                    },
+                ]
             );
+            assert!(reported(b"not a record").is_empty());
         }
-        assert_eq!(ledger.total(Some("ada")), 20);
-        assert_eq!(ledger.total(None), 30);
-        assert_eq!(ledger.oldest(Some("ada")).as_deref(), Some("a"));
-        assert_eq!(ledger.oldest(Some("bo")).as_deref(), Some("b"));
-        assert_eq!(ledger.oldest(None).as_deref(), Some("a"));
-        let saved = serde_json::to_vec(&ledger).unwrap();
-        let read: Ledger = serde_json::from_slice(&saved).unwrap();
-        assert_eq!(read.kept, ledger.kept);
+
+        phase the_oldest_files_go_first_past_a_quota;
+        {
+            let mut ledger = Ledger::default();
+            for (hash, member, order) in [("a", "ada", 0), ("b", "bo", 1), ("c", "ada", 2)] {
+                ledger.kept.insert(
+                    hash.into(),
+                    Kept {
+                        member: member.into(),
+                        bytes: 10,
+                        order,
+                    },
+                );
+            }
+            assert_eq!(ledger.total(Some("ada")), 20);
+            assert_eq!(ledger.total(None), 30);
+            assert_eq!(ledger.oldest(Some("ada")).as_deref(), Some("a"));
+            assert_eq!(ledger.oldest(Some("bo")).as_deref(), Some("b"));
+            assert_eq!(ledger.oldest(None).as_deref(), Some("a"));
+            let saved = serde_json::to_vec(&ledger).unwrap();
+            let read: Ledger = serde_json::from_slice(&saved).unwrap();
+            assert_eq!(read.kept, ledger.kept);
+        }
     }
 }

@@ -862,303 +862,426 @@ impl Mailer for FakeMailer {
 mod tests {
     use super::*;
 
-    #[test]
-    fn confirmation_acceptance_and_queue_failure_stay_honest_across_restart() {
-        let root = tempfile::tempdir().unwrap();
-        let mailer = Arc::new(FakeMailer::default());
-        let limits = Limits {
-            max_items: 1,
-            ..Limits::DEFAULT
-        };
-        let open = || {
-            DoorMail::assembled(
+    tilo_test_env::scenario! {
+        fn the_door_mails_only_what_is_safe_and_stays_honest_about_it;
+
+        phase confirmation_acceptance_and_queue_failure_stay_honest_across_restart;
+        {
+            let root = tempfile::tempdir().unwrap();
+            let mailer = Arc::new(FakeMailer::default());
+            let limits = Limits {
+                max_items: 1,
+                ..Limits::DEFAULT
+            };
+            let open = || {
+                DoorMail::assembled(
+                    "https://tilo.example/",
+                    "Lounge",
+                    Templates::baked(),
+                    Outbox::durable(root.path(), mailer.clone(), limits).unwrap(),
+                    false,
+                )
+            };
+            let door = open();
+            let to = WaitListMailbox {
+                contact: "Ada@example.org".into(),
+                language: "en".into(),
+            };
+            assert!(door.send_for(
+                Kind::Confirm,
+                door.confirm(&to, &"ab".repeat(32), &"cd".repeat(32)),
+                &"ef".repeat(32)
+            ));
+            assert!(door.confirmation_kept("ada@example.org"));
+            drop(door);
+            let restarted = open();
+            assert!(restarted.confirmation_kept("ADA@example.org"));
+            assert!(!restarted.send_for(
+                Kind::Confirm,
+                restarted.confirm(&to, &"12".repeat(32), &"34".repeat(32)),
+                &"56".repeat(32)
+            ));
+            assert!(!restarted.confirmation_kept("ada@example.org"));
+            drop(restarted);
+            assert!(!open().confirmation_kept("ada@example.org"));
+            assert!(mailer.sent.lock().unwrap().is_empty());
+        }
+
+        phase a_mail_is_logged_without_its_address_or_links;
+        {
+            let door = DoorMail::new(
+                Arc::new(FakeMailer::default()),
+                "https://tilo.example/",
+                "Lounge",
+            );
+            let to = WaitListMailbox {
+                contact: "ada@example.org".into(),
+                language: "de".into(),
+            };
+            let mail = door.confirm(&to, "c0ffee", "beef").unwrap();
+            assert!(
+                mail.text
+                    .contains("https://tilo.example/?wait-list-confirm=c0ffee")
+            );
+            assert!(
+                mail.text
+                    .contains("https://tilo.example/?wait-list-remove=beef")
+            );
+            assert!(mail.subject.contains("Warteliste"));
+            let logged = format!("{mail:?}");
+            assert!(!logged.contains("ada@") && !logged.contains("c0ffee"));
+        }
+
+        phase a_member_has_only_invitations_on_this_door_mailed;
+        {
+            let door = DoorMail::new(
+                Arc::new(FakeMailer::default()),
+                "https://tilo.example/",
+                "Lounge",
+            );
+            assert!(door.on_door("https://tilo.example/?invite=AAEC"));
+            assert!(door.on_door("https://tilo.example/#/desktop/room/x?invite=AAEC"));
+            // An invitation with its certificate chain is several KiB long.
+            let long = format!(
+                "https://tilo.example/#/@host/w/x?invite={}",
+                "A".repeat(6000)
+            );
+            assert!(door.on_door(&long));
+            for language in LANGUAGES {
+                let to = WaitListMailbox {
+                    contact: "ada@example.org".into(),
+                    language: language.into(),
+                };
+                let mail = door.invite(&to, &long, &"ab".repeat(32)).unwrap();
+                assert!(mail.text.contains(&long));
+                assert!(mail.html.contains(&long));
+                assert!(door.send_for(Kind::Invite, Some(mail), &"cd".repeat(32)));
+            }
+            for link in [
+                "https://evil.example/?invite=AAEC",
+                "https://tilo.example.evil/?invite=AAEC",
+                "https://tilo.example/?other=1",
+                "https://tilo.example/?invite=AA EC",
+                &format!("https://tilo.example/?invite={}", "A".repeat(20_000)),
+            ] {
+                assert!(!door.on_door(link), "{link}");
+            }
+        }
+
+        phase the_door_mails_only_plain_https_links_on_a_page_that_is_one;
+        {
+            assert!(safe_url("https://tilo.example/", false));
+            assert!(safe_url(
+                "https://tilo.example.invalid/?wait-list-confirm=aa",
+                false
+            ));
+            assert!(safe_url(
+                "https://tilo.example/#/desktop/room/x?invite=AAEC",
+                false
+            ));
+            assert!(safe_url("http://localhost:8790/", true));
+            assert!(safe_url("http://127.0.0.1:9/", true));
+            assert!(safe_url("http://[::1]:9/", true));
+            assert!(safe_url("http://tilo.localhost:24120/", true));
+            assert!(!safe_url("http://localhost.tilo.example/", true));
+            // A plain loopback page is the local review mode's, not a room's.
+            assert!(!safe_url("http://localhost:8790/", false));
+            assert!(!safe_url("http://127.0.0.1:9/", false));
+            for bad in [
+                "",
+                "javascript:alert(1)",
+                "data:text/html,<script>alert(1)</script>",
+                "//tilo.example/",
+                "http://tilo.example/",
+                "https:///",
+                "https://user:pass@tilo.example/",
+                "https://tilo.example/a b",
+                "https://tilo.example/\r\n",
+            ] {
+                assert!(!safe_url(bad, true) && !safe_url(bad, false), "{bad:?}");
+            }
+
+            let door = DoorMail::new(
+                Arc::new(FakeMailer::default()),
+                "https://tilo.example/",
+                "Lounge",
+            );
+            let to = WaitListMailbox {
+                contact: "ada@example.org".into(),
+                language: "en".into(),
+            };
+            assert!(
+                door.invite(&to, "javascript:alert(1)", "aa").is_none(),
+                "an invitation the room let through is never mailed"
+            );
+            assert!(
+                door.invite(&to, "http://tilo.example/?invite=AA", "aa")
+                    .is_none()
+            );
+            assert!(
+                door.invite(&to, "http://localhost:8790/?invite=AA", "aa")
+                    .is_some()
+            );
+
+            // A room's door, outside the local mode, mails no plain http link.
+            let dir = tempfile::tempdir().unwrap();
+            let room = DoorMail::durable(
+                Arc::new(FakeMailer::default()),
                 "https://tilo.example/",
                 "Lounge",
                 Templates::baked(),
-                Outbox::durable(root.path(), mailer.clone(), limits).unwrap(),
                 false,
+                &dir.path().join("mail-outbox"),
             )
-        };
-        let door = open();
-        let to = WaitListMailbox {
-            contact: "Ada@example.org".into(),
-            language: "en".into(),
-        };
-        assert!(door.send_for(
-            Kind::Confirm,
-            door.confirm(&to, &"ab".repeat(32), &"cd".repeat(32)),
-            &"ef".repeat(32)
-        ));
-        assert!(door.confirmation_kept("ada@example.org"));
-        drop(door);
-        let restarted = open();
-        assert!(restarted.confirmation_kept("ADA@example.org"));
-        assert!(!restarted.send_for(
-            Kind::Confirm,
-            restarted.confirm(&to, &"12".repeat(32), &"34".repeat(32)),
-            &"56".repeat(32)
-        ));
-        assert!(!restarted.confirmation_kept("ada@example.org"));
-        drop(restarted);
-        assert!(!open().confirmation_kept("ada@example.org"));
-        assert!(mailer.sent.lock().unwrap().is_empty());
-    }
-
-    #[test]
-    fn the_built_in_templates_are_templates_this_mail_fills() {
-        let templates = Templates::baked();
-        check_template(
-            Path::new("layout.html"),
-            &templates.layout,
-            &LAYOUT_PLACEHOLDERS,
-            true,
-        )
-        .unwrap();
-        for (language, templates) in [("en", &templates.en), ("de", &templates.de)] {
-            for (kind, body) in [
-                (Kind::Confirm, &templates.confirm),
-                (Kind::Invite, &templates.invite),
-                (Kind::Removed, &templates.removed),
-            ] {
-                let stem = Path::new(language).join(kind.name());
-                check_template(
-                    &stem.with_extension("txt"),
-                    &body.text,
-                    &BODY_PLACEHOLDERS,
-                    false,
-                )
-                .unwrap();
-                check_template(
-                    &stem.with_extension("html"),
-                    &body.html,
-                    &BODY_PLACEHOLDERS,
-                    false,
-                )
-                .unwrap();
-            }
+            .unwrap();
+            assert!(
+                room.invite(&to, "http://localhost:8790/?invite=AA", "aa")
+                    .is_none()
+            );
+            assert!(
+                room.invite(&to, "https://tilo.example/?invite=AA", "aa")
+                    .is_some()
+            );
         }
-    }
 
-    #[test]
-    fn every_mail_fills_every_placeholder_in_every_language() {
-        for language in LANGUAGES {
-            for kind in Kind::ALL {
-                let values = Values {
-                    workspace: "Lounge",
-                    email: "ada@example.org",
-                    link: "https://tilo.example/?x=1",
-                    remove_link: "https://tilo.example/?y=2",
-                    door: "https://tilo.example/",
-                };
-                let mail = Templates::baked().render(kind, language, "ada@example.org", &values);
-                assert!(!mail.subject.is_empty() && !mail.subject.contains("{{"));
-                for body in [&mail.text, &mail.html] {
-                    assert!(!body.contains("{{"), "{language} {kind:?}: {body}");
-                }
-                assert!(mail.html.starts_with("<!doctype html>"));
-                assert!(mail.html.contains(&format!("lang=\"{language}\"")));
-                if kind != Kind::Removed {
-                    assert!(mail.text.contains("https://tilo.example/?y=2"));
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn the_html_escapes_what_it_is_filled_with_and_the_text_does_not() {
-        let values = Values {
-            workspace: "<Ada & Bo>",
-            ..Values::default()
-        };
-        let mail = Templates::baked().render(Kind::Removed, "en", "x@example.org", &values);
-        assert!(mail.html.contains("&lt;Ada &amp; Bo&gt;"));
-        assert!(!mail.html.contains("<Ada"));
-        assert!(mail.text.contains("<Ada & Bo>"));
-    }
-
-    #[test]
-    fn a_value_that_spells_a_placeholder_is_never_filled_again() {
-        let values = Values {
-            workspace: "{{link}} <{{door}}>",
-            email: "ada@example.org",
-            link: "https://tilo.example/?wait-list-confirm=aa",
-            remove_link: "https://tilo.example/?wait-list-remove=bb",
-            door: "https://tilo.example/",
-        };
-        let mail = Templates::baked().render(Kind::Confirm, "en", "ada@example.org", &values);
-        // As text it stays as typed, in the HTML escaped, and neither takes
-        // the link's place.
-        assert!(mail.text.contains("{{link}} <{{door}}>"));
-        assert!(mail.html.contains("{{link}} &lt;{{door}}&gt;"));
-        assert_eq!(mail.html.matches("wait-list-confirm=aa").count(), 1);
-        assert_eq!(mail.text.matches("wait-list-confirm=aa").count(), 1);
-        assert!(mail.is_sendable());
-    }
-
-    #[test]
-    fn a_mail_is_logged_without_its_address_or_links() {
-        let door = DoorMail::new(
-            Arc::new(FakeMailer::default()),
-            "https://tilo.example/",
-            "Lounge",
-        );
-        let to = WaitListMailbox {
-            contact: "ada@example.org".into(),
-            language: "de".into(),
-        };
-        let mail = door.confirm(&to, "c0ffee", "beef").unwrap();
-        assert!(
-            mail.text
-                .contains("https://tilo.example/?wait-list-confirm=c0ffee")
-        );
-        assert!(
-            mail.text
-                .contains("https://tilo.example/?wait-list-remove=beef")
-        );
-        assert!(mail.subject.contains("Warteliste"));
-        let logged = format!("{mail:?}");
-        assert!(!logged.contains("ada@") && !logged.contains("c0ffee"));
-    }
-
-    #[test]
-    fn a_member_has_only_invitations_on_this_door_mailed() {
-        let door = DoorMail::new(
-            Arc::new(FakeMailer::default()),
-            "https://tilo.example/",
-            "Lounge",
-        );
-        assert!(door.on_door("https://tilo.example/?invite=AAEC"));
-        assert!(door.on_door("https://tilo.example/#/desktop/room/x?invite=AAEC"));
-        // An invitation with its certificate chain is several KiB long.
-        let long = format!(
-            "https://tilo.example/#/@host/w/x?invite={}",
-            "A".repeat(6000)
-        );
-        assert!(door.on_door(&long));
-        for language in LANGUAGES {
-            let to = WaitListMailbox {
-                contact: "ada@example.org".into(),
-                language: language.into(),
+        phase a_subject_that_could_be_more_headers_is_never_sent;
+        {
+            let good = Mail {
+                to: "ada@example.org".into(),
+                subject: "You're invited to Lounge".into(),
+                text: "hello".into(),
+                html: "<p>hello</p>".into(),
             };
-            let mail = door.invite(&to, &long, &"ab".repeat(32)).unwrap();
-            assert!(mail.text.contains(&long));
-            assert!(mail.html.contains(&long));
-            assert!(door.send_for(Kind::Invite, Some(mail), &"cd".repeat(32)));
-        }
-        for link in [
-            "https://evil.example/?invite=AAEC",
-            "https://tilo.example.evil/?invite=AAEC",
-            "https://tilo.example/?other=1",
-            "https://tilo.example/?invite=AA EC",
-            &format!("https://tilo.example/?invite={}", "A".repeat(20_000)),
-        ] {
-            assert!(!door.on_door(link), "{link}");
-        }
-    }
-
-    #[test]
-    fn the_door_mails_only_plain_https_links_on_a_page_that_is_one() {
-        assert!(safe_url("https://tilo.example/", false));
-        assert!(safe_url(
-            "https://tilo.example.invalid/?wait-list-confirm=aa",
-            false
-        ));
-        assert!(safe_url(
-            "https://tilo.example/#/desktop/room/x?invite=AAEC",
-            false
-        ));
-        assert!(safe_url("http://localhost:8790/", true));
-        assert!(safe_url("http://127.0.0.1:9/", true));
-        assert!(safe_url("http://[::1]:9/", true));
-        assert!(safe_url("http://tilo.localhost:24120/", true));
-        assert!(!safe_url("http://localhost.tilo.example/", true));
-        // A plain loopback page is the local review mode's, not a room's.
-        assert!(!safe_url("http://localhost:8790/", false));
-        assert!(!safe_url("http://127.0.0.1:9/", false));
-        for bad in [
-            "",
-            "javascript:alert(1)",
-            "data:text/html,<script>alert(1)</script>",
-            "//tilo.example/",
-            "http://tilo.example/",
-            "https:///",
-            "https://user:pass@tilo.example/",
-            "https://tilo.example/a b",
-            "https://tilo.example/\r\n",
-        ] {
-            assert!(!safe_url(bad, true) && !safe_url(bad, false), "{bad:?}");
-        }
-
-        let door = DoorMail::new(
-            Arc::new(FakeMailer::default()),
-            "https://tilo.example/",
-            "Lounge",
-        );
-        let to = WaitListMailbox {
-            contact: "ada@example.org".into(),
-            language: "en".into(),
-        };
-        assert!(
-            door.invite(&to, "javascript:alert(1)", "aa").is_none(),
-            "an invitation the room let through is never mailed"
-        );
-        assert!(
-            door.invite(&to, "http://tilo.example/?invite=AA", "aa")
-                .is_none()
-        );
-        assert!(
-            door.invite(&to, "http://localhost:8790/?invite=AA", "aa")
-                .is_some()
-        );
-
-        // A room's door, outside the local mode, mails no plain http link.
-        let dir = tempfile::tempdir().unwrap();
-        let room = DoorMail::durable(
-            Arc::new(FakeMailer::default()),
-            "https://tilo.example/",
-            "Lounge",
-            Templates::baked(),
-            false,
-            &dir.path().join("mail-outbox"),
-        )
-        .unwrap();
-        assert!(
-            room.invite(&to, "http://localhost:8790/?invite=AA", "aa")
-                .is_none()
-        );
-        assert!(
-            room.invite(&to, "https://tilo.example/?invite=AA", "aa")
-                .is_some()
-        );
-    }
-
-    #[test]
-    fn a_subject_that_could_be_more_headers_is_never_sent() {
-        let good = Mail {
-            to: "ada@example.org".into(),
-            subject: "You're invited to Lounge".into(),
-            text: "hello".into(),
-            html: "<p>hello</p>".into(),
-        };
-        assert!(good.is_sendable());
-        for subject in [
-            String::new(),
-            "Hello\r\nBcc: evil@example.net".into(),
-            "Hello\nBcc: evil@example.net".into(),
-            "Hello\u{0}".into(),
-            "x".repeat(MAX_SUBJECT_BYTES + 1),
-        ] {
+            assert!(good.is_sendable());
+            for subject in [
+                String::new(),
+                "Hello\r\nBcc: evil@example.net".into(),
+                "Hello\nBcc: evil@example.net".into(),
+                "Hello\u{0}".into(),
+                "x".repeat(MAX_SUBJECT_BYTES + 1),
+            ] {
+                let mail = Mail {
+                    subject,
+                    ..good.clone()
+                };
+                assert!(!mail.is_sendable());
+            }
             let mail = Mail {
-                subject,
-                ..good.clone()
+                to: "ada@example.org\r\nBcc: evil@example.net".into(),
+                ..good
             };
             assert!(!mail.is_sendable());
         }
-        let mail = Mail {
-            to: "ada@example.org\r\nBcc: evil@example.net".into(),
-            ..good
-        };
-        assert!(!mail.is_sendable());
+
+        phase the_mail_service_is_asked_again_only_when_it_may_let_the_mail_through;
+        {
+            for status in [408, 409, 425, 429, 500, 503, 599] {
+                assert!(waits(status), "{status}");
+            }
+            for status in [400, 401, 403, 404, 413, 422] {
+                assert!(!waits(status), "{status}");
+            }
+        }
+    }
+
+    tilo_test_env::scenario! {
+        fn mail_templates_fill_escape_and_refuse_what_is_malformed;
+
+        phase the_built_in_templates_are_templates_this_mail_fills;
+        {
+            let templates = Templates::baked();
+            check_template(
+                Path::new("layout.html"),
+                &templates.layout,
+                &LAYOUT_PLACEHOLDERS,
+                true,
+            )
+            .unwrap();
+            for (language, templates) in [("en", &templates.en), ("de", &templates.de)] {
+                for (kind, body) in [
+                    (Kind::Confirm, &templates.confirm),
+                    (Kind::Invite, &templates.invite),
+                    (Kind::Removed, &templates.removed),
+                ] {
+                    let stem = Path::new(language).join(kind.name());
+                    check_template(
+                        &stem.with_extension("txt"),
+                        &body.text,
+                        &BODY_PLACEHOLDERS,
+                        false,
+                    )
+                    .unwrap();
+                    check_template(
+                        &stem.with_extension("html"),
+                        &body.html,
+                        &BODY_PLACEHOLDERS,
+                        false,
+                    )
+                    .unwrap();
+                }
+            }
+        }
+
+        phase every_mail_fills_every_placeholder_in_every_language;
+        {
+            for language in LANGUAGES {
+                for kind in Kind::ALL {
+                    let values = Values {
+                        workspace: "Lounge",
+                        email: "ada@example.org",
+                        link: "https://tilo.example/?x=1",
+                        remove_link: "https://tilo.example/?y=2",
+                        door: "https://tilo.example/",
+                    };
+                    let mail = Templates::baked().render(kind, language, "ada@example.org", &values);
+                    assert!(!mail.subject.is_empty() && !mail.subject.contains("{{"));
+                    for body in [&mail.text, &mail.html] {
+                        assert!(!body.contains("{{"), "{language} {kind:?}: {body}");
+                    }
+                    assert!(mail.html.starts_with("<!doctype html>"));
+                    assert!(mail.html.contains(&format!("lang=\"{language}\"")));
+                    if kind != Kind::Removed {
+                        assert!(mail.text.contains("https://tilo.example/?y=2"));
+                    }
+                }
+            }
+        }
+
+        phase the_html_escapes_what_it_is_filled_with_and_the_text_does_not;
+        {
+            let values = Values {
+                workspace: "<Ada & Bo>",
+                ..Values::default()
+            };
+            let mail = Templates::baked().render(Kind::Removed, "en", "x@example.org", &values);
+            assert!(mail.html.contains("&lt;Ada &amp; Bo&gt;"));
+            assert!(!mail.html.contains("<Ada"));
+            assert!(mail.text.contains("<Ada & Bo>"));
+        }
+
+        phase a_value_that_spells_a_placeholder_is_never_filled_again;
+        {
+            let values = Values {
+                workspace: "{{link}} <{{door}}>",
+                email: "ada@example.org",
+                link: "https://tilo.example/?wait-list-confirm=aa",
+                remove_link: "https://tilo.example/?wait-list-remove=bb",
+                door: "https://tilo.example/",
+            };
+            let mail = Templates::baked().render(Kind::Confirm, "en", "ada@example.org", &values);
+            // As text it stays as typed, in the HTML escaped, and neither takes
+            // the link's place.
+            assert!(mail.text.contains("{{link}} <{{door}}>"));
+            assert!(mail.html.contains("{{link}} &lt;{{door}}&gt;"));
+            assert_eq!(mail.html.matches("wait-list-confirm=aa").count(), 1);
+            assert_eq!(mail.text.matches("wait-list-confirm=aa").count(), 1);
+            assert!(mail.is_sendable());
+        }
+
+        phase a_configured_directory_is_used_and_a_missing_file_is_an_error;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            configured(
+                dir.path(),
+                "<!doctype html><html><body>{{body}}</body></html>",
+                "<p>Confirm {{email}} for {{workspace}}: <a href=\"{{link}}\">here</a></p>",
+                "Subject: Confirm for {{workspace}}\n\n{{email}}: {{link}}\n",
+            );
+            let templates = Templates::load(dir.path()).unwrap();
+            let out = tempfile::tempdir().unwrap();
+            let written = preview(out.path(), &templates).unwrap();
+            assert_eq!(written.len(), LANGUAGES.len() * Kind::ALL.len() * 2);
+            let mail = templates.render(
+                Kind::Confirm,
+                "en",
+                "ada@example.org",
+                &Values {
+                    workspace: "Lounge",
+                    email: "ada@example.org",
+                    link: "https://tilo.example/?wait-list-confirm=aa",
+                    remove_link: "https://tilo.example/?wait-list-remove=bb",
+                    door: "https://tilo.example/",
+                },
+            );
+            assert!(mail.html.starts_with("<!doctype html>"));
+            assert!(mail.html.contains("Confirm ada@example.org for Lounge"));
+            assert!(!mail.html.contains("lang="));
+            assert_eq!(mail.subject, "Confirm for Lounge");
+
+            // Every file is required: none falls back to the built-in words.
+            for missing in ["layout.html", "en/confirm.txt", "de/removed.html"] {
+                let broken = tempfile::tempdir().unwrap();
+                configured(
+                    broken.path(),
+                    "<!doctype html><html><body>{{body}}</body></html>",
+                    "<p>{{email}}</p>",
+                    "Subject: {{workspace}}\n\n{{link}}\n",
+                );
+                std::fs::remove_file(broken.path().join(missing)).unwrap();
+                assert!(Templates::load(broken.path()).is_err(), "{missing}");
+            }
+        }
+
+        phase a_malformed_template_is_an_error_rather_than_a_fallback;
+        {
+            let cases = [
+                // A layout must wrap a body, once, and fills nothing else.
+                (
+                    "<!doctype html><html><body></body></html>",
+                    "Subject: x\n\n{{link}}\n",
+                ),
+                (
+                    "<!doctype html><html><body>{{body}}{{body}}</body></html>",
+                    "Subject: x\n\n{{link}}\n",
+                ),
+                (
+                    "<!doctype html><html><body>{{body}}{{link}}</body></html>",
+                    "Subject: x\n\n{{link}}\n",
+                ),
+                // A mail fills no body and no unknown placeholder.
+                (
+                    "<!doctype html><html><body>{{body}}</body></html>",
+                    "Subject: x\n\n{{body}}\n",
+                ),
+                (
+                    "<!doctype html><html><body>{{body}}</body></html>",
+                    "Subject: x\n\n{{secret}}\n",
+                ),
+                // A placeholder that never closes would be mailed as text.
+                (
+                    "<!doctype html><html><body>{{body}}</body></html>",
+                    "Subject: x\n\n{{link\n",
+                ),
+                // A subject is the first line.
+                (
+                    "<!doctype html><html><body>{{body}}</body></html>",
+                    "\n{{link}}\n",
+                ),
+                // Carriage returns could split a header.
+                (
+                    "<!doctype html><html><body>{{body}}</body></html>",
+                    "Subject: x\r\n\r\n{{link}}\r\n",
+                ),
+            ];
+            for (layout, confirm) in cases {
+                let dir = tempfile::tempdir().unwrap();
+                configured(dir.path(), layout, "<p>{{email}}</p>", confirm);
+                assert!(
+                    Templates::load(dir.path()).is_err(),
+                    "{layout:?} {confirm:?}"
+                );
+            }
+            // A directory that is not one is refused, not replaced by defaults.
+            assert!(Templates::load(Path::new("/nonexistent/tilo-mail")).is_err());
+        }
+
+        phase the_preview_writes_every_mail_in_every_language;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let written = preview(dir.path(), &Templates::baked()).unwrap();
+            assert_eq!(written.len(), LANGUAGES.len() * Kind::ALL.len() * 2);
+            assert!(written.iter().all(|path| path.is_file()));
+        }
     }
 
     /// A configured directory of templates in `dir`: the layout wraps a body
@@ -1182,121 +1305,6 @@ mod tests {
                 )
                 .unwrap();
             }
-        }
-    }
-
-    #[test]
-    fn a_configured_directory_is_used_and_a_missing_file_is_an_error() {
-        let dir = tempfile::tempdir().unwrap();
-        configured(
-            dir.path(),
-            "<!doctype html><html><body>{{body}}</body></html>",
-            "<p>Confirm {{email}} for {{workspace}}: <a href=\"{{link}}\">here</a></p>",
-            "Subject: Confirm for {{workspace}}\n\n{{email}}: {{link}}\n",
-        );
-        let templates = Templates::load(dir.path()).unwrap();
-        let out = tempfile::tempdir().unwrap();
-        let written = preview(out.path(), &templates).unwrap();
-        assert_eq!(written.len(), LANGUAGES.len() * Kind::ALL.len() * 2);
-        let mail = templates.render(
-            Kind::Confirm,
-            "en",
-            "ada@example.org",
-            &Values {
-                workspace: "Lounge",
-                email: "ada@example.org",
-                link: "https://tilo.example/?wait-list-confirm=aa",
-                remove_link: "https://tilo.example/?wait-list-remove=bb",
-                door: "https://tilo.example/",
-            },
-        );
-        assert!(mail.html.starts_with("<!doctype html>"));
-        assert!(mail.html.contains("Confirm ada@example.org for Lounge"));
-        assert!(!mail.html.contains("lang="));
-        assert_eq!(mail.subject, "Confirm for Lounge");
-
-        // Every file is required: none falls back to the built-in words.
-        for missing in ["layout.html", "en/confirm.txt", "de/removed.html"] {
-            let broken = tempfile::tempdir().unwrap();
-            configured(
-                broken.path(),
-                "<!doctype html><html><body>{{body}}</body></html>",
-                "<p>{{email}}</p>",
-                "Subject: {{workspace}}\n\n{{link}}\n",
-            );
-            std::fs::remove_file(broken.path().join(missing)).unwrap();
-            assert!(Templates::load(broken.path()).is_err(), "{missing}");
-        }
-    }
-
-    #[test]
-    fn a_malformed_template_is_an_error_rather_than_a_fallback() {
-        let cases = [
-            // A layout must wrap a body, once, and fills nothing else.
-            (
-                "<!doctype html><html><body></body></html>",
-                "Subject: x\n\n{{link}}\n",
-            ),
-            (
-                "<!doctype html><html><body>{{body}}{{body}}</body></html>",
-                "Subject: x\n\n{{link}}\n",
-            ),
-            (
-                "<!doctype html><html><body>{{body}}{{link}}</body></html>",
-                "Subject: x\n\n{{link}}\n",
-            ),
-            // A mail fills no body and no unknown placeholder.
-            (
-                "<!doctype html><html><body>{{body}}</body></html>",
-                "Subject: x\n\n{{body}}\n",
-            ),
-            (
-                "<!doctype html><html><body>{{body}}</body></html>",
-                "Subject: x\n\n{{secret}}\n",
-            ),
-            // A placeholder that never closes would be mailed as text.
-            (
-                "<!doctype html><html><body>{{body}}</body></html>",
-                "Subject: x\n\n{{link\n",
-            ),
-            // A subject is the first line.
-            (
-                "<!doctype html><html><body>{{body}}</body></html>",
-                "\n{{link}}\n",
-            ),
-            // Carriage returns could split a header.
-            (
-                "<!doctype html><html><body>{{body}}</body></html>",
-                "Subject: x\r\n\r\n{{link}}\r\n",
-            ),
-        ];
-        for (layout, confirm) in cases {
-            let dir = tempfile::tempdir().unwrap();
-            configured(dir.path(), layout, "<p>{{email}}</p>", confirm);
-            assert!(
-                Templates::load(dir.path()).is_err(),
-                "{layout:?} {confirm:?}"
-            );
-        }
-        // A directory that is not one is refused, not replaced by defaults.
-        assert!(Templates::load(Path::new("/nonexistent/tilo-mail")).is_err());
-    }
-
-    #[test]
-    fn the_preview_writes_every_mail_in_every_language() {
-        let dir = tempfile::tempdir().unwrap();
-        let written = preview(dir.path(), &Templates::baked()).unwrap();
-        assert_eq!(written.len(), LANGUAGES.len() * Kind::ALL.len() * 2);
-        assert!(written.iter().all(|path| path.is_file()));
-    }
-
-    #[test]
-    fn the_mail_service_is_asked_again_only_when_it_may_let_the_mail_through() {
-        for status in [408, 409, 425, 429, 500, 503, 599] {
-            assert!(waits(status), "{status}");
-        }
-        for status in [400, 401, 403, 404, 413, 422] {
-            assert!(!waits(status), "{status}");
         }
     }
 }

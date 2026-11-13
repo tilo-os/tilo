@@ -510,198 +510,202 @@ mod tests {
         (state, shelf)
     }
 
-    #[test]
-    fn what_is_kept_is_handed_back_until_it_lapses() {
-        let (_state, shelf) = shelf_at(NOW);
-        shelf
-            .put(HANDLE, stored(&"a".repeat(1200), 60), NOW)
-            .unwrap();
-        assert_eq!(shelf.get(HANDLE, NOW), Some(kept(&"a".repeat(1200))));
-        assert_eq!(
-            shelf.get(HANDLE, NOW + 59 * NS),
-            Some(kept(&"a".repeat(1200)))
-        );
-        assert_eq!(
-            shelf.get(HANDLE, NOW + 60 * NS),
-            None,
-            "nothing past its life"
-        );
-    }
+    tilo_test_env::scenario! {
+        fn the_shelf_keeps_invitations_until_they_lapse_or_are_taken_back;
 
-    #[test]
-    fn an_invitation_left_before_a_restart_waits_for_whoever_follows_the_link() {
-        let state = tempfile::tempdir().unwrap();
-        let disk = state.path().to_path_buf();
-        let sealed = "a".repeat(1200);
-        let before = Shelf::opening(disk.clone(), NOW);
-        before
-            .put(
-                HANDLE,
-                Stored {
+        phase what_is_kept_is_handed_back_until_it_lapses;
+        {
+            let (_state, shelf) = shelf_at(NOW);
+            shelf
+                .put(HANDLE, stored(&"a".repeat(1200), 60), NOW)
+                .unwrap();
+            assert_eq!(shelf.get(HANDLE, NOW), Some(kept(&"a".repeat(1200))));
+            assert_eq!(
+                shelf.get(HANDLE, NOW + 59 * NS),
+                Some(kept(&"a".repeat(1200)))
+            );
+            assert_eq!(
+                shelf.get(HANDLE, NOW + 60 * NS),
+                None,
+                "nothing past its life"
+            );
+        }
+
+        phase an_invitation_left_before_a_restart_waits_for_whoever_follows_the_link;
+        {
+            let state = tempfile::tempdir().unwrap();
+            let disk = state.path().to_path_buf();
+            let sealed = "a".repeat(1200);
+            let before = Shelf::opening(disk.clone(), NOW);
+            before
+                .put(
+                    HANDLE,
+                    Stored {
+                        host: Some("https://relay.example".to_owned()),
+                        ..stored(&sealed, 3600)
+                    },
+                    NOW,
+                )
+                .unwrap();
+            drop(before);
+
+            // The relay that comes up next on the same state disk finds it, as
+            // whoever the link reached needs it to.
+            let after = Shelf::opening(disk.clone(), NOW + 60 * NS);
+            assert_eq!(
+                after.get(HANDLE, NOW + 60 * NS),
+                Some(Fetched {
+                    sealed,
                     host: Some("https://relay.example".to_owned()),
-                    ..stored(&sealed, 3600)
-                },
-                NOW,
-            )
-            .unwrap();
-        drop(before);
-
-        // The relay that comes up next on the same state disk finds it, as
-        // whoever the link reached needs it to.
-        let after = Shelf::opening(disk.clone(), NOW + 60 * NS);
-        assert_eq!(
-            after.get(HANDLE, NOW + 60 * NS),
-            Some(Fetched {
-                sealed,
-                host: Some("https://relay.example".to_owned()),
-            })
-        );
-        // The secret it was left with still takes it back, off the disk too.
-        let wrong = "b".repeat(DELETE_CHARS);
-        assert!(matches!(
-            after.take(HANDLE, &wrong, NOW + 60 * NS),
-            Err(Refused::Forbidden)
-        ));
-        after.take(HANDLE, DELETE, NOW + 60 * NS).unwrap();
-        assert!(!disk.join(format!("{HANDLE}.json")).is_file());
-        assert!(
-            Shelf::opening(disk, NOW + 60 * NS)
-                .get(HANDLE, NOW)
-                .is_none(),
-            "a link its inviter took back names nothing, a restart included"
-        );
-    }
-
-    #[test]
-    fn an_invitation_that_lapsed_while_nothing_ran_is_collected() {
-        let (state, before) = shelf_at(NOW);
-        before.put(HANDLE, stored("c2VhbGVk", 60), NOW).unwrap();
-        before.put(OTHER, stored("b3RoZXI", 3600), NOW).unwrap();
-        drop(before);
-
-        // Two minutes later the relay is back: one invitation lapsed while it
-        // was down, the other did not.
-        let after = Shelf::opening(state.path().to_path_buf(), NOW + 120 * NS);
-        assert_eq!(after.get(HANDLE, NOW + 120 * NS), None);
-        assert_eq!(
-            after.get(OTHER, NOW + 120 * NS),
-            Some(kept("b3RoZXI")),
-            "one that has not lapsed is still there"
-        );
-        assert!(
-            !state.path().join(format!("{HANDLE}.json")).exists(),
-            "what lapsed is taken off the disk"
-        );
-        assert!(state.path().join(format!("{OTHER}.json")).exists());
-    }
-
-    #[test]
-    fn a_file_that_is_not_an_invitation_is_not_one() {
-        let (state, _shelf) = shelf_at(NOW);
-        // What a crash mid-write leaves: a rename's own file, which names no
-        // handle, beside the invitation it would have replaced.
-        std::fs::write(state.path().join(".tmpQx7f"), b"half a record").unwrap();
-        // What nothing of this site wrote, under a handle it could have: no
-        // invitation, and none handed out.
-        std::fs::write(state.path().join(format!("{HANDLE}.json")), b"{ not one").unwrap();
-        let shelf = Shelf::opening(state.path().to_path_buf(), NOW);
-        assert_eq!(shelf.get(HANDLE, NOW), None);
-    }
-
-    #[test]
-    fn an_invitation_is_taken_back_only_with_its_own_secret() {
-        let (_state, shelf) = shelf_at(NOW);
-        shelf.put(HANDLE, stored("c2VhbGVk", 60), NOW).unwrap();
-        let wrong = "b".repeat(DELETE_CHARS);
-        assert!(matches!(
-            shelf.take(HANDLE, &wrong, NOW),
-            Err(Refused::Forbidden)
-        ));
-        assert!(
-            shelf.get(HANDLE, NOW).is_some(),
-            "a wrong secret changes nothing"
-        );
-        shelf.take(HANDLE, DELETE, NOW).unwrap();
-        assert!(shelf.get(HANDLE, NOW).is_none());
-        assert!(matches!(
-            shelf.take(HANDLE, DELETE, NOW),
-            Err(Refused::Gone)
-        ));
-    }
-
-    #[test]
-    fn a_handle_is_kept_once_and_only_for_a_while_worth_keeping() {
-        let (_state, shelf) = shelf_at(NOW);
-        shelf.put(HANDLE, stored("c2VhbGVk", 60), NOW).unwrap();
-        assert!(matches!(
-            shelf.put(HANDLE, stored("b3RoZXI", 60), NOW),
-            Err(Refused::Taken)
-        ));
-        for refused in [
-            Stored {
-                sealed: String::new(),
-                ..stored("c2VhbGVk", 60)
-            },
-            Stored {
-                sealed: "a".repeat(MAX_SEALED_BYTES + 1),
-                ..stored("c2VhbGVk", 60)
-            },
-            Stored {
-                delete: "short".to_owned(),
-                ..stored("c2VhbGVk", 60)
-            },
-            Stored {
-                host: Some("https://host.example/not-an-origin".to_owned()),
-                ..stored("c2VhbGVk", 60)
-            },
-            Stored {
-                host: Some("http://host.example".to_owned()),
-                ..stored("c2VhbGVk", 60)
-            },
-            Stored {
-                expires_at_ns: NOW,
-                ..stored("c2VhbGVk", 60)
-            },
-            Stored {
-                expires_at_ns: NOW + (MAX_STORED_SECONDS + 1) * NS,
-                ..stored("c2VhbGVk", 60)
-            },
-        ] {
+                })
+            );
+            // The secret it was left with still takes it back, off the disk too.
+            let wrong = "b".repeat(DELETE_CHARS);
             assert!(matches!(
-                shelf.put(OTHER, refused, NOW),
-                Err(Refused::Malformed(_))
+                after.take(HANDLE, &wrong, NOW + 60 * NS),
+                Err(Refused::Forbidden)
+            ));
+            after.take(HANDLE, DELETE, NOW + 60 * NS).unwrap();
+            assert!(!disk.join(format!("{HANDLE}.json")).is_file());
+            assert!(
+                Shelf::opening(disk, NOW + 60 * NS)
+                    .get(HANDLE, NOW)
+                    .is_none(),
+                "a link its inviter took back names nothing, a restart included"
+            );
+        }
+
+        phase an_invitation_that_lapsed_while_nothing_ran_is_collected;
+        {
+            let (state, before) = shelf_at(NOW);
+            before.put(HANDLE, stored("c2VhbGVk", 60), NOW).unwrap();
+            before.put(OTHER, stored("b3RoZXI", 3600), NOW).unwrap();
+            drop(before);
+
+            // Two minutes later the relay is back: one invitation lapsed while it
+            // was down, the other did not.
+            let after = Shelf::opening(state.path().to_path_buf(), NOW + 120 * NS);
+            assert_eq!(after.get(HANDLE, NOW + 120 * NS), None);
+            assert_eq!(
+                after.get(OTHER, NOW + 120 * NS),
+                Some(kept("b3RoZXI")),
+                "one that has not lapsed is still there"
+            );
+            assert!(
+                !state.path().join(format!("{HANDLE}.json")).exists(),
+                "what lapsed is taken off the disk"
+            );
+            assert!(state.path().join(format!("{OTHER}.json")).exists());
+        }
+
+        phase a_file_that_is_not_an_invitation_is_not_one;
+        {
+            let (state, _shelf) = shelf_at(NOW);
+            // What a crash mid-write leaves: a rename's own file, which names no
+            // handle, beside the invitation it would have replaced.
+            std::fs::write(state.path().join(".tmpQx7f"), b"half a record").unwrap();
+            // What nothing of this site wrote, under a handle it could have: no
+            // invitation, and none handed out.
+            std::fs::write(state.path().join(format!("{HANDLE}.json")), b"{ not one").unwrap();
+            let shelf = Shelf::opening(state.path().to_path_buf(), NOW);
+            assert_eq!(shelf.get(HANDLE, NOW), None);
+        }
+
+        phase an_invitation_is_taken_back_only_with_its_own_secret;
+        {
+            let (_state, shelf) = shelf_at(NOW);
+            shelf.put(HANDLE, stored("c2VhbGVk", 60), NOW).unwrap();
+            let wrong = "b".repeat(DELETE_CHARS);
+            assert!(matches!(
+                shelf.take(HANDLE, &wrong, NOW),
+                Err(Refused::Forbidden)
+            ));
+            assert!(
+                shelf.get(HANDLE, NOW).is_some(),
+                "a wrong secret changes nothing"
+            );
+            shelf.take(HANDLE, DELETE, NOW).unwrap();
+            assert!(shelf.get(HANDLE, NOW).is_none());
+            assert!(matches!(
+                shelf.take(HANDLE, DELETE, NOW),
+                Err(Refused::Gone)
             ));
         }
-        assert!(shelf.get(OTHER, NOW).is_none());
-        // A handle that is not one names no file, wherever it points.
-        for handle in ["../../../etc/passwd", "short", &format!("{HANDLE}x")] {
-            assert!(matches!(
-                shelf.put(handle, stored("c2VhbGVk", 60), NOW),
-                Err(Refused::Malformed(_))
-            ));
-        }
-    }
 
-    #[test]
-    fn what_it_admits_into_comes_back_with_the_invitation() {
-        let (_state, shelf) = shelf_at(NOW);
-        shelf
-            .put(
-                HANDLE,
+        phase a_handle_is_kept_once_and_only_for_a_while_worth_keeping;
+        {
+            let (_state, shelf) = shelf_at(NOW);
+            shelf.put(HANDLE, stored("c2VhbGVk", 60), NOW).unwrap();
+            assert!(matches!(
+                shelf.put(HANDLE, stored("b3RoZXI", 60), NOW),
+                Err(Refused::Taken)
+            ));
+            for refused in [
                 Stored {
-                    host: Some("https://host.example:8443".to_owned()),
+                    sealed: String::new(),
                     ..stored("c2VhbGVk", 60)
                 },
-                NOW,
-            )
-            .unwrap();
-        assert_eq!(
-            shelf.get(HANDLE, NOW),
-            Some(Fetched {
-                sealed: "c2VhbGVk".to_owned(),
-                host: Some("https://host.example:8443".to_owned()),
-            })
-        );
+                Stored {
+                    sealed: "a".repeat(MAX_SEALED_BYTES + 1),
+                    ..stored("c2VhbGVk", 60)
+                },
+                Stored {
+                    delete: "short".to_owned(),
+                    ..stored("c2VhbGVk", 60)
+                },
+                Stored {
+                    host: Some("https://host.example/not-an-origin".to_owned()),
+                    ..stored("c2VhbGVk", 60)
+                },
+                Stored {
+                    host: Some("http://host.example".to_owned()),
+                    ..stored("c2VhbGVk", 60)
+                },
+                Stored {
+                    expires_at_ns: NOW,
+                    ..stored("c2VhbGVk", 60)
+                },
+                Stored {
+                    expires_at_ns: NOW + (MAX_STORED_SECONDS + 1) * NS,
+                    ..stored("c2VhbGVk", 60)
+                },
+            ] {
+                assert!(matches!(
+                    shelf.put(OTHER, refused, NOW),
+                    Err(Refused::Malformed(_))
+                ));
+            }
+            assert!(shelf.get(OTHER, NOW).is_none());
+            // A handle that is not one names no file, wherever it points.
+            for handle in ["../../../etc/passwd", "short", &format!("{HANDLE}x")] {
+                assert!(matches!(
+                    shelf.put(handle, stored("c2VhbGVk", 60), NOW),
+                    Err(Refused::Malformed(_))
+                ));
+            }
+        }
+
+        phase what_it_admits_into_comes_back_with_the_invitation;
+        {
+            let (_state, shelf) = shelf_at(NOW);
+            shelf
+                .put(
+                    HANDLE,
+                    Stored {
+                        host: Some("https://host.example:8443".to_owned()),
+                        ..stored("c2VhbGVk", 60)
+                    },
+                    NOW,
+                )
+                .unwrap();
+            assert_eq!(
+                shelf.get(HANDLE, NOW),
+                Some(Fetched {
+                    sealed: "c2VhbGVk".to_owned(),
+                    host: Some("https://host.example:8443".to_owned()),
+                })
+            );
+        }
     }
 
     #[test]

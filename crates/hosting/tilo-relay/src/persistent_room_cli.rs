@@ -1839,10 +1839,80 @@ mod tests {
         }
     }
 
-    #[test]
-    fn the_workspace_is_named_after_the_room_capitalized() {
-        assert_eq!(workspace_name("plaza"), "Plaza");
-        assert_eq!(workspace_name(""), "");
+    tilo_test_env::scenario! {
+        fn the_operators_arguments_name_the_room_its_quota_and_its_bots;
+
+        phase the_workspace_is_named_after_the_room_capitalized;
+        {
+            assert_eq!(workspace_name("plaza"), "Plaza");
+            assert_eq!(workspace_name(""), "");
+        }
+
+        phase a_host_keeps_ten_gigabytes_per_person_unless_the_operator_says_otherwise;
+        {
+            use clap::Parser as _;
+            #[derive(clap::Parser)]
+            struct Args {
+                #[command(flatten)]
+                persistent: PersistentArgs,
+            }
+            let serving = |extra: &[&str]| {
+                Args::try_parse_from(
+                    [
+                        "relay",
+                        "--persistent",
+                        "tilo",
+                        "--root-file",
+                        "/run/secrets/root",
+                        "--room-id-file",
+                        "/state/id",
+                    ]
+                    .into_iter()
+                    .chain(extra.iter().copied()),
+                )
+            };
+            assert_eq!(
+                serving(&[]).unwrap().persistent.person_storage_gb,
+                10,
+                "the host's default"
+            );
+            assert_eq!(
+                serving(&["--person-storage-gb", "40"])
+                    .unwrap()
+                    .persistent
+                    .person_storage_gb,
+                40,
+                "the operator sets it"
+            );
+            assert!(
+                serving(&["--person-storage-gb", "lots"]).is_err(),
+                "gigabytes are a number"
+            );
+            assert!(
+                Args::try_parse_from(["relay", "--person-storage-gb", "40"]).is_err(),
+                "workspaces of people's own are kept by a persistent host"
+            );
+        }
+
+        phase a_bot_spec_names_an_entry_and_its_inputs;
+        {
+            let spec = parse_bot_spec("so.tilo.bots.discord-bridge guild=123 mode=live").unwrap();
+            assert_eq!(spec.entry, "so.tilo.bots.discord-bridge");
+            assert_eq!(spec.inputs.get("guild").map(String::as_str), Some("123"));
+            assert_eq!(input_value("123"), serde_json::json!("123"));
+            assert_eq!(
+                input_value(r#"{"link":"https://tilo.so"}"#),
+                serde_json::json!({"link": "https://tilo.so"})
+            );
+            assert!(parse_bot_spec("so.tilo.bots.discord-bridge guild").is_err());
+            assert!(parse_bot_spec("").is_err());
+            assert!(
+                parse_bot_spec("so.tilo.bots.x a=1 a=2")
+                    .unwrap_err()
+                    .to_string()
+                    .contains("twice")
+            );
+        }
     }
 
     #[test]
@@ -2441,71 +2511,5 @@ mod tests {
             "{log:#?}"
         );
         relay.shutdown().await;
-    }
-
-    #[test]
-    fn a_host_keeps_ten_gigabytes_per_person_unless_the_operator_says_otherwise() {
-        use clap::Parser as _;
-        #[derive(clap::Parser)]
-        struct Args {
-            #[command(flatten)]
-            persistent: PersistentArgs,
-        }
-        let serving = |extra: &[&str]| {
-            Args::try_parse_from(
-                [
-                    "relay",
-                    "--persistent",
-                    "tilo",
-                    "--root-file",
-                    "/run/secrets/root",
-                    "--room-id-file",
-                    "/state/id",
-                ]
-                .into_iter()
-                .chain(extra.iter().copied()),
-            )
-        };
-        assert_eq!(
-            serving(&[]).unwrap().persistent.person_storage_gb,
-            10,
-            "the host's default"
-        );
-        assert_eq!(
-            serving(&["--person-storage-gb", "40"])
-                .unwrap()
-                .persistent
-                .person_storage_gb,
-            40,
-            "the operator sets it"
-        );
-        assert!(
-            serving(&["--person-storage-gb", "lots"]).is_err(),
-            "gigabytes are a number"
-        );
-        assert!(
-            Args::try_parse_from(["relay", "--person-storage-gb", "40"]).is_err(),
-            "workspaces of people's own are kept by a persistent host"
-        );
-    }
-
-    #[test]
-    fn a_bot_spec_names_an_entry_and_its_inputs() {
-        let spec = parse_bot_spec("so.tilo.bots.discord-bridge guild=123 mode=live").unwrap();
-        assert_eq!(spec.entry, "so.tilo.bots.discord-bridge");
-        assert_eq!(spec.inputs.get("guild").map(String::as_str), Some("123"));
-        assert_eq!(input_value("123"), serde_json::json!("123"));
-        assert_eq!(
-            input_value(r#"{"link":"https://tilo.so"}"#),
-            serde_json::json!({"link": "https://tilo.so"})
-        );
-        assert!(parse_bot_spec("so.tilo.bots.discord-bridge guild").is_err());
-        assert!(parse_bot_spec("").is_err());
-        assert!(
-            parse_bot_spec("so.tilo.bots.x a=1 a=2")
-                .unwrap_err()
-                .to_string()
-                .contains("twice")
-        );
     }
 }

@@ -1560,30 +1560,34 @@ mod tests {
         }
     }
 
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "each phase keeps one former test's body verbatim"
-    )]
-    fn startup_validation_and_room_authority_admit_only_signed_hosts() {
-        // Phase `valid_host_identity_passes_startup_validation`.
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::too_many_lines,
+            reason = "each phase keeps one former test's body verbatim"
+        )]
+        fn startup_validation_and_room_authority_admit_only_signed_hosts;
+
+        phase valid_host_identity_passes_startup_validation;
         {
             validate_relay_identity(&identity(DeviceCapabilities::member())).unwrap();
         }
-        // Phase `an_agent_grant_cannot_start_a_relay`.
+
+        phase an_agent_grant_cannot_start_a_relay;
         {
             let error =
                 validate_relay_identity(&identity(DeviceCapabilities::nothing())).unwrap_err();
             assert!(error.to_string().contains("not a device"));
         }
-        // Phase `mismatched_device_key_is_rejected_at_startup`.
+
+        phase mismatched_device_key_is_rejected_at_startup;
         {
             let mut relay = identity(DeviceCapabilities::member());
             relay.device_signing_key = ed25519_dalek::SigningKey::from_bytes(&[42; 32]);
             let error = validate_relay_identity(&relay).unwrap_err();
             assert!(error.to_string().contains("does not match"));
         }
-        // Phase `a_home_peer_bundle_serves_full_content_replication`.
+
+        phase a_home_peer_bundle_serves_full_content_replication;
         {
             let temp = tempfile::tempdir().unwrap();
             let status = temp.path().join("status.json");
@@ -1630,64 +1634,68 @@ mod tests {
         Arc::new(tilo_clock::FixedClock(stamped))
     }
 
-    #[test]
-    fn a_replica_proof_lapses_five_seconds_after_its_stamp() {
-        let temp = tempfile::tempdir().unwrap();
-        let path = temp.path().join("status.json");
-        let mut status = fs::full_replica::FullReplicaStatus::syncing();
-        status.state = "ready".into();
-        status.full_content_replication = true;
-        status.filesystem_endpoints.push(EndpointAddr::new(
-            iroh::SecretKey::from_bytes(&[7; 32]).public(),
-        ));
-        fs::full_replica::save_status(&path, &status).unwrap();
-        let stamped = fs::full_replica::load_status(&path)
-            .unwrap()
-            .unwrap()
-            .updated_at_ms;
-        let proof_at = |now_ms: u64| {
-            ReplicaProof {
-                path: path.clone(),
-                clock: Arc::new(tilo_clock::FixedClock(now_ms)),
-            }
-            .current()
-        };
-        assert!(proof_at(stamped.saturating_add(5_000)).is_some());
-        assert!(proof_at(stamped.saturating_add(5_001)).is_none());
-    }
+    tilo_test_env::scenario! {
+        fn a_replica_proof_holds_while_its_stamp_or_its_lock_does;
 
-    /// #4224. A replica that holds its liveness lock keeps its ready
-    /// proof without restamping it; the proof lapses the moment the lock
-    /// is released (the replica exited), however old the stamp.
-    #[test]
-    fn a_running_replica_keeps_its_proof_without_restamping_it() {
-        let temp = tempfile::tempdir().unwrap();
-        let path = temp.path().join("status.json");
-        let mut status = fs::full_replica::FullReplicaStatus::syncing();
-        status.state = "ready".into();
-        status.full_content_replication = true;
-        status.filesystem_endpoints.push(EndpointAddr::new(
-            iroh::SecretKey::from_bytes(&[7; 32]).public(),
-        ));
-        let alive = fs::full_replica::ReplicaLiveness::hold(&path).unwrap();
-        fs::full_replica::save_status(&path, &status).unwrap();
-        let stamped = fs::full_replica::load_status(&path)
-            .unwrap()
-            .unwrap()
-            .updated_at_ms;
-        let an_hour_later = ReplicaProof {
-            path,
-            clock: Arc::new(tilo_clock::FixedClock(stamped.saturating_add(3_600_000))),
-        };
-        assert!(
-            an_hour_later.current().is_some(),
-            "a live replica's proof must not depend on how recently it was written"
-        );
-        drop(alive);
-        assert!(
-            an_hour_later.current().is_none(),
-            "the proof of a replica that exited must lapse"
-        );
+        phase a_replica_proof_lapses_five_seconds_after_its_stamp;
+        {
+            let temp = tempfile::tempdir().unwrap();
+            let path = temp.path().join("status.json");
+            let mut status = fs::full_replica::FullReplicaStatus::syncing();
+            status.state = "ready".into();
+            status.full_content_replication = true;
+            status.filesystem_endpoints.push(EndpointAddr::new(
+                iroh::SecretKey::from_bytes(&[7; 32]).public(),
+            ));
+            fs::full_replica::save_status(&path, &status).unwrap();
+            let stamped = fs::full_replica::load_status(&path)
+                .unwrap()
+                .unwrap()
+                .updated_at_ms;
+            let proof_at = |now_ms: u64| {
+                ReplicaProof {
+                    path: path.clone(),
+                    clock: Arc::new(tilo_clock::FixedClock(now_ms)),
+                }
+                .current()
+            };
+            assert!(proof_at(stamped.saturating_add(5_000)).is_some());
+            assert!(proof_at(stamped.saturating_add(5_001)).is_none());
+        }
+
+        phase a_running_replica_keeps_its_proof_without_restamping_it;
+        // #4224. A replica that holds its liveness lock keeps its ready
+        // proof without restamping it; the proof lapses the moment the lock
+        // is released (the replica exited), however old the stamp.
+        {
+            let temp = tempfile::tempdir().unwrap();
+            let path = temp.path().join("status.json");
+            let mut status = fs::full_replica::FullReplicaStatus::syncing();
+            status.state = "ready".into();
+            status.full_content_replication = true;
+            status.filesystem_endpoints.push(EndpointAddr::new(
+                iroh::SecretKey::from_bytes(&[7; 32]).public(),
+            ));
+            let alive = fs::full_replica::ReplicaLiveness::hold(&path).unwrap();
+            fs::full_replica::save_status(&path, &status).unwrap();
+            let stamped = fs::full_replica::load_status(&path)
+                .unwrap()
+                .unwrap()
+                .updated_at_ms;
+            let an_hour_later = ReplicaProof {
+                path,
+                clock: Arc::new(tilo_clock::FixedClock(stamped.saturating_add(3_600_000))),
+            };
+            assert!(
+                an_hour_later.current().is_some(),
+                "a live replica's proof must not depend on how recently it was written"
+            );
+            drop(alive);
+            assert!(
+                an_hour_later.current().is_none(),
+                "the proof of a replica that exited must lapse"
+            );
+        }
     }
 
     #[tokio::test]

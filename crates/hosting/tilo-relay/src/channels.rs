@@ -365,40 +365,44 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 mod tests {
     use super::{ChannelDirectory, Channels, STATE, SigningKey, adopt_earlier_state};
 
-    #[test]
-    fn the_channel_state_an_earlier_relay_kept_moves_into_the_shared_service() {
-        let state = tempfile::tempdir().unwrap();
-        let workspace = uuid::Uuid::new_v4();
-        let rooms = state.path().join(super::ROOMS);
-        std::fs::create_dir_all(&rooms).unwrap();
-        let earlier = rooms.join(format!("{workspace}.channels"));
-        std::fs::create_dir_all(&earlier).unwrap();
-        std::fs::write(earlier.join("11.peer"), b"sealed").unwrap();
-        std::fs::write(earlier.join("11.route"), b"route").unwrap();
-        std::fs::write(earlier.join("notes"), b"kept").unwrap();
-        let root = state.path().join(STATE);
-        adopt_earlier_state(&rooms, &root).unwrap();
-        let moved = root.join(workspace.to_string()).join(STATE);
-        assert_eq!(std::fs::read(moved.join("11.peer")).unwrap(), b"sealed");
-        assert_eq!(std::fs::read(moved.join("11.route")).unwrap(), b"route");
-        assert!(!earlier.join("11.peer").exists());
-        assert_eq!(std::fs::read(earlier.join("notes")).unwrap(), b"kept");
-    }
+    tilo_test_env::scenario! {
+        fn a_relay_keeps_its_channel_state_in_the_shared_service;
 
-    #[test]
-    fn a_relay_that_may_own_workspaces_takes_part_in_their_channels() {
-        let state = tempfile::tempdir().unwrap();
-        let device = SigningKey::from_bytes(&[7; 32]);
-        let channels = Channels::open(state.path(), device).unwrap();
-        assert!(state.path().join(STATE).is_dir());
-        let device = channels.device();
-        assert!(device.sink.is_some());
-        assert!(
-            channels
-                .link
-                .directory
-                .allowed_devices(tilo_desktop_model::WorkspaceId::new(), 0)
-                .is_none()
-        );
+        phase the_channel_state_an_earlier_relay_kept_moves_into_the_shared_service;
+        {
+            let state = tempfile::tempdir().unwrap();
+            let workspace = uuid::Uuid::new_v4();
+            let rooms = state.path().join(super::ROOMS);
+            std::fs::create_dir_all(&rooms).unwrap();
+            let earlier = rooms.join(format!("{workspace}.channels"));
+            std::fs::create_dir_all(&earlier).unwrap();
+            std::fs::write(earlier.join("11.peer"), b"sealed").unwrap();
+            std::fs::write(earlier.join("11.route"), b"route").unwrap();
+            std::fs::write(earlier.join("notes"), b"kept").unwrap();
+            let root = state.path().join(STATE);
+            adopt_earlier_state(&rooms, &root).unwrap();
+            let moved = root.join(workspace.to_string()).join(STATE);
+            assert_eq!(std::fs::read(moved.join("11.peer")).unwrap(), b"sealed");
+            assert_eq!(std::fs::read(moved.join("11.route")).unwrap(), b"route");
+            assert!(!earlier.join("11.peer").exists());
+            assert_eq!(std::fs::read(earlier.join("notes")).unwrap(), b"kept");
+        }
+
+        phase a_relay_that_may_own_workspaces_takes_part_in_their_channels;
+        {
+            let state = tempfile::tempdir().unwrap();
+            let device = SigningKey::from_bytes(&[7; 32]);
+            let channels = Channels::open(state.path(), device).unwrap();
+            assert!(state.path().join(STATE).is_dir());
+            let device = channels.device();
+            assert!(device.sink.is_some());
+            assert!(
+                channels
+                    .link
+                    .directory
+                    .allowed_devices(tilo_desktop_model::WorkspaceId::new(), 0)
+                    .is_none()
+            );
+        }
     }
 }

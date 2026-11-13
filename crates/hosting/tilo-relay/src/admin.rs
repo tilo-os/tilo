@@ -611,79 +611,83 @@ mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt as _;
 
-    #[test]
-    fn host_record_retirement_signs_and_rejects_another_person() {
-        let temp = tempfile::tempdir().unwrap();
-        let identities = temp.path().join("identities");
-        let identity_root = temp.path().join("tilo");
-        let paths = tilo_user_identity::IdentityPaths::under(&identity_root);
-        tilo_identity_host::provisioning::ensure_collaboration_identity(
-            &identities,
-            &paths,
-            tilo_identity_host::provisioning::IdentityStorage::Files,
-        )
-        .unwrap();
-        assert!(!paths.user_privkey.exists());
-        let user = tilo_user_identity::persist::read_public_key(&paths.user_pubkey).unwrap();
-        let revocation = sign_host_revocation(&identity_root, Some(&identities), [72; 32]).unwrap();
-        tilo_user_identity::verify_revocation_entry(&revocation).unwrap();
-        assert_eq!(revocation.user_public_key, user);
-        assert_eq!(revocation.revoked_device_public_key, [72; 32]);
-        persist_fleet_revocation(&identity_root, Some(&identities), &revocation).unwrap();
-        let fleet =
-            tilo_identity_host::device_fleet::DeviceFleetStore::at(&identities, paths.clone())
-                .load(&hex::encode(user))
-                .unwrap();
-        assert_eq!(fleet.revocations, vec![revocation]);
-        tilo_user_identity::persist::write_public_key(&paths.user_pubkey, &[73; 32]).unwrap();
-        let error = sign_host_revocation(&identity_root, Some(&identities), [72; 32]).unwrap_err();
-        assert!(error.to_string().contains("another person"));
-        assert!(!pending_decommissions_path(&temp.path().join("tilo")).exists());
-        assert!(!paths.user_privkey.exists());
-    }
+    tilo_test_env::scenario! {
+        fn host_record_revocations_are_signed_verified_and_kept_private;
 
-    #[test]
-    fn canonical_revocation_aggregate_is_verified_deduplicated_and_private() {
-        let temp = tempfile::tempdir().unwrap();
-        let paths = tilo_user_identity::IdentityPaths::under(temp.path());
-        std::fs::create_dir_all(paths.user_pubkey.parent().unwrap()).unwrap();
-        let root = ed25519_dalek::SigningKey::from_bytes(&[71; 32]);
-        let mut entry = tilo_user_identity::RevocationEntry {
-            user_public_key: root.verifying_key().to_bytes(),
-            revoked_device_public_key: [72; 32],
-            revoked_at_ns: 1,
-            reason: tilo_user_identity::RevocationReason::Retired,
-            signature: [0; 64],
-        };
-        tilo_user_identity::sign_revocation_entry(&mut entry, &root).unwrap();
-        persist_canonical_revocation(&paths, &entry).unwrap();
-        let first = entry.clone();
-        entry.revoked_at_ns = 2;
-        tilo_user_identity::sign_revocation_entry(&mut entry, &root).unwrap();
-        persist_canonical_revocation(&paths, &entry).unwrap();
+        phase host_record_retirement_signs_and_rejects_another_person;
+        {
+            let temp = tempfile::tempdir().unwrap();
+            let identities = temp.path().join("identities");
+            let identity_root = temp.path().join("tilo");
+            let paths = tilo_user_identity::IdentityPaths::under(&identity_root);
+            tilo_identity_host::provisioning::ensure_collaboration_identity(
+                &identities,
+                &paths,
+                tilo_identity_host::provisioning::IdentityStorage::Files,
+            )
+            .unwrap();
+            assert!(!paths.user_privkey.exists());
+            let user = tilo_user_identity::persist::read_public_key(&paths.user_pubkey).unwrap();
+            let revocation = sign_host_revocation(&identity_root, Some(&identities), [72; 32]).unwrap();
+            tilo_user_identity::verify_revocation_entry(&revocation).unwrap();
+            assert_eq!(revocation.user_public_key, user);
+            assert_eq!(revocation.revoked_device_public_key, [72; 32]);
+            persist_fleet_revocation(&identity_root, Some(&identities), &revocation).unwrap();
+            let fleet =
+                tilo_identity_host::device_fleet::DeviceFleetStore::at(&identities, paths.clone())
+                    .load(&hex::encode(user))
+                    .unwrap();
+            assert_eq!(fleet.revocations, vec![revocation]);
+            tilo_user_identity::persist::write_public_key(&paths.user_pubkey, &[73; 32]).unwrap();
+            let error = sign_host_revocation(&identity_root, Some(&identities), [72; 32]).unwrap_err();
+            assert!(error.to_string().contains("another person"));
+            assert!(!pending_decommissions_path(&temp.path().join("tilo")).exists());
+            assert!(!paths.user_privkey.exists());
+        }
 
-        let path = tilo_user_identity::revocations_path(&paths);
-        let stored: Vec<tilo_user_identity::RevocationEntry> =
-            postcard::from_bytes(&std::fs::read(&path).unwrap()).unwrap();
-        assert_eq!(
-            stored,
-            vec![first],
-            "one entry per device, and the person's earliest word stands"
-        );
-        assert_eq!(
-            std::fs::metadata(path).unwrap().permissions().mode() & 0o777,
-            0o600
-        );
+        phase canonical_revocation_aggregate_is_verified_deduplicated_and_private;
+        {
+            let temp = tempfile::tempdir().unwrap();
+            let paths = tilo_user_identity::IdentityPaths::under(temp.path());
+            std::fs::create_dir_all(paths.user_pubkey.parent().unwrap()).unwrap();
+            let root = ed25519_dalek::SigningKey::from_bytes(&[71; 32]);
+            let mut entry = tilo_user_identity::RevocationEntry {
+                user_public_key: root.verifying_key().to_bytes(),
+                revoked_device_public_key: [72; 32],
+                revoked_at_ns: 1,
+                reason: tilo_user_identity::RevocationReason::Retired,
+                signature: [0; 64],
+            };
+            tilo_user_identity::sign_revocation_entry(&mut entry, &root).unwrap();
+            persist_canonical_revocation(&paths, &entry).unwrap();
+            let first = entry.clone();
+            entry.revoked_at_ns = 2;
+            tilo_user_identity::sign_revocation_entry(&mut entry, &root).unwrap();
+            persist_canonical_revocation(&paths, &entry).unwrap();
 
-        let pending = PendingDecommission {
-            device: hex::encode(entry.revoked_device_public_key),
-            service: hex::encode([73; 32]),
-            revocation: entry.clone(),
-        };
-        save_pending_decommissions(temp.path(), std::slice::from_ref(&pending)).unwrap();
-        let after_restart = load_pending_decommissions(temp.path()).unwrap();
-        assert_eq!(after_restart.len(), 1);
-        assert_eq!(after_restart[0].device, pending.device);
-        assert_eq!(after_restart[0].revocation, entry);
+            let path = tilo_user_identity::revocations_path(&paths);
+            let stored: Vec<tilo_user_identity::RevocationEntry> =
+                postcard::from_bytes(&std::fs::read(&path).unwrap()).unwrap();
+            assert_eq!(
+                stored,
+                vec![first],
+                "one entry per device, and the person's earliest word stands"
+            );
+            assert_eq!(
+                std::fs::metadata(path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+
+            let pending = PendingDecommission {
+                device: hex::encode(entry.revoked_device_public_key),
+                service: hex::encode([73; 32]),
+                revocation: entry.clone(),
+            };
+            save_pending_decommissions(temp.path(), std::slice::from_ref(&pending)).unwrap();
+            let after_restart = load_pending_decommissions(temp.path()).unwrap();
+            assert_eq!(after_restart.len(), 1);
+            assert_eq!(after_restart[0].device, pending.device);
+            assert_eq!(after_restart[0].revocation, entry);
+        }
     }
 }
