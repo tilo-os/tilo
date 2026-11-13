@@ -676,16 +676,36 @@ mod tests {
 
     #[test]
     fn store_links_name_only_a_stable_app_identity() {
-        assert_eq!(
-            parse_store_uri("tilo-store:app/so.tilo.notes").unwrap(),
-            "so.tilo.notes"
-        );
-        for invalid in [
-            "tilo-store:app/",
-            "tilo-store:app/so.tilo.notes?install=true",
-            "tilo-store:remote/so.tilo.notes",
+        // An identity is at most 255 characters.
+        let longest = "a".repeat(255);
+        let longest_link = format!("tilo-store:app/{longest}");
+        let too_long_link = format!("tilo-store:app/{longest}a");
+        for (link, app) in [
+            ("tilo-store:app/so.tilo.notes", Some("so.tilo.notes")),
+            ("tilo-store:app/a", Some("a")),
+            (
+                "tilo-store:app/org.gnome.Chess-2",
+                Some("org.gnome.Chess-2"),
+            ),
+            (longest_link.as_str(), Some(longest.as_str())),
+            (too_long_link.as_str(), None),
+            ("tilo-store:app/", None),
+            ("tilo-store:app/so.tilo.notes?install=true", None),
+            ("tilo-store:remote/so.tilo.notes", None),
+            ("", None),
+            ("tilo-store:app", None),
+            ("tilo-store:catalogue", None),
+            ("TILO-STORE:app/so.tilo.notes", None),
+            (" tilo-store:app/so.tilo.notes", None),
+            ("tilo-store:app/so.tilo.notes/extra", None),
+            ("tilo-store:app/../so.tilo.notes", None),
+            ("tilo-store:app/so.tilo.notes#install", None),
+            ("tilo-store:app/so.tilo notes", None),
+            ("tilo-store:app/so.tilo.n\u{f6}tes", None),
+            ("tilo-store:app/so.tilo.notes\n", None),
         ] {
-            assert!(parse_store_uri(invalid).is_err(), "{invalid}");
+            let parsed = parse_store_uri(link);
+            assert_eq!(parsed.as_deref().ok(), app, "{link:?} gave {parsed:?}");
         }
     }
 
