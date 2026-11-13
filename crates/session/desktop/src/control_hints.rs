@@ -400,15 +400,20 @@ fn place(spec: &HintSpec<Signal>, frame: &HintFrame) -> Option<HintPlace> {
             None,
             frame.search_keys.clone(),
         ),
-        Gesture::MoveWindow => (
-            Stand::Beside {
-                anchor: row.hovered_bar.or(row.focused_bar)?,
-                side: PopoverSide::Below,
-                points: true,
-            },
-            None,
-            Vec::new(),
-        ),
+        // The bar the person holds, lit along its underside where it meets the window's body while
+        // the hint shows: below the bar is the window's own content, and no hint stands over that.
+        Gesture::MoveWindow => {
+            let bar = row.hovered_bar.or(row.focused_bar)?;
+            (
+                Stand::Beside {
+                    anchor: bar,
+                    side: PopoverSide::Below,
+                    points: true,
+                },
+                Some(vello::kurbo::Line::new((bar.x0, bar.y1), (bar.x1, bar.y1))),
+                Vec::new(),
+            )
+        }
         Gesture::ResizeEdge => {
             let (line, edge) = row.focused_edge?;
             (
@@ -452,11 +457,12 @@ fn place(spec: &HintSpec<Signal>, frame: &HintFrame) -> Option<HintPlace> {
     {
         return None;
     }
-    // A window's edge has a window's content on its inner side and another's (or the screen's
-    // edge) on its outer one: the card covers neither, and stands in the bar's room when no spot
-    // beside the edge is clear, the edge itself lit where the person drags it.
-    let resizing = matches!(spec.gesture, Gesture::ResizeEdge);
-    let clear = clear_of(frame, &over, stand.anchor().filter(|_| !resizing));
+    // A hint anchored to a window stands beside its bar or its edge, which have that window's
+    // content on one side and another's (or the screen's) on the other: the card covers neither of
+    // them, and stands in the bar's room when no side of the spot is clear, the spot itself lit
+    // where the person drags it.
+    let at_a_window = matches!(spec.gesture, Gesture::MoveWindow | Gesture::ResizeEdge);
+    let clear = clear_of(frame, &over);
     Some(HintPlace {
         stand,
         edge,
@@ -464,25 +470,14 @@ fn place(spec: &HintSpec<Signal>, frame: &HintFrame) -> Option<HintPlace> {
         keys,
         touch: frame.touch,
         clear,
-        bar: frame.hint_room.filter(|_| resizing),
+        bar: frame.hint_room.filter(|_| at_a_window),
     })
 }
 
 /// The content no hint may stand over: the cards standing over the desk, an app's activity cards
-/// in a window's corner, and every window's content but the one `anchor` teaches (a hint below a
-/// window's bar hangs into that window, never into another's). With no `anchor`, every window's
-/// content.
-fn clear_of(frame: &HintFrame, over: &[Rect], anchor: Option<Rect>) -> Vec<Rect> {
-    // Which of the desk's windows a hint points at: its bar or its edge stands in the window.
-    let own = anchor.and_then(|anchor| {
-        let at = anchor.inflate(1.0, 1.0);
-        frame
-            .row
-            .windows_on_desk
-            .iter()
-            .find(|(window, _)| window.overlaps(at))
-            .map(|(_, content)| *content)
-    });
+/// in a window's corner, and every window's body — the one whose bar or edge a hint teaches
+/// included, since a hint below that bar would stand over the window itself.
+fn clear_of(frame: &HintFrame, over: &[Rect]) -> Vec<Rect> {
     over.iter()
         .copied()
         .chain(
@@ -490,8 +485,7 @@ fn clear_of(frame: &HintFrame, over: &[Rect], anchor: Option<Rect>) -> Vec<Rect>
                 .row
                 .windows_on_desk
                 .iter()
-                .map(|(_, content)| *content)
-                .filter(|content| Some(*content) != own),
+                .map(|(_, content)| *content),
         )
         .collect()
 }
@@ -564,6 +558,11 @@ mod tests {
             Some(Rect::new(100.0, 48.0, 700.0, 84.0)),
             "at the window's title"
         );
+        assert_eq!(
+            at(Gesture::MoveWindow).edge,
+            Some(Line::new((100.0, 84.0), (700.0, 84.0))),
+            "the bar lights along its underside where the person holds it"
+        );
         let line = Line::new((700.0, 96.0), (700.0, 880.0));
         let resize = at(Gesture::ResizeEdge);
         assert_eq!(
@@ -623,10 +622,13 @@ mod tests {
             let spec = HINTS.iter().find(|s| s.gesture == gesture).unwrap();
             assert!(place(spec, &frame).is_none(), "{gesture:?}");
         }
-        // The hints anchored to a window's own controls are not the bar's to keep.
+        // The hints anchored to a window's own controls are not the bar's to keep: they stand
+        // beside their spot, and only fall back to the bar's room when no side of it is clear.
         for gesture in [Gesture::MoveWindow, Gesture::ResizeEdge] {
             let spec = HINTS.iter().find(|s| s.gesture == gesture).unwrap();
-            assert!(place(spec, &frame).is_some(), "{gesture:?}");
+            let hint = place(spec, &frame).unwrap_or_else(|| panic!("{gesture:?}"));
+            assert!(hint.stand.anchor().is_some(), "{gesture:?}");
+            assert_eq!(hint.bar, None, "{gesture:?} has no room to fall back to");
         }
     }
 
@@ -710,12 +712,12 @@ mod tests {
         assert_eq!(hint.clear, clear.row.over, "the cards it keeps clear of");
     }
 
-    /// The resize hint covers no window's content, the one whose edge it teaches included (it hid
-    /// the label of the theme Settings showed chosen): it keeps clear of every window's body and,
-    /// where the edge leaves no room clear of them, stands in the bar's room with the edge lit.
-    /// The move hint still hangs below its own window's bar.
+    /// The move and resize hints cover no window's content, the one whose bar or edge they teach
+    /// included (the resize hint hid the label of the theme Settings showed chosen, and the move
+    /// hint hung into the window it held): both keep clear of every window's body, and where the
+    /// spot leaves no side of it clear they stand in the bar's room with the spot lit.
     #[test]
-    fn the_resize_hint_covers_no_windows_content_its_own_included() {
+    fn a_hint_at_a_window_covers_no_windows_content_its_own_included() {
         let mut frame = frame();
         let left = (
             Rect::new(32.0, 40.0, 700.0, 888.0),
@@ -727,15 +729,22 @@ mod tests {
         );
         frame.row.windows_on_desk = vec![left, right];
         let spec = |gesture| HINTS.iter().find(|s| s.gesture == gesture).unwrap();
-        let resize = place(spec(Gesture::ResizeEdge), &frame).expect("its edge is on screen");
-        assert!(resize.clear.contains(&left.1) && resize.clear.contains(&right.1));
-        assert_eq!(
-            resize.bar, frame.hint_room,
-            "the bar's room is where it stands instead"
-        );
-        let moving = place(spec(Gesture::MoveWindow), &frame).expect("its bar is on screen");
-        assert!(!moving.clear.contains(&left.1) && moving.clear.contains(&right.1));
-        assert_eq!(moving.bar, None);
+        for gesture in [Gesture::ResizeEdge, Gesture::MoveWindow] {
+            let hint = place(spec(gesture), &frame).expect("its spot is on screen");
+            assert!(
+                hint.clear.contains(&left.1) && hint.clear.contains(&right.1),
+                "{gesture:?} keeps clear of both windows: {:?}",
+                hint.clear
+            );
+            assert_eq!(
+                hint.bar, frame.hint_room,
+                "{gesture:?} stands in the bar's room where no side is clear"
+            );
+            assert!(
+                hint.edge.is_some(),
+                "{gesture:?} lights the spot where the gesture is done"
+            );
+        }
     }
 
     // A window asking the person a question has no place for the hints anchored to it: the one that

@@ -22,6 +22,7 @@ use tilo_desktop_model::{
 };
 use tilo_desktop_surface::{DesktopHandle, DesktopSurface};
 use ui::control_hints::Learned;
+use ui::control_hints::performed::{self, Performed};
 use ui::headless::FrameHarness;
 use ui::kurbo::{Affine, Rect};
 use ui::widget::DrawChild;
@@ -352,18 +353,24 @@ fn bar_geometry(tree: &DesktopTree, width: u32) -> (Option<Rect>, Vec<(String, R
     (chrome.bar().hint_room(), controls)
 }
 
-/// The card the hint `unlearned` paints over `tree` after `wait`, as the chrome drives it, with
-/// the strip's own places and the room the real bar keeps beside its clock: the real geometry the
-/// hint is placed against.
+/// The card the hint `unlearned` paints over `tree`, as the chrome drives it, with the strip's own
+/// places and the room the real bar keeps beside its clock: the real geometry the hint is placed
+/// against. `cues` are what the person did just before it, for a hint whose moment is one of those;
+/// they are noted here, after the desk's own frames have drawn, since a frame of the chrome reads
+/// and keeps what was noted before it.
 fn painted_hint(
     tree: &DesktopTree,
     unlearned: &str,
+    cues: &[Performed],
     wait: ui::time::Duration,
     width: u32,
 ) -> (Option<Rect>, ui::widget::HintPlaces, Option<Rect>) {
     let (_, row) = desk_below_the_bar(tree, width);
     let (room, _) = bar_geometry(tree, width);
     let mut hints = ControlHints::new(record_learning_all_but(unlearned));
+    for cue in cues {
+        performed::note(*cue);
+    }
     let frame = HintFrame {
         row: row.clone(),
         area: row.viewport,
@@ -412,6 +419,7 @@ fn no_hint_stands_over_a_window_or_an_apps_cards() {
         let (painted, row, room) = painted_hint(
             &tree,
             "open-from-search",
+            &[],
             ui::time::Duration::from_secs(18),
             width,
         );
@@ -460,7 +468,7 @@ fn no_hint_stands_over_a_window_or_an_apps_cards() {
     // room. (A maximised window has no handle to take: no hint.)
     for tree in [desk_tree(2), desk_tree(3)] {
         let (painted, row, room) =
-            painted_hint(&tree, "resize-window", ui::time::Duration::ZERO, 1280);
+            painted_hint(&tree, "resize-window", &[], ui::time::Duration::ZERO, 1280);
         let painted = painted.expect("the resize hint shows");
         for (_, content) in &row.windows_on_desk {
             assert!(
@@ -482,4 +490,40 @@ fn no_hint_stands_over_a_window_or_an_apps_cards() {
             "the hint stands beside its handle {line:?} or in the bar's room: {painted:?}"
         );
     }
+}
+
+/// The move hint covers no window's content either, the window whose bar it teaches included: it
+/// hung below the bar, into the window itself, over what the window showed. It stands beside the
+/// bar where a side of it is clear, else in the room the bar keeps beside its clock, and the bar
+/// lights along its underside where the person holds it.
+#[test]
+fn the_move_hint_covers_no_windows_content_its_own_included() {
+    let tree = desk_tree(3);
+    // Its moment: a window's bar was hovered and a window opened, as the desk notes them.
+    let (painted, row, room) = painted_hint(
+        &tree,
+        "move-window",
+        &[Performed::HoveredWindowBar, Performed::OpenedWindow],
+        ui::time::Duration::ZERO,
+        1280,
+    );
+    let painted = painted.expect("the move hint shows");
+    for (_, content) in &row.windows_on_desk {
+        assert!(
+            !painted.overlaps(*content),
+            "the move hint {painted:?} stands over a window's content {content:?}"
+        );
+    }
+    for (name, rect) in &bar_geometry(&tree, 1280).1 {
+        assert!(
+            !painted.overlaps(*rect),
+            "the move hint {painted:?} stands over the bar's {name} {rect:?}"
+        );
+    }
+    let bar = row.focused_bar.expect("fixture: a bar to take");
+    let in_room = room.is_some_and(|room| room.contains_rect(painted));
+    assert!(
+        in_room || painted.inflate(16.0, 16.0).contains(bar.center()),
+        "the hint stands beside its bar {bar:?} or in the bar's room: {painted:?}"
+    );
 }

@@ -35,8 +35,8 @@ pub enum Stand {
 pub struct HintPlace {
     /// Where it stands.
     pub stand: Stand,
-    /// A line the gesture takes (a window's edge, the strip's), lit in the person's colour while
-    /// the hint shows.
+    /// A line the gesture takes (a window's edge, the bar it is held by, the strip's), lit in the
+    /// person's colour while the hint shows.
     pub edge: Option<Line>,
     /// Its words, in the person's language.
     pub words: String,
@@ -52,9 +52,10 @@ pub struct HintPlace {
     /// stand and does not show.
     pub clear: Vec<Rect>,
     /// The room the top bar keeps beside its clock, for a hint beside a control whose sides are
-    /// all content (a window's edge between two windows, or at the screen's): the hint stands
-    /// there instead, as one for a gesture with no control on screen does, while [`Self::edge`]
-    /// lights where the gesture is done. `None`: it stands beside its anchor or not at all.
+    /// all content (a window's bar over its own body, a window's edge between two windows, or at
+    /// the screen's): the hint stands there instead, as one for a gesture with no control on screen
+    /// does, while [`Self::edge`] lights where the gesture is done. `None`: it stands beside its
+    /// anchor or not at all.
     pub bar: Option<Rect>,
 }
 
