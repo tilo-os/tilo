@@ -312,6 +312,17 @@ pub struct AnswerRef {
     pub kind: String,
 }
 
+/// What an app answered an origin's search with: the app asked, its kind as the app publishes it
+/// (`tube.channel`), what it held of that kind before the search (so what it holds afterwards that
+/// it did not then is the answer), and how the invocation went. `None` when the app could not be
+/// asked at all.
+pub type OriginAnswer = Option<(
+    String,
+    String,
+    std::collections::BTreeSet<String>,
+    Result<(), String>,
+)>;
+
 /// What a text typed on the canvas does when no resource it names is held: ask the app whose type
 /// it names for what it says, through that app's own search action
 /// (`outside:<origin>.search`, shell.md §8, "Finding what to place", search.md §7, "Who
@@ -319,20 +330,7 @@ pub struct AnswerRef {
 /// failure, or the run itself is the answer's outcome (shell.md §8). `None` for a text that names
 /// no app's type the platform can ask, so the text fails to place as it always did; `Some(Err)` is
 /// the invocation's own failure, which the query stands as `.failed` with.
-///
-/// Answers the app asked, its kind as the app publishes it (`tube.channel`), what it held of that
-/// kind before the search (so what it holds afterwards that it did not then is the answer), and
-/// how the invocation went.
-pub type AskOrigin = Rc<
-    dyn Fn(
-        &str,
-    ) -> Option<(
-        String,
-        String,
-        std::collections::BTreeSet<String>,
-        Result<(), String>,
-    )>,
->;
+pub type AskOrigin = Rc<dyn Fn(&str) -> OriginAnswer>;
 
 /// The outcome of the invocation of an app's search action: what the query is told when the app
 /// refused to search or the run failed before it could.
@@ -360,14 +358,7 @@ pub struct Found<'a> {
     pub ask: &'a dyn Fn(&str) -> bool,
     /// The ask of an app whose type the text names, when nothing it names is held, [`AskOrigin`]:
     /// `None` when the platform can ask no app for the text.
-    pub ask_origin: &'a dyn Fn(
-        &str,
-    ) -> Option<(
-        String,
-        String,
-        std::collections::BTreeSet<String>,
-        SearchOutcome,
-    )>,
+    pub ask_origin: &'a dyn Fn(&str) -> OriginAnswer,
     /// Whether anyone else's change is still in flight.
     pub busy: Busy,
 }
@@ -763,7 +754,7 @@ impl Arrangement {
             self.catalog
                 .borrow_mut()
                 .remember(&query_resource, query_target(&query));
-            self.queries.borrow_mut().insert(key.clone(), query.clone());
+            self.queries.borrow_mut().insert(key.clone(), query);
             // What the app held of the kind when it was asked: what it holds of that kind
             // afterwards that it did not hold then is what the search found.
             self.query_held.borrow_mut().insert(key, held);
@@ -821,9 +812,7 @@ impl Arrangement {
         answer: Answer,
         busy: Busy,
     ) -> Option<String> {
-        let Some(mut query) = self.queries.borrow().get(&place.to_string()).cloned() else {
-            return None;
-        };
+        let mut query = self.queries.borrow().get(&place.to_string()).cloned()?;
         let (state, reason, found) = match answer {
             Answer::Ok(matches) => (String::new(), String::new(), matches),
             Answer::Err(reason) => ("failed".to_owned(), reason, Vec::new()),
@@ -839,7 +828,7 @@ impl Arrangement {
                 kind: found.kind,
             })
             .collect();
-        let (state, kind) = settle(state, &query.matches);
+        let (state, kind) = settle(&state, &query.matches);
         query.state.clone_from(&state);
         query.kind.clone_from(&kind);
         query.reason.clone_from(&reason);
@@ -875,14 +864,7 @@ impl Arrangement {
         &mut self,
         _asked: &str,
         place: u64,
-        ask_origin: &dyn Fn(
-            &str,
-        ) -> Option<(
-            String,
-            String,
-            std::collections::BTreeSet<String>,
-            SearchOutcome,
-        )>,
+        ask_origin: &dyn Fn(&str) -> OriginAnswer,
         _busy: Busy,
     ) -> Result<(), String> {
         let Some(mut query) = self.queries.borrow().get(&place.to_string()).cloned() else {
@@ -1341,8 +1323,8 @@ impl Arrangement {
         let shows: Vec<(TabId, String)> = match action {
             ArrangementAction::Place {
                 place, resource, ..
-            } => vec![(*place, resource.clone())],
-            ArrangementAction::Show {
+            }
+            | ArrangementAction::Show {
                 place, resource, ..
             } => vec![(*place, resource.clone())],
             _ => Vec::new(),
@@ -1392,49 +1374,13 @@ fn change(
             before,
             strip,
         } => move_place(tree, *place, StripId(*row), *before, *strip, by_the_person),
-        ArrangementAction::Resize { strip, permille } => {
-            let Some(group) = group_mut(tree, *strip) else {
-                return Ok(false);
-            };
-            let width = WindowWidth::Fraction(*permille);
-            let changed = group.width != width;
-            group.width = width;
-            Ok(changed)
-        }
+        ArrangementAction::Resize { strip, permille } => Ok(resize_strip(tree, *strip, *permille)),
         ArrangementAction::Maximize { strip, maximized } => {
-            let group = group_mut(tree, *strip)
-                .ok_or_else(|| "that strip is not in the arrangement".to_owned())?;
-            let changed = group.maximized != *maximized;
-            group.maximized = *maximized;
-            Ok(changed)
+            maximize_strip(tree, *strip, *maximized)
         }
-        ArrangementAction::Close { place } => {
-            if tree.close_tab(*place).is_some() {
-                Ok(true)
-            } else {
-                Err("that place is not in the arrangement".into())
-            }
-        }
-        ArrangementAction::Activate { place } => {
-            let Some(held) = group_holding(tree, *place) else {
-                return Err("that place is not in the arrangement".into());
-            };
-            if held.active_tab == *place {
-                return Err("that place is in front already".into());
-            }
-            held.activate_tab(*place);
-            Ok(true)
-        }
-        ArrangementAction::Pin { place, pinned } => {
-            let Some(tab) = group_holding(tree, *place)
-                .and_then(|held| held.tabs.iter_mut().find(|tab| tab.id == *place))
-            else {
-                return Err("that place is not in the arrangement".into());
-            };
-            let changed = tab.pinned != *pinned;
-            tab.pinned = *pinned;
-            Ok(changed)
-        }
+        ArrangementAction::Close { place } => close_place(tree, *place),
+        ArrangementAction::Activate { place } => activate_place(tree, *place),
+        ArrangementAction::Pin { place, pinned } => pin_place(tree, *place, *pinned),
         ArrangementAction::Position { place, x, y } => {
             position(tree, *place, clamp_coord(*x), clamp_coord(*y))
         }
@@ -1491,6 +1437,60 @@ fn change(
             Err("a retried search is resolved before it reaches the record".into())
         }
     }
+}
+
+/// Resize the strip `strip` to `permille` of its row's width. Whether the desk changed; a strip
+/// nowhere on the desk is left as it is.
+fn resize_strip(tree: &mut DesktopTree, strip: u64, permille: u32) -> bool {
+    let Some(group) = group_mut(tree, strip) else {
+        return false;
+    };
+    let width = WindowWidth::Fraction(permille);
+    let changed = group.width != width;
+    group.width = width;
+    changed
+}
+
+/// Maximize the strip `strip` (`maximized`), so it stands alone as the window the desk is.
+fn maximize_strip(tree: &mut DesktopTree, strip: u64, maximized: bool) -> Result<bool, String> {
+    let group =
+        group_mut(tree, strip).ok_or_else(|| "that strip is not in the arrangement".to_owned())?;
+    let changed = group.maximized != maximized;
+    group.maximized = maximized;
+    Ok(changed)
+}
+
+/// Close the place `place` and the strip it leaves empty.
+fn close_place(tree: &mut DesktopTree, place: u64) -> Result<bool, String> {
+    if tree.close_tab(place).is_some() {
+        Ok(true)
+    } else {
+        Err("that place is not in the arrangement".into())
+    }
+}
+
+/// Bring the place `place` in front of the others in its group.
+fn activate_place(tree: &mut DesktopTree, place: u64) -> Result<bool, String> {
+    let Some(held) = group_holding(tree, place) else {
+        return Err("that place is not in the arrangement".into());
+    };
+    if held.active_tab == place {
+        return Err("that place is in front already".into());
+    }
+    held.activate_tab(place);
+    Ok(true)
+}
+
+/// Pin the place `place` (`pinned`), so an agent's arrangement leaves it where it is.
+fn pin_place(tree: &mut DesktopTree, place: u64, pinned: bool) -> Result<bool, String> {
+    let Some(tab) = group_holding(tree, place)
+        .and_then(|held| held.tabs.iter_mut().find(|tab| tab.id == place))
+    else {
+        return Err("that place is not in the arrangement".into());
+    };
+    let changed = tab.pinned != pinned;
+    tab.pinned = pinned;
+    Ok(changed)
 }
 
 /// Move the place `place` to `(x, y)` on its workspace's canvas. Whether the desk changed.
@@ -2549,6 +2549,13 @@ pub(super) fn text(args: &ActionArgs, name: &str) -> String {
     args.text(name).unwrap_or_default().to_owned()
 }
 
+/// The answer an arranging action that asks the record gives: complete, with nothing for the
+/// caller to read back. A place that stands on a later pass is complete when it is asked, never
+/// left pending (`Accepted` would be, and nothing completes it).
+fn completed() -> ui::host_operation::ResourceOperationStart {
+    ui::host_operation::ResourceOperationStart::Completed(tilo_actions::ActionOutput::default())
+}
+
 /// The arrangement's published side: the one door the palette, a script, an agent and the host's
 /// own calls reach its actions through, beside the desktop's own.
 #[derive(Clone)]
@@ -2651,9 +2658,7 @@ impl Door {
         };
         if address.action == "place" {
             if self.placed_beside(&asked, arguments, &action)? {
-                return Ok(ui::host_operation::ResourceOperationStart::Completed(
-                    tilo_actions::ActionOutput::default(),
-                ));
+                return Ok(completed());
             }
             self.place_at_surface(arguments, &mut action)?;
         }
@@ -2680,40 +2685,12 @@ impl Door {
             y,
         } = &action
         {
-            let spot = (*x, *y);
-            let find = Rc::clone(&self.find);
-            let ask = Rc::clone(&self.ask);
-            let ask_origin = Rc::clone(&self.ask_origin);
-            let door = self.clone();
-            let needle = text.trim().to_owned();
-            let (text, view, strip) = (text.clone(), view.clone(), *strip);
-            find(
-                &needle,
-                Box::new(move |hits| {
-                    if let Err(why) = door.arrangement.borrow_mut().place_found(Found {
-                        asked: &asked,
-                        text: &text,
-                        view: &view,
-                        strip,
-                        at: spot,
-                        hits: &hits,
-                        ask: &*ask,
-                        ask_origin: &*ask_origin,
-                        busy,
-                    }) {
-                        // The text named nothing a place can show, and nothing answered it: the
-                        // person sees no place, so the log says why.
-                        tracing::warn!(%why, %text, "what the text found is not placed");
-                    }
-                }),
-            );
+            self.find_and_place_found(&asked, text, view, *strip, (*x, *y), busy);
             // The search is under way and the place stands on a later pass: the door answers as it
             // always did for an arranging action, which is complete when the ask is taken. Nothing
             // of the place is left for the caller to read back, so it is not a pending invocation
             // (`Accepted` would be, and nothing completes it).
-            return Ok(ui::host_operation::ResourceOperationStart::Completed(
-                tilo_actions::ActionOutput::default(),
-            ));
+            return Ok(completed());
         }
         // The system's `open` is resolved here, where the desk's ids and its places are: it
         // becomes the `Place` it makes beside its anchor, or the `Activate` that brings what is
@@ -2724,17 +2701,14 @@ impl Door {
             beside,
         } = &action
         {
-            let opened = self
-                .arrangement
+            self.arrangement
                 .borrow_mut()
-                .open_place(&asked, resource, view, beside);
-            opened.map_err(|why| tilo_actions::DoorError::Unavailable {
-                code: "nowhere_to_open".to_owned(),
-                reason: why,
-            })?;
-            return Ok(ui::host_operation::ResourceOperationStart::Completed(
-                tilo_actions::ActionOutput::default(),
-            ));
+                .open_place(&asked, resource, view, beside)
+                .map_err(|why| tilo_actions::DoorError::Unavailable {
+                    code: "nowhere_to_open".to_owned(),
+                    reason: why,
+                })?;
+            return Ok(completed());
         }
         // A query's Retry asks its app again, from the text it holds: the query goes back to
         // searching, and the app's own search action runs the text once more through `ask_origin`
@@ -2749,18 +2723,54 @@ impl Door {
                     code: "nothing_to_place".to_owned(),
                     reason: why,
                 })?;
-            return Ok(ui::host_operation::ResourceOperationStart::Completed(
-                tilo_actions::ActionOutput::default(),
-            ));
+            return Ok(completed());
         }
         self.arrangement
             .borrow_mut()
             .ask(&asked, action, busy)
             .map(drop)
             .map_err(tilo_actions::DoorError::Failed)?;
-        Ok(ui::host_operation::ResourceOperationStart::Completed(
-            tilo_actions::ActionOutput::default(),
-        ))
+        Ok(completed())
+    }
+
+    /// Search for the text a place found by text names, and stand what it finds beside where the
+    /// person typed: `find` answers the hits on whatever thread it needs, and `place_found` makes
+    /// the place on a later pass, as the person's own step.
+    fn find_and_place_found(
+        &self,
+        asked: &str,
+        text: &str,
+        view: &str,
+        strip: Option<u64>,
+        at: (i64, i64),
+        busy: Busy,
+    ) {
+        let find = Rc::clone(&self.find);
+        let ask = Rc::clone(&self.ask);
+        let ask_origin = Rc::clone(&self.ask_origin);
+        let door = self.clone();
+        let needle = text.trim().to_owned();
+        let (asked, text, view) = (asked.to_owned(), text.to_owned(), view.to_owned());
+        find(
+            &needle,
+            Box::new(move |hits| {
+                if let Err(why) = door.arrangement.borrow_mut().place_found(Found {
+                    asked: &asked,
+                    text: &text,
+                    view: &view,
+                    strip,
+                    at,
+                    hits: &hits,
+                    ask: &*ask,
+                    ask_origin: &*ask_origin,
+                    busy,
+                }) {
+                    // The text named nothing a place can show, and nothing answered it: the
+                    // person sees no place, so the log says why.
+                    tracing::warn!(%why, %text, "what the text found is not placed");
+                }
+            }),
+        );
     }
 
     /// [`Self::invoke`] with `actor` as the one who asks: the name their step of the desk's history
@@ -2846,9 +2856,7 @@ impl Door {
                 reason: "the arrangement has no step left".to_owned(),
             });
         }
-        Ok(ui::host_operation::ResourceOperationStart::Completed(
-            tilo_actions::ActionOutput::default(),
-        ))
+        Ok(completed())
     }
 
     /// The person whose arrangement it is.

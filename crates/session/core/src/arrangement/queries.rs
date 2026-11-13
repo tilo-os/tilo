@@ -15,7 +15,7 @@ pub(super) fn query_state_from_outcome(outcome: SearchOutcome) -> (String, Strin
     }
 }
 
-pub(super) fn settle(state: String, matches: &[ArrangementRefReading]) -> (String, String) {
+pub(super) fn settle(state: &str, matches: &[ArrangementRefReading]) -> (String, String) {
     let kind = matches
         .first()
         .map(|one| one.kind.clone())

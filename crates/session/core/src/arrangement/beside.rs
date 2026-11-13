@@ -55,8 +55,8 @@ impl Arrangement {
                 .map(|(_, group)| group);
             let (width, height) = moved
                 .and_then(|group| held.arrangement.place_of(group))
-                .map_or(
-                    (clamp_side(DEFAULT_WIDTH), clamp_side(DEFAULT_HEIGHT)),
+                .map_or_else(
+                    || (clamp_side(DEFAULT_WIDTH), clamp_side(DEFAULT_HEIGHT)),
                     |own| (own.width, own.height),
                 );
             let free = held
