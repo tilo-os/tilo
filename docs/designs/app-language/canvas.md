@@ -25,7 +25,7 @@ typing a sentence, it becomes an ask to the agent with that context. So "rename"
 
 ## 3. Answers
 
-- An answer is a window of composed views (first-experience.md), placed where the person
+- An answer is a window of composed views, placed where the person
   pointed and drawn by the UI host like any window. Text answers are a view too.
 - It's live: the view is generated tilolang and updates as the resources change.
 - It's kept: the person can keep it in their own app and reuse it, or discard it.
