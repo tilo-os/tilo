@@ -2983,15 +2983,14 @@ impl PdfApp {
         }
         self.selected_anno.clone_from(&hit);
         self.selected_sig = None;
-        if let Some(id) = hit {
-            if let Some(c) = self
+        if let Some(id) = hit
+            && let Some(c) = self
                 .comments
                 .iter()
                 .find(|c| c.pinned() == Some(id.as_str()))
-            {
-                let cid = c.id.clone();
-                self.focus_sidebar(SidebarTab::Comments, cid);
-            }
+        {
+            let cid = c.id.clone();
+            self.focus_sidebar(SidebarTab::Comments, cid);
         }
         self.dirty = true;
     }

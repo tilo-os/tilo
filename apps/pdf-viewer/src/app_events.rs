@@ -737,15 +737,13 @@ impl PdfApp {
                     }
                     self.reload(state);
                 }
-            } else {
-                if let Some(c) = self
-                    .comments
-                    .iter()
-                    .find(|c| c.pinned() == Some(mdrag.id.as_str()))
-                {
-                    let cid = c.id.clone();
-                    self.focus_sidebar(SidebarTab::Comments, cid);
-                }
+            } else if let Some(c) = self
+                .comments
+                .iter()
+                .find(|c| c.pinned() == Some(mdrag.id.as_str()))
+            {
+                let cid = c.id.clone();
+                self.focus_sidebar(SidebarTab::Comments, cid);
             }
             self.dirty = true;
             *handled = true;

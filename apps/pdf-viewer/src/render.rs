@@ -641,10 +641,7 @@ pub fn crop_page_region(
     let mut out = Vec::with_capacity(cw * ch * 4);
     for row in y0..y1 {
         let start = (row * iw + x0) * 4;
-        let Some(slice) = src.get(start..start + cw * 4) else {
-            return None;
-        };
-        out.extend_from_slice(slice);
+        out.extend_from_slice(src.get(start..start + cw * 4)?);
     }
     Some((cw, ch, out))
 }
