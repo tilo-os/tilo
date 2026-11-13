@@ -7256,7 +7256,14 @@ impl AppBrokerState {
             .ok_or("native context has no membership authority")?
             .decide_in_workspace(&route.cluster_id, |workspace| {
                 let workspace = workspace.ok_or("native context workspace is unavailable")?;
-                let mut agents = workspace.agent_members_at(now);
+                let mut agents: Vec<(String, Option<String>)> = workspace
+                    .agent_members_at(now)
+                    .into_iter()
+                    .map(|(agent, _)| {
+                        let keeper = workspace.agent_keeper(&agent).map(str::to_owned);
+                        (agent, keeper)
+                    })
+                    .collect();
                 agents.sort_by(|left, right| left.0.cmp(&right.0));
                 let mut people: Vec<String> = workspace
                     .roster()
@@ -7321,13 +7328,14 @@ impl AppBrokerState {
                 joined_at,
             });
         }
-        for (agent, _) in agents {
+        for (agent, keeper) in agents {
             tilo_peer_state::workspace_membership::valid_agent_id(&agent)
                 .map_err(|_| "native context contains a noncanonical agent identity")?;
             let is_self = admitted.agent_id.as_deref() == Some(agent.as_str());
-            // The colour its face wears everywhere ([`participant_color`] of an agent): an app
-            // draws it as the bar does, one rule for every surface.
-            let colour = ui::presence::participant_hue(&agent, true, None);
+            // The colour its face wears everywhere ([`participant_color`] of an agent, clear of
+            // the person who admitted it): an app draws it as the bar does, one rule and one key
+            // for every surface.
+            let colour = ui::presence::participant_hue(&agent, true, keeper.as_deref());
             collaborators.push(ui::collaboration::Collaborator {
                 id: format!("agent:{agent}"),
                 name: agent,
@@ -13321,8 +13329,9 @@ pub mod tests {
                 )
                 .is_err()
         );
-        // An agent wears the colour its face wears everywhere, so the card it
-        // shows in a window is drawn as the bar draws it.
+        // An agent wears the colour its face wears everywhere, clear of the
+        // person who admitted it, so the card it shows in a window is drawn as
+        // the bar draws it.
         for agent in roster.iter().filter(|row| row.is_agent) {
             let key = agent
                 .id
@@ -13330,7 +13339,7 @@ pub mod tests {
                 .expect("an agent's id names its key");
             assert_eq!(
                 agent.colour,
-                Some(ui::presence::participant_hue(key, true, None)),
+                Some(ui::presence::participant_hue(key, true, Some(&person))),
                 "{key}"
             );
         }

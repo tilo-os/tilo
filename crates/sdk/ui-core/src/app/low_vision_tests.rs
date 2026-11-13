@@ -394,3 +394,25 @@ fn shell_palette_message_rethemes_the_open_app_without_settings_file_access() {
         "an invalid host palette must not replace the live theme"
     );
 }
+
+/// A window the desk floats as a card draws on the card's ground, the one its header and every
+/// other card in the column stand on, through a theme rebuild; back in its strip it draws on the
+/// window ground again.
+#[cfg(feature = "native")]
+#[test]
+fn a_window_floating_as_a_card_draws_on_the_cards_ground() {
+    use crate::window_toolbar::ToolbarEvent;
+    let _settings = own_settings();
+    let mut a = app();
+    a.set_theme(Theme::dark());
+    let window = Theme::dark().tokens.colors.surfaces.content;
+    let card = crate::widget::floating_surface::card_ground(&Theme::dark());
+    assert_ne!(window, card, "a card stands on a ground of its own");
+    let ground = |a: &App| a.theme.tokens.colors.surfaces.content;
+    a.receive_bar_event(ToolbarEvent::Floating { floating: true }, None);
+    assert_eq!(ground(&a), card, "floating");
+    a.set_theme(Theme::dark());
+    assert_eq!(ground(&a), card, "a new theme keeps it on the card");
+    a.receive_bar_event(ToolbarEvent::Floating { floating: false }, None);
+    assert_eq!(ground(&a), window, "back in its strip");
+}

@@ -327,13 +327,21 @@ impl App {
                 },
                 None => false,
             },
+            // The window floats as a card, or stands in its strip again: it draws on the card's
+            // ground while it floats ([`crate::theme::Theme::as_card`]).
+            ToolbarEvent::Floating { .. } => {
+                crate::window_toolbar::deliver(event.clone());
+                self.rebuild_theme();
+                self.layout.layout_dirty = true;
+                self.layout.request_rebuild();
+                true
+            }
             ToolbarEvent::ToggleSidebar
             | ToolbarEvent::Back
             | ToolbarEvent::Forward
             | ToolbarEvent::Commit { .. }
             | ToolbarEvent::Edit { .. }
-            | ToolbarEvent::Action { .. }
-            | ToolbarEvent::Floating { .. } => return None,
+            | ToolbarEvent::Action { .. } => return None,
         })
     }
 

@@ -1096,19 +1096,23 @@ impl ChatApp {
             *y + side,
         );
         let mut ctx = PaintCtx::new(scene, tf, tr, theme);
+        // The time stays whole beside the name: in a narrow window the name
+        // gives up its room and ends in an ellipsis, never the time.
+        let time_style = theme.text(TextRole::Caption).numeric();
+        let clock = time_label(m);
+        let gap = f64::from(theme.tokens.spacing.s2);
+        let clock_room = f64::from(ctx.text.measure_style(&clock, None, &time_style).0) + gap;
         let (end_x, nh, line) = self.paint_author(
             &mut ctx,
             m,
             avatar,
             Point::new(text_x, *y),
-            area.x1 - self.chrome.gutter,
+            area.x1 - self.chrome.gutter - clock_room,
         );
         // The time's line box is bottom-aligned to the name's, which keeps
         // their baselines together at any text scale.
-        let time_style = theme.text(TextRole::Caption).numeric();
-        let clock = time_label(m);
         let th = line_of(ctx.text, &time_style);
-        let clock_x = end_x + f64::from(theme.tokens.spacing.s2);
+        let clock_x = end_x + gap;
         let (clock_w, clock_h) = text(
             &mut ctx,
             &clock,

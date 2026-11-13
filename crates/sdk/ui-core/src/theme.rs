@@ -1281,6 +1281,16 @@ impl Theme {
             None => theme,
         }
     }
+
+    /// This theme in a window floating over the desk as a card
+    /// ([`crate::window_toolbar::floats`]): its ground is the card's, so the
+    /// app under the card's header draws on the same surface as the header
+    /// and every other card in the column, not on a window's darker ground.
+    #[must_use]
+    pub fn as_card(mut self) -> Self {
+        self.tokens.colors.surfaces.content = crate::widget::floating_surface::card_ground(&self);
+        self
+    }
 }
 
 /// The neutral temperature a workspace takes from its wallpaper (RGBA8

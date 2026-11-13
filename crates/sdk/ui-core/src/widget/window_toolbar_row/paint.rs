@@ -580,6 +580,9 @@ pub(super) fn paint_location(
         if avatar.agent {
             face = face.agent();
         }
+        if let Some(hue) = avatar.hue {
+            face = face.hue(hue);
+        }
         if let Some(presence) = avatar.presence {
             face = face.status(presence.status());
         }

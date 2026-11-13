@@ -110,19 +110,29 @@ fn an_agent_is_made_with_a_name_keeper_colour_and_when() {
     );
 }
 
+/// Nothing chosen, an agent wears what the one rule gives it: what it is, clear of the colour
+/// of the person who keeps it, as the bar and every app draw it.
 #[test]
-fn an_agents_colour_follows_its_identity_as_a_persons_does() {
+fn an_agents_colour_follows_the_rule_every_surface_draws_it_by() {
     let mut record = as_person(ADA);
     record.apply(make("Claude")).unwrap();
     let agent = {
         let state = record.state().unwrap();
         state.agents[0].clone()
     };
-    let hue = collab_types::presence::PresenceHue::of_identity(&format!("agent:{}", agent.id.0));
-    assert_eq!(agent.colour, None, "nothing chosen, so its identity's");
+    let hue = collab_types::presence::PresenceHue::of_participant(
+        &format!("agent:{}", agent.id.0),
+        true,
+        Some(&agent.keeper),
+    );
+    assert_eq!(agent.colour, None, "nothing chosen, so the rule's");
+    let keeper = collab_types::presence::PresenceHue::of_identity(&agent.keeper);
+    assert_ne!(
+        usize::from(agent.slot()),
+        keeper.slot(),
+        "never its keeper's colour"
+    );
     assert_eq!(agent.slot(), u8::try_from(hue.slot()).unwrap());
-    assert_eq!(agent.hue(), hue);
-    assert_eq!(agent.rgb(), collab_types::presence::identity_rgb(hue));
     assert_eq!(agent.identity(), format!("agent:{}", agent.id.0));
 }
 

@@ -759,6 +759,21 @@ impl Workspace {
         agents
     }
 
+    /// The person who admitted the agent `agent` to the workspace: the one it acts for, whose
+    /// colour it is painted clear of.
+    #[must_use]
+    pub fn agent_keeper(&self, agent: &str) -> Option<&str> {
+        self.policy
+            .grants
+            .iter()
+            .find_map(|grant| match (&grant.subject, &grant.granted_by) {
+                (Subject::Agent(held), Subject::Person(person)) if held == agent => {
+                    Some(person.as_str())
+                }
+                _ => None,
+            })
+    }
+
     /// What a launch into this workspace hands its apps at `now`: the apps the
     /// workspace's grants make authors, and the workspace's sandbox.
     #[must_use]

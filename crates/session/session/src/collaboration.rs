@@ -126,12 +126,12 @@ impl Session {
                         }
                         None => (lines::waiting(), None),
                     };
-                    // The colour the agent wears wherever it shows: the one its name gives it, never
-                    // the run it works in, and clear of the colour of the person it works for — the
-                    // one rule every surface asks, so its face here is the face its changes wear in
-                    // History, on its card and on its marks.
+                    // The colour the agent wears wherever it shows: the one what it was admitted as
+                    // gives it, never the run it works in, and clear of the colour of the person it
+                    // works for — the one rule and the one key every surface asks (the workspace's
+                    // member list keys it so for its card in a window and its marks).
                     let (r, g, b) = ui::presence::participant_color(
-                        &seated.name,
+                        &seated.agent,
                         true,
                         Some(&self.shared.person),
                     );

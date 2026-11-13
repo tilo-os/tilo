@@ -1409,6 +1409,10 @@ impl App {
                     self.accessibility.ui_scale * self.accessibility.zoom.factor(),
                 ),
         };
+        // A window floating as a card draws on the card's ground.
+        if crate::window_toolbar::floats() {
+            self.theme = self.theme.clone().as_card();
+        }
         self.text_renderer
             .apply_typography(&self.theme.tokens.typography);
         // Deliver motion policy before the event loop consults
