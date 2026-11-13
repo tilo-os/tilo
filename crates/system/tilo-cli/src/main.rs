@@ -233,9 +233,12 @@ enum Cmd {
         cmd: hosted::AccountCmd,
     },
     /// Files into a hosted workspace.
-    #[command(after_help = "Example:\n  tilo files put passport.png -w jane-doe\n  \
-                            tilo -w jane-doe do pdf-viewer#import-pdf-content content=tilo.content:… name=application.pdf\n  \
-                            tilo files get tilo.content:… -w jane-doe -o cover-letter.docx")]
+    #[command(
+        after_help = "Examples:\n  tilo files put passport.png -w jane-doe\n  \
+                            tilo files put ./contracts -w jane-doe\n  \
+                            tilo files put scan.pdf -w jane-doe --store\n  \
+                            tilo files get tilo.content:… -w jane-doe -o cover-letter.docx"
+    )]
     Files {
         /// The answer as JSON, typed as the SDK gets it.
         #[arg(long)]

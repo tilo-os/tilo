@@ -2,8 +2,10 @@
 //! transport.
 
 mod document;
+mod landing;
 mod sniff;
 pub use document::{DocumentFormat, RECORDING, RECORDING_MAGIC, document_format, opened_by};
+pub use landing::{HEAD_BYTES, Landing, landing};
 pub use sniff::{ImageFormat, image_format, image_size, sniff};
 
 /// Whether `hash` has the shape of a content address: 64 lower- or upper-case
