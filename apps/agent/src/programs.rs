@@ -50,11 +50,13 @@ pub fn definition() -> ToolDefinition {
              what the person pointed at. Read: `find(notes.Note)` lists a type's resources, \
              `find(tasks.Task, done: false)` by the type's filters, and every type also by when \
              it last changed: `find(notes.Note, changed: -7d)` (the last 7 days; `today`, \
-             `2026-11-01..`); `grep(/launch/i, in: notes)` searches text; `read(n2)` is a \
-             resource's text; `n2.title` a field; `updated(n2)` who changed it last and when; \
+             `2026-11-01..`). A program reads no clock: dates and times are written as search \
+             writes them, `find(tasks.Task, due: today..today + 7d)` is what is due this week. \
+             `grep(/launch/i, in: notes)` searches text; `read(n2)` is a resource's text; \
+             `n2.title` a field; `updated(n2)` who changed it last and when; \
              `describe(notes)` an app's types, fields, filters and actions. Lists chain: \
              `.filter(n -> n.pinned)`, `.sort_by(.title)`, `.map(.title)`, `.take(5)`, \
-             `.len()`. A program answers with what it `print`s and the value of its last line; \
+             `.len()`; conditions combine with `not`, `and`, `or`. A program answers with what it `print`s and the value of its last line; \
              the values of earlier lines are not shown. Change things by calling actions or \
              assigning fields. A program that would change many things or destroy something \
              answers with a preview; send it again with `confirm` once the person's request \

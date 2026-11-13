@@ -583,3 +583,23 @@ fn what_changed_in_the_notes_this_week_is_found_by_when_each_last_changed() {
         "{described}"
     );
 }
+
+/// "Which of my tasks are due this week?": a program asks a date as search writes it, since a
+/// program reads no clock of its own; what it reaches for first (`today`, `!`, `&&`) is taught.
+#[test]
+fn due_this_week_is_a_filter_and_the_words_a_program_reaches_for_first_are_taught() {
+    let w = world();
+    let week = w.run("find(tasks.Task, due: today..today + 7d, done: false).len()");
+    assert_eq!(week["state"], "done", "{week:#}");
+    let clock = refused(&w.run("print(today)"));
+    assert!(
+        clock.contains("a program cannot") && clock.contains("due: today"),
+        "{clock}"
+    );
+    let negated = refused(&w.run("find(tasks.Task).filter(t -> !t.done && t.title != \"x\")"));
+    assert!(
+        negated.contains("tilolang writes `not x`")
+            && negated.contains("tilolang writes `a and b`"),
+        "{negated}"
+    );
+}

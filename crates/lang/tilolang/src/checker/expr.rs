@@ -328,7 +328,8 @@ impl Checker<'_> {
         // `today`: the day this invocation falls on for the person, read in their zone as the
         // filter's `today` reads it.
         if name == "today" {
-            if self.st.ctx == Ctx::Action || self.st.press {
+            // A program reaches the refusal that says how it asks by time instead.
+            if matches!(self.st.ctx, Ctx::Action | Ctx::Program) || self.st.press {
                 self.reads(crate::effects::Effect::Time, span, "`today`");
                 return Ex::host(Imp::Today, vec![], Ty::Date);
             }
