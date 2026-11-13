@@ -244,6 +244,7 @@ mod tests {
     use super::*;
 
     tilo_test_env::scenario! {
+        #[allow(clippy::arithmetic_side_effects, reason = "arithmetic on a test's fixed values")]
         fn inhibitors_compose_announce_changes_and_lapse_at_their_deadline;
 
         phase inhibitor_tokens_compose_share_state_and_release_on_drop;

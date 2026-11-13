@@ -886,6 +886,7 @@ mod tests {
     use super::*;
 
     tilo_test_env::scenario! {
+        #[allow(clippy::arithmetic_side_effects, reason = "arithmetic on a test's fixed values")]
         fn the_service_reacts_to_edges_deadlines_and_battery_events;
 
         phase service_reacts_to_lid_sleep_and_signal_edges;
