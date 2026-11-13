@@ -55,8 +55,10 @@ fn picture(name: &str) -> Vec<u8> {
 
 #[test]
 fn two_windows_in_two_workspaces_keep_their_content_apart() {
-    let mut first = TestApp::<AlbumApp>::in_workspace("workspace-first").unwrap();
-    let mut second = TestApp::<AlbumApp>::in_workspace("workspace-second").unwrap();
+    const FIRST: &str = "8d2f6b41-0c9a-4e57-b3d8-1a7c5e90f264";
+    const SECOND: &str = "e46b19c7-3f52-4a08-9d71-6b2e8f04c593";
+    let mut first = TestApp::<AlbumApp>::in_workspace(FIRST).unwrap();
+    let mut second = TestApp::<AlbumApp>::in_workspace(SECOND).unwrap();
     assert_eq!(
         SEEN.with(|seen| seen.borrow().len()),
         2,

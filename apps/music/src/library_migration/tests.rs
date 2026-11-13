@@ -192,7 +192,7 @@ fn the_same_legacy_heads_migrate_deterministically_and_merge_once() {
 
 #[test]
 fn opening_a_retained_profile_migrates_and_restores_live_player_actions() {
-    use ui::framework::testing::TestApp;
+    use ui::framework::testing::{TEST_WORKSPACE, TestApp};
     use ui::record::{RecordId, RecordKind};
 
     let mut doc = populated_legacy_library();
@@ -201,8 +201,8 @@ fn opening_a_retained_profile_migrates_and_restores_live_player_actions() {
         &mut doc,
         &window,
         &RecordKind::new(Library::KIND),
-        "test-workspace",
-        Some("test-workspace"),
+        TEST_WORKSPACE,
+        Some(TEST_WORKSPACE),
     ));
     let record = RecordId::package_primary();
     let mut app = TestApp::<crate::MusicShell>::launched_replica(&[], &mut doc).unwrap();

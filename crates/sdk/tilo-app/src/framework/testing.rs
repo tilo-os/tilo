@@ -18,10 +18,10 @@ use ui_core::record::RecordId;
 use tilo_resource::Resource;
 
 use super::app::{ResourceApp, definition, prepare_on, role_permissions};
-use super::headless::{AUTHOR, INSTANCE, TEST_WORKSPACE, operation, profile_directory, surface_of};
+use super::headless::{AUTHOR, INSTANCE, operation, profile_directory, surface_of};
 use super::root::ResourceRoot;
 
-pub use super::headless::{HeadlessApp, HostedApp, surface_in};
+pub use super::headless::{HeadlessApp, HostedApp, TEST_WORKSPACE, surface_in};
 
 /// The hang bound and bounded waits a test uses, re-exported from the
 /// toolkit's `test-support` so an app's tests reach them through `ui`
@@ -152,7 +152,7 @@ pub fn drive_live_window_writing_after<A: ResourceApp, T>(
             debounce,
         )),
         "test-device".into(),
-        "test-workspace",
+        TEST_WORKSPACE,
         UserId(AUTHOR.into()),
         role_permissions(AUTHOR, Role::Owner),
         tilo_actions::ActionContext::default(),
@@ -225,7 +225,7 @@ pub fn drive_live_embedded<A: ResourceApp, T>(
     let host = ApplicationHost::new(
         profile.path().join("state"),
         "test-device".into(),
-        "test-workspace",
+        TEST_WORKSPACE,
         UserId(AUTHOR.into()),
         role_permissions(AUTHOR, Role::Owner),
         tilo_actions::ActionContext::default(),

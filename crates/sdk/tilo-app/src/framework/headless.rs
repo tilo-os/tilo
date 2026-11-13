@@ -22,15 +22,17 @@ pub(super) const AUTHOR: &str = "test-author";
 use ui_core::record::{RecordCheckout, RecordId, RecordStore};
 
 use super::app::{
-    DATA_DIR_INSTANCE, ResourceApp, data_dir_host, definition, hand_launch, prepare_on,
-    role_permissions, settle_launch,
+    DATA_DIR_INSTANCE, DATA_DIR_WORKSPACE, ResourceApp, data_dir_host, definition, hand_launch,
+    prepare_on, role_permissions, settle_launch,
 };
 use super::launch::LaunchInput;
 use super::root::ResourceRoot;
 
 pub(super) const INSTANCE: u64 = 7;
-/// The workspace a test opens the app in unless it names one.
-pub(super) const TEST_WORKSPACE: &str = "test-workspace";
+/// The workspace a test opens the app in unless it names one. A workspace is
+/// named by a UUID: a record kept in one has a route to travel on only then,
+/// and what its window stores is sealed for that workspace's members.
+pub const TEST_WORKSPACE: &str = "5b1f7c0e-2a84-4d63-9f51-0c8e7a4b6d92";
 /// The device a test app runs on unless it names another.
 const TEST_DEVICE: &str = "test-device";
 
@@ -116,11 +118,12 @@ fn workspace_secret(workspace: &str) -> Option<tilo_seal::SymmetricKey> {
 }
 
 impl Profile {
-    /// The workspace the app opens in, on a temporary profile.
-    fn workspace(&self) -> Option<&str> {
+    /// The workspace the app opens in: the profile's own, or the one a
+    /// `--data-dir` profile is kept in.
+    fn workspace(&self) -> &str {
         match self {
-            Self::Temporary(_, workspace, _) | Self::Window(_, workspace, ..) => Some(workspace),
-            Self::DataDir(_) => None,
+            Self::Temporary(_, workspace, _) | Self::Window(_, workspace, ..) => workspace,
+            Self::DataDir(_) => DATA_DIR_WORKSPACE,
         }
     }
 
@@ -236,7 +239,8 @@ impl<A: ResourceApp> HeadlessApp<A> {
 
     /// The app as its owner opens it on a fresh private profile, in `workspace`:
     /// one of several windows of the app in one process, each in a workspace of
-    /// its own.
+    /// its own. A workspace is named by a UUID, so a record kept in it has a
+    /// route to travel on.
     pub fn in_workspace(workspace: &str) -> Result<Self, LaunchError> {
         Self::fresh(workspace, Role::Owner, AUTHOR)
     }
@@ -2126,6 +2130,32 @@ fn profile_host(
     })
 }
 
+/// Hold `profile`'s workspace keys on the route of `prepared`'s record, as a
+/// device does: what the app stores is then sealed under its members' secret,
+/// so the same bytes stored twice are one item under one reference. A record
+/// this host cannot name a route for would seal its content under a key of its
+/// own, which no other reader of the record holds; it is refused instead.
+fn hold_workspace_keys(
+    opening: &Opening,
+    prepared: &PreparedComponentInputs,
+    profile: &Profile,
+) -> Result<(), LaunchError> {
+    let record = prepared.context.record();
+    let route = prepared
+        .context
+        .records()
+        .wire_route(&record.id)
+        .map_err(|error| {
+            operation(format!(
+                "{}'s record {} names no route on this host: {error}",
+                opening.id, record.id
+            ))
+        })?;
+    ui_core::collaboration::record_content::ContentLane::of(&route)
+        .hold_secret(workspace_secret(profile.workspace()));
+    Ok(())
+}
+
 /// Open the app `opening` describes as `launch` says, `configure` given its
 /// host context before it is instantiated.
 fn open_app(
@@ -2164,15 +2194,7 @@ fn open_app(
         (_, named) => prepare_on(&mut host, definition, instance, named, inputs)?,
     };
     let checkout = prepared.context.record().clone();
-    // The harness holds the workspace's keys, as the record's route does on a
-    // device: what the app stores is sealed under its members' secret.
-    if let (Some(workspace), Ok(route)) = (
-        profile.workspace(),
-        prepared.context.records().wire_route(&checkout.id),
-    ) {
-        ui_core::collaboration::record_content::ContentLane::of(&route)
-            .hold_secret(workspace_secret(workspace));
-    }
+    hold_workspace_keys(opening, &prepared, &profile)?;
     hand_launch(definition, arguments, &mut prepared)?;
     prepared.context.provide_launch_options(options);
     if private {
@@ -2257,7 +2279,7 @@ fn private_launch(
         };
         Profile::Temporary(
             Rc::new(profile_directory().map_err(operation)?),
-            "private".into(),
+            TEST_WORKSPACE.to_owned(),
             device,
         )
     } else {
