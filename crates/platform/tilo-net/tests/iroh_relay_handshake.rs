@@ -1,13 +1,8 @@
-//! A relay client sends right behind its answer to the relay's challenge.
-//!
-//! A page reaches its host only through the host's packet relay, and its
-//! WebSocket offers no TLS key material, so the relay authenticates it with a
-//! challenge. Upstream, the client then waited a round trip for the relay to
-//! confirm its answer before it sent anything, and a fresh visitor's session
-//! began that much later. The vendored client (`vendor/iroh-relay`,
-//! `ClientBuilder::send_before_confirmed`) goes on at once: the relay reads
-//! what follows the answer only once it confirmed it, and a denial is the
-//! connection's first error instead.
+//! A relay client sends right behind its answer to the relay's challenge: a
+//! page reaches its host only through the host's packet relay, whose
+//! WebSocket offers no TLS key material to authenticate with. The vendored
+//! client (`vendor/iroh-relay`, `ClientBuilder::send_before_confirmed`) goes
+//! on at once; the test compares it with the confirming round trip.
 
 #![cfg(not(target_family = "wasm"))]
 #![allow(
@@ -29,10 +24,8 @@ use iroh_relay::server::{Access, AccessControl, ClientRequest, RelayConfig};
 use iroh_relay::tls::{CaTlsConfig, default_provider};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
-/// Each way's delay on the network between the client and the relay.
 const ONE_WAY: Duration = Duration::from_millis(150);
 
-/// A relay admitting everyone but the keys it was given.
 #[derive(Debug)]
 struct Refusing(Vec<iroh::PublicKey>);
 
@@ -108,7 +101,6 @@ fn client(url: &str, key: SecretKey, send_before_confirmed: bool) -> ClientBuild
     .send_before_confirmed(send_before_confirmed)
 }
 
-/// The next datagrams `client` receives.
 async fn datagrams(client: &mut Client) -> Datagrams {
     loop {
         let message = tokio::time::timeout(Duration::from_secs(10), client.next())

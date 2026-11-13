@@ -7,35 +7,28 @@ use rustls::crypto::CryptoProvider;
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use rustls::{ClientConfig, DigitallySignedStruct, RootCertStore, SignatureScheme};
 
-/// The workspace's only TLS crypto provider.
 pub fn crypto_provider() -> Arc<CryptoProvider> {
     Arc::new(rustls::crypto::ring::default_provider())
 }
 
-/// Install [`crypto_provider`] as the process default.
-///
-/// Libraries that consult `CryptoProvider::get_default()` rather than taking a
-/// provider need this before they build a client. Repeated calls are harmless.
+/// Install [`crypto_provider`] as the process default: libraries that read
+/// `CryptoProvider::get_default()` need this before they build a client.
+/// Repeated calls are harmless.
 pub fn install_crypto_provider() {
     if CryptoProvider::get_default().is_none() {
-        // Losing a race to another installer leaves the same provider in place.
+        // Another installer winning the race installs this same provider.
         let _ = rustls::crypto::ring::default_provider().install_default();
     }
 }
 
-/// Roots from the Tilo system trust bundle.
-///
-/// Unparsable entries are skipped; an unreadable bundle yields an empty store,
-/// so verification fails closed. The bundle exists on Linux, and Android's
-/// system store stands in for it there; on macOS use [`client_config`],
-/// which asks the platform.
+/// Roots from the Tilo system trust bundle. An unreadable bundle yields an
+/// empty store, so verification fails closed.
 pub fn system_roots() -> RootCertStore {
     let mut roots = RootCertStore::empty();
     roots.add_parsable_certificates(rustls_native_certs::load_native_certs().certs);
     roots
 }
 
-/// A client config that verifies servers against `roots`.
 pub fn client_config_with_roots(roots: RootCertStore) -> Result<ClientConfig, rustls::Error> {
     Ok(ClientConfig::builder_with_provider(crypto_provider())
         .with_safe_default_protocol_versions()?
@@ -43,10 +36,6 @@ pub fn client_config_with_roots(roots: RootCertStore) -> Result<ClientConfig, ru
         .with_no_client_auth())
 }
 
-/// A client config that verifies servers against the system's trust: the
-/// Tilo bundle on Linux, the Keychain on macOS, the system store on Android.
-/// This is the verifier reqwest uses, so every Tilo client trusts the same
-/// servers.
 #[cfg(not(target_os = "android"))]
 pub fn client_config() -> Result<ClientConfig, rustls::Error> {
     use rustls_platform_verifier::BuilderVerifierExt as _;
@@ -56,19 +45,15 @@ pub fn client_config() -> Result<ClientConfig, rustls::Error> {
         .with_no_client_auth())
 }
 
-/// On Android the platform verifier needs the app's JVM context and its own
-/// Kotlin classes, and aborts the process without them; Android's system
-/// store holds the same roots the platform trusts.
+/// The platform verifier aborts without the app's JVM context and its own
+/// Kotlin classes; Android's system store holds the same roots.
 #[cfg(target_os = "android")]
 pub fn client_config() -> Result<ClientConfig, rustls::Error> {
     client_config_with_roots(system_roots())
 }
 
-/// A client config that verifies servers as [`client_config`] does, and also
-/// trusts each of `extra` (DER), as [`server_verifier_also_trusting`] does.
-///
-/// For a test that runs servers under its own certificates; production
-/// trust is [`client_config`] alone.
+/// A test's own certificates (DER), trusted as a chain root and as that exact
+/// server certificate; production trust is [`client_config`] alone.
 pub fn client_config_also_trusting(
     extra: Vec<CertificateDer<'static>>,
 ) -> Result<ClientConfig, rustls::Error> {
@@ -79,21 +64,16 @@ pub fn client_config_also_trusting(
         .with_no_client_auth())
 }
 
-/// A verifier that checks servers as [`client_config`] does, and also
-/// trusts each of `extra` (DER): as a root a server's chain may lead to, and
-/// as that exact server certificate, for a self-signed server certificate
-/// that is its own issuer (which a chain check does not take as its own
-/// root). Verification stays on: a server must still present one of these
-/// or a chain to a trusted root, for its name, and hold its key.
-///
-/// The verifier form of [`client_config_also_trusting`], for a client that
-/// takes a verifier rather than a config (an iroh endpoint's
-/// `CaTlsConfig::custom_server_cert_verifier`).
+/// Verifies as [`client_config`] does, and also trusts each of `extra` (DER) as
+/// a chain root and as that exact server certificate, so a self-signed server
+/// (which a chain check does not take as its own root) verifies. Verification
+/// stays on: a server must still present one of these or a chain to a trusted
+/// root, for its name, and hold its key.
 pub fn server_verifier_also_trusting(
     extra: Vec<CertificateDer<'static>>,
 ) -> Result<Arc<dyn ServerCertVerifier>, rustls::Error> {
     let provider = crypto_provider();
-    // A certificate no chain check takes as a root (a leaf) is still pinned.
+    // A self-signed leaf is no root to a chain check, so it is pinned as well.
     let roots: Vec<CertificateDer<'static>> = extra
         .iter()
         .filter(|cert| RootCertStore::empty().add((*cert).clone()).is_ok())
@@ -194,10 +174,9 @@ impl ServerCertVerifier for AlsoTrusting {
     }
 }
 
-/// A client config that trusts the server certificate `accept` admits, given
-/// its DER, instead of a chain to a root: a pinned certificate or hash, or any
-/// certificate the caller checks after the handshake. The handshake signature
-/// is still verified, so the server holds the admitted certificate's key.
+/// Trusts the server certificate `accept` admits, given its DER, instead of a
+/// chain to a root. The handshake signature is still verified, so the server
+/// holds the admitted certificate's key.
 pub fn pinned_client_config(
     accept: impl Fn(&[u8]) -> bool + Send + Sync + 'static,
 ) -> Result<ClientConfig, rustls::Error> {

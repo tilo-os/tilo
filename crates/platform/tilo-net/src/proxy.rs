@@ -1,51 +1,7 @@
 //! The host's fetch proxy: how a page reads cross-origin responses that the
-//! site does not allow it to (CORS).
-//!
-//! A page's `fetch` only exposes a cross-origin response when the site sends
-//! `Access-Control-Allow-Origin`. Most APIs and feeds do not, so an HTTP
-//! tester or a feed reader in a page needs a relay. The workspace host the
-//! page is admitted to offers one: `host` is its implementation, which
-//! `tilo-relay` serves and, in development, the `tilo-fetch-proxy` program
-//! behind `tilo-web-desktop/scripts/serve.mjs`. The app opts in per client
-//! or per request with [`ProxyUse::CrossOrigin`]; the host enables it with
-//! [`configure`], or the page names it in `globalThis.__tiloFetchProxy` (see
-//! [`current`]). Both are off by default, and the desktop never uses it:
-//! there is no CORS there.
-//!
-//! # Wire protocol, version 1
-//!
-//! A proxied request goes to the configured endpoint:
-//!
-//! - `METHOD {endpoint}?url={target}`: the method and body are the target
-//!   request's, and `target` is the percent-encoded absolute `http`/`https`
-//!   URL.
-//! - [`MARKER_HEADER`] is set, so a cross-site form cannot drive the proxy.
-//! - [`SESSION_HEADER`] carries the page's session at a host on another
-//!   origin, whose cookies a page cannot send; a host on the page's own
-//!   origin may authenticate it by its cookies instead.
-//! - Headers a browser refuses to send (`User-Agent`, `Cookie`, `Referer`,
-//!   `Origin`, …) travel as [`FORWARD_PREFIX`]`<name>`; the proxy restores
-//!   them. Every other header is sent as is. The page's own cookies and
-//!   session are credentials for the proxy and are never forwarded.
-//!
-//! The proxy validates the target, refuses destinations on its own network
-//! (loopback, private, link-local and unique-local addresses, re-checked on
-//! every redirect hop), follows redirects itself, and bounds bodies, time and
-//! how much each device may ask of it. It answers:
-//!
-//! - the target's status, headers and body, with hop-by-hop headers removed,
-//!   each header the host's origin would act on renamed to
-//!   [`FORWARD_PREFIX`]`<name>`: `Set-Cookie`, so that origin never stores
-//!   the cookie; `WWW-Authenticate`, so the browser never answers the
-//!   challenge with a login prompt for that origin, which blocks the tab's
-//!   input until the request ends; and caching, security-policy and
-//!   site-data headers, which would apply to it. [`FINAL_URL_HEADER`] names
-//!   the URL that answered after redirects;
-//! - or, when the proxy itself fails, a status with [`ERROR_HEADER`] set to
-//!   one of [`ProxyFailure`]'s codes and a text body.
-//!
-//! [`Client`](crate::Client) does all of this: a proxied response reads like
-//! a direct one.
+//! site does not allow it to (CORS). The workspace host the page is admitted
+//! to offers one: [`host`] is its implementation, which `tilo-relay` serves
+//! and, in development, `tilo-fetch-proxy`.
 
 #[cfg(all(feature = "proxy-host", not(target_family = "wasm")))]
 pub mod host;
@@ -58,64 +14,41 @@ use url::Url;
 use crate::NetError;
 use tilo_lock::RwLockRecover as _;
 
-/// Marks a request as meant for the proxy; value `1`.
 pub const MARKER_HEADER: &str = "x-tilo-proxy";
 /// Prefix of headers the proxy restores to their real name, both ways.
 pub const FORWARD_PREFIX: &str = "x-tilo-forward-";
-/// The URL that answered, after the proxy followed redirects.
 pub const FINAL_URL_HEADER: &str = "x-tilo-proxy-final-url";
-/// Set on responses the proxy made itself; the value is a [`ProxyFailure`] code.
 pub const ERROR_HEADER: &str = "x-tilo-proxy-error";
-/// The page's session at the host, for a host on another origin (lowercase
-/// hex); the same header the host's browser routes take.
 pub const SESSION_HEADER: &str = "x-tilo-session";
-/// The protocol version in [`MARKER_HEADER`].
 pub const VERSION: &str = "1";
-/// [`MARKER_HEADER`] as a query parameter, for a `GET` or `HEAD` from a page
-/// element that cannot send headers: a media element streaming a video.
 pub const MARKER_PARAM: &str = "tilo-proxy";
-/// [`SESSION_HEADER`] as a query parameter, beside [`MARKER_PARAM`].
 pub const SESSION_PARAM: &str = "tilo-session";
 
-/// Whether a request may go through the host's fetch proxy.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum ProxyUse {
-    /// Always fetch directly. The default.
     #[default]
     Never,
-    /// In a page, send cross-origin requests through the host's proxy when
-    /// the host has configured one; fetch directly otherwise, and always on
-    /// the desktop.
+    /// In a page, sends cross-origin requests through the host's proxy when the
+    /// host has configured one; direct otherwise, and always on the desktop.
     CrossOrigin,
 }
 
-/// Why the proxy answered instead of the target, from [`ERROR_HEADER`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ProxyFailure {
-    /// `bad-request`: the target URL is missing, malformed or not http(s).
     BadRequest,
-    /// `blocked`: the destination is on the proxy's own network.
     Blocked,
-    /// `unreachable`: the target could not be reached.
     Unreachable,
-    /// `timeout`: the target did not answer in time.
     Timeout,
-    /// `too-large`: a body exceeded the proxy's limit.
     TooLarge,
-    /// `unauthorized`: the page is not signed in to the host.
     Unauthorized,
-    /// `rate-limited`: this device, or everyone together, asked too much of
-    /// the proxy lately; `Retry-After` says when to try again.
+    /// This device, or everyone together, asked too much of the proxy lately.
     RateLimited,
-    /// `over-budget`: the proxy relayed as much as it allows this visitor,
-    /// or everyone in its workspace together, for now (a day, by default);
-    /// `Retry-After` says when the budget turns over. A media element shows
-    /// people this one, so the page can say why playback stopped.
+    /// The proxy relayed as much as it allows this visitor, or everyone in its
+    /// workspace together, for now (a day, by default).
     OverBudget,
 }
 
 impl ProxyFailure {
-    /// The code in [`ERROR_HEADER`].
     #[must_use]
     pub const fn code(self) -> &'static str {
         match self {
@@ -130,7 +63,6 @@ impl ProxyFailure {
         }
     }
 
-    /// The HTTP status a proxy answers with.
     #[must_use]
     pub const fn status(self) -> u16 {
         match self {
@@ -174,22 +106,17 @@ impl ProxyFailure {
     }
 }
 
-/// The proxy a page uses now: where it is, and the page's session there.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Proxy {
-    /// The endpoint, `…/fetch` on the host.
     pub endpoint: Url,
-    /// The page's session at the host, sent as [`SESSION_HEADER`]; `None`
-    /// for a host that authenticates the page by its cookies.
+    /// The page's session at the host, sent as [`SESSION_HEADER`]; `None` for a
+    /// host that authenticates the page by its cookies.
     pub session: Option<String>,
 }
 
-/// Who names the endpoint.
 #[derive(Clone)]
 enum Decision {
-    /// The page, until the host calls [`configure`].
     Page,
-    /// The host: an endpoint, or no proxy.
     Host(Option<Url>),
 }
 
@@ -204,15 +131,10 @@ fn check_endpoint(endpoint: &Url) -> Result<(), NetError> {
     Ok(())
 }
 
-/// Enable the host's proxy at `endpoint`, or disable it with `None`.
-///
-/// Hosts call this, not apps: every proxied request carries the app's
-/// headers and body to the endpoint, so it must be the page's own host or
-/// the workspace host the page is admitted to.
-///
-/// # Errors
-///
-/// [`NetError::InvalidUrl`] for an endpoint that is not http(s).
+/// Enable the host's proxy at `endpoint`, or disable it with `None`. Hosts
+/// call this, not apps: every proxied request carries the app's headers and
+/// body to the endpoint, so it must be the page's own host or the workspace
+/// host the page is admitted to.
 pub fn configure(endpoint: Option<Url>) -> Result<(), NetError> {
     if let Some(endpoint) = &endpoint {
         check_endpoint(endpoint)?;
@@ -223,13 +145,6 @@ pub fn configure(endpoint: Option<Url>) -> Result<(), NetError> {
 
 /// The proxy in use: the host's [`configure`] choice, else what the page
 /// names in `globalThis.__tiloFetchProxy`, else none.
-///
-/// The page names it either as a string, the endpoint (absolute or relative
-/// to the page) of a host on its own origin, or as a function answering
-/// `{endpoint, session}` (or nothing while there is no proxy), which the
-/// browser runtime installs once the workspace host the page is admitted to
-/// offers one: the session then follows the page's reconnects. It is read on
-/// every request.
 #[must_use]
 pub fn current() -> Option<Proxy> {
     let decision = ENDPOINT.read_recover().clone();
@@ -242,7 +157,6 @@ pub fn current() -> Option<Proxy> {
     }
 }
 
-/// The endpoint of the proxy in use, see [`current`].
 #[must_use]
 pub fn endpoint() -> Option<Url> {
     current().map(|proxy| proxy.endpoint)
@@ -299,12 +213,6 @@ fn browser_forbidden(name: &HeaderName) -> bool {
     FORBIDDEN.contains(&name) || name.starts_with("proxy-") || name.starts_with("sec-")
 }
 
-/// The proxy URL and headers for a request to `target` through `proxy`.
-///
-/// # Errors
-///
-/// [`NetError::InvalidRequest`] when a forwarded header name cannot be
-/// formed, or the session is not a header value.
 pub fn route(
     proxy: &Proxy,
     target: &Url,
@@ -337,10 +245,7 @@ pub fn route(
 }
 
 /// The URL a page element that cannot send headers (a media element) loads
-/// `target` from through `proxy`: the marker and the session ride in the
-/// query ([`MARKER_PARAM`], [`SESSION_PARAM`]). Only `GET` and `HEAD` are
-/// taken this way, and an open-ended byte range is answered a piece at a
-/// time, as a media element asks for more.
+/// `target` from through `proxy`.
 #[must_use]
 pub fn media_url(proxy: &Proxy, target: &Url) -> Url {
     let mut url = proxy.endpoint.clone();
@@ -355,12 +260,6 @@ pub fn media_url(proxy: &Proxy, target: &Url) -> Url {
     url
 }
 
-/// Undo [`route`] on a response: the target's headers and the URL that
-/// answered, or the proxy's own failure.
-///
-/// # Errors
-///
-/// The [`ProxyFailure`] as a [`NetError`], with `body` as its message.
 pub fn unwrap_response(
     target: &Url,
     headers: &HeaderMap,
