@@ -1021,6 +1021,59 @@ view deck(d: Deck) {
         assert_eq!(texts(count.tree()), ["299"]);
     }
 
+    /// The ends of a collection that holds nothing, or one item: an item that joins an empty
+    /// one is its first and its last, and the last to leave leaves it with neither; beside one
+    /// that stays, the first is as it was.
+    #[test]
+    fn a_view_of_a_collection_of_none_or_one_follows_its_ends() {
+        for (n, runs, alone) in [(0, [1, 1, 1], "empty"), (1, [0, 1, 1], "item 0")] {
+            let rows = Rows::new(n);
+            let mut oldest = rows.view("oldest");
+            let mut newest = rows.view("newest");
+            let mut count = rows.view("count");
+            assert_eq!(texts(oldest.tree()), [alone], "{n} items");
+            assert_eq!(texts(newest.tree()), [alone], "{n} items");
+            assert_eq!(texts(count.tree()), [n.to_string()], "{n} items");
+
+            let added = std::cell::RefCell::new(None);
+            let add = |rows: &Rows| {
+                let out = rows.call("add", vec![Value::resource(&rows.bag), Value::text("new")]);
+                *added.borrow_mut() = Some(returned_ref(out));
+            };
+            let mut views = [&mut oldest, &mut newest, &mut count];
+            assert_eq!(
+                runs_for(&rows, &mut views, add),
+                runs,
+                "{n} items: one joined"
+            );
+            let first = if n == 0 { "new" } else { alone };
+            assert_eq!(texts(oldest.tree()), [first], "{n} items: one joined");
+            assert_eq!(texts(newest.tree()), ["new"], "{n} items: one joined");
+            assert_eq!(
+                texts(count.tree()),
+                [(n + 1).to_string()],
+                "{n} items: one joined"
+            );
+
+            let added = added.into_inner().unwrap();
+            let leave = |rows: &Rows| {
+                rows.call(
+                    "remove",
+                    vec![Value::resource(&rows.bag), Value::resource(&added)],
+                );
+            };
+            let mut views = [&mut oldest, &mut newest, &mut count];
+            assert_eq!(
+                runs_for(&rows, &mut views, leave),
+                runs,
+                "{n} items: it left"
+            );
+            assert_eq!(texts(oldest.tree()), [alone], "{n} items: it left");
+            assert_eq!(texts(newest.tree()), [alone], "{n} items: it left");
+            assert_eq!(texts(count.tree()), [n.to_string()], "{n} items: it left");
+        }
+    }
+
     /// An item that comes into a collection reaches the filtered views of it whose filter holds
     /// of it, and only those: one it does not match was in none of them before either.
     #[test]
