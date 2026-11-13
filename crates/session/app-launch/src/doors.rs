@@ -70,9 +70,10 @@ pub struct HostedWindow {
     pub opens: Opens,
 }
 
-/// What a window is asked to show: the record a launch named, and the item the window opens on.
-/// A window that holds its app's data opens the record itself, from its launch's command line,
-/// and the item from its window request; a hosted window's instance is handed both.
+/// What a window is asked to show: the record a launch named, the item the window opens on, and
+/// the file or link it opens. A window that holds its app's data opens the record itself, from
+/// its launch's command line, and the item and the file from its window request; a hosted
+/// window's instance is handed the record and the item, and opens no file.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Opens {
     /// The record the launch named, by its id.
@@ -80,17 +81,8 @@ pub struct Opens {
     /// The item the window opens on, by its anchor: a search hit's, an agent's `open`, the
     /// conversation a send landed in.
     pub reveal: Option<String>,
-}
-
-impl Opens {
-    /// A window asked to open on the item `reveal`, when it names one.
-    #[must_use]
-    pub fn revealing(reveal: Option<&str>) -> Self {
-        Self {
-            record: None,
-            reveal: reveal.map(str::to_owned),
-        }
-    }
+    /// The file (at the path the app's sandbox holds it at) or link the launch names.
+    pub open: Option<String>,
 }
 
 /// What the session does with a hosted window's instance.
@@ -386,8 +378,8 @@ impl Doors {
 
     /// Where a window of `app` in `workspace` opens: in the process already
     /// serving the workspace, or in one this launch starts, whose door it
-    /// reserves. Only a `routable` launch, the app's own window with nothing
-    /// named to open, can open in a running process.
+    /// reserves. Only a `routable` launch, the app's own window, on nothing or
+    /// on the file or link `opens` names, can open in a running process.
     ///
     /// #
     /// Errors [`Routed::Opened`]: the running process opens the window and nothing
@@ -611,6 +603,7 @@ fn send_window(
         collaboration: collaboration.is_some(),
         shell_ui: shell_ui.is_some(),
         reveal: opens.reveal.clone(),
+        open: opens.open.clone(),
     };
     ui::window_door::send(
         &entry.ours,
@@ -819,7 +812,10 @@ mod tests {
             doors.open_in_running(
                 APP,
                 WORKSPACE,
-                &Opens::revealing(Some("chat/channels/c_ada")),
+                &Opens {
+                    reveal: Some("chat/channels/c_ada".to_owned()),
+                    ..Opens::default()
+                },
                 &never_alone,
                 None,
             ),
@@ -836,6 +832,30 @@ mod tests {
         );
         assert_ne!(first, told.instance);
         assert_ne!(plain.instance, told.instance);
+
+        // A second file opened with the app reaches the process that runs it, at the path
+        // the app's sandbox holds it at: it opens in a window of its own there.
+        let budget = Opens {
+            open: Some("/documents/Budget.txt".to_owned()),
+            ..Opens::default()
+        };
+        assert_eq!(
+            doors.open_in_running(APP, WORKSPACE, &budget, &never_alone, None),
+            Routed::Opened
+        );
+        let opened = ui::window_door::receive(&launcher_end)
+            .expect("a request")
+            .expect("open")
+            .request;
+        assert_eq!(
+            opened.open.as_deref(),
+            Some("/documents/Budget.txt"),
+            "the running app is handed the file"
+        );
+        assert!(
+            ![first, plain.instance, told.instance].contains(&opened.instance),
+            "the file opens in a window of its own"
+        );
 
         assert_eq!(
             doors.open_in_running(APP, ELSEWHERE, &Opens::default(), &never_alone, None),
@@ -939,8 +959,8 @@ mod tests {
         );
     }
 
-    /// A launch with something named to open never opens in a running
-    /// process: the app's own command line carries it.
+    /// A launch the door does not carry, such as a record, never opens in a
+    /// running process: the app's own command line carries it.
     #[test]
     fn a_launch_that_names_what_it_opens_reserves_a_door_and_starts() {
         let (doors, _) = doors();
@@ -980,7 +1000,7 @@ mod tests {
 
         let first_opens = Opens {
             record: Some("uuid:7a110d00-0000-4000-8000-000000000009".to_owned()),
-            reveal: None,
+            ..Opens::default()
         };
         doors
             .first_hosted_window(APP, WORKSPACE, 5, &first_opens)
@@ -996,7 +1016,10 @@ mod tests {
             doors.open_in_running(
                 APP,
                 WORKSPACE,
-                &Opens::revealing(Some("tl.notes.Note:7")),
+                &Opens {
+                    reveal: Some("tl.notes.Note:7".to_owned()),
+                    ..Opens::default()
+                },
                 &never_alone,
                 Some(6)
             ),

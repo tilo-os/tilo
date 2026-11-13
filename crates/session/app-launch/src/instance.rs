@@ -11,10 +11,12 @@
 //! app's toolkit gives it to the process it already runs.
 //!
 //! A Tilo package is never started twice: one process serves its records for
-//! a workspace, so a launch that names a record, content or a file of an app
-//! that already has a window — showing, or on its way — goes to that window.
-//! A second process would hold the app's records against the first, and one
-//! of them would read nothing.
+//! a workspace, so a launch that names a record or content of an app that
+//! already has a window — showing, or on its way — goes to that window. A
+//! file or a link it is opened on goes to that process, which opens it in a
+//! window of its own beside the others (`crate::doors`). A second process
+//! would hold the app's records against the first, and one of them would read
+//! nothing.
 //!
 //! The desk is what knows which windows and places exist, so it hands them in
 //! ([`Shown`]) and this module decides ([`Instance::answer`]). Nothing here
@@ -55,12 +57,6 @@ impl Shown {
         Self {
             tabs: tabs.into_iter().collect(),
         }
-    }
-
-    /// Whether the desk holds no tab of an app at all.
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.tabs.is_empty()
     }
 
     /// The first tab of `app` the desk holds.
@@ -135,11 +131,13 @@ impl Instance {
         // A machine app's document or a link starts its own command line with
         // it, and the app's toolkit hands it to the process it already runs —
         // which is how an app the shell had started opened one too. A Tilo
-        // package is not started again for what a launch names it: one
-        // process serves its records for a workspace, so a record, content or
-        // file goes to the window it has and no second process takes them.
-        if matches!(launch, Launch::Host { .. }) && opens(launch) {
-            return Answer::Start { new_window: false };
+        // package's file or link is asked of the process it runs, through its
+        // window door: another window of it opens on that file. A record or
+        // content goes to the window it has, and no second process takes them.
+        match launch {
+            Launch::Host { open: Some(_), .. } => return Answer::Start { new_window: false },
+            Launch::Package { open: Some(_), .. } => return Answer::Start { new_window: true },
+            _ => {}
         }
         match self.windows {
             Windows::One => Answer::Raise { tab },
@@ -158,16 +156,6 @@ pub enum Answer {
     /// Raise `tab`, the one the app's window is in or on its way to; nothing
     /// starts.
     Raise { tab: u64 },
-}
-
-/// Whether the launch names a document, a link, a record or some content for
-/// the app to open.
-fn opens(launch: &Launch) -> bool {
-    match launch {
-        Launch::Package { open, .. } | Launch::Host { open, .. } => open.is_some(),
-        Launch::Record { .. } | Launch::Content { .. } => true,
-        Launch::Window { .. } | Launch::Crashed { .. } => false,
-    }
 }
 
 /// The strings a package's window may announce itself by: its id, and its
@@ -277,8 +265,9 @@ mod tests {
 
     /// A machine app's document or link starts its own command line: the app
     /// hands it to the process it already runs, as an app the shell had
-    /// started received one. A Tilo package is never started twice: what a
-    /// launch names it opens in the window it has, showing or on its way.
+    /// started received one. A Tilo package is never started twice: a file
+    /// it is opened on goes to the process it runs, in a window of its own;
+    /// a record it has goes to the window it has.
     #[test]
     fn a_launch_with_a_document_or_a_link_goes_to_the_running_app() {
         let (launch, editor) = editor("");
@@ -299,8 +288,13 @@ mod tests {
             .opening(Some(Open::File("/home/you/notes.tilo-note".into())));
         assert_eq!(
             notes.answer(&document, &shown),
-            Answer::Raise { tab: 12 },
-            "a package opens the file in the one process it runs"
+            Answer::Start { new_window: true },
+            "a package opens the file in another window of the one process it runs"
+        );
+        assert_eq!(
+            notes.answer(&document, &Shown::default()),
+            Answer::Start { new_window: false },
+            "nothing showing: the file opens in the app's first window"
         );
         let record = Launch::parse("record:so.tilo.notes:ideas").expect("a record launch");
         assert_eq!(

@@ -152,6 +152,9 @@ struct AgentProcess {
 enum Beginning {
     /// The window the app has, or the place one is on its way to, came forward: nothing starts.
     Raised,
+    /// The desk holds a tab for another window of the app, beside the one it has, and asks this
+    /// session back for the window in it: nothing starts yet.
+    Asked,
     /// The app starts, with a window of its own when `new_window` .
     Start { new_window: bool },
     /// The app starts into the tab `tab` , a saved window's that nothing was asking for: the window
@@ -884,7 +887,7 @@ impl Apps {
         place: Option<&LaunchPlace>,
     ) -> Result<bool, DoorError> {
         match self.starting(launch, workspace, instance, place) {
-            Beginning::Raised => Ok(false),
+            Beginning::Raised | Beginning::Asked => Ok(false),
             Beginning::Start { new_window } => {
                 self.start_window(launch, workspace, new_window, instance, None)
             }
@@ -1023,6 +1026,15 @@ impl Apps {
                 .filter(|(tab, _)| Some(*tab) != instance),
         );
         let answer = app.answer(launch, &shown);
+        // A file or a link opened with an app that runs opens in another window of its process, in
+        // a tab the desk holds beside the app's own: that tab is the window's instance.
+        if instance.is_none()
+            && matches!(launch, Launch::Package { open: Some(_), .. })
+            && answer == (Answer::Start { new_window: true })
+            && self.ask_window(launch, shown.of(&app), false, false, None)
+        {
+            return Beginning::Asked;
+        }
         if let Answer::Raise { tab } = answer
             && desktop.with_policy(|policy| policy.focus_tab(tab))
         {
@@ -1374,10 +1386,15 @@ impl Apps {
             return Ok(true);
         }
         let timed = tilo_startup_metrics::launch_requested(app);
-        let opens = window_opens(launch, reveal, hosted).map_err(|error| {
+        let failed = |error: String| {
             tilo_startup_metrics::launch_failed(timed);
             DoorError::Failed(error)
-        })?;
+        };
+        let documents = self.state.borrow().documents.clone();
+        let launch = handed(launch, workspace, documents.as_ref())
+            .map_err(|error| failed(error.to_string()))?;
+        let launch = launch.as_ref();
+        let opens = window_opens(launch, reveal, hosted).map_err(failed)?;
         // A window of a hosted app whose tab this session named itself, which happens only in a
         // session with no desk behind it: the tab is the window's instance, and it is the only
         // name the window has.
@@ -1409,10 +1426,10 @@ impl Apps {
                 .spawn(&planned, Some(&asked), &workspace.id, None, Some(timed))
                 .map(|_| true);
         };
-        // The app's own window with nothing named to open is the one its running process opens
-        // itself, as it opens any later one; a hosted app's every window is.
-        let routable = planned.kind == Kind::Package
-            && (hosted || matches!(launch, Launch::Package { open: None, .. }));
+        // The app's own window, on nothing or on a file or a link, is one its running process
+        // opens itself, as it opens any later one; a hosted app's every window is.
+        let routable =
+            planned.kind == Kind::Package && (hosted || matches!(launch, Launch::Package { .. }));
         let alone: Box<dyn Fn() -> StartAlone> = if hosted {
             self.start_again(launch, workspace, instance, reveal)
         } else {
@@ -1503,8 +1520,7 @@ impl Apps {
             continuity_instance: instance,
             connector: None,
         };
-        let launch = handed(launch, workspace, state.documents.as_ref())?;
-        Planned::of(&launch, &context)
+        Planned::of(launch, &context)
     }
 
     /// Plan `launch` against `workspace`, reporting the launch's failure for the timing it was
@@ -1790,6 +1806,17 @@ fn window_opens(
             _ => None,
         },
         reveal: reveal.map(str::to_owned),
+        open: match launch {
+            Launch::Package {
+                open: Some(tilo_app_launch::Open::File(path)),
+                ..
+            } => Some(path.display().to_string()),
+            Launch::Package {
+                open: Some(tilo_app_launch::Open::Uri(uri)),
+                ..
+            } => Some(uri.clone()),
+            _ => None,
+        },
     })
 }
 

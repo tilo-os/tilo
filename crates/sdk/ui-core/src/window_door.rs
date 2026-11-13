@@ -38,6 +38,11 @@ pub struct WindowRequest {
     /// window it was for.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reveal: Option<String>,
+    /// What the window opens, as a launch's command line names it: a file
+    /// opened with the running app, at the path its sandbox holds it at, or
+    /// a link.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub open: Option<String>,
 }
 
 #[cfg(feature = "local-daemons")]
@@ -56,8 +61,9 @@ pub fn announce() {
 
 /// Build the window the shell asked for (`pending`), as the process's first
 /// window was built from its launch (`spec`, `args`), but with the window's
-/// own instance and connections, and nothing the launch named to open: that
-/// was the first window's.
+/// own instance and connections, opening what the request names (a file
+/// opened with the running app) and nothing its launch named: that was the
+/// first window's.
 #[cfg(feature = "native")]
 pub(crate) fn open_window(
     spec: &crate::launch::LaunchSpec,
@@ -446,6 +452,17 @@ mod transport {
         })
     }
 
+    /// What the window being built for a request opens, if it names one;
+    /// `None` for the process's first window, which opens what its launch named.
+    #[must_use]
+    pub fn requested_open() -> Option<String> {
+        BUILDING.with(|slot| {
+            slot.borrow()
+                .as_ref()
+                .and_then(|opening| opening.request.open.clone())
+        })
+    }
+
     /// The instance of the window being built for a request, if one is.
     #[must_use]
     pub fn instance() -> Option<u64> {
@@ -515,6 +532,7 @@ mod transport {
                 collaboration: true,
                 shell_ui: true,
                 reveal: Some("chat/channels/c_ada".into()),
+                open: None,
             };
             send(&shell, &request, Some(&collaboration), Some(&shell_ui)).unwrap();
             let opening = receive(&app).unwrap().unwrap();
@@ -526,10 +544,11 @@ mod transport {
                 collaboration: false,
                 shell_ui: false,
                 reveal: None,
+                open: Some("/documents/Budget.txt".into()),
             };
             send(&shell, &bare, None, None).unwrap();
             let opening = receive(&app).unwrap().unwrap();
-            assert_eq!(opening.request.instance, 42);
+            assert_eq!(opening.request, bare, "the file it opens comes with it");
             assert!(opening.collaboration.is_none() && opening.shell_ui.is_none());
             drop(shell);
             assert!(receive(&app).unwrap().is_none());
@@ -543,6 +562,7 @@ mod transport {
                 collaboration: true,
                 shell_ui: false,
                 reveal: None,
+                open: None,
             };
             assert!(send(&shell, &request, None, None).is_err());
             runtime_portal::windows::send_open(&shell, &serde_json::to_vec(&request).unwrap(), &[])
@@ -561,6 +581,7 @@ mod transport {
                     collaboration: true,
                     shell_ui: false,
                     reveal: Some("chat/channels/c_ada".into()),
+                    open: Some("/documents/Budget.txt".into()),
                 },
                 collaboration: connection(),
                 shell_ui: None,
@@ -577,6 +598,11 @@ mod transport {
                     Some("chat/channels/c_ada"),
                     "the window opens on the item the shell named"
                 );
+                assert_eq!(
+                    requested_open().as_deref(),
+                    Some("/documents/Budget.txt"),
+                    "the window opens the file the shell named"
+                );
                 assert!(is_building());
                 assert_eq!(take_collaboration().is_some(), carried);
                 assert!(take_collaboration().is_none(), "taken once");
@@ -584,6 +610,7 @@ mod transport {
             });
             assert_eq!(instance(), None);
             assert_eq!(requested_reveal(), None);
+            assert_eq!(requested_open(), None);
             assert!(!is_building());
         }
     }

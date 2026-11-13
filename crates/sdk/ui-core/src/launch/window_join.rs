@@ -187,8 +187,7 @@ pub(crate) fn dispatch_window(
     spec: &LaunchSpec,
     args: &LaunchArgs,
 ) -> Result<WindowBuild, LaunchError> {
-    let mut args = args.clone();
-    args.positionals.clear();
+    let args = window_args(args);
     match dispatch_local_first(spec, &args) {
         LocalFirst::Built(dispatched) => {
             dispatched.map(|dispatched| WindowBuild::Built(dispatched.into_app()))
@@ -204,9 +203,16 @@ pub(crate) fn dispatch_window_arrived(
     args: &LaunchArgs,
     arriving: Arriving,
 ) -> Result<Option<App>, LaunchError> {
-    let mut args = args.clone();
-    args.positionals.clear();
+    let args = window_args(args);
     dispatch_arrived(spec, &args, arriving).map(DefinitionDispatch::into_app)
+}
+
+/// The process's launch, opening what the shell's request names in place of
+/// what its first window was launched on.
+fn window_args(args: &LaunchArgs) -> LaunchArgs {
+    let mut args = args.clone();
+    args.positionals = crate::window_door::requested_open().into_iter().collect();
+    args
 }
 
 /// What [`dispatch_window`] built.
