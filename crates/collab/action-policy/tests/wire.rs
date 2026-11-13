@@ -80,14 +80,10 @@ fn a_grantee_keeps_its_bytes() {
         (Grantee::agent("a"), &[0x00, 0x01, 0x01, b'a']),
         (Grantee::bot("b"), &[0x00, 0x02, 0x01, b'b']),
         (Grantee::role(Role::Editor), &[0x01, 0x02]),
-        (Grantee::task("t"), &[0x02, 0x01, b't']),
-        (Grantee::shortcut("s"), &[0x03, 0x01, b's']),
     ];
     for (grantee, golden) in cases {
         match grantee {
-            Grantee::Member(_) | Grantee::Role(_) | Grantee::Task(_) | Grantee::Shortcut(_) => {
-                stored_as!(grantee, golden);
-            }
+            Grantee::Member(_) | Grantee::Role(_) => stored_as!(grantee, golden),
         }
     }
 }

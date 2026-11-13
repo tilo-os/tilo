@@ -110,14 +110,12 @@ impl NativeTaskActionRequirement {
             return Err("this run has ended or was replaced".into());
         }
         let delegation = self.turn_authority(workspace, run, looked)?;
-        // The answers a person gave for this issue are grants naming it.
-        let issue = tilo_action_policy::Grantee::task(run.issue.clone());
+        // The answers the person gave for this issue are its runs' alone.
         let verdict = Authority::person(
             policy
                 .party_of(tilo_action_policy::Grantee::agent(run.agent.clone()))
                 .with_grants(&delegation)
-                .also_as(issue.clone())
-                .with_grants(policy.grants_of(&issue)),
+                .with_grants(issue_answers(policy, run)),
         )
         .decide(&node, self.need.kind, &cx);
         let starter = policy
@@ -272,6 +270,40 @@ pub const TRACKER_RECORD: &str = "";
 #[must_use]
 pub fn is_tracker_issue(task_id: &str) -> bool {
     task_id.starts_with(TRACKER_ISSUE_PREFIX)
+}
+
+/// The id prefix of the answers a person gave for `issue`'s runs: what the
+/// sheet records on the issue, and what its runs are decided by.
+#[must_use]
+pub fn issue_answer_prefix(issue: &str) -> String {
+    format!("issue-answer:{issue}:")
+}
+
+/// The id of the grant keeping the person's answer for actions of `kind` at
+/// `scope` on `issue`: one per question, so answering it again replaces it.
+#[must_use]
+pub fn issue_answer_id(
+    issue: &str,
+    (scope, kind): (
+        &tilo_action_policy::agent_answers::AnswerScope,
+        tilo_action_policy::ActionKind,
+    ),
+) -> String {
+    format!("{}{}:{kind}", issue_answer_prefix(issue), scope.key())
+}
+
+/// The answers a person gave for `run`'s issue, as the tracker decides the
+/// run with them.
+#[must_use]
+pub fn issue_answers<'a>(
+    policy: &'a tilo_action_policy::WorkspacePolicy,
+    run: &TrackerRun,
+) -> impl Iterator<Item = &'a tilo_action_policy::Grant> + 'a {
+    let prefix = issue_answer_prefix(&run.issue);
+    policy
+        .grants
+        .iter()
+        .filter(move |grant| grant.id.as_str().starts_with(&prefix))
 }
 
 /// The prefix of a run that answers a person's message in a conversation: Chat's record, the

@@ -366,9 +366,10 @@ pub struct ActingAs {
 }
 
 impl ActingAs {
-    /// The grantee this actor is named by.
+    /// The grantee this actor is named by, when it is a member: an automation
+    /// acts with its owner's party, which is the tree's.
     #[must_use]
-    pub fn grantee(&self) -> tilo_action_policy::Grantee {
+    pub fn grantee(&self) -> Option<tilo_action_policy::Grantee> {
         self.actor.grantee()
     }
 }

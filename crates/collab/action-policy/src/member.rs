@@ -178,13 +178,11 @@ impl Actor {
         Self::Automation(AutomationId::new(id))
     }
 
-    /// The grantee a grant names this actor by.
+    /// The grantee a grant names this actor by, when it is a member: an
+    /// automation is its owner's.
     #[must_use]
-    pub fn grantee(&self) -> crate::Grantee {
-        match self {
-            Self::Member(member) => crate::granted_to(member),
-            Self::Automation(id) => crate::Grantee::shortcut(id.as_str().to_owned()),
-        }
+    pub fn grantee(&self) -> Option<crate::Grantee> {
+        Some(crate::granted_to(self.member_id()?))
     }
 
     /// The member, when the actor is one.

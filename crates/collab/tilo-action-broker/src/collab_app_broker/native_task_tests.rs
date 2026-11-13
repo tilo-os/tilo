@@ -828,8 +828,8 @@ async fn authenticated_native_action_ignores_another_running_tasks_ceiling() {
             put_grant(
                 &f,
                 Grant::new(
-                    "other-task-denies-append",
-                    Grantee::task(other.clone()),
+                    format!("issue-answer:{other}:app:so.tilo.notes:undoable"),
+                    Grantee::agent("scribe"),
                     TreePath::workspace(workspace_id().to_string()).app("so.tilo.notes"),
                     KindSet::UNDOABLE,
                     Answer::Deny,
@@ -872,14 +872,14 @@ async fn ordinary_native_agent_invocation_cannot_escape_task_resource_scope() {
                 )
             };
             for (id, resource, answer) in [
-                ("task-other-resource-only", "notes:other", Answer::Allow),
-                ("task-not-release", "notes:release", Answer::Deny),
+                ("other-resource-only", "notes:other", Answer::Allow),
+                ("not-release", "notes:release", Answer::Deny),
             ] {
                 put_grant(
                     &f,
                     Grant::new(
-                        id,
-                        Grantee::task(f.task.clone()),
+                        format!("issue-answer:{}:{id}", f.task),
+                        Grantee::agent("scribe"),
                         append(resource),
                         KindSet::UNDOABLE,
                         answer,
@@ -997,8 +997,8 @@ async fn a_native_run_is_held_to_its_issues_grants() {
             put_grant(
                 &f,
                 Grant::new(
-                    "task-no-append",
-                    Grantee::task(f.task.clone()),
+                    format!("issue-answer:{}:no-append", f.task),
+                    Grantee::agent("scribe"),
                     tilo_actions::action_node(
                         &TreePath::workspace(workspace_id().to_string()),
                         "so.tilo.notes",

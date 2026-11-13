@@ -1,4 +1,4 @@
-use super::{NativeTaskActionRequirement, TrackerRun};
+use super::{NativeTaskActionRequirement, TrackerRun, issue_answer_id};
 use automerge::AutoCommit;
 use ed25519_dalek::SigningKey;
 use tilo_action_policy::turn::Looked;
@@ -336,7 +336,7 @@ fn assert_independent_task_grants(
         .put_governed_grants(
             &[Grant::new(
                 "other-task-deny",
-                Grantee::task(&other),
+                Grantee::agent("scribe"),
                 TreePath::workspace(workspace),
                 KindSet::ALL,
                 Answer::Deny,
@@ -617,7 +617,7 @@ fn a_grant_naming_the_issue_lets_its_runs_act_without_asking() {
         .put_governed_grants(
             &[Grant::new(
                 "issue-allows-notes",
-                Grantee::task(ISSUE),
+                Grantee::agent("scribe"),
                 notes,
                 KindSet::OUTSIDE,
                 Answer::Allow,
@@ -647,20 +647,24 @@ fn a_grant_naming_the_issue_lets_its_runs_act_without_asking() {
     );
     peer.governance_mut()
         .put_governed_grants(
-            &[tilo_action_policy::agent_answers::answer_grant(
-                workspace,
-                Grantee::task(ISSUE),
-                (
-                    &tilo_action_policy::agent_answers::AnswerScope::action(
+            &[{
+                let (scope, kind) = (
+                    tilo_action_policy::agent_answers::AnswerScope::action(
                         "so.tilo.notes",
                         "document",
                         "append",
                     ),
                     tilo_action_policy::ActionKind::Undoable,
-                ),
-                Answer::Allow,
-                Grantee::person("governor"),
-            )],
+                );
+                Grant::new(
+                    issue_answer_id(ISSUE, (&scope, kind)),
+                    Grantee::agent("scribe"),
+                    scope.node(workspace),
+                    KindSet::of(kind),
+                    Answer::Allow,
+                    Grantee::person("governor"),
+                )
+            }],
             &key,
             now,
         )
@@ -761,16 +765,20 @@ fn allowing_one_page_read_for_the_issue_answers_the_runs_other_page_reads() {
     // The one answer the sheet records for it.
     peer.governance_mut()
         .put_governed_grants(
-            &[tilo_action_policy::agent_answers::answer_grant(
-                workspace,
-                Grantee::task(ISSUE),
-                (
-                    &issue_answer_scope("so.tilo.browser", ("browser.tab", "read-page"), false),
+            &[{
+                let (scope, kind) = (
+                    issue_answer_scope("so.tilo.browser", ("browser.tab", "read-page"), false),
                     tilo_action_policy::ActionKind::Outside,
-                ),
-                Answer::Allow,
-                Grantee::person("governor"),
-            )],
+                );
+                Grant::new(
+                    issue_answer_id(ISSUE, (&scope, kind)),
+                    Grantee::agent("scribe"),
+                    scope.node(workspace),
+                    KindSet::of(kind),
+                    Answer::Allow,
+                    Grantee::person("governor"),
+                )
+            }],
             &key,
             now,
         )

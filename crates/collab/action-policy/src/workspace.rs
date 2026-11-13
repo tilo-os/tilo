@@ -444,13 +444,6 @@ impl WorkspacePolicy {
         Party::new(vec![grantee], &self.grants)
     }
 
-    /// The grants naming the work on the issue `issue`.
-    pub fn task_grants<'a>(&'a self, issue: &'a str) -> impl Iterator<Item = &'a Grant> + 'a {
-        self.grants
-            .iter()
-            .filter(move |grant| matches!(&grant.grantee, Grantee::Task(task) if task == issue))
-    }
-
     /// The grants naming `grantee`.
     pub fn grants_of<'a>(&'a self, grantee: &'a Grantee) -> impl Iterator<Item = &'a Grant> + 'a {
         self.grants

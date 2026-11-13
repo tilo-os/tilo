@@ -23,7 +23,6 @@
 use crate::BrokerError;
 use std::sync::Arc;
 
-use tilo_action_policy::agent_answers::answer_grant;
 use tilo_action_policy::{Answer, Grant, Grantee};
 use tilo_actions::remote::{Caller, CallerPrincipal, InvokeArgument, InvokeRequest};
 
@@ -33,7 +32,8 @@ use crate::app_actions::{
     AppActionAnswer, AppActionConsent, AppActionConsentPrompter, AppActionConsentRequest,
 };
 use crate::services::{
-    TRACKER_APP, TRACKER_ISSUE_PREFIX, TrackerAnswer, TrackerRun, issue_answer_scope,
+    TRACKER_APP, TRACKER_ISSUE_PREFIX, TrackerAnswer, TrackerRun, issue_answer_id,
+    issue_answer_scope,
 };
 
 /// The tracker's verb a person answers a run's question with.
@@ -152,17 +152,19 @@ impl AppBrokerState {
             .as_ref()
             .filter(|action| may_grant && !action.contract.need().privileged)
             .map(|action| {
-                answer_grant(
-                    workspace,
-                    Grantee::task(issue),
-                    (
-                        &issue_answer_scope(
-                            &question.app,
-                            (&action.resource_kind, &action.action),
-                            action.contract.asks_for_argument(None),
-                        ),
-                        action.contract.need().kind,
+                let (scope, kind) = (
+                    issue_answer_scope(
+                        &question.app,
+                        (&action.resource_kind, &action.action),
+                        action.contract.asks_for_argument(None),
                     ),
+                    action.contract.need().kind,
+                );
+                Grant::new(
+                    issue_answer_id(issue, (&scope, kind)),
+                    Grantee::agent(run.agent.clone()),
+                    scope.node(workspace),
+                    tilo_action_policy::KindSet::of(kind),
                     Answer::Allow,
                     Grantee::person(person),
                 )

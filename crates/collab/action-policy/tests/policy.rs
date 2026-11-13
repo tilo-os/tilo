@@ -537,18 +537,9 @@ fn every_bound_applies() {
             Answer::Allow,
             alice(),
         ),
-        Grant::new(
-            "task",
-            Grantee::task("t"),
-            mail(),
-            KindSet::READ_UNDOABLE,
-            Answer::Allow,
-            alice(),
-        ),
     ];
     let authority = Authority::person(Party::new(vec![alice()], &grants))
-        .bounded_by(Party::new(vec![Grantee::agent("ag")], &grants))
-        .bounded_by(Party::new(vec![Grantee::task("t")], &grants));
+        .bounded_by(Party::new(vec![Grantee::agent("ag")], &grants));
     assert_eq!(
         authority
             .decide(&archive(), ActionKind::Undoable, &cx())

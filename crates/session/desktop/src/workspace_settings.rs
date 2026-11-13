@@ -958,12 +958,6 @@ fn classify_grant(grant: &tilo_action_policy::Grant) -> GrantSubject {
         };
     }
     match subject {
-        tilo_action_policy::Grantee::Task(id) | tilo_action_policy::Grantee::Shortcut(id) => {
-            GrantSubject {
-                kind: SubjectKind::Other,
-                id: id.clone(),
-            }
-        }
         tilo_action_policy::Grantee::Member(tilo_action_policy::MemberId::Bot(id)) => {
             GrantSubject {
                 kind: SubjectKind::Other,

@@ -44,21 +44,16 @@ impl<'a> Authority<'a> {
         let mut people: usize = 0;
         let mut person_parts = Vec::new();
         let mut others = Vec::new();
-        // The work an acting was caused by: grants naming that issue decide for
-        // every node of the tree, as the agent's own do.
-        let work = acting.cause.as_ref().map(|cause| {
-            (
-                Grantee::task(cause.as_str().to_owned()),
-                policy.task_grants(cause.as_str()).collect::<Vec<_>>(),
-            )
-        });
+        // An automation acts with its owner's party: the tree names it for the
+        // person it runs for, and its steps are that person's grants. One that
+        // runs for nobody allows nothing.
+        let owned = !acting.acted_for.is_empty();
         for node in acting.nodes() {
             match &node.by {
                 Actor::Member(member) => match member {
                     MemberId::Person(person) => {
                         people = people.saturating_add(1);
-                        let party =
-                            with_work(policy.party(person).with_grants(granted), work.as_ref());
+                        let party = policy.party(person).with_grants(granted);
                         person_parts.push(if node.foreign_device {
                             party.capped(crate::Cap::FOREIGN_DEVICE)
                         } else {
@@ -66,15 +61,11 @@ impl<'a> Authority<'a> {
                         });
                     }
                     MemberId::Agent(_) | MemberId::Bot(_) => {
-                        others.push(with_work(
-                            software_party(member, policy, granted),
-                            work.as_ref(),
-                        ));
+                        others.push(software_party(member, policy, granted));
                     }
                 },
-                Actor::Automation(id) => {
-                    others.push(with_work(automation_party(id, granted), work.as_ref()));
-                }
+                Actor::Automation(_) if owned => {}
+                Actor::Automation(_) => others.push(Party::default()),
             }
         }
         let mut parts = person_parts.into_iter().chain(others);
@@ -85,16 +76,6 @@ impl<'a> Authority<'a> {
             app: acting.app.as_ref(),
             app_kinds: None,
         }
-    }
-}
-
-/// `party`, where the work an acting was caused by names `work` too.
-fn with_work<'a>(party: Party<'a>, work: Option<&(Grantee, Vec<&'a Grant>)>) -> Party<'a> {
-    match work {
-        Some((task, grants)) => party
-            .also_as(task.clone())
-            .with_grants(grants.iter().copied()),
-        None => party,
     }
 }
 
@@ -115,11 +96,6 @@ fn software_party<'a>(
     granted: &'a [Grant],
 ) -> Party<'a> {
     policy.party_of(granted_to(member)).with_grants(granted)
-}
-
-/// An automation's own grants: the steps the people it runs for gave it.
-fn automation_party<'a>(id: &crate::AutomationId, granted: &'a [Grant]) -> Party<'a> {
-    Party::new(vec![Grantee::shortcut(id.as_str().to_owned())], granted)
 }
 
 /// One invocation, as admission weighs it.
@@ -331,7 +307,7 @@ mod tests {
         );
         let given = [Grant::new(
             "automation-1:0",
-            Grantee::shortcut("1"),
+            Grantee::person("editor"),
             TreePath::workspace(WORKSPACE),
             KindSet::READ_UNDOABLE,
             Answer::Allow,

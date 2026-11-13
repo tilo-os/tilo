@@ -279,7 +279,9 @@ pub struct StepGrant {
 
 #[must_use]
 pub fn grant_answer(grant: &[Rule], node: &TreePath, kind: ActionKind) -> StepGrant {
-    let subject = Grantee::shortcut(String::new());
+    // The shortcut's own rules, judged as everyone's: who runs it decides
+    // elsewhere, and its steps are never a member's grants of their own.
+    let subject = Grantee::role(tilo_action_policy::Role::Viewer);
     let grants: Vec<Grant> = grant
         .iter()
         .enumerate()
@@ -293,7 +295,13 @@ pub fn grant_answer(grant: &[Rule], node: &TreePath, kind: ActionKind) -> StepGr
             granted_by: subject.clone(),
         })
         .collect();
-    let decision = decide(&grants, &[subject], node, kind, &Context::at(0));
+    let decision = decide(
+        &grants,
+        std::slice::from_ref(&subject),
+        node,
+        kind,
+        &Context::at(0),
+    );
     StepGrant {
         answer: decision.answer,
         names_action: decision.grant().is_some_and(|grant| {

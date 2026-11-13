@@ -238,7 +238,7 @@ pub fn plan_install(
 ) -> BotInstallPlan {
     let rules = tilo_automation::grant::derived_rules(&bot.program, catalog);
     // The subject only names the preview grants; the sentence never prints it.
-    let preview_subject = Grantee::shortcut(bot.source.entry.clone());
+    let preview_subject = Grantee::role(tilo_action_policy::Role::Viewer);
     let grants: Vec<Grant> = rules
         .iter()
         .enumerate()

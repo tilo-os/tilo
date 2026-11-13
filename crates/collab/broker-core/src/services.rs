@@ -18,7 +18,8 @@ pub use task_execution::{
     AgentRoster, DOOR_RUN_PREFIX, NativeTaskActionRequirement, NativeTaskBinding, Preview,
     PreviewSide, TRACKER_APP, TRACKER_ISSUE_PREFIX, TRACKER_RECORD, TRACKER_RESOURCE,
     TrackerAnswer, TrackerDirection, TrackerQuestion, TrackerRun, TrackerRuns,
-    confirmation_preview, is_conversation_turn, is_door_run, is_tracker_issue, issue_answer_scope,
+    confirmation_preview, is_conversation_turn, is_door_run, is_tracker_issue, issue_answer_id,
+    issue_answer_scope, issue_answers,
 };
 pub use workspace_nodes::{WorkspaceNodeActions, WorkspaceNodeAsk, WorkspaceNodeOutcome};
 

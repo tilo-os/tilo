@@ -37,12 +37,11 @@ pub(in crate::state) fn member_authority<'a>(
     delegate: Option<&'a crate::state::ActingAs>,
 ) -> Authority<'a> {
     let authority = policy.person_on_device(person, foreign);
-    match delegate {
-        Some(delegation) => authority.also_as(
-            policy
-                .party_of(delegation.grantee())
-                .with_grants(&delegation.grants),
-        ),
+    match delegate.and_then(|delegation| delegation.grantee()) {
+        Some(grantee) => {
+            let delegation = delegate.expect("a grantee comes from a delegation");
+            authority.also_as(policy.party_of(grantee).with_grants(&delegation.grants))
+        }
         None => authority,
     }
 }

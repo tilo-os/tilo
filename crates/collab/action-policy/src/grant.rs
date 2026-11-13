@@ -180,11 +180,6 @@ pub enum Grantee {
     /// Everyone holding `role` or a higher one: a grant to `Role::Viewer` is
     /// everyone in the workspace.
     Role(Role),
-    /// The work done on an issue, by its address: grants naming it bound
-    /// every run of the issue, and give no one more than they hold.
-    Task(String),
-    /// A Shortcut run for a person.
-    Shortcut(String),
 }
 
 impl Grantee {
@@ -211,16 +206,6 @@ impl Grantee {
     #[must_use]
     pub fn role(role: Role) -> Self {
         Self::Role(role)
-    }
-
-    #[must_use]
-    pub fn task(id: impl Into<String>) -> Self {
-        Self::Task(id.into())
-    }
-
-    #[must_use]
-    pub fn shortcut(id: impl Into<String>) -> Self {
-        Self::Shortcut(id.into())
     }
 
     /// The member, when a grant names one.
@@ -270,8 +255,6 @@ impl fmt::Display for Grantee {
         match self {
             Self::Member(member) => member.fmt(f),
             Self::Role(role) => write!(f, "every {role}"),
-            Self::Task(id) => write!(f, "task {id}"),
-            Self::Shortcut(id) => write!(f, "Shortcut {id}"),
         }
     }
 }
