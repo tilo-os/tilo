@@ -532,18 +532,35 @@ mod open_with_tests {
         );
         let doc = automerge::AutoCommit::new();
         let resources = crate::files_app::published::tree(&w, &doc);
-        let rows: Vec<String> = ui::tilo_actions::flatten(&resources)
-            .into_iter()
-            .filter(|row| {
-                row.resource_id.0 == entry_id && row.action.id.starts_with("open-with-app:")
-            })
-            .map(|row| row.action.label.clone())
-            .collect();
+        let rows: Vec<(String, Option<String>, Option<String>)> =
+            ui::tilo_actions::flatten(&resources)
+                .into_iter()
+                .filter(|row| {
+                    row.resource_id.0 == entry_id && row.action.id.starts_with("open-with-app:")
+                })
+                .map(|row| {
+                    (
+                        row.action.label.clone(),
+                        row.action.icon.clone(),
+                        row.action.description.clone(),
+                    )
+                })
+                .collect();
+        // Each row is the app's own name, wears its glyph, and says where the machine got it where
+        // its name alone does not.
         assert_eq!(
             rows,
             vec![
-                "Open with Evince (default)".to_string(),
-                "Open with PDF Viewer".to_string(),
+                (
+                    "Open with Evince (default)".to_string(),
+                    Some("file".to_string()),
+                    Some("System".to_string()),
+                ),
+                (
+                    "Open with PDF Viewer".to_string(),
+                    Some("file".to_string()),
+                    Some("Open with…".to_string()),
+                ),
             ]
         );
         let mut doc = doc;
