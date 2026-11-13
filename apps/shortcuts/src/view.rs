@@ -2713,39 +2713,43 @@ fn step_fields(at: &StepEditor<'_>, step: &Step) -> (Column, Vec<Element>) {
 mod tests {
     use super::*;
 
-    #[test]
-    fn the_action_filter_matches_labels_apps_and_resources() {
-        assert!(matches_query("", &["Create note", "Notes", "Notes note"]));
-        assert!(matches_query(
-            "note",
-            &["Create note", "Notes", "Notes note"]
-        ));
-        assert!(matches_query(
-            "  NOTES ",
-            &["Create note", "Notes", "Notes note"]
-        ));
-        assert!(matches_query(
-            "folder",
-            &["Create note", "Notes", "Favorite folder"]
-        ));
-        assert!(!matches_query(
-            "calendar",
-            &["Create note", "Notes", "Notes note"]
-        ));
-    }
+    tilo_test_env::scenario! {
+        fn the_action_picker_narrows_to_what_is_typed;
 
-    #[test]
-    fn the_open_picker_is_the_view_the_window_search_narrows() {
-        let query = LocalState::new(String::new());
-        let view = ModelView::from_state(&query, |query: &String| {
-            Box::new(Text::new(query)) as Element
-        });
-        let mut picker = PickerChoices {
-            query: query.clone(),
-            view,
-        };
-        picker.set_filter("new note");
-        assert_eq!(query.get(), "new note");
-        assert_eq!(picker.filter_count(), None);
+        phase the_action_filter_matches_labels_apps_and_resources;
+        {
+            assert!(matches_query("", &["Create note", "Notes", "Notes note"]));
+            assert!(matches_query(
+                "note",
+                &["Create note", "Notes", "Notes note"]
+            ));
+            assert!(matches_query(
+                "  NOTES ",
+                &["Create note", "Notes", "Notes note"]
+            ));
+            assert!(matches_query(
+                "folder",
+                &["Create note", "Notes", "Favorite folder"]
+            ));
+            assert!(!matches_query(
+                "calendar",
+                &["Create note", "Notes", "Notes note"]
+            ));
+        }
+
+        phase the_open_picker_is_the_view_the_window_search_narrows;
+        {
+            let query = LocalState::new(String::new());
+            let view = ModelView::from_state(&query, |query: &String| {
+                Box::new(Text::new(query)) as Element
+            });
+            let mut picker = PickerChoices {
+                query: query.clone(),
+                view,
+            };
+            picker.set_filter("new note");
+            assert_eq!(query.get(), "new note");
+            assert_eq!(picker.filter_count(), None);
+        }
     }
 }
