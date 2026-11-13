@@ -130,48 +130,52 @@ fn presentation_profile_requested(
 mod tests {
     use super::*;
 
-    #[test]
-    fn ordinary_presentation_timing_requires_explicit_host_diagnostics() {
-        assert!(presentation_timing_requested(Some("1")));
-        for value in [None, Some(""), Some("0"), Some("true")] {
-            assert!(!presentation_timing_requested(value));
-        }
-    }
+    tilo_test_env::scenario! {
+        fn presentation_diagnostics_are_asked_for_explicitly;
 
-    #[test]
-    fn presentation_profile_requires_a_native_scenario_and_explicit_feedback() {
-        use std::ffi::OsStr;
-        assert!(presentation_profile_requested(
-            Some("1"),
-            false,
-            Some(OsStr::new("scenario.json"))
-        ));
-        for (profile, scenario) in [
-            (None, Some(OsStr::new("scenario.json"))),
-            (Some("0"), Some(OsStr::new("scenario.json"))),
-            (Some("1"), None),
-            (Some("1"), Some(OsStr::new(""))),
-        ] {
-            assert!(!presentation_profile_requested(profile, false, scenario));
+        phase ordinary_presentation_timing_requires_explicit_host_diagnostics;
+        {
+            assert!(presentation_timing_requested(Some("1")));
+            for value in [None, Some(""), Some("0"), Some("true")] {
+                assert!(!presentation_timing_requested(value));
+            }
         }
-    }
 
-    #[test]
-    fn local_input_run_profiles_presentation_without_a_scenario() {
-        use std::ffi::OsStr;
-        // A launch that measures the person's own typing has no scenario to
-        // name, and its feedback must still be enabled.
-        assert!(presentation_profile_requested(Some("1"), true, None));
-        assert!(!presentation_profile_requested(Some("1"), false, None));
-        assert!(!presentation_profile_requested(None, true, None));
-        assert!(!presentation_profile_requested(Some("0"), true, None));
-        // A named scenario alongside local input is refused, as the local-input
-        // observer refuses it: rather than profile the wrong input, enable
-        // nothing.
-        assert!(!presentation_profile_requested(
-            Some("1"),
-            true,
-            Some(OsStr::new("scenario.json"))
-        ));
+        phase presentation_profile_requires_a_native_scenario_and_explicit_feedback;
+        {
+            use std::ffi::OsStr;
+            assert!(presentation_profile_requested(
+                Some("1"),
+                false,
+                Some(OsStr::new("scenario.json"))
+            ));
+            for (profile, scenario) in [
+                (None, Some(OsStr::new("scenario.json"))),
+                (Some("0"), Some(OsStr::new("scenario.json"))),
+                (Some("1"), None),
+                (Some("1"), Some(OsStr::new(""))),
+            ] {
+                assert!(!presentation_profile_requested(profile, false, scenario));
+            }
+        }
+
+        phase local_input_run_profiles_presentation_without_a_scenario;
+        {
+            use std::ffi::OsStr;
+            // A launch that measures the person's own typing has no scenario to
+            // name, and its feedback must still be enabled.
+            assert!(presentation_profile_requested(Some("1"), true, None));
+            assert!(!presentation_profile_requested(Some("1"), false, None));
+            assert!(!presentation_profile_requested(None, true, None));
+            assert!(!presentation_profile_requested(Some("0"), true, None));
+            // A named scenario alongside local input is refused, as the local-input
+            // observer refuses it: rather than profile the wrong input, enable
+            // nothing.
+            assert!(!presentation_profile_requested(
+                Some("1"),
+                true,
+                Some(OsStr::new("scenario.json"))
+            ));
+        }
     }
 }

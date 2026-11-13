@@ -615,70 +615,74 @@ mod tests {
         drop(owner);
     }
 
-    #[test]
-    fn a_dead_owners_socket_is_replaced_and_a_busy_lock_times_out() {
-        let dir = tempfile::tempdir().unwrap();
-        let resource = dir.path().join("profile");
-        std::fs::create_dir(&resource).unwrap();
-        let socket = dir.path().canonicalize().unwrap().join("profile.sock");
-        drop(std::os::unix::net::UnixListener::bind(&socket).unwrap());
-        let rendezvous = Rendezvous::beside(&resource).unwrap();
-        let Joined::Owner(owner) = rendezvous.join(tilo_test_env::hang_bound(), greet).unwrap()
-        else {
-            panic!("a dead owner's socket answered");
-        };
-        assert!(!socket.exists(), "the stale socket is removed");
-        let error = rendezvous
-            .join(Duration::from_millis(100), greet)
-            .err()
-            .unwrap();
-        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
-        drop(owner);
-        assert!(matches!(
-            rendezvous.join(tilo_test_env::hang_bound(), greet).unwrap(),
-            Joined::Owner(_)
-        ));
-    }
+    tilo_test_env::scenario! {
+        fn a_rendezvous_replaces_a_dead_owner_meets_deep_resources_and_refuses_long_paths;
 
-    #[test]
-    fn a_resource_deeper_than_a_socket_address_still_meets() {
-        let dir = tempfile::tempdir().unwrap();
-        let deep = dir.path().join("d".repeat(60)).join("e".repeat(60));
-        std::fs::create_dir_all(&deep).unwrap();
-        let resource = deep.join("profile");
-        std::fs::create_dir(&resource).unwrap();
-        let socket = deep.canonicalize().unwrap().join("profile.sock");
-        assert!(std::os::unix::net::SocketAddr::from_pathname(&socket).is_err());
-        let rendezvous = Rendezvous::beside(&resource).unwrap();
-        let Joined::Owner(owner) = rendezvous.join(tilo_test_env::hang_bound(), greet).unwrap()
-        else {
-            panic!("nobody owned the resource");
-        };
-        let listener = owner.listen().unwrap();
-        assert!(socket.exists(), "the socket is bound beside the resource");
-        let Joined::Peer(peer) = rendezvous.join(tilo_test_env::hang_bound(), greet).unwrap()
-        else {
-            panic!("the owner was not reached");
-        };
-        let accepted = listener
-            .accept_within(tilo_test_env::hang_bound())
-            .unwrap()
-            .unwrap();
-        (&peer).write_all(b"hello").unwrap();
-        let mut read = [0; 5];
-        (&accepted).read_exact(&mut read).unwrap();
-        assert_eq!(&read, b"hello");
-        listener.close();
-        assert!(!socket.exists());
-        drop(owner);
-    }
+        phase a_dead_owners_socket_is_replaced_and_a_busy_lock_times_out;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let resource = dir.path().join("profile");
+            std::fs::create_dir(&resource).unwrap();
+            let socket = dir.path().canonicalize().unwrap().join("profile.sock");
+            drop(std::os::unix::net::UnixListener::bind(&socket).unwrap());
+            let rendezvous = Rendezvous::beside(&resource).unwrap();
+            let Joined::Owner(owner) = rendezvous.join(tilo_test_env::hang_bound(), greet).unwrap()
+            else {
+                panic!("a dead owner's socket answered");
+            };
+            assert!(!socket.exists(), "the stale socket is removed");
+            let error = rendezvous
+                .join(Duration::from_millis(100), greet)
+                .err()
+                .unwrap();
+            assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+            drop(owner);
+            assert!(matches!(
+                rendezvous.join(tilo_test_env::hang_bound(), greet).unwrap(),
+                Joined::Owner(_)
+            ));
+        }
 
-    #[test]
-    fn a_socket_path_too_long_is_refused() {
-        let dir = tempfile::tempdir().unwrap();
-        let resource = dir.path().join("x".repeat(120));
-        std::fs::create_dir(&resource).unwrap();
-        let error = Rendezvous::beside(&resource).err().unwrap();
-        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        phase a_resource_deeper_than_a_socket_address_still_meets;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let deep = dir.path().join("d".repeat(60)).join("e".repeat(60));
+            std::fs::create_dir_all(&deep).unwrap();
+            let resource = deep.join("profile");
+            std::fs::create_dir(&resource).unwrap();
+            let socket = deep.canonicalize().unwrap().join("profile.sock");
+            assert!(std::os::unix::net::SocketAddr::from_pathname(&socket).is_err());
+            let rendezvous = Rendezvous::beside(&resource).unwrap();
+            let Joined::Owner(owner) = rendezvous.join(tilo_test_env::hang_bound(), greet).unwrap()
+            else {
+                panic!("nobody owned the resource");
+            };
+            let listener = owner.listen().unwrap();
+            assert!(socket.exists(), "the socket is bound beside the resource");
+            let Joined::Peer(peer) = rendezvous.join(tilo_test_env::hang_bound(), greet).unwrap()
+            else {
+                panic!("the owner was not reached");
+            };
+            let accepted = listener
+                .accept_within(tilo_test_env::hang_bound())
+                .unwrap()
+                .unwrap();
+            (&peer).write_all(b"hello").unwrap();
+            let mut read = [0; 5];
+            (&accepted).read_exact(&mut read).unwrap();
+            assert_eq!(&read, b"hello");
+            listener.close();
+            assert!(!socket.exists());
+            drop(owner);
+        }
+
+        phase a_socket_path_too_long_is_refused;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let resource = dir.path().join("x".repeat(120));
+            std::fs::create_dir(&resource).unwrap();
+            let error = Rendezvous::beside(&resource).err().unwrap();
+            assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        }
     }
 }

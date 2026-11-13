@@ -197,20 +197,6 @@ mod tests {
             .unwrap()
     }
 
-    #[test]
-    fn a_running_child_keeps_the_watch_asleep_until_the_deadline() {
-        let mut child = sleeper("5");
-        let (watch, _bell) = ExitWatch::new(&child);
-        assert_eq!(watch.watches_the_process(), cfg!(target_os = "linux"));
-        if watch.watches_the_process() {
-            let began = Instant::now();
-            watch.wait(Some(Duration::from_millis(400)));
-            assert!(began.elapsed() >= Duration::from_millis(400));
-        }
-        let _ = child.kill();
-        let _ = child.wait();
-    }
-
     /// Block on `watch` on its own thread, and fail as hung if nothing wakes
     /// it within the shared hang bound.
     fn woken(watch: ExitWatch, what: &str) {
@@ -222,24 +208,42 @@ mod tests {
         tilo_test_env::recv(what, &woken);
     }
 
-    #[test]
-    fn an_exit_or_a_ring_wakes_the_watch_at_once() {
-        // The child outlives the test, so only the ring can wake the watch.
-        let mut child = sleeper("3600");
-        let (watch, bell) = ExitWatch::new(&child);
-        if !watch.watches_the_process() {
+    tilo_test_env::scenario! {
+        fn the_exit_watch_sleeps_until_its_deadline_and_wakes_on_an_exit_or_a_ring;
+
+        phase a_running_child_keeps_the_watch_asleep_until_the_deadline;
+        {
+            let mut child = sleeper("5");
+            let (watch, _bell) = ExitWatch::new(&child);
+            assert_eq!(watch.watches_the_process(), cfg!(target_os = "linux"));
+            if watch.watches_the_process() {
+                let began = Instant::now();
+                watch.wait(Some(Duration::from_millis(400)));
+                assert!(began.elapsed() >= Duration::from_millis(400));
+            }
             let _ = child.kill();
             let _ = child.wait();
-            return;
         }
-        bell.ring();
-        woken(watch, "the ring to wake the watch");
 
-        let mut quick = sleeper("0");
-        let (watch, _bell) = ExitWatch::new(&quick);
-        woken(watch, "the exit to wake the watch");
-        assert!(quick.wait().unwrap().success());
-        let _ = child.kill();
-        let _ = child.wait();
+        phase an_exit_or_a_ring_wakes_the_watch_at_once;
+        {
+            // The child outlives the test, so only the ring can wake the watch.
+            let mut child = sleeper("3600");
+            let (watch, bell) = ExitWatch::new(&child);
+            if !watch.watches_the_process() {
+                let _ = child.kill();
+                let _ = child.wait();
+                return;
+            }
+            bell.ring();
+            woken(watch, "the ring to wake the watch");
+
+            let mut quick = sleeper("0");
+            let (watch, _bell) = ExitWatch::new(&quick);
+            woken(watch, "the exit to wake the watch");
+            assert!(quick.wait().unwrap().success());
+            let _ = child.kill();
+            let _ = child.wait();
+        }
     }
 }

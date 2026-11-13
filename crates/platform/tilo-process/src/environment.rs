@@ -233,38 +233,42 @@ pub fn environment() -> Arc<HostEnvironment> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn config_dir_falls_back_to_home() {
-        let paths = HostPaths {
-            home: Some("/home/ada".into()),
-            ..HostPaths::default()
-        };
-        assert_eq!(paths.config_dir(), Some(PathBuf::from("/home/ada/.config")));
-        let paths = HostPaths {
-            home: Some("/home/ada".into()),
-            config_home: Some("/cfg".into()),
-            ..HostPaths::default()
-        };
-        assert_eq!(paths.config_dir(), Some(PathBuf::from("/cfg")));
-    }
+    tilo_test_env::scenario! {
+        fn host_paths_fall_back_to_home;
 
-    #[test]
-    fn cache_dir_falls_back_to_home() {
-        let paths = HostPaths {
-            home: Some("/home/ada".into()),
-            ..HostPaths::default()
-        };
-        assert_eq!(paths.cache_dir(), Some(PathBuf::from("/home/ada/.cache")));
-        let paths = HostPaths {
-            home: Some("/home/ada".into()),
-            cache_home: Some("/run/tilo/app/.cache".into()),
-            ..HostPaths::default()
-        };
-        assert_eq!(
-            paths.cache_dir(),
-            Some(PathBuf::from("/run/tilo/app/.cache"))
-        );
-        assert_eq!(HostPaths::default().cache_dir(), None);
+        phase config_dir_falls_back_to_home;
+        {
+            let paths = HostPaths {
+                home: Some("/home/ada".into()),
+                ..HostPaths::default()
+            };
+            assert_eq!(paths.config_dir(), Some(PathBuf::from("/home/ada/.config")));
+            let paths = HostPaths {
+                home: Some("/home/ada".into()),
+                config_home: Some("/cfg".into()),
+                ..HostPaths::default()
+            };
+            assert_eq!(paths.config_dir(), Some(PathBuf::from("/cfg")));
+        }
+
+        phase cache_dir_falls_back_to_home;
+        {
+            let paths = HostPaths {
+                home: Some("/home/ada".into()),
+                ..HostPaths::default()
+            };
+            assert_eq!(paths.cache_dir(), Some(PathBuf::from("/home/ada/.cache")));
+            let paths = HostPaths {
+                home: Some("/home/ada".into()),
+                cache_home: Some("/run/tilo/app/.cache".into()),
+                ..HostPaths::default()
+            };
+            assert_eq!(
+                paths.cache_dir(),
+                Some(PathBuf::from("/run/tilo/app/.cache"))
+            );
+            assert_eq!(HostPaths::default().cache_dir(), None);
+        }
     }
 
     #[test]

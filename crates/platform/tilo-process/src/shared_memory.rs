@@ -345,20 +345,6 @@ mod tests {
     }
 
     #[test]
-    fn a_child_inherits_the_memory_once() {
-        let mut memory = SharedMemory::create("tilo-process-test", 4096).unwrap();
-        assert_eq!(memory.len(), 4096);
-        assert!(
-            run_child(&mut memory, "[ -e /dev/fd/$fd ]")
-                .unwrap()
-                .success()
-        );
-        let mut again = Command::new("/bin/true");
-        memory.hand_to(&mut again, "--memory=");
-        assert_eq!(again.get_args().count(), 0);
-    }
-
-    #[test]
     #[cfg(target_os = "linux")]
     fn a_child_writes_into_the_memory_it_inherits() {
         let mut memory = SharedMemory::create("tilo-process-test", 4096).unwrap();
@@ -373,8 +359,26 @@ mod tests {
         assert_eq!(written, [0, 0, 0, 0, 0, 0, 0, 0, 1, 2, 3, 4]);
     }
 
-    #[test]
-    fn empty_memory_is_refused() {
-        assert!(SharedMemory::create("tilo-process-test", 0).is_err());
+    tilo_test_env::scenario! {
+        fn shared_memory_is_inherited_once_and_never_empty;
+
+        phase a_child_inherits_the_memory_once;
+        {
+            let mut memory = SharedMemory::create("tilo-process-test", 4096).unwrap();
+            assert_eq!(memory.len(), 4096);
+            assert!(
+                run_child(&mut memory, "[ -e /dev/fd/$fd ]")
+                    .unwrap()
+                    .success()
+            );
+            let mut again = Command::new("/bin/true");
+            memory.hand_to(&mut again, "--memory=");
+            assert_eq!(again.get_args().count(), 0);
+        }
+
+        phase empty_memory_is_refused;
+        {
+            assert!(SharedMemory::create("tilo-process-test", 0).is_err());
+        }
     }
 }
