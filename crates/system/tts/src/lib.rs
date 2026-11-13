@@ -1,11 +1,5 @@
 //! # tilo-tts — the Tilo text-to-speech engine
 //!
-//! A small, dependency-light, **offline** speech engine for the Tilo built-in screen reader.
-//! It abstracts over several speech backends behind one [`Speaker`] trait and adds an
-//! interrupt-aware [`SpeechQueue`] so chatty focus narration coalesces and preempts sanely.
-//!
-//! ## Backends
-//!
 //! | Backend | Type | Role |
 //! |---|---|---|
 //! | `SpeechDispatcherSpeaker` (Unix) | SSIP socket to `speech-dispatcher` | **primary** — brokers espeak-ng / Piper system-side, server-side queue + interrupt |
@@ -14,54 +8,6 @@
 //!
 //! [`default_speaker`] tries them in that order and *always* returns something
 //! (it never panics if no TTS is installed).
-//!
-//! ## Quick start
-//!
-//! ```no_run
-//! use tts::{default_speaker, Speaker, Utterance, Priority};
-//!
-//! let mut speaker = default_speaker();          // never panics
-//! speaker.set_rate(1.2);
-//! speaker.speak("Save, button", true);          // interrupt = stop-and-say
-//! // Or with explicit priority:
-//! speaker.speak_utterance(
-//!     Utterance::new("Permission denied").with_priority(Priority::Important),
-//! );
-//! ```
-//!
-//! With the queue (what the reader uses):
-//!
-//! ```
-//! use tts::{SpeechQueue, NullSpeaker, Utterance, Speaker};
-//!
-//! let mut queue = SpeechQueue::new();
-//! let mut speaker = NullSpeaker::new();
-//!
-//! queue.push(Utterance::new("Toolbar"));        // focus change (interrupting)
-//! queue.push(Utterance::new("Save button"));    // newer focus change supersedes
-//! queue.drive(&mut speaker);
-//! assert_eq!(speaker.spoken(), &["Save button".to_string()]);
-//! ```
-//!
-//! ## License posture
-//!
-//! This crate is `MIT OR Apache-2.0` and links **only permissive** code. The actual speech
-//! engines are GPL, but each is reached as a **separate process across a protocol/process
-//! boundary**, which is *not* linkage and imposes **no GPL constraint** on this crate or
-//! anything that links it:
-//!
-//! * **speech-dispatcher** (GPL): reached over its **SSIP socket** via the pure-Rust
-//!   [`ssip-client`](https://crates.io/crates/ssip-client) crate (MIT OR Apache-2.0).
-//! * **espeak-ng** (GPL-3.0): reached as a **spawned subprocess** (text piped to its stdin);
-//!   also typically reached *through* speech-dispatcher as an output module.
-//! * **Piper** (OHF-Voice fork, GPL-3.0): reached as a **speech-dispatcher output module** —
-//!   another separate process behind the SSIP socket.
-//!
-//! Ship those engines in the OS image and document their licenses; the Tilo code itself stays
-//! permissive. (`piper-plus`, MIT, exists as a GPL-free in-process escape hatch if a
-//! daemon-less embedded path is ever needed — out of scope here.)
-//!
-//! All backends are offline: no network, no telemetry.
 
 #![forbid(unsafe_code)]
 mod error;
@@ -116,14 +62,12 @@ mod integration_tests {
             );
         }
         {
-            // The "silence key": stop() on the speaker + clear() on the queue.
             let mut q = SpeechQueue::new();
             q.push(Utterance::new("a long say-all").with_priority(Priority::Text));
             let mut spk = NullSpeaker::new();
             spk.speak("currently talking", true);
             assert!(spk.is_speaking());
 
-            // Silence:
             spk.stop();
             q.clear();
 
