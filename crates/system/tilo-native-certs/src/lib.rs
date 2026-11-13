@@ -1,11 +1,7 @@
-//! Narrow native-root loader for Tilo's Rustls stack.
+//! Native root loader for Tilo's Rustls stack.
 //!
-//! Upstream `rustls-native-certs` discovers Unix roots through
-//! `openssl-probe`, including process-controlled OpenSSL environment and a
-//! list of distro-specific guesses. Tilo has one immutable trust bundle, so
-//! accepting that discovery surface is unnecessary. This compatible subset
-//! reads only the Tilo bundle path. Process environment cannot redirect trust.
-//! On Android it reads the system trust store, at its fixed read-only path.
+//! It reads only the Tilo trust bundle, or on Android the system store at its
+//! fixed read-only path, so process environment cannot redirect trust.
 
 use rustls_pki_types::CertificateDer;
 use rustls_pki_types::pem::PemObject;
@@ -17,22 +13,21 @@ use std::path::{Path, PathBuf};
 #[cfg(not(target_os = "android"))]
 const TILO_CA_BUNDLE: &str = "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem";
 
-/// Android's system store: one PEM root per file. The updatable Conscrypt
-/// module carries it since Android 14; the system image did before.
+/// Android's system stores, one PEM root per file: the Conscrypt module's, then
+/// the system image's.
 #[cfg(target_os = "android")]
 const ANDROID_CA_STORES: [&str; 2] = [
     "/apex/com.android.conscrypt/cacerts",
     "/system/etc/security/cacerts",
 ];
 
-/// Load certificates from Tilo's single system trust bundle.
 #[cfg(not(target_os = "android"))]
 pub fn load_native_certs() -> CertificateResult {
     load_certs_from_paths(Some(Path::new(TILO_CA_BUNDLE)), None)
 }
 
-/// Load the system roots Android itself trusts: the first store that holds
-/// any. Roots a user added or disabled in Settings are not consulted.
+/// The roots Android itself trusts: the first store that holds any. Roots a user
+/// added or disabled in Settings are not consulted.
 #[cfg(target_os = "android")]
 pub fn load_native_certs() -> CertificateResult {
     let mut result = CertificateResult::default();
@@ -45,7 +40,7 @@ pub fn load_native_certs() -> CertificateResult {
     result
 }
 
-/// Every root in a directory holding one PEM file per certificate.
+/// Every root in a directory of one PEM file per certificate.
 #[cfg(any(target_os = "android", test))]
 fn load_pem_store(store: &Path) -> CertificateResult {
     let mut result = CertificateResult::default();
@@ -66,10 +61,8 @@ fn load_pem_store(store: &Path) -> CertificateResult {
     result.finish()
 }
 
-/// Load certificates from an explicit PEM file.
-///
-/// The directory argument is deliberately rejected: hashed OpenSSL CA
-/// directories are not part of Tilo's trust model.
+/// Load certificates from an explicit PEM file. The directory argument is
+/// rejected: hashed OpenSSL CA directories are not part of Tilo's trust model.
 pub fn load_certs_from_paths(file: Option<&Path>, dir: Option<&Path>) -> CertificateResult {
     let mut result = CertificateResult::default();
     if let Some(dir) = dir {
