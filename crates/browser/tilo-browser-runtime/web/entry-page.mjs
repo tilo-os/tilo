@@ -27,7 +27,7 @@ import {connectPeer, httpsPost, identityProfile, inspectInvitation, joinWorkspac
 import {readBrowserAccounts} from './browser-accounts.mjs';
 import {idbStorage, openDeviceCustody} from './device-custody.mjs';
 import {createIdentityActions, SIGN_IN, setupOrigin, syncProfile} from './identity-actions.mjs';
-import {firstRun, MCP_URL, openFirstRun, setupDone} from './first-run.mjs';
+import {firstRun, MCP_URL, openFirstRun, readSetup, setupDone} from './first-run.mjs';
 import {pickImageFile, squarePhoto} from './profile-photos.mjs';
 import {deviceLabel, pairingFailure, pairSecret, whenRequested} from './pairing.mjs';
 import {readInstallSecret, SET_UP, SETUP_PHASES, setUpFailure, setUpMachine} from './machine-setup.mjs';
@@ -1286,6 +1286,18 @@ export async function startEntryPage({mode}) {
         }
       });
     }
+    // A link that carries a secret (an invitation, a pairing) never shows the
+    // first screen: the person is let in without it. A person who has not been
+    // set up here and was let in this way into the site's own home workspace is
+    // handed on to the bare site, where the first screen is — its skip, or
+    // their agent, opens a workspace of their own instead of leaving them on
+    // the shared desktop they landed in. A link into another workspace is that
+    // workspace's, and is left alone.
+    if (!embed && !firstRun && here.kind === 'room' && readSetup()?.step !== 'done'
+        && page.peer?.workspace && page.peer.workspace === homeRoomOf(page.entry)) {
+      loadPage(page.entry.base);
+      return;
+    }
     // A tab an agent just signed in as a device of the person: it paired
     // through the home workspace, and opens the person's own one next.
     if (!embed && page.peer && openOwnAsked()) void openOwnAfterSignIn({page, status});
@@ -1524,6 +1536,14 @@ function rememberedWorkspace(scope) {
   if (scope?.kind !== 'room' || !scope.room) return null;
   const origin = new URL(scope.host).origin;
   return enteredWorkspaces().find(entry => entry.origin === origin && entry.room === scope.room) ?? null;
+}
+
+/** The workspace the site's own door names, as its admission address spells it
+ * (`<relay>/peer/v1/directory/<room>/`): the site's home. */
+function homeRoomOf(entry) {
+  const admission = entry?.home?.admission;
+  const match = typeof admission === 'string' ? admission.match(/\/directory\/([^/]+)\/?$/) : null;
+  return match ? match[1] : null;
 }
 
 /** The workspace this browser was admitted to through the home workspace's door. */
@@ -2068,7 +2088,8 @@ function connectAnAgent({origin, identity, runtime, link}) {
 function offerFirstRunCodes({origin, identity, runtime, link}) {
   if (firstRunCodesOffered || !firstRun || !origin || !runtime?.createLoginCode) return;
   firstRunCodesOffered = true;
-  const setup = agentSetupCodes({origin, identity, runtime, link});
+  const host = new URL(origin).origin;
+  const setup = agentSetupCodes({origin: host, identity, runtime, link});
   firstRun.offerSetup(setup.make, setup.resume);
   const {codes, ours} = setup;
   // Claimed by a device of the person: this tab asks to be certified as a
