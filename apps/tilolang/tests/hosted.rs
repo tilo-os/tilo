@@ -1042,14 +1042,7 @@ fn every_key_typed_while_the_connection_is_full_is_kept_and_reaches_the_workspac
     for change in changes.lock().unwrap().iter() {
         workspace.load_incoming(change).unwrap();
     }
-    let mut record = session
-        .host
-        .instances()
-        .next()
-        .unwrap()
-        .record()
-        .doc()
-        .clone();
+    let mut record = session.host.instances().next().unwrap().record().doc();
     assert_eq!(
         workspace.get_heads(),
         record.get_heads(),
@@ -1981,7 +1974,6 @@ fn heads(session: &Session) -> Vec<String> {
         .expect("the window's instance")
         .record()
         .doc()
-        .clone()
         .get_heads()
         .into_iter()
         .map(|head| format!("{head:?}"))
@@ -2796,8 +2788,7 @@ fn task_in_record(session: &Session, title: &str, done: bool) -> bool {
         .next()
         .expect("the window's instance")
         .record()
-        .chunks()
-        .clone();
+        .chunks();
     let Some(record) = chunks.first() else {
         return false;
     };

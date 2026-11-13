@@ -1453,6 +1453,11 @@ impl Host {
         synced
     }
 
+    /// Hold the record's chunks from here on, the one copy of each; see [`TiloStore::adopt`].
+    pub fn adopt(&self, chunks: crate::chunk::Chunks) {
+        self.inner.store.adopt(chunks);
+    }
+
     /// Bring the runtime's view of a record kept as one document up to date; see
     /// [`TiloStore::sync_from`].
     pub fn sync_from(&self, record: &tilo_resource::Doc) -> bool {

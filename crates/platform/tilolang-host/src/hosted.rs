@@ -59,14 +59,6 @@ thread_local! {
     static CALLER: RefCell<Option<Caller>> = const { RefCell::new(None) };
 }
 
-/// Bring `host` up to date with the record and the chunks of it this replica holds: the store reads
-/// and writes the resources each chunk holds where the record's manifest places them, and reads
-/// the chunks it was not sent if something reads or writes in them.
-fn sync_record(host: &Host, record: &InstanceRecord) {
-    host.sync_chunks(record.chunks());
-    host.sync_from(record.doc());
-}
-
 /// The person's date and time now: the device's clock, which is the one their window reads, so a
 /// day an instance writes and a day their window heads a row by are the same day.
 fn local_now() -> chrono::DateTime<chrono::Local> {
@@ -1078,7 +1070,7 @@ impl Hosted {
             .receive_and(&mut self.instance, |event| events.push(event));
         // The chunks the replica holds with the record's own frame: the store reads them as what
         // the window shows reaches into them, and the indexes are built over them.
-        self.instance.sync_chunks(self.record.chunks());
+        self.record.sync_instance(&mut self.instance);
         changed |= self.instance.update();
         let chose = self.chosen();
         changed |= chose;
@@ -1224,7 +1216,7 @@ impl Hosted {
         if let Some(why) = unshared {
             self.instance.unshared(why);
         }
-        self.instance.sync_chunks(self.record.chunks());
+        self.record.sync_instance(&mut self.instance);
     }
 
     /// Publish the app's resources to the session's persistent search index, over the
@@ -1246,7 +1238,6 @@ impl Hosted {
         let Some(host) = self.instance.host() else {
             return;
         };
-        sync_record(&host, &self.record);
         // An index still being built off the frame holds nothing yet: the frame that takes it
         // in publishes what it holds, which is why nothing is marked as sent here.
         if !host.index_ready() {
@@ -1343,7 +1334,6 @@ impl Hosted {
                 let Some(host) = self.instance.host() else {
                     return true;
                 };
-                sync_record(&host, &self.record);
                 tilolang_tilo::search::read(
                     &host.store().snapshot(),
                     &tilolang_tilo::search::catalogue(&host),
@@ -1888,7 +1878,7 @@ impl Hosted {
         };
         let item = args.get("item").and_then(serde_json::Value::as_str);
         let value = if let Some(version) = args.get("version").and_then(serde_json::Value::as_str) {
-            let doc = self.record.doc();
+            let doc = &self.record.doc();
             let heads = collaboration::history_source::steps::resolve(doc, version)?;
             let frozen = doc
                 .clone()
@@ -1914,7 +1904,6 @@ impl Hosted {
                 .instance
                 .host()
                 .ok_or_else(|| "the app has not started yet".to_owned())?;
-            sync_record(&host, &self.record);
             host.read_content(item)?
         };
         Ok(tilo_actions::ActionOutput {
@@ -2478,14 +2467,18 @@ impl Applier {
         wake: Waker,
         connection: std::os::fd::OwnedFd,
     ) -> Result<Self, String> {
+        let mut record = record;
         let scope = RecordScope::of(&record, &wake);
         let _code = scope.enter();
         let host = Host::new(
-            record.doc(),
+            &tilo_resource::Doc::new(),
             tilolang_tilo::runtime::Principal::new(spec.person.clone()),
             || None,
         )
         .map_err(|error| error.to_string())?;
+        // The host's store holds the record from here on: what the origin applies is written
+        // there, and read there at once.
+        record.hold_in(&host);
         host.set_clock(tilolang_tilo::host::system_time);
         host.load_bundle(bundle)
             .map_err(|error| error.to_string())?;
@@ -2553,9 +2546,6 @@ impl Applier {
     pub fn turn(&mut self) -> bool {
         let _code = self.scope.enter();
         let mut changed = self.record.take_in_record();
-        if changed {
-            sync_record(&self.host, &self.record);
-        }
         self.surface.update();
         let state = std::mem::replace(&mut self.applying, Applying::Answered);
         self.applying = match state {
@@ -2678,7 +2668,6 @@ impl Applier {
                 .apply_change(&committed.action, &invoker, ambient.as_ref())
                 .map_err(|error| error.to_string())?;
         }
-        sync_record(&self.host, &self.record);
         self.surface.update();
         Ok(true)
     }
@@ -2702,8 +2691,6 @@ impl Applier {
                 return serde_json::json!({"failed": format!("the change's context does not decode: {error}")});
             }
         };
-        // The record as the workspace holds it now: requirements are decided on what others wrote.
-        sync_record(&self.host, &self.record);
         let address = ActionAddress::new(change.resource.clone(), change.action.clone());
         // An agent asks of the resource it names, whatever a window shows: the workspace is not
         // published for one change, and an applier shows nothing. What it names by what a control
@@ -2749,7 +2736,6 @@ impl Applier {
                 ambient.as_ref(),
             ) {
                 Ok(value) => {
-                    sync_record(&self.host, &self.record);
                     // What it wrote, for the task to read back at once, as a change's answer.
                     let wrote = self.wrote_since(&before);
                     serde_json::json!({"ok": {"value": value, "resources": []}, "change": wrote})
@@ -2779,7 +2765,6 @@ impl Applier {
         {
             return serde_json::json!({"failed": error.to_string()});
         }
-        sync_record(&self.host, &self.record);
         let output = returned(&self.host, &action);
         let differs = change.preview.as_ref().is_some_and(|preview| {
             serde_json::to_value(&action).is_ok_and(|applied| applied != *preview)

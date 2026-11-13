@@ -62,7 +62,6 @@ fn record(session: &Session) -> Chunks {
         .expect("the window's instance")
         .record()
         .chunks()
-        .clone()
 }
 
 /// The record's heads now: what the changes a peer takes start after.

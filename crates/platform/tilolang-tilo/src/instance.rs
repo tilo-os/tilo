@@ -828,7 +828,7 @@ impl Instance {
 
     /// The host over the workspace record `doc`, built with the package the first time; without the
     /// record (while it is read off the frame), over the workspace's indexes.
-    fn host_for(&mut self, doc: Option<&tilo_resource::Doc>) -> Option<Host> {
+    fn host_for(&mut self, doc: Option<&tilo_resource::Doc>, had: bool) -> Option<Host> {
         if let Some(host) = self.host.borrow().as_ref() {
             // An index built off the frame changes what every view reads, as a change does.
             let synced = doc.is_some_and(|doc| host.sync_from(doc));
@@ -837,7 +837,7 @@ impl Instance {
             }
             // Opened on what an earlier version wrote, the package brings it to where it keeps
             // it now, once the record is had; what they commit goes as any action does.
-            if doc.is_some() && !self.migrated && self.origin && self.mode == Mode::Live {
+            if had && !self.migrated && self.origin && self.mode == Mode::Live {
                 self.migrated = true;
                 if host.migrate() > 0 {
                     self.moved = true;
@@ -852,18 +852,17 @@ impl Instance {
             // on a profile of its own: their indexes are built in memory, at once.
             None
         };
-        let loader = match (doc, self.opening, &index_dir) {
-            (Some(_), _, _) => None,
-            (None, true, Some(_)) => Some(self.record_loader.take()?),
-            // Without the record, a window opens over the indexes it keeps or not at all.
-            (None, _, _) => return None,
-        };
-        // The chunks are the host's from here on: a copy kept here would hold the record's
-        // documents as they were, and make every write to them copy the document first.
+        // The chunks are the host's from here on: the store holds the one copy of each.
         let chunks = self.record_chunks.take();
+        let loader = match (doc.is_some() || chunks.is_some(), self.opening, &index_dir) {
+            (true, _, _) => None,
+            (false, true, Some(_)) => Some(self.record_loader.take()?),
+            // Without the record, a window opens over the indexes it keeps or not at all.
+            (false, _, _) => return None,
+        };
         let opening = Opening {
             record: doc,
-            chunks: chunks.as_ref(),
+            chunks: None,
             index_dir,
             device: self.device.as_deref(),
         };
@@ -875,9 +874,13 @@ impl Instance {
             Ok(host) => host,
             Err(error) => {
                 tracing::error!(%error, "the tilolang runtime could not be set up");
+                self.record_chunks = chunks;
                 return None;
             }
         };
+        if let Some(chunks) = chunks {
+            host.adopt(chunks);
+        }
         if let Some(loader) = loader {
             // A write, or a field no index holds, waits for the record and lands on it.
             host.set_record_loader(Box::new(loader));
@@ -952,7 +955,7 @@ impl Instance {
     /// in place when it reads the state the old one wrote, and otherwise by starting over on
     /// the workspace record `doc` with it, as the app's next start would. The host the instance runs
     /// on afterwards.
-    fn follow_updates(&mut self, doc: &tilo_resource::Doc, host: Host) -> Host {
+    fn follow_updates(&mut self, doc: Option<&tilo_resource::Doc>, host: Host) -> Host {
         let Some(update) = self
             .platform
             .latest()
@@ -983,7 +986,11 @@ impl Instance {
                 tracing::info!(
                     "tilolang: {title}: {reason}; it starts over on the new build, with its data"
                 );
-                self.start_over(doc).unwrap_or(host)
+                let old = host.clone();
+                self.start_over(doc, &old).unwrap_or_else(|| {
+                    *self.host.borrow_mut() = Some(old.clone());
+                    old
+                })
             }
         };
         self.platform.surface_changed(&self.app, &update.bundle);
@@ -1027,7 +1034,9 @@ impl Instance {
     /// Start over on the workspace record `doc`: a new runtime that loads the latest build and reads
     /// the record afresh, as a start of the app does. View state and the open detail start
     /// over; the record, and so every resource, is the one the instance had.
-    fn start_over(&mut self, doc: &tilo_resource::Doc) -> Option<Host> {
+    fn start_over(&mut self, doc: Option<&tilo_resource::Doc>, old: &Host) -> Option<Host> {
+        // The record the store held goes over to the new host's store: one copy of it, still.
+        let held = doc.is_none().then(|| old.store().release());
         self.publication = None;
         self.root = None;
         if self.detail.take().is_some() {
@@ -1038,7 +1047,15 @@ impl Instance {
             self.sink = Some(Box::new(crate::sink::LogSink::dev()));
         }
         self.started = false;
-        self.host_for(Some(doc))
+        self.record_chunks = held;
+        let host = self.host_for(doc, true);
+        if host.is_none()
+            && let Some(chunks) = self.record_chunks.take()
+        {
+            // No new host: the old one keeps the record.
+            old.adopt(chunks);
+        }
+        host
     }
 
     // ----- presence ------------------------------------------------------------------------
@@ -2204,41 +2221,55 @@ impl Instance {
 
     // ----- frames --------------------------------------------------------------------------
 
-    /// The first half of a frame over the record's chunks: every chunk of the record this
-    /// replica holds into the store, which reads and writes there the resources the record's
-    /// manifest places in it, and reads the ones it was not sent when a read or a write reaches
-    /// them ([`Host::sync_chunks`]); and the record's frame ([`Self::sync`]).
-    pub fn sync_chunks(&mut self, chunks: &crate::chunk::Chunks) {
-        if self.host.borrow().is_none() {
-            // The host opens over the chunks this frame brings, and reads the rest of them as it
-            // reaches into them.
-            self.record_chunks = Some(chunks.clone());
+    /// Open the instance over the record's chunks, the store holding them from then on: the
+    /// host opens over them, or the one opened over the workspace's indexes takes them. The
+    /// chunks back when no host could be had, for the next frame to try again.
+    pub fn open_over(&mut self, chunks: crate::chunk::Chunks) -> Option<crate::chunk::Chunks> {
+        let host = self.host.borrow().as_ref().cloned();
+        match host {
+            Some(host) => host.adopt(chunks),
+            None => self.record_chunks = Some(chunks),
         }
-        let mut moved = false;
-        if let Some(host) = self.host.borrow().as_ref().cloned() {
-            moved |= host.sync_chunks(chunks);
+        self.sync_held(true);
+        self.read_short();
+        self.record_chunks.take()
+    }
+
+    /// Have the store read the chunks the lists a window opens over need: an index that
+    /// reflects fewer chunks than the record's manifest names cannot say the rows it lacks.
+    fn read_short(&mut self) {
+        let host = self.host.borrow().as_ref().cloned();
+        if host.is_some_and(|host| host.store().load_short()) {
+            self.moved = true;
         }
-        // The record's frame reads the store the chunks were brought into, and opens the host
-        // when it was not there yet: the chunks go in again after it, then.
-        self.sync(chunks.first());
-        if let Some(host) = self.host.borrow().as_ref().cloned() {
-            moved |= host.sync_chunks(chunks);
-        }
+    }
+
+    /// The first half of a frame over the record the store holds ([`Self::open_over`]):
+    /// `moved` when a write of the record's since the last frame moved what the store reads.
+    pub fn sync_held(&mut self, moved: bool) {
         if moved {
             self.moved = true;
         }
+        self.read_short();
+        self.frame(None, true);
     }
 
     /// The first half of a frame: bring the runtime up to date with the workspace record `record`
     /// (`None` while the instance opens over the workspace's indexes), open the root once the
     /// indexes are read, stage a scenario, and send the window what changed.
     pub fn sync(&mut self, record: Option<&tilo_resource::Doc>) {
-        let Some(host) = self.host_for(record) else {
+        self.frame(record, record.is_some());
+    }
+
+    /// [`Self::sync`]; `had` when the record is had, as `record` or in the store.
+    fn frame(&mut self, record: Option<&tilo_resource::Doc>, had: bool) {
+        let Some(host) = self.host_for(record, had) else {
             return;
         };
-        let host = match record {
-            Some(doc) => self.follow_updates(doc, host),
-            None => host,
+        let host = if had {
+            self.follow_updates(record, host)
+        } else {
+            host
         };
         if !self.started {
             // Until the indexes hold rows to read, the lists would show nothing: the window

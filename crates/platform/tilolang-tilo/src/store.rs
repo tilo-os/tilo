@@ -408,6 +408,9 @@ struct Inner {
     /// Where a chunk the store was not sent comes from when something reads into it or a write
     /// is addressed to it ([`TiloStore::set_chunk_loader`]).
     chunk_loader: Option<ChunkLoader>,
+    /// Whether the store holds the record's chunks as their holder's one copy
+    /// ([`TiloStore::adopt`]): the chunks above the record it has not read yet are among them.
+    adopted: bool,
     /// The chunks the store asked its source for and the source cannot give: they are not on
     /// this device yet, or the peer holding them is away. Each is asked for once and waited on:
     /// the sync that brings it reads it then ([`Inner::attach_document`]), and a window reads
@@ -731,7 +734,7 @@ impl TiloStore {
     #[must_use]
     pub fn new(record: &Doc) -> Self {
         let store = Self::empty(None);
-        store.mutate().attach_document(chunk::FIRST, record);
+        store.mutate().attach_document(chunk::FIRST, record.clone());
         store
     }
 
@@ -762,6 +765,7 @@ impl TiloStore {
                 index_dir,
                 loader: None,
                 chunk_loader: None,
+                adopted: false,
                 waited: BTreeSet::new(),
                 wake: None,
                 doc_reads: std::cell::Cell::default(),
@@ -2002,6 +2006,11 @@ impl Inner {
         let reached = write.touched.clone();
         self.local.push(write);
         Ok(reached)
+    }
+
+    /// Whether the store can have a chunk it was not sent: from its holder, or its loader.
+    fn can_load(&self) -> bool {
+        self.adopted || self.chunk_loader.is_some()
     }
 
     /// Drop the open transaction of the chunk `chunk`'s mirror, if it has one.

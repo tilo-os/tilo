@@ -691,29 +691,15 @@ fn press_increment(host: &mut TilolangHost, window: &mut Window) {
 fn another_devices_edit_shows_in_a_hosted_window_beside_its_own() {
     let (mut host, mut window, _sent, inbox, route) = running("ada");
     settle(&mut host, &mut window);
-    let held = host.instances().next().unwrap().record().doc().clone();
+    let held = host.instances().next().unwrap().record().doc();
     let (mut elsewhere, mut graces, _, _, _) =
         running_on("grace", APP, counter(), Rc::default(), held);
     settle(&mut elsewhere, &mut graces);
     press_increment(&mut elsewhere, &mut graces);
-    let theirs = elsewhere
-        .instances()
-        .next()
-        .unwrap()
-        .record()
-        .doc()
-        .clone()
-        .save();
+    let theirs = elsewhere.instances().next().unwrap().record().doc().save();
 
     press_increment(&mut host, &mut window);
-    let mine = host
-        .instances()
-        .next()
-        .unwrap()
-        .record()
-        .doc()
-        .clone()
-        .get_heads();
+    let mine = host.instances().next().unwrap().record().doc().get_heads();
     let read = collaboration::CommittedDocument::for_test(theirs, None);
     inbox
         .borrow_mut()
@@ -725,7 +711,7 @@ fn another_devices_edit_shows_in_a_hosted_window_beside_its_own() {
 
     let hosted = host.instances().next().unwrap();
     assert_eq!(value_of(hosted), 2, "grace's press shows beside ada's");
-    let mut record = hosted.record().doc().clone();
+    let mut record = hosted.record().doc();
     assert!(
         mine.iter()
             .all(|head| record.get_change_by_hash(head).is_some()),
@@ -2084,7 +2070,7 @@ fn increment() -> (tilo_actions::ActionAddress, automerge::AutoCommit) {
         .unwrap()
         .address
         .clone();
-    (address, hosted.record().doc().clone())
+    (address, hosted.record().doc())
 }
 
 /// Hand `applier` `change` and run it until it answers: the answer.
@@ -2316,7 +2302,7 @@ fn a_change_the_workspace_refuses_is_never_kept() {
                 .unwrap_or_else(|| panic!("refused, with why: {answer}"));
             assert!(why.contains("publishes no"), "{why}");
             assert_eq!(
-                applier.record().doc().clone().get_heads(),
+                applier.record().doc().get_heads(),
                 before,
                 "the record holds nothing of the refused change"
             );

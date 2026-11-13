@@ -249,7 +249,7 @@ fn pastes_past_a_mebibyte(paragraphs: usize) {
             && shown.len() > 1 << 20,
         "the paste shows: {shown:.60}"
     );
-    let mut doc = host.instances().next().unwrap().record().doc().clone();
+    let mut doc = host.instances().next().unwrap().record().doc();
     let (paste, parts) = kept_as_content(&mut doc);
     let record = host.instances().next().unwrap().record();
     assert!(

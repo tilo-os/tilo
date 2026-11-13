@@ -272,6 +272,10 @@ pub type Stamps = BTreeMap<ChunkNo, Vec<ChangeHash>>;
 pub struct Chunks {
     first: Option<Arc<Doc>>,
     more: BTreeMap<ChunkNo, Arc<Doc>>,
+    /// The chunks above the record that its holder has and the store has not read yet: kept
+    /// here, the one copy of each, until something reads or writes into it
+    /// ([`Self::unpark`]). Only the record's holder sees them ([`Self::held`], [`Self::all`]).
+    parked: BTreeMap<ChunkNo, Arc<Doc>>,
     /// Where the record's manifest places its resources, as of its last change.
     placement: Placement,
     /// The heads the store has applied of each chunk it holds.
@@ -327,6 +331,86 @@ impl Chunks {
                     .or_insert_with(|| Arc::new(Doc::new())),
             )
         }
+    }
+
+    /// The chunk `chunk` the record's holder has: one the store reads, or one it has not read
+    /// yet.
+    #[must_use]
+    pub fn held(&self, chunk: ChunkNo) -> Option<&Doc> {
+        self.mirror(chunk)
+            .or_else(|| self.parked.get(&chunk).map(AsRef::as_ref))
+    }
+
+    /// The chunk `chunk` the record's holder writes into: the one it has, else one started
+    /// here, as a write into a run that starts there is made before that chunk arrives.
+    pub fn open_held(&mut self, chunk: ChunkNo) -> &mut Doc {
+        if let Some(doc) = self.parked.get_mut(&chunk) {
+            return Arc::make_mut(doc);
+        }
+        let doc = if chunk == FIRST {
+            self.first.get_or_insert_with(|| Arc::new(Doc::new()))
+        } else {
+            self.more
+                .entry(chunk)
+                .or_insert_with(|| Arc::new(Doc::new()))
+        };
+        Arc::make_mut(doc)
+    }
+
+    /// Every chunk the record's holder has, the record first and the rest by number: the ones
+    /// the store reads and the ones it has not read yet.
+    pub fn all(&self) -> impl Iterator<Item = (ChunkNo, &Doc)> {
+        let mut all: Vec<(ChunkNo, &Doc)> = self.docs().collect();
+        all.extend(
+            self.parked
+                .iter()
+                .map(|(chunk, doc)| (*chunk, doc.as_ref())),
+        );
+        all.sort_by_key(|(chunk, _)| *chunk);
+        all.into_iter()
+    }
+
+    /// Keep every chunk above the record unread: what the store reads of them it takes out
+    /// ([`Self::unpark`]) when something reaches into one.
+    pub fn park_above_first(&mut self) {
+        for (chunk, doc) in std::mem::take(&mut self.more) {
+            self.seen.remove(&chunk);
+            self.parked.insert(chunk, doc);
+        }
+    }
+
+    /// The set with every chunk its holder has as one the store reads: what a look at the
+    /// whole record reads.
+    #[must_use]
+    pub fn whole(&self) -> Self {
+        let mut whole = self.clone();
+        for (chunk, doc) in std::mem::take(&mut whole.parked) {
+            whole.more.insert(chunk, doc);
+        }
+        whole
+    }
+
+    /// Take the chunk `chunk` the store reads out of the set.
+    pub fn take_attached(&mut self, chunk: ChunkNo) -> Option<Doc> {
+        let doc = if chunk == FIRST {
+            self.first.take()
+        } else {
+            self.more.remove(&chunk)
+        }?;
+        Some(Arc::try_unwrap(doc).unwrap_or_else(|shared| (*shared).clone()))
+    }
+
+    /// Take the unread chunk `chunk` out, for the store to read.
+    pub fn unpark(&mut self, chunk: ChunkNo) -> Option<Doc> {
+        let doc = self.parked.remove(&chunk)?;
+        Some(Arc::try_unwrap(doc).unwrap_or_else(|shared| (*shared).clone()))
+    }
+
+    /// Whether the store took in the heads of `chunk`: a chunk the holder wrote that the store
+    /// has not read yet has none.
+    #[must_use]
+    pub fn is_seen(&self, chunk: ChunkNo) -> bool {
+        self.seen.contains_key(&chunk)
     }
 
     /// The set holding `doc` as the record, chunk [`FIRST`], and nothing above it.

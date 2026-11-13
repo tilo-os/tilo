@@ -239,11 +239,11 @@ fn window_over(
 /// The window driven by hand takes in the index its load builds: without frames of its own,
 /// nothing wakes it to poll for it, as a running window's next frame would.
 fn settle(window: &mut Window) {
-    window.instance.sync(Some(window.workspace.doc()));
+    window.workspace.sync_instance(&mut window.instance);
     if let Some(host) = window.instance.host() {
         host.wait_index();
     }
-    window.instance.sync(Some(window.workspace.doc()));
+    window.workspace.sync_instance(&mut window.instance);
     window.instance.update();
 }
 
@@ -277,7 +277,7 @@ fn what_one_window_commits_through_the_collab_client_reaches_the_other() {
     // workspace path commits it to her record and sends it.
     let mut committed = Vec::new();
     for _ in 0..100 {
-        ada.instance.sync(Some(ada.workspace.doc()));
+        ada.workspace.sync_instance(&mut ada.instance);
         ada.instance.update();
         committed.extend(ada.workspace.commit(&mut ada.instance).unwrap());
         if !committed.is_empty() {
@@ -290,7 +290,7 @@ fn what_one_window_commits_through_the_collab_client_reaches_the_other() {
     );
     let ada_root = ada.instance.host().unwrap().root_of(APP).unwrap();
     assert!(
-        !ada.workspace.doc().clone().get_changes(&[]).is_empty(),
+        !ada.workspace.doc().get_changes(&[]).is_empty(),
         "the root is in ada's record"
     );
 
@@ -318,8 +318,8 @@ fn what_one_window_commits_through_the_collab_client_reaches_the_other() {
     assert!(grace.workspace.receive(&mut grace.instance));
     settle(&mut grace);
     assert_eq!(
-        grace.workspace.doc().clone().get_heads(),
-        ada.workspace.doc().clone().get_heads(),
+        grace.workspace.doc().get_heads(),
+        ada.workspace.doc().get_heads(),
         "grace holds what ada committed"
     );
     let grace_root = grace.instance.host().unwrap().root_of(APP).unwrap();
@@ -424,8 +424,8 @@ fn what_the_collab_client_cannot_take_yet_is_kept_and_reaches_the_workspace_once
     grace.instance.update();
     ada.instance.update();
     assert_eq!(
-        grace.workspace.doc().clone().get_heads(),
-        ada.workspace.doc().clone().get_heads(),
+        grace.workspace.doc().get_heads(),
+        ada.workspace.doc().get_heads(),
         "grace holds everything ada made while her client was full"
     );
     assert_eq!(
@@ -472,7 +472,7 @@ fn ada_window(
 fn make_root(window: &mut Window) -> tilolang_tilo::runtime::ResourceRef {
     settle(window);
     for _ in 0..100 {
-        window.instance.sync(Some(window.workspace.doc()));
+        window.workspace.sync_instance(&mut window.instance);
         window.instance.update();
         if !window
             .workspace
@@ -492,8 +492,8 @@ fn grace_over(
     documents: &Rc<dyn durable_store::DurableStore>,
     platform: &Rc<Counter>,
 ) -> Window {
-    let workspace = InstanceRecord::open(manager, documents, "grace", "tl.test").unwrap();
-    let (instance, patches) = instance_over("grace", &workspace, platform);
+    let mut workspace = InstanceRecord::open(manager, documents, "grace", "tl.test").unwrap();
+    let (instance, patches) = instance_over("grace", &mut workspace, platform);
     Window {
         instance,
         workspace,
@@ -502,7 +502,7 @@ fn grace_over(
 }
 
 /// `me`'s instance of the counter over `record`, as the record holds it once it opened.
-fn instance_over(me: &str, record: &InstanceRecord, platform: &Rc<Counter>) -> (Instance, End) {
+fn instance_over(me: &str, record: &mut InstanceRecord, platform: &Rc<Counter>) -> (Instance, End) {
     let (app_end, patches) = pair();
     let mut instance = Instance::new(
         Config {
@@ -519,13 +519,13 @@ fn instance_over(me: &str, record: &InstanceRecord, platform: &Rc<Counter>) -> (
         Rc::new(Alone),
         Box::new(app_end),
     );
-    instance.sync(Some(record.doc()));
+    record.sync_instance(&mut instance);
     if let Some(host) = instance.host() {
         // Driven by hand, this window has no frames to take in the index its load builds off
         // them: it waits for it, as a running window's frames would.
         host.wait_index();
     }
-    instance.sync(Some(record.doc()));
+    record.sync_instance(&mut instance);
     instance.update();
     (instance, patches)
 }
@@ -557,7 +557,7 @@ fn a_tilolang_edit_in_a_workspace_another_host_governs_is_undone() {
     });
 
     let (ada, root) = ada_window(&route, &platform);
-    let committed = ada.workspace.doc().clone().save();
+    let committed = ada.workspace.doc().save();
 
     // Grace's window opens on a connection whose route the broker reads committed.
     let (manager, _) =
@@ -610,7 +610,7 @@ fn a_tilolang_edit_in_a_workspace_another_host_governs_is_undone() {
         record.save_status(),
         collaboration::record::RecordSaveStatus::Saved
     );
-    let heads = record.doc().clone().get_heads();
+    let heads = record.doc().get_heads();
     let mut store =
         collaboration::record::save::workspace_document(&documents, APP, &workspace_id.to_string())
             .unwrap();
@@ -636,7 +636,7 @@ fn another_persons_edit_reaches_a_window_as_the_workspaces_committed_read() {
     let (manager, broker) = CollaborationManager::native_refresh_fixture_for_test(
         APP,
         workspace_id,
-        ada.workspace.doc().clone().save(),
+        ada.workspace.doc().save(),
     );
     let profile = tempfile::tempdir().unwrap();
     let documents: Rc<dyn durable_store::DurableStore> =
@@ -650,16 +650,16 @@ fn another_persons_edit_reaches_a_window_as_the_workspaces_committed_read() {
 
     // Grace adds one in her window while ada adds one in hers, which the workspace commits.
     add_one(&mut grace, &root, "grace");
-    let mine = grace.workspace.doc().clone().get_heads();
+    let mine = grace.workspace.doc().get_heads();
     add_one(&mut ada, &root, "ada");
-    broker.replace_history(ada.workspace.doc().clone().save());
+    broker.replace_history(ada.workspace.doc().save());
 
     tilo_test_env::wait_until("ada's edit to show in grace's window", || {
         grace.workspace.receive(&mut grace.instance);
         grace.instance.update();
         value_at(&grace.instance, &root) == 2
     });
-    let mut held = grace.workspace.doc().clone();
+    let mut held = grace.workspace.doc();
     assert!(
         mine.iter()
             .all(|head| held.get_change_by_hash(head).is_some()),
@@ -686,7 +686,7 @@ fn an_unreadable_workspace_copy_leaves_the_window_its_own_record() {
     let (manager, broker) = CollaborationManager::native_refresh_fixture_for_test(
         APP,
         workspace_id,
-        ada.workspace.doc().clone().save(),
+        ada.workspace.doc().save(),
     );
     let profile = tempfile::tempdir().unwrap();
     let documents: Rc<dyn durable_store::DurableStore> =
@@ -697,7 +697,7 @@ fn an_unreadable_workspace_copy_leaves_the_window_its_own_record() {
         "the record is the workspace's once read"
     );
     add_one(&mut grace, &root, "grace");
-    let mine = grace.workspace.doc().clone().get_heads();
+    let mine = grace.workspace.doc().get_heads();
 
     // The workspace's copy of the record is not a document this app reads.
     broker.replace_history(vec![0xff; 16]);
@@ -723,7 +723,7 @@ fn an_unreadable_workspace_copy_leaves_the_window_its_own_record() {
         1,
         "the window keeps its own edit"
     );
-    let mut held = grace.workspace.doc().clone();
+    let mut held = grace.workspace.doc();
     assert!(
         mine.iter()
             .all(|head| held.get_change_by_hash(head).is_some()),

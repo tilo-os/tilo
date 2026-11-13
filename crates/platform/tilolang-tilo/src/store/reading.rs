@@ -74,9 +74,9 @@ pub(super) fn write_as_a_known_actor(mirror: &mut Doc) {
     }
 }
 
-/// A copy of `record`'s committed changes, to write into.
-pub(super) fn mirror_of(record: &Doc) -> Doc {
-    let mut mirror = record.clone();
+/// `record`'s committed changes, to write into.
+pub(super) fn mirror_of(record: Doc) -> Doc {
+    let mut mirror = record;
     // Only the record's committed changes are the mirror's: an open transaction of the
     // record arrives as a change once the framework commits it.
     mirror.rollback();
