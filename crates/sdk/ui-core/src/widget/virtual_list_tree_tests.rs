@@ -383,6 +383,47 @@ fn a_tree_keeps_its_chevrons_column_while_its_rows_stay() {
     );
 }
 
+/// A model change is read as the rows stand: the column the tree's first level keeps is what it
+/// showed before, so a rename that re-reads every row moves none of them sideways for a frame.
+#[test]
+fn a_model_change_keeps_the_rows_where_they_stood() {
+    let probe = |_: &OpenableTree, _: usize, key: &u64| -> Element {
+        Box::new(super::tests::ProbeRow::new(
+            key.to_string(),
+            20.0,
+            false,
+            Rc::new(Cell::new(0)),
+        ))
+    };
+    let mut list = VirtualList::new(
+        OpenableTree {
+            keys: vec![0, 1],
+            parents: HashMap::new(),
+        },
+        20.0,
+        probe,
+    )
+    .with_viewport_height(200.0)
+    .with_tree(Rc::new(TreeMarks::default()));
+    let _ = super::tests::lay_out(&mut list, 300.0);
+    let column = list.lead;
+    assert!(
+        (column - list.bleed).abs() < 0.5,
+        "nothing of the first level folds, so its rows keep no column: {column} in from {}",
+        list.bleed
+    );
+
+    list.update_model(|model| model.keys = vec![0, 1, 2]);
+    // The frame settles its rows' column before the rows it re-reads are mounted: the column
+    // stands where the tree showed it, not where a first level nobody has read yet would put it.
+    list.settle_lead();
+    assert!(
+        (list.lead - column).abs() < 0.5,
+        "a model change moves no row sideways: {} against {column}",
+        list.lead
+    );
+}
+
 #[test]
 fn a_tree_reads_as_a_tree_and_says_how_deep_each_row_stands() {
     use crate::a11y::Role;
