@@ -212,6 +212,15 @@ struct ComponentRunnerWakeState {
 impl ComponentRunnerWakeState {
     fn drain(&self) {
         for (generation, event) in self.receiver.borrow_mut().try_iter() {
+            // A save that moved on is its owner's service alone, which the
+            // owner queue the component was mounted with takes, and which
+            // asks for a frame only when the owner shows something new
+            // ([`FrameHarness::service_pending_owner_models_report`]). Taken
+            // as a wake, each keystroke's landed write synced and laid out
+            // the whole window again, in a second frame after the key's.
+            if !event.asks_for_frame() {
+                continue;
+            }
             if self.generation.get() == Some(generation)
                 && self.binding.lifetime.accepts(&event)
                 && self.binding.enter().is_ok()

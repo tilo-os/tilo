@@ -476,6 +476,10 @@ pub(crate) struct Mount {
     desktop: Option<Desktop>,
     gpu: Option<Gpu>,
     pending: bool,
+    /// Wakes the mounted app's component sent the loop, not yet taken up:
+    /// one of them is its owner's service, which asks for a frame only when
+    /// it shows something new ([`Mount::service_owner_models`]).
+    component_wakes: Arc<std::sync::atomic::AtomicUsize>,
     background_retry: Option<ui::time::Instant>,
     feedback_retry: Option<ui::time::Instant>,
     viewport: ViewportState,
@@ -876,10 +880,12 @@ impl Mount {
         };
         let wake = proxy().map_err(|failure| failure.as_string().unwrap_or_default())?;
         let id = self.id;
+        let woken = Arc::clone(&self.component_wakes);
         self.frame
             .show_component(
                 *component,
                 Arc::new(move || {
+                    woken.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     let _ = wake.send_event(id);
                 }),
             )
@@ -908,7 +914,10 @@ impl Mount {
         }
     }
 
-    fn service_owner_models(&mut self) {
+    /// Serve what the mount's owner models were woken for. Returns whether
+    /// a frame must show it: a model ran, or an owner shows something new
+    /// (a save that landed in time shows nothing).
+    fn service_owner_models(&mut self) -> bool {
         self.feedback_retry = None;
         if let Some(desktop) = &self.desktop
             && let Some(feedback) = desktop.shared.feedback.borrow().as_ref()
@@ -921,9 +930,11 @@ impl Mount {
             gpu_ready: self.presents(),
         };
         let mut attempted = false;
+        let mut presented = false;
         let result = crate::background_work::run(p, || {
             let report = self.frame.service_pending_owner_models_report();
             attempted = report.attempted;
+            presented = report.presented;
             report.result.map(|()| report.completed)
         });
         if attempted {
@@ -946,6 +957,7 @@ impl Mount {
                     ui::time::now().checked_add(ui::time::Duration::from_millis(50));
             }
         }
+        attempted || presented
     }
 
     fn flush_records(&self) {
@@ -1531,10 +1543,12 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         SurfaceCaps::STANDARD
     };
     let viewport = observed.bounded_by(caps);
+    let component_wakes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let dpr = viewport.dpr;
     let mut frame = match root {
         Root::Component(component) => {
             let wake = proxy()?;
+            let woken = Arc::clone(&component_wakes);
             let mut frame = FrameHarness::from_component_with_wake_notifier(
                 *component,
                 viewport.logical_size(),
@@ -1543,6 +1557,7 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
                     text_renderer,
                 },
                 move || {
+                    woken.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     let _ = wake.send_event(id);
                 },
             )
@@ -1664,6 +1679,7 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         desktop,
         gpu: None,
         pending: true,
+        component_wakes,
         background_retry: None,
         feedback_retry: None,
         viewport: ViewportState::with_caps(observed, caps),
