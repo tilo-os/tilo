@@ -208,8 +208,6 @@ fn verbs_and_field_edits_change_the_library() {
     assert_eq!(library.state().unwrap().total_unread(), 0);
 }
 
-/// Tags are normalized and folders are named: the model refuses others
-/// from any path.
 #[test]
 fn the_invariants_refuse_unnormalized_tags_and_blank_folders() {
     let mut library = Replica::<Library>::new();
@@ -238,8 +236,6 @@ fn the_invariants_refuse_unnormalized_tags_and_blank_folders() {
     );
 }
 
-/// Unsubscribing removes the subscription with its articles; deleting a
-/// folder keeps its subscriptions, at the top of the sidebar.
 #[test]
 fn unsubscribing_and_deleting_a_folder() {
     let mut library = Replica::<Library>::new();
@@ -269,8 +265,6 @@ fn unsubscribing_and_deleting_a_folder() {
     );
 }
 
-/// Importing subscribes to what the file lists that the library lacks, in
-/// the folders it names; importing it again adds nothing.
 #[test]
 fn importing_subscribes_once_in_named_folders() {
     let mut library = Replica::<Library>::new();
@@ -302,8 +296,6 @@ fn importing_subscribes_once_in_named_folders() {
     assert_eq!(library.state().unwrap().folders.len(), 1);
 }
 
-/// Two people reading one library at once converge: read and star flags
-/// per article, tags per tag, articles per article.
 #[test]
 fn concurrent_edits_converge() {
     let mut ours = Replica::<Library>::new();
@@ -328,8 +320,6 @@ fn concurrent_edits_converge() {
     assert_eq!(merged.articles.len(), 2);
 }
 
-/// Each folder, subscription and article is published as its own item with
-/// the verbs that act on it; each tag is a place that reveals its articles.
 #[test]
 fn the_published_library_offers_every_item_its_actions() {
     let mut library = Replica::<Library>::new();
@@ -391,8 +381,6 @@ fn the_published_library_offers_every_item_its_actions() {
     );
 }
 
-/// Every subscription and article is found by what it holds, anchored at
-/// its item.
 #[test]
 fn search_finds_subscriptions_and_articles() {
     let mut library = Replica::<Library>::new();
@@ -434,7 +422,6 @@ fn search_finds_subscriptions_and_articles() {
     );
 }
 
-/// The reader on the sample library, laid out as the screenshots are.
 fn sample_app() -> TestApp<FeedsShell> {
     let mut app = TestApp::<FeedsShell>::new().unwrap();
     for invoke in FeedsShell::scenario(None) {
@@ -444,8 +431,6 @@ fn sample_app() -> TestApp<FeedsShell> {
     app
 }
 
-/// Activate the control `name` as a person does, through the window's
-/// accessibility tree, and let the app settle.
 fn activate(app: &mut TestApp<FeedsShell>, name: &str) {
     app.settle();
     let harness = app.harness();
@@ -459,7 +444,6 @@ fn activate(app: &mut TestApp<FeedsShell>, name: &str) {
     app.settle();
 }
 
-/// Removing a subscription runs at once and offers Undo: nothing asks first.
 #[test]
 fn an_undoable_remove_runs_at_once_with_undo() {
     let mut app = sample_app();
@@ -516,9 +500,6 @@ fn an_undoable_remove_runs_at_once_with_undo() {
     );
 }
 
-/// Every action listed for people reads as an outcome: no raw ids, no
-/// separator glyphs, no implementation suffixes; the actions the app uses to
-/// land its own work are not listed for people at all.
 #[test]
 fn every_action_listed_for_people_reads_as_an_outcome() {
     let mut app = sample_app();
@@ -545,8 +526,6 @@ fn every_action_listed_for_people_reads_as_an_outcome() {
     }
 }
 
-/// Unsubscribing asks nothing of any caller: the palette, a script and an
-/// agent run it at once too, and Undo takes it back.
 #[test]
 fn every_caller_unsubscribes_at_once_and_undo_takes_it_back() {
     let mut app = sample_app();
@@ -576,7 +555,6 @@ fn every_caller_unsubscribes_at_once_and_undo_takes_it_back() {
     assert!(app.state().feed(&feed).is_some());
 }
 
-/// Opening the app writes nothing: there is no library to show.
 #[test]
 fn opening_writes_nothing() {
     let mut app = TestApp::<FeedsShell>::new().unwrap();
@@ -585,9 +563,6 @@ fn opening_writes_nothing() {
     assert!(!app.undo(), "there is nothing to undo");
 }
 
-/// How articles read is the person's setting: the palette's effects and
-/// another window's write reach the reader, change no document and are
-/// nobody's undo step.
 #[test]
 fn reading_preferences_are_personal_settings() {
     let mut app = sample_app();
@@ -633,8 +608,6 @@ fn reading_preferences_are_personal_settings() {
     assert_eq!(shown.font, ReadFont::Mono);
 }
 
-/// The reader's keys, the palette and an agent all edit the library
-/// through the same door, one undo step each.
 #[test]
 fn the_reader_edits_through_the_framework_door() {
     let mut app = sample_app();
@@ -703,8 +676,6 @@ fn the_reader_edits_through_the_framework_door() {
     );
 }
 
-/// An agent reaches every subscription, article and tag through the one
-/// published tree, each change one call, and opening an item shows it.
 #[test]
 fn an_agent_edits_and_opens_items_one_call_each() {
     let mut app = sample_app();
@@ -770,8 +741,6 @@ fn an_agent_edits_and_opens_items_one_call_each() {
     assert!(app.state().feed(&feed).is_none());
 }
 
-/// Unsubscribing the last feed — here, through the palette, or by a
-/// collaborator — leaves the reader showing no rows of it.
 #[test]
 fn unsubscribing_the_last_feed_empties_the_reader() {
     let mut app = TestApp::<FeedsShell>::new().unwrap();
@@ -806,9 +775,6 @@ fn unsubscribing_the_last_feed_empties_the_reader() {
     assert!(!shown.contains("The Only Article"), "{shown}");
 }
 
-/// Refreshing and OPML import/export are the reader's effects: every
-/// caller sees them, and refreshing says why it cannot run without
-/// subscriptions.
 #[test]
 fn refreshing_and_opml_are_effects_of_the_reader() {
     let mut app = TestApp::<FeedsShell>::new().unwrap();
@@ -831,8 +797,6 @@ fn refreshing_and_opml_are_effects_of_the_reader() {
     );
 }
 
-/// What a refresh fetched reaches every collaborator but is nobody's
-/// undo step, while an OPML import is one step.
 #[test]
 fn fetched_rows_are_no_undo_step_and_an_import_is_one() {
     let mut app = TestApp::<FeedsShell>::new().unwrap();
@@ -1006,9 +970,6 @@ fn history_entries_render_as_the_apps_sentences() {
     assert_eq!(sentences("de-DE")[0], "Ordner Reading angelegt");
 }
 
-/// Every screenshot is the framework's capture: the library comes from
-/// the scenario's actions, the open popovers from the reader's staging,
-/// and the narrow scenarios get a phone-sized window.
 #[test]
 fn captures_stage_through_actions_and_the_reader() {
     let mut detail = TestApp::<FeedsShell>::capture(Some("detail")).unwrap();
@@ -1063,7 +1024,6 @@ fn captures_stage_through_actions_and_the_reader() {
     assert!(empty.state().is_empty());
 }
 
-/// Every host that mounts the reader loads its messages.
 #[test]
 fn the_catalog_resolves_the_link_messages() {
     FeedsShell::catalog().unwrap().ensure();
@@ -1086,8 +1046,6 @@ fn the_catalog_resolves_the_link_messages() {
     }
 }
 
-/// A library from before an article's body was a list of blocks: it was one
-/// JSON string. Opened now, every article reads with its blocks.
 #[test]
 fn article_bodies_kept_as_json_strings_migrate_to_blocks() {
     use ui::tilo_resource::{Slot, evolution, read_key};
@@ -1130,8 +1088,6 @@ fn article_bodies_kept_as_json_strings_migrate_to_blocks() {
     );
 }
 
-/// What a window of Feeds kept on its own before the app kept one library
-/// per workspace: a window record subscribed to `urls`.
 fn window_library(instance: u64, urls: &[&str]) -> ui::tilo_resource::Doc {
     let doc = ui::framework::testing::window_record::<FeedsShell>(instance, &[]).unwrap();
     let mut library = Replica::<Library>::from_doc(doc);
@@ -1152,9 +1108,6 @@ fn subscribed(app: &TestApp<FeedsShell>) -> Vec<String> {
     urls
 }
 
-/// A feed the person adds is there after the app is closed and opened
-/// again, in a new window, and in a second window open beside the first:
-/// every window of Feeds in a workspace shows its one library.
 #[test]
 fn a_feed_added_is_there_after_reopening_and_in_every_window() {
     let mut app = TestApp::<FeedsShell>::new().unwrap();
@@ -1182,9 +1135,6 @@ fn a_feed_added_is_there_after_reopening_and_in_every_window() {
     );
 }
 
-/// Feeds kept a library per window before: when the workspace's library is
-/// first opened, the feeds every earlier window subscribed to are in it,
-/// and the window records stay as they were.
 #[test]
 fn earlier_windows_libraries_merge_into_the_workspace_library() {
     let first = window_library(0x51, &["https://a.example/feed"]);
@@ -1213,11 +1163,6 @@ fn earlier_windows_libraries_merge_into_the_workspace_library() {
     }
 }
 
-/// The palette a person opens in Feeds lists what they can do, each row once
-/// and in their words: no action that is only for agents (seeing the window
-/// as a picture, bringing it forward), no button's own press repeating the
-/// library's action, and no line under a row that repeats its label or
-/// another row's line.
 #[test]
 fn the_palette_rows_say_each_thing_once_and_only_to_people() {
     let mut app = sample_app();
@@ -1271,8 +1216,6 @@ fn the_palette_rows_say_each_thing_once_and_only_to_people() {
     );
 }
 
-/// The window bar's sidebar button flips the sidebar on every click, in a
-/// window wide enough to dock it and in a narrow one.
 #[test]
 fn the_window_bars_sidebar_button_flips_the_sidebar() {
     ui::framework::testing::check_window_sidebar_button(

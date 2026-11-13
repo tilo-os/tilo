@@ -18,7 +18,6 @@ use crate::model::{FeedKind, Filter, Id, Library, TagKey};
 use crate::resource::FeedsEffect;
 use crate::search::feed_icon;
 
-/// The sidebar item id of a place.
 pub(crate) fn nav_id(filter: &Filter) -> String {
     match filter {
         Filter::All => "smart:all".into(),
@@ -30,7 +29,6 @@ pub(crate) fn nav_id(filter: &Filter) -> String {
     }
 }
 
-/// The place a sidebar item id names.
 pub(crate) fn filter_of(id: &str) -> Option<Filter> {
     match id {
         "smart:all" => Some(Filter::All),
@@ -65,9 +63,7 @@ impl Counted for NavItem {
     }
 }
 
-/// The sidebar's section of subscriptions and folders.
 const FEEDS_SECTION: &str = "feeds";
-/// Its heading's action, which opens the New folder dialog.
 const NEW_FOLDER: &str = "new-folder";
 
 impl Core {

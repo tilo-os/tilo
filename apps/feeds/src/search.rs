@@ -7,19 +7,13 @@ use ui::tilo_resource::{SearchEntry, SearchPreview, SearchWeight};
 
 use crate::model::{Article, BlockKind, Feed, FeedKind, Folder, Library, Row};
 
-/// The heading folders are listed under.
 pub const FOLDERS: &str = "Folders";
-/// The heading feeds are listed under.
 pub const FEEDS: &str = "Feeds";
-/// The heading articles are listed under.
 pub const ARTICLES: &str = "Articles";
 
-/// How many of a feed's newest articles its preview names.
 const LATEST: usize = 3;
-/// How much of an article's text its preview starts with, in characters.
 const EXCERPT_CHARS: usize = 280;
 
-/// Every folder, feed and article, as search lists them.
 pub fn entries(library: &Library) -> Vec<SearchEntry> {
     let folders = library
         .folders_sorted()
@@ -32,7 +26,6 @@ pub fn entries(library: &Library) -> Vec<SearchEntry> {
     folders.chain(feeds).chain(articles).collect()
 }
 
-/// The mark a feed wears in the sidebar.
 pub fn feed_icon(kind: FeedKind) -> ui::icons::Icon {
     match kind {
         // A Gemini capsule is a page of gemtext.
@@ -129,7 +122,6 @@ fn article_entry(library: &Library, article: &Row<'_, Article>) -> SearchEntry {
     entry
 }
 
-/// `n` of something, in the singular for one.
 fn count(n: usize, one: &str, many: &str) -> String {
     if n == 1 {
         format!("1 {one}")
@@ -138,7 +130,6 @@ fn count(n: usize, one: &str, many: &str) -> String {
     }
 }
 
-/// The site an address is on, without its scheme and `www.`.
 fn host(url: &str) -> Option<String> {
     let rest = url.split_once("://").map_or(url, |(_, rest)| rest);
     let host = rest.split(['/', '?', '#']).next().unwrap_or(rest);
@@ -146,7 +137,6 @@ fn host(url: &str) -> Option<String> {
     (!host.is_empty()).then(|| host.to_owned())
 }
 
-/// The day an article came out, when the feed said.
 fn published(at: i64) -> Option<String> {
     use ui::format::Moment as _;
     if at <= 0 {
@@ -199,8 +189,6 @@ mod tests {
             .collect()
     }
 
-    /// Folders, feeds and articles are listed apart, each with the sidebar's
-    /// mark, and every entry the library holds is one of them.
     #[test]
     fn each_kind_is_its_own_group_with_its_own_mark() {
         let library = sample();
@@ -231,9 +219,6 @@ mod tests {
         );
     }
 
-    /// An article reads as the list shows it, with its feed under its title;
-    /// its preview has its source, its date and the start of its text, never
-    /// its address or the raw fields it is found by.
     #[test]
     fn an_article_previews_its_source_date_and_first_lines() {
         let library = sample();
@@ -261,8 +246,6 @@ mod tests {
         );
     }
 
-    /// A feed previews its site, how much is unread and its newest articles;
-    /// a folder, the feeds it holds.
     #[test]
     fn a_feed_and_a_folder_preview_what_they_hold() {
         let library = sample();

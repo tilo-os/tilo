@@ -31,7 +31,6 @@ use crate::model::{BlockKind, ContentBlock, Filter, Id, ReadFont, TagKey};
 use crate::reader_theme::ReaderPalette;
 use ui::i18n::ArgValue;
 
-/// A leaf that fills its column, registered for the host's sweeps.
 pub(crate) fn fill_leaf<W: Widget + 'static>(
     taffy: &mut TaffyTree<()>,
     node_map: &mut HashMap<NodeId, *mut dyn Widget>,
@@ -48,16 +47,10 @@ pub(crate) fn fill_leaf<W: Widget + 'static>(
 /// What the reader painted last frame, for hit-testing and scrolling.
 pub(crate) struct ReaderState {
     pub(crate) rect: Rect,
-    /// Scrolls the painted article: offset, wheel, keyboard and the overlay
-    /// scroll bar that fades when idle.
     pub(crate) scroller: ScrollRegion,
-    /// The page's theme at the last paint, for the scroll bar's fade.
     pub(crate) theme: Theme,
-    /// Links, one rect per line they cover, with their target.
     pub(crate) links: Vec<(Rect, usize, String)>,
-    /// Tag chips and the tag each shows.
     pub(crate) tags: Vec<(Rect, TagKey)>,
-    /// The article the scroll offset belongs to.
     shown: Option<Id>,
 }
 
@@ -75,7 +68,6 @@ impl Default for ReaderState {
 }
 
 impl ReaderState {
-    /// Back to the top of the article.
     pub(crate) fn scroll_to_top(&mut self) {
         self.scroller.set_offset(vello::kurbo::Vec2::ZERO);
     }
@@ -119,7 +111,6 @@ impl Styles {
     }
 }
 
-/// The date an article was published, in the person's date style.
 fn published_date(published: i64) -> Option<String> {
     (published > 0).then(|| ui::format::date_of(&ui::format::UnixSecs(published)))
 }
@@ -445,7 +436,6 @@ impl Core {
         }
     }
 
-    /// Route `event` to the reader. Returns whether the reader used it.
     pub(crate) fn reader_event(
         &mut self,
         event: &WindowEvent,
@@ -635,7 +625,6 @@ impl Widget for ReaderPane {
         over.then_some(winit::window::CursorIcon::Pointer)
     }
 
-    /// A glide after a flick scrolls the article as the wheel does.
     fn update(&mut self, _state: &ui::widget::AppModel, _path: &ui::widget::ModelPath) -> bool {
         if let Ok(mut core) = self.core.try_borrow_mut() {
             core.reader.scroller.advance();
