@@ -596,3 +596,109 @@ fn the_gallery_shows_every_component_of_the_toolkit_and_each_builds() {
     .expect("the gallery lays out, every component of it built");
     assert!(report.layouts > 0, "the gallery is laid out");
 }
+
+/// An allow-list names one finding a line: blank lines and what follows a `#` are no finding, an
+/// id named twice is allowed once, and a list that is not there is an error naming it, never an
+/// empty list.
+#[test]
+fn an_allow_list_is_one_finding_a_line_past_its_comments_and_blank_lines() {
+    let scratch = tempfile::tempdir().expect("a scratch directory");
+    let path = scratch.path().join("allowed");
+    let rows: [(&str, &str, &[&str]); 8] = [
+        ("an empty file", "", &[]),
+        (
+            "blank lines and comments alone",
+            "\n   \n# known\n  # and this\n",
+            &[],
+        ),
+        (
+            "one finding",
+            "overflow:tasks:list\n",
+            &["overflow:tasks:list"],
+        ),
+        (
+            "no line end after the last finding",
+            "overflow:tasks:list",
+            &["overflow:tasks:list"],
+        ),
+        (
+            "room around a finding and a comment after it",
+            "  overflow:tasks:list \t# since the board\n",
+            &["overflow:tasks:list"],
+        ),
+        ("a comment that holds a second #", "a # b # c\n", &["a"]),
+        ("a finding named twice", "b\na\nb\n", &["a", "b"]),
+        ("line ends of another system", "a\r\nb\r\n", &["a", "b"]),
+    ];
+    for (row, text, ids) in rows {
+        std::fs::write(&path, text).expect("the list writes");
+        let read = layout_check::read_allow(&path)
+            .unwrap_or_else(|error| panic!("{row}: the list reads: {error}"));
+        let read: Vec<&str> = read.iter().map(String::as_str).collect();
+        assert_eq!(read, ids, "{row}");
+    }
+    let missing = scratch.path().join("no such list");
+    let refused =
+        layout_check::read_allow(&missing).expect_err("a list that is not there is no empty list");
+    assert!(
+        refused.starts_with(&missing.display().to_string()),
+        "the error names the list: {refused}"
+    );
+}
+
+/// A run the command cannot read is refused before anything is laid out, saying what was wrong
+/// with it: a `--dump` size that is no size, a flag left without its value, a flag it does not
+/// have.
+#[test]
+fn a_run_the_command_cannot_read_is_refused_with_what_is_wrong_with_it() {
+    use tilo_test_env::SpawnUnderEnvLock as _;
+
+    let rows: [(&[&str], &str); 9] = [
+        (
+            &["--dump", "390"],
+            "--dump 390: a window size such as 390x844",
+        ),
+        (&["--dump", ""], "--dump : a window size such as 390x844"),
+        (
+            &["--dump", "x844"],
+            "--dump x844: a window size such as 390x844",
+        ),
+        (
+            &["--dump", "390x"],
+            "--dump 390x: a window size such as 390x844",
+        ),
+        (
+            &["--dump", "-390x844"],
+            "--dump -390x844: a window size such as 390x844",
+        ),
+        (
+            &["--dump", "390x844x2"],
+            "--dump 390x844x2: a window size such as 390x844",
+        ),
+        (&["--dump"], "--dump needs a value"),
+        (&["--dump", "390x844", "--press"], "--press needs a value"),
+        (&["--no-such-flag"], "unknown option --no-such-flag"),
+    ];
+    for (args, said) in rows {
+        let output = Command::new(env!("CARGO_BIN_EXE_tilolang"))
+            .arg("layout-check")
+            .args(args)
+            .output_locked()
+            .expect("the command runs");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "{args:?} is refused as a run that cannot be read: {stderr}"
+        );
+        assert!(
+            stderr.contains(said),
+            "{args:?} says what is wrong with it ({said}): {stderr}"
+        );
+        assert!(
+            output.stdout.is_empty(),
+            "{args:?} lays nothing out: {}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+    }
+}
