@@ -121,6 +121,20 @@ pub struct InspectionNode {
     pub children: Vec<InspectionNode>,
 }
 
+impl InspectionNode {
+    /// This node and every node under it, in tree order.
+    #[must_use]
+    pub fn nodes(&self) -> Vec<&Self> {
+        let mut out = Vec::new();
+        let mut next = vec![self];
+        while let Some(node) = next.pop() {
+            out.push(node);
+            next.extend(node.children.iter().rev());
+        }
+        out
+    }
+}
+
 /// A coherent post-layout snapshot of the retained and semantic trees.
 #[derive(Debug, serde::Serialize)]
 pub struct InspectionSnapshot {

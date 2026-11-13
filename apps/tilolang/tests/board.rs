@@ -12,7 +12,6 @@
 
 use tilolang_app::app::TlApp;
 use ui::framework::testing::TestApp;
-use ui::headless::InspectionNode;
 
 const DESKTOP: (u32, u32) = (1280, 800);
 
@@ -30,13 +29,6 @@ fn settle(app: &mut TestApp<TlApp>) {
         app.harness()
             .settle_for_capture(ui::time::Duration::from_millis(300));
         app.harness().relayout();
-    }
-}
-
-fn walk<'a>(node: &'a InspectionNode, out: &mut Vec<&'a InspectionNode>) {
-    out.push(node);
-    for child in &node.children {
-        walk(child, out);
     }
 }
 
@@ -75,8 +67,7 @@ fn stale_bindings(app: &mut TestApp<TlApp>) -> Vec<String> {
 /// says what the card stands for.
 fn card_rect(app: &mut TestApp<TlApp>, title: &str) -> [f64; 4] {
     let snapshot = app.harness().inspection();
-    let mut all = Vec::new();
-    walk(&snapshot.root, &mut all);
+    let all = snapshot.root.nodes();
     all.iter()
         .find(|node| {
             node.widget == "ListRow"
@@ -101,8 +92,7 @@ fn menu_items(app: &mut TestApp<TlApp>) -> Vec<String> {
         }
     }
     let snapshot = app.harness().inspection();
-    let mut all = Vec::new();
-    walk(&snapshot.root, &mut all);
+    let all = snapshot.root.nodes();
     let mut out = Vec::new();
     for node in all.into_iter().filter(|node| node.widget == "ContextMenu") {
         if let Some(semantics) = &node.semantics

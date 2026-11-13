@@ -18,7 +18,6 @@
 use tilolang_app::app::TlApp;
 use ui::a11y::Role;
 use ui::framework::testing::TestApp;
-use ui::headless::InspectionNode;
 
 const DESKTOP: (u32, u32) = (1280, 800);
 const PHONE: (u32, u32) = (420, 860);
@@ -38,8 +37,7 @@ fn staged(viewport: (u32, u32)) -> TestApp<TlApp> {
 /// offers the views its type declares, the board the second.
 fn show_board(app: &mut TestApp<TlApp>) {
     let snapshot = app.harness().inspection();
-    let mut all = Vec::new();
-    walk(&snapshot.root, &mut all);
+    let all = snapshot.root.nodes();
     let bar = all
         .iter()
         .filter_map(|node| node.semantics.as_ref())
@@ -72,19 +70,11 @@ fn settle(app: &mut TestApp<TlApp>) {
     }
 }
 
-fn walk<'a>(node: &'a InspectionNode, out: &mut Vec<&'a InspectionNode>) {
-    out.push(node);
-    for child in &node.children {
-        walk(child, out);
-    }
-}
-
 /// The cards on the board, `(title, [x, y, width, height])`, in the order they are drawn: a
 /// card is its row, which says what the card stands for.
 fn cards(app: &mut TestApp<TlApp>) -> Vec<(String, [f64; 4])> {
     let snapshot = app.harness().inspection();
-    let mut all = Vec::new();
-    walk(&snapshot.root, &mut all);
+    let all = snapshot.root.nodes();
     all.into_iter()
         .filter(|node| node.widget == "ListRow")
         .filter_map(|node| {
@@ -149,8 +139,7 @@ fn names(lane: &[String]) -> Vec<&str> {
 /// The fields a board draws for a person to add from: each lane's entry, where it is drawn.
 fn entries(app: &mut TestApp<TlApp>) -> Vec<ui::kurbo::Rect> {
     let snapshot = app.harness().inspection();
-    let mut all = Vec::new();
-    walk(&snapshot.root, &mut all);
+    let all = snapshot.root.nodes();
     all.into_iter()
         .filter(|node| node.widget == "TextInput")
         .filter(|node| {
@@ -209,8 +198,7 @@ fn a_lanes_foot_adds_a_card_to_the_lane_it_is_in() {
     // The window's bar carries the one add of the window, above the board: no lane's heading
     // carries one of its own.
     let snapshot = app.harness().inspection();
-    let mut all = Vec::new();
-    walk(&snapshot.root, &mut all);
+    let all = snapshot.root.nodes();
     let adds: Vec<[f64; 4]> = all
         .into_iter()
         .filter(|node| node.widget == "Button")
@@ -526,8 +514,7 @@ fn access_walk<'a>(node: &'a ui::a11y::AccessNode, out: &mut Vec<&'a ui::a11y::A
 /// Every accessible node of the window.
 fn accessible(app: &mut TestApp<TlApp>) -> Vec<ui::a11y::AccessNode> {
     let snapshot = app.harness().inspection();
-    let mut all = Vec::new();
-    walk(&snapshot.root, &mut all);
+    let all = snapshot.root.nodes();
     let mut out = Vec::new();
     for node in all {
         if let Some(access) = &node.semantics {
@@ -639,8 +626,7 @@ fn the_home_list_shows_the_inbox_tasks_of_a_busy_week() {
 /// choosing it, so the row the keyboard is on is the focused one.
 fn keyboard_row(app: &mut TestApp<TlApp>) -> Option<[f64; 4]> {
     let snapshot = app.harness().inspection();
-    let mut all = Vec::new();
-    walk(&snapshot.root, &mut all);
+    let all = snapshot.root.nodes();
     all.into_iter()
         .filter(|node| node.widget == "SwipeRow")
         .find(|node| {
@@ -653,8 +639,7 @@ fn keyboard_row(app: &mut TestApp<TlApp>) -> Option<[f64; 4]> {
 
 fn open_menu(app: &mut TestApp<TlApp>) -> Option<[f64; 4]> {
     let snapshot = app.harness().inspection();
-    let mut all = Vec::new();
-    walk(&snapshot.root, &mut all);
+    let all = snapshot.root.nodes();
     all.into_iter()
         .filter(|node| node.widget == "ContextMenu")
         .find(|node| {
@@ -683,8 +668,7 @@ fn a_row_menu_opened_from_the_keyboard_stands_under_that_row() {
     settle(&mut app);
     let row = keyboard_row(&mut app).unwrap_or_else(|| {
         let snapshot = app.harness().inspection();
-        let mut all = Vec::new();
-        walk(&snapshot.root, &mut all);
+        let all = snapshot.root.nodes();
         let focused: Vec<_> = all
             .iter()
             .filter(|node| {
@@ -1020,8 +1004,7 @@ fn an_agent_editing_a_title_is_seen_writing_in_it() {
     }
     let field = text_field(&mut app, "Buy oat milk and bread");
     let snapshot = app.harness().inspection();
-    let mut all = Vec::new();
-    walk(&snapshot.root, &mut all);
+    let all = snapshot.root.nodes();
     let caret = all
         .iter()
         .find(|node| node.path == format!("presence-mark-{}", agent.actor))
@@ -1086,8 +1069,7 @@ fn a_person_writing_in_a_title_is_seen_there() {
     settle(&mut app);
     let field = text_field(&mut app, "Buy oat milk");
     let snapshot = app.harness().inspection();
-    let mut all = Vec::new();
-    walk(&snapshot.root, &mut all);
+    let all = snapshot.root.nodes();
     let caret = all
         .iter()
         .find(|node| node.path == "presence-mark-bo")

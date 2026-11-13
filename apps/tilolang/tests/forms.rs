@@ -16,7 +16,6 @@
 
 use tilolang_app::app::TlApp;
 use ui::framework::testing::TestApp;
-use ui::headless::InspectionNode;
 
 const DESKTOP: (u32, u32) = (1280, 800);
 const PHONE: (u32, u32) = (420, 860);
@@ -61,13 +60,6 @@ fn open_place(app: &mut TestApp<TlApp>, label: &str) {
     settle(app);
 }
 
-fn walk<'a>(node: &'a InspectionNode, out: &mut Vec<&'a InspectionNode>) {
-    out.push(node);
-    for child in &node.children {
-        walk(child, out);
-    }
-}
-
 fn access_walk<'a>(node: &'a ui::a11y::AccessNode, out: &mut Vec<&'a ui::a11y::AccessNode>) {
     out.push(node);
     for child in &node.children {
@@ -78,8 +70,7 @@ fn access_walk<'a>(node: &'a ui::a11y::AccessNode, out: &mut Vec<&'a ui::a11y::A
 /// Every accessible node of the window.
 fn accessible(app: &mut TestApp<TlApp>) -> Vec<ui::a11y::AccessNode> {
     let snapshot = app.harness().inspection();
-    let mut all = Vec::new();
-    walk(&snapshot.root, &mut all);
+    let all = snapshot.root.nodes();
     let mut out = Vec::new();
     for node in all {
         if let Some(access) = &node.semantics {
