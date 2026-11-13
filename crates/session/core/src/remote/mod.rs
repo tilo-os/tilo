@@ -114,12 +114,20 @@ struct Waiting {
     updates: HashMap<InvocationId, Vec<Asked<Option<InvocationState>>>>,
     cancels: HashMap<InvocationId, Vec<Asked<Answered<()>>>>,
     follows: HashMap<InvocationId, Followed>,
+    /// The followed invocations, oldest first: the ones that ended give way once there are more
+    /// than [`FOLLOWED`].
+    followed_order: std::collections::VecDeque<InvocationId>,
     puts: HashMap<u64, Asked<Answered<ContentPutAnswer>>>,
     gets: HashMap<u64, Asked<Answered<ContentGetAnswer>>>,
     confirms: HashMap<u64, Asked<Answered<ConfirmedInvocation>>>,
     searches: HashMap<u64, Asked<Answered<Vec<Found>>>>,
     changes: HashMap<u64, Asked<Answered<ChangePage>>>,
 }
+
+/// How many invocations a session's asker keeps following. An agent that invokes all day keeps
+/// the ones that still run and the latest that ended; an older one that ended is asked of the
+/// device again, as one nobody followed is.
+const FOLLOWED: usize = 64;
 
 /// An invocation the device accepted, as it last answered for it.
 struct Followed {
@@ -210,6 +218,38 @@ impl Waiting {
         for asked in expired(&mut self.changes, now) {
             give.push(giving(asked, Err(late())));
         }
+    }
+
+    /// Follow `invocation`, which the device accepted, letting the oldest that ended go past
+    /// [`FOLLOWED`].
+    fn follow(&mut self, invocation: InvocationId) {
+        if self.follows.contains_key(&invocation) {
+            return;
+        }
+        self.follows.insert(
+            invocation,
+            Followed {
+                state: InvocationState::new(invocation, InvocationUpdate::Accepted { invocation }),
+                holds: true,
+                asked: None,
+                waiters: Vec::new(),
+            },
+        );
+        self.followed_order.push_back(invocation);
+        if self.follows.len() <= FOLLOWED {
+            return;
+        }
+        let follows = &mut self.follows;
+        self.followed_order.retain(|id| {
+            let ended = follows
+                .get(id)
+                .is_none_or(|followed| followed.state.is_terminal() && followed.waiters.is_empty());
+            if ended && follows.len() > FOLLOWED {
+                follows.remove(id);
+                return false;
+            }
+            follows.contains_key(id)
+        });
     }
 
     fn is_empty(&self) -> bool {
@@ -663,20 +703,7 @@ impl ActionHost for SessionActions {
                 })
             );
             if let Some(inner) = inner.upgrade().filter(|_| accepted) {
-                inner
-                    .waiting
-                    .lock_recover()
-                    .follows
-                    .entry(invocation)
-                    .or_insert_with(|| Followed {
-                        state: InvocationState::new(
-                            invocation,
-                            InvocationUpdate::Accepted { invocation },
-                        ),
-                        holds: true,
-                        asked: None,
-                        waiters: Vec::new(),
-                    });
+                inner.waiting.lock_recover().follow(invocation);
             }
             receipt
         })
@@ -1043,6 +1070,49 @@ mod tests {
             *device.observed.lock_recover(),
             observed,
             "what ended is read from what the device said"
+        );
+    }
+
+    /// An agent that invokes all day through one session keeps following only so many of the
+    /// invocations that ended: what it follows stays bounded however long it runs, and the
+    /// latest that ended still reads from what the device said.
+    #[test]
+    fn invocations_that_ended_give_way_past_the_followed_bound() {
+        let first = InvocationId::new();
+        let device = Device::new(first, false);
+        let actions = SessionActions::new(
+            Arc::clone(&device) as Arc<dyn RemoteSession>,
+            WorkspaceId::from_u128(1),
+            DEVICE,
+        );
+        let mut last = first;
+        for _ in 0..FOLLOWED * 4 {
+            last = InvocationId::new();
+            *device.state.lock_recover() = InvocationUpdate::Accepted { invocation: last };
+            accepted(&actions, last);
+            *device.state.lock_recover() = InvocationUpdate::Succeeded {
+                invocation: last,
+                output: tilo_actions::ActionOutput::default(),
+            };
+            actions.observe(&caller(), &last).expect("a state");
+        }
+        let followed = actions.0.waiting.lock_recover().follows.len();
+        assert!(
+            followed <= FOLLOWED,
+            "{followed} invocations followed, past {FOLLOWED}"
+        );
+        assert_eq!(
+            actions.0.waiting.lock_recover().followed_order.len(),
+            followed,
+            "the order names exactly the followed invocations"
+        );
+        let observed = *device.observed.lock_recover();
+        let state = actions.observe(&caller(), &last).expect("a state");
+        assert!(matches!(state.update, InvocationUpdate::Succeeded { .. }));
+        assert_eq!(
+            *device.observed.lock_recover(),
+            observed,
+            "the latest that ended is still read from what the device said"
         );
     }
 
