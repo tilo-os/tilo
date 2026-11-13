@@ -1717,66 +1717,70 @@ mod tests {
         include!("input_phase_profile_tests.rs");
     }
 
-    #[test]
-    fn a_relayout_repaints_where_moved_widgets_were_and_are() {
-        let (a, b) = (1_u8, 2_u8);
-        let (a, b) = (
-            (std::ptr::from_ref(&a).cast::<()>(), 1),
-            (std::ptr::from_ref(&b).cast::<()>(), 1),
-        );
-        let field = KurboRect::new(0.0, 0.0, 100.0, 20.0);
-        let label = KurboRect::new(0.0, 30.0, 50.0, 40.0);
-        let grown = KurboRect::new(0.0, 0.0, 140.0, 20.0);
-        assert_eq!(
-            changed_boxes(&[(a, field), (b, label)], &[(a, grown), (b, label)]),
-            vec![field, grown]
-        );
-        assert_eq!(
-            changed_boxes(&[(a, field), (b, label)], &[(a, field), (b, label)]),
-            Vec::<KurboRect>::new()
-        );
-        // Two widgets that swapped places repaint where each was and is.
-        assert_eq!(
-            changed_boxes(&[(a, field), (b, label)], &[(b, field), (a, label)]),
-            vec![label, field, field, label]
-        );
-        // One that came into view repaints where it is.
-        assert_eq!(
-            changed_boxes(&[(a, field)], &[(a, field), (b, label)]),
-            vec![label]
-        );
-    }
+    tilo_test_env::scenario! {
+        fn a_changed_layout_repaints_only_the_boxes_that_changed;
 
-    #[test]
-    fn a_described_rebuild_repaints_the_widgets_that_came_went_or_moved() {
-        let (a, b, c) = (1_u8, 2_u8, 3_u8);
-        let [a, b, c] = [&a, &b, &c].map(|widget| (std::ptr::from_ref(widget).cast::<()>(), 1));
-        let header = KurboRect::new(0.0, 0.0, 100.0, 20.0);
-        let chip = KurboRect::new(0.0, 0.0, 40.0, 20.0);
-        let body = KurboRect::new(0.0, 30.0, 100.0, 90.0);
-        let lower = KurboRect::new(0.0, 40.0, 100.0, 100.0);
-        // A chip came, the body moved down under it; the header kept its box.
-        assert_eq!(
-            changed_boxes(
-                &[(a, header), (b, body)],
-                &[(a, header), (c, chip), (b, lower)]
-            ),
-            vec![chip, body, lower]
-        );
-        assert_eq!(
-            changed_boxes(
-                &[(a, header), (c, chip), (b, body)],
-                &[(a, header), (b, body)]
-            ),
-            vec![chip]
-        );
-        // A widget held at the start of its parent shares the parent's
-        // address, not its depth: neither is mistaken for the other.
-        let child = (a.0, 2);
-        assert_eq!(
-            changed_boxes(&[(a, header), (child, chip)], &[(a, header), (child, chip)]),
-            Vec::<KurboRect>::new()
-        );
+        phase a_relayout_repaints_where_moved_widgets_were_and_are;
+        {
+            let (a, b) = (1_u8, 2_u8);
+            let (a, b) = (
+                (std::ptr::from_ref(&a).cast::<()>(), 1),
+                (std::ptr::from_ref(&b).cast::<()>(), 1),
+            );
+            let field = KurboRect::new(0.0, 0.0, 100.0, 20.0);
+            let label = KurboRect::new(0.0, 30.0, 50.0, 40.0);
+            let grown = KurboRect::new(0.0, 0.0, 140.0, 20.0);
+            assert_eq!(
+                changed_boxes(&[(a, field), (b, label)], &[(a, grown), (b, label)]),
+                vec![field, grown]
+            );
+            assert_eq!(
+                changed_boxes(&[(a, field), (b, label)], &[(a, field), (b, label)]),
+                Vec::<KurboRect>::new()
+            );
+            // Two widgets that swapped places repaint where each was and is.
+            assert_eq!(
+                changed_boxes(&[(a, field), (b, label)], &[(b, field), (a, label)]),
+                vec![label, field, field, label]
+            );
+            // One that came into view repaints where it is.
+            assert_eq!(
+                changed_boxes(&[(a, field)], &[(a, field), (b, label)]),
+                vec![label]
+            );
+        }
+
+        phase a_described_rebuild_repaints_the_widgets_that_came_went_or_moved;
+        {
+            let (a, b, c) = (1_u8, 2_u8, 3_u8);
+            let [a, b, c] = [&a, &b, &c].map(|widget| (std::ptr::from_ref(widget).cast::<()>(), 1));
+            let header = KurboRect::new(0.0, 0.0, 100.0, 20.0);
+            let chip = KurboRect::new(0.0, 0.0, 40.0, 20.0);
+            let body = KurboRect::new(0.0, 30.0, 100.0, 90.0);
+            let lower = KurboRect::new(0.0, 40.0, 100.0, 100.0);
+            // A chip came, the body moved down under it; the header kept its box.
+            assert_eq!(
+                changed_boxes(
+                    &[(a, header), (b, body)],
+                    &[(a, header), (c, chip), (b, lower)]
+                ),
+                vec![chip, body, lower]
+            );
+            assert_eq!(
+                changed_boxes(
+                    &[(a, header), (c, chip), (b, body)],
+                    &[(a, header), (b, body)]
+                ),
+                vec![chip]
+            );
+            // A widget held at the start of its parent shares the parent's
+            // address, not its depth: neither is mistaken for the other.
+            let child = (a.0, 2);
+            assert_eq!(
+                changed_boxes(&[(a, header), (child, chip)], &[(a, header), (child, chip)]),
+                Vec::<KurboRect>::new()
+            );
+        }
     }
 
     /// Records where it is clicked, in its own logical coordinates.

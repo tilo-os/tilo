@@ -83,60 +83,97 @@ fn press(shell: &mut UnixStream, name: &str, role: &str, action: TargetAction) {
     shell.write_all(&frame).unwrap();
 }
 
-#[test]
-fn a_window_describes_its_controls_when_they_change_and_acts_on_what_is_pressed() {
-    let (mut app, mut shell, pressed) = window();
+tilo_test_env::scenario! {
+    fn a_window_tells_the_shell_its_controls_and_presses_the_one_named;
 
-    let targets = described(&mut app, &mut shell).expect("the window describes its controls");
-    let go = targets
-        .iter()
-        .find(|target| target.name == "Go")
-        .expect("the button is one of the window's controls");
-    assert_eq!(go.role, "Button");
-    assert!(go.actions.contains(&TargetAction::Activate));
-    assert!(
-        go.rect[2] > go.rect[0] && go.rect[3] > go.rect[1],
-        "a control is described where it is drawn: {:?}",
-        go.rect
-    );
+    phase a_window_describes_its_controls_when_they_change_and_acts_on_what_is_pressed;
+    {
+        let (mut app, mut shell, pressed) = window();
 
-    // Nothing changed since: the window has nothing more to say.
-    app.pump_floating_surface_service();
-    assert!(
-        !sent(&mut shell)
+        let targets = described(&mut app, &mut shell).expect("the window describes its controls");
+        let go = targets
             .iter()
-            .any(|message| matches!(message, FloatingSurfaceClientMessage::WindowTargets { .. })),
-        "a pass that changed nothing sends no controls"
-    );
+            .find(|target| target.name == "Go")
+            .expect("the button is one of the window's controls");
+        assert_eq!(go.role, "Button");
+        assert!(go.actions.contains(&TargetAction::Activate));
+        assert!(
+            go.rect[2] > go.rect[0] && go.rect[3] > go.rect[1],
+            "a control is described where it is drawn: {:?}",
+            go.rect
+        );
 
-    // The frame that lays out what the window described, as the runner draws
-    // one before a person can press anything in it.
-    layout(&mut app);
+        // Nothing changed since: the window has nothing more to say.
+        app.pump_floating_surface_service();
+        assert!(
+            !sent(&mut shell)
+                .iter()
+                .any(|message| matches!(message, FloatingSurfaceClientMessage::WindowTargets { .. })),
+            "a pass that changed nothing sends no controls"
+        );
 
-    press(&mut shell, "Go", "Button", TargetAction::Activate);
-    app.pump_floating_surface_service();
-    assert_eq!(pressed.get(), 1, "the pressed control acted");
-}
+        // The frame that lays out what the window described, as the runner draws
+        // one before a person can press anything in it.
+        layout(&mut app);
 
-#[test]
-fn a_control_the_window_no_longer_shows_presses_nothing() {
-    let (mut app, mut shell, pressed) = window();
-    let _targets = described(&mut app, &mut shell).expect("the window describes its controls");
-    layout(&mut app);
+        press(&mut shell, "Go", "Button", TargetAction::Activate);
+        app.pump_floating_surface_service();
+        assert_eq!(pressed.get(), 1, "the pressed control acted");
+    }
 
-    press(&mut shell, "Gone", "Button", TargetAction::Activate);
-    app.pump_floating_surface_service();
-    assert_eq!(
-        pressed.get(),
-        0,
-        "a control the window does not show acts nothing"
-    );
+    phase a_control_the_window_no_longer_shows_presses_nothing;
+    {
+        let (mut app, mut shell, pressed) = window();
+        let _targets = described(&mut app, &mut shell).expect("the window describes its controls");
+        layout(&mut app);
 
-    // The name alone is not the control: a role the window does not show it
-    // as finds nothing either.
-    press(&mut shell, "Go", "ListItem", TargetAction::Activate);
-    app.pump_floating_surface_service();
-    assert_eq!(pressed.get(), 0, "the role says which control is meant");
+        press(&mut shell, "Gone", "Button", TargetAction::Activate);
+        app.pump_floating_surface_service();
+        assert_eq!(
+            pressed.get(),
+            0,
+            "a control the window does not show acts nothing"
+        );
+
+        // The name alone is not the control: a role the window does not show it
+        // as finds nothing either.
+        press(&mut shell, "Go", "ListItem", TargetAction::Activate);
+        app.pump_floating_surface_service();
+        assert_eq!(pressed.get(), 0, "the role says which control is meant");
+    }
+
+    phase a_control_that_runs_an_app_action_is_listed_and_pressed_by_what_it_does;
+    {
+        let identity = doing();
+        let (mut app, pressed) = doing_window();
+        let controls = app.window_controls();
+        let control = controls
+            .iter()
+            .find(|control| control.identity.as_deref() == Some(identity.as_str()))
+            .unwrap_or_else(|| {
+                panic!(
+                    "the window lists the control by what it does: {:?}",
+                    controls
+                        .iter()
+                        .map(|control| &control.name)
+                        .collect::<Vec<_>>()
+                )
+            });
+        assert_eq!(
+            control.name, "Play",
+            "and names it in the person's language"
+        );
+        assert!(
+            control.rect.2 > 0.0 && control.rect.3 > 0.0,
+            "where a person reaches it: {:?}",
+            control.rect
+        );
+        assert!(
+            app.press_window_control(&identity, TargetAction::Activate),
+            "the window acts on the control the identity names"
+        );
+        assert_eq!(pressed.get(), 1, "and the press reached it");
+    }
 }
 
 /// A window whose one control does `tube.video`'s `play`, as a hosted window wraps the control
@@ -159,39 +196,6 @@ const DOING: (&str, &str) = ("tube.video", "play");
 /// [`DOING`] as a control publishes it.
 fn doing() -> String {
     format!("{}{}{}", DOING.0, '\u{1f}', DOING.1)
-}
-
-#[test]
-fn a_control_that_runs_an_app_action_is_listed_and_pressed_by_what_it_does() {
-    let identity = doing();
-    let (mut app, pressed) = doing_window();
-    let controls = app.window_controls();
-    let control = controls
-        .iter()
-        .find(|control| control.identity.as_deref() == Some(identity.as_str()))
-        .unwrap_or_else(|| {
-            panic!(
-                "the window lists the control by what it does: {:?}",
-                controls
-                    .iter()
-                    .map(|control| &control.name)
-                    .collect::<Vec<_>>()
-            )
-        });
-    assert_eq!(
-        control.name, "Play",
-        "and names it in the person's language"
-    );
-    assert!(
-        control.rect.2 > 0.0 && control.rect.3 > 0.0,
-        "where a person reaches it: {:?}",
-        control.rect
-    );
-    assert!(
-        app.press_window_control(&identity, TargetAction::Activate),
-        "the window acts on the control the identity names"
-    );
-    assert_eq!(pressed.get(), 1, "and the press reached it");
 }
 
 /// A window whose own menu carries the send-to box, on a shell-ui connection whose shell end the

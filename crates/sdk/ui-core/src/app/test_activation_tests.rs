@@ -38,28 +38,32 @@ fn activate(shell: &mut UnixStream, test_id: &str) {
     shell.write_all(&frame).unwrap();
 }
 
-#[test]
-fn the_focused_window_presses_the_control_its_test_id_names() {
-    let (mut app, mut shell, pressed) = window();
-    app.input.window_focused = true;
-    activate(&mut shell, "go");
-    app.pump_floating_surface_service();
-    assert_eq!(pressed.get(), 1, "the focused window pressed `go`");
+tilo_test_env::scenario! {
+    fn a_test_id_presses_a_control_of_the_focused_window_only;
 
-    activate(&mut shell, "nothing-here");
-    app.pump_floating_surface_service();
-    assert_eq!(
-        pressed.get(),
-        1,
-        "a test id the window does not show presses nothing"
-    );
-}
+    phase the_focused_window_presses_the_control_its_test_id_names;
+    {
+        let (mut app, mut shell, pressed) = window();
+        app.input.window_focused = true;
+        activate(&mut shell, "go");
+        app.pump_floating_surface_service();
+        assert_eq!(pressed.get(), 1, "the focused window pressed `go`");
 
-#[test]
-fn a_window_without_the_keyboard_leaves_its_controls_alone() {
-    let (mut app, mut shell, pressed) = window();
-    app.input.window_focused = false;
-    activate(&mut shell, "go");
-    app.pump_floating_surface_service();
-    assert_eq!(pressed.get(), 0, "only the focused window of the app acts");
+        activate(&mut shell, "nothing-here");
+        app.pump_floating_surface_service();
+        assert_eq!(
+            pressed.get(),
+            1,
+            "a test id the window does not show presses nothing"
+        );
+    }
+
+    phase a_window_without_the_keyboard_leaves_its_controls_alone;
+    {
+        let (mut app, mut shell, pressed) = window();
+        app.input.window_focused = false;
+        activate(&mut shell, "go");
+        app.pump_floating_surface_service();
+        assert_eq!(pressed.get(), 0, "only the focused window of the app acts");
+    }
 }

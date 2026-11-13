@@ -174,96 +174,100 @@ fn wide() -> (App, UnixStream, Rc<Cell<f64>>) {
     (app, shell, offset)
 }
 
-#[test]
-fn a_wide_view_keeps_its_sideways_scroll_and_the_strip_hears_nothing() {
-    let (mut app, mut shell, offset) = wide();
-    let window = Surface;
+tilo_test_env::scenario! {
+    fn the_sideways_wheel_is_the_contents_first_and_the_strips_otherwise;
 
-    app.surface_input(&window, sideways(-120.0), false);
-    app.surface_input(&window, sideways(-120.0), false);
-    assert_eq!(offset.get(), 240.0, "the content scrolled by both events");
-    assert_eq!(
-        left_to_the_strip(&mut app, &mut shell),
-        0.0,
-        "an event the app scrolled with is never the strip's"
-    );
-}
+    phase a_wide_view_keeps_its_sideways_scroll_and_the_strip_hears_nothing;
+    {
+        let (mut app, mut shell, offset) = wide();
+        let window = Surface;
 
-#[test]
-fn a_content_that_does_not_scroll_hands_the_whole_gesture_to_the_strip() {
-    let (mut app, mut shell) = window(Box::new(crate::widget::Column::new()));
-    let window = Surface;
-
-    // The first event decides: nothing here scrolls sideways, so every event
-    // of the gesture is the strip's, and no view of the app sees one.
-    let mut handed = 0.0;
-    for _ in 0..5 {
-        app.surface_input(&window, sideways(-40.0), false);
-        handed += left_to_the_strip(&mut app, &mut shell);
-    }
-    assert_eq!(handed, 200.0, "the strip pans by what the window left");
-
-    // A pause ends the gesture: what comes after decides afresh.
-    app.floating.sideways_gesture = None;
-    app.surface_input(&window, sideways(-40.0), false);
-    assert_eq!(left_to_the_strip(&mut app, &mut shell), 40.0);
-}
-
-#[test]
-fn a_gesture_the_content_took_is_never_split_by_the_strip() {
-    let (mut app, mut shell, offset) = wide();
-    let window = Surface;
-
-    // The view scrolls until its last column, and the wheel carries on: the
-    // rest of the gesture is still the content's, and the strip stays home.
-    for _ in 0..20 {
         app.surface_input(&window, sideways(-120.0), false);
+        app.surface_input(&window, sideways(-120.0), false);
+        assert_eq!(offset.get(), 240.0, "the content scrolled by both events");
+        assert_eq!(
+            left_to_the_strip(&mut app, &mut shell),
+            0.0,
+            "an event the app scrolled with is never the strip's"
+        );
     }
-    assert!(
-        offset.get() > 0.0,
-        "the content scrolled as far as it goes: {}",
-        offset.get()
-    );
-    assert_eq!(
-        left_to_the_strip(&mut app, &mut shell),
-        0.0,
-        "a gesture the content took never pans the strip"
-    );
-}
 
-#[test]
-fn a_plain_wheel_is_no_sideways_gesture_at_all() {
-    let (mut app, mut shell) = window(Box::new(crate::widget::Column::new()));
-    let window = Surface;
+    phase a_content_that_does_not_scroll_hands_the_whole_gesture_to_the_strip;
+    {
+        let (mut app, mut shell) = window(Box::new(crate::widget::Column::new()));
+        let window = Surface;
 
-    for _ in 0..3 {
-        app.surface_input(&window, plain(-40.0), false);
+        // The first event decides: nothing here scrolls sideways, so every event
+        // of the gesture is the strip's, and no view of the app sees one.
+        let mut handed = 0.0;
+        for _ in 0..5 {
+            app.surface_input(&window, sideways(-40.0), false);
+            handed += left_to_the_strip(&mut app, &mut shell);
+        }
+        assert_eq!(handed, 200.0, "the strip pans by what the window left");
+
+        // A pause ends the gesture: what comes after decides afresh.
+        app.floating.sideways_gesture = None;
+        app.surface_input(&window, sideways(-40.0), false);
+        assert_eq!(left_to_the_strip(&mut app, &mut shell), 40.0);
     }
-    assert_eq!(
-        left_to_the_strip(&mut app, &mut shell),
-        0.0,
-        "a vertical wheel neither pans the strip nor decides a sideways gesture"
-    );
-    // Nor did it take ownership of one: the next sideways wheel is the
-    // strip's from its first event.
-    app.surface_input(&window, sideways(-40.0), false);
-    assert_eq!(left_to_the_strip(&mut app, &mut shell), 40.0);
-}
 
-#[test]
-fn the_shell_hears_nothing_of_a_gesture_the_app_keeps() {
-    let (mut app, mut shell, _offset) = wide();
-    let window = Surface;
+    phase a_gesture_the_content_took_is_never_split_by_the_strip;
+    {
+        let (mut app, mut shell, offset) = wide();
+        let window = Surface;
 
-    // The content scrolls with the gesture's first event, so every event of
-    // it is the content's — including one at its end that moves nothing.
-    app.surface_input(&window, sideways(-120.0), false);
-    app.surface_input(&window, sideways(-100_000.0), false);
-    assert_eq!(left_to_the_strip(&mut app, &mut shell), 0.0);
+        // The view scrolls until its last column, and the wheel carries on: the
+        // rest of the gesture is still the content's, and the strip stays home.
+        for _ in 0..20 {
+            app.surface_input(&window, sideways(-120.0), false);
+        }
+        assert!(
+            offset.get() > 0.0,
+            "the content scrolled as far as it goes: {}",
+            offset.get()
+        );
+        assert_eq!(
+            left_to_the_strip(&mut app, &mut shell),
+            0.0,
+            "a gesture the content took never pans the strip"
+        );
+    }
 
-    // What the shell writes on the same connection is still read as its own.
-    shell
-        .write_all(b"{\"kind\":\"reattach\",\"id\":\"gone\"}\n")
-        .unwrap();
-    app.pump_floating_surface_service();
+    phase a_plain_wheel_is_no_sideways_gesture_at_all;
+    {
+        let (mut app, mut shell) = window(Box::new(crate::widget::Column::new()));
+        let window = Surface;
+
+        for _ in 0..3 {
+            app.surface_input(&window, plain(-40.0), false);
+        }
+        assert_eq!(
+            left_to_the_strip(&mut app, &mut shell),
+            0.0,
+            "a vertical wheel neither pans the strip nor decides a sideways gesture"
+        );
+        // Nor did it take ownership of one: the next sideways wheel is the
+        // strip's from its first event.
+        app.surface_input(&window, sideways(-40.0), false);
+        assert_eq!(left_to_the_strip(&mut app, &mut shell), 40.0);
+    }
+
+    phase the_shell_hears_nothing_of_a_gesture_the_app_keeps;
+    {
+        let (mut app, mut shell, _offset) = wide();
+        let window = Surface;
+
+        // The content scrolls with the gesture's first event, so every event of
+        // it is the content's — including one at its end that moves nothing.
+        app.surface_input(&window, sideways(-120.0), false);
+        app.surface_input(&window, sideways(-100_000.0), false);
+        assert_eq!(left_to_the_strip(&mut app, &mut shell), 0.0);
+
+        // What the shell writes on the same connection is still read as its own.
+        shell
+            .write_all(b"{\"kind\":\"reattach\",\"id\":\"gone\"}\n")
+            .unwrap();
+        app.pump_floating_surface_service();
+    }
 }
