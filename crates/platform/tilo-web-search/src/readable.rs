@@ -502,18 +502,21 @@ mod tests {
     }
 
     #[test]
-    fn ordered_and_nested_lists_keep_their_shape() {
-        let page =
-            read("<body><ol><li>first<ul><li>inner</li></ul></li><li>second</li></ol></body>");
-        assert_eq!(page.text, "1. first\n  - inner\n2. second");
-    }
-
-    #[test]
-    fn a_table_row_stays_on_one_line() {
-        let page = read(
-            "<body><table><tr><td><p>src</p><p>dir</p></td><td><div>fix</div></td></tr>\
-             <tr><td> </td><td></td></tr><tr><td>b</td><td>2</td></tr></table></body>",
-        );
-        assert_eq!(page.text, "src dir | fix\nb | 2");
+    fn lists_and_table_rows_keep_their_shape() {
+        for (row, html, expected) in [
+            (
+                "ordered_and_nested_lists_keep_their_shape",
+                "<body><ol><li>first<ul><li>inner</li></ul></li><li>second</li></ol></body>",
+                "1. first\n  - inner\n2. second",
+            ),
+            (
+                "a_table_row_stays_on_one_line",
+                "<body><table><tr><td><p>src</p><p>dir</p></td><td><div>fix</div></td></tr>\
+                 <tr><td> </td><td></td></tr><tr><td>b</td><td>2</td></tr></table></body>",
+                "src dir | fix\nb | 2",
+            ),
+        ] {
+            assert_eq!(read(html).text, expected, "{row}");
+        }
     }
 }

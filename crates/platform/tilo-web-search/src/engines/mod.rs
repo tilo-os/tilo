@@ -426,29 +426,29 @@ mod tests {
     }
 
     #[test]
-    fn a_challenge_page_is_blocked_not_empty() {
-        let captcha = "<html><head><title>Captcha</title></head><body>prove it</body></html>";
-        for engine in Engine::ALL {
-            assert!(
-                matches!(
-                    engine.parse(captcha),
-                    Err(EngineError::Blocked(_) | EngineError::RateLimited(_))
-                ),
-                "{engine}"
-            );
-        }
-    }
-
-    #[test]
-    fn a_page_without_a_result_list_is_a_layout_error() {
-        for engine in Engine::ALL {
-            assert!(
-                matches!(
-                    engine.parse("<html><body><p>Hello</p></body></html>"),
-                    Err(EngineError::Layout(_))
-                ),
-                "{engine}"
-            );
+    fn a_page_that_is_no_result_list_is_an_error_not_an_empty_answer() {
+        type Expected = fn(&Result<Vec<EngineResult>, EngineError>) -> bool;
+        let rows: [(&str, &str, Expected); 2] = [
+            (
+                "a_challenge_page_is_blocked_not_empty",
+                "<html><head><title>Captcha</title></head><body>prove it</body></html>",
+                |parsed| {
+                    matches!(
+                        parsed,
+                        Err(EngineError::Blocked(_) | EngineError::RateLimited(_))
+                    )
+                },
+            ),
+            (
+                "a_page_without_a_result_list_is_a_layout_error",
+                "<html><body><p>Hello</p></body></html>",
+                |parsed| matches!(parsed, Err(EngineError::Layout(_))),
+            ),
+        ];
+        for (row, page, expected) in rows {
+            for engine in Engine::ALL {
+                assert!(expected(&engine.parse(page)), "{row}: {engine}");
+            }
         }
     }
 }
