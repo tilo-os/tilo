@@ -1,7 +1,5 @@
-//! Persist magic-packet wake through `NetworkManager` without reconnecting.
-//!
-//! Driver support and current configuration are observations, not proof that
-//! the whole machine resumes. No operation here suspends or reconnects it.
+//! Magic-packet wake through `NetworkManager`, persisted without reconnecting. Driver
+//! support and the current setting are observations, not what was asked for.
 
 use serde::{Deserialize, Serialize};
 
@@ -15,26 +13,20 @@ pub struct NetworkWakeStatus {
     pub configured: bool,
     pub supported: Option<bool>,
     pub applied: Option<bool>,
-    /// Reapply can fail after the profile is saved. Preserve that distinction.
+    /// Reapplying can fail after the profile is saved; this keeps that apart from a save that failed.
     pub problem: Option<String>,
 }
 
-/// Read the saved profile and the active driver's magic-packet setting.
 pub fn status(profile: &str) -> Result<NetworkWakeStatus, String> {
     observe(profile, &SystemProfiles, &system_command)
 }
 
-/// Change only magic-packet wake, persisting through subsequent activations.
-///
-/// # Errors
-/// Enabling requires an active interface whose driver reports magic-packet
-/// support. `NetworkManager` retains its normal authorization checks.
 pub fn configure(profile: &str, enabled: bool) -> Result<NetworkWakeStatus, String> {
     change(profile, enabled, &SystemProfiles, &system_command)
 }
 
-// Host services can retain a PATH without sbin. Locate these two read-only
-// system tools at their fixed installed paths without widening PATH.
+// Host services can keep a `PATH` without sbin, so these two read-only tools are found at their
+// installed paths rather than by widening `PATH`.
 fn system_command(tool: &str, args: &[&str]) -> Result<String, String> {
     if matches!(tool, "iw" | "ethtool") {
         let path = format!("/usr/sbin/{tool}");
@@ -47,14 +39,13 @@ fn system_command(tool: &str, args: &[&str]) -> Result<String, String> {
 
 type Runner<'a> = dyn Fn(&str, &[&str]) -> Result<String, String> + 'a;
 
-/// Which wake setting a profile has.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Medium {
-    /// `802-11-wireless.wake-on-wlan`; `NM_SETTING_WIRELESS_WAKE_ON_WLAN_MAGIC`
-    /// is `0x08`, its 4-way-handshake flag `0x40`.
+    /// `802-11-wireless.wake-on-wlan`; `NM_SETTING_WIRELESS_WAKE_ON_WLAN_MAGIC` is `0x08`, its
+    /// 4-way-handshake flag `0x40`.
     Wifi,
-    /// `802-3-ethernet.wake-on-lan`; `NM_SETTING_WIRED_WAKE_ON_LAN_MAGIC` is
-    /// `0x40`, its ARP flag `0x20`.
+    /// `802-3-ethernet.wake-on-lan`; `NM_SETTING_WIRED_WAKE_ON_LAN_MAGIC` is `0x40`, its ARP flag
+    /// `0x20`.
     Ethernet,
 }
 
@@ -74,20 +65,14 @@ impl Medium {
     }
 }
 
-/// What this needs of `NetworkManager`, behind one seam so the sequence is
-/// tested against a fake.
+/// What this needs of `NetworkManager`, behind one seam so the sequence is tested against a fake.
 trait Profiles {
-    /// The profile's medium and its wake flags.
     fn wake(&self, profile: &str) -> Result<(Medium, u32), String>;
-    /// The interface the profile is active on, if it is.
     fn active_interface(&self, profile: &str) -> Result<Option<String>, String>;
-    /// Save the wake flags.
     fn set_wake(&self, profile: &str, medium: Medium, flags: u32) -> Result<(), String>;
-    /// Apply the saved profile to `interface` without reconnecting it.
     fn reapply(&self, interface: &str) -> Result<(), String>;
 }
 
-/// `NetworkManager` on the system bus.
 struct SystemProfiles;
 
 impl Profiles for SystemProfiles {
@@ -198,9 +183,8 @@ fn driver(interface: &str, wifi: bool, run: &Runner<'_>) -> Result<(bool, bool),
     Ok((supported, wowlan_magic_packet(&phy, run)?))
 }
 
-/// Whether the Wi-Fi radio `phy` (`phy0`, the name under
-/// `/sys/class/ieee80211`) wakes the machine on a magic packet now. Wi-Fi
-/// drivers do not answer the ethtool wake query that Ethernet ones do.
+/// Whether the Wi-Fi radio `phy` (`phy0`, the name under `/sys/class/ieee80211`) wakes the machine on a
+/// magic packet now. Wi-Fi drivers do not answer the ethtool wake query that Ethernet ones do.
 pub fn wifi_magic_packet_enabled(phy: &str) -> Result<bool, String> {
     if !phy
         .strip_prefix("phy")
@@ -292,11 +276,10 @@ mod tests {
 
     const PROFILE: &str = "11111111-1111-4111-8111-111111111111";
 
-    /// `NetworkManager` and the driver tools as far as wake goes.
     struct NetworkManager {
         calls: RefCell<Vec<String>>,
         medium: Cell<Medium>,
-        /// The saved flags; `None` follows `configured`.
+        /// `None` follows `configured`.
         flags: Cell<Option<u32>>,
         configured: Cell<bool>,
         applied: Cell<bool>,

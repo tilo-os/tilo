@@ -1,6 +1,5 @@
-//! The evdev codes a forwarded gamepad travels as: read from a local
-//! controller and written to the virtual uinput device, so the two directions
-//! cannot disagree.
+//! The evdev codes a forwarded gamepad travels as, read from a local controller and
+//! written to the virtual uinput device.
 
 use crate::{GamepadAxis, GamepadButton};
 
@@ -11,8 +10,7 @@ pub(crate) const EV_ABS: u16 = 0x03;
 pub(crate) const ABS_HAT0X: u16 = 0x10;
 pub(crate) const ABS_HAT0Y: u16 = 0x11;
 
-/// Every forwarded axis; the hat travels separately on [`ABS_HAT0X`] and
-/// [`ABS_HAT0Y`].
+/// Every forwarded axis; the hat travels separately on [`ABS_HAT0X`] and [`ABS_HAT0Y`].
 pub(crate) const AXES: [GamepadAxis; 6] = [
     GamepadAxis::LeftX,
     GamepadAxis::LeftY,
@@ -22,7 +20,6 @@ pub(crate) const AXES: [GamepadAxis; 6] = [
     GamepadAxis::RightTrigger,
 ];
 
-/// Every forwarded button.
 pub(crate) const BUTTONS: [GamepadButton; 11] = [
     GamepadButton::South,
     GamepadButton::East,
@@ -37,7 +34,6 @@ pub(crate) const BUTTONS: [GamepadButton; 11] = [
     GamepadButton::Guide,
 ];
 
-/// The absolute-axis code (`ABS_*`) an axis travels as.
 pub(crate) const fn axis_code(axis: GamepadAxis) -> u16 {
     match axis {
         GamepadAxis::LeftX => 0x00,        // ABS_X
@@ -49,7 +45,6 @@ pub(crate) const fn axis_code(axis: GamepadAxis) -> u16 {
     }
 }
 
-/// The key code (`BTN_*`) a button travels as.
 pub(crate) const fn button_code(button: GamepadButton) -> u16 {
     match button {
         GamepadButton::South => 0x130,       // BTN_SOUTH
@@ -66,12 +61,10 @@ pub(crate) const fn button_code(button: GamepadButton) -> u16 {
     }
 }
 
-/// The forwarded axis an absolute-axis code carries, if any.
 pub(crate) fn axis(code: u16) -> Option<GamepadAxis> {
     AXES.into_iter().find(|&axis| axis_code(axis) == code)
 }
 
-/// The forwarded button a key code carries, if any.
 pub(crate) fn button(code: u16) -> Option<GamepadButton> {
     BUTTONS
         .into_iter()

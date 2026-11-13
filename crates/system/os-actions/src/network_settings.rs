@@ -1,9 +1,7 @@
-//! The parts of a saved network Settings shows on a network's own page and
-//! a VPN's: how the link in use stands (band, speed, addresses), the
-//! profile's IPv6, proxy and 802.1X identity, its password, and a VPN
-//! profile's tunnel (endpoint, routes, MTU, keepalive), all through
-//! `NetworkManager`'s D-Bus client [`tilo_nm`]. Secrets travel only in the
-//! D-Bus calls that carry them.
+//! The parts of a saved network's page and a VPN's that Settings shows: how the link in
+//! use stands, the profile's IPv6, proxy and 802.1X identity, its password, and a VPN
+//! profile's tunnel, all through `NetworkManager`'s client [`tilo_nm`]. Secrets travel
+//! only in the D-Bus calls that carry them.
 
 use std::collections::HashMap;
 use std::fmt::Write as _;
@@ -14,26 +12,20 @@ use zeroize::Zeroizing;
 
 use crate::network::{valid_ip_token, validate_uuid, with_nm};
 
-// ---------------------------------------------------------------------------
-// IPv6
-// ---------------------------------------------------------------------------
+// How a connection gets its IPv6 address.
 
-/// How a connection gets its IPv6 address.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Ipv6Method {
-    /// From the network (router advertisements, `DHCPv6`).
+    /// From router advertisements and `DHCPv6`.
     #[default]
     Automatic,
-    /// The addresses given.
     Manual,
     /// Only the link-local address: no routed IPv6.
     LinkLocal,
-    /// No IPv6 at all.
     Disabled,
 }
 
 impl Ipv6Method {
-    /// `NetworkManager`'s name for it (`ipv6.method`).
     const fn method(self) -> &'static str {
         match self {
             Self::Automatic => "auto",
@@ -54,19 +46,17 @@ impl Ipv6Method {
     }
 }
 
-/// A profile's IPv6 settings.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Ipv6Configuration {
     pub method: Ipv6Method,
-    /// Addresses with their prefix (`2001:db8::10/64`), for a manual method.
+    /// With their prefix (`2001:db8::10/64`), for a manual method.
     pub addresses: Vec<String>,
     pub gateway: Option<String>,
     /// Name servers of its own; empty takes the network's.
     pub dns: Vec<String>,
 }
 
-/// A profile's IPv6 settings, `None` when its method is one this does not
-/// edit (shared) or a value is unreadable.
+/// `None` when the method is one this does not edit (shared) or a value is unreadable.
 pub(crate) fn ipv6_of(settings: &Settings) -> Option<Ipv6Configuration> {
     let family = IpFamily::V6;
     // `NetworkManager`'s default when the profile leaves it out.
@@ -87,11 +77,6 @@ pub(crate) fn ipv6_of(settings: &Settings) -> Option<Ipv6Configuration> {
     })
 }
 
-/// Apply one profile's IPv6 settings.
-///
-/// # Errors
-/// An invalid id, address, gateway or name server, a manual method without
-/// an address, or `NetworkManager` refusing.
 pub fn configure_ipv6(uuid: &str, config: &Ipv6Configuration) -> Result<(), String> {
     validate_uuid(uuid)?;
     if config.addresses.len() > 16
@@ -129,11 +114,8 @@ pub fn configure_ipv6(uuid: &str, config: &Ipv6Configuration) -> Result<(), Stri
     })
 }
 
-/// Give a profile name servers of its own, or (empty) take the network's.
-/// IPv4 and IPv6 servers go to their own family.
-///
-/// # Errors
-/// An invalid id or server, or `NetworkManager` refusing.
+/// Gives a profile name servers of its own, or with none the network's; IPv4 and IPv6 servers go to
+/// their own family.
 pub fn configure_dns(uuid: &str, servers: &[String]) -> Result<(), String> {
     validate_uuid(uuid)?;
     if servers.len() > 16 || servers.iter().any(|server| !valid_ip_token(server)) {
@@ -155,9 +137,8 @@ pub fn configure_dns(uuid: &str, servers: &[String]) -> Result<(), String> {
     })
 }
 
-/// The text of the QR code a phone scans to join a Wi-Fi network: the
-/// `WIFI:` scheme Android and iOS read. `password` is `None` for an open
-/// network.
+/// The `WIFI:` payload a phone scans to join, the scheme Android and iOS read. `password` is `None` for
+/// an open network.
 #[must_use]
 pub fn wifi_qr_payload(ssid: &str, password: Option<&str>, hidden: bool) -> Zeroizing<String> {
     let escape = |value: &str| {
@@ -187,12 +168,8 @@ pub fn wifi_qr_payload(ssid: &str, password: Option<&str>, hidden: bool) -> Zero
     text
 }
 
-// ---------------------------------------------------------------------------
-// Work or school (802.1X) identity
-// ---------------------------------------------------------------------------
+// Who a work or school network knows this device as, and the certificate it checks the network with.
 
-/// Who a work or school network knows this device as, and the certificate
-/// it checks the network with.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct EnterpriseIdentity {
     pub identity: String,
@@ -210,11 +187,6 @@ pub(crate) fn enterprise_identity_of(settings: &Settings) -> Option<EnterpriseId
     })
 }
 
-/// Change a work or school network's identity and CA certificate.
-///
-/// # Errors
-/// An invalid id, an identity or path with a line break, a relative path,
-/// or `NetworkManager` refusing.
 pub fn configure_enterprise_identity(
     uuid: &str,
     identity: &EnterpriseIdentity,
@@ -241,15 +213,12 @@ pub fn configure_enterprise_identity(
     })
 }
 
-// ---------------------------------------------------------------------------
-// One proxy server, kept as an auto-configuration script
-// ---------------------------------------------------------------------------
+// The one-line auto-configuration script that sends everything through one server, which is how
+// `NetworkManager` keeps a proxy.
 
 const PROXY_SCRIPT_START: &str = "function FindProxyForURL(url, host) { return \"PROXY ";
 const PROXY_SCRIPT_END: &str = "\"; }";
 
-/// Whether `server` is `host:port`: a host name or address of the
-/// characters a host can have, and a port.
 #[must_use]
 pub fn valid_proxy_server(server: &str) -> bool {
     let Some((host, port)) = server.rsplit_once(':') else {
@@ -264,15 +233,12 @@ pub fn valid_proxy_server(server: &str) -> bool {
         && port.parse::<u16>().is_ok_and(|port| port > 0)
 }
 
-/// The one-line auto-configuration script that sends everything through
-/// `server`.
 #[must_use]
 pub fn manual_proxy_script(server: &str) -> String {
     format!("{PROXY_SCRIPT_START}{server}{PROXY_SCRIPT_END}")
 }
 
-/// The server a script [`manual_proxy_script`] wrote names; `None` for any
-/// other script.
+/// The server a script [`manual_proxy_script`] wrote names; `None` for any other script.
 #[must_use]
 pub fn manual_proxy_of(script: &str) -> Option<String> {
     let server = script
@@ -282,14 +248,10 @@ pub fn manual_proxy_of(script: &str) -> Option<String> {
     valid_proxy_server(server).then(|| server.to_string())
 }
 
-// ---------------------------------------------------------------------------
-// The Wi-Fi link in use
-// ---------------------------------------------------------------------------
+// How the Wi-Fi link in use stands.
 
-/// How the Wi-Fi link in use stands.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct WifiLinkDetails {
-    /// The device it is on (`wlan0`).
     pub device: String,
     pub frequency_mhz: Option<u32>,
     /// The link's bit rate as `NetworkManager` says it (`866 Mbit/s`).
@@ -302,7 +264,6 @@ pub struct WifiLinkDetails {
     pub dns: Vec<String>,
 }
 
-/// Which band a frequency is in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WifiBand {
     TwoPointFour,
@@ -311,7 +272,6 @@ pub enum WifiBand {
 }
 
 impl WifiBand {
-    /// The band `mhz` is in, if it is a Wi-Fi band.
     #[must_use]
     pub fn of_frequency(mhz: u32) -> Option<Self> {
         match mhz {
@@ -323,10 +283,6 @@ impl WifiBand {
     }
 }
 
-/// The link the connected Wi-Fi device is on.
-///
-/// # Errors
-/// No Wi-Fi device is connected, or `NetworkManager` cannot be asked.
 pub fn wifi_link_details() -> Result<WifiLinkDetails, String> {
     with_nm(|nm| async move {
         let device = nm
@@ -366,15 +322,9 @@ pub fn wifi_link_details() -> Result<WifiLinkDetails, String> {
     })
 }
 
-// ---------------------------------------------------------------------------
-// Passwords and hidden networks
-// ---------------------------------------------------------------------------
+// A saved Wi-Fi network's password. Reading it asks `NetworkManager`, which asks the person to
+// authenticate when the profile is the system's.
 
-/// A saved Wi-Fi network's password. Reading it asks `NetworkManager`, which
-/// asks the person to authenticate when the profile is the system's.
-///
-/// # Errors
-/// An invalid id, a network without a password, or the request refused.
 pub fn wifi_profile_password(uuid: &str) -> Result<Zeroizing<String>, String> {
     validate_uuid(uuid)?;
     let password = with_nm(|nm| async move {
@@ -392,10 +342,6 @@ pub fn wifi_profile_password(uuid: &str) -> Result<Zeroizing<String>, String> {
     Ok(password)
 }
 
-/// Change a saved Wi-Fi network's password.
-///
-/// # Errors
-/// An invalid id or password, or `NetworkManager` refusing.
 pub fn set_wifi_profile_password(uuid: &str, password: &str) -> Result<(), String> {
     validate_uuid(uuid)?;
     if !(8..=63).contains(&password.len()) || password.chars().any(char::is_control) {
@@ -411,7 +357,6 @@ pub fn set_wifi_profile_password(uuid: &str, password: &str) -> Result<(), Strin
     })
 }
 
-/// Join a network that does not broadcast its name.
 pub fn connect_hidden_wifi(ssid: &str, password: Option<&str>) -> Result<(), String> {
     if ssid.is_empty() || ssid.len() > 32 || ssid.chars().any(char::is_control) {
         return Err("a network name is 1 to 32 characters".into());
@@ -419,12 +364,8 @@ pub fn connect_hidden_wifi(ssid: &str, password: Option<&str>) -> Result<(), Str
     crate::network::join_wifi(ssid, password, true)
 }
 
-// ---------------------------------------------------------------------------
-// VPN profiles
-// ---------------------------------------------------------------------------
+// A VPN protocol `NetworkManager` can run here: `WireGuard` built in, the others as installed plugins.
 
-/// A VPN protocol `NetworkManager` can run here: `WireGuard` built in, the
-/// others as installed plugins.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VpnPlugin {
     /// Its service type (`org.freedesktop.NetworkManager.openvpn`).
@@ -433,7 +374,6 @@ pub struct VpnPlugin {
     pub name: String,
 }
 
-/// The VPN plugins installed: each a `.name` file `NetworkManager` reads.
 #[must_use]
 pub fn installed_vpn_plugins() -> Vec<VpnPlugin> {
     let mut plugins = Vec::new();
@@ -483,8 +423,7 @@ fn parse_vpn_plugin(text: &str) -> Option<VpnPlugin> {
     Some(VpnPlugin { service, name })
 }
 
-/// What the plugins `NetworkManager` ships are called, by their short name
-/// (`openvpn`).
+/// What the plugins `NetworkManager` ships are called, by their short name (`openvpn`).
 fn known_plugin_name(short: &str) -> Option<&'static str> {
     Some(match short {
         "openvpn" => "OpenVPN",
@@ -501,19 +440,12 @@ fn known_plugin_name(short: &str) -> Option<&'static str> {
     })
 }
 
-/// What the VPN protocol of service type `service`
-/// (`org.freedesktop.NetworkManager.openvpn`) is called, whether or not its
-/// plugin is installed here.
 #[must_use]
 pub fn vpn_service_name(service: &str) -> String {
     let short = service.rsplit('.').next().unwrap_or(service);
     known_plugin_name(short).map_or_else(|| short.to_owned(), str::to_owned)
 }
 
-/// A plugin VPN profile's service type, which says its protocol.
-///
-/// # Errors
-/// An invalid id, or `NetworkManager` cannot be asked.
 pub fn vpn_service_type(uuid: &str) -> Result<Option<String>, String> {
     validate_uuid(uuid)?;
     with_nm(|nm| async move {
@@ -526,33 +458,25 @@ pub fn vpn_service_type(uuid: &str) -> Result<Option<String>, String> {
     })
 }
 
-/// What a VPN profile's page shows and edits.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct VpnProfileSettings {
     pub name: String,
     /// `wireguard`, or `vpn` for a plugin's profile.
     pub kind: String,
-    /// A plugin profile's service type.
     pub service: Option<String>,
     pub autoconnect: bool,
-    /// Every connection goes through the tunnel; otherwise only the
-    /// networks it routes.
+    /// Every connection goes through the tunnel; otherwise only the networks it routes.
     pub all_traffic: bool,
     pub addresses: Vec<String>,
     pub dns: Vec<String>,
     pub mtu: Option<u32>,
     pub endpoint: Option<String>,
     pub allowed_ips: Vec<String>,
-    /// The server's public key (`WireGuard`).
     pub peer_public_key: Option<String>,
     /// Seconds between keepalives (`WireGuard`); `None` sends none.
     pub keepalive: Option<u32>,
 }
 
-/// A VPN profile's settings.
-///
-/// # Errors
-/// An invalid id, or `NetworkManager` cannot be asked.
 pub fn vpn_profile_settings(uuid: &str) -> Result<VpnProfileSettings, String> {
     validate_uuid(uuid)?;
     with_nm(|nm| async move {
@@ -594,29 +518,23 @@ fn vpn_settings_of(profile: &Settings) -> Result<VpnProfileSettings, String> {
     Ok(settings)
 }
 
-/// The `vpn.data` keys that name a plugin profile's server: `OpenVPN`'s
-/// `remote`, the `gateway` of `OpenConnect`, L2TP, PPTP, SSTP and
-/// Fortinet, vpnc's `IPSec gateway`, strongSwan's `address` and
+/// The `vpn.data` keys that name a plugin profile's server: `OpenVPN`'s `remote`, the `gateway` of
+/// `OpenConnect`, L2TP, PPTP, SSTP and Fortinet, vpnc's `IPSec gateway`, strongSwan's `address` and
 /// Libreswan's `right`.
 const SERVER_KEYS: [&str; 5] = ["remote", "gateway", "IPSec gateway", "address", "right"];
 
 /// The longest host name DNS allows.
 const MAX_HOST_BYTES: usize = 253;
 
-/// Where a VPN profile's servers are, as host names or addresses without
-/// ports: where its tunnel's own packets go, which a block while it is down
-/// must let through.
-///
-/// # Errors
-/// An invalid id, or `NetworkManager` cannot be asked.
+/// Where a VPN profile's servers are, as host names or addresses without ports: the tunnel's own
+/// packets go there, which a block while it is down must let through.
 pub fn vpn_servers(uuid: &str) -> Result<Vec<String>, String> {
     validate_uuid(uuid)?;
     with_nm(|nm| async move { Ok(servers_of(&nm.profile(uuid).await?.settings)) })
 }
 
-/// The host of a server as a profile writes it: `host`, `host:port`,
-/// `host:port:proto`, `[v6]:port`, a bare IPv6 address, or `host port
-/// proto`.
+/// The host of a server as a profile writes it: `host`, `host:port`, `host:port:proto`, `[v6]:port`, a
+/// bare IPv6 address, or `host port proto`.
 fn server_host(text: &str) -> Option<String> {
     let first = text.split_whitespace().next()?;
     let host = if let Some(bracketed) = first.strip_prefix('[') {
@@ -630,8 +548,8 @@ fn server_host(text: &str) -> Option<String> {
         .then(|| host.to_owned())
 }
 
-/// A profile's servers: its `WireGuard` peers' endpoints, or its plugin's
-/// server keys, each a list (`OpenVPN`'s remotes) separated by commas.
+/// A profile's servers: its `WireGuard` peers' endpoints, or its plugin's server keys, each a
+/// comma-separated list.
 fn servers_of(profile: &Settings) -> Vec<String> {
     let mut hosts: Vec<String> = profile
         .wireguard_peers()
@@ -650,7 +568,6 @@ fn servers_of(profile: &Settings) -> Vec<String> {
     hosts
 }
 
-/// What to change of a VPN profile; `None` leaves a value as it is.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct VpnProfilePatch {
     pub name: Option<String>,
@@ -664,7 +581,6 @@ pub struct VpnProfilePatch {
 }
 
 impl VpnProfilePatch {
-    /// Whether it changes a `WireGuard` peer.
     fn touches_peer(&self) -> bool {
         self.endpoint.is_some() || self.allowed_ips.is_some() || self.keepalive.is_some()
     }
@@ -674,10 +590,6 @@ fn valid_endpoint(endpoint: &str) -> bool {
     valid_proxy_server(endpoint)
 }
 
-/// Change a VPN profile.
-///
-/// # Errors
-/// An invalid id or value, or `NetworkManager` refusing.
 pub fn configure_vpn_profile(uuid: &str, patch: &VpnProfilePatch) -> Result<(), String> {
     validate_uuid(uuid)?;
     let patch = patch.clone();
@@ -772,16 +684,11 @@ fn apply_vpn_patch(
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// WireGuard keys and tunnels
-// ---------------------------------------------------------------------------
-
 fn base64_of(bytes: &[u8]) -> String {
     base64::engine::general_purpose::STANDARD.encode(bytes)
 }
 
-/// A new `WireGuard` key pair: the private key (kept by `NetworkManager`)
-/// and the public key the server is told.
+/// The private key stays with `NetworkManager`; the public key is what the server is told.
 pub fn generate_wireguard_keys() -> Result<(Zeroizing<String>, String), String> {
     let mut bytes = Zeroizing::new([0_u8; 32]);
     getrandom::fill(&mut *bytes).map_err(|error| format!("no randomness for a key: {error}"))?;
@@ -796,10 +703,6 @@ pub fn generate_wireguard_keys() -> Result<(Zeroizing<String>, String), String> 
     Ok((Zeroizing::new(base64_of(&*bytes)), public))
 }
 
-/// The public key of the `WireGuard` private key `private`.
-///
-/// # Errors
-/// `private` is not a base64 `WireGuard` key.
 pub fn wireguard_public_key(private: &str) -> Result<String, String> {
     let decoded = Zeroizing::new(
         base64::engine::general_purpose::STANDARD
@@ -813,7 +716,6 @@ pub fn wireguard_public_key(private: &str) -> Result<String, String> {
     public_of(bytes)
 }
 
-/// The X25519 public key of the private key `bytes`, in base64.
 fn public_of(bytes: [u8; 32]) -> Result<String, String> {
     tilo_seal::SecretKey::from_bytes(bytes)
         .public_key()
@@ -821,10 +723,8 @@ fn public_of(bytes: [u8; 32]) -> Result<String, String> {
         .map_err(|error| format!("not a WireGuard key: {error}"))
 }
 
-/// A `WireGuard` tunnel to set up.
 pub struct WireGuardTunnel {
     pub private_key: Zeroizing<String>,
-    /// This device's address in the tunnel (`10.7.0.2/32`).
     pub address: String,
     pub dns: Vec<String>,
     pub peer_public_key: String,
@@ -834,7 +734,6 @@ pub struct WireGuardTunnel {
 }
 
 impl WireGuardTunnel {
-    /// The tunnel as a `wg-quick` configuration file.
     pub fn config(&self) -> Result<Zeroizing<String>, String> {
         if !valid_ip_token(&self.address) || !self.address.contains('/') {
             return Err("the tunnel address is an address with its prefix: 10.7.0.2/32".into());
@@ -881,8 +780,7 @@ impl WireGuardTunnel {
     }
 }
 
-/// An interface name for a tunnel called `name`: what `NetworkManager`
-/// names a `WireGuard` profile it imports from a file of that name.
+/// What `NetworkManager` names a `WireGuard` profile it imports from a file of that name.
 #[must_use]
 pub fn interface_name(name: &str) -> String {
     let cleaned: String = name
@@ -907,11 +805,9 @@ pub fn interface_name(name: &str) -> String {
     }
 }
 
-/// The most of a configuration file an import reads.
 pub const MAX_VPN_CONFIG_BYTES: u64 = 1024 * 1024;
 
-/// The kind of VPN a configuration file is by its name: `wireguard` for
-/// `.conf`, `openvpn` for `.ovpn`.
+/// `wireguard` for `.conf`, `openvpn` for `.ovpn`.
 #[must_use]
 pub fn vpn_kind_of_file(name: &str) -> Option<&'static str> {
     let extension = std::path::Path::new(name).extension()?.to_str()?;
@@ -929,9 +825,8 @@ fn strip_config_comment(line: &str) -> &str {
     line.get(..cut).unwrap_or(line)
 }
 
-/// Whether `text` holds what a `kind` tunnel needs to be set up: a
-/// `WireGuard` file its key, address and peer; an `OpenVPN` file a server
-/// and a way to check it. Secrets are only looked for, never kept.
+/// What a `kind` tunnel needs to be set up: a `WireGuard` file its key, address and peer; an `OpenVPN`
+/// file a server and a way to reach it.
 pub fn validate_vpn_config(kind: &str, text: &str) -> Result<(), String> {
     if text.trim().is_empty() {
         return Err("The file is empty.".into());
@@ -996,11 +891,6 @@ pub fn validate_vpn_config(kind: &str, text: &str) -> Result<(), String> {
     }
 }
 
-/// Set up the configuration `text` of `kind` (`wireguard` or `openvpn`) as
-/// a profile called `name`. The new profile's id.
-///
-/// # Errors
-/// An invalid name, kind or file, or `NetworkManager` refusing the profile.
 pub fn import_vpn_text(kind: &str, name: &str, text: &str) -> Result<String, String> {
     if name.trim().is_empty() || name.len() > 255 || name.chars().any(char::is_control) {
         return Err("a VPN's name is 1 to 255 characters".into());
@@ -1009,12 +899,8 @@ pub fn import_vpn_text(kind: &str, name: &str, text: &str) -> Result<String, Str
     with_nm(|nm| async move { nm.add(settings).await })
 }
 
-/// Set up the configuration file at `path` as a profile named after the
-/// file, as `NetworkManager`'s own import does. The new profile's id.
-///
-/// # Errors
-/// The file cannot be read, is not a usable `kind` file or its name is not
-/// a usable interface name (`WireGuard`), or `NetworkManager` refuses it.
+/// Sets up the file at `path` as a profile named after it, as `NetworkManager`'s own import does; the
+/// new profile's id.
 pub fn import_path_finding_uuid(kind: &str, path: &std::path::Path) -> Result<String, String> {
     use std::io::Read as _;
     let stem = path
@@ -1039,9 +925,7 @@ pub fn import_path_finding_uuid(kind: &str, path: &std::path::Path) -> Result<St
     with_nm(|nm| async move { nm.add(settings).await })
 }
 
-/// A new profile for the `kind` configuration `text`, called `id` on
-/// interface `interface`. Files an `OpenVPN` configuration names are found
-/// next to it (`base`).
+/// Files an `OpenVPN` configuration names are looked for next to it.
 fn vpn_settings_from(
     kind: &str,
     id: &str,
@@ -1064,8 +948,7 @@ fn vpn_settings_from(
     Ok(settings)
 }
 
-/// `NetworkManager` keeps a profile of a plugin's type but cannot connect
-/// it without the plugin.
+/// `NetworkManager` keeps a profile of a plugin's type but cannot connect it without the plugin.
 fn require_plugin(service: &str) -> Result<(), String> {
     if installed_vpn_plugins()
         .iter()
@@ -1080,10 +963,7 @@ fn require_plugin(service: &str) -> Result<(), String> {
     }
 }
 
-/// A `wg-quick` file as a `WireGuard` profile, as `NetworkManager`'s import
-/// makes it: the interface's key, port, mark and MTU, its addresses and
-/// name servers, and every peer. Hooks (`PostUp` and the like) are
-/// `wg-quick`'s own and are left out.
+/// A `wg-quick` file as a `WireGuard` profile, as `NetworkManager`'s import makes it.
 fn wireguard_settings(text: &str) -> Result<Settings, String> {
     let mut settings = Settings::default();
     settings.set("connection", "type", "wireguard");
@@ -1180,8 +1060,7 @@ fn wireguard_settings(text: &str) -> Result<Settings, String> {
     Ok(settings)
 }
 
-/// A `WireGuard` profile's own addresses and name servers of `family`:
-/// without an address, the family is off on the tunnel.
+/// Without an address the family is off on the tunnel.
 fn wireguard_addresses(
     settings: &mut Settings,
     family: IpFamily,
@@ -1202,7 +1081,6 @@ fn wireguard_addresses(
     Ok(())
 }
 
-/// One `[Peer]` line of a `wg-quick` file.
 fn wireguard_peer_setting(peer: &mut WireGuardPeer, key: &str, value: &str) -> Result<(), String> {
     match key {
         "publickey" => value.clone_into(&mut peer.public_key),
@@ -1227,13 +1105,10 @@ fn wireguard_peer_setting(peer: &mut WireGuardPeer, key: &str, value: &str) -> R
     Ok(())
 }
 
-/// `OpenVPN`'s plugin service.
 const OPENVPN_SERVICE: &str = "org.freedesktop.NetworkManager.openvpn";
 
-/// An `OpenVPN` client file as a profile of `OpenVPN`'s plugin: its servers,
-/// keys and certificates (inline ones saved as files of their own), and the
-/// options the plugin knows. The plugin asks for a password when it
-/// connects.
+/// An `OpenVPN` client file as a profile of `OpenVPN`'s plugin: its servers, keys and certificates,
+/// inline ones saved as files of their own.
 #[allow(
     clippy::too_many_lines,
     reason = "one arm per directive the plugin takes, read top to bottom"
@@ -1425,8 +1300,8 @@ fn openvpn_settings(
     Ok(settings)
 }
 
-/// Save a key or certificate an `OpenVPN` file carries inline as a file only
-/// this person reads, where `OpenVPN`'s plugin keeps them; its path.
+/// Saves an inline key or certificate as a file only this person reads, where the plugin keeps them;
+/// its path.
 fn save_inline(id: &str, tag: &str, body: &str) -> Result<String, String> {
     use std::io::Write as _;
     use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _};
@@ -1456,13 +1331,6 @@ fn save_inline(id: &str, tag: &str, body: &str) -> Result<String, String> {
     Ok(path.to_string_lossy().into_owned())
 }
 
-/// Set up a VPN of an installed plugin's type (`service`), called `name`,
-/// reaching `server`; the plugin asks for the rest when it connects. The
-/// new profile's id.
-///
-/// # Errors
-/// An unknown service, an invalid name or server, or `NetworkManager`
-/// refusing.
 pub fn create_plugin_vpn(service: &str, name: &str, server: &str) -> Result<String, String> {
     if !installed_vpn_plugins()
         .iter()
@@ -1503,8 +1371,7 @@ pub fn create_plugin_vpn(service: &str, name: &str, server: &str) -> Result<Stri
     with_nm(|nm| async move { nm.add(settings).await })
 }
 
-/// A VPN profile as the file Export writes: a `WireGuard` tunnel as a
-/// `wg-quick` file with its key, an `OpenVPN` one as a client file naming
+/// A `WireGuard` profile as a `wg-quick` file with its key, an `OpenVPN` one as a client file naming
 /// its certificates.
 pub fn export_vpn(uuid: &str) -> Result<Zeroizing<String>, String> {
     validate_uuid(uuid)?;
@@ -1520,7 +1387,6 @@ pub fn export_vpn(uuid: &str) -> Result<Zeroizing<String>, String> {
     }
 }
 
-/// An `OpenVPN` profile's plugin data as a client file.
 fn openvpn_file(data: &HashMap<String, String>) -> Zeroizing<String> {
     let get = |key: &str| data.get(key).map(String::as_str).filter(|v| !v.is_empty());
     let mut text = Zeroizing::new(String::from("client\n"));
@@ -1619,12 +1485,8 @@ fn openvpn_file(data: &HashMap<String, String>) -> Zeroizing<String> {
     text
 }
 
-/// A `WireGuard` profile as a `wg-quick` configuration file, its private key
-/// included: what Export writes. Reading the key asks `NetworkManager`,
-/// which asks the person to authenticate when the profile is the system's.
-///
-/// # Errors
-/// An invalid id, a profile that is not `WireGuard`, or the request refused.
+/// A `WireGuard` profile as a `wg-quick` configuration file, its private key included. Reading the key
+/// asks `NetworkManager`, which asks the person to authenticate when the profile is the system's.
 pub fn export_wireguard(uuid: &str) -> Result<Zeroizing<String>, String> {
     validate_uuid(uuid)?;
     let (settings, key) = with_nm(|nm| async move {
@@ -1739,8 +1601,8 @@ mod tests {
         }
     }
 
-    /// A tunnel Settings writes as a `wg-quick` file becomes the profile it
-    /// describes, which reads back as the same tunnel.
+    /// A tunnel Settings writes as a `wg-quick` file becomes the profile it describes, which reads back
+    /// as the same tunnel.
     #[test]
     fn a_wireguard_file_becomes_the_profile_it_describes() {
         let tunnel = tunnel();

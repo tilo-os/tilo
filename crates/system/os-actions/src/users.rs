@@ -1,10 +1,5 @@
-//! Narrow `AccountsService` administration for local login accounts.
-//!
-//! `AccountsService` is the authority and performs the polkit challenge.  Tilo
-//! never invokes `useradd` with UI strings, edits `/etc/passwd`, or stores a
-//! login password in the Settings document.  Password bytes travel only over
-//! a narrow in-process Rust SHA-crypt implementation, then as a salted hash in
-//! the D-Bus request; neither value appears in argv or diagnostics.
+//! `AccountsService` administration for local login accounts; it is the authority and
+//! performs the polkit challenge.
 
 use zbus::zvariant::OwnedObjectPath;
 use zeroize::Zeroizing;
@@ -68,9 +63,8 @@ async fn find_user(conn: &zbus::Connection, username: &str) -> Result<OwnedObjec
 }
 
 fn account_error(e: &zbus::Error) -> String {
-    // D-Bus errors can include policy/action names but never values supplied
-    // to SetPassword.  Keep the useful authentication failure while avoiding
-    // Debug output of the whole message body.
+    // D-Bus errors can carry policy and action names but never values given to SetPassword; the
+    // authentication failure is kept and the rest replaced.
     format!("account change was refused: {e}")
 }
 
@@ -78,7 +72,6 @@ fn block<T>(f: impl std::future::Future<Output = Result<T, String>>) -> Result<T
     crate::block_on(f)
 }
 
-/// Create a local login account through `AccountsService`.
 pub fn create_user(username: &str, full_name: &str, role: AccountRole) -> Result<(), String> {
     let username = validate_username(username)?.to_string();
     let full_name = validate_real_name(full_name)?.to_string();
@@ -95,13 +88,6 @@ pub fn create_user(username: &str, full_name: &str, role: AccountRole) -> Result
     })
 }
 
-/// Delete the local login account `username` through `AccountsService`.
-///
-/// # Errors
-///
-/// Returns an error message if `username` fails validation, `uid` is outside the ordinary user
-/// range `1000..60000`, `username` is the caller's own account, `uid` does not fit in an
-/// `i64`, the system bus is unreachable, or `AccountsService` refuses the request.
 pub fn delete_user(username: &str, uid: u64, remove_files: bool) -> Result<(), String> {
     validate_username(username)?;
     if !(1000..60000).contains(&uid) {
@@ -125,9 +111,8 @@ pub fn delete_user(username: &str, uid: u64, remove_files: bool) -> Result<(), S
     })
 }
 
-// The returned future borrows `zbus::Proxy` internals that are not `Send`; that is fine here
-// because `call_user` is only ever driven to completion synchronously by its
-// caller via `block()`, never spawned onto another thread.
+// The future borrows `zbus::Proxy` internals that are not `Send`, which is fine because `call_user`
+// only drives it to completion on this thread.
 #[allow(
     clippy::future_not_send,
     reason = "only ever polled synchronously by its caller through block()"
@@ -151,12 +136,6 @@ async fn call_user(
     Ok(())
 }
 
-/// Change `username`'s account role (standard vs. administrator).
-///
-/// # Errors
-///
-/// Returns an error message if `username` fails validation, `username` is the caller's own
-/// account and `role` would demote it, or `AccountsService` refuses the request.
 pub fn set_role(username: &str, role: AccountRole) -> Result<(), String> {
     validate_username(username)?;
     if std::env::var("USER").ok().as_deref() == Some(username) && role == AccountRole::Standard {
@@ -165,13 +144,11 @@ pub fn set_role(username: &str, role: AccountRole) -> Result<(), String> {
     block(call_user(username, "SetAccountType", &(role as i32)))
 }
 
-/// Enable or disable passwordless automatic login for `username`.
 pub fn set_automatic_login(username: &str, enabled: bool) -> Result<(), String> {
     validate_username(username)?;
     block(call_user(username, "SetAutomaticLogin", &enabled))
 }
 
-/// Read whether `username` is set up for automatic login.
 pub fn automatic_login(username: &str) -> Result<bool, String> {
     validate_username(username)?;
     block(async move {
@@ -189,27 +166,18 @@ pub fn automatic_login(username: &str) -> Result<bool, String> {
     })
 }
 
-/// Set `username`'s login password. `password` is zeroized in place before returning,
-/// regardless of outcome.
-///
-/// # Errors
-///
-/// Returns an error message if `username` fails validation, `password` is outside 10–1024
-/// bytes or contains a newline, hashing fails, or `AccountsService` refuses the request.
+/// `password` is zeroized in place before returning, whatever the outcome.
 pub fn set_password(username: &str, password: &mut [u8]) -> Result<(), String> {
     validate_username(username)?;
     let hash = Zeroizing::new(tilo_crypto::hash_account_password(password)?);
     block(call_user(username, "SetPassword", &(hash.as_str(), "")))
 }
 
-/// The group whose members administer this device: `AccountsService` makes
-/// an administrator by adding the account to it, and polkit's rules (Tilo's
-/// and Flatpak's own) grant privileged changes to it.
+/// The group whose members administer this device: `AccountsService` adds accounts to it, and polkit's
+/// rules read it.
 const ADMINISTRATORS: &std::ffi::CStr = c"wheel";
 
-/// Whether this process's user administers the device. Reads the group
-/// database, which may be a file or a network service: never on a UI
-/// thread.
+/// Reads the group database, which may be a file or a network service: never on a UI thread.
 #[must_use]
 pub fn administers_this_device() -> bool {
     administrators_gid().is_some_and(in_group)
@@ -220,8 +188,8 @@ fn administrators_gid() -> Option<libc::gid_t> {
     // SAFETY: an all-zero `group` is a valid out-parameter for getgrnam_r.
     let mut group: libc::group = unsafe { std::mem::zeroed() };
     let mut found: *mut libc::group = std::ptr::null_mut();
-    // SAFETY: every pointer is valid for the call and `buffer.len()` is its
-    // length; getgrnam_r writes only into `group`, `buffer` and `found`.
+    // SAFETY: every pointer is valid for the call and `buffer.len()` is its length; getgrnam_r writes
+    // only into `group`, `buffer` and `found`.
     let status = unsafe {
         libc::getgrnam_r(
             ADMINISTRATORS.as_ptr(),
