@@ -5,8 +5,8 @@
 #
 #   vm-e2e-branch.sh        what e2e-branch runs
 #
-# box, a and b share one local network beside each one's own way out (passt): a bridge here,
-# each guest on it through a tap of its own, as a person's machines on one home network.
+# box, a and b reach each other on the network tilo-vm gives the VMs of one host (a second NIC
+# on loopback multicast, `tilolan0`), beside each one's own way out (passt).
 #
 # The report (report.md, report.json) and each VM's evidence land in /target/e2e-branch.
 # `t test e2e-branch --test hold` (or `t dispatch e2e-branch --input hold=SECONDS`) keeps the
@@ -19,8 +19,6 @@ reports=/target/e2e-branch
 gate=/target/publish/os-dev-disk/$arch/disk
 tilo_vm=/target/tilo-vm-bin/tilo-vm
 run_user=acceptance
-bridge=tilobranch0
-taps=(tilo-br-box tilo-br-a tilo-br-b)
 phase() { echo "e2e-branch: $1 at ${SECONDS}s"; }
 
 bash tools/ci/install-packages.sh tools/ci/packages/vm-acceptance.txt tools/ci/packages/e2e-remote.txt
@@ -57,22 +55,6 @@ chown "$run_user:" "/home/$run_user/.config/libvirt/qemu.conf"
 mkdir -p target/dev-runs
 chown -R "$run_user:" "$work" "$reports" target
 
-# The boxes' local network: a bridge with a tap per box the session user may open, which
-# libvirt hands its guest as an unmanaged ethernet interface (scripts/vm-e2e/branch.py).
-if [[ ! -c /dev/net/tun ]]; then
-  modprobe tun 2>/dev/null || true
-  [[ -c /dev/net/tun ]] || { mkdir -p /dev/net; mknod -m 0666 /dev/net/tun c 10 200; }
-fi
-chmod 0666 /dev/net/tun
-ip link del "$bridge" 2>/dev/null || true
-ip link add "$bridge" type bridge
-echo 0 > "/sys/class/net/$bridge/bridge/multicast_snooping"
-ip link set "$bridge" up
-for tap in "${taps[@]}"; do
-  ip link del "$tap" 2>/dev/null || true
-  ip tuntap add dev "$tap" mode tap user "$run_user"
-  ip link set "$tap" master "$bridge" up
-done
 as_user() { sudo -n -u "$run_user" -H env "XDG_RUNTIME_DIR=/run/user/$uid" "PATH=$PATH" "$@"; }
 caps=$(as_user virsh --connect qemu:///session capabilities)
 grep -q "<domain type='kvm'" <<<"$caps" || { echo "libvirt's session daemon offers no KVM domain" >&2; exit 1; }
@@ -86,8 +68,13 @@ extra=()
 status=0
 as_user env GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0='*' \
   python3 scripts/vm-e2e/branch.py --disk "$base" --commit "$commit" --tilo-vm /usr/local/bin/tilo-vm \
-  --out "$reports" --taps "$(IFS=,; echo "${taps[*]}")" --hold "$hold" "${extra[@]}" || status=$?
+  --out "$reports" --hold "$hold" "${extra[@]}" || status=$?
 [[ ! -f $reports/report.md ]] || cat "$reports/report.md"
+# What vm branch said (its admission of each branch, and how long it took) and each box's address
+# on tilo-vm's network, pass or fail.
+for f in "$reports"/data/S04-branch.txt "$reports"/data/lan-*.txt; do
+  [[ -f $f ]] && { echo "== $(basename "$f")"; tail -n 40 "$f" | cut -c1-500; }
+done
 # A failed check keeps no outputs: its evidence (each box's boot journal of its device identity,
 # the person's session where a step could not reach it) is printed here.
 if (( status != 0 )); then

@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Branching a configured box, end to end, on real VMs.
 
-    scripts/vm-e2e/branch.py --disk DEV.qcow2 --out DIR --taps BOX,A,B [--tilo-vm PATH] [--hold SECONDS]
+    scripts/vm-e2e/branch.py --disk DEV.qcow2 --out DIR [--tilo-vm PATH] [--hold SECONDS]
 
-tools/ci/vm-e2e-branch.sh runs it as the e2e-branch check, with the taps of the boxes' local
-network.
+tools/ci/vm-e2e-branch.sh runs it as the e2e-branch check. The boxes reach each other on the
+network tilo-vm gives the VMs of one host (`tilolan0`, 198.18.0.0/16), and nothing else.
 
 A person sets one box up once, with their keys, and branches boxes off it that start
 configured and then work on their own (`tilo-vm vm branch`, docs/architecture/workspace.md,
@@ -56,7 +56,6 @@ SOURCE, BRANCHES = "box", ("a", "b")
 NAMES = (SOURCE, *BRANCHES)
 # The boxes' local network (tools/ci/vm-e2e-branch.sh's bridge): each box's address on it and
 # the MAC of its NIC there.
-LAN = {name: (f"10.78.0.{n}/24", f"52:54:00:e2:b0:0{n}") for n, name in enumerate(NAMES, start=1)}
 OUTPUT = "1280x800"
 WORKSPACE = "Branch e2e"
 # What the person stores: names only, never the values, appear in the report.
@@ -88,10 +87,9 @@ run_of: dict = {}
 
 
 class Run:
-    def __init__(self, binary: str, out: Path, taps: dict[str, str]):
+    def __init__(self, binary: str, out: Path):
         self.binary = binary
         self.out = out
-        self.taps = taps
         self.steps: list[dict] = []
         self.vms: dict[str, TiloVm] = {}
         self.facts: dict = {}
@@ -341,6 +339,7 @@ def boot_box(facts: dict, run: Run, disk: Path, memory: int) -> None:
     box.vm_cmd("start", SOURCE, timeout=900)
     m = machine_facts(run, SOURCE, "S01-box")
     facts["machine"] = {k: m.get(k) for k in ("UUID", "RECORD", "BRANCH-UNIT")}
+    facts["lan"] = lan_of(run, SOURCE)
     expect(m.get("UUID"), "box reports no product UUID")
     expect(m.get("RECORD") == m.get("UUID"),
            f"box did not record its machine at boot: machine.bin {m.get('RECORD')!r}, "
@@ -454,33 +453,19 @@ def virsh(*args: str, check: bool = True) -> str:
     return proc.stdout
 
 
-def plug_lan(run: Run, name: str) -> None:
-    """Put the stopped `name` on the boxes' network: its tap, as a second NIC."""
-    ip, mac = LAN[name]
-    nic = run.out / "data" / f"lan-{name}.xml"
-    nic.write_text(f"<interface type='ethernet'><mac address='{mac}'/>"
-                   f"<target dev='{run.taps[name]}' managed='no'/><model type='virtio'/></interface>\n")
-    virsh("attach-device", name, str(nic), "--config")
-
-
-def address_lan(run: Run, name: str) -> str:
-    """Give `name` its address on the boxes' network, as a person sets one by hand."""
-    ip, mac = LAN[name]
-    return run.vm(name).root_exec(f"""
-set -e
-dev=$(ip -o link | awk -v mac={mac} 'index($0, mac) {{ sub(":$", "", $2); print $2; exit }}')
-[ -n "$dev" ] || {{ echo "no interface with {mac}"; ip -o link; exit 1; }}
-if command -v nmcli >/dev/null 2>&1 && nmcli -t general status >/dev/null 2>&1; then
-  nmcli con delete tilo-e2e >/dev/null 2>&1 || true
-  nmcli con add type ethernet ifname "$dev" con-name tilo-e2e ipv4.method manual \
-    ipv4.addresses {ip} ipv6.method link-local >/dev/null
-  nmcli con up tilo-e2e >/dev/null
-else
-  ip link set "$dev" up
-  ip addr replace {ip} dev "$dev"
-fi
-ip -o addr show dev "$dev"
-""", timeout=120)
+def lan_of(run: Run, name: str) -> str:
+    """`name` 's address on the network tilo-vm gives the VMs of one host (`tilolan0`), kept
+    as evidence and checked: the boxes reach each other there and nowhere else."""
+    def read() -> str:
+        return run.vm(name).root_exec(
+            "ip -o link show dev tilolan0; ip -o -4 addr show dev tilolan0; "
+            "systemctl show tilo-vm-lan.service -p ActiveState -p Result --value | paste -sd, -",
+            timeout=120, check=False)
+    said = wait_until(lambda: (text := read()) if " 198.18." in text else None, 90,
+                      interval=3.0) or read()
+    run.write(f"lan-{name}.txt", said)
+    expect(" 198.18." in said, f"{name} has no 198.18 address on tilolan0: {said.strip()[-400:]!r}")
+    return said.strip()[-300:]
 
 
 BOOT_JOURNAL = ("journalctl -b --no-pager -o short-monotonic -u tilo-device-branch "
@@ -1071,14 +1056,13 @@ def branch(facts: dict, run: Run) -> None:
     started = time.monotonic()
     try:
         out = box.vm_cmd("branch", SOURCE, *BRANCHES, "--stop", timeout=2400)
-    except VmError:
+    except VmError as exc:
+        run.write("S04-branch.txt", f"failed after {round(time.monotonic() - started)} s:\n{exc}")
         keep_admission(run)
         raise
     facts["branch_seconds"] = round(time.monotonic() - started, 1)
     facts["branch_said"] = out.strip().splitlines()[-12:]
-    run.write("S04-branch.txt", out)
-    for name in NAMES:
-        plug_lan(run, name)
+    run.write("S04-branch.txt", f"took {facts['branch_seconds']} s:\n{out}")
     listing = box.vm_cmd("list", timeout=120, check=False)
     run.write("S04-list.txt", listing)
 
@@ -1138,7 +1122,7 @@ def boot(facts: dict, run: Run, names: tuple[str, ...]) -> None:
         else:
             run.write(f"S05-{name}-session.txt", session_excerpt(run.vm(name)))
     for name in names:
-        facts[f"lan_{name}"] = address_lan(run, name).strip()[-300:]
+        facts[f"lan_{name}"] = lan_of(run, name)
     # The sessions start again on the network the boxes now share, as on a box that came up
     # on it.
     for name in names:
@@ -1244,13 +1228,12 @@ def main() -> int:
     ap.add_argument("--commit")
     ap.add_argument("--tilo-vm", default="tilo-vm")
     ap.add_argument("--out", type=Path, required=True)
-    ap.add_argument("--taps", required=True, help="the tap devices of box, a and b on their network")
     ap.add_argument("--hold", type=int, default=0, help="seconds to keep the VMs up after the steps")
     ap.add_argument("--boot-only", action="store_true",
                     help="stop after the boxes' first boot and its checks (S01-S07)")
     args = ap.parse_args()
     args.out.mkdir(parents=True, exist_ok=True)
-    run = Run(args.tilo_vm, args.out, dict(zip(NAMES, args.taps.split(","))))
+    run = Run(args.tilo_vm, args.out)
     meta = {"commit": args.commit, "started": dt.datetime.now(dt.UTC).isoformat(timespec="seconds"),
             "disk": str(args.disk)}
     try:
@@ -1382,7 +1365,7 @@ def reboot(facts: dict, run: Run, names: tuple[str, ...]) -> None:
         shown = desk_at_boot(run, name, "S10")
         if shown:
             over[name] = shown
-        facts[f"lan_{name}"] = address_lan(run, name).strip()[-300:]
+        facts[f"lan_{name}"] = lan_of(run, name)
     expect(not over, f"setup or identity recovery stood over the desk after a reboot: {over}")
 
 
