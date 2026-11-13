@@ -687,7 +687,7 @@ d-rfgelicn = Zeigen
 
 d-p4owlmpg = Immer
 
-d-sscc6gs3 = Solange kein Fenster es deckt
+d-sscc6gs3 = Solange kein Fenster sie deckt
 
 d-v2eyzsgr = An der Bildschirmkante
 

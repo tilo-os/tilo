@@ -7,12 +7,10 @@ use vello::kurbo::{Affine, Rect};
 
 use super::super::context_menu::{ContextMenu, MenuItem};
 use super::super::window_toolbar_row::{LocationLift, PickerText, paint_picker};
-use super::{
-    NONE_CHOSEN, Orientation, Segment, SegmentedFace, SegmentedStyle, StripMetrics, ToggleGroup,
-};
+use super::{NONE_CHOSEN, Orientation, SegmentedFace, SegmentedStyle, ToggleGroup};
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
-use crate::widget::{ControlSize, Widget};
+use crate::widget::Widget;
 
 pub(super) fn labels_fit(width: f64, naturals: &[(f64, f64)]) -> bool {
     let needed: f64 = naturals.iter().map(|(full, short)| full.min(*short)).sum();
@@ -21,25 +19,6 @@ pub(super) fn labels_fit(width: f64, naturals: &[(f64, f64)]) -> bool {
 
 impl SegmentedFace<'_> {
     #[must_use]
-    pub fn folds(
-        segments: &[Rect],
-        labels: &[&str],
-        size: ControlSize,
-        text: &mut TextRenderer,
-        theme: &Theme,
-    ) -> bool {
-        let shown: Vec<Segment> = labels.iter().map(|label| Segment::new(*label)).collect();
-        let naturals =
-            StripMetrics::of(size, theme).naturals(&shown, SegmentedStyle::Segmented, text);
-        labels.len() == segments.len()
-            && labels.iter().any(|label| !label.is_empty())
-            && segments
-                .iter()
-                .zip(&naturals)
-                .any(|(segment, (full, short))| full.min(*short) > segment.width() + 0.5)
-    }
-
-    #[must_use]
     pub fn folded(mut self, hovered: bool, open: bool) -> Self {
         self.fold = Some(LocationLift {
             hovered,
@@ -47,15 +26,6 @@ impl SegmentedFace<'_> {
             focused: false,
         });
         self
-    }
-
-    #[must_use]
-    pub fn menu_items(labels: &[&str], selected: usize) -> Vec<MenuItem> {
-        labels
-            .iter()
-            .enumerate()
-            .map(|(i, label)| MenuItem::selection(*label).with_checked(i == selected))
-            .collect()
     }
 
     fn strip(&self) -> Option<Rect> {
@@ -219,6 +189,7 @@ mod tests {
     use std::cell::RefCell;
     use std::rc::Rc;
 
+    use super::super::Segment;
     use super::*;
     use crate::synthetic_input::{cursor_moved, mouse_press, mouse_release};
     use crate::testing::dispatch;
@@ -291,10 +262,21 @@ mod tests {
         assert_eq!(narrow.menu.items()[1].checked(), Some(true));
         let node = Widget::accessibility(&narrow).expect("the strip reaches assistive technology");
         assert_eq!(node.state.expanded, Some(true));
+        // Folded, the strip draws one picker and no segment: the one control a person reaches is
+        // the picker, at the whole strip's target, and the menu it opens lists every case.
         assert_eq!(
             node.children.len(),
-            LABELS.len(),
-            "each segment stays choosable"
+            1,
+            "the picker is the one control, not segments that are not drawn"
+        );
+        let picker = &node.children[0];
+        assert_eq!(picker.name.as_deref(), Some("Dissolve"), "what it holds");
+        let bounds = picker.bounds.expect("the picker's own target").to_rect();
+        assert!(
+            bounds.width() >= narrow.rect.width() - 1.0,
+            "the picker stands the whole strip wide, not {} of {}",
+            bounds.width(),
+            narrow.rect.width()
         );
 
         for index in [3, 0, 4] {
@@ -318,44 +300,5 @@ mod tests {
         Widget::set_focus(&mut narrow, true);
         assert!(narrow.focus_visible(), "keyboard focus shows the ring");
         assert_ne!(frame(&mut narrow), unfocused, "focus rings the picker");
-    }
-
-    #[test]
-    fn a_painted_strip_folds_where_its_labels_do_not_fit() {
-        let mut text = TextRenderer::new();
-        let theme = Theme::dark();
-        let size = ControlSize::Regular;
-        let mut laid_out = |width: f64| {
-            let strip = Rect::new(0.0, 0.0, width, 32.0);
-            SegmentedFace::partition(strip, &LABELS, size, &mut text, &theme)
-        };
-        let wide = laid_out(640.0);
-        let narrow = laid_out(160.0);
-        assert!(!SegmentedFace::folds(
-            &wide, &LABELS, size, &mut text, &theme
-        ));
-        assert!(SegmentedFace::folds(
-            &narrow, &LABELS, size, &mut text, &theme
-        ));
-        let even: Vec<Rect> = (0..LABELS.len())
-            .map(|i| {
-                let x = f64::from(u8::try_from(i).unwrap_or(0)) * 70.0;
-                Rect::new(x, 0.0, x + 70.0, 32.0)
-            })
-            .collect();
-        assert!(SegmentedFace::folds(
-            &even, &LABELS, size, &mut text, &theme
-        ));
-        assert!(!SegmentedFace::folds(
-            &even,
-            &["", "", "", "", ""],
-            size,
-            &mut text,
-            &theme
-        ));
-        let items = SegmentedFace::menu_items(&LABELS, 2);
-        assert_eq!(items.len(), LABELS.len());
-        assert_eq!(items[2].checked(), Some(true));
-        assert_eq!(items[0].checked(), Some(false));
     }
 }

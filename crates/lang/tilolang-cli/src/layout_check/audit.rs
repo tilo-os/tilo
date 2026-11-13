@@ -394,34 +394,34 @@ fn heading_boxes(node: &InspectionNode, clip: Rect, out: &mut Vec<Rect>) {
     }
 }
 
-/// The boxes of what a person acts on in `node`, its own and its descendants': the controls a
-/// screen offers, as much of each as can be seen.
-fn control_boxes(node: &InspectionNode, clip: Rect, out: &mut Vec<Rect>) {
+/// The boxes of what `node` shows a person, its own and its descendants': the words it names things
+/// with and the controls it offers, each as much of it as can be seen. A box that paints its own
+/// words — an empty state, a row, a card — shows them by its name.
+fn named_boxes(node: &InspectionNode, clip: Rect, out: &mut Vec<Rect>) {
     if floats(&node.widget) {
         return;
     }
     let inner = node
         .child_clip
         .map_or(clip, |child_clip| clip.intersect(rect(child_clip)));
-    let acts = node
-        .semantics
-        .as_ref()
-        .is_some_and(|access| interactive(access.role) && !access.state.hidden);
-    if acts {
-        let seen = node
-            .semantics
-            .as_ref()
-            .and_then(|access| access.bounds)
-            .map_or(rect(node.rect), |bounds| {
-                rect(node.rect).union(bounds.to_rect())
-            })
-            .intersect(clip);
+    let shows = is_text(node)
+        || node.semantics.as_ref().is_some_and(|access| {
+            !access.state.hidden
+                && (access
+                    .name
+                    .as_deref()
+                    .is_some_and(|name| !name.trim().is_empty())
+                    || interactive(access.role))
+        });
+    if shows {
+        let seen = rect(node.rect).intersect(clip);
         if has_area(seen) {
             out.push(seen);
         }
+        return;
     }
     for child in &node.children {
-        control_boxes(child, inner, out);
+        named_boxes(child, inner, out);
     }
 }
 
@@ -444,8 +444,7 @@ fn shows_nothing_under_its_title(node: &InspectionNode, own: Rect) -> Option<(Re
     heading_boxes(node, own, &mut headings);
     let title = headings.first().copied()?;
     let mut content = headings;
-    text_boxes(node, own, &mut content);
-    control_boxes(node, own, &mut content);
+    named_boxes(node, own, &mut content);
     // What stands beside the title is the header's own band: a subtitle, a count, the control that
     // closes it. What stands under the band is the surface's body.
     let band = content
@@ -480,6 +479,16 @@ fn texts_meet(a: &InspectionNode, b: &InspectionNode, clip: Rect) -> bool {
 /// nothing of the two is read through the other.
 fn stands_as_window(node: &InspectionNode) -> bool {
     node.widget == "WindowFrame" || matches!(&node.children[..], [only] if stands_as_window(only))
+}
+
+/// Whether `node` is a surface floating over what it covers on its own opaque ground: a panel or a
+/// popover over the desk is read on its own, as a window on a desktop is, so what stands behind it
+/// is behind it by design.
+fn floats_opaque(node: &InspectionNode) -> bool {
+    matches!(
+        node.widget.as_str(),
+        "FloatingPanel" | "Popover" | "ContextMenu" | "Tooltip"
+    ) || matches!(&node.children[..], [only] if floats_opaque(only))
 }
 
 fn layers(widget: &str) -> bool {
@@ -2153,7 +2162,7 @@ impl Walk<'_> {
         for (i, (a, ra)) in shown.iter().enumerate() {
             for (b, rb) in shown.iter().skip(i.saturating_add(1)) {
                 let both = ra.intersect(*rb);
-                let covers = if stands_as_window(b) {
+                let covers = if stands_as_window(b) || floats_opaque(b) {
                     false
                 } else if places {
                     is_control(a) && is_control(b)
