@@ -124,12 +124,12 @@ impl ChatApp {
             .and_then(|acting| acting.person.as_ref())
             .map(|person| person.0.as_str())
             .or_else(|| self.agent_people.get(id).map(String::as_str));
-        Some(match person {
-            Some(person) => {
-                ui::acting_line(&name, Some(&self.user_name(person)), self.is_me(person))
-            }
-            None => crate::i18n::t_args("chat-agent-author", &[("name", name.into())]),
-        })
+        Some(crate::identity::acting_label(
+            &name,
+            person,
+            |person| self.user_name(person),
+            |person| self.is_me(person),
+        ))
     }
 
     /// How a narrow line names someone: their given name, so a line that
