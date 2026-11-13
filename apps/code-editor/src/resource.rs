@@ -472,6 +472,9 @@ mod tests {
         hits: bool,
     }
 
+    /// The scenarios [`shot`] gives a row of their own.
+    const OWN_SHOTS: [&str; 2] = ["hardware", "search"];
+
     fn shot(scenario: Option<&str>) -> Shot {
         let sample = Shot {
             shown: "main.rs",
@@ -500,13 +503,20 @@ mod tests {
     /// finished staging, that no language server runs in it, and its audit.
     #[test]
     fn every_scenario_captures_over_the_sample_project() {
-        for scenario in CodeEditorShell::scenarios()
+        let scenarios: Vec<&str> = CodeEditorShell::scenarios()
             .iter()
             .copied()
             .filter(|scenario| *scenario != "terminal")
-            .map(Some)
-            .chain([None])
-        {
+            .collect();
+        // A row of its own is asked of a capture only while the app has the
+        // scenario: one renamed or removed must fail here, not go unasked.
+        for own in OWN_SHOTS {
+            assert!(
+                scenarios.contains(&own),
+                "{own} has a row of its own and is no scenario of the app"
+            );
+        }
+        for scenario in scenarios.into_iter().map(Some).chain([None]) {
             let expected = shot(scenario);
             let mut app = TestApp::<CodeEditorShell>::capture(scenario)
                 .unwrap_or_else(|error| panic!("{scenario:?}: {error}"));
@@ -522,9 +532,11 @@ mod tests {
             assert_eq!(name.as_deref(), Some(expected.shown), "{scenario:?}");
             assert!(!staging, "{scenario:?} staged");
             assert!(!servers, "{scenario:?} runs a language server");
-            if expected.hits {
-                assert!(hits > 0, "{scenario:?} shows no search hits");
-            }
+            assert_eq!(
+                hits > 0,
+                expected.hits,
+                "{scenario:?} shows {hits} search hits"
+            );
             let (id, file) = state
                 .files
                 .iter()
