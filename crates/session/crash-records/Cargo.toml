@@ -9,6 +9,7 @@ license.workspace = true
 [dependencies]
 # A record's file name starts with its local time, and a list sorts by it.
 chrono = { workspace = true, features = ["clock", "std"] }
+tilo-formats = { version = "0.1.0", path = "../../sdk/tilo-formats" }
 # The records are private files of this user's, created and read as such.
 tilo-files = { path = "../../platform/tilo-files" }
 tilo-paths.workspace = true

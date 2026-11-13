@@ -13,12 +13,14 @@ pub fn timecode(seconds: f64, fps: f64) -> String {
     let s = total_secs % 60;
     let m = (total_secs / 60) % 60;
     let h = total_secs / 3600;
-    // format: machine (SMPTE timecode, hours:minutes:seconds:frames)
-    if h > 0 {
-        format!("{h:02}:{m:02}:{s:02}:{f:02}")
-    } else {
-        format!("{m:02}:{s:02}:{f:02}")
-    }
+    ui::format::machine!(
+        "SMPTE timecode, hours and minutes and seconds and frames",
+        if h > 0 {
+            format!("{h:02}:{m:02}:{s:02}:{f:02}")
+        } else {
+            format!("{m:02}:{s:02}:{f:02}")
+        }
+    )
 }
 
 /// Compact clock for media-bin durations: `M:SS` (or `H:MM:SS`). No

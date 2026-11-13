@@ -17,10 +17,15 @@ programs and the SDK:
   table);
 * month and weekday name tables (``["Jan", "Feb", …]``).
 
-A line that formats for a machine (a protocol header, a log, a file name, a
-timecode a format defines) says so with a ``// format: machine`` comment and
-the reason, on that line or just above it, and is left alone. Test code is
-exempt.
+A value that formats for a machine (a protocol field, a log, a file name, a
+timecode a format defines) says so in code, in the call that keeps it::
+
+    let name = ui::format::machine!("the record's file name", format!("{:04}.json", id));
+
+`tilo_formats::machine!` (the toolkit re-exports it as `ui::format::machine!`)
+is the expression it wraps, and its first argument is the reason. The reason is
+code the compiler keeps, so tidying the comments around it never takes it away;
+this check reads the call, never a comment. Test code is exempt.
 """
 
 from __future__ import annotations
@@ -33,7 +38,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from judged import add_staged_argument, judged  # noqa: E402
-from rust_source import is_test_file, line_number, production_source  # noqa: E402
+from rust_source import is_test_file, line_number, matching, production_source  # noqa: E402
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -45,10 +50,11 @@ FORMATTER = (
     Path("crates/sdk/ui-core/src/format"),
     Path("crates/sdk/ui-core/src/clock.rs"),
 )
-MACHINE_MARK = re.compile(r"//\s*format:\s*machine\b")
-# How many lines above a flagged line its mark may stand: a comment of a few
-# lines over a table or a call.
-MARK_REACH = 4
+MACHINE = re.compile(r"\bmachine\s*!\s*\(")
+FIRST_ARGUMENT = re.compile(r'\s*"((?:[^"\\]|\\.)*)"\s*,')
+# The reason has to say why the value is machine text: a call with a word or two
+# is not an account a reader can check, so it leaves the finding where it was.
+REASON_WORDS = 6
 
 CHRONO_PATTERN = re.compile(r'\.format\(\s*"((?:[^"\\]|\\.)*%(?:[^"\\]|\\.)*)"')
 MACHINE_PATTERN = re.compile(
@@ -85,18 +91,34 @@ def in_formatter(relative: Path) -> bool:
     return any(relative == owned or owned in relative.parents for owned in FORMATTER)
 
 
+def machine_spans(code: str) -> list[tuple[int, int]]:
+    """The spans `machine!("<why>", <expr>)` covers, each from the call's name to
+    the bracket that closes it.
+
+    The reason is the call's first argument: text inside the call is text the
+    reason accounts for. A call whose reason says too little covers nothing.
+    """
+    spans: list[tuple[int, int]] = []
+    for found in MACHINE.finditer(code):
+        open_paren = found.end() - 1
+        close = matching(code, open_paren)
+        reason = FIRST_ARGUMENT.match(code, open_paren + 1)
+        if reason is None or len(reason.group(1).split()) < REASON_WORDS:
+            continue
+        spans.append((found.start(), close))
+    return spans
+
+
 def audit_text(relative: str, text: str) -> list[Violation]:
     """The hand-built formatting in one source file's production code."""
-    raw_lines = text.splitlines()
     code = production_source(text)
+    for_machines = machine_spans(code)
     violations: list[Violation] = []
 
     def flag(offset: int, reason: str) -> None:
-        line = line_number(code, offset)
-        marked = raw_lines[max(line - 1 - MARK_REACH, 0) : line]
-        if any(MACHINE_MARK.search(source) for source in marked):
+        if any(start <= offset < end for start, end in for_machines):
             return
-        violations.append(Violation(relative, line, reason))
+        violations.append(Violation(relative, line_number(code, offset), reason))
 
     for found in CHRONO_PATTERN.finditer(code):
         if not MACHINE_PATTERN.match(found.group(1)):

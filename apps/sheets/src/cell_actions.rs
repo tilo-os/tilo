@@ -167,11 +167,16 @@ fn iso_date_text(serial: f64) -> String {
     let seconds = (serial.fract().abs() * 86_400.0).round();
     // A fraction of a day is below 86 401 seconds, exact as an integer.
     let seconds = format!("{seconds:.0}").parse::<u32>().unwrap_or(0);
-    // format: machine — the ISO 8601 text set-cells reads back, not a display.
     match (seconds / 3600 % 24, seconds % 3600 / 60, seconds % 60) {
         (0, 0, 0) => date,
-        (hour, minute, 0) => format!("{date}T{hour:02}:{minute:02}"),
-        (hour, minute, second) => format!("{date}T{hour:02}:{minute:02}:{second:02}"),
+        (hour, minute, 0) => ui::format::machine!(
+            "the ISO 8601 text set-cells reads back, not a display",
+            format!("{date}T{hour:02}:{minute:02}")
+        ),
+        (hour, minute, second) => ui::format::machine!(
+            "the ISO 8601 text set-cells reads back, not a display",
+            format!("{date}T{hour:02}:{minute:02}:{second:02}")
+        ),
     }
 }
 

@@ -175,38 +175,45 @@ fn date_series(pattern: &[FillCell], count: usize) -> Option<Vec<FillOut>> {
 
 /// A month or weekday series, continuing with the detected step.
 fn name_series(pattern: &[FillCell], count: usize) -> Option<Vec<FillOut>> {
-    // format: machine (the names a cell holds and the series continues; never
-    // the viewer's language, so every collaborator fills the same cells)
-    const MONTHS_SHORT: [&str; 12] = [
-        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-    ];
-    // format: machine (as above)
-    const MONTHS_LONG: [&str; 12] = [
-        "January",
-        "February",
-        "March",
-        "April",
-        "May",
-        "June",
-        "July",
-        "August",
-        "September",
-        "October",
-        "November",
-        "December",
-    ];
-    // format: machine (as above)
-    const DAYS_SHORT: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-    // format: machine (as above)
-    const DAYS_LONG: [&str; 7] = [
-        "Sunday",
-        "Monday",
-        "Tuesday",
-        "Wednesday",
-        "Thursday",
-        "Friday",
-        "Saturday",
-    ];
+    const MONTHS_SHORT: [&str; 12] = ui::format::machine!(
+        "the names a cell holds, never the viewer's own language",
+        [
+            "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+        ]
+    );
+    const MONTHS_LONG: [&str; 12] = ui::format::machine!(
+        "the names a cell holds, never the viewer's own language",
+        [
+            "January",
+            "February",
+            "March",
+            "April",
+            "May",
+            "June",
+            "July",
+            "August",
+            "September",
+            "October",
+            "November",
+            "December",
+        ]
+    );
+    const DAYS_SHORT: [&str; 7] = ui::format::machine!(
+        "the names a cell holds, never the viewer's own language",
+        ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+    );
+    const DAYS_LONG: [&str; 7] = ui::format::machine!(
+        "the names a cell holds, never the viewer's own language",
+        [
+            "Sunday",
+            "Monday",
+            "Tuesday",
+            "Wednesday",
+            "Thursday",
+            "Friday",
+            "Saturday",
+        ]
+    );
 
     for list in [
         &MONTHS_SHORT[..],

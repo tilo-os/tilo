@@ -357,10 +357,12 @@ fn probe_stream(
     let mib = stream.size_bytes as f64 / (1024.0 * 1024.0);
     println!("   itag={}  ~{} kbps", stream.itag, stream.bitrate / 1000);
     println!("   mime: {}", stream.mime);
-    // format: machine (a diagnostic command's own output)
-    println!(
-        "   API content-length: {} bytes ({mib:.2} MiB)",
-        stream.size_bytes
+    ui::format::machine!(
+        "a diagnostic command's own output, for whoever reads it",
+        println!(
+            "   API content-length: {} bytes ({mib:.2} MiB)",
+            stream.size_bytes
+        )
     );
     // Signed URLs carry short-lived credentials: keep them out of logs.
     println!("   source URL resolved (redacted)");

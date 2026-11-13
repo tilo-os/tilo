@@ -293,8 +293,10 @@ pub fn keep_stops(dir: &Path, stops: &[Stop], found_at: i64) -> std::io::Result<
         let Some(when) = chrono::Local.timestamp_opt(at, 0).earliest() else {
             continue;
         };
-        // format: machine (the record's file name)
-        let stamp = when.format(FILE_TIMESTAMP).to_string();
+        let stamp = tilo_formats::machine!(
+            "the record's file name, which programs sort by",
+            when.format(FILE_TIMESTAMP).to_string()
+        );
         let name = format!("{stamp}{tail}");
         match super::write_record(dir, &name, &render_stop(stop, &stamp)) {
             Ok(_) => {

@@ -42,15 +42,50 @@ class FormatsContractTests(unittest.TestCase):
             self.assertEqual(len(reasons('const U: [&str; 3] = ["B", "KiB", "MiB"];\n')), 1)
             self.assertEqual(len(reasons('const M: [&str; 2] = ["Jan", "Feb"];\n')), 1)
 
-    def test_marks_comments_and_tests_are_exempt(self):
-        with self.subTest(phase="a machine mark on the line or above it"):
-            self.assertEqual(reasons('let s = format!("{h:02}:{m:02}"); // format: machine (SMPTE)\n'), [])
+    def test_machine_text_names_its_reason_in_code(self):
+        with self.subTest(phase="a call around the text"):
             self.assertEqual(
-                reasons('// format: machine (a file name)\nlet s = at.format("%d.%m.%Y");\n'), []
+                reasons('let s = ui::format::machine!("SMPTE timecode, hours and minutes and frames", '
+                        'at.format("%H:%M:%S:%f"));\n'),
+                [],
             )
-        with self.subTest(phase="a mark further away does not count"):
-            text = "// format: machine\n" + "\n" * 6 + 'let s = format!("{h:02}:{m:02}");\n'
-            self.assertEqual(len(reasons(text)), 1)
+            self.assertEqual(
+                reasons('let s = ui::format::machine!("a file name, read by a program", '
+                        'format!("{h:02}:{m:02}"));\n'),
+                [],
+            )
+        with self.subTest(phase="machine text in a constant"):
+            self.assertEqual(
+                reasons('const M: [&str; 2] = machine!("the names a cell holds, not the '
+                        'viewer\'s own language", ["Jan", "Feb"]);\n'),
+                [],
+            )
+        with self.subTest(phase="a call whose reason says too little"):
+            for reason in ('""', '"as above"', '"SQL text"'):
+                self.assertEqual(
+                    len(reasons(f'let s = machine!({reason}, format!("{{h:02}}:{{m:02}}"));\n')),
+                    1,
+                    reason,
+                )
+        with self.subTest(phase="a value outside the call is still flagged"):
+            self.assertEqual(
+                len(reasons('let s = machine!("a file name, read by a program", name);\n'
+                            'let t = format!("{h:02}:{m:02}");\n')),
+                1,
+            )
+
+    def test_the_reason_lives_in_code_not_in_the_comments_around_it(self):
+        exempt = 'let s = machine!("SMPTE timecode, hours and minutes and frames", at.format("%H:%M:%S"));\n'
+        with_comment = "// format: machine (SMPTE)\n" + exempt
+        self.assertEqual(reasons(exempt), [])
+        self.assertEqual(reasons(with_comment), [], "a comment neither grants nor takes an exemption")
+        self.assertEqual(
+            len(reasons('// format: machine (SMPTE timecode)\nlet s = at.format("%H:%M:%S");\n')),
+            1,
+            "the old comment marker grants nothing now",
+        )
+
+    def test_comments_and_tests_are_exempt(self):
         with self.subTest(phase="comments"):
             self.assertEqual(reasons('// at.format("%b %d")\n'), [])
         with self.subTest(phase="test modules"):

@@ -196,8 +196,10 @@ pub fn directory() -> Option<PathBuf> {
 /// The local time now, as a record's file name starts with it.
 #[must_use]
 pub fn file_timestamp() -> String {
-    // format: machine (the record's file name)
-    chrono::Local::now().format(FILE_TIMESTAMP).to_string()
+    tilo_formats::machine!(
+        "the record's file name, which programs sort by",
+        chrono::Local::now().format(FILE_TIMESTAMP).to_string()
+    )
 }
 
 /// Write `body` as the new record `name` in `dir`: a private file, created

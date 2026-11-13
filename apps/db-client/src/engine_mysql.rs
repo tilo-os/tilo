@@ -329,20 +329,23 @@ pub(crate) fn mysql_value_to_cell(v: Value) -> Cell {
             Ok(s) => Cell::bounded_text(s),
             Err(e) => Cell::Blob(e.into_bytes().len()),
         },
-        // format: machine (SQL's canonical DATETIME and TIME text, as the
-        // server and every SQL client write it)
         Value::Date(year, month, day, hour, min, sec, micros) => {
             if hour == 0 && min == 0 && sec == 0 && micros == 0 {
-                Cell::bounded_text(format!("{year:04}-{month:02}-{day:02}"))
+                Cell::bounded_text(ui::format::machine!(
+                    "SQL's canonical DATETIME text, as the server writes it",
+                    format!("{year:04}-{month:02}-{day:02}")
+                ))
             } else if micros == 0 {
-                Cell::bounded_text(format!(
-                    // format: machine (SQL text)
-                    "{year:04}-{month:02}-{day:02} {hour:02}:{min:02}:{sec:02}"
+                Cell::bounded_text(ui::format::machine!(
+                    "SQL's canonical DATETIME text, as the server writes it",
+                    format!("{year:04}-{month:02}-{day:02} {hour:02}:{min:02}:{sec:02}")
                 ))
             } else {
-                Cell::bounded_text(format!(
-                    // format: machine (SQL text)
-                    "{year:04}-{month:02}-{day:02} {hour:02}:{min:02}:{sec:02}.{micros:06}"
+                Cell::bounded_text(ui::format::machine!(
+                    "SQL's canonical DATETIME text, as the server writes it",
+                    format!(
+                        "{year:04}-{month:02}-{day:02} {hour:02}:{min:02}:{sec:02}.{micros:06}"
+                    )
                 ))
             }
         }
@@ -350,11 +353,15 @@ pub(crate) fn mysql_value_to_cell(v: Value) -> Cell {
             let sign = if neg { "-" } else { "" };
             let hours = days * 24 + u32::from(hour);
             if micros == 0 {
-                // format: machine (SQL text)
-                Cell::bounded_text(format!("{sign}{hours:02}:{min:02}:{sec:02}"))
+                Cell::bounded_text(ui::format::machine!(
+                    "SQL's canonical TIME text, as the server writes it",
+                    format!("{sign}{hours:02}:{min:02}:{sec:02}")
+                ))
             } else {
-                // format: machine (SQL text)
-                Cell::bounded_text(format!("{sign}{hours:02}:{min:02}:{sec:02}.{micros:06}"))
+                Cell::bounded_text(ui::format::machine!(
+                    "SQL's canonical TIME text, as the server writes it",
+                    format!("{sign}{hours:02}:{min:02}:{sec:02}.{micros:06}")
+                ))
             }
         }
     }

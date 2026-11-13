@@ -46,6 +46,9 @@ use chrono::Timelike;
 
 pub use chrono::{NaiveDate, NaiveDateTime, NaiveTime, Weekday};
 pub use region::{DateStyle, FirstDayOfWeek, NumberStyle, RegionFormats};
+/// Text for a machine rather than a person: [`machine!`] names why it is not
+/// written in the person's formats (see its own docs).
+pub use tilo_formats::machine;
 
 use crate::i18n::{ArgValue, widget_format};
 

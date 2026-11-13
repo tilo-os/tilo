@@ -296,10 +296,11 @@ pub(crate) fn with_time(text: &str, time: Option<NaiveTime>) -> String {
     };
     match crate::component::moment_day(text) {
         Some(day) => instant_text(day, time),
-        // The field's value is the clock a person picked, which reading the field back reads:
-        // machine text, not their clock style.
-        // format: machine
-        None => time.format("%H:%M").to_string(),
+        // The field's value is the clock a person picked, which reading the field back reads.
+        None => crate::format::machine!(
+            "the field's value, read back rather than shown in their style",
+            time.format("%H:%M").to_string()
+        ),
     }
 }
 

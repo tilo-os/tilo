@@ -552,9 +552,10 @@ pub fn serial_to_time(serial: f64, style: TimeStyle) -> String {
     let mi = (total_secs % 3600) / 60;
     // A cell that follows the language reads each person's own clock.
     match style.resolved(ui::format::words()) {
-        // format: machine (a cell's own number format, the same for every
-        // collaborator)
-        TimeStyle::Language | TimeStyle::H24 => format!("{h:02}:{mi:02}"),
+        TimeStyle::Language | TimeStyle::H24 => ui::format::machine!(
+            "a cell's own number format, the same for every collaborator",
+            format!("{h:02}:{mi:02}")
+        ),
         TimeStyle::H12 => {
             let suffix = if h < 12 { "AM" } else { "PM" };
             let h12 = match h % 12 {
@@ -567,11 +568,12 @@ pub fn serial_to_time(serial: f64, style: TimeStyle) -> String {
 }
 
 fn month_abbrev(m: u32) -> &'static str {
-    // format: machine (a cell's own date format, the same for every
-    // collaborator)
-    const M: [&str; 12] = [
-        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-    ];
+    const M: [&str; 12] = ui::format::machine!(
+        "a cell's own date format, the same for every collaborator",
+        [
+            "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+        ]
+    );
     let idx = m.clamp(1, 12).saturating_sub(1);
     usize::try_from(idx)
         .ok()

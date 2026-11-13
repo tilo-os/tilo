@@ -39,24 +39,30 @@ pub fn shown(
 
 /// The day the stored text `text` is: its date part.
 fn day_of(text: &str) -> Option<NaiveDate> {
-    // ignored-failure: a value that is not a day is shown as the text it is
-    NaiveDate::parse_from_str(text, "%Y-%m-%d").ok()
+    tilo_failure::ignored!(
+        "a value that is not a day is shown as the text it is",
+        NaiveDate::parse_from_str(text, "%Y-%m-%d").ok()
+    )
 }
 
 /// The instant `YYYY-MM-DDTHH:MM:SSZ` in the zone `zone` (seconds ahead of UTC).
 fn moment_of(text: &str, zone: i64) -> Option<chrono::NaiveDateTime> {
-    // ignored-failure: a value that is not an instant is shown as the text it is
     let zone = FixedOffset::east_opt(i32::try_from(zone).ok()?)?;
-    DateTime::parse_from_rfc3339(text)
-        .ok()
-        .map(|at| at.with_timezone(&zone).naive_local())
+    tilo_failure::ignored!(
+        "a value that is not an instant is shown as the text it is",
+        DateTime::parse_from_rfc3339(text)
+            .ok()
+            .map(|at| at.with_timezone(&zone).naive_local())
+    )
 }
 
 /// The length of time the stored text `text` is, when it is one.
 fn duration_of(text: &str) -> Option<std::time::Duration> {
-    // ignored-failure: a value that is no number of seconds is shown as the text it is
-    text.trim()
-        .parse::<u64>()
-        .ok()
-        .map(std::time::Duration::from_secs)
+    tilo_failure::ignored!(
+        "a value that is no number of seconds is shown as the text it is",
+        text.trim()
+            .parse::<u64>()
+            .ok()
+            .map(std::time::Duration::from_secs)
+    )
 }
