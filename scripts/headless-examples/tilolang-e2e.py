@@ -197,17 +197,20 @@ def toolkit_word(name: str, key: str) -> str:
     return say("crates/sdk/ui-core", key, window_language(name))
 
 
-def doing(name: str, ty: str, action: str, on: str | None = None) -> str:
-    """What the app `name`'s action `action`, run on records of the app `on`'s type `ty`, is known
-    by: the record kind it acts on and the operation, in the apps' own ids, which no composition
-    and no language changes.
+def doing(name: str, ty: str | None, action: str, on: str | None = None) -> str:
+    """What the app `name`'s action `action` is known by: the kind of the resource the app publishes
+    it on, and the operation, in the app's own ids, which no composition and no language changes.
 
-    `ty` is the type as its app declares it (`Tasks`, `Notebook`): the kind that app publishes the
-    records under is `tl.` and the app's id before it. `on` names the app holding those records,
-    when it is not the one declaring the action (`today`'s cleanup runs on `tasks`' tasks). `action`
-    is looked up in the ids lock of the app that declares it (`apps/tl/<name>/app.ids`), as every
-    declaration there is named (`new_task = qymo5lg2`)."""
-    kind = f"tl.{app_id(on or name)}.{ty}"
+    `ty` is the type as its app declares it (`Tasks`, `Notebook`) when the action acts on records of
+    a type its app declares: the kind those records are published under is `tl.` and the app's id
+    before it. `on` names the app holding those records, when it is not the one declaring the
+    action. An action that takes another app's record is published on the app's own resource
+    (`today`'s cleanup runs on `tasks`' tasks), whose kind is `tl.` and the app's id: pass `None`
+    for `ty`.
+    `action` is looked up in the ids lock of the app that declares it (`apps/tl/<name>/app.ids`),
+    as every declaration there is named (`new_task = qymo5lg2`)."""
+    app = app_id(on or name)
+    kind = f"tl.{app}" if ty is None else f"tl.{app}.{ty}"
     return "\x1f".join((kind, app_id_of(name, action)))
 
 
@@ -737,7 +740,7 @@ def check_today(session: Session, out: Path, before: bytes) -> dict:
     focus(session, next(w for w in session.windows() if w.get("app_id") == today))
     until("Tasks' tasks in Today's card", lambda: (lambda shown: shown if all(
         title in shown for title in held) else None)(named(session)), 30)
-    cleanup = doing("today", "Tasks", "morning_cleanup", on="tasks")
+    cleanup = doing("today", None, "morning_cleanup")
     session.wait_doing(cleanup)
     done = mark_done(session, held[0])
     menu = menu_complete(session, held[1])
@@ -916,19 +919,14 @@ def app_operation(session: Session, app: str, operation: str):
 def app_action(session: Session, app: str, declared: str, kind: str | None = None):
     """The action `declared` (`new_task`, as the app's source writes it) that the window of `app`
     publishes, of the kind its effect has when `kind` names one (`View`, `Document`). The action is
-    found by the id the app publishes it under, never by the words its title reads in. Its
-    application is `app` exactly: so.tilo.notes never matches so.tilo.lang.notes."""
-    wanted = app_id_of(app_dir(app), declared)
+    found by the name the app publishes it under — as a native app's verb, which an agent at the
+    door calls it by — never by the words its title reads in. Its application is `app` exactly:
+    so.tilo.notes never matches so.tilo.lang.notes."""
     for action in session.actions(""):
-        if (action.get("application") == app and action.get("operation") == wanted
+        if (action.get("application") == app and action.get("operation") == declared
                 and kind in (None, action.get("operation_kind"))):
             return action
     return None
-
-
-def app_dir(app: str) -> str:
-    """The directory under `apps/tl` of the app `app`."""
-    return app.removeprefix("so.tilo.lang.")
 
 
 def focus(session: Session, window: dict) -> None:
