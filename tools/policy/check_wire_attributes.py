@@ -28,10 +28,10 @@ the end of a frame. Neither are ``rename``/``rename_all`` (a positional format
 writes no names), ``with``/``serialize_with`` (which write the field the same
 way on both sides), or ``transparent``.
 
-What a compact format carries is reachability from those roots, so a type that
-only builds what a frame holds is not judged: a roster's `Person` is turned into
-its `Member` row before it reaches the frame, and no byte of it is read by
-position. A type that becomes a field of a carried type is judged from then on.
+A type that only builds what a frame holds is not judged: a roster's `Person` is
+turned into its `Member` row before it reaches the frame, and no byte of it is
+read by position. A type that becomes a field of a carried type is judged from
+then on.
 
 This is an absolute judgement of a tree, not of a change: it runs over the whole
 tree in the pre-commit hook and in the repository policy suite, so a commit made
@@ -104,8 +104,9 @@ def problems(root: Path = ROOT, unreadable: list[str] | None = None) -> list[str
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser_args = list(sys.argv[1:] if argv is None else argv)
-    root = Path(parser_args[0]).resolve() if parser_args else ROOT
+    """`check_wire_attributes.py [ROOT]`, failing on what the lines above name."""
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    root = Path(arguments[0]).resolve() if arguments else ROOT
     unreadable: list[str] = []
     found = problems(root, unreadable)
     for error in unreadable:
