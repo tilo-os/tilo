@@ -91,6 +91,9 @@ FIND_S = 180
 ALLOW_ONCE = "Allow once"
 ALLOW = "Allow"
 DENY = "Deny"
+# The choice only the door's own sheet offers: a sheet with "Allow once" and without it asks
+# about one step of an agent that is in already (crates/session/session/src/run_questions.rs).
+ALLOW_SESSION = "Allow for this session"
 # The Browser, as the desk names the app.
 BROWSER = "so.tilo.browser"
 # How long the person is not there to answer B's sheet.
@@ -718,6 +721,19 @@ ip -o addr show dev "$dev"
         if [s for s in self.seated(b) if s.get("seat")]:
             raise Failed(f"B still seats the agent after its Stop: {self.seated(b)}")
 
+    def unasked(self, box: Box, res: Result) -> None:
+        """Nobody sits at `box`, so no sheet may be up on it: neither the door's, which its
+        setting answers, nor a question about a step, which nothing this agent does asks for.
+        The failure says which of the two it is, by what the sheet offers."""
+        if not self.sheet_targets(box):
+            return
+        names = [str(t.get("name")) for t in self.targets(box)]
+        res.facts["sheet"] = [n for n in names if "llow" in n or n == DENY]
+        if ALLOW_SESSION in names:
+            raise Failed("B asked its person although its setting lets the person's devices in")
+        raise Failed("B let the agent in unasked, then asked its person about a step of it: "
+                     f"{res.facts['sheet']}")
+
     def work(self, a: Box, b: Box, res: Result, facts: dict) -> None:
         res.facts["setting"] = self.set_accept(b, True)
         ready, go = f"$HOME/{GUEST_DIR}/work-ready", f"$HOME/{GUEST_DIR}/work-go"
@@ -727,8 +743,7 @@ ip -o addr show dev "$dev"
                                            E2E_TITLE=title, E2E_WAIT_S="60")
         seated = wait_until(lambda: [s for s in self.seated(b) if s.get("seat")], 90, 1.0)
         res.facts["seated"] = seated
-        if self.sheet_targets(b):
-            raise Failed("B asked its person although its setting lets the person's devices in")
+        self.unasked(b, res)
         wait_until(lambda: "yes" in a.vm.exec(f'test -e "{ready}" && echo yes || echo no'), 120, 1.0)
         a.vm.exec(f'touch "{go}"')
         t = self.finish(thread, holder)
