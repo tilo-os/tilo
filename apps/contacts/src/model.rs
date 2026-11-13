@@ -890,148 +890,204 @@ pub fn sample_contacts() -> Vec<Contact> {
 mod tests {
     use super::*;
 
-    /// Birthdays parse ISO and common typed forms, round-trip and pretty-print.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "merged scenario test: each labelled phase is one original case, kept verbatim"
-    )]
-    #[test]
-    fn birthday_parses_formats_and_round_trips() {
-        {
-            let b = Birthday::parse("1815-12-10").expect("valid ISO date");
-            assert_eq!(b.year(), Some(1815));
-            assert_eq!(b.month(), 12);
-            assert_eq!(b.day(), 10);
-            assert_eq!(
-                b,
-                Birthday::Full {
-                    year: 1815,
-                    month: 12,
-                    day: 10
-                }
-            );
-        }
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::too_many_lines,
+            reason = "merged scenario test: each labelled phase is one original case, kept verbatim"
+        )]
+        fn the_contact_model_reads_birthdays_names_and_the_books_order;
 
+        phase birthday_parses_formats_and_round_trips;
+        // Birthdays parse ISO and common typed forms, round-trip and pretty-print.
         {
-            assert_eq!(
-                Birthday::parse("2001/03/09"),
-                Some(Birthday::Full {
-                    year: 2001,
-                    month: 3,
-                    day: 9
-                })
-            );
-            assert_eq!(
-                Birthday::parse("20010309"),
-                Some(Birthday::Full {
-                    year: 2001,
-                    month: 3,
-                    day: 9
-                })
-            );
-            assert_eq!(
-                Birthday::parse("03/09/2001"),
-                Some(Birthday::Full {
-                    year: 2001,
-                    month: 3,
-                    day: 9
-                })
-            );
-            assert_eq!(
-                Birthday::parse("09.03.2001"),
-                Some(Birthday::Full {
-                    year: 2001,
-                    month: 3,
-                    day: 9
-                })
-            );
-            assert_eq!(
-                Birthday::parse("25/12/1990"),
-                Some(Birthday::Full {
-                    year: 1990,
-                    month: 12,
-                    day: 25
-                })
-            );
-            assert_eq!(Birthday::parse("not a date"), None);
-            assert_eq!(Birthday::parse(""), None);
-            assert_eq!(Birthday::parse("2001-13-40"), None);
-        }
-
-        {
-            assert_eq!(
-                Birthday::parse("12-10"),
-                Some(Birthday::MonthDay { month: 12, day: 10 })
-            );
-            assert_eq!(
-                Birthday::parse("--12-10"),
-                Some(Birthday::MonthDay { month: 12, day: 10 })
-            );
-            assert_eq!(
-                Birthday::parse("--1210"),
-                Some(Birthday::MonthDay { month: 12, day: 10 })
-            );
-            let b = Birthday::parse("12-10").unwrap();
-            assert_eq!(b.year(), None, "a year-less birthday has no year");
-            assert_eq!((b.month(), b.day()), (12, 10));
-        }
-
-        {
-            for b in [
-                Birthday::Full {
-                    year: 1815,
-                    month: 12,
-                    day: 10,
-                },
-                Birthday::Full {
-                    year: 2000,
-                    month: 2,
-                    day: 29,
-                },
-                Birthday::MonthDay { month: 6, day: 23 },
-            ] {
+            {
+                let b = Birthday::parse("1815-12-10").expect("valid ISO date");
+                assert_eq!(b.year(), Some(1815));
+                assert_eq!(b.month(), 12);
+                assert_eq!(b.day(), 10);
                 assert_eq!(
-                    Birthday::parse(&b.iso()),
-                    Some(b),
-                    "{} round-trips",
-                    b.iso()
+                    b,
+                    Birthday::Full {
+                        year: 1815,
+                        month: 12,
+                        day: 10
+                    }
                 );
+            }
+
+            {
+                assert_eq!(
+                    Birthday::parse("2001/03/09"),
+                    Some(Birthday::Full {
+                        year: 2001,
+                        month: 3,
+                        day: 9
+                    })
+                );
+                assert_eq!(
+                    Birthday::parse("20010309"),
+                    Some(Birthday::Full {
+                        year: 2001,
+                        month: 3,
+                        day: 9
+                    })
+                );
+                assert_eq!(
+                    Birthday::parse("03/09/2001"),
+                    Some(Birthday::Full {
+                        year: 2001,
+                        month: 3,
+                        day: 9
+                    })
+                );
+                assert_eq!(
+                    Birthday::parse("09.03.2001"),
+                    Some(Birthday::Full {
+                        year: 2001,
+                        month: 3,
+                        day: 9
+                    })
+                );
+                assert_eq!(
+                    Birthday::parse("25/12/1990"),
+                    Some(Birthday::Full {
+                        year: 1990,
+                        month: 12,
+                        day: 25
+                    })
+                );
+                assert_eq!(Birthday::parse("not a date"), None);
+                assert_eq!(Birthday::parse(""), None);
+                assert_eq!(Birthday::parse("2001-13-40"), None);
+            }
+
+            {
+                assert_eq!(
+                    Birthday::parse("12-10"),
+                    Some(Birthday::MonthDay { month: 12, day: 10 })
+                );
+                assert_eq!(
+                    Birthday::parse("--12-10"),
+                    Some(Birthday::MonthDay { month: 12, day: 10 })
+                );
+                assert_eq!(
+                    Birthday::parse("--1210"),
+                    Some(Birthday::MonthDay { month: 12, day: 10 })
+                );
+                let b = Birthday::parse("12-10").unwrap();
+                assert_eq!(b.year(), None, "a year-less birthday has no year");
+                assert_eq!((b.month(), b.day()), (12, 10));
+            }
+
+            {
+                for b in [
+                    Birthday::Full {
+                        year: 1815,
+                        month: 12,
+                        day: 10,
+                    },
+                    Birthday::Full {
+                        year: 2000,
+                        month: 2,
+                        day: 29,
+                    },
+                    Birthday::MonthDay { month: 6, day: 23 },
+                ] {
+                    assert_eq!(
+                        Birthday::parse(&b.iso()),
+                        Some(b),
+                        "{} round-trips",
+                        b.iso()
+                    );
+                }
+            }
+
+            {
+                assert_eq!(
+                    Birthday::Full {
+                        year: 1815,
+                        month: 12,
+                        day: 10
+                    }
+                    .pretty(),
+                    "Dec 10, 1815"
+                );
+                assert_eq!(Birthday::MonthDay { month: 12, day: 10 }.pretty(), "Dec 10");
             }
         }
 
+        phase display_names_and_field_matching;
         {
-            assert_eq!(
-                Birthday::Full {
-                    year: 1815,
-                    month: 12,
-                    day: 10
-                }
-                .pretty(),
-                "Dec 10, 1815"
-            );
-            assert_eq!(Birthday::MonthDay { month: 12, day: 10 }.pretty(), "Dec 10");
-        }
-    }
+            {
+                let mut c = Contact::new();
+                assert_eq!(c.display_name(), "Unnamed contact");
+                c.org = "ACME".into();
+                assert_eq!(c.display_name(), "ACME");
+                c.first = "Jane".into();
+                c.last = "Doe".into();
+                assert_eq!(c.display_name(), "Jane Doe");
+            }
 
-    #[test]
-    fn display_names_and_field_matching() {
-        {
-            let mut c = Contact::new();
-            assert_eq!(c.display_name(), "Unnamed contact");
-            c.org = "ACME".into();
-            assert_eq!(c.display_name(), "ACME");
-            c.first = "Jane".into();
-            c.last = "Doe".into();
-            assert_eq!(c.display_name(), "Jane Doe");
+            {
+                let mut c = Contact::new();
+                c.first = "Grace".into();
+                c.emails.push(Labeled::new("work", "grace@navy.mil"));
+                assert!(c.matches(&"navy".to_lowercase()));
+                assert!(c.matches(&"grace".to_lowercase()));
+                assert!(!c.matches(&"zzz".to_lowercase()));
+            }
         }
 
+        phase book_filters_sorts_and_groups;
         {
-            let mut c = Contact::new();
-            c.first = "Grace".into();
-            c.emails.push(Labeled::new("work", "grace@navy.mil"));
-            assert!(c.matches(&"navy".to_lowercase()));
-            assert!(c.matches(&"grace".to_lowercase()));
-            assert!(!c.matches(&"zzz".to_lowercase()));
+            {
+                let store = book(sample_contacts());
+                let ids = store.filtered_sorted("", None, SortKey::Name);
+                let names: Vec<String> = ids
+                    .iter()
+                    .map(|id| store.contact(*id).unwrap().last.clone())
+                    .collect();
+                let pos = |n: &str| names.iter().position(|x| x == n).unwrap();
+                assert!(pos("Berners-Lee") < pos("Hopper"));
+                assert!(pos("Hopper") < pos("Lovelace"));
+
+                let friends = store.filtered_sorted("", Some("Friends"), SortKey::Name);
+                assert!(friends.iter().all(|id| {
+                    store
+                        .contact(*id)
+                        .unwrap()
+                        .groups
+                        .iter()
+                        .any(|g| g.value.eq_ignore_ascii_case("Friends"))
+                }));
+                assert!(!friends.is_empty());
+            }
+
+            {
+                let mut a = Contact::new();
+                a.groups = vec![
+                    GroupEntry::new("Work"),
+                    GroupEntry::new("work"),
+                    GroupEntry::new("Family"),
+                ]
+                .into();
+                let store = book(vec![a]);
+                let groups = store.all_groups();
+                assert_eq!(groups.len(), 2, "Work/work collapse: {groups:?}");
+            }
+
+            {
+                let mut first = Contact::new();
+                first.groups.push(GroupEntry::new("Cafe\u{301}"));
+                let mut second = Contact::new();
+                second.groups.push(GroupEntry::new("CAFÉ"));
+                let store = book(vec![first.clone(), second]);
+
+                assert_eq!(store.all_groups(), vec!["CAFÉ".to_string()]);
+                let visible = store.filtered_sorted("", Some("café"), SortKey::Name);
+                assert_eq!(visible.len(), 2);
+                assert!(first.matches("CAFÉ"));
+            }
         }
     }
 
@@ -1039,58 +1095,6 @@ mod tests {
         crate::resource::Contacts {
             contacts: contacts.into(),
             ..crate::resource::Contacts::default()
-        }
-    }
-
-    #[test]
-    fn book_filters_sorts_and_groups() {
-        {
-            let store = book(sample_contacts());
-            let ids = store.filtered_sorted("", None, SortKey::Name);
-            let names: Vec<String> = ids
-                .iter()
-                .map(|id| store.contact(*id).unwrap().last.clone())
-                .collect();
-            let pos = |n: &str| names.iter().position(|x| x == n).unwrap();
-            assert!(pos("Berners-Lee") < pos("Hopper"));
-            assert!(pos("Hopper") < pos("Lovelace"));
-
-            let friends = store.filtered_sorted("", Some("Friends"), SortKey::Name);
-            assert!(friends.iter().all(|id| {
-                store
-                    .contact(*id)
-                    .unwrap()
-                    .groups
-                    .iter()
-                    .any(|g| g.value.eq_ignore_ascii_case("Friends"))
-            }));
-            assert!(!friends.is_empty());
-        }
-
-        {
-            let mut a = Contact::new();
-            a.groups = vec![
-                GroupEntry::new("Work"),
-                GroupEntry::new("work"),
-                GroupEntry::new("Family"),
-            ]
-            .into();
-            let store = book(vec![a]);
-            let groups = store.all_groups();
-            assert_eq!(groups.len(), 2, "Work/work collapse: {groups:?}");
-        }
-
-        {
-            let mut first = Contact::new();
-            first.groups.push(GroupEntry::new("Cafe\u{301}"));
-            let mut second = Contact::new();
-            second.groups.push(GroupEntry::new("CAFÉ"));
-            let store = book(vec![first.clone(), second]);
-
-            assert_eq!(store.all_groups(), vec!["CAFÉ".to_string()]);
-            let visible = store.filtered_sorted("", Some("café"), SortKey::Name);
-            assert_eq!(visible.len(), 2);
-            assert!(first.matches("CAFÉ"));
         }
     }
 }

@@ -57,48 +57,52 @@ pub(crate) fn mailto_uri(address: &str) -> Option<String> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_number_as_people_write_it_becomes_a_dial_string() {
-        assert_eq!(
-            tel_uri("+44 (0)20 7946 0018").as_deref(),
-            Some("tel:+44(0)2079460018")
-        );
-        assert_eq!(tel_uri("555 0100").as_deref(), Some("tel:5550100"));
-        assert_eq!(tel_uri(" +1-555-0100 ").as_deref(), Some("tel:+1-555-0100"));
-    }
+    tilo_test_env::scenario! {
+        fn a_contacts_number_or_address_becomes_a_handoff_uri_or_is_refused;
 
-    #[test]
-    fn a_number_with_nothing_dialable_is_refused_rather_than_guessed() {
-        for empty in ["", "   ", "ask Sam", "+", "–"] {
-            assert_eq!(tel_uri(empty), None, "{empty:?} names no number");
-            assert_eq!(sms_uri(empty), None, "{empty:?} names no number");
+        phase a_number_as_people_write_it_becomes_a_dial_string;
+        {
+            assert_eq!(
+                tel_uri("+44 (0)20 7946 0018").as_deref(),
+                Some("tel:+44(0)2079460018")
+            );
+            assert_eq!(tel_uri("555 0100").as_deref(), Some("tel:5550100"));
+            assert_eq!(tel_uri(" +1-555-0100 ").as_deref(), Some("tel:+1-555-0100"));
         }
-    }
 
-    #[test]
-    fn a_message_goes_to_the_same_dial_string() {
-        assert_eq!(sms_uri("555 0100").as_deref(), Some("sms:5550100"));
-    }
+        phase a_number_with_nothing_dialable_is_refused_rather_than_guessed;
+        {
+            for empty in ["", "   ", "ask Sam", "+", "–"] {
+                assert_eq!(tel_uri(empty), None, "{empty:?} names no number");
+                assert_eq!(sms_uri(empty), None, "{empty:?} names no number");
+            }
+        }
 
-    #[test]
-    fn an_address_becomes_a_mailto_and_a_non_address_does_not() {
-        assert_eq!(
-            mailto_uri(" ada@example.test ").as_deref(),
-            Some("mailto:ada@example.test")
-        );
-        assert_eq!(
-            mailto_uri("ada+lists@example.test").as_deref(),
-            Some("mailto:ada+lists@example.test")
-        );
-        for refused in [
-            "",
-            "ada",
-            "@example.test",
-            "ada@",
-            "a@b@c",
-            "ada lovelace@x",
-        ] {
-            assert_eq!(mailto_uri(refused), None, "{refused:?} is not an address");
+        phase a_message_goes_to_the_same_dial_string;
+        {
+            assert_eq!(sms_uri("555 0100").as_deref(), Some("sms:5550100"));
+        }
+
+        phase an_address_becomes_a_mailto_and_a_non_address_does_not;
+        {
+            assert_eq!(
+                mailto_uri(" ada@example.test ").as_deref(),
+                Some("mailto:ada@example.test")
+            );
+            assert_eq!(
+                mailto_uri("ada+lists@example.test").as_deref(),
+                Some("mailto:ada+lists@example.test")
+            );
+            for refused in [
+                "",
+                "ada",
+                "@example.test",
+                "ada@",
+                "a@b@c",
+                "ada lovelace@x",
+            ] {
+                assert_eq!(mailto_uri(refused), None, "{refused:?} is not an address");
+            }
         }
     }
 }
