@@ -19,80 +19,84 @@ fn capture(id: &str, label: &str) -> SharedCapture {
     }
 }
 
-/// Scans go to the front, a code scanned again moves there, and the
-/// history is capped.
-#[test]
-fn scans_are_newest_first_deduped_and_capped() {
-    let mut record = Replica::<Record>::new();
-    for raw in ["https://a", "https://b", "https://a"] {
-        record.apply(Record::RECORD_SCAN.with(raw)).unwrap();
+tilo_test_env::scenario! {
+    fn the_record_keeps_scans_and_handoffs_and_converges;
+
+    phase scans_are_newest_first_deduped_and_capped;
+    // Scans go to the front, a code scanned again moves there, and the
+    // history is capped.
+    {
+        let mut record = Replica::<Record>::new();
+        for raw in ["https://a", "https://b", "https://a"] {
+            record.apply(Record::RECORD_SCAN.with(raw)).unwrap();
+        }
+        let scans = record.state().unwrap().scans;
+        assert_eq!(
+            scans
+                .iter()
+                .map(|scan| scan.raw.as_str())
+                .collect::<Vec<_>>(),
+            ["https://a", "https://b"]
+        );
+        for index in 0..(MAX_SCANS + 10) {
+            record
+                .apply(Record::RECORD_SCAN.with(format!("code-{index}").as_str()))
+                .unwrap();
+        }
+        assert_eq!(record.state().unwrap().scans.len(), MAX_SCANS);
+        assert!(record.apply(Record::RECORD_SCAN.with("")).is_err());
     }
-    let scans = record.state().unwrap().scans;
-    assert_eq!(
-        scans
-            .iter()
-            .map(|scan| scan.raw.as_str())
-            .collect::<Vec<_>>(),
-        ["https://a", "https://b"]
-    );
-    for index in 0..(MAX_SCANS + 10) {
+
+    phase a_capture_is_handed_off_with_verified_metadata_only;
+    // A capture is handed off only with verified bytes and sane metadata, and
+    // the record's fields change only through its verbs.
+    {
+        let mut record = Replica::<Record>::new();
         record
-            .apply(Record::RECORD_SCAN.with(format!("code-{index}").as_str()))
+            .apply(Record::REGISTER_CAPTURE.with(capture("IMG_1.jpg", "Harbour")))
             .unwrap();
+        assert_eq!(record.state().unwrap().recent.unwrap().label, "Harbour");
+        let mut forged = capture("IMG_2.jpg", "Forged");
+        forged.media_id = "/home/someone/IMG_2.jpg".into();
+        assert!(
+            record.apply(Record::REGISTER_CAPTURE.with(forged)).is_err(),
+            "a path is never a capture's identity"
+        );
+        let mut empty = capture("IMG_3.jpg", "Empty");
+        empty.w = 0;
+        assert!(record.apply(Record::REGISTER_CAPTURE.with(empty)).is_err());
+        assert!(
+            ui::tilo_resource::Invoke::edit(&Record::paths().scans.set(Vec::new()))
+                .ok()
+                .and_then(|invoke| record.apply(invoke).ok())
+                .is_none(),
+            "the scan history changes only by scanning"
+        );
     }
-    assert_eq!(record.state().unwrap().scans.len(), MAX_SCANS);
-    assert!(record.apply(Record::RECORD_SCAN.with("")).is_err());
-}
 
-/// A capture is handed off only with verified bytes and sane metadata, and
-/// the record's fields change only through its verbs.
-#[test]
-fn a_capture_is_handed_off_with_verified_metadata_only() {
-    let mut record = Replica::<Record>::new();
-    record
-        .apply(Record::REGISTER_CAPTURE.with(capture("IMG_1.jpg", "Harbour")))
-        .unwrap();
-    assert_eq!(record.state().unwrap().recent.unwrap().label, "Harbour");
-    let mut forged = capture("IMG_2.jpg", "Forged");
-    forged.media_id = "/home/someone/IMG_2.jpg".into();
-    assert!(
-        record.apply(Record::REGISTER_CAPTURE.with(forged)).is_err(),
-        "a path is never a capture's identity"
-    );
-    let mut empty = capture("IMG_3.jpg", "Empty");
-    empty.w = 0;
-    assert!(record.apply(Record::REGISTER_CAPTURE.with(empty)).is_err());
-    assert!(
-        ui::tilo_resource::Invoke::edit(&Record::paths().scans.set(Vec::new()))
-            .ok()
-            .and_then(|invoke| record.apply(invoke).ok())
-            .is_none(),
-        "the scan history changes only by scanning"
-    );
-}
-
-/// Two devices scanning at once converge on one history; the capture
-/// handed off last stays whole.
-#[test]
-fn concurrent_scans_and_handoffs_converge() {
-    let mut ours = Replica::<Record>::new();
-    let mut theirs = ours.fork();
-    ours.apply(Record::RECORD_SCAN.with("ours")).unwrap();
-    ours.apply(Record::REGISTER_CAPTURE.with(capture("IMG_ours.jpg", "Ours")))
-        .unwrap();
-    theirs.apply(Record::RECORD_SCAN.with("theirs")).unwrap();
-    theirs
-        .apply(Record::REGISTER_CAPTURE.with(capture("IMG_theirs.jpg", "Theirs")))
-        .unwrap();
-    ours.sync_with(&mut theirs).unwrap();
-    let merged = ours.state().unwrap();
-    assert_eq!(merged, theirs.state().unwrap());
-    let recent = merged.recent.unwrap();
-    assert!(
-        (recent.id == "IMG_ours.jpg" && recent.label == "Ours")
-            || (recent.id == "IMG_theirs.jpg" && recent.label == "Theirs"),
-        "one handoff wins whole"
-    );
+    phase concurrent_scans_and_handoffs_converge;
+    // Two devices scanning at once converge on one history; the capture
+    // handed off last stays whole.
+    {
+        let mut ours = Replica::<Record>::new();
+        let mut theirs = ours.fork();
+        ours.apply(Record::RECORD_SCAN.with("ours")).unwrap();
+        ours.apply(Record::REGISTER_CAPTURE.with(capture("IMG_ours.jpg", "Ours")))
+            .unwrap();
+        theirs.apply(Record::RECORD_SCAN.with("theirs")).unwrap();
+        theirs
+            .apply(Record::REGISTER_CAPTURE.with(capture("IMG_theirs.jpg", "Theirs")))
+            .unwrap();
+        ours.sync_with(&mut theirs).unwrap();
+        let merged = ours.state().unwrap();
+        assert_eq!(merged, theirs.state().unwrap());
+        let recent = merged.recent.unwrap();
+        assert!(
+            (recent.id == "IMG_ours.jpg" && recent.label == "Ours")
+                || (recent.id == "IMG_theirs.jpg" && recent.label == "Theirs"),
+            "one handoff wins whole"
+        );
+    }
 }
 
 #[test]
