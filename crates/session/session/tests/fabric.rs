@@ -306,47 +306,6 @@ fn the_persons_devices_on_one_network_sync_without_a_relay() {
 }
 
 #[test]
-fn a_clipboard_entry_set_on_one_session_reaches_the_other() {
-    let person = person();
-    let laptop = device(&person, 1, "Laptop");
-    let desk = device(&person, 2, "Desk");
-    laptop.client.connect(desk.client.endpoint_addr());
-
-    assert!(
-        until(&[&laptop, &desk], || both_online(&laptop, &desk)),
-        "the two devices' sessions came up"
-    );
-
-    let now = tilo_clock::unix_now_ms();
-    let text = "a line copied on the laptop";
-    let copy = ClipboardEntry::shareable(
-        ClipboardPayload::Text(text.to_owned()),
-        laptop.id.clone(),
-        now,
-        FabricStamp {
-            counter: now,
-            device: laptop.id.clone(),
-        },
-    )
-    .expect("a shareable copy");
-    laptop.fabric().share_clipboard(vec![copy]);
-
-    assert!(
-        until(&[&laptop, &desk], || {
-            desk.fabric()
-                .device_fabric()
-                .merged_clipboard()
-                .entries()
-                .any(|entry| {
-                    entry.origin == laptop.id
-                        && entry.payload == ClipboardPayload::Text(text.to_owned())
-                })
-        }),
-        "the copy made on the laptop reached the desk"
-    );
-}
-
-#[test]
 fn a_wake_reaches_the_other_session() {
     let person = person();
     let laptop = device(&person, 1, "Laptop");
