@@ -269,6 +269,40 @@ fn tab_titled(device: &Device, workspace: &str, title: &str) -> Option<(String, 
         })
 }
 
+/// What a desk shows in one of its tabs.
+#[derive(Debug, PartialEq, Eq)]
+enum Shows {
+    /// A window that runs on another device, by the key of the device that hosts it.
+    Hosted(String),
+    /// Anything else, this device's own view of a window among them.
+    Own,
+    /// The desk does not hold the tab.
+    Nothing,
+}
+
+/// What `device`'s desk shows in its tab `tab` of `workspace`.
+fn tab_shows(device: &Device, workspace: &str, tab: &str) -> Shows {
+    let state = device.state();
+    let Ok(tree) = serde_json::from_value::<tilo_desktop_model::DesktopTree>(
+        state["state"]["workspace_tree"].clone(),
+    ) else {
+        return Shows::Nothing;
+    };
+    tree.workspaces
+        .iter()
+        .filter(|held| held.id().to_string() == workspace)
+        .flat_map(|held| &held.strips)
+        .flat_map(|strip| &strip.window_groups)
+        .flat_map(|group| &group.tabs)
+        .find(|held| held.id.to_string() == tab)
+        .map_or(Shows::Nothing, |held| match &held.tile {
+            tilo_desktop_model::TileContent::HostedWindow { host, .. } => {
+                Shows::Hosted(host.clone())
+            }
+            _ => Shows::Own,
+        })
+}
+
 /// The epoch `device`'s session last said it seals the live plane of `workspace` under: what it
 /// logs when the plane opens and whenever its keys move.
 fn sealing_epoch(device: &Device, workspace: &str) -> Option<u64> {
@@ -403,6 +437,22 @@ fn the_shared_window_arrives(workspace: &str, sharer: &Device, viewer: &Device, 
         || tab_titled(sharer, workspace, title).is_some(),
     );
     let (tab, shows) = tab_titled(sharer, workspace, title).expect("the window's tab");
+    // The desk's record carries the window to the other device, which lists it under the same id
+    // as its own view of it: a window it opens itself, and no picture of the one that runs on the
+    // sharing device. The share is asked for whether that view is there yet or not, and the steps
+    // below say which of the two they found.
+    let listed_before = {
+        let until = Instant::now() + Duration::from_secs(20);
+        loop {
+            if tab_shows(viewer, workspace, &tab) == Shows::Own {
+                break true;
+            }
+            if Instant::now() >= until {
+                break false;
+            }
+            std::thread::sleep(Duration::from_millis(250));
+        }
+    };
     let asked = sharer.act(
         SESSION,
         "session:window-share\u{1f}share",
@@ -466,6 +516,45 @@ fn the_shared_window_arrives(workspace: &str, sharer: &Device, viewer: &Device, 
                 .is_some_and(|row| row["pictured"] == json!(true))
         },
     );
+    // What it pictures is the window that runs on the sharing device, in a tab that names that
+    // device: a tab of its own, beside the desk's own view of the window where it lists one.
+    let pictured_in = || {
+        row_of(&shares(viewer), "watching", &tab)
+            .and_then(|row| row["shown_in"].as_str().map(str::to_owned))
+            .unwrap_or_default()
+    };
+    let sharing_device = hex::encode(sharer.cert.device_public_key);
+    eventually(
+        &format!(
+            "{}'s desk holds the window of tab {tab} in a tab that names {} as the device it \
+             runs on",
+            viewer.label, sharer.label
+        ),
+        Duration::from_secs(20),
+        workspace,
+        &both,
+        || {
+            matches!(
+                tab_shows(viewer, workspace, &pictured_in()),
+                Shows::Hosted(host) if host.eq_ignore_ascii_case(&sharing_device)
+            )
+        },
+    );
+    let place = pictured_in();
+    let own_view = tab_shows(viewer, workspace, &tab) == Shows::Own;
+    println!(
+        "{} listed tab {tab} as its own view of the window before the share: {listed_before}; \
+         it lists it so now: {own_view}; it pictures the shared window in tab {place}",
+        viewer.label
+    );
+    if own_view {
+        assert_ne!(
+            place,
+            tab,
+            "the shared window stands in a tab of its own beside the desk's own view of it\n{}",
+            report(workspace, &both)
+        );
+    }
     eventually(
         &format!(
             "{} names who views tab {tab}, and says it sends the window",

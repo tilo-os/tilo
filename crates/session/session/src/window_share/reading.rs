@@ -157,6 +157,9 @@ impl WindowShares {
                     "tab": tab.to_string(),
                     "room": workspace,
                     "host": watched.host.to_string(),
+                    // The tab of this desk that pictures it, which is the sharer's own where this
+                    // desk holds no view of its own of the window.
+                    "shown_in": self.pictured_in(*tab).to_string(),
                     "waiting_for": self.watching_waits_for(workspace),
                 })
             })

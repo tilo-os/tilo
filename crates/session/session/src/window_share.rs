@@ -308,6 +308,9 @@ pub(crate) trait ShareGovernor {
 struct Governed {
     /// The workspace whose governance says so.
     workspace: String,
+    /// The tab of this desk that pictures it: the one its sharer shows it in, or a tab this
+    /// device minted where the desk holds its own view of the window under that id.
+    shown_in: TabId,
     /// Whether the strip it is in was made for it, and goes with it.
     strip: bool,
 }
@@ -587,32 +590,41 @@ impl WindowShares {
                     }
                     self.changed();
                 }
-                ShareCommand::Watch { tab, workspace } => {
-                    let Some((host, _)) = hosted_window(tree, tab) else {
-                        tracing::debug!(tab, "no window of another device is shown in this tab");
-                        continue;
-                    };
-                    let Some(host) = device_key(&host) else {
-                        tracing::debug!(tab, %host, "a tab is hosted by no device key");
-                        continue;
-                    };
-                    self.watching.insert(
-                        (workspace, tab),
-                        Watched {
-                            host,
-                            asked_at: now,
-                        },
-                    );
-                    self.changed();
-                }
-                ShareCommand::Unwatch { tab, workspace } => {
-                    if self.watching.remove(&(workspace, tab)).is_some() {
-                        self.changed();
-                    }
-                }
+                ShareCommand::Watch { tab, workspace } => self.watch(tree, tab, workspace, now),
+                ShareCommand::Unwatch { tab, workspace } => self.unwatch(tab, workspace),
             }
         }
         self.start_waiting(compositor, desk, sync, engine, pages, now);
+    }
+
+    /// Ask the device hosting the window this desk shows in its tab `tab` for it, in `workspace`.
+    /// The tab is this desk's; the window is asked for by the tab its sharer shows it in.
+    fn watch(&mut self, tree: &DesktopTree, tab: TabId, workspace: String, now: Instant) {
+        let Some((host, _)) = hosted_window(tree, tab) else {
+            tracing::debug!(tab, "no window of another device is shown in this tab");
+            return;
+        };
+        let Some(host) = device_key(&host) else {
+            tracing::debug!(tab, %host, "a tab is hosted by no device key");
+            return;
+        };
+        let shared = self.shared_as(tab);
+        self.watching.insert(
+            (workspace, shared),
+            Watched {
+                host,
+                asked_at: now,
+            },
+        );
+        self.changed();
+    }
+
+    /// Stop asking for the window this desk shows in its tab `tab`.
+    fn unwatch(&mut self, tab: TabId, workspace: String) {
+        let shared = self.shared_as(tab);
+        if self.watching.remove(&(workspace, shared)).is_some() {
+            self.changed();
+        }
     }
 
     /// Run `then` on the loop with what a workspace's governance answered a share's write, once
@@ -813,7 +825,7 @@ impl WindowShares {
         let live: BTreeSet<TabId> = shared.iter().map(|shared| shared.tab).collect();
         let mut changed = self.take_ended(desk, &mut tree, &live);
         for shared in &shared {
-            changed |= self.show_shared(&mut tree, shared, now);
+            changed |= self.show_shared(desk, &mut tree, shared, now);
         }
         if changed {
             desk.replace_tree(tree);
@@ -923,12 +935,12 @@ impl WindowShares {
                 continue;
             };
             self.watching.remove(&(governed.workspace, tab));
-            // Only a tile the governance put on the desk goes with the share. A tab the desk
-            // already listed for the window is the desk's own, this device's view of it, and
-            // stays.
-            if hosted_window(tree, tab).is_some() {
+            // The tab that pictured the window goes with the share, and nothing else does: what
+            // the desk lists under the sharer's id is this device's own view of the window.
+            let place = governed.shown_in;
+            if hosted_window(tree, place).is_some() {
                 self.end_tab(desk, tab, TAB_GONE);
-                remove_governed_tile(tree, tab, governed.strip.then_some(StripId(tab)));
+                remove_governed_tile(tree, place, governed.strip.then_some(StripId(place)));
                 changed = true;
             } else {
                 self.end_tab(desk, tab, SENDER_STOPPED);
@@ -938,69 +950,62 @@ impl WindowShares {
         changed
     }
 
-    /// Add the tab of `shared` 's window to `tree` at the end of its workspace's last strip, and
-    /// watch it from the device the governance says hosts it. Answers whether `tree` changed.
-    fn show_shared(&mut self, tree: &mut DesktopTree, shared: &Shared, now: Instant) -> bool {
-        let Shared {
-            tab,
-            app_id,
-            host,
-            workspace,
-            host_label,
-        } = shared;
-        let (tab, workspace) = (*tab, workspace.clone());
+    /// Picture the window `shared` names in a tab of `tree`, and watch it from the device the
+    /// governance says hosts it. The tab is the one the desk shows the window in already as one
+    /// running on its host, and otherwise a new one at the end of its workspace's last strip:
+    /// under its sharer's id where this desk holds nothing under it, and under an id this device
+    /// mints where the desk lists the window as this device's own view of it. That view is what
+    /// this device opened, and stays as it is; the shared window is what runs on the sharer's
+    /// device, and stands beside it. Answers whether `tree` changed.
+    fn show_shared(
+        &mut self,
+        desk: &DesktopHandle,
+        tree: &mut DesktopTree,
+        shared: &Shared,
+        now: Instant,
+    ) -> bool {
+        let (tab, host, workspace) = (shared.tab, &shared.host, shared.workspace.clone());
+        let standing = self.governed.get(&tab).map(|governed| governed.shown_in);
         let mut changed = false;
-        if shown(tree, tab) {
-            self.governed.entry(tab).or_insert_with(|| Governed {
-                workspace: workspace.clone(),
-                strip: false,
-            });
-        } else if let Some(held) = tree
-            .workspaces
-            .iter_mut()
-            .find(|held| held.policy.workspace == workspace)
-        {
-            let label = app_id.clone();
-            let group = WindowGroup {
-                id: tab,
-                tabs: vec![Tab {
-                    id: tab,
-                    title: label.clone(),
-                    tile: TileContent::HostedWindow {
-                        app_id: app_id.clone(),
-                        label,
-                        host: host.clone(),
-                        host_label: host_label.clone(),
-                    },
-                    app_title: None,
-                    view: String::new(),
-                    pinned: false,
-                }],
-                active_tab: tab,
-                width: WindowWidth::Normal,
-                maximized: false,
-                focus_history: Vec::new(),
+        if standing.is_none_or(|place| hosted_window(tree, place).is_none()) {
+            let claimed: BTreeSet<TabId> = self
+                .governed
+                .values()
+                .map(|governed| governed.shown_in)
+                .collect();
+            let held = tree
+                .workspaces
+                .iter()
+                .any(|held| held.policy.workspace == workspace);
+            let placed = match hosted_tab_of(tree, shared, self.salt, &claimed) {
+                Some(place) => Some((place, false)),
+                None if held => {
+                    let place = if shown(tree, tab) {
+                        desk.mint_id()
+                    } else {
+                        tab
+                    };
+                    changed = true;
+                    Some((place, add_hosted_tab(tree, shared, place)))
+                }
+                None => None,
             };
-            let strip = held.strips.is_empty();
-            if strip {
-                held.strips.push(Strip {
-                    id: StripId(tab),
-                    name: String::new(),
-                    window_groups: Vec::new(),
-                });
+            if let Some((shown_in, strip)) = placed {
+                if standing.is_some_and(|before| before != shown_in) {
+                    // The tab that pictured it shows something else now: its stream is shown
+                    // again where the window stands.
+                    self.unmount(desk, tab);
+                }
+                self.governed.insert(
+                    tab,
+                    Governed {
+                        workspace: workspace.clone(),
+                        shown_in,
+                        strip,
+                    },
+                );
+                self.changed();
             }
-            if let Some(last) = held.strips.last_mut() {
-                last.window_groups.push(group);
-            }
-            self.governed.insert(
-                tab,
-                Governed {
-                    workspace: workspace.clone(),
-                    strip,
-                },
-            );
-            self.changed();
-            changed = true;
         }
         // Its stream is asked for as any watched window's is, from the device the governance says
         // hosts it.
@@ -1260,7 +1265,11 @@ impl WindowShares {
             self.watching
                 .retain(|(workspace, watched), _| *watched != tab || *workspace != entry.workspace);
             self.end_tab(desk, tab, TAB_GONE);
-            remove_governed_tile(&mut tree, tab, entry.strip.then_some(StripId(tab)));
+            // Only the tab that pictured the window goes: the desk's own view of it stays.
+            let place = entry.shown_in;
+            if hosted_window(&tree, place).is_some() {
+                remove_governed_tile(&mut tree, place, entry.strip.then_some(StripId(place)));
+            }
         }
         desk.replace_tree(tree);
         self.changed();
@@ -1334,13 +1343,16 @@ impl WindowShares {
                     ..
                 } => {
                     // A page's announcement, with what only this desktop knows of it: who it is to
-                    // the sender, what the desk calls the window, and whose device it comes from.
-                    let (title, sharer) = desk.read(|tree| tab_title(tree, named));
-                    let Some(start) =
+                    // the sender, what the desk calls the window, whose device it comes from, and
+                    // the tab of this desk that pictures it.
+                    let place = self.pictured_in(named);
+                    let (title, sharer) = desk.read(|tree| tab_title(tree, place));
+                    let Some(mut start) =
                         PeerStreamStart::announced(&msg, sync.peer(), sharer, title, true)
                     else {
                         continue;
                     };
+                    start.tab = place;
                     // A stream that is already decoded keeps its tile until its sender ends it,
                     // which is how a restarted stream reaches this device.
                     let shown = self
@@ -1351,7 +1363,7 @@ impl WindowShares {
                     self.received.insert(
                         (from, surface),
                         Received {
-                            tab: start.tab,
+                            tab: named,
                             host: publisher,
                             ws,
                             shown,
@@ -1386,7 +1398,9 @@ impl WindowShares {
     /// drawn into the tile its announcement made ([`crate::page_track`]).
     fn follow_windows(&mut self, desk: &DesktopHandle, sync: &Client) {
         let tree = desk.read(Clone::clone);
-        let wanted = tracks_to_show(&self.received, &self.watching, |tab| shown(&tree, tab));
+        let wanted = tracks_to_show(&self.received, &self.watching, |tab| {
+            shown(&tree, self.pictured_in(tab))
+        });
         if wanted != self.shown_tracks || !wanted.is_empty() {
             let planes = crate::calls::planes_of(sync);
             for (workspace, hosts) in &wanted {
@@ -1469,7 +1483,9 @@ impl WindowShares {
         let peer = neighbour_wire::peer_handle(from.as_bytes());
         let key = (peer, tab);
         if object.keyframe {
-            let start = desk.read(|tree| picture_start(tree, sync.peer(), peer, tab, &object));
+            let place = self.pictured_in(tab);
+            let start =
+                desk.read(|tree| picture_start(tree, sync.peer(), peer, (tab, place), &object));
             let Some(start) = start else {
                 tracing::debug!(tab, codec = ?object.codec, "a shared window's codec is not decoded here");
                 return;
@@ -1572,9 +1588,15 @@ impl WindowShares {
     /// Show every stream whose window the desk holds a tab for now, so its tile decodes it there: a
     /// stream that reached this device before the tab was made has waited for one.
     fn show_streams(&mut self, desk: &DesktopHandle) {
+        let governed = &self.governed;
         for ((peer, surface), stream) in &mut self.received {
             if stream.shown {
                 continue;
+            }
+            // The tab that pictures the window may have been made, or made anew, since the stream
+            // was announced.
+            if let Some(governed) = governed.get(&stream.tab) {
+                stream.start.tab = governed.shown_in;
             }
             if desk.show_peer_surface(&stream.start).is_some() {
                 stream.shown = true;
@@ -1608,6 +1630,34 @@ impl WindowShares {
             // Where the stream came from is where its input goes: the device hosting the window,
             // over the topic of its workspace.
             sync.publish_control(stream.ws, msg, stream.host);
+        }
+    }
+
+    /// The tab of this desk that pictures the window its sharer shows in `tab`: the one the
+    /// workspace's governance had it shown in, and `tab` itself for a window watched by hand.
+    fn pictured_in(&self, tab: TabId) -> TabId {
+        self.governed
+            .get(&tab)
+            .map_or(tab, |governed| governed.shown_in)
+    }
+
+    /// The tab a window's sharer shows it in, for the window this desk pictures in `tab`.
+    fn shared_as(&self, tab: TabId) -> TabId {
+        self.governed
+            .iter()
+            .find(|(_, governed)| governed.shown_in == tab)
+            .map_or(tab, |(shared, _)| *shared)
+    }
+
+    /// The tile of the window its sharer shows in `tab` leaves the tab it stood in, which shows
+    /// something else now: its stream is shown again where the desk pictures the window
+    /// ([`Self::show_streams`]).
+    fn unmount(&mut self, desk: &DesktopHandle, tab: TabId) {
+        for ((peer, surface), stream) in &mut self.received {
+            if stream.tab == tab && stream.shown {
+                desk.end_peer_surface(*peer, *surface, TAB_GONE);
+                stream.shown = false;
+            }
         }
     }
 
@@ -2214,13 +2264,14 @@ const fn video_codec(codec: StreamCodec) -> tilo_live::video::Codec {
     }
 }
 
-/// The stream a shared window's keyframe `object` starts, as the tile in `tab` decodes it: `None`
-/// for a codec no decoder here takes.
+/// The stream the keyframe `object` starts of the window its sharer shows in `tab`, as the tile in
+/// `place`, the tab of this desk that pictures it, decodes it: `None` for a codec no decoder here
+/// takes.
 fn picture_start(
     tree: &DesktopTree,
     local_peer: PeerId,
     peer: PeerId,
-    tab: TabId,
+    (tab, place): (TabId, TabId),
     object: &VideoObject,
 ) -> Option<PeerStreamStart> {
     let codec = match object.codec {
@@ -2230,8 +2281,8 @@ fn picture_start(
         tilo_live::video::Codec::Av1 => StreamCodec::Av1,
         tilo_live::video::Codec::Vp8 => return None,
     };
-    let (title, sharer) = tab_title(tree, tab);
-    let app_id = hosted_window(tree, tab)
+    let (title, sharer) = tab_title(tree, place);
+    let app_id = hosted_window(tree, place)
         .map(|(_, app_id)| app_id)
         .unwrap_or_default();
     let colorimetry = if object.hdr {
@@ -2255,7 +2306,7 @@ fn picture_start(
             title
         },
         app_id,
-        tab,
+        tab: place,
         sharer,
         // Whether the sender lets its viewer type is the sender's own rule, so this device offers
         // its pointer and keys and the sender decides whether they land.
@@ -2342,6 +2393,80 @@ fn hosted_window(tree: &DesktopTree, tab: TabId) -> Option<(String, String)> {
         TileContent::HostedWindow { host, app_id, .. } => Some((host.clone(), app_id.clone())),
         _ => None,
     })
+}
+
+/// The tab of `tree` that shows the window `shared` names as one running on its host already: the
+/// tab its sharer shows it in, or a tab this device minted for it (under `salt`) that pictures no
+/// other shared window (`claimed`), as a desk laid out again when its session starts holds.
+fn hosted_tab_of(
+    tree: &DesktopTree,
+    shared: &Shared,
+    salt: u16,
+    claimed: &BTreeSet<TabId>,
+) -> Option<TabId> {
+    if hosted_window(tree, shared.tab).is_some() {
+        return Some(shared.tab);
+    }
+    tree.workspaces
+        .iter()
+        .filter(|held| held.policy.workspace == shared.workspace)
+        .flat_map(tilo_desktop_model::Workspace::tabs)
+        .find(|tab| {
+            peer_salt_of(tab.id) == salt
+                && !claimed.contains(&tab.id)
+                && matches!(
+                    &tab.tile,
+                    TileContent::HostedWindow { host, app_id, .. }
+                        if *host == shared.host && *app_id == shared.app_id
+                )
+        })
+        .map(|tab| tab.id)
+}
+
+/// Add the tab `place` to `tree` for the window `shared` names, as one running on its host, in a
+/// group of its own at the end of its workspace's last strip. Answers whether that strip was made
+/// for it.
+fn add_hosted_tab(tree: &mut DesktopTree, shared: &Shared, place: TabId) -> bool {
+    let Some(held) = tree
+        .workspaces
+        .iter_mut()
+        .find(|held| held.policy.workspace == shared.workspace)
+    else {
+        return false;
+    };
+    let label = shared.app_id.clone();
+    let group = WindowGroup {
+        id: place,
+        tabs: vec![Tab {
+            id: place,
+            title: label.clone(),
+            tile: TileContent::HostedWindow {
+                app_id: shared.app_id.clone(),
+                label,
+                host: shared.host.clone(),
+                host_label: shared.host_label.clone(),
+            },
+            app_title: None,
+            view: String::new(),
+            pinned: false,
+        }],
+        active_tab: place,
+        width: WindowWidth::Normal,
+        maximized: false,
+        focus_history: Vec::new(),
+    };
+    let strip = held.strips.is_empty();
+    if strip {
+        held.strips.push(Strip {
+            id: StripId(place),
+            name: String::new(),
+            window_groups: Vec::new(),
+        });
+    }
+    if let Some(last) = held.strips.last_mut() {
+        last.window_groups.push(group);
+    }
+    strip
 }
 
 /// What a share of `tab` is of, once the desk said what the ask left out. Whoever asks at the

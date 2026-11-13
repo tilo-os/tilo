@@ -27,7 +27,9 @@ use automerge::transaction::Transactable as _;
 use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_RECORD, OpenedBy};
 use tilo_desktop_model::person_view::{self, PersonView};
 use tilo_desktop_model::shared_record::{self, device};
-use tilo_desktop_model::{DesktopTree, Workspace, WorkspaceId, WorkspaceSlot, peer_salt_of};
+use tilo_desktop_model::{
+    DesktopTree, TileContent, Workspace, WorkspaceId, WorkspaceSlot, peer_salt_of,
+};
 
 use tilo_broker_core::custody::OwnerCustody as _;
 
@@ -229,7 +231,21 @@ impl Save {
                 &automerge::ActorId::from(engine.identity().device_cert.device_public_key.to_vec()),
             ),
         ));
-        let mine = |id: u64| peer_salt_of(id) == local;
+        // A window that runs on another device is that device's to add to the record, whoever
+        // minted the tab it stands in here: the tab this desk pictures a shared window in, beside
+        // its own view of that window, is this desk's alone.
+        let here = hex::encode(engine.identity().device_cert.device_public_key);
+        let elsewhere: BTreeSet<u64> = laid_out
+            .tabs()
+            .filter(|tab| {
+                matches!(
+                    &tab.tile,
+                    TileContent::HostedWindow { host, .. } if !host.eq_ignore_ascii_case(&here)
+                )
+            })
+            .map(|tab| tab.id)
+            .collect();
+        let mine = |id: u64| peer_salt_of(id) == local && !elsewhere.contains(&id);
         let by_tab: BTreeMap<u64, String> = notes.into_iter().collect();
         let records = |id: u64| by_tab.get(&id).cloned();
         match device::write(

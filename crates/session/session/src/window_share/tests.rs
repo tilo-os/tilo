@@ -2084,10 +2084,11 @@ fn only_a_share_of_an_unheard_device_asks_who_the_workspace_admits() {
 
 /// Two devices that hold one workspace each list the other's windows already: the desk's own
 /// record says so before anything is shared, and each device opens its own view of a window the
-/// other opened. A share of such a window is asked for from its device and adds no second tab,
-/// and when the share ends that tab stays, since this session never put it on the desk.
+/// other opened. That view is this device's. What the other device shares is the window that runs
+/// there, so it is pictured in a tab of its own beside the view, which stays as it was; and when
+/// the share ends that tab goes, and the view stays.
 #[test]
-fn a_window_the_desk_already_lists_keeps_its_tab_while_it_is_shared_and_when_the_share_ends() {
+fn a_window_the_desk_already_lists_is_pictured_in_a_tab_of_its_own_beside_the_desks_view_of_it() {
     tilo_window_share::flatpak_share::read_encoders();
     let salt = tilo_desktop_model::ids::device_salt_of_key(device(0x67).as_bytes());
     let mut host = member_minting_under(
@@ -2125,11 +2126,9 @@ fn a_window_the_desk_already_lists_keeps_its_tab_while_it_is_shared_and_when_the
                 .count()
         })
     };
+    let own_view = tile_of(&viewer.session, tab);
     assert!(
-        matches!(
-            tile_of(&viewer.session, tab),
-            Some(TileContent::LocalApp { .. })
-        ),
+        matches!(own_view, Some(TileContent::LocalApp { .. })),
         "the other device lists the window as one it opens its own view of"
     );
 
@@ -2140,27 +2139,46 @@ fn a_window_the_desk_already_lists_keeps_its_tab_while_it_is_shared_and_when_the
     carry_governance(&host.session, &viewer.session);
     heard(&viewer, 0x67, "Framework");
 
-    // The window is asked for from the device that shares it, with nobody asking for it by hand.
+    // The window that runs on the sharing device is pictured, with nobody asking for it by hand.
     let wanted = tab.to_string();
     until(&mut host, &mut window, &mut viewer, |_, viewer, _| {
-        rows(&shares(&viewer.session), "watching")
+        rows(&shares(&viewer.session), "received")
             .iter()
-            .any(|watched| watched["tab"].as_str() == Some(wanted.as_str()))
+            .any(|stream| {
+                stream["tab"].as_str() == Some(wanted.as_str())
+                    && stream["pictured"].as_bool() == Some(true)
+            })
     });
-    assert!(
-        matches!(
-            tile_of(&viewer.session, tab),
-            Some(TileContent::LocalApp { .. })
-        ),
-        "the tab is still the one the desk listed"
+    // It stands in a tab of its own, which says which device it runs on.
+    let place: u64 = rows(&shares(&viewer.session), "watching")
+        .iter()
+        .find(|watched| watched["tab"].as_str() == Some(wanted.as_str()))
+        .and_then(|watched| watched["shown_in"].as_str())
+        .and_then(|place| place.parse().ok())
+        .expect("the tab the shared window is pictured in");
+    assert_ne!(place, tab, "the shared window stands in a tab of its own");
+    assert_eq!(
+        hosted(&viewer.session, place),
+        Some(hex::encode(device(0x67).as_bytes())),
+        "which shows it as the window running on the device that shares it"
+    );
+    assert_eq!(
+        viewer.session.handle().peer_surface_tabs(),
+        vec![place],
+        "and holds its picture"
+    );
+    assert_eq!(
+        tile_of(&viewer.session, tab),
+        own_view,
+        "the desk's own view of the window is as it was"
     );
     assert_eq!(
         stands(&viewer.session),
         1,
-        "and no second tab stands for the window"
+        "and nothing else stands under the window's own id"
     );
 
-    // The share ends: nothing is asked for any more, and the tab the desk listed stays.
+    // The share ends: the tab that pictured it goes, and the desk's own view of the window stays.
     host.session
         .invoke(
             SHARES_RESOURCE,
@@ -2183,11 +2201,17 @@ fn a_window_the_desk_already_lists_keeps_its_tab_while_it_is_shared_and_when_the
         rows(&reading, "watching").is_empty() && rows(&reading, "received").is_empty()
     });
     assert!(
-        matches!(
-            tile_of(&viewer.session, tab),
-            Some(TileContent::LocalApp { .. })
-        ),
-        "the tab that is this desk's own view of the window stays when the share ends"
+        tile_of(&viewer.session, place).is_none(),
+        "the tab that pictured the shared window went with the share"
+    );
+    assert!(
+        viewer.session.handle().peer_surface_tabs().is_empty(),
+        "and no picture of it is held"
+    );
+    assert_eq!(
+        tile_of(&viewer.session, tab),
+        own_view,
+        "the desk's own view of the window stays when the share ends"
     );
     assert_eq!(stands(&viewer.session), 1);
 }
@@ -2347,7 +2371,7 @@ fn a_shared_windows_pictures_reach_a_viewer_within_a_few_frames() {
                     let object = VideoObject::decode(&object.body).expect("a picture");
                     heard.push(wall_us().saturating_sub(object.timestamp_us));
                     if object.keyframe && tiles.read(TAB).is_none() {
-                        let start = super::picture_start(&tree, 7, peer, TAB, &object)
+                        let start = super::picture_start(&tree, 7, peer, (TAB, TAB), &object)
                             .expect("a codec this build decodes");
                         tiles
                             .start(&tree, &start)

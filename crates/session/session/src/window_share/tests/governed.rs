@@ -393,8 +393,7 @@ fn a_window_a_second_device_shares_reaches_the_first_through_the_workspaces_gove
     );
 
     // The share is the workspace's, so nobody asks for it on the first device: its desk names
-    // the share and asks the device the governance says hosts the window for it, in the tab that
-    // stood for it.
+    // the share and asks the device the governance says hosts the window for it.
     alone(
         &mut viewer,
         &mut None,
@@ -418,6 +417,9 @@ fn a_window_a_second_device_shares_reaches_the_first_through_the_workspaces_gove
         ),
         asked,
     );
+    // The tab that listed the window is this desk's own view of it and stays as it is. The window
+    // the second device shares stands beside it, in a tab of its own that names the device it
+    // runs on.
     let stands = viewer.session.handle().read(|tree| {
         tree.workspaces
             .iter()
@@ -425,8 +427,21 @@ fn a_window_a_second_device_shares_reaches_the_first_through_the_workspaces_gove
             .filter(|shown| shown.id == tab)
             .count()
     });
+    assert_eq!(stands, 1, "one tab stands under the window's own id");
+    assert!(
+        hosted(&viewer.session, tab).is_none(),
+        "and it is still this desk's own view of the window"
+    );
+    let place: u64 = rows(&shares(&viewer.session), "watching")
+        .iter()
+        .find(|watched| watched["tab"] == named.as_str())
+        .and_then(|watched| watched["shown_in"].as_str())
+        .and_then(|place| place.parse().ok())
+        .expect("the tab the shared window is pictured in");
+    assert_ne!(place, tab, "the shared window stands in a tab of its own");
     assert_eq!(
-        stands, 1,
-        "the window is shown in the tab that stood for it, and in no second one"
+        hosted(&viewer.session, place).as_deref(),
+        Some(host.as_str()),
+        "which shows it as the window running on the second device"
     );
 }
