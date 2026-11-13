@@ -14,13 +14,9 @@ use launcher::loader_preflight::{read_dynamic_section, read_interpreter};
 /// The authenticated SDK identity selected by the developer, not by its manifest.
 #[derive(Debug, Clone)]
 pub struct SdkSelection {
-    /// Optional separately signed compiler interface for exact artifact reuse.
     pub compiler: Option<compiler::CompilerSelection>,
-    /// Directory containing the canonical signed bundle and its complete payload.
     pub bundle: PathBuf,
-    /// Independently obtained expected publisher public key.
     pub publisher: String,
-    /// Independently obtained expected content root.
     pub root: String,
 }
 

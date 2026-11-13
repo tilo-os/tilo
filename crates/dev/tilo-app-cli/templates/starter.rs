@@ -4,7 +4,6 @@ use ui::prelude::*;
 /// keeps its history; add a field here and it is all of those at once.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Greeting {
-    /// Collaborative text: two people typing in it merge character by character.
     pub name: String,
 }
 
@@ -15,7 +14,6 @@ pub struct Greeting {
 /// without one exists only for the pointer.
 #[resource(kind = "generated.greeting")]
 impl Greeting {
-    /// Forget the name.
     #[action]
     pub fn clear(&mut self) {
         self.name.clear();

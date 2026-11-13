@@ -361,7 +361,6 @@ fn an_android_package_without_arch_is_one_package_per_architecture() {
     let packages = packages.as_array().expect("one result per package");
     assert_eq!(packages.len(), 2);
 
-    // Both builds are measured against the registry's Android limit.
     let limit = tilo_app_package::platform_size_limit("android");
     assert_eq!(limit, tilo_app_package::MAX_DESKTOP_APP_TAPP_BYTES);
     for package in packages {
@@ -459,7 +458,6 @@ fn an_android_package_is_release_signed_bundled_and_packed_for_the_registry() {
         "no build before the refusal"
     );
 
-    // The same key signs the next release.
     let again = fixture.tilo_app(
         &fixture.app,
         &[

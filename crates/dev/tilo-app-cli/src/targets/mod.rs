@@ -28,7 +28,6 @@ use tilo_caps::{Capability, Finding};
 pub use serve::ServeOptions;
 pub mod workspace;
 
-/// What to build, for which target.
 #[derive(Clone, Debug)]
 #[allow(
     clippy::struct_excessive_bools,
@@ -68,18 +67,15 @@ impl TargetRequest {
     }
 }
 
-/// The web bundle a web build produces.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
 pub enum WebBundle {
     /// The desktop bundle for Tilo's own web apps, otherwise the app alone.
     Auto,
     /// The page runtime with only this app.
     App,
-    /// Every web-capable Tilo app (inside a Tilo checkout).
     Desktop,
 }
 
-/// A built, runnable artifact.
 #[derive(Clone, Debug)]
 pub struct BuildOutcome {
     pub target: Target,
@@ -90,7 +86,6 @@ pub struct BuildOutcome {
     pub entry: String,
 }
 
-/// An app project as the target commands see it.
 #[derive(Clone, Debug)]
 pub struct Project {
     pub app_dir: PathBuf,
@@ -100,7 +95,6 @@ pub struct Project {
     pub bin: String,
     pub manifest_path: PathBuf,
     pub manifest: tilo_app_package::Manifest,
-    /// The Cargo workspace the app builds in (the app itself outside Tilo).
     pub workspace_root: PathBuf,
     /// Cargo's target directory for that workspace; never redirected.
     pub target_dir: PathBuf,
@@ -159,7 +153,6 @@ impl Project {
         })
     }
 
-    /// The app's display name.
     #[must_use]
     pub fn display_name(&self) -> String {
         self.manifest
@@ -557,7 +550,6 @@ pub fn run(
 #[derive(Clone, Debug)]
 pub struct TargetPackageRequest {
     pub build: TargetRequest,
-    /// Output path (file for Linux/macOS, directory for the web).
     pub output: Option<PathBuf>,
     pub identity: Option<PathBuf>,
     pub force: bool,
@@ -607,7 +599,6 @@ pub fn package(start: &Path, request: &TargetPackageRequest) -> Result<PathBuf> 
     }
 }
 
-/// Build the app's binary for this host and return its path.
 fn build_native(
     project: &Project,
     request: &TargetRequest,

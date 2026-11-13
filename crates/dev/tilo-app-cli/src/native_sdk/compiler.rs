@@ -16,9 +16,7 @@ use crate::{AppPackageSpec, BuildPlan, PackageRequest};
 /// Its signer must be the independently selected runtime publisher.
 #[derive(Debug, Clone)]
 pub struct CompilerSelection {
-    /// Signed compiler bundle directory.
     pub bundle: PathBuf,
-    /// Independently obtained content root.
     pub root: String,
 }
 

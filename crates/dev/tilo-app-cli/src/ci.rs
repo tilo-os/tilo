@@ -688,7 +688,6 @@ mod tests {
     #[test]
     fn github_generator_writes_a_callable_pair_and_preserves_existing_files() {
         let temp = tempfile::tempdir().expect("tempdir");
-        // The app directory resolves through symlinks (macOS: /var is /private/var).
         let root = temp.path().canonicalize().expect("canonical tempdir");
         let app = root.join("apps/editor");
         std::fs::create_dir_all(root.join(".git")).expect("git");
@@ -893,7 +892,6 @@ mod tests {
     #[test]
     fn workflow_goes_at_the_repository_root() {
         let temp = tempfile::tempdir().expect("tempdir");
-        // The app directory resolves through symlinks (macOS: /var is /private/var).
         let root = temp.path().canonicalize().expect("canonical tempdir");
         let app = root.join("apps/editor");
         std::fs::create_dir_all(root.join(".git")).expect("git");

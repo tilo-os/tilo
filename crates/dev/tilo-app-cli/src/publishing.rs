@@ -20,13 +20,11 @@ enum KeysCommand {
     /// Create a publisher key in this machine's secret store. An existing
     /// key is never replaced.
     New,
-    /// Print the key's public half and the line that proves a namespace.
     Show {
         /// A key file; defaults to `$TILO_PUBLISHER_KEY`, then the secret store.
         #[arg(long)]
         key: Option<PathBuf>,
     },
-    /// Print the key as a key file, for a CI secret or a backup.
     Export {
         /// A key file; defaults to `$TILO_PUBLISHER_KEY`, then the secret store.
         #[arg(long)]
@@ -44,10 +42,8 @@ pub struct ApplyArgs {
     /// `HOST:NAME` for a Forgejo or Gitea host. Repeatable.
     #[arg(long = "forge")]
     forges: Vec<String>,
-    /// How the registry's owner can reach you.
     #[arg(long, required_unless_present = "status")]
     contact: Option<String>,
-    /// Anything the owner should know.
     #[arg(long, default_value = "")]
     note: String,
     /// Only report the status of this key's application.
@@ -62,12 +58,9 @@ pub struct ApplyArgs {
 
 #[derive(clap::Args)]
 pub struct PublishArgs {
-    /// Packages to publish [default: every dist/*.tapp].
     packages: Vec<PathBuf>,
-    /// Store presentation for a new entry: name, tagline, description, images.
     #[arg(long)]
     metadata: Option<PathBuf>,
-    /// The architecture of a Tilo OS build whose manifest declares several.
     #[arg(long)]
     arch: Option<String>,
     #[arg(long)]

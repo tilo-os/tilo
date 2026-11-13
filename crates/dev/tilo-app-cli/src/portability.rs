@@ -28,10 +28,8 @@ use syn::punctuated::Punctuated;
 use syn::visit_mut::VisitMut;
 use tilo_app_package::{Package, Platform};
 
-/// The lint's name, as printed in diagnostics.
 pub const LINT: &str = "portability";
 
-/// The rules, shared with the repository's policy gate.
 const RULES_TABLE: &str = include_str!("../../../../tools/policy/app_portability_rules.toml");
 
 #[derive(Debug, Deserialize)]
@@ -55,7 +53,6 @@ struct TargetCfg {
     allowed: Vec<String>,
 }
 
-/// Which packages the gate counts beyond the apps.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 struct Scope {
@@ -107,7 +104,6 @@ impl Strict {
     }
 }
 
-/// One rule of the table. Each rule uses the keys that describe it.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, rename_all = "kebab-case")]
 pub(crate) struct RuleSpec {
@@ -139,7 +135,6 @@ pub(crate) struct RuleSpec {
     replacements: BTreeMap<String, String>,
 }
 
-/// Which apps a rule applies to.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 enum Applies {
@@ -151,11 +146,9 @@ enum Applies {
     Web,
 }
 
-/// How the lint treats a finding in an app that runs everywhere.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Severity {
-    /// Fails the lint.
     #[default]
     Error,
     /// Reported only, until the replacement exists for every app.
@@ -176,7 +169,6 @@ impl RuleSpec {
     }
 }
 
-/// The parsed rules table.
 pub(crate) fn rules() -> Result<&'static RulesTable> {
     static RULES: OnceLock<Result<RulesTable, String>> = OnceLock::new();
     RULES
@@ -220,17 +212,11 @@ pub enum FindingKind {
     NativeCrate,
     /// An `extern { ... }` block.
     Ffi,
-    /// A platform path or environment variable.
     PlatformPath,
-    /// A subprocess naming an OS tool.
     OsTool,
-    /// A platform or SDK-internal crate in the manifest's dependencies.
     NativeDependency,
-    /// A Tilo crate outside the app SDK and the platform crates.
     InternalDependency,
-    /// An SDK feature that names one backend.
     NativeSdkFeature,
-    /// An OS thread.
     Thread,
     Clock,
     /// The `std` filesystem or sockets.
@@ -267,22 +253,17 @@ impl FindingKind {
     }
 }
 
-/// One platform-specific site in an app.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PortabilityFinding {
-    /// Path relative to the app directory.
     pub path: PathBuf,
-    /// One-based line.
     pub line: usize,
     pub kind: FindingKind,
     pub severity: Severity,
     /// What was found, for example "`std::os::unix::fs`".
     pub what: String,
-    /// How to fix it.
     pub help: String,
 }
 
-/// The result of linting one app.
 #[derive(Debug)]
 pub struct PortabilityReport {
     pub app_dir: PathBuf,
@@ -295,7 +276,6 @@ pub struct PortabilityReport {
     /// Sites of the web rules (threads, the std clock, std files and sockets),
     /// whether or not the app declares the web: each makes it native-only.
     pub web: Vec<PortabilityFinding>,
-    /// Number of Rust source files inspected.
     pub files: usize,
 }
 
@@ -469,7 +449,6 @@ fn source_line(path: &Path, line: usize) -> Option<String> {
     Some(source.chars().take(120).collect())
 }
 
-/// Lint one app directory.
 pub fn lint_app(app_dir: &Path) -> Result<PortabilityReport> {
     let table = rules()?;
     let manifest = app_manifest(app_dir)?;
@@ -630,10 +609,8 @@ pub(crate) fn shipped_sources(app_dir: &Path) -> Result<Vec<(PathBuf, TokenStrea
 /// the SDK's portable crates still hold.
 const BASELINE: &str = "tools/policy/app_portability_baseline.toml";
 
-/// The baseline's sections, in its order.
 const SECTIONS: [&str; 2] = ["apps", "sdk"];
 
-/// Sites per section, package and rule.
 type Counts = BTreeMap<String, BTreeMap<String, BTreeMap<String, usize>>>;
 
 fn counted(counts: &mut Counts, section: &str, package: &str, rule: &str) {
@@ -766,7 +743,6 @@ fn compare(current: &Counts, baseline: &Counts) -> (Vec<String>, Vec<String>) {
     (regressions, stale)
 }
 
-/// One site the gate counts, with the package and section it is in.
 #[derive(Clone, Debug)]
 pub struct PackageFinding {
     /// `apps` or `sdk`.
@@ -799,13 +775,11 @@ impl PortabilityGate {
         !self.strict && regressions.is_empty() && stale.is_empty()
     }
 
-    /// The apps' reports, in name order.
     #[must_use]
     pub fn apps(&self) -> &[PortabilityReport] {
         &self.apps
     }
 
-    /// The baseline for the tree that produced this gate.
     #[must_use]
     pub fn baseline_table(&self) -> String {
         render_baseline(&self.counts)
@@ -827,7 +801,6 @@ impl PortabilityGate {
         failures
     }
 
-    /// The sites behind the counts, of every package or of the named ones.
     #[must_use]
     pub fn render_sites(&self, packages: &[String]) -> String {
         let mut text = String::new();
@@ -1077,11 +1050,8 @@ fn workspace_dir(start: &Path) -> Result<(PathBuf, toml::Table)> {
     )
 }
 
-/// What the app's Cargo manifest says about platform code.
 struct CargoFacts {
-    /// Findings from the manifest itself.
     findings: Vec<PortabilityFinding>,
-    /// Rust identifiers of native crates the shipped code can name.
     native_idents: BTreeSet<String>,
     lib_path: Option<PathBuf>,
     bin_paths: Vec<PathBuf>,
@@ -1163,7 +1133,6 @@ impl CargoFacts {
         }
     }
 
-    /// Dependency findings; returns the aliases of the app SDK dependency.
     fn dependencies(
         &mut self,
         app_dir: &Path,
@@ -1246,7 +1215,6 @@ impl CargoFacts {
         sdk_aliases
     }
 
-    /// App features that select SDK backends or are backend selections.
     fn features(
         &mut self,
         manifest: &toml::Table,
@@ -1286,7 +1254,6 @@ impl CargoFacts {
         }
     }
 
-    /// Crate roots of the shipped targets.
     fn roots(&self, app_dir: &Path) -> Vec<PathBuf> {
         let mut roots = Vec::new();
         roots.push(
@@ -1722,7 +1689,6 @@ impl VisitMut for Pruner<'_> {
     }
 }
 
-/// The outer attributes of an expression used as a statement.
 fn expr_attrs(expr: &syn::Expr) -> &[syn::Attribute] {
     match expr {
         syn::Expr::Assign(expr) => &expr.attrs,
@@ -1899,7 +1865,6 @@ pub(crate) fn is_doc_attribute(tokens: &[TokenTree], index: usize) -> bool {
 
 type Hit = (usize, FindingKind, String);
 
-/// The source-level rules of the table, ready to match tokens.
 struct Scanner<'a> {
     table: &'a RulesTable,
     native: &'a BTreeSet<String>,

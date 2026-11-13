@@ -3,7 +3,6 @@ use ui::a11y::{Action, Role};
 use ui::headless::SemanticExpectation;
 use ui::prelude::{Invoke, Replica, TestApp};
 
-/// The edit of the name: a field edit at its path, as the name field makes it.
 fn name(text: &str) -> Invoke<Greeting> {
     Invoke::edit(&Greeting::paths().name.replace(text)).expect("an edit")
 }
@@ -41,7 +40,6 @@ fn the_name_field_edits_the_greeting() {
     assert_eq!(app.state().name, "");
 }
 
-/// Permissions apply to every action: a viewer's edit is refused.
 #[test]
 fn a_viewer_cannot_edit() {
     let mut app = TestApp::<App>::with_role(ui::Role::Viewer).expect("the app opens");

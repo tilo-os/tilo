@@ -1120,7 +1120,6 @@ mod tests {
             "the development loop's light module"
         );
         assert_eq!(bundle_profile(&release_request(false)), "release");
-        // A measured bundle keeps the assertions it is measured with.
         assert_eq!(bundle_profile(&release_request(true)), "assert");
     }
 
