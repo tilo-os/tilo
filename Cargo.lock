@@ -24764,6 +24764,7 @@ dependencies = [
  "base64 0.22.1",
  "brush-parser",
  "regex",
+ "tilo-test-env",
  "unicode-width",
  "workspace-hack",
 ]

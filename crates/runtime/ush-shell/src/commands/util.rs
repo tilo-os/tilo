@@ -450,42 +450,47 @@ pub fn parse_size(text: &str) -> Option<u64> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn globs_match_like_fnmatch() {
-        assert!(glob("*.rs", "lib.rs", false));
-        assert!(!glob("*.rs", "lib.rsx", false));
-        assert!(glob("a?c", "abc", false));
-        assert!(glob("[a-c]x", "bx", false));
-        assert!(!glob("[!a-c]x", "bx", false));
-        assert!(glob("*/b/*", "a/b/c", false));
-        assert!(glob("*.TXT", "x.txt", true));
-        assert!(glob("[[:digit:]]*", "1a", false));
-        assert!(glob("\\*", "*", false));
-    }
+    tilo_test_env::scenario! {
+        /// What the commands share: glob matching, dates and sizes.
+        fn the_commands_shared_helpers_match_and_format_like_gnu;
 
-    #[test]
-    fn dates_come_out_right() {
-        assert_eq!(
-            civil(1_700_000_000),
-            Civil {
-                year: 2023,
-                month: 11,
-                day: 14,
-                hour: 22,
-                minute: 13,
-                second: 20
-            }
-        );
-        assert_eq!(civil(0).year, 1970);
-        assert_eq!(civil(-1).year, 1969);
-    }
+        phase globs_match_like_fnmatch;
+        {
+            assert!(glob("*.rs", "lib.rs", false));
+            assert!(!glob("*.rs", "lib.rsx", false));
+            assert!(glob("a?c", "abc", false));
+            assert!(glob("[a-c]x", "bx", false));
+            assert!(!glob("[!a-c]x", "bx", false));
+            assert!(glob("*/b/*", "a/b/c", false));
+            assert!(glob("*.TXT", "x.txt", true));
+            assert!(glob("[[:digit:]]*", "1a", false));
+            assert!(glob("\\*", "*", false));
+        }
 
-    #[test]
-    fn sizes_for_people() {
-        assert_eq!(human(1023), "1023");
-        assert_eq!(human(1024), "1.0K");
-        assert_eq!(human(1025), "1.1K");
-        assert_eq!(human(10 * 1024), "10K");
-        assert_eq!(human(1_048_576), "1.0M");
+        phase dates_come_out_right;
+        {
+            assert_eq!(
+                civil(1_700_000_000),
+                Civil {
+                    year: 2023,
+                    month: 11,
+                    day: 14,
+                    hour: 22,
+                    minute: 13,
+                    second: 20
+                }
+            );
+            assert_eq!(civil(0).year, 1970);
+            assert_eq!(civil(-1).year, 1969);
+        }
+
+        phase sizes_for_people;
+        {
+            assert_eq!(human(1023), "1023");
+            assert_eq!(human(1024), "1.0K");
+            assert_eq!(human(1025), "1.1K");
+            assert_eq!(human(10 * 1024), "10K");
+            assert_eq!(human(1_048_576), "1.0M");
+        }
     }
 }

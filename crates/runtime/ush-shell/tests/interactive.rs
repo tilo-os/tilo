@@ -107,123 +107,175 @@ fn typed_on(host: &MemoryHost, keys: &str) -> Ran {
     }
 }
 
-#[test]
-fn emacs_keys_edit_the_line_before_it_runs() {
-    let host = home();
-    let ran = typed_on(
-        &host,
-        concat!(
-            "cho hi\x01e\x05 there\r",                 // Ctrl+A, Ctrl+E
-            "echo one two\x17three\r",                 // Ctrl+W
-            "echo abc\x1b[D\x1b[D\x0b\r",              // Left, Left, Ctrl+K
-            "echo x y\x15echo kept\r",                 // Ctrl+U
-            "echo first second\x1bb\x1bb\x1bdthird\r", // Alt+B, Alt+B, Alt+D
-            "world\x1b[Hecho hello \x1b[F!\r",         // Home, End
-            "echo ab\x08\x7fz\r",                      // Backspace twice
-            "echo gone\x1f\x1f\x1f\x1f\x1fne\r",       // Ctrl+_ undoes the typing
-        ),
-    );
-    assert_eq!(
-        ran.runs(),
-        [
-            "echo hi there",
-            "echo one three",
-            "echo a",
-            "echo kept",
-            "echo third second",
-            "echo hello world!",
-            "echo z",
-            "ne",
-        ],
-        "{:?}",
-        ran.err
-    );
-    assert!(ran.printed().contains("hi there"), "{:?}", ran.printed());
-    assert_eq!(
-        host.editing(),
-        (false, 20),
-        "the terminal goes back after each line"
-    );
-}
+tilo_test_env::scenario! {
+    /// The line editor's keys and multi-line input.
+    fn the_line_editor_edits_drops_and_continues_lines;
 
-#[test]
-fn ctrl_c_drops_the_line_and_ctrl_d_ends_the_session() {
-    let ran = typed_on(&home(), "echo never\x03echo after\r\x04");
-    assert_eq!(ran.runs(), ["echo after"]);
-    assert!(ran.err.contains("^C"));
-}
-
-#[test]
-fn open_quotes_backslashes_blocks_and_pastes_take_more_lines() {
-    let ran = typed_on(
-        &home(),
-        concat!(
-            "echo 'a\rb'\r",
-            "echo one \\\rtwo\r",
-            "if true\rthen echo yes\rfi\r",
-            "\x1b[200~echo p1\r\necho p2\x1b[201~\r",
-        ),
-    );
-    assert_eq!(
-        ran.runs(),
-        [
-            "echo 'a\nb'",
-            "echo one \\\ntwo",
-            "if true\nthen echo yes\nfi",
-            "echo p1\necho p2"
-        ]
-    );
-    let printed = ran.printed();
-    for line in ["a\r\nb", "one two", "yes", "p1\r\np2"] {
-        assert!(
-            printed
-                .replace("\r\n", "\n")
-                .contains(&line.replace("\r\n", "\n")),
-            "{line:?} in {printed:?}"
+    phase emacs_keys_edit_the_line_before_it_runs;
+    {
+        let host = home();
+        let ran = typed_on(
+            &host,
+            concat!(
+                "cho hi\x01e\x05 there\r",                 // Ctrl+A, Ctrl+E
+                "echo one two\x17three\r",                 // Ctrl+W
+                "echo abc\x1b[D\x1b[D\x0b\r",              // Left, Left, Ctrl+K
+                "echo x y\x15echo kept\r",                 // Ctrl+U
+                "echo first second\x1bb\x1bb\x1bdthird\r", // Alt+B, Alt+B, Alt+D
+                "world\x1b[Hecho hello \x1b[F!\r",         // Home, End
+                "echo ab\x08\x7fz\r",                      // Backspace twice
+                "echo gone\x1f\x1f\x1f\x1f\x1fne\r",       // Ctrl+_ undoes the typing
+            ),
+        );
+        assert_eq!(
+            ran.runs(),
+            [
+                "echo hi there",
+                "echo one three",
+                "echo a",
+                "echo kept",
+                "echo third second",
+                "echo hello world!",
+                "echo z",
+                "ne",
+            ],
+            "{:?}",
+            ran.err
+        );
+        assert!(ran.printed().contains("hi there"), "{:?}", ran.printed());
+        assert_eq!(
+            host.editing(),
+            (false, 20),
+            "the terminal goes back after each line"
         );
     }
-    assert!(ran.err.contains("> "), "the continuation prompt");
+
+    phase ctrl_c_drops_the_line_and_ctrl_d_ends_the_session;
+    {
+        let ran = typed_on(&home(), "echo never\x03echo after\r\x04");
+        assert_eq!(ran.runs(), ["echo after"]);
+        assert!(ran.err.contains("^C"));
+    }
+
+    phase open_quotes_backslashes_blocks_and_pastes_take_more_lines;
+    {
+        let ran = typed_on(
+            &home(),
+            concat!(
+                "echo 'a\rb'\r",
+                "echo one \\\rtwo\r",
+                "if true\rthen echo yes\rfi\r",
+                "\x1b[200~echo p1\r\necho p2\x1b[201~\r",
+            ),
+        );
+        assert_eq!(
+            ran.runs(),
+            [
+                "echo 'a\nb'",
+                "echo one \\\ntwo",
+                "if true\nthen echo yes\nfi",
+                "echo p1\necho p2"
+            ]
+        );
+        let printed = ran.printed();
+        for line in ["a\r\nb", "one two", "yes", "p1\r\np2"] {
+            assert!(
+                printed
+                    .replace("\r\n", "\n")
+                    .contains(&line.replace("\r\n", "\n")),
+                "{line:?} in {printed:?}"
+            );
+        }
+        assert!(ran.err.contains("> "), "the continuation prompt");
+    }
 }
 
-#[test]
-fn up_recalls_the_persons_history_newest_first_after_this_shells_own() {
-    let host = home().with_history(&["echo oldest", "echo older"]);
-    let ran = typed_on(
-        &host,
-        concat!(
-            "\x1b[A\r",             // Up: the newest of the person's
-            "\x1b[A\x1b[A\x1b[A\r", // this shell's line, then the person's
-            "\x1b[A\x1b[A\x1b[B\r", // Down goes back one
-        ),
-    );
-    assert_eq!(
-        ran.runs(),
-        ["echo older", "echo oldest", "echo oldest"],
-        "{:?}",
-        ran.err
-    );
-}
+tilo_test_env::scenario! {
+    /// Recall of the person's history, from the host and from Terminal.
+    fn the_prompt_recalls_the_persons_history;
 
-#[test]
-fn ctrl_r_finds_a_line_by_what_it_holds() {
-    let host = home().with_history(&["echo apple", "echo banana", "echo apricot"]);
-    let ran = typed_on(&host, "\x12ap\r\x12ap\x12\r\x12zzz\x07\r");
-    assert_eq!(ran.runs(), ["echo apricot", "echo apple"]);
-    assert!(ran.err.contains("(reverse-i-search)'ap': "));
-}
+    phase up_recalls_the_persons_history_newest_first_after_this_shells_own;
+    {
+        let host = home().with_history(&["echo oldest", "echo older"]);
+        let ran = typed_on(
+            &host,
+            concat!(
+                "\x1b[A\r",             // Up: the newest of the person's
+                "\x1b[A\x1b[A\x1b[A\r", // this shell's line, then the person's
+                "\x1b[A\x1b[A\x1b[B\r", // Down goes back one
+            ),
+        );
+        assert_eq!(
+            ran.runs(),
+            ["echo older", "echo oldest", "echo oldest"],
+            "{:?}",
+            ran.err
+        );
+    }
 
-#[test]
-fn history_lists_the_persons_lines_numbered_oldest_first() {
-    let host = home().with_history(&["echo one", "echo two"]);
-    let ran = typed_on(&host, "history\r");
-    assert!(
-        ran.printed()
-            .contains("    1  echo one\n    2  echo two\n    3  history\n"),
-        "{:?}",
-        ran.printed()
-    );
-    let ran = typed_on(&host, "history -c\r");
-    assert!(ran.err.contains("only reads it"), "{}", ran.err);
+    phase ctrl_r_finds_a_line_by_what_it_holds;
+    {
+        let host = home().with_history(&["echo apple", "echo banana", "echo apricot"]);
+        let ran = typed_on(&host, "\x12ap\r\x12ap\x12\r\x12zzz\x07\r");
+        assert_eq!(ran.runs(), ["echo apricot", "echo apple"]);
+        assert!(ran.err.contains("(reverse-i-search)'ap': "));
+    }
+
+    phase history_lists_the_persons_lines_numbered_oldest_first;
+    {
+        let host = home().with_history(&["echo one", "echo two"]);
+        let ran = typed_on(&host, "history\r");
+        assert!(
+            ran.printed()
+                .contains("    1  echo one\n    2  echo two\n    3  history\n"),
+            "{:?}",
+            ran.printed()
+        );
+        let ran = typed_on(&host, "history -c\r");
+        assert!(ran.err.contains("only reads it"), "{}", ran.err);
+    }
+
+    phase without_a_history_of_its_own_the_host_lets_terminal_answer;
+    {
+        let host = home();
+        let (keys_tx, keys_rx) = channel();
+        let asked = Arc::new(Mutex::new(Vec::new()));
+        let (stdout, out) = Output::buffer();
+        let io = Stdio {
+            stdin: Input::new(Keys(keys_rx, VecDeque::new())),
+            stdout,
+            stderr: Output::new(Answering {
+                seen: Arc::default(),
+                history: ["echo c", "echo b", "echo a"].map(String::from).to_vec(),
+                keys: keys_tx.clone(),
+                asked: Arc::clone(&asked),
+            }),
+        };
+        let shell_host = host;
+        let session = std::thread::spawn(move || {
+            let mut shell = Shell::new(
+                Arc::new(shell_host),
+                [("PS1".to_string(), "$ ".to_string())],
+                PathBuf::from("/home/me"),
+                io,
+            );
+            shell.interactive(&Session {
+                runs_key: Some(KEY.into()),
+            });
+        });
+        keys_tx.send(b"\x1b[A\x1b[A\x1b[A\r".to_vec()).unwrap();
+        keys_tx.send(b"\x12b\r".to_vec()).unwrap();
+        keys_tx.send(b"exit\r".to_vec()).unwrap();
+        session.join().unwrap();
+        let ran = Ran {
+            out: String::from_utf8_lossy(&out.take()).into_owned(),
+            err: String::new(),
+        };
+        assert_eq!(ran.runs(), ["echo a", "echo b"]);
+        let asked = asked.lock().unwrap().clone();
+        assert_eq!(asked[..2], ["0:".to_owned(), "2:".to_owned()], "{asked:?}");
+        assert!(asked.contains(&"0:b".to_owned()), "{asked:?}");
+    }
 }
 
 struct Keys(Receiver<Vec<u8>>, VecDeque<u8>);
@@ -293,48 +345,6 @@ impl Write for Answering {
 }
 
 #[test]
-fn without_a_history_of_its_own_the_host_lets_terminal_answer() {
-    let host = home();
-    let (keys_tx, keys_rx) = channel();
-    let asked = Arc::new(Mutex::new(Vec::new()));
-    let (stdout, out) = Output::buffer();
-    let io = Stdio {
-        stdin: Input::new(Keys(keys_rx, VecDeque::new())),
-        stdout,
-        stderr: Output::new(Answering {
-            seen: Arc::default(),
-            history: ["echo c", "echo b", "echo a"].map(String::from).to_vec(),
-            keys: keys_tx.clone(),
-            asked: Arc::clone(&asked),
-        }),
-    };
-    let shell_host = host;
-    let session = std::thread::spawn(move || {
-        let mut shell = Shell::new(
-            Arc::new(shell_host),
-            [("PS1".to_string(), "$ ".to_string())],
-            PathBuf::from("/home/me"),
-            io,
-        );
-        shell.interactive(&Session {
-            runs_key: Some(KEY.into()),
-        });
-    });
-    keys_tx.send(b"\x1b[A\x1b[A\x1b[A\r".to_vec()).unwrap();
-    keys_tx.send(b"\x12b\r".to_vec()).unwrap();
-    keys_tx.send(b"exit\r".to_vec()).unwrap();
-    session.join().unwrap();
-    let ran = Ran {
-        out: String::from_utf8_lossy(&out.take()).into_owned(),
-        err: String::new(),
-    };
-    assert_eq!(ran.runs(), ["echo a", "echo b"]);
-    let asked = asked.lock().unwrap().clone();
-    assert_eq!(asked[..2], ["0:".to_owned(), "2:".to_owned()], "{asked:?}");
-    assert!(asked.contains(&"0:b".to_owned()), "{asked:?}");
-}
-
-#[test]
 fn tab_completes_commands_paths_variables_and_lists_on_a_second_tab() {
     let host = home().with_programs(&["cargo"]);
     host.file("/home/me/src/main.rs", "fn main() {}\n")
@@ -399,34 +409,136 @@ fn script_on(host: &MemoryHost, script: &str) -> (String, String, i32) {
     )
 }
 
-#[test]
-fn background_jobs_run_beside_the_shell_and_wait_waits_for_them() {
-    let host = home().with_real_time();
-    let (out, err, status) = script_on(
-        &host,
-        "(sleep 0.3; echo late) &\necho early\njobs\nwait\necho waited $?",
-    );
-    assert_eq!(status, 0, "{err}");
-    assert_eq!(
-        out, "early\n[1]+  Running                 ( sleep 0.3; echo late ) &\nlate\nwaited 0\n",
-        "{err}"
-    );
-}
+tilo_test_env::scenario! {
+    /// Jobs.
+    fn jobs_run_stop_continue_and_end_beside_the_shell;
 
-#[test]
-fn kill_ends_a_job_and_fg_waits_for_one() {
-    let host = home().with_real_time();
-    let started = Instant::now();
-    let (out, err, _) = script_on(
-        &host,
-        "sleep 30 &\nkill %1\nwait %1\necho killed $?\nsleep 0.1 &\nfg %1\necho fg $?\necho $!",
-    );
-    assert!(started.elapsed() < Duration::from_secs(10), "kill ended it");
-    let lines: Vec<&str> = out.lines().collect();
-    assert_eq!(lines.first().copied(), Some("killed 130"), "{out} {err}");
-    assert_eq!(lines.get(1).copied(), Some("fg 0"), "{out} {err}");
-    assert!(err.contains("sleep 0.1"), "fg says which job: {err}");
-    assert!(lines.get(2).is_some_and(|pid| pid.parse::<u32>().is_ok()));
+    phase background_jobs_run_beside_the_shell_and_wait_waits_for_them;
+    {
+        let host = home().with_real_time();
+        let (out, err, status) = script_on(
+            &host,
+            "(sleep 0.3; echo late) &\necho early\njobs\nwait\necho waited $?",
+        );
+        assert_eq!(status, 0, "{err}");
+        assert_eq!(
+            out, "early\n[1]+  Running                 ( sleep 0.3; echo late ) &\nlate\nwaited 0\n",
+            "{err}"
+        );
+    }
+
+    phase kill_ends_a_job_and_fg_waits_for_one;
+    {
+        let host = home().with_real_time();
+        let started = Instant::now();
+        let (out, err, _) = script_on(
+            &host,
+            "sleep 30 &\nkill %1\nwait %1\necho killed $?\nsleep 0.1 &\nfg %1\necho fg $?\necho $!",
+        );
+        assert!(started.elapsed() < Duration::from_secs(10), "kill ended it");
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines.first().copied(), Some("killed 130"), "{out} {err}");
+        assert_eq!(lines.get(1).copied(), Some("fg 0"), "{out} {err}");
+        assert!(err.contains("sleep 0.1"), "fg says which job: {err}");
+        assert!(lines.get(2).is_some_and(|pid| pid.parse::<u32>().is_ok()));
+    }
+
+    phase a_program_in_the_guest_is_stopped_continued_and_ended_as_its_job;
+    {
+        let guest = Guest {
+            files: home(),
+            signals: Arc::default(),
+        };
+        let (stdout, out) = Output::buffer();
+        let (stderr, err) = Output::buffer();
+        let io = Stdio {
+            stdin: Input::null(),
+            stdout,
+            stderr,
+        };
+        let mut shell = Shell::new(
+            Arc::new(guest.clone()),
+            [("HOME".to_string(), "/home/me".to_string())],
+            PathBuf::from("/home/me"),
+            io,
+        );
+        let status = shell.run_to_exit(concat!(
+            "serve &\n",
+            "until test -e serving; do :; done\n",
+            "kill -STOP %1\n",
+            "jobs\n",
+            "kill -CONT %1\n",
+            "kill %1\n",
+            "wait %1\n",
+            "echo ended $?\n",
+        ));
+        drop(shell);
+        let out = String::from_utf8_lossy(&out.take()).into_owned();
+        let err = String::from_utf8_lossy(&err.take()).into_owned();
+        assert_eq!(status, 0, "{err}");
+        assert!(out.contains("[1]+  Stopped                 serve"), "{out}");
+        assert!(out.ends_with("ended 143\n"), "{out}");
+        let signals = guest.signals.lock().unwrap().clone();
+        assert_eq!(
+            signals,
+            [
+                (Signal::Stop, false),
+                (Signal::Continue, false),
+                (Signal::Terminate, false)
+            ]
+        );
+    }
+
+    phase ctrl_z_stops_the_line_and_fg_brings_it_back;
+    {
+        let host = home().with_real_time();
+        let suspend = host.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(200));
+            suspend.suspend();
+        });
+        let ran = typed_on(&host, "sleep 0.6; echo slept\rjobs\rfg\rjobs\r");
+        let printed = ran.printed();
+        assert!(
+            ran.err
+                .contains("[1]+  Stopped                 sleep 0.6; echo slept"),
+            "{:?}",
+            ran.err
+        );
+        assert!(
+            printed.contains("[1]+  Stopped"),
+            "jobs lists it: {printed:?}"
+        );
+        assert!(
+            printed.contains("slept"),
+            "fg ran it to its end: {printed:?}"
+        );
+        let ended: Vec<String> = marked(&ran.out, "D")
+            .into_iter()
+            .map(|f| f[0].1.clone())
+            .collect();
+        assert_eq!(ended, ["148", "0", "0", "0"], "{ended:?}");
+    }
+
+    phase a_background_job_has_a_run_of_its_own;
+    {
+        let host = home();
+        host.file("/home/me/a", "x");
+        let ran = typed_on(&host, "rm a & wait\recho after\r");
+        let started = marked(&ran.out, "C");
+        let job: Vec<_> = started
+            .iter()
+            .filter(|f| f.iter().any(|(k, v)| k == "j" && v == "1"))
+            .collect();
+        assert_eq!(job.len(), 1, "{started:?}");
+        assert!(job[0].iter().any(|(k, v)| k == "cmd" && unb64(v) == "rm a"));
+        let ended = marked(&ran.out, "D");
+        assert!(ended.iter().any(|f| f.iter().any(|(k, _)| k == "j")));
+        let runs = host.action_runs();
+        assert_eq!(runs.len(), 1);
+        assert!(runs[0].ends_with("-job-1"), "{runs:?}");
+        assert_eq!(ran.runs(), ["rm a & wait", "echo after"]);
+    }
 }
 
 #[derive(Clone)]
@@ -496,103 +608,6 @@ impl Host for Guest {
             }
         }
     }
-}
-
-#[test]
-fn a_program_in_the_guest_is_stopped_continued_and_ended_as_its_job() {
-    let guest = Guest {
-        files: home(),
-        signals: Arc::default(),
-    };
-    let (stdout, out) = Output::buffer();
-    let (stderr, err) = Output::buffer();
-    let io = Stdio {
-        stdin: Input::null(),
-        stdout,
-        stderr,
-    };
-    let mut shell = Shell::new(
-        Arc::new(guest.clone()),
-        [("HOME".to_string(), "/home/me".to_string())],
-        PathBuf::from("/home/me"),
-        io,
-    );
-    let status = shell.run_to_exit(concat!(
-        "serve &\n",
-        "until test -e serving; do :; done\n",
-        "kill -STOP %1\n",
-        "jobs\n",
-        "kill -CONT %1\n",
-        "kill %1\n",
-        "wait %1\n",
-        "echo ended $?\n",
-    ));
-    drop(shell);
-    let out = String::from_utf8_lossy(&out.take()).into_owned();
-    let err = String::from_utf8_lossy(&err.take()).into_owned();
-    assert_eq!(status, 0, "{err}");
-    assert!(out.contains("[1]+  Stopped                 serve"), "{out}");
-    assert!(out.ends_with("ended 143\n"), "{out}");
-    let signals = guest.signals.lock().unwrap().clone();
-    assert_eq!(
-        signals,
-        [
-            (Signal::Stop, false),
-            (Signal::Continue, false),
-            (Signal::Terminate, false)
-        ]
-    );
-}
-
-#[test]
-fn ctrl_z_stops_the_line_and_fg_brings_it_back() {
-    let host = home().with_real_time();
-    let suspend = host.clone();
-    std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_millis(200));
-        suspend.suspend();
-    });
-    let ran = typed_on(&host, "sleep 0.6; echo slept\rjobs\rfg\rjobs\r");
-    let printed = ran.printed();
-    assert!(
-        ran.err
-            .contains("[1]+  Stopped                 sleep 0.6; echo slept"),
-        "{:?}",
-        ran.err
-    );
-    assert!(
-        printed.contains("[1]+  Stopped"),
-        "jobs lists it: {printed:?}"
-    );
-    assert!(
-        printed.contains("slept"),
-        "fg ran it to its end: {printed:?}"
-    );
-    let ended: Vec<String> = marked(&ran.out, "D")
-        .into_iter()
-        .map(|f| f[0].1.clone())
-        .collect();
-    assert_eq!(ended, ["148", "0", "0", "0"], "{ended:?}");
-}
-
-#[test]
-fn a_background_job_has_a_run_of_its_own() {
-    let host = home();
-    host.file("/home/me/a", "x");
-    let ran = typed_on(&host, "rm a & wait\recho after\r");
-    let started = marked(&ran.out, "C");
-    let job: Vec<_> = started
-        .iter()
-        .filter(|f| f.iter().any(|(k, v)| k == "j" && v == "1"))
-        .collect();
-    assert_eq!(job.len(), 1, "{started:?}");
-    assert!(job[0].iter().any(|(k, v)| k == "cmd" && unb64(v) == "rm a"));
-    let ended = marked(&ran.out, "D");
-    assert!(ended.iter().any(|f| f.iter().any(|(k, _)| k == "j")));
-    let runs = host.action_runs();
-    assert_eq!(runs.len(), 1);
-    assert!(runs[0].ends_with("-job-1"), "{runs:?}");
-    assert_eq!(ran.runs(), ["rm a & wait", "echo after"]);
 }
 
 #[test]

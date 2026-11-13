@@ -23,6 +23,10 @@ unicode-width = "0.2.2"
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 workspace-hack = { version = "0.1" }
 
+[dev-dependencies]
+# `scenario!`: one test function holds the cases of one subject.
+tilo-test-env = { path = "../../dev/test-env" }
+
 [[test]]
 name = "it"
 path = "tests/it.rs"
