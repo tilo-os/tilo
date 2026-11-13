@@ -239,50 +239,59 @@ def descendants(pid: int) -> list[int]:
     return out
 
 
-def environ(pid: int) -> dict:
+def read_proc(path: str) -> bytes | None:
+    """What `/proc` entry `path` holds, read as the process's own owner would read it.
+
+    A session holding the person's identity keys turns `PR_SET_DUMPABLE` off, so the kernel
+    hands its `/proc` entry to nobody but root: what keeps another process from reading its
+    keys also keeps a test from reading its command line, its namespaces or its maps. `sudo -n`
+    is tried once for those, as [`vulkan_drivers`] does for the maps."""
     try:
-        raw = Path(f"/proc/{pid}/environ").read_bytes()
+        return Path(path).read_bytes()
     except OSError:
+        result = subprocess.run(["sudo", "-n", "cat", path], capture_output=True)
+        return result.stdout if result.returncode == 0 else None
+
+
+def read_proc_link(path: str) -> str | None:
+    """What the `/proc` symbolic link `path` names, as [`read_proc`] reads an entry."""
+    try:
+        return os.readlink(path)
+    except OSError:
+        result = subprocess.run(["sudo", "-n", "readlink", path], text=True, capture_output=True)
+        return result.stdout.strip() if result.returncode == 0 else None
+
+
+def environ(pid: int) -> dict:
+    raw = read_proc(f"/proc/{pid}/environ")
+    if raw is None:
         return {}
     pairs = (item.split(b"=", 1) for item in raw.split(b"\0") if b"=" in item)
     return {k.decode(errors="replace"): v.decode(errors="replace") for k, v in pairs}
 
 
 def exe(pid: int) -> str:
-    try:
-        return os.readlink(f"/proc/{pid}/exe")
-    except OSError:
-        return ""
+    return read_proc_link(f"/proc/{pid}/exe") or ""
 
 
 def cmdline(pid: int) -> list[str]:
-    try:
-        return Path(f"/proc/{pid}/cmdline").read_bytes().decode(errors="replace").split("\0")
-    except OSError:
+    raw = read_proc(f"/proc/{pid}/cmdline")
+    if raw is None:
         return []
+    return raw.decode(errors="replace").split("\0")
 
 
 def namespaces(pid: int) -> dict:
-    out = {}
-    for ns in ("user", "mnt", "pid"):
-        try:
-            out[ns] = os.readlink(f"/proc/{pid}/ns/{ns}")
-        except OSError:
-            out[ns] = None
-    return out
+    return {ns: read_proc_link(f"/proc/{pid}/ns/{ns}") for ns in ("user", "mnt", "pid")}
 
 
 def vulkan_drivers(pid: int) -> list[str] | None:
     """The Vulkan drivers mapped into `pid`, or None when its maps are not
-    readable (a non-dumpable process; `sudo -n` is tried once)."""
-    try:
-        maps = Path(f"/proc/{pid}/maps").read_text()
-    except OSError:
-        result = subprocess.run(["sudo", "-n", "cat", f"/proc/{pid}/maps"], text=True, capture_output=True)
-        if result.returncode != 0:
-            return None
-        maps = result.stdout
-    return sorted({m for m in re.findall(r"libvulkan_[a-z_]+\.so", maps)})
+    readable (a non-dumpable process `sudo -n` cannot read either)."""
+    raw = read_proc(f"/proc/{pid}/maps")
+    if raw is None:
+        return None
+    return sorted({m for m in re.findall(r"libvulkan_[a-z_]+\.so", raw.decode(errors="replace"))})
 
 
 def switches(pid: int) -> dict[str, int]:
