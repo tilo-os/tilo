@@ -1018,6 +1018,7 @@ impl PageOf<'_> {
                             "input.source.add_picker",
                             &t("input-source-add-title"),
                         )
+                        // window-bar: picker, type-ahead over the layouts the dropdown offers
                         .with_placeholder(&t("input-source-add-placeholder")),
                         effect(InputEffect::ADD_SOURCE),
                     ),
