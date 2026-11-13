@@ -368,6 +368,7 @@ fn lower(
             | Item::Root(_)
             | Item::DefaultView(_)
             | Item::RowView(_)
+            | Item::PlaceView(_)
             | Item::Views(_) => {
                 continue;
             }

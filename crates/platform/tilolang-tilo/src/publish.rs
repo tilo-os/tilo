@@ -508,6 +508,7 @@ fn views_of(
         return Vec::new();
     };
     let primary = meta.default_view(&declared.id);
+    let placed = meta.place_view(&declared.id);
     meta.views_showing(type_name)
         .into_iter()
         .map(|view| {
@@ -531,7 +532,8 @@ fn views_of(
             if let Some(line) = description {
                 spec = spec.with_description(line);
             }
-            (spec.with_primary(is_primary), opens)
+            let is_place = placed == Some(view.id.as_str());
+            (spec.with_primary(is_primary).with_place(is_place), opens)
         })
         .collect()
 }

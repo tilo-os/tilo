@@ -64,6 +64,8 @@ pub struct Env {
     pub states: Vec<StateInfo>,
     /// `row view v for T`: the type and the view's name.
     pub row_views: Vec<(TypeKey, String)>,
+    /// `place view v for T`: the type and the view's name.
+    pub place_views: Vec<(TypeKey, String)>,
     /// `views a, b for T`: the type, the views in the order written, and where the
     /// declaration stands.
     pub views_of: Vec<(TypeKey, Vec<crate::resolve::ViewsInfo>, Span)>,
@@ -1595,6 +1597,7 @@ impl Resolver<'_> {
                 | Item::Root(_)
                 | Item::DefaultView(_)
                 | Item::RowView(_)
+                | Item::PlaceView(_)
                 | Item::Views(_)
                 | Item::Scenario(_)
                 | Item::Trigger(_) => continue,
@@ -2104,6 +2107,7 @@ impl Resolver<'_> {
                     self.env.roots.push(key);
                 }
                 Item::RowView(d) => self.row_view_decl(d),
+                Item::PlaceView(d) => self.place_view_decl(d),
                 Item::DefaultView(d) => {
                     // `default view talk for talks`: for the type of the root `talks`.
                     let named = match &d.ty.kind {

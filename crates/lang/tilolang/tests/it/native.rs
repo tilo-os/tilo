@@ -1158,3 +1158,59 @@ action new_thread(threads: Threads) -> Thread (key: "Ctrl+N") {{ return threads.
 action archive(t: Thread) (key: "Ctrl+N") {{}}"#
     ));
 }
+
+/// `place view v for T`: what a place of a `T` shows standing on its own, a view of the resource
+/// alone, one per type, and in the metadata the session reads.
+#[test]
+fn a_place_view_is_declared_once_and_takes_the_resource_alone() {
+    let c = crate::common::compile_body(
+        r#"type Note {
+    title: Text
+}
+
+root Notebook
+
+type Notebook {
+    notes: Collection<Note>
+}
+
+default view notebook for Notebook
+
+place view all_notes for Notebook
+
+view notebook(nb: Notebook) {
+    std.page(nb) {
+        text("The notebook's window")
+    }
+}
+
+view all_notes(nb: Notebook) {
+    std.list(nb.notes) { (n, at) ->
+        ui.ListItem(item: n, presence: at)
+    }
+}"#,
+    );
+    let id = |n: &str| c.ids.get(n).expect("id").to_string();
+    assert_eq!(
+        c.meta.place_view(&id("Notebook")),
+        Some(id("all_notes").as_str())
+    );
+    assert_eq!(
+        c.meta.default_view(&id("Notebook")),
+        Some(id("notebook").as_str())
+    );
+    expect(
+        "E018",
+        &with_t("place view r for T\nview r(x: T, y: Int) {\n    text(x.t)\n}"),
+    );
+    expect("E018", &with_t("place view nothing for T"));
+    expect(
+        "E011",
+        &with_t(
+            "place view r for T\nplace view s for T\nview r(x: T) {\n    text(x.t)\n}\nview s(x: T) {\n    text(x.t)\n}",
+        ),
+    );
+    ok(&with_t(
+        "place view r for T\nview r(x: T) {\n    text(x.t)\n}",
+    ));
+}
