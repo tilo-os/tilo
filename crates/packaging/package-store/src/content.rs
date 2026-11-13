@@ -1,15 +1,4 @@
 //! The content store, driven synchronously.
-//!
-//! Package payload blobs live in the fs crate's [`ContentStore`] — the same
-//! implementation, format and BLAKE3 hash space as every other blob on the
-//! device — under `<store>/content`. The store is a single-writer database,
-//! so it is opened for one operation at a time, under the package store's
-//! lock, and closed again; `tilo-install` and the app host therefore never
-//! contend for it beyond that lock.
-//!
-//! Callers are synchronous (a CLI, a daemon's blocking pool), and may
-//! themselves be running inside an async runtime, so each session runs on a
-//! scoped thread with its own current-thread runtime.
 
 use std::collections::HashSet;
 use std::io::Read;
@@ -68,9 +57,6 @@ impl Content<'_> {
         Ok(BlobHash(*stored.as_bytes()))
     }
 
-    /// Run `work`, a batch of ingests, with one database sync at its end
-    /// instead of one per blob. The sync runs whatever `work` returned;
-    /// nothing the batch wrote counts as stored until this returns `Ok`.
     pub(crate) fn deferred<R>(
         &self,
         work: impl FnOnce() -> Result<R, StoreError>,
@@ -86,15 +72,11 @@ impl Content<'_> {
         Ok(value)
     }
 
-    /// Database syncs this session's writes have made; see
-    /// [`ContentStore::write_syncs`].
     #[cfg(test)]
     pub(crate) fn write_syncs(&self) -> u64 {
         self.store.write_syncs()
     }
 
-    /// Write `blob` to the new file `target`, sharing extents with the
-    /// store's copy where the filesystem allows.
     pub(crate) fn export(&self, blob: &BlobHash, target: &Path) -> Result<(), StoreError> {
         self.runtime
             .block_on(self.store.export_file(hash(blob), target))
@@ -115,7 +97,6 @@ impl Content<'_> {
         Ok(Some((len, file)))
     }
 
-    /// Every blob held, complete or partial.
     pub(crate) fn hashes(&self) -> Result<Vec<BlobHash>, StoreError> {
         Ok(self
             .runtime
@@ -126,7 +107,6 @@ impl Content<'_> {
             .collect())
     }
 
-    /// Remove exactly `selected`, keeping every other blob.
     pub(crate) fn evict(&self, selected: &[BlobHash]) -> Result<(), StoreError> {
         if selected.is_empty() {
             return Ok(());

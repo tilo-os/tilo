@@ -168,7 +168,6 @@ fn a_fetched_runtime_materialises_its_whole_tree_read_only() {
     );
     assert!(tree.join("usr/share/empty").is_dir());
 
-    // A second resolution is local: nothing is fetched or rewritten.
     let inode =
         std::os::unix::fs::MetadataExt::ino(&std::fs::metadata(tree.join("usr/bin/bash")).unwrap());
     assert_eq!(materialized_tree(&store, &runtime.meta.id).unwrap(), tree);
@@ -178,7 +177,6 @@ fn a_fetched_runtime_materialises_its_whole_tree_read_only() {
         inode
     );
 
-    // Images have no registry row, so nothing can launch them.
     assert!(store.user().registry().unwrap().entries().is_empty());
     assert_eq!(store.images().unwrap().len(), 1);
 }
@@ -199,7 +197,6 @@ fn untrusted_revoked_and_substituted_images_are_refused() {
     let mut registry = Registry::default();
     registry.publish(&trusted);
     registry.publish(&foreign);
-    // Asked for `missing`, this registry answers with another package.
     registry.publish_as(missing, &trusted);
 
     let root = scratch();
@@ -308,7 +305,6 @@ fn system_images_open_offline_and_images_are_not_applications() {
         .unwrap();
     assert_eq!(shipped.id, runtime.meta.id);
 
-    // No registry and no trusted publisher: the system copy is used as is.
     let user = scratch();
     let store = Store::new(PackageStore::at(user.path()))
         .with_system(package_store::Layout::new(system.path()));
@@ -316,7 +312,6 @@ fn system_images_open_offline_and_images_are_not_applications() {
     assert!(tree.starts_with(system.path()));
     assert!(tree.join("usr/bin/sh").is_symlink());
 
-    // An image is not an application, and an application not an image.
     let apps = PackageStore::at(user.path());
     let refused = apps
         .install(
@@ -490,7 +485,6 @@ fn images_from_the_users_certified_devices_are_trusted_while_they_are_certified(
         )
         .with_fetcher(registry);
 
-    // Ada's devices, her home relay included: it holds her certificate.
     for own in [0, 1, 2] {
         materialized_tree(&store, &id(own)).unwrap();
     }
@@ -508,7 +502,6 @@ fn images_from_the_users_certified_devices_are_trusted_while_they_are_certified(
         "{refused}"
     );
     assert!(store.user().image(id(4)).unwrap().is_none());
-    // Ada's certificate does not make her laptop one of Bob's.
     let theirs = ada.certificate(&laptop, DeviceCapabilities::primary());
     assert!(bob.fleet.0.lock().unwrap().certify(theirs).is_err());
 
@@ -552,7 +545,6 @@ fn an_image_one_device_shelved_is_fetched_by_another_instead_of_rebuilt() {
     let runtime = PackageId::from_bytes([3; 32]);
     let (_a, tool) = pandoc(runtime, &laptop, 60);
 
-    // The laptop built the tool into its store, and shelves it.
     let laptop_root = scratch();
     let laptop_store = PackageStore::at(laptop_root.path());
     laptop_store
@@ -760,7 +752,6 @@ fn a_sparse_system_image_is_rebuilt_from_its_tree_and_the_host_files_it_names() 
 fn a_host_file_that_is_not_the_signed_bytes_is_refused() {
     let ci = SigningIdentity::generate();
     let (_source, runtime) = sealed_runtime(&ci);
-    // The host's libc changed under the image (an update, or tampering).
     let (system, _host) = sparse_system_runtime(&runtime, b"a different libc");
     let user = scratch();
     let store = Store::new(PackageStore::at(user.path()))
@@ -814,7 +805,6 @@ fn a_host_sources_file_names_only_signed_files_by_plain_absolute_paths() {
         assert!(error.to_string().contains(why), "{contents:?}: {error}");
     }
 
-    // A left-out file the host sources do not name is missing, not skipped.
     std::fs::write(&sources, "").unwrap();
     let user = scratch();
     let store = Store::new(PackageStore::at(user.path()))

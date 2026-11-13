@@ -1,26 +1,4 @@
 //! Environment images: `env-runtime` and `tool` packages as read-only trees.
-//!
-//! An environment's `/usr` and `/etc` are a stack of images. The supervisor
-//! names each by its [`PackageId`] and turns it into a directory with
-//! [`materialized_tree`] (or [`local_materialized_tree`] for overlay lowers):
-//!
-//! 1. The system stores the OS or the host package shipped (read-only, so
-//!    the first environment opens offline) are looked in first.
-//! 2. Then the user's store.
-//! 3. Otherwise the image is fetched from the [`Store`]'s sources in turn
-//!    (an [`ImageShelf`], the registry), checked to be the package asked
-//!    for, admitted by the [`ImageTrust`], and materialised into the user's
-//!    store.
-//!
-//! Every use admits the image again, wherever it was found: trust is a
-//! property of the image's publisher *now*, so an image a device signed
-//! stops opening the moment the user removes that device.
-//!
-//! A materialised image is a plain directory tree with read-only files at
-//! `pkgs/<package-id>/`, which bwrap stacks as an overlay lower directory
-//! without any mount privilege. Images have no registry row: nothing
-//! launches them, and two versions of one image id coexist for as long as
-//! environments use them.
 
 use std::collections::BTreeMap;
 use std::io::Read;
@@ -54,7 +32,6 @@ pub const SYSTEM_IMAGE_PUBLISHERS_FILE: &str = "image-publishers";
 /// signed hash as it is imported, exactly as a byte in the tree is.
 pub const HOST_SOURCES_FILE: &str = "host-sources";
 
-/// Why an image could not be turned into a tree.
 #[derive(Debug, thiserror::Error)]
 pub enum MaterializeError {
     #[error("image {0} is not in any store and no source offers it")]
@@ -143,7 +120,6 @@ pub struct ImageTrust {
     fleet: Option<Arc<dyn FleetSource>>,
 }
 
-/// Where the devices of the user a store serves are read from.
 pub trait FleetSource: Send + Sync + std::fmt::Debug {
     /// The user's fleet as it stands now. Asked at every admission that
     /// needs it, so a device removed since is refused at once.
@@ -162,7 +138,6 @@ impl FleetSource for CertifiedFleet {
 }
 
 impl ImageTrust {
-    /// Trust nothing beyond the system stores' contents.
     pub fn new() -> Self {
         Self::default()
     }
@@ -202,7 +177,6 @@ impl ImageTrust {
         Ok(trust)
     }
 
-    /// Also trust images `publisher` signed.
     #[must_use]
     pub fn with_publisher(mut self, publisher: [u8; 32]) -> Self {
         if !self.publishers.contains(&publisher) {
@@ -211,22 +185,18 @@ impl ImageTrust {
         self
     }
 
-    /// Also trust images signed by the devices of the user `fleet` reads,
-    /// as [`ImageTrust`] describes.
     #[must_use]
     pub fn with_fleet(mut self, fleet: impl FleetSource + 'static) -> Self {
         self.fleet = Some(Arc::new(fleet));
         self
     }
 
-    /// Replace the revocation list.
     #[must_use]
     pub fn with_revoked(mut self, revoked: RevocationList) -> Self {
         self.revoked = revoked;
         self
     }
 
-    /// The publishers trusted outright.
     pub fn publishers(&self) -> &[[u8; 32]] {
         &self.publishers
     }
@@ -299,8 +269,6 @@ impl ImageTrust {
         }
     }
 
-    /// Where `publisher` stands with the user's fleet now; `None` without a
-    /// fleet.
     fn fleet_standing(&self, publisher: &[u8; 32]) -> Option<Result<DeviceStanding, String>> {
         let source = self.fleet.as_deref()?;
         let now_ns = tilo_clock::unix_now_ns();
@@ -349,7 +317,6 @@ pub struct Store {
     sources: Vec<Source>,
 }
 
-/// Somewhere missing images are fetched from, and what to call it.
 #[derive(Clone)]
 struct Source {
     name: String,
@@ -459,8 +426,6 @@ impl Store {
         Ok(out)
     }
 
-    /// The image `id`'s metadata and the store holding it, without
-    /// fetching.
     fn local(&self, id: PackageId) -> Result<Option<(PackageMeta, &Layout, bool)>, StoreError> {
         for layout in &self.system {
             if let Some(meta) = read_image(layout, id)? {
@@ -559,7 +524,6 @@ impl Store {
     }
 }
 
-/// What [`Store::resolve`] found for an image.
 struct Resolved {
     meta: PackageMeta,
     tree: PathBuf,
@@ -625,8 +589,6 @@ fn read_host_sources(
     Ok(Some(HostSources(sources)))
 }
 
-/// Largest package a shelf hands over. A shelved image is whole, payload
-/// included, and is read into memory to be installed.
 const MAX_SHELVED_IMAGE_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 
 /// A directory of whole images, `<dir>/<hex id>.tapp`, where the user's
@@ -650,7 +612,6 @@ impl ImageShelf {
         &self.dir
     }
 
-    /// Where image `id` sits on the shelf.
     pub fn path(&self, id: &PackageId) -> PathBuf {
         self.dir.join(format!("{}.tapp", id.to_hex()))
     }
@@ -761,9 +722,6 @@ pub fn local_materialized_tree(store: &Store, id: &PackageId) -> Result<PathBuf,
     Ok(local)
 }
 
-/// Ingest every file of the image tree at `source` into `content`, checking
-/// each against the hash `meta` signed. A file the tree leaves out is read
-/// from the host file `host` names for it.
 fn import_image_payload(
     content: &crate::content::Content<'_>,
     meta: &PackageMeta,
@@ -928,10 +886,6 @@ pub(crate) fn read_image(
     Ok(Some(meta))
 }
 
-/// Every complete image in `layout`. A record that cannot be read is
-/// skipped: listing serves garbage collection and discovery, and
-/// [`materialized_tree`] reports a broken record of the image it is asked
-/// for.
 pub(crate) fn list_images(layout: &Layout) -> Result<Vec<PackageMeta>, StoreError> {
     let entries = match std::fs::read_dir(layout.packages()) {
         Ok(entries) => entries,
