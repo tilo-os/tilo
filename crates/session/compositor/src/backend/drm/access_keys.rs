@@ -563,7 +563,7 @@ mod tests {
         expect: BounceVerdict,
     }
 
-    fn run(window: Duration, steps: &[Step]) {
+    fn run(name: &str, window: Duration, steps: &[Step]) {
         let t0 = Instant::now();
         let mut filter = BounceKeys::default();
         for (index, step) in steps.iter().enumerate() {
@@ -576,7 +576,7 @@ mod tests {
             assert_eq!(
                 verdict,
                 step.expect,
-                "step {index}: key {} {} at {} ms",
+                "{name}, step {index}: key {} {} at {} ms",
                 step.key,
                 if step.pressed { "down" } else { "up" },
                 step.at
@@ -608,60 +608,59 @@ mod tests {
 
     #[test]
     fn bounce_keys_timing_table() {
-        run(
-            ms(300),
-            &[
-                // A clean keystroke.
-                down(0, A, OK),
-                up(80, A, OK),
-                // The same key 100 ms after release: a bounce, and its release goes with it.
-                down(180, A, NO),
-                up(200, A, NO),
-                // Still inside the window, which restarted at 200 ms.
-                down(450, A, NO),
-                up(470, A, NO),
-                // 300 ms after the last release: a real keystroke again.
-                down(770, A, OK),
-                up(850, A, OK),
-                // A different key right away is never a bounce.
-                down(860, B, OK),
-                up(900, B, OK),
-                // A again: B was the last release, so A is not a repeat.
-                down(910, A, OK),
-                up(990, A, OK),
-            ],
-        );
-    }
-
-    #[test]
-    fn the_window_boundary_is_exclusive() {
-        run(
-            ms(300),
-            &[
-                down(0, A, OK),
-                up(10, A, OK),
-                down(309, A, NO),
-                up(309, A, NO),
-                down(609, A, OK),
-            ],
-        );
-    }
-
-    #[test]
-    fn a_zero_window_accepts_everything() {
-        run(
-            Duration::ZERO,
-            &[down(0, A, OK), up(1, A, OK), down(2, A, OK), up(3, A, OK)],
-        );
-    }
-
-    #[test]
-    fn a_held_key_is_one_keystroke_however_long_it_is_held() {
-        // Bounce keys measures from the release; holding never counts.
-        run(
-            ms(300),
-            &[down(0, A, OK), up(5_000, A, OK), down(5_400, A, OK)],
-        );
+        let rows: [(&str, Duration, &[Step]); 6] = [
+            (
+                "a keystroke, its bounces and other keys",
+                ms(300),
+                &[
+                    // A clean keystroke.
+                    down(0, A, OK),
+                    up(80, A, OK),
+                    // The same key 100 ms after release: a bounce, and its release goes with it.
+                    down(180, A, NO),
+                    up(200, A, NO),
+                    // Still inside the window, which restarted at 200 ms.
+                    down(450, A, NO),
+                    up(470, A, NO),
+                    // 300 ms after the last release: a real keystroke again.
+                    down(770, A, OK),
+                    up(850, A, OK),
+                    // A different key right away is never a bounce.
+                    down(860, B, OK),
+                    up(900, B, OK),
+                    // A again: B was the last release, so A is not a repeat.
+                    down(910, A, OK),
+                    up(990, A, OK),
+                ],
+            ),
+            (
+                "the window's boundary is exclusive",
+                ms(300),
+                &[
+                    down(0, A, OK),
+                    up(10, A, OK),
+                    down(309, A, NO),
+                    up(309, A, NO),
+                    down(609, A, OK),
+                ],
+            ),
+            (
+                "a zero window accepts everything",
+                Duration::ZERO,
+                &[down(0, A, OK), up(1, A, OK), down(2, A, OK), up(3, A, OK)],
+            ),
+            (
+                // Bounce keys measures from the release; holding never counts.
+                "a held key is one keystroke however long it is held",
+                ms(300),
+                &[down(0, A, OK), up(5_000, A, OK), down(5_400, A, OK)],
+            ),
+            ("no key at all", ms(300), &[]),
+            ("one press and nothing after it", ms(300), &[down(0, A, OK)]),
+        ];
+        for (name, window, steps) in rows {
+            run(name, window, steps);
+        }
     }
 
     #[test]

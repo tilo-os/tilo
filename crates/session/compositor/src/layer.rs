@@ -1028,43 +1028,102 @@ mod tests {
         Rectangle::new(Point::from((0, 0)), Size::from((1000, 800)))
     }
 
+    /// Where [`placement`] puts a surface on the 1000 by 800 output: what the row shows, the
+    /// surface's anchors, the size it asks for and its margins (top, right, bottom, left), then
+    /// its place as x, y, width and height.
     #[test]
-    fn a_bar_anchored_to_both_sides_spans_the_output_at_its_margins() {
-        let placed = placement(
-            &request(
-                Anchor::TOP | Anchor::LEFT | Anchor::RIGHT,
+    fn a_surface_is_placed_by_its_anchors_its_size_and_its_margins() {
+        let bar = Anchor::TOP | Anchor::LEFT | Anchor::RIGHT;
+        let low_bar = Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT;
+        let corner = Anchor::TOP | Anchor::LEFT;
+        let none = (0, 0, 0, 0);
+        let rows = [
+            (
+                "a bar anchored to both sides spans the output",
+                bar,
                 (0, 40),
-                (0, 0, 0, 0),
+                none,
+                (0, 0, 1000, 40),
             ),
-            output(),
-        );
-        assert_eq!(
-            placed,
-            Rectangle::new(Point::from((0, 0)), Size::from((1000, 40)))
-        );
-    }
-
-    #[test]
-    fn a_panel_hangs_from_the_edge_it_is_anchored_to_at_the_size_it_asked_for() {
-        let placed = placement(
-            &request(Anchor::TOP | Anchor::RIGHT, (380, 500), (34, 8, 0, 0)),
-            output(),
-        );
-        assert_eq!(
-            placed,
-            Rectangle::new(Point::from((1000 - 380 - 8, 34)), Size::from((380, 500)))
-        );
-        let corner = placement(
-            &request(Anchor::TOP | Anchor::LEFT, (300, 200), (0, 0, 0, 0)),
-            output(),
-        );
-        assert_eq!(corner.loc, Point::from((0, 0)));
-        // Anchored to the bottom, it keeps its bottom edge at the margin.
-        let low = placement(
-            &request(Anchor::BOTTOM | Anchor::RIGHT, (300, 200), (0, 10, 20, 0)),
-            output(),
-        );
-        assert_eq!(low.loc, Point::from((1000 - 300 - 10, 800 - 200 - 20)));
+            (
+                "a panel hangs from the edges it is anchored to, at its size and margins",
+                Anchor::TOP | Anchor::RIGHT,
+                (380, 500),
+                (34, 8, 0, 0),
+                (1000 - 380 - 8, 34, 380, 500),
+            ),
+            (
+                "a panel in the corner",
+                corner,
+                (300, 200),
+                none,
+                (0, 0, 300, 200),
+            ),
+            (
+                // Anchored to the bottom, it keeps its bottom edge at the margin.
+                "a panel anchored to the bottom and the right",
+                Anchor::BOTTOM | Anchor::RIGHT,
+                (300, 200),
+                (0, 10, 20, 0),
+                (1000 - 300 - 10, 800 - 200 - 20, 300, 200),
+            ),
+            (
+                "a surface anchored to nothing is centred",
+                Anchor::empty(),
+                (400, 300),
+                none,
+                (300, 250, 400, 300),
+            ),
+            (
+                "a stretched axis keeps the margins",
+                bar,
+                (0, 32),
+                (4, 4, 0, 4),
+                (4, 4, 1000 - 8, 32),
+            ),
+            (
+                "a size larger than its output is kept inside it",
+                corner,
+                (2000, 4000),
+                none,
+                (0, 0, 1000, 800),
+            ),
+            (
+                "a bar anchored to the bottom and both sides",
+                low_bar,
+                (0, 40),
+                none,
+                (0, 800 - 40, 1000, 40),
+            ),
+            (
+                "a surface anchored to every edge fills the output inside its margins",
+                Anchor::all(),
+                (0, 0),
+                (10, 20, 30, 40),
+                (40, 10, 1000 - 40 - 20, 800 - 10 - 30),
+            ),
+            (
+                "an axis with one anchor and no size takes the whole of it",
+                Anchor::LEFT,
+                (0, 0),
+                none,
+                (0, 0, 1000, 800),
+            ),
+            (
+                "margins wider than the output leave one pixel",
+                bar,
+                (0, 40),
+                (0, 600, 0, 600),
+                (600, 0, 1, 40),
+            ),
+        ];
+        for (name, anchor, size, margin, (x, y, width, height)) in rows {
+            assert_eq!(
+                placement(&request(anchor, size, margin), output()),
+                Rectangle::new(Point::from((x, y)), Size::from((width, height))),
+                "{name}"
+            );
+        }
     }
 
     /// A popover the session places stands at its room's corner whatever its anchors say, as tall
@@ -1101,39 +1160,5 @@ mod tests {
         );
         let tall = request(Anchor::TOP | Anchor::LEFT, (380, 900), (0, 0, 0, 0));
         assert_eq!(within(&tall, room), room.room);
-    }
-
-    #[test]
-    fn a_surface_anchored_to_nothing_is_centred() {
-        let placed = placement(
-            &request(Anchor::empty(), (400, 300), (0, 0, 0, 0)),
-            output(),
-        );
-        assert_eq!(placed.loc, Point::from((300, 250)));
-    }
-
-    #[test]
-    fn a_stretched_axis_keeps_the_margins() {
-        let placed = placement(
-            &request(
-                Anchor::TOP | Anchor::LEFT | Anchor::RIGHT,
-                (0, 32),
-                (4, 4, 0, 4),
-            ),
-            output(),
-        );
-        assert_eq!(
-            placed,
-            Rectangle::new(Point::from((4, 4)), Size::from((1000 - 8, 32)))
-        );
-    }
-
-    #[test]
-    fn a_size_larger_than_its_output_is_kept_inside_it() {
-        let placed = placement(
-            &request(Anchor::TOP | Anchor::LEFT, (2000, 4000), (0, 0, 0, 0)),
-            output(),
-        );
-        assert_eq!(placed.size, Size::from((1000, 800)));
     }
 }

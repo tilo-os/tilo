@@ -457,9 +457,21 @@ fn rules_names(layout: &KeyboardLayout) -> Vec<u8> {
 mod tests {
     use super::*;
 
+    /// A `_NET_WM_ICON` value holding one square icon of `edge` pixels, each `pixel`, and then
+    /// `rest`.
+    fn square(edge: u32, pixel: u32, rest: &[u32]) -> Vec<u32> {
+        let side = usize::try_from(edge).expect("an edge fits");
+        let mut data = vec![edge, edge];
+        data.extend(std::iter::repeat_n(pixel, side.saturating_mul(side)));
+        data.extend_from_slice(rest);
+        data
+    }
+
+    /// A `_NET_WM_ICON` value, the edge of the icon kept from it (`None` when none is kept), and
+    /// that icon's pixels where a row pins them.
     #[test]
-    fn the_largest_square_icon_is_kept_as_premultiplied_rgba() {
-        let data = [
+    fn the_largest_square_icon_a_tab_can_use_is_kept_as_premultiplied_rgba() {
+        let two_squares = vec![
             2,
             2,
             0x80FF_0000,
@@ -470,36 +482,78 @@ mod tests {
             1,
             0xFFFF_FFFF, // 1x1
         ];
-        let icon = icon(&data).expect("an icon");
-        assert_eq!((icon.width, icon.height), (2, 2));
-        assert_eq!(
-            icon.pixels,
-            vec![
-                128, 0, 0, 128, // half-transparent red, premultiplied
-                0, 0, 0, 0, // transparent green
-                0, 0, 0, 0, // transparent blue
-                255, 255, 255, 255, // opaque white
-            ]
-        );
-    }
-
-    #[test]
-    fn icons_that_are_not_square_are_skipped() {
-        let data = [3, 2, 1, 2, 3, 4, 5, 6, 1, 1, 0xFF00_0000];
-        let icon = icon(&data).expect("an icon");
-        assert_eq!((icon.width, icon.height), (1, 1));
-    }
-
-    #[test]
-    fn a_cut_off_icon_value_yields_nothing_after_it() {
-        let data = [8, 8, 1, 2, 3];
-        assert_eq!(icon(&data), None);
-    }
-
-    #[test]
-    fn icons_larger_than_a_tab_needs_are_skipped() {
-        let data = [MAX_EDGE + 1, MAX_EDGE + 1];
-        assert_eq!(icon(&data), None);
+        let larger_square = vec![
+            128, 0, 0, 128, // half-transparent red, premultiplied
+            0, 0, 0, 0, // transparent green
+            0, 0, 0, 0, // transparent blue
+            255, 255, 255, 255, // opaque white
+        ];
+        let white: Vec<u8> = vec![255, 255, 255, 255];
+        let red: Vec<u8> = vec![255, 0, 0, 255];
+        let not_square = vec![3, 2, 1, 2, 3, 4, 5, 6, 1, 1, 0xFF00_0000];
+        let rows = [
+            (
+                "the larger of two squares",
+                two_squares,
+                Some(2),
+                Some(larger_square),
+            ),
+            (
+                "an icon that is not square is skipped",
+                not_square,
+                Some(1),
+                None,
+            ),
+            (
+                "a cut-off icon yields nothing after it",
+                vec![8, 8, 1, 2, 3],
+                None,
+                None,
+            ),
+            (
+                "a header larger than a tab needs, cut off",
+                vec![MAX_EDGE + 1, MAX_EDGE + 1],
+                None,
+                None,
+            ),
+            ("no value at all", Vec::new(), None, None),
+            ("a header cut off after its width", vec![2], None, None),
+            (
+                "an icon of no size is skipped",
+                vec![0, 0, 1, 1, 0xFFFF_FFFF],
+                Some(1),
+                Some(white.clone()),
+            ),
+            (
+                "the first of two icons the same size is kept",
+                vec![1, 1, 0xFFFF_0000, 1, 1, 0xFF00_00FF],
+                Some(1),
+                Some(red),
+            ),
+            (
+                "an icon one pixel past the largest edge is skipped",
+                square(MAX_EDGE + 1, 0xFF00_0000, &[1, 1, 0xFFFF_FFFF]),
+                Some(1),
+                Some(white),
+            ),
+            (
+                "an icon at the largest edge is kept",
+                square(MAX_EDGE, 0xFF00_0000, &[]),
+                Some(MAX_EDGE),
+                None,
+            ),
+        ];
+        for (name, data, edge, pixels) in rows {
+            let kept = icon(&data);
+            assert_eq!(
+                kept.as_ref().map(|icon| (icon.width, icon.height)),
+                edge.map(|edge| (edge, edge)),
+                "{name}"
+            );
+            if let Some(pixels) = pixels {
+                assert_eq!(kept.expect("an icon").pixels, pixels, "{name}");
+            }
+        }
     }
 
     #[test]

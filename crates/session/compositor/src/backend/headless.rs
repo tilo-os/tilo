@@ -741,29 +741,57 @@ mod tests {
         Duration::from_millis(n)
     }
 
+    /// The blank the frame after one built at `built` is shown at, and the point it is built, for
+    /// a display whose last blank was the test's instant: every time below is counted from it.
     #[test]
-    fn the_frame_for_a_blank_is_built_one_lead_before_it() {
+    fn the_next_frame_is_built_one_lead_before_the_first_blank_still_ahead() {
         let t0 = Instant::now();
-        let (blank, due) = next_frame(t0, INTERVAL, ms(3), t0 + ms(1));
-        assert_eq!(blank, t0 + INTERVAL, "the next blank on the grid");
-        assert_eq!(due, t0 + INTERVAL - ms(3), "built one lead before it");
-    }
-
-    #[test]
-    fn a_frame_that_overran_its_blank_lands_on_the_grid_after_it() {
-        let t0 = Instant::now();
-        // Built for the second blank but finished two refreshes on.
-        let late = t0 + INTERVAL * 2 + ms(1);
-        let (blank, due) = next_frame(t0, INTERVAL, ms(3), late);
-        assert_eq!(blank, t0 + INTERVAL * 3, "no bursting to catch up");
-        assert_eq!(due, t0 + INTERVAL * 3 - ms(3));
-    }
-
-    #[test]
-    fn a_lead_longer_than_a_refresh_builds_at_once() {
-        let t0 = Instant::now();
-        let (blank, due) = next_frame(t0, INTERVAL, INTERVAL, t0);
-        assert_eq!(blank, t0 + INTERVAL);
-        assert_eq!(due, t0, "the blank before it is already past");
+        // What the row shows, the lead, when the frame before was built, then the blank the next
+        // one shows at and the point it is built.
+        let rows = [
+            (
+                "the next blank on the grid, built one lead before it",
+                ms(3),
+                ms(1),
+                INTERVAL,
+                INTERVAL - ms(3),
+            ),
+            (
+                // Built for the second blank but finished two refreshes on.
+                "a frame that overran its blank lands on the grid after it, without bursting",
+                ms(3),
+                INTERVAL * 2 + ms(1),
+                INTERVAL * 3,
+                INTERVAL * 3 - ms(3),
+            ),
+            (
+                "a lead as long as a refresh builds at once: the blank before it is past",
+                INTERVAL,
+                Duration::ZERO,
+                INTERVAL,
+                Duration::ZERO,
+            ),
+            (
+                "no lead at all builds at the blank",
+                Duration::ZERO,
+                ms(1),
+                INTERVAL,
+                INTERVAL,
+            ),
+            (
+                "a frame built exactly on a blank is followed by the one after it",
+                ms(3),
+                INTERVAL,
+                INTERVAL * 2,
+                INTERVAL * 2 - ms(3),
+            ),
+        ];
+        for (name, lead, built, blank, due) in rows {
+            assert_eq!(
+                next_frame(t0, INTERVAL, lead, t0 + built),
+                (t0 + blank, t0 + due),
+                "{name}: the blank it shows at, then the point it is built"
+            );
+        }
     }
 }
