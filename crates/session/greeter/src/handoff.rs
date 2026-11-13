@@ -212,14 +212,108 @@ mod tests {
         (dir, served)
     }
 
-    #[test]
-    fn the_daemon_names_the_person_who_signed_in_at_boot() {
-        let (dir, served) = daemon(Some("{\"name\":\"ada\"}\n"));
-        assert_eq!(
-            pending_sign_in(&dir.path().join("socket"), &dir.path().join("autologin")).as_deref(),
-            Some("ada")
-        );
-        assert_eq!(served.join().unwrap(), "{\"op\":\"pending-sign-in\"}\n");
+    tilo_test_env::scenario! {
+        fn the_daemon_answers_what_the_greeter_asks_about_a_boot_sign_in;
+
+        phase the_daemon_names_the_person_who_signed_in_at_boot;
+        {
+            let (dir, served) = daemon(Some("{\"name\":\"ada\"}\n"));
+            assert_eq!(
+                pending_sign_in(&dir.path().join("socket"), &dir.path().join("autologin")).as_deref(),
+                Some("ada")
+            );
+            assert_eq!(served.join().unwrap(), "{\"op\":\"pending-sign-in\"}\n");
+        }
+
+        phase a_fingerprint_is_offered_only_when_the_daemon_says_the_key_is_held;
+        {
+            let (dir, served) = daemon(Some("{\"ok\":true,\"key_held\":true}\n"));
+            assert!(key_held(&dir.path().join("socket"), "ada"));
+            assert_eq!(
+                served.join().unwrap(),
+                "{\"op\":\"key-held\",\"user\":\"ada\"}\n"
+            );
+
+            for reply in [
+                "{\"ok\":true,\"key_held\":false}\n",
+                "{\"ok\":false,\"error\":\"not-permitted\"}\n",
+                "{\"ok\":true}\n",
+            ] {
+                let (dir, served) = daemon(Some(reply));
+                assert!(!key_held(&dir.path().join("socket"), "ada"), "{reply}");
+                served.join().unwrap();
+            }
+            let empty = tempfile::tempdir().unwrap();
+            assert!(!key_held(&empty.path().join("socket"), "ada"));
+        }
+
+        phase the_daemon_says_whether_a_secret_is_a_pin;
+        {
+            use crate::auth::boot::SecretKind;
+            let (dir, served) = daemon(Some("{\"ok\":true,\"secret\":\"pin\"}\n"));
+            assert_eq!(
+                secret_kind(&dir.path().join("socket"), "ada"),
+                Some(SecretKind::Pin)
+            );
+            assert_eq!(
+                served.join().unwrap(),
+                "{\"op\":\"secret-kind\",\"user\":\"ada\"}\n"
+            );
+            for (reply, kind) in [
+                (
+                    "{\"ok\":true,\"secret\":\"password\"}\n",
+                    Some(SecretKind::Password),
+                ),
+                ("{\"ok\":true}\n", None),
+                ("{\"ok\":false,\"error\":\"not-permitted\"}\n", None),
+                ("{\"ok\":true,\"secret\":\"pattern\"}\n", None),
+            ] {
+                let (dir, served) = daemon(Some(reply));
+                assert_eq!(
+                    secret_kind(&dir.path().join("socket"), "ada"),
+                    kind,
+                    "{reply}"
+                );
+                served.join().unwrap();
+            }
+            let empty = tempfile::tempdir().unwrap();
+            assert_eq!(secret_kind(&empty.path().join("socket"), "ada"), None);
+        }
+
+        phase a_boot_whose_first_session_was_the_installer_autologin_hands_nobody_over;
+        {
+            let (dir, served) = daemon(Some("{\"name\":\"ada\"}\n"));
+            let autologin = dir.path().join("autologin");
+            std::fs::create_dir(&autologin).unwrap();
+            assert_eq!(
+                pending_sign_in(&dir.path().join("socket"), &autologin),
+                None
+            );
+            // The daemon was not even asked: its first connection is this one.
+            drop(UnixStream::connect(dir.path().join("socket")).unwrap());
+            assert_eq!(served.join().unwrap(), "");
+        }
+
+        phase only_a_plain_account_name_is_taken;
+        {
+            for (reply, expected) in [
+                ("{\"name\":\"ada\"}", Some("ada")),
+                ("{\"name\":\"_svc.ben-2\"}", Some("_svc.ben-2")),
+                ("{\"name\":\"ada\",\"since\":12}", Some("ada")),
+                ("null", None),
+                ("{}", None),
+                ("{\"name\":null}", None),
+                ("{\"name\":\"\"}", None),
+                ("{\"name\":\"-rf\"}", None),
+                ("{\"name\":\"ada lovelace\"}", None),
+                ("{\"name\":\"../root\"}", None),
+                ("{\"name\":\"a\\nb\"}", None),
+                ("{\"name\":\"abcdefghijklmnopqrstuvwxyz0123456\"}", None),
+                ("not json", None),
+            ] {
+                assert_eq!(parse_reply(reply).as_deref(), expected, "{reply}");
+            }
+        }
     }
 
     #[test]
@@ -250,61 +344,6 @@ mod tests {
             None
         );
         served.join().unwrap();
-    }
-
-    #[test]
-    fn a_fingerprint_is_offered_only_when_the_daemon_says_the_key_is_held() {
-        let (dir, served) = daemon(Some("{\"ok\":true,\"key_held\":true}\n"));
-        assert!(key_held(&dir.path().join("socket"), "ada"));
-        assert_eq!(
-            served.join().unwrap(),
-            "{\"op\":\"key-held\",\"user\":\"ada\"}\n"
-        );
-
-        for reply in [
-            "{\"ok\":true,\"key_held\":false}\n",
-            "{\"ok\":false,\"error\":\"not-permitted\"}\n",
-            "{\"ok\":true}\n",
-        ] {
-            let (dir, served) = daemon(Some(reply));
-            assert!(!key_held(&dir.path().join("socket"), "ada"), "{reply}");
-            served.join().unwrap();
-        }
-        let empty = tempfile::tempdir().unwrap();
-        assert!(!key_held(&empty.path().join("socket"), "ada"));
-    }
-
-    #[test]
-    fn the_daemon_says_whether_a_secret_is_a_pin() {
-        use crate::auth::boot::SecretKind;
-        let (dir, served) = daemon(Some("{\"ok\":true,\"secret\":\"pin\"}\n"));
-        assert_eq!(
-            secret_kind(&dir.path().join("socket"), "ada"),
-            Some(SecretKind::Pin)
-        );
-        assert_eq!(
-            served.join().unwrap(),
-            "{\"op\":\"secret-kind\",\"user\":\"ada\"}\n"
-        );
-        for (reply, kind) in [
-            (
-                "{\"ok\":true,\"secret\":\"password\"}\n",
-                Some(SecretKind::Password),
-            ),
-            ("{\"ok\":true}\n", None),
-            ("{\"ok\":false,\"error\":\"not-permitted\"}\n", None),
-            ("{\"ok\":true,\"secret\":\"pattern\"}\n", None),
-        ] {
-            let (dir, served) = daemon(Some(reply));
-            assert_eq!(
-                secret_kind(&dir.path().join("socket"), "ada"),
-                kind,
-                "{reply}"
-            );
-            served.join().unwrap();
-        }
-        let empty = tempfile::tempdir().unwrap();
-        assert_eq!(secret_kind(&empty.path().join("socket"), "ada"), None);
     }
 
     #[test]
@@ -349,20 +388,6 @@ mod tests {
         assert_eq!(set(&empty), SetSecret::Failed);
     }
 
-    #[test]
-    fn a_boot_whose_first_session_was_the_installer_autologin_hands_nobody_over() {
-        let (dir, served) = daemon(Some("{\"name\":\"ada\"}\n"));
-        let autologin = dir.path().join("autologin");
-        std::fs::create_dir(&autologin).unwrap();
-        assert_eq!(
-            pending_sign_in(&dir.path().join("socket"), &autologin),
-            None
-        );
-        // The daemon was not even asked: its first connection is this one.
-        drop(UnixStream::connect(dir.path().join("socket")).unwrap());
-        assert_eq!(served.join().unwrap(), "");
-    }
-
     /// greetd's framing: a little-endian length, then JSON.
     fn read_request(stream: &mut UnixStream) -> Value {
         let mut len = [0; 4];
@@ -399,84 +424,88 @@ mod tests {
         vec!["/usr/libexec/tilo-session".to_owned()]
     }
 
-    #[test]
-    fn a_question_from_pam_cancels_the_handoff_unanswered() {
-        let (dir, served) = greetd(|stream| {
-            assert_eq!(
-                read_request(stream),
-                serde_json::json!({"type":"create_session","username":"ada"})
-            );
-            respond(
-                stream,
-                &serde_json::json!({"type":"auth_message","auth_message_type":"secret","auth_message":"Password:"}),
-            );
-            assert_eq!(
-                read_request(stream),
-                serde_json::json!({"type":"cancel_session"})
-            );
-            respond(stream, &serde_json::json!({"type":"success"}));
-        });
-        let (sender, updates) = std::sync::mpsc::channel();
-        let sender = std::sync::Mutex::new(sender);
-        let _session = crate::auth::spawn_handoff_updates(
-            dir.path().join("greetd.sock").to_str().unwrap().to_owned(),
-            "ada".to_owned(),
-            session_argv(),
-            Vec::new(),
-            move |update| sender.lock().unwrap().send(update).unwrap(),
-        );
-        assert_eq!(
-            updates.recv_timeout(tilo_test_env::hang_bound()).unwrap(),
-            crate::auth::AuthUpdate::Failed(crate::auth::Failure::Cancelled)
-        );
-        served.join().unwrap();
-    }
+    tilo_test_env::scenario! {
+        fn a_boot_sign_in_is_handed_to_greetd_without_a_question;
 
-    #[test]
-    fn an_accepted_boot_sign_in_starts_the_session_without_a_question() {
-        // A started session exits the greeter, as greetd requires; run that
-        // in a child so the exit does not end this test binary.
-        let (dir, served) = greetd(|stream| {
+        phase a_question_from_pam_cancels_the_handoff_unanswered;
+        {
+            let (dir, served) = greetd(|stream| {
+                assert_eq!(
+                    read_request(stream),
+                    serde_json::json!({"type":"create_session","username":"ada"})
+                );
+                respond(
+                    stream,
+                    &serde_json::json!({"type":"auth_message","auth_message_type":"secret","auth_message":"Password:"}),
+                );
+                assert_eq!(
+                    read_request(stream),
+                    serde_json::json!({"type":"cancel_session"})
+                );
+                respond(stream, &serde_json::json!({"type":"success"}));
+            });
+            let (sender, updates) = std::sync::mpsc::channel();
+            let sender = std::sync::Mutex::new(sender);
+            let _session = crate::auth::spawn_handoff_updates(
+                dir.path().join("greetd.sock").to_str().unwrap().to_owned(),
+                "ada".to_owned(),
+                session_argv(),
+                Vec::new(),
+                move |update| sender.lock().unwrap().send(update).unwrap(),
+            );
             assert_eq!(
-                read_request(stream),
-                serde_json::json!({"type":"create_session","username":"ada"})
+                updates.recv_timeout(tilo_test_env::hang_bound()).unwrap(),
+                crate::auth::AuthUpdate::Failed(crate::auth::Failure::Cancelled)
             );
-            respond(
-                stream,
-                &serde_json::json!({"type":"auth_message","auth_message_type":"info","auth_message":"Welcome back"}),
+            served.join().unwrap();
+        }
+
+        phase an_accepted_boot_sign_in_starts_the_session_without_a_question;
+        {
+            // A started session exits the greeter, as greetd requires; run that
+            // in a child so the exit does not end this test binary.
+            let (dir, served) = greetd(|stream| {
+                assert_eq!(
+                    read_request(stream),
+                    serde_json::json!({"type":"create_session","username":"ada"})
+                );
+                respond(
+                    stream,
+                    &serde_json::json!({"type":"auth_message","auth_message_type":"info","auth_message":"Welcome back"}),
+                );
+                let answer = read_request(stream);
+                assert_eq!(answer["type"], "post_auth_message_response");
+                assert!(answer["response"].is_null(), "{answer}");
+                respond(stream, &serde_json::json!({"type":"success"}));
+                assert_eq!(
+                    read_request(stream),
+                    serde_json::json!({"type":"start_session","cmd":["/usr/libexec/tilo-session"],"env":[]})
+                );
+                respond(stream, &serde_json::json!({"type":"success"}));
+            });
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "handoff::tests::handoff_start_child",
+                    "--nocapture",
+                ])
+                .env(
+                    "TILO_GREETER_HANDOFF_FIXTURE",
+                    dir.path().join("greetd.sock"),
+                )
+                .output_locked()
+                .unwrap();
+            served.join().unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
             );
-            let answer = read_request(stream);
-            assert_eq!(answer["type"], "post_auth_message_response");
-            assert!(answer["response"].is_null(), "{answer}");
-            respond(stream, &serde_json::json!({"type":"success"}));
-            assert_eq!(
-                read_request(stream),
-                serde_json::json!({"type":"start_session","cmd":["/usr/libexec/tilo-session"],"env":[]})
+            assert!(
+                String::from_utf8_lossy(&output.stdout).contains("accepted"),
+                "the session started through the acceptance hook"
             );
-            respond(stream, &serde_json::json!({"type":"success"}));
-        });
-        let output = std::process::Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                "handoff::tests::handoff_start_child",
-                "--nocapture",
-            ])
-            .env(
-                "TILO_GREETER_HANDOFF_FIXTURE",
-                dir.path().join("greetd.sock"),
-            )
-            .output_locked()
-            .unwrap();
-        served.join().unwrap();
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        assert!(
-            String::from_utf8_lossy(&output.stdout).contains("accepted"),
-            "the session started through the acceptance hook"
-        );
+        }
     }
 
     #[test]
@@ -508,26 +537,5 @@ mod tests {
         // The worker exits the process once greetd starts the session.
         let after = updates.recv_timeout(tilo_test_env::hang_bound());
         panic!("the handoff returned instead of starting the session: {after:?}");
-    }
-
-    #[test]
-    fn only_a_plain_account_name_is_taken() {
-        for (reply, expected) in [
-            ("{\"name\":\"ada\"}", Some("ada")),
-            ("{\"name\":\"_svc.ben-2\"}", Some("_svc.ben-2")),
-            ("{\"name\":\"ada\",\"since\":12}", Some("ada")),
-            ("null", None),
-            ("{}", None),
-            ("{\"name\":null}", None),
-            ("{\"name\":\"\"}", None),
-            ("{\"name\":\"-rf\"}", None),
-            ("{\"name\":\"ada lovelace\"}", None),
-            ("{\"name\":\"../root\"}", None),
-            ("{\"name\":\"a\\nb\"}", None),
-            ("{\"name\":\"abcdefghijklmnopqrstuvwxyz0123456\"}", None),
-            ("not json", None),
-        ] {
-            assert_eq!(parse_reply(reply).as_deref(), expected, "{reply}");
-        }
     }
 }

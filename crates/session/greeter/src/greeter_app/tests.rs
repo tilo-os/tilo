@@ -464,29 +464,118 @@ fn hidden_from_access(w: &dyn Widget, id: &str, hidden: bool) -> Option<bool> {
         .find_map(|child| hidden_from_access(child, id, hidden))
 }
 
-/// "The login screen must appear with a 2944x1840 built-in panel plus a
-/// 1920x1080 monitor attached."
-///
-/// The kiosk stretches the one sign-in window over both displays. With
-/// each display at its own scale that is 3392x1080; when the kiosk keeps
-/// both at 1x it is 4864x1840, which at the panel's scale 2 was a
-/// 9728-wide texture the device refused, and the greeter exited until
-/// greetd gave up. Either way the card is on the panel, the monitor shows
-/// the time, and the window's frame fits the device.
-#[test]
-fn the_login_screen_appears_with_a_built_in_panel_and_a_1080p_monitor_attached() {
-    use crate::output_scale::{Arrangement, Display, Displays};
-    let arrangements = [
-        (
-            Rect::new(0.0, 0.0, 1472.0, 920.0),
-            Rect::new(1472.0, 0.0, 3392.0, 1080.0),
-        ),
-        (
-            Rect::new(0.0, 0.0, 2944.0, 1840.0),
-            Rect::new(2944.0, 0.0, 4864.0, 1080.0),
-        ),
-    ];
-    for (panel, monitor) in arrangements {
+tilo_test_env::scenario! {
+    fn the_screen_is_laid_out_on_its_displays_at_every_size;
+
+    phase the_login_screen_appears_with_a_built_in_panel_and_a_1080p_monitor_attached;
+    // "The login screen must appear with a 2944x1840 built-in panel plus a
+    // 1920x1080 monitor attached."
+    //
+    // The kiosk stretches the one sign-in window over both displays. With
+    // each display at its own scale that is 3392x1080; when the kiosk keeps
+    // both at 1x it is 4864x1840, which at the panel's scale 2 was a
+    // 9728-wide texture the device refused, and the greeter exited until
+    // greetd gave up. Either way the card is on the panel, the monitor shows
+    // the time, and the window's frame fits the device.
+    {
+        use crate::output_scale::{Arrangement, Display, Displays};
+        let arrangements = [
+            (
+                Rect::new(0.0, 0.0, 1472.0, 920.0),
+                Rect::new(1472.0, 0.0, 3392.0, 1080.0),
+            ),
+            (
+                Rect::new(0.0, 0.0, 2944.0, 1840.0),
+                Rect::new(2944.0, 0.0, 4864.0, 1080.0),
+            ),
+        ];
+        for (panel, monitor) in arrangements {
+            let displays = Displays::fixed(Arrangement {
+                displays: vec![
+                    Display {
+                        rect: panel,
+                        internal: true,
+                    },
+                    Display {
+                        rect: monitor,
+                        internal: false,
+                    },
+                ],
+            });
+            let window = panel.union(monitor);
+            for theme in [Theme::dark(), Theme::light()] {
+                let mut app =
+                    GreeterApp::with_sessions_and_login_user(one_session(), Some(quick_user()))
+                        .with_displays(displays.clone());
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    reason = "display sizes in logical px fit f32"
+                )]
+                let viewport = (window.width() as f32, window.height() as f32);
+                layout_at_with_theme(&mut app, viewport, &theme);
+                assert_eq!(app.content, panel, "the card fills the built-in panel");
+                for id in ["greeter.password", "greeter.clock"] {
+                    let rect = rect_of(&app, id).unwrap_or_else(|| panic!("{id} is laid out"));
+                    assert!(
+                        rect.area() > 0.0 && inside(panel, rect),
+                        "{id} at {rect:?} is not on the built-in panel {panel:?}"
+                    );
+                }
+                assert!(
+                    rect_of(&app, "greeter.password").is_some_and(|field| !inside(monitor, field)),
+                    "the monitor carries no password field"
+                );
+                for id in ["greeter.display-clock", "greeter.display-date"] {
+                    let rect = rect_of(&app, id).unwrap_or_else(|| panic!("{id} is laid out"));
+                    assert!(
+                        rect.area() > 0.0 && inside(monitor, rect),
+                        "{id} at {rect:?} is not on the monitor {monitor:?}"
+                    );
+                    assert_eq!(
+                        hidden_from_access(&app, id, false),
+                        Some(true),
+                        "the monitor's {id} is read once, on the panel"
+                    );
+                }
+                assert_eq!(
+                    hidden_from_access(&app, "greeter.password", false),
+                    Some(false)
+                );
+            }
+
+            // The frame the window draws at the panel's scale 2 fits every
+            // device the toolkit opens, and keeps the window's logical size.
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "display sizes in physical px fit u32"
+            )]
+            let physical = (
+                (window.width() * 2.0) as u32,
+                (window.height() * 2.0) as u32,
+            );
+            let limit = ui::gpu::requested_texture_limit();
+            let extent = ui::scale::fit_to_texture_limit(physical, 2.0, limit);
+            assert!(
+                extent.width <= limit && extent.height <= limit,
+                "{extent:?} exceeds the device limit {limit}"
+            );
+            let logical = ui::scale::logical_size((extent.width, extent.height), extent.scale);
+            assert!(
+                (logical.0 - window.width()).abs() <= 1.0 && (logical.1 - window.height()).abs() <= 1.0,
+                "the frame keeps the window's layout: {logical:?} vs {window:?}"
+            );
+        }
+    }
+
+    phase several_outputs_put_the_card_on_the_built_in_panel_and_the_backdrop_on_each;
+    {
+        use crate::output_scale::{Arrangement, Display, Displays};
+        // The reported laptop: its 2944x1840 panel at scale 2 beside a 1080p
+        // monitor. `cage` stretches the one window over both, so a card
+        // centred in the window straddled the seam between the displays.
+        let panel = Rect::new(0.0, 0.0, 1472.0, 920.0);
+        let monitor = Rect::new(1472.0, 0.0, 3392.0, 1080.0);
         let displays = Displays::fixed(Arrangement {
             displays: vec![
                 Display {
@@ -499,109 +588,161 @@ fn the_login_screen_appears_with_a_built_in_panel_and_a_1080p_monitor_attached()
                 },
             ],
         });
-        let window = panel.union(monitor);
-        for theme in [Theme::dark(), Theme::light()] {
-            let mut app =
-                GreeterApp::with_sessions_and_login_user(one_session(), Some(quick_user()))
-                    .with_displays(displays.clone());
-            #[allow(
-                clippy::cast_possible_truncation,
-                reason = "display sizes in logical px fit f32"
-            )]
-            let viewport = (window.width() as f32, window.height() as f32);
-            layout_at_with_theme(&mut app, viewport, &theme);
-            assert_eq!(app.content, panel, "the card fills the built-in panel");
-            for id in ["greeter.password", "greeter.clock"] {
-                let rect = rect_of(&app, id).unwrap_or_else(|| panic!("{id} is laid out"));
-                assert!(
-                    rect.area() > 0.0 && inside(panel, rect),
-                    "{id} at {rect:?} is not on the built-in panel {panel:?}"
-                );
-            }
+        let mut app = GreeterApp::with_sessions(test_sessions()).with_displays(displays);
+        layout_at_with_theme(&mut app, (3392.0, 1080.0), &Theme::dark());
+        assert_eq!(app.content, panel);
+        assert_eq!(app.layout_outputs, vec![panel, monitor]);
+        for id in ["greeter.password", "greeter.clock"] {
+            let rect = rect_of(&app, id).unwrap_or_else(|| panic!("{id} is laid out"));
             assert!(
-                rect_of(&app, "greeter.password").is_some_and(|field| !inside(monitor, field)),
-                "the monitor carries no password field"
-            );
-            for id in ["greeter.display-clock", "greeter.display-date"] {
-                let rect = rect_of(&app, id).unwrap_or_else(|| panic!("{id} is laid out"));
-                assert!(
-                    rect.area() > 0.0 && inside(monitor, rect),
-                    "{id} at {rect:?} is not on the monitor {monitor:?}"
-                );
-                assert_eq!(
-                    hidden_from_access(&app, id, false),
-                    Some(true),
-                    "the monitor's {id} is read once, on the panel"
-                );
-            }
-            assert_eq!(
-                hidden_from_access(&app, "greeter.password", false),
-                Some(false)
+                rect.area() > 0.0 && inside(panel, rect),
+                "{id} at {rect:?} is not on the built-in panel"
             );
         }
 
-        // The frame the window draws at the panel's scale 2 fits every
-        // device the toolkit opens, and keeps the window's logical size.
-        #[allow(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            reason = "display sizes in physical px fit u32"
-        )]
-        let physical = (
-            (window.width() * 2.0) as u32,
-            (window.height() * 2.0) as u32,
-        );
-        let limit = ui::gpu::requested_texture_limit();
-        let extent = ui::scale::fit_to_texture_limit(physical, 2.0, limit);
-        assert!(
-            extent.width <= limit && extent.height <= limit,
-            "{extent:?} exceeds the device limit {limit}"
-        );
-        let logical = ui::scale::logical_size((extent.width, extent.height), extent.scale);
-        assert!(
-            (logical.0 - window.width()).abs() <= 1.0 && (logical.1 - window.height()).abs() <= 1.0,
-            "the frame keeps the window's layout: {logical:?} vs {window:?}"
-        );
-    }
-}
-
-#[test]
-fn several_outputs_put_the_card_on_the_built_in_panel_and_the_backdrop_on_each() {
-    use crate::output_scale::{Arrangement, Display, Displays};
-    // The reported laptop: its 2944x1840 panel at scale 2 beside a 1080p
-    // monitor. `cage` stretches the one window over both, so a card
-    // centred in the window straddled the seam between the displays.
-    let panel = Rect::new(0.0, 0.0, 1472.0, 920.0);
-    let monitor = Rect::new(1472.0, 0.0, 3392.0, 1080.0);
-    let displays = Displays::fixed(Arrangement {
-        displays: vec![
-            Display {
-                rect: panel,
-                internal: true,
-            },
-            Display {
-                rect: monitor,
-                internal: false,
-            },
-        ],
-    });
-    let mut app = GreeterApp::with_sessions(test_sessions()).with_displays(displays);
-    layout_at_with_theme(&mut app, (3392.0, 1080.0), &Theme::dark());
-    assert_eq!(app.content, panel);
-    assert_eq!(app.layout_outputs, vec![panel, monitor]);
-    for id in ["greeter.password", "greeter.clock"] {
-        let rect = rect_of(&app, id).unwrap_or_else(|| panic!("{id} is laid out"));
-        assert!(
-            rect.area() > 0.0 && inside(panel, rect),
-            "{id} at {rect:?} is not on the built-in panel"
-        );
+        // Before the kiosk has resized the window to the new layout, the
+        // composition stays centred in the window it has.
+        layout_at_with_theme(&mut app, (1472.0, 920.0), &Theme::dark());
+        assert_eq!(app.content, panel);
+        assert!(app.layout_outputs.is_empty());
     }
 
-    // Before the kiosk has resized the window to the new layout, the
-    // composition stays centred in the window it has.
-    layout_at_with_theme(&mut app, (1472.0, 920.0), &Theme::dark());
-    assert_eq!(app.content, panel);
-    assert!(app.layout_outputs.is_empty());
+    phase the_form_stays_on_screen_at_every_size_and_text_scale;
+    {
+        for (viewport, scale) in [
+            ((2944.0, 1840.0), 1.0),
+            ((1472.0, 920.0), 1.0),
+            ((1280.0, 800.0), 1.0),
+            ((800.0, 600.0), 1.5),
+            ((640.0, 480.0), 2.0),
+            ((360.0, 640.0), 1.0),
+        ] {
+            for scenario in [AuthScenario::PersonalError, AuthScenario::Error] {
+                let mut app = GreeterApp::for_shot(scenario);
+                app.sessions = test_sessions();
+                let theme = Theme::dark().with_text_scale(scale);
+                layout_at_with_theme(&mut app, viewport, &theme);
+                let screen = Rect::new(0.0, 0.0, f64::from(viewport.0), f64::from(viewport.1));
+                let card = app.composed.element().expect("composed");
+                for id in [
+                    "greeter.password",
+                    "greeter.login",
+                    "greeter.larger-text",
+                    "greeter.high-contrast",
+                    "greeter.screen-reader",
+                    "greeter.session",
+                    "greeter.power",
+                ] {
+                    let rect = rect_for(card, id)
+                        .unwrap_or_else(|| panic!("{id} missing at {viewport:?}x{scale}"));
+                    assert!(
+                        rect.width() > 0.0 && inside(screen, rect),
+                        "{id} {rect:?} is off screen at {viewport:?} x{scale} ({scenario:?})"
+                    );
+                }
+                let field = passcode_field_rect(card).unwrap();
+                let action = rect_for(card, "greeter.login").unwrap();
+                assert!(
+                    (field.center().y - action.center().y).abs() < 1.0 && action.x0 >= field.x1,
+                    "the sign-in action sits beside the field at {viewport:?}: {field:?} {action:?}"
+                );
+            }
+        }
+    }
+
+    phase shot_scenarios_compose;
+    {
+        for scenario in [
+            AuthScenario::Form,
+            AuthScenario::Error,
+            AuthScenario::Authenticating,
+            AuthScenario::Fingerprint,
+            AuthScenario::CapsLock,
+            AuthScenario::Hint,
+            AuthScenario::Starting,
+            AuthScenario::LongName,
+            AuthScenario::Personal,
+            AuthScenario::PersonalError,
+            AuthScenario::PersonalAuthenticating,
+            AuthScenario::PersonalCapsLock,
+            AuthScenario::PersonalHint,
+            AuthScenario::PersonalStarting,
+            AuthScenario::PersonalNoFingerprint,
+            AuthScenario::PersonalLocked,
+            AuthScenario::PersonalSessionFailed,
+            AuthScenario::PersonalServiceDown,
+            AuthScenario::PersonalPasscodeExpired,
+            AuthScenario::PersonalSessions,
+            AuthScenario::PersonalPin,
+        ] {
+            let mut app = GreeterApp::for_shot(scenario);
+            layout_at_with_theme(&mut app, (1280.0, 800.0), &Theme::dark());
+            assert!(app.composed.element().is_some(), "{scenario:?} composes");
+        }
+    }
+
+    phase the_time_is_the_hero_and_the_clock_wakes_once_a_minute;
+    {
+        let mut app = GreeterApp::for_shot(AuthScenario::Personal);
+        layout_at_with_theme(&mut app, (1472.0, 920.0), &Theme::dark());
+        let card = app.composed.element().expect("composed");
+        let clock = rect_for(card, "greeter.clock").expect("the time is shown");
+        let name = rect_for(card, "greeter.welcome").expect("the person is named");
+        let field = rect_for(card, "greeter.password").expect("the passcode field");
+        assert!(
+            clock.height() > name.height() * 3.0,
+            "the time is display type: {clock:?} vs {name:?}"
+        );
+        assert!(
+            clock.y1 <= name.y0 && name.y1 <= field.y0,
+            "time, then who, then the passcode"
+        );
+        assert_eq!(
+            accessible_name_for(card, "greeter.clock").as_deref(),
+            Some("09:41")
+        );
+        // A live screen wakes at the next minute and not before.
+        let live = GreeterApp::with_sessions(one_session());
+        let wake = live
+            .next_wake_deadline()
+            .expect("the clock asks for a wake");
+        let until = wake.saturating_duration_since(Instant::now());
+        assert!(until <= Duration::from_secs(60), "{until:?}");
+    }
+
+    phase the_boot_sign_in_shows_the_card_where_the_greeter_does;
+    {
+        let (_supervisor, link) = boot::Link::pair().unwrap();
+        let mut boot_app = GreeterApp::for_boot(BootLink::new(link), false);
+        boot_app.boot_message(ToGreeter::People {
+            people: vec![boot::Person {
+                uid: 1000,
+                name: "ada".into(),
+                display_name: "Ada".into(),
+                secret: boot::SecretKind::Password,
+            }],
+            highlighted: 0,
+        });
+        let mut greeter = GreeterApp::for_shot(AuthScenario::PersonalNoFingerprint);
+        boot_app.clock = greeter.clock.clone();
+        boot_app.clock_pinned = true;
+        boot_app.device = greeter.device;
+        for viewport in [(1280.0, 800.0), (800.0, 1280.0), (1920.0, 1080.0)] {
+            layout_at_with_theme(&mut boot_app, viewport, &Theme::dark());
+            layout_at_with_theme(&mut greeter, viewport, &Theme::dark());
+            let at_boot = boot_app.composed.element().expect("composed");
+            let after = greeter.composed.element().expect("composed");
+            assert!(
+                rect_of(at_boot, "greeter.cant-sign-in").is_some(),
+                "the boot offers the other ways in"
+            );
+            assert_eq!(
+                passcode_field_rect(at_boot),
+                passcode_field_rect(after),
+                "at {viewport:?}"
+            );
+        }
+    }
 }
 
 #[test]
@@ -705,171 +846,223 @@ fn console_reports_input_only_once_the_compositor_focuses_the_window() {
     assert!(accepts(&app));
 }
 
-#[test]
-fn a_session_choice_appears_only_when_there_is_one_to_make() {
-    // The image installs os/usr/share/wayland-sessions as-is, so this is
-    // exactly what the greeter on a fresh install reads: the one Tilo session,
-    // which signing in starts.
-    {
-        let shipped = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../os/usr/share/wayland-sessions");
-        let sessions = read_sessions(&shipped);
-        let names: Vec<&str> = sessions.iter().map(|s| s.name.as_str()).collect();
-        assert_eq!(names, ["Tilo"]);
+tilo_test_env::scenario! {
+    fn the_form_offers_a_choice_only_where_there_is_one;
 
-        let app = GreeterApp::with_sessions(sessions);
-        assert!(!app.offers_session_choice());
-        assert!(find_test_id(card_of(&app).as_ref(), "greeter.session").is_none());
-        assert_eq!(app.console_state()["session_choice"], false);
-        assert_eq!(app.session_label(), "Tilo");
-        assert_eq!(
-            app.sessions[app.selected_session].argv,
-            ["/usr/libexec/tilo-session", "--backend", "drm"]
-        );
-    }
+    phase a_session_choice_appears_only_when_there_is_one_to_make;
     {
-        let app = GreeterApp::with_sessions(one_session());
-        assert!(!app.offers_session_choice());
-        assert!(
-            !focusables(&app).contains(&"greeter.session".to_string()),
-            "a single session must not render a picker: {:?}",
-            focusables(&app)
-        );
-        assert!(find_test_id(card_of(&app).as_ref(), "greeter.session").is_none());
-        assert_eq!(app.console_state()["session_choice"], false);
+        // The image installs os/usr/share/wayland-sessions as-is, so this is
+        // exactly what the greeter on a fresh install reads: the one Tilo session,
+        // which signing in starts.
+        {
+            let shipped = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../os/usr/share/wayland-sessions");
+            let sessions = read_sessions(&shipped);
+            let names: Vec<&str> = sessions.iter().map(|s| s.name.as_str()).collect();
+            assert_eq!(names, ["Tilo"]);
+
+            let app = GreeterApp::with_sessions(sessions);
+            assert!(!app.offers_session_choice());
+            assert!(find_test_id(card_of(&app).as_ref(), "greeter.session").is_none());
+            assert_eq!(app.console_state()["session_choice"], false);
+            assert_eq!(app.session_label(), "Tilo");
+            assert_eq!(
+                app.sessions[app.selected_session].argv,
+                ["/usr/libexec/tilo-session", "--backend", "drm"]
+            );
+        }
+        {
+            let app = GreeterApp::with_sessions(one_session());
+            assert!(!app.offers_session_choice());
+            assert!(
+                !focusables(&app).contains(&"greeter.session".to_string()),
+                "a single session must not render a picker: {:?}",
+                focusables(&app)
+            );
+            assert!(find_test_id(card_of(&app).as_ref(), "greeter.session").is_none());
+            assert_eq!(app.console_state()["session_choice"], false);
+        }
+        {
+            let app = GreeterApp::with_sessions(test_sessions());
+            assert!(app.offers_session_choice());
+            assert_eq!(app.console_state()["session_choice"], true);
+            assert_eq!(
+                focusables(&app),
+                vec![
+                    "greeter.username",
+                    "greeter.password",
+                    "greeter.login",
+                    "greeter.fingerprint",
+                    "greeter.larger-text",
+                    "greeter.high-contrast",
+                    "greeter.screen-reader",
+                    "greeter.session",
+                    "greeter.power",
+                ],
+                "the choice sits after sign-in, beside the power actions"
+            );
+            assert_eq!(app.session_label(), "Tilo", "the human name, not the id");
+        }
+        {
+            let mut app = GreeterApp::with_sessions(test_sessions());
+            let doc = AutoCommit::new();
+            let root = automerge::ROOT;
+
+            // The picker starts on the session that signing in would start.
+            app.sync(&doc, &root);
+            assert_eq!(app.selected_session, 0);
+            assert_eq!(app.session_choice.with(Clone::clone), "Tilo");
+
+            app.session_choice.set("Weston".to_owned());
+            app.sync(&doc, &root);
+            assert_eq!(app.selected_session, 1);
+            assert_eq!(
+                app.sessions[app.selected_session].argv,
+                ["/usr/bin/weston"],
+                "the choice must reach the argv handed to greetd"
+            );
+
+            // A label that names no known session leaves the choice alone.
+            app.session_choice
+                .set("a session that went away".to_owned());
+            app.sync(&doc, &root);
+            assert_eq!(app.selected_session, 1, "choice survives a stale label");
+            assert!(untouched(&doc), "the choice stays out of the document");
+        }
+        {
+            let mut app = GreeterApp::with_sessions_and_login_user(Vec::new(), Some(quick_user()));
+            let doc = AutoCommit::new();
+            app.sync(&doc, &automerge::ROOT);
+            seed_password(&app, "pw");
+            app.attempt_login(AuthMethod::Password);
+            assert_eq!(app.notice, Notice::Error("greeter-error-no-session"));
+            assert_eq!(app.phase, AuthPhase::Idle);
+        }
     }
+
+    phase fingerprint_login_is_offered_only_for_enrolled_accounts_and_sends_no_password;
     {
-        let app = GreeterApp::with_sessions(test_sessions());
-        assert!(app.offers_session_choice());
-        assert_eq!(app.console_state()["session_choice"], true);
-        assert_eq!(
-            focusables(&app),
-            vec![
-                "greeter.username",
-                "greeter.password",
-                "greeter.login",
-                "greeter.fingerprint",
-                "greeter.larger-text",
-                "greeter.high-contrast",
-                "greeter.screen-reader",
-                "greeter.session",
-                "greeter.power",
-            ],
-            "the choice sits after sign-in, beside the power actions"
-        );
-        assert_eq!(app.session_label(), "Tilo", "the human name, not the id");
+        {
+            assert!(fingerprint_list_has_enrollment(
+                "Fingerprints for user tester:\n - #0: right-index-finger\n"
+            ));
+            assert!(fingerprint_list_has_enrollment(
+                "Fingerprints for user tester:\n - right-index-finger\n"
+            ));
+            assert!(!fingerprint_list_has_enrollment(
+                "Fingerprints for user tester:\nnone\n"
+            ));
+            assert!(!fingerprint_list_has_enrollment("right-index-finger"));
+        }
+        {
+            let mut app = GreeterApp::with_sessions_login_user_and_fingerprint(
+                one_session(),
+                Some(quick_user()),
+                FingerprintAvailability::Unavailable,
+            );
+            assert!(
+                !focusables(&app).contains(&"greeter.fingerprint".to_string()),
+                "an unavailable factor must not appear in the form or focus order"
+            );
+
+            let doc = AutoCommit::new();
+            app.sync(&doc, &automerge::ROOT);
+            app.attempt_login(AuthMethod::Fingerprint);
+            assert_eq!(app.notice, Notice::Hint("greeter-hint-no-fingerprint"));
+            assert_eq!(app.phase, AuthPhase::Idle);
+        }
+        {
+            let mut app = GreeterApp::with_sessions_login_user_and_fingerprint(
+                one_session(),
+                None,
+                FingerprintAvailability::CheckNamedAccount,
+            );
+            app.fingerprint_probe = only_bob_has_a_fingerprint;
+
+            assert!(focusables(&app).contains(&"greeter.fingerprint".to_string()));
+            assert!(app.fingerprint_available_for("bob"));
+            assert!(!app.fingerprint_available_for("alice"));
+            assert!(!app.fingerprint_available_for(""));
+        }
+        {
+            let mut app = GreeterApp::with_sessions(one_session());
+            let doc = AutoCommit::new();
+            app.sync(&doc, &automerge::ROOT);
+
+            assert_eq!(
+                app.take_auth_secret(AuthMethod::Password),
+                Err("greeter-hint-passcode")
+            );
+            assert_eq!(
+                app.take_auth_secret(AuthMethod::Fingerprint)
+                    .map(|secret| secret.to_string()),
+                Ok(String::new()),
+                "fingerprint PAM conversation must begin without a dummy password"
+            );
+        }
+        {
+            let app = GreeterApp::for_shot(AuthScenario::Fingerprint);
+            assert_eq!(app.phase, AuthPhase::Authenticating);
+            assert_eq!(app.status_text(), "Place your finger on the reader");
+            assert_eq!(
+                live_politeness_for(card_of(&app).as_ref(), "Place your finger on the reader"),
+                Some(Politeness::Assertive),
+                "a time-sensitive PAM instruction must be announced without moving focus"
+            );
+        }
     }
+
+    phase several_accounts_are_listed_and_choosing_one_resets_the_form;
     {
-        let mut app = GreeterApp::with_sessions(test_sessions());
+        let mut app = GreeterApp::for_shot(AuthScenario::Accounts);
         let doc = AutoCommit::new();
         let root = automerge::ROOT;
-
-        // The picker starts on the session that signing in would start.
         app.sync(&doc, &root);
-        assert_eq!(app.selected_session, 0);
-        assert_eq!(app.session_choice.with(Clone::clone), "Tilo");
-
-        app.session_choice.set("Weston".to_owned());
-        app.sync(&doc, &root);
-        assert_eq!(app.selected_session, 1);
-        assert_eq!(
-            app.sessions[app.selected_session].argv,
-            ["/usr/bin/weston"],
-            "the choice must reach the argv handed to greetd"
+        let ids = focusables(&app);
+        assert_eq!(ids.first().map(String::as_str), Some("greeter.password"));
+        assert!(ids.contains(&"greeter.account.ada".to_string()), "{ids:?}");
+        assert!(
+            ids.contains(&"greeter.account.grace".to_string()),
+            "{ids:?}"
         );
-
-        // A label that names no known session leaves the choice alone.
-        app.session_choice
-            .set("a session that went away".to_owned());
+        assert!(
+            !ids.contains(&"greeter.account.kai".to_string()),
+            "the chosen account is the one shown, not listed again"
+        );
+        seed_password(&app, "typed for kai");
+        let _ = Widget::take_focus_reset(&mut app);
+        let ada = app
+            .users
+            .iter()
+            .position(|user| user.username == "ada")
+            .expect("ada is listed");
+        app.requests.account.set(Some(ada));
         app.sync(&doc, &root);
-        assert_eq!(app.selected_session, 1, "choice survives a stale label");
-        assert!(untouched(&doc), "the choice stays out of the document");
-    }
-    {
-        let mut app = GreeterApp::with_sessions_and_login_user(Vec::new(), Some(quick_user()));
-        let doc = AutoCommit::new();
-        app.sync(&doc, &automerge::ROOT);
-        seed_password(&app, "pw");
-        app.attempt_login(AuthMethod::Password);
-        assert_eq!(app.notice, Notice::Error("greeter-error-no-session"));
-        assert_eq!(app.phase, AuthPhase::Idle);
+        assert_eq!(
+            app.login_user.as_ref().map(|u| u.username.as_str()),
+            Some("ada")
+        );
+        assert!(
+            app.password_buffer.lock().unwrap().is_empty(),
+            "a passcode never follows to another account"
+        );
+        assert_eq!(typed_username(&app), "ada");
+        assert!(
+            Widget::take_focus_reset(&mut app),
+            "the keyboard returns to the passcode"
+        );
+        // A single account is never a list.
+        let single = GreeterApp::for_shot(AuthScenario::Personal);
+        assert!(
+            !focusables(&single)
+                .iter()
+                .any(|id| id.starts_with("greeter.account."))
+        );
     }
 }
 
 fn only_bob_has_a_fingerprint(username: &str) -> bool {
     username == "bob"
-}
-
-#[test]
-fn fingerprint_login_is_offered_only_for_enrolled_accounts_and_sends_no_password() {
-    {
-        assert!(fingerprint_list_has_enrollment(
-            "Fingerprints for user tester:\n - #0: right-index-finger\n"
-        ));
-        assert!(fingerprint_list_has_enrollment(
-            "Fingerprints for user tester:\n - right-index-finger\n"
-        ));
-        assert!(!fingerprint_list_has_enrollment(
-            "Fingerprints for user tester:\nnone\n"
-        ));
-        assert!(!fingerprint_list_has_enrollment("right-index-finger"));
-    }
-    {
-        let mut app = GreeterApp::with_sessions_login_user_and_fingerprint(
-            one_session(),
-            Some(quick_user()),
-            FingerprintAvailability::Unavailable,
-        );
-        assert!(
-            !focusables(&app).contains(&"greeter.fingerprint".to_string()),
-            "an unavailable factor must not appear in the form or focus order"
-        );
-
-        let doc = AutoCommit::new();
-        app.sync(&doc, &automerge::ROOT);
-        app.attempt_login(AuthMethod::Fingerprint);
-        assert_eq!(app.notice, Notice::Hint("greeter-hint-no-fingerprint"));
-        assert_eq!(app.phase, AuthPhase::Idle);
-    }
-    {
-        let mut app = GreeterApp::with_sessions_login_user_and_fingerprint(
-            one_session(),
-            None,
-            FingerprintAvailability::CheckNamedAccount,
-        );
-        app.fingerprint_probe = only_bob_has_a_fingerprint;
-
-        assert!(focusables(&app).contains(&"greeter.fingerprint".to_string()));
-        assert!(app.fingerprint_available_for("bob"));
-        assert!(!app.fingerprint_available_for("alice"));
-        assert!(!app.fingerprint_available_for(""));
-    }
-    {
-        let mut app = GreeterApp::with_sessions(one_session());
-        let doc = AutoCommit::new();
-        app.sync(&doc, &automerge::ROOT);
-
-        assert_eq!(
-            app.take_auth_secret(AuthMethod::Password),
-            Err("greeter-hint-passcode")
-        );
-        assert_eq!(
-            app.take_auth_secret(AuthMethod::Fingerprint)
-                .map(|secret| secret.to_string()),
-            Ok(String::new()),
-            "fingerprint PAM conversation must begin without a dummy password"
-        );
-    }
-    {
-        let app = GreeterApp::for_shot(AuthScenario::Fingerprint);
-        assert_eq!(app.phase, AuthPhase::Authenticating);
-        assert_eq!(app.status_text(), "Place your finger on the reader");
-        assert_eq!(
-            live_politeness_for(card_of(&app).as_ref(), "Place your finger on the reader"),
-            Some(Politeness::Assertive),
-            "a time-sensitive PAM instruction must be announced without moving focus"
-        );
-    }
 }
 
 /// Seed the process-local passcode buffer without touching the document.
@@ -879,109 +1072,273 @@ fn seed_password(app: &GreeterApp, pw: &str) {
     value.push_str(pw);
 }
 
-#[test]
-fn submit_validates_fields_keeps_the_passcode_private_and_ignores_repeats() {
-    {
-        let mut app = GreeterApp::with_sessions(test_sessions());
-        let mut doc = AutoCommit::new();
-        press(&mut app, &mut doc, "greeter.login");
-        assert_eq!(app.notice, Notice::Hint("greeter-hint-username"));
-        assert_eq!(app.status_text(), "Enter your username.");
-        assert!(!app.requests.sign_in.get(), "the request is taken once");
-        assert!(untouched(&doc), "an attempt writes nothing to the document");
-    }
-    {
-        let mut app = GreeterApp::with_sessions(test_sessions());
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        app.sync(&doc, &root);
+tilo_test_env::scenario! {
+    fn a_sign_in_attempt_starts_once_and_says_what_it_is_doing;
 
-        type_username(&mut app, &mut doc, "alice");
-        assert_eq!(typed_username(&app), "alice");
-        assert!(
-            doc.get(&root, "greeter.username").unwrap().is_none(),
-            "the typed username stays out of the document"
-        );
-        assert!(dispatch_enter(&mut app, &mut doc, "greeter.username"));
-        app.sync(&doc, &root);
-        assert_eq!(app.notice, Notice::Hint("greeter-hint-passcode"));
-        assert_eq!(app.phase, AuthPhase::Idle);
+    phase submit_validates_fields_keeps_the_passcode_private_and_ignores_repeats;
+    {
+        {
+            let mut app = GreeterApp::with_sessions(test_sessions());
+            let mut doc = AutoCommit::new();
+            press(&mut app, &mut doc, "greeter.login");
+            assert_eq!(app.notice, Notice::Hint("greeter-hint-username"));
+            assert_eq!(app.status_text(), "Enter your username.");
+            assert!(!app.requests.sign_in.get(), "the request is taken once");
+            assert!(untouched(&doc), "an attempt writes nothing to the document");
+        }
+        {
+            let mut app = GreeterApp::with_sessions(test_sessions());
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            app.sync(&doc, &root);
+
+            type_username(&mut app, &mut doc, "alice");
+            assert_eq!(typed_username(&app), "alice");
+            assert!(
+                doc.get(&root, "greeter.username").unwrap().is_none(),
+                "the typed username stays out of the document"
+            );
+            assert!(dispatch_enter(&mut app, &mut doc, "greeter.username"));
+            app.sync(&doc, &root);
+            assert_eq!(app.notice, Notice::Hint("greeter-hint-passcode"));
+            assert_eq!(app.phase, AuthPhase::Idle);
+        }
+        {
+            let mut app = GreeterApp::with_sessions_and_login_user(one_session(), Some(quick_user()));
+            let doc = AutoCommit::new();
+            app.sync(&doc, &automerge::ROOT);
+            seed_password(&app, "pw");
+            // The test runner is not greetd.
+            assert!(std::env::var_os("GREETD_SOCK").is_none());
+            app.attempt_login(AuthMethod::Password);
+            assert_eq!(app.notice, Notice::Error("greeter-error-service"));
+            assert!(!app.status_text().contains("GREETD_SOCK"));
+        }
+        {
+            let mut hint = GreeterApp::with_sessions(one_session());
+            hint.set_hint("greeter-hint-passcode");
+            let mut err = GreeterApp::with_sessions(one_session());
+            err.finish_failure(Failure::Credentials);
+            // Both are said under the field, at once.
+            assert_eq!(
+                live_politeness_for(card_of(&hint).as_ref(), "Enter your password."),
+                Some(Politeness::Assertive),
+                "a hint is said under the field"
+            );
+            assert_eq!(
+                live_politeness_for(
+                    card_of(&err).as_ref(),
+                    "Incorrect username or password. Try again."
+                ),
+                Some(Politeness::Assertive),
+                "an error is said under the field"
+            );
+            assert_eq!(hint.status_text(), "Enter your password.");
+            assert_eq!(
+                err.status_text(),
+                "Incorrect username or password. Try again."
+            );
+        }
+        {
+            let app = GreeterApp::with_sessions(one_session());
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            seed_password(&app, "correct horse battery staple");
+
+            assert!(doc.get(&root, "greeter.password").unwrap().is_none());
+            assert!(
+                !doc.save()
+                    .windows("correct horse battery staple".len())
+                    .any(|bytes| bytes == b"correct horse battery staple"),
+                "the serialized Automerge history must not contain the passcode"
+            );
+            let mut app = app;
+            app.sync(&doc, &root);
+            assert!(untouched(&doc));
+            let secret = app
+                .take_auth_secret(AuthMethod::Password)
+                .expect("local passcode is available exactly for authentication");
+            assert_eq!(secret.as_str(), "correct horse battery staple");
+            assert!(app.password_buffer.lock().unwrap().is_empty());
+        }
+        for phase in [AuthPhase::Authenticating, AuthPhase::Starting] {
+            let mut app = GreeterApp::with_sessions(one_session());
+            let doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            app.sync(&doc, &root);
+            app.phase = phase;
+            app.username.set("alice".to_owned());
+            seed_password(&app, "pw");
+
+            app.requests.sign_in.set(true);
+            app.sync(&doc, &root);
+            assert_eq!(app.phase, phase);
+            assert!(
+                !app.requests.sign_in.get(),
+                "the request is taken, not kept"
+            );
+            assert_eq!(&*app.password_buffer.lock().unwrap(), "pw");
+        }
     }
+
+    phase enter_signs_in_only_from_text_fields;
+    {
+        // Phase `enter_defaults_to_sign_in_from_text_fields`.
+        for field in ["greeter.username", "greeter.password"] {
+            let mut app = GreeterApp::with_sessions(test_sessions());
+            let mut doc = AutoCommit::new();
+            assert!(dispatch_enter(&mut app, &mut doc, field));
+            assert!(app.requests.sign_in.get(), "Enter in {field} signs in");
+            app.sync(&doc, &automerge::ROOT);
+            assert_eq!(app.notice, Notice::Hint("greeter-hint-username"));
+            assert!(untouched(&doc));
+        }
+        for control in [
+            "greeter.session",
+            "greeter.fingerprint",
+            "greeter.larger-text",
+            "greeter.high-contrast",
+            "greeter.screen-reader",
+            "greeter.power",
+        ] {
+            let mut app = GreeterApp::with_sessions(test_sessions());
+            let mut doc = AutoCommit::new();
+            let handled = dispatch_enter(&mut app, &mut doc, control);
+            assert!(
+                !app.requests.sign_in.get(),
+                "Enter on {control} must not submit the passcode form"
+            );
+            if control == "greeter.session" || control == "greeter.power" {
+                assert!(handled, "the focused dropdown consumes Enter itself");
+            } else {
+                assert!(!handled, "{control} remains available to App activation");
+            }
+        }
+    }
+
+    phase the_sign_in_and_fingerprint_actions_each_start_one_attempt;
     {
         let mut app = GreeterApp::with_sessions_and_login_user(one_session(), Some(quick_user()));
-        let doc = AutoCommit::new();
-        app.sync(&doc, &automerge::ROOT);
-        seed_password(&app, "pw");
-        // The test runner is not greetd.
-        assert!(std::env::var_os("GREETD_SOCK").is_none());
-        app.attempt_login(AuthMethod::Password);
-        assert_eq!(app.notice, Notice::Error("greeter-error-service"));
-        assert!(!app.status_text().contains("GREETD_SOCK"));
-    }
-    {
-        let mut hint = GreeterApp::with_sessions(one_session());
-        hint.set_hint("greeter-hint-passcode");
-        let mut err = GreeterApp::with_sessions(one_session());
-        err.finish_failure(Failure::Credentials);
-        // Both are said under the field, at once.
-        assert_eq!(
-            live_politeness_for(card_of(&hint).as_ref(), "Enter your password."),
-            Some(Politeness::Assertive),
-            "a hint is said under the field"
-        );
-        assert_eq!(
-            live_politeness_for(
-                card_of(&err).as_ref(),
-                "Incorrect username or password. Try again."
-            ),
-            Some(Politeness::Assertive),
-            "an error is said under the field"
-        );
-        assert_eq!(hint.status_text(), "Enter your password.");
-        assert_eq!(
-            err.status_text(),
-            "Incorrect username or password. Try again."
-        );
-    }
-    {
-        let app = GreeterApp::with_sessions(one_session());
         let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        seed_password(&app, "correct horse battery staple");
+        press(&mut app, &mut doc, "greeter.login");
+        assert_eq!(app.notice, Notice::Hint("greeter-hint-passcode"));
+        assert!(!app.requests.sign_in.get(), "one press, one attempt");
 
-        assert!(doc.get(&root, "greeter.password").unwrap().is_none());
+        seed_password(&app, "typed before the finger");
+        press(&mut app, &mut doc, "greeter.fingerprint");
+        // The test runner is not greetd, so the attempt ends at asking for it.
+        assert_eq!(app.notice, Notice::Error("greeter-error-service"));
         assert!(
-            !doc.save()
-                .windows("correct horse battery staple".len())
-                .any(|bytes| bytes == b"correct horse battery staple"),
-            "the serialized Automerge history must not contain the passcode"
+            app.password_buffer.lock().unwrap().is_empty(),
+            "a fingerprint attempt scrubs a passcode typed before it"
         );
-        let mut app = app;
-        app.sync(&doc, &root);
-        assert!(untouched(&doc));
-        let secret = app
-            .take_auth_secret(AuthMethod::Password)
-            .expect("local passcode is available exactly for authentication");
-        assert_eq!(secret.as_str(), "correct horse battery staple");
-        assert!(app.password_buffer.lock().unwrap().is_empty());
+        assert!(!app.requests.fingerprint.get(), "one press, one attempt");
+        assert!(untouched(&doc), "attempts write nothing to the document");
     }
-    for phase in [AuthPhase::Authenticating, AuthPhase::Starting] {
-        let mut app = GreeterApp::with_sessions(one_session());
-        let doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        app.sync(&doc, &root);
-        app.phase = phase;
-        app.username.set("alice".to_owned());
-        seed_password(&app, "pw");
 
-        app.requests.sign_in.set(true);
-        app.sync(&doc, &root);
-        assert_eq!(app.phase, phase);
-        assert!(
-            !app.requests.sign_in.get(),
-            "the request is taken, not kept"
+    phase in_flight_feedback_is_said_once_with_appropriate_urgency;
+    {
+        {
+            let app = GreeterApp::for_shot(AuthScenario::PersonalAuthenticating);
+            assert_eq!(app.status_text(), "Signing in…");
+            let card = card_of(&app);
+            assert!(
+                passcode_node(card.as_ref()).state.busy,
+                "the prompt says it is checking"
+            );
+            let said = spoken(card.as_ref());
+            assert_eq!(
+                said.iter().filter(|s| s.as_str() == "Signing in…").count(),
+                1,
+                "the in-flight sentence appears exactly once: {said:?}"
+            );
+        }
+        for (scenario, message, expected) in [
+            (
+                AuthScenario::PersonalHint,
+                "Enter your password.",
+                Politeness::Assertive,
+            ),
+            (
+                AuthScenario::PersonalError,
+                "Incorrect password. Try again.",
+                Politeness::Assertive,
+            ),
+            (
+                AuthScenario::PersonalStarting,
+                "Starting your session…",
+                Politeness::Polite,
+            ),
+        ] {
+            let app = GreeterApp::for_shot(scenario);
+            assert_eq!(
+                live_politeness_for(card_of(&app).as_ref(), message),
+                Some(expected),
+                "{scenario:?} feedback must be announced at the right urgency"
+            );
+        }
+        {
+            let mut app = GreeterApp::with_sessions(one_session());
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            app.sync(&doc, &root);
+            app.begin_authenticating();
+            assert_eq!(app.status_text(), "Signing in…");
+            let payload = AuthUpdate::Prompt {
+                text: "Place your finger on the reader".to_string(),
+                is_error: false,
+            }
+            .encode();
+            app.on_external_event(&payload, &mut ui::widget::Edits::lend(&mut doc), &root);
+            assert_eq!(app.phase, AuthPhase::Authenticating);
+            assert_eq!(app.status_text(), "Place your finger on the reader");
+        }
+        {
+            let mut app = GreeterApp::with_sessions(one_session());
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            app.sync(&doc, &root);
+            app.begin_authenticating();
+            app.on_external_event(
+                &AuthUpdate::Accepted.encode(),
+                &mut ui::widget::Edits::lend(&mut doc),
+                &root,
+            );
+            assert_eq!(app.phase, AuthPhase::Starting);
+            assert!(app.phase.is_busy(), "inputs stay inert while handing over");
+            assert_eq!(app.status_text(), "Starting your session…");
+        }
+    }
+
+    phase escape_clears_the_passcode_and_repeated_failures_say_so;
+    {
+        let mut app = GreeterApp::with_sessions_and_login_user(one_session(), Some(quick_user()));
+        let mut doc = AutoCommit::new();
+        seed_password(&app, "half typed");
+        app.notice = Notice::Error("greeter-error-passcode");
+        dispatch(
+            &mut app,
+            &mut doc,
+            "greeter.password",
+            &named_key_event(NamedKey::Escape),
         );
-        assert_eq!(&*app.password_buffer.lock().unwrap(), "pw");
+        assert!(app.password_buffer.lock().unwrap().is_empty());
+        assert_eq!(app.notice, Notice::None);
+
+        for _ in 0..3 {
+            app.begin_authenticating();
+            app.finish_failure(Failure::Credentials);
+        }
+        assert_eq!(
+            app.status_text(),
+            "Incorrect password, 3 times in a row. Try again."
+        );
+        app.begin_authenticating();
+        app.finish_failure(Failure::Locked);
+        assert_eq!(
+            app.failures, 0,
+            "another kind of failure starts the count over"
+        );
     }
 }
 
@@ -1007,22 +1364,26 @@ fn assert_trees_mirror(w: &dyn Widget, taffy: &TaffyTree<()>, node: NodeId, path
     }
 }
 
-#[test]
-fn widget_tree_and_focus_order_are_complete_and_stable() {
-    // Phase `widget_tree_mirrors_taffy_tree`.
-    for app in [
-        GreeterApp::with_sessions(test_sessions()),
-        GreeterApp::for_shot(AuthScenario::PersonalError),
-        GreeterApp::for_shot(AuthScenario::PersonalAuthenticating),
-    ] {
-        let mut app = app;
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let root = app.build_layout(&mut taffy, &Theme::dark(), &mut node_map);
-        assert_eq!(app.children().len(), 1);
-        assert_trees_mirror(&app, &taffy, root, "GreeterApp");
+tilo_test_env::scenario! {
+    fn widget_tree_and_focus_order_are_complete_and_stable;
+
+    phase widget_tree_mirrors_taffy_tree;
+    {
+        for app in [
+            GreeterApp::with_sessions(test_sessions()),
+            GreeterApp::for_shot(AuthScenario::PersonalError),
+            GreeterApp::for_shot(AuthScenario::PersonalAuthenticating),
+        ] {
+            let mut app = app;
+            let mut taffy: TaffyTree<()> = TaffyTree::new();
+            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+            let root = app.build_layout(&mut taffy, &Theme::dark(), &mut node_map);
+            assert_eq!(app.children().len(), 1);
+            assert_trees_mirror(&app, &taffy, root, "GreeterApp");
+        }
     }
-    // Phase `focusable_order_is_stable_across_idle_state_changes`.
+
+    phase focusable_order_is_stable_across_idle_state_changes;
     // On the form, the focusable order must NOT shift when the session
     // changes, a notice appears, or Caps Lock is detected — the
     // precondition for keeping focus and caret glued to the same field.
@@ -1168,135 +1529,6 @@ fn a_personal_device_greets_the_person_and_asks_only_for_the_passcode() {
         let person = said.iter().position(|s| s == "Kai Example");
         let passcode = said.iter().position(|s| s == "Password");
         assert!(person.is_some() && person < passcode, "{said:?}");
-    }
-}
-
-#[test]
-fn enter_signs_in_only_from_text_fields() {
-    // Phase `enter_defaults_to_sign_in_from_text_fields`.
-    for field in ["greeter.username", "greeter.password"] {
-        let mut app = GreeterApp::with_sessions(test_sessions());
-        let mut doc = AutoCommit::new();
-        assert!(dispatch_enter(&mut app, &mut doc, field));
-        assert!(app.requests.sign_in.get(), "Enter in {field} signs in");
-        app.sync(&doc, &automerge::ROOT);
-        assert_eq!(app.notice, Notice::Hint("greeter-hint-username"));
-        assert!(untouched(&doc));
-    }
-    for control in [
-        "greeter.session",
-        "greeter.fingerprint",
-        "greeter.larger-text",
-        "greeter.high-contrast",
-        "greeter.screen-reader",
-        "greeter.power",
-    ] {
-        let mut app = GreeterApp::with_sessions(test_sessions());
-        let mut doc = AutoCommit::new();
-        let handled = dispatch_enter(&mut app, &mut doc, control);
-        assert!(
-            !app.requests.sign_in.get(),
-            "Enter on {control} must not submit the passcode form"
-        );
-        if control == "greeter.session" || control == "greeter.power" {
-            assert!(handled, "the focused dropdown consumes Enter itself");
-        } else {
-            assert!(!handled, "{control} remains available to App activation");
-        }
-    }
-}
-
-#[test]
-fn the_sign_in_and_fingerprint_actions_each_start_one_attempt() {
-    let mut app = GreeterApp::with_sessions_and_login_user(one_session(), Some(quick_user()));
-    let mut doc = AutoCommit::new();
-    press(&mut app, &mut doc, "greeter.login");
-    assert_eq!(app.notice, Notice::Hint("greeter-hint-passcode"));
-    assert!(!app.requests.sign_in.get(), "one press, one attempt");
-
-    seed_password(&app, "typed before the finger");
-    press(&mut app, &mut doc, "greeter.fingerprint");
-    // The test runner is not greetd, so the attempt ends at asking for it.
-    assert_eq!(app.notice, Notice::Error("greeter-error-service"));
-    assert!(
-        app.password_buffer.lock().unwrap().is_empty(),
-        "a fingerprint attempt scrubs a passcode typed before it"
-    );
-    assert!(!app.requests.fingerprint.get(), "one press, one attempt");
-    assert!(untouched(&doc), "attempts write nothing to the document");
-}
-
-#[test]
-fn in_flight_feedback_is_said_once_with_appropriate_urgency() {
-    {
-        let app = GreeterApp::for_shot(AuthScenario::PersonalAuthenticating);
-        assert_eq!(app.status_text(), "Signing in…");
-        let card = card_of(&app);
-        assert!(
-            passcode_node(card.as_ref()).state.busy,
-            "the prompt says it is checking"
-        );
-        let said = spoken(card.as_ref());
-        assert_eq!(
-            said.iter().filter(|s| s.as_str() == "Signing in…").count(),
-            1,
-            "the in-flight sentence appears exactly once: {said:?}"
-        );
-    }
-    for (scenario, message, expected) in [
-        (
-            AuthScenario::PersonalHint,
-            "Enter your password.",
-            Politeness::Assertive,
-        ),
-        (
-            AuthScenario::PersonalError,
-            "Incorrect password. Try again.",
-            Politeness::Assertive,
-        ),
-        (
-            AuthScenario::PersonalStarting,
-            "Starting your session…",
-            Politeness::Polite,
-        ),
-    ] {
-        let app = GreeterApp::for_shot(scenario);
-        assert_eq!(
-            live_politeness_for(card_of(&app).as_ref(), message),
-            Some(expected),
-            "{scenario:?} feedback must be announced at the right urgency"
-        );
-    }
-    {
-        let mut app = GreeterApp::with_sessions(one_session());
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        app.sync(&doc, &root);
-        app.begin_authenticating();
-        assert_eq!(app.status_text(), "Signing in…");
-        let payload = AuthUpdate::Prompt {
-            text: "Place your finger on the reader".to_string(),
-            is_error: false,
-        }
-        .encode();
-        app.on_external_event(&payload, &mut ui::widget::Edits::lend(&mut doc), &root);
-        assert_eq!(app.phase, AuthPhase::Authenticating);
-        assert_eq!(app.status_text(), "Place your finger on the reader");
-    }
-    {
-        let mut app = GreeterApp::with_sessions(one_session());
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        app.sync(&doc, &root);
-        app.begin_authenticating();
-        app.on_external_event(
-            &AuthUpdate::Accepted.encode(),
-            &mut ui::widget::Edits::lend(&mut doc),
-            &root,
-        );
-        assert_eq!(app.phase, AuthPhase::Starting);
-        assert!(app.phase.is_busy(), "inputs stay inert while handing over");
-        assert_eq!(app.status_text(), "Starting your session…");
     }
 }
 
@@ -1827,49 +2059,6 @@ fn a_keystroke_repaints_the_passcode_row_not_the_screen() {
 }
 
 #[test]
-fn the_form_stays_on_screen_at_every_size_and_text_scale() {
-    for (viewport, scale) in [
-        ((2944.0, 1840.0), 1.0),
-        ((1472.0, 920.0), 1.0),
-        ((1280.0, 800.0), 1.0),
-        ((800.0, 600.0), 1.5),
-        ((640.0, 480.0), 2.0),
-        ((360.0, 640.0), 1.0),
-    ] {
-        for scenario in [AuthScenario::PersonalError, AuthScenario::Error] {
-            let mut app = GreeterApp::for_shot(scenario);
-            app.sessions = test_sessions();
-            let theme = Theme::dark().with_text_scale(scale);
-            layout_at_with_theme(&mut app, viewport, &theme);
-            let screen = Rect::new(0.0, 0.0, f64::from(viewport.0), f64::from(viewport.1));
-            let card = app.composed.element().expect("composed");
-            for id in [
-                "greeter.password",
-                "greeter.login",
-                "greeter.larger-text",
-                "greeter.high-contrast",
-                "greeter.screen-reader",
-                "greeter.session",
-                "greeter.power",
-            ] {
-                let rect = rect_for(card, id)
-                    .unwrap_or_else(|| panic!("{id} missing at {viewport:?}x{scale}"));
-                assert!(
-                    rect.width() > 0.0 && inside(screen, rect),
-                    "{id} {rect:?} is off screen at {viewport:?} x{scale} ({scenario:?})"
-                );
-            }
-            let field = passcode_field_rect(card).unwrap();
-            let action = rect_for(card, "greeter.login").unwrap();
-            assert!(
-                (field.center().y - action.center().y).abs() < 1.0 && action.x0 >= field.x1,
-                "the sign-in action sits beside the field at {viewport:?}: {field:?} {action:?}"
-            );
-        }
-    }
-}
-
-#[test]
 fn copy_uses_words_not_symbols() {
     // The screen says things in words and draws icons with the toolkit's
     // icon set; no emoji or pictographic characters stand in for either.
@@ -1897,221 +2086,86 @@ fn copy_uses_words_not_symbols() {
     }
 }
 
-#[test]
-fn shot_scenarios_compose() {
-    for scenario in [
-        AuthScenario::Form,
-        AuthScenario::Error,
-        AuthScenario::Authenticating,
-        AuthScenario::Fingerprint,
-        AuthScenario::CapsLock,
-        AuthScenario::Hint,
-        AuthScenario::Starting,
-        AuthScenario::LongName,
-        AuthScenario::Personal,
-        AuthScenario::PersonalError,
-        AuthScenario::PersonalAuthenticating,
-        AuthScenario::PersonalCapsLock,
-        AuthScenario::PersonalHint,
-        AuthScenario::PersonalStarting,
-        AuthScenario::PersonalNoFingerprint,
-        AuthScenario::PersonalLocked,
-        AuthScenario::PersonalSessionFailed,
-        AuthScenario::PersonalServiceDown,
-        AuthScenario::PersonalPasscodeExpired,
-        AuthScenario::PersonalSessions,
-        AuthScenario::PersonalPin,
-    ] {
-        let mut app = GreeterApp::for_shot(scenario);
-        layout_at_with_theme(&mut app, (1280.0, 800.0), &Theme::dark());
-        assert!(app.composed.element().is_some(), "{scenario:?} composes");
-    }
-}
+tilo_test_env::scenario! {
+    fn a_boot_sign_in_shows_the_transition_and_falls_back_to_the_form;
 
-#[test]
-fn the_time_is_the_hero_and_the_clock_wakes_once_a_minute() {
-    let mut app = GreeterApp::for_shot(AuthScenario::Personal);
-    layout_at_with_theme(&mut app, (1472.0, 920.0), &Theme::dark());
-    let card = app.composed.element().expect("composed");
-    let clock = rect_for(card, "greeter.clock").expect("the time is shown");
-    let name = rect_for(card, "greeter.welcome").expect("the person is named");
-    let field = rect_for(card, "greeter.password").expect("the passcode field");
-    assert!(
-        clock.height() > name.height() * 3.0,
-        "the time is display type: {clock:?} vs {name:?}"
-    );
-    assert!(
-        clock.y1 <= name.y0 && name.y1 <= field.y0,
-        "time, then who, then the passcode"
-    );
-    assert_eq!(
-        accessible_name_for(card, "greeter.clock").as_deref(),
-        Some("09:41")
-    );
-    // A live screen wakes at the next minute and not before.
-    let live = GreeterApp::with_sessions(one_session());
-    let wake = live
-        .next_wake_deadline()
-        .expect("the clock asks for a wake");
-    let until = wake.saturating_duration_since(Instant::now());
-    assert!(until <= Duration::from_secs(60), "{until:?}");
-}
+    phase a_boot_sign_in_shows_only_the_transition_and_falls_back_without_an_error;
+    {
+        let mut app = GreeterApp::for_shot(AuthScenario::Accounts);
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        app.offer_boot_sign_in("grace");
+        app.sync(&doc, &root);
+        assert_eq!(app.phase, AuthPhase::Starting);
+        assert_eq!(
+            app.login_user.as_ref().map(|u| u.username.as_str()),
+            Some("grace"),
+            "the person who signed in at boot is the one starting"
+        );
+        assert_eq!(app.status_text(), "Starting your session…");
+        assert!(
+            !focusables(&app).contains(&"greeter.password".to_string()),
+            "nothing to type while the session starts"
+        );
 
-#[test]
-fn a_boot_sign_in_shows_only_the_transition_and_falls_back_without_an_error() {
-    let mut app = GreeterApp::for_shot(AuthScenario::Accounts);
-    let mut doc = AutoCommit::new();
-    let root = automerge::ROOT;
-    app.offer_boot_sign_in("grace");
-    app.sync(&doc, &root);
-    assert_eq!(app.phase, AuthPhase::Starting);
-    assert_eq!(
-        app.login_user.as_ref().map(|u| u.username.as_str()),
-        Some("grace"),
-        "the person who signed in at boot is the one starting"
-    );
-    assert_eq!(app.status_text(), "Starting your session…");
-    assert!(
-        !focusables(&app).contains(&"greeter.password".to_string()),
-        "nothing to type while the session starts"
-    );
+        app.on_external_event(
+            &AuthUpdate::Accepted.encode(),
+            &mut ui::widget::Edits::lend(&mut doc),
+            &root,
+        );
+        assert_eq!(app.phase, AuthPhase::Starting);
 
-    app.on_external_event(
-        &AuthUpdate::Accepted.encode(),
-        &mut ui::widget::Edits::lend(&mut doc),
-        &root,
-    );
-    assert_eq!(app.phase, AuthPhase::Starting);
+        // greetd refused, or PAM asked a question: the ordinary screen, with
+        // that person chosen, and no error.
+        let _ = Widget::take_focus_reset(&mut app);
+        app.on_external_event(
+            &AuthUpdate::Failed(Failure::Cancelled).encode(),
+            &mut ui::widget::Edits::lend(&mut doc),
+            &root,
+        );
+        assert_eq!(app.phase, AuthPhase::Idle);
+        assert_eq!(app.notice, Notice::None);
+        assert_eq!(app.failures, 0);
+        assert!(Widget::take_focus_reset(&mut app));
+        app.sync(&doc, &root);
+        assert_eq!(
+            focusables(&app).first().map(String::as_str),
+            Some("greeter.password")
+        );
+        assert_eq!(
+            app.login_user.as_ref().map(|u| u.username.as_str()),
+            Some("grace")
+        );
 
-    // greetd refused, or PAM asked a question: the ordinary screen, with
-    // that person chosen, and no error.
-    let _ = Widget::take_focus_reset(&mut app);
-    app.on_external_event(
-        &AuthUpdate::Failed(Failure::Cancelled).encode(),
-        &mut ui::widget::Edits::lend(&mut doc),
-        &root,
-    );
-    assert_eq!(app.phase, AuthPhase::Idle);
-    assert_eq!(app.notice, Notice::None);
-    assert_eq!(app.failures, 0);
-    assert!(Widget::take_focus_reset(&mut app));
-    app.sync(&doc, &root);
-    assert_eq!(
-        focusables(&app).first().map(String::as_str),
-        Some("greeter.password")
-    );
-    assert_eq!(
-        app.login_user.as_ref().map(|u| u.username.as_str()),
-        Some("grace")
-    );
-
-    // The handoff is over: a later refusal reads as usual.
-    seed_password(&app, "wrongpw");
-    app.begin_authenticating();
-    app.on_external_event(
-        &AuthUpdate::Failed(Failure::Credentials).encode(),
-        &mut ui::widget::Edits::lend(&mut doc),
-        &root,
-    );
-    assert_eq!(app.notice, Notice::Error("greeter-error-passcode"));
-}
-
-#[test]
-fn a_boot_sign_in_for_an_unlisted_account_falls_back_to_the_named_form() {
-    let mut app = GreeterApp::for_shot(AuthScenario::Accounts);
-    let mut doc = AutoCommit::new();
-    let root = automerge::ROOT;
-    app.offer_boot_sign_in("svc");
-    app.sync(&doc, &root);
-    assert_eq!(app.phase, AuthPhase::Starting);
-    assert_eq!(app.attempt_username(), "svc");
-    app.on_external_event(
-        &AuthUpdate::Failed(Failure::NotPermitted).encode(),
-        &mut ui::widget::Edits::lend(&mut doc),
-        &root,
-    );
-    assert_eq!(app.phase, AuthPhase::Idle);
-    assert_eq!(app.notice, Notice::None);
-    assert_eq!(typed_username(&app), "svc");
-}
-
-#[test]
-fn several_accounts_are_listed_and_choosing_one_resets_the_form() {
-    let mut app = GreeterApp::for_shot(AuthScenario::Accounts);
-    let doc = AutoCommit::new();
-    let root = automerge::ROOT;
-    app.sync(&doc, &root);
-    let ids = focusables(&app);
-    assert_eq!(ids.first().map(String::as_str), Some("greeter.password"));
-    assert!(ids.contains(&"greeter.account.ada".to_string()), "{ids:?}");
-    assert!(
-        ids.contains(&"greeter.account.grace".to_string()),
-        "{ids:?}"
-    );
-    assert!(
-        !ids.contains(&"greeter.account.kai".to_string()),
-        "the chosen account is the one shown, not listed again"
-    );
-    seed_password(&app, "typed for kai");
-    let _ = Widget::take_focus_reset(&mut app);
-    let ada = app
-        .users
-        .iter()
-        .position(|user| user.username == "ada")
-        .expect("ada is listed");
-    app.requests.account.set(Some(ada));
-    app.sync(&doc, &root);
-    assert_eq!(
-        app.login_user.as_ref().map(|u| u.username.as_str()),
-        Some("ada")
-    );
-    assert!(
-        app.password_buffer.lock().unwrap().is_empty(),
-        "a passcode never follows to another account"
-    );
-    assert_eq!(typed_username(&app), "ada");
-    assert!(
-        Widget::take_focus_reset(&mut app),
-        "the keyboard returns to the passcode"
-    );
-    // A single account is never a list.
-    let single = GreeterApp::for_shot(AuthScenario::Personal);
-    assert!(
-        !focusables(&single)
-            .iter()
-            .any(|id| id.starts_with("greeter.account."))
-    );
-}
-
-#[test]
-fn escape_clears_the_passcode_and_repeated_failures_say_so() {
-    let mut app = GreeterApp::with_sessions_and_login_user(one_session(), Some(quick_user()));
-    let mut doc = AutoCommit::new();
-    seed_password(&app, "half typed");
-    app.notice = Notice::Error("greeter-error-passcode");
-    dispatch(
-        &mut app,
-        &mut doc,
-        "greeter.password",
-        &named_key_event(NamedKey::Escape),
-    );
-    assert!(app.password_buffer.lock().unwrap().is_empty());
-    assert_eq!(app.notice, Notice::None);
-
-    for _ in 0..3 {
+        // The handoff is over: a later refusal reads as usual.
+        seed_password(&app, "wrongpw");
         app.begin_authenticating();
-        app.finish_failure(Failure::Credentials);
+        app.on_external_event(
+            &AuthUpdate::Failed(Failure::Credentials).encode(),
+            &mut ui::widget::Edits::lend(&mut doc),
+            &root,
+        );
+        assert_eq!(app.notice, Notice::Error("greeter-error-passcode"));
     }
-    assert_eq!(
-        app.status_text(),
-        "Incorrect password, 3 times in a row. Try again."
-    );
-    app.begin_authenticating();
-    app.finish_failure(Failure::Locked);
-    assert_eq!(
-        app.failures, 0,
-        "another kind of failure starts the count over"
-    );
+
+    phase a_boot_sign_in_for_an_unlisted_account_falls_back_to_the_named_form;
+    {
+        let mut app = GreeterApp::for_shot(AuthScenario::Accounts);
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        app.offer_boot_sign_in("svc");
+        app.sync(&doc, &root);
+        assert_eq!(app.phase, AuthPhase::Starting);
+        assert_eq!(app.attempt_username(), "svc");
+        app.on_external_event(
+            &AuthUpdate::Failed(Failure::NotPermitted).encode(),
+            &mut ui::widget::Edits::lend(&mut doc),
+            &root,
+        );
+        assert_eq!(app.phase, AuthPhase::Idle);
+        assert_eq!(app.notice, Notice::None);
+        assert_eq!(typed_username(&app), "svc");
+    }
 }
 
 #[test]
@@ -2160,120 +2214,277 @@ fn field_and_keys(app: &GreeterApp) -> (Option<Rect>, Option<Rect>) {
     )
 }
 
-#[test]
-fn a_pin_pad_is_four_rows_and_a_password_keyboard_five() {
-    let theme = Theme::dark();
-    let (key, gap) = (
-        f64::from(theme.tokens.metrics.panel_row_height),
-        f64::from(theme.tokens.spacing.s2),
-    );
-    let rows_of = |app: &mut GreeterApp| {
-        let keyboard = shown_keyboard(app);
-        let rect = field_and_keys(app).1.expect("the keyboard is laid out");
+tilo_test_env::scenario! {
+    fn the_on_screen_keyboard_suits_the_secret_and_types_into_the_passcode;
+
+    phase a_pin_pad_is_four_rows_and_a_password_keyboard_five;
+    {
+        let theme = Theme::dark();
+        let (key, gap) = (
+            f64::from(theme.tokens.metrics.panel_row_height),
+            f64::from(theme.tokens.spacing.s2),
+        );
+        let rows_of = |app: &mut GreeterApp| {
+            let keyboard = shown_keyboard(app);
+            let rect = field_and_keys(app).1.expect("the keyboard is laid out");
+            assert!(
+                (rect.height() - keyboard.height(key, gap)).abs() < 0.5,
+                "{rect:?}"
+            );
+            ((rect.height() + gap) / (key + gap)).round()
+        };
+        let rows = rows_of(&mut GreeterApp::for_shot(AuthScenario::PersonalPin));
+        assert!((rows - 4.0).abs() < 0.01, "{rows}");
+        let rows = rows_of(&mut GreeterApp::for_shot(AuthScenario::Personal));
+        assert!((rows - 5.0).abs() < 0.01, "{rows}");
+    }
+
+    phase the_on_screen_keyboard_is_a_number_pad_for_a_pin_and_letters_for_a_password;
+    {
+        let mut pin = GreeterApp::for_shot(AuthScenario::PersonalPin);
+        assert!(shown_keyboard(&mut pin).is_for_pin());
+        let field = passcode_node(pin.composed.element().expect("composed"));
         assert!(
-            (rect.height() - keyboard.height(key, gap)).abs() < 0.5,
-            "{rect:?}"
+            field
+                .children
+                .iter()
+                .any(|child| child.name.as_deref() == Some("PIN")),
+            "the field asks for the PIN by name: {field:?}"
         );
-        ((rect.height() + gap) / (key + gap)).round()
-    };
-    let rows = rows_of(&mut GreeterApp::for_shot(AuthScenario::PersonalPin));
-    assert!((rows - 4.0).abs() < 0.01, "{rows}");
-    let rows = rows_of(&mut GreeterApp::for_shot(AuthScenario::Personal));
-    assert!((rows - 5.0).abs() < 0.01, "{rows}");
-}
 
-#[test]
-fn the_on_screen_keyboard_is_a_number_pad_for_a_pin_and_letters_for_a_password() {
-    let mut pin = GreeterApp::for_shot(AuthScenario::PersonalPin);
-    assert!(shown_keyboard(&mut pin).is_for_pin());
-    let field = passcode_node(pin.composed.element().expect("composed"));
-    assert!(
-        field
-            .children
-            .iter()
-            .any(|child| child.name.as_deref() == Some("PIN")),
-        "the field asks for the PIN by name: {field:?}"
-    );
+        let mut password = GreeterApp::for_shot(AuthScenario::Personal);
+        assert!(!shown_keyboard(&mut password).is_for_pin());
 
-    let mut password = GreeterApp::for_shot(AuthScenario::Personal);
-    assert!(!shown_keyboard(&mut password).is_for_pin());
+        // At boot the supervisor's list says, and choosing another person
+        // opens their keyboard.
+        let (_supervisor, link) = boot::Link::pair().unwrap();
+        let mut app = GreeterApp::for_boot(BootLink::new(link), false);
+        let person = |uid, name: &str, secret| boot::Person {
+            uid,
+            name: name.into(),
+            display_name: name.into(),
+            secret,
+        };
+        app.boot_message(ToGreeter::People {
+            people: vec![
+                person(1000, "ada", boot::SecretKind::Pin),
+                person(1001, "ben", boot::SecretKind::Password),
+            ],
+            highlighted: 0,
+        });
+        assert!(shown_keyboard(&mut app).is_for_pin());
+        app.boot_message(ToGreeter::Ask {
+            person: 1,
+            note: Note::None,
+            several: true,
+        });
+        assert!(!shown_keyboard(&mut app).is_for_pin());
+    }
 
-    // At boot the supervisor's list says, and choosing another person
-    // opens their keyboard.
-    let (_supervisor, link) = boot::Link::pair().unwrap();
-    let mut app = GreeterApp::for_boot(BootLink::new(link), false);
-    let person = |uid, name: &str, secret| boot::Person {
-        uid,
-        name: name.into(),
-        display_name: name.into(),
-        secret,
-    };
-    app.boot_message(ToGreeter::People {
-        people: vec![
-            person(1000, "ada", boot::SecretKind::Pin),
-            person(1001, "ben", boot::SecretKind::Password),
-        ],
-        highlighted: 0,
-    });
-    assert!(shown_keyboard(&mut app).is_for_pin());
-    app.boot_message(ToGreeter::Ask {
-        person: 1,
-        note: Note::None,
-        several: true,
-    });
-    assert!(!shown_keyboard(&mut app).is_for_pin());
-}
-
-#[test]
-fn the_boot_sign_in_shows_the_card_where_the_greeter_does() {
-    let (_supervisor, link) = boot::Link::pair().unwrap();
-    let mut boot_app = GreeterApp::for_boot(BootLink::new(link), false);
-    boot_app.boot_message(ToGreeter::People {
-        people: vec![boot::Person {
-            uid: 1000,
-            name: "ada".into(),
-            display_name: "Ada".into(),
-            secret: boot::SecretKind::Password,
-        }],
-        highlighted: 0,
-    });
-    let mut greeter = GreeterApp::for_shot(AuthScenario::PersonalNoFingerprint);
-    boot_app.clock = greeter.clock.clone();
-    boot_app.clock_pinned = true;
-    boot_app.device = greeter.device;
-    for viewport in [(1280.0, 800.0), (800.0, 1280.0), (1920.0, 1080.0)] {
-        layout_at_with_theme(&mut boot_app, viewport, &Theme::dark());
-        layout_at_with_theme(&mut greeter, viewport, &Theme::dark());
-        let at_boot = boot_app.composed.element().expect("composed");
-        let after = greeter.composed.element().expect("composed");
-        assert!(
-            rect_of(at_boot, "greeter.cant-sign-in").is_some(),
-            "the boot offers the other ways in"
-        );
-        assert_eq!(
-            passcode_field_rect(at_boot),
-            passcode_field_rect(after),
-            "at {viewport:?}"
-        );
+    phase keys_from_the_on_screen_keyboard_reach_the_passcode_a_delete_too;
+    {
+        use ui::passcode_keyboard::PasscodeInput;
+        let mut app = GreeterApp::for_shot(AuthScenario::PersonalPin);
+        shown_keyboard(&mut app);
+        app.touch_keyboard.typed.borrow_mut().extend([
+            PasscodeInput::Text("1".into()),
+            PasscodeInput::Text("2".into()),
+            PasscodeInput::Backspace,
+            PasscodeInput::Text("3".into()),
+        ]);
+        app.take_touch_keys();
+        assert_eq!(*app.password_buffer.lock_recover(), "13");
     }
 }
 
-#[test]
-fn after_boot_cant_sign_in_sits_under_the_field_for_a_known_account() {
-    let mut app = GreeterApp::for_shot(AuthScenario::PersonalNoFingerprint);
-    layout_at_with_theme(&mut app, (1280.0, 800.0), &Theme::dark());
-    let card = app.composed.element().expect("composed");
-    let field = passcode_field_rect(card).expect("the passcode field");
-    let button = rect_of(card, "greeter.cant-sign-in").expect("offered after boot");
-    assert!(button.y0 >= field.y1, "{button:?} is under {field:?}");
-    assert_eq!(
-        focusables(&app)[..3],
-        ["greeter.password", "greeter.login", "greeter.cant-sign-in"],
-        "the next stop after signing in"
-    );
-    // Without a known account there is nobody to recover.
-    let app = GreeterApp::with_sessions(one_session());
-    assert!(!focusables(&app).contains(&"greeter.cant-sign-in".to_owned()));
+tilo_test_env::scenario! {
+    fn cant_sign_in_recovers_the_account_with_its_recovery_key;
+
+    phase after_boot_cant_sign_in_sits_under_the_field_for_a_known_account;
+    {
+        let mut app = GreeterApp::for_shot(AuthScenario::PersonalNoFingerprint);
+        layout_at_with_theme(&mut app, (1280.0, 800.0), &Theme::dark());
+        let card = app.composed.element().expect("composed");
+        let field = passcode_field_rect(card).expect("the passcode field");
+        let button = rect_of(card, "greeter.cant-sign-in").expect("offered after boot");
+        assert!(button.y0 >= field.y1, "{button:?} is under {field:?}");
+        assert_eq!(
+            focusables(&app)[..3],
+            ["greeter.password", "greeter.login", "greeter.cant-sign-in"],
+            "the next stop after signing in"
+        );
+        // Without a known account there is nobody to recover.
+        let app = GreeterApp::with_sessions(one_session());
+        assert!(!focusables(&app).contains(&"greeter.cant-sign-in".to_owned()));
+    }
+
+    phase cant_sign_in_after_boot_opens_the_recovery_form_and_cancel_returns;
+    {
+        let mut app = pinned(GreeterApp::with_sessions_and_login_user(
+            one_session(),
+            Some(quick_user()),
+        ));
+        let mut doc = AutoCommit::new();
+        seed_password(&app, "half typed");
+        press(&mut app, &mut doc, "greeter.cant-sign-in");
+        assert!(app.recovery.is_some());
+        assert!(app.password_buffer.lock().unwrap().is_empty());
+        assert!(app.take_focus_reset(), "focus moves into the form");
+        assert_eq!(
+            focusables(&app)[..5],
+            [
+                "greeter.recovery-key",
+                "greeter.new-secret",
+                "greeter.confirm-secret",
+                "greeter.recovery-cancel",
+                "greeter.recovery-save",
+            ],
+            "the recovery key takes focus"
+        );
+        let card = card_of(&app);
+        assert!(find_test_id(card.as_ref(), "greeter.password").is_none());
+        assert!(find_test_id(card.as_ref(), "greeter.cant-sign-in").is_none());
+        assert_eq!(
+            accessible_name_for(card.as_ref(), "greeter.recovery-key").as_deref(),
+            Some("Recovery key")
+        );
+        assert!(
+            !shown_keyboard(&mut app).is_for_pin(),
+            "a recovery key is typed on the letters"
+        );
+
+        press(&mut app, &mut doc, "greeter.recovery-cancel");
+        assert!(app.recovery.is_none());
+        assert_eq!(
+            focusables(&app).first().map(String::as_str),
+            Some("greeter.password")
+        );
+
+        press(&mut app, &mut doc, "greeter.cant-sign-in");
+        assert!(dispatch(
+            &mut app,
+            &mut doc,
+            "greeter.recovery-key",
+            &named_key_event(NamedKey::Escape)
+        ));
+        app.sync(&doc, &automerge::ROOT);
+        assert!(app.recovery.is_none(), "Esc leaves the form too");
+        assert!(untouched(&doc));
+    }
+
+    phase mismatched_entries_are_refused_without_asking_tilo_authd;
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let listener = std::os::unix::net::UnixListener::bind(dir.path().join("socket")).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let (mut app, mut doc) = recovering();
+        app.auth_socket = dir.path().join("socket");
+
+        press(&mut app, &mut doc, "greeter.recovery-save");
+        assert_eq!(
+            app.recovery.as_ref().unwrap().notice,
+            Notice::Hint("greeter-recovery-hint-key")
+        );
+        fill_recovery(&app, "cccc-dddd", "", "");
+        press(&mut app, &mut doc, "greeter.recovery-save");
+        assert_eq!(
+            app.recovery.as_ref().unwrap().notice,
+            Notice::Hint("greeter-recovery-hint-new")
+        );
+        assert_eq!(recovery_buffers(&app), ["cccc-dddd", "", ""]);
+
+        fill_recovery(&app, "cccc-dddd", "2468", "1357");
+        press(&mut app, &mut doc, "greeter.recovery-save");
+        let recovery = app.recovery.as_ref().unwrap();
+        assert_eq!(recovery.notice, Notice::Error("greeter-recovery-mismatch"));
+        assert!(!recovery.is_pending());
+        assert_eq!(
+            recovery_buffers(&app),
+            ["cccc-dddd", "", ""],
+            "the two entries are typed again"
+        );
+        assert!(
+            spoken(card_of(&app).as_ref())
+                .contains(&"The two entries don't match. Type them again.".to_owned())
+        );
+        assert!(
+            listener
+                .accept()
+                .is_err_and(|e| e.kind() == std::io::ErrorKind::WouldBlock),
+            "tilo-authd was not asked"
+        );
+        assert!(untouched(&doc));
+    }
+
+    phase the_recovery_key_sets_a_new_secret_and_a_wrong_one_says_so;
+    {
+        use std::io::{BufRead, BufReader, Write};
+        let dir = tempfile::tempdir().unwrap();
+        let listener = std::os::unix::net::UnixListener::bind(dir.path().join("socket")).unwrap();
+        let daemon = std::thread::spawn(move || {
+            let mut requests = Vec::new();
+            for reply in [
+                "{\"ok\":false,\"error\":\"wrong\"}\n",
+                "{\"ok\":false,\"error\":\"weak-secret\"}\n",
+                "{\"ok\":true}\n",
+            ] {
+                let (stream, _) = listener.accept().unwrap();
+                let mut request = String::new();
+                BufReader::new(&stream).read_line(&mut request).unwrap();
+                (&stream).write_all(reply.as_bytes()).unwrap();
+                requests.push(serde_json::from_str::<serde_json::Value>(&request).unwrap());
+            }
+            requests
+        });
+        let (mut app, mut doc) = recovering();
+        app.auth_socket = dir.path().join("socket");
+
+        for (refusal, said) in [
+            (
+                "greeter-recovery-wrong",
+                "That recovery key isn't right. Check it and try again.",
+            ),
+            (
+                "greeter-recovery-weak",
+                "This computer has no security chip, so it needs a longer password. Choose a longer one.",
+            ),
+        ] {
+            fill_recovery(&app, "cccc-dddd", "2468", "2468");
+            press(&mut app, &mut doc, "greeter.recovery-save");
+            assert!(app.recovery.as_ref().unwrap().is_pending());
+            assert_eq!(recovery_buffers(&app), ["", "", ""]);
+            answered(&mut app, &doc);
+            assert_eq!(
+                app.recovery.as_ref().unwrap().notice,
+                Notice::Error(refusal)
+            );
+            assert_eq!(recovery_buffers(&app), ["", "", ""]);
+            assert!(spoken(card_of(&app).as_ref()).contains(&said.to_owned()));
+        }
+
+        fill_recovery(&app, "cccc-dddd", "2468", "2468");
+        press(&mut app, &mut doc, "greeter.recovery-save");
+        answered(&mut app, &doc);
+        assert!(app.recovery.is_none(), "back to the sign-in form");
+        assert_eq!(app.notice, Notice::Hint("greeter-recovery-done-pin"));
+        assert_eq!(app.status_text(), "Sign in with your new PIN.");
+        assert_eq!(
+            accessible_name_for(card_of(&app).as_ref(), "greeter.password").as_deref(),
+            Some("PIN")
+        );
+
+        let requests = daemon.join().unwrap();
+        assert_eq!(
+            requests.last(),
+            Some(&serde_json::json!({
+                "op": "set-secret",
+                "user": "tester",
+                "recovery": "cccc-dddd",
+                "new": "2468",
+            }))
+        );
+        assert!(untouched(&doc), "no secret reaches the document");
+    }
 }
 
 fn recovering() -> (GreeterApp, AutoCommit) {
@@ -2302,104 +2513,6 @@ fn recovery_buffers(app: &GreeterApp) -> [String; 3] {
     [&recovery.key, &recovery.new, &recovery.confirm].map(|b| b.lock().unwrap().clone())
 }
 
-#[test]
-fn cant_sign_in_after_boot_opens_the_recovery_form_and_cancel_returns() {
-    let mut app = pinned(GreeterApp::with_sessions_and_login_user(
-        one_session(),
-        Some(quick_user()),
-    ));
-    let mut doc = AutoCommit::new();
-    seed_password(&app, "half typed");
-    press(&mut app, &mut doc, "greeter.cant-sign-in");
-    assert!(app.recovery.is_some());
-    assert!(app.password_buffer.lock().unwrap().is_empty());
-    assert!(app.take_focus_reset(), "focus moves into the form");
-    assert_eq!(
-        focusables(&app)[..5],
-        [
-            "greeter.recovery-key",
-            "greeter.new-secret",
-            "greeter.confirm-secret",
-            "greeter.recovery-cancel",
-            "greeter.recovery-save",
-        ],
-        "the recovery key takes focus"
-    );
-    let card = card_of(&app);
-    assert!(find_test_id(card.as_ref(), "greeter.password").is_none());
-    assert!(find_test_id(card.as_ref(), "greeter.cant-sign-in").is_none());
-    assert_eq!(
-        accessible_name_for(card.as_ref(), "greeter.recovery-key").as_deref(),
-        Some("Recovery key")
-    );
-    assert!(
-        !shown_keyboard(&mut app).is_for_pin(),
-        "a recovery key is typed on the letters"
-    );
-
-    press(&mut app, &mut doc, "greeter.recovery-cancel");
-    assert!(app.recovery.is_none());
-    assert_eq!(
-        focusables(&app).first().map(String::as_str),
-        Some("greeter.password")
-    );
-
-    press(&mut app, &mut doc, "greeter.cant-sign-in");
-    assert!(dispatch(
-        &mut app,
-        &mut doc,
-        "greeter.recovery-key",
-        &named_key_event(NamedKey::Escape)
-    ));
-    app.sync(&doc, &automerge::ROOT);
-    assert!(app.recovery.is_none(), "Esc leaves the form too");
-    assert!(untouched(&doc));
-}
-
-#[test]
-fn mismatched_entries_are_refused_without_asking_tilo_authd() {
-    let dir = tempfile::tempdir().unwrap();
-    let listener = std::os::unix::net::UnixListener::bind(dir.path().join("socket")).unwrap();
-    listener.set_nonblocking(true).unwrap();
-    let (mut app, mut doc) = recovering();
-    app.auth_socket = dir.path().join("socket");
-
-    press(&mut app, &mut doc, "greeter.recovery-save");
-    assert_eq!(
-        app.recovery.as_ref().unwrap().notice,
-        Notice::Hint("greeter-recovery-hint-key")
-    );
-    fill_recovery(&app, "cccc-dddd", "", "");
-    press(&mut app, &mut doc, "greeter.recovery-save");
-    assert_eq!(
-        app.recovery.as_ref().unwrap().notice,
-        Notice::Hint("greeter-recovery-hint-new")
-    );
-    assert_eq!(recovery_buffers(&app), ["cccc-dddd", "", ""]);
-
-    fill_recovery(&app, "cccc-dddd", "2468", "1357");
-    press(&mut app, &mut doc, "greeter.recovery-save");
-    let recovery = app.recovery.as_ref().unwrap();
-    assert_eq!(recovery.notice, Notice::Error("greeter-recovery-mismatch"));
-    assert!(!recovery.is_pending());
-    assert_eq!(
-        recovery_buffers(&app),
-        ["cccc-dddd", "", ""],
-        "the two entries are typed again"
-    );
-    assert!(
-        spoken(card_of(&app).as_ref())
-            .contains(&"The two entries don't match. Type them again.".to_owned())
-    );
-    assert!(
-        listener
-            .accept()
-            .is_err_and(|e| e.kind() == std::io::ErrorKind::WouldBlock),
-        "tilo-authd was not asked"
-    );
-    assert!(untouched(&doc));
-}
-
 /// Sync until tilo-authd's answer has been taken.
 fn answered(app: &mut GreeterApp, doc: &AutoCommit) {
     let started = Instant::now();
@@ -2415,76 +2528,6 @@ fn answered(app: &mut GreeterApp, doc: &AutoCommit) {
         std::thread::sleep(Duration::from_millis(5));
         app.sync(doc, &automerge::ROOT);
     }
-}
-
-#[test]
-fn the_recovery_key_sets_a_new_secret_and_a_wrong_one_says_so() {
-    use std::io::{BufRead, BufReader, Write};
-    let dir = tempfile::tempdir().unwrap();
-    let listener = std::os::unix::net::UnixListener::bind(dir.path().join("socket")).unwrap();
-    let daemon = std::thread::spawn(move || {
-        let mut requests = Vec::new();
-        for reply in [
-            "{\"ok\":false,\"error\":\"wrong\"}\n",
-            "{\"ok\":false,\"error\":\"weak-secret\"}\n",
-            "{\"ok\":true}\n",
-        ] {
-            let (stream, _) = listener.accept().unwrap();
-            let mut request = String::new();
-            BufReader::new(&stream).read_line(&mut request).unwrap();
-            (&stream).write_all(reply.as_bytes()).unwrap();
-            requests.push(serde_json::from_str::<serde_json::Value>(&request).unwrap());
-        }
-        requests
-    });
-    let (mut app, mut doc) = recovering();
-    app.auth_socket = dir.path().join("socket");
-
-    for (refusal, said) in [
-        (
-            "greeter-recovery-wrong",
-            "That recovery key isn't right. Check it and try again.",
-        ),
-        (
-            "greeter-recovery-weak",
-            "This computer has no security chip, so it needs a longer password. Choose a longer one.",
-        ),
-    ] {
-        fill_recovery(&app, "cccc-dddd", "2468", "2468");
-        press(&mut app, &mut doc, "greeter.recovery-save");
-        assert!(app.recovery.as_ref().unwrap().is_pending());
-        assert_eq!(recovery_buffers(&app), ["", "", ""]);
-        answered(&mut app, &doc);
-        assert_eq!(
-            app.recovery.as_ref().unwrap().notice,
-            Notice::Error(refusal)
-        );
-        assert_eq!(recovery_buffers(&app), ["", "", ""]);
-        assert!(spoken(card_of(&app).as_ref()).contains(&said.to_owned()));
-    }
-
-    fill_recovery(&app, "cccc-dddd", "2468", "2468");
-    press(&mut app, &mut doc, "greeter.recovery-save");
-    answered(&mut app, &doc);
-    assert!(app.recovery.is_none(), "back to the sign-in form");
-    assert_eq!(app.notice, Notice::Hint("greeter-recovery-done-pin"));
-    assert_eq!(app.status_text(), "Sign in with your new PIN.");
-    assert_eq!(
-        accessible_name_for(card_of(&app).as_ref(), "greeter.password").as_deref(),
-        Some("PIN")
-    );
-
-    let requests = daemon.join().unwrap();
-    assert_eq!(
-        requests.last(),
-        Some(&serde_json::json!({
-            "op": "set-secret",
-            "user": "tester",
-            "recovery": "cccc-dddd",
-            "new": "2468",
-        }))
-    );
-    assert!(untouched(&doc), "no secret reaches the document");
 }
 
 /// What the screen reader said, through the toolkit's recording speaker.
@@ -2673,21 +2716,6 @@ fn with_the_screen_reader_on_a_pin_is_entered_by_touch_and_never_spoken() {
             assert!(!utterance.contains(run), "{utterance} in {said:?}");
         }
     }
-}
-
-#[test]
-fn keys_from_the_on_screen_keyboard_reach_the_passcode_a_delete_too() {
-    use ui::passcode_keyboard::PasscodeInput;
-    let mut app = GreeterApp::for_shot(AuthScenario::PersonalPin);
-    shown_keyboard(&mut app);
-    app.touch_keyboard.typed.borrow_mut().extend([
-        PasscodeInput::Text("1".into()),
-        PasscodeInput::Text("2".into()),
-        PasscodeInput::Backspace,
-        PasscodeInput::Text("3".into()),
-    ]);
-    app.take_touch_keys();
-    assert_eq!(*app.password_buffer.lock_recover(), "13");
 }
 
 /// Run `operation` with the monotonic clock `t` ms after `zero` and the
