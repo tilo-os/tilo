@@ -796,6 +796,52 @@ fn people_may_only_ask_about_themselves() {
     assert_eq!(m.old.locked(), ["ada"]);
 }
 
+/// Status is for root and the person themselves, not for the login screen,
+/// which has its own two questions; and a boot sign-in nobody made is neither
+/// shown to anyone nor claimed by anyone.
+#[test]
+fn the_login_screen_gets_no_status_and_an_unmade_boot_sign_in_is_neither_seen_nor_claimed() {
+    let m = machine!(false, &[("ada", "correct horse battery staple")]);
+    let daemon = m.daemon();
+    let status =
+        |peer: Peer, user: &str| reply(daemon.handle(peer, Request::Status { user: user.into() }));
+    for (peer, user, refusal) in [
+        (BOB, "ada", Refusal::NotPermitted),
+        (GREETER, "ada", Refusal::NotPermitted),
+        (GREETER, "eve", Refusal::NotPermitted),
+        (ROOT, "eve", Refusal::NotEnrolled),
+    ] {
+        assert_eq!(
+            status(peer, user),
+            refused(refusal),
+            "the status of {user} asked by uid {}",
+            peer.uid
+        );
+    }
+    let not_enrolled = Reply {
+        enrolled: Some(false),
+        ..Reply::success()
+    };
+    assert_eq!(status(ROOT, "ada"), not_enrolled);
+    assert_eq!(status(BOB, "bob"), not_enrolled);
+
+    let claim =
+        |peer: Peer| reply(daemon.handle(peer, Request::ClaimBootSignIn { user: "ada".into() }));
+    for peer in [ADA, GREETER] {
+        assert_eq!(
+            claim(peer),
+            refused(Refusal::NotPermitted),
+            "claimed by uid {}",
+            peer.uid
+        );
+    }
+    assert_eq!(claim(ROOT), refused(Refusal::NoBootSignIn));
+    for peer in [ROOT, GREETER, ADA] {
+        assert_eq!(pending(&daemon, peer), None, "asked by uid {}", peer.uid);
+    }
+    assert_eq!(m.record(ADA.uid), None, "asking leaves no record");
+}
+
 #[test]
 fn a_secret_changes_with_the_current_one_or_with_the_recovery_key_as_root() {
     let m = machine!(true, &[("ada", "123456")]);
@@ -886,7 +932,12 @@ fn the_admins_recovery_key_must_be_the_machines_and_the_login_screen_sets_a_new_
     };
     let factors = || reply(daemon.handle(ADA, Request::Status { user: "ada".into() })).factors;
     assert_eq!(factors(), ["password"]);
-    let enrolled = m.record(ADA.uid).unwrap();
+    let (runner, _) = m.runner();
+    let kept = || {
+        let tokens = luks::tokens(&runner, &m.device).unwrap();
+        (m.record(ADA.uid).unwrap(), m.slots(), tokens)
+    };
+    let enrolled = kept();
     assert_eq!(add_recovery(&other), refused(Refusal::Wrong));
     assert!(!m.record(ADA.uid).unwrap().has(Kind::Recovery));
     assert_eq!(
@@ -894,9 +945,9 @@ fn the_admins_recovery_key_must_be_the_machines_and_the_login_screen_sets_a_new_
         refused(Refusal::BadRequest)
     );
     assert_eq!(
-        m.record(ADA.uid).unwrap(),
+        kept(),
         enrolled,
-        "a refused recovery key changes nothing"
+        "a refused recovery key changes neither the record nor the header"
     );
 
     assert_eq!(add_recovery(&recovery), Reply::success());
@@ -918,6 +969,23 @@ fn the_admins_recovery_key_must_be_the_machines_and_the_login_screen_sets_a_new_
         refused(Refusal::NotPermitted)
     );
     assert_eq!(change(None, None, "2468"), refused(Refusal::BadRequest));
+    // Both proofs at once are a change by the current secret, which is not
+    // the login screen's to make; and the recovery key is no proof from
+    // anyone but root and the login screen.
+    assert_eq!(
+        change(Some("123456"), Some(&recovery), "2468"),
+        refused(Refusal::NotPermitted)
+    );
+    let by_bob = Request::SetSecret {
+        user: "ada".into(),
+        current: None,
+        recovery: Some(secret(&recovery)),
+        new: secret("2468"),
+    };
+    assert_eq!(
+        reply(daemon.handle(BOB, by_bob)),
+        refused(Refusal::NotPermitted)
+    );
     assert_eq!(change(None, Some(&other), "2468"), refused(Refusal::Wrong));
     assert_eq!(
         change(None, Some("not a recovery key"), "2468"),
@@ -965,9 +1033,12 @@ fn the_lockout_authorisation_moves_under_the_keys_and_recovery_ends_a_lockout() 
     for wrong in ["1", "2", "3", "4", "5"] {
         let _ = verify(&daemon, ADA, "ada", wrong);
     }
+    let locked = verify(&daemon, ADA, "ada", "123456");
+    assert_eq!(locked.error, Some(Refusal::LockedOut));
     assert_eq!(
-        verify(&daemon, ADA, "ada", "123456").error,
-        Some(Refusal::LockedOut)
+        (locked.tries_left, locked.retry_in_s),
+        (Some(0), Some(600)),
+        "the login screen is told there is no try left and how long to wait"
     );
 
     assert_eq!(

@@ -606,6 +606,10 @@ fn boot_unlock_cannot_try_without_a_sign_in_token_then_opens_with_the_secret_or_
         keys_dir: &keys_dir,
         handoff: None,
     };
+    assert!(
+        luks::tokens(&f.runner, &device).unwrap().is_empty(),
+        "the header reads, and holds no sign-in token"
+    );
     assert!(matches!(unlock.run(b"123456"), BootOutcome::CouldNotTry(_)));
     assert!(!keys_dir.join("root.key").exists());
     assert_eq!(
@@ -655,6 +659,28 @@ fn boot_unlock_cannot_try_without_a_sign_in_token_then_opens_with_the_secret_or_
     assert!(matches!(
         unlock.run(RecoveryKey::from_bytes([4; 32]).formatted().as_bytes()),
         BootOutcome::Wrong(None)
+    ));
+
+    // Asked for one person, only their token is tried; and an entry that is
+    // not text is wrong before the TPM hears of it.
+    std::fs::remove_file(keys_dir.join("root.key")).unwrap();
+    let named = |uid: u32, entry: &[u8]| {
+        BootUnlock {
+            uid: Some(uid),
+            ..unlock
+        }
+        .run(entry)
+    };
+    assert!(matches!(
+        named(UID + 1, b"123456\n"),
+        BootOutcome::CouldNotTry(_)
+    ));
+    assert!(matches!(named(UID, &[0xff]), BootOutcome::Wrong(None)));
+    assert!(!keys_dir.join("root.key").exists());
+    assert_eq!(f.tries_used(), used, "neither reached the TPM");
+    assert!(matches!(
+        named(UID, recovery.formatted().as_bytes()),
+        BootOutcome::Unlocked { uid: UID }
     ));
 }
 
