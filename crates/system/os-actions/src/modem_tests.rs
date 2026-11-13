@@ -403,237 +403,312 @@ fn code(digits: &str) -> Zeroizing<String> {
     Zeroizing::new(digits.into())
 }
 
-#[test]
-fn without_a_modem_modem_manager_reports_none() {
-    let fixture = Fixture::new(None);
-    assert_eq!(fixture.read(), MobileReading::default());
-}
+tilo_test_env::scenario! {
+    fn a_modem_reports_its_registration_or_why_it_has_none;
 
-#[test]
-fn a_registered_modem_reports_operator_technology_signal_and_traffic() {
-    let fixture = Fixture::new(Some(Script::registered()));
-    let modem = fixture.modem();
-    assert_eq!(modem.name, "Quectel EM120R-GL");
-    assert_eq!(modem.state, ModemState::Registered);
-    assert!(modem.usable());
-    assert_eq!(modem.registration, Registration::Home);
-    assert_eq!(modem.operator.as_deref(), Some("Telekom.de"));
-    assert_eq!(modem.technology, Some(Technology::Lte));
-    assert_eq!(modem.signal, Some(72));
-    assert_eq!(modem.pin_enabled, Some(true));
-    assert_eq!(modem.numbers, ["+491701234567"]);
-    assert_eq!(
-        modem.traffic,
-        Some(Traffic {
-            received: 3_000_000,
-            sent: 1_000_000
-        }),
-        "the totals ModemManager keeps, not the current connection's"
-    );
-    let current = modem.modes.unwrap();
-    assert_eq!(current.generations(), [5, 4, 3, 2]);
-    assert_eq!(current.preferred_generation(), Some(5));
-    assert_eq!(current.key(), "5g-4g-3g-2g-prefer-5g");
-    assert_eq!(modem.supported_modes.len(), 3);
-    let sim = modem.active_sim().unwrap();
-    assert_eq!(sim.path, SIM_1);
-    assert_eq!(sim.label(), "Telekom.de");
-    assert_eq!(sim.operator_code.as_deref(), Some("26201"));
-    assert_eq!(sim.kind, SimKind::Physical);
-}
+    phase without_a_modem_modem_manager_reports_none;
+    {
+        let fixture = Fixture::new(None);
+        assert_eq!(fixture.read(), MobileReading::default());
+    }
 
-#[test]
-fn a_roaming_modem_says_so() {
-    let fixture = Fixture::new(Some(Script {
-        registration: 5,
-        operator: "Orange F".into(),
-        technologies: 1 << 15 | 1 << 14,
-        ..Script::registered()
-    }));
-    let modem = fixture.modem();
-    assert_eq!(modem.registration, Registration::Roaming);
-    assert_eq!(modem.operator.as_deref(), Some("Orange F"));
-    assert_eq!(
-        modem.technology,
-        Some(Technology::Nr5g),
-        "the fastest in use"
-    );
-}
+    phase a_registered_modem_reports_operator_technology_signal_and_traffic;
+    {
+        let fixture = Fixture::new(Some(Script::registered()));
+        let modem = fixture.modem();
+        assert_eq!(modem.name, "Quectel EM120R-GL");
+        assert_eq!(modem.state, ModemState::Registered);
+        assert!(modem.usable());
+        assert_eq!(modem.registration, Registration::Home);
+        assert_eq!(modem.operator.as_deref(), Some("Telekom.de"));
+        assert_eq!(modem.technology, Some(Technology::Lte));
+        assert_eq!(modem.signal, Some(72));
+        assert_eq!(modem.pin_enabled, Some(true));
+        assert_eq!(modem.numbers, ["+491701234567"]);
+        assert_eq!(
+            modem.traffic,
+            Some(Traffic {
+                received: 3_000_000,
+                sent: 1_000_000
+            }),
+            "the totals ModemManager keeps, not the current connection's"
+        );
+        let current = modem.modes.unwrap();
+        assert_eq!(current.generations(), [5, 4, 3, 2]);
+        assert_eq!(current.preferred_generation(), Some(5));
+        assert_eq!(current.key(), "5g-4g-3g-2g-prefer-5g");
+        assert_eq!(modem.supported_modes.len(), 3);
+        let sim = modem.active_sim().unwrap();
+        assert_eq!(sim.path, SIM_1);
+        assert_eq!(sim.label(), "Telekom.de");
+        assert_eq!(sim.operator_code.as_deref(), Some("26201"));
+        assert_eq!(sim.kind, SimKind::Physical);
+    }
 
-#[test]
-fn a_locked_sim_is_unlocked_with_its_pin_and_a_wrong_pin_costs_a_try() {
-    let fixture = Fixture::new(Some(Script::locked()));
-    let modem = fixture.modem();
-    assert_eq!(modem.state, ModemState::Locked);
-    assert_eq!(modem.lock, SimLock::Pin);
-    assert_eq!(modem.retries.pin, Some(3));
-    assert_eq!(modem.signal, None, "no signal is claimed while locked");
-    assert_eq!(modem.operator, None);
-
-    let wrong = fixture.apply(&ModemChange::SendPin {
-        sim: SIM_1.into(),
-        pin: code("0000"),
-    });
-    assert_eq!(wrong, Err(ModemError::WrongCode));
-    assert_eq!(fixture.modem().retries.pin, Some(2));
-
-    fixture
-        .apply(&ModemChange::SendPin {
-            sim: SIM_1.into(),
-            pin: code("1234"),
-        })
-        .unwrap();
-    let modem = fixture.modem();
-    assert_eq!(modem.lock, SimLock::None);
-    assert!(modem.usable());
-}
-
-#[test]
-fn the_last_wrong_pin_asks_for_the_puk_which_sets_a_new_pin() {
-    let fixture = Fixture::new(Some(Script {
-        pin_retries: 1,
-        ..Script::locked()
-    }));
-    assert_eq!(
-        fixture.apply(&ModemChange::SendPin {
-            sim: SIM_1.into(),
-            pin: code("9999"),
-        }),
-        Err(ModemError::WrongCode)
-    );
-    let modem = fixture.modem();
-    assert_eq!(modem.lock, SimLock::Puk);
-    assert_eq!(modem.retries.puk, Some(10));
-
-    fixture
-        .apply(&ModemChange::SendPuk {
-            sim: SIM_1.into(),
-            puk: code("12345678"),
-            new_pin: code("4321"),
-        })
-        .unwrap();
-    assert_eq!(fixture.modem().lock, SimLock::None);
-    assert_eq!(fixture.script.lock().unwrap().pin, "4321");
-}
-
-#[test]
-fn the_pin_is_changed_and_disabled_with_the_current_pin() {
-    let fixture = Fixture::new(Some(Script::registered()));
-    fixture
-        .apply(&ModemChange::ChangePin {
-            sim: SIM_1.into(),
-            old_pin: code("1234"),
-            new_pin: code("2468"),
-        })
-        .unwrap();
-    assert_eq!(
-        fixture.apply(&ModemChange::SetPinLock {
-            sim: SIM_1.into(),
-            pin: code("1234"),
-            enabled: false,
-        }),
-        Err(ModemError::WrongCode),
-        "the old PIN no longer works"
-    );
-    fixture
-        .apply(&ModemChange::SetPinLock {
-            sim: SIM_1.into(),
-            pin: code("2468"),
-            enabled: false,
-        })
-        .unwrap();
-    assert_eq!(fixture.modem().pin_enabled, Some(false));
-}
-
-#[test]
-fn malformed_codes_and_objects_never_reach_modem_manager() {
-    let fixture = Fixture::new(Some(Script::locked()));
-    for change in [
-        ModemChange::SendPin {
-            sim: SIM_1.into(),
-            pin: code("12a4"),
-        },
-        ModemChange::SendPin {
-            sim: SIM_1.into(),
-            pin: code("123"),
-        },
-        ModemChange::SendPin {
-            sim: "/org/freedesktop/ModemManager1/Modem/0".into(),
-            pin: code("1234"),
-        },
-        ModemChange::SendPuk {
-            sim: SIM_1.into(),
-            puk: code("1234"),
-            new_pin: code("1234"),
-        },
-        ModemChange::UseSlot {
-            modem: MODEM.into(),
-            slot: 0,
-        },
-    ] {
-        assert!(
-            matches!(fixture.apply(&change), Err(ModemError::Invalid(_))),
-            "{change:?} is refused before it is sent"
+    phase a_roaming_modem_says_so;
+    {
+        let fixture = Fixture::new(Some(Script {
+            registration: 5,
+            operator: "Orange F".into(),
+            technologies: 1 << 15 | 1 << 14,
+            ..Script::registered()
+        }));
+        let modem = fixture.modem();
+        assert_eq!(modem.registration, Registration::Roaming);
+        assert_eq!(modem.operator.as_deref(), Some("Orange F"));
+        assert_eq!(
+            modem.technology,
+            Some(Technology::Nr5g),
+            "the fastest in use"
         );
     }
-    assert_eq!(
-        fixture.modem().retries.pin,
-        Some(3),
-        "no try was spent on a malformed code"
-    );
+
+    phase a_modem_without_a_sim_says_why;
+    {
+        let fixture = Fixture::new(Some(Script {
+            state: -1,
+            failed_reason: 2,
+            ..Script::registered()
+        }));
+        let modem = fixture.modem();
+        assert_eq!(modem.failure, Some(ModemFailure::SimMissing));
+        assert!(!modem.usable());
+    }
 }
 
-#[test]
-fn network_types_and_the_sim_slot_are_set_on_the_modem() {
-    let fixture = Fixture::new(Some(Script {
-        slots: vec![SIM_1.into(), SIM_2.into()],
-        primary_slot: 1,
-        ..Script::registered()
-    }));
-    let modem = fixture.modem();
-    assert_eq!(modem.sims.len(), 2, "both slots are listed");
-    assert_eq!(modem.sims[0].slot, Some(1));
-    assert!(modem.sims[0].active);
-    assert_eq!(modem.sims[1].label(), "Vodafone.de");
-    assert_eq!(
-        modem.sims[1].kind,
-        SimKind::Esim {
-            profiles: Some(true)
+tilo_test_env::scenario! {
+    fn a_sim_is_unlocked_and_its_pin_changed_only_with_the_right_codes;
+
+    phase a_locked_sim_is_unlocked_with_its_pin_and_a_wrong_pin_costs_a_try;
+    {
+        let fixture = Fixture::new(Some(Script::locked()));
+        let modem = fixture.modem();
+        assert_eq!(modem.state, ModemState::Locked);
+        assert_eq!(modem.lock, SimLock::Pin);
+        assert_eq!(modem.retries.pin, Some(3));
+        assert_eq!(modem.signal, None, "no signal is claimed while locked");
+        assert_eq!(modem.operator, None);
+
+        let wrong = fixture.apply(&ModemChange::SendPin {
+            sim: SIM_1.into(),
+            pin: code("0000"),
+        });
+        assert_eq!(wrong, Err(ModemError::WrongCode));
+        assert_eq!(fixture.modem().retries.pin, Some(2));
+
+        fixture
+            .apply(&ModemChange::SendPin {
+                sim: SIM_1.into(),
+                pin: code("1234"),
+            })
+            .unwrap();
+        let modem = fixture.modem();
+        assert_eq!(modem.lock, SimLock::None);
+        assert!(modem.usable());
+    }
+
+    phase the_last_wrong_pin_asks_for_the_puk_which_sets_a_new_pin;
+    {
+        let fixture = Fixture::new(Some(Script {
+            pin_retries: 1,
+            ..Script::locked()
+        }));
+        assert_eq!(
+            fixture.apply(&ModemChange::SendPin {
+                sim: SIM_1.into(),
+                pin: code("9999"),
+            }),
+            Err(ModemError::WrongCode)
+        );
+        let modem = fixture.modem();
+        assert_eq!(modem.lock, SimLock::Puk);
+        assert_eq!(modem.retries.puk, Some(10));
+
+        fixture
+            .apply(&ModemChange::SendPuk {
+                sim: SIM_1.into(),
+                puk: code("12345678"),
+                new_pin: code("4321"),
+            })
+            .unwrap();
+        assert_eq!(fixture.modem().lock, SimLock::None);
+        assert_eq!(fixture.script.lock().unwrap().pin, "4321");
+    }
+
+    phase the_pin_is_changed_and_disabled_with_the_current_pin;
+    {
+        let fixture = Fixture::new(Some(Script::registered()));
+        fixture
+            .apply(&ModemChange::ChangePin {
+                sim: SIM_1.into(),
+                old_pin: code("1234"),
+                new_pin: code("2468"),
+            })
+            .unwrap();
+        assert_eq!(
+            fixture.apply(&ModemChange::SetPinLock {
+                sim: SIM_1.into(),
+                pin: code("1234"),
+                enabled: false,
+            }),
+            Err(ModemError::WrongCode),
+            "the old PIN no longer works"
+        );
+        fixture
+            .apply(&ModemChange::SetPinLock {
+                sim: SIM_1.into(),
+                pin: code("2468"),
+                enabled: false,
+            })
+            .unwrap();
+        assert_eq!(fixture.modem().pin_enabled, Some(false));
+    }
+
+    phase malformed_codes_and_objects_never_reach_modem_manager;
+    {
+        let fixture = Fixture::new(Some(Script::locked()));
+        for change in [
+            ModemChange::SendPin {
+                sim: SIM_1.into(),
+                pin: code("12a4"),
+            },
+            ModemChange::SendPin {
+                sim: SIM_1.into(),
+                pin: code("123"),
+            },
+            ModemChange::SendPin {
+                sim: "/org/freedesktop/ModemManager1/Modem/0".into(),
+                pin: code("1234"),
+            },
+            ModemChange::SendPuk {
+                sim: SIM_1.into(),
+                puk: code("1234"),
+                new_pin: code("1234"),
+            },
+            ModemChange::UseSlot {
+                modem: MODEM.into(),
+                slot: 0,
+            },
+        ] {
+            assert!(
+                matches!(fixture.apply(&change), Err(ModemError::Invalid(_))),
+                "{change:?} is refused before it is sent"
+            );
         }
-    );
-
-    fixture
-        .apply(&ModemChange::UseSlot {
-            modem: MODEM.into(),
-            slot: 2,
-        })
-        .unwrap();
-    let lte_only = NetworkModes {
-        allowed: 1 << 3,
-        preferred: 0,
-    };
-    fixture
-        .apply(&ModemChange::SetModes {
-            modem: MODEM.into(),
-            modes: lte_only,
-        })
-        .unwrap();
-    let modem = fixture.modem();
-    assert_eq!(modem.active_sim().unwrap().path, SIM_2);
-    assert_eq!(modem.modes, Some(lte_only));
-    assert_eq!(lte_only.key(), "4g");
+        assert_eq!(
+            fixture.modem().retries.pin,
+            Some(3),
+            "no try was spent on a malformed code"
+        );
+    }
 }
 
-#[test]
-fn a_modem_without_a_sim_says_why() {
-    let fixture = Fixture::new(Some(Script {
-        state: -1,
-        failed_reason: 2,
-        ..Script::registered()
-    }));
-    let modem = fixture.modem();
-    assert_eq!(modem.failure, Some(ModemFailure::SimMissing));
-    assert!(!modem.usable());
+tilo_test_env::scenario! {
+    fn mobile_data_settings_are_set_on_the_modem_and_its_profile;
+
+    phase network_types_and_the_sim_slot_are_set_on_the_modem;
+    {
+        let fixture = Fixture::new(Some(Script {
+            slots: vec![SIM_1.into(), SIM_2.into()],
+            primary_slot: 1,
+            ..Script::registered()
+        }));
+        let modem = fixture.modem();
+        assert_eq!(modem.sims.len(), 2, "both slots are listed");
+        assert_eq!(modem.sims[0].slot, Some(1));
+        assert!(modem.sims[0].active);
+        assert_eq!(modem.sims[1].label(), "Vodafone.de");
+        assert_eq!(
+            modem.sims[1].kind,
+            SimKind::Esim {
+                profiles: Some(true)
+            }
+        );
+
+        fixture
+            .apply(&ModemChange::UseSlot {
+                modem: MODEM.into(),
+                slot: 2,
+            })
+            .unwrap();
+        let lte_only = NetworkModes {
+            allowed: 1 << 3,
+            preferred: 0,
+        };
+        fixture
+            .apply(&ModemChange::SetModes {
+                modem: MODEM.into(),
+                modes: lte_only,
+            })
+            .unwrap();
+        let modem = fixture.modem();
+        assert_eq!(modem.active_sim().unwrap().path, SIM_2);
+        assert_eq!(modem.modes, Some(lte_only));
+        assert_eq!(lte_only.key(), "4g");
+    }
+
+    phase the_mobile_data_profile_is_the_connected_one_else_the_automatic_one;
+    {
+        let wifi = mobile(
+            "0d7f5e66-3b1b-4a0b-9a59-0f1a2c3d4e5f",
+            "802-11-wireless",
+            true,
+            1_700_000_900,
+        );
+        let manual = mobile(
+            "5b2e8a70-1c7d-4f2e-9a61-0d3c9e4b7a10",
+            "gsm",
+            false,
+            1_700_000_800,
+        );
+        let automatic = mobile(
+            "9e41c2d8-6a35-4b9f-8c07-2f5d1e8a3b64",
+            "gsm",
+            true,
+            1_700_000_100,
+        );
+        let profiles = [wifi.clone(), manual.clone(), automatic];
+        let chosen = choose_mobile_profile(&profiles, |profile| profile.path == wifi.path).unwrap();
+        assert_eq!(chosen.uuid, "9e41c2d8-6a35-4b9f-8c07-2f5d1e8a3b64");
+        let connected =
+            choose_mobile_profile(&profiles, |profile| profile.path == manual.path).unwrap();
+        assert_eq!(connected.uuid, "5b2e8a70-1c7d-4f2e-9a61-0d3c9e4b7a10");
+        assert!(connected.active);
+        assert_eq!(choose_mobile_profile(&[wifi], |_| true), None);
+
+        let mut settings = Settings::default();
+        settings.set("connection", "metered", 1_i32);
+        settings.set("gsm", "auto-config", true);
+        settings.set("gsm", "home-only", true);
+        let profile = mobile_profile_of(&settings, false);
+        assert_eq!(
+            profile.name, MOBILE_PROFILE_NAME,
+            "unnamed reads as the default"
+        );
+        assert!(profile.automatic_apn && profile.autoconnect);
+        assert_eq!(profile.apn, None);
+        assert!(!profile.roaming, "home only means no roaming");
+        assert_eq!(profile.metered, MeteredPolicy::Metered);
+
+        let mut settings = Settings::default();
+        settings.set("connection", "id", "Work");
+        settings.set("connection", "autoconnect", false);
+        settings.set("gsm", "apn", "internet.telekom");
+        let typed = mobile_profile_of(&settings, true);
+        assert_eq!(typed.name, "Work");
+        assert_eq!(typed.apn.as_deref(), Some("internet.telekom"));
+        assert!(!typed.automatic_apn && typed.roaming && !typed.autoconnect);
+        assert_eq!(typed.metered, MeteredPolicy::Automatic);
+    }
+
+    phase an_apn_is_refused_with_characters_no_operator_uses;
+    {
+        assert!(valid_apn("internet.telekom").is_ok());
+        assert!(valid_apn("web.vodafone.de").is_ok());
+        assert!(valid_apn("").is_err());
+        assert!(valid_apn("bad apn").is_err());
+        assert!(valid_apn("inject\nline").is_err());
+    }
 }
 
 fn mobile(uuid: &str, kind: &str, autoconnect: bool, timestamp: u64) -> Profile {
@@ -647,67 +722,4 @@ fn mobile(uuid: &str, kind: &str, autoconnect: bool, timestamp: u64) -> Profile 
         settings,
         filename: String::new(),
     }
-}
-
-#[test]
-fn the_mobile_data_profile_is_the_connected_one_else_the_automatic_one() {
-    let wifi = mobile(
-        "0d7f5e66-3b1b-4a0b-9a59-0f1a2c3d4e5f",
-        "802-11-wireless",
-        true,
-        1_700_000_900,
-    );
-    let manual = mobile(
-        "5b2e8a70-1c7d-4f2e-9a61-0d3c9e4b7a10",
-        "gsm",
-        false,
-        1_700_000_800,
-    );
-    let automatic = mobile(
-        "9e41c2d8-6a35-4b9f-8c07-2f5d1e8a3b64",
-        "gsm",
-        true,
-        1_700_000_100,
-    );
-    let profiles = [wifi.clone(), manual.clone(), automatic];
-    let chosen = choose_mobile_profile(&profiles, |profile| profile.path == wifi.path).unwrap();
-    assert_eq!(chosen.uuid, "9e41c2d8-6a35-4b9f-8c07-2f5d1e8a3b64");
-    let connected =
-        choose_mobile_profile(&profiles, |profile| profile.path == manual.path).unwrap();
-    assert_eq!(connected.uuid, "5b2e8a70-1c7d-4f2e-9a61-0d3c9e4b7a10");
-    assert!(connected.active);
-    assert_eq!(choose_mobile_profile(&[wifi], |_| true), None);
-
-    let mut settings = Settings::default();
-    settings.set("connection", "metered", 1_i32);
-    settings.set("gsm", "auto-config", true);
-    settings.set("gsm", "home-only", true);
-    let profile = mobile_profile_of(&settings, false);
-    assert_eq!(
-        profile.name, MOBILE_PROFILE_NAME,
-        "unnamed reads as the default"
-    );
-    assert!(profile.automatic_apn && profile.autoconnect);
-    assert_eq!(profile.apn, None);
-    assert!(!profile.roaming, "home only means no roaming");
-    assert_eq!(profile.metered, MeteredPolicy::Metered);
-
-    let mut settings = Settings::default();
-    settings.set("connection", "id", "Work");
-    settings.set("connection", "autoconnect", false);
-    settings.set("gsm", "apn", "internet.telekom");
-    let typed = mobile_profile_of(&settings, true);
-    assert_eq!(typed.name, "Work");
-    assert_eq!(typed.apn.as_deref(), Some("internet.telekom"));
-    assert!(!typed.automatic_apn && typed.roaming && !typed.autoconnect);
-    assert_eq!(typed.metered, MeteredPolicy::Automatic);
-}
-
-#[test]
-fn an_apn_is_refused_with_characters_no_operator_uses() {
-    assert!(valid_apn("internet.telekom").is_ok());
-    assert!(valid_apn("web.vodafone.de").is_ok());
-    assert!(valid_apn("").is_err());
-    assert!(valid_apn("bad apn").is_err());
-    assert!(valid_apn("inject\nline").is_err());
 }

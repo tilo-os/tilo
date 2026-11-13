@@ -356,83 +356,87 @@ mod tests {
         }
     }
 
-    #[test]
-    fn network_wake_reads_networkmanager_magic_and_not_handshake_flags() {
-        let nm = NetworkManager::default();
-        // NMSettingWirelessWakeOnWLan: MAGIC = 0x08, 4WAY_HANDSHAKE = 0x40.
-        for (flags, expected) in [(8, true), (64, false), (72, true), (0, false), (1, false)] {
-            nm.flags.set(Some(flags));
-            let status = observe(PROFILE, &nm, &|tool, args| nm.run(tool, args)).unwrap();
-            assert_eq!(status.configured, expected, "NetworkManager flags {flags}");
-        }
-        assert!(nm.calls.borrow().is_empty(), "reading changes nothing");
-    }
+    tilo_test_env::scenario! {
+        fn wake_on_lan_is_read_from_and_written_to_the_profile_and_its_device;
 
-    #[test]
-    fn network_wake_reads_wired_magic_and_not_arp_flags() {
-        let nm = NetworkManager::default();
-        nm.medium.set(Medium::Ethernet);
-        // NMSettingWiredWakeOnLan: MAGIC = 0x40, ARP = 0x20.
-        for (flags, expected) in [(64, true), (32, false), (96, true), (0, false)] {
-            nm.flags.set(Some(flags));
-            let status = observe(PROFILE, &nm, &|tool, args| nm.run(tool, args)).unwrap();
-            assert_eq!(status.configured, expected, "NetworkManager flags {flags}");
-            assert_eq!(status.supported, Some(true));
-        }
-    }
-
-    #[test]
-    fn persists_and_reapplies_supported_magic_packet_without_reconnecting() {
-        let nm = NetworkManager::default();
-        let status = change(PROFILE, true, &nm, &|tool, args| nm.run(tool, args)).unwrap();
-        assert!(status.configured);
-        assert_eq!(status.applied, Some(true));
-        assert_eq!(status.supported, Some(true));
-        assert_eq!(status.problem, None);
-        assert_eq!(
-            nm.calls.borrow().as_slice(),
-            [format!("modify {PROFILE} Wifi 0x8"), "reapply wlan0".into()]
-        );
-        assert!(
-            !change(PROFILE, false, &nm, &|tool, args| nm.run(tool, args))
-                .unwrap()
-                .configured
-        );
-    }
-
-    #[test]
-    fn rejects_unsupported_inactive_and_invalid_profiles_before_mutation() {
-        for inactive in [false, true] {
+        phase network_wake_reads_networkmanager_magic_and_not_handshake_flags;
+        {
             let nm = NetworkManager::default();
-            nm.inactive.set(inactive);
-            nm.unsupported.set(!inactive);
-            assert!(change(PROFILE, true, &nm, &|tool, args| nm.run(tool, args)).is_err());
+            // NMSettingWirelessWakeOnWLan: MAGIC = 0x08, 4WAY_HANDSHAKE = 0x40.
+            for (flags, expected) in [(8, true), (64, false), (72, true), (0, false), (1, false)] {
+                nm.flags.set(Some(flags));
+                let status = observe(PROFILE, &nm, &|tool, args| nm.run(tool, args)).unwrap();
+                assert_eq!(status.configured, expected, "NetworkManager flags {flags}");
+            }
+            assert!(nm.calls.borrow().is_empty(), "reading changes nothing");
+        }
+
+        phase network_wake_reads_wired_magic_and_not_arp_flags;
+        {
+            let nm = NetworkManager::default();
+            nm.medium.set(Medium::Ethernet);
+            // NMSettingWiredWakeOnLan: MAGIC = 0x40, ARP = 0x20.
+            for (flags, expected) in [(64, true), (32, false), (96, true), (0, false)] {
+                nm.flags.set(Some(flags));
+                let status = observe(PROFILE, &nm, &|tool, args| nm.run(tool, args)).unwrap();
+                assert_eq!(status.configured, expected, "NetworkManager flags {flags}");
+                assert_eq!(status.supported, Some(true));
+            }
+        }
+
+        phase persists_and_reapplies_supported_magic_packet_without_reconnecting;
+        {
+            let nm = NetworkManager::default();
+            let status = change(PROFILE, true, &nm, &|tool, args| nm.run(tool, args)).unwrap();
+            assert!(status.configured);
+            assert_eq!(status.applied, Some(true));
+            assert_eq!(status.supported, Some(true));
+            assert_eq!(status.problem, None);
+            assert_eq!(
+                nm.calls.borrow().as_slice(),
+                [format!("modify {PROFILE} Wifi 0x8"), "reapply wlan0".into()]
+            );
+            assert!(
+                !change(PROFILE, false, &nm, &|tool, args| nm.run(tool, args))
+                    .unwrap()
+                    .configured
+            );
+        }
+
+        phase rejects_unsupported_inactive_and_invalid_profiles_before_mutation;
+        {
+            for inactive in [false, true] {
+                let nm = NetworkManager::default();
+                nm.inactive.set(inactive);
+                nm.unsupported.set(!inactive);
+                assert!(change(PROFILE, true, &nm, &|tool, args| nm.run(tool, args)).is_err());
+                assert!(nm.calls.borrow().is_empty());
+            }
+            let nm = NetworkManager::default();
+            assert!(change("--hostile", true, &nm, &|tool, args| nm.run(tool, args)).is_err());
             assert!(nm.calls.borrow().is_empty());
         }
-        let nm = NetworkManager::default();
-        assert!(change("--hostile", true, &nm, &|tool, args| nm.run(tool, args)).is_err());
-        assert!(nm.calls.borrow().is_empty());
-    }
 
-    #[test]
-    fn reports_saved_but_not_applied_instead_of_claiming_enabled() {
-        let nm = NetworkManager::default();
-        nm.reapply_failed.set(true);
-        let status = change(PROFILE, true, &nm, &|tool, args| nm.run(tool, args)).unwrap();
-        assert!(status.configured);
-        assert_eq!(status.applied, Some(false));
-        assert!(status.problem.unwrap().contains("saved"));
-        assert!(nm.configured.get());
-    }
+        phase reports_saved_but_not_applied_instead_of_claiming_enabled;
+        {
+            let nm = NetworkManager::default();
+            nm.reapply_failed.set(true);
+            let status = change(PROFILE, true, &nm, &|tool, args| nm.run(tool, args)).unwrap();
+            assert!(status.configured);
+            assert_eq!(status.applied, Some(false));
+            assert!(status.problem.unwrap().contains("saved"));
+            assert!(nm.configured.get());
+        }
 
-    #[test]
-    fn wifi_magic_packet_wake_is_read_from_the_named_radio_only() {
-        let nm = NetworkManager::default();
-        assert_eq!(wowlan_magic_packet("phy0", &|t, a| nm.run(t, a)), Ok(false));
-        nm.applied.set(true);
-        assert_eq!(wowlan_magic_packet("phy0", &|t, a| nm.run(t, a)), Ok(true));
-        for name in ["", "phy", "wlan0", "phy0 ", "-phy0", "phy-1"] {
-            assert!(wifi_magic_packet_enabled(name).is_err(), "{name:?}");
+        phase wifi_magic_packet_wake_is_read_from_the_named_radio_only;
+        {
+            let nm = NetworkManager::default();
+            assert_eq!(wowlan_magic_packet("phy0", &|t, a| nm.run(t, a)), Ok(false));
+            nm.applied.set(true);
+            assert_eq!(wowlan_magic_packet("phy0", &|t, a| nm.run(t, a)), Ok(true));
+            for name in ["", "phy", "wlan0", "phy0 ", "-phy0", "phy-1"] {
+                assert!(wifi_magic_packet_enabled(name).is_err(), "{name:?}");
+            }
         }
     }
 }

@@ -1523,68 +1523,84 @@ pub fn export_wireguard(uuid: &str) -> Result<Zeroizing<String>, String> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_profiles_ipv6_and_identity_are_read_from_its_settings() {
-        let mut settings = Settings::default();
-        settings.set("ipv6", "method", "manual");
-        settings
-            .set_addresses(IpFamily::V6, &["2001:db8::10/64".into()])
-            .unwrap();
-        settings
-            .set_gateway(IpFamily::V6, Some("2001:db8::1"))
-            .unwrap();
-        settings.set("802-1x", "identity", "ada@example.org");
-        settings.set_path("802-1x", "ca-cert", "/etc/pki/campus.pem");
-        assert_eq!(
-            ipv6_of(&settings),
-            Some(Ipv6Configuration {
-                method: Ipv6Method::Manual,
-                addresses: vec!["2001:db8::10/64".into()],
-                gateway: Some("2001:db8::1".into()),
-                dns: Vec::new(),
-            })
-        );
-        assert_eq!(
-            enterprise_identity_of(&settings),
-            Some(EnterpriseIdentity {
-                identity: "ada@example.org".into(),
-                ca_certificate: "/etc/pki/campus.pem".into(),
-            })
-        );
-        assert_eq!(
-            ipv6_of(&Settings::default()).map(|v6| v6.method),
-            Some(Ipv6Method::Automatic),
-            "NetworkManager's default"
-        );
-        settings.set("ipv6", "method", "shared");
-        assert_eq!(ipv6_of(&settings), None, "a method this does not edit");
-        assert_eq!(enterprise_identity_of(&Settings::default()), None);
-    }
+    tilo_test_env::scenario! {
+        fn a_profiles_addresses_proxy_and_sharing_are_read_from_its_settings;
 
-    #[test]
-    fn one_proxy_server_round_trips_through_its_script_and_others_are_not_read_as_one() {
-        let script = manual_proxy_script("proxy.example:8080");
-        assert_eq!(
-            manual_proxy_of(&script).as_deref(),
-            Some("proxy.example:8080")
-        );
-        assert_eq!(
-            manual_proxy_of("function FindProxyForURL() { return \"DIRECT\"; }"),
-            None
-        );
-        assert!(valid_proxy_server("[2001:db8::1]:3128"));
-        for bad in [
-            "proxy.example",
-            "proxy example:80",
-            "host:0",
-            "host:99999",
-            ":80",
-        ] {
-            assert!(!valid_proxy_server(bad), "{bad}");
+        phase a_profiles_ipv6_and_identity_are_read_from_its_settings;
+        {
+            let mut settings = Settings::default();
+            settings.set("ipv6", "method", "manual");
+            settings
+                .set_addresses(IpFamily::V6, &["2001:db8::10/64".into()])
+                .unwrap();
+            settings
+                .set_gateway(IpFamily::V6, Some("2001:db8::1"))
+                .unwrap();
+            settings.set("802-1x", "identity", "ada@example.org");
+            settings.set_path("802-1x", "ca-cert", "/etc/pki/campus.pem");
+            assert_eq!(
+                ipv6_of(&settings),
+                Some(Ipv6Configuration {
+                    method: Ipv6Method::Manual,
+                    addresses: vec!["2001:db8::10/64".into()],
+                    gateway: Some("2001:db8::1".into()),
+                    dns: Vec::new(),
+                })
+            );
+            assert_eq!(
+                enterprise_identity_of(&settings),
+                Some(EnterpriseIdentity {
+                    identity: "ada@example.org".into(),
+                    ca_certificate: "/etc/pki/campus.pem".into(),
+                })
+            );
+            assert_eq!(
+                ipv6_of(&Settings::default()).map(|v6| v6.method),
+                Some(Ipv6Method::Automatic),
+                "NetworkManager's default"
+            );
+            settings.set("ipv6", "method", "shared");
+            assert_eq!(ipv6_of(&settings), None, "a method this does not edit");
+            assert_eq!(enterprise_identity_of(&Settings::default()), None);
         }
-        assert_eq!(WifiBand::of_frequency(5180), Some(WifiBand::Five));
-        assert_eq!(WifiBand::of_frequency(2412), Some(WifiBand::TwoPointFour));
-        assert_eq!(WifiBand::of_frequency(6115), Some(WifiBand::Six));
+
+        phase one_proxy_server_round_trips_through_its_script_and_others_are_not_read_as_one;
+        {
+            let script = manual_proxy_script("proxy.example:8080");
+            assert_eq!(
+                manual_proxy_of(&script).as_deref(),
+                Some("proxy.example:8080")
+            );
+            assert_eq!(
+                manual_proxy_of("function FindProxyForURL() { return \"DIRECT\"; }"),
+                None
+            );
+            assert!(valid_proxy_server("[2001:db8::1]:3128"));
+            for bad in [
+                "proxy.example",
+                "proxy example:80",
+                "host:0",
+                "host:99999",
+                ":80",
+            ] {
+                assert!(!valid_proxy_server(bad), "{bad}");
+            }
+            assert_eq!(WifiBand::of_frequency(5180), Some(WifiBand::Five));
+            assert_eq!(WifiBand::of_frequency(2412), Some(WifiBand::TwoPointFour));
+            assert_eq!(WifiBand::of_frequency(6115), Some(WifiBand::Six));
+        }
+
+        phase a_network_shares_as_the_wifi_scheme_phones_scan;
+        {
+            assert_eq!(
+                wifi_qr_payload("Cafe; Guest", Some("pa:ss\\word"), false).as_str(),
+                "WIFI:T:WPA;S:Cafe\\; Guest;P:pa\\:ss\\\\word;;"
+            );
+            assert_eq!(
+                wifi_qr_payload("Library", None, true).as_str(),
+                "WIFI:T:nopass;S:Library;H:true;;"
+            );
+        }
     }
 
     fn tunnel() -> WireGuardTunnel {
@@ -1601,99 +1617,288 @@ mod tests {
         }
     }
 
-    /// A tunnel Settings writes as a `wg-quick` file becomes the profile it describes, which reads back
-    /// as the same tunnel.
-    #[test]
-    fn a_wireguard_file_becomes_the_profile_it_describes() {
-        let tunnel = tunnel();
-        let text = tunnel.config().unwrap().replace(
-            "[Peer]",
-            "MTU = 1380\nDNS = 2001:db8::53, corp.example\nPostUp = iptables -A FORWARD -j ACCEPT\n\n\
+    tilo_test_env::scenario! {
+        fn vpn_profiles_are_imported_checked_patched_and_exported;
+
+        phase a_wireguard_file_becomes_the_profile_it_describes;
+        // A tunnel Settings writes as a `wg-quick` file becomes the profile it describes, which reads back
+        // as the same tunnel.
+        {
+            let tunnel = tunnel();
+            let text = tunnel.config().unwrap().replace(
+                "[Peer]",
+                "MTU = 1380\nDNS = 2001:db8::53, corp.example\nPostUp = iptables -A FORWARD -j ACCEPT\n\n\
              [Peer]\nPresharedKey = c2VjcmV0\n",
-        );
-        let settings = vpn_settings_from("wireguard", "Home", "home", &text, None).unwrap();
-        assert_eq!(settings.kind(), "wireguard");
-        assert_eq!(settings.id(), "Home");
-        assert_eq!(
-            settings.string("connection", "interface-name").as_deref(),
-            Some("home")
-        );
-        assert_eq!(
-            settings.string("wireguard", "private-key").as_deref(),
-            Some(tunnel.private_key.trim())
-        );
-        assert_eq!(settings.method(IpFamily::V6).as_deref(), Some("disabled"));
-        assert_eq!(settings.dns(IpFamily::V6), ["2001:db8::53"]);
-        assert_eq!(settings.strings("ipv6", "dns-search"), ["corp.example"]);
-        let read = vpn_settings_of(&settings).unwrap();
-        assert_eq!(read.addresses, ["10.7.0.2/32"]);
-        assert_eq!(read.dns, ["1.1.1.1"]);
-        assert_eq!(read.mtu, Some(1380));
-        assert_eq!(read.endpoint.as_deref(), Some("home.example:51820"));
-        assert_eq!(read.allowed_ips, ["0.0.0.0/0", "::/0"]);
-        assert_eq!(read.keepalive, Some(25));
-        assert_eq!(
-            read.peer_public_key.as_deref(),
-            Some(tunnel.peer_public_key.as_str())
-        );
-        assert!(read.all_traffic && read.autoconnect);
-        let peers = settings.dicts("wireguard", "peers");
-        assert!(peers[0].contains_key("preshared-key"));
-
-        assert!(
-            wireguard_settings("[Interface]\nPrivateKey = aGVsbG8=\n").is_err(),
-            "a key that is no WireGuard key"
-        );
-        assert!(wireguard_settings("[Peer]\nEndpoint = x:1\n").is_err());
-    }
-
-    #[test]
-    fn a_vpn_patch_rewrites_the_peer_whole_and_checks_its_values() {
-        let mut settings = vpn_settings_from(
-            "wireguard",
-            "Home",
-            "home",
-            &tunnel().config().unwrap(),
-            None,
-        )
-        .unwrap();
-        let current = vpn_settings_of(&settings).unwrap();
-        apply_vpn_patch(
-            &mut settings,
-            &current,
-            &VpnProfilePatch {
-                keepalive: Some(None),
-                all_traffic: Some(false),
-                mtu: Some(Some(1400)),
-                ..VpnProfilePatch::default()
-            },
-        )
-        .unwrap();
-        let read = vpn_settings_of(&settings).unwrap();
-        assert!(!read.all_traffic);
-        assert_eq!(read.keepalive, None);
-        assert_eq!(read.mtu, Some(1400));
-        assert_eq!(read.endpoint, current.endpoint, "kept");
-        assert_eq!(read.allowed_ips, current.allowed_ips, "kept");
-        assert_eq!(settings.boolean("ipv6", "never-default"), Some(true));
-        for bad in [
-            VpnProfilePatch {
-                mtu: Some(Some(70_000)),
-                ..VpnProfilePatch::default()
-            },
-            VpnProfilePatch {
-                endpoint: Some("no port".into()),
-                ..VpnProfilePatch::default()
-            },
-            VpnProfilePatch {
-                name: Some(" ".into()),
-                ..VpnProfilePatch::default()
-            },
-        ] {
-            assert!(
-                apply_vpn_patch(&mut settings.clone(), &current, &bad).is_err(),
-                "{bad:?}"
             );
+            let settings = vpn_settings_from("wireguard", "Home", "home", &text, None).unwrap();
+            assert_eq!(settings.kind(), "wireguard");
+            assert_eq!(settings.id(), "Home");
+            assert_eq!(
+                settings.string("connection", "interface-name").as_deref(),
+                Some("home")
+            );
+            assert_eq!(
+                settings.string("wireguard", "private-key").as_deref(),
+                Some(tunnel.private_key.trim())
+            );
+            assert_eq!(settings.method(IpFamily::V6).as_deref(), Some("disabled"));
+            assert_eq!(settings.dns(IpFamily::V6), ["2001:db8::53"]);
+            assert_eq!(settings.strings("ipv6", "dns-search"), ["corp.example"]);
+            let read = vpn_settings_of(&settings).unwrap();
+            assert_eq!(read.addresses, ["10.7.0.2/32"]);
+            assert_eq!(read.dns, ["1.1.1.1"]);
+            assert_eq!(read.mtu, Some(1380));
+            assert_eq!(read.endpoint.as_deref(), Some("home.example:51820"));
+            assert_eq!(read.allowed_ips, ["0.0.0.0/0", "::/0"]);
+            assert_eq!(read.keepalive, Some(25));
+            assert_eq!(
+                read.peer_public_key.as_deref(),
+                Some(tunnel.peer_public_key.as_str())
+            );
+            assert!(read.all_traffic && read.autoconnect);
+            let peers = settings.dicts("wireguard", "peers");
+            assert!(peers[0].contains_key("preshared-key"));
+
+            assert!(
+                wireguard_settings("[Interface]\nPrivateKey = aGVsbG8=\n").is_err(),
+                "a key that is no WireGuard key"
+            );
+            assert!(wireguard_settings("[Peer]\nEndpoint = x:1\n").is_err());
+        }
+
+        phase a_vpn_patch_rewrites_the_peer_whole_and_checks_its_values;
+        {
+            let mut settings = vpn_settings_from(
+                "wireguard",
+                "Home",
+                "home",
+                &tunnel().config().unwrap(),
+                None,
+            )
+            .unwrap();
+            let current = vpn_settings_of(&settings).unwrap();
+            apply_vpn_patch(
+                &mut settings,
+                &current,
+                &VpnProfilePatch {
+                    keepalive: Some(None),
+                    all_traffic: Some(false),
+                    mtu: Some(Some(1400)),
+                    ..VpnProfilePatch::default()
+                },
+            )
+            .unwrap();
+            let read = vpn_settings_of(&settings).unwrap();
+            assert!(!read.all_traffic);
+            assert_eq!(read.keepalive, None);
+            assert_eq!(read.mtu, Some(1400));
+            assert_eq!(read.endpoint, current.endpoint, "kept");
+            assert_eq!(read.allowed_ips, current.allowed_ips, "kept");
+            assert_eq!(settings.boolean("ipv6", "never-default"), Some(true));
+            for bad in [
+                VpnProfilePatch {
+                    mtu: Some(Some(70_000)),
+                    ..VpnProfilePatch::default()
+                },
+                VpnProfilePatch {
+                    endpoint: Some("no port".into()),
+                    ..VpnProfilePatch::default()
+                },
+                VpnProfilePatch {
+                    name: Some(" ".into()),
+                    ..VpnProfilePatch::default()
+                },
+            ] {
+                assert!(
+                    apply_vpn_patch(&mut settings.clone(), &current, &bad).is_err(),
+                    "{bad:?}"
+                );
+            }
+        }
+
+        phase an_openvpn_file_becomes_its_plugins_profile_and_exports_back;
+        {
+            let settings = openvpn();
+            let data = settings.string_map("vpn", "data");
+            assert_eq!(
+                data.get("remote").map(String::as_str),
+                Some("vpn.work.example:1194, backup.work.example:443:tcp")
+            );
+            assert_eq!(
+                data.get("ca").map(String::as_str),
+                Some("/home/ada/vpn/ca.crt")
+            );
+            assert_eq!(
+                data.get("ta").map(String::as_str),
+                Some("/home/ada/vpn/ta.key")
+            );
+            assert_eq!(data.get("ta-dir").map(String::as_str), Some("1"));
+            assert_eq!(
+                data.get("connection-type").map(String::as_str),
+                Some("password-tls")
+            );
+            assert_eq!(data.get("proto-tcp").map(String::as_str), Some("yes"));
+
+            let read = vpn_settings_of(&settings).unwrap();
+            assert_eq!(read.service.as_deref(), Some(OPENVPN_SERVICE));
+            assert_eq!(read.mtu, Some(1400));
+            assert_eq!(
+                servers_of(&settings),
+                ["vpn.work.example", "backup.work.example"]
+            );
+
+            let file = openvpn_file(&data);
+            for line in [
+                "client",
+                "remote vpn.work.example 1194",
+                "remote backup.work.example 443 tcp",
+                "ca /home/ada/vpn/ca.crt",
+                "tls-auth /home/ada/vpn/ta.key 1",
+                "tun-mtu 1400",
+                "auth-user-pass",
+            ] {
+                assert!(file.lines().any(|l| l == line), "{line}\n{}", file.as_str());
+            }
+            let again = openvpn_settings("Work", &file, None).unwrap();
+            assert_eq!(
+                again.string_map("vpn", "data").get("remote"),
+                data.get("remote")
+            );
+
+            assert!(
+                openvpn_settings("x", "client\nca ca.crt\nremote a 1\n", None).is_err(),
+                "a relative path with no file to be next to"
+            );
+            assert!(openvpn_settings("x", "client\nremote a 1\n<ca>\nunclosed\n", None).is_err());
+        }
+
+        phase a_profiles_servers_are_its_peers_endpoints_or_its_plugins_server;
+        {
+            let mut gateway = Settings::default();
+            gateway.set("connection", "type", "vpn");
+            gateway.set(
+                "vpn",
+                "data",
+                HashMap::from([
+                    ("gateway".to_owned(), "198.51.100.7".to_owned()),
+                    ("user".to_owned(), "ada".to_owned()),
+                ]),
+            );
+            assert_eq!(servers_of(&gateway), ["198.51.100.7"]);
+            gateway.set(
+                "vpn",
+                "data",
+                HashMap::from([("tunnel-mtu".to_owned(), "1400".to_owned())]),
+            );
+            assert!(servers_of(&gateway).is_empty());
+            let mut wireguard = Settings::default();
+            wireguard.set_wireguard_peer(&WireGuardPeer {
+                public_key: "AAA=".into(),
+                endpoint: Some("[2001:db8::7]:51820".into()),
+                ..WireGuardPeer::default()
+            });
+            assert_eq!(servers_of(&wireguard), ["2001:db8::7"]);
+            assert_eq!(server_host("2001:db8::9"), Some("2001:db8::9".into()));
+            assert_eq!(server_host(""), None);
+        }
+
+        phase a_wireguard_public_key_is_the_x25519_one;
+        // RFC 7748's Alice: a known private key gives its known public key.
+        {
+            let hex = |text: &str| -> Vec<u8> {
+                (0..text.len())
+                    .step_by(2)
+                    .map(|at| u8::from_str_radix(&text[at..at + 2], 16).unwrap())
+                    .collect()
+            };
+            let private = base64_of(&hex(
+                "77076d0a7318a57d3c16c17251b26645df4c2f87ebc0992ab177fba51db92c2a",
+            ));
+            let public = base64_of(&hex(
+                "8520f0098930a754748b7ddcb43ef75a0dbf3a0d26381af4eba4a98eaa9b4e6a",
+            ));
+            assert_eq!(wireguard_public_key(&private).unwrap(), public);
+        }
+
+        phase generated_wireguard_keys_pair_up_and_a_tunnel_writes_a_complete_file;
+        {
+            let (private, public) = generate_wireguard_keys().unwrap();
+            assert_eq!(wireguard_public_key(&private).unwrap(), public);
+            let (_, server) = generate_wireguard_keys().unwrap();
+            let tunnel = WireGuardTunnel {
+                private_key: private,
+                address: "10.7.0.2/32".into(),
+                dns: vec!["1.1.1.1".into()],
+                peer_public_key: server.clone(),
+                endpoint: "home.example:51820".into(),
+                allowed_ips: vec!["0.0.0.0/0".into()],
+                keepalive: Some(25),
+            };
+            let text = tunnel.config().unwrap();
+            for line in [
+                "[Interface]",
+                "Address = 10.7.0.2/32",
+                "DNS = 1.1.1.1",
+                "[Peer]",
+                &format!("PublicKey = {server}"),
+                "Endpoint = home.example:51820",
+                "AllowedIPs = 0.0.0.0/0",
+                "PersistentKeepalive = 25",
+            ] {
+                assert!(text.lines().any(|l| l == line), "{line}");
+            }
+            assert_eq!(
+                interface_name("Home Office VPN (Berlin)"),
+                "home-office-vpn"
+            );
+            assert_eq!(interface_name("!!!"), "wg-tilo");
+        }
+
+        phase a_vpn_file_is_checked_for_what_its_tunnel_needs;
+        {
+            assert!(validate_vpn_config("wireguard", WIREGUARD_FILE).is_ok());
+            let missing = validate_vpn_config("wireguard", "[Peer]\nEndpoint = x:1\n").unwrap_err();
+            assert!(missing.contains("Interface.PrivateKey"), "{missing}");
+            assert!(
+                validate_vpn_config("wireguard", "[Interface]\n# PrivateKey = commented\n").is_err(),
+                "a commented key is no key"
+            );
+            assert!(validate_vpn_config("openvpn", "client\nremote vpn.example 1194\n").is_err());
+            assert!(
+                validate_vpn_config(
+                    "openvpn",
+                    "client\nremote vpn.example 1194\n<ca>\ncertificate\n</ca>\n"
+                )
+                .is_ok()
+            );
+            assert!(validate_vpn_config("openvpn", "  ").is_err());
+            assert_eq!(vpn_kind_of_file("home.conf"), Some("wireguard"));
+            assert_eq!(vpn_kind_of_file("WORK.OVPN"), Some("openvpn"));
+            assert_eq!(vpn_kind_of_file("notes.txt"), None);
+        }
+
+        phase a_vpn_plugin_is_named_by_its_name_file;
+        {
+            let plugin = parse_vpn_plugin(
+                "[VPN Connection]\nname=openvpn\nservice=org.freedesktop.NetworkManager.openvpn\n",
+            )
+            .unwrap();
+            assert_eq!(plugin.name, "OpenVPN");
+            assert_eq!(plugin.service, "org.freedesktop.NetworkManager.openvpn");
+            assert_eq!(parse_vpn_plugin("[VPN Connection]\nname=x\n"), None);
+        }
+
+        phase a_service_type_names_its_protocol_without_its_plugin;
+        {
+            assert_eq!(
+                vpn_service_name("org.freedesktop.NetworkManager.openvpn"),
+                "OpenVPN"
+            );
+            assert_eq!(
+                vpn_service_name("org.freedesktop.NetworkManager.strongswan"),
+                "IPsec (strongSwan)"
+            );
+            assert_eq!(vpn_service_name("com.example.tunnel"), "tunnel");
         }
     }
 
@@ -1708,156 +1913,6 @@ mod tests {
         .unwrap()
     }
 
-    #[test]
-    fn an_openvpn_file_becomes_its_plugins_profile_and_exports_back() {
-        let settings = openvpn();
-        let data = settings.string_map("vpn", "data");
-        assert_eq!(
-            data.get("remote").map(String::as_str),
-            Some("vpn.work.example:1194, backup.work.example:443:tcp")
-        );
-        assert_eq!(
-            data.get("ca").map(String::as_str),
-            Some("/home/ada/vpn/ca.crt")
-        );
-        assert_eq!(
-            data.get("ta").map(String::as_str),
-            Some("/home/ada/vpn/ta.key")
-        );
-        assert_eq!(data.get("ta-dir").map(String::as_str), Some("1"));
-        assert_eq!(
-            data.get("connection-type").map(String::as_str),
-            Some("password-tls")
-        );
-        assert_eq!(data.get("proto-tcp").map(String::as_str), Some("yes"));
-
-        let read = vpn_settings_of(&settings).unwrap();
-        assert_eq!(read.service.as_deref(), Some(OPENVPN_SERVICE));
-        assert_eq!(read.mtu, Some(1400));
-        assert_eq!(
-            servers_of(&settings),
-            ["vpn.work.example", "backup.work.example"]
-        );
-
-        let file = openvpn_file(&data);
-        for line in [
-            "client",
-            "remote vpn.work.example 1194",
-            "remote backup.work.example 443 tcp",
-            "ca /home/ada/vpn/ca.crt",
-            "tls-auth /home/ada/vpn/ta.key 1",
-            "tun-mtu 1400",
-            "auth-user-pass",
-        ] {
-            assert!(file.lines().any(|l| l == line), "{line}\n{}", file.as_str());
-        }
-        let again = openvpn_settings("Work", &file, None).unwrap();
-        assert_eq!(
-            again.string_map("vpn", "data").get("remote"),
-            data.get("remote")
-        );
-
-        assert!(
-            openvpn_settings("x", "client\nca ca.crt\nremote a 1\n", None).is_err(),
-            "a relative path with no file to be next to"
-        );
-        assert!(openvpn_settings("x", "client\nremote a 1\n<ca>\nunclosed\n", None).is_err());
-    }
-
-    #[test]
-    fn a_profiles_servers_are_its_peers_endpoints_or_its_plugins_server() {
-        let mut gateway = Settings::default();
-        gateway.set("connection", "type", "vpn");
-        gateway.set(
-            "vpn",
-            "data",
-            HashMap::from([
-                ("gateway".to_owned(), "198.51.100.7".to_owned()),
-                ("user".to_owned(), "ada".to_owned()),
-            ]),
-        );
-        assert_eq!(servers_of(&gateway), ["198.51.100.7"]);
-        gateway.set(
-            "vpn",
-            "data",
-            HashMap::from([("tunnel-mtu".to_owned(), "1400".to_owned())]),
-        );
-        assert!(servers_of(&gateway).is_empty());
-        let mut wireguard = Settings::default();
-        wireguard.set_wireguard_peer(&WireGuardPeer {
-            public_key: "AAA=".into(),
-            endpoint: Some("[2001:db8::7]:51820".into()),
-            ..WireGuardPeer::default()
-        });
-        assert_eq!(servers_of(&wireguard), ["2001:db8::7"]);
-        assert_eq!(server_host("2001:db8::9"), Some("2001:db8::9".into()));
-        assert_eq!(server_host(""), None);
-    }
-
-    /// RFC 7748's Alice: a known private key gives its known public key.
-    #[test]
-    fn a_wireguard_public_key_is_the_x25519_one() {
-        let hex = |text: &str| -> Vec<u8> {
-            (0..text.len())
-                .step_by(2)
-                .map(|at| u8::from_str_radix(&text[at..at + 2], 16).unwrap())
-                .collect()
-        };
-        let private = base64_of(&hex(
-            "77076d0a7318a57d3c16c17251b26645df4c2f87ebc0992ab177fba51db92c2a",
-        ));
-        let public = base64_of(&hex(
-            "8520f0098930a754748b7ddcb43ef75a0dbf3a0d26381af4eba4a98eaa9b4e6a",
-        ));
-        assert_eq!(wireguard_public_key(&private).unwrap(), public);
-    }
-
-    #[test]
-    fn generated_wireguard_keys_pair_up_and_a_tunnel_writes_a_complete_file() {
-        let (private, public) = generate_wireguard_keys().unwrap();
-        assert_eq!(wireguard_public_key(&private).unwrap(), public);
-        let (_, server) = generate_wireguard_keys().unwrap();
-        let tunnel = WireGuardTunnel {
-            private_key: private,
-            address: "10.7.0.2/32".into(),
-            dns: vec!["1.1.1.1".into()],
-            peer_public_key: server.clone(),
-            endpoint: "home.example:51820".into(),
-            allowed_ips: vec!["0.0.0.0/0".into()],
-            keepalive: Some(25),
-        };
-        let text = tunnel.config().unwrap();
-        for line in [
-            "[Interface]",
-            "Address = 10.7.0.2/32",
-            "DNS = 1.1.1.1",
-            "[Peer]",
-            &format!("PublicKey = {server}"),
-            "Endpoint = home.example:51820",
-            "AllowedIPs = 0.0.0.0/0",
-            "PersistentKeepalive = 25",
-        ] {
-            assert!(text.lines().any(|l| l == line), "{line}");
-        }
-        assert_eq!(
-            interface_name("Home Office VPN (Berlin)"),
-            "home-office-vpn"
-        );
-        assert_eq!(interface_name("!!!"), "wg-tilo");
-    }
-
-    #[test]
-    fn a_network_shares_as_the_wifi_scheme_phones_scan() {
-        assert_eq!(
-            wifi_qr_payload("Cafe; Guest", Some("pa:ss\\word"), false).as_str(),
-            "WIFI:T:WPA;S:Cafe\\; Guest;P:pa\\:ss\\\\word;;"
-        );
-        assert_eq!(
-            wifi_qr_payload("Library", None, true).as_str(),
-            "WIFI:T:nopass;S:Library;H:true;;"
-        );
-    }
-
     const WIREGUARD_FILE: &str = "\
 [Interface]
 PrivateKey = aGVsbG8=
@@ -1869,51 +1924,4 @@ PublicKey = kP8x2yQ1mZ7vR3nL9fH0sJtW6cB4dE5gA1iU2oXyz0=
 Endpoint = home.example:51820
 AllowedIPs = 0.0.0.0/0, ::/0
 ";
-
-    #[test]
-    fn a_vpn_file_is_checked_for_what_its_tunnel_needs() {
-        assert!(validate_vpn_config("wireguard", WIREGUARD_FILE).is_ok());
-        let missing = validate_vpn_config("wireguard", "[Peer]\nEndpoint = x:1\n").unwrap_err();
-        assert!(missing.contains("Interface.PrivateKey"), "{missing}");
-        assert!(
-            validate_vpn_config("wireguard", "[Interface]\n# PrivateKey = commented\n").is_err(),
-            "a commented key is no key"
-        );
-        assert!(validate_vpn_config("openvpn", "client\nremote vpn.example 1194\n").is_err());
-        assert!(
-            validate_vpn_config(
-                "openvpn",
-                "client\nremote vpn.example 1194\n<ca>\ncertificate\n</ca>\n"
-            )
-            .is_ok()
-        );
-        assert!(validate_vpn_config("openvpn", "  ").is_err());
-        assert_eq!(vpn_kind_of_file("home.conf"), Some("wireguard"));
-        assert_eq!(vpn_kind_of_file("WORK.OVPN"), Some("openvpn"));
-        assert_eq!(vpn_kind_of_file("notes.txt"), None);
-    }
-
-    #[test]
-    fn a_vpn_plugin_is_named_by_its_name_file() {
-        let plugin = parse_vpn_plugin(
-            "[VPN Connection]\nname=openvpn\nservice=org.freedesktop.NetworkManager.openvpn\n",
-        )
-        .unwrap();
-        assert_eq!(plugin.name, "OpenVPN");
-        assert_eq!(plugin.service, "org.freedesktop.NetworkManager.openvpn");
-        assert_eq!(parse_vpn_plugin("[VPN Connection]\nname=x\n"), None);
-    }
-
-    #[test]
-    fn a_service_type_names_its_protocol_without_its_plugin() {
-        assert_eq!(
-            vpn_service_name("org.freedesktop.NetworkManager.openvpn"),
-            "OpenVPN"
-        );
-        assert_eq!(
-            vpn_service_name("org.freedesktop.NetworkManager.strongswan"),
-            "IPsec (strongSwan)"
-        );
-        assert_eq!(vpn_service_name("com.example.tunnel"), "tunnel");
-    }
 }

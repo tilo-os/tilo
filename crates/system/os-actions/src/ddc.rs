@@ -277,99 +277,103 @@ mod tests {
         body
     }
 
-    #[test]
-    fn requests_carry_the_mccs_frame_and_checksum() {
-        // ddcutil's well-known "get brightness" frame.
-        assert_eq!(request(&[0x01, 0x10]), vec![0x51, 0x82, 0x01, 0x10, 0xAC]);
-        let set = request(&[0x03, 0x10, 0x00, 0x32]);
-        assert_eq!(&set[..6], &[0x51, 0x84, 0x03, 0x10, 0x00, 0x32]);
-        assert_eq!(set[6], checksum(0x6E, &set[..6]));
-    }
+    tilo_test_env::scenario! {
+        fn ddc_ci_requests_replies_and_retries_follow_the_protocol;
 
-    #[test]
-    fn a_reply_yields_current_and_maximum() {
-        let value = parse_get_vcp_reply(&reply(70, 100), 0x10).unwrap();
-        assert_eq!(
-            value,
-            VcpValue {
-                current: 70,
-                maximum: 100
-            }
-        );
-        assert_eq!(value.fraction(), Some(0.7));
-    }
+        phase requests_carry_the_mccs_frame_and_checksum;
+        {
+            // ddcutil's well-known "get brightness" frame.
+            assert_eq!(request(&[0x01, 0x10]), vec![0x51, 0x82, 0x01, 0x10, 0xAC]);
+            let set = request(&[0x03, 0x10, 0x00, 0x32]);
+            assert_eq!(&set[..6], &[0x51, 0x84, 0x03, 0x10, 0x00, 0x32]);
+            assert_eq!(set[6], checksum(0x6E, &set[..6]));
+        }
 
-    #[test]
-    fn corrupt_null_and_unsupported_replies_are_told_apart() {
-        let mut corrupt = reply(70, 100);
-        corrupt[8] ^= 0x01;
-        assert_eq!(
-            parse_get_vcp_reply(&corrupt, 0x10),
-            Err(ReplyError::BadChecksum)
-        );
-        let null = [0x6E, 0x80, 0xBE, 0, 0, 0, 0, 0, 0, 0, 0];
-        assert_eq!(parse_get_vcp_reply(&null, 0x10), Err(ReplyError::Busy));
-        let mut unsupported = reply(0, 0);
-        unsupported[3] = 0x01;
-        unsupported[10] = checksum(0x50, &unsupported[..10]);
-        assert_eq!(
-            parse_get_vcp_reply(&unsupported, 0x10),
-            Err(ReplyError::Unsupported)
-        );
-        let mut other_code = reply(70, 100);
-        other_code[4] = 0x12;
-        other_code[10] = checksum(0x50, &other_code[..10]);
-        assert_eq!(
-            parse_get_vcp_reply(&other_code, 0x10),
-            Err(ReplyError::Malformed)
-        );
-    }
+        phase a_reply_yields_current_and_maximum;
+        {
+            let value = parse_get_vcp_reply(&reply(70, 100), 0x10).unwrap();
+            assert_eq!(
+                value,
+                VcpValue {
+                    current: 70,
+                    maximum: 100
+                }
+            );
+            assert_eq!(value.fraction(), Some(0.7));
+        }
 
-    #[test]
-    fn a_busy_monitor_is_asked_again() {
-        let mut corrupt = reply(40, 100);
-        corrupt[10] ^= 0xFF;
-        let mut monitor = FakeMonitor {
-            replies: VecDeque::from([Ok(corrupt), Ok(reply(40, 100))]),
-            ..FakeMonitor::default()
-        };
-        let value = get_vcp(&mut monitor, VCP_BRIGHTNESS).unwrap();
-        assert_eq!(value.current, 40);
-        assert_eq!(monitor.written.len(), 2, "one retry");
-        assert!(monitor.paused >= REPLY_DELAY * 2, "waited for each reply");
-    }
+        phase corrupt_null_and_unsupported_replies_are_told_apart;
+        {
+            let mut corrupt = reply(70, 100);
+            corrupt[8] ^= 0x01;
+            assert_eq!(
+                parse_get_vcp_reply(&corrupt, 0x10),
+                Err(ReplyError::BadChecksum)
+            );
+            let null = [0x6E, 0x80, 0xBE, 0, 0, 0, 0, 0, 0, 0, 0];
+            assert_eq!(parse_get_vcp_reply(&null, 0x10), Err(ReplyError::Busy));
+            let mut unsupported = reply(0, 0);
+            unsupported[3] = 0x01;
+            unsupported[10] = checksum(0x50, &unsupported[..10]);
+            assert_eq!(
+                parse_get_vcp_reply(&unsupported, 0x10),
+                Err(ReplyError::Unsupported)
+            );
+            let mut other_code = reply(70, 100);
+            other_code[4] = 0x12;
+            other_code[10] = checksum(0x50, &other_code[..10]);
+            assert_eq!(
+                parse_get_vcp_reply(&other_code, 0x10),
+                Err(ReplyError::Malformed)
+            );
+        }
 
-    #[test]
-    fn retries_are_bounded() {
-        let mut monitor = FakeMonitor::default();
-        assert!(get_vcp(&mut monitor, VCP_BRIGHTNESS).is_err());
-        assert_eq!(monitor.written.len(), ATTEMPTS);
-    }
+        phase a_busy_monitor_is_asked_again;
+        {
+            let mut corrupt = reply(40, 100);
+            corrupt[10] ^= 0xFF;
+            let mut monitor = FakeMonitor {
+                replies: VecDeque::from([Ok(corrupt), Ok(reply(40, 100))]),
+                ..FakeMonitor::default()
+            };
+            let value = get_vcp(&mut monitor, VCP_BRIGHTNESS).unwrap();
+            assert_eq!(value.current, 40);
+            assert_eq!(monitor.written.len(), 2, "one retry");
+            assert!(monitor.paused >= REPLY_DELAY * 2, "waited for each reply");
+        }
 
-    #[test]
-    fn an_unsupported_feature_is_not_retried() {
-        let mut unsupported = reply(0, 0);
-        unsupported[3] = 0x01;
-        unsupported[10] = checksum(0x50, &unsupported[..10]);
-        let mut monitor = FakeMonitor {
-            replies: VecDeque::from([Ok(unsupported)]),
-            ..FakeMonitor::default()
-        };
-        assert!(matches!(
-            get_vcp(&mut monitor, VCP_BRIGHTNESS),
-            Err(DdcError::Reply(ReplyError::Unsupported))
-        ));
-        assert_eq!(monitor.written.len(), 1);
-    }
+        phase retries_are_bounded;
+        {
+            let mut monitor = FakeMonitor::default();
+            assert!(get_vcp(&mut monitor, VCP_BRIGHTNESS).is_err());
+            assert_eq!(monitor.written.len(), ATTEMPTS);
+        }
 
-    #[test]
-    fn a_set_survives_a_nak_and_waits_for_the_monitor_to_settle() {
-        let mut monitor = FakeMonitor {
-            write_failures: 1,
-            ..FakeMonitor::default()
-        };
-        set_vcp(&mut monitor, VCP_BRIGHTNESS, 55).unwrap();
-        assert_eq!(monitor.written, vec![request(&[0x03, 0x10, 0x00, 55])]);
-        assert!(monitor.paused >= WRITE_SETTLE);
+        phase an_unsupported_feature_is_not_retried;
+        {
+            let mut unsupported = reply(0, 0);
+            unsupported[3] = 0x01;
+            unsupported[10] = checksum(0x50, &unsupported[..10]);
+            let mut monitor = FakeMonitor {
+                replies: VecDeque::from([Ok(unsupported)]),
+                ..FakeMonitor::default()
+            };
+            assert!(matches!(
+                get_vcp(&mut monitor, VCP_BRIGHTNESS),
+                Err(DdcError::Reply(ReplyError::Unsupported))
+            ));
+            assert_eq!(monitor.written.len(), 1);
+        }
+
+        phase a_set_survives_a_nak_and_waits_for_the_monitor_to_settle;
+        {
+            let mut monitor = FakeMonitor {
+                write_failures: 1,
+                ..FakeMonitor::default()
+            };
+            set_vcp(&mut monitor, VCP_BRIGHTNESS, 55).unwrap();
+            assert_eq!(monitor.written, vec![request(&[0x03, 0x10, 0x00, 55])]);
+            assert!(monitor.paused >= WRITE_SETTLE);
+        }
     }
 }

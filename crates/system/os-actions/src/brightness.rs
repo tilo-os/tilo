@@ -1130,114 +1130,164 @@ mod tests {
         edid
     }
 
-    #[test]
-    fn each_connected_monitor_gets_its_own_control() {
-        let tree = Tree::new();
-        tree.backlight("intel_backlight");
-        tree.connector("card0-eDP-1", "connected");
-        let hdmi = tree.connector("card0-HDMI-A-1", "connected");
-        fs::write(hdmi.join("edid"), edid(7)).unwrap();
-        let bus = tree.path("i2c/i2c-5");
-        fs::create_dir_all(&bus).unwrap();
-        std::os::unix::fs::symlink(&bus, hdmi.join("ddc")).unwrap();
-        let dp = tree.connector("card0-DP-2", "connected");
-        fs::create_dir_all(dp.join("i2c-9")).unwrap();
-        fs::create_dir_all(dp.join("power")).unwrap();
-        tree.connector("card0-DP-3", "disconnected");
-        tree.connector("card0-Virtual-1", "connected");
-        fs::create_dir_all(tree.path("drm/card0")).unwrap();
-        tree.faux_card("card1", &["Virtual-1"]);
+    tilo_test_env::scenario! {
+        fn each_display_gets_the_brightness_control_its_hardware_offers;
 
-        assert_eq!(
-            tree.monitors(),
-            vec![
-                MonitorBrightness {
+        phase each_connected_monitor_gets_its_own_control;
+        {
+            let tree = Tree::new();
+            tree.backlight("intel_backlight");
+            tree.connector("card0-eDP-1", "connected");
+            let hdmi = tree.connector("card0-HDMI-A-1", "connected");
+            fs::write(hdmi.join("edid"), edid(7)).unwrap();
+            let bus = tree.path("i2c/i2c-5");
+            fs::create_dir_all(&bus).unwrap();
+            std::os::unix::fs::symlink(&bus, hdmi.join("ddc")).unwrap();
+            let dp = tree.connector("card0-DP-2", "connected");
+            fs::create_dir_all(dp.join("i2c-9")).unwrap();
+            fs::create_dir_all(dp.join("power")).unwrap();
+            tree.connector("card0-DP-3", "disconnected");
+            tree.connector("card0-Virtual-1", "connected");
+            fs::create_dir_all(tree.path("drm/card0")).unwrap();
+            tree.faux_card("card1", &["Virtual-1"]);
+
+            assert_eq!(
+                tree.monitors(),
+                vec![
+                    MonitorBrightness {
+                        connector: "eDP-1".into(),
+                        target: BrightnessTarget::Backlight(tree.path("backlight/intel_backlight")),
+                        edid: None,
+                    },
+                    MonitorBrightness {
+                        connector: "DP-2".into(),
+                        target: BrightnessTarget::Ddc(tree.path("dev/i2c-9")),
+                        edid: None,
+                    },
+                    MonitorBrightness {
+                        connector: "HDMI-A-1".into(),
+                        target: BrightnessTarget::Ddc(tree.path("dev/i2c-5")),
+                        edid: Some("edid:10ac42a107000000".into()),
+                    },
+                    MonitorBrightness {
+                        connector: "Virtual-1".into(),
+                        target: BrightnessTarget::Software,
+                        edid: None,
+                    },
+                ]
+            );
+        }
+
+        phase a_panel_without_a_backlight_is_dimmed_in_software;
+        {
+            let tree = Tree::new();
+            tree.connector("card0-eDP-1", "connected");
+            assert_eq!(
+                tree.monitors(),
+                vec![MonitorBrightness {
                     connector: "eDP-1".into(),
-                    target: BrightnessTarget::Backlight(tree.path("backlight/intel_backlight")),
-                    edid: None,
-                },
-                MonitorBrightness {
-                    connector: "DP-2".into(),
-                    target: BrightnessTarget::Ddc(tree.path("dev/i2c-9")),
-                    edid: None,
-                },
-                MonitorBrightness {
-                    connector: "HDMI-A-1".into(),
-                    target: BrightnessTarget::Ddc(tree.path("dev/i2c-5")),
-                    edid: Some("edid:10ac42a107000000".into()),
-                },
-                MonitorBrightness {
-                    connector: "Virtual-1".into(),
                     target: BrightnessTarget::Software,
                     edid: None,
-                },
-            ]
-        );
-    }
-
-    #[test]
-    fn a_panel_without_a_backlight_is_dimmed_in_software() {
-        let tree = Tree::new();
-        tree.connector("card0-eDP-1", "connected");
-        assert_eq!(
-            tree.monitors(),
-            vec![MonitorBrightness {
-                connector: "eDP-1".into(),
-                target: BrightnessTarget::Software,
-                edid: None,
-            }]
-        );
-    }
-
-    #[test]
-    fn an_edid_identity_is_its_maker_product_and_serial() {
-        assert_eq!(edid_key(&edid(3)).as_deref(), Some("edid:10ac42a103000000"));
-        assert_ne!(edid_key(&edid(3)), edid_key(&edid(4)), "two of one model");
-        assert_eq!(edid_key(&[0u8; 128]), None, "not an EDID");
-        assert_eq!(edid_key(&edid(3)[..12]), None, "cut short");
-    }
-
-    #[test]
-    fn the_backlight_target_reads_and_writes_its_own_device() {
-        let tree = Tree::new();
-        tree.backlight("amdgpu_bl0");
-        let target = BrightnessTarget::Backlight(tree.path("backlight/amdgpu_bl0"));
-        assert!((target.get().unwrap() - 0.1).abs() < 1e-6);
-        target.set(64.0).unwrap();
-        assert_eq!(
-            fs::read_to_string(tree.path("backlight/amdgpu_bl0/brightness")).unwrap(),
-            "64"
-        );
-    }
-
-    #[test]
-    fn percent_maps_onto_the_monitors_own_scale() {
-        assert_eq!(ddc_raw(50.0, 100), 50);
-        assert_eq!(ddc_raw(50.0, 255), 128);
-        assert_eq!(ddc_raw(150.0, 100), 100);
-        assert_eq!(ddc_raw(-5.0, 100), 0);
-    }
-
-    #[test]
-    fn software_dimming_is_perceptual_monotonic_and_never_black() {
-        assert_eq!(software_luminance(1.0), 1.0);
-        assert_eq!(software_luminance(0.0), SOFTWARE_DIM_FLOOR);
-        assert_eq!(
-            software_luminance(f32::NAN),
-            1.0,
-            "a bad level dims nothing"
-        );
-        let mut last = 0.0;
-        for step in 0..=100u8 {
-            let light = software_luminance(f32::from(step) / 100.0);
-            assert!(light >= last, "monotonic at {step}");
-            assert!(light >= SOFTWARE_DIM_FLOOR);
-            last = light;
+                }]
+            );
         }
-        assert!(
-            software_luminance(0.5) < 0.5,
-            "half the slider looks half as bright, which is well under half the light"
-        );
+
+        phase an_edid_identity_is_its_maker_product_and_serial;
+        {
+            assert_eq!(edid_key(&edid(3)).as_deref(), Some("edid:10ac42a103000000"));
+            assert_ne!(edid_key(&edid(3)), edid_key(&edid(4)), "two of one model");
+            assert_eq!(edid_key(&[0u8; 128]), None, "not an EDID");
+            assert_eq!(edid_key(&edid(3)[..12]), None, "cut short");
+        }
+
+        phase the_backlight_target_reads_and_writes_its_own_device;
+        {
+            let tree = Tree::new();
+            tree.backlight("amdgpu_bl0");
+            let target = BrightnessTarget::Backlight(tree.path("backlight/amdgpu_bl0"));
+            assert!((target.get().unwrap() - 0.1).abs() < 1e-6);
+            target.set(64.0).unwrap();
+            assert_eq!(
+                fs::read_to_string(tree.path("backlight/amdgpu_bl0/brightness")).unwrap(),
+                "64"
+            );
+        }
+
+        phase percent_maps_onto_the_monitors_own_scale;
+        {
+            assert_eq!(ddc_raw(50.0, 100), 50);
+            assert_eq!(ddc_raw(50.0, 255), 128);
+            assert_eq!(ddc_raw(150.0, 100), 100);
+            assert_eq!(ddc_raw(-5.0, 100), 0);
+        }
+
+        phase software_dimming_is_perceptual_monotonic_and_never_black;
+        {
+            assert_eq!(software_luminance(1.0), 1.0);
+            assert_eq!(software_luminance(0.0), SOFTWARE_DIM_FLOOR);
+            assert_eq!(
+                software_luminance(f32::NAN),
+                1.0,
+                "a bad level dims nothing"
+            );
+            let mut last = 0.0;
+            for step in 0..=100u8 {
+                let light = software_luminance(f32::from(step) / 100.0);
+                assert!(light >= last, "monotonic at {step}");
+                assert!(light >= SOFTWARE_DIM_FLOOR);
+                last = light;
+            }
+            assert!(
+                software_luminance(0.5) < 0.5,
+                "half the slider looks half as bright, which is well under half the light"
+            );
+        }
+
+        phase only_the_displays_the_session_shows_get_a_brightness_control;
+        {
+            let panel = MonitorBrightness {
+                connector: "eDP-1".into(),
+                target: BrightnessTarget::Backlight(PathBuf::from("/sys/class/backlight/panel")),
+                edid: None,
+            };
+            let mut hub_monitor = ddc_monitor("DP-2");
+            hub_monitor.target = BrightnessTarget::Software;
+            let mut seat_card = ddc_monitor("Virtual-1");
+            seat_card.target = BrightnessTarget::Software;
+            let connectors = |levels: Vec<MonitorLevel>| -> Vec<String> {
+                levels.into_iter().map(|level| level.connector).collect()
+            };
+
+            let (service, _) = fake_service(vec![panel, hub_monitor, seat_card]);
+            service.show_only(SessionDisplays {
+                connectors: vec!["eDP-1".into(), "DP-2".into()],
+                software_dim: true,
+            });
+            assert_eq!(connectors(service.rescan_blocking()), ["eDP-1", "DP-2"]);
+            assert_eq!(service.software_levels().len(), 1, "only DP-2 is dimmed");
+
+            // A compositor that cannot dim in software leaves DP-2 without a control of any kind.
+            service.show_only(SessionDisplays {
+                connectors: vec!["eDP-1".into(), "DP-2".into()],
+                software_dim: false,
+            });
+            assert_eq!(connectors(service.rescan_blocking()), ["eDP-1"]);
+        }
+
+        phase a_virtual_card_on_the_faux_bus_is_nobodys_display;
+        {
+            let tree = Tree::new();
+            tree.backlight("dp_aux_backlight");
+            tree.faux_card("card0", &["Virtual-1"]);
+            tree.connector("card1-eDP-1", "connected");
+            tree.connector("card1-DP-2", "connected");
+            let connectors: Vec<String> = tree
+                .monitors()
+                .into_iter()
+                .map(|monitor| monitor.connector)
+                .collect();
+            assert_eq!(connectors, ["eDP-1", "DP-2"]);
+        }
     }
 
     fn ddc_monitor(connector: &str) -> MonitorBrightness {
@@ -1316,238 +1366,196 @@ mod tests {
         tilo_test_env::recv("the brightness service to go idle", &told);
     }
 
-    #[test]
-    fn a_backlight_moved_elsewhere_is_read_back_and_announced() {
-        let panel = MonitorBrightness {
-            connector: "eDP-1".into(),
-            target: BrightnessTarget::Backlight(PathBuf::from("/sys/class/backlight/panel")),
-            edid: None,
-        };
-        let kernel = Arc::new(Mutex::new(0.5_f32));
-        let (read_from, written_to) = (Arc::clone(&kernel), Arc::clone(&kernel));
-        let service = BrightnessService::spawn(
-            Arc::new(move || vec![panel.clone()]),
-            Arc::new(move |_: &BrightnessTarget| -> Result<Reading, String> {
-                Ok(Reading {
-                    level: *read_from.lock().unwrap(),
-                    maximum: None,
-                })
-            }),
-            Arc::new(
-                move |_: &BrightnessTarget, pct: f32, _: Option<u16>| -> Result<(), String> {
-                    *written_to.lock().unwrap() = pct / 100.0;
-                    Ok(())
-                },
-            ),
-            |_| {},
-            None,
-        );
-        service.rescan_blocking();
-        let told = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let count = Arc::clone(&told);
-        service.on_change(Arc::new(move || {
-            count.fetch_add(1, Ordering::SeqCst);
-        }));
-        let level = |service: &BrightnessService| service.levels()[0].level;
+    tilo_test_env::scenario! {
+        fn the_brightness_service_follows_its_monitors_through_scans_and_remembers_their_levels;
 
-        assert!(!service.reload_backlights(), "nothing moved");
-        assert_eq!(told.load(Ordering::SeqCst), 0);
-
-        // A firmware hotkey or another program sets the panel.
-        *kernel.lock().unwrap() = 0.8;
-        assert!(service.reload_backlights());
-        assert_eq!(level(&service), 0.8);
-        assert_eq!(told.load(Ordering::SeqCst), 1);
-
-        // A level set here is announced too, and its own event reads back what was written.
-        assert!(service.set("eDP-1", 30.0));
-        assert_eq!(told.load(Ordering::SeqCst), 2);
-        idle(&service);
-        assert!(!service.reload_backlights());
-        assert_eq!(level(&service), 0.3);
-    }
-
-    #[test]
-    fn only_the_displays_the_session_shows_get_a_brightness_control() {
-        let panel = MonitorBrightness {
-            connector: "eDP-1".into(),
-            target: BrightnessTarget::Backlight(PathBuf::from("/sys/class/backlight/panel")),
-            edid: None,
-        };
-        let mut hub_monitor = ddc_monitor("DP-2");
-        hub_monitor.target = BrightnessTarget::Software;
-        let mut seat_card = ddc_monitor("Virtual-1");
-        seat_card.target = BrightnessTarget::Software;
-        let connectors = |levels: Vec<MonitorLevel>| -> Vec<String> {
-            levels.into_iter().map(|level| level.connector).collect()
-        };
-
-        let (service, _) = fake_service(vec![panel, hub_monitor, seat_card]);
-        service.show_only(SessionDisplays {
-            connectors: vec!["eDP-1".into(), "DP-2".into()],
-            software_dim: true,
-        });
-        assert_eq!(connectors(service.rescan_blocking()), ["eDP-1", "DP-2"]);
-        assert_eq!(service.software_levels().len(), 1, "only DP-2 is dimmed");
-
-        // A compositor that cannot dim in software leaves DP-2 without a control of any kind.
-        service.show_only(SessionDisplays {
-            connectors: vec!["eDP-1".into(), "DP-2".into()],
-            software_dim: false,
-        });
-        assert_eq!(connectors(service.rescan_blocking()), ["eDP-1"]);
-    }
-
-    #[test]
-    fn a_virtual_card_on_the_faux_bus_is_nobodys_display() {
-        let tree = Tree::new();
-        tree.backlight("dp_aux_backlight");
-        tree.faux_card("card0", &["Virtual-1"]);
-        tree.connector("card1-eDP-1", "connected");
-        tree.connector("card1-DP-2", "connected");
-        let connectors: Vec<String> = tree
-            .monitors()
-            .into_iter()
-            .map(|monitor| monitor.connector)
-            .collect();
-        assert_eq!(connectors, ["eDP-1", "DP-2"]);
-    }
-
-    /// A level set while a rescan reads the bus survives it: the probe works from a snapshot outside
-    /// the lock.
-    #[test]
-    fn a_level_set_during_a_rescan_is_not_reverted() {
-        let mut software = ddc_monitor("DP-9");
-        software.target = BrightnessTarget::Software;
-        let (entered_tx, entered) = std::sync::mpsc::channel::<()>();
-        let (release, released) = std::sync::mpsc::channel::<()>();
-        let (entered_tx, released) = (Mutex::new(entered_tx), Mutex::new(released));
-        let calls = std::sync::atomic::AtomicUsize::new(0);
-        let service = BrightnessService::spawn(
-            Arc::new(move || {
-                if calls.fetch_add(1, Ordering::SeqCst) == 1 {
-                    let _ = entered_tx.lock().unwrap().send(());
-                    let _ = released.lock().unwrap().recv();
-                }
-                vec![software.clone()]
-            }),
-            Arc::new(|_: &BrightnessTarget| -> Result<Reading, String> { Err("no bus".into()) }),
-            Arc::new(
-                |_: &BrightnessTarget, _: f32, _: Option<u16>| -> Result<(), String> { Ok(()) },
-            ),
-            |_| {},
-            None,
-        );
-        service.rescan_blocking();
-        service.rescan();
-        tilo_test_env::recv("the rescan to reach the bus", &entered);
-        assert!(service.set("DP-9", 40.0));
-        release.send(()).unwrap();
-        idle(&service);
-        assert_eq!(service.software_levels(), vec![("DP-9".into(), 0.4)]);
-    }
-
-    #[test]
-    fn a_monitor_without_ddc_ci_is_dimmed_in_software() {
-        let mut broken = ddc_monitor("DP-9");
-        broken.target = BrightnessTarget::Ddc(PathBuf::from("/dev/broken"));
-        let (service, applied) = fake_service(vec![ddc_monitor("DP-1"), broken]);
-        let levels = service.rescan_blocking();
-        assert_eq!(
-            levels,
-            vec![
-                MonitorLevel {
-                    connector: "DP-1".into(),
-                    level: 0.5,
-                    kind: BrightnessKind::Ddc,
-                },
-                MonitorLevel {
-                    connector: "DP-9".into(),
-                    level: 1.0,
-                    kind: BrightnessKind::Software,
-                },
-            ]
-        );
-        let before = service.generation();
-        assert!(service.set("DP-9", 40.0));
-        assert!(service.generation() > before, "the compositor is told");
-        assert_eq!(service.software_levels(), vec![("DP-9".into(), 0.4)]);
-        idle(&service);
-        assert!(
-            applied.lock().unwrap().is_empty(),
-            "nothing is written to a bus that does not answer"
-        );
-    }
-
-    #[test]
-    fn a_known_monitor_is_probed_once_per_appearance() {
-        let fake = fake_service_at(vec![ddc_monitor("DP-1")], None);
-        fake.service.rescan_blocking();
-        fake.service.rescan_blocking();
-        fake.service.rescan();
-        idle(&fake.service);
-        assert_eq!(
-            fake.reads.load(Ordering::SeqCst),
-            1,
-            "rescans while it stays connected ask the bus nothing"
-        );
-    }
-
-    #[test]
-    fn capability_scale_and_level_are_remembered_by_edid() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("tilo/display-brightness.json");
-        let mut broken = ddc_monitor("HDMI-A-1");
-        broken.target = BrightnessTarget::Ddc(PathBuf::from("/dev/broken"));
+        phase a_backlight_moved_elsewhere_is_read_back_and_announced;
         {
-            let fake = fake_service_at(
-                vec![ddc_monitor("DP-1"), broken.clone()],
-                Some(path.clone()),
+            let panel = MonitorBrightness {
+                connector: "eDP-1".into(),
+                target: BrightnessTarget::Backlight(PathBuf::from("/sys/class/backlight/panel")),
+                edid: None,
+            };
+            let kernel = Arc::new(Mutex::new(0.5_f32));
+            let (read_from, written_to) = (Arc::clone(&kernel), Arc::clone(&kernel));
+            let service = BrightnessService::spawn(
+                Arc::new(move || vec![panel.clone()]),
+                Arc::new(move |_: &BrightnessTarget| -> Result<Reading, String> {
+                    Ok(Reading {
+                        level: *read_from.lock().unwrap(),
+                        maximum: None,
+                    })
+                }),
+                Arc::new(
+                    move |_: &BrightnessTarget, pct: f32, _: Option<u16>| -> Result<(), String> {
+                        *written_to.lock().unwrap() = pct / 100.0;
+                        Ok(())
+                    },
+                ),
+                |_| {},
+                None,
             );
-            fake.service.rescan_blocking();
-            assert!(fake.service.set("DP-1", 70.0));
-            assert!(fake.service.set("HDMI-A-1", 30.0));
-            idle(&fake.service);
-        }
-        let memory = Memory::load(&path);
-        assert_eq!(
-            memory.monitors.get("edid:DP-1"),
-            Some(&Remembered {
-                ddc: Some(true),
-                maximum: Some(100),
-                level: Some(0.7),
-            })
-        );
-        assert_eq!(
-            memory.monitors.get("edid:HDMI-A-1"),
-            Some(&Remembered {
-                ddc: Some(false),
-                maximum: None,
-                level: Some(0.3),
-            })
-        );
-        broken.connector = "DP-3".into();
-        let fake = fake_service_at(vec![broken], Some(path));
-        fake.service.rescan_blocking();
-        assert_eq!(fake.service.software_levels(), vec![("DP-3".into(), 0.3)]);
-    }
+            service.rescan_blocking();
+            let told = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let count = Arc::clone(&told);
+            service.on_change(Arc::new(move || {
+                count.fetch_add(1, Ordering::SeqCst);
+            }));
+            let level = |service: &BrightnessService| service.levels()[0].level;
 
-    #[test]
-    fn a_level_another_process_remembered_reaches_this_one() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("display-brightness.json");
-        let mut software = ddc_monitor("DP-4");
-        software.target = BrightnessTarget::Software;
-        let fake = fake_service_at(vec![software], Some(path.clone()));
-        fake.service.rescan_blocking();
-        let mut memory = Memory::load(&path);
-        memory.monitors.entry("edid:DP-4".into()).or_default().level = Some(0.25);
-        memory.save(&path);
-        let before = fake.service.generation();
-        assert!(fake.service.reload_memory());
-        assert!(fake.service.generation() > before);
-        assert_eq!(fake.service.software_levels(), vec![("DP-4".into(), 0.25)]);
-        assert!(!fake.service.reload_memory(), "nothing new the second time");
+            assert!(!service.reload_backlights(), "nothing moved");
+            assert_eq!(told.load(Ordering::SeqCst), 0);
+
+            // A firmware hotkey or another program sets the panel.
+            *kernel.lock().unwrap() = 0.8;
+            assert!(service.reload_backlights());
+            assert_eq!(level(&service), 0.8);
+            assert_eq!(told.load(Ordering::SeqCst), 1);
+
+            // A level set here is announced too, and its own event reads back what was written.
+            assert!(service.set("eDP-1", 30.0));
+            assert_eq!(told.load(Ordering::SeqCst), 2);
+            idle(&service);
+            assert!(!service.reload_backlights());
+            assert_eq!(level(&service), 0.3);
+        }
+
+        phase a_level_set_during_a_rescan_is_not_reverted;
+        // A level set while a rescan reads the bus survives it: the probe works from a snapshot outside
+        // the lock.
+        {
+            let mut software = ddc_monitor("DP-9");
+            software.target = BrightnessTarget::Software;
+            let (entered_tx, entered) = std::sync::mpsc::channel::<()>();
+            let (release, released) = std::sync::mpsc::channel::<()>();
+            let (entered_tx, released) = (Mutex::new(entered_tx), Mutex::new(released));
+            let calls = std::sync::atomic::AtomicUsize::new(0);
+            let service = BrightnessService::spawn(
+                Arc::new(move || {
+                    if calls.fetch_add(1, Ordering::SeqCst) == 1 {
+                        let _ = entered_tx.lock().unwrap().send(());
+                        let _ = released.lock().unwrap().recv();
+                    }
+                    vec![software.clone()]
+                }),
+                Arc::new(|_: &BrightnessTarget| -> Result<Reading, String> { Err("no bus".into()) }),
+                Arc::new(
+                    |_: &BrightnessTarget, _: f32, _: Option<u16>| -> Result<(), String> { Ok(()) },
+                ),
+                |_| {},
+                None,
+            );
+            service.rescan_blocking();
+            service.rescan();
+            tilo_test_env::recv("the rescan to reach the bus", &entered);
+            assert!(service.set("DP-9", 40.0));
+            release.send(()).unwrap();
+            idle(&service);
+            assert_eq!(service.software_levels(), vec![("DP-9".into(), 0.4)]);
+        }
+
+        phase a_monitor_without_ddc_ci_is_dimmed_in_software;
+        {
+            let mut broken = ddc_monitor("DP-9");
+            broken.target = BrightnessTarget::Ddc(PathBuf::from("/dev/broken"));
+            let (service, applied) = fake_service(vec![ddc_monitor("DP-1"), broken]);
+            let levels = service.rescan_blocking();
+            assert_eq!(
+                levels,
+                vec![
+                    MonitorLevel {
+                        connector: "DP-1".into(),
+                        level: 0.5,
+                        kind: BrightnessKind::Ddc,
+                    },
+                    MonitorLevel {
+                        connector: "DP-9".into(),
+                        level: 1.0,
+                        kind: BrightnessKind::Software,
+                    },
+                ]
+            );
+            let before = service.generation();
+            assert!(service.set("DP-9", 40.0));
+            assert!(service.generation() > before, "the compositor is told");
+            assert_eq!(service.software_levels(), vec![("DP-9".into(), 0.4)]);
+            idle(&service);
+            assert!(
+                applied.lock().unwrap().is_empty(),
+                "nothing is written to a bus that does not answer"
+            );
+        }
+
+        phase a_known_monitor_is_probed_once_per_appearance;
+        {
+            let fake = fake_service_at(vec![ddc_monitor("DP-1")], None);
+            fake.service.rescan_blocking();
+            fake.service.rescan_blocking();
+            fake.service.rescan();
+            idle(&fake.service);
+            assert_eq!(
+                fake.reads.load(Ordering::SeqCst),
+                1,
+                "rescans while it stays connected ask the bus nothing"
+            );
+        }
+
+        phase capability_scale_and_level_are_remembered_by_edid;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("tilo/display-brightness.json");
+            let mut broken = ddc_monitor("HDMI-A-1");
+            broken.target = BrightnessTarget::Ddc(PathBuf::from("/dev/broken"));
+            {
+                let fake = fake_service_at(
+                    vec![ddc_monitor("DP-1"), broken.clone()],
+                    Some(path.clone()),
+                );
+                fake.service.rescan_blocking();
+                assert!(fake.service.set("DP-1", 70.0));
+                assert!(fake.service.set("HDMI-A-1", 30.0));
+                idle(&fake.service);
+            }
+            let memory = Memory::load(&path);
+            assert_eq!(
+                memory.monitors.get("edid:DP-1"),
+                Some(&Remembered {
+                    ddc: Some(true),
+                    maximum: Some(100),
+                    level: Some(0.7),
+                })
+            );
+            assert_eq!(
+                memory.monitors.get("edid:HDMI-A-1"),
+                Some(&Remembered {
+                    ddc: Some(false),
+                    maximum: None,
+                    level: Some(0.3),
+                })
+            );
+            broken.connector = "DP-3".into();
+            let fake = fake_service_at(vec![broken], Some(path));
+            fake.service.rescan_blocking();
+            assert_eq!(fake.service.software_levels(), vec![("DP-3".into(), 0.3)]);
+        }
+
+        phase a_level_another_process_remembered_reaches_this_one;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("display-brightness.json");
+            let mut software = ddc_monitor("DP-4");
+            software.target = BrightnessTarget::Software;
+            let fake = fake_service_at(vec![software], Some(path.clone()));
+            fake.service.rescan_blocking();
+            let mut memory = Memory::load(&path);
+            memory.monitors.entry("edid:DP-4".into()).or_default().level = Some(0.25);
+            memory.save(&path);
+            let before = fake.service.generation();
+            assert!(fake.service.reload_memory());
+            assert!(fake.service.generation() > before);
+            assert_eq!(fake.service.software_levels(), vec![("DP-4".into(), 0.25)]);
+            assert!(!fake.service.reload_memory(), "nothing new the second time");
+        }
     }
 
     /// Holds a monitor's bus mid-write until the test lets it go.
@@ -1590,103 +1598,211 @@ mod tests {
         fn pause(&mut self, _duration: Duration) {}
     }
 
-    /// A held brightness key on a monitor whose bus is stuck mid-write: the cache moves at once, the
-    /// bus sees a few writes, never two at once, and ends on the last value.
-    #[test]
-    fn ddc_writes_coalesce_to_the_newest_value_one_at_a_time_per_monitor() {
-        type BusWrites = Arc<Mutex<Vec<Vec<u8>>>>;
-        let buses: Arc<Mutex<BTreeMap<String, BusWrites>>> = Arc::new(Mutex::new(BTreeMap::new()));
-        let in_flight = Arc::new(Mutex::new(BTreeMap::<String, usize>::new()));
-        let overlapped = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        // DP-1's bus holds every write until the presses are done.
-        let dp1_gate = Arc::new(Gate::default());
-        let (wire, flight, overlap, gate) = (
-            Arc::clone(&buses),
-            Arc::clone(&in_flight),
-            Arc::clone(&overlapped),
-            Arc::clone(&dp1_gate),
-        );
-        let service = BrightnessService::spawn(
-            Arc::new(|| vec![ddc_monitor("DP-1"), ddc_monitor("DP-2")]),
-            Arc::new(|_: &BrightnessTarget| -> Result<Reading, String> {
-                Ok(Reading {
-                    level: 0.5,
-                    maximum: Some(100),
-                })
-            }),
-            Arc::new(
-                move |target: &BrightnessTarget,
-                      pct: f32,
-                      maximum: Option<u16>|
-                      -> Result<(), String> {
-                    let BrightnessTarget::Ddc(node) = target else {
-                        return Ok(());
-                    };
-                    let name = node.display().to_string();
-                    let writing = {
-                        let mut flight = flight.lock().unwrap();
-                        let count = flight.entry(name.clone()).or_default();
-                        *count = count.saturating_add(1);
-                        let writing = *count;
-                        drop(flight);
-                        writing
-                    };
-                    if writing > 1 {
-                        overlap.store(true, Ordering::SeqCst);
-                    }
-                    let frames = Arc::clone(wire.lock().unwrap().entry(name.clone()).or_default());
-                    let gate = (name == "/dev/DP-1").then(|| Arc::clone(&gate));
-                    let mut bus = SlowBus { frames, gate };
-                    let raw = ddc_raw(pct, maximum.expect("the scale is cached"));
-                    let result = ddc::set_vcp(&mut bus, ddc::VCP_BRIGHTNESS, raw)
-                        .map_err(|error| error.to_string());
-                    if let Some(count) = flight.lock().unwrap().get_mut(&name) {
-                        *count = count.saturating_sub(1);
-                    }
-                    result
-                },
-            ),
-            |_| {},
-            None,
-        );
-        service.rescan_blocking();
-        // Every press returns while DP-1's bus is held: a press that waited on the bus would never
-        // return.
-        for press in 1..=20u8 {
-            assert!(service.set("DP-1", f32::from(press) * 5.0));
-            let level = service.levels()[0].level;
+    tilo_test_env::scenario! {
+        fn a_brightness_change_is_cached_at_once_and_written_one_at_a_time_in_the_background;
+
+        phase ddc_writes_coalesce_to_the_newest_value_one_at_a_time_per_monitor;
+        // A held brightness key on a monitor whose bus is stuck mid-write: the cache moves at once, the
+        // bus sees a few writes, never two at once, and ends on the last value.
+        {
+            type BusWrites = Arc<Mutex<Vec<Vec<u8>>>>;
+            let buses: Arc<Mutex<BTreeMap<String, BusWrites>>> = Arc::new(Mutex::new(BTreeMap::new()));
+            let in_flight = Arc::new(Mutex::new(BTreeMap::<String, usize>::new()));
+            let overlapped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            // DP-1's bus holds every write until the presses are done.
+            let dp1_gate = Arc::new(Gate::default());
+            let (wire, flight, overlap, gate) = (
+                Arc::clone(&buses),
+                Arc::clone(&in_flight),
+                Arc::clone(&overlapped),
+                Arc::clone(&dp1_gate),
+            );
+            let service = BrightnessService::spawn(
+                Arc::new(|| vec![ddc_monitor("DP-1"), ddc_monitor("DP-2")]),
+                Arc::new(|_: &BrightnessTarget| -> Result<Reading, String> {
+                    Ok(Reading {
+                        level: 0.5,
+                        maximum: Some(100),
+                    })
+                }),
+                Arc::new(
+                    move |target: &BrightnessTarget,
+                          pct: f32,
+                          maximum: Option<u16>|
+                          -> Result<(), String> {
+                        let BrightnessTarget::Ddc(node) = target else {
+                            return Ok(());
+                        };
+                        let name = node.display().to_string();
+                        let writing = {
+                            let mut flight = flight.lock().unwrap();
+                            let count = flight.entry(name.clone()).or_default();
+                            *count = count.saturating_add(1);
+                            let writing = *count;
+                            drop(flight);
+                            writing
+                        };
+                        if writing > 1 {
+                            overlap.store(true, Ordering::SeqCst);
+                        }
+                        let frames = Arc::clone(wire.lock().unwrap().entry(name.clone()).or_default());
+                        let gate = (name == "/dev/DP-1").then(|| Arc::clone(&gate));
+                        let mut bus = SlowBus { frames, gate };
+                        let raw = ddc_raw(pct, maximum.expect("the scale is cached"));
+                        let result = ddc::set_vcp(&mut bus, ddc::VCP_BRIGHTNESS, raw)
+                            .map_err(|error| error.to_string());
+                        if let Some(count) = flight.lock().unwrap().get_mut(&name) {
+                            *count = count.saturating_sub(1);
+                        }
+                        result
+                    },
+                ),
+                |_| {},
+                None,
+            );
+            service.rescan_blocking();
+            // Every press returns while DP-1's bus is held: a press that waited on the bus would never
+            // return.
+            for press in 1..=20u8 {
+                assert!(service.set("DP-1", f32::from(press) * 5.0));
+                let level = service.levels()[0].level;
+                assert!(
+                    (level - f32::from(press) * 0.05).abs() < 1e-6,
+                    "the cache moves with every press: {level} after press {press}"
+                );
+            }
+            // DP-2 is written while DP-1's bus is still held.
+            assert!(service.set("DP-2", 10.0));
+            tilo_test_env::wait_until("DP-2's write, while DP-1's bus is held", || {
+                buses
+                    .lock()
+                    .unwrap()
+                    .get("/dev/DP-2")
+                    .is_some_and(|frames| !frames.lock().unwrap().is_empty())
+            });
+            dp1_gate.open();
+            idle(&service);
+            let dp1 = buses.lock().unwrap().get("/dev/DP-1").cloned().unwrap();
+            let frames = dp1.lock().unwrap().clone();
             assert!(
-                (level - f32::from(press) * 0.05).abs() < 1e-6,
-                "the cache moves with every press: {level} after press {press}"
+                frames.len() <= 4,
+                "a burst of 20 collapses to a few writes, got {}",
+                frames.len()
+            );
+            assert_eq!(
+                frames.last().unwrap(),
+                &ddc::request(&[0x03, ddc::VCP_BRIGHTNESS, 0x00, 100]),
+                "the bus ends on the last value"
+            );
+            assert!(
+                !overlapped.load(Ordering::SeqCst),
+                "one write in flight per monitor"
             );
         }
-        // DP-2 is written while DP-1's bus is still held.
-        assert!(service.set("DP-2", 10.0));
-        tilo_test_env::wait_until("DP-2's write, while DP-1's bus is held", || {
-            buses
-                .lock()
-                .unwrap()
-                .get("/dev/DP-2")
-                .is_some_and(|frames| !frames.lock().unwrap().is_empty())
-        });
-        dp1_gate.open();
-        idle(&service);
-        let dp1 = buses.lock().unwrap().get("/dev/DP-1").cloned().unwrap();
-        let frames = dp1.lock().unwrap().clone();
-        assert!(
-            frames.len() <= 4,
-            "a burst of 20 collapses to a few writes, got {}",
-            frames.len()
-        );
-        assert_eq!(
-            frames.last().unwrap(),
-            &ddc::request(&[0x03, ddc::VCP_BRIGHTNESS, 0x00, 100]),
-            "the bus ends on the last value"
-        );
-        assert!(
-            !overlapped.load(Ordering::SeqCst),
-            "one write in flight per monitor"
-        );
+
+        phase writes_to_one_ddc_monitor_are_spaced_out;
+        {
+            // When each write reached the monitor, and how long the writer had slept before it: the slept
+            // time is recorded, not spent.
+            let applied: Arc<Mutex<Vec<(f32, Instant, u64)>>> = Arc::new(Mutex::new(Vec::new()));
+            let log = Arc::clone(&applied);
+            let writer = Writer::spawn(
+                "DP-1",
+                Arc::new(
+                    move |_: &BrightnessTarget, pct: f32, _: Option<u16>| -> Result<(), String> {
+                        let slept = SLEPT_MS.load(Ordering::SeqCst);
+                        log.lock().unwrap().push((pct, Instant::now(), slept));
+                        Ok(())
+                    },
+                ),
+                record_sleep,
+            )
+            .unwrap();
+            let target = ddc_monitor("DP-1").target;
+            writer.send(target.clone(), 10.0, Some(100));
+            writer.wait_idle();
+            writer.send(target, 20.0, Some(100));
+            writer.wait_idle();
+            let applied = applied.lock().unwrap().clone();
+            let pcts: Vec<f32> = applied.iter().map(|(pct, _, _)| *pct).collect();
+            assert_eq!(pcts, vec![10.0, 20.0]);
+            let (_, first_at, slept_before_first) = applied[0];
+            let (_, second_at, slept_before_second) = applied[1];
+            let slept = Duration::from_millis(slept_before_second - slept_before_first);
+            // The recorded sleep is whole milliseconds, cut down from the asked duration: allow the one it
+            // can lose.
+            assert!(
+                second_at.duration_since(first_at) + slept + Duration::from_millis(1)
+                    >= DDC_MIN_INTERVAL,
+                "the monitor gets its settle gap: {:?} passed and {slept:?} was slept",
+                second_at.duration_since(first_at)
+            );
+        }
+
+        phase a_set_is_cached_at_once_and_written_in_the_background;
+        {
+            let (service, applied) = fake_service(vec![ddc_monitor("DP-1"), ddc_monitor("DP-2")]);
+            service.rescan_blocking();
+            assert!(service.set("DP-2", 80.0));
+            assert!(!service.set("HDMI-A-9", 80.0), "an unknown monitor");
+            assert_eq!(
+                service.levels()[1].level,
+                0.8,
+                "read back before the write lands"
+            );
+            idle(&service);
+            assert_eq!(*applied.lock().unwrap(), vec![("/dev/DP-2".into(), 80.0)]);
+        }
+
+        phase a_reader_is_told_once_the_scan_asked_before_it_lands;
+        {
+            let (service, _) = fake_service(vec![ddc_monitor("DP-1")]);
+            idle(&service);
+            assert_eq!(
+                service.levels().len(),
+                1,
+                "the scan asked for before landed first"
+            );
+        }
+
+        phase stepping_together_keeps_each_monitor_at_its_share_of_the_brightest;
+        {
+            let next = step_together(&[0.8, 0.4], 0.1);
+            assert!(
+                (next[0] - 0.9).abs() < 1e-6,
+                "the brightest moves by the step"
+            );
+            assert!(
+                (next[1] - 0.45).abs() < 1e-6,
+                "the other stays at half of it"
+            );
+            let down = step_together(&[0.8, 0.4], -0.4);
+            assert!((down[0] - 0.4).abs() < 1e-6 && (down[1] - 0.2).abs() < 1e-6);
+            assert_eq!(
+                step_together(&[1.0, 0.5], 0.1),
+                vec![1.0, 0.5],
+                "clamped at full"
+            );
+            assert_eq!(
+                step_together(&[0.0, 0.0], 0.1),
+                vec![0.1, 0.1],
+                "dark ones rise together"
+            );
+            assert_eq!(step_together(&[0.2, 0.1], -0.5), vec![0.0, 0.0]);
+        }
+
+        phase a_step_moves_the_monitor_asked_for_or_else_the_first;
+        {
+            let (service, _) = fake_service(vec![ddc_monitor("DP-1"), ddc_monitor("DP-2")]);
+            service.rescan_blocking();
+            let stepped = service.step(Some("DP-2"), 0.1).unwrap();
+            assert_eq!(stepped.connector, "DP-2");
+            assert!((stepped.level - 0.6).abs() < 1e-6);
+            let fallback = service.step(Some("eDP-1"), -0.1).unwrap();
+            assert_eq!(fallback.connector, "DP-1");
+            assert!((fallback.level - 0.4).abs() < 1e-6);
+            assert_eq!(service.step(None, 1.0).unwrap().level, 1.0, "clamped");
+        }
     }
 
     static SLEPT_MS: AtomicU64 = AtomicU64::new(0);
@@ -1694,109 +1810,5 @@ mod tests {
     fn record_sleep(duration: Duration) {
         let ms = u64::try_from(duration.as_millis()).unwrap_or(u64::MAX);
         SLEPT_MS.fetch_add(ms, Ordering::SeqCst);
-    }
-
-    #[test]
-    fn writes_to_one_ddc_monitor_are_spaced_out() {
-        // When each write reached the monitor, and how long the writer had slept before it: the slept
-        // time is recorded, not spent.
-        let applied: Arc<Mutex<Vec<(f32, Instant, u64)>>> = Arc::new(Mutex::new(Vec::new()));
-        let log = Arc::clone(&applied);
-        let writer = Writer::spawn(
-            "DP-1",
-            Arc::new(
-                move |_: &BrightnessTarget, pct: f32, _: Option<u16>| -> Result<(), String> {
-                    let slept = SLEPT_MS.load(Ordering::SeqCst);
-                    log.lock().unwrap().push((pct, Instant::now(), slept));
-                    Ok(())
-                },
-            ),
-            record_sleep,
-        )
-        .unwrap();
-        let target = ddc_monitor("DP-1").target;
-        writer.send(target.clone(), 10.0, Some(100));
-        writer.wait_idle();
-        writer.send(target, 20.0, Some(100));
-        writer.wait_idle();
-        let applied = applied.lock().unwrap().clone();
-        let pcts: Vec<f32> = applied.iter().map(|(pct, _, _)| *pct).collect();
-        assert_eq!(pcts, vec![10.0, 20.0]);
-        let (_, first_at, slept_before_first) = applied[0];
-        let (_, second_at, slept_before_second) = applied[1];
-        let slept = Duration::from_millis(slept_before_second - slept_before_first);
-        // The recorded sleep is whole milliseconds, cut down from the asked duration: allow the one it
-        // can lose.
-        assert!(
-            second_at.duration_since(first_at) + slept + Duration::from_millis(1)
-                >= DDC_MIN_INTERVAL,
-            "the monitor gets its settle gap: {:?} passed and {slept:?} was slept",
-            second_at.duration_since(first_at)
-        );
-    }
-
-    #[test]
-    fn a_set_is_cached_at_once_and_written_in_the_background() {
-        let (service, applied) = fake_service(vec![ddc_monitor("DP-1"), ddc_monitor("DP-2")]);
-        service.rescan_blocking();
-        assert!(service.set("DP-2", 80.0));
-        assert!(!service.set("HDMI-A-9", 80.0), "an unknown monitor");
-        assert_eq!(
-            service.levels()[1].level,
-            0.8,
-            "read back before the write lands"
-        );
-        idle(&service);
-        assert_eq!(*applied.lock().unwrap(), vec![("/dev/DP-2".into(), 80.0)]);
-    }
-
-    #[test]
-    fn a_reader_is_told_once_the_scan_asked_before_it_lands() {
-        let (service, _) = fake_service(vec![ddc_monitor("DP-1")]);
-        idle(&service);
-        assert_eq!(
-            service.levels().len(),
-            1,
-            "the scan asked for before landed first"
-        );
-    }
-
-    #[test]
-    fn stepping_together_keeps_each_monitor_at_its_share_of_the_brightest() {
-        let next = step_together(&[0.8, 0.4], 0.1);
-        assert!(
-            (next[0] - 0.9).abs() < 1e-6,
-            "the brightest moves by the step"
-        );
-        assert!(
-            (next[1] - 0.45).abs() < 1e-6,
-            "the other stays at half of it"
-        );
-        let down = step_together(&[0.8, 0.4], -0.4);
-        assert!((down[0] - 0.4).abs() < 1e-6 && (down[1] - 0.2).abs() < 1e-6);
-        assert_eq!(
-            step_together(&[1.0, 0.5], 0.1),
-            vec![1.0, 0.5],
-            "clamped at full"
-        );
-        assert_eq!(
-            step_together(&[0.0, 0.0], 0.1),
-            vec![0.1, 0.1],
-            "dark ones rise together"
-        );
-        assert_eq!(step_together(&[0.2, 0.1], -0.5), vec![0.0, 0.0]);
-    }
-
-    #[test]
-    fn a_step_moves_the_monitor_asked_for_or_else_the_first() {
-        let (service, _) = fake_service(vec![ddc_monitor("DP-1"), ddc_monitor("DP-2")]);
-        service.rescan_blocking();
-        let stepped = service.step(Some("DP-2"), 0.1).unwrap();
-        assert_eq!(stepped.connector, "DP-2");
-        assert!((stepped.level - 0.6).abs() < 1e-6);
-        let fallback = service.step(Some("eDP-1"), -0.1).unwrap();
-        assert_eq!(fallback.connector, "DP-1");
-        assert!((fallback.level - 0.4).abs() < 1e-6);
-        assert_eq!(service.step(None, 1.0).unwrap().level, 1.0, "clamped");
     }
 }

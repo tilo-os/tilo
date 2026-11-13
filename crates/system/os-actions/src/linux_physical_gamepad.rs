@@ -519,147 +519,151 @@ mod tests {
         }
     }
 
-    #[test]
-    fn forwarded_virtual_gamepads_are_not_room_hardware() {
-        assert!(is_forwarded_gamepad(
-            Some(FORWARDED_GAMEPAD_VENDOR),
-            Some(FORWARDED_GAMEPAD_PRODUCT)
-        ));
-        assert!(!is_forwarded_gamepad(Some(0x045e), Some(0x028e)));
-        assert!(!is_forwarded_gamepad(Some(FORWARDED_GAMEPAD_VENDOR), None));
-        assert!(!is_forwarded_gamepad(None, None));
-    }
+    tilo_test_env::scenario! {
+        fn physical_gamepads_are_told_from_virtual_ones_paired_and_classified;
 
-    #[test]
-    fn a_joycond_pair_is_one_controller_and_its_raw_halves_are_hidden() {
-        const JOYSTICK: &str = "E:ID_INPUT=1\nE:ID_INPUT_JOYSTICK=1\nG:uaccess\nQ:uaccess\n";
-        const HELD: &str = "E:ID_INPUT=1\nE:ID_INPUT_JOYSTICK=1\nG:joycond\nQ:joycond\n";
-        const RELEASED: &str =
-            "E:ID_INPUT=1\nE:ID_INPUT_JOYSTICK=1\nG:joycond\nG:uaccess\nQ:uaccess\n";
-        let device = |product, udev_properties, mode| EvdevDescriptor {
-            vendor_id: Some(NINTENDO_VENDOR),
-            product_id: Some(product),
-            udev_properties,
-            mode,
-        };
-        let room = |devices: &[EvdevDescriptor<'_>]| {
-            devices
-                .iter()
-                .filter(|device| is_room_controller(device))
-                .count()
-        };
-
-        // Both halves grabbed and combined: only joycond's uinput device.
-        assert_eq!(
-            room(&[
-                device(JOYCON_LEFT_PRODUCT, HELD, 0o020_600),
-                device(JOYCON_RIGHT_PRODUCT, HELD, 0o020_600),
-                device(0x2008, JOYSTICK, 0o020_660),
-            ]),
-            1
-        );
-        assert!(is_room_controller(&device(0x2008, JOYSTICK, 0o020_660)));
-        assert!(!is_room_controller(&device(
-            JOYCON_GRIP_PRODUCT,
-            HELD,
-            0o020_600
-        )));
-        // A half released to be used alone is a controller of its own, whether or not udev's change
-        // pass reset the node's mode.
-        assert!(is_room_controller(&device(
-            JOYCON_LEFT_PRODUCT,
-            RELEASED,
-            0o020_660
-        )));
-        assert!(is_room_controller(&device(
-            JOYCON_RIGHT_PRODUCT,
-            HELD,
-            0o020_666
-        )));
-        // A record from before udev split current tags off still counts.
-        assert!(!is_room_controller(&device(
-            JOYCON_LEFT_PRODUCT,
-            "E:ID_INPUT_JOYSTICK=1\nG:joycond\n",
-            0o020_600
-        )));
-        // Without joycond's tag the kernel device is the only one there is.
-        assert!(is_room_controller(&device(
-            JOYCON_RIGHT_PRODUCT,
-            JOYSTICK,
-            0o020_600
-        )));
-        // The Pro Controller stays with hid-nintendo and Steam; a stray tag on it must not hide it
-        // either.
-        assert!(is_room_controller(&device(0x2009, HELD, 0o020_600)));
-        assert!(!has_current_udev_tag(
-            "E:TAGS=:joycond:\nQ:joycondx\n",
-            "joycond"
-        ));
-    }
-
-    #[test]
-    fn sysfs_ids_parse_as_hex() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("vendor");
-        fs::write(&path, "057e\n").expect("write vendor");
-        assert_eq!(read_hex_id(&path), Some(0x057e));
-        fs::write(&path, "garbage").expect("write vendor");
-        assert_eq!(read_hex_id(&path), None);
-        assert_eq!(read_hex_id(&dir.path().join("missing")), None);
-    }
-
-    #[test]
-    fn physical_gamepads_classify_and_calibrate_into_the_fixed_schema() {
+        phase forwarded_virtual_gamepads_are_not_room_hardware;
         {
-            assert!(is_exclusive_controller(
-                "E:ID_INPUT=1\nE:ID_INPUT_JOYSTICK=1\n"
+            assert!(is_forwarded_gamepad(
+                Some(FORWARDED_GAMEPAD_VENDOR),
+                Some(FORWARDED_GAMEPAD_PRODUCT)
             ));
-            assert!(!is_exclusive_controller("E:ID_INPUT=1\n"));
-            for hybrid in [
-                "ID_INPUT_KEYBOARD=1",
-                "ID_INPUT_MOUSE=1",
-                "ID_INPUT_TOUCHPAD=1",
-                "ID_INPUT_TOUCHSCREEN=1",
-                "ID_INPUT_TABLET=1",
-            ] {
-                assert!(!is_exclusive_controller(&format!(
-                    "E:ID_INPUT_JOYSTICK=1\nE:{hybrid}\n"
-                )));
+            assert!(!is_forwarded_gamepad(Some(0x045e), Some(0x028e)));
+            assert!(!is_forwarded_gamepad(Some(FORWARDED_GAMEPAD_VENDOR), None));
+            assert!(!is_forwarded_gamepad(None, None));
+        }
+
+        phase a_joycond_pair_is_one_controller_and_its_raw_halves_are_hidden;
+        {
+            const JOYSTICK: &str = "E:ID_INPUT=1\nE:ID_INPUT_JOYSTICK=1\nG:uaccess\nQ:uaccess\n";
+            const HELD: &str = "E:ID_INPUT=1\nE:ID_INPUT_JOYSTICK=1\nG:joycond\nQ:joycond\n";
+            const RELEASED: &str =
+                "E:ID_INPUT=1\nE:ID_INPUT_JOYSTICK=1\nG:joycond\nG:uaccess\nQ:uaccess\n";
+            let device = |product, udev_properties, mode| EvdevDescriptor {
+                vendor_id: Some(NINTENDO_VENDOR),
+                product_id: Some(product),
+                udev_properties,
+                mode,
+            };
+            let room = |devices: &[EvdevDescriptor<'_>]| {
+                devices
+                    .iter()
+                    .filter(|device| is_room_controller(device))
+                    .count()
+            };
+
+            // Both halves grabbed and combined: only joycond's uinput device.
+            assert_eq!(
+                room(&[
+                    device(JOYCON_LEFT_PRODUCT, HELD, 0o020_600),
+                    device(JOYCON_RIGHT_PRODUCT, HELD, 0o020_600),
+                    device(0x2008, JOYSTICK, 0o020_660),
+                ]),
+                1
+            );
+            assert!(is_room_controller(&device(0x2008, JOYSTICK, 0o020_660)));
+            assert!(!is_room_controller(&device(
+                JOYCON_GRIP_PRODUCT,
+                HELD,
+                0o020_600
+            )));
+            // A half released to be used alone is a controller of its own, whether or not udev's change
+            // pass reset the node's mode.
+            assert!(is_room_controller(&device(
+                JOYCON_LEFT_PRODUCT,
+                RELEASED,
+                0o020_660
+            )));
+            assert!(is_room_controller(&device(
+                JOYCON_RIGHT_PRODUCT,
+                HELD,
+                0o020_666
+            )));
+            // A record from before udev split current tags off still counts.
+            assert!(!is_room_controller(&device(
+                JOYCON_LEFT_PRODUCT,
+                "E:ID_INPUT_JOYSTICK=1\nG:joycond\n",
+                0o020_600
+            )));
+            // Without joycond's tag the kernel device is the only one there is.
+            assert!(is_room_controller(&device(
+                JOYCON_RIGHT_PRODUCT,
+                JOYSTICK,
+                0o020_600
+            )));
+            // The Pro Controller stays with hid-nintendo and Steam; a stray tag on it must not hide it
+            // either.
+            assert!(is_room_controller(&device(0x2009, HELD, 0o020_600)));
+            assert!(!has_current_udev_tag(
+                "E:TAGS=:joycond:\nQ:joycondx\n",
+                "joycond"
+            ));
+        }
+
+        phase sysfs_ids_parse_as_hex;
+        {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let path = dir.path().join("vendor");
+            fs::write(&path, "057e\n").expect("write vendor");
+            assert_eq!(read_hex_id(&path), Some(0x057e));
+            fs::write(&path, "garbage").expect("write vendor");
+            assert_eq!(read_hex_id(&path), None);
+            assert_eq!(read_hex_id(&dir.path().join("missing")), None);
+        }
+
+        phase physical_gamepads_classify_and_calibrate_into_the_fixed_schema;
+        {
+            {
+                assert!(is_exclusive_controller(
+                    "E:ID_INPUT=1\nE:ID_INPUT_JOYSTICK=1\n"
+                ));
+                assert!(!is_exclusive_controller("E:ID_INPUT=1\n"));
+                for hybrid in [
+                    "ID_INPUT_KEYBOARD=1",
+                    "ID_INPUT_MOUSE=1",
+                    "ID_INPUT_TOUCHPAD=1",
+                    "ID_INPUT_TOUCHSCREEN=1",
+                    "ID_INPUT_TABLET=1",
+                ] {
+                    assert!(!is_exclusive_controller(&format!(
+                        "E:ID_INPUT_JOYSTICK=1\nE:{hybrid}\n"
+                    )));
+                }
             }
-        }
-        {
-            let axis = AxisCalibration::from_abs_info(abs_info(-100, 300, 12), AxisKind::Stick)
-                .expect("valid calibration");
-            assert_eq!(axis.center, 100);
-            assert_eq!(axis.normalize(-100), i16::MIN);
-            assert_eq!(axis.normalize(300), i16::MAX);
-            assert_eq!(axis.normalize(89), 0);
-            assert_eq!(axis.normalize(112), 0);
-            assert!(axis.normalize(50) < 0);
-            assert!(axis.normalize(200) > 0);
-        }
-        {
-            let trigger = AxisCalibration::from_abs_info(abs_info(0, 255, 0), AxisKind::Trigger)
-                .expect("valid calibration");
-            assert_eq!(trigger.normalize(0), 0);
-            assert_eq!(trigger.normalize(255), i16::MAX);
-            assert!((16_300..=16_500).contains(&trigger.normalize(128)));
-        }
-        {
-            assert!(AxisCalibration::from_abs_info(abs_info(4, 4, 0), AxisKind::Stick).is_err());
-            assert!(AxisCalibration::from_abs_info(abs_info(5, 4, 0), AxisKind::Trigger).is_err());
-        }
-        {
-            for raw in [i32::MIN, -2, -1, 0, 1, 2, i32::MAX] {
-                let normalized = raw.signum() as i8;
-                assert!((-1..=1).contains(&normalized));
-                assert!(
-                    ForwardedGamepadEvent::Hat {
-                        x: normalized,
-                        y: -normalized,
-                    }
-                    .is_valid()
-                );
+            {
+                let axis = AxisCalibration::from_abs_info(abs_info(-100, 300, 12), AxisKind::Stick)
+                    .expect("valid calibration");
+                assert_eq!(axis.center, 100);
+                assert_eq!(axis.normalize(-100), i16::MIN);
+                assert_eq!(axis.normalize(300), i16::MAX);
+                assert_eq!(axis.normalize(89), 0);
+                assert_eq!(axis.normalize(112), 0);
+                assert!(axis.normalize(50) < 0);
+                assert!(axis.normalize(200) > 0);
+            }
+            {
+                let trigger = AxisCalibration::from_abs_info(abs_info(0, 255, 0), AxisKind::Trigger)
+                    .expect("valid calibration");
+                assert_eq!(trigger.normalize(0), 0);
+                assert_eq!(trigger.normalize(255), i16::MAX);
+                assert!((16_300..=16_500).contains(&trigger.normalize(128)));
+            }
+            {
+                assert!(AxisCalibration::from_abs_info(abs_info(4, 4, 0), AxisKind::Stick).is_err());
+                assert!(AxisCalibration::from_abs_info(abs_info(5, 4, 0), AxisKind::Trigger).is_err());
+            }
+            {
+                for raw in [i32::MIN, -2, -1, 0, 1, 2, i32::MAX] {
+                    let normalized = raw.signum() as i8;
+                    assert!((-1..=1).contains(&normalized));
+                    assert!(
+                        ForwardedGamepadEvent::Hat {
+                            x: normalized,
+                            y: -normalized,
+                        }
+                        .is_valid()
+                    );
+                }
             }
         }
     }

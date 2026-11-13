@@ -174,127 +174,131 @@ pub fn watch(
 mod tests {
     use super::*;
 
-    #[test]
-    fn mesa_state_derives_from_the_hardware_part() {
-        let status = CodecPackStatus::parse(
-            r#"{"schema":1,"id":"media-codecs","state":"installed","desired":true,"generation":4,
+    tilo_test_env::scenario! {
+        fn the_codec_pack_reports_each_state_with_its_line_and_actions;
+
+        phase mesa_state_derives_from_the_hardware_part;
+        {
+            let status = CodecPackStatus::parse(
+                r#"{"schema":1,"id":"media-codecs","state":"installed","desired":true,"generation":4,
                 "parts":{"tilo-codecs":"enabled","tilo-codecs-mesa":"waiting"}}"#,
-        );
-        assert_eq!(status.state, PackState::Installed);
-        assert_eq!(status.mesa, MesaState::Waiting);
-        assert_eq!(status.generation, 4);
-        assert_eq!(
-            CodecPackStatus::parse(r#"{"state":"installed","mesa":"enabled"}"#).mesa,
-            MesaState::Off,
-            "only the parts map decides"
-        );
-        assert_eq!(
-            CodecPackStatus::parse(
-                r#"{"state":"installed","parts":{"tilo-codecs-mesa":"unsupported"}}"#
-            )
-            .mesa,
-            MesaState::Unsupported
-        );
-    }
-
-    #[test]
-    fn installed_with_mesa_waiting_offers_a_recheck() {
-        let status = CodecPackStatus::parse(
-            r#"{"state":"installed","parts":{"tilo-codecs":"enabled","tilo-codecs-mesa":"waiting"},"desired":true}"#,
-        );
-        assert!(status.summary().contains("follows once a matching driver"));
-        assert_eq!(
-            status.offered_actions(),
-            vec![CodecAction::Refresh, CodecAction::Remove]
-        );
-        assert_eq!(status.refresh_problem(), None);
-        assert!(status.when_it_applies().unwrap().contains("No restart"));
-    }
-
-    #[test]
-    fn every_state_has_its_line_and_actions() {
-        let cases = [
-            ("not-installed", false, "Off", vec![CodecAction::Install]),
-            (
-                "waiting-for-network",
-                true,
-                "Waiting for an internet connection. It turns on by itself once this device is online.",
-                vec![CodecAction::Remove],
-            ),
-            ("installing", true, "Downloading\u{2026}", vec![]),
-            ("removing", false, "Removing\u{2026}", vec![]),
-            (
-                "failed",
-                true,
-                "Could not install: offline",
-                vec![CodecAction::Install, CodecAction::Remove],
-            ),
-            (
-                "failed",
-                false,
-                "Could not install: offline",
-                vec![CodecAction::Install],
-            ),
-        ];
-        for (state, desired, line, actions) in cases {
-            let status = CodecPackStatus::parse(&format!(
-                r#"{{"state":"{state}","last_error":"offline","desired":{desired}}}"#
-            ));
-            assert_eq!(status.summary(), line, "{state}");
-            assert_eq!(status.offered_actions(), actions, "{state}");
+            );
+            assert_eq!(status.state, PackState::Installed);
+            assert_eq!(status.mesa, MesaState::Waiting);
+            assert_eq!(status.generation, 4);
+            assert_eq!(
+                CodecPackStatus::parse(r#"{"state":"installed","mesa":"enabled"}"#).mesa,
+                MesaState::Off,
+                "only the parts map decides"
+            );
+            assert_eq!(
+                CodecPackStatus::parse(
+                    r#"{"state":"installed","parts":{"tilo-codecs-mesa":"unsupported"}}"#
+                )
+                .mesa,
+                MesaState::Unsupported
+            );
         }
-        let enabled = CodecPackStatus::parse(
-            r#"{"state":"installed","parts":{"tilo-codecs-mesa":"enabled"}}"#,
-        );
-        assert_eq!(enabled.summary(), "On, including hardware H.264/HEVC");
-        assert!(
-            enabled
-                .when_it_applies()
-                .unwrap()
-                .contains("Sign out and back in")
-        );
-        assert_eq!(
-            CodecPackStatus::parse(r#"{"state":"failed"}"#).action_label(CodecAction::Install),
-            "Try again"
-        );
-    }
 
-    #[test]
-    fn progress_label_leads_the_line_while_installing() {
-        let installing = CodecPackStatus::parse(
-            r#"{"state":"installing","progress":{"step":3,"steps":6,"label":"Downloading"}}"#,
-        );
-        assert_eq!(installing.summary(), "Downloading (step 3 of 6)\u{2026}");
-        let bytes = CodecPackStatus::parse(
-            r#"{"state":"installing","progress":{"step":3,"steps":5,"label":"Downloading","bytes":12500000,"total":40000000}}"#,
-        );
-        assert_eq!(
-            bytes.summary(),
-            "Downloading 12 of 40 MB (step 3 of 5)\u{2026}"
-        );
-    }
+        phase installed_with_mesa_waiting_offers_a_recheck;
+        {
+            let status = CodecPackStatus::parse(
+                r#"{"state":"installed","parts":{"tilo-codecs":"enabled","tilo-codecs-mesa":"waiting"},"desired":true}"#,
+            );
+            assert!(status.summary().contains("follows once a matching driver"));
+            assert_eq!(
+                status.offered_actions(),
+                vec![CodecAction::Refresh, CodecAction::Remove]
+            );
+            assert_eq!(status.refresh_problem(), None);
+            assert!(status.when_it_applies().unwrap().contains("No restart"));
+        }
 
-    #[test]
-    fn failed_refresh_of_working_codecs_is_reported_separately() {
-        let status = CodecPackStatus::parse(
-            r#"{"state":"installed","parts":{"tilo-codecs-mesa":"enabled"},"last_error":"offline"}"#,
-        );
-        assert_eq!(status.offered_actions(), vec![CodecAction::Remove]);
-        assert_eq!(
-            status.refresh_problem().as_deref(),
-            Some("The last update of the formats failed: offline")
-        );
-    }
+        phase every_state_has_its_line_and_actions;
+        {
+            let cases = [
+                ("not-installed", false, "Off", vec![CodecAction::Install]),
+                (
+                    "waiting-for-network",
+                    true,
+                    "Waiting for an internet connection. It turns on by itself once this device is online.",
+                    vec![CodecAction::Remove],
+                ),
+                ("installing", true, "Downloading\u{2026}", vec![]),
+                ("removing", false, "Removing\u{2026}", vec![]),
+                (
+                    "failed",
+                    true,
+                    "Could not install: offline",
+                    vec![CodecAction::Install, CodecAction::Remove],
+                ),
+                (
+                    "failed",
+                    false,
+                    "Could not install: offline",
+                    vec![CodecAction::Install],
+                ),
+            ];
+            for (state, desired, line, actions) in cases {
+                let status = CodecPackStatus::parse(&format!(
+                    r#"{{"state":"{state}","last_error":"offline","desired":{desired}}}"#
+                ));
+                assert_eq!(status.summary(), line, "{state}");
+                assert_eq!(status.offered_actions(), actions, "{state}");
+            }
+            let enabled = CodecPackStatus::parse(
+                r#"{"state":"installed","parts":{"tilo-codecs-mesa":"enabled"}}"#,
+            );
+            assert_eq!(enabled.summary(), "On, including hardware H.264/HEVC");
+            assert!(
+                enabled
+                    .when_it_applies()
+                    .unwrap()
+                    .contains("Sign out and back in")
+            );
+            assert_eq!(
+                CodecPackStatus::parse(r#"{"state":"failed"}"#).action_label(CodecAction::Install),
+                "Try again"
+            );
+        }
 
-    #[test]
-    fn the_codecs_use_their_own_units_and_status() {
-        assert_eq!(
-            CodecAction::Install.unit(&id()),
-            "tilo-extension@install:media-codecs.service"
-        );
-        assert_eq!(
-            id().status_path(),
-            Path::new("/var/lib/tilo/extensions/media-codecs.json")
-        );
+        phase progress_label_leads_the_line_while_installing;
+        {
+            let installing = CodecPackStatus::parse(
+                r#"{"state":"installing","progress":{"step":3,"steps":6,"label":"Downloading"}}"#,
+            );
+            assert_eq!(installing.summary(), "Downloading (step 3 of 6)\u{2026}");
+            let bytes = CodecPackStatus::parse(
+                r#"{"state":"installing","progress":{"step":3,"steps":5,"label":"Downloading","bytes":12500000,"total":40000000}}"#,
+            );
+            assert_eq!(
+                bytes.summary(),
+                "Downloading 12 of 40 MB (step 3 of 5)\u{2026}"
+            );
+        }
+
+        phase failed_refresh_of_working_codecs_is_reported_separately;
+        {
+            let status = CodecPackStatus::parse(
+                r#"{"state":"installed","parts":{"tilo-codecs-mesa":"enabled"},"last_error":"offline"}"#,
+            );
+            assert_eq!(status.offered_actions(), vec![CodecAction::Remove]);
+            assert_eq!(
+                status.refresh_problem().as_deref(),
+                Some("The last update of the formats failed: offline")
+            );
+        }
+
+        phase the_codecs_use_their_own_units_and_status;
+        {
+            assert_eq!(
+                CodecAction::Install.unit(&id()),
+                "tilo-extension@install:media-codecs.service"
+            );
+            assert_eq!(
+                id().status_path(),
+                Path::new("/var/lib/tilo/extensions/media-codecs.json")
+            );
+        }
     }
 }

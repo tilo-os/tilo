@@ -123,83 +123,87 @@ mod tests {
         dir
     }
 
-    #[test]
-    fn the_keyboard_light_is_found_among_other_leds() {
-        let t = tree(&[
-            ("input3::capslock", 0, 1),
-            ("tpacpi::kbd_backlight", 1, 2),
-            ("platform::mute", 1, 1),
-        ]);
-        assert_eq!(
-            get_in(t.path()).unwrap(),
-            KeyboardBacklight { level: 1, max: 2 },
-            "caps-lock and mute LEDs are not the keyboard light"
-        );
-    }
+    tilo_test_env::scenario! {
+        fn the_keyboard_light_is_found_written_and_stepped;
 
-    #[test]
-    fn a_write_lands_on_the_keyboard_light_and_round_trips() {
-        let t = tree(&[("asus::kbd_backlight", 0, 3)]);
-        set_in(t.path(), 2).unwrap();
-        assert_eq!(
-            fs::read_to_string(t.path().join("asus::kbd_backlight/brightness")).unwrap(),
-            "2"
-        );
-        assert_eq!(get_in(t.path()).unwrap().level, 2);
-    }
+        phase the_keyboard_light_is_found_among_other_leds;
+        {
+            let t = tree(&[
+                ("input3::capslock", 0, 1),
+                ("tpacpi::kbd_backlight", 1, 2),
+                ("platform::mute", 1, 1),
+            ]);
+            assert_eq!(
+                get_in(t.path()).unwrap(),
+                KeyboardBacklight { level: 1, max: 2 },
+                "caps-lock and mute LEDs are not the keyboard light"
+            );
+        }
 
-    #[test]
-    fn a_write_past_the_maximum_saturates() {
-        let t = tree(&[("dell::kbd_backlight", 0, 2)]);
-        set_in(t.path(), 9).unwrap();
-        assert_eq!(
-            fs::read_to_string(t.path().join("dell::kbd_backlight/brightness")).unwrap(),
-            "2",
-            "the kernel rejects a value above max_brightness"
-        );
-    }
+        phase a_write_lands_on_the_keyboard_light_and_round_trips;
+        {
+            let t = tree(&[("asus::kbd_backlight", 0, 3)]);
+            set_in(t.path(), 2).unwrap();
+            assert_eq!(
+                fs::read_to_string(t.path().join("asus::kbd_backlight/brightness")).unwrap(),
+                "2"
+            );
+            assert_eq!(get_in(t.path()).unwrap().level, 2);
+        }
 
-    #[test]
-    fn a_machine_without_a_keyboard_light_says_so() {
-        let t = tree(&[("input3::capslock", 0, 1)]);
-        assert!(device(t.path()).is_none());
-        assert!(get_in(t.path()).is_err());
-        assert!(set_in(t.path(), 1).is_err());
-    }
+        phase a_write_past_the_maximum_saturates;
+        {
+            let t = tree(&[("dell::kbd_backlight", 0, 2)]);
+            set_in(t.path(), 9).unwrap();
+            assert_eq!(
+                fs::read_to_string(t.path().join("dell::kbd_backlight/brightness")).unwrap(),
+                "2",
+                "the kernel rejects a value above max_brightness"
+            );
+        }
 
-    #[test]
-    fn coarse_lights_step_one_level_and_fine_ones_a_tenth() {
-        let coarse = KeyboardBacklight { level: 1, max: 2 };
-        assert_eq!(coarse.step(true), 2);
-        assert_eq!(coarse.step(false), 0);
-        assert_eq!(KeyboardBacklight { level: 2, max: 2 }.step(true), 2);
-        assert_eq!(KeyboardBacklight { level: 0, max: 2 }.step(false), 0);
+        phase a_machine_without_a_keyboard_light_says_so;
+        {
+            let t = tree(&[("input3::capslock", 0, 1)]);
+            assert!(device(t.path()).is_none());
+            assert!(get_in(t.path()).is_err());
+            assert!(set_in(t.path(), 1).is_err());
+        }
 
-        let fine = KeyboardBacklight {
-            level: 100,
-            max: 255,
-        };
-        assert_eq!(fine.step(true), 125);
-        assert_eq!(fine.step(false), 75);
-        assert_eq!(
-            KeyboardBacklight {
-                level: 250,
-                max: 255
-            }
-            .step(true),
-            255
-        );
-    }
+        phase coarse_lights_step_one_level_and_fine_ones_a_tenth;
+        {
+            let coarse = KeyboardBacklight { level: 1, max: 2 };
+            assert_eq!(coarse.step(true), 2);
+            assert_eq!(coarse.step(false), 0);
+            assert_eq!(KeyboardBacklight { level: 2, max: 2 }.step(true), 2);
+            assert_eq!(KeyboardBacklight { level: 0, max: 2 }.step(false), 0);
 
-    #[test]
-    fn the_toggle_turns_a_lit_keyboard_off_and_a_dark_one_fully_on() {
-        assert_eq!(KeyboardBacklight { level: 1, max: 3 }.toggled(), 0);
-        assert_eq!(KeyboardBacklight { level: 0, max: 3 }.toggled(), 3);
-    }
+            let fine = KeyboardBacklight {
+                level: 100,
+                max: 255,
+            };
+            assert_eq!(fine.step(true), 125);
+            assert_eq!(fine.step(false), 75);
+            assert_eq!(
+                KeyboardBacklight {
+                    level: 250,
+                    max: 255
+                }
+                .step(true),
+                255
+            );
+        }
 
-    #[test]
-    fn the_fraction_is_level_over_max() {
-        let half = KeyboardBacklight { level: 1, max: 2 }.fraction();
-        assert!((half - 0.5).abs() < f32::EPSILON);
+        phase the_toggle_turns_a_lit_keyboard_off_and_a_dark_one_fully_on;
+        {
+            assert_eq!(KeyboardBacklight { level: 1, max: 3 }.toggled(), 0);
+            assert_eq!(KeyboardBacklight { level: 0, max: 3 }.toggled(), 3);
+        }
+
+        phase the_fraction_is_level_over_max;
+        {
+            let half = KeyboardBacklight { level: 1, max: 2 }.fraction();
+            assert!((half - 0.5).abs() < f32::EPSILON);
+        }
     }
 }

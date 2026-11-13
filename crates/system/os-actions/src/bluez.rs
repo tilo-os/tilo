@@ -273,69 +273,73 @@ mod tests {
         }
     }
 
-    #[test]
-    fn handoff_addresses_resolve_uniquely_and_pairing_must_complete() {
+    tilo_test_env::scenario! {
+        fn bluetooth_addresses_and_adapters_are_checked_before_bluez_is_asked;
+
+        phase handoff_addresses_resolve_uniquely_and_pairing_must_complete;
         {
-            let devices = vec![device(
-                "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF",
-                "AA:BB:CC:DD:EE:FF",
-                false,
-            )];
-            assert_eq!(
-                unique_device_by_address(&devices, "aa:bb:cc:dd:ee:ff")
-                    .unwrap()
-                    .map(|device| device.path.as_str()),
-                Some("/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF")
-            );
-        }
-        {
-            let devices = vec![
-                device("/org/bluez/hci0/dev_AA", "AA:BB:CC:DD:EE:FF", true),
-                device("/org/bluez/hci1/dev_AA", "AA:BB:CC:DD:EE:FF", false),
-            ];
-            assert!(
-                unique_device_by_address(&devices, "AA:BB:CC:DD:EE:FF")
+            {
+                let devices = vec![device(
+                    "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF",
+                    "AA:BB:CC:DD:EE:FF",
+                    false,
+                )];
+                assert_eq!(
+                    unique_device_by_address(&devices, "aa:bb:cc:dd:ee:ff")
+                        .unwrap()
+                        .map(|device| device.path.as_str()),
+                    Some("/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF")
+                );
+            }
+            {
+                let devices = vec![
+                    device("/org/bluez/hci0/dev_AA", "AA:BB:CC:DD:EE:FF", true),
+                    device("/org/bluez/hci1/dev_AA", "AA:BB:CC:DD:EE:FF", false),
+                ];
+                assert!(
+                    unique_device_by_address(&devices, "AA:BB:CC:DD:EE:FF")
+                        .unwrap_err()
+                        .contains("ambiguous")
+                );
+            }
+            {
+                assert!(valid_address("AA:BB:CC:DD:EE:FF"));
+                assert!(valid_address("aa:bb:cc:dd:ee:ff"));
+                assert!(!valid_address("/org/bluez/hci0/dev_AA"));
+                assert!(!valid_address("AA:BB:CC:DD:EE"));
+                assert!(!valid_address("GG:BB:CC:DD:EE:FF"));
+            }
+            {
+                assert_eq!(
+                    connected_pair_outcome(tilo_bluez::PairOutcome::PairedAndConnected),
+                    Ok(())
+                );
+                assert!(
+                    connected_pair_outcome(tilo_bluez::PairOutcome::PairedNotConnected {
+                        reason: "accessory stayed busy".into(),
+                    })
                     .unwrap_err()
-                    .contains("ambiguous")
-            );
+                    .contains("accessory stayed busy")
+                );
+            }
         }
-        {
-            assert!(valid_address("AA:BB:CC:DD:EE:FF"));
-            assert!(valid_address("aa:bb:cc:dd:ee:ff"));
-            assert!(!valid_address("/org/bluez/hci0/dev_AA"));
-            assert!(!valid_address("AA:BB:CC:DD:EE"));
-            assert!(!valid_address("GG:BB:CC:DD:EE:FF"));
-        }
-        {
-            assert_eq!(
-                connected_pair_outcome(tilo_bluez::PairOutcome::PairedAndConnected),
-                Ok(())
-            );
-            assert!(
-                connected_pair_outcome(tilo_bluez::PairOutcome::PairedNotConnected {
-                    reason: "accessory stayed busy".into(),
-                })
-                .unwrap_err()
-                .contains("accessory stayed busy")
-            );
-        }
-    }
 
-    #[test]
-    fn forgetting_a_device_needs_a_real_address() {
-        assert!(forget_address("not-an-address").is_err());
-        assert!(forget_address("/org/bluez/hci0/dev_AA_BB").is_err());
-    }
+        phase forgetting_a_device_needs_a_real_address;
+        {
+            assert!(forget_address("not-an-address").is_err());
+            assert!(forget_address("/org/bluez/hci0/dev_AA_BB").is_err());
+        }
 
-    #[test]
-    fn has_adapter_requires_an_hci_controller() {
-        let empty = tempfile::tempdir().unwrap();
-        assert!(!has_adapter_in(empty.path()));
-        let with_hci = tempfile::tempdir().unwrap();
-        fs::create_dir(with_hci.path().join("hci0")).unwrap();
-        assert!(has_adapter_in(with_hci.path()));
-        let noise = tempfile::tempdir().unwrap();
-        fs::create_dir(noise.path().join("rfkill")).unwrap();
-        assert!(!has_adapter_in(noise.path()));
+        phase has_adapter_requires_an_hci_controller;
+        {
+            let empty = tempfile::tempdir().unwrap();
+            assert!(!has_adapter_in(empty.path()));
+            let with_hci = tempfile::tempdir().unwrap();
+            fs::create_dir(with_hci.path().join("hci0")).unwrap();
+            assert!(has_adapter_in(with_hci.path()));
+            let noise = tempfile::tempdir().unwrap();
+            fs::create_dir(noise.path().join("rfkill")).unwrap();
+            assert!(!has_adapter_in(noise.path()));
+        }
     }
 }
