@@ -1,8 +1,8 @@
 //! `cargo web`: the web desktop, built by the bundle's own build (`build.sh --bundle desktop`) and
 //! served by the local hosting stack (`os/containers/tilo-sh/stack.sh`), which runs production's
-//! entrypoints and site layout. After it serves, the page is read back as a browser would start
-//! it: the entry page, every module it and its modules name, and the runtime's WebAssembly. A
-//! missing piece fails the command, so a bundle that would not start is never left serving.
+//! entrypoints and site layout. After it serves, the page is read back as a browser would start it:
+//! the entry page, every module it names, and the runtime's WebAssembly. A missing piece fails the
+//! command, so a bundle that would not start is never left serving.
 
 use std::collections::{BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};

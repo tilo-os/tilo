@@ -2,11 +2,10 @@
 //! aliases (`.cargo/config.toml`) are the way in: `cargo desktop`, `cargo headless`, `cargo web`.
 //!
 //! Each command drives the path that already exists for it and adds nothing beside it: the
-//! development session (`dist/dev/nested-session.sh` over `dist/dev/nested-session-build.sh`) for
-//! the desktop and the headless runtime, and the web bundle's build (`build.sh`) and the local
-//! hosting stack (`os/containers/tilo-sh/stack.sh`) for the web desktop. What this adds is the
-//! choice of options, a line saying where the running thing is and how to reach it, and `--check`:
-//! a smoke test that starts the thing, asks it something, and stops it.
+//! development session (`dist/dev/nested-session.sh`) for the desktop and the headless runtime, and
+//! the web bundle's build and local hosting stack for the web desktop. What this adds is the choice
+//! of options, a line saying where the running thing is and how to reach it, and `--check`: a smoke
+//! test that starts it, asks it something, and stops it.
 
 mod check;
 mod json;
