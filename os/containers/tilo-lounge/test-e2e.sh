@@ -54,14 +54,16 @@
 #                  list and confirms through the mail (a second Lounge, whose
 #                  door takes people by invitation: the one policy the stack
 #                  cannot have at once)
-#   onboarding     one stranger's whole way in, on a host of its own whose door
-#                  takes people by invitation: the wait list and its
-#                  confirmation mail, the invitation an operator sends from the
-#                  workspace's own wait list and the mail it carries, the
-#                  workspace of their own they land in, their passkey bringing
-#                  them back to it, a second workspace they make, and a visitor
-#                  with no invitation who still cannot get in
-#                  (integration/onboarding.mjs, test-onboarding.sh)
+#   onboarding     one stranger's whole way in, on a whole tilo.sh of its own
+#                  (test-onboarding.sh: the stack, whose door takes people by
+#                  invitation as production's does): the wait list and its
+#                  confirmation mail, the invitation the person who runs the
+#                  host sends from the workspace's own wait list and the mail it
+#                  carries, the workspace of their own they land in and the
+#                  agent set up there. It stops at the passkey: a browser that
+#                  forgot the site signs the person in, and the host refuses to
+#                  certify the tab as one of their devices
+#                  (integration/onboarding.mjs)
 #   restart        the Lounge's relay starts again on its volume, and a person
 #                  who was not here reads the chat people-call wrote and
 #                  writes in it
@@ -135,8 +137,9 @@ print("ok: the directory lists the Lounge, joined at its door as an editor")
       # of its own (direct-lounge.sh, LOUNGE_PORT_BASE).
       exec bash "$lounge_dir/test-wait-list-door.sh" "$E2E_BUNDLE" "$out" ;;
     onboarding)
-      # A host of its own for the same reason, on addresses of its own.
-      LOUNGE_PORT_BASE=19810 exec bash "$lounge_dir/test-onboarding.sh" "$E2E_BUNDLE" "$out" ;;
+      # A whole tilo.sh of its own, on addresses of its own: the stack's door
+      # takes people by invitation, so it cannot be the one above.
+      ONBOARDING_PORT_BASE=25100 exec bash "$lounge_dir/test-onboarding.sh" "$E2E_BUNDLE" "$out" ;;
     restart)
       earlier=$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["chat"])' \
         "$E2E_WORK/people-call/report.json") || { echo 'FAIL: people-call left no chat message behind'; exit 1; }
@@ -157,10 +160,9 @@ shift 2
 all=(signin directory boot people-call people-desk people-menus people-invite share-link agent-setup setup-resume visa entry passkey wait-list restart)
 # Run only when named: a person reloading their workspace page twenty times
 # in one browser, counting the reloads that crash or never come back; and a
-# stranger's whole onboarding, which stops at the operator's invitation: an
-# invitation the host issues after the workspace started again on its volume
-# is not answered to the page that asked for it, so the flow waits for a link
-# that the host has already made.
+# stranger's whole onboarding, which brings up a whole tilo.sh of its own
+# rather than using the stack the other flows share, and which stops at the
+# passkey return (the host refuses to certify the tab).
 named_only=(reloads onboarding)
 asked=("$@")
 [[ ${#asked[@]} -gt 0 ]] || read -r -a asked <<< "${E2E_FLOWS:-${all[*]}}"

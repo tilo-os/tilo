@@ -1662,7 +1662,7 @@ reason = "needs the built web desktop bundle, headless Chromium and the built re
 
 [[unrequired]]
 suite = "os/containers/tilo-lounge/test-onboarding.sh"
-reason = "one flow of the e2e check, on a host of its own whose door takes people by invitation and whose mails go to a sink it runs: it needs the built web desktop bundle, headless Chromium, the built relay, crypto and tilo command, and minutes of a machine's walls; the e2e check runs it beside the other flows"
+reason = "one flow of the e2e check, on a whole tilo.sh of its own (the stack, whose door takes people by invitation and whose mail goes to a sink it reads): it needs the built web desktop bundle, the stack's programs, context, site and Caddy, headless Chromium, the tilo command, and minutes of a machine's walls; the e2e check runs it beside the other flows"
 
 [[unrequired]]
 suite = "os/containers/tilo-lounge/test-page-tour.sh"
