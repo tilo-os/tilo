@@ -52,7 +52,39 @@ fn place_row(harness: &ui::headless::FrameHarness, place: &str) -> Rect {
     })
 }
 
-pub(crate) fn document_of(calendar: &Calendar) -> AutoCommit {
+/// The demo calendar of one day and, once a fixture asks for it, the document that holds it.
+struct Demo {
+    today: NaiveDate,
+    calendar: Calendar,
+    document: std::cell::OnceCell<AutoCommit>,
+}
+
+thread_local! {
+    /// What the first demo app on this test's thread was seeded with. It is written once and
+    /// never changed: every app takes its own copy of the calendar and every fixture its own copy
+    /// of the document, so no phase of a test sees what another did to its own.
+    static DEMO: std::cell::OnceCell<Demo> = const { std::cell::OnceCell::new() };
+}
+
+/// The demo calendar [`CalendarApp::new_demo`] starts from. Replaying it into a document is most
+/// of what a demo fixture costs, so a test that mounts several demo apps seeds one calendar and
+/// replays it once ([`document_of`]). A day other than the first one asked for is seeded afresh.
+pub(crate) fn demo_calendar(today: NaiveDate) -> Calendar {
+    DEMO.with(|demo| {
+        let demo = demo.get_or_init(|| Demo {
+            today,
+            calendar: crate::model::seed_demo(today),
+            document: std::cell::OnceCell::new(),
+        });
+        if demo.today == today {
+            demo.calendar.clone()
+        } else {
+            crate::model::seed_demo(today)
+        }
+    })
+}
+
+fn replayed(calendar: &Calendar) -> AutoCommit {
     let mut replica = ui::tilo_resource::Replica::<Calendar>::new();
     for invoke in crate::resource::sample_invocations(calendar) {
         replica.apply(invoke).expect("the sample applies");
@@ -60,8 +92,56 @@ pub(crate) fn document_of(calendar: &Calendar) -> AutoCommit {
     replica.doc().clone()
 }
 
+/// The document that holds `calendar`, as replaying its sample invocations writes it: a copy of
+/// the one replay of the demo calendar while `calendar` is still exactly that, and a replay of
+/// its own for any other calendar.
+pub(crate) fn document_of(calendar: &Calendar) -> AutoCommit {
+    DEMO.with(|demo| {
+        demo.get()
+            .filter(|demo| demo.calendar == *calendar)
+            .map(|demo| demo.document.get_or_init(|| replayed(calendar)).clone())
+    })
+    .unwrap_or_else(|| replayed(calendar))
+}
+
 pub(crate) fn demo_document(app: &CalendarApp) -> AutoCommit {
     document_of(&app.model)
+}
+
+/// The demo fixtures of one test start from one seed and share nothing they do afterwards.
+#[test]
+fn demo_fixtures_are_separate_copies_of_one_seed() {
+    let mut first = CalendarApp::new_demo();
+    let mut first_doc = demo_document(&first);
+    present(&mut first, &mut first_doc, &automerge::ROOT);
+    let id = first.model.events[0].id;
+    first.select_event(id);
+    first.apply_action(Action::DeleteEvent(id), &mut Edits::lend(&mut first_doc));
+    assert!(first.model.event(id).is_none(), "the first app deleted it");
+    assert!(crate::resource::read_doc(&first_doc).event(id).is_none());
+
+    let second = CalendarApp::new_demo();
+    let second_doc = demo_document(&second);
+    assert!(
+        second.model.event(id).is_some(),
+        "a later app starts from the whole seed"
+    );
+    assert!(
+        crate::resource::read_doc(&second_doc).event(id).is_some(),
+        "and its document holds what the first app deleted from its own"
+    );
+    assert!(
+        crate::resource::read_doc(&document_of(&first.model))
+            .event(id)
+            .is_none(),
+        "a calendar that is no longer the seed is replayed as it is"
+    );
+    let tomorrow = second.today + Duration::days(1);
+    assert_ne!(
+        demo_calendar(tomorrow),
+        demo_calendar(second.today),
+        "another day is seeded on its own"
+    );
 }
 
 fn waits_for_upload(doc: &AutoCommit, id: Id) -> bool {
