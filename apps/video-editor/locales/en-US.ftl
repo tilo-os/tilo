@@ -680,3 +680,7 @@ video-editor-redo = Redo
 video-editor-nothing-to-undo = Nothing to undo
 video-editor-nothing-to-redo = Nothing to redo
 video-editor-undo-command = { $verb }: { $summary }
+video-editor-not-a-timecode = Not a timecode
+video-editor-export-summary = { $width }×{ $height } for { $length }, { $size }
+video-editor-export-marked-range = { $width }×{ $height } for { $length } of the marked range, { $size }
+video-editor-export-no-answer = The file chooser closed without an answer

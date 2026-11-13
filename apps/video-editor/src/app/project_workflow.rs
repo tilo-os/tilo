@@ -337,7 +337,7 @@ impl VideoEditorApp {
             Some(Err(_)) => {
                 self.export_notice = None;
                 self.export_status = ExportStatus::Failed {
-                    reason: "the file chooser closed without a result".into(),
+                    reason: crate::resource::CATALOG.t("video-editor-export-no-answer"),
                 };
             }
             None => {}

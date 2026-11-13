@@ -7558,7 +7558,12 @@ pub(crate) fn shortcuts() -> Vec<(&'static str, Vec<ShortcutRow>)> {
                     &["{shift:Delete}"],
                     t("video-editor-shortcut-ripple-delete"),
                 ),
-                row(&["Arrows"], t("video-editor-shortcut-nudge")),
+                // Four caps, each the label the keyboard prints on that key:
+                // no word for "arrows" reaches a window in any language.
+                row(
+                    &["left", "up", "down", "right"],
+                    t("video-editor-shortcut-nudge"),
+                ),
             ],
         ),
         (
@@ -8388,12 +8393,17 @@ impl VideoEditorApp {
             field.apply_layout_external(l.entry);
             field.draw_child(scene, tf, tr, &panel, presence);
         }
+        // The field says only what is wrong with what was typed; the key that
+        // takes it is the key people already press in a text field.
         let (hint, hc) = if self.navigation.goto_notice {
-            ("Not a timecode, try 1:30", c.semantic.danger)
+            (
+                crate::resource::CATALOG.t("video-editor-not-a-timecode"),
+                c.semantic.danger,
+            )
         } else {
-            ("Enter to jump, Esc to cancel", panel.text_dim)
+            (String::new(), panel.text_dim)
         };
-        text(scene, tr, tf, hint, &ty.xs, hc, x, l.hint_top);
+        text(scene, tr, tf, &hint, &ty.xs, hc, x, l.hint_top);
     }
 
     #[allow(
@@ -8525,15 +8535,28 @@ impl VideoEditorApp {
         let (w, h) = crate::export::output_dims(&self.export, &self.project);
         // And how long it will run — the marked range when there is one,
         // which is the whole reason for marking one.
-        let info = format!(
-            "{w}×{h} for {}{}, {est}",
-            timecode(self.project.export_duration(), self.project.fps),
-            if self.project.has_marks() {
-                " (marked range)"
-            } else {
-                ""
-            }
-        );
+        let length = timecode(self.project.export_duration(), self.project.fps);
+        let info = if self.project.has_marks() {
+            crate::resource::CATALOG.t_args(
+                "video-editor-export-marked-range",
+                &[
+                    ("width", ui::i18n::ArgValue::Number(f64::from(w))),
+                    ("height", ui::i18n::ArgValue::Number(f64::from(h))),
+                    ("length", ui::i18n::ArgValue::Text(length)),
+                    ("size", ui::i18n::ArgValue::Text(est)),
+                ],
+            )
+        } else {
+            crate::resource::CATALOG.t_args(
+                "video-editor-export-summary",
+                &[
+                    ("width", ui::i18n::ArgValue::Number(f64::from(w))),
+                    ("height", ui::i18n::ArgValue::Number(f64::from(h))),
+                    ("length", ui::i18n::ArgValue::Text(length)),
+                    ("size", ui::i18n::ArgValue::Text(est)),
+                ],
+            )
+        };
         let info = elide_at(&info, width, &ty.sm, tr);
         text(scene, tr, tf, &info, &ty.sm, dim, x0, l.info_top);
         let status = l.status;

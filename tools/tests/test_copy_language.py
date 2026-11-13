@@ -1166,6 +1166,67 @@ class CopyLanguageTests(unittest.TestCase):
             "the words are keys into the catalogue through the crate's own "
             "mapping, so the window paints a translation, not the table")
 
+    def test_a_table_of_messages_answers_with_messages_and_nothing_else(self):
+        root = self._root({
+            "apps/demo/src/lib.rs": "\n".join([
+                "enum Section { Curves, Mask }",
+                "impl Section {",
+                "    fn message(self) -> &'static str {",
+                "        match self {",
+                '            Section::Curves => "demo-section-curves",',
+                '            Section::Mask => "Mask",',
+                "        }",
+                "    }",
+                "}",
+                "fn heading(section: Section) -> Node {",
+                "    Node::new(Role::Heading)",
+                '        .with_name(crate::strings::t(section.message()))',
+                "}",
+                "/// The message for a stored option, named by the value it holds.",
+                "fn option_ftl(stored: &str) -> &'static str {",
+                "    match stored {",
+                '        "Mask" => "demo-option-mask",',
+                '        _ => "demo-option-curves",',
+                "    }",
+                "}",
+            ]) + "\n",
+        })
+        self.assertEqual(
+            [text for _, _, text in copy.key_table_literals(root, root / "baselines")],
+            ["Mask"],
+            "a table the catalogue lookup resolves answers with this crate's "
+            "message ids; the word it was asked with is the stored value, not "
+            "copy, so neither it nor the ids themselves are found")
+
+    def test_a_table_rule_holds_once_a_crate_has_no_baseline_left(self):
+        root = self._root({
+            "apps/demo/src/lib.rs": "\n".join([
+                "fn message(key: &str) -> &'static str {",
+                "    match key {",
+                '        "a" => "demo-name",',
+                '        _ => "Demo",',
+                "    }",
+                "}",
+                "fn heading() -> Node {",
+                '    Node::new(Role::Heading).with_name(crate::strings::t(message("a")))',
+                "}",
+            ]) + "\n",
+        })
+        baselines = root / "baselines"
+        baselines.mkdir()
+        (baselines / "apps-demo.txt").write_text("en-US demo-name raw-id\n")
+        self.assertEqual(
+            [text for _, _, text in copy.key_table_literals(root, baselines)],
+            [],
+            "a crate still listing copy it has not migrated is not held to the "
+            "table rule until its shard goes")
+        (baselines / "apps-demo.txt").unlink()
+        self.assertEqual(
+            [text for _, _, text in copy.key_table_literals(root, baselines)],
+            ["Demo"],
+            "the day the shard goes, the words a catalogue lookup resolves have "
+            "to be the crate's own messages")
+
     def test_a_refusal_reported_to_the_caller_is_not_copy(self):
         root = self._root({
             "apps/demo/src/lib.rs": "\n".join([

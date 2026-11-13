@@ -680,3 +680,7 @@ video-editor-redo = Wiederholen
 video-editor-nothing-to-undo = Nichts rückgängig zu machen
 video-editor-nothing-to-redo = Nichts zu wiederholen
 video-editor-undo-command = { $verb }: { $summary }
+video-editor-not-a-timecode = Keine Zeitangabe
+video-editor-export-summary = { $width }×{ $height }, { $length }, { $size }
+video-editor-export-marked-range = { $width }×{ $height }, { $length } des markierten Bereichs, { $size }
+video-editor-export-no-answer = Die Dateiauswahl wurde ohne Antwort geschlossen

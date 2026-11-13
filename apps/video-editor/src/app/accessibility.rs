@@ -8,6 +8,15 @@ use super::*;
 // Accessibility
 // ==========================================================================
 
+/// The three toggles a lane carries, the name the router addresses each by and
+/// the catalogue message a reader hears for it. The written name is the router's
+/// alone, so a route survives the window's language.
+const TRACK_TOGGLES: [(&str, &str); 3] = [
+    ("Mute", "video-editor-toggle-mute"),
+    ("Solo", "video-editor-toggle-solo"),
+    ("Lock", "video-editor-toggle-lock"),
+];
+
 /// Which transport button each index addresses, the catalogue message a
 /// reader hears, and the name the router addresses it by.
 ///
@@ -479,13 +488,11 @@ impl VideoEditorApp {
         let track_count = self.project.tracks.len();
         for (ti, track) in self.project.tracks.iter().enumerate() {
             let mut kids: Vec<AccessNode> = Vec::new();
-            // The written word is what routes, so the toggle keeps its key
-            // when the spoken name changes language.
-            for (key, message, on) in [
-                ("Mute", "video-editor-toggle-mute", track.muted),
-                ("Solo", "video-editor-toggle-solo", track.solo),
-                ("Lock", "video-editor-toggle-lock", track.locked),
-            ] {
+            for (key, message, on) in TRACK_TOGGLES
+                .into_iter()
+                .zip([track.muted, track.solo, track.locked])
+                .map(|((key, message), on)| (key, message, on))
+            {
                 kids.push(
                     AccessNode::new(Role::ToggleButton)
                         .with_name(crate::resource::CATALOG.t_args(
