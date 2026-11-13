@@ -276,93 +276,97 @@ mod tests {
         response
     }
 
-    #[test]
-    fn redirect_line_parsing() {
-        assert_eq!(
-            parse_redirect_line("GET /oauth?state=xyz&code=4%2F0Afoo&scope=mail HTTP/1.1"),
-            Some(RedirectResult::Code {
-                code: "4/0Afoo".into(),
-                state: "xyz".into()
-            })
-        );
-        assert_eq!(
-            parse_redirect_line("GET /oauth?error=access_denied&state=xyz HTTP/1.1"),
-            Some(RedirectResult::Error("access_denied".into()))
-        );
-        assert_eq!(parse_redirect_line("GET /favicon.ico HTTP/1.1"), None);
-        assert_eq!(parse_redirect_line("GET /?code=x HTTP/1.1"), None);
-        assert_eq!(parse_redirect_line(""), None);
-    }
+    tilo_test_env::scenario! {
+        fn the_loopback_listener_takes_the_redirect_meant_for_it;
 
-    #[test]
-    fn captures_the_code_after_ignoring_a_favicon_request() {
-        let server = LoopbackServer::bind().unwrap();
-        assert!(
-            server
-                .redirect_uri()
-                .starts_with(&format!("http://127.0.0.1:{}/", server.port()))
-        );
-        let port = server.port();
-        // The listener is bound, so the browser's connections queue in the
-        // backlog until the wait accepts them.
-        let browser = std::thread::spawn(move || {
-            browser_get(port, "/favicon.ico");
-            browser_get(port, "/oauth?code=THECODE&state=STATE123")
-        });
-        let code = server
-            .wait_for_code("STATE123", tilo_test_env::hang_bound())
-            .unwrap();
-        assert_eq!(code, "THECODE");
-        assert!(browser.join().unwrap().contains("close this tab"));
-    }
+        phase redirect_line_parsing;
+        {
+            assert_eq!(
+                parse_redirect_line("GET /oauth?state=xyz&code=4%2F0Afoo&scope=mail HTTP/1.1"),
+                Some(RedirectResult::Code {
+                    code: "4/0Afoo".into(),
+                    state: "xyz".into()
+                })
+            );
+            assert_eq!(
+                parse_redirect_line("GET /oauth?error=access_denied&state=xyz HTTP/1.1"),
+                Some(RedirectResult::Error("access_denied".into()))
+            );
+            assert_eq!(parse_redirect_line("GET /favicon.ico HTTP/1.1"), None);
+            assert_eq!(parse_redirect_line("GET /?code=x HTTP/1.1"), None);
+            assert_eq!(parse_redirect_line(""), None);
+        }
 
-    #[test]
-    fn a_registered_host_and_path_are_the_redirect() {
-        let redirect = Redirect {
-            host: "localhost".into(),
-            path: "/auth/callback".into(),
-        };
-        let server = LoopbackServer::bind().unwrap().at(&redirect);
-        let port = server.port();
-        assert_eq!(
-            server.redirect_uri(),
-            format!("http://localhost:{port}/auth/callback")
-        );
-        let browser = std::thread::spawn(move || {
-            browser_get(port, "/oauth?code=WRONG_PATH&state=S");
-            browser_get(port, "/auth/callback?code=C&state=S")
-        });
-        assert_eq!(
-            server.wait_for_code("S", tilo_test_env::hang_bound()),
-            Ok("C".into())
-        );
-        browser.join().unwrap();
-    }
+        phase captures_the_code_after_ignoring_a_favicon_request;
+        {
+            let server = LoopbackServer::bind().unwrap();
+            assert!(
+                server
+                    .redirect_uri()
+                    .starts_with(&format!("http://127.0.0.1:{}/", server.port()))
+            );
+            let port = server.port();
+            // The listener is bound, so the browser's connections queue in the
+            // backlog until the wait accepts them.
+            let browser = std::thread::spawn(move || {
+                browser_get(port, "/favicon.ico");
+                browser_get(port, "/oauth?code=THECODE&state=STATE123")
+            });
+            let code = server
+                .wait_for_code("STATE123", tilo_test_env::hang_bound())
+                .unwrap();
+            assert_eq!(code, "THECODE");
+            assert!(browser.join().unwrap().contains("close this tab"));
+        }
 
-    #[test]
-    fn rejects_a_state_mismatch() {
-        let server = LoopbackServer::bind().unwrap();
-        let port = server.port();
-        let browser = std::thread::spawn(move || browser_get(port, "/oauth?code=X&state=WRONG"));
-        assert_eq!(
-            server.wait_for_code("EXPECTED", tilo_test_env::hang_bound()),
-            Err(OAuthError::StateMismatch)
-        );
-        browser.join().unwrap();
-    }
+        phase a_registered_host_and_path_are_the_redirect;
+        {
+            let redirect = Redirect {
+                host: "localhost".into(),
+                path: "/auth/callback".into(),
+            };
+            let server = LoopbackServer::bind().unwrap().at(&redirect);
+            let port = server.port();
+            assert_eq!(
+                server.redirect_uri(),
+                format!("http://localhost:{port}/auth/callback")
+            );
+            let browser = std::thread::spawn(move || {
+                browser_get(port, "/oauth?code=WRONG_PATH&state=S");
+                browser_get(port, "/auth/callback?code=C&state=S")
+            });
+            assert_eq!(
+                server.wait_for_code("S", tilo_test_env::hang_bound()),
+                Ok("C".into())
+            );
+            browser.join().unwrap();
+        }
 
-    #[test]
-    fn deadline_and_cancel_end_the_wait() {
-        let server = LoopbackServer::bind().unwrap();
-        assert_eq!(
-            server.wait_for_code("S", Duration::ZERO),
-            Err(OAuthError::TimedOut)
-        );
-        let server = LoopbackServer::bind().unwrap();
-        server.canceller().cancel();
-        assert_eq!(
-            server.wait_for_code("S", tilo_test_env::hang_bound()),
-            Err(OAuthError::Cancelled)
-        );
+        phase rejects_a_state_mismatch;
+        {
+            let server = LoopbackServer::bind().unwrap();
+            let port = server.port();
+            let browser = std::thread::spawn(move || browser_get(port, "/oauth?code=X&state=WRONG"));
+            assert_eq!(
+                server.wait_for_code("EXPECTED", tilo_test_env::hang_bound()),
+                Err(OAuthError::StateMismatch)
+            );
+            browser.join().unwrap();
+        }
+
+        phase deadline_and_cancel_end_the_wait;
+        {
+            let server = LoopbackServer::bind().unwrap();
+            assert_eq!(
+                server.wait_for_code("S", Duration::ZERO),
+                Err(OAuthError::TimedOut)
+            );
+            let server = LoopbackServer::bind().unwrap();
+            server.canceller().cancel();
+            assert_eq!(
+                server.wait_for_code("S", tilo_test_env::hang_bound()),
+                Err(OAuthError::Cancelled)
+            );
+        }
     }
 }

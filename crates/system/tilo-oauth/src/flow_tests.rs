@@ -27,171 +27,179 @@ fn sign_in(server: &FakeAuthorizationServer) -> Result<TokenSet, OAuthError> {
     result
 }
 
-#[test]
-fn code_flow_with_pkce_yields_tokens() {
-    let server = FakeAuthorizationServer::start();
-    let tokens = sign_in(&server).expect("sign-in");
-    assert!(tokens.access_token.starts_with("access-"));
-    assert!(tokens.refresh_token.starts_with("refresh-"));
-    assert_eq!(tokens.expires_in, 3600);
+tilo_test_env::scenario! {
+    fn tokens_are_refreshed_and_revoked_at_the_provider;
 
-    let requests = server.requests();
-    let authorize = requests
-        .iter()
-        .find(|request| request.target.starts_with("/authorize?"))
-        .expect("the browser visited the authorization endpoint");
-    assert!(authorize.target.contains("code_challenge_method=S256"));
-    assert!(authorize.target.contains("access_type=offline"));
-    assert!(authorize.target.contains("login_hint=ada%40example.test"));
-    assert!(
-        authorize
-            .target
-            .contains("redirect_uri=http%3A%2F%2F127.0.0.1%3A"),
-        "loopback redirect on 127.0.0.1: {}",
-        authorize.target
-    );
-    // The verifier itself never travels on the authorization request; the
-    // server saw it only at the token endpoint, and it matched.
-    let verifiers = server.verifiers();
-    assert_eq!(verifiers.len(), 1);
-    assert!(!authorize.target.contains(&verifiers[0]));
+    phase refresh_renews_the_access_token_and_keeps_the_refresh_token;
+    {
+        let server = FakeAuthorizationServer::start();
+        server.set_token_lifetime(1);
+        let tokens = sign_in(&server).unwrap();
+        assert!(tokens.needs_refresh(), "a one second token is due");
+        let client = OAuthClient::new().unwrap();
+        let renewed = client
+            .refresh(&server.provider(), &registration(), &tokens.refresh_token)
+            .unwrap();
+        assert_ne!(renewed.access_token, tokens.access_token);
+        assert_eq!(
+            renewed.refresh_token, tokens.refresh_token,
+            "carried forward when the provider does not rotate it"
+        );
+        assert_eq!(server.refreshes(), 1);
+    }
+
+    phase a_revoked_refresh_token_is_invalid_grant;
+    {
+        let server = FakeAuthorizationServer::start();
+        let tokens = sign_in(&server).unwrap();
+        server.revoke_all_refresh_tokens();
+        let error = OAuthClient::new()
+            .unwrap()
+            .refresh(&server.provider(), &registration(), &tokens.refresh_token)
+            .unwrap_err();
+        assert_eq!(error, OAuthError::InvalidGrant);
+        assert!(error.needs_authentication());
+    }
+
+    phase revocation_sends_the_refresh_token_to_the_revocation_endpoint;
+    {
+        let server = FakeAuthorizationServer::start();
+        let tokens = sign_in(&server).unwrap();
+        let client = OAuthClient::new().unwrap();
+        assert_eq!(
+            client.revoke(&server.provider(), &registration(), &tokens),
+            Ok(true)
+        );
+        assert_eq!(server.revoked(), vec![tokens.refresh_token.clone()]);
+        let mut provider = server.provider();
+        provider.revocation = crate::Revocation::Unsupported;
+        assert_eq!(
+            client.revoke(&provider, &registration(), &tokens),
+            Ok(false)
+        );
+    }
 }
 
-#[test]
-fn a_code_redeemed_with_the_wrong_verifier_is_rejected() {
-    let server = FakeAuthorizationServer::start();
-    let provider = server.provider();
-    let authorization = Authorization::begin(&provider, &registration(), None).unwrap();
-    // Intercept the code the way a malicious app on the same machine would,
-    // by asking the server for it with our challenge, then try to redeem it
-    // without knowing the verifier.
-    let location = {
-        let url = authorization.url().to_string();
-        let mut rebuilt = url::Url::parse(&url).unwrap();
-        let mut query: Vec<(String, String)> = rebuilt.query_pairs().into_owned().collect();
-        for (key, value) in &mut query {
-            if key == "redirect_uri" {
-                *value = format!("{}/nowhere", server.url());
-            }
-        }
-        rebuilt.query_pairs_mut().clear().extend_pairs(query);
-        rebuilt.to_string()
-    };
-    browse(&location).unwrap();
-    let requests = server.requests();
-    let stolen = requests
-        .iter()
-        .find_map(|request| {
-            request
+tilo_test_env::scenario! {
+    fn a_browser_sign_in_yields_tokens_only_to_the_app_that_began_it;
+
+    phase code_flow_with_pkce_yields_tokens;
+    {
+        let server = FakeAuthorizationServer::start();
+        let tokens = sign_in(&server).expect("sign-in");
+        assert!(tokens.access_token.starts_with("access-"));
+        assert!(tokens.refresh_token.starts_with("refresh-"));
+        assert_eq!(tokens.expires_in, 3600);
+
+        let requests = server.requests();
+        let authorize = requests
+            .iter()
+            .find(|request| request.target.starts_with("/authorize?"))
+            .expect("the browser visited the authorization endpoint");
+        assert!(authorize.target.contains("code_challenge_method=S256"));
+        assert!(authorize.target.contains("access_type=offline"));
+        assert!(authorize.target.contains("login_hint=ada%40example.test"));
+        assert!(
+            authorize
                 .target
-                .strip_prefix("/nowhere?code=")
-                .map(|rest| rest.split('&').next().unwrap_or_default().to_string())
-        })
-        .expect("the code was delivered");
-    let client = OAuthClient::new().unwrap();
-    assert_eq!(
-        client.exchange_code(
-            &provider,
-            &registration(),
-            Some(&format!("{}/nowhere", server.url())),
-            &stolen,
-            "not-the-verifier-for-this-challenge-0000000000",
-        ),
-        Err(OAuthError::InvalidGrant)
-    );
-}
+                .contains("redirect_uri=http%3A%2F%2F127.0.0.1%3A"),
+            "loopback redirect on 127.0.0.1: {}",
+            authorize.target
+        );
+        // The verifier itself never travels on the authorization request; the
+        // server saw it only at the token endpoint, and it matched.
+        let verifiers = server.verifiers();
+        assert_eq!(verifiers.len(), 1);
+        assert!(!authorize.target.contains(&verifiers[0]));
+    }
 
-#[test]
-fn a_forged_state_is_refused_before_any_token_request() {
-    let server = FakeAuthorizationServer::start();
-    server.forge_state("attacker-state");
-    assert_eq!(sign_in(&server), Err(OAuthError::StateMismatch));
-    assert!(
-        server.verifiers().is_empty(),
-        "no code exchange after a state mismatch"
-    );
-}
+    phase a_code_redeemed_with_the_wrong_verifier_is_rejected;
+    {
+        let server = FakeAuthorizationServer::start();
+        let provider = server.provider();
+        let authorization = Authorization::begin(&provider, &registration(), None).unwrap();
+        // Intercept the code the way a malicious app on the same machine would,
+        // by asking the server for it with our challenge, then try to redeem it
+        // without knowing the verifier.
+        let location = {
+            let url = authorization.url().to_string();
+            let mut rebuilt = url::Url::parse(&url).unwrap();
+            let mut query: Vec<(String, String)> = rebuilt.query_pairs().into_owned().collect();
+            for (key, value) in &mut query {
+                if key == "redirect_uri" {
+                    *value = format!("{}/nowhere", server.url());
+                }
+            }
+            rebuilt.query_pairs_mut().clear().extend_pairs(query);
+            rebuilt.to_string()
+        };
+        browse(&location).unwrap();
+        let requests = server.requests();
+        let stolen = requests
+            .iter()
+            .find_map(|request| {
+                request
+                    .target
+                    .strip_prefix("/nowhere?code=")
+                    .map(|rest| rest.split('&').next().unwrap_or_default().to_string())
+            })
+            .expect("the code was delivered");
+        let client = OAuthClient::new().unwrap();
+        assert_eq!(
+            client.exchange_code(
+                &provider,
+                &registration(),
+                Some(&format!("{}/nowhere", server.url())),
+                &stolen,
+                "not-the-verifier-for-this-challenge-0000000000",
+            ),
+            Err(OAuthError::InvalidGrant)
+        );
+    }
 
-#[test]
-fn refresh_renews_the_access_token_and_keeps_the_refresh_token() {
-    let server = FakeAuthorizationServer::start();
-    server.set_token_lifetime(1);
-    let tokens = sign_in(&server).unwrap();
-    assert!(tokens.needs_refresh(), "a one second token is due");
-    let client = OAuthClient::new().unwrap();
-    let renewed = client
-        .refresh(&server.provider(), &registration(), &tokens.refresh_token)
-        .unwrap();
-    assert_ne!(renewed.access_token, tokens.access_token);
-    assert_eq!(
-        renewed.refresh_token, tokens.refresh_token,
-        "carried forward when the provider does not rotate it"
-    );
-    assert_eq!(server.refreshes(), 1);
-}
+    phase a_forged_state_is_refused_before_any_token_request;
+    {
+        let server = FakeAuthorizationServer::start();
+        server.forge_state("attacker-state");
+        assert_eq!(sign_in(&server), Err(OAuthError::StateMismatch));
+        assert!(
+            server.verifiers().is_empty(),
+            "no code exchange after a state mismatch"
+        );
+    }
 
-#[test]
-fn a_revoked_refresh_token_is_invalid_grant() {
-    let server = FakeAuthorizationServer::start();
-    let tokens = sign_in(&server).unwrap();
-    server.revoke_all_refresh_tokens();
-    let error = OAuthClient::new()
-        .unwrap()
-        .refresh(&server.provider(), &registration(), &tokens.refresh_token)
-        .unwrap_err();
-    assert_eq!(error, OAuthError::InvalidGrant);
-    assert!(error.needs_authentication());
-}
+    phase cancelling_ends_a_pending_sign_in;
+    {
+        let server = FakeAuthorizationServer::start();
+        let authorization = Authorization::begin(&server.provider(), &registration(), None).unwrap();
+        authorization.canceller().expect("a loopback wait").cancel();
+        assert_eq!(
+            authorization.complete(&OAuthClient::new().unwrap(), WAIT),
+            Err(OAuthError::Cancelled)
+        );
+    }
 
-#[test]
-fn revocation_sends_the_refresh_token_to_the_revocation_endpoint() {
-    let server = FakeAuthorizationServer::start();
-    let tokens = sign_in(&server).unwrap();
-    let client = OAuthClient::new().unwrap();
-    assert_eq!(
-        client.revoke(&server.provider(), &registration(), &tokens),
-        Ok(true)
-    );
-    assert_eq!(server.revoked(), vec![tokens.refresh_token.clone()]);
-    let mut provider = server.provider();
-    provider.revocation = crate::Revocation::Unsupported;
-    assert_eq!(
-        client.revoke(&provider, &registration(), &tokens),
-        Ok(false)
-    );
-}
-
-#[test]
-fn cancelling_ends_a_pending_sign_in() {
-    let server = FakeAuthorizationServer::start();
-    let authorization = Authorization::begin(&server.provider(), &registration(), None).unwrap();
-    authorization.canceller().expect("a loopback wait").cancel();
-    assert_eq!(
-        authorization.complete(&OAuthClient::new().unwrap(), WAIT),
-        Err(OAuthError::Cancelled)
-    );
-}
-
-#[test]
-fn the_client_secret_goes_to_the_token_endpoint() {
-    let server = FakeAuthorizationServer::start();
-    server.require_client_secret("installed-app-secret");
-    assert!(matches!(sign_in(&server), Err(OAuthError::Protocol(_))));
-    let registration = Registration {
-        client_secret: Some("installed-app-secret".into()),
-        ..registration()
-    };
-    let authorization = Authorization::begin(&server.provider(), &registration, None).unwrap();
-    let url = authorization.url().to_string();
-    let browser = std::thread::spawn(move || browse(&url));
-    let tokens = authorization
-        .complete(&OAuthClient::new().unwrap(), WAIT)
-        .expect("sign-in with the secret");
-    browser.join().unwrap().unwrap();
-    OAuthClient::new()
-        .unwrap()
-        .refresh(&server.provider(), &registration, &tokens.refresh_token)
-        .expect("refresh with the secret");
+    phase the_client_secret_goes_to_the_token_endpoint;
+    {
+        let server = FakeAuthorizationServer::start();
+        server.require_client_secret("installed-app-secret");
+        assert!(matches!(sign_in(&server), Err(OAuthError::Protocol(_))));
+        let registration = Registration {
+            client_secret: Some("installed-app-secret".into()),
+            ..registration()
+        };
+        let authorization = Authorization::begin(&server.provider(), &registration, None).unwrap();
+        let url = authorization.url().to_string();
+        let browser = std::thread::spawn(move || browse(&url));
+        let tokens = authorization
+            .complete(&OAuthClient::new().unwrap(), WAIT)
+            .expect("sign-in with the secret");
+        browser.join().unwrap().unwrap();
+        OAuthClient::new()
+            .unwrap()
+            .refresh(&server.provider(), &registration, &tokens.refresh_token)
+            .expect("refresh with the secret");
+    }
 }
 
 #[test]

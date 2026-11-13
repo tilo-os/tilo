@@ -208,127 +208,131 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_device_code_waits_for_the_person_then_trades_for_a_copilot_token() {
-        let replies = vec![
-            json(&serde_json::json!({
-                "device_code": "DEV", "user_code": "ABCD-1234",
-                "verification_uri": "https://github.com/login/device",
-                "expires_in": 900, "interval": 0
-            })),
-            json(&serde_json::json!({"error": "authorization_pending"})),
-            json(&serde_json::json!({
-                "access_token": "gho_person", "token_type": "bearer", "scope": "read:user"
-            })),
-            json(&serde_json::json!({"token": "tid=copilot", "expires_at": 4_102_444_800_u64})),
-        ];
-        let server = Responder::start(replies);
-        let copilot = Refresh::CopilotToken {
-            endpoint: format!("{}/copilot_internal/v2/token", server.url()),
-        };
-        let provider = provider(&server.url(), copilot);
-        let http = OAuthClient::new().unwrap();
-        let client = Registration::public("Iv1.client");
-        let device = DeviceAuthorization::begin(&http, &provider, &client).unwrap();
-        assert_eq!(device.user_code(), "ABCD-1234");
-        assert_eq!(device.verification_uri(), "https://github.com/login/device");
-        let tokens = device.complete(&http).unwrap();
-        assert_eq!(tokens.access_token, "tid=copilot");
-        assert_eq!(tokens.refresh_token, "gho_person");
-        assert!(tokens.expires_in > 0);
+    tilo_test_env::scenario! {
+        fn a_device_sign_in_waits_trades_and_ends;
 
-        let asked = server.next_request();
-        assert!(asked.body_text().contains("client_id=Iv1.client"));
-        assert!(asked.body_text().contains("scope=read%3Auser"));
-        for _ in 0..2 {
-            let poll = server.next_request();
-            assert!(poll.body_text().contains("device_code=DEV"));
-            assert!(
-                poll.body_text()
-                    .contains("grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Adevice_code")
-            );
-        }
-        let exchange = server.next_request();
-        assert_eq!(exchange.method, "GET");
-        assert_eq!(exchange.header("authorization"), Some("token gho_person"));
-        assert!(exchange.header("editor-version").is_some());
-    }
-
-    #[test]
-    fn a_revoked_github_token_is_sign_in_again_and_no_subscription_says_so() {
-        for (status, expected) in [
-            (401, OAuthError::InvalidGrant),
-            (
-                404,
-                OAuthError::Protocol("this GitHub account has no Copilot subscription".into()),
-            ),
-        ] {
-            let server = Responder::start(vec![Reply::status(status)]);
-            let provider = provider(
-                &server.url(),
-                Refresh::CopilotToken {
-                    endpoint: server.url(),
-                },
-            );
+        phase a_device_code_waits_for_the_person_then_trades_for_a_copilot_token;
+        {
+            let replies = vec![
+                json(&serde_json::json!({
+                    "device_code": "DEV", "user_code": "ABCD-1234",
+                    "verification_uri": "https://github.com/login/device",
+                    "expires_in": 900, "interval": 0
+                })),
+                json(&serde_json::json!({"error": "authorization_pending"})),
+                json(&serde_json::json!({
+                    "access_token": "gho_person", "token_type": "bearer", "scope": "read:user"
+                })),
+                json(&serde_json::json!({"token": "tid=copilot", "expires_at": 4_102_444_800_u64})),
+            ];
+            let server = Responder::start(replies);
+            let copilot = Refresh::CopilotToken {
+                endpoint: format!("{}/copilot_internal/v2/token", server.url()),
+            };
+            let provider = provider(&server.url(), copilot);
             let http = OAuthClient::new().unwrap();
-            assert_eq!(
-                http.refresh(&provider, &Registration::public("c"), "gho_x")
-                    .unwrap_err(),
-                expected
-            );
+            let client = Registration::public("Iv1.client");
+            let device = DeviceAuthorization::begin(&http, &provider, &client).unwrap();
+            assert_eq!(device.user_code(), "ABCD-1234");
+            assert_eq!(device.verification_uri(), "https://github.com/login/device");
+            let tokens = device.complete(&http).unwrap();
+            assert_eq!(tokens.access_token, "tid=copilot");
+            assert_eq!(tokens.refresh_token, "gho_person");
+            assert!(tokens.expires_in > 0);
+
+            let asked = server.next_request();
+            assert!(asked.body_text().contains("client_id=Iv1.client"));
+            assert!(asked.body_text().contains("scope=read%3Auser"));
+            for _ in 0..2 {
+                let poll = server.next_request();
+                assert!(poll.body_text().contains("device_code=DEV"));
+                assert!(
+                    poll.body_text()
+                        .contains("grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Adevice_code")
+                );
+            }
+            let exchange = server.next_request();
+            assert_eq!(exchange.method, "GET");
+            assert_eq!(exchange.header("authorization"), Some("token gho_person"));
+            assert!(exchange.header("editor-version").is_some());
         }
-    }
 
-    #[test]
-    fn the_wait_ends_when_cancelled_denied_or_expired() {
-        assert_eq!(
-            poll_answer(r#"{"error":"authorization_pending"}"#),
-            Poll::Pending
-        );
-        assert_eq!(poll_answer(r#"{"error":"slow_down"}"#), Poll::SlowDown);
-        assert_eq!(
-            poll_answer(r#"{"error":"expired_token"}"#),
-            Poll::Done(Err(OAuthError::TimedOut))
-        );
-        assert!(matches!(
-            poll_answer(r#"{"error":"access_denied"}"#),
-            Poll::Done(Err(OAuthError::Denied(_)))
-        ));
-        let cancel = DeviceCancel::default();
-        cancel.cancel();
-        assert!(cancel.wait(tilo_test_env::hang_bound()));
-        assert!(!DeviceCancel::default().wait(Duration::ZERO));
+        phase a_revoked_github_token_is_sign_in_again_and_no_subscription_says_so;
+        {
+            for (status, expected) in [
+                (401, OAuthError::InvalidGrant),
+                (
+                    404,
+                    OAuthError::Protocol("this GitHub account has no Copilot subscription".into()),
+                ),
+            ] {
+                let server = Responder::start(vec![Reply::status(status)]);
+                let provider = provider(
+                    &server.url(),
+                    Refresh::CopilotToken {
+                        endpoint: server.url(),
+                    },
+                );
+                let http = OAuthClient::new().unwrap();
+                assert_eq!(
+                    http.refresh(&provider, &Registration::public("c"), "gho_x")
+                        .unwrap_err(),
+                    expected
+                );
+            }
+        }
 
-        let server = Responder::start(vec![json(&serde_json::json!({
-            "device_code": "D", "user_code": "U",
-            "verification_uri": "https://example.com/device", "interval": 3600
-        }))]);
-        let http = OAuthClient::new().unwrap();
-        let device = DeviceAuthorization::begin(
-            &http,
-            &provider(&server.url(), Refresh::RefreshToken),
-            &Registration::public("c"),
-        )
-        .unwrap();
-        let cancel = device.canceller();
-        let waiting = std::thread::spawn(move || device.complete(&OAuthClient::new().unwrap()));
-        cancel.cancel();
-        assert_eq!(waiting.join().unwrap().unwrap_err(), OAuthError::Cancelled);
-    }
+        phase the_wait_ends_when_cancelled_denied_or_expired;
+        {
+            assert_eq!(
+                poll_answer(r#"{"error":"authorization_pending"}"#),
+                Poll::Pending
+            );
+            assert_eq!(poll_answer(r#"{"error":"slow_down"}"#), Poll::SlowDown);
+            assert_eq!(
+                poll_answer(r#"{"error":"expired_token"}"#),
+                Poll::Done(Err(OAuthError::TimedOut))
+            );
+            assert!(matches!(
+                poll_answer(r#"{"error":"access_denied"}"#),
+                Poll::Done(Err(OAuthError::Denied(_)))
+            ));
+            let cancel = DeviceCancel::default();
+            cancel.cancel();
+            assert!(cancel.wait(tilo_test_env::hang_bound()));
+            assert!(!DeviceCancel::default().wait(Duration::ZERO));
 
-    #[test]
-    fn a_device_answer_without_a_safe_page_is_refused() {
-        let server = Responder::start(vec![json(&serde_json::json!({
-            "device_code": "D", "user_code": "U", "verification_uri": "javascript:alert(1)"
-        }))]);
-        let http = OAuthClient::new().unwrap();
-        assert!(matches!(
-            DeviceAuthorization::begin(
+            let server = Responder::start(vec![json(&serde_json::json!({
+                "device_code": "D", "user_code": "U",
+                "verification_uri": "https://example.com/device", "interval": 3600
+            }))]);
+            let http = OAuthClient::new().unwrap();
+            let device = DeviceAuthorization::begin(
                 &http,
                 &provider(&server.url(), Refresh::RefreshToken),
                 &Registration::public("c"),
-            ),
-            Err(OAuthError::Protocol(_))
-        ));
+            )
+            .unwrap();
+            let cancel = device.canceller();
+            let waiting = std::thread::spawn(move || device.complete(&OAuthClient::new().unwrap()));
+            cancel.cancel();
+            assert_eq!(waiting.join().unwrap().unwrap_err(), OAuthError::Cancelled);
+        }
+
+        phase a_device_answer_without_a_safe_page_is_refused;
+        {
+            let server = Responder::start(vec![json(&serde_json::json!({
+                "device_code": "D", "user_code": "U", "verification_uri": "javascript:alert(1)"
+            }))]);
+            let http = OAuthClient::new().unwrap();
+            assert!(matches!(
+                DeviceAuthorization::begin(
+                    &http,
+                    &provider(&server.url(), Refresh::RefreshToken),
+                    &Registration::public("c"),
+                ),
+                Err(OAuthError::Protocol(_))
+            ));
+        }
     }
 }
