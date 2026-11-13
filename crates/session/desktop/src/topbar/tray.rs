@@ -135,12 +135,6 @@ impl TopBarChrome {
                 || bell.x1 + f64::from(tokens.spacing.s2),
                 |next| f64::midpoint(bell.x1, next.x0),
             );
-            // The unread count sits on the bell's shoulder and is the bell's too.
-            let right = if layout.badge.is_zero_area() {
-                right
-            } else {
-                right.max(layout.badge.x1 + f64::from(tokens.spacing.s1))
-            };
             // The bell's target never takes the readings' slots.
             let right = next.map_or(right, |next| right.min(next.x0));
             Rect::new(

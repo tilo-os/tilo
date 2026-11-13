@@ -161,6 +161,9 @@ pub struct StatusClusterLayout {
     pub badge: Rect,
 }
 
+/// How far past its glyph's top right corner the bell's count is centred.
+const BADGE_PAST_CORNER: f64 = 3.0;
+
 /// The most slots a cluster takes: the bell, the volume, the link, the battery, and one glyph of room.
 pub const MAX_SLOTS: usize = 5;
 
@@ -246,6 +249,26 @@ impl<'a> StatusClusterFace<'a> {
         self.slots.len().min(MAX_SLOTS)
     }
 
+    /// The room after the bell, when a slot follows it: as much as its widest count reaches past
+    /// it, and a hairline more, so a count never stands on the glyph beside the bell. The same
+    /// whether anything is unread, so news arriving moves nothing.
+    fn bell_shoulder(&self, index: usize, text: &mut TextRenderer, theme: &Theme) -> f64 {
+        if !matches!(self.slots.get(index), Some(StatusSlot::Bell { .. }))
+            || index + 1 >= self.slots_shown()
+        {
+            return 0.0;
+        }
+        let (label_w, label_h) =
+            text.measure_style(&badge_label(10), None, &Self::percentage_style(theme));
+        let (width, _) = badge_size(label_w, label_h, theme);
+        let (slot, glyph) = (self.slot(theme), Self::glyph(theme));
+        let reach = (slot + glyph) / 2.0 + BADGE_PAST_CORNER + width / 2.0;
+        let next_glyph = slot + (slot - glyph) / 2.0;
+        (reach + f64::from(theme.tokens.spacing.s1) / 2.0 - next_glyph)
+            .max(0.0)
+            .ceil()
+    }
+
     /// The cluster's width: its pad each side, a square per slot, and the
     /// battery's percentage where it has a reading. The bell's count sits on
     /// its glyph's corner and takes no width, so nothing unread leaves no
@@ -255,7 +278,10 @@ impl<'a> StatusClusterFace<'a> {
     pub fn width(&self, text: &mut TextRenderer, theme: &Theme) -> f64 {
         let slots = self.slots_shown();
         let mut w = 2.0 * Self::pad(theme)
-            + f64::from(u32::try_from(slots).unwrap_or(u32::MAX)) * self.slot(theme);
+            + f64::from(u32::try_from(slots).unwrap_or(u32::MAX)) * self.slot(theme)
+            + (0..slots)
+                .map(|index| self.bell_shoulder(index, text, theme))
+                .sum::<f64>();
         if let Some(percent) = self.battery {
             let label = format!("{percent}%");
             let (label_w, _) = text.measure_style(&label, None, &Self::percentage_style(theme));
@@ -313,11 +339,11 @@ impl<'a> StatusClusterFace<'a> {
                 // corner's room was pushed down and in over the bell.
                 let reach = f64::from(theme.tokens.spacing.s1);
                 let centre_y = square.y0.max(rect.y0 - reach + height / 2.0);
-                let centre_x = (square.x1 + 3.0).min(rect.x1 + reach - width / 2.0);
+                let centre_x = (square.x1 + BADGE_PAST_CORNER).min(rect.x1 + reach - width / 2.0);
                 layout.badge =
                     Rect::from_center_size(Point::new(centre_x, centre_y), (width, height));
             }
-            x += slot;
+            x += slot + self.bell_shoulder(index, text, theme);
         }
         layout
     }
@@ -834,6 +860,40 @@ mod tests {
             layout.badge,
             layout.slots[0]
         );
+    }
+
+    /// The widest count stands clear of the glyph after the bell, and the room it keeps there is
+    /// the same with nothing unread: the bar's volume is never covered.
+    #[test]
+    fn the_count_never_reaches_the_next_glyph() {
+        let theme = Theme::dark();
+        let glyph = StatusClusterFace::glyph(&theme);
+        let volume = StatusSlot::Glyph(Icon::Volume2);
+        for unread in [1, 9, 120] {
+            let bell = StatusSlot::Bell {
+                unread,
+                quiet: false,
+            };
+            let (layout, _) = paint(&[bell, volume], StatusCluster::new());
+            let next = Rect::from_center_size(layout.slots[1].center(), (glyph, glyph));
+            assert!(
+                layout.badge.x1 < next.x0,
+                "{unread} unread: the count {:?} reaches the volume {next:?}",
+                layout.badge
+            );
+        }
+        let (quiet, _) = paint(
+            &[
+                StatusSlot::Bell {
+                    unread: 0,
+                    quiet: false,
+                },
+                volume,
+            ],
+            StatusCluster::new(),
+        );
+        let (busy, _) = paint(&[BELL, volume], StatusCluster::new());
+        assert_eq!(quiet.slots[1], busy.slots[1], "news arriving moves nothing");
     }
 
     /// The bell is drawn at the glyph size, and in the stroke, of every other bar control, so

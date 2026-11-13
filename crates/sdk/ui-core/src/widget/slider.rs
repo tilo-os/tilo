@@ -46,6 +46,8 @@ const TRACK_HEIGHT: f64 = 6.0;
 const KNOB_RADIUS: f64 = 10.0;
 const KNOB_RADIUS_HOVER_SCALE: f64 = 1.08;
 const KNOB_RADIUS_PRESS_SCALE: f64 = 1.15;
+/// The knob's border, drawn outside its radius.
+const KNOB_BORDER: f64 = 1.5;
 
 /// One finger on a slider, read as the pointer held down: the value jumps to
 /// where the finger lands, follows it while it moves (on or off the track)
@@ -922,7 +924,7 @@ impl SliderFace {
     fn paint_bounds(&self) -> Rect {
         // The pressed halo's outer ring (4) and the knob's border (1.5), as
         // `Slider::paint` draws them.
-        let bleed = Self::overhang() + 4.0 + 1.5;
+        let bleed = Self::overhang() + 4.0 + KNOB_BORDER;
         self.rect.inflate(bleed, bleed)
     }
 
@@ -1016,7 +1018,7 @@ impl Slider {
         // primary ink (HIG §9.5), ringed in the ground so it stays a disc of
         // its own where it sits on the filled half, which is the same ink.
         let (fill_color, border_color) = thumb_colors(theme, filled, unfilled);
-        let border_width = 1.5;
+        let border_width = KNOB_BORDER;
         // Pressed halo: nested hairlines outside the knob, derived against
         // the track they ring, drawn first so the knob sits cleanly on top.
         if face.dragging {
@@ -1097,6 +1099,12 @@ pub fn paint_held_readout(
         knob.y1,
     );
     crate::widget::tooltip::draw_hover_tooltip(scene, transform, text, theme, knob, label, span);
+}
+
+/// The room a shown value takes from the track: the widest value, a gap, and the knob's reach
+/// past the track's end, so a knob at the top of the range never stands on the value.
+fn value_lane(widest: f64, theme: &Theme) -> f64 {
+    widest + f64::from(theme.gap_standard) + SliderFace::overhang() + KNOB_BORDER
 }
 
 /// How far above its knob a held slider's readout reaches: the tooltip
@@ -1277,8 +1285,7 @@ impl Widget for Slider {
                 f64::from(text_renderer.measure_style(&text, None, &style).0)
             })
             .fold(0.0_f64, f64::max);
-            let gap = f64::from(theme.gap_standard);
-            self.value_lane = (widest + gap).min(self.rect.width() / 2.0);
+            self.value_lane = value_lane(widest, theme).min(self.rect.width() / 2.0);
             let text = self.spoken_value();
             let (width, height) = text_renderer.measure_style(&text, None, &style);
             let ink = if self.effectively_enabled() {
@@ -1643,6 +1650,26 @@ mod tests {
         assert_eq!(slider.spoken_value(), "72%");
         // The far end of the shortened track is the top of the range.
         assert!((slider.value_from_cursor_x(152.0) - 1.0).abs() < 0.05);
+    }
+
+    /// A knob at the top of the range stands clear of the value beside it, pressed and
+    /// bordered, with the theme's gap between them: "100%" is never drawn under it.
+    #[test]
+    fn a_knob_at_the_top_never_covers_the_shown_value() {
+        let theme = Theme::dark();
+        let mut text = crate::text_render::TextRenderer::new();
+        let style = theme.text(crate::tokens::TextRole::Body).numeric();
+        let widest = f64::from(text.measure_style("100%", None, &style).0);
+        let mut slider = Slider::from_state(&crate::LocalState::new(1.0)).shows_value();
+        slider.rect = Rect::new(0.0, 0.0, 240.0, 32.0);
+        slider.value_lane = value_lane(widest, &theme);
+        let knob = SliderFace::new(slider.track_rect(), 1.0).knob_centre();
+        let reach = knob.x + SliderFace::overhang() + KNOB_BORDER;
+        let value = slider.rect.x1 - widest;
+        assert!(
+            value - reach >= f64::from(theme.gap_standard) - 0.01,
+            "the knob reaches {reach}, the value starts at {value}"
+        );
     }
     use super::*;
     use crate::testing::{Dispatch, dispatch};
