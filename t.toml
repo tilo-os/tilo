@@ -5523,9 +5523,11 @@ default = false
 # of its own.
 [[check]]
 name = "e2e"
-# Its run resolves and reaches hosts no list here names yet (its sandbox refused its DNS
-# lookups under edition 2): the open network it had, until its destinations are known.
-egress = { to = ["0.0.0.0/0", "::/0"] }
+# No egress: every flow meets the stack on loopback (the relay and API on 127.0.0.1 and localhost,
+# the site at tilo.localhost, which the image's resolver answers itself), and its programs, fonts
+# and Caddy are its needs'. Its sandbox refuses a router search (UPnP, 239.255.255.250:1900, as
+# iroh's endpoints make) and DNS lookups: with the open network the same flows failed as without
+# it, so none of them needs either.
 run = "bash os/containers/tilo-lounge/test-e2e.sh /target/publish/web-desktop/bundle /target/e2e"
 needs = ["lounge-gate-binaries", "lounge-fonts", "lounge-gate-cli", "lounge-gate-tools", "web-desktop-bundle", "tilo-sh-binaries", "tilo-sh-caddy", "image-web-entry-context"]
 # Its setup is not pinned: dnf installs the newest build Fedora's updates repository holds, which
@@ -5549,9 +5551,7 @@ timeout_secs = 1200
 # flow has the check's time. Run when named, to chase a reload that kills its tab.
 [[check]]
 name = "e2e-reloads"
-# Its run resolves and reaches hosts no list here names yet (its sandbox refused its DNS
-# lookups under edition 2): the open network it had, until its destinations are known.
-egress = { to = ["0.0.0.0/0", "::/0"] }
+# No egress: as e2e, it meets the stack on loopback alone; see e2e.
 run = "bash os/containers/tilo-lounge/test-e2e.sh /target/publish/web-desktop/bundle /target/e2e-reloads reloads"
 needs = ["lounge-gate-binaries", "lounge-fonts", "lounge-gate-cli", "lounge-gate-tools", "web-desktop-bundle", "tilo-sh-binaries", "tilo-sh-caddy", "image-web-entry-context"]
 # Its setup is not pinned: dnf installs the newest build Fedora's updates repository holds, which
@@ -5569,9 +5569,8 @@ default = false
 # light, dark and at a phone's width, kept as pictures. It judges nothing on looks.
 [[check]]
 name = "page-tour"
-# Its run resolves and reaches hosts no list here names yet (its sandbox refused its DNS
-# lookups under edition 2): the open network it had, until its destinations are known.
-egress = { to = ["0.0.0.0/0", "::/0"] }
+# No egress: as e2e, the tour meets its Lounge on loopback (direct-lounge.sh) and its programs and
+# fonts are its needs'.
 run = "mkdir -p /target/page-tour-cli\ntar -xzf /target/publish/cli/linux-x86_64/tilo-linux-x86_64.tar.gz -C /target/page-tour-cli tilo\nTILO_TOUR_IN_LOG=1 bash os/containers/tilo-lounge/test-page-tour.sh /target/publish/web-desktop/bundle /target/page-tour"
 needs = ["lounge-gate-binaries", "lounge-fonts", "lounge-gate-tools", "web-desktop-bundle", "cli-x86_64"]
 env = { TILO_RELAY_BIN = "/target/publish/lounge-gate/binaries/tilo-relay", TILO_FONTS_DIR = "/target/publish/lounge/fonts", TILO_CRYPTO_BIN = "/target/publish/lounge/gate-tools/tilo-crypto", TILO_CLI_BIN = "/target/page-tour-cli/tilo" }
