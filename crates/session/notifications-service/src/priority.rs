@@ -391,116 +391,120 @@ mod tests {
         }
     }
 
-    #[test]
-    fn priority_contact_claims_are_normalised_bounded_and_never_persist_endpoints() {
+    tilo_test_env::scenario! {
+        fn priority_contacts_are_kept_matched_and_replaced_by_id;
+
+        phase priority_contact_claims_are_normalised_bounded_and_never_persist_endpoints;
         {
-            let temp = tempfile::tempdir().unwrap();
-            let path = temp.path().join("priority.json");
-            let registry = PriorityContacts::open(Some(path.clone()));
-            registry
-                .replace_verified(&[ContactProjection {
-                    id: "ca761232-ed42-11ce-bacd-00aa0057b223".into(),
-                    name: "Ada".into(),
-                    endpoints: vec![" Ada@Example.COM ".into(), "+49 123 456789".into()],
-                }])
-                .unwrap();
-            let raw = std::fs::read_to_string(&path).unwrap();
-            assert!(!raw.contains("Ada@Example.COM"));
-            assert!(!raw.contains("123 456789"));
-            assert!(registry.matches("ada@example.com"));
-            assert!(registry.matches("+49 (123) 456789"));
-            // And the record is the person's own, read back on restart.
-            let reopened = PriorityContacts::open(Some(path));
-            assert!(reopened.matches("ada@example.com"));
+            {
+                let temp = tempfile::tempdir().unwrap();
+                let path = temp.path().join("priority.json");
+                let registry = PriorityContacts::open(Some(path.clone()));
+                registry
+                    .replace_verified(&[ContactProjection {
+                        id: "ca761232-ed42-11ce-bacd-00aa0057b223".into(),
+                        name: "Ada".into(),
+                        endpoints: vec![" Ada@Example.COM ".into(), "+49 123 456789".into()],
+                    }])
+                    .unwrap();
+                let raw = std::fs::read_to_string(&path).unwrap();
+                assert!(!raw.contains("Ada@Example.COM"));
+                assert!(!raw.contains("123 456789"));
+                assert!(registry.matches("ada@example.com"));
+                assert!(registry.matches("+49 (123) 456789"));
+                // And the record is the person's own, read back on restart.
+                let reopened = PriorityContacts::open(Some(path));
+                assert!(reopened.matches("ada@example.com"));
+            }
+            {
+                let registry = PriorityContacts::in_memory();
+                let count = registry
+                    .replace_verified(&[ContactProjection {
+                        id: "../escape".into(),
+                        name: "x".repeat(1000),
+                        endpoints: vec!["a@example.com".into()],
+                    }])
+                    .unwrap();
+                assert_eq!(count, 0);
+            }
         }
+
+        phase a_contact_is_marked_and_unmarked_by_id;
         {
             let registry = PriorityContacts::in_memory();
-            let count = registry
-                .replace_verified(&[ContactProjection {
-                    id: "../escape".into(),
-                    name: "x".repeat(1000),
-                    endpoints: vec!["a@example.com".into()],
-                }])
-                .unwrap();
-            assert_eq!(count, 0);
-        }
-    }
-
-    #[test]
-    fn a_contact_is_marked_and_unmarked_by_id() {
-        let registry = PriorityContacts::in_memory();
-        assert_eq!(registry.mark(&contact("ada", "ada@example.com")), Ok(1));
-        assert_eq!(registry.mark(&contact("grace", "grace@example.com")), Ok(2));
-        // Marking again replaces it.
-        assert_eq!(registry.mark(&contact("ada", "+49 30 1234567")), Ok(2));
-        assert!(!registry.matches("ada@example.com"));
-        assert!(registry.matches("+49301234567"));
-        assert_eq!(
-            registry.contacts(),
-            [
-                PriorityContact {
-                    id: "ada".into(),
-                    name: "ada".into()
-                },
-                PriorityContact {
-                    id: "grace".into(),
-                    name: "grace".into()
-                }
-            ]
-        );
-        assert_eq!(registry.unmark("ada"), Ok(true));
-        assert_eq!(registry.unmark("ada"), Ok(false));
-        assert!(!registry.matches("+49301234567"));
-        assert!(
-            registry
-                .mark(&contact("nobody", "not an endpoint"))
-                .is_err()
-        );
-    }
-
-    /// Notifications are matched as they arrive while Contacts may be
-    /// replacing the projection; the replacement's disk write (whose fsyncs
-    /// take seconds under I/O pressure) must not hold the lock that
-    /// matching takes.
-    #[test]
-    fn matching_never_waits_for_a_replacement_being_written() {
-        use std::sync::mpsc;
-        let temp = tempfile::tempdir().unwrap();
-        let registry = PriorityContacts::open(Some(temp.path().join("priority.json")));
-        registry
-            .replace_verified(&[contact("ada", "ada@example.com")])
-            .unwrap();
-
-        let (writing_tx, writing) = mpsc::channel();
-        let (release, release_rx) = mpsc::channel::<()>();
-        let replacing = registry.clone();
-        let replacement = std::thread::spawn(move || {
-            let paused = std::cell::Cell::new(false);
-            tilo_files::native::atomic::test_support::with_observer(
-                move |_| {
-                    // Hold the write at its first checkpoint, before any sync.
-                    if !paused.replace(true) {
-                        writing_tx.send(()).unwrap();
-                        release_rx.recv().unwrap();
+            assert_eq!(registry.mark(&contact("ada", "ada@example.com")), Ok(1));
+            assert_eq!(registry.mark(&contact("grace", "grace@example.com")), Ok(2));
+            // Marking again replaces it.
+            assert_eq!(registry.mark(&contact("ada", "+49 30 1234567")), Ok(2));
+            assert!(!registry.matches("ada@example.com"));
+            assert!(registry.matches("+49301234567"));
+            assert_eq!(
+                registry.contacts(),
+                [
+                    PriorityContact {
+                        id: "ada".into(),
+                        name: "ada".into()
+                    },
+                    PriorityContact {
+                        id: "grace".into(),
+                        name: "grace".into()
                     }
-                },
-                || replacing.replace_verified(&[contact("grace", "grace@example.com")]),
-            )
-        });
-        writing.recv().unwrap();
-        let (matched_tx, matched) = mpsc::channel();
-        let matching = registry.clone();
-        std::thread::spawn(move || {
-            let _ = matched_tx.send(matching.matches("ada@example.com"));
-        });
-        let matched = matched.recv_timeout(tilo_test_env::hang_bound());
-        release.send(()).unwrap();
-        assert!(
-            matched.expect("matching waited for the replacement's disk write"),
-            "the previous projection answers until the new one is installed"
-        );
-        assert_eq!(replacement.join().unwrap().unwrap(), 1);
-        assert!(registry.matches("grace@example.com"));
-        assert!(!registry.matches("ada@example.com"));
+                ]
+            );
+            assert_eq!(registry.unmark("ada"), Ok(true));
+            assert_eq!(registry.unmark("ada"), Ok(false));
+            assert!(!registry.matches("+49301234567"));
+            assert!(
+                registry
+                    .mark(&contact("nobody", "not an endpoint"))
+                    .is_err()
+            );
+        }
+
+        phase matching_never_waits_for_a_replacement_being_written;
+        // Notifications are matched as they arrive while Contacts may be
+        // replacing the projection; the replacement's disk write (whose fsyncs
+        // take seconds under I/O pressure) must not hold the lock that
+        // matching takes.
+        {
+            use std::sync::mpsc;
+            let temp = tempfile::tempdir().unwrap();
+            let registry = PriorityContacts::open(Some(temp.path().join("priority.json")));
+            registry
+                .replace_verified(&[contact("ada", "ada@example.com")])
+                .unwrap();
+
+            let (writing_tx, writing) = mpsc::channel();
+            let (release, release_rx) = mpsc::channel::<()>();
+            let replacing = registry.clone();
+            let replacement = std::thread::spawn(move || {
+                let paused = std::cell::Cell::new(false);
+                tilo_files::native::atomic::test_support::with_observer(
+                    move |_| {
+                        // Hold the write at its first checkpoint, before any sync.
+                        if !paused.replace(true) {
+                            writing_tx.send(()).unwrap();
+                            release_rx.recv().unwrap();
+                        }
+                    },
+                    || replacing.replace_verified(&[contact("grace", "grace@example.com")]),
+                )
+            });
+            writing.recv().unwrap();
+            let (matched_tx, matched) = mpsc::channel();
+            let matching = registry.clone();
+            std::thread::spawn(move || {
+                let _ = matched_tx.send(matching.matches("ada@example.com"));
+            });
+            let matched = matched.recv_timeout(tilo_test_env::hang_bound());
+            release.send(()).unwrap();
+            assert!(
+                matched.expect("matching waited for the replacement's disk write"),
+                "the previous projection answers until the new one is installed"
+            );
+            assert_eq!(replacement.join().unwrap().unwrap(), 1);
+            assert!(registry.matches("grace@example.com"));
+            assert!(!registry.matches("ada@example.com"));
+        }
     }
 }

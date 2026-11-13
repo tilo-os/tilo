@@ -196,145 +196,149 @@ mod tests {
 
     use super::*;
 
-    #[test]
-    fn image_data_hints_are_decoded_and_bounded() {
-        let mut hints = HashMap::new();
-        hints.insert(
-            "image-data".to_string(),
-            OwnedValue::try_from(Value::new((
-                2_i32,
-                1_i32,
-                8_i32,
-                true,
-                8_i32,
-                4_i32,
-                vec![255_u8, 0, 0, 255, 0, 255, 0, 255],
-            )))
-            .expect("image-data"),
-        );
-        let image = parse_image_data(&hints).expect("RGBA is decoded");
-        assert_eq!((image.width, image.height), (2, 1));
-        assert_eq!(image.rgba, [255, 0, 0, 255, 0, 255, 0, 255]);
+    tilo_test_env::scenario! {
+        fn hints_are_read_bounded_and_defaulted;
 
-        // Three channels gain an opaque alpha.
-        hints.insert(
-            "image-data".to_string(),
-            OwnedValue::try_from(Value::new((
-                1_i32,
-                1_i32,
-                4_i32,
-                false,
-                8_i32,
-                3_i32,
-                vec![1_u8, 2, 3, 0],
-            )))
-            .expect("image-data"),
-        );
-        assert_eq!(
-            parse_image_data(&hints).map(|image| image.rgba),
-            Some(vec![1, 2, 3, 255])
-        );
+        phase image_data_hints_are_decoded_and_bounded;
+        {
+            let mut hints = HashMap::new();
+            hints.insert(
+                "image-data".to_string(),
+                OwnedValue::try_from(Value::new((
+                    2_i32,
+                    1_i32,
+                    8_i32,
+                    true,
+                    8_i32,
+                    4_i32,
+                    vec![255_u8, 0, 0, 255, 0, 255, 0, 255],
+                )))
+                .expect("image-data"),
+            );
+            let image = parse_image_data(&hints).expect("RGBA is decoded");
+            assert_eq!((image.width, image.height), (2, 1));
+            assert_eq!(image.rgba, [255, 0, 0, 255, 0, 255, 0, 255]);
 
-        // More than 8 bits per sample is not something the card can paint.
-        hints.insert(
-            "image-data".to_string(),
-            OwnedValue::try_from(Value::new((
-                1_i32,
-                1_i32,
-                4_i32,
-                false,
-                16_i32,
-                3_i32,
-                vec![0_u8; 32],
-            )))
-            .expect("image-data"),
-        );
-        assert!(parse_image_data(&hints).is_none());
-    }
+            // Three channels gain an opaque alpha.
+            hints.insert(
+                "image-data".to_string(),
+                OwnedValue::try_from(Value::new((
+                    1_i32,
+                    1_i32,
+                    4_i32,
+                    false,
+                    8_i32,
+                    3_i32,
+                    vec![1_u8, 2, 3, 0],
+                )))
+                .expect("image-data"),
+            );
+            assert_eq!(
+                parse_image_data(&hints).map(|image| image.rgba),
+                Some(vec![1, 2, 3, 255])
+            );
 
-    #[test]
-    fn actions_pair_up_and_drop_a_dangling_key() {
-        let actions = vec![
-            "default".to_string(),
-            "Open".to_string(),
-            "snooze".to_string(),
-            "Snooze".to_string(),
-            "dangling".to_string(),
-        ];
-        let pairs = pair_actions(&actions);
-        assert_eq!(
-            pairs,
-            vec![
-                ("default".to_string(), "Open".to_string()),
-                ("snooze".to_string(), "Snooze".to_string()),
-            ]
-        );
-    }
+            // More than 8 bits per sample is not something the card can paint.
+            hints.insert(
+                "image-data".to_string(),
+                OwnedValue::try_from(Value::new((
+                    1_i32,
+                    1_i32,
+                    4_i32,
+                    false,
+                    16_i32,
+                    3_i32,
+                    vec![0_u8; 32],
+                )))
+                .expect("image-data"),
+            );
+            assert!(parse_image_data(&hints).is_none());
+        }
 
-    #[test]
-    fn urgency_hint_defaults_to_normal() {
-        let hints: Hints = HashMap::new();
-        assert_eq!(parse_urgency(&hints), 1);
-        let mut hints: Hints = HashMap::new();
-        hints.insert("urgency".to_string(), OwnedValue::from(2u8));
-        assert_eq!(parse_urgency(&hints), 2);
-    }
+        phase actions_pair_up_and_drop_a_dangling_key;
+        {
+            let actions = vec![
+                "default".to_string(),
+                "Open".to_string(),
+                "snooze".to_string(),
+                "Snooze".to_string(),
+                "dangling".to_string(),
+            ];
+            let pairs = pair_actions(&actions);
+            assert_eq!(
+                pairs,
+                vec![
+                    ("default".to_string(), "Open".to_string()),
+                    ("snooze".to_string(), "Snooze".to_string()),
+                ]
+            );
+        }
 
-    #[test]
-    fn badge_and_contact_hints_are_bounded() {
-        let mut hints = HashMap::new();
-        hints.insert("x-tilo-badge-count".into(), OwnedValue::from(u32::MAX));
-        hints.insert(
-            "x-tilo-contact-handle".into(),
-            OwnedValue::from(Str::from("ada@example.test")),
-        );
-        assert_eq!(parse_badge_count(&hints), Some(9_999));
-        assert_eq!(
-            parse_contact_endpoint(&hints).as_deref(),
-            Some("ada@example.test")
-        );
-        hints.insert(
-            "x-tilo-contact-handle".into(),
-            OwnedValue::from(Str::from("bad\nhandle")),
-        );
-        assert_eq!(parse_contact_endpoint(&hints), None);
-    }
+        phase urgency_hint_defaults_to_normal;
+        {
+            let hints: Hints = HashMap::new();
+            assert_eq!(parse_urgency(&hints), 1);
+            let mut hints: Hints = HashMap::new();
+            hints.insert("urgency".to_string(), OwnedValue::from(2u8));
+            assert_eq!(parse_urgency(&hints), 2);
+        }
 
-    #[test]
-    fn sender_name_hint_is_one_trimmed_line() {
-        let mut hints = HashMap::new();
-        assert_eq!(parse_sender_name(&hints), None);
-        hints.insert(
-            "x-tilo-sender-name".into(),
-            OwnedValue::from(Str::from("  Ada  ")),
-        );
-        assert_eq!(parse_sender_name(&hints).as_deref(), Some("Ada"));
-        hints.insert(
-            "x-tilo-sender-name".into(),
-            OwnedValue::from(Str::from("Ada\nLovelace")),
-        );
-        assert_eq!(parse_sender_name(&hints), None);
-    }
+        phase badge_and_contact_hints_are_bounded;
+        {
+            let mut hints = HashMap::new();
+            hints.insert("x-tilo-badge-count".into(), OwnedValue::from(u32::MAX));
+            hints.insert(
+                "x-tilo-contact-handle".into(),
+                OwnedValue::from(Str::from("ada@example.test")),
+            );
+            assert_eq!(parse_badge_count(&hints), Some(9_999));
+            assert_eq!(
+                parse_contact_endpoint(&hints).as_deref(),
+                Some("ada@example.test")
+            );
+            hints.insert(
+                "x-tilo-contact-handle".into(),
+                OwnedValue::from(Str::from("bad\nhandle")),
+            );
+            assert_eq!(parse_contact_endpoint(&hints), None);
+        }
 
-    #[test]
-    fn category_and_suppress_sound_hints_are_read() {
-        let mut hints: Hints = HashMap::new();
-        assert_eq!(parse_category(&hints), None);
-        assert!(!parse_suppress_sound(&hints));
-        hints.insert(
-            "category".into(),
-            OwnedValue::from(Str::from("im.received")),
-        );
-        assert_eq!(parse_category(&hints).as_deref(), Some("im.received"));
-        assert!(!parse_incoming_call(&hints));
-        hints.insert("suppress-sound".into(), OwnedValue::from(true));
-        assert!(parse_suppress_sound(&hints));
-        hints.insert(
-            "category".into(),
-            OwnedValue::from(Str::from(INCOMING_CALL)),
-        );
-        assert!(parse_incoming_call(&hints));
-        hints.insert("category".into(), OwnedValue::from(Str::from("a\nb")));
-        assert_eq!(parse_category(&hints), None);
+        phase sender_name_hint_is_one_trimmed_line;
+        {
+            let mut hints = HashMap::new();
+            assert_eq!(parse_sender_name(&hints), None);
+            hints.insert(
+                "x-tilo-sender-name".into(),
+                OwnedValue::from(Str::from("  Ada  ")),
+            );
+            assert_eq!(parse_sender_name(&hints).as_deref(), Some("Ada"));
+            hints.insert(
+                "x-tilo-sender-name".into(),
+                OwnedValue::from(Str::from("Ada\nLovelace")),
+            );
+            assert_eq!(parse_sender_name(&hints), None);
+        }
+
+        phase category_and_suppress_sound_hints_are_read;
+        {
+            let mut hints: Hints = HashMap::new();
+            assert_eq!(parse_category(&hints), None);
+            assert!(!parse_suppress_sound(&hints));
+            hints.insert(
+                "category".into(),
+                OwnedValue::from(Str::from("im.received")),
+            );
+            assert_eq!(parse_category(&hints).as_deref(), Some("im.received"));
+            assert!(!parse_incoming_call(&hints));
+            hints.insert("suppress-sound".into(), OwnedValue::from(true));
+            assert!(parse_suppress_sound(&hints));
+            hints.insert(
+                "category".into(),
+                OwnedValue::from(Str::from(INCOMING_CALL)),
+            );
+            assert!(parse_incoming_call(&hints));
+            hints.insert("category".into(), OwnedValue::from(Str::from("a\nb")));
+            assert_eq!(parse_category(&hints), None);
+        }
     }
 }

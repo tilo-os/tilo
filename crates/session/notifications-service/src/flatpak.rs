@@ -153,58 +153,62 @@ mod tests {
         .expect("cgroup");
     }
 
-    #[test]
-    fn flatpak_cgroup_matching_uses_the_systemd_escaped_scope() {
-        assert_eq!(systemd_escape("org.example.App"), "org.example.App");
-        assert_eq!(systemd_escape("org.example App"), "org.example\\x20App");
-        assert!(flatpak_cgroup_matches(
-            "0::/app.slice/app-flatpak-org.example\\x20App-42.scope",
-            "org.example App"
-        ));
-        assert!(!flatpak_cgroup_matches(
-            "0::/app.slice/app-flatpak-org.example\\x20App-42.SCOPE",
-            "org.example App"
-        ));
-    }
+    tilo_test_env::scenario! {
+        fn a_flatpak_sender_is_identified_by_its_scope_runtime_and_install;
 
-    #[test]
-    fn flatpak_identity_requires_matching_scope_runtime_and_install() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let app_id = "org.example.Chat";
-        let entries = flatpak_entries(tmp.path(), app_id);
-        write_flatpak_proc(tmp.path(), 404, app_id, app_id);
+        phase flatpak_cgroup_matching_uses_the_systemd_escaped_scope;
+        {
+            assert_eq!(systemd_escape("org.example.App"), "org.example.App");
+            assert_eq!(systemd_escape("org.example App"), "org.example\\x20App");
+            assert!(flatpak_cgroup_matches(
+                "0::/app.slice/app-flatpak-org.example\\x20App-42.scope",
+                "org.example App"
+            ));
+            assert!(!flatpak_cgroup_matches(
+                "0::/app.slice/app-flatpak-org.example\\x20App-42.SCOPE",
+                "org.example App"
+            ));
+        }
 
-        assert_eq!(
-            verified_flatpak_app_id_from(tmp.path(), 404, &entries).as_deref(),
-            Some(app_id),
-            "identity comes from runtime metadata/cgroup, not Notify.app_name"
-        );
+        phase flatpak_identity_requires_matching_scope_runtime_and_install;
+        {
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let app_id = "org.example.Chat";
+            let entries = flatpak_entries(tmp.path(), app_id);
+            write_flatpak_proc(tmp.path(), 404, app_id, app_id);
 
-        write_flatpak_proc(tmp.path(), 405, app_id, "org.example.Spoof");
-        assert_eq!(
-            verified_flatpak_app_id_from(tmp.path(), 405, &entries),
-            None,
-            "a mismatched cgroup leaves a foreign sender unattributed"
-        );
+            assert_eq!(
+                verified_flatpak_app_id_from(tmp.path(), 404, &entries).as_deref(),
+                Some(app_id),
+                "identity comes from runtime metadata/cgroup, not Notify.app_name"
+            );
 
-        write_flatpak_proc(
-            tmp.path(),
-            406,
-            "org.example.Missing",
-            "org.example.Missing",
-        );
-        assert_eq!(
-            verified_flatpak_app_id_from(tmp.path(), 406, &entries),
-            None,
-            "an uninstalled Flatpak id is never accepted"
-        );
-    }
+            write_flatpak_proc(tmp.path(), 405, app_id, "org.example.Spoof");
+            assert_eq!(
+                verified_flatpak_app_id_from(tmp.path(), 405, &entries),
+                None,
+                "a mismatched cgroup leaves a foreign sender unattributed"
+            );
 
-    #[test]
-    fn app_ids_are_bounded_reverse_dns_characters() {
-        assert!(valid_app_id("org.example.Chat"));
-        assert!(!valid_app_id(""));
-        assert!(!valid_app_id("org/example"));
-        assert!(!valid_app_id(&"a".repeat(161)));
+            write_flatpak_proc(
+                tmp.path(),
+                406,
+                "org.example.Missing",
+                "org.example.Missing",
+            );
+            assert_eq!(
+                verified_flatpak_app_id_from(tmp.path(), 406, &entries),
+                None,
+                "an uninstalled Flatpak id is never accepted"
+            );
+        }
+
+        phase app_ids_are_bounded_reverse_dns_characters;
+        {
+            assert!(valid_app_id("org.example.Chat"));
+            assert!(!valid_app_id(""));
+            assert!(!valid_app_id("org/example"));
+            assert!(!valid_app_id(&"a".repeat(161)));
+        }
     }
 }
