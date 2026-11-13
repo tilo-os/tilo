@@ -12,13 +12,22 @@ use tilo_actions::remote::{Pending, PendingPoll, pending};
 
 /// Run `work` as a task of its own, never on the loop that asks: its answer, once it lands. A
 /// session with no task to run it on abandons the answer, which its asker hears.
-pub(crate) fn off_loop<T: Send + 'static>(
-    work: impl Future<Output = T> + Send + 'static,
+///
+/// Natively the task runs on the app runtime's thread, so `work` and its answer move there
+/// ([`tilo_rt::MaybeSend`]). A page has one thread, and what a write holds there — the
+/// workspace's store, its device key — stays on it, so the task there is a turn of the page's own
+/// queue ([`tilo_rt::spawn_task`]): the work still starts after the loop that asked had its turn.
+pub(crate) fn off_loop<T: tilo_rt::MaybeSend + 'static>(
+    work: impl Future<Output = T> + tilo_rt::MaybeSend + 'static,
 ) -> Pending<T> {
     let (done, answer) = pending();
+    let run = async move { done.complete(work.await) };
+    #[cfg(target_family = "wasm")]
+    tilo_rt::spawn_task(run);
+    #[cfg(not(target_family = "wasm"))]
     match tilo_rt::try_app() {
         Ok(runtime) => {
-            runtime.spawn(async move { done.complete(work.await) });
+            runtime.spawn(run);
         }
         Err(error) => tracing::warn!(%error, "no task runs the work: its asker hears no answer"),
     }

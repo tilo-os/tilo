@@ -9,23 +9,16 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll, Waker};
 
-#[cfg(not(target_family = "wasm"))]
 use tilo_actions::remote::Pending;
 
 /// What a write came to: the write as the workspace took it, or why it took none.
 pub(crate) type Written = Result<tilo_peer_state::owner::AppWrite, String>;
 
-/// Work under way off the loop, answering `T` once it is done. A page has one thread, and the
-/// engine it writes with is not `Send` there: its work is polled on the loop instead, whose
-/// waker it wakes when it moves on.
+/// Work under way off the loop, answering `T` once it is done.
 pub(crate) struct Polled<T> {
-    #[cfg(not(target_family = "wasm"))]
     answer: Pending<T>,
     /// What the work came to when the task running it went away without answering.
-    #[cfg(not(target_family = "wasm"))]
     gone: Option<Box<dyn FnOnce() -> T>>,
-    #[cfg(target_family = "wasm")]
-    work: Pin<Box<dyn Future<Output = T>>>,
     waker: Waker,
 }
 
@@ -34,51 +27,22 @@ pub(crate) type Writing = Polled<Written>;
 
 impl Writing {
     /// `write`, run off the loop, which `wake` wakes once it is done.
-    #[cfg(not(target_family = "wasm"))]
     pub(crate) fn write(
         wake: tilo_service::Wake,
-        write: impl Future<Output = Written> + Send + 'static,
+        write: impl Future<Output = Written> + tilo_rt::MaybeSend + 'static,
     ) -> Self {
         Self::new(wake, write, || {
             Err("the write's task stopped before it answered".to_owned())
         })
     }
-
-    /// `write`, polled on the page's loop, which `wake` wakes when it moves on.
-    #[cfg(target_family = "wasm")]
-    pub(crate) fn write(
-        wake: tilo_service::Wake,
-        write: impl Future<Output = Written> + 'static,
-    ) -> Self {
-        Self {
-            work: Box::pin(write),
-            waker: Waker::from(Arc::new(Wakes(wake))),
-        }
-    }
 }
 
-#[cfg(target_family = "wasm")]
-impl<T> Polled<T> {
-    /// What the work came to, once it is done; `None` while it is under way.
-    pub(crate) fn done(&mut self) -> Option<T> {
-        match self
-            .work
-            .as_mut()
-            .poll(&mut Context::from_waker(&self.waker))
-        {
-            Poll::Ready(done) => Some(done),
-            Poll::Pending => None,
-        }
-    }
-}
-
-#[cfg(not(target_family = "wasm"))]
-impl<T: Send + 'static> Polled<T> {
+impl<T: tilo_rt::MaybeSend + 'static> Polled<T> {
     /// Start `work` off the loop; `wake` wakes the loop once it is done, and `gone` is its answer
     /// should the task running it stop first.
     pub(crate) fn new(
         wake: tilo_service::Wake,
-        work: impl Future<Output = T> + Send + 'static,
+        work: impl Future<Output = T> + tilo_rt::MaybeSend + 'static,
         gone: impl FnOnce() -> T + 'static,
     ) -> Self {
         Self {
