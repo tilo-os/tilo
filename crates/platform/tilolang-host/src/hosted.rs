@@ -866,6 +866,13 @@ impl Hosted {
         self.search_index_whole.is_some()
     }
 
+    /// Whether the instance owes its window a frame: a change it has not sent, work it reads off
+    /// the frame that changes what it shows, or a search index being read that will send more.
+    #[must_use]
+    pub fn owes_a_frame(&self) -> bool {
+        self.index_pending() || self.instance.owes_a_frame()
+    }
+
     /// Why the instance's surface was last refused rather than published: empty while what it
     /// offers is a valid resource/action surface.
     #[must_use]
@@ -2390,6 +2397,13 @@ impl Applier {
     #[must_use]
     pub fn answered(&self) -> bool {
         matches!(self.applying, Applying::Answered)
+    }
+
+    /// Whether it has work of its own in hand: a change that arrived and has not run, or one still
+    /// to answer. A change its connection has not carried yet is the session's, not its own.
+    #[must_use]
+    pub fn owes(&self) -> bool {
+        matches!(self.applying, Applying::Arrived(_) | Applying::Ran(_))
     }
 
     /// One step: take in what the workspace sent and what came on the connection, run the change

@@ -239,17 +239,27 @@ impl Member {
         self.host.instances().next().unwrap()
     }
 
-    /// Frames until nothing changes for a while.
+    /// Frames until the host owes nothing: no instance being opened, and no window with a frame
+    /// coming — a change its instance has not sent, or work it reads off the frame. Nothing is
+    /// settled by letting time pass; a host that owes nothing draws nothing more.
     fn settle(&mut self) {
-        let mut quiet: u32 = 0;
-        while quiet < 20 {
+        let began = std::time::Instant::now();
+        loop {
             let changed = self.host.turn();
             self.window.take();
-            if changed {
-                quiet = 0;
-            } else {
-                quiet = quiet.saturating_add(1);
-                std::thread::sleep(std::time::Duration::from_millis(5));
+            if !changed && !self.host.owes_work() {
+                return;
+            }
+            assert!(
+                began.elapsed() < std::time::Duration::from_secs(120),
+                "the host owes work after {}s: {} opening, {} running",
+                began.elapsed().as_secs(),
+                self.host.opening(),
+                self.host.instances().count()
+            );
+            if !changed {
+                // Nothing moved: what the host owes is work off its frame, which wakes it.
+                std::thread::sleep(std::time::Duration::from_millis(1));
             }
         }
     }
