@@ -63,9 +63,11 @@ fn refused(reason: impl Into<String>) -> ActionError {
 pub fn replay_launch(
     recording: &ui::feedback::RecordingRef,
 ) -> tilo_actions::remote::ApplicationLaunch {
+    // A launch names content by its lower-case address, and a recording's hash is the plain
+    // BLAKE3 of its bytes: it carries no key, so the whole reference is the address.
     tilo_actions::remote::ApplicationLaunch::with_content(
         recording.app.clone(),
-        recording.hash.clone(),
+        recording.hash.to_ascii_lowercase(),
     )
 }
 
