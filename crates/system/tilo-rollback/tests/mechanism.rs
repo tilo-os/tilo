@@ -41,8 +41,6 @@ struct Fixture {
     cfg: Config,
     /// Private half of the stand-in prediction key.
     sign_priv: PathBuf,
-    /// Second, unauthorised key.
-    evil_priv: PathBuf,
     key_name: Vec<u8>,
     /// The floor authority's key Name and the NV index authPolicy it implies.
     authority_name: Vec<u8>,
@@ -68,12 +66,9 @@ impl Fixture {
         let sign_priv = scratch.path().join("sign.priv.pem");
         let sign_pub = scratch.path().join("sign.pub.pem");
         gen_rsa(&sign_priv, &sign_pub);
-        let evil_priv = scratch.path().join("evil.priv.pem");
-        let evil_pub = scratch.path().join("evil.pub.pem");
-        gen_rsa(&evil_priv, &evil_pub);
 
         // One key serves as both prediction and floor authority (the shipped default); tests
-        // needing the distinction use `evil_priv` as the wrong key.
+        // needing the distinction use `evil_priv()` as the wrong key.
         let mut cfg = Config {
             pcr_public_key: sign_pub.display().to_string(),
             floor_authority_key: sign_pub.display().to_string(),
@@ -96,7 +91,6 @@ impl Fixture {
             runner,
             cfg,
             sign_priv,
-            evil_priv,
             key_name,
             authority_name,
             nv_auth_policy,
@@ -112,6 +106,38 @@ impl Fixture {
     }
     fn selection(&self) -> String {
         policy::pcr_selection(&self.cfg.pcr_bank, &self.cfg.pcrs)
+    }
+
+    /// Private half of a second, unauthorised key, generated for the test that asks: two do,
+    /// and generating it in `new` cost every other test a key it never read.
+    fn evil_priv(&self) -> PathBuf {
+        let evil_priv = self.dir().join("evil.priv.pem");
+        let evil_pub = self.dir().join("evil.pub.pem");
+        gen_rsa(&evil_priv, &evil_pub);
+        evil_priv
+    }
+
+    /// Sign a prediction over the live measurements for each of `generations` and write it to
+    /// `dir`, as an image ships them. Returns them in the order asked for: a test that also
+    /// enrolls one of those generations hands over the prediction it shipped, which is
+    /// byte-for-byte what a second `predict` returns (same live PCRs, and an RSASSA-PKCS1-v1_5
+    /// signature has no randomness), without a second trial session.
+    fn ship_predictions(&self, dir: &Path, generations: &[u64]) -> Vec<Prediction> {
+        generations
+            .iter()
+            .map(|&generation| {
+                let p = self.predict(generation, &self.sign_priv, "");
+                policy::write_signed_prediction(
+                    dir,
+                    generation,
+                    &self.cfg.pcr_bank,
+                    &self.cfg.pcrs,
+                    &p,
+                )
+                .expect("write prediction");
+                p
+            })
+            .collect()
     }
 
     fn floor(&self, initial_floor: u64) -> counter::FloorState {
@@ -532,7 +558,7 @@ fn a_prediction_signed_by_another_key_is_refused() {
     let token = f.seal_token(7, floor, &[good], secret, None);
     assert!(f.try_unseal(&token, None).expect("sanity").is_some());
 
-    let forged = f.predict(7, &f.evil_priv, "forged");
+    let forged = f.predict(7, &f.evil_priv(), "forged");
     let mut tampered = token;
     let b64 = base64::engine::general_purpose::STANDARD;
     tampered.predictions[0].signature = b64.encode(&forged.signature);
@@ -925,11 +951,7 @@ fn confirming_a_generation_enrolls_it_prunes_the_window_and_then_raises_the_floo
     let preds = f.dir().join("predictions");
     let state = f.dir().join("state.json");
 
-    for g in [5u64, 6, 7, 8] {
-        let p = f.predict(g, &f.sign_priv, "");
-        policy::write_signed_prediction(&preds, g, &f.cfg.pcr_bank, &f.cfg.pcrs, &p)
-            .expect("write prediction");
-    }
+    let shipped = f.ship_predictions(&preds, &[5, 6, 7, 8]);
 
     // First enrollment: generation 5, floor at the bottom of the window.
     let floor = f.floor(3);
@@ -938,7 +960,7 @@ fn confirming_a_generation_enrolls_it_prunes_the_window_and_then_raises_the_floo
         &ws,
         &img,
         &f.cfg,
-        &unpinned(5, floor, &[f.predict(5, &f.sign_priv, "")]),
+        &unpinned(5, floor, &shipped[..1]),
         recovery,
     )
     .expect("enroll 5");
@@ -1003,22 +1025,19 @@ fn confirming_a_generation_enrolls_it_prunes_the_window_and_then_raises_the_floo
     assert_eq!(o8.floor.floor_generation(), 6);
 
     // The pruned generation's keyslot is gone; only the window's generations remain.
-    let left: Vec<u64> = keyslots::list_tokens(&f.runner, &img)
-        .expect("list")
-        .into_iter()
-        .map(|(_, t)| t.generation)
-        .collect();
+    let tokens = keyslots::list_tokens(&f.runner, &img).expect("list");
+    let left: Vec<u64> = tokens.iter().map(|(_, t)| t.generation).collect();
     assert_eq!(left, vec![8, 7, 6]);
 
-    // Generation 6 is the floor, so it must still unseal; anything below must not.
-    let t6 = keyslots::list_tokens(&f.runner, &img)
-        .expect("list")
-        .into_iter()
+    // Generation 6 is the floor, so it must still unseal; anything below must not. Its token
+    // comes from the listing above: nothing has written to the header since.
+    let t6 = &tokens
+        .iter()
         .find(|(_, t)| t.generation == 6)
         .expect("token 6")
         .1;
     assert!(
-        f.try_unseal(&t6, None).expect("unseal 6").is_some(),
+        f.try_unseal(t6, None).expect("unseal 6").is_some(),
         "the generation at the floor must still unseal"
     );
 
@@ -1034,18 +1053,14 @@ fn a_declared_floor_closes_the_window_on_a_vulnerable_generation() {
     let ws = f.ws();
     let preds = f.dir().join("predictions");
     let state = f.dir().join("state.json");
-    for g in [7u64, 8] {
-        let p = f.predict(g, &f.sign_priv, "");
-        policy::write_signed_prediction(&preds, g, &f.cfg.pcr_bank, &f.cfg.pcrs, &p)
-            .expect("write");
-    }
+    let shipped = f.ship_predictions(&preds, &[7, 8]);
     let floor = f.floor(5);
     keyslots::enroll_generation(
         &f.runner,
         &ws,
         &img,
         &f.cfg,
-        &unpinned(7, floor, &[f.predict(7, &f.sign_priv, "")]),
+        &unpinned(7, floor, &shipped[..1]),
         recovery,
     )
     .expect("enroll 7");
@@ -1228,11 +1243,7 @@ fn an_unattended_confirmation_works_from_the_boot_secret_alone() {
     let ws = f.ws();
     let preds = f.dir().join("predictions");
     let state = f.dir().join("state.json");
-    for g in [6u64, 7] {
-        let p = f.predict(g, &f.sign_priv, "");
-        policy::write_signed_prediction(&preds, g, &f.cfg.pcr_bank, &f.cfg.pcrs, &p)
-            .expect("write");
-    }
+    let shipped = f.ship_predictions(&preds, &[6, 7]);
 
     // Enrolled with a PIN, the way a real machine is.
     let pin: &[u8] = b"482913";
@@ -1245,7 +1256,7 @@ fn an_unattended_confirmation_works_from_the_boot_secret_alone() {
         &keyslots::Enrollment {
             generation: 6,
             floor,
-            predictions: &[f.predict(6, &f.sign_priv, "")],
+            predictions: &shipped[..1],
             pin: Some(pin),
         },
         recovery,
@@ -1259,7 +1270,7 @@ fn an_unattended_confirmation_works_from_the_boot_secret_alone() {
         &keyslots::Enrollment {
             generation: 7,
             floor,
-            predictions: &[f.predict(7, &f.sign_priv, "")],
+            predictions: &shipped[1..],
             pin: Some(pin),
         },
         recovery,
@@ -1328,19 +1339,15 @@ fn an_unattended_confirmation_refuses_a_proof_that_is_not_that_generations_secre
     let ws = f.ws();
     let preds = f.dir().join("predictions");
     let state = f.dir().join("state.json");
-    for g in [6u64, 7] {
-        let p = f.predict(g, &f.sign_priv, "");
-        policy::write_signed_prediction(&preds, g, &f.cfg.pcr_bank, &f.cfg.pcrs, &p)
-            .expect("write");
-    }
+    let shipped = f.ship_predictions(&preds, &[6, 7]);
     let floor = f.floor(4);
-    for g in [6u64, 7] {
+    for (g, prediction) in [6u64, 7].into_iter().zip(&shipped) {
         keyslots::enroll_generation(
             &f.runner,
             &ws,
             &img,
             &f.cfg,
-            &unpinned(g, floor, &[f.predict(g, &f.sign_priv, "")]),
+            &unpinned(g, floor, std::slice::from_ref(prediction)),
             recovery,
         )
         .expect("enroll");
@@ -1489,11 +1496,7 @@ fn confirming_the_running_generation_keeps_the_staged_generations_keyslot() {
     let ws = f.ws();
     let preds = f.dir().join("predictions");
     let state = f.dir().join("state.json");
-    for g in [5u64, 6] {
-        let p = f.predict(g, &f.sign_priv, "");
-        policy::write_signed_prediction(&preds, g, &f.cfg.pcr_bank, &f.cfg.pcrs, &p)
-            .expect("write");
-    }
+    let shipped = f.ship_predictions(&preds, &[5, 6]);
     let floor = f.floor(3);
 
     keyslots::enroll_generation(
@@ -1501,7 +1504,7 @@ fn confirming_the_running_generation_keeps_the_staged_generations_keyslot() {
         &ws,
         &img,
         &f.cfg,
-        &unpinned(5, floor, &[f.predict(5, &f.sign_priv, "")]),
+        &unpinned(5, floor, &shipped[..1]),
         recovery,
     )
     .expect("enroll 5");
@@ -1510,7 +1513,7 @@ fn confirming_the_running_generation_keeps_the_staged_generations_keyslot() {
         &ws,
         &img,
         &f.cfg,
-        &unpinned(6, floor, &[f.predict(6, &f.sign_priv, "")]),
+        &unpinned(6, floor, &shipped[1..]),
         recovery,
     )
     .expect("stage 6");
@@ -1549,11 +1552,8 @@ fn confirming_the_running_generation_keeps_the_staged_generations_keyslot() {
         o.dropped
     );
 
-    let left: Vec<u64> = keyslots::list_tokens(&f.runner, &img)
-        .expect("list")
-        .into_iter()
-        .map(|(_, t)| t.generation)
-        .collect();
+    let tokens = keyslots::list_tokens(&f.runner, &img).expect("list");
+    let left: Vec<u64> = tokens.iter().map(|(_, t)| t.generation).collect();
     assert!(
         left.contains(&6),
         "generation 6's token must survive: {left:?}"
@@ -1565,15 +1565,15 @@ fn confirming_the_running_generation_keeps_the_staged_generations_keyslot() {
         "generation 6's keyslot must survive"
     );
 
-    // And it still unseals, so the reboot into 6 has something to unlock with.
-    let t6 = keyslots::list_tokens(&f.runner, &img)
-        .expect("list")
-        .into_iter()
+    // And it still unseals, so the reboot into 6 has something to unlock with. Its token comes
+    // from the listing above: only a header dump has run since.
+    let t6 = &tokens
+        .iter()
         .find(|(_, t)| t.generation == 6)
         .expect("token 6")
         .1;
     assert!(
-        f.try_unseal(&t6, None).expect("unseal 6").is_some(),
+        f.try_unseal(t6, None).expect("unseal 6").is_some(),
         "the staged generation's secret must still be releasable"
     );
 }
@@ -1964,7 +1964,7 @@ fn an_approval_signed_by_another_key_is_refused() {
 
     // Same policy, same target, wrong signer.
     let req = approval::build_request(f.cfg.nv_index, &nv_name, floor, &[], 3).unwrap();
-    let forged = approval::issue(&f.runner, &ws, &req, &f.evil_priv, 4, true)
+    let forged = approval::issue(&f.runner, &ws, &req, &f.evil_priv(), 4, true)
         .expect("the forger can produce a well-formed approval");
     assert_eq!(forged.len(), 1);
     assert_eq!(forged[0].target_counter, target);
@@ -2001,19 +2001,15 @@ fn setup_generations_5_to_8(
     let ws = f.ws();
     let preds = f.dir().join("predictions");
     let state = f.dir().join("state.json");
-    for g in [5u64, 6, 7, 8] {
-        let p = f.predict(g, &f.sign_priv, "");
-        policy::write_signed_prediction(&preds, g, &f.cfg.pcr_bank, &f.cfg.pcrs, &p)
-            .expect("write");
-    }
+    let shipped = f.ship_predictions(&preds, &[5, 6, 7, 8]);
     let floor = f.floor(3);
-    for g in [5u64, 6, 7, 8] {
+    for (g, prediction) in [5u64, 6, 7, 8].into_iter().zip(&shipped) {
         keyslots::enroll_generation(
             &f.runner,
             &ws,
             &img,
             &f.cfg,
-            &unpinned(g, floor, &[f.predict(g, &f.sign_priv, "")]),
+            &unpinned(g, floor, std::slice::from_ref(prediction)),
             recovery,
         )
         .expect("enroll");
@@ -2082,28 +2078,25 @@ fn without_approvals_the_floor_stays_put_and_the_disk_still_unlocks() {
     );
 
     // The disk still unlocks — the whole point.
-    let t8 = keyslots::list_tokens(&f.runner, &img)
-        .expect("list")
-        .into_iter()
+    let tokens = keyslots::list_tokens(&f.runner, &img).expect("list");
+    let t8 = &tokens
+        .iter()
         .find(|(_, t)| t.generation == 8)
         .expect("token 8")
         .1;
     assert!(
-        f.try_unseal(&t8, None).expect("unseal 8").is_some(),
+        f.try_unseal(t8, None).expect("unseal 8").is_some(),
         "an unavailable floor authority must never stop the disk unlocking"
     );
     assert!(keyslots::verify_recovery(&f.runner, &ws, &img, recovery).expect("verify recovery"));
 
-    // And once approvals arrive, the same confirmation advances.
+    // And once approvals arrive, the same confirmation advances. The enrolled generations are
+    // those of the listing above: the unseal and the recovery check read, and write nothing.
     let floor_now = counter::FloorState {
         counter: f.counter_now(),
         base: floor.base,
     };
-    let enrolled: Vec<u64> = keyslots::list_tokens(&f.runner, &img)
-        .expect("list")
-        .into_iter()
-        .map(|(_, t)| t.generation)
-        .collect();
+    let enrolled: Vec<u64> = tokens.iter().map(|(_, t)| t.generation).collect();
     f.issue_approvals(floor_now, &enrolled, 6, true);
     let o2 = confirm::run(
         &f.runner,
