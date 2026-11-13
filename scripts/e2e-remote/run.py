@@ -1160,14 +1160,22 @@ ip -o addr show dev "$dev"
 
         def show_tab(box: Box, shown) -> str:
             """Bring the tab `shown` to the front of `box`'s desk with the desk's own `focus`,
-            as picking the window from the desk's list does: no pointer moves. What the desk
-            answered, for the step's facts."""
-            try:
-                answer = box.vm.invoke("so.tilo.session", "desktop:desk\x1ffocus",
-                                       {"tab": str(shown)})
-            except VmError as exc:
-                return f"not brought into view: {str(exc)[:200]}"
-            return json.dumps(answer, ensure_ascii=False)[:300]
+            as picking the window from the desk's list does: no pointer moves. The action is
+            asked of whoever the desk lists it under, and of the session where it lists none.
+            What the desk answered, for the step's facts."""
+            focus = "desktop:desk\x1ffocus"
+            row = next((row for query in ("desktop:desk", "focus") for row in listed(box, query)
+                        if str(row.get("id", "")) == focus), None)
+            providers = ([str(row.get("provider"))] if row else []) + ["so.tilo.session", "session"]
+            refused = []
+            for provider in dict.fromkeys(providers):
+                try:
+                    answer = box.vm.invoke(provider, focus, {"tab": str(shown)})
+                except VmError as exc:
+                    refused.append(f"{provider}: {str(exc)[:120]}")
+                    continue
+                return json.dumps(answer, ensure_ascii=False)[:300]
+            return "not brought into view: " + "; ".join(refused)
 
         def plane(state: dict) -> dict | None:
             """The live plane of the workspace the window is shared in, as a session says it
