@@ -364,62 +364,69 @@ mod retirement_tests {
                 .as_ref()
                 .is_some_and(|authority| authority.check().is_ok())
     }
-    #[test]
-    fn missing_or_panicked_stop_keeps_source_and_control_custody_on_retries() {
-        for panic in [false, true] {
-            let mut owner = unknown_worker(panic);
-            owner.source_view = [9; 32];
-            assert!(
-                !live_custody(&owner),
-                "source digest cannot replace actual endpoint custody"
-            );
+    tilo_test_env::scenario! {
+        /// Retiring a retained source worker whose stop was never observed.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn an_unknown_stop_keeps_source_and_control_custody;
+
+        phase missing_or_panicked_stop_keeps_source_and_control_custody_on_retries;
+        {
+            for panic in [false, true] {
+                let mut owner = unknown_worker(panic);
+                owner.source_view = [9; 32];
+                assert!(
+                    !live_custody(&owner),
+                    "source digest cannot replace actual endpoint custody"
+                );
+                let path = owner.working.as_ref().unwrap().path().to_owned();
+                let expected = owner.selected_file.as_ref().unwrap().metadata().unwrap();
+                assert!(owner.retire().is_err());
+                assert!(
+                    owner.retire().is_err(),
+                    "consumed join handle cannot become successful stop"
+                );
+                assert!(!owner.stopped);
+                assert!(
+                    !live_custody(&owner),
+                    "unknown stop never becomes a live source epoch"
+                );
+                let held = owner.selected_file.as_ref().unwrap().metadata().unwrap();
+                assert_eq!((held.dev(), held.ino()), (expected.dev(), expected.ino()));
+                assert!(owner.parent.is_some());
+                assert!(path.join("selected").exists());
+                // The fixture spawned no process, so release only its owned test
+                // files explicitly; do not manufacture a production stop receipt.
+                owner.selected_file.take();
+                owner.parent.take();
+                owner.working.take().unwrap().close().unwrap();
+            }
+        }
+
+        phase drop_after_unknown_stop_keeps_actual_file_descriptors_and_working_tree;
+        {
+            let mut owner = unknown_worker(true);
             let path = owner.working.as_ref().unwrap().path().to_owned();
+            let selected_fd = owner.selected_file.as_ref().unwrap().as_raw_fd();
+            let parent_fd = owner.parent.as_ref().unwrap().as_raw_fd();
             let expected = owner.selected_file.as_ref().unwrap().metadata().unwrap();
             assert!(owner.retire().is_err());
+            drop(owner);
             assert!(
-                owner.retire().is_err(),
-                "consumed join handle cannot become successful stop"
+                path.join("selected").exists(),
+                "unknown cleanup cannot remove control ancestry"
             );
-            assert!(!owner.stopped);
-            assert!(
-                !live_custody(&owner),
-                "unknown stop never becomes a live source epoch"
+            let mut observed: libc::stat = unsafe { std::mem::zeroed() };
+            assert_eq!(unsafe { libc::fstat(selected_fd, &raw mut observed) }, 0);
+            assert_eq!(
+                (observed.st_dev, observed.st_ino),
+                (expected.dev(), expected.ino())
             );
-            let held = owner.selected_file.as_ref().unwrap().metadata().unwrap();
-            assert_eq!((held.dev(), held.ino()), (expected.dev(), expected.ino()));
-            assert!(owner.parent.is_some());
-            assert!(path.join("selected").exists());
-            // The fixture spawned no process, so release only its owned test
-            // files explicitly; do not manufacture a production stop receipt.
-            owner.selected_file.take();
-            owner.parent.take();
-            owner.working.take().unwrap().close().unwrap();
+            assert_eq!(unsafe { libc::fstat(parent_fd, &raw mut observed) }, 0);
+            // These descriptors were deliberately retained by this exact fixture;
+            // close only those owned objects after observing the regression.
+            assert_eq!(unsafe { libc::close(selected_fd) }, 0);
+            assert_eq!(unsafe { libc::close(parent_fd) }, 0);
+            std::fs::remove_dir_all(path).unwrap();
         }
-    }
-    #[test]
-    fn drop_after_unknown_stop_keeps_actual_file_descriptors_and_working_tree() {
-        let mut owner = unknown_worker(true);
-        let path = owner.working.as_ref().unwrap().path().to_owned();
-        let selected_fd = owner.selected_file.as_ref().unwrap().as_raw_fd();
-        let parent_fd = owner.parent.as_ref().unwrap().as_raw_fd();
-        let expected = owner.selected_file.as_ref().unwrap().metadata().unwrap();
-        assert!(owner.retire().is_err());
-        drop(owner);
-        assert!(
-            path.join("selected").exists(),
-            "unknown cleanup cannot remove control ancestry"
-        );
-        let mut observed: libc::stat = unsafe { std::mem::zeroed() };
-        assert_eq!(unsafe { libc::fstat(selected_fd, &raw mut observed) }, 0);
-        assert_eq!(
-            (observed.st_dev, observed.st_ino),
-            (expected.dev(), expected.ino())
-        );
-        assert_eq!(unsafe { libc::fstat(parent_fd, &raw mut observed) }, 0);
-        // These descriptors were deliberately retained by this exact fixture;
-        // close only those owned objects after observing the regression.
-        assert_eq!(unsafe { libc::close(selected_fd) }, 0);
-        assert_eq!(unsafe { libc::close(parent_fd) }, 0);
-        std::fs::remove_dir_all(path).unwrap();
     }
 }

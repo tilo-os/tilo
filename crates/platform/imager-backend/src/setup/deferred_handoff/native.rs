@@ -1095,269 +1095,205 @@ user_pref("mail.identity.id1.fullName", "Personal");
         (plan, prepared, reviewed)
     }
 
-    #[test]
-    fn journal_is_private_bound_and_reimports_only_the_selected_mail_and_browser() {
-        let fixture = tempfile::tempdir().unwrap();
-        let root = fixture.path().join("root");
-        source_dir(&root);
-        let mut environment = tilo_test_env::ScopedEnv::new();
-        environment.set(runtime_identity::FILE_SECRETS_ENV, "1");
-        let identity = PreparedIdentity::create(
-            &root.join("identity"),
-            "Ada",
-            [1, 2, 3],
-            IdentityStorage::Files,
-        )
-        .unwrap();
-        let person = provision_device(&root.join("device"), &identity, &mut environment);
-        let home = fixture.path().join("source");
-        source_dir(&home);
-        let (plan, prepared, _reviewed) = prepared(&home);
-        assert_eq!(
-            std::fs::metadata(&prepared.journal)
-                .unwrap()
-                .permissions()
-                .mode()
-                & 0o777,
-            0o600
-        );
-        let opened = Journal::open(&home, &plan).unwrap();
-        assert_eq!(opened.operation_id(), plan.operation_id);
-        assert_eq!(opened.exclusions(), plan.home_exclusions.as_slice());
-        let target = tempfile::tempdir().unwrap();
-        let workspace = tempfile::tempdir().unwrap();
-        let receipt = import_selected_from_source(
-            &plan,
-            &home,
-            target.path(),
-            workspace.path(),
-            person,
-            &AtomicBool::new(false),
-        )
-        .unwrap_or_else(|error| panic!("deferred import failed: {error}"));
-        assert_eq!(receipt.mail.len(), 1);
-        assert_eq!(receipt.mail[0].accounts.len(), 1);
-        assert!(
-            receipt
-                .reconnect
-                .iter()
-                .any(|reason| reason == "browser:sessions"),
-            "copied browser profiles still require a specific sign-in"
-        );
-        assert!(
-            receipt
-                .reconnect
-                .iter()
-                .any(|reason| reason == "browser:credentials"),
-            "saved passwords stay in the source and require a new sign-in"
-        );
-        assert!(target.path().join(".config/tilo").is_dir());
-        assert!(target.path().join(".cache/so.tilo.mail/mail").is_dir());
-        let browser = receipt.browser.expect("selected browser projection");
-        assert_eq!(browser.profiles.len(), 1);
-        assert!(browser.projection.join("plan.json").is_file());
-        assert!(browser.projection.join("profiles").is_dir());
-        let deferred_root =
-            browser_continuity::completion::deferred_root(target.path(), &plan.operation_id);
-        assert_eq!(
-            browser.projection,
-            browser_continuity::completion::deferred_projection(&deferred_root)
-        );
-        let completion = browser_continuity::completion::Completion::read(
-            &deferred_root.join(browser_continuity::completion::FILE_NAME),
-        )
-        .unwrap();
-        assert_eq!(completion.operation(), plan.operation_id);
-        assert_eq!(
-            completion.setup_digest(),
-            browser_continuity::completion::deferred_setup_digest(&plan.operation_id)
-        );
-        assert_eq!(completion.plan().identity_public_key, person);
-        let plan_bytes = plan.bytes().unwrap();
-        assert!(!String::from_utf8_lossy(&plan_bytes).contains("person@example.test"));
-        assert!(!String::from_utf8_lossy(&plan_bytes).contains("ImapMail"));
-        assert!(!String::from_utf8_lossy(&plan_bytes).contains("profile.id"));
-    }
+    tilo_test_env::scenario! {
+        /// The deferred handoff journal: its privacy, its binding and what crosses it.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn the_deferred_handoff_journal_carries_only_what_was_selected;
 
-    #[test]
-    fn browser_already_carried_by_the_package_is_not_duplicated_in_the_journal() {
-        let fixture = tempfile::tempdir().unwrap();
-        let home = fixture.path().join("source");
-        source_dir(&home);
-        browser_fixture(&home);
-        let inventory = account_sources::discover(&SourceRoots {
-            home: home.clone(),
-            config: home.join(".config"),
-        });
-        let browser = crate::browser_selection::Selection::discover(&home, &inventory.candidates)
-            .unwrap()
-            .selected();
-        let mut package_plan = plan(&home);
-        assert!(!browser.profiles().is_empty());
-        let prepared = prepare(&Prepare {
-            source_home: &home,
-            plan: &package_plan,
-            exclusions: &package_plan.home_exclusions,
-            mail: &[],
-            browser: &SelectedSources::default(),
-            applications: false,
-            accounts: false,
-            account_sources: &[],
-            accounts_in_package: false,
-            browser_in_package: true,
-        })
-        .unwrap();
-        package_plan
-            .attach_deferred_handoff(prepared.binding)
+        phase journal_is_private_bound_and_reimports_only_the_selected_mail_and_browser;
+        {
+            let fixture = tempfile::tempdir().unwrap();
+            let root = fixture.path().join("root");
+            source_dir(&root);
+            let mut environment = tilo_test_env::ScopedEnv::new();
+            environment.set(runtime_identity::FILE_SECRETS_ENV, "1");
+            let identity = PreparedIdentity::create(
+                &root.join("identity"),
+                "Ada",
+                [1, 2, 3],
+                IdentityStorage::Files,
+            )
             .unwrap();
-        let journal = Journal::open(&home, &package_plan).unwrap();
-        assert!(journal.browser.is_empty());
-        assert!(
-            !journal
-                .reconnect()
+            let person = provision_device(&root.join("device"), &identity, &mut environment);
+            let home = fixture.path().join("source");
+            source_dir(&home);
+            let (plan, prepared, _reviewed) = prepared(&home);
+            assert_eq!(
+                std::fs::metadata(&prepared.journal)
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+            let opened = Journal::open(&home, &plan).unwrap();
+            assert_eq!(opened.operation_id(), plan.operation_id);
+            assert_eq!(opened.exclusions(), plan.home_exclusions.as_slice());
+            let target = tempfile::tempdir().unwrap();
+            let workspace = tempfile::tempdir().unwrap();
+            let receipt = import_selected_from_source(
+                &plan,
+                &home,
+                target.path(),
+                workspace.path(),
+                person,
+                &AtomicBool::new(false),
+            )
+            .unwrap_or_else(|error| panic!("deferred import failed: {error}"));
+            assert_eq!(receipt.mail.len(), 1);
+            assert_eq!(receipt.mail[0].accounts.len(), 1);
+            assert!(
+                receipt
+                    .reconnect
+                    .iter()
+                    .any(|reason| reason == "browser:sessions"),
+                "copied browser profiles still require a specific sign-in"
+            );
+            assert!(
+                receipt
+                    .reconnect
+                    .iter()
+                    .any(|reason| reason == "browser:credentials"),
+                "saved passwords stay in the source and require a new sign-in"
+            );
+            assert!(target.path().join(".config/tilo").is_dir());
+            assert!(target.path().join(".cache/so.tilo.mail/mail").is_dir());
+            let browser = receipt.browser.expect("selected browser projection");
+            assert_eq!(browser.profiles.len(), 1);
+            assert!(browser.projection.join("plan.json").is_file());
+            assert!(browser.projection.join("profiles").is_dir());
+            let deferred_root =
+                browser_continuity::completion::deferred_root(target.path(), &plan.operation_id);
+            assert_eq!(
+                browser.projection,
+                browser_continuity::completion::deferred_projection(&deferred_root)
+            );
+            let completion = browser_continuity::completion::Completion::read(
+                &deferred_root.join(browser_continuity::completion::FILE_NAME),
+            )
+            .unwrap();
+            assert_eq!(completion.operation(), plan.operation_id);
+            assert_eq!(
+                completion.setup_digest(),
+                browser_continuity::completion::deferred_setup_digest(&plan.operation_id)
+            );
+            assert_eq!(completion.plan().identity_public_key, person);
+            let plan_bytes = plan.bytes().unwrap();
+            assert!(!String::from_utf8_lossy(&plan_bytes).contains("person@example.test"));
+            assert!(!String::from_utf8_lossy(&plan_bytes).contains("ImapMail"));
+            assert!(!String::from_utf8_lossy(&plan_bytes).contains("profile.id"));
+        }
+
+        phase browser_already_carried_by_the_package_is_not_duplicated_in_the_journal;
+        {
+            let fixture = tempfile::tempdir().unwrap();
+            let home = fixture.path().join("source");
+            source_dir(&home);
+            browser_fixture(&home);
+            let inventory = account_sources::discover(&SourceRoots {
+                home: home.clone(),
+                config: home.join(".config"),
+            });
+            let browser = crate::browser_selection::Selection::discover(&home, &inventory.candidates)
+                .unwrap()
+                .selected();
+            let mut package_plan = plan(&home);
+            assert!(!browser.profiles().is_empty());
+            let prepared = prepare(&Prepare {
+                source_home: &home,
+                plan: &package_plan,
+                exclusions: &package_plan.home_exclusions,
+                mail: &[],
+                browser: &SelectedSources::default(),
+                applications: false,
+                accounts: false,
+                account_sources: &[],
+                accounts_in_package: false,
+                browser_in_package: true,
+            })
+            .unwrap();
+            package_plan
+                .attach_deferred_handoff(prepared.binding)
+                .unwrap();
+            let journal = Journal::open(&home, &package_plan).unwrap();
+            assert!(journal.browser.is_empty());
+            assert!(
+                !journal
+                    .reconnect()
+                    .iter()
+                    .any(|reason| reason.starts_with("browser:") || reason.starts_with("accounts:")),
+                "the package already carries the browser and any selected sign-ins"
+            );
+
+            let duplicate = prepare(&Prepare {
+                source_home: &home,
+                plan: &plan(&home),
+                exclusions: &package_plan.home_exclusions,
+                mail: &[],
+                browser: &browser,
+                applications: false,
+                accounts: false,
+                account_sources: &[],
+                accounts_in_package: false,
+                browser_in_package: true,
+            })
+            .expect_err("a profile cannot be both in the package and the journal");
+            assert!(duplicate.to_string().contains("both in the package"));
+        }
+
+        phase only_the_selected_goa_account_and_its_services_cross_the_private_journal;
+        {
+            let fixture = tempfile::tempdir().unwrap();
+            let home = fixture.path().join("source");
+            source_dir(&home);
+            write(
+                &home.join(".config/goa-1.0/accounts.conf"),
+                "[Account account_1]\nProvider=google\nIdentity=person@example.test\nPresentationIdentity=person@example.test\nFilesEnabled=true\nMailEnabled=true\nCalendarEnabled=false\nContactsEnabled=false\n[Account account_2]\nProvider=google\nIdentity=other@example.test\nPresentationIdentity=other@example.test\nFilesEnabled=true\nMailEnabled=true\nCalendarEnabled=false\nContactsEnabled=false\n",
+            );
+            let mut plan = migration_handoff::capture_fixture(
+                &home,
+                &uuid::Uuid::new_v4().to_string(),
+                Categories {
+                    home: true,
+                    flatpak: false,
+                    accounts: true,
+                },
+            )
+            .unwrap();
+            plan.home_policy = HomePolicy::Copy;
+            plan.home_exclusions = Vec::new();
+            plan.set_fixture_original_uid(ORIGINAL_UID);
+            plan.validate().unwrap();
+            let inventory = account_sources::discover(&SourceRoots {
+                home: home.clone(),
+                config: home.join(".config"),
+            });
+            let selected: Vec<_> = inventory
+                .candidates
                 .iter()
-                .any(|reason| reason.starts_with("browser:") || reason.starts_with("accounts:")),
-            "the package already carries the browser and any selected sign-ins"
-        );
-
-        let duplicate = prepare(&Prepare {
-            source_home: &home,
-            plan: &plan(&home),
-            exclusions: &package_plan.home_exclusions,
-            mail: &[],
-            browser: &browser,
-            applications: false,
-            accounts: false,
-            account_sources: &[],
-            accounts_in_package: false,
-            browser_in_package: true,
-        })
-        .expect_err("a profile cannot be both in the package and the journal");
-        assert!(duplicate.to_string().contains("both in the package"));
-    }
-
-    #[test]
-    fn only_the_selected_goa_account_and_its_services_cross_the_private_journal() {
-        let fixture = tempfile::tempdir().unwrap();
-        let home = fixture.path().join("source");
-        source_dir(&home);
-        write(
-            &home.join(".config/goa-1.0/accounts.conf"),
-            "[Account account_1]\nProvider=google\nIdentity=person@example.test\nPresentationIdentity=person@example.test\nFilesEnabled=true\nMailEnabled=true\nCalendarEnabled=false\nContactsEnabled=false\n[Account account_2]\nProvider=google\nIdentity=other@example.test\nPresentationIdentity=other@example.test\nFilesEnabled=true\nMailEnabled=true\nCalendarEnabled=false\nContactsEnabled=false\n",
-        );
-        let mut plan = migration_handoff::capture_fixture(
-            &home,
-            &uuid::Uuid::new_v4().to_string(),
-            Categories {
-                home: true,
-                flatpak: false,
+                .filter(|candidate| candidate.identity.as_deref() == Some("person@example.test"))
+                .filter_map(SelectedAccount::from_candidate)
+                .collect();
+            assert_eq!(selected.len(), 1);
+            let prepared = prepare(&Prepare {
+                source_home: &home,
+                plan: &plan,
+                exclusions: &plan.home_exclusions,
+                mail: &[],
+                browser: &SelectedSources::default(),
+                applications: false,
                 accounts: true,
-            },
-        )
-        .unwrap();
-        plan.home_policy = HomePolicy::Copy;
-        plan.home_exclusions = Vec::new();
-        plan.set_fixture_original_uid(ORIGINAL_UID);
-        plan.validate().unwrap();
-        let inventory = account_sources::discover(&SourceRoots {
-            home: home.clone(),
-            config: home.join(".config"),
-        });
-        let selected: Vec<_> = inventory
-            .candidates
-            .iter()
-            .filter(|candidate| candidate.identity.as_deref() == Some("person@example.test"))
-            .filter_map(SelectedAccount::from_candidate)
-            .collect();
-        assert_eq!(selected.len(), 1);
-        let prepared = prepare(&Prepare {
-            source_home: &home,
-            plan: &plan,
-            exclusions: &plan.home_exclusions,
-            mail: &[],
-            browser: &SelectedSources::default(),
-            applications: false,
-            accounts: true,
-            account_sources: &selected,
-            accounts_in_package: false,
-            browser_in_package: false,
-        })
-        .unwrap();
-        plan.attach_deferred_handoff(prepared.binding).unwrap();
-        let journal = Journal::open(&home, &plan).unwrap();
-        assert_eq!(journal.selected_accounts(), selected.as_slice());
-        let target = tempfile::tempdir().unwrap();
-        let workspace = tempfile::tempdir().unwrap();
-        let receipt = import_selected_from_source(
-            &plan,
-            &home,
-            target.path(),
-            workspace.path(),
-            [7; 32],
-            &AtomicBool::new(false),
-        )
-        .unwrap();
-        assert_eq!(receipt.accounts.len(), 1);
-        assert_eq!(
-            receipt.accounts[0].services,
-            vec![
-                account_sources::Service::Files,
-                account_sources::Service::Mail
-            ]
-        );
-        assert!(receipt.accounts[0].pending);
-        let serialized = serde_json::to_string(&receipt).unwrap();
-        assert!(!serialized.contains("person@example.test"));
-        assert!(!serialized.contains("other@example.test"));
-        assert!(!serialized.contains(&home.to_string_lossy().to_string()));
-        let store = accounts::AccountStore::load_in(&target.path().join(".config/tilo"));
-        assert!(store.all().iter().any(|account| {
-            account.type_id.as_str() == accounts::thunderbird::PENDING_TYPE
-                && account.config["email"] == "person@example.test"
-        }));
-        assert!(store.all().iter().all(|account| {
-            account
-                .config
-                .get("email")
-                .and_then(serde_json::Value::as_str)
-                != Some("other@example.test")
-        }));
-    }
-
-    #[test]
-    fn changed_plan_journal_or_source_root_is_refused() {
-        let fixture = tempfile::tempdir().unwrap();
-        let home = fixture.path().join("source");
-        source_dir(&home);
-        let (plan, _prepared, _reviewed) = prepared(&home);
-        let journal = journal_bytes(
-            &journal_directory(&home).unwrap(),
-            &format!("{}{JOURNAL_SUFFIX}", plan.operation_id),
-        )
-        .unwrap();
-
-        // A plan edited after review no longer matches the journal digest.
-        let mut changed = plan.clone();
-        changed.home_exclusions = Vec::new();
-        assert!(Journal::open(&home, &changed).is_err());
-
-        // A substituted journal no longer matches the plan's journal digest.
-        let mut altered = journal.clone();
-        altered.push(b' ');
-        let journal_path = operation_path(&home, &plan.operation_id);
-        std::fs::write(&journal_path, &altered).unwrap();
-        assert!(Journal::open(&home, &plan).is_err());
-        std::fs::write(&journal_path, &journal).unwrap();
-
-        let replacement = fixture.path().join("replacement");
-        source_dir(&replacement);
-        std::fs::rename(&home, fixture.path().join("old-source")).unwrap();
-        std::fs::rename(&replacement, &home).unwrap();
-        assert!(Journal::open(&home, &plan).is_err());
-        let target = tempfile::tempdir().unwrap();
-        let workspace = tempfile::tempdir().unwrap();
-        assert!(
-            import_selected_from_source(
+                account_sources: &selected,
+                accounts_in_package: false,
+                browser_in_package: false,
+            })
+            .unwrap();
+            plan.attach_deferred_handoff(prepared.binding).unwrap();
+            let journal = Journal::open(&home, &plan).unwrap();
+            assert_eq!(journal.selected_accounts(), selected.as_slice());
+            let target = tempfile::tempdir().unwrap();
+            let workspace = tempfile::tempdir().unwrap();
+            let receipt = import_selected_from_source(
                 &plan,
                 &home,
                 target.path(),
@@ -1365,7 +1301,77 @@ user_pref("mail.identity.id1.fullName", "Personal");
                 [7; 32],
                 &AtomicBool::new(false),
             )
-            .is_err()
-        );
+            .unwrap();
+            assert_eq!(receipt.accounts.len(), 1);
+            assert_eq!(
+                receipt.accounts[0].services,
+                vec![
+                    account_sources::Service::Files,
+                    account_sources::Service::Mail
+                ]
+            );
+            assert!(receipt.accounts[0].pending);
+            let serialized = serde_json::to_string(&receipt).unwrap();
+            assert!(!serialized.contains("person@example.test"));
+            assert!(!serialized.contains("other@example.test"));
+            assert!(!serialized.contains(&home.to_string_lossy().to_string()));
+            let store = accounts::AccountStore::load_in(&target.path().join(".config/tilo"));
+            assert!(store.all().iter().any(|account| {
+                account.type_id.as_str() == accounts::thunderbird::PENDING_TYPE
+                    && account.config["email"] == "person@example.test"
+            }));
+            assert!(store.all().iter().all(|account| {
+                account
+                    .config
+                    .get("email")
+                    .and_then(serde_json::Value::as_str)
+                    != Some("other@example.test")
+            }));
+        }
+
+        phase changed_plan_journal_or_source_root_is_refused;
+        {
+            let fixture = tempfile::tempdir().unwrap();
+            let home = fixture.path().join("source");
+            source_dir(&home);
+            let (plan, _prepared, _reviewed) = prepared(&home);
+            let journal = journal_bytes(
+                &journal_directory(&home).unwrap(),
+                &format!("{}{JOURNAL_SUFFIX}", plan.operation_id),
+            )
+            .unwrap();
+
+            // A plan edited after review no longer matches the journal digest.
+            let mut changed = plan.clone();
+            changed.home_exclusions = Vec::new();
+            assert!(Journal::open(&home, &changed).is_err());
+
+            // A substituted journal no longer matches the plan's journal digest.
+            let mut altered = journal.clone();
+            altered.push(b' ');
+            let journal_path = operation_path(&home, &plan.operation_id);
+            std::fs::write(&journal_path, &altered).unwrap();
+            assert!(Journal::open(&home, &plan).is_err());
+            std::fs::write(&journal_path, &journal).unwrap();
+
+            let replacement = fixture.path().join("replacement");
+            source_dir(&replacement);
+            std::fs::rename(&home, fixture.path().join("old-source")).unwrap();
+            std::fs::rename(&replacement, &home).unwrap();
+            assert!(Journal::open(&home, &plan).is_err());
+            let target = tempfile::tempdir().unwrap();
+            let workspace = tempfile::tempdir().unwrap();
+            assert!(
+                import_selected_from_source(
+                    &plan,
+                    &home,
+                    target.path(),
+                    workspace.path(),
+                    [7; 32],
+                    &AtomicBool::new(false),
+                )
+                .is_err()
+            );
+        }
     }
 }

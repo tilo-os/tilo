@@ -425,65 +425,72 @@ mod tests {
         .map(|(key, value)| (key.as_bytes().to_vec(), value.as_bytes().to_vec()))
         .collect()
     }
-    #[test]
-    fn sparse_map_bounds_and_terminal_marker() {
-        assert!(parse(&keys("100", "2", "10,5,100,0"), 5).unwrap().is_some());
-        assert!(parse(&keys("100", "1", "100,0"), 0).unwrap().is_some());
-        for (size, count, map, stored) in [
-            ("100", "2", "10,5,14,2", 7),
-            ("100", "1", "99,2", 2),
-            ("100", "1", "100,1", 1),
-            ("100", "1", "99,0", 0),
-            ("100", "2", "1,0,100,0", 0),
-            ("100", "1", "1,2", 3),
-            ("100", "1", "1,2,3", 2),
-            ("100", "1", "1", 0),
-            ("100", "1", "18446744073709551615,2", 2),
-            ("9223372036854775808", "0", "", 0),
-            ("100", "65537", "", 0),
-        ] {
-            assert!(parse(&keys(size, count, map), stored).is_err(), "{map}");
+    tilo_test_env::scenario! {
+        /// The sparse map of an archived file.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn a_sparse_map_is_bounded_and_verified_against_the_actual_file;
+
+        phase sparse_map_bounds_and_terminal_marker;
+        {
+            assert!(parse(&keys("100", "2", "10,5,100,0"), 5).unwrap().is_some());
+            assert!(parse(&keys("100", "1", "100,0"), 0).unwrap().is_some());
+            for (size, count, map, stored) in [
+                ("100", "2", "10,5,14,2", 7),
+                ("100", "1", "99,2", 2),
+                ("100", "1", "100,1", 1),
+                ("100", "1", "99,0", 0),
+                ("100", "2", "1,0,100,0", 0),
+                ("100", "1", "1,2", 3),
+                ("100", "1", "1,2,3", 2),
+                ("100", "1", "1", 0),
+                ("100", "1", "18446744073709551615,2", 2),
+                ("9223372036854775808", "0", "", 0),
+                ("100", "65537", "", 0),
+            ] {
+                assert!(parse(&keys(size, count, map), stored).is_err(), "{map}");
+            }
+            let mut metadata = keys("100", "1", "100,0");
+            metadata.insert(b"GNU.sparse.major".to_vec(), b"1".to_vec());
+            assert!(parse(&metadata, 0).is_err());
+            metadata.remove(b"GNU.sparse.major".as_slice());
+            metadata.remove(b"GNU.sparse.name".as_slice());
+            assert!(parse(&metadata, 0).is_err());
         }
-        let mut metadata = keys("100", "1", "100,0");
-        metadata.insert(b"GNU.sparse.major".to_vec(), b"1".to_vec());
-        assert!(parse(&metadata, 0).is_err());
-        metadata.remove(b"GNU.sparse.major".as_slice());
-        metadata.remove(b"GNU.sparse.name".as_slice());
-        assert!(parse(&metadata, 0).is_err());
-    }
-    #[test]
-    fn actual_sparse_file_verifies_extents_and_rejects_gap_or_size_changes() {
-        let directory = tempfile::tempdir().unwrap();
-        let file = File::options()
-            .read(true)
-            .write(true)
-            .create_new(true)
-            .open(directory.path().join("data"))
+
+        phase actual_sparse_file_verifies_extents_and_rejects_gap_or_size_changes;
+        {
+            let directory = tempfile::tempdir().unwrap();
+            let file = File::options()
+                .read(true)
+                .write(true)
+                .create_new(true)
+                .open(directory.path().join("data"))
+                .unwrap();
+            let logical = 64 * 1024 * 1024;
+            file.set_len(logical).unwrap();
+            file.write_all_at(b"data", 4096).unwrap();
+            use std::io::{Seek, SeekFrom};
+            let mut position_check = &file;
+            position_check.seek(SeekFrom::Start(123)).unwrap();
+            assert!(stored_size(&file).unwrap() < logical);
+            assert_eq!(position_check.stream_position().unwrap(), 123);
+            let sparse = parse(
+                &keys(&logical.to_string(), "2", &format!("4096,4,{logical},0")),
+                4,
+            )
+            .unwrap()
             .unwrap();
-        let logical = 64 * 1024 * 1024;
-        file.set_len(logical).unwrap();
-        file.write_all_at(b"data", 4096).unwrap();
-        use std::io::{Seek, SeekFrom};
-        let mut position_check = &file;
-        position_check.seek(SeekFrom::Start(123)).unwrap();
-        assert!(stored_size(&file).unwrap() < logical);
-        assert_eq!(position_check.stream_position().unwrap(), 123);
-        let sparse = parse(
-            &keys(&logical.to_string(), "2", &format!("4096,4,{logical},0")),
-            4,
-        )
-        .unwrap()
-        .unwrap();
-        let cancel = AtomicBool::new(false);
-        let witness = sparse.hash(&mut b"data".as_slice(), &cancel).unwrap();
-        witness.verify(&file, &cancel).unwrap();
-        file.write_all_at(b"x", 32 * 1024 * 1024).unwrap();
-        assert!(witness.verify(&file, &cancel).is_err());
-        file.write_all_at(&[0], 32 * 1024 * 1024).unwrap();
-        file.write_all_at(b"bad!", 4096).unwrap();
-        assert!(witness.verify(&file, &cancel).is_err());
-        file.write_all_at(b"data", 4096).unwrap();
-        file.set_len(logical.checked_sub(1).unwrap()).unwrap();
-        assert!(witness.verify(&file, &cancel).is_err());
+            let cancel = AtomicBool::new(false);
+            let witness = sparse.hash(&mut b"data".as_slice(), &cancel).unwrap();
+            witness.verify(&file, &cancel).unwrap();
+            file.write_all_at(b"x", 32 * 1024 * 1024).unwrap();
+            assert!(witness.verify(&file, &cancel).is_err());
+            file.write_all_at(&[0], 32 * 1024 * 1024).unwrap();
+            file.write_all_at(b"bad!", 4096).unwrap();
+            assert!(witness.verify(&file, &cancel).is_err());
+            file.write_all_at(b"data", 4096).unwrap();
+            file.set_len(logical.checked_sub(1).unwrap()).unwrap();
+            assert!(witness.verify(&file, &cancel).is_err());
+        }
     }
 }

@@ -839,40 +839,47 @@ mod pax_tests {
         bytes.push(b'\n');
         bytes
     }
-    #[test]
-    fn pax_decoder_obeys_lengths_for_multiline_and_binary_values() {
-        let acl = b"user::rwx\ngroup::r-x\nmask::r-x\nother::---";
-        let mut bytes = record("SCHILY.acl.access", acl);
-        bytes.extend(record(
-            "SCHILY.xattr.user.binary",
-            b"binary\0value\nwith newline",
-        ));
-        let mut actual = BTreeMap::new();
-        decode_pax(&bytes, &mut actual).unwrap();
-        assert_eq!(actual[b"SCHILY.acl.access".as_slice()], acl);
-        assert_eq!(
-            actual[b"SCHILY.xattr.user.binary".as_slice()],
-            b"binary\0value\nwith newline"
-        );
-        assert_eq!(actual.len(), 2);
-    }
-    #[test]
-    fn pax_decoder_refuses_truncation_bad_lengths_and_duplicate_keys() {
-        let good = record("path", b"./document");
-        let mut duplicate = good.clone();
-        duplicate.extend(&good);
-        let mut wrong = good.clone();
-        wrong[0] = b'9';
-        for bad in [
-            good[..good.len() - 1].to_vec(),
-            wrong,
-            duplicate,
-            b"0 path=x\n".to_vec(),
-            b"999999999999999999999 path=x\n".to_vec(),
-            b"12 path=x\n".to_vec(),
-            b"9 a\nb=x\n".to_vec(),
-        ] {
-            assert!(decode_pax(&bad, &mut BTreeMap::new()).is_err());
+    tilo_test_env::scenario! {
+        /// Decoding pax extended headers.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn the_pax_decoder_obeys_lengths_and_refuses_malformed_records;
+
+        phase pax_decoder_obeys_lengths_for_multiline_and_binary_values;
+        {
+            let acl = b"user::rwx\ngroup::r-x\nmask::r-x\nother::---";
+            let mut bytes = record("SCHILY.acl.access", acl);
+            bytes.extend(record(
+                "SCHILY.xattr.user.binary",
+                b"binary\0value\nwith newline",
+            ));
+            let mut actual = BTreeMap::new();
+            decode_pax(&bytes, &mut actual).unwrap();
+            assert_eq!(actual[b"SCHILY.acl.access".as_slice()], acl);
+            assert_eq!(
+                actual[b"SCHILY.xattr.user.binary".as_slice()],
+                b"binary\0value\nwith newline"
+            );
+            assert_eq!(actual.len(), 2);
+        }
+
+        phase pax_decoder_refuses_truncation_bad_lengths_and_duplicate_keys;
+        {
+            let good = record("path", b"./document");
+            let mut duplicate = good.clone();
+            duplicate.extend(&good);
+            let mut wrong = good.clone();
+            wrong[0] = b'9';
+            for bad in [
+                good[..good.len() - 1].to_vec(),
+                wrong,
+                duplicate,
+                b"0 path=x\n".to_vec(),
+                b"999999999999999999999 path=x\n".to_vec(),
+                b"12 path=x\n".to_vec(),
+                b"9 a\nb=x\n".to_vec(),
+            ] {
+                assert!(decode_pax(&bad, &mut BTreeMap::new()).is_err());
+            }
         }
     }
 }

@@ -819,104 +819,111 @@ mod tests {
         assert!(!root.exists());
     }
 
-    #[test]
-    fn read_request_rejects_ambient_paths_and_changed_operation_after_private_publication() {
-        let private = tempfile::Builder::new()
-            .permissions(std::fs::Permissions::from_mode(0o700))
-            .tempdir()
-            .unwrap();
-        let home = private.path().join("home");
-        std::fs::create_dir(&home).unwrap();
-        let operation = uuid::Uuid::new_v4().to_string();
-        let plan = migration_handoff::capture_fixture(
-            &home,
-            &operation,
-            migration_handoff::Categories {
-                home: true,
-                ..Default::default()
-            },
-        )
-        .unwrap();
-        let (rendezvous, _listener) = Rendezvous::create(private.path()).unwrap();
-        let mut request = Request {
-            schema: 1,
-            purpose: ReadMediaPurpose::OriginalRegistration,
-            operation,
-            rendezvous,
-            source_plans: vec![plan.bytes().unwrap()],
-            target: TargetDrive {
-                name: "fixture-only".into(),
-                model: "public test medium".into(),
-                stable_id: Some("fixture-only".into()),
-                size: 16 * 1024 * 1024 * 1024,
-                kind: crate::imager_model::TargetKind::Usb,
-                tran: Some("usb".into()),
-                removable: true,
-                is_system: false,
-                partitions: Vec::new(),
-            },
-        };
-        request.validate().unwrap();
-        let bytes = serde_json::to_vec(&request).unwrap();
-        let held =
-            super::super::home_capture_helper::publish_request_bytes(private.path(), &bytes, MAX)
+    tilo_test_env::scenario! {
+        /// The read-media request and the helper that takes it.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn a_read_media_request_and_its_helper_refuse_ambient_or_malformed_inputs;
+
+        phase read_request_rejects_ambient_paths_and_changed_operation_after_private_publication;
+        {
+            let private = tempfile::Builder::new()
+                .permissions(std::fs::Permissions::from_mode(0o700))
+                .tempdir()
                 .unwrap();
-        assert_eq!(held.metadata().unwrap().mode() & 0o077, 0);
-        let mut value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        value["output_path"] = serde_json::json!("/dev/arbitrary");
-        assert!(serde_json::from_value::<Request>(value).is_err());
-        let mut unknown = serde_json::to_value(&request).unwrap();
-        unknown["purpose"] = serde_json::json!("arbitrary-root-read");
-        assert!(serde_json::from_value::<Request>(unknown).is_err());
-        let mut legacy = serde_json::to_value(&request).unwrap();
-        legacy.as_object_mut().unwrap().remove("purpose");
-        assert!(
-            serde_json::from_value::<Request>(legacy).unwrap().purpose
-                == ReadMediaPurpose::OriginalRegistration
-        );
-        request.purpose = ReadMediaPurpose::BootPending;
-        assert!(request.validate().is_err());
-        let registered_plans = request.source_plans.clone();
-        request.source_plans.clear();
-        request.validate().unwrap();
-        let boot = serde_json::to_vec(&request).unwrap();
-        let decoded: Request = serde_json::from_slice(&boot).unwrap();
-        assert!(
-            decoded.purpose == ReadMediaPurpose::BootPending && decoded.source_plans.is_empty()
-        );
-        request.target.is_system = true;
-        request.validate().unwrap();
-        let saved_kind = request.target.kind;
-        let saved_tran = request.target.tran.clone();
-        let saved_removable = request.target.removable;
-        request.target.kind = crate::imager_model::TargetKind::Nvme;
-        request.target.tran = Some("nvme".into());
-        request.target.removable = false;
-        assert!(request.validate().is_err());
-        request.target.kind = saved_kind;
-        request.target.tran = saved_tran;
-        request.target.removable = saved_removable;
-        request.purpose = ReadMediaPurpose::OriginalRegistration;
-        assert!(request.validate().is_err());
-        request.target.is_system = false;
-        request.source_plans = registered_plans;
-        request.validate().unwrap();
-        request.operation = uuid::Uuid::new_v4().to_string();
-        assert!(request.validate().is_err());
-        assert!(!private.path().join("output").exists());
-    }
-    #[test]
-    fn registered_read_helper_refuses_malformed_arguments_before_any_permission_or_gui() {
-        assert!(maybe_run(&[ARG.into()]).is_err());
-        assert!(
-            maybe_run(&[
-                ARG.into(),
-                "request.json".into(),
-                "digest".into(),
-                "extra".into()
-            ])
-            .is_err()
-        );
-        assert_eq!(maybe_run(&["unrelated".into()]).unwrap(), None);
+            let home = private.path().join("home");
+            std::fs::create_dir(&home).unwrap();
+            let operation = uuid::Uuid::new_v4().to_string();
+            let plan = migration_handoff::capture_fixture(
+                &home,
+                &operation,
+                migration_handoff::Categories {
+                    home: true,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            let (rendezvous, _listener) = Rendezvous::create(private.path()).unwrap();
+            let mut request = Request {
+                schema: 1,
+                purpose: ReadMediaPurpose::OriginalRegistration,
+                operation,
+                rendezvous,
+                source_plans: vec![plan.bytes().unwrap()],
+                target: TargetDrive {
+                    name: "fixture-only".into(),
+                    model: "public test medium".into(),
+                    stable_id: Some("fixture-only".into()),
+                    size: 16 * 1024 * 1024 * 1024,
+                    kind: crate::imager_model::TargetKind::Usb,
+                    tran: Some("usb".into()),
+                    removable: true,
+                    is_system: false,
+                    partitions: Vec::new(),
+                },
+            };
+            request.validate().unwrap();
+            let bytes = serde_json::to_vec(&request).unwrap();
+            let held =
+                super::super::home_capture_helper::publish_request_bytes(private.path(), &bytes, MAX)
+                    .unwrap();
+            assert_eq!(held.metadata().unwrap().mode() & 0o077, 0);
+            let mut value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            value["output_path"] = serde_json::json!("/dev/arbitrary");
+            assert!(serde_json::from_value::<Request>(value).is_err());
+            let mut unknown = serde_json::to_value(&request).unwrap();
+            unknown["purpose"] = serde_json::json!("arbitrary-root-read");
+            assert!(serde_json::from_value::<Request>(unknown).is_err());
+            let mut legacy = serde_json::to_value(&request).unwrap();
+            legacy.as_object_mut().unwrap().remove("purpose");
+            assert!(
+                serde_json::from_value::<Request>(legacy).unwrap().purpose
+                    == ReadMediaPurpose::OriginalRegistration
+            );
+            request.purpose = ReadMediaPurpose::BootPending;
+            assert!(request.validate().is_err());
+            let registered_plans = request.source_plans.clone();
+            request.source_plans.clear();
+            request.validate().unwrap();
+            let boot = serde_json::to_vec(&request).unwrap();
+            let decoded: Request = serde_json::from_slice(&boot).unwrap();
+            assert!(
+                decoded.purpose == ReadMediaPurpose::BootPending && decoded.source_plans.is_empty()
+            );
+            request.target.is_system = true;
+            request.validate().unwrap();
+            let saved_kind = request.target.kind;
+            let saved_tran = request.target.tran.clone();
+            let saved_removable = request.target.removable;
+            request.target.kind = crate::imager_model::TargetKind::Nvme;
+            request.target.tran = Some("nvme".into());
+            request.target.removable = false;
+            assert!(request.validate().is_err());
+            request.target.kind = saved_kind;
+            request.target.tran = saved_tran;
+            request.target.removable = saved_removable;
+            request.purpose = ReadMediaPurpose::OriginalRegistration;
+            assert!(request.validate().is_err());
+            request.target.is_system = false;
+            request.source_plans = registered_plans;
+            request.validate().unwrap();
+            request.operation = uuid::Uuid::new_v4().to_string();
+            assert!(request.validate().is_err());
+            assert!(!private.path().join("output").exists());
+        }
+
+        phase registered_read_helper_refuses_malformed_arguments_before_any_permission_or_gui;
+        {
+            assert!(maybe_run(&[ARG.into()]).is_err());
+            assert!(
+                maybe_run(&[
+                    ARG.into(),
+                    "request.json".into(),
+                    "digest".into(),
+                    "extra".into()
+                ])
+                .is_err()
+            );
+            assert_eq!(maybe_run(&["unrelated".into()]).unwrap(), None);
+        }
     }
 }

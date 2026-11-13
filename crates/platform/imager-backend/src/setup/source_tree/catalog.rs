@@ -315,31 +315,37 @@ impl SteamCatalog {
 mod tests {
     use super::*;
 
-    #[test]
-    fn known_folder_names_are_a_closed_vocabulary() {
-        assert_eq!(
-            KnownFolder::from_name("Documents"),
-            Some(KnownFolder::Documents)
-        );
-        assert_eq!(
-            KnownFolder::from_name("ONEDRIVE"),
-            Some(KnownFolder::OneDrive)
-        );
-        assert_eq!(KnownFolder::from_name("alice-private"), None);
-        assert!(KnownFolder::OneDrive.is_cloud());
-        assert!(!KnownFolder::Documents.is_cloud());
-    }
+    tilo_test_env::scenario! {
+        /// The catalog of known folders and apps.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn the_source_catalog_is_closed_bounded_and_free_of_duplicates;
 
-    #[test]
-    fn catalog_is_bounded_and_has_no_duplicate_app_ids() {
-        assert!(APPS.len() <= 256);
-        for (index, app) in APPS.iter().enumerate() {
-            assert!(app.app_id > 0 && !app.name.is_empty());
-            assert!(!APPS[..index].iter().any(|other| other.app_id == app.app_id));
-            for location in app.windows.iter().chain(app.linux.iter()) {
-                assert!(!location.relative.is_empty());
-                assert!(!location.relative.starts_with('/'));
-                assert!(!location.relative.contains(".."));
+        phase known_folder_names_are_a_closed_vocabulary;
+        {
+            assert_eq!(
+                KnownFolder::from_name("Documents"),
+                Some(KnownFolder::Documents)
+            );
+            assert_eq!(
+                KnownFolder::from_name("ONEDRIVE"),
+                Some(KnownFolder::OneDrive)
+            );
+            assert_eq!(KnownFolder::from_name("alice-private"), None);
+            assert!(KnownFolder::OneDrive.is_cloud());
+            assert!(!KnownFolder::Documents.is_cloud());
+        }
+
+        phase catalog_is_bounded_and_has_no_duplicate_app_ids;
+        {
+            assert!(APPS.len() <= 256);
+            for (index, app) in APPS.iter().enumerate() {
+                assert!(app.app_id > 0 && !app.name.is_empty());
+                assert!(!APPS[..index].iter().any(|other| other.app_id == app.app_id));
+                for location in app.windows.iter().chain(app.linux.iter()) {
+                    assert!(!location.relative.is_empty());
+                    assert!(!location.relative.starts_with('/'));
+                    assert!(!location.relative.contains(".."));
+                }
             }
         }
     }

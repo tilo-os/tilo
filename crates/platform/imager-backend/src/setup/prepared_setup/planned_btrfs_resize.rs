@@ -254,72 +254,79 @@ mod tests {
         .unwrap();
         (RetainedHomePlan::new(source).unwrap(), reviewed)
     }
-    #[test]
-    fn effective_copy_mapping_preserves_requested_plan_and_rejects_unreviewed_extent() {
-        let (shared, reviewed) = selection();
-        let resize = PlannedBtrfsResize::from_review(&shared, &reviewed)
-            .unwrap()
-            .unwrap();
-        let mut original = shared.as_plan().clone();
-        original.home_policy = migration_handoff::HomePolicy::Copy;
-        let bytes = original.bytes().unwrap();
-        let physical = resize
-            .effective_original_copy_plan(&shared, &original)
-            .unwrap();
-        assert_eq!(original.bytes().unwrap(), bytes);
-        assert_eq!(physical.home.volume.last_lba, resize.new_last_lba);
-        let mut unchanged_home = physical.home;
-        unchanged_home.volume = original.home.volume.clone();
-        assert_eq!(unchanged_home, original.home);
-        assert!(
-            resize
-                .effective_original_copy_plan(&shared, shared.as_plan())
-                .is_err()
-        );
-        let mut wrong = resize.clone();
-        wrong.to_bytes -= 1 << 20;
-        assert!(
-            wrong
+    tilo_test_env::scenario! {
+        /// The planned Btrfs resize a prepared setup declares.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn a_planned_btrfs_resize_binds_the_reviewed_mapping_without_touching_the_original;
+
+        phase effective_copy_mapping_preserves_requested_plan_and_rejects_unreviewed_extent;
+        {
+            let (shared, reviewed) = selection();
+            let resize = PlannedBtrfsResize::from_review(&shared, &reviewed)
+                .unwrap()
+                .unwrap();
+            let mut original = shared.as_plan().clone();
+            original.home_policy = migration_handoff::HomePolicy::Copy;
+            let bytes = original.bytes().unwrap();
+            let physical = resize
                 .effective_original_copy_plan(&shared, &original)
-                .is_err()
-        );
-        let mut wrong = resize;
-        wrong.reviewed_plan.target_extent.first_lba += 1;
-        wrong.reviewed_plan_sha256 =
-            Sha256::digest(bounded_review(&wrong.reviewed_plan).unwrap()).into();
-        assert!(
-            wrong
-                .effective_original_copy_plan(&shared, &original)
-                .is_err()
-        );
-    }
-    #[test]
-    fn declaration_binds_original_and_reviewed_resize_without_mutating_original() {
-        let (original, reviewed) = selection();
-        let original_bytes = original.as_plan().bytes().unwrap();
-        let resize = PlannedBtrfsResize::from_review(&original, &reviewed)
-            .unwrap()
-            .unwrap();
-        let effective = resize.effective_plan(&original).unwrap();
-        assert_eq!(
-            effective.as_plan().home.volume.last_lba,
-            resize.new_last_lba
-        );
-        assert_eq!(original.as_plan().bytes().unwrap(), original_bytes);
-        let mut changed = resize.clone();
-        changed.to_bytes -= 1 << 20;
-        assert!(changed.effective_plan(&original).is_err());
-        let mut changed = resize.clone();
-        changed.reviewed_plan.target_extent.first_lba += 1;
-        changed.reviewed_plan_sha256 =
-            Sha256::digest(bounded_review(&changed.reviewed_plan).unwrap()).into();
-        assert!(changed.effective_plan(&original).is_err());
-        let mut changed_original = original.as_plan().clone();
-        changed_original.operation_id = "different-retained-consent".into();
-        let changed_original = RetainedHomePlan::new(changed_original).unwrap();
-        assert!(resize.effective_plan(&changed_original).is_err());
-        let decoded: PlannedBtrfsResize =
-            serde_json::from_slice(&serde_json::to_vec(&resize).unwrap()).unwrap();
-        assert_eq!(decoded.effective_plan(&original).unwrap(), effective);
+                .unwrap();
+            assert_eq!(original.bytes().unwrap(), bytes);
+            assert_eq!(physical.home.volume.last_lba, resize.new_last_lba);
+            let mut unchanged_home = physical.home;
+            unchanged_home.volume = original.home.volume.clone();
+            assert_eq!(unchanged_home, original.home);
+            assert!(
+                resize
+                    .effective_original_copy_plan(&shared, shared.as_plan())
+                    .is_err()
+            );
+            let mut wrong = resize.clone();
+            wrong.to_bytes -= 1 << 20;
+            assert!(
+                wrong
+                    .effective_original_copy_plan(&shared, &original)
+                    .is_err()
+            );
+            let mut wrong = resize;
+            wrong.reviewed_plan.target_extent.first_lba += 1;
+            wrong.reviewed_plan_sha256 =
+                Sha256::digest(bounded_review(&wrong.reviewed_plan).unwrap()).into();
+            assert!(
+                wrong
+                    .effective_original_copy_plan(&shared, &original)
+                    .is_err()
+            );
+        }
+
+        phase declaration_binds_original_and_reviewed_resize_without_mutating_original;
+        {
+            let (original, reviewed) = selection();
+            let original_bytes = original.as_plan().bytes().unwrap();
+            let resize = PlannedBtrfsResize::from_review(&original, &reviewed)
+                .unwrap()
+                .unwrap();
+            let effective = resize.effective_plan(&original).unwrap();
+            assert_eq!(
+                effective.as_plan().home.volume.last_lba,
+                resize.new_last_lba
+            );
+            assert_eq!(original.as_plan().bytes().unwrap(), original_bytes);
+            let mut changed = resize.clone();
+            changed.to_bytes -= 1 << 20;
+            assert!(changed.effective_plan(&original).is_err());
+            let mut changed = resize.clone();
+            changed.reviewed_plan.target_extent.first_lba += 1;
+            changed.reviewed_plan_sha256 =
+                Sha256::digest(bounded_review(&changed.reviewed_plan).unwrap()).into();
+            assert!(changed.effective_plan(&original).is_err());
+            let mut changed_original = original.as_plan().clone();
+            changed_original.operation_id = "different-retained-consent".into();
+            let changed_original = RetainedHomePlan::new(changed_original).unwrap();
+            assert!(resize.effective_plan(&changed_original).is_err());
+            let decoded: PlannedBtrfsResize =
+                serde_json::from_slice(&serde_json::to_vec(&resize).unwrap()).unwrap();
+            assert_eq!(decoded.effective_plan(&original).unwrap(), effective);
+        }
     }
 }
