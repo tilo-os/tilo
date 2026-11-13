@@ -24,7 +24,7 @@ pub struct Queries {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Effect)]
-#[effect(operation = "test.queries.effect")]
+#[effect(operation = "test.queries.effect", catalogue = "tests/locales")]
 pub enum QueryEffect {
     /// Run a saved query.
     #[effect(row, item = queries)]
@@ -44,7 +44,7 @@ fn answer(
     (action == "save").then(|| serde_json::json!({ "saved": true }))
 }
 
-#[resource(kind = "test.queries", label = "Queries", effects = QueryEffect, answer = answer, app = "so.tilo.test-queries")]
+#[resource(kind = "test.queries", effects = QueryEffect, answer = answer, app = "so.tilo.test-queries", catalogue = "tests/locales")]
 impl Queries {
     /// Save a query.
     #[action(answers)]

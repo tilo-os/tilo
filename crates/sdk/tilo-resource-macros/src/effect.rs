@@ -884,6 +884,7 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
             }
         }
     });
+    catalogue.missing()?;
     Ok(quote! {
         impl #krate::Effect for #name {
             const OPERATION: &'static str = #operation;

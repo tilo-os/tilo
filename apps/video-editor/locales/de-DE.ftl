@@ -402,3 +402,12 @@ video-editor-project-link-with = Clips verknüpfen
 
 ## What the app is called in a window and in the launcher
 video-editor-app-title = Video-Editor
+## Actions bound to what the person is looking at
+
+video-editor-project-mark-in-here = Anfang am Abspielkopf setzen
+video-editor-project-mark-out-here = Ende am Abspielkopf setzen
+video-editor-project-split-here = Clip am Abspielkopf teilen
+video-editor-project-trim-in-here = Clipanfang bis zum Abspielkopf kürzen
+video-editor-project-trim-out-here = Clipende bis zum Abspielkopf kürzen
+video-editor-project-place-two-angles-here = Nebeneinander platzieren
+video-editor-project-trim-mix = Mischung passend kürzen

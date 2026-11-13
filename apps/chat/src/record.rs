@@ -1412,7 +1412,6 @@ impl Chat {
 
 #[ui::tilo_resource::resource(
     kind = "chat.workspace",
-    label = "Chat",
     params = chat,
     search = Chat::search,
     read_content = Chat::content,

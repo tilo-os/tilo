@@ -46,7 +46,7 @@ impl ui::storage::SettingsSchema for AgentProviders {
         ui::storage::Scope::Shared(agent_provider_config::SETTINGS_SECTION);
 }
 
-#[ui::tilo_resource::resource(kind = "settings.agent-providers", label = "Agent model providers")]
+#[ui::tilo_resource::resource(kind = "settings.agent-providers")]
 impl AgentProviders {
     /// Keep the providers of this device and its network as `config` holds
     /// them, with the default and the models chosen for agents and for each
@@ -120,10 +120,7 @@ impl ui::storage::SettingsSchema for HostedAgentProviders {
         ui::storage::Scope::Shared(agent_provider_config::HOSTED_SECTION);
 }
 
-#[ui::tilo_resource::resource(
-    kind = "settings.hosted-agent-providers",
-    label = "Hosted agent model providers"
-)]
+#[ui::tilo_resource::resource(kind = "settings.hosted-agent-providers")]
 impl HostedAgentProviders {
     /// Keep the person's hosted providers as `hosted` holds them. A provider
     /// of a device or its network stays on that device, and is refused here.

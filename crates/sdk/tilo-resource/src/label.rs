@@ -51,22 +51,9 @@ pub struct Word {
 }
 
 impl Word {
-    /// A word no catalogue holds: `source` in every language.
-    #[must_use]
-    pub const fn plain(source: &'static str) -> Self {
-        Self {
-            key: "",
-            source,
-            catalogue: None,
-        }
-    }
-
     /// The word in the person's language.
     #[must_use]
     pub fn read(&self) -> String {
-        if self.key.is_empty() {
-            return self.source.to_owned();
-        }
         resolve(self.catalogue, self.key).unwrap_or_else(|| self.source.to_owned())
     }
 }

@@ -343,3 +343,12 @@ ebook-library-delete-scheme = Delete scheme
 
 ## What the app is called in a window and in the launcher
 ebook-app-title = Books
+## Actions bound to what the person is looking at
+
+ebook-library-bookmark-page = Bookmark this page
+ebook-library-note-page = Add a note to this page
+ebook-library-highlight-selection = Highlight selection
+ebook-library-note-selection = Add a note to the selection
+
+## What the records are called, and the actions on them
+settings-books-catalogues = Book catalogues

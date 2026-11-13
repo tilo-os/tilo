@@ -157,3 +157,19 @@ sheets-workbook-comment = Comment on cells
 
 ## What the app is called in a window and in the launcher
 sheets-app-title = Sheets
+## Actions bound to what the person is looking at
+
+sheets-workbook-comment-selection = Comment on selection
+sheets-workbook-insert-row-active = Insert row above
+sheets-workbook-delete-row-active = Delete row
+sheets-workbook-insert-column-active = Insert column left
+sheets-workbook-delete-column-active = Delete column
+sheets-workbook-insert-column-chart = Create column chart from selection
+sheets-workbook-insert-line-chart = Create line chart from selection
+sheets-workbook-format-currency = Format as currency
+sheets-workbook-format-percent = Format as percent
+sheets-workbook-clear-format = Clear formatting
+sheets-workbook-sum-selection = Sum selection
+sheets-workbook-fill-down = Fill down
+sheets-workbook-fill-right = Fill right
+sheets-workbook-autosum-active = AutoSum column

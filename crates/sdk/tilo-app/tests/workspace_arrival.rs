@@ -23,8 +23,8 @@ pub struct Board {
 
 #[resource(
     kind = "test.workspace-arrival-board",
-    label = "Board",
-    app = "so.tilo.test-workspace-arrival"
+    app = "so.tilo.test-workspace-arrival",
+    catalogue = "tests/locales"
 )]
 impl Board {
     /// Add a card.

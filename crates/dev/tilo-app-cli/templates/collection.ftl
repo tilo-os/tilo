@@ -14,3 +14,10 @@ generated-add = Added an item
 generated-remove = Removed an item
 generated-item-title = Renamed an item
 generated-item-done = Checked an item off
+
+## Actions: what the record and each of its actions are called, looked up as
+## <kind>-<action>, the kind with its dots as dashes.
+
+generated-items = Items
+generated-items-add = Add an item
+generated-items-remove = Remove an item

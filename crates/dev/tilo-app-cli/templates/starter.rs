@@ -13,7 +13,7 @@ pub struct Greeting {
 /// setting a field. The controls below, the action palette, agents, scripts
 /// and tests make the same edits and invoke the same verbs. A capability
 /// without one exists only for the pointer.
-#[resource(kind = "generated.greeting", label = "Greeting")]
+#[resource(kind = "generated.greeting")]
 impl Greeting {
     /// Forget the name.
     #[action]

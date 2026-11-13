@@ -22,7 +22,7 @@
 //! #[derive(Model, Default)]
 //! pub struct Note { pub body: String }
 //!
-//! #[resource(kind = "example.note", label = "Note")]
+//! #[resource(kind = "example.note")]
 //! impl Note {
 //!     /// Edit the note.
 //!     #[action]

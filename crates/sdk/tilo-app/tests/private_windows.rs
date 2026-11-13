@@ -14,7 +14,7 @@ pub struct Tabs {
     pub open: Vec<String>,
 }
 
-#[resource(kind = "test.tabs", label = "Tabs")]
+#[resource(kind = "test.tabs", catalogue = "tests/locales")]
 impl Tabs {
     /// Open a tab.
     #[action]
@@ -29,7 +29,7 @@ pub struct Visits {
     pub urls: Vec<String>,
 }
 
-#[resource(kind = "test.visits", label = "Visits")]
+#[resource(kind = "test.visits", catalogue = "tests/locales")]
 impl Visits {
     /// Remember a visit.
     #[action]

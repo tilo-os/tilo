@@ -352,7 +352,7 @@ impl ui::storage::SettingsSchema for InputDevicePrefs {
     ui::settings_codec!();
 }
 
-#[ui::tilo_resource::resource(kind = "settings.input-device", label = "Input on this device")]
+#[ui::tilo_resource::resource(kind = "settings.input-device")]
 impl InputDevicePrefs {
     /// Give one of this device's keyboards its own layouts, the one it types
     /// with and each layout's options; `all` holds the options of the shared
@@ -858,7 +858,6 @@ pub mod tablet_choices {
 
 #[ui::tilo_resource::resource(
     kind = "settings.input",
-    label = "Input",
     version = 2,
     migrate = crate::leaves_moved_out
 )]
@@ -1196,7 +1195,7 @@ impl ui::storage::SettingsSchema for DeskWidgetsPrefs {
     ui::settings_codec!();
 }
 
-#[ui::tilo_resource::resource(kind = "settings.desk_widgets", label = "Desk widgets")]
+#[ui::tilo_resource::resource(kind = "settings.desk_widgets")]
 impl DeskWidgetsPrefs {}
 
 /// This device's idle and button preferences, read by the compositor's
@@ -1208,7 +1207,6 @@ impl ui::storage::SettingsSchema for PowerPrefs {
 
 #[ui::tilo_resource::resource(
     kind = "settings.power",
-    label = "Power",
     version = 2,
     migrate = PowerPrefs::upgrade
 )]
@@ -1332,7 +1330,6 @@ impl ui::storage::SettingsSchema for UpdatePrefs {
 
 #[ui::tilo_resource::resource(
     kind = "settings.updates",
-    label = "Updates",
     version = 2,
     migrate = UpdatePrefs::upgrade
 )]
@@ -1723,10 +1720,7 @@ impl ui::storage::SettingsSchema for AppearanceDevicePrefs {
     ui::settings_codec!();
 }
 
-#[ui::tilo_resource::resource(
-    kind = "settings.appearance-device",
-    label = "Appearance on this device"
-)]
+#[ui::tilo_resource::resource(kind = "settings.appearance-device")]
 impl AppearanceDevicePrefs {}
 
 impl ui::storage::SettingsSchema for AppearancePrefs {
@@ -1747,7 +1741,6 @@ impl ui::storage::SettingsSchema for AppearancePrefs {
 
 #[ui::tilo_resource::resource(
     kind = "settings.appearance",
-    label = "Appearance",
     version = 2,
     migrate = crate::leaves_moved_out
 )]
@@ -1775,7 +1768,7 @@ impl AppearancePrefs {
 
     /// Draw every app dark or light, each with the theme chosen for that
     /// mode; a schedule stops until a theme is chosen again.
-    #[action(id = "set-dark-mode", label = "Dark mode")]
+    #[action(id = "set-dark-mode")]
     pub fn set_dark_mode(&mut self, on: bool) -> Result<(), ui::tilo_resource::Refusal> {
         self.mode = if on { "dark" } else { "light" }.into();
         Ok(())
@@ -1882,11 +1875,11 @@ impl ui::storage::SettingsSchema for NotificationPrefs {
     ui::settings_codec!();
 }
 
-#[ui::tilo_resource::resource(kind = "settings.notifications", label = "Notifications")]
+#[ui::tilo_resource::resource(kind = "settings.notifications")]
 impl NotificationPrefs {
     /// Silence notifications until it is turned off again, or let them
     /// through: banners and sounds wait, the centre still keeps them.
-    #[action(id = "set-do-not-disturb", label = "Do not disturb")]
+    #[action(id = "set-do-not-disturb")]
     pub fn set_do_not_disturb(&mut self, on: bool) -> Result<(), ui::tilo_resource::Refusal> {
         self.do_not_disturb = on;
         Ok(())
@@ -1894,7 +1887,7 @@ impl NotificationPrefs {
 
     /// Mute one app's notifications for a while, counted from when the
     /// action was made, or unmute it.
-    #[action(label = "Mute an app")]
+    #[action()]
     pub fn mute_app(
         &mut self,
         cx: &mut ui::tilo_resource::ActionCx,
@@ -1969,7 +1962,6 @@ impl ui::storage::SettingsSchema for AudioPrefs {
 
 #[ui::tilo_resource::resource(
     kind = "settings.audio",
-    label = "Sound",
     version = 2,
     migrate = crate::leaves_moved_out
 )]
@@ -1997,7 +1989,7 @@ impl ui::storage::SettingsSchema for AudioDevicePrefs {
     ui::settings_codec!();
 }
 
-#[ui::tilo_resource::resource(kind = "settings.audio-device", label = "Sound on this device")]
+#[ui::tilo_resource::resource(kind = "settings.audio-device")]
 impl AudioDevicePrefs {
     /// Remember the output device this device plays through, chosen again
     /// when Settings next finds it. Choosing an output in Sound runs this.
@@ -2037,7 +2029,6 @@ impl ui::storage::SettingsSchema for DisplayPrefs {
 
 #[ui::tilo_resource::resource(
     kind = "settings.display",
-    label = "Displays",
     version = 2,
     migrate = crate::leaves_moved_out
 )]
@@ -2065,7 +2056,7 @@ impl ui::storage::SettingsSchema for NightLightPrefs {
     ui::settings_codec!();
 }
 
-#[ui::tilo_resource::resource(kind = "settings.night-light", label = "Night light")]
+#[ui::tilo_resource::resource(kind = "settings.night-light")]
 impl NightLightPrefs {}
 
 /// Refused unless `time` is a time of day, `HH:MM`.

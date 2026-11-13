@@ -13,3 +13,7 @@ tree-notes-label = Notes
 tree-notes-placeholder = Write something…
 tree-preview-heading = Preview
 tree-share = Share
+
+## What the record and its actions are called
+example-notebook = Notebook
+example-notebook-share = Share a section

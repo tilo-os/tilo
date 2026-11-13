@@ -1965,6 +1965,7 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
         (quote!(record), quote!(cx))
     };
 
+    catalogue.missing()?;
     Ok(quote! {
         #item
 

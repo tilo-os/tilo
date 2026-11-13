@@ -349,11 +349,6 @@ files-action-copy-to-folder = Copy to folder…
 files-menu-new-folder = New folder
 files-menu-new-file = New file…
 files-menu-move-trash = Move to Trash
-files-rename-selected = Rename “{ $name }”
-files-trash-selected = Move { $count ->
-    [one] “{ $name }”
-   *[other] { $count } items
-} to Trash
 files-copy-selected = Copy { $count ->
     [one] “{ $name }”
    *[other] { $count } items
@@ -656,3 +651,18 @@ files-folder-compress = Compress
 files-folder-record-clipboard-transfer = Paste files
 files-folder-record-trash-restore = Restore file
 files-folder-revert = Take back change
+
+## Actions bound to what the person is looking at
+
+files-folder-rename-selected = Rename selection
+files-folder-trash-selected = Move selection to Trash
+files-folder-move-to = Move to folder…
+files-folder-rename-here = Rename an entry here
+files-folder-trash-here = Move entries here to Trash
+files-folder-move-here = Move entries from here to a folder
+files-folder-copy-here = Copy entries from here to a folder
+files-folder-write-file-here = Write a file here
+files-folder-compress-here = Compress entries here to an archive
+files-folder-extract-here = Extract an archive into this folder
+files-folder-add-current-bookmark = Add this folder to Favorites
+files-folder-remove-current-bookmark = Remove this folder from Favorites

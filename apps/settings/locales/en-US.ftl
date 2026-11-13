@@ -2957,6 +2957,7 @@ settings-effect-set-home-relay-hosting = Let the home relay host a workspace
 settings-effect-review-removal = Remove device
 settings-effect-cancel-removal = Cancel
 settings-effect-revoke-device = Revoke device
+settings-effect-revoke-browser = Remove browser
 settings-effect-revoke-agent = Revoke agent
 settings-effect-stop-run = Stop run
 settings-effect-answer-device = Answer device
@@ -3146,3 +3147,14 @@ settings-root = Settings
 
 ## What the app is called in a window and in the launcher
 settings-app-title = Settings
+## Actions bound to what the person is looking at
+
+settings-input-device-set-tablet-keep-aspect = Keep the tablet's aspect ratio, or stretch it
+settings-input-device-set-tablet-left-handed = Turn the tablet around for the left hand, or back
+settings-input-device-set-tablet-tip-feel = Set how firmly the pen must press
+settings-input-device-set-tablet-button = Set what one of the pen's buttons does
+settings-input-device-set-tablet-eraser = Set what the pen's eraser end does
+settings-input-device-set-pad-button = Set what a pad button does
+settings-input-device-set-pad-dial = Set what a ring or strip does in one mode
+settings-notifications-unmute-app-now = Unmute notifications
+settings-notifications-mute-app-hour = Mute notifications for an hour

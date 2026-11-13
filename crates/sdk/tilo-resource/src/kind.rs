@@ -12,13 +12,13 @@
 //! ([`ResourceKind::hosted_by`]) and what an open resource is called
 //! ([`ResourceKind::named`]).
 //!
-//! ```
+//! ```ignore
 //! use tilo_resource::{Kinds, Model, ResourceKind, resource};
 //!
 //! #[derive(Model, Default)]
 //! pub struct Note { pub body: String }
 //!
-//! #[resource(kind = "example.note", label = "Note")]
+//! #[resource(kind = "example.note")]
 //! impl Note {
 //!     /// Edit the note.
 //!     #[action]

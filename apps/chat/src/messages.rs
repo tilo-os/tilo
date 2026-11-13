@@ -199,7 +199,6 @@ pub struct NewMessage {
 // each message the chain publishes, as on the record's other items.
 #[ui::tilo_resource::resource(
     kind = "chat.messages",
-    label = "Messages",
     params = chat_part,
     search = ChatPart::search,
     effects = crate::effects::ChatEffect,

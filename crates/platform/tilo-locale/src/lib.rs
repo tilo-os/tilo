@@ -191,7 +191,7 @@ impl ui::storage::SettingsSchema for Locale {
     const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared("locale");
 }
 
-#[ui::tilo_resource::resource(kind = "settings.locale", label = "Region and language")]
+#[ui::tilo_resource::resource(kind = "settings.locale")]
 impl Locale {}
 
 #[cfg(test)]

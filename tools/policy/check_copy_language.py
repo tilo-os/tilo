@@ -35,6 +35,11 @@ that (HIG section 4):
   has two homes"). The same rule holds for string literals in production Rust
   sources, where copy that bypasses the catalogue would slip past it.
 
+A declaration's label is a key of its crate's catalogue (`#[effect]`,
+`#[action]` and `#[resource]` derive one by rule, or name one with
+`label = "key"`), so it is read in every language the catalogue ships; words
+written in the attribute (`label = "Open file"`) are refused.
+
 A message or literal that has to say it anyway (the save status's own
 one-time "Saved" after a failure) is listed in `copy_save_exceptions.toml`
 with the reason it is not routine; an entry that no longer matches fails.
@@ -2329,8 +2334,11 @@ def source_copy_literals(root: Path) -> list[tuple[str, int, str]]:
 
 
 def catalogues(root: Path) -> list[Path]:
+    """Every shipped catalogue: a crate's tests name their declarations from
+    one of their own (`tests/locales`), words they set up and assert, which
+    no person reads."""
     return sorted(path for path in root.rglob("locales/*.ftl")
-                  if "target" not in path.relative_to(root).parts
+                  if not {"target", "tests"} & set(path.relative_to(root).parts)
                   and not any(part.startswith(".") for part in path.relative_to(root).parts))
 
 
@@ -2420,10 +2428,53 @@ def check(root: Path, glossary_path: Path, baseline_dir: Path,
     for exception in sorted(literals - used_literals, key=repr):
         errors.append(f"{name_literals}: {exception.file}: \"{exception.text}\" no longer "
                       "matches anything; delete it")
+    for file, line, text in written_labels(root):
+        errors.append(f"{file}:{line}: label = \"{text}\" is words; a declaration's label is a "
+                      "key of its crate's catalogue, derived by rule or named "
+                      "(`label = \"key\"`) [written-label]")
     name = named(root, save_exceptions_path) if save_exceptions_path else "save exceptions"
     for exception in sorted(exceptions - used, key=repr):
         errors.append(f"{name}: {exception} no longer matches anything; delete it")
     return errors
+
+
+# A declaration attribute: `#[effect(...)]`, `#[action(...)]` or
+# `#[resource(...)]`, under any path (`#[tilo_resource::resource(...)]`).
+DECLARATION = re.compile(r"#\[\s*(?:\w+\s*::\s*)*(?:effect|action|resource)\s*\(")
+DECLARED_LABEL = re.compile(r"(?<![\w$])label\s*=(?!=)")
+LABEL_KEY = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
+
+
+def written_labels(root: Path) -> list[tuple[str, int, str]]:
+    """Words written as a declaration's label (`label = "Open file"`) in any
+    Rust source of apps, crates and examples, tests included: a label names a key of
+    the crate's catalogue."""
+    found = []
+    for top in ("apps", "crates", "examples"):
+        base = root / top
+        if not base.is_dir():
+            continue
+        for path in sorted(base.rglob("*.rs")):
+            relative = path.relative_to(root)
+            if "target" in relative.parts or any(part.startswith(".") for part in relative.parts):
+                continue
+            text = path.read_text(errors="replace")
+            if "label" not in text:
+                continue
+            code, literals = rust_source.lex(text)
+            by_start = {literal.start: literal for literal in literals}
+            for attribute in DECLARATION.finditer(code):
+                close = rust_source.matching(code, attribute.end() - 1)
+                for label in DECLARED_LABEL.finditer(code, attribute.end(), close):
+                    start = label.end()
+                    while text[start].isspace():
+                        start += 1
+                    literal = by_start.get(start)
+                    if literal is not None and not LABEL_KEY.fullmatch(literal.value):
+                        found.append((relative.as_posix(),
+                                      rust_source.line_number(text, literal.start),
+                                      literal.value))
+    return found
 
 
 def main(argv: list[str]) -> int:

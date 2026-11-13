@@ -2957,6 +2957,7 @@ settings-effect-set-home-relay-hosting = Heim-Relay einen Arbeitsbereich hosten 
 settings-effect-review-removal = Gerät entfernen
 settings-effect-cancel-removal = Abbrechen
 settings-effect-revoke-device = Gerät entziehen
+settings-effect-revoke-browser = Browser entfernen
 settings-effect-revoke-agent = Agenten entziehen
 settings-effect-stop-run = Lauf stoppen
 settings-effect-answer-device = Gerät antworten lassen
@@ -3146,3 +3147,14 @@ settings-root = Einstellungen
 
 ## What the app is called in a window and in the launcher
 settings-app-title = Einstellungen
+## Actions bound to what the person is looking at
+
+settings-input-device-set-tablet-keep-aspect = Seitenverhältnis des Tabletts beibehalten oder strecken
+settings-input-device-set-tablet-left-handed = Tablett für die linke Hand drehen oder zurück
+settings-input-device-set-tablet-tip-feel = Festlegen, wie fest der Stift drücken muss
+settings-input-device-set-tablet-button = Festlegen, was eine Stifttaste tut
+settings-input-device-set-tablet-eraser = Festlegen, was das Radiererende des Stifts tut
+settings-input-device-set-pad-button = Festlegen, was eine Pad-Taste tut
+settings-input-device-set-pad-dial = Festlegen, was ein Ring oder Streifen in einem Modus tut
+settings-notifications-unmute-app-now = Mitteilungen wieder einschalten
+settings-notifications-mute-app-hour = Mitteilungen eine Stunde stummschalten

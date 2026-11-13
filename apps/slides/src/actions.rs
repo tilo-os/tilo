@@ -320,24 +320,6 @@ pub fn inserted_element_template(kind: ElementKind) -> Element {
     }
 }
 
-/// A one-line label for an element: a text element shows its first line
-/// (trimmed / capped), a shape shows its kind.
-pub fn element_label(kind: ElementKind, text: &str) -> String {
-    if kind == ElementKind::Text {
-        let line = text.lines().next().unwrap_or("").trim();
-        if line.is_empty() {
-            "Text".to_string()
-        } else if line.chars().count() > 32 {
-            let short: String = line.chars().take(32).collect();
-            format!("{short}…")
-        } else {
-            line.to_string()
-        }
-    } else {
-        kind.label().to_string()
-    }
-}
-
 /// The most elements, across slides, one deck holds.
 pub const MAX_TOTAL_ELEMENTS: usize = 20_000;
 /// The most characters of words and notes one deck holds.

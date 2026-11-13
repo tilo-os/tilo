@@ -8,7 +8,7 @@
 //!
 //! ## The golden path
 //!
-//! ```
+//! ```ignore
 //! use tilo_resource::{ActionCx, Collection, Id, Model, resource};
 //!
 //! #[derive(Model, Default)]
@@ -22,7 +22,7 @@
 //!     pub done: bool,
 //! }
 //!
-//! #[resource(kind = "example.todo", label = "Todo list")]
+//! #[resource(kind = "example.todo")]
 //! impl Todo {
 //!     /// Add an item.
 //!     #[action]
@@ -222,6 +222,18 @@ pub use vocabulary::{Built, Declaration, Vocabulary, vocabulary};
 
 /// Items the generated code refers to. Not part of the public API.
 #[doc(hidden)]
+/// A word of the catalogue beside the crate that names it,
+/// `word!("files-rename-here")`: a [`label::Word`] read in the person's
+/// language whenever what carries it is published. A key the crate's
+/// `locales/en-US.ftl` does not hold does not build;
+/// `word!("key", catalogue = "tests/locales")` reads another catalogue.
+#[macro_export]
+macro_rules! word {
+    ($key:literal $(, catalogue = $dir:literal)? $(,)?) => {
+        $crate::__private::word!($crate, $key $(, catalogue = $dir)?)
+    };
+}
+
 pub mod __private {
     pub use automerge::{ObjId, ObjType, Patch, ROOT, ReadDoc, ScalarValue, Value};
     pub use serde;
@@ -231,6 +243,7 @@ pub mod __private {
         HOST_RENDER_TAG, OperationKind, PROMPTED_PARAM, ParamType, ResourceSpec, ResourceViewSpec,
         RiskLevel, StepKind, picked_resource_schema,
     };
+    pub use tilo_resource_macros::word;
 
     pub use crate::apply_cache::forget_all;
 

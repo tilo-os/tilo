@@ -8,3 +8,7 @@ qr-clear-button = Clear
 # What each change says in history.
 qr-code-clear = Cleared the code
 qr-code-code-payload = Changed what the code encodes
+
+## What the record and its actions are called
+example-qr-code = QR code
+example-qr-code-clear = Clear the payload

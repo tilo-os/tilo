@@ -327,7 +327,11 @@ pub struct Bench {
     pub seated: i64,
 }
 
-#[resource(kind = "test.bench", label = "Bench", app = "so.tilo.test-bench")]
+#[resource(
+    kind = "test.bench",
+    app = "so.tilo.test-bench",
+    catalogue = "tests/locales"
+)]
 impl Bench {
     /// Sit down.
     #[action]
@@ -395,7 +399,11 @@ pub struct Ledger {
     pub answer: String,
 }
 
-#[resource(kind = "test.ledger", label = "Ledger", app = "so.tilo.test-ledger")]
+#[resource(
+    kind = "test.ledger",
+    app = "so.tilo.test-ledger",
+    catalogue = "tests/locales"
+)]
 impl Ledger {
     /// Ask for an entry.
     #[action]

@@ -271,6 +271,35 @@ class CopyLanguageTests(unittest.TestCase):
                 "as in the argument itself; a word only fed to a call is not")
 
 
+    def test_a_declarations_label_names_a_key_and_words_are_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "apps/demo/src"
+            source.mkdir(parents=True)
+            (source / "lib.rs").write_text("\n".join([
+                '#[ui::tilo_resource::resource(kind = "demo.list", label = "Shopping list")]',
+                "impl List {",
+                '    #[action(label = "demo-add", destructive)]',
+                "    pub fn add(&mut self) {}",
+                '    #[action(id = "drop", label = "Drop it")]',
+                "    pub fn drop_it(&mut self) {}",
+                "}",
+                "#[derive(Effect)]",
+                '#[effect(operation = "demo.effects", catalogue = "tests/locales")]',
+                "enum Demo {",
+                '    #[effect(label = "Open")]',
+                "    Open,",
+                "}",
+                '// #[action(label = "Commented out")]',
+                'const FIXTURE: &str = r#"#[resource(kind = \"x\", label = \"Quoted\")]"#;',
+                'fn f(node: Node) { node.with(label = "Not a declaration"); }',
+            ]) + "\n")
+            self.assertEqual(
+                [(line, text) for _, line, text in copy.written_labels(root)],
+                [(1, "Shopping list"), (5, "Drop it"), (11, "Open")],
+                "a key passes; words in a declaration fail, in a comment or a string they "
+                "are no declaration")
+
     def test_a_sentence_built_around_a_value_is_copy_too(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

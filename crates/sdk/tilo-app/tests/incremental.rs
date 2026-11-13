@@ -57,7 +57,7 @@ pub struct Book {
     pub read: bool,
 }
 
-#[resource(kind = "test.library", label = "Library")]
+#[resource(kind = "test.library", catalogue = "tests/locales")]
 impl Library {
     /// Add books.
     #[action]

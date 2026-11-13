@@ -9,6 +9,29 @@ pub mod locales {
         include_str!("../../tilo-app-cli/templates/collection.ftl"),
         include_str!("../../tilo-app-cli/templates/graph.ftl"),
     );
+
+    /// The declarations read their words where the crate is built, from
+    /// `locales/en-US.ftl`: every word a template names its record and
+    /// actions by (its catalog's last section, `## Actions`) is there as the
+    /// template says it.
+    #[test]
+    fn the_declarations_read_every_templates_words() {
+        let declared = include_str!("../locales/en-US.ftl");
+        for template in [
+            include_str!("../../tilo-app-cli/templates/starter.ftl"),
+            include_str!("../../tilo-app-cli/templates/document.ftl"),
+            include_str!("../../tilo-app-cli/templates/collection.ftl"),
+            include_str!("../../tilo-app-cli/templates/graph.ftl"),
+        ] {
+            let (_, actions) = template
+                .split_once("## Actions")
+                .expect("a section of actions");
+            for line in actions.lines().filter(|line| line.contains(" = ")) {
+                assert!(declared.lines().any(|held| held == line), "{line}");
+            }
+        }
+    }
+
     // What `tilo-app add locale de-DE` and a translator make of the starter's.
     const DE_DE: &str = "starter-title = Hallo\n\
 starter-name-label = Dein Name\n\

@@ -255,3 +255,6 @@ slides-effect-export-pptx-content = Präsentation als Inhalt exportieren
 
 ## What the app is called in a window and in the launcher
 slides-app-title = Präsentationen
+## Actions bound to what the person is looking at
+
+slides-deck-delete-selection = Auswahl löschen

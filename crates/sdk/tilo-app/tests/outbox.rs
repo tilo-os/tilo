@@ -38,7 +38,7 @@ pub struct Post {
     pub note: String,
 }
 
-#[resource(kind = "test.post", label = "Post")]
+#[resource(kind = "test.post", catalogue = "tests/locales")]
 impl Post {
     /// Send a message through the account on `device`.
     #[action(undo = Self::unsend)]
@@ -414,7 +414,7 @@ pub struct Agenda {
     pub uploads: Outbox<Meeting>,
 }
 
-#[resource(kind = "test.agenda", label = "Agenda", queue = Agenda::queue)]
+#[resource(kind = "test.agenda", queue = Agenda::queue, catalogue = "tests/locales")]
 impl Agenda {
     /// Move the meeting and rename it at once.
     #[action]

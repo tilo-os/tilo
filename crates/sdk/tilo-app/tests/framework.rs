@@ -20,8 +20,8 @@ pub struct Item {
 
 #[resource(
     kind = "test.checklist",
-    label = "Checklist",
-    app = "so.tilo.test-checklist"
+    app = "so.tilo.test-checklist",
+    catalogue = "tests/locales"
 )]
 impl Checklist {
     /// Rename the checklist.

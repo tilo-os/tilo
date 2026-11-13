@@ -584,26 +584,32 @@ pub(super) fn pen_operations(
             .bind(verbs::SetTabletKeepAspect::paths().device, key.clone())
             .declaration(
                 "set-tablet-keep-aspect",
-                "Keep the tablet's aspect ratio, or stretch it",
+                tilo_resource::word!("settings-input-device-set-tablet-keep-aspect"),
             ),
         InputDevicePrefs::SET_TABLET_LEFT_HANDED
             .bind(verbs::SetTabletLeftHanded::paths().device, key.clone())
             .declaration(
                 "set-tablet-left-handed",
-                "Turn the tablet around for the left hand, or back",
+                tilo_resource::word!("settings-input-device-set-tablet-left-handed"),
             ),
         InputDevicePrefs::SET_TABLET_TIP_FEEL
             .bind(verbs::SetTabletTipFeel::paths().device, key.clone())
-            .declaration("set-tablet-tip-feel", "Set how firmly the pen must press"),
+            .declaration(
+                "set-tablet-tip-feel",
+                tilo_resource::word!("settings-input-device-set-tablet-tip-feel"),
+            ),
         InputDevicePrefs::SET_TABLET_BUTTON
             .bind(verbs::SetTabletButton::paths().device, key.clone())
             .declaration(
                 "set-tablet-button",
-                "Set what one of the pen's buttons does",
+                tilo_resource::word!("settings-input-device-set-tablet-button"),
             ),
         InputDevicePrefs::SET_TABLET_ERASER
             .bind(verbs::SetTabletEraser::paths().device, key)
-            .declaration("set-tablet-eraser", "Set what the pen's eraser end does"),
+            .declaration(
+                "set-tablet-eraser",
+                tilo_resource::word!("settings-input-device-set-tablet-eraser"),
+            ),
     ]
 }
 
@@ -615,9 +621,15 @@ pub(super) fn pad_operations(
     vec![
         InputDevicePrefs::SET_PAD_BUTTON
             .bind(verbs::SetPadButton::paths().device, device.to_owned())
-            .declaration("set-pad-button", "Set what a pad button does"),
+            .declaration(
+                "set-pad-button",
+                tilo_resource::word!("settings-input-device-set-pad-button"),
+            ),
         InputDevicePrefs::SET_PAD_DIAL
             .bind(verbs::SetPadDial::paths().device, device.to_owned())
-            .declaration("set-pad-dial", "Set what a ring or strip does in one mode"),
+            .declaration(
+                "set-pad-dial",
+                tilo_resource::word!("settings-input-device-set-pad-dial"),
+            ),
     ]
 }

@@ -402,3 +402,12 @@ video-editor-project-link-with = Link clips
 
 ## What the app is called in a window and in the launcher
 video-editor-app-title = Video Editor
+## Actions bound to what the person is looking at
+
+video-editor-project-mark-in-here = Mark in at playhead
+video-editor-project-mark-out-here = Mark out at playhead
+video-editor-project-split-here = Split clip at playhead
+video-editor-project-trim-in-here = Trim clip start to playhead
+video-editor-project-trim-out-here = Trim clip end to playhead
+video-editor-project-place-two-angles-here = Place side by side
+video-editor-project-trim-mix = Trim the mix to fit

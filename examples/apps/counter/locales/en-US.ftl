@@ -9,3 +9,8 @@ counter-reset-button = Reset
 counter-add = Added { $amount }
 counter-reset = Reset the count
 counter-counter-count = Set the count to { $new }
+
+## What the record and its actions are called
+example-counter = Counter
+example-counter-add = Add to the count
+example-counter-reset = Reset the count

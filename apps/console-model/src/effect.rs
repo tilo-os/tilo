@@ -39,8 +39,6 @@ pub enum ConsoleEffect {
         #[param("The agent's client, by the name it goes by")]
         agent: String,
     },
-    /// Open connect
-    ///
     /// Show how an agent connects in this window: the commands that add Tilo to a client, and
     /// every agent already let in. It changes only the view of whoever opens it.
     #[effect(view, participant)]

@@ -22,7 +22,7 @@ pub struct Song {
     pub title: String,
 }
 
-#[resource(kind = "test.playlist", label = "Playlist")]
+#[resource(kind = "test.playlist", catalogue = "tests/locales")]
 impl Playlist {
     /// Add a song.
     #[action]

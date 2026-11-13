@@ -57,7 +57,7 @@ pub struct Card {
     pub either: Option<Either>,
 }
 
-#[resource(kind = "test.card", label = "Card")]
+#[resource(kind = "test.card", catalogue = "tests/locales")]
 impl Card {
     /// Draw a box `width` units wide.
     #[action]
@@ -100,7 +100,7 @@ impl Card {
     }
 }
 
-#[resource(kind = "test.rules", label = "Rules", version = 3, migrate = Rules::upgrade)]
+#[resource(kind = "test.rules", version = 3, migrate = Rules::upgrade, catalogue = "tests/locales")]
 impl Rules {
     /// Match a host.
     #[action]

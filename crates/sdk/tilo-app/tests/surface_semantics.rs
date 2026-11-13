@@ -19,7 +19,7 @@ pub struct Ballot {
     pub no: i64,
 }
 
-#[resource(kind = "test.ballot", label = "Ballot")]
+#[resource(kind = "test.ballot", catalogue = "tests/locales")]
 impl Ballot {
     /// Count a vote for.
     #[action]

@@ -48,7 +48,7 @@ pub struct Library {
     pub logo: Bytes,
 }
 
-#[resource(kind = "test.library", label = "Library")]
+#[resource(kind = "test.library", catalogue = "tests/locales")]
 impl Library {
     /// Create a snippet: a unit of its own.
     #[action(writes = snippets)]
@@ -278,7 +278,7 @@ impl Shelf {
     }
 }
 
-#[resource(kind = "test.shelf", label = "Shelf")]
+#[resource(kind = "test.shelf", catalogue = "tests/locales")]
 impl Shelf {
     /// Shelve a book.
     #[action]
@@ -348,7 +348,7 @@ impl Misdeclared {
     }
 }
 
-#[resource(kind = "test.misdeclared", label = "Misdeclared")]
+#[resource(kind = "test.misdeclared", catalogue = "tests/locales")]
 impl Misdeclared {
     /// Rename it.
     #[action]

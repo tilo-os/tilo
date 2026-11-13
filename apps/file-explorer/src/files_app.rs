@@ -9,6 +9,7 @@
 //! frame. See [`crate::command`].
 
 use ui::num::i64_of_usize;
+use ui::tilo_resource::word;
 
 use crate::command::{CommandSink, FileCommand, new_sink};
 use crate::i18n::{arg, t, t_args};
@@ -1632,8 +1633,8 @@ impl FilesState {
         Some((selected.len(), name))
     }
 
-    /// `key` naming the selection (`files-trash-selected`): "Move
-    /// “report.pdf” to Trash", or "Move 3 items to Trash".
+    /// `key` naming the selection (`files-copy-selected`): "Copy
+    /// “report.pdf”", or "Copy 3 items".
     pub(crate) fn selection_label(key: &str, (count, name): &(usize, String)) -> String {
         crate::i18n::t_args(
             key,
@@ -1659,9 +1660,9 @@ impl FilesState {
         if self.is_trash_view() {
             return Vec::new();
         }
-        let Some(named) = self.selection_named() else {
+        if self.selection_named().is_none() {
             return Vec::new();
-        };
+        }
         let paths: Vec<String> = self
             .selected_paths()
             .iter()
@@ -1674,10 +1675,7 @@ impl FilesState {
                     .bind(file_explorer::Rename::paths().device, device.clone())
                     .and(file_explorer::Rename::paths().folder, String::new())
                     .and(file_explorer::Rename::paths().entry, path.clone())
-                    .declaration(
-                        "rename-selected",
-                        Self::selection_label("files-rename-selected", &named),
-                    ),
+                    .declaration("rename-selected", word!("files-folder-rename-selected")),
             );
         }
         declarations.extend(
@@ -1685,10 +1683,7 @@ impl FilesState {
                 .bind(file_explorer::Trash::paths().device, device)
                 .and(file_explorer::Trash::paths().folder, String::new())
                 .and(file_explorer::Trash::paths().entries, paths)
-                .declaration(
-                    "trash-selected",
-                    Self::selection_label("files-trash-selected", &named),
-                )
+                .declaration("trash-selected", word!("files-folder-trash-selected"))
                 .map(|mut trash| {
                     trash.destructive = true;
                     trash
@@ -1722,7 +1717,7 @@ impl FilesState {
             .bind(file_explorer::Rename::paths().device, device.clone())
             .and(file_explorer::Rename::paths().folder, String::new())
             .and(file_explorer::Rename::paths().entry, path.clone())
-            .declaration("rename", t("files-menu-rename"));
+            .declaration("rename", word!("files-menu-rename"));
         let move_to = FileExplorer::MOVE_ENTRIES
             .bind(file_explorer::MoveEntries::paths().device, device.clone())
             .and(file_explorer::MoveEntries::paths().from, String::new())
@@ -1730,12 +1725,12 @@ impl FilesState {
                 file_explorer::MoveEntries::paths().entries,
                 vec![path.clone()],
             )
-            .declaration("move-to", "Move to folder…");
+            .declaration("move-to", word!("files-folder-move-to"));
         let trash = FileExplorer::TRASH
             .bind(file_explorer::Trash::paths().device, device)
             .and(file_explorer::Trash::paths().folder, String::new())
             .and(file_explorer::Trash::paths().entries, vec![path])
-            .declaration("trash", t("files-menu-move-trash"))
+            .declaration("trash", word!("files-menu-move-trash"))
             .map(|mut trash| {
                 trash.destructive = true;
                 trash
@@ -1791,38 +1786,35 @@ impl FilesState {
         let new_folder = FileExplorer::NEW_FOLDER
             .bind(file_explorer::NewFolder::paths().device, device.clone())
             .and(file_explorer::NewFolder::paths().parent, here.clone())
-            .declaration("new-folder-here", t("files-menu-new-folder"));
+            .declaration("new-folder-here", word!("files-menu-new-folder"));
         let rename = FileExplorer::RENAME
             .bind(file_explorer::Rename::paths().device, device.clone())
             .and(file_explorer::Rename::paths().folder, folder.clone())
-            .declaration("rename-here", "Rename an entry here");
+            .declaration("rename-here", word!("files-folder-rename-here"));
         let trash = FileExplorer::TRASH
             .bind(file_explorer::Trash::paths().device, device.clone())
             .and(file_explorer::Trash::paths().folder, folder.clone())
-            .declaration("trash-here", "Move entries here to Trash");
+            .declaration("trash-here", word!("files-folder-trash-here"));
         let moving = FileExplorer::MOVE_ENTRIES
             .bind(file_explorer::MoveEntries::paths().device, device.clone())
             .and(file_explorer::MoveEntries::paths().from, folder.clone())
-            .declaration("move-here", "Move entries from here to a folder");
+            .declaration("move-here", word!("files-folder-move-here"));
         let copying = FileExplorer::COPY_INTO
             .bind(file_explorer::CopyInto::paths().device, device.clone())
             .and(file_explorer::CopyInto::paths().from, folder)
-            .declaration("copy-here", "Copy entries from here to a folder");
+            .declaration("copy-here", word!("files-folder-copy-here"));
         let writing = FileExplorer::WRITE_FILE
             .bind(file_explorer::WriteFile::paths().device, device.clone())
             .and(file_explorer::WriteFile::paths().folder, here.clone())
-            .declaration("write-file-here", "Write a file here");
+            .declaration("write-file-here", word!("files-folder-write-file-here"));
         let compressing = FileExplorer::COMPRESS
             .bind(file_explorer::Compress::paths().device, device.clone())
             .and(file_explorer::Compress::paths().from, here.clone())
-            .declaration(
-                "compress-here",
-                "Compress entries here to a zip or tar.zst archive",
-            );
+            .declaration("compress-here", word!("files-folder-compress-here"));
         let extracting = FileExplorer::EXTRACT
             .bind(file_explorer::Extract::paths().device, device)
             .and(file_explorer::Extract::paths().to, Some(here))
-            .declaration("extract-here", "Extract an archive into this folder");
+            .declaration("extract-here", word!("files-folder-extract-here"));
         // Each of these names the entries it changes by name or path, which
         // an agent or a script passes and a person picks in the listing: a
         // person renames, moves or trashes what they selected, or a row's

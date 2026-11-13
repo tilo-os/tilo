@@ -38,7 +38,7 @@ pub struct Feed {
     pub opened: Vec<u64>,
 }
 
-#[resource(kind = "example.activity-feed", label = "Activity")]
+#[resource(kind = "example.activity-feed")]
 impl Feed {
     /// Open an activity.
     #[action]

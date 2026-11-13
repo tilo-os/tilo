@@ -123,7 +123,7 @@ impl ui::storage::SettingsSchema for ShortcutPrefs {
     ui::settings_codec!();
 }
 
-#[tilo_resource::resource(kind = "settings.shortcuts", label = "Keyboard shortcuts")]
+#[tilo_resource::resource(kind = "settings.shortcuts")]
 impl ShortcutPrefs {
     /// Move a desktop shortcut to another chord. A chord another shortcut,
     /// a fixed desktop key or a published action holds is refused, naming

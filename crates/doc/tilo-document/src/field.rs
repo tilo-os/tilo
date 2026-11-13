@@ -359,7 +359,7 @@ mod tests {
         pub body: RichText,
     }
 
-    #[resource(kind = "test.note", label = "Note")]
+    #[resource(kind = "test.note", catalogue = "tests/locales")]
     impl Note {
         /// Replace the note's text.
         #[action]
@@ -479,7 +479,7 @@ mod tests {
         pub lazy: RichText,
     }
 
-    #[resource(kind = "test.card", label = "Card")]
+    #[resource(kind = "test.card", catalogue = "tests/locales")]
     impl Card {
         /// Write both texts.
         #[action]

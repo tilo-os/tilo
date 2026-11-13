@@ -1303,3 +1303,6 @@ media-toggle-off = Off
 floating-window-title = Floating window
 now-playing-seek = Playback position
 now-playing-seek-help = Use Left and Right Arrow to move five seconds
+
+## What the records are called, and the actions on them
+settings-text-assistance = Spelling and text

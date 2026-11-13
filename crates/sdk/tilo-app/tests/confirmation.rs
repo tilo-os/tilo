@@ -23,8 +23,8 @@ pub struct Notes {
 
 #[resource(
     kind = "test.notes",
-    label = "Notes",
-    app = "so.tilo.test-confirmation"
+    app = "so.tilo.test-confirmation",
+    catalogue = "tests/locales"
 )]
 impl Notes {
     /// Add a note.

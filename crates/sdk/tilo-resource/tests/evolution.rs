@@ -11,7 +11,7 @@ pub struct ContactV1 {
     pub name: String,
 }
 
-#[resource(kind = "test.contact", label = "Contact")]
+#[resource(kind = "test.contact", catalogue = "tests/locales")]
 impl ContactV1 {
     /// Rename the contact.
     #[action]
@@ -32,7 +32,7 @@ pub struct Contact {
     pub outbox: Outbox<String>,
 }
 
-#[resource(kind = "test.contact", label = "Contact", version = 2, migrate = Contact::upgrade)]
+#[resource(kind = "test.contact", version = 2, migrate = Contact::upgrade, catalogue = "tests/locales")]
 impl Contact {
     /// Rename the contact.
     #[action]

@@ -14,7 +14,11 @@ pub struct Album {
     pub pictures: Vec<Bytes>,
 }
 
-#[resource(kind = "test.album", label = "Album", app = "so.tilo.test-album")]
+#[resource(
+    kind = "test.album",
+    app = "so.tilo.test-album",
+    catalogue = "tests/locales"
+)]
 impl Album {
     /// Keep a picture of the album.
     #[action]

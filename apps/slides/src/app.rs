@@ -1051,7 +1051,6 @@ impl SlidesApp {
         Some(store::Selected {
             slide: ui::tilo_resource::Id::from(slide.id.as_str()),
             element: ui::tilo_resource::Id::from(element.id.as_str()),
-            label: crate::actions::element_label(element.kind, &element.text),
         })
     }
 

@@ -43,7 +43,7 @@ impl Counter {
 /// `#[action]` method is a verb: its doc comment is its label, its parameters
 /// are typed and described with `#[param]`, and returning `Err` refuses it
 /// without changing anything.
-#[resource(kind = "example.counter", label = "Counter")]
+#[resource(kind = "example.counter")]
 impl Counter {
     /// Add an amount to the count.
     #[action]

@@ -25,17 +25,11 @@ impl ui::storage::SettingsSchema for AgentDoorDevice {
         ui::storage::Scope::Shared(settings_store::agent_door::SECTION);
 }
 
-#[ui::tilo_resource::resource(
-    kind = "settings.agent-door",
-    label = "Agents from your other devices"
-)]
+#[ui::tilo_resource::resource(kind = "settings.agent-door")]
 impl AgentDoorDevice {
     /// Accept agents from my other devices without asking on this one, or
     /// ask again.
-    #[action(
-        id = "set-accept-own-devices",
-        label = "Accept agents from my other devices"
-    )]
+    #[action(id = "set-accept-own-devices")]
     pub fn set_accept_own_devices(&mut self, on: bool) {
         self.accept_own_devices = on;
     }

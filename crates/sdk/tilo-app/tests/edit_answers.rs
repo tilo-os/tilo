@@ -29,11 +29,11 @@ impl Deck {
     }
 }
 
-#[resource(kind = "test.deck", label = "Deck")]
+#[resource(kind = "test.deck", catalogue = "tests/locales")]
 impl Deck {}
 
 #[derive(Clone, Debug, PartialEq, Effect)]
-#[effect(operation = "test.deck.effects")]
+#[effect(operation = "test.deck.effects", catalogue = "tests/locales")]
 pub enum DeckEffect {
     /// Add a card.
     #[effect(edit, job, returns)]

@@ -558,7 +558,10 @@ fn queued_file_changes_declare_that_they_can_be_undone() {
     let bound = FileExplorer::RENAME
         .bind(file_explorer::Rename::paths().device, "device".to_owned())
         .and(file_explorer::Rename::paths().folder, "/tmp".to_owned())
-        .declaration("rename-here", "Rename an entry here")
+        .declaration(
+            "rename-here",
+            ui::tilo_resource::word!("files-folder-rename-here"),
+        )
         .unwrap();
     assert_eq!(bound.kind, ActionKind::Outside);
     let spec = ui::tilo_resource::declaration_spec(&*bound);

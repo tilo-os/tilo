@@ -43,7 +43,6 @@ pub(crate) enum Ask {
 pub(crate) struct Selected {
     pub(crate) slide: Id,
     pub(crate) element: Id,
-    pub(crate) label: String,
 }
 
 /// What the editor and the view's effect handler share.
@@ -281,12 +280,7 @@ fn element_kind(deck: &Deck, slide: &str, element: &str) -> Result<ElementKind, 
 /// its declared actions: delete it, bring it to the front, send it to the
 /// back.
 pub(crate) fn selection_declarations(selected: Option<&Selected>) -> Vec<ActionDecl<DeckRecord>> {
-    let Some(Selected {
-        slide,
-        element,
-        label,
-    }) = selected
-    else {
+    let Some(Selected { slide, element }) = selected else {
         return Vec::new();
     };
     let mut declarations = Vec::new();
@@ -299,7 +293,10 @@ pub(crate) fn selection_declarations(selected: Option<&Selected>) -> Vec<ActionD
             crate::deck::deck::DeleteElement::paths().element,
             element.clone(),
         )
-        .declaration("delete-selection", format!("Delete {label}"))
+        .declaration(
+            "delete-selection",
+            ui::tilo_resource::word!("slides-deck-delete-selection"),
+        )
     {
         declarations.push(delete.describe("Delete the element selected in the editor."));
     }
@@ -312,14 +309,20 @@ pub(crate) fn selection_declarations(selected: Option<&Selected>) -> Vec<ActionD
             crate::deck::deck::BringToFront::paths().element,
             element.clone(),
         )
-        .declaration("bring-selection-front", format!("Bring to front: {label}"));
+        .declaration(
+            "bring-selection-front",
+            ui::tilo_resource::word!("slides-bring-front"),
+        );
     let back = DeckRecord::SEND_TO_BACK
         .bind(crate::deck::deck::SendToBack::paths().slide, slide.clone())
         .and(
             crate::deck::deck::SendToBack::paths().element,
             element.clone(),
         )
-        .declaration("send-selection-back", format!("Send to back: {label}"));
+        .declaration(
+            "send-selection-back",
+            ui::tilo_resource::word!("slides-send-back"),
+        );
     for restack in [front, back].into_iter().flatten() {
         declarations.push(restack.describe("Restack the element selected in the editor."));
     }

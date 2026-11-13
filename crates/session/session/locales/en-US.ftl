@@ -422,6 +422,7 @@ so-tilo-session-desk-switch-workspace = Switch to workspace
 so-tilo-session-desk-invitations = List invitations
 so-tilo-session-desk-issue-invitation = Make an invitation link
 so-tilo-session-desk-show-invite = Invite people
+so-tilo-session-desk-show-connect = Connect an agent or computer
 so-tilo-session-desk-cancel-invitation = Cancel invitation
 so-tilo-session-desk-show-surface = Show or hide a panel
 so-tilo-session-desk-close-surface = Close panel

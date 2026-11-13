@@ -32,7 +32,6 @@ impl ui::storage::SettingsSchema for DesktopControls {
 
 #[ui::tilo_resource::resource(
     kind = "settings.desktop-controls",
-    label = "Desktop controls",
     version = 2,
     migrate = crate::leaves_moved_out
 )]
@@ -57,10 +56,7 @@ impl ui::storage::SettingsSchema for DesktopControlsDevice {
     );
 }
 
-#[ui::tilo_resource::resource(
-    kind = "settings.desktop-controls-device",
-    label = "Desktop controls on this device"
-)]
+#[ui::tilo_resource::resource(kind = "settings.desktop-controls-device")]
 impl DesktopControlsDevice {}
 
 /// The person's default apps, as their settings hold them.
@@ -80,12 +76,12 @@ impl ui::storage::SettingsSchema for DefaultApps {
         ui::storage::Scope::Shared(desktop_policy::PERSONAL_DEFAULTS_SECTION);
 }
 
-#[ui::tilo_resource::resource(kind = "settings.default-apps", label = "Default apps")]
+#[ui::tilo_resource::resource(kind = "settings.default-apps")]
 impl DefaultApps {
     /// Open one kind of file or link with an app. Only the chosen kind
     /// changes: the handlers kept for every other kind, including kinds a
     /// newer version knows, stay.
-    #[action(id = "set-default-app-handler", label = "Set default app")]
+    #[action(id = "set-default-app-handler")]
     pub fn open_with(
         &mut self,
         #[param("The kind of file or link: `ext:pdf`, `mime:text/html`, `scheme:https`")]
@@ -129,7 +125,7 @@ impl ui::storage::SettingsSchema for ClockPrefs {
     const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared(settings_store::clock::SECTION);
 }
 
-#[ui::tilo_resource::resource(kind = "settings.clock", label = "Clock")]
+#[ui::tilo_resource::resource(kind = "settings.clock")]
 impl ClockPrefs {}
 
 /// How the person's displays are arranged, wherever they connect them.
@@ -145,7 +141,7 @@ impl ui::storage::SettingsSchema for SharedDisplayPrefs {
         ui::storage::Scope::Shared(settings_store::person_displays::ARRANGEMENT_SECTION);
 }
 
-#[ui::tilo_resource::resource(kind = "settings.display-arrangement", label = "Display arrangement")]
+#[ui::tilo_resource::resource(kind = "settings.display-arrangement")]
 impl SharedDisplayPrefs {
     /// Arrange the person's displays: each display entry given takes the
     /// place of the stored one where it differs, at a revision above every
@@ -184,10 +180,7 @@ impl ui::storage::SettingsSchema for AutomaticDisplayPrefs {
     const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared("continuity");
 }
 
-#[ui::tilo_resource::resource(
-    kind = "settings.automatic-display",
-    label = "Automatic display input"
-)]
+#[ui::tilo_resource::resource(kind = "settings.automatic-display")]
 impl AutomaticDisplayPrefs {
     /// Opt this device into automatic grants to its enrolled online input
     /// devices, or out. The separate Continuity master and Display/input
@@ -236,7 +229,7 @@ impl ui::storage::SettingsSchema for PendingDisplayChange {
         ui::storage::Scope::Shared(settings_store::hardware::DISPLAY_TRANSACTION_SECTION);
 }
 
-#[ui::tilo_resource::resource(kind = "settings.display-change", label = "Display change")]
+#[ui::tilo_resource::resource(kind = "settings.display-change")]
 impl PendingDisplayChange {}
 
 impl PendingDisplayChange {

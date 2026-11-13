@@ -49,7 +49,10 @@ impl Choice {
             .bind(params.event, crate::model::key(self.event))
             .and(params.email, self.hint.email.clone())
             .and(params.name, self.hint.label.clone())
-            .declaration(Calendar::INVITE.id, t("calendar-contact-add"))?;
+            .declaration(
+                Calendar::INVITE.id,
+                ui::tilo_resource::word!("calendar-contact-add"),
+            )?;
         // Offering a contact here takes nothing away: the address book stays
         // in Contacts, and the event gains this person only once the invite
         // is taken, through the calendar's own verb. Nobody is asked to

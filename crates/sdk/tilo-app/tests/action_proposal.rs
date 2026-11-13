@@ -25,7 +25,11 @@ pub struct Note {
     pub pinned: bool,
 }
 
-#[resource(kind = "test.note", label = "Note", app = "so.tilo.test-note")]
+#[resource(
+    kind = "test.note",
+    app = "so.tilo.test-note",
+    catalogue = "tests/locales"
+)]
 impl Note {}
 
 struct NoteApp;

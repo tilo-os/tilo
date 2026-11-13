@@ -40,7 +40,7 @@ pub struct Checklist {
     pub tasks: Collection<Task>,
 }
 
-#[resource(kind = "test.checklist", label = "Checklist")]
+#[resource(kind = "test.checklist", catalogue = "tests/locales")]
 impl Checklist {
     /// Set the next task's title.
     #[action]

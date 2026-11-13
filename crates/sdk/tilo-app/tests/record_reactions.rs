@@ -14,7 +14,7 @@ pub struct Poster {
     pub reactions: Reactions,
 }
 
-#[resource(kind = "test.poster", label = "Poster")]
+#[resource(kind = "test.poster", catalogue = "tests/locales")]
 impl Poster {
     /// Retitle the poster.
     #[action]

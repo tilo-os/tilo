@@ -96,3 +96,7 @@ video-player-library-set-transport = Record playback position
 
 ## What the app is called in a window and in the launcher
 video-player-app-title = Video Player
+## Actions bound to what the person is looking at
+
+video-player-library-bookmark-current-time = Bookmark this moment
+video-player-library-add-this-video-to-watch-later = Add this video to Watch later

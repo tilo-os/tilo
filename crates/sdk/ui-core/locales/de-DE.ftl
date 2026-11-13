@@ -1268,3 +1268,6 @@ media-toggle-off = Aus
 floating-window-title = Schwebendes Fenster
 now-playing-seek = Wiedergabeposition
 now-playing-seek-help = Mit Pfeil links und rechts um fünf Sekunden springen
+
+## What the records are called, and the actions on them
+settings-text-assistance = Rechtschreibung und Text

@@ -9,6 +9,7 @@
 //! translates, and publishes the word with the catalogue it is in, so it is
 //! read in the person's language whenever it is published.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -27,6 +28,9 @@ pub(crate) struct Catalogue {
     dir: String,
     messages: HashMap<String, String>,
     locales: Vec<String>,
+    /// Every declaration whose key it does not hold, so one build names
+    /// every line to add.
+    missing: RefCell<Option<syn::Error>>,
 }
 
 impl Catalogue {
@@ -53,6 +57,7 @@ impl Catalogue {
             dir: dir.to_owned(),
             messages: messages(&text),
             locales,
+            missing: RefCell::new(None),
         }
     }
 
@@ -90,8 +95,9 @@ impl Catalogue {
     }
 
     /// The word a declaration names: `named` (`label = "key"`) or the key
-    /// derived for it, read from this catalogue. Without either in it, the
-    /// declaration's written text, `written`, which no catalogue translates.
+    /// derived for it, read from this catalogue. A declaration whose key the
+    /// catalogue does not hold does not build: [`Self::missing`] names the
+    /// line to add, its text the declaration's own words, `written`.
     pub(crate) fn declared(
         &self,
         krate: &Tokens,
@@ -100,35 +106,40 @@ impl Catalogue {
         derived: &str,
         written: &str,
     ) -> syn::Result<(Tokens, String)> {
-        let plain = |text: &str| {
-            if text.contains('{') {
-                Err(syn::Error::new(
-                    span,
-                    "a label is plain words: it takes no `{ $argument }`",
-                ))
-            } else {
-                Ok(())
+        let key = named.unwrap_or(derived);
+        let Some(text) = self.text(key) else {
+            let file = format!("{}/{SOURCE}.ftl", self.dir);
+            let error = syn::Error::new(
+                span,
+                match named {
+                    Some(words) if !is_key(words) => format!(
+                        "a label is a key of {file}, not words: add `{derived} = {words}` there \
+                         and leave `label` out"
+                    ),
+                    Some(_) => format!("`{key}` is no message of {file}"),
+                    None => format!("`{key}` is no message of {file}: add `{key} = {written}`"),
+                },
+            );
+            match &mut *self.missing.borrow_mut() {
+                Some(all) => all.combine(error),
+                none => *none = Some(error),
             }
+            return Ok((self.word(krate, key, written), written.to_owned()));
         };
-        if let Some(key) = named.filter(|named| is_key(named)) {
-            let Some(text) = self.text(key) else {
-                return Err(syn::Error::new(
-                    span,
-                    format!("`{key}` is no message of {}/{SOURCE}.ftl", self.dir),
-                ));
-            };
-            plain(text)?;
-            return Ok((self.word(krate, key, text), text.to_owned()));
+        if text.contains('{') {
+            return Err(syn::Error::new(
+                span,
+                "a label is plain words: it takes no `{ $argument }`",
+            ));
         }
-        if let Some(text) = self.text(derived) {
-            plain(text)?;
-            return Ok((self.word(krate, derived, text), text.to_owned()));
-        }
-        let written = named.unwrap_or(written);
-        Ok((
-            quote!(#krate::label::Word::plain(#written)),
-            written.to_owned(),
-        ))
+        Ok((self.word(krate, key, text), text.to_owned()))
+    }
+}
+
+impl Catalogue {
+    /// Every declaration [`Self::declared`] found no key for, as one error.
+    pub(crate) fn missing(&self) -> syn::Result<()> {
+        self.missing.take().map_or(Ok(()), Err)
     }
 }
 

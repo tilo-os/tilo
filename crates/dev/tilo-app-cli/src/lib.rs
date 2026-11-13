@@ -38,11 +38,14 @@ mod pack;
 pub mod portability;
 pub mod push;
 mod resource_kinds;
+mod scaffold_files;
 pub mod size;
 pub mod standalone;
 pub mod surface;
 pub mod targets;
 pub mod web;
+
+use scaffold_files::{app_catalog, app_surface, headless_actions};
 
 const APP_AGENT_GUIDE: &str = include_str!("../templates/AGENTS.md");
 const STARTER_APP_TEMPLATE: &str = include_str!("../templates/starter.rs");
@@ -2789,6 +2792,9 @@ fn form_component_source(
     let value_label = ScreenMessage::new(name, "value-label", "Value");
     let value_placeholder = ScreenMessage::new(name, "value-placeholder", "Enter a value");
     let enabled_label = ScreenMessage::new(name, "enabled-label", "Enabled");
+    // What the record its test edits through the form is called: a key of the
+    // app's catalogue, as every record's name is.
+    let flags = ScreenMessage::new(name, "flags", "Form flags");
     let source = format!(
         r##"// tilo-app:graph-props=form-v2
 use ui::widget::{{Checkbox, Element, TextInput, labeled_check, labeled_field}};
@@ -2913,7 +2919,7 @@ mod tests {{
         enabled: bool,
     }}
 
-    #[ui::prelude::resource(kind = "template.form-flags", label = "Form flags")]
+    #[ui::prelude::resource(kind = "{name}.flags")]
     impl GraphFlags {{}}
 
     struct GraphForm {{
@@ -3026,7 +3032,10 @@ mod tests {{
 }}
 "##
     );
-    (source, vec![value_label, value_placeholder, enabled_label])
+    (
+        source,
+        vec![value_label, value_placeholder, enabled_label, flags],
+    )
 }
 
 fn tree_component_source(
@@ -9755,55 +9764,6 @@ fn app_manifest(spec: &AppSpec) -> Result<String> {
         collab = version("collab")?,
         fs = version("tilo-fs")?,
     ))
-}
-
-fn headless_actions(spec: &AppSpec) -> String {
-    match spec.template {
-        Template::Starter => String::from(
-            "[\n  {\"perform\": {\"target\": \"name-input\", \"action\": \"set_value\", \"value\": \"Ada\"}},\n  {\"perform\": {\"target\": \"name-input\", \"action\": \"focus\"}},\n  {\"expect\": {\"target\": \"name-input\", \"role\": \"text_input\", \"value\": \"Ada\", \"focused\": true}},\n  {\"expect\": {\"target\": \"greeting\", \"role\": \"static_text\", \"name_contains\": \"Ada\"}}\n]\n",
-        ),
-        Template::Document => String::from(
-            "[\n  {\"perform\": {\"target\": \"document-title-input\", \"action\": \"set_value\", \"value\": \"Project Atlas\"}},\n  {\"perform\": {\"target\": \"document-body-input\", \"action\": \"set_value\", \"value\": \"A durable first draft.\"}},\n  {\"expect\": {\"target\": \"document-title-preview\", \"role\": \"heading\", \"name\": \"Project Atlas\"}},\n  {\"expect\": {\"target\": \"document-body-preview\", \"name\": \"A durable first draft.\"}}\n]\n",
-        ),
-        Template::Collection => String::from(
-            "[\n  {\"perform\": {\"target\": \"draft-input\", \"action\": \"set_value\", \"value\": \"Buy milk\"}},\n  {\"expect\": {\"target\": \"draft-input\", \"role\": \"text_input\", \"value\": \"Buy milk\"}},\n  {\"perform\": {\"target\": \"add\", \"action\": \"activate\"}},\n  {\"expect\": {\"target\": \"draft-input\", \"role\": \"text_input\", \"value\": \"\"}}\n]\n",
-        ),
-        Template::Graph => String::from(
-            "[\n  {\"perform\": {\"target\": \"name-input\", \"action\": \"set_value\", \"value\": \"Atlas\"}},\n  {\"expect\": {\"target\": \"name-preview\", \"role\": \"static_text\", \"name\": \"Atlas\"}},\n  {\"perform\": {\"target\": \"create\", \"action\": \"activate\"}}\n]\n",
-        ),
-    }
-}
-
-/// The app's source catalog. A graph screen's static text is a message id
-/// too, so the graph template's catalog also names the screen it generates.
-fn app_catalog(spec: &AppSpec) -> String {
-    // The templates key their history messages `generated-…`, as they name
-    // their kinds `generated.…`; the history looks them up under the app.
-    let prefix = format!("{}-", tilo_history::app_prefix(&spec.app_id));
-    let catalog: String = spec
-        .template
-        .catalog()
-        .lines()
-        .map(|line| {
-            line.strip_prefix("generated-")
-                .map_or_else(|| format!("{line}\n"), |rest| format!("{prefix}{rest}\n"))
-        })
-        .collect();
-    if spec.template != Template::Graph {
-        return catalog;
-    }
-    format!(
-        "graph-title = {{ \"{}\" }}\ngraph-introduction = This screen is a serialized graph under ui/. Edit it while the app runs with tilo-app ui edit ui/main.json.\n{catalog}",
-        escape_fluent_string(&spec.title)
-    )
-}
-
-/// The app's committed public surface: what `tilo-app surface` writes for
-/// the template's code, under the app's own resource kinds.
-fn app_surface(spec: &AppSpec) -> String {
-    spec.template
-        .surface()
-        .replace("kind = \"generated.", &format!("kind = \"{}.", spec.app_id))
 }
 
 fn graph_document() -> Result<String> {

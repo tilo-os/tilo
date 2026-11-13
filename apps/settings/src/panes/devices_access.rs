@@ -72,7 +72,7 @@ pub enum DevicesAccessEffect {
         reason: String,
     },
     /// End every tab's access of one browser of the person's, for good.
-    #[effect(job, row, destructive, label = "Remove browser")]
+    #[effect(job, row, destructive)]
     RevokeBrowser {
         #[param("The browser's id, as the device list names it")]
         browser: String,

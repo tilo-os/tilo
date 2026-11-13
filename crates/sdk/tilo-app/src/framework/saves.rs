@@ -541,7 +541,7 @@ mod window_tests {
         pub text: String,
     }
 
-    #[resource(kind = "test.save-status-draft", label = "Draft")]
+    #[resource(kind = "test.save-status-draft", catalogue = "tests/locales")]
     impl Draft {
         /// Set the text.
         #[action]

@@ -181,9 +181,9 @@ impl Browser {
             .declaration(
                 "set-site-protection",
                 if protected {
-                    "Turn tracker protection off for this site"
+                    ui::tilo_resource::word!("browser-application-protection-off")
                 } else {
-                    "Turn tracker protection on for this site"
+                    ui::tilo_resource::word!("browser-application-protection-on")
                 },
             )
     }

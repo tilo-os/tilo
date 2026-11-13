@@ -22,7 +22,7 @@ mod schema_rows {
         pub title: String,
     }
 
-    #[resource(kind = "test.note", label = "Note")]
+    #[resource(kind = "test.note", catalogue = "tests/locales")]
     impl Note {
         /// Rename the note.
         #[action]

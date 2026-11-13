@@ -3391,12 +3391,14 @@ fn each_template_composes_the_toolkit_patterns_it_teaches() {
                 .filter(|(path, _)| path.extension().is_none_or(|extension| extension != "ftl"))
                 .map(|(_, source)| source.as_str())
                 .collect::<String>();
-            // History messages are looked up by verb name, not written out.
+            // History messages are looked up by verb name, and what the record and its actions
+            // are called by kind: neither is written out.
             let history = format!("{}-", tilo_history::app_prefix(&spec.app_id));
+            let actions = format!("{}-", spec.app_id.replace('.', "-"));
             for id in messages
                 .entries
                 .keys()
-                .filter(|id| !id.starts_with(&history))
+                .filter(|id| !id.starts_with(&history) && !id.starts_with(&actions))
             {
                 assert!(
                     source.contains(&format!("\"{id}\"")),

@@ -1697,7 +1697,10 @@ impl BrowserWidget {
         Browser::ADD_BOOKMARK
             .bind(params.url, self.current_uri.clone())
             .and(params.title, Some(self.title.clone()))
-            .declaration("bookmark-page", "Bookmark this page")
+            .declaration(
+                "bookmark-page",
+                ui::tilo_resource::word!("browser-bookmark-page"),
+            )
             .into_iter()
             .collect()
     }
