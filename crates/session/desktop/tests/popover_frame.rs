@@ -77,8 +77,20 @@ fn assert_one_frame(
     let device_panel = to_device(panel);
     let inside = device_panel.inflate(1.0, 1.0);
     let mut changed = Rect::ZERO;
+    let row_len = (width * 4) as usize;
     for y in 0..height {
+        // Where the open surface left the ground as it was there is nothing to compare: the same
+        // bytes read equally light. Most of the frame is that, so a row of it, and a pixel of it
+        // in a row the surface reaches, is passed by whole rather than read channel by channel.
+        let row = (y * width * 4) as usize;
+        if bare[row..row + row_len] == open[row..row + row_len] {
+            continue;
+        }
         for x in 0..width {
+            let at = row + (x * 4) as usize;
+            if bare[at..at + 4] == open[at..at + 4] {
+                continue;
+            }
             let (px, py) = (f64::from(x) + 0.5, f64::from(y) + 0.5);
             if inside.contains(Point::new(px, py)) {
                 continue;
@@ -132,10 +144,21 @@ fn device_size(scale: f64) -> (u32, u32) {
     )
 }
 
-/// What the page draws of `frame` at `scale`, on the GPU and on the CPU: the scene over the window
-/// ground, no blur pass run, so each material shows the opaque ground its placeholder holds.
-fn drawn_as_a_page(frame: &FrameHarness, scale: f64, theme: &Theme) -> [Vec<u8>; 2] {
+/// What the page draws of `frame` at `scale`, on the GPU with `gpu` and on the CPU: the scene over
+/// the window ground, no blur pass run, so each material shows the opaque ground its placeholder
+/// holds.
+fn drawn_as_a_page(
+    frame: &FrameHarness,
+    scale: f64,
+    theme: &Theme,
+    gpu: &mut ui::offscreen::OffscreenRenderer,
+) -> [Vec<u8>; 2] {
     let (width, height) = device_size(scale);
+    assert_eq!(
+        (gpu.width, gpu.height),
+        (width, height),
+        "the renderer is the page's size at {scale}x"
+    );
     let mut scene = vello::Scene::new();
     scene.fill(
         vello::peniko::Fill::NonZero,
@@ -145,12 +168,21 @@ fn drawn_as_a_page(frame: &FrameHarness, scale: f64, theme: &Theme) -> [Vec<u8>;
         &Rect::new(0.0, 0.0, f64::from(width), f64::from(height)),
     );
     scene.append(frame.scene(), Some(Affine::scale(scale)));
-    let mut gpu = ui::offscreen::OffscreenRenderer::new(width, height);
     gpu.set_backdrop(None);
     let on_gpu = gpu.render_resilient(&scene, theme.tokens.colors.surfaces.content);
     let mut cpu = ui::offscreen::CpuSurface::new(width, height, 4).expect("a CPU rasterizer");
     cpu.draw(&scene, None);
     [on_gpu, cpu.pixels().to_vec()]
+}
+
+/// What the desktop draws of `frame`: over the window ground with the backdrop its material
+/// blurs, as [`FrameHarness::render_rgba`] draws it, on a renderer that is kept for the next
+/// frame.
+fn drawn_with_its_backdrop(
+    frame: &FrameHarness,
+    renderer: &mut ui::offscreen::OffscreenRenderer,
+) -> Vec<u8> {
+    frame.render_rgba_with(renderer, frame.theme().tokens.colors.surfaces.content)
 }
 
 fn menu_model() -> WorkspaceMenuModel {
@@ -219,43 +251,51 @@ impl Surfaces {
     }
 }
 
+/// The densities a page is drawn at: one pixel a point, the fractional ones of a zoomed page or a
+/// scaled display, and a laptop's two.
+const DENSITIES: [f64; 4] = [1.0, 1.25, 1.5, 2.0];
+
+/// Every way a frame of the bar's menu and card reaches the screen, over the same surfaces, opened
+/// once a theme. With the material's blurred backdrop, as the desktop draws them. And without it —
+/// a page, which runs no blur pass, or a renderer whose pass failed — where each surface is its
+/// own rounded panel on its opaque ground, at every density a page is drawn at, on the GPU and on
+/// the CPU.
+///
+/// One renderer draws every frame of its size, as a window's renderer does: a renderer made for
+/// each frame compiled its pipelines again for each, which took longer than drawing them.
 #[test]
 fn the_bars_menu_and_card_are_each_one_frame_exactly_their_own() {
     ui::i18n::I18nManager::init("en-US");
-    for (name, theme) in [("light", Theme::light()), ("dark", Theme::dark())] {
-        let surfaces = Surfaces::new(&theme);
-        let bare = Framed::harness(&surfaces.bare).render_rgba();
+    let themed = [("light", Theme::light()), ("dark", Theme::dark())]
+        .map(|(name, theme)| (name, Surfaces::new(&theme), theme));
+    let mut desktop = ui::offscreen::OffscreenRenderer::new(SIZE.0, SIZE.1);
+    for (name, surfaces, theme) in &themed {
+        let bare = drawn_with_its_backdrop(Framed::harness(&surfaces.bare), &mut desktop);
         for (what, frame, panel) in surfaces.open() {
-            let open = frame.render_rgba();
+            let open = drawn_with_its_backdrop(frame, &mut desktop);
             assert_one_frame(
                 &format!("{what} ({name})"),
                 (&bare, &open),
                 panel,
                 1.0,
-                &theme,
+                theme,
             );
         }
     }
-}
-
-/// Without the blurred backdrop — a page, which runs no blur pass, or a renderer whose pass failed —
-/// each surface is its own rounded panel on its opaque ground, at every density a page is drawn at.
-#[test]
-fn without_their_backdrop_the_bars_menu_and_card_are_each_their_own_rounded_panel() {
-    ui::i18n::I18nManager::init("en-US");
-    for (name, theme) in [("light", Theme::light()), ("dark", Theme::dark())] {
-        let surfaces = Surfaces::new(&theme);
-        for scale in [1.0, 1.25, 1.5, 2.0] {
-            let bare = drawn_as_a_page(Framed::harness(&surfaces.bare), scale, &theme);
+    for scale in DENSITIES {
+        let (width, height) = device_size(scale);
+        let mut page = ui::offscreen::OffscreenRenderer::new(width, height);
+        for (name, surfaces, theme) in &themed {
+            let bare = drawn_as_a_page(Framed::harness(&surfaces.bare), scale, theme, &mut page);
             for (what, frame, panel) in surfaces.open() {
-                let open = drawn_as_a_page(frame, scale, &theme);
+                let open = drawn_as_a_page(frame, scale, theme, &mut page);
                 for (renderer, (bare, open)) in ["GPU", "CPU"].iter().zip(bare.iter().zip(&open)) {
                     assert_one_frame(
                         &format!("{what} ({name}, {renderer}, at {scale}x, without its backdrop)"),
                         (bare, open),
                         panel,
                         scale,
-                        &theme,
+                        theme,
                     );
                 }
             }
