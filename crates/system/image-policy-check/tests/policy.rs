@@ -128,58 +128,246 @@ fn policy_failure(text: &str, trust: &Trust) -> String {
     }
 }
 
-#[test]
-fn the_shipped_policy_proves_the_repository_release_trust() {
-    check(&fs::read_to_string(SHIPPED).unwrap(), &repository_trust()).unwrap();
-}
+tilo_test_env::scenario! {
+    fn the_check_passes_only_a_policy_that_proves_the_release_trust;
 
-#[test]
-fn both_trust_modes_have_a_passing_shape() {
-    check(&key_policy().to_string(), &key_trust()).unwrap();
-    check(&chain_policy().to_string(), &chain_trust()).unwrap();
-}
+    phase the_shipped_policy_proves_the_repository_release_trust;
+    {
+        check(&fs::read_to_string(SHIPPED).unwrap(), &repository_trust()).unwrap();
+    }
 
-#[test]
-fn an_image_with_the_root_may_not_fall_back_to_the_bare_key() {
-    assert_eq!(
-        policy_failure(&key_policy().to_string(), &chain_trust()),
-        "registry.tilo.so/tilo/tilo: pins a bare key, but this image's release trust is the root /usr/share/tilo/release/root.crt"
-    );
-    assert_eq!(
-        policy_failure(&chain_policy().to_string(), &key_trust()),
-        "registry.tilo.so/tilo/tilo: chains to a root certificate, but this image installs no /usr/share/tilo/release/root.crt"
-    );
-}
+    phase both_trust_modes_have_a_passing_shape;
+    {
+        check(&key_policy().to_string(), &key_trust()).unwrap();
+        check(&chain_policy().to_string(), &chain_trust()).unwrap();
+    }
 
-#[test]
-fn chain_requirements_name_the_current_epoch_and_purpose() {
-    let chain = |mutate: &dyn Fn(&mut Value)| {
-        let mut policy = chain_policy();
-        mutate(&mut policy["transports"]["docker"][TILO][0]);
-        policy_failure(&policy.to_string(), &chain_trust())
-    };
-    assert_eq!(
-        chain(&|r| r["fulcio"]["oidcIssuer"] = json!("https://signing.example/release/epoch-2")),
-        "registry.tilo.so/tilo/tilo: fulcio.oidcIssuer is 'https://signing.example/release/epoch-2', not 'https://signing.example/release/epoch-3'"
-    );
-    assert_eq!(
-        chain(&|r| r["fulcio"]["subjectEmail"] = json!("extension-manifests@signing.example")),
-        "registry.tilo.so/tilo/tilo: fulcio.subjectEmail is 'extension-manifests@signing.example', not 'os-images@signing.example'"
-    );
-    assert_eq!(
-        chain(&|r| r["fulcio"]["caPath"] = json!("/etc/pki/other.crt")),
-        "registry.tilo.so/tilo/tilo: fulcio.caPath is '/etc/pki/other.crt', not '/usr/share/tilo/release/root.crt'"
-    );
-    assert_eq!(
-        chain(&|r| r["fulcio"]["caData"] = json!("Y2E=")),
-        "registry.tilo.so/tilo/tilo: fulcio carries unexpected fields ['caData']"
-    );
-    assert_eq!(
-        chain(&|r| {
-            r.as_object_mut().unwrap().remove("rekorPublicKeyPath");
-        }),
-        "registry.tilo.so/tilo/tilo: no rekorPublicKeyPath, so the signature need not be in the transparency log"
-    );
+    phase an_image_with_the_root_may_not_fall_back_to_the_bare_key;
+    {
+        assert_eq!(
+            policy_failure(&key_policy().to_string(), &chain_trust()),
+            "registry.tilo.so/tilo/tilo: pins a bare key, but this image's release trust is the root /usr/share/tilo/release/root.crt"
+        );
+        assert_eq!(
+            policy_failure(&chain_policy().to_string(), &key_trust()),
+            "registry.tilo.so/tilo/tilo: chains to a root certificate, but this image installs no /usr/share/tilo/release/root.crt"
+        );
+    }
+
+    phase chain_requirements_name_the_current_epoch_and_purpose;
+    {
+        let chain = |mutate: &dyn Fn(&mut Value)| {
+            let mut policy = chain_policy();
+            mutate(&mut policy["transports"]["docker"][TILO][0]);
+            policy_failure(&policy.to_string(), &chain_trust())
+        };
+        assert_eq!(
+            chain(&|r| r["fulcio"]["oidcIssuer"] = json!("https://signing.example/release/epoch-2")),
+            "registry.tilo.so/tilo/tilo: fulcio.oidcIssuer is 'https://signing.example/release/epoch-2', not 'https://signing.example/release/epoch-3'"
+        );
+        assert_eq!(
+            chain(&|r| r["fulcio"]["subjectEmail"] = json!("extension-manifests@signing.example")),
+            "registry.tilo.so/tilo/tilo: fulcio.subjectEmail is 'extension-manifests@signing.example', not 'os-images@signing.example'"
+        );
+        assert_eq!(
+            chain(&|r| r["fulcio"]["caPath"] = json!("/etc/pki/other.crt")),
+            "registry.tilo.so/tilo/tilo: fulcio.caPath is '/etc/pki/other.crt', not '/usr/share/tilo/release/root.crt'"
+        );
+        assert_eq!(
+            chain(&|r| r["fulcio"]["caData"] = json!("Y2E=")),
+            "registry.tilo.so/tilo/tilo: fulcio carries unexpected fields ['caData']"
+        );
+        assert_eq!(
+            chain(&|r| {
+                r.as_object_mut().unwrap().remove("rekorPublicKeyPath");
+            }),
+            "registry.tilo.so/tilo/tilo: no rekorPublicKeyPath, so the signature need not be in the transparency log"
+        );
+    }
+
+    phase every_weakened_policy_fails;
+    {
+        let cases = weakened_cases();
+        assert_eq!(
+            cases.len(),
+            20,
+            "plus the missing file: the 21 weakened policies of the boot audit"
+        );
+        for (name, text) in cases {
+            assert!(check(&text, &key_trust()).is_err(), "{name} was accepted");
+        }
+    }
+
+    phase failures_say_which_scope_and_why;
+    {
+        let key = key_trust();
+        assert_eq!(
+            policy_failure(
+                &weakened(|d| {
+                    d.insert(TILO.into(), accept());
+                }),
+                &key
+            ),
+            "registry.tilo.so/tilo/tilo: requirement type is 'insecureAcceptAnything', not 'sigstoreSigned'"
+        );
+        assert_eq!(
+            policy_failure(
+                &weakened(|d| d[TILO][0]["keyPath"] = json!("/etc/pki/other.pub")),
+                &key
+            ),
+            "registry.tilo.so/tilo/tilo: keyPath is '/etc/pki/other.pub', not '/usr/share/tilo/cosign.pub'"
+        );
+        assert_eq!(
+            policy_failure(
+                &weakened(|d| {
+                    d[TILO][0]
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("rekorPublicKeyPath");
+                }),
+                &key
+            ),
+            "registry.tilo.so/tilo/tilo: no rekorPublicKeyPath, so the signature need not be in the transparency log"
+        );
+        assert_eq!(
+            policy_failure(
+                &weakened(|d| d[TILO][0]["rekorPublicKeyPath"] = json!("/tmp/rekor.pub")),
+                &key
+            ),
+            "registry.tilo.so/tilo/tilo: rekorPublicKeyPath is '/tmp/rekor.pub', not '/usr/share/tilo/release/rekor.pub'"
+        );
+        assert_eq!(
+            policy_failure(&weakened(|d| d[TILO][0]["keyData"] = json!("a2V5")), &key),
+            "registry.tilo.so/tilo/tilo: sigstoreSigned carries unexpected fields ['keyData']"
+        );
+        assert_eq!(
+            policy_failure(
+                &weakened(|d| {
+                    d.remove(TILO);
+                }),
+                &key
+            ),
+            "registry.tilo.so/tilo/tilo: no docker scope, so the default rule applies"
+        );
+        assert_eq!(
+            policy_failure(
+                &weakened(|d| d[TILO][0]["signedIdentity"] = json!({"type": "exactRepository"})),
+                &key
+            ),
+            "registry.tilo.so/tilo/tilo: signedIdentity type 'exactRepository' does not bind the image's own repository"
+        );
+        assert_eq!(
+            policy_failure(
+                &weakened(|d| d[TILO][0]["signedIdentity"] = json!({"type": 7})),
+                &key
+            ),
+            "registry.tilo.so/tilo/tilo: signedIdentity type 7 does not bind the image's own repository"
+        );
+        assert_eq!(
+            policy_failure(&weakened(|d| d[CODE][0]["type"] = json!(null)), &key),
+            "code.tilo.so/tilo/tilo: requirement type is None, not 'sigstoreSigned'"
+        );
+        assert_eq!(
+            policy_failure(
+                &weakened(|d| {
+                    d.insert("registry.example".into(), accept());
+                }),
+                &key
+            ),
+            "docker scope 'registry.example': insecureAcceptAnything, which only user-chosen public registries and local transports may use"
+        );
+        let mut default_accepts = key_policy();
+        default_accepts["default"] = accept();
+        assert_eq!(
+            policy_failure(&default_accepts.to_string(), &key),
+            "the default rule is [{'type': 'insecureAcceptAnything'}], not a reject, so an image no scope names is not refused"
+        );
+        assert_eq!(policy_failure("[]", &key), "policy is not a JSON object");
+        assert_eq!(
+            policy_failure("{}", &key),
+            "policy has no transports object"
+        );
+        assert_eq!(
+            policy_failure(r#"{"transports": {}}"#, &key),
+            "policy has no transports.docker object"
+        );
+        assert_eq!(
+            policy_failure(r#"{"transports": {"docker": {"a": 1, "a": 2}}}"#, &key),
+            "duplicate key 'a'; the effective rule is ambiguous"
+        );
+        let unhashable =
+            weakened(|d| d[TILO][0]["signedIdentity"] = json!({"type": ["matchRepository"]}));
+        assert!(matches!(check(&unhashable, &key), Err(Failure::Crash(_))));
+    }
+
+    phase guarded_repositories_are_judged_by_their_effective_rule;
+    {
+        // With no scope of their own, the default reject covers them.
+        let mut policy = key_policy();
+        let docker = policy["transports"]["docker"].as_object_mut().unwrap();
+        docker.retain(|name, _| {
+            ![
+                "legacy-guest",
+                "hosted-guest",
+                "tilo-vm",
+                "tilo-ci",
+                "tilo-dev",
+            ]
+            .contains(&name.rsplit('/').next().unwrap())
+        });
+        check(&policy.to_string(), &key_trust()).unwrap();
+        // A namespace scope that rejects covers them too; one that accepts does not.
+        policy["transports"]["docker"]["registry.tilo.so/tilo"] = json!([{"type": "reject"}]);
+        policy["transports"]["docker"]["code.tilo.so/tilo"] = json!([{"type": "reject"}]);
+        check(&policy.to_string(), &key_trust()).unwrap();
+        policy["transports"]["docker"]["code.tilo.so/tilo"] = accept();
+        assert!(check(&policy.to_string(), &key_trust()).is_err());
+    }
+
+    phase only_listed_registries_and_local_transports_accept_anything;
+    {
+        let accepts = |mutate: &dyn Fn(&mut Value)| {
+            let mut policy = key_policy();
+            mutate(&mut policy["transports"]);
+            check(&policy.to_string(), &key_trust()).is_ok()
+        };
+        assert!(accepts(&|t| t["docker"]["quay.io"] = accept()));
+        assert!(accepts(&|t| t["docker"]["quay.io/example/app"] = accept()));
+        assert!(!accepts(&|t| t["docker"]["quay.io.example"] = accept()));
+        assert!(!accepts(
+            &|t| t["docker"]["registry.tilo.sox/tilo/x"] = accept()
+        ));
+        assert!(accepts(&|t| t["oci-archive"] = json!({"": accept()})));
+        assert!(!accepts(
+            &|t| t["oci-archive"] = json!({"/srv/images": accept()})
+        ));
+        assert!(!accepts(&|t| t["docker-daemon"] = json!({"": accept()})));
+        // Refusing more is always allowed.
+        assert!(accepts(
+            &|t| t["docker-daemon"] = json!({"": [{"type": "reject"}]})
+        ));
+    }
+
+    phase release_trust_is_read_strictly;
+    {
+        assert_eq!(key_trust(), Trust::Key);
+        assert_eq!(
+            chain_trust(),
+            Trust::Chain {
+                issuer: "https://signing.example/release/epoch-3".into(),
+                identity: "os-images@signing.example".into(),
+            }
+        );
+        for broken in [
+            "TILO_RELEASE_EPOCH=0\nTILO_RELEASE_ISSUER_PREFIX=a\nTILO_RELEASE_IDENTITY_DOMAIN=b\n",
+            "TILO_RELEASE_EPOCH=x\nTILO_RELEASE_ISSUER_PREFIX=a\nTILO_RELEASE_IDENTITY_DOMAIN=b\n",
+            "TILO_RELEASE_EPOCH=1\nTILO_RELEASE_IDENTITY_DOMAIN=b\n",
+            "TILO_RELEASE_EPOCH=1\nexport X=1\n",
+            "TILO_RELEASE_EPOCH=1\nnot an assignment\n",
+        ] {
+            assert!(Trust::parse(broken, true).is_err(), "{broken:?} was read");
+        }
+    }
 }
 
 /// The boot audit's weakened policies, one scope each.
@@ -307,190 +495,6 @@ fn weakened_documents() -> Vec<(&'static str, String)> {
     ]
 }
 
-#[test]
-fn every_weakened_policy_fails() {
-    let cases = weakened_cases();
-    assert_eq!(
-        cases.len(),
-        20,
-        "plus the missing file: the 21 weakened policies of the boot audit"
-    );
-    for (name, text) in cases {
-        assert!(check(&text, &key_trust()).is_err(), "{name} was accepted");
-    }
-}
-
-#[test]
-fn failures_say_which_scope_and_why() {
-    let key = key_trust();
-    assert_eq!(
-        policy_failure(
-            &weakened(|d| {
-                d.insert(TILO.into(), accept());
-            }),
-            &key
-        ),
-        "registry.tilo.so/tilo/tilo: requirement type is 'insecureAcceptAnything', not 'sigstoreSigned'"
-    );
-    assert_eq!(
-        policy_failure(
-            &weakened(|d| d[TILO][0]["keyPath"] = json!("/etc/pki/other.pub")),
-            &key
-        ),
-        "registry.tilo.so/tilo/tilo: keyPath is '/etc/pki/other.pub', not '/usr/share/tilo/cosign.pub'"
-    );
-    assert_eq!(
-        policy_failure(
-            &weakened(|d| {
-                d[TILO][0]
-                    .as_object_mut()
-                    .unwrap()
-                    .remove("rekorPublicKeyPath");
-            }),
-            &key
-        ),
-        "registry.tilo.so/tilo/tilo: no rekorPublicKeyPath, so the signature need not be in the transparency log"
-    );
-    assert_eq!(
-        policy_failure(
-            &weakened(|d| d[TILO][0]["rekorPublicKeyPath"] = json!("/tmp/rekor.pub")),
-            &key
-        ),
-        "registry.tilo.so/tilo/tilo: rekorPublicKeyPath is '/tmp/rekor.pub', not '/usr/share/tilo/release/rekor.pub'"
-    );
-    assert_eq!(
-        policy_failure(&weakened(|d| d[TILO][0]["keyData"] = json!("a2V5")), &key),
-        "registry.tilo.so/tilo/tilo: sigstoreSigned carries unexpected fields ['keyData']"
-    );
-    assert_eq!(
-        policy_failure(
-            &weakened(|d| {
-                d.remove(TILO);
-            }),
-            &key
-        ),
-        "registry.tilo.so/tilo/tilo: no docker scope, so the default rule applies"
-    );
-    assert_eq!(
-        policy_failure(
-            &weakened(|d| d[TILO][0]["signedIdentity"] = json!({"type": "exactRepository"})),
-            &key
-        ),
-        "registry.tilo.so/tilo/tilo: signedIdentity type 'exactRepository' does not bind the image's own repository"
-    );
-    assert_eq!(
-        policy_failure(
-            &weakened(|d| d[TILO][0]["signedIdentity"] = json!({"type": 7})),
-            &key
-        ),
-        "registry.tilo.so/tilo/tilo: signedIdentity type 7 does not bind the image's own repository"
-    );
-    assert_eq!(
-        policy_failure(&weakened(|d| d[CODE][0]["type"] = json!(null)), &key),
-        "code.tilo.so/tilo/tilo: requirement type is None, not 'sigstoreSigned'"
-    );
-    assert_eq!(
-        policy_failure(
-            &weakened(|d| {
-                d.insert("registry.example".into(), accept());
-            }),
-            &key
-        ),
-        "docker scope 'registry.example': insecureAcceptAnything, which only user-chosen public registries and local transports may use"
-    );
-    let mut default_accepts = key_policy();
-    default_accepts["default"] = accept();
-    assert_eq!(
-        policy_failure(&default_accepts.to_string(), &key),
-        "the default rule is [{'type': 'insecureAcceptAnything'}], not a reject, so an image no scope names is not refused"
-    );
-    assert_eq!(policy_failure("[]", &key), "policy is not a JSON object");
-    assert_eq!(
-        policy_failure("{}", &key),
-        "policy has no transports object"
-    );
-    assert_eq!(
-        policy_failure(r#"{"transports": {}}"#, &key),
-        "policy has no transports.docker object"
-    );
-    assert_eq!(
-        policy_failure(r#"{"transports": {"docker": {"a": 1, "a": 2}}}"#, &key),
-        "duplicate key 'a'; the effective rule is ambiguous"
-    );
-    let unhashable =
-        weakened(|d| d[TILO][0]["signedIdentity"] = json!({"type": ["matchRepository"]}));
-    assert!(matches!(check(&unhashable, &key), Err(Failure::Crash(_))));
-}
-
-#[test]
-fn guarded_repositories_are_judged_by_their_effective_rule() {
-    // With no scope of their own, the default reject covers them.
-    let mut policy = key_policy();
-    let docker = policy["transports"]["docker"].as_object_mut().unwrap();
-    docker.retain(|name, _| {
-        ![
-            "legacy-guest",
-            "hosted-guest",
-            "tilo-vm",
-            "tilo-ci",
-            "tilo-dev",
-        ]
-        .contains(&name.rsplit('/').next().unwrap())
-    });
-    check(&policy.to_string(), &key_trust()).unwrap();
-    // A namespace scope that rejects covers them too; one that accepts does not.
-    policy["transports"]["docker"]["registry.tilo.so/tilo"] = json!([{"type": "reject"}]);
-    policy["transports"]["docker"]["code.tilo.so/tilo"] = json!([{"type": "reject"}]);
-    check(&policy.to_string(), &key_trust()).unwrap();
-    policy["transports"]["docker"]["code.tilo.so/tilo"] = accept();
-    assert!(check(&policy.to_string(), &key_trust()).is_err());
-}
-
-#[test]
-fn only_listed_registries_and_local_transports_accept_anything() {
-    let accepts = |mutate: &dyn Fn(&mut Value)| {
-        let mut policy = key_policy();
-        mutate(&mut policy["transports"]);
-        check(&policy.to_string(), &key_trust()).is_ok()
-    };
-    assert!(accepts(&|t| t["docker"]["quay.io"] = accept()));
-    assert!(accepts(&|t| t["docker"]["quay.io/example/app"] = accept()));
-    assert!(!accepts(&|t| t["docker"]["quay.io.example"] = accept()));
-    assert!(!accepts(
-        &|t| t["docker"]["registry.tilo.sox/tilo/x"] = accept()
-    ));
-    assert!(accepts(&|t| t["oci-archive"] = json!({"": accept()})));
-    assert!(!accepts(
-        &|t| t["oci-archive"] = json!({"/srv/images": accept()})
-    ));
-    assert!(!accepts(&|t| t["docker-daemon"] = json!({"": accept()})));
-    // Refusing more is always allowed.
-    assert!(accepts(
-        &|t| t["docker-daemon"] = json!({"": [{"type": "reject"}]})
-    ));
-}
-
-#[test]
-fn release_trust_is_read_strictly() {
-    assert_eq!(key_trust(), Trust::Key);
-    assert_eq!(
-        chain_trust(),
-        Trust::Chain {
-            issuer: "https://signing.example/release/epoch-3".into(),
-            identity: "os-images@signing.example".into(),
-        }
-    );
-    for broken in [
-        "TILO_RELEASE_EPOCH=0\nTILO_RELEASE_ISSUER_PREFIX=a\nTILO_RELEASE_IDENTITY_DOMAIN=b\n",
-        "TILO_RELEASE_EPOCH=x\nTILO_RELEASE_ISSUER_PREFIX=a\nTILO_RELEASE_IDENTITY_DOMAIN=b\n",
-        "TILO_RELEASE_EPOCH=1\nTILO_RELEASE_IDENTITY_DOMAIN=b\n",
-        "TILO_RELEASE_EPOCH=1\nexport X=1\n",
-        "TILO_RELEASE_EPOCH=1\nnot an assignment\n",
-    ] {
-        assert!(Trust::parse(broken, true).is_err(), "{broken:?} was read");
-    }
-}
-
 fn run(args: &[&str]) -> (Option<i32>, String, String) {
     let output = Command::new(binary()).args(args).output_locked().unwrap();
     (
@@ -500,109 +504,130 @@ fn run(args: &[&str]) -> (Option<i32>, String, String) {
     )
 }
 
-#[test]
-fn the_command_line_reports_as_the_audit_reads_it() {
-    let (code, out, err) = run(&[SHIPPED, RELEASE]);
-    assert_eq!(code, Some(0), "{out}{err}");
-    assert!(
-        out.starts_with(&format!("{SHIPPED}: Tilo image scopes require ")),
-        "{out}"
-    );
+tilo_test_env::scenario! {
+    fn the_boot_audit_runs_the_compiled_check_and_reads_its_report;
 
-    let work = tempfile::tempdir().unwrap();
-    let trust = work.path().join("release");
-    fs::create_dir(&trust).unwrap();
-    let trust_dir = trust.to_str().unwrap();
+    phase the_command_line_reports_as_the_audit_reads_it;
+    {
+        let (code, out, err) = run(&[SHIPPED, RELEASE]);
+        assert_eq!(code, Some(0), "{out}{err}");
+        assert!(
+            out.starts_with(&format!("{SHIPPED}: Tilo image scopes require ")),
+            "{out}"
+        );
 
-    // No trust.env: fail closed.
-    let key = work.path().join("key.json");
-    fs::write(&key, key_policy().to_string()).unwrap();
-    let (code, out, _) = run(&[key.to_str().unwrap(), trust_dir]);
-    assert_eq!(code, Some(1));
-    assert!(
-        out.contains("cannot read release trust: [Errno 2]"),
-        "{out}"
-    );
+        let work = tempfile::tempdir().unwrap();
+        let trust = work.path().join("release");
+        fs::create_dir(&trust).unwrap();
+        let trust_dir = trust.to_str().unwrap();
 
-    fs::write(trust.join("trust.env"), TRUST_ENV).unwrap();
-    let (code, out, _) = run(&[key.to_str().unwrap(), trust_dir]);
-    assert_eq!(code, Some(0), "{out}");
-    assert_eq!(
-        out,
-        format!(
-            "{}: Tilo image scopes require the /usr/share/tilo/cosign.pub sigstore signature, logged in Rekor\n",
-            key.display()
+        // No trust.env: fail closed.
+        let key = work.path().join("key.json");
+        fs::write(&key, key_policy().to_string()).unwrap();
+        let (code, out, _) = run(&[key.to_str().unwrap(), trust_dir]);
+        assert_eq!(code, Some(1));
+        assert!(
+            out.contains("cannot read release trust: [Errno 2]"),
+            "{out}"
+        );
+
+        fs::write(trust.join("trust.env"), TRUST_ENV).unwrap();
+        let (code, out, _) = run(&[key.to_str().unwrap(), trust_dir]);
+        assert_eq!(code, Some(0), "{out}");
+        assert_eq!(
+            out,
+            format!(
+                "{}: Tilo image scopes require the /usr/share/tilo/cosign.pub sigstore signature, logged in Rekor\n",
+                key.display()
+            )
+        );
+
+        // Installing the root switches the requirement: the key policy is now a
+        // downgrade and the chain policy passes.
+        fs::write(trust.join("root.crt"), "placeholder").unwrap();
+        let (code, _, _) = run(&[key.to_str().unwrap(), trust_dir]);
+        assert_eq!(code, Some(1));
+        let chain = work.path().join("chain.json");
+        fs::write(&chain, chain_policy().to_string()).unwrap();
+        let (code, out, _) = run(&[chain.to_str().unwrap(), trust_dir]);
+        assert_eq!(code, Some(0), "{out}");
+        assert_eq!(
+            out,
+            format!(
+                "{}: Tilo image scopes require a Rekor-logged sigstore signature by an operational certificate for os-images@signing.example of https://signing.example/release/epoch-3 under /usr/share/tilo/release/root.crt\n",
+                chain.display()
+            )
+        );
+
+        let missing = work.path().join("missing.json").display().to_string();
+        let (code, out, _) = run(&[&missing, trust_dir]);
+        assert_eq!(code, Some(1));
+        assert_eq!(
+            out,
+            format!(
+                "{missing}: cannot read policy: [Errno 2] No such file or directory: '{missing}'\n"
+            )
+        );
+
+        let latin = work.path().join("latin.json");
+        fs::write(&latin, b"{\"a\": \"\xe9\"}").unwrap();
+        let (code, out, _) = run(&[latin.to_str().unwrap(), trust_dir]);
+        assert_eq!(code, Some(1));
+        assert!(out.ends_with(": cannot read policy: 'utf-8' codec can't decode byte 0xe9 in position 7: invalid continuation byte\n"), "{out}");
+
+        let weak = work.path().join("weak.json");
+        let mut weak_policy = chain_policy();
+        weak_policy["transports"]["docker"][TILO] = accept();
+        fs::write(&weak, weak_policy.to_string()).unwrap();
+        let (code, out, _) = run(&[weak.to_str().unwrap(), trust_dir]);
+        assert_eq!(code, Some(1));
+        assert_eq!(
+            out,
+            format!(
+                "{}: registry.tilo.so/tilo/tilo: requirement type is 'insecureAcceptAnything', not 'sigstoreSigned'\n",
+                weak.display()
+            )
+        );
+
+        let crlf = work.path().join("crlf.json");
+        fs::write(
+            &crlf,
+            fs::read_to_string(SHIPPED).unwrap().replace('\n', "\r\n"),
         )
-    );
+        .unwrap();
+        assert_eq!(
+            run(&[crlf.to_str().unwrap(), RELEASE]).0,
+            Some(0),
+            "universal newlines"
+        );
 
-    // Installing the root switches the requirement: the key policy is now a
-    // downgrade and the chain policy passes.
-    fs::write(trust.join("root.crt"), "placeholder").unwrap();
-    let (code, _, _) = run(&[key.to_str().unwrap(), trust_dir]);
-    assert_eq!(code, Some(1));
-    let chain = work.path().join("chain.json");
-    fs::write(&chain, chain_policy().to_string()).unwrap();
-    let (code, out, _) = run(&[chain.to_str().unwrap(), trust_dir]);
-    assert_eq!(code, Some(0), "{out}");
-    assert_eq!(
-        out,
-        format!(
-            "{}: Tilo image scopes require a Rekor-logged sigstore signature by an operational certificate for os-images@signing.example of https://signing.example/release/epoch-3 under /usr/share/tilo/release/root.crt\n",
-            chain.display()
-        )
-    );
+        let (code, out, err) = run(&["a", "b", "c"]);
+        assert_eq!(
+            (code, out.as_str(), err.as_str()),
+            (
+                Some(2),
+                "",
+                "usage: tilo-image-policy-check [--developer] [POLICY [TRUST_DIR]]\n"
+            )
+        );
+    }
 
-    let missing = work.path().join("missing.json").display().to_string();
-    let (code, out, _) = run(&[&missing, trust_dir]);
-    assert_eq!(code, Some(1));
-    assert_eq!(
-        out,
-        format!(
-            "{missing}: cannot read policy: [Errno 2] No such file or directory: '{missing}'\n"
-        )
-    );
-
-    let latin = work.path().join("latin.json");
-    fs::write(&latin, b"{\"a\": \"\xe9\"}").unwrap();
-    let (code, out, _) = run(&[latin.to_str().unwrap(), trust_dir]);
-    assert_eq!(code, Some(1));
-    assert!(out.ends_with(": cannot read policy: 'utf-8' codec can't decode byte 0xe9 in position 7: invalid continuation byte\n"), "{out}");
-
-    let weak = work.path().join("weak.json");
-    let mut weak_policy = chain_policy();
-    weak_policy["transports"]["docker"][TILO] = accept();
-    fs::write(&weak, weak_policy.to_string()).unwrap();
-    let (code, out, _) = run(&[weak.to_str().unwrap(), trust_dir]);
-    assert_eq!(code, Some(1));
-    assert_eq!(
-        out,
-        format!(
-            "{}: registry.tilo.so/tilo/tilo: requirement type is 'insecureAcceptAnything', not 'sigstoreSigned'\n",
-            weak.display()
-        )
-    );
-
-    let crlf = work.path().join("crlf.json");
-    fs::write(
-        &crlf,
-        fs::read_to_string(SHIPPED).unwrap().replace('\n', "\r\n"),
-    )
-    .unwrap();
-    assert_eq!(
-        run(&[crlf.to_str().unwrap(), RELEASE]).0,
-        Some(0),
-        "universal newlines"
-    );
-
-    let (code, out, err) = run(&["a", "b", "c"]);
-    assert_eq!(
-        (code, out.as_str(), err.as_str()),
-        (
-            Some(2),
-            "",
-            "usage: tilo-image-policy-check [--developer] [POLICY [TRUST_DIR]]\n"
-        )
-    );
+    phase the_audit_runs_the_compiled_check;
+    {
+        let audit = fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../os/usr/libexec/tilo-security-audit"
+        ))
+        .unwrap();
+        assert!(audit.contains(
+            "image_policy_check=\"${TILO_AUDIT_POLICY_CHECK:-/usr/libexec/tilo-image-policy-check}\"\n"
+        ));
+        assert!(audit.contains(r#"if ! report="$("$image_policy_check" "$policy" 2>&1)"; then"#));
+        // A dev image is the one deliberate exception, read from the image's own
+        // flavour file, and the developer form is asked for only there.
+        assert!(audit.contains(r#"[ "$(cat "$image_flavour_file" 2>/dev/null || true)" = dev ]"#));
+        assert!(audit.contains(r#"report="$("$image_policy_check" --developer "$policy" 2>&1)""#));
+    }
 }
 
 /// A dev image: `os/scripts/finalize-dev-image.py` rewrites exactly the two
@@ -623,148 +648,135 @@ fn dev_policy() -> Value {
     policy
 }
 
-#[test]
-fn a_developer_image_reports_its_dev_key_scope_instead_of_failing() {
-    let text = dev_policy().to_string();
-    // A release reading fails on it: that is what a production device must
-    // keep doing, and the dev key must never satisfy a release image.
-    assert_eq!(
-        policy_failure(&text, &key_trust()),
-        format!(
-            "registry.tilo.so/tilo/tilo-vm: keyPath is '{DEV_KEY}', not '/usr/share/tilo/cosign.pub'"
-        )
-    );
-    // The developer reading holds every other invariant and names what it
-    // accepted instead.
-    let overrides = check_developer(&text, &key_trust()).unwrap();
-    assert_eq!(
-        overrides,
-        [
-            DeveloperOverride {
-                repository: "registry.tilo.so/tilo/tilo-vm".into(),
-                key: DEV_KEY.into(),
-            },
-            DeveloperOverride {
-                repository: "registry.tilo.so/tilo/tilo-vm-ref".into(),
-                key: DEV_KEY.into(),
-            },
-        ]
-    );
-    // A release image's own policy has nothing to override, even when asked.
-    assert!(
-        check_developer(&key_policy().to_string(), &key_trust())
-            .unwrap()
-            .is_empty()
-    );
-}
+tilo_test_env::scenario! {
+    fn a_developer_image_is_excused_only_for_its_two_dev_repositories;
 
-#[test]
-fn the_dev_key_is_accepted_only_in_the_two_dev_repositories_and_only_alone() {
-    // The dev key on a release scope is a downgrade, developer mode or not.
-    for scope in signed_scopes() {
-        let mut policy = dev_policy();
-        policy["transports"]["docker"][scope.as_str()] = json!([{
-            "type": "sigstoreSigned",
-            "keyPath": DEV_KEY,
-            "rekorPublicKeyPath": "/usr/share/tilo/release/rekor.pub",
-            "signedIdentity": {"type": "matchRepository"},
-        }]);
-        let text = policy.to_string();
-        let message = match check_developer(&text, &key_trust()) {
-            Err(Failure::Policy(message)) => message,
-            other => panic!("{scope} with the dev key: {other:?}"),
-        };
-        assert!(message.contains(DEV_KEY), "{scope}: {message}");
-        assert!(message.contains(PINNED), "{scope}: {message}");
-    }
-    // Nor on another Tilo repository under the same namespace.
-    let mut policy = dev_policy();
-    policy["transports"]["docker"]["registry.tilo.so/tilo/tilo-dev"] = json!([{
-        "type": "sigstoreSigned",
-        "keyPath": DEV_KEY,
-        "signedIdentity": {"type": "matchRepository"},
-    }]);
-    assert!(check_developer(&policy.to_string(), &key_trust()).is_err());
-    // The dev repositories with anything but that exact requirement still
-    // fail: the developer override has one shape, not a weaker bar.
-    for weaken in [
-        json!([{"type": "insecureAcceptAnything"}]),
-        json!([{
-            "type": "sigstoreSigned",
-            "keyPath": DEV_KEY,
-            "rekorPublicKeyPath": "/usr/share/tilo/release/rekor.pub",
-            "signedIdentity": {"type": "matchRepository"},
-        }]),
-        json!([{
-            "type": "sigstoreSigned",
-            "keyPath": "/etc/pki/other.pub",
-            "signedIdentity": {"type": "matchRepository"},
-        }]),
-        json!([{
-            "type": "sigstoreSigned",
-            "keyPath": DEV_KEY,
-            "signedIdentity": {"type": "matchRepository"},
-            "keyData": "a2V5",
-        }]),
-    ] {
-        let mut policy = dev_policy();
-        policy["transports"]["docker"]["registry.tilo.so/tilo/tilo-vm"] = weaken.clone();
+    phase a_developer_image_reports_its_dev_key_scope_instead_of_failing;
+    {
+        let text = dev_policy().to_string();
+        // A release reading fails on it: that is what a production device must
+        // keep doing, and the dev key must never satisfy a release image.
+        assert_eq!(
+            policy_failure(&text, &key_trust()),
+            format!(
+                "registry.tilo.so/tilo/tilo-vm: keyPath is '{DEV_KEY}', not '/usr/share/tilo/cosign.pub'"
+            )
+        );
+        // The developer reading holds every other invariant and names what it
+        // accepted instead.
+        let overrides = check_developer(&text, &key_trust()).unwrap();
+        assert_eq!(
+            overrides,
+            [
+                DeveloperOverride {
+                    repository: "registry.tilo.so/tilo/tilo-vm".into(),
+                    key: DEV_KEY.into(),
+                },
+                DeveloperOverride {
+                    repository: "registry.tilo.so/tilo/tilo-vm-ref".into(),
+                    key: DEV_KEY.into(),
+                },
+            ]
+        );
+        // A release image's own policy has nothing to override, even when asked.
         assert!(
-            check_developer(&policy.to_string(), &key_trust()).is_err(),
-            "developer mode accepted {weaken}"
+            check_developer(&key_policy().to_string(), &key_trust())
+                .unwrap()
+                .is_empty()
         );
     }
-}
 
-#[test]
-fn the_developer_flag_is_the_callers_statement_and_the_audit_is_the_only_caller() {
-    let work = tempfile::tempdir().unwrap();
-    let trust = work.path().join("release");
-    fs::create_dir(&trust).unwrap();
-    fs::write(trust.join("trust.env"), TRUST_ENV).unwrap();
-    let trust_dir = trust.to_str().unwrap();
-    let dev = work.path().join("dev.json");
-    fs::write(&dev, dev_policy().to_string()).unwrap();
+    phase the_dev_key_is_accepted_only_in_the_two_dev_repositories_and_only_alone;
+    {
+        // The dev key on a release scope is a downgrade, developer mode or not.
+        for scope in signed_scopes() {
+            let mut policy = dev_policy();
+            policy["transports"]["docker"][scope.as_str()] = json!([{
+                "type": "sigstoreSigned",
+                "keyPath": DEV_KEY,
+                "rekorPublicKeyPath": "/usr/share/tilo/release/rekor.pub",
+                "signedIdentity": {"type": "matchRepository"},
+            }]);
+            let text = policy.to_string();
+            let message = match check_developer(&text, &key_trust()) {
+                Err(Failure::Policy(message)) => message,
+                other => panic!("{scope} with the dev key: {other:?}"),
+            };
+            assert!(message.contains(DEV_KEY), "{scope}: {message}");
+            assert!(message.contains(PINNED), "{scope}: {message}");
+        }
+        // Nor on another Tilo repository under the same namespace.
+        let mut policy = dev_policy();
+        policy["transports"]["docker"]["registry.tilo.so/tilo/tilo-dev"] = json!([{
+            "type": "sigstoreSigned",
+            "keyPath": DEV_KEY,
+            "signedIdentity": {"type": "matchRepository"},
+        }]);
+        assert!(check_developer(&policy.to_string(), &key_trust()).is_err());
+        // The dev repositories with anything but that exact requirement still
+        // fail: the developer override has one shape, not a weaker bar.
+        for weaken in [
+            json!([{"type": "insecureAcceptAnything"}]),
+            json!([{
+                "type": "sigstoreSigned",
+                "keyPath": DEV_KEY,
+                "rekorPublicKeyPath": "/usr/share/tilo/release/rekor.pub",
+                "signedIdentity": {"type": "matchRepository"},
+            }]),
+            json!([{
+                "type": "sigstoreSigned",
+                "keyPath": "/etc/pki/other.pub",
+                "signedIdentity": {"type": "matchRepository"},
+            }]),
+            json!([{
+                "type": "sigstoreSigned",
+                "keyPath": DEV_KEY,
+                "signedIdentity": {"type": "matchRepository"},
+                "keyData": "a2V5",
+            }]),
+        ] {
+            let mut policy = dev_policy();
+            policy["transports"]["docker"]["registry.tilo.so/tilo/tilo-vm"] = weaken.clone();
+            assert!(
+                check_developer(&policy.to_string(), &key_trust()).is_err(),
+                "developer mode accepted {weaken}"
+            );
+        }
+    }
 
-    // Without the flag, a dev image's policy fails exactly as before.
-    let (code, out, _) = run(&[dev.to_str().unwrap(), trust_dir]);
-    assert_eq!(code, Some(1), "{out}");
-    assert!(out.contains(DEV_KEY), "{out}");
+    phase the_developer_flag_is_the_callers_statement_and_the_audit_is_the_only_caller;
+    {
+        let work = tempfile::tempdir().unwrap();
+        let trust = work.path().join("release");
+        fs::create_dir(&trust).unwrap();
+        fs::write(trust.join("trust.env"), TRUST_ENV).unwrap();
+        let trust_dir = trust.to_str().unwrap();
+        let dev = work.path().join("dev.json");
+        fs::write(&dev, dev_policy().to_string()).unwrap();
 
-    // With it, the same policy passes and the report names the dev key.
-    let (code, out, err) = run(&["--developer", dev.to_str().unwrap(), trust_dir]);
-    assert_eq!(code, Some(0), "{out}{err}");
-    assert!(out.contains(DEV_KEY), "{out}");
-    assert!(out.contains("Tilo image scopes require"), "{out}");
-    // And in either position.
-    let (code, _, _) = run(&[dev.to_str().unwrap(), trust_dir, "--developer"]);
-    assert_eq!(code, Some(0));
+        // Without the flag, a dev image's policy fails exactly as before.
+        let (code, out, _) = run(&[dev.to_str().unwrap(), trust_dir]);
+        assert_eq!(code, Some(1), "{out}");
+        assert!(out.contains(DEV_KEY), "{out}");
 
-    // A weakened release scope still fails with the flag, so the flag cannot
-    // be used to admit anything but the two dev repositories.
-    let mut weak = dev_policy();
-    weak["transports"]["docker"][TILO][0]["keyPath"] = json!("/etc/pki/other.pub");
-    let weak_path = work.path().join("weak.json");
-    fs::write(&weak_path, weak.to_string()).unwrap();
-    let (code, out, _) = run(&["--developer", weak_path.to_str().unwrap(), trust_dir]);
-    assert_eq!(code, Some(1), "{out}");
+        // With it, the same policy passes and the report names the dev key.
+        let (code, out, err) = run(&["--developer", dev.to_str().unwrap(), trust_dir]);
+        assert_eq!(code, Some(0), "{out}{err}");
+        assert!(out.contains(DEV_KEY), "{out}");
+        assert!(out.contains("Tilo image scopes require"), "{out}");
+        // And in either position.
+        let (code, _, _) = run(&[dev.to_str().unwrap(), trust_dir, "--developer"]);
+        assert_eq!(code, Some(0));
+
+        // A weakened release scope still fails with the flag, so the flag cannot
+        // be used to admit anything but the two dev repositories.
+        let mut weak = dev_policy();
+        weak["transports"]["docker"][TILO][0]["keyPath"] = json!("/etc/pki/other.pub");
+        let weak_path = work.path().join("weak.json");
+        fs::write(&weak_path, weak.to_string()).unwrap();
+        let (code, out, _) = run(&["--developer", weak_path.to_str().unwrap(), trust_dir]);
+        assert_eq!(code, Some(1), "{out}");
+    }
 }
 
 const PINNED: &str = "/usr/share/tilo/cosign.pub";
-
-#[test]
-fn the_audit_runs_the_compiled_check() {
-    let audit = fs::read_to_string(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../../os/usr/libexec/tilo-security-audit"
-    ))
-    .unwrap();
-    assert!(audit.contains(
-        "image_policy_check=\"${TILO_AUDIT_POLICY_CHECK:-/usr/libexec/tilo-image-policy-check}\"\n"
-    ));
-    assert!(audit.contains(r#"if ! report="$("$image_policy_check" "$policy" 2>&1)"; then"#));
-    // A dev image is the one deliberate exception, read from the image's own
-    // flavour file, and the developer form is asked for only there.
-    assert!(audit.contains(r#"[ "$(cat "$image_flavour_file" 2>/dev/null || true)" = dev ]"#));
-    assert!(audit.contains(r#"report="$("$image_policy_check" --developer "$policy" 2>&1)""#));
-}
