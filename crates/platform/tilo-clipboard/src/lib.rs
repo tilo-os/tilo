@@ -18,15 +18,10 @@
 //! | Web | the trusted clipboard event being dispatched ([`events`]), else a synchronous copy inside the user's click |
 //!
 //! Each falls back to an [`InProcessClipboard`] when there is no system
-//! clipboard, and logs that once. [`availability`] says what the target can
-//! do; a backend may do less at run time, never more.
-//!
-//! `arboard`'s Wayland path needs `zwlr_data_control_manager_v1`, a
-//! clipboard-*manager* protocol Tilo deliberately withholds from sandboxed
-//! apps: it exposes every selection on the seat with no focus check, and the
-//! fleet copies TOTP codes and recovery phrases (see
-//! `crates/session/compositor/src/`). The Wayland backend's
-//! `wl_data_device` is focus-gated instead; `arboard` is kept only for X11.
+//! clipboard, and logs that once. `arboard` is kept only for X11: its Wayland path
+//! needs `zwlr_data_control_manager_v1`, a clipboard-manager protocol Tilo
+//! withholds from sandboxed apps because it exposes every selection on the seat
+//! with no focus check. The Wayland backend's `wl_data_device` is focus-gated.
 
 use std::sync::{Mutex, OnceLock};
 
