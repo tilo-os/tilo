@@ -577,295 +577,301 @@ impl Scrollbar {
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_resting_thumb_is_lighter_on_a_light_ground_and_reads_once_active() {
-        use crate::a11y::contrast_ratio;
-        let light = Theme::light();
-        let ground = light.tokens.colors.surfaces.content;
-        let rest = thumb_color(&light, false);
-        let active = thumb_color(&light, true);
-        assert!(contrast_ratio(rest, ground) < contrast_ratio(active, ground));
-        assert!(contrast_ratio(active, ground) >= 3.0);
-        assert!(contrast_ratio(rest, ground) >= 1.5, "still visible at rest");
-        let dark = Theme::dark();
-        assert!(
-            contrast_ratio(
-                thumb_color(&dark, false),
-                dark.tokens.colors.surfaces.content
-            ) >= 3.0
-        );
-    }
+    tilo_test_env::scenario! {
+        /// A scrollbar's thumb and track.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn thumbs_and_tracks_are_placed_painted_and_pressed;
 
-    #[test]
-    fn a_track_in_a_lane_is_the_thumb_centred_with_equal_margins() {
-        let theme = Theme::dark();
-        let gutter = f64::from(theme.tokens.metrics.scrollbar_gutter);
-        let thumb = f64::from(theme.tokens.metrics.scroll_thumb);
-        let lane = Rect::new(100.0, 0.0, 100.0 + gutter, 300.0);
-        let track = Scrollbar::vertical().track_in(lane, &theme);
-        assert!((track.width() - thumb).abs() < 1e-9);
-        let margin = (gutter - thumb) / 2.0;
-        assert!((track.x0 - lane.x0 - margin).abs() < 1e-9);
-        assert!((lane.x1 - track.x1 - margin).abs() < 1e-9);
-        assert!((track.y0 - margin).abs() < 1e-9 && (300.0 - track.y1 - margin).abs() < 1e-9);
-        let lane = Rect::new(0.0, 200.0, 400.0, 200.0 + gutter);
-        let track = Scrollbar::horizontal().track_in(lane, &theme);
-        assert!((track.height() - thumb).abs() < 1e-9);
-    }
-
-    #[test]
-    fn a_track_keeps_out_of_rounded_corners_and_reaches_square_ones() {
-        use crate::theme::SurfaceShape;
-        let window = Rect::new(0.0, 0.0, 400.0, 300.0);
-        let vertical = Rect::new(390.0, 2.0, 398.0, 298.0);
-        let horizontal = Rect::new(2.0, 290.0, 380.0, 298.0);
-        let rounded = SurfaceShape::rounded(window, 12.0);
-        assert_eq!(
-            clear_of_corners(vertical, true, Some(&rounded)),
-            Rect::new(390.0, 12.0, 398.0, 288.0),
-            "a vertical bar stops a radius short of the top and the bottom"
-        );
-        assert_eq!(
-            clear_of_corners(horizontal, false, Some(&rounded)),
-            Rect::new(12.0, 290.0, 380.0, 298.0),
-            "a horizontal bar stops a radius short of the side it reaches"
-        );
-        for square in [Some(SurfaceShape::rounded(window, 0.0)), None] {
-            assert_eq!(clear_of_corners(vertical, true, square.as_ref()), vertical);
-            assert_eq!(
-                clear_of_corners(horizontal, false, square.as_ref()),
-                horizontal
+        phase a_resting_thumb_is_lighter_on_a_light_ground_and_reads_once_active;
+        {
+            use crate::a11y::contrast_ratio;
+            let light = Theme::light();
+            let ground = light.tokens.colors.surfaces.content;
+            let rest = thumb_color(&light, false);
+            let active = thumb_color(&light, true);
+            assert!(contrast_ratio(rest, ground) < contrast_ratio(active, ground));
+            assert!(contrast_ratio(active, ground) >= 3.0);
+            assert!(contrast_ratio(rest, ground) >= 1.5, "still visible at rest");
+            let dark = Theme::dark();
+            assert!(
+                contrast_ratio(
+                    thumb_color(&dark, false),
+                    dark.tokens.colors.surfaces.content
+                ) >= 3.0
             );
         }
-        let inner = Rect::new(200.0, 40.0, 208.0, 250.0);
-        assert_eq!(clear_of_corners(inner, true, Some(&rounded)), inner);
-        let top_only = SurfaceShape {
-            bounds: window,
-            radii: vello::kurbo::RoundedRectRadii::new(12.0, 12.0, 0.0, 0.0),
-        };
-        assert_eq!(
-            clear_of_corners(vertical, true, Some(&top_only)),
-            Rect::new(390.0, 12.0, 398.0, 298.0)
-        );
-    }
 
-    /// The theme says the surface in scene coordinates; an owner drawing at
-    /// a scale or an offset sees it in its own.
-    #[test]
-    fn corners_are_seen_in_the_owners_coordinates() {
-        use crate::theme::SurfaceShape;
-        let mut theme = Theme::dark();
-        assert_eq!(
-            SurfaceCorners::seen(&theme, vello::kurbo::Affine::IDENTITY),
-            SurfaceCorners::default(),
-            "no surface said: nothing to keep out of"
-        );
-        theme.surface = Some(SurfaceShape::rounded(
-            Rect::new(0.0, 0.0, 800.0, 600.0),
-            24.0,
-        ));
-        let seen = SurfaceCorners::seen(&theme, vello::kurbo::Affine::scale(2.0));
-        let track = Rect::new(392.0, 0.0, 400.0, 300.0);
-        assert_eq!(
-            seen.clear(track, true),
-            Rect::new(392.0, 12.0, 400.0, 288.0)
-        );
-        theme.surface = Some(SurfaceShape::rounded(
-            Rect::new(0.0, 0.0, 800.0, 600.0),
-            0.0,
-        ));
-        assert_eq!(
-            SurfaceCorners::seen(&theme, vello::kurbo::Affine::IDENTITY),
-            SurfaceCorners::default(),
-            "a square surface has no corners to keep out of"
-        );
+        phase a_track_in_a_lane_is_the_thumb_centred_with_equal_margins;
+        {
+            let theme = Theme::dark();
+            let gutter = f64::from(theme.tokens.metrics.scrollbar_gutter);
+            let thumb = f64::from(theme.tokens.metrics.scroll_thumb);
+            let lane = Rect::new(100.0, 0.0, 100.0 + gutter, 300.0);
+            let track = Scrollbar::vertical().track_in(lane, &theme);
+            assert!((track.width() - thumb).abs() < 1e-9);
+            let margin = (gutter - thumb) / 2.0;
+            assert!((track.x0 - lane.x0 - margin).abs() < 1e-9);
+            assert!((lane.x1 - track.x1 - margin).abs() < 1e-9);
+            assert!((track.y0 - margin).abs() < 1e-9 && (300.0 - track.y1 - margin).abs() < 1e-9);
+            let lane = Rect::new(0.0, 200.0, 400.0, 200.0 + gutter);
+            let track = Scrollbar::horizontal().track_in(lane, &theme);
+            assert!((track.height() - thumb).abs() < 1e-9);
+        }
+
+        phase a_track_keeps_out_of_rounded_corners_and_reaches_square_ones;
+        {
+            use crate::theme::SurfaceShape;
+            let window = Rect::new(0.0, 0.0, 400.0, 300.0);
+            let vertical = Rect::new(390.0, 2.0, 398.0, 298.0);
+            let horizontal = Rect::new(2.0, 290.0, 380.0, 298.0);
+            let rounded = SurfaceShape::rounded(window, 12.0);
+            assert_eq!(
+                clear_of_corners(vertical, true, Some(&rounded)),
+                Rect::new(390.0, 12.0, 398.0, 288.0),
+                "a vertical bar stops a radius short of the top and the bottom"
+            );
+            assert_eq!(
+                clear_of_corners(horizontal, false, Some(&rounded)),
+                Rect::new(12.0, 290.0, 380.0, 298.0),
+                "a horizontal bar stops a radius short of the side it reaches"
+            );
+            for square in [Some(SurfaceShape::rounded(window, 0.0)), None] {
+                assert_eq!(clear_of_corners(vertical, true, square.as_ref()), vertical);
+                assert_eq!(
+                    clear_of_corners(horizontal, false, square.as_ref()),
+                    horizontal
+                );
+            }
+            let inner = Rect::new(200.0, 40.0, 208.0, 250.0);
+            assert_eq!(clear_of_corners(inner, true, Some(&rounded)), inner);
+            let top_only = SurfaceShape {
+                bounds: window,
+                radii: vello::kurbo::RoundedRectRadii::new(12.0, 12.0, 0.0, 0.0),
+            };
+            assert_eq!(
+                clear_of_corners(vertical, true, Some(&top_only)),
+                Rect::new(390.0, 12.0, 398.0, 298.0)
+            );
+        }
+
+        phase corners_are_seen_in_the_owners_coordinates;
+        // The theme says the surface in scene coordinates; an owner drawing at
+        // a scale or an offset sees it in its own.
+        {
+            use crate::theme::SurfaceShape;
+            let mut theme = Theme::dark();
+            assert_eq!(
+                SurfaceCorners::seen(&theme, vello::kurbo::Affine::IDENTITY),
+                SurfaceCorners::default(),
+                "no surface said: nothing to keep out of"
+            );
+            theme.surface = Some(SurfaceShape::rounded(
+                Rect::new(0.0, 0.0, 800.0, 600.0),
+                24.0,
+            ));
+            let seen = SurfaceCorners::seen(&theme, vello::kurbo::Affine::scale(2.0));
+            let track = Rect::new(392.0, 0.0, 400.0, 300.0);
+            assert_eq!(
+                seen.clear(track, true),
+                Rect::new(392.0, 12.0, 400.0, 288.0)
+            );
+            theme.surface = Some(SurfaceShape::rounded(
+                Rect::new(0.0, 0.0, 800.0, 600.0),
+                0.0,
+            ));
+            assert_eq!(
+                SurfaceCorners::seen(&theme, vello::kurbo::Affine::IDENTITY),
+                SurfaceCorners::default(),
+                "a square surface has no corners to keep out of"
+            );
+        }
+
+        phase the_thumb_clears_the_non_text_floor_on_every_material;
+        // The thumb clears the non-text floor against the ground it scrolls over once the pointer
+        // is on it, on every material, and at rest on a dark one; a resting thumb on a light
+        // ground is lighter but still shows.
+        {
+            use crate::a11y::contrast_ratio;
+            for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+                let ground = theme.tokens.colors.surfaces.content;
+                let idle = contrast_ratio(thumb_color(&theme, false), ground);
+                let active = contrast_ratio(thumb_color(&theme, true), ground);
+                let light = crate::color::relative_luminance(ground) >= LIGHT_GROUND_LUMINANCE;
+                let floor = if light {
+                    1.5
+                } else {
+                    crate::tokens::colors::NON_TEXT_MIN_CONTRAST
+                };
+                assert!(idle >= floor, "{}: idle thumb {idle:.2}:1", theme.name);
+                assert!(
+                    active >= crate::tokens::colors::NON_TEXT_MIN_CONTRAST,
+                    "{}: active thumb {active:.2}:1",
+                    theme.name
+                );
+                assert!(
+                    active >= idle,
+                    "{}: active {active:.2} < idle {idle:.2}",
+                    theme.name
+                );
+            }
+        }
+
+        phase thumb_geometry_follows_content_ratio_offset_and_axis;
+        {
+            {
+                let bar = Scrollbar::vertical();
+                let short = bar
+                    .thumb_rect(v_track(), ScrollMetrics::new(600.0, 300.0, 0.0))
+                    .unwrap();
+                let tall = bar
+                    .thumb_rect(v_track(), ScrollMetrics::new(1200.0, 300.0, 0.0))
+                    .unwrap();
+                assert!(short.height() > tall.height());
+                // 2× content → thumb ≈ half the 300-px track.
+                assert!(
+                    (short.height() - 150.0).abs() < 1.0,
+                    "got {}",
+                    short.height()
+                );
+            }
+
+            {
+                let bar = Scrollbar::vertical();
+                let thumb = bar
+                    .thumb_rect(v_track(), ScrollMetrics::new(100_000.0, 300.0, 0.0))
+                    .unwrap();
+                assert!(thumb.height() >= MIN_THUMB_LEN - 1e-6);
+            }
+
+            {
+                let bar = Scrollbar::vertical();
+                let m0 = ScrollMetrics::new(1200.0, 300.0, 0.0);
+                let top = bar.thumb_rect(v_track(), m0).unwrap();
+                assert!((top.y0 - 0.0).abs() < 1e-6, "thumb starts at track top");
+                // max_scroll = 900; fully scrolled thumb bottom == track bottom.
+                let m1 = ScrollMetrics::new(1200.0, 300.0, 900.0);
+                let bottom = bar.thumb_rect(v_track(), m1).unwrap();
+                assert!((bottom.y1 - 300.0).abs() < 1e-3, "got {}", bottom.y1);
+            }
+
+            {
+                let mut bar = Scrollbar::horizontal();
+                let track = Rect::new(0.0, 92.0, 300.0, 100.0);
+                let m = ScrollMetrics::new(1200.0, 300.0, 0.0);
+                let thumb = bar.thumb_rect(track, m).unwrap();
+                assert!(
+                    (thumb.x0 - 0.0).abs() < 1e-6,
+                    "h-thumb starts at track left"
+                );
+                assert!(thumb.width() < track.width(), "h-thumb shorter than track");
+                let mid = Point::new(thumb.x0.midpoint(thumb.x1), 96.0);
+                assert_eq!(bar.press(track, m, mid), PressOutcome::Thumb);
+                let off = bar
+                    .drag_to(track, m, Point::new(mid.x + 100.0, 96.0))
+                    .unwrap();
+                assert!(off > 0.0, "h-drag right increases offset: {off}");
+            }
+        }
+
+        phase thumb_and_track_presses_drag_and_page_within_bounds;
+        {
+            {
+                let mut bar = Scrollbar::vertical();
+                let m = ScrollMetrics::new(1200.0, 300.0, 0.0); // max_scroll = 900
+                let thumb = bar.thumb_rect(v_track(), m).unwrap();
+                let mid = Point::new(96.0, thumb.y0.midpoint(thumb.y1));
+                assert_eq!(bar.press(v_track(), m, mid), PressOutcome::Thumb);
+                assert!(bar.is_dragging());
+                // Drag down 100 px. travel = 300 - thumb_len(=75) = 225.
+                // Δoffset = 100/225 * 900 = 400.
+                let moved = Point::new(96.0, mid.y + 100.0);
+                let off = bar.drag_to(v_track(), m, moved).unwrap();
+                assert!((off - 400.0).abs() < 1.0, "got {off}");
+                assert!(bar.release());
+                assert!(!bar.is_dragging());
+            }
+
+            {
+                let mut bar = Scrollbar::vertical();
+                let m = ScrollMetrics::new(1200.0, 300.0, 0.0);
+                let thumb = bar.thumb_rect(v_track(), m).unwrap();
+                let mid = Point::new(96.0, thumb.y0.midpoint(thumb.y1));
+                bar.press(v_track(), m, mid);
+                // Huge downward drag → clamped to max_scroll.
+                let off = bar
+                    .drag_to(v_track(), m, Point::new(96.0, mid.y + 10_000.0))
+                    .unwrap();
+                assert!((off - 900.0).abs() < 1e-6, "clamped to max: {off}");
+                // Huge upward drag → clamped to 0.
+                let off = bar
+                    .drag_to(v_track(), m, Point::new(96.0, mid.y - 10_000.0))
+                    .unwrap();
+                assert!((off - 0.0).abs() < 1e-6, "clamped to 0: {off}");
+            }
+
+            {
+                let mut bar = Scrollbar::vertical();
+                let m = ScrollMetrics::new(1200.0, 300.0, 0.0);
+                let thumb = bar.thumb_rect(v_track(), m).unwrap();
+                let below = Point::new(96.0, thumb.y1 + 5.0);
+                match bar.press(v_track(), m, below) {
+                    PressOutcome::Page(o) => {
+                        assert!(
+                            (o - 300.0 * PAGE_FRACTION).abs() < 1.0,
+                            "page ≈ viewport*frac: {o}"
+                        );
+                    }
+                    other => panic!("expected Page, got {other:?}"),
+                }
+                assert!(!bar.is_dragging(), "track click is not a drag");
+            }
+
+            {
+                let mut bar = Scrollbar::vertical();
+                // Already at top → paging up clamps to 0.
+                let m = ScrollMetrics::new(1200.0, 300.0, 0.0);
+                let thumb = bar.thumb_rect(v_track(), m).unwrap();
+                let m_mid = ScrollMetrics::new(1200.0, 300.0, 450.0);
+                let thumb_mid = bar.thumb_rect(v_track(), m_mid).unwrap();
+                let above = Point::new(96.0, thumb_mid.y0 - 5.0);
+                match bar.press(v_track(), m_mid, above) {
+                    PressOutcome::Page(o) => assert!(o < 450.0, "paged up from 450: {o}"),
+                    other => panic!("expected Page, got {other:?}"),
+                }
+                let _ = thumb; // silence unused in the top branch
+            }
+
+            {
+                let mut bar = Scrollbar::vertical();
+                let m = ScrollMetrics::new(1200.0, 300.0, 0.0);
+                let thumb = bar.thumb_rect(v_track(), m).unwrap();
+                let on = Point::new(96.0, thumb.y0.midpoint(thumb.y1));
+                assert!(bar.update_hover(v_track(), m, on), "hover turns on");
+                assert!(
+                    !bar.update_hover(v_track(), m, on),
+                    "no change while still on"
+                );
+                assert!(bar.is_hovered());
+                let off = Point::new(96.0, thumb.y1 + 50.0);
+                assert!(bar.update_hover(v_track(), m, off), "hover turns off");
+                assert!(!bar.is_hovered());
+            }
+
+            {
+                let mut bar = Scrollbar::vertical();
+                // content fits viewport → max_scroll 0, thumb fills the track.
+                let m = ScrollMetrics::new(300.0, 300.0, 0.0);
+                // A press outside the (full-length) thumb still misses the track
+                // edges; a press inside begins a drag that can't move (max 0).
+                let outside = Point::new(96.0, 400.0);
+                assert_eq!(bar.press(v_track(), m, outside), PressOutcome::Miss);
+            }
+        }
     }
 
     /// A 300-px-tall vertical track spanning x∈[92,100], y∈[0,300].
     fn v_track() -> Rect {
         Rect::new(92.0, 0.0, 100.0, 300.0)
-    }
-
-    /// The thumb clears the non-text floor against the ground it scrolls over once the pointer
-    /// is on it, on every material, and at rest on a dark one; a resting thumb on a light
-    /// ground is lighter but still shows.
-    #[test]
-    fn the_thumb_clears_the_non_text_floor_on_every_material() {
-        use crate::a11y::contrast_ratio;
-        for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
-            let ground = theme.tokens.colors.surfaces.content;
-            let idle = contrast_ratio(thumb_color(&theme, false), ground);
-            let active = contrast_ratio(thumb_color(&theme, true), ground);
-            let light = crate::color::relative_luminance(ground) >= LIGHT_GROUND_LUMINANCE;
-            let floor = if light {
-                1.5
-            } else {
-                crate::tokens::colors::NON_TEXT_MIN_CONTRAST
-            };
-            assert!(idle >= floor, "{}: idle thumb {idle:.2}:1", theme.name);
-            assert!(
-                active >= crate::tokens::colors::NON_TEXT_MIN_CONTRAST,
-                "{}: active thumb {active:.2}:1",
-                theme.name
-            );
-            assert!(
-                active >= idle,
-                "{}: active {active:.2} < idle {idle:.2}",
-                theme.name
-            );
-        }
-    }
-
-    #[test]
-    fn thumb_geometry_follows_content_ratio_offset_and_axis() {
-        {
-            let bar = Scrollbar::vertical();
-            let short = bar
-                .thumb_rect(v_track(), ScrollMetrics::new(600.0, 300.0, 0.0))
-                .unwrap();
-            let tall = bar
-                .thumb_rect(v_track(), ScrollMetrics::new(1200.0, 300.0, 0.0))
-                .unwrap();
-            assert!(short.height() > tall.height());
-            // 2× content → thumb ≈ half the 300-px track.
-            assert!(
-                (short.height() - 150.0).abs() < 1.0,
-                "got {}",
-                short.height()
-            );
-        }
-
-        {
-            let bar = Scrollbar::vertical();
-            let thumb = bar
-                .thumb_rect(v_track(), ScrollMetrics::new(100_000.0, 300.0, 0.0))
-                .unwrap();
-            assert!(thumb.height() >= MIN_THUMB_LEN - 1e-6);
-        }
-
-        {
-            let bar = Scrollbar::vertical();
-            let m0 = ScrollMetrics::new(1200.0, 300.0, 0.0);
-            let top = bar.thumb_rect(v_track(), m0).unwrap();
-            assert!((top.y0 - 0.0).abs() < 1e-6, "thumb starts at track top");
-            // max_scroll = 900; fully scrolled thumb bottom == track bottom.
-            let m1 = ScrollMetrics::new(1200.0, 300.0, 900.0);
-            let bottom = bar.thumb_rect(v_track(), m1).unwrap();
-            assert!((bottom.y1 - 300.0).abs() < 1e-3, "got {}", bottom.y1);
-        }
-
-        {
-            let mut bar = Scrollbar::horizontal();
-            let track = Rect::new(0.0, 92.0, 300.0, 100.0);
-            let m = ScrollMetrics::new(1200.0, 300.0, 0.0);
-            let thumb = bar.thumb_rect(track, m).unwrap();
-            assert!(
-                (thumb.x0 - 0.0).abs() < 1e-6,
-                "h-thumb starts at track left"
-            );
-            assert!(thumb.width() < track.width(), "h-thumb shorter than track");
-            let mid = Point::new(thumb.x0.midpoint(thumb.x1), 96.0);
-            assert_eq!(bar.press(track, m, mid), PressOutcome::Thumb);
-            let off = bar
-                .drag_to(track, m, Point::new(mid.x + 100.0, 96.0))
-                .unwrap();
-            assert!(off > 0.0, "h-drag right increases offset: {off}");
-        }
-    }
-
-    #[test]
-    fn thumb_and_track_presses_drag_and_page_within_bounds() {
-        {
-            let mut bar = Scrollbar::vertical();
-            let m = ScrollMetrics::new(1200.0, 300.0, 0.0); // max_scroll = 900
-            let thumb = bar.thumb_rect(v_track(), m).unwrap();
-            let mid = Point::new(96.0, thumb.y0.midpoint(thumb.y1));
-            assert_eq!(bar.press(v_track(), m, mid), PressOutcome::Thumb);
-            assert!(bar.is_dragging());
-            // Drag down 100 px. travel = 300 - thumb_len(=75) = 225.
-            // Δoffset = 100/225 * 900 = 400.
-            let moved = Point::new(96.0, mid.y + 100.0);
-            let off = bar.drag_to(v_track(), m, moved).unwrap();
-            assert!((off - 400.0).abs() < 1.0, "got {off}");
-            assert!(bar.release());
-            assert!(!bar.is_dragging());
-        }
-
-        {
-            let mut bar = Scrollbar::vertical();
-            let m = ScrollMetrics::new(1200.0, 300.0, 0.0);
-            let thumb = bar.thumb_rect(v_track(), m).unwrap();
-            let mid = Point::new(96.0, thumb.y0.midpoint(thumb.y1));
-            bar.press(v_track(), m, mid);
-            // Huge downward drag → clamped to max_scroll.
-            let off = bar
-                .drag_to(v_track(), m, Point::new(96.0, mid.y + 10_000.0))
-                .unwrap();
-            assert!((off - 900.0).abs() < 1e-6, "clamped to max: {off}");
-            // Huge upward drag → clamped to 0.
-            let off = bar
-                .drag_to(v_track(), m, Point::new(96.0, mid.y - 10_000.0))
-                .unwrap();
-            assert!((off - 0.0).abs() < 1e-6, "clamped to 0: {off}");
-        }
-
-        {
-            let mut bar = Scrollbar::vertical();
-            let m = ScrollMetrics::new(1200.0, 300.0, 0.0);
-            let thumb = bar.thumb_rect(v_track(), m).unwrap();
-            let below = Point::new(96.0, thumb.y1 + 5.0);
-            match bar.press(v_track(), m, below) {
-                PressOutcome::Page(o) => {
-                    assert!(
-                        (o - 300.0 * PAGE_FRACTION).abs() < 1.0,
-                        "page ≈ viewport*frac: {o}"
-                    );
-                }
-                other => panic!("expected Page, got {other:?}"),
-            }
-            assert!(!bar.is_dragging(), "track click is not a drag");
-        }
-
-        {
-            let mut bar = Scrollbar::vertical();
-            // Already at top → paging up clamps to 0.
-            let m = ScrollMetrics::new(1200.0, 300.0, 0.0);
-            let thumb = bar.thumb_rect(v_track(), m).unwrap();
-            let m_mid = ScrollMetrics::new(1200.0, 300.0, 450.0);
-            let thumb_mid = bar.thumb_rect(v_track(), m_mid).unwrap();
-            let above = Point::new(96.0, thumb_mid.y0 - 5.0);
-            match bar.press(v_track(), m_mid, above) {
-                PressOutcome::Page(o) => assert!(o < 450.0, "paged up from 450: {o}"),
-                other => panic!("expected Page, got {other:?}"),
-            }
-            let _ = thumb; // silence unused in the top branch
-        }
-
-        {
-            let mut bar = Scrollbar::vertical();
-            let m = ScrollMetrics::new(1200.0, 300.0, 0.0);
-            let thumb = bar.thumb_rect(v_track(), m).unwrap();
-            let on = Point::new(96.0, thumb.y0.midpoint(thumb.y1));
-            assert!(bar.update_hover(v_track(), m, on), "hover turns on");
-            assert!(
-                !bar.update_hover(v_track(), m, on),
-                "no change while still on"
-            );
-            assert!(bar.is_hovered());
-            let off = Point::new(96.0, thumb.y1 + 50.0);
-            assert!(bar.update_hover(v_track(), m, off), "hover turns off");
-            assert!(!bar.is_hovered());
-        }
-
-        {
-            let mut bar = Scrollbar::vertical();
-            // content fits viewport → max_scroll 0, thumb fills the track.
-            let m = ScrollMetrics::new(300.0, 300.0, 0.0);
-            // A press outside the (full-length) thumb still misses the track
-            // edges; a press inside begins a drag that can't move (max 0).
-            let outside = Point::new(96.0, 400.0);
-            assert_eq!(bar.press(v_track(), m, outside), PressOutcome::Miss);
-        }
     }
 }
 

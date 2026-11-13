@@ -170,47 +170,104 @@ fn list_rows_in_a_section_are_one_list() {
     assert_eq!(flags, [(false, false); 4]);
 }
 
-#[test]
-fn adjacent_selected_rows_join_into_one_lift() {
-    let mut section = Section::new(vec![
-        Box::new(ListRow::new("a", "Ada").selected(true)),
-        Box::new(ListRow::new("b", "Grace").selected(true)),
-        Box::new(ListRow::new("c", "Linus").selected(true)),
-        Box::new(ListRow::new("d", "Mary")),
-    ]);
-    section.sync_row_join();
-    let joins: Vec<RowJoin> = rows_of(&mut section)
-        .into_iter()
-        .map(|row| row.join())
-        .collect();
-    assert_eq!(
-        joins,
-        [
-            RowJoin::new(false, true),
-            RowJoin::new(true, true),
-            RowJoin::new(true, false),
-            RowJoin::new(true, false),
-        ]
-    );
-}
+tilo_test_env::scenario! {
+    /// Section rows and headings that are laid out without a host.
+    /// Each phase was a test of its own and builds its own fixture.
+    fn rows_join_share_a_column_and_headings_count;
 
-#[test]
-fn consecutive_badged_rows_share_one_badge_column() {
-    let theme = Theme::dark();
-    let mut text = TextRenderer::new();
-    let mut section = Section::new(vec![
-        Box::new(ListRow::new("a", "/users").badge("GET")),
-        Box::new(ListRow::new("b", "/users").badge("DELETE")),
-        Box::new(Text::new("break")),
-        Box::new(ListRow::new("c", "/health").badge("GET")),
-    ]);
-    section.sync_rows(&mut text, &theme);
-    let shared: Vec<Option<f64>> = rows_of(&mut section)
-        .into_iter()
-        .map(|row| row.shared_leading)
-        .collect();
-    let width = crate::widget::badge_column_width(&mut text, &theme, &["GET", "DELETE"]);
-    assert_eq!(shared, [Some(width), Some(width), None]);
+    phase adjacent_selected_rows_join_into_one_lift;
+    {
+        let mut section = Section::new(vec![
+            Box::new(ListRow::new("a", "Ada").selected(true)),
+            Box::new(ListRow::new("b", "Grace").selected(true)),
+            Box::new(ListRow::new("c", "Linus").selected(true)),
+            Box::new(ListRow::new("d", "Mary")),
+        ]);
+        section.sync_row_join();
+        let joins: Vec<RowJoin> = rows_of(&mut section)
+            .into_iter()
+            .map(|row| row.join())
+            .collect();
+        assert_eq!(
+            joins,
+            [
+                RowJoin::new(false, true),
+                RowJoin::new(true, true),
+                RowJoin::new(true, false),
+                RowJoin::new(true, false),
+            ]
+        );
+    }
+
+    phase consecutive_badged_rows_share_one_badge_column;
+    {
+        let theme = Theme::dark();
+        let mut text = TextRenderer::new();
+        let mut section = Section::new(vec![
+            Box::new(ListRow::new("a", "/users").badge("GET")),
+            Box::new(ListRow::new("b", "/users").badge("DELETE")),
+            Box::new(Text::new("break")),
+            Box::new(ListRow::new("c", "/health").badge("GET")),
+        ]);
+        section.sync_rows(&mut text, &theme);
+        let shared: Vec<Option<f64>> = rows_of(&mut section)
+            .into_iter()
+            .map(|row| row.shared_leading)
+            .collect();
+        let width = crate::widget::badge_column_width(&mut text, &theme, &["GET", "DELETE"]);
+        assert_eq!(shared, [Some(width), Some(width), None]);
+    }
+
+    phase a_header_in_a_taller_box_keeps_its_line_at_the_box_s_foot;
+    {
+        let theme = Theme::dark();
+        let mut text = TextRenderer::new();
+        let face = SectionHeaderFace::group("Overdue since Jun 29")
+            .count(2)
+            .action("Clear all");
+        let width = 400.0;
+        let height = face.height(&mut text, &theme, width);
+        let natural = Rect::new(0.0, 100.0, width, 100.0 + height);
+        let taller = Rect::new(0.0, 100.0, width, 100.0 + height + 20.0);
+        let mut above_foot = |rect: Rect| {
+            face.action_rect(rect, &mut text, &theme)
+                .expect("the header has an action")
+                .y1
+                - rect.y1
+        };
+        assert!(
+            (above_foot(natural) - above_foot(taller)).abs() < 0.5,
+            "the header's line stands at the foot of its box, so room above it never comes between \
+         it and what it heads: {:.1} and {:.1} above the foot",
+            above_foot(natural),
+            above_foot(taller)
+        );
+    }
+
+    phase a_heading_counts_one_row_as_nothing;
+    // A heading counts its rows where the number says something they do not: one row restates
+    // itself with "1", while two say how many and a run cut short says how many it left out.
+    {
+        assert_eq!(heading_count(1, None), None, "one row says nothing");
+        assert_eq!(heading_count(0, None), None, "no rows say nothing");
+        assert_eq!(heading_count(2, None), Some(2), "two rows say how many");
+        assert_eq!(heading_count(9, None), Some(9));
+        assert_eq!(
+            heading_count(1, Some(1)),
+            None,
+            "a run of one, all shown, says nothing"
+        );
+        assert_eq!(
+            heading_count(0, Some(1)),
+            Some(1),
+            "a run cut short says how many it left out, even at one"
+        );
+        assert_eq!(
+            heading_count(3, Some(20)),
+            Some(20),
+            "and how many it holds"
+        );
+    }
 }
 
 /// A disclosure only shows what the page already holds, so the native app
@@ -473,56 +530,5 @@ fn a_list_without_marks_after_its_switches_keeps_them_on_the_edge() {
     assert!(
         (alone[0] - beside_drill[0]).abs() < 0.5,
         "a chevron with no switch before it moves no switch: {alone:?} vs {beside_drill:?}"
-    );
-}
-
-#[test]
-fn a_header_in_a_taller_box_keeps_its_line_at_the_box_s_foot() {
-    let theme = Theme::dark();
-    let mut text = TextRenderer::new();
-    let face = SectionHeaderFace::group("Overdue since Jun 29")
-        .count(2)
-        .action("Clear all");
-    let width = 400.0;
-    let height = face.height(&mut text, &theme, width);
-    let natural = Rect::new(0.0, 100.0, width, 100.0 + height);
-    let taller = Rect::new(0.0, 100.0, width, 100.0 + height + 20.0);
-    let mut above_foot = |rect: Rect| {
-        face.action_rect(rect, &mut text, &theme)
-            .expect("the header has an action")
-            .y1
-            - rect.y1
-    };
-    assert!(
-        (above_foot(natural) - above_foot(taller)).abs() < 0.5,
-        "the header's line stands at the foot of its box, so room above it never comes between \
-         it and what it heads: {:.1} and {:.1} above the foot",
-        above_foot(natural),
-        above_foot(taller)
-    );
-}
-
-/// A heading counts its rows where the number says something they do not: one row restates
-/// itself with "1", while two say how many and a run cut short says how many it left out.
-#[test]
-fn a_heading_counts_one_row_as_nothing() {
-    assert_eq!(heading_count(1, None), None, "one row says nothing");
-    assert_eq!(heading_count(0, None), None, "no rows say nothing");
-    assert_eq!(heading_count(2, None), Some(2), "two rows say how many");
-    assert_eq!(heading_count(9, None), Some(9));
-    assert_eq!(
-        heading_count(1, Some(1)),
-        None,
-        "a run of one, all shown, says nothing"
-    );
-    assert_eq!(
-        heading_count(0, Some(1)),
-        Some(1),
-        "a run cut short says how many it left out, even at one"
-    );
-    assert_eq!(
-        heading_count(3, Some(20)),
-        Some(20),
-        "and how many it holds"
     );
 }

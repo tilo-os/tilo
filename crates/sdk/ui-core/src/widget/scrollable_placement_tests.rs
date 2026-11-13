@@ -168,81 +168,87 @@ impl Rows {
     }
 }
 
-#[test]
-fn a_scroll_places_only_the_rows_near_the_view_and_walks_only_those() {
-    let mut rows = rows(2_000);
-    rows.scroll_to(2_000.0);
-    // Rows 100 to 120 meet the view.
-    let walked = rows.walked();
-    assert!(!walked.is_empty() && walked.len() < 30, "{walked:?}");
-    for rect in &walked {
-        assert!(
-            rect.y1 > -1.0 && rect.y0 < f64::from(VIEW) + 1.0,
-            "a walked row stands where the view shows it: {rect:?}"
-        );
-    }
-    assert_eq!(rows.row(100).y0, 0.0, "row 100 tops the view");
-    assert_eq!(rows.row(0).y0, -2_000.0);
-    // Row 500 was never near the view: it keeps the box of the first
-    // placement, which no walk and no pointer meets.
-    assert_eq!(rows.row(500).y0, 10_000.0);
-    crate::testing::dispatch(
-        &mut rows.scroll,
-        &crate::synthetic_input::cursor_moved(10.0, 10.0),
-    );
-    assert_eq!(
-        rows.pointed[500].get(),
-        0,
-        "a row far from the view is not given the pointer"
-    );
-    assert_eq!(rows.pointed[100].get(), 1, "a row in view is");
+tilo_test_env::scenario! {
+    /// Which rows a scroll places, walks and finds.
+    /// Each phase was a test of its own and builds its own fixture.
+    fn a_scroll_places_and_finds_the_rows_near_the_view;
 
-    rows.scroll_to(2_400.0);
-    assert_eq!(rows.row(100).y0, -400.0, "row 100 left the view upwards");
-    assert_eq!(rows.row(120).y0, 0.0);
-}
-
-#[test]
-fn a_row_whose_paint_grows_is_found_near_the_view_once_it_lays_out_again() {
-    let mut rows = rows(400);
-    rows.scroll_to(2_000.0);
-    let row_80 = |rows: &Rows| rows.walked().contains(&rows.row(80));
-    assert!(!row_80(&rows), "row 80 stands 400 px above the view");
-    // Row 80 now paints 500 px below its box: into the view.
-    rows.reach[80].set(500.0);
-    rows.relayout[80].set(true);
-    rows.scroll_to(2_000.0);
-    assert_eq!(
-        rows.row(80).y0,
-        -400.0,
-        "the row that asked for a layout was placed where it stands"
-    );
-    assert!(
-        row_80(&rows),
-        "what it paints reaches the view: the walk visits it"
-    );
-    rows.scroll_to(2_040.0);
-    assert_eq!(rows.row(80).y0, -440.0);
-    assert!(row_80(&rows), "and keeps visiting it as the view moves on");
-}
-
-#[test]
-fn a_scroll_keeps_its_fraction_but_an_offset_from_another_scale_lands_whole() {
-    let mut rows = rows(400);
-    let origin = |rows: &Rows| rows.row(2).y0 - 2.0 * f64::from(ROW);
-    // Part of a pixel: the content sits exactly where the scroll put it,
-    // because the copy a host takes of it moves the pixels it showed by that
-    // same part of a pixel.
-    let part = 40.3_f32;
-    rows.scroll_to(part);
-    assert_eq!(
-        origin(&rows),
-        f64::from(-part),
-        "the content sits where the scroll put it"
-    );
+    phase a_scroll_places_only_the_rows_near_the_view_and_walks_only_those;
     {
-        let _grid = crate::widget::enter_device_scale(2.0);
-        rows.scroll_to(part);
+        let mut rows = rows(2_000);
+        rows.scroll_to(2_000.0);
+        // Rows 100 to 120 meet the view.
+        let walked = rows.walked();
+        assert!(!walked.is_empty() && walked.len() < 30, "{walked:?}");
+        for rect in &walked {
+            assert!(
+                rect.y1 > -1.0 && rect.y0 < f64::from(VIEW) + 1.0,
+                "a walked row stands where the view shows it: {rect:?}"
+            );
+        }
+        assert_eq!(rows.row(100).y0, 0.0, "row 100 tops the view");
+        assert_eq!(rows.row(0).y0, -2_000.0);
+        // Row 500 was never near the view: it keeps the box of the first
+        // placement, which no walk and no pointer meets.
+        assert_eq!(rows.row(500).y0, 10_000.0);
+        crate::testing::dispatch(
+            &mut rows.scroll,
+            &crate::synthetic_input::cursor_moved(10.0, 10.0),
+        );
+        assert_eq!(
+            rows.pointed[500].get(),
+            0,
+            "a row far from the view is not given the pointer"
+        );
+        assert_eq!(rows.pointed[100].get(), 1, "a row in view is");
+
+        rows.scroll_to(2_400.0);
+        assert_eq!(rows.row(100).y0, -400.0, "row 100 left the view upwards");
+        assert_eq!(rows.row(120).y0, 0.0);
     }
-    assert_eq!(origin(&rows), -40.0, "it lands on the display's pixel");
+
+    phase a_row_whose_paint_grows_is_found_near_the_view_once_it_lays_out_again;
+    {
+        let mut rows = rows(400);
+        rows.scroll_to(2_000.0);
+        let row_80 = |rows: &Rows| rows.walked().contains(&rows.row(80));
+        assert!(!row_80(&rows), "row 80 stands 400 px above the view");
+        // Row 80 now paints 500 px below its box: into the view.
+        rows.reach[80].set(500.0);
+        rows.relayout[80].set(true);
+        rows.scroll_to(2_000.0);
+        assert_eq!(
+            rows.row(80).y0,
+            -400.0,
+            "the row that asked for a layout was placed where it stands"
+        );
+        assert!(
+            row_80(&rows),
+            "what it paints reaches the view: the walk visits it"
+        );
+        rows.scroll_to(2_040.0);
+        assert_eq!(rows.row(80).y0, -440.0);
+        assert!(row_80(&rows), "and keeps visiting it as the view moves on");
+    }
+
+    phase a_scroll_keeps_its_fraction_but_an_offset_from_another_scale_lands_whole;
+    {
+        let mut rows = rows(400);
+        let origin = |rows: &Rows| rows.row(2).y0 - 2.0 * f64::from(ROW);
+        // Part of a pixel: the content sits exactly where the scroll put it,
+        // because the copy a host takes of it moves the pixels it showed by that
+        // same part of a pixel.
+        let part = 40.3_f32;
+        rows.scroll_to(part);
+        assert_eq!(
+            origin(&rows),
+            f64::from(-part),
+            "the content sits where the scroll put it"
+        );
+        {
+            let _grid = crate::widget::enter_device_scale(2.0);
+            rows.scroll_to(part);
+        }
+        assert_eq!(origin(&rows), -40.0, "it lands on the display's pixel");
+    }
 }

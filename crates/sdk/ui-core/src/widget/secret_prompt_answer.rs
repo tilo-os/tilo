@@ -115,62 +115,68 @@ mod tests {
         Some((text.into(), tone))
     }
 
-    #[test]
-    fn only_an_answer_arrives_and_the_first_line_rests() {
-        let motion = Theme::dark().motion();
-        let base = crate::time::now();
-        let mut answer = Answer::default();
+    tilo_test_env::scenario! {
+        /// The answer line under a secret prompt.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn an_answer_line_arrives_and_rests;
 
-        answer.observe(line("Press Enter", NoticeTone::Quiet), base, motion);
-        assert_eq!(answer.paint(base).shown_alpha, 1.0, "the first line rests");
-        assert_eq!(answer.deadline(), None);
+        phase only_an_answer_arrives_and_the_first_line_rests;
+        {
+            let motion = Theme::dark().motion();
+            let base = crate::time::now();
+            let mut answer = Answer::default();
 
-        answer.observe(line("Checking", NoticeTone::Busy), base, motion);
-        let arriving = answer.paint(base);
-        assert!(arriving.shown_alpha < 1.0, "an answer fades in");
-        assert!(arriving.replaced.is_some(), "over the line it replaces");
-        assert_eq!(arriving.dx, 0.0, "checking does not shake");
-        let end = answer.deadline().expect("the fade asks for frames");
-        assert!(answer.paint(end).replaced.is_none());
-        assert_eq!(answer.paint(end).shown_alpha, 1.0);
-        answer.rest_if_settled(end);
-        assert_eq!(answer.deadline(), None, "a settled answer asks for nothing");
+            answer.observe(line("Press Enter", NoticeTone::Quiet), base, motion);
+            assert_eq!(answer.paint(base).shown_alpha, 1.0, "the first line rests");
+            assert_eq!(answer.deadline(), None);
 
-        answer.observe(line("Wrong", NoticeTone::Error), at(end, 10), motion);
-        let shaking = (0..=40)
-            .map(|step| answer.paint(at(end, 10 + step * 5)).dx)
-            .any(|dx| dx.abs() > 0.5);
-        assert!(shaking, "a refusal shakes");
+            answer.observe(line("Checking", NoticeTone::Busy), base, motion);
+            let arriving = answer.paint(base);
+            assert!(arriving.shown_alpha < 1.0, "an answer fades in");
+            assert!(arriving.replaced.is_some(), "over the line it replaces");
+            assert_eq!(arriving.dx, 0.0, "checking does not shake");
+            let end = answer.deadline().expect("the fade asks for frames");
+            assert!(answer.paint(end).replaced.is_none());
+            assert_eq!(answer.paint(end).shown_alpha, 1.0);
+            answer.rest_if_settled(end);
+            assert_eq!(answer.deadline(), None, "a settled answer asks for nothing");
 
-        let later = at(end, 5_000);
-        answer.observe(line("Press Enter", NoticeTone::Quiet), later, motion);
-        let edit = answer.paint(later);
-        assert!(
-            edit.replaced.is_none() || edit.shown_alpha >= 1.0,
-            "an edit lands at once"
-        );
-        assert_eq!(edit.dx, 0.0);
-    }
+            answer.observe(line("Wrong", NoticeTone::Error), at(end, 10), motion);
+            let shaking = (0..=40)
+                .map(|step| answer.paint(at(end, 10 + step * 5)).dx)
+                .any(|dx| dx.abs() > 0.5);
+            assert!(shaking, "a refusal shakes");
 
-    #[test]
-    fn reduced_motion_keeps_the_fade_and_never_shakes() {
-        let theme = Theme::dark().with_reduce_motion(true);
-        let motion = theme.motion();
-        let base = crate::time::now();
-        let mut answer = Answer::default();
-        answer.observe(line("Press Enter", NoticeTone::Quiet), base, motion);
-        answer.observe(line("Wrong", NoticeTone::Error), base, motion);
-        let end = answer.deadline().unwrap_or(base);
-        for step in 0..=40 {
-            let now = at(base, step * 5);
-            if now > end {
-                break;
-            }
-            assert_eq!(
-                answer.paint(now).dx,
-                0.0,
-                "no movement under reduced motion"
+            let later = at(end, 5_000);
+            answer.observe(line("Press Enter", NoticeTone::Quiet), later, motion);
+            let edit = answer.paint(later);
+            assert!(
+                edit.replaced.is_none() || edit.shown_alpha >= 1.0,
+                "an edit lands at once"
             );
+            assert_eq!(edit.dx, 0.0);
+        }
+
+        phase reduced_motion_keeps_the_fade_and_never_shakes;
+        {
+            let theme = Theme::dark().with_reduce_motion(true);
+            let motion = theme.motion();
+            let base = crate::time::now();
+            let mut answer = Answer::default();
+            answer.observe(line("Press Enter", NoticeTone::Quiet), base, motion);
+            answer.observe(line("Wrong", NoticeTone::Error), base, motion);
+            let end = answer.deadline().unwrap_or(base);
+            for step in 0..=40 {
+                let now = at(base, step * 5);
+                if now > end {
+                    break;
+                }
+                assert_eq!(
+                    answer.paint(now).dx,
+                    0.0,
+                    "no movement under reduced motion"
+                );
+            }
         }
     }
 }

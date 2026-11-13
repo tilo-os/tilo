@@ -386,21 +386,245 @@ mod tests {
         root.children().iter().map(|c| c.get_rect()).collect()
     }
 
-    /// A row of short content stands as tall as the control size it names,
-    /// so a list mixing keycaps and recorder fields keeps one rhythm.
-    #[test]
-    fn a_row_stands_at_least_a_control_high() {
-        let regular = crate::widget::ControlSize::Regular.height(&Theme::dark());
-        let mut plain = two_texts();
-        lay_out(&mut plain, 400.0);
-        assert!(plain.get_rect().height() < regular, "text alone is shorter");
-        let mut row = two_texts().with_min_height(crate::widget::ControlSize::Regular);
-        lay_out(&mut row, 400.0);
-        assert!(
-            (row.get_rect().height() - regular).abs() < 0.5,
-            "{} vs {regular}",
-            row.get_rect().height()
-        );
+    tilo_test_env::scenario! {
+        /// A row: its height, its children, its wrap and its damage.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn a_row_sizes_wraps_places_and_merges_damage;
+
+        phase a_row_stands_at_least_a_control_high;
+        // A row of short content stands as tall as the control size it names,
+        // so a list mixing keycaps and recorder fields keeps one rhythm.
+        {
+            let regular = crate::widget::ControlSize::Regular.height(&Theme::dark());
+            let mut plain = two_texts();
+            lay_out(&mut plain, 400.0);
+            assert!(plain.get_rect().height() < regular, "text alone is shorter");
+            let mut row = two_texts().with_min_height(crate::widget::ControlSize::Regular);
+            lay_out(&mut row, 400.0);
+            assert!(
+                (row.get_rect().height() - regular).abs() < 0.5,
+                "{} vs {regular}",
+                row.get_rect().height()
+            );
+        }
+
+        phase a_full_width_child_beside_a_spacer_stays_inside_the_row;
+        // A label, a spacer and a full-width child (a nested row of buttons,
+        // a fluid container) stay inside the row instead of overflowing it.
+        {
+            use crate::widget::{Button, Container, Spacer};
+            let buttons = || {
+                Row::new()
+                    .no_wrap()
+                    .with_gap(4.0)
+                    .push(Box::new(Button::new("a", "Alpha")))
+                    .push(Box::new(Button::new("b", "Beta")))
+            };
+            let nested = Row::new()
+                .no_wrap()
+                .push(Box::new(Text::new("Label")))
+                .push(Box::new(Spacer::new()))
+                .push(Box::new(buttons()));
+            let fluid = Row::new()
+                .no_wrap()
+                .push(Box::new(Text::new("Label")))
+                .push(Box::new(Spacer::new()))
+                .push(Box::new(
+                    Container::new()
+                        .with_no_padding()
+                        .with_child(Box::new(buttons())),
+                ));
+            for mut row in [nested, fluid] {
+                let rects = lay_out(&mut row, 400.0);
+                let right = rects.iter().map(|rect| rect.x1).fold(0.0, f64::max);
+                assert!(right <= 400.5, "the row overflows its 400 px: {rects:?}");
+                assert!(
+                    rects[2].width() >= 100.0,
+                    "the trailing child keeps its content's width: {rects:?}"
+                );
+                assert!(
+                    rects[2].x1 > 390.0,
+                    "the spacer pushes the trailing child to the far end: {rects:?}"
+                );
+                assert!(
+                    rects[0].width() > 20.0,
+                    "the label keeps its text: {rects:?}"
+                );
+            }
+        }
+
+        phase a_growing_child_does_not_widen_a_row_measured_for_its_content;
+        // A child growing into the leftover room from the least it names
+        // does not make a row measured for its content (no scrollable above
+        // it) as wide as that child's longest label.
+        {
+            use crate::widget::{Button, Column, Container};
+            let label = "A long layer name that would not fit in a narrow panel at all";
+            let row = Row::new()
+                .no_wrap()
+                .push(Box::new(
+                    Container::new()
+                        .with_no_padding()
+                        .with_flex_grow()
+                        .with_min_width(0.0)
+                        .with_child(Box::new(Text::new(label))),
+                ))
+                .push(Box::new(Button::new("eye", "Eye")));
+            let mut panel = Container::new()
+                .with_no_padding()
+                .with_width(240.0)
+                .with_child(Box::new(Column::new().with_no_padding().push(Box::new(
+                    Column::new().with_intrinsic_height().push(Box::new(row)),
+                ))));
+            lay_out(&mut panel, 600.0);
+            let mut widest: f64 = 0.0;
+            let mut stack: Vec<&dyn Widget> = vec![&panel];
+            while let Some(widget) = stack.pop() {
+                widest = widest.max(widget.get_rect().x1);
+                stack.extend(widget.children());
+            }
+            assert!(
+                widest <= 240.5,
+                "the row overflows its 240 px panel: {widest}"
+            );
+        }
+
+        phase a_line_of_buttons_wraps_before_it_overlaps;
+        // A line of buttons that runs out of room moves the buttons that do
+        // not fit onto lines of their own, one gap apart, rather than letting
+        // them overlap or run past the edge.
+        {
+            use crate::widget::Button;
+            let mut row = Row::new()
+                .with_rhythm(crate::tokens::Rhythm::Related)
+                .align_start()
+                .push(Box::new(Button::new("up", "Move earlier")))
+                .push(Box::new(Button::new("down", "Move later")))
+                .push(Box::new(Button::new("delete", "Delete workspace")));
+            let wide = lay_out(&mut row, 600.0);
+            assert!(
+                wide.iter().all(|rect| (rect.y0 - wide[0].y0).abs() < 0.5),
+                "three buttons share one line at 600 px: {wide:?}"
+            );
+            let narrow = lay_out(&mut row, 240.0);
+            let lines = narrow
+                .iter()
+                .filter(|rect| rect.y0 > narrow[0].y0 + 0.5)
+                .count();
+            assert!(lines >= 1, "a 240 px row wraps: {narrow:?}");
+            for (index, a) in narrow.iter().enumerate() {
+                assert!(a.x1 <= 240.5, "{a:?} runs past the edge");
+                for b in &narrow[index + 1..] {
+                    assert!(a.intersect(*b).area() <= 0.0, "{a:?} and {b:?} overlap");
+                }
+            }
+            let gap = narrow
+                .iter()
+                .filter(|rect| rect.y0 > narrow[0].y0 + 0.5)
+                .map(|rect| rect.y0 - narrow[0].y1)
+                .fold(f64::INFINITY, f64::min);
+            assert!(gap >= 4.0, "wrapped lines keep a gap: {gap}");
+        }
+
+        phase row_gap_justify_and_alignment_place_children;
+        {
+            {
+                let theme = Theme::dark();
+                let rects = lay_out(&mut two_texts(), 600.0);
+                assert!(
+                    (rects[1].x0 - rects[0].x1 - f64::from(theme.gap_standard)).abs() < 0.5,
+                    "default gap is gap_standard: {rects:?}"
+                );
+                assert!(
+                    (rects[0].x0).abs() < 0.5,
+                    "children start at the leading edge: {rects:?}"
+                );
+            }
+
+            {
+                let rects = lay_out(&mut two_texts().with_gap(4.0), 600.0);
+                assert!((rects[1].x0 - rects[0].x1 - 4.0).abs() < 0.5, "{rects:?}");
+                let tight = lay_out(&mut two_texts().with_gap(0.0), 600.0);
+                assert!((tight[1].x0 - tight[0].x1).abs() < 0.5, "{tight:?}");
+            }
+
+            {
+                let rects = lay_out(
+                    &mut two_texts().with_justify(taffy::JustifyContent::SpaceBetween),
+                    600.0,
+                );
+                assert!((rects[0].x0).abs() < 0.5, "{rects:?}");
+                assert!((rects[1].x1 - 600.0).abs() < 0.5, "{rects:?}");
+                let end = lay_out(
+                    &mut two_texts().with_justify(taffy::JustifyContent::End),
+                    600.0,
+                );
+                assert!((end[1].x1 - 600.0).abs() < 0.5, "{end:?}");
+                assert!(
+                    end[0].x0 > 300.0,
+                    "both children sit at the trailing end: {end:?}"
+                );
+            }
+
+            {
+                let tall = Box::new(
+                    crate::widget::Container::new()
+                        .with_no_padding()
+                        .with_size(40.0, 80.0),
+                );
+                let centred = lay_out(
+                    &mut Row::new()
+                        .no_wrap()
+                        .push(Box::new(Text::new("x")))
+                        .push(tall),
+                    600.0,
+                );
+                let text_mid = centred[0].y0.midpoint(centred[0].y1);
+                let tall_mid = centred[1].y0.midpoint(centred[1].y1);
+                assert!(
+                    (text_mid - tall_mid).abs() < 1.0,
+                    "default centres the short child: {centred:?}"
+                );
+
+                let tall = Box::new(
+                    crate::widget::Container::new()
+                        .with_no_padding()
+                        .with_size(40.0, 80.0),
+                );
+                let start = lay_out(
+                    &mut Row::new()
+                        .no_wrap()
+                        .with_align_items(taffy::AlignItems::Start)
+                        .push(Box::new(Text::new("x")))
+                        .push(tall),
+                    600.0,
+                );
+                assert!(
+                    (start[0].y0 - start[1].y0).abs() < 0.5,
+                    "Start aligns the short child's top with the tall child's: {start:?}"
+                );
+            }
+        }
+
+        phase damage_merge_coalesces_near_children_but_keeps_wrap_endpoints;
+        {
+            {
+                // These are the clipped old/new segments at opposite ends of a
+                // 200px indeterminate progress bar. Their union would repaint the
+                // entire track even though each changed strip is only 60px wide.
+                let old_segment = vello::kurbo::Rect::new(140.0, 0.0, 200.0, 8.0);
+                let new_segment = vello::kurbo::Rect::new(0.0, 0.0, 60.0, 8.0);
+
+                assert!(!can_merge_damage(old_segment, new_segment));
+            }
+
+            {
+                let left = vello::kurbo::Rect::new(0.0, 0.0, 40.0, 20.0);
+                let right = vello::kurbo::Rect::new(44.0, 0.0, 84.0, 20.0);
+
+                assert!(can_merge_damage(left, right));
+            }
+        }
     }
 
     fn two_texts() -> Row {
@@ -408,223 +632,5 @@ mod tests {
             .no_wrap()
             .push(Box::new(Text::new("lead")))
             .push(Box::new(Text::new("trail")))
-    }
-
-    /// A label, a spacer and a full-width child (a nested row of buttons,
-    /// a fluid container) stay inside the row instead of overflowing it.
-    #[test]
-    fn a_full_width_child_beside_a_spacer_stays_inside_the_row() {
-        use crate::widget::{Button, Container, Spacer};
-        let buttons = || {
-            Row::new()
-                .no_wrap()
-                .with_gap(4.0)
-                .push(Box::new(Button::new("a", "Alpha")))
-                .push(Box::new(Button::new("b", "Beta")))
-        };
-        let nested = Row::new()
-            .no_wrap()
-            .push(Box::new(Text::new("Label")))
-            .push(Box::new(Spacer::new()))
-            .push(Box::new(buttons()));
-        let fluid = Row::new()
-            .no_wrap()
-            .push(Box::new(Text::new("Label")))
-            .push(Box::new(Spacer::new()))
-            .push(Box::new(
-                Container::new()
-                    .with_no_padding()
-                    .with_child(Box::new(buttons())),
-            ));
-        for mut row in [nested, fluid] {
-            let rects = lay_out(&mut row, 400.0);
-            let right = rects.iter().map(|rect| rect.x1).fold(0.0, f64::max);
-            assert!(right <= 400.5, "the row overflows its 400 px: {rects:?}");
-            assert!(
-                rects[2].width() >= 100.0,
-                "the trailing child keeps its content's width: {rects:?}"
-            );
-            assert!(
-                rects[2].x1 > 390.0,
-                "the spacer pushes the trailing child to the far end: {rects:?}"
-            );
-            assert!(
-                rects[0].width() > 20.0,
-                "the label keeps its text: {rects:?}"
-            );
-        }
-    }
-
-    /// A child growing into the leftover room from the least it names
-    /// does not make a row measured for its content (no scrollable above
-    /// it) as wide as that child's longest label.
-    #[test]
-    fn a_growing_child_does_not_widen_a_row_measured_for_its_content() {
-        use crate::widget::{Button, Column, Container};
-        let label = "A long layer name that would not fit in a narrow panel at all";
-        let row = Row::new()
-            .no_wrap()
-            .push(Box::new(
-                Container::new()
-                    .with_no_padding()
-                    .with_flex_grow()
-                    .with_min_width(0.0)
-                    .with_child(Box::new(Text::new(label))),
-            ))
-            .push(Box::new(Button::new("eye", "Eye")));
-        let mut panel = Container::new()
-            .with_no_padding()
-            .with_width(240.0)
-            .with_child(Box::new(Column::new().with_no_padding().push(Box::new(
-                Column::new().with_intrinsic_height().push(Box::new(row)),
-            ))));
-        lay_out(&mut panel, 600.0);
-        let mut widest: f64 = 0.0;
-        let mut stack: Vec<&dyn Widget> = vec![&panel];
-        while let Some(widget) = stack.pop() {
-            widest = widest.max(widget.get_rect().x1);
-            stack.extend(widget.children());
-        }
-        assert!(
-            widest <= 240.5,
-            "the row overflows its 240 px panel: {widest}"
-        );
-    }
-
-    /// A line of buttons that runs out of room moves the buttons that do
-    /// not fit onto lines of their own, one gap apart, rather than letting
-    /// them overlap or run past the edge.
-    #[test]
-    fn a_line_of_buttons_wraps_before_it_overlaps() {
-        use crate::widget::Button;
-        let mut row = Row::new()
-            .with_rhythm(crate::tokens::Rhythm::Related)
-            .align_start()
-            .push(Box::new(Button::new("up", "Move earlier")))
-            .push(Box::new(Button::new("down", "Move later")))
-            .push(Box::new(Button::new("delete", "Delete workspace")));
-        let wide = lay_out(&mut row, 600.0);
-        assert!(
-            wide.iter().all(|rect| (rect.y0 - wide[0].y0).abs() < 0.5),
-            "three buttons share one line at 600 px: {wide:?}"
-        );
-        let narrow = lay_out(&mut row, 240.0);
-        let lines = narrow
-            .iter()
-            .filter(|rect| rect.y0 > narrow[0].y0 + 0.5)
-            .count();
-        assert!(lines >= 1, "a 240 px row wraps: {narrow:?}");
-        for (index, a) in narrow.iter().enumerate() {
-            assert!(a.x1 <= 240.5, "{a:?} runs past the edge");
-            for b in &narrow[index + 1..] {
-                assert!(a.intersect(*b).area() <= 0.0, "{a:?} and {b:?} overlap");
-            }
-        }
-        let gap = narrow
-            .iter()
-            .filter(|rect| rect.y0 > narrow[0].y0 + 0.5)
-            .map(|rect| rect.y0 - narrow[0].y1)
-            .fold(f64::INFINITY, f64::min);
-        assert!(gap >= 4.0, "wrapped lines keep a gap: {gap}");
-    }
-
-    #[test]
-    fn row_gap_justify_and_alignment_place_children() {
-        {
-            let theme = Theme::dark();
-            let rects = lay_out(&mut two_texts(), 600.0);
-            assert!(
-                (rects[1].x0 - rects[0].x1 - f64::from(theme.gap_standard)).abs() < 0.5,
-                "default gap is gap_standard: {rects:?}"
-            );
-            assert!(
-                (rects[0].x0).abs() < 0.5,
-                "children start at the leading edge: {rects:?}"
-            );
-        }
-
-        {
-            let rects = lay_out(&mut two_texts().with_gap(4.0), 600.0);
-            assert!((rects[1].x0 - rects[0].x1 - 4.0).abs() < 0.5, "{rects:?}");
-            let tight = lay_out(&mut two_texts().with_gap(0.0), 600.0);
-            assert!((tight[1].x0 - tight[0].x1).abs() < 0.5, "{tight:?}");
-        }
-
-        {
-            let rects = lay_out(
-                &mut two_texts().with_justify(taffy::JustifyContent::SpaceBetween),
-                600.0,
-            );
-            assert!((rects[0].x0).abs() < 0.5, "{rects:?}");
-            assert!((rects[1].x1 - 600.0).abs() < 0.5, "{rects:?}");
-            let end = lay_out(
-                &mut two_texts().with_justify(taffy::JustifyContent::End),
-                600.0,
-            );
-            assert!((end[1].x1 - 600.0).abs() < 0.5, "{end:?}");
-            assert!(
-                end[0].x0 > 300.0,
-                "both children sit at the trailing end: {end:?}"
-            );
-        }
-
-        {
-            let tall = Box::new(
-                crate::widget::Container::new()
-                    .with_no_padding()
-                    .with_size(40.0, 80.0),
-            );
-            let centred = lay_out(
-                &mut Row::new()
-                    .no_wrap()
-                    .push(Box::new(Text::new("x")))
-                    .push(tall),
-                600.0,
-            );
-            let text_mid = centred[0].y0.midpoint(centred[0].y1);
-            let tall_mid = centred[1].y0.midpoint(centred[1].y1);
-            assert!(
-                (text_mid - tall_mid).abs() < 1.0,
-                "default centres the short child: {centred:?}"
-            );
-
-            let tall = Box::new(
-                crate::widget::Container::new()
-                    .with_no_padding()
-                    .with_size(40.0, 80.0),
-            );
-            let start = lay_out(
-                &mut Row::new()
-                    .no_wrap()
-                    .with_align_items(taffy::AlignItems::Start)
-                    .push(Box::new(Text::new("x")))
-                    .push(tall),
-                600.0,
-            );
-            assert!(
-                (start[0].y0 - start[1].y0).abs() < 0.5,
-                "Start aligns the short child's top with the tall child's: {start:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn damage_merge_coalesces_near_children_but_keeps_wrap_endpoints() {
-        {
-            // These are the clipped old/new segments at opposite ends of a
-            // 200px indeterminate progress bar. Their union would repaint the
-            // entire track even though each changed strip is only 60px wide.
-            let old_segment = vello::kurbo::Rect::new(140.0, 0.0, 200.0, 8.0);
-            let new_segment = vello::kurbo::Rect::new(0.0, 0.0, 60.0, 8.0);
-
-            assert!(!can_merge_damage(old_segment, new_segment));
-        }
-
-        {
-            let left = vello::kurbo::Rect::new(0.0, 0.0, 40.0, 20.0);
-            let right = vello::kurbo::Rect::new(44.0, 0.0, 84.0, 20.0);
-
-            assert!(can_merge_damage(left, right));
-        }
     }
 }

@@ -1073,581 +1073,774 @@ mod tests {
         Rect::new(0.0, 0.0, 600.0, 800.0)
     }
 
-    #[test]
-    fn drawer_shares_the_shell_metrics() {
-        let mut d = SidebarDrawer::new();
-        d.scale_for(&Theme::dark());
-        let metrics = Metrics::BASE;
-        assert_eq!(d.resolved_docked_width(), f64::from(metrics.sidebar_width));
-        assert_eq!(d.resolved_overlay_width(), f64::from(metrics.drawer_width));
-        assert_eq!(
-            d.resolved_breakpoint(),
-            f64::from(metrics.compact_breakpoint)
-        );
-    }
+    tilo_test_env::scenario! {
+        /// A sidebar's metrics, its resize and its scale.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn resizing_and_scale_keep_the_panel_usable;
 
-    /// The content beside the panel is never a phone's screen: an authored minimum under a
-    /// column's width ([`crate::widget::arrange::column_min_width`]) is raised to one, so the panel
-    /// stops where the content still reads and the handle stays usable.
-    #[test]
-    fn a_panel_keeps_a_column_for_the_content_however_narrow_its_authored_minimum() {
-        let theme = Theme::dark();
-        let column = f64::from(crate::widget::arrange::column_min_width(
-            crate::widget::arrange::rem_of(&theme),
-        ));
-        for side in [SidebarSide::Left, SidebarSide::Right] {
-            let mut drawer = SidebarDrawer::new()
-                .side(side)
-                .with_rail()
-                .content_min_width(360.0);
-            drawer.scale_for(&theme);
-            let area = Rect::new(40.0, 20.0, 800.0, 740.0);
-            drawer.resolve(area);
-            drawer.snap(true);
-            drawer.resolve(area);
-            assert!(drawer.is_docked(), "the panel docks beside a column");
-            assert_eq!(drawer.content_rect().width(), column);
-            assert!(
-                drawer.sidebar_rect().width() + column <= area.width() + 0.5,
-                "the panel and the content's column fit the window"
+        phase drawer_shares_the_shell_metrics;
+        {
+            let mut d = SidebarDrawer::new();
+            d.scale_for(&Theme::dark());
+            let metrics = Metrics::BASE;
+            assert_eq!(d.resolved_docked_width(), f64::from(metrics.sidebar_width));
+            assert_eq!(d.resolved_overlay_width(), f64::from(metrics.drawer_width));
+            assert_eq!(
+                d.resolved_breakpoint(),
+                f64::from(metrics.compact_breakpoint)
             );
-            assert!(drawer.resize_accessibility().is_some());
-            let value = match side {
-                SidebarSide::Left => "90%",
-                SidebarSide::Right => "10%",
-            };
-            let target = drawer.resize_target();
-            drawer.perform_resize_action(target, &crate::a11y::Action::SetValue(value.into()));
-            drawer.resolve(area);
-            assert!(drawer.is_docked(), "resize must not turn into an overlay");
-            assert_eq!(drawer.content_rect().width(), column);
         }
-    }
 
-    /// A surface drawn to the room it gets (pages, a picture) is no column of text: the panel
-    /// docks beside it narrower than a column, down to the surface's own minimum, and floats over
-    /// it only below that.
-    #[test]
-    fn a_panel_docks_beside_a_surface_narrower_than_a_column() {
-        let theme = Theme::dark();
-        let column = f64::from(crate::widget::arrange::column_min_width(
-            crate::widget::arrange::rem_of(&theme),
-        ));
-        let surface = 360.0;
-        assert!(surface < column, "the surface's minimum is under a column");
-        let mut drawer = SidebarDrawer::new()
-            .right()
-            .docked_width(300.0)
-            .content_surface(surface);
-        drawer.scale_for(&theme);
-        let area = Rect::new(0.0, 0.0, 600.0, 700.0);
-        drawer.resolve(area);
-        drawer.snap(true);
-        drawer.resolve(area);
-        assert!(drawer.is_docked(), "the panel docks beside the surface");
-        assert!((drawer.content_rect().width() - surface).abs() < 0.5);
-        let narrow = Rect::new(0.0, 0.0, surface + 150.0, 700.0);
-        drawer.resolve(narrow);
-        assert!(
-            drawer.is_overlay(),
-            "below the surface's minimum the panel floats"
-        );
-    }
-
-    #[test]
-    fn sidebar_trailing_edge_drag_resizes_and_collapses_the_actual_panel() {
-        let mut drawer = SidebarDrawer::new().content_min_width(560.0);
-        let theme = Theme::dark();
-        drawer.scale_for(&theme);
-        let area = Rect::new(40.0, 20.0, 1240.0, 820.0);
-        drawer.header(area, &theme);
-        drawer.resolve(area);
-        drawer.snap(true);
-        drawer.resolve(area);
-        let edge = drawer.sidebar_rect().x1;
-        let y = 200.0;
-        let motion = |x| crate::synthetic_input::cursor_moved(x, y);
-        route(&mut drawer, &motion(edge));
-        assert!(route(&mut drawer, &crate::synthetic_input::mouse_press()));
-        route(&mut drawer, &motion(edge + 40.0));
-        drawer.resolve(area);
-        assert_eq!(drawer.list_rect().width(), 320.0);
-        route(&mut drawer, &motion(edge + 400.0));
-        drawer.resolve(area);
-        assert_eq!(drawer.list_rect().width(), 420.0);
-        route(&mut drawer, &motion(area.x0 + 100.0));
-        assert!(!drawer.is_open());
-        assert!(route(&mut drawer, &crate::synthetic_input::mouse_release()));
-        drawer.open();
-        drawer.snap(true);
-        drawer.resolve(area);
-        assert_eq!(drawer.list_rect().width(), 420.0);
-    }
-
-    #[test]
-    fn sidebar_resize_hides_only_below_the_minimum_and_reopens_at_the_last_usable_width() {
-        use winit::event::{ElementState, MouseButton};
-        for side in [SidebarSide::Left, SidebarSide::Right] {
-            let mut drawer = SidebarDrawer::new().side(side).content_min_width(560.0);
-            drawer.scale_for(&Theme::dark());
-            let area = wide();
+        phase sidebar_trailing_edge_drag_resizes_and_collapses_the_actual_panel;
+        {
+            let mut drawer = SidebarDrawer::new().content_min_width(560.0);
+            let theme = Theme::dark();
+            drawer.scale_for(&theme);
+            let area = Rect::new(40.0, 20.0, 1240.0, 820.0);
+            drawer.header(area, &theme);
             drawer.resolve(area);
             drawer.snap(true);
             drawer.resolve(area);
-            let motion = |width| {
-                crate::synthetic_input::cursor_moved(
-                    match side {
-                        SidebarSide::Left => area.x0 + width,
-                        SidebarSide::Right => area.x1 - width,
-                    },
-                    200.0,
-                )
-            };
-            let button = |state| crate::synthetic_input::mouse_input(state, MouseButton::Left);
-            let initial_width = drawer.list_rect().width();
-            route(&mut drawer, &motion(initial_width));
-            assert!(route(&mut drawer, &button(ElementState::Pressed)));
-            route(&mut drawer, &motion(200.0));
+            let edge = drawer.sidebar_rect().x1;
+            let y = 200.0;
+            let motion = |x| crate::synthetic_input::cursor_moved(x, y);
+            route(&mut drawer, &motion(edge));
+            assert!(route(&mut drawer, &crate::synthetic_input::mouse_press()));
+            route(&mut drawer, &motion(edge + 40.0));
             drawer.resolve(area);
-            assert!(drawer.is_open(), "the exact minimum stays visible");
-            assert_eq!(drawer.list_rect().width(), 200.0);
-            route(&mut drawer, &motion(199.0));
-            assert!(!drawer.is_open(), "dragging below the minimum hides it");
-            assert!(route(&mut drawer, &button(ElementState::Released)));
+            assert_eq!(drawer.list_rect().width(), 320.0);
+            route(&mut drawer, &motion(edge + 400.0));
+            drawer.resolve(area);
+            assert_eq!(drawer.list_rect().width(), 420.0);
+            route(&mut drawer, &motion(area.x0 + 100.0));
+            assert!(!drawer.is_open());
+            assert!(route(&mut drawer, &crate::synthetic_input::mouse_release()));
             drawer.open();
             drawer.snap(true);
             drawer.resolve(area);
-            assert_eq!(drawer.list_rect().width(), 200.0);
+            assert_eq!(drawer.list_rect().width(), 420.0);
+        }
+
+        phase sidebar_resize_hides_only_below_the_minimum_and_reopens_at_the_last_usable_width;
+        {
+            use winit::event::{ElementState, MouseButton};
+            for side in [SidebarSide::Left, SidebarSide::Right] {
+                let mut drawer = SidebarDrawer::new().side(side).content_min_width(560.0);
+                drawer.scale_for(&Theme::dark());
+                let area = wide();
+                drawer.resolve(area);
+                drawer.snap(true);
+                drawer.resolve(area);
+                let motion = |width| {
+                    crate::synthetic_input::cursor_moved(
+                        match side {
+                            SidebarSide::Left => area.x0 + width,
+                            SidebarSide::Right => area.x1 - width,
+                        },
+                        200.0,
+                    )
+                };
+                let button = |state| crate::synthetic_input::mouse_input(state, MouseButton::Left);
+                let initial_width = drawer.list_rect().width();
+                route(&mut drawer, &motion(initial_width));
+                assert!(route(&mut drawer, &button(ElementState::Pressed)));
+                route(&mut drawer, &motion(200.0));
+                drawer.resolve(area);
+                assert!(drawer.is_open(), "the exact minimum stays visible");
+                assert_eq!(drawer.list_rect().width(), 200.0);
+                route(&mut drawer, &motion(199.0));
+                assert!(!drawer.is_open(), "dragging below the minimum hides it");
+                assert!(route(&mut drawer, &button(ElementState::Released)));
+                drawer.open();
+                drawer.snap(true);
+                drawer.resolve(area);
+                assert_eq!(drawer.list_rect().width(), 200.0);
+            }
+        }
+
+        phase sidebar_resize_semantics_share_the_pointer_width_and_preserve_scale_and_rail;
+        {
+            use crate::a11y::Action;
+            for side in [SidebarSide::Left, SidebarSide::Right] {
+                let mut drawer = SidebarDrawer::new()
+                    .side(side)
+                    .with_rail()
+                    .content_min_width(560.0);
+                let theme = Theme::dark().with_text_scale(2.0);
+                drawer.scale_for(&theme);
+                let area = Rect::new(0.0, 0.0, 2400.0, 800.0);
+                drawer.resolve(area);
+                drawer.snap(true);
+                drawer.resolve(area);
+                let node = drawer
+                    .resize_accessibility()
+                    .expect("actual docked separator");
+                assert_eq!(node.role, crate::a11y::Role::Separator);
+                let target = node.action_target.expect("stable semantic route");
+                let value = match side {
+                    SidebarSide::Left => "30%",
+                    SidebarSide::Right => "70%",
+                };
+                assert!(drawer.perform_resize_action(&target, &Action::SetValue(value.into())));
+                assert_eq!(drawer.sidebar_rect().width(), 720.0);
+                assert_eq!(
+                    drawer.rail_rect().width(),
+                    f64::from(theme.tokens.metrics.rail_width)
+                );
+                let before = drawer.sidebar_rect();
+                assert!(!drawer.perform_resize_action(&target, &Action::SetValue("NaN".into())));
+                assert_eq!(drawer.sidebar_rect(), before);
+                let increase = match side {
+                    SidebarSide::Left => Action::Increment,
+                    SidebarSide::Right => Action::Decrement,
+                };
+                assert!(drawer.perform_resize_action(&target, &increase));
+                assert_eq!(drawer.sidebar_rect().width(), 840.0);
+                drawer.resolve(Rect::new(0.0, 0.0, 500.0, 800.0));
+                assert!(drawer.is_overlay());
+                assert!(drawer.resize_accessibility().is_none());
+                drawer.resolve(area);
+                drawer.snap(true);
+                drawer.resolve(area);
+                assert_eq!(drawer.sidebar_rect().width(), 840.0);
+            }
+        }
+
+        phase sidebar_resize_preserves_icon_extent_scaling_when_text_grows_independently;
+        {
+            for side in [SidebarSide::Left, SidebarSide::Right] {
+                let mut drawer = SidebarDrawer::new()
+                    .side(side)
+                    .icon_docked_width(280.0)
+                    .with_rail();
+                let theme = Theme::dark().with_text_scale(2.0);
+                drawer.scale_for(&theme);
+                let area = Rect::new(0.0, 0.0, 2400.0, 800.0);
+                drawer.resolve(area);
+                drawer.snap(true);
+                drawer.resolve(area);
+                let target = drawer
+                    .resize_accessibility()
+                    .expect("actual docked icon-sized separator")
+                    .action_target
+                    .expect("stable semantic route");
+                let value = match side {
+                    SidebarSide::Left => "30%",
+                    SidebarSide::Right => "70%",
+                };
+                assert!(
+                    drawer.perform_resize_action(&target, &crate::a11y::Action::SetValue(value.into()))
+                );
+                assert_eq!(drawer.sidebar_rect().width(), 720.0);
+                drawer.resolve(area);
+                assert_eq!(drawer.sidebar_rect().width(), 720.0);
+            }
+        }
+
+        phase scale_for_grows_text_sized_extents_and_leaves_the_icon_rail;
+        {
+            let authored = || {
+                SidebarDrawer::new()
+                    .breakpoint(760.0)
+                    .docked_width(240.0)
+                    .overlay_width(320.0)
+                    .rail_width(56.0)
+            };
+            let mut plain = authored();
+            plain.resolve(Rect::new(0.0, 0.0, 1000.0, 800.0));
+            assert_eq!(plain.layout(), SplitLayout::Docked);
+            assert_eq!(plain.sidebar_rect().width(), 240.0);
+            assert_eq!(
+                (
+                    plain.resolved_breakpoint(),
+                    plain.resolved_overlay_width(),
+                    plain.resolved_rail_width()
+                ),
+                (760.0, 320.0, 56.0)
+            );
+
+            let mut large = authored();
+            large.scale_for(&Theme::dark().with_text_scale(2.0));
+            assert_eq!(
+                (
+                    large.resolved_breakpoint(),
+                    large.resolved_docked_width(),
+                    large.resolved_overlay_width()
+                ),
+                (1520.0, 480.0, 640.0)
+            );
+            assert_eq!(large.resolved_rail_width(), 56.0);
+            large.resolve(Rect::new(0.0, 0.0, 1000.0, 800.0));
+            assert_eq!(large.layout(), SplitLayout::Overlay);
+
+            let mut smaller = authored();
+            smaller.scale_for(&Theme::dark().with_text_scale(0.75));
+            assert_eq!(smaller.resolved_docked_width(), 240.0);
+
+            let mut dense = authored();
+            dense.scale_for(&Theme::dark().with_ui_scale(1.5));
+            assert!((dense.resolved_rail_width() - 84.0).abs() < 1e-9);
+            assert!((dense.resolved_breakpoint() - 1140.0).abs() < 1e-9);
+
+            let mut glyphs = SidebarDrawer::new()
+                .icon_docked_width(56.0)
+                .overlay_width(288.0);
+            glyphs.scale_for(&Theme::dark().with_text_scale(2.0));
+            assert_eq!(glyphs.resolved_docked_width(), 56.0);
+            assert_eq!(glyphs.resolved_overlay_width(), 576.0);
+            glyphs.set_docked_width(64.0);
+            assert_eq!(glyphs.resolved_docked_width(), 64.0);
         }
     }
 
-    #[test]
-    fn sidebar_resize_semantics_share_the_pointer_width_and_preserve_scale_and_rail() {
-        use crate::a11y::Action;
-        for side in [SidebarSide::Left, SidebarSide::Right] {
+    tilo_test_env::scenario! {
+        /// When a panel docks beside the content, and what gives way when both cannot fit.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn panels_dock_by_their_minimums_or_take_turns;
+
+        phase a_panel_keeps_a_column_for_the_content_however_narrow_its_authored_minimum;
+        // The content beside the panel is never a phone's screen: an authored minimum under a
+        // column's width ([`crate::widget::arrange::column_min_width`]) is raised to one, so the panel
+        // stops where the content still reads and the handle stays usable.
+        {
+            let theme = Theme::dark();
+            let column = f64::from(crate::widget::arrange::column_min_width(
+                crate::widget::arrange::rem_of(&theme),
+            ));
+            for side in [SidebarSide::Left, SidebarSide::Right] {
+                let mut drawer = SidebarDrawer::new()
+                    .side(side)
+                    .with_rail()
+                    .content_min_width(360.0);
+                drawer.scale_for(&theme);
+                let area = Rect::new(40.0, 20.0, 800.0, 740.0);
+                drawer.resolve(area);
+                drawer.snap(true);
+                drawer.resolve(area);
+                assert!(drawer.is_docked(), "the panel docks beside a column");
+                assert_eq!(drawer.content_rect().width(), column);
+                assert!(
+                    drawer.sidebar_rect().width() + column <= area.width() + 0.5,
+                    "the panel and the content's column fit the window"
+                );
+                assert!(drawer.resize_accessibility().is_some());
+                let value = match side {
+                    SidebarSide::Left => "90%",
+                    SidebarSide::Right => "10%",
+                };
+                let target = drawer.resize_target();
+                drawer.perform_resize_action(target, &crate::a11y::Action::SetValue(value.into()));
+                drawer.resolve(area);
+                assert!(drawer.is_docked(), "resize must not turn into an overlay");
+                assert_eq!(drawer.content_rect().width(), column);
+            }
+        }
+
+        phase a_panel_docks_beside_a_surface_narrower_than_a_column;
+        // A surface drawn to the room it gets (pages, a picture) is no column of text: the panel
+        // docks beside it narrower than a column, down to the surface's own minimum, and floats over
+        // it only below that.
+        {
+            let theme = Theme::dark();
+            let column = f64::from(crate::widget::arrange::column_min_width(
+                crate::widget::arrange::rem_of(&theme),
+            ));
+            let surface = 360.0;
+            assert!(surface < column, "the surface's minimum is under a column");
             let mut drawer = SidebarDrawer::new()
-                .side(side)
+                .right()
+                .docked_width(300.0)
+                .content_surface(surface);
+            drawer.scale_for(&theme);
+            let area = Rect::new(0.0, 0.0, 600.0, 700.0);
+            drawer.resolve(area);
+            drawer.snap(true);
+            drawer.resolve(area);
+            assert!(drawer.is_docked(), "the panel docks beside the surface");
+            assert!((drawer.content_rect().width() - surface).abs() < 0.5);
+            let narrow = Rect::new(0.0, 0.0, surface + 150.0, 700.0);
+            drawer.resolve(narrow);
+            assert!(
+                drawer.is_overlay(),
+                "below the surface's minimum the panel floats"
+            );
+        }
+
+        phase content_minimum_docks_by_the_narrowest_panel_and_shrinks_it_first;
+        {
+            let m = Metrics::BASE;
+            let content_min = f64::from(m.content_min_width);
+            let mut drawer = SidebarDrawer::new()
                 .with_rail()
-                .content_min_width(560.0);
-            let theme = Theme::dark().with_text_scale(2.0);
-            drawer.scale_for(&theme);
-            let area = Rect::new(0.0, 0.0, 2400.0, 800.0);
-            drawer.resolve(area);
-            drawer.snap(true);
-            drawer.resolve(area);
-            let node = drawer
-                .resize_accessibility()
-                .expect("actual docked separator");
-            assert_eq!(node.role, crate::a11y::Role::Separator);
-            let target = node.action_target.expect("stable semantic route");
-            let value = match side {
-                SidebarSide::Left => "30%",
-                SidebarSide::Right => "70%",
+                .content_min_width(content_min);
+            drawer.scale_for(&Theme::dark());
+            let narrowest = f64::from(m.sidebar_min_width + m.rail_width);
+            let breakpoint = narrowest + content_min;
+            assert_eq!(drawer.resolved_breakpoint(), breakpoint);
+            let at = |drawer: &mut SidebarDrawer, width: f64| {
+                drawer.resolve(Rect::new(0.0, 0.0, width, 800.0));
             };
-            assert!(drawer.perform_resize_action(&target, &Action::SetValue(value.into())));
-            assert_eq!(drawer.sidebar_rect().width(), 720.0);
-            assert_eq!(
-                drawer.rail_rect().width(),
-                f64::from(theme.tokens.metrics.rail_width)
-            );
-            let before = drawer.sidebar_rect();
-            assert!(!drawer.perform_resize_action(&target, &Action::SetValue("NaN".into())));
-            assert_eq!(drawer.sidebar_rect(), before);
-            let increase = match side {
-                SidebarSide::Left => Action::Increment,
-                SidebarSide::Right => Action::Decrement,
-            };
-            assert!(drawer.perform_resize_action(&target, &increase));
-            assert_eq!(drawer.sidebar_rect().width(), 840.0);
-            drawer.resolve(Rect::new(0.0, 0.0, 500.0, 800.0));
+            let docked = drawer.resolved_docked_width();
+            at(&mut drawer, docked + content_min + 100.0);
+            assert!(drawer.is_docked());
+            assert_eq!(drawer.sidebar_rect().width(), docked);
+            at(&mut drawer, breakpoint + 10.0);
+            assert!(drawer.is_docked());
+            assert_eq!(drawer.content_rect().width(), content_min);
+            assert_eq!(drawer.sidebar_rect().width(), narrowest + 10.0);
+            at(&mut drawer, breakpoint - 1.0);
             assert!(drawer.is_overlay());
-            assert!(drawer.resize_accessibility().is_none());
-            drawer.resolve(area);
-            drawer.snap(true);
-            drawer.resolve(area);
-            assert_eq!(drawer.sidebar_rect().width(), 840.0);
+            assert_eq!(
+                drawer.scrim_rect().width(),
+                0.0,
+                "a closed drawer has no dismiss area"
+            );
+            let band = f64::from(m.layout_hysteresis);
+            at(&mut drawer, breakpoint + band - 1.0);
+            assert!(drawer.is_overlay(), "no flicker near the threshold");
+            at(&mut drawer, breakpoint + band);
+            assert!(drawer.is_docked());
+            drawer.scale_for(&Theme::dark().with_text_scale(2.0));
+            assert_eq!(
+                drawer.resolved_breakpoint(),
+                2.0 * f64::from(m.sidebar_min_width + m.content_min_width) + f64::from(m.rail_width)
+            );
+            drawer.set_breakpoint(700.0);
+            assert_eq!(drawer.resolved_breakpoint(), 1400.0);
         }
-    }
 
-    #[test]
-    fn sidebar_resize_preserves_icon_extent_scaling_when_text_grows_independently() {
-        for side in [SidebarSide::Left, SidebarSide::Right] {
+        phase a_content_kind_docks_by_its_real_minimum;
+        {
+            let m = Metrics::BASE;
+            let mut drawer = SidebarDrawer::new().content_kind(crate::widget::ContentKind::Grid);
+            drawer.scale_for(&Theme::dark());
+            assert_eq!(
+                drawer.resolved_breakpoint(),
+                f64::from(m.sidebar_min_width + m.grid_min_width)
+            );
+            drawer.resolve(Rect::new(0.0, 0.0, 600.0, 800.0));
+            assert!(drawer.is_docked(), "a media grid keeps its sidebar at 600");
+        }
+
+        phase too_narrow_to_dock_the_list_and_the_content_take_turns;
+        // Too narrow to dock, a panel that asked for the push layout takes turns with the content
+        // instead of floating over it: the list fills the window on the sidebar region, the
+        // content comes back with the toggle.
+        {
+            let theme = Theme::dark();
+            let window = Rect::new(0.0, 0.0, 360.0, 800.0);
+            let mut pushes = vec![SidebarDrawer::new().content_kind(crate::widget::ContentKind::List)];
+            pushes.extend([
+                SidebarDrawer::new()
+                    .content_kind(crate::widget::ContentKind::Document)
+                    .with_push(),
+                SidebarDrawer::new()
+                    .content_kind(crate::widget::ContentKind::Grid)
+                    .with_push(),
+            ]);
+            for mut drawer in pushes {
+                drawer.scale_for(&theme);
+                drawer.resolve(window);
+                assert!(!drawer.is_open(), "narrowing lands on the content");
+                assert_eq!(drawer.content_rect(), window);
+                drawer.resolve(window);
+                drawer.snap(true);
+                drawer.resolve(window);
+                assert_eq!(
+                    drawer.sidebar_rect().width(),
+                    window.width(),
+                    "the list fills the window"
+                );
+                assert_eq!(drawer.scrim_rect(), Rect::ZERO, "nothing beside it");
+                assert!(!drawer.press_dismisses(Point::new(300.0, 400.0)));
+                let local = drawer.paint_panel(&mut Scene::new(), Affine::IDENTITY, &theme);
+                assert_eq!(
+                    local.tokens.colors.surfaces.content,
+                    theme
+                        .in_region(crate::surface::Region::Sidebar)
+                        .tokens
+                        .colors
+                        .surfaces
+                        .content,
+                    "on the sidebar region, not a floating panel"
+                );
+            }
+
+            let mut document = SidebarDrawer::new().content_kind(crate::widget::ContentKind::Document);
+            document.scale_for(&theme);
+            document.snap(true);
+            document.resolve(window);
+            assert!(document.is_overlay() && !document.is_push());
+            assert!(
+                document.sidebar_rect().width() < window.width(),
+                "a content-primary app's sidebar floats over the content"
+            );
+
+            let mut plain = SidebarDrawer::new().content_min_width(280.0);
+            plain.scale_for(&theme);
+            plain.snap(true);
+            plain.resolve(window);
+            assert!(plain.is_overlay(), "too narrow to dock");
+            assert!(
+                !plain.is_push(),
+                "a panel that states no content kind floats over the content"
+            );
+            assert!(plain.sidebar_rect().width() < window.width());
+        }
+
+        phase a_panel_docks_at_its_own_width_beside_a_content_column;
+        {
+            let theme = Theme::dark();
+            let docked = f64::from(Metrics::BASE.sidebar_width);
+            let least = f64::from(Metrics::BASE.panel_min_width);
+            let column = f64::from(Metrics::BASE.content_min_width);
+            let mut drawer = SidebarDrawer::new().content_is_column(column);
+            drawer.scale_for(&theme);
+
+            // Roomy: the panel is its own width, never the leftover room, and
+            // the column beside it takes the rest.
+            let roomy = Rect::new(0.0, 0.0, 1400.0, 800.0);
+            let content = drawer.resolve(roomy);
+            assert!(drawer.is_docked());
+            assert!((drawer.sidebar_rect().width() - docked).abs() < 0.5);
+            assert!((content.width() - (1400.0 - docked)).abs() < 0.5);
+
+            let just_fits = Rect::new(0.0, 0.0, least + column, 800.0);
+            drawer.resolve(just_fits);
+            assert!(drawer.is_docked());
+            assert!((drawer.sidebar_rect().width() - least).abs() < 0.5);
+
+            let narrow = Rect::new(0.0, 0.0, (least + column) / 2.0, 800.0);
+            drawer.scale_for(&theme);
+            drawer.resolve(narrow);
+            assert!(drawer.is_overlay(), "below its own minimum it floats");
+            assert!(!drawer.is_push(), "a panel stated no push layout");
+            let floated = drawer.sidebar_rect().width();
+            assert!(
+                (floated - drawer.resolved_overlay_width()).abs() < 0.5,
+                "floating at the drawer width, not {floated}"
+            );
+        }
+
+        phase a_panel_states_its_own_minimum;
+        {
+            let theme = Theme::dark();
             let mut drawer = SidebarDrawer::new()
-                .side(side)
-                .icon_docked_width(280.0)
-                .with_rail();
-            let theme = Theme::dark().with_text_scale(2.0);
+                .content_is_column(600.0)
+                .panel_min_width(420.0)
+                .docked_width(480.0);
             drawer.scale_for(&theme);
-            let area = Rect::new(0.0, 0.0, 2400.0, 800.0);
-            drawer.resolve(area);
-            drawer.snap(true);
-            drawer.resolve(area);
-            let target = drawer
-                .resize_accessibility()
-                .expect("actual docked icon-sized separator")
-                .action_target
-                .expect("stable semantic route");
-            let value = match side {
-                SidebarSide::Left => "30%",
-                SidebarSide::Right => "70%",
-            };
+            let just_fits = Rect::new(0.0, 0.0, 1020.0, 800.0);
+            drawer.resolve(just_fits);
+            assert!(drawer.is_docked());
+            let width = drawer.sidebar_rect().width();
             assert!(
-                drawer.perform_resize_action(&target, &crate::a11y::Action::SetValue(value.into()))
+                (width - 420.0).abs() < 0.5,
+                "docked at its stated minimum, not {width}"
             );
-            assert_eq!(drawer.sidebar_rect().width(), 720.0);
-            drawer.resolve(area);
-            assert_eq!(drawer.sidebar_rect().width(), 720.0);
-        }
-    }
-
-    #[test]
-    fn content_minimum_docks_by_the_narrowest_panel_and_shrinks_it_first() {
-        let m = Metrics::BASE;
-        let content_min = f64::from(m.content_min_width);
-        let mut drawer = SidebarDrawer::new()
-            .with_rail()
-            .content_min_width(content_min);
-        drawer.scale_for(&Theme::dark());
-        let narrowest = f64::from(m.sidebar_min_width + m.rail_width);
-        let breakpoint = narrowest + content_min;
-        assert_eq!(drawer.resolved_breakpoint(), breakpoint);
-        let at = |drawer: &mut SidebarDrawer, width: f64| {
-            drawer.resolve(Rect::new(0.0, 0.0, width, 800.0));
-        };
-        let docked = drawer.resolved_docked_width();
-        at(&mut drawer, docked + content_min + 100.0);
-        assert!(drawer.is_docked());
-        assert_eq!(drawer.sidebar_rect().width(), docked);
-        at(&mut drawer, breakpoint + 10.0);
-        assert!(drawer.is_docked());
-        assert_eq!(drawer.content_rect().width(), content_min);
-        assert_eq!(drawer.sidebar_rect().width(), narrowest + 10.0);
-        at(&mut drawer, breakpoint - 1.0);
-        assert!(drawer.is_overlay());
-        assert_eq!(
-            drawer.scrim_rect().width(),
-            0.0,
-            "a closed drawer has no dismiss area"
-        );
-        let band = f64::from(m.layout_hysteresis);
-        at(&mut drawer, breakpoint + band - 1.0);
-        assert!(drawer.is_overlay(), "no flicker near the threshold");
-        at(&mut drawer, breakpoint + band);
-        assert!(drawer.is_docked());
-        drawer.scale_for(&Theme::dark().with_text_scale(2.0));
-        assert_eq!(
-            drawer.resolved_breakpoint(),
-            2.0 * f64::from(m.sidebar_min_width + m.content_min_width) + f64::from(m.rail_width)
-        );
-        drawer.set_breakpoint(700.0);
-        assert_eq!(drawer.resolved_breakpoint(), 1400.0);
-    }
-
-    #[test]
-    fn a_content_kind_docks_by_its_real_minimum() {
-        let m = Metrics::BASE;
-        let mut drawer = SidebarDrawer::new().content_kind(crate::widget::ContentKind::Grid);
-        drawer.scale_for(&Theme::dark());
-        assert_eq!(
-            drawer.resolved_breakpoint(),
-            f64::from(m.sidebar_min_width + m.grid_min_width)
-        );
-        drawer.resolve(Rect::new(0.0, 0.0, 600.0, 800.0));
-        assert!(drawer.is_docked(), "a media grid keeps its sidebar at 600");
-    }
-
-    /// Too narrow to dock, a panel that asked for the push layout takes turns with the content
-    /// instead of floating over it: the list fills the window on the sidebar region, the
-    /// content comes back with the toggle.
-    #[test]
-    fn too_narrow_to_dock_the_list_and_the_content_take_turns() {
-        let theme = Theme::dark();
-        let window = Rect::new(0.0, 0.0, 360.0, 800.0);
-        let mut pushes = vec![SidebarDrawer::new().content_kind(crate::widget::ContentKind::List)];
-        pushes.extend([
-            SidebarDrawer::new()
-                .content_kind(crate::widget::ContentKind::Document)
-                .with_push(),
-            SidebarDrawer::new()
-                .content_kind(crate::widget::ContentKind::Grid)
-                .with_push(),
-        ]);
-        for mut drawer in pushes {
-            drawer.scale_for(&theme);
-            drawer.resolve(window);
-            assert!(!drawer.is_open(), "narrowing lands on the content");
-            assert_eq!(drawer.content_rect(), window);
-            drawer.resolve(window);
-            drawer.snap(true);
-            drawer.resolve(window);
-            assert_eq!(
-                drawer.sidebar_rect().width(),
-                window.width(),
-                "the list fills the window"
-            );
-            assert_eq!(drawer.scrim_rect(), Rect::ZERO, "nothing beside it");
-            assert!(!drawer.press_dismisses(Point::new(300.0, 400.0)));
-            let local = drawer.paint_panel(&mut Scene::new(), Affine::IDENTITY, &theme);
-            assert_eq!(
-                local.tokens.colors.surfaces.content,
-                theme
-                    .in_region(crate::surface::Region::Sidebar)
-                    .tokens
-                    .colors
-                    .surfaces
-                    .content,
-                "on the sidebar region, not a floating panel"
-            );
+            assert!((drawer.resolved_breakpoint() - 1020.0).abs() < 0.5);
         }
 
-        let mut document = SidebarDrawer::new().content_kind(crate::widget::ContentKind::Document);
-        document.scale_for(&theme);
-        document.snap(true);
-        document.resolve(window);
-        assert!(document.is_overlay() && !document.is_push());
-        assert!(
-            document.sidebar_rect().width() < window.width(),
-            "a content-primary app's sidebar floats over the content"
-        );
-
-        let mut plain = SidebarDrawer::new().content_min_width(280.0);
-        plain.scale_for(&theme);
-        plain.snap(true);
-        plain.resolve(window);
-        assert!(plain.is_overlay(), "too narrow to dock");
-        assert!(
-            !plain.is_push(),
-            "a panel that states no content kind floats over the content"
-        );
-        assert!(plain.sidebar_rect().width() < window.width());
-    }
-
-    #[test]
-    fn a_panel_docks_at_its_own_width_beside_a_content_column() {
-        let theme = Theme::dark();
-        let docked = f64::from(Metrics::BASE.sidebar_width);
-        let least = f64::from(Metrics::BASE.panel_min_width);
-        let column = f64::from(Metrics::BASE.content_min_width);
-        let mut drawer = SidebarDrawer::new().content_is_column(column);
-        drawer.scale_for(&theme);
-
-        // Roomy: the panel is its own width, never the leftover room, and
-        // the column beside it takes the rest.
-        let roomy = Rect::new(0.0, 0.0, 1400.0, 800.0);
-        let content = drawer.resolve(roomy);
-        assert!(drawer.is_docked());
-        assert!((drawer.sidebar_rect().width() - docked).abs() < 0.5);
-        assert!((content.width() - (1400.0 - docked)).abs() < 0.5);
-
-        let just_fits = Rect::new(0.0, 0.0, least + column, 800.0);
-        drawer.resolve(just_fits);
-        assert!(drawer.is_docked());
-        assert!((drawer.sidebar_rect().width() - least).abs() < 0.5);
-
-        let narrow = Rect::new(0.0, 0.0, (least + column) / 2.0, 800.0);
-        drawer.scale_for(&theme);
-        drawer.resolve(narrow);
-        assert!(drawer.is_overlay(), "below its own minimum it floats");
-        assert!(!drawer.is_push(), "a panel stated no push layout");
-        let floated = drawer.sidebar_rect().width();
-        assert!(
-            (floated - drawer.resolved_overlay_width()).abs() < 0.5,
-            "floating at the drawer width, not {floated}"
-        );
-    }
-
-    #[test]
-    fn a_panel_states_its_own_minimum() {
-        let theme = Theme::dark();
-        let mut drawer = SidebarDrawer::new()
-            .content_is_column(600.0)
-            .panel_min_width(420.0)
-            .docked_width(480.0);
-        drawer.scale_for(&theme);
-        let just_fits = Rect::new(0.0, 0.0, 1020.0, 800.0);
-        drawer.resolve(just_fits);
-        assert!(drawer.is_docked());
-        let width = drawer.sidebar_rect().width();
-        assert!(
-            (width - 420.0).abs() < 0.5,
-            "docked at its stated minimum, not {width}"
-        );
-        assert!((drawer.resolved_breakpoint() - 1020.0).abs() < 0.5);
-    }
-
-    #[test]
-    fn sidebar_docks_wide_overlays_narrow_and_mirrors_sides() {
+        phase sidebar_docks_wide_overlays_narrow_and_mirrors_sides;
         {
-            let mut d = SidebarDrawer::new().right().docked_width(300.0);
-            let content = d.resolve(wide());
-            assert!(d.is_docked(), "wide width docks");
-            assert!(d.is_open(), "docked default is open");
-            assert!((content.x0 - wide().x0).abs() < 0.5);
-            assert!((wide().x1 - content.x1 - 300.0).abs() < 0.5);
-            assert_eq!(d.scrim_rect(), Rect::ZERO, "docked draws no scrim");
-            assert!((d.sidebar_rect().x1 - wide().x1).abs() < 0.5);
-            assert!((d.sidebar_rect().width() - 300.0).abs() < 0.5);
-        }
+            {
+                let mut d = SidebarDrawer::new().right().docked_width(300.0);
+                let content = d.resolve(wide());
+                assert!(d.is_docked(), "wide width docks");
+                assert!(d.is_open(), "docked default is open");
+                assert!((content.x0 - wide().x0).abs() < 0.5);
+                assert!((wide().x1 - content.x1 - 300.0).abs() < 0.5);
+                assert_eq!(d.scrim_rect(), Rect::ZERO, "docked draws no scrim");
+                assert!((d.sidebar_rect().x1 - wide().x1).abs() < 0.5);
+                assert!((d.sidebar_rect().width() - 300.0).abs() < 0.5);
+            }
 
-        {
-            let mut d = SidebarDrawer::new().right().overlay_width(320.0);
-            let content = d.resolve(narrow());
-            assert!(d.is_overlay(), "narrow width overlays");
-            assert!(!d.is_open(), "overlay default is closed");
-            assert!((content.width() - narrow().width()).abs() < 0.5);
-            assert_eq!(d.scrim_rect(), Rect::ZERO);
-            assert!(
-                d.sidebar_rect().x0 >= narrow().x1 - 0.5,
-                "closed right drawer is off-screen to the right"
-            );
-        }
+            {
+                let mut d = SidebarDrawer::new().right().overlay_width(320.0);
+                let content = d.resolve(narrow());
+                assert!(d.is_overlay(), "narrow width overlays");
+                assert!(!d.is_open(), "overlay default is closed");
+                assert!((content.width() - narrow().width()).abs() < 0.5);
+                assert_eq!(d.scrim_rect(), Rect::ZERO);
+                assert!(
+                    d.sidebar_rect().x0 >= narrow().x1 - 0.5,
+                    "closed right drawer is off-screen to the right"
+                );
+            }
 
-        {
-            let mut d = SidebarDrawer::new().left().docked_width(280.0);
-            let content = d.resolve(wide());
-            assert!(d.is_docked() && d.is_open());
-            assert!((content.x0 - wide().x0 - 280.0).abs() < 0.5);
-            assert!((d.sidebar_rect().x0 - wide().x0).abs() < 0.5);
-        }
+            {
+                let mut d = SidebarDrawer::new().left().docked_width(280.0);
+                let content = d.resolve(wide());
+                assert!(d.is_docked() && d.is_open());
+                assert!((content.x0 - wide().x0 - 280.0).abs() < 0.5);
+                assert!((d.sidebar_rect().x0 - wide().x0).abs() < 0.5);
+            }
 
-        {
-            let mut d = SidebarDrawer::new()
-                .left()
-                .docked_width(280.0)
-                .rail_width(56.0)
-                .closed();
-            let content = d.resolve(wide());
-            assert!((content.x0 - wide().x0 - 56.0).abs() < 0.5);
-            d.open();
-            d.snap(true);
-            d.resolve(wide());
-            assert!((d.content_rect().x0 - wide().x0 - 280.0).abs() < 0.5);
-        }
-
-        {
-            let mut d = SidebarDrawer::new().right();
-            d.resolve(wide());
-            d.close();
-            d.resolve(wide());
-            assert!(!d.is_open(), "explicit collapse holds while docked");
-            d.resolve(narrow());
-            d.resolve(wide());
-            assert!(
-                !d.is_open(),
-                "the choice is remembered for the wide size class"
-            );
-        }
-    }
-
-    #[test]
-    fn overlay_drawer_floats_slides_with_scrim_and_dismisses_on_scrim_only() {
-        let theme = Theme::dark();
-        let gap = f64::from(theme.tokens.spacing.s2);
-        {
-            let mut d = SidebarDrawer::new().right().overlay_width(320.0);
-            d.scale_for(&theme);
-            d.resolve(narrow());
-            d.toggle();
-            d.snap(true);
-            d.resolve(narrow());
-            assert!(d.is_open());
-            assert!(d.scrim_rect().width() > 0.0, "open overlay lays a scrim");
-            assert!(
-                (d.sidebar_rect().x1 - (narrow().x1 - gap)).abs() < 0.5,
-                "an open drawer floats s2 inside the trailing edge"
-            );
-            assert!((d.sidebar_rect().y0 - gap).abs() < 0.5);
-        }
-
-        {
-            let mut d = SidebarDrawer::new().right().overlay_width(320.0);
-            d.resolve(narrow());
-            d.open();
-            d.snap(true);
-            d.resolve(narrow());
-            assert!(!d.press_dismisses(d.sidebar_rect().center()));
-            assert!(d.is_open());
-            let scrim_pt = Point::new(narrow().x0 + 20.0, 400.0);
-            assert!(d.scrim_contains(scrim_pt));
-            assert!(d.press_dismisses(scrim_pt));
-            assert!(!d.is_open());
-        }
-
-        {
-            let mut d = SidebarDrawer::new().right().overlay_width(320.0);
-            d.resolve(narrow());
-            d.snap(false);
-            assert_eq!(d.reveal(), 0.0);
-            let opened = crate::time::now();
-            crate::time::testing::with_monotonic_time(opened, || {
+            {
+                let mut d = SidebarDrawer::new()
+                    .left()
+                    .docked_width(280.0)
+                    .rail_width(56.0)
+                    .closed();
+                let content = d.resolve(wide());
+                assert!((content.x0 - wide().x0 - 56.0).abs() < 0.5);
                 d.open();
-                d.tick(&theme);
-            });
-            assert!(
-                d.reveal() < 0.01,
-                "the first tick covers only the time since the toggle ({})",
-                d.reveal()
-            );
+                d.snap(true);
+                d.resolve(wide());
+                assert!((d.content_rect().x0 - wide().x0 - 280.0).abs() < 0.5);
+            }
 
-            crate::time::testing::with_monotonic_time(
-                opened + crate::time::Duration::from_millis(16),
-                || d.tick(&theme),
-            );
-            let r = d.reveal();
-            assert!(r > 0.0 && r < 1.0, "mid-slide after one frame ({r})");
-            assert!(d.is_animating());
+            {
+                let mut d = SidebarDrawer::new().right();
+                d.resolve(wide());
+                d.close();
+                d.resolve(wide());
+                assert!(!d.is_open(), "explicit collapse holds while docked");
+                d.resolve(narrow());
+                d.resolve(wide());
+                assert!(
+                    !d.is_open(),
+                    "the choice is remembered for the wide size class"
+                );
+            }
+        }
+    }
 
-            crate::time::testing::with_monotonic_time(
-                opened + crate::time::Duration::from_secs(5),
-                || d.tick(&theme),
-            );
-            assert!(!d.is_animating());
-            assert!((d.reveal() - 1.0).abs() < 0.01);
+    tilo_test_env::scenario! {
+        /// The overlay drawer.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn an_overlay_drawer_slides_under_its_scrim_and_header;
+
+        phase overlay_drawer_floats_slides_with_scrim_and_dismisses_on_scrim_only;
+        {
+            let theme = Theme::dark();
+            let gap = f64::from(theme.tokens.spacing.s2);
+            {
+                let mut d = SidebarDrawer::new().right().overlay_width(320.0);
+                d.scale_for(&theme);
+                d.resolve(narrow());
+                d.toggle();
+                d.snap(true);
+                d.resolve(narrow());
+                assert!(d.is_open());
+                assert!(d.scrim_rect().width() > 0.0, "open overlay lays a scrim");
+                assert!(
+                    (d.sidebar_rect().x1 - (narrow().x1 - gap)).abs() < 0.5,
+                    "an open drawer floats s2 inside the trailing edge"
+                );
+                assert!((d.sidebar_rect().y0 - gap).abs() < 0.5);
+            }
+
+            {
+                let mut d = SidebarDrawer::new().right().overlay_width(320.0);
+                d.resolve(narrow());
+                d.open();
+                d.snap(true);
+                d.resolve(narrow());
+                assert!(!d.press_dismisses(d.sidebar_rect().center()));
+                assert!(d.is_open());
+                let scrim_pt = Point::new(narrow().x0 + 20.0, 400.0);
+                assert!(d.scrim_contains(scrim_pt));
+                assert!(d.press_dismisses(scrim_pt));
+                assert!(!d.is_open());
+            }
+
+            {
+                let mut d = SidebarDrawer::new().right().overlay_width(320.0);
+                d.resolve(narrow());
+                d.snap(false);
+                assert_eq!(d.reveal(), 0.0);
+                let opened = crate::time::now();
+                crate::time::testing::with_monotonic_time(opened, || {
+                    d.open();
+                    d.tick(&theme);
+                });
+                assert!(
+                    d.reveal() < 0.01,
+                    "the first tick covers only the time since the toggle ({})",
+                    d.reveal()
+                );
+
+                crate::time::testing::with_monotonic_time(
+                    opened + crate::time::Duration::from_millis(16),
+                    || d.tick(&theme),
+                );
+                let r = d.reveal();
+                assert!(r > 0.0 && r < 1.0, "mid-slide after one frame ({r})");
+                assert!(d.is_animating());
+
+                crate::time::testing::with_monotonic_time(
+                    opened + crate::time::Duration::from_secs(5),
+                    || d.tick(&theme),
+                );
+                assert!(!d.is_animating());
+                assert!((d.reveal() - 1.0).abs() < 0.01);
+            }
+
+            {
+                let mut calm = Theme::dark();
+                calm.reduce_motion = true;
+                let mut d = SidebarDrawer::new().right().overlay_width(320.0);
+                d.resolve(narrow());
+                d.snap(false);
+                d.open();
+                d.tick(&calm);
+                assert_eq!(d.reveal(), 1.0);
+                assert!(!d.is_animating());
+            }
+
+            {
+                let mut d = SidebarDrawer::new().overlay_width(320.0);
+                d.resolve(narrow());
+                d.open();
+                d.snap(true);
+                d.resolve(narrow());
+                let mut scene = Scene::new();
+                let mut text = TextRenderer::new();
+                let drawer_theme = d.paint_panel(&mut scene, Affine::IDENTITY, &theme);
+                assert_eq!(
+                    drawer_theme.tokens.colors.surfaces.content,
+                    crate::chrome::panel_ground(&theme),
+                    "drawer contents stand on the floating material"
+                );
+                d.draw_toggle(
+                    &mut scene,
+                    Affine::IDENTITY,
+                    &mut text,
+                    &drawer_theme,
+                    Rect::new(12.0, 12.0, 44.0, 44.0),
+                    true,
+                );
+                assert!(scene.encoding().draw_tags.len() >= 3);
+
+                let mut docked = SidebarDrawer::new();
+                docked.resolve(wide());
+                let docked_theme = docked.paint_panel(&mut Scene::new(), Affine::IDENTITY, &theme);
+                assert_eq!(
+                    docked_theme.tokens.colors.surfaces.content,
+                    theme.region(crate::surface::Region::Sidebar)
+                );
+            }
         }
 
+        phase a_painted_header_row_owns_the_toggle_and_the_drawer_opens_under_it;
         {
-            let mut calm = Theme::dark();
-            calm.reduce_motion = true;
-            let mut d = SidebarDrawer::new().right().overlay_width(320.0);
+            use winit::event::{DeviceId, ElementState, MouseButton, WindowEvent};
+            let theme = Theme::dark();
+            let gap = f64::from(theme.tokens.spacing.s2);
+            let mut d = SidebarDrawer::new();
+            d.scale_for(&theme);
+            d.set_platform_conventions(crate::platform::PlatformConventions::new(
+                crate::platform::Platform::Linux,
+            ));
+            let face = d.header_with_history(narrow(), &theme, true);
+            assert_eq!(d.toggle_rect(), face.toggle);
+            assert!(face.toggle.x0 < face.history.x0);
             d.resolve(narrow());
-            d.snap(false);
-            d.open();
-            d.tick(&calm);
-            assert_eq!(d.reveal(), 1.0);
-            assert!(!d.is_animating());
-        }
+            assert!(!d.is_open());
+            let node = d.toggle_accessibility().expect("a node");
+            assert_eq!(node.name.as_deref(), Some("Show sidebar"));
 
-        {
-            let mut d = SidebarDrawer::new().overlay_width(320.0);
-            d.resolve(narrow());
-            d.open();
+            let p = face.toggle.center();
+            let device = DeviceId::dummy();
+            route(
+                &mut d,
+                &WindowEvent::CursorMoved {
+                    device_id: device,
+                    position: winit::dpi::PhysicalPosition::new(p.x, p.y),
+                },
+            );
+            for state in [ElementState::Pressed, ElementState::Released] {
+                assert!(route(
+                    &mut d,
+                    &WindowEvent::MouseInput {
+                        device_id: device,
+                        state,
+                        button: MouseButton::Left,
+                    },
+                ));
+            }
+            assert!(d.is_open());
             d.snap(true);
             d.resolve(narrow());
-            let mut scene = Scene::new();
-            let mut text = TextRenderer::new();
-            let drawer_theme = d.paint_panel(&mut scene, Affine::IDENTITY, &theme);
-            assert_eq!(
-                drawer_theme.tokens.colors.surfaces.content,
-                crate::chrome::panel_ground(&theme),
-                "drawer contents stand on the floating material"
+            assert!((d.sidebar_rect().y0 - (face.row.y1 + gap)).abs() < 0.5);
+            assert!(
+                (d.scrim_rect().y0 - face.row.y1).abs() < 0.5,
+                "the row stays live"
             );
-            d.draw_toggle(
+
+            let key = crate::synthetic_input::key_input(
+                &winit::keyboard::Key::Character("L".into()),
+                ElementState::Pressed,
+            );
+            let modifiers = winit::event::Modifiers::from(
+                winit::keyboard::ModifiersState::CONTROL | winit::keyboard::ModifiersState::SHIFT,
+            );
+            assert!(route_with(&mut d, &key, modifiers));
+            assert!(!d.is_open());
+            assert!(
+                d.perform_toggle_action(&crate::a11y::Action::Activate, &[node.key.expect("keyed")])
+            );
+            assert!(d.is_open());
+        }
+
+        phase overlay_only_rail_and_an_early_snap;
+        {
+            let theme = Theme::dark();
+            let mut d = SidebarDrawer::new().overlay_only();
+            d.resolve(wide());
+            assert!(d.is_overlay(), "never docks");
+
+            let mut d = SidebarDrawer::new();
+            d.snap(true);
+            d.resolve(narrow());
+            assert!(d.is_open(), "the drawer opens over a narrow window");
+            d.resolve(wide());
+            assert!(d.is_open(), "the docked default was not overwritten");
+
+            let mut d = SidebarDrawer::new().with_rail();
+            d.scale_for(&theme);
+            d.resolve(wide());
+            let rail = d.rail_rect();
+            assert!((rail.width() - f64::from(theme.tokens.metrics.rail_width)).abs() < 0.5);
+            // From the coordinator (2026-10-19): the drawer's rail follows the
+            // shared rail rule. At double text it grows to keep "Channels" whole,
+            // up to its cap; at stock text it keeps its width.
+            let big = Theme::high_contrast().with_text_scale(2.0);
+            let mut grown = SidebarDrawer::new().with_rail();
+            grown.rail_labels(["Chat", "Channels"]);
+            grown.scale_for(&big);
+            let width = grown.rail_column_width();
+            assert!(width > f64::from(big.tokens.metrics.rail_width), "{width}");
+            assert!(
+                width <= f64::from(big.tokens.metrics.rail_max_width),
+                "{width}"
+            );
+            let mut stock = SidebarDrawer::new().with_rail();
+            stock.rail_labels(["Channels"]);
+            stock.scale_for(&theme);
+            assert!(
+                (stock.rail_column_width() - f64::from(theme.tokens.metrics.rail_width)).abs() < 0.5
+            );
+            assert_eq!(rail.x0, d.sidebar_rect().x0);
+            assert_eq!(d.list_rect().x0, rail.x1);
+            assert!(
+                (d.list_rect().width() - f64::from(theme.tokens.metrics.sidebar_width)).abs() < 0.5,
+                "the list keeps the sidebar's width beside the rail"
+            );
+
+            let mut scene = Scene::new();
+            let local = SidebarDrawer::paint_panel_in(
                 &mut scene,
                 Affine::IDENTITY,
-                &mut text,
-                &drawer_theme,
-                Rect::new(12.0, 12.0, 44.0, 44.0),
-                true,
+                Rect::new(10.0, 70.0, 330.0, 700.0),
+                &theme,
             );
-            assert!(scene.encoding().draw_tags.len() >= 3);
-
-            let mut docked = SidebarDrawer::new();
-            docked.resolve(wide());
-            let docked_theme = docked.paint_panel(&mut Scene::new(), Affine::IDENTITY, &theme);
             assert_eq!(
-                docked_theme.tokens.colors.surfaces.content,
-                theme.region(crate::surface::Region::Sidebar)
+                local.tokens.colors.surfaces.content,
+                crate::chrome::panel_ground(&theme)
             );
+            assert!(scene.encoding().draw_tags.len() >= 2);
         }
     }
 
@@ -1680,180 +1873,5 @@ mod tests {
                 taffy: &taffy,
             },
         )
-    }
-
-    #[test]
-    fn a_painted_header_row_owns_the_toggle_and_the_drawer_opens_under_it() {
-        use winit::event::{DeviceId, ElementState, MouseButton, WindowEvent};
-        let theme = Theme::dark();
-        let gap = f64::from(theme.tokens.spacing.s2);
-        let mut d = SidebarDrawer::new();
-        d.scale_for(&theme);
-        d.set_platform_conventions(crate::platform::PlatformConventions::new(
-            crate::platform::Platform::Linux,
-        ));
-        let face = d.header_with_history(narrow(), &theme, true);
-        assert_eq!(d.toggle_rect(), face.toggle);
-        assert!(face.toggle.x0 < face.history.x0);
-        d.resolve(narrow());
-        assert!(!d.is_open());
-        let node = d.toggle_accessibility().expect("a node");
-        assert_eq!(node.name.as_deref(), Some("Show sidebar"));
-
-        let p = face.toggle.center();
-        let device = DeviceId::dummy();
-        route(
-            &mut d,
-            &WindowEvent::CursorMoved {
-                device_id: device,
-                position: winit::dpi::PhysicalPosition::new(p.x, p.y),
-            },
-        );
-        for state in [ElementState::Pressed, ElementState::Released] {
-            assert!(route(
-                &mut d,
-                &WindowEvent::MouseInput {
-                    device_id: device,
-                    state,
-                    button: MouseButton::Left,
-                },
-            ));
-        }
-        assert!(d.is_open());
-        d.snap(true);
-        d.resolve(narrow());
-        assert!((d.sidebar_rect().y0 - (face.row.y1 + gap)).abs() < 0.5);
-        assert!(
-            (d.scrim_rect().y0 - face.row.y1).abs() < 0.5,
-            "the row stays live"
-        );
-
-        let key = crate::synthetic_input::key_input(
-            &winit::keyboard::Key::Character("L".into()),
-            ElementState::Pressed,
-        );
-        let modifiers = winit::event::Modifiers::from(
-            winit::keyboard::ModifiersState::CONTROL | winit::keyboard::ModifiersState::SHIFT,
-        );
-        assert!(route_with(&mut d, &key, modifiers));
-        assert!(!d.is_open());
-        assert!(
-            d.perform_toggle_action(&crate::a11y::Action::Activate, &[node.key.expect("keyed")])
-        );
-        assert!(d.is_open());
-    }
-
-    #[test]
-    fn overlay_only_rail_and_an_early_snap() {
-        let theme = Theme::dark();
-        let mut d = SidebarDrawer::new().overlay_only();
-        d.resolve(wide());
-        assert!(d.is_overlay(), "never docks");
-
-        let mut d = SidebarDrawer::new();
-        d.snap(true);
-        d.resolve(narrow());
-        assert!(d.is_open(), "the drawer opens over a narrow window");
-        d.resolve(wide());
-        assert!(d.is_open(), "the docked default was not overwritten");
-
-        let mut d = SidebarDrawer::new().with_rail();
-        d.scale_for(&theme);
-        d.resolve(wide());
-        let rail = d.rail_rect();
-        assert!((rail.width() - f64::from(theme.tokens.metrics.rail_width)).abs() < 0.5);
-        // From the coordinator (2026-10-19): the drawer's rail follows the
-        // shared rail rule. At double text it grows to keep "Channels" whole,
-        // up to its cap; at stock text it keeps its width.
-        let big = Theme::high_contrast().with_text_scale(2.0);
-        let mut grown = SidebarDrawer::new().with_rail();
-        grown.rail_labels(["Chat", "Channels"]);
-        grown.scale_for(&big);
-        let width = grown.rail_column_width();
-        assert!(width > f64::from(big.tokens.metrics.rail_width), "{width}");
-        assert!(
-            width <= f64::from(big.tokens.metrics.rail_max_width),
-            "{width}"
-        );
-        let mut stock = SidebarDrawer::new().with_rail();
-        stock.rail_labels(["Channels"]);
-        stock.scale_for(&theme);
-        assert!(
-            (stock.rail_column_width() - f64::from(theme.tokens.metrics.rail_width)).abs() < 0.5
-        );
-        assert_eq!(rail.x0, d.sidebar_rect().x0);
-        assert_eq!(d.list_rect().x0, rail.x1);
-        assert!(
-            (d.list_rect().width() - f64::from(theme.tokens.metrics.sidebar_width)).abs() < 0.5,
-            "the list keeps the sidebar's width beside the rail"
-        );
-
-        let mut scene = Scene::new();
-        let local = SidebarDrawer::paint_panel_in(
-            &mut scene,
-            Affine::IDENTITY,
-            Rect::new(10.0, 70.0, 330.0, 700.0),
-            &theme,
-        );
-        assert_eq!(
-            local.tokens.colors.surfaces.content,
-            crate::chrome::panel_ground(&theme)
-        );
-        assert!(scene.encoding().draw_tags.len() >= 2);
-    }
-
-    #[test]
-    fn scale_for_grows_text_sized_extents_and_leaves_the_icon_rail() {
-        let authored = || {
-            SidebarDrawer::new()
-                .breakpoint(760.0)
-                .docked_width(240.0)
-                .overlay_width(320.0)
-                .rail_width(56.0)
-        };
-        let mut plain = authored();
-        plain.resolve(Rect::new(0.0, 0.0, 1000.0, 800.0));
-        assert_eq!(plain.layout(), SplitLayout::Docked);
-        assert_eq!(plain.sidebar_rect().width(), 240.0);
-        assert_eq!(
-            (
-                plain.resolved_breakpoint(),
-                plain.resolved_overlay_width(),
-                plain.resolved_rail_width()
-            ),
-            (760.0, 320.0, 56.0)
-        );
-
-        let mut large = authored();
-        large.scale_for(&Theme::dark().with_text_scale(2.0));
-        assert_eq!(
-            (
-                large.resolved_breakpoint(),
-                large.resolved_docked_width(),
-                large.resolved_overlay_width()
-            ),
-            (1520.0, 480.0, 640.0)
-        );
-        assert_eq!(large.resolved_rail_width(), 56.0);
-        large.resolve(Rect::new(0.0, 0.0, 1000.0, 800.0));
-        assert_eq!(large.layout(), SplitLayout::Overlay);
-
-        let mut smaller = authored();
-        smaller.scale_for(&Theme::dark().with_text_scale(0.75));
-        assert_eq!(smaller.resolved_docked_width(), 240.0);
-
-        let mut dense = authored();
-        dense.scale_for(&Theme::dark().with_ui_scale(1.5));
-        assert!((dense.resolved_rail_width() - 84.0).abs() < 1e-9);
-        assert!((dense.resolved_breakpoint() - 1140.0).abs() < 1e-9);
-
-        let mut glyphs = SidebarDrawer::new()
-            .icon_docked_width(56.0)
-            .overlay_width(288.0);
-        glyphs.scale_for(&Theme::dark().with_text_scale(2.0));
-        assert_eq!(glyphs.resolved_docked_width(), 56.0);
-        assert_eq!(glyphs.resolved_overlay_width(), 576.0);
-        glyphs.set_docked_width(64.0);
-        assert_eq!(glyphs.resolved_docked_width(), 64.0);
     }
 }

@@ -24,75 +24,81 @@ fn assert_same_scene(actual: &Scene, expected: &Scene) {
         "hot actual Text must repaint original current color exactly as a cold widget"
     );
 }
-#[test]
-fn main_actual_text_default_color_changes_repaint_without_changing_prepared_geometry() {
-    let mut renderer = crate::font_catalog::fixture_renderer();
-    let mut hot = Text::new("Current color Καλημέρα");
-    let first_theme = Theme::dark();
-    let first = draw_current(&mut hot, &mut renderer, &first_theme);
-    let retained = hot
-        .prepared_input
-        .as_ref()
-        .expect("bounded ordinary text uses retained input")
-        .clone();
-    let mut changed = Theme::dark();
-    changed.tokens.colors.text_primary = vello::peniko::Color::WHITE;
-    if changed.tokens.colors.text_primary == first_theme.tokens.colors.text_primary {
-        changed.tokens.colors.text_primary = vello::peniko::Color::BLACK;
-    }
-    let current = draw_current(&mut hot, &mut renderer, &changed);
-    let cold = draw_current(
-        &mut Text::new("Current color Καλημέρα"),
-        &mut renderer,
-        &changed,
-    );
-    assert_same_scene(&current, &cold);
-    assert!(
-        !exact_scene_encoding_eq(&first, &current),
-        "real brush change required"
-    );
-    assert_eq!(retained.text(), hot.prepared_input.as_ref().unwrap().text());
-    assert_eq!(hot.drawn_color, Some(changed.tokens.colors.text_primary));
-    assert_same_scene(&draw_current(&mut hot, &mut renderer, &first_theme), &first);
-}
-#[test]
-fn main_actual_text_dimmed_and_explicit_colors_preserve_original_transition_order() {
-    let mut renderer = crate::font_catalog::fixture_renderer();
-    let theme = Theme::dark();
-    let label = "Current explicit color";
-    let mut hot = Text::new(label);
-    draw_current(&mut hot, &mut renderer, &theme);
-    hot = hot.with_color(vello::peniko::Color::WHITE);
-    let explicit = draw_current(&mut hot, &mut renderer, &theme);
-    assert_same_scene(
-        &explicit,
-        &draw_current(
-            &mut Text::new(label).with_color(vello::peniko::Color::WHITE),
-            &mut renderer,
-            &theme,
-        ),
-    );
-    hot = hot.dimmed();
-    let dimmed = draw_current(&mut hot, &mut renderer, &theme);
-    assert_same_scene(
-        &dimmed,
-        &draw_current(&mut Text::new(label).dimmed(), &mut renderer, &theme),
-    );
-    assert_eq!(hot.drawn_color, Some(theme.text_dim));
-    let mut changed = Theme::dark();
-    changed.text_dim = vello::peniko::Color::BLACK;
-    if changed.text_dim == theme.text_dim {
-        changed.text_dim = vello::peniko::Color::WHITE;
-    }
-    assert_same_scene(
-        &draw_current(&mut hot, &mut renderer, &changed),
-        &draw_current(&mut Text::new(label).dimmed(), &mut renderer, &changed),
-    );
-    hot = hot.with_color(vello::peniko::Color::WHITE);
-    assert_same_scene(&draw_current(&mut hot, &mut renderer, &changed), &explicit);
-    assert_eq!(hot.drawn_color, Some(vello::peniko::Color::WHITE));
-}
+tilo_test_env::scenario! {
+    /// Colour changes of a text drawn the way main draws it.
+    /// Each phase was a test of its own and builds its own fixture.
+    fn main_text_colour_changes_repaint_in_order;
 
+    phase main_actual_text_default_color_changes_repaint_without_changing_prepared_geometry;
+    {
+        let mut renderer = crate::font_catalog::fixture_renderer();
+        let mut hot = Text::new("Current color Καλημέρα");
+        let first_theme = Theme::dark();
+        let first = draw_current(&mut hot, &mut renderer, &first_theme);
+        let retained = hot
+            .prepared_input
+            .as_ref()
+            .expect("bounded ordinary text uses retained input")
+            .clone();
+        let mut changed = Theme::dark();
+        changed.tokens.colors.text_primary = vello::peniko::Color::WHITE;
+        if changed.tokens.colors.text_primary == first_theme.tokens.colors.text_primary {
+            changed.tokens.colors.text_primary = vello::peniko::Color::BLACK;
+        }
+        let current = draw_current(&mut hot, &mut renderer, &changed);
+        let cold = draw_current(
+            &mut Text::new("Current color Καλημέρα"),
+            &mut renderer,
+            &changed,
+        );
+        assert_same_scene(&current, &cold);
+        assert!(
+            !exact_scene_encoding_eq(&first, &current),
+            "real brush change required"
+        );
+        assert_eq!(retained.text(), hot.prepared_input.as_ref().unwrap().text());
+        assert_eq!(hot.drawn_color, Some(changed.tokens.colors.text_primary));
+        assert_same_scene(&draw_current(&mut hot, &mut renderer, &first_theme), &first);
+    }
+
+    phase main_actual_text_dimmed_and_explicit_colors_preserve_original_transition_order;
+    {
+        let mut renderer = crate::font_catalog::fixture_renderer();
+        let theme = Theme::dark();
+        let label = "Current explicit color";
+        let mut hot = Text::new(label);
+        draw_current(&mut hot, &mut renderer, &theme);
+        hot = hot.with_color(vello::peniko::Color::WHITE);
+        let explicit = draw_current(&mut hot, &mut renderer, &theme);
+        assert_same_scene(
+            &explicit,
+            &draw_current(
+                &mut Text::new(label).with_color(vello::peniko::Color::WHITE),
+                &mut renderer,
+                &theme,
+            ),
+        );
+        hot = hot.dimmed();
+        let dimmed = draw_current(&mut hot, &mut renderer, &theme);
+        assert_same_scene(
+            &dimmed,
+            &draw_current(&mut Text::new(label).dimmed(), &mut renderer, &theme),
+        );
+        assert_eq!(hot.drawn_color, Some(theme.text_dim));
+        let mut changed = Theme::dark();
+        changed.text_dim = vello::peniko::Color::BLACK;
+        if changed.text_dim == theme.text_dim {
+            changed.text_dim = vello::peniko::Color::WHITE;
+        }
+        assert_same_scene(
+            &draw_current(&mut hot, &mut renderer, &changed),
+            &draw_current(&mut Text::new(label).dimmed(), &mut renderer, &changed),
+        );
+        hot = hot.with_color(vello::peniko::Color::WHITE);
+        assert_same_scene(&draw_current(&mut hot, &mut renderer, &changed), &explicit);
+        assert_eq!(hot.drawn_color, Some(vello::peniko::Color::WHITE));
+    }
+}
 fn exact_scene_encoding_eq(left: &vello::Scene, right: &vello::Scene) -> bool {
     left.encoding_eq(right)
 }

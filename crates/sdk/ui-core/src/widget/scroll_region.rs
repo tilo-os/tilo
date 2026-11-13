@@ -1063,66 +1063,194 @@ mod tests {
         handled
     }
 
-    #[test]
-    fn the_region_reserves_its_lane_only_while_content_overflows() {
-        let fits = region(150.0);
-        assert_eq!(fits.content_rect(), Rect::new(0.0, 0.0, 300.0, 200.0));
-        let tall = region(1000.0);
-        let lane = f64::from(Theme::dark().tokens.metrics.scrollbar_gutter);
-        assert!((tall.content_rect().x1 - (300.0 - lane)).abs() < 1e-9);
-    }
+    tilo_test_env::scenario! {
+        /// A scroll region: its lane and bars, its scrolling and glides, its offset.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn a_region_reserves_scrolls_glides_and_persists;
 
-    #[test]
-    fn overlaid_bars_keep_the_content_width_and_sit_in_its_trailing_edge() {
-        let theme = Theme::dark();
-        let lane = f64::from(theme.tokens.metrics.scrollbar_gutter);
-        let viewport = Rect::new(0.0, 0.0, 300.0, 200.0);
-        let mut region = ScrollRegion::vertical().with_overlaid_bars();
-        region.set_viewport(viewport, &theme);
-        region.set_content_size(300.0, 150.0);
-        assert_eq!(region.content_rect(), viewport);
-        region.set_content_size(300.0, 1000.0);
-        assert_eq!(
-            region.content_rect(),
-            viewport,
-            "content that overflows keeps the whole width"
-        );
-        let track = region
-            .v_track(&theme)
-            .expect("an overflowing region has a bar");
-        assert!(
-            track.x0 >= viewport.x1 - lane && track.x1 <= viewport.x1,
-            "{track:?}"
-        );
-    }
+        phase the_region_reserves_its_lane_only_while_content_overflows;
+        {
+            let fits = region(150.0);
+            assert_eq!(fits.content_rect(), Rect::new(0.0, 0.0, 300.0, 200.0));
+            let tall = region(1000.0);
+            let lane = f64::from(Theme::dark().tokens.metrics.scrollbar_gutter);
+            assert!((tall.content_rect().x1 - (300.0 - lane)).abs() < 1e-9);
+        }
 
-    #[test]
-    fn wheel_and_keys_scroll_within_the_content_and_clamp() {
-        let mut region = region(1000.0);
-        send(
-            &mut region,
-            &crate::synthetic_input::cursor_moved(100.0, 100.0),
-        );
-        assert!(send(
-            &mut region,
-            &crate::synthetic_input::mouse_wheel(0.0, -1.0),
-        ));
-        let line = f64::from(Theme::dark().tokens.metrics.wheel_line);
-        assert!((region.offset().y - line).abs() < 1e-9);
-        region.set_focused(true);
-        let end =
-            crate::synthetic_input::key_input(&Key::Named(NamedKey::End), ElementState::Pressed);
-        assert!(send(&mut region, &end));
-        assert!(
-            (region.offset().y - 800.0).abs() < 1e-9,
-            "{:?}",
-            region.offset()
-        );
-        assert!(!send(&mut region, &end), "already at the end");
-        assert!(
-            (region.to_content(Point::new(10.0, 10.0)).y - 810.0).abs() < 1e-9,
-            "hit-testing goes through the offset"
-        );
+        phase overlaid_bars_keep_the_content_width_and_sit_in_its_trailing_edge;
+        {
+            let theme = Theme::dark();
+            let lane = f64::from(theme.tokens.metrics.scrollbar_gutter);
+            let viewport = Rect::new(0.0, 0.0, 300.0, 200.0);
+            let mut region = ScrollRegion::vertical().with_overlaid_bars();
+            region.set_viewport(viewport, &theme);
+            region.set_content_size(300.0, 150.0);
+            assert_eq!(region.content_rect(), viewport);
+            region.set_content_size(300.0, 1000.0);
+            assert_eq!(
+                region.content_rect(),
+                viewport,
+                "content that overflows keeps the whole width"
+            );
+            let track = region
+                .v_track(&theme)
+                .expect("an overflowing region has a bar");
+            assert!(
+                track.x0 >= viewport.x1 - lane && track.x1 <= viewport.x1,
+                "{track:?}"
+            );
+        }
+
+        phase wheel_and_keys_scroll_within_the_content_and_clamp;
+        {
+            let mut region = region(1000.0);
+            send(
+                &mut region,
+                &crate::synthetic_input::cursor_moved(100.0, 100.0),
+            );
+            assert!(send(
+                &mut region,
+                &crate::synthetic_input::mouse_wheel(0.0, -1.0),
+            ));
+            let line = f64::from(Theme::dark().tokens.metrics.wheel_line);
+            assert!((region.offset().y - line).abs() < 1e-9);
+            region.set_focused(true);
+            let end =
+                crate::synthetic_input::key_input(&Key::Named(NamedKey::End), ElementState::Pressed);
+            assert!(send(&mut region, &end));
+            assert!(
+                (region.offset().y - 800.0).abs() < 1e-9,
+                "{:?}",
+                region.offset()
+            );
+            assert!(!send(&mut region, &end), "already at the end");
+            assert!(
+                (region.to_content(Point::new(10.0, 10.0)).y - 810.0).abs() < 1e-9,
+                "hit-testing goes through the offset"
+            );
+        }
+
+        phase a_flick_glides_on_in_whole_steps_and_rests_at_the_end;
+        {
+            use crate::time::testing::with_monotonic_time;
+            let mut region = region(100_000.0);
+            let start = crate::time::now();
+            let mut tick = flick(&mut region, start, 6);
+            let lifted = region.offset().y;
+            assert!((lifted - 120.0).abs() < 1e-9, "the fingers moved it 1:1");
+            assert!(region.needs_animation_frame(&Theme::dark()), "it glides");
+            let mut frames = 0;
+            while region.is_gliding() && frames < 2_000 {
+                tick += 1;
+                frames += 1;
+                let moved = with_monotonic_time(start + frame(tick), || region.advance());
+                let y = region.offset().y;
+                assert!(
+                    !moved || (y - y.round()).abs() < 1e-9,
+                    "a glide moves whole pixels, so the host copies it: {y}"
+                );
+            }
+            assert!(region.offset().y > lifted + 100.0, "{:?}", region.offset());
+            assert!(!region.is_gliding(), "it comes to rest");
+
+            let mut short = self::region(400.0);
+            let start = crate::time::now();
+            let mut tick = flick(&mut short, start, 6);
+            while short.is_gliding() && tick < 2_000 {
+                tick += 1;
+                with_monotonic_time(start + frame(tick), || short.advance());
+            }
+            assert!(
+                (short.offset().y - 200.0).abs() < 1e-9,
+                "it stops at the end"
+            );
+            assert!(!short.is_gliding());
+        }
+
+        phase a_held_key_or_the_fingers_catch_a_glide_and_reduced_motion_never_starts_one;
+        {
+            use crate::time::testing::with_monotonic_time;
+            use winit::event::TouchPhase;
+            let mut region = region(100_000.0);
+            let start = crate::time::now();
+            let tick = flick(&mut region, start, 6);
+            assert!(region.is_gliding());
+            with_monotonic_time(start + frame(tick + 1), || {
+                send(&mut region, &swipe(-5.0, TouchPhase::Started));
+            });
+            assert!(!region.is_gliding(), "fingers back down catch it");
+
+            let mut region = self::region(100_000.0);
+            let tick = flick(&mut region, start, 6);
+            region.set_focused(true);
+            with_monotonic_time(start + frame(tick + 1), || {
+                send(
+                    &mut region,
+                    &crate::synthetic_input::key_input(
+                        &Key::Named(NamedKey::ArrowDown),
+                        ElementState::Pressed,
+                    ),
+                );
+            });
+            assert!(!region.is_gliding(), "a key lands where it says");
+
+            let mut theme = Theme::dark();
+            theme.reduce_motion = true;
+            let mut calm = self::region(100_000.0);
+            calm.handle_window_event(
+                &crate::synthetic_input::cursor_moved(100.0, 100.0),
+                1.0,
+                winit::keyboard::ModifiersState::empty(),
+                &mut false,
+                &theme,
+            );
+            for tick in 0..6 {
+                with_monotonic_time(start + frame(tick), || {
+                    calm.handle_window_event(
+                        &swipe(-20.0, TouchPhase::Moved),
+                        1.0,
+                        winit::keyboard::ModifiersState::empty(),
+                        &mut false,
+                        &theme,
+                    );
+                });
+            }
+            with_monotonic_time(start + frame(6), || {
+                calm.handle_window_event(
+                    &swipe(0.0, TouchPhase::Ended),
+                    1.0,
+                    winit::keyboard::ModifiersState::empty(),
+                    &mut false,
+                    &theme,
+                );
+            });
+            assert!((calm.offset().y - 120.0).abs() < 1e-9);
+            assert!(
+                !calm.is_gliding(),
+                "reduced motion moves only with the fingers"
+            );
+        }
+
+        phase a_persisted_offset_is_clamped_and_written_back;
+        {
+            let cell = Rc::new(Cell::new((0.0_f32, 5000.0_f32)));
+            let mut region = ScrollRegion::vertical().with_persisted_offset(Rc::clone(&cell));
+            region.set_viewport(Rect::new(0.0, 0.0, 300.0, 200.0), &Theme::dark());
+            region.set_content_size(280.0, 1000.0);
+            assert!((region.offset().y - 800.0).abs() < 1e-9);
+            assert!((cell.get().1 - 800.0).abs() < 1e-3);
+        }
+
+        phase accessible_scrolling_moves_the_region;
+        {
+            let mut region = region(1000.0);
+            let result = region.apply_primary_vertical_scroll(super::super::PrimaryScrollAction::End);
+            assert!(matches!(
+                result,
+                super::super::PrimaryScrollResult::Changed(_)
+            ));
+            assert!((region.offset().y - 800.0).abs() < 1e-9);
+        }
     }
 
     fn swipe(dy: f64, phase: winit::event::TouchPhase) -> WindowEvent {
@@ -1151,107 +1279,6 @@ mod tests {
 
     fn frame(tick: u64) -> std::time::Duration {
         std::time::Duration::from_micros(tick * 8_333)
-    }
-
-    #[test]
-    fn a_flick_glides_on_in_whole_steps_and_rests_at_the_end() {
-        use crate::time::testing::with_monotonic_time;
-        let mut region = region(100_000.0);
-        let start = crate::time::now();
-        let mut tick = flick(&mut region, start, 6);
-        let lifted = region.offset().y;
-        assert!((lifted - 120.0).abs() < 1e-9, "the fingers moved it 1:1");
-        assert!(region.needs_animation_frame(&Theme::dark()), "it glides");
-        let mut frames = 0;
-        while region.is_gliding() && frames < 2_000 {
-            tick += 1;
-            frames += 1;
-            let moved = with_monotonic_time(start + frame(tick), || region.advance());
-            let y = region.offset().y;
-            assert!(
-                !moved || (y - y.round()).abs() < 1e-9,
-                "a glide moves whole pixels, so the host copies it: {y}"
-            );
-        }
-        assert!(region.offset().y > lifted + 100.0, "{:?}", region.offset());
-        assert!(!region.is_gliding(), "it comes to rest");
-
-        let mut short = self::region(400.0);
-        let start = crate::time::now();
-        let mut tick = flick(&mut short, start, 6);
-        while short.is_gliding() && tick < 2_000 {
-            tick += 1;
-            with_monotonic_time(start + frame(tick), || short.advance());
-        }
-        assert!(
-            (short.offset().y - 200.0).abs() < 1e-9,
-            "it stops at the end"
-        );
-        assert!(!short.is_gliding());
-    }
-
-    #[test]
-    fn a_held_key_or_the_fingers_catch_a_glide_and_reduced_motion_never_starts_one() {
-        use crate::time::testing::with_monotonic_time;
-        use winit::event::TouchPhase;
-        let mut region = region(100_000.0);
-        let start = crate::time::now();
-        let tick = flick(&mut region, start, 6);
-        assert!(region.is_gliding());
-        with_monotonic_time(start + frame(tick + 1), || {
-            send(&mut region, &swipe(-5.0, TouchPhase::Started));
-        });
-        assert!(!region.is_gliding(), "fingers back down catch it");
-
-        let mut region = self::region(100_000.0);
-        let tick = flick(&mut region, start, 6);
-        region.set_focused(true);
-        with_monotonic_time(start + frame(tick + 1), || {
-            send(
-                &mut region,
-                &crate::synthetic_input::key_input(
-                    &Key::Named(NamedKey::ArrowDown),
-                    ElementState::Pressed,
-                ),
-            );
-        });
-        assert!(!region.is_gliding(), "a key lands where it says");
-
-        let mut theme = Theme::dark();
-        theme.reduce_motion = true;
-        let mut calm = self::region(100_000.0);
-        calm.handle_window_event(
-            &crate::synthetic_input::cursor_moved(100.0, 100.0),
-            1.0,
-            winit::keyboard::ModifiersState::empty(),
-            &mut false,
-            &theme,
-        );
-        for tick in 0..6 {
-            with_monotonic_time(start + frame(tick), || {
-                calm.handle_window_event(
-                    &swipe(-20.0, TouchPhase::Moved),
-                    1.0,
-                    winit::keyboard::ModifiersState::empty(),
-                    &mut false,
-                    &theme,
-                );
-            });
-        }
-        with_monotonic_time(start + frame(6), || {
-            calm.handle_window_event(
-                &swipe(0.0, TouchPhase::Ended),
-                1.0,
-                winit::keyboard::ModifiersState::empty(),
-                &mut false,
-                &theme,
-            );
-        });
-        assert!((calm.offset().y - 120.0).abs() < 1e-9);
-        assert!(
-            !calm.is_gliding(),
-            "reduced motion moves only with the fingers"
-        );
     }
 
     #[test]
@@ -1316,26 +1343,5 @@ mod tests {
         });
         assert_eq!(calm.offset().y, 300.0);
         assert!(!calm.needs_animation_frame(&theme));
-    }
-
-    #[test]
-    fn a_persisted_offset_is_clamped_and_written_back() {
-        let cell = Rc::new(Cell::new((0.0_f32, 5000.0_f32)));
-        let mut region = ScrollRegion::vertical().with_persisted_offset(Rc::clone(&cell));
-        region.set_viewport(Rect::new(0.0, 0.0, 300.0, 200.0), &Theme::dark());
-        region.set_content_size(280.0, 1000.0);
-        assert!((region.offset().y - 800.0).abs() < 1e-9);
-        assert!((cell.get().1 - 800.0).abs() < 1e-3);
-    }
-
-    #[test]
-    fn accessible_scrolling_moves_the_region() {
-        let mut region = region(1000.0);
-        let result = region.apply_primary_vertical_scroll(super::super::PrimaryScrollAction::End);
-        assert!(matches!(
-            result,
-            super::super::PrimaryScrollResult::Changed(_)
-        ));
-        assert!((region.offset().y - 800.0).abs() < 1e-9);
     }
 }

@@ -1618,197 +1618,358 @@ mod a11y_tests;
 mod tests {
     use super::*;
 
-    #[test]
-    fn flattened_export_changes_only_annotated_pixels() {
+    tilo_test_env::scenario! {
+        /// The markup editor: its export, its strokes, its zoom and its toolbar.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn markup_exports_strokes_zoom_and_toolbar;
+
+        phase flattened_export_changes_only_annotated_pixels;
         {
-            let original: Arc<[u8]> = Arc::from(vec![20_u8; 16 * 16 * 4]);
-            let mut markup = ScreenshotMarkup::new(original.clone(), 16, 16);
-            markup.strokes.push(MarkupStroke {
-                tool: MarkupTool::Pen,
-                color: [255, 0, 0, 255],
-                width_px: 2.0,
-                points: vec![Point::new(4.0, 4.0), Point::new(12.0, 12.0)],
-            });
-            let export = markup.flattened();
-            assert_eq!((export.width, export.height), (16, 16));
-            assert_eq!(export.rgba.len(), original.len());
-            assert_ne!(export.rgba, original);
-            assert_eq!(&export.rgba[0..4], &original[0..4]);
+            {
+                let original: Arc<[u8]> = Arc::from(vec![20_u8; 16 * 16 * 4]);
+                let mut markup = ScreenshotMarkup::new(original.clone(), 16, 16);
+                markup.strokes.push(MarkupStroke {
+                    tool: MarkupTool::Pen,
+                    color: [255, 0, 0, 255],
+                    width_px: 2.0,
+                    points: vec![Point::new(4.0, 4.0), Point::new(12.0, 12.0)],
+                });
+                let export = markup.flattened();
+                assert_eq!((export.width, export.height), (16, 16));
+                assert_eq!(export.rgba.len(), original.len());
+                assert_ne!(export.rgba, original);
+                assert_eq!(&export.rgba[0..4], &original[0..4]);
+            }
+
+            {
+                let original: Arc<[u8]> = Arc::from(vec![100_u8, 100, 100, 255]);
+                let mut markup = ScreenshotMarkup::new(original, 1, 1);
+                markup.strokes.push(MarkupStroke {
+                    tool: MarkupTool::Highlighter,
+                    color: [255, 200, 0, 92],
+                    width_px: 18.0,
+                    points: vec![Point::new(0.5, 0.5)],
+                });
+                let export = markup.flattened();
+                assert!(export.rgba[0] > 100 && export.rgba[0] < 255);
+                assert!(export.rgba[1] > 100 && export.rgba[1] < 200);
+                assert_eq!(export.rgba[3], 255);
+            }
+
+            {
+                let original: Arc<[u8]> = Arc::from(vec![0_u8; 64 * 64 * 4]);
+                let stroke = |tool| MarkupStroke {
+                    tool,
+                    color: [255, 80, 80, 255],
+                    width_px: 3.0,
+                    points: vec![Point::new(10.0, 32.0), Point::new(50.0, 32.0)],
+                };
+                let mut pen = ScreenshotMarkup::new(original.clone(), 64, 64);
+                pen.strokes.push(stroke(MarkupTool::Pen));
+                let mut arrow = ScreenshotMarkup::new(original, 64, 64);
+                arrow.strokes.push(stroke(MarkupTool::Arrow));
+                let changed =
+                    |rgba: &Arc<[u8]>| rgba.chunks_exact(4).filter(|pixel| pixel[3] != 0).count();
+
+                assert!(changed(&arrow.flattened().rgba) > changed(&pen.flattened().rgba));
+            }
+
+            {
+                let original: Arc<[u8]> = Arc::from(vec![0_u8; 64 * 64 * 4]);
+                let mut markup = ScreenshotMarkup::new(original, 64, 64);
+                markup.strokes.push(MarkupStroke {
+                    tool: MarkupTool::Rectangle,
+                    color: [80, 160, 255, 255],
+                    width_px: 3.0,
+                    points: vec![Point::new(10.0, 10.0), Point::new(50.0, 50.0)],
+                });
+                let export = markup.flattened();
+                let left_edge = (45_usize * 64 + 10) * 4;
+                let bottom_edge = (50_usize * 64 + 45) * 4;
+
+                assert_eq!(export.rgba[left_edge + 3], 255);
+                assert_eq!(export.rgba[bottom_edge + 3], 255);
+            }
+
+            {
+                let original: Arc<[u8]> = Arc::from(vec![180_u8; 32 * 32 * 4]);
+                let mut markup = ScreenshotMarkup::new(original.clone(), 32, 32);
+                markup.strokes.push(MarkupStroke {
+                    tool: MarkupTool::Redact,
+                    color: [18, 18, 22, 255],
+                    width_px: 0.0,
+                    points: vec![Point::new(8.0, 9.0), Point::new(20.0, 18.0)],
+                });
+                let export = markup.flattened();
+                let inside = (12_usize * 32 + 12) * 4;
+                let outside = (7_usize * 32 + 7) * 4;
+
+                assert_eq!(&export.rgba[inside..inside + 4], &[18, 18, 22, 255]);
+                assert_eq!(
+                    &export.rgba[outside..outside + 4],
+                    &original[outside..outside + 4]
+                );
+            }
         }
 
+        phase strokes_undo_redo_animate_and_extend_exactly;
         {
-            let original: Arc<[u8]> = Arc::from(vec![100_u8, 100, 100, 255]);
-            let mut markup = ScreenshotMarkup::new(original, 1, 1);
-            markup.strokes.push(MarkupStroke {
-                tool: MarkupTool::Highlighter,
-                color: [255, 200, 0, 92],
-                width_px: 18.0,
-                points: vec![Point::new(0.5, 0.5)],
-            });
-            let export = markup.flattened();
-            assert!(export.rgba[0] > 100 && export.rgba[0] < 255);
-            assert!(export.rgba[1] > 100 && export.rgba[1] < 200);
-            assert_eq!(export.rgba[3], 255);
+            {
+                let original: Arc<[u8]> = Arc::from(vec![0_u8; 4 * 4 * 4]);
+                let mut markup = ScreenshotMarkup::new(original, 4, 4);
+                let stroke = MarkupStroke {
+                    tool: MarkupTool::Pen,
+                    color: [255, 0, 0, 255],
+                    width_px: 2.0,
+                    points: vec![Point::new(1.0, 1.0), Point::new(2.0, 2.0)],
+                };
+                markup.strokes.push(stroke.clone());
+                markup.activate("undo");
+                assert!(markup.strokes.is_empty());
+                assert_eq!(markup.redo, vec![stroke.clone()]);
+                markup.activate("redo");
+                assert_eq!(markup.strokes, vec![stroke]);
+                assert!(markup.redo.is_empty());
+            }
+
+            {
+                let original: Arc<[u8]> = Arc::from(vec![0_u8; 16 * 9 * 4]);
+                let spawn = Rect::new(1_200.0, 18.0, 1_246.0, 42.0);
+                let mut markup = ScreenshotMarkup::new(original, 16, 9).with_spawn_from(Some(spawn));
+                markup.rect = Rect::new(0.0, 0.0, 1_600.0, 900.0);
+                markup.layout_parts();
+                let settled = markup.canvas;
+
+                markup.set_entrance_transition_progress(0);
+                assert_eq!(markup.entrance_motion(), 0.0);
+                assert_eq!(markup.presentation_canvas(0.0), spawn);
+                markup.set_entrance_transition_progress(1_000);
+                assert_eq!(markup.entrance_motion(), 1.0);
+                let end = markup.presentation_canvas(1.0);
+                assert!((end.x0 - settled.x0).abs() < 0.001);
+                assert!((end.y0 - settled.y0).abs() < 0.001);
+                assert!((end.x1 - settled.x1).abs() < 0.001);
+                assert!((end.y1 - settled.y1).abs() < 0.001);
+                assert!(!markup.needs_animation_frame());
+            }
+
+            {
+                let original: Arc<[u8]> = Arc::from(vec![0_u8; 100 * 80 * 4]);
+                let mut markup = ScreenshotMarkup::new(original, 100, 80);
+                markup.rect = Rect::new(0.0, 0.0, 1_000.0, 700.0);
+                markup.layout_parts();
+                markup.drawing = Some(MarkupStroke {
+                    tool: MarkupTool::Pen,
+                    color: SWATCHES[0],
+                    width_px: 4.0,
+                    points: vec![Point::new(10.0, 10.0)],
+                });
+
+                assert!(markup.move_active_gesture(markup.canvas.center()));
+                assert!(markup.panning.is_none());
+                assert_eq!(markup.drawing.as_ref().unwrap().points.len(), 2);
+            }
         }
 
+        phase zoom_and_fit_track_source_pixels_without_changing_export;
         {
-            let original: Arc<[u8]> = Arc::from(vec![0_u8; 64 * 64 * 4]);
-            let stroke = |tool| MarkupStroke {
-                tool,
-                color: [255, 80, 80, 255],
-                width_px: 3.0,
-                points: vec![Point::new(10.0, 32.0), Point::new(50.0, 32.0)],
-            };
-            let mut pen = ScreenshotMarkup::new(original.clone(), 64, 64);
-            pen.strokes.push(stroke(MarkupTool::Pen));
-            let mut arrow = ScreenshotMarkup::new(original, 64, 64);
-            arrow.strokes.push(stroke(MarkupTool::Arrow));
-            let changed =
-                |rgba: &Arc<[u8]>| rgba.chunks_exact(4).filter(|pixel| pixel[3] != 0).count();
+            {
+                let original: Arc<[u8]> = Arc::from(vec![33_u8; 100 * 80 * 4]);
+                let mut markup = ScreenshotMarkup::new(original.clone(), 100, 80);
+                markup.rect = Rect::new(0.0, 0.0, 1_000.0, 700.0);
+                markup.layout_parts();
+                let anchor = Point::new(markup.viewport.x0 + 180.0, markup.viewport.y0 + 120.0);
+                let before = markup.image_point(anchor);
+                markup.set_zoom_around(3.0, anchor);
+                let after = markup.image_point(anchor);
 
-            assert!(changed(&arrow.flattened().rgba) > changed(&pen.flattened().rgba));
+                assert!((before.x - after.x).abs() < 0.001);
+                assert!((before.y - after.y).abs() < 0.001);
+                assert_eq!(markup.flattened().rgba, original);
+
+                markup.pan = Vec2::new(100_000.0, -100_000.0);
+                markup.clamp_pan();
+                assert!(markup.canvas.x0 <= markup.viewport.x0);
+                assert!(markup.canvas.x1 >= markup.viewport.x1);
+                assert!(markup.canvas.y0 <= markup.viewport.y0);
+                assert!(markup.canvas.y1 >= markup.viewport.y1);
+                markup.reset_view();
+                assert_eq!(markup.zoom, 1.0);
+                assert_eq!(markup.canvas, markup.fit_canvas);
+            }
+
+            {
+                let small: Arc<[u8]> = Arc::from(vec![0_u8; 100 * 80 * 4]);
+                let mut markup = ScreenshotMarkup::new(small, 100, 80);
+                markup.rect = Rect::new(0.0, 0.0, 1_000.0, 700.0);
+                markup.layout_parts();
+                assert_eq!(markup.fit_canvas.width(), 100.0);
+                assert_eq!(markup.fit_canvas.height(), 80.0);
+                assert!((markup.display_scale() - 1.0).abs() < 0.001);
+
+                let large: Arc<[u8]> = Arc::from(vec![0_u8; 1_000 * 2_000 * 4]);
+                let mut markup = ScreenshotMarkup::new(large, 1_000, 2_000);
+                markup.rect = Rect::new(0.0, 0.0, 1_000.0, 700.0);
+                markup.layout_parts();
+                assert!(markup.display_scale() < 1.0);
+                markup.set_zoom_around(2.0, markup.canvas.center());
+                assert!((markup.display_scale() - markup.fit_canvas.width() / 500.0).abs() < 0.001);
+            }
         }
 
+        phase markup_toolbar_lays_out_tokenised_targets_that_collapse_when_narrow;
         {
-            let original: Arc<[u8]> = Arc::from(vec![0_u8; 64 * 64 * 4]);
-            let mut markup = ScreenshotMarkup::new(original, 64, 64);
-            markup.strokes.push(MarkupStroke {
-                tool: MarkupTool::Rectangle,
-                color: [80, 160, 255, 255],
-                width_px: 3.0,
-                points: vec![Point::new(10.0, 10.0), Point::new(50.0, 50.0)],
-            });
-            let export = markup.flattened();
-            let left_edge = (45_usize * 64 + 10) * 4;
-            let bottom_edge = (50_usize * 64 + 45) * 4;
+            // Case `toolbar_controls_meet_the_minimum_target_and_never_overlap`.
+            {
+                let markup = markup_at(1200.0);
+                let controls = markup.controls();
+                for (id, r) in &controls {
+                    assert!(
+                        r.width() >= MIN_TARGET - 1e-6 && r.height() >= MIN_TARGET - 1e-6,
+                        "{id} {r:?} is under the {MIN_TARGET}px minimum target"
+                    );
+                }
+                assert_eq!(
+                    controls
+                        .iter()
+                        .filter(|(id, _)| id.starts_with("color-"))
+                        .count(),
+                    SWATCHES.len(),
+                    "every swatch fits on a wide toolbar"
+                );
+                assert_no_two_controls_overlap(&controls);
+            }
 
-            assert_eq!(export.rgba[left_edge + 3], 255);
-            assert_eq!(export.rgba[bottom_edge + 3], 255);
-        }
+            {
+                let mut markup = markup_at(440.0);
+                let controls = markup.controls();
+                assert_no_two_controls_overlap(&controls);
+                for required in [
+                    "cancel", "undo", "redo", "tool", "fit", "colors", "open", "copy", "save",
+                ] {
+                    assert!(
+                        controls.iter().any(|(id, _)| *id == required),
+                        "{required} must survive a narrow toolbar"
+                    );
+                }
+                assert!(
+                    !controls.iter().any(|(id, _)| id.starts_with("color-")),
+                    "a 420px toolbar cannot hold five swatch targets; they collapse behind `colors`"
+                );
+                let open = controls
+                    .iter()
+                    .find(|(id, _)| *id == "open")
+                    .map(|(_, r)| *r)
+                    .expect("open is offered");
+                for (id, r) in &controls {
+                    if *id == "colors" {
+                        assert!(
+                            r.width() >= MIN_TARGET && r.x1 <= open.x0,
+                            "{id} {r:?} is a full target and stays clear of open {open:?}"
+                        );
+                    }
+                }
 
-        {
-            let original: Arc<[u8]> = Arc::from(vec![180_u8; 32 * 32 * 4]);
-            let mut markup = ScreenshotMarkup::new(original.clone(), 32, 32);
-            markup.strokes.push(MarkupStroke {
-                tool: MarkupTool::Redact,
-                color: [18, 18, 22, 255],
-                width_px: 0.0,
-                points: vec![Point::new(8.0, 9.0), Point::new(20.0, 18.0)],
-            });
-            let export = markup.flattened();
-            let inside = (12_usize * 32 + 12) * 4;
-            let outside = (7_usize * 32 + 7) * 4;
+                markup.activate("colors");
+                let opened = markup.controls();
+                assert_no_two_controls_overlap(&opened);
+                for id in SWATCH_IDS {
+                    let r = opened
+                        .iter()
+                        .find(|(candidate, _)| *candidate == id)
+                        .map(|(_, r)| *r)
+                        .unwrap_or_else(|| panic!("{id} is reachable from the open palette"));
+                    assert!(
+                        r.width() >= MIN_TARGET && r.height() >= MIN_TARGET,
+                        "{id} {r:?} is under the minimum target"
+                    );
+                    assert!(
+                        markup.rect.x0 <= r.x0 && r.x1 <= markup.rect.x1,
+                        "{id} {r:?} leaves the surface {:?}",
+                        markup.rect
+                    );
+                }
+                markup.activate("color-green");
+                assert_eq!(markup.color, SWATCHES[3], "the palette choice is applied");
+                assert!(
+                    !markup.color_picker_open,
+                    "choosing a colour closes the palette"
+                );
+            }
 
-            assert_eq!(&export.rgba[inside..inside + 4], &[18, 18, 22, 255]);
-            assert_eq!(
-                &export.rgba[outside..outside + 4],
-                &original[outside..outside + 4]
-            );
-        }
-    }
+            {
+                let mut markup = markup_at(440.0);
+                markup.tool = MarkupTool::Redact;
+                let controls = markup.controls();
+                let open = controls
+                    .iter()
+                    .find(|(id, _)| *id == "open")
+                    .map(|(_, r)| *r)
+                    .expect("open is offered");
+                let badge = markup.redact_badge_rect();
+                assert!(
+                    badge.width() == 0.0 || badge.x1 <= open.x0 - CONTROL_GAP + 1e-6,
+                    "badge {badge:?} runs under open {open:?}"
+                );
+                for (id, r) in &controls {
+                    let overlap = badge.intersect(*r);
+                    assert!(
+                        overlap.is_zero_area(),
+                        "badge {badge:?} and {id} {r:?} claim the same pixels"
+                    );
+                }
+            }
 
-    #[test]
-    fn strokes_undo_redo_animate_and_extend_exactly() {
-        {
-            let original: Arc<[u8]> = Arc::from(vec![0_u8; 4 * 4 * 4]);
-            let mut markup = ScreenshotMarkup::new(original, 4, 4);
-            let stroke = MarkupStroke {
-                tool: MarkupTool::Pen,
-                color: [255, 0, 0, 255],
-                width_px: 2.0,
-                points: vec![Point::new(1.0, 1.0), Point::new(2.0, 2.0)],
-            };
-            markup.strokes.push(stroke.clone());
-            markup.activate("undo");
-            assert!(markup.strokes.is_empty());
-            assert_eq!(markup.redo, vec![stroke.clone()]);
-            markup.activate("redo");
-            assert_eq!(markup.strokes, vec![stroke]);
-            assert!(markup.redo.is_empty());
-        }
+            // Case `layout_constants_equal_the_spacing_tokens`.
+            {
+                let spacing = crate::tokens::Spacing::default();
+                assert!(
+                    (CANVAS_INSET - f64::from(spacing.s6)).abs() < 1e-9,
+                    "CANVAS_INSET is s6"
+                );
+                assert!(
+                    (HEADER_GAP - f64::from(spacing.s2)).abs() < 1e-9,
+                    "HEADER_GAP is s2"
+                );
+                assert!(
+                    (CONTROL_GAP - f64::from(spacing.s1)).abs() < 1e-9,
+                    "CONTROL_GAP is s1"
+                );
+                assert!(
+                    (TOOLBAR_INSET - f64::from(spacing.s2)).abs() < 1e-9,
+                    "TOOLBAR_INSET is s2"
+                );
+            }
 
-        {
-            let original: Arc<[u8]> = Arc::from(vec![0_u8; 16 * 9 * 4]);
-            let spawn = Rect::new(1_200.0, 18.0, 1_246.0, 42.0);
-            let mut markup = ScreenshotMarkup::new(original, 16, 9).with_spawn_from(Some(spawn));
-            markup.rect = Rect::new(0.0, 0.0, 1_600.0, 900.0);
-            markup.layout_parts();
-            let settled = markup.canvas;
-
-            markup.set_entrance_transition_progress(0);
-            assert_eq!(markup.entrance_motion(), 0.0);
-            assert_eq!(markup.presentation_canvas(0.0), spawn);
-            markup.set_entrance_transition_progress(1_000);
-            assert_eq!(markup.entrance_motion(), 1.0);
-            let end = markup.presentation_canvas(1.0);
-            assert!((end.x0 - settled.x0).abs() < 0.001);
-            assert!((end.y0 - settled.y0).abs() < 0.001);
-            assert!((end.x1 - settled.x1).abs() < 0.001);
-            assert!((end.y1 - settled.y1).abs() < 0.001);
-            assert!(!markup.needs_animation_frame());
-        }
-
-        {
-            let original: Arc<[u8]> = Arc::from(vec![0_u8; 100 * 80 * 4]);
-            let mut markup = ScreenshotMarkup::new(original, 100, 80);
-            markup.rect = Rect::new(0.0, 0.0, 1_000.0, 700.0);
-            markup.layout_parts();
-            markup.drawing = Some(MarkupStroke {
-                tool: MarkupTool::Pen,
-                color: SWATCHES[0],
-                width_px: 4.0,
-                points: vec![Point::new(10.0, 10.0)],
-            });
-
-            assert!(markup.move_active_gesture(markup.canvas.center()));
-            assert!(markup.panning.is_none());
-            assert_eq!(markup.drawing.as_ref().unwrap().points.len(), 2);
-        }
-    }
-
-    #[test]
-    fn zoom_and_fit_track_source_pixels_without_changing_export() {
-        {
-            let original: Arc<[u8]> = Arc::from(vec![33_u8; 100 * 80 * 4]);
-            let mut markup = ScreenshotMarkup::new(original.clone(), 100, 80);
-            markup.rect = Rect::new(0.0, 0.0, 1_000.0, 700.0);
-            markup.layout_parts();
-            let anchor = Point::new(markup.viewport.x0 + 180.0, markup.viewport.y0 + 120.0);
-            let before = markup.image_point(anchor);
-            markup.set_zoom_around(3.0, anchor);
-            let after = markup.image_point(anchor);
-
-            assert!((before.x - after.x).abs() < 0.001);
-            assert!((before.y - after.y).abs() < 0.001);
-            assert_eq!(markup.flattened().rgba, original);
-
-            markup.pan = Vec2::new(100_000.0, -100_000.0);
-            markup.clamp_pan();
-            assert!(markup.canvas.x0 <= markup.viewport.x0);
-            assert!(markup.canvas.x1 >= markup.viewport.x1);
-            assert!(markup.canvas.y0 <= markup.viewport.y0);
-            assert!(markup.canvas.y1 >= markup.viewport.y1);
-            markup.reset_view();
-            assert_eq!(markup.zoom, 1.0);
-            assert_eq!(markup.canvas, markup.fit_canvas);
-        }
-
-        {
-            let small: Arc<[u8]> = Arc::from(vec![0_u8; 100 * 80 * 4]);
-            let mut markup = ScreenshotMarkup::new(small, 100, 80);
-            markup.rect = Rect::new(0.0, 0.0, 1_000.0, 700.0);
-            markup.layout_parts();
-            assert_eq!(markup.fit_canvas.width(), 100.0);
-            assert_eq!(markup.fit_canvas.height(), 80.0);
-            assert!((markup.display_scale() - 1.0).abs() < 0.001);
-
-            let large: Arc<[u8]> = Arc::from(vec![0_u8; 1_000 * 2_000 * 4]);
-            let mut markup = ScreenshotMarkup::new(large, 1_000, 2_000);
-            markup.rect = Rect::new(0.0, 0.0, 1_000.0, 700.0);
-            markup.layout_parts();
-            assert!(markup.display_scale() < 1.0);
-            markup.set_zoom_around(2.0, markup.canvas.center());
-            assert!((markup.display_scale() - markup.fit_canvas.width() / 500.0).abs() < 0.001);
+            {
+                let mut markup = markup_at(1200.0);
+                markup.tool = MarkupTool::Redact;
+                let controls = markup.controls();
+                let fit = controls
+                    .iter()
+                    .find(|(id, _)| *id == "fit")
+                    .map(|(_, r)| *r)
+                    .expect("fit is offered");
+                let tool = controls
+                    .iter()
+                    .find(|(id, _)| *id == "tool")
+                    .map(|(_, r)| *r)
+                    .expect("tool is offered");
+                let badge = markup.redact_badge_rect();
+                assert!(
+                    (badge.x0 - (fit.x1 + CONTROL_GAP)).abs() < 1e-6,
+                    "badge {badge:?} does not start one gap after fit {fit:?}"
+                );
+                assert!(
+                    (badge.center().y - fit.center().y).abs() < 1e-6,
+                    "badge shares the toolbar's centre line"
+                );
+                let picker = markup.tool_picker_rect();
+                assert!(
+                    (picker.x0 + 24.0 - tool.center().x).abs() < 1e-6,
+                    "the first picker choice sits above the tool button"
+                );
+            }
         }
     }
 
@@ -1829,161 +1990,6 @@ mod tests {
                     "{a_id} {a:?} and {b_id} {b:?} claim the same pixels: {overlap:?}"
                 );
             }
-        }
-    }
-
-    #[test]
-    fn markup_toolbar_lays_out_tokenised_targets_that_collapse_when_narrow() {
-        // Case `toolbar_controls_meet_the_minimum_target_and_never_overlap`.
-        {
-            let markup = markup_at(1200.0);
-            let controls = markup.controls();
-            for (id, r) in &controls {
-                assert!(
-                    r.width() >= MIN_TARGET - 1e-6 && r.height() >= MIN_TARGET - 1e-6,
-                    "{id} {r:?} is under the {MIN_TARGET}px minimum target"
-                );
-            }
-            assert_eq!(
-                controls
-                    .iter()
-                    .filter(|(id, _)| id.starts_with("color-"))
-                    .count(),
-                SWATCHES.len(),
-                "every swatch fits on a wide toolbar"
-            );
-            assert_no_two_controls_overlap(&controls);
-        }
-
-        {
-            let mut markup = markup_at(440.0);
-            let controls = markup.controls();
-            assert_no_two_controls_overlap(&controls);
-            for required in [
-                "cancel", "undo", "redo", "tool", "fit", "colors", "open", "copy", "save",
-            ] {
-                assert!(
-                    controls.iter().any(|(id, _)| *id == required),
-                    "{required} must survive a narrow toolbar"
-                );
-            }
-            assert!(
-                !controls.iter().any(|(id, _)| id.starts_with("color-")),
-                "a 420px toolbar cannot hold five swatch targets; they collapse behind `colors`"
-            );
-            let open = controls
-                .iter()
-                .find(|(id, _)| *id == "open")
-                .map(|(_, r)| *r)
-                .expect("open is offered");
-            for (id, r) in &controls {
-                if *id == "colors" {
-                    assert!(
-                        r.width() >= MIN_TARGET && r.x1 <= open.x0,
-                        "{id} {r:?} is a full target and stays clear of open {open:?}"
-                    );
-                }
-            }
-
-            markup.activate("colors");
-            let opened = markup.controls();
-            assert_no_two_controls_overlap(&opened);
-            for id in SWATCH_IDS {
-                let r = opened
-                    .iter()
-                    .find(|(candidate, _)| *candidate == id)
-                    .map(|(_, r)| *r)
-                    .unwrap_or_else(|| panic!("{id} is reachable from the open palette"));
-                assert!(
-                    r.width() >= MIN_TARGET && r.height() >= MIN_TARGET,
-                    "{id} {r:?} is under the minimum target"
-                );
-                assert!(
-                    markup.rect.x0 <= r.x0 && r.x1 <= markup.rect.x1,
-                    "{id} {r:?} leaves the surface {:?}",
-                    markup.rect
-                );
-            }
-            markup.activate("color-green");
-            assert_eq!(markup.color, SWATCHES[3], "the palette choice is applied");
-            assert!(
-                !markup.color_picker_open,
-                "choosing a colour closes the palette"
-            );
-        }
-
-        {
-            let mut markup = markup_at(440.0);
-            markup.tool = MarkupTool::Redact;
-            let controls = markup.controls();
-            let open = controls
-                .iter()
-                .find(|(id, _)| *id == "open")
-                .map(|(_, r)| *r)
-                .expect("open is offered");
-            let badge = markup.redact_badge_rect();
-            assert!(
-                badge.width() == 0.0 || badge.x1 <= open.x0 - CONTROL_GAP + 1e-6,
-                "badge {badge:?} runs under open {open:?}"
-            );
-            for (id, r) in &controls {
-                let overlap = badge.intersect(*r);
-                assert!(
-                    overlap.is_zero_area(),
-                    "badge {badge:?} and {id} {r:?} claim the same pixels"
-                );
-            }
-        }
-
-        // Case `layout_constants_equal_the_spacing_tokens`.
-        {
-            let spacing = crate::tokens::Spacing::default();
-            assert!(
-                (CANVAS_INSET - f64::from(spacing.s6)).abs() < 1e-9,
-                "CANVAS_INSET is s6"
-            );
-            assert!(
-                (HEADER_GAP - f64::from(spacing.s2)).abs() < 1e-9,
-                "HEADER_GAP is s2"
-            );
-            assert!(
-                (CONTROL_GAP - f64::from(spacing.s1)).abs() < 1e-9,
-                "CONTROL_GAP is s1"
-            );
-            assert!(
-                (TOOLBAR_INSET - f64::from(spacing.s2)).abs() < 1e-9,
-                "TOOLBAR_INSET is s2"
-            );
-        }
-
-        {
-            let mut markup = markup_at(1200.0);
-            markup.tool = MarkupTool::Redact;
-            let controls = markup.controls();
-            let fit = controls
-                .iter()
-                .find(|(id, _)| *id == "fit")
-                .map(|(_, r)| *r)
-                .expect("fit is offered");
-            let tool = controls
-                .iter()
-                .find(|(id, _)| *id == "tool")
-                .map(|(_, r)| *r)
-                .expect("tool is offered");
-            let badge = markup.redact_badge_rect();
-            assert!(
-                (badge.x0 - (fit.x1 + CONTROL_GAP)).abs() < 1e-6,
-                "badge {badge:?} does not start one gap after fit {fit:?}"
-            );
-            assert!(
-                (badge.center().y - fit.center().y).abs() < 1e-6,
-                "badge shares the toolbar's centre line"
-            );
-            let picker = markup.tool_picker_rect();
-            assert!(
-                (picker.x0 + 24.0 - tool.center().x).abs() < 1e-6,
-                "the first picker choice sits above the tool button"
-            );
         }
     }
 }
