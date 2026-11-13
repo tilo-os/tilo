@@ -293,61 +293,66 @@ mod tests {
         );
     }
 
-    #[test]
-    fn wait_child_or_returns_on_wake() {
-        let mut child = sleeper("3600");
-        let wake = std::sync::Arc::new(WakeFd::new().unwrap());
-        let ringer = wake.clone();
-        let thread = std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(50));
-            ringer.ring();
-        });
-        let first = wait_child_or(&mut child, Some(wake.fd()), None).unwrap();
-        thread.join().unwrap();
-        assert_eq!(first, Wakeup::Woken);
-        // Level-triggered until drained, then quiet again.
-        let soon = Instant::now()
-            .checked_add(Duration::from_millis(30))
-            .unwrap();
-        assert_eq!(
-            wait_child_or(&mut child, Some(wake.fd()), Some(soon)).unwrap(),
-            Wakeup::Woken
-        );
-        wake.drain();
-        let soon = Instant::now()
-            .checked_add(Duration::from_millis(30))
-            .unwrap();
-        assert_eq!(
-            wait_child_or(&mut child, Some(wake.fd()), Some(soon)).unwrap(),
-            Wakeup::Deadline
-        );
-        child.kill().unwrap();
-        assert!(matches!(
-            wait_child_or(&mut child, Some(wake.fd()), None).unwrap(),
-            Wakeup::Exited(_)
-        ));
-    }
+    tilo_test_env::scenario! {
+        /// `wait_child_or`, where the wait is not measured in context switches.
+        fn wait_child_or_returns_on_a_wake_or_a_deadline;
 
-    #[test]
-    fn wait_child_or_honours_deadline() {
-        let mut child = sleeper("3600");
-        let began = Instant::now();
-        let deadline = began.checked_add(Duration::from_millis(100)).unwrap();
-        assert_eq!(
-            wait_child_or(&mut child, None, Some(deadline)).unwrap(),
-            Wakeup::Deadline
-        );
-        assert!(Instant::now() >= deadline);
-        // A past deadline only probes a live child.
-        assert_eq!(
-            wait_child_or(&mut child, None, Some(began)).unwrap(),
-            Wakeup::Deadline
-        );
-        child.kill().unwrap();
-        child.wait().unwrap();
-        assert!(matches!(
-            wait_child_or(&mut child, None, Some(began)).unwrap(),
-            Wakeup::Exited(_)
-        ));
+        phase wait_child_or_returns_on_wake;
+        {
+            let mut child = sleeper("3600");
+            let wake = std::sync::Arc::new(WakeFd::new().unwrap());
+            let ringer = wake.clone();
+            let thread = std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(50));
+                ringer.ring();
+            });
+            let first = wait_child_or(&mut child, Some(wake.fd()), None).unwrap();
+            thread.join().unwrap();
+            assert_eq!(first, Wakeup::Woken);
+            // Level-triggered until drained, then quiet again.
+            let soon = Instant::now()
+                .checked_add(Duration::from_millis(30))
+                .unwrap();
+            assert_eq!(
+                wait_child_or(&mut child, Some(wake.fd()), Some(soon)).unwrap(),
+                Wakeup::Woken
+            );
+            wake.drain();
+            let soon = Instant::now()
+                .checked_add(Duration::from_millis(30))
+                .unwrap();
+            assert_eq!(
+                wait_child_or(&mut child, Some(wake.fd()), Some(soon)).unwrap(),
+                Wakeup::Deadline
+            );
+            child.kill().unwrap();
+            assert!(matches!(
+                wait_child_or(&mut child, Some(wake.fd()), None).unwrap(),
+                Wakeup::Exited(_)
+            ));
+        }
+
+        phase wait_child_or_honours_deadline;
+        {
+            let mut child = sleeper("3600");
+            let began = Instant::now();
+            let deadline = began.checked_add(Duration::from_millis(100)).unwrap();
+            assert_eq!(
+                wait_child_or(&mut child, None, Some(deadline)).unwrap(),
+                Wakeup::Deadline
+            );
+            assert!(Instant::now() >= deadline);
+            // A past deadline only probes a live child.
+            assert_eq!(
+                wait_child_or(&mut child, None, Some(began)).unwrap(),
+                Wakeup::Deadline
+            );
+            child.kill().unwrap();
+            child.wait().unwrap();
+            assert!(matches!(
+                wait_child_or(&mut child, None, Some(began)).unwrap(),
+                Wakeup::Exited(_)
+            ));
+        }
     }
 }
