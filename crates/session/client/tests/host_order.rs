@@ -54,7 +54,6 @@ async fn https_and_iroh_commits_share_one_host_order() {
         "127.0.0.1:0".parse().unwrap(),
     )
     .await;
-    let _laptop = crate::participant::Participant::start(&host.relay, &root).await;
 
     let browser_peer = start_peer(
         host.iroh(),

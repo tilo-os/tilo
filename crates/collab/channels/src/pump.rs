@@ -203,9 +203,7 @@ mod tests {
                 signer: std::sync::Arc::new(key(1)),
                 role: crate::Role::Participant,
             },
-            Box::new(Directory {
-                policy: Policy::default(),
-            }),
+            Box::new(Directory::new(Policy::default())),
             Arc::new(Gates::default()),
         )
         .unwrap();
@@ -320,9 +318,7 @@ mod tests {
                     signer: std::sync::Arc::new(key(seed)),
                     role: crate::Role::Participant,
                 },
-                Box::new(Directory {
-                    policy: policy.clone(),
-                }),
+                Box::new(Directory::new(policy.clone())),
                 Arc::new(Gates::default()),
             )
             .unwrap();

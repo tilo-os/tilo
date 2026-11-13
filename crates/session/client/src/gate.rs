@@ -83,8 +83,7 @@ pub fn required_workspace_action(msg: &NeighbourMsg) -> Option<WorkspaceAction> 
         // Channel governance is signed by a participant and checked against the membership; access
         // requests are how a reader obtains keys.
         | NeighbourMsg::MlsGovernance { .. }
-        | NeighbourMsg::MlsAccessRequest { .. }
-        | NeighbourMsg::MlsChannelUnfounded { .. } => {
+        | NeighbourMsg::MlsAccessRequest { .. } => {
             Some((TreePath::root(), ActionKind::Read))
         }
         // Settled before the gate: identity is how a sender becomes known at all; a codec advert,

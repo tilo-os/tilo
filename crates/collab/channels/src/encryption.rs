@@ -222,13 +222,6 @@ pub enum InboundChannelGovernance {
         workspace: WorkspaceId,
         request: Box<collab_types::MlsAccessRequestV1>,
     },
-    /// The workspace's host carries no genesis of `channel`, which `device`
-    /// asked for ([`NeighbourMsg::MlsChannelUnfounded`]).
-    Unfounded {
-        workspace: WorkspaceId,
-        channel: ChannelId,
-        device: Ed25519PublicKey,
-    },
 }
 
 impl InboundChannelGovernance {
@@ -243,15 +236,6 @@ impl InboundChannelGovernance {
                 workspace, request, ..
             } => WorkspaceId::parse(&workspace)
                 .map(|workspace| Self::AccessRequest { workspace, request }),
-            NeighbourMsg::MlsChannelUnfounded {
-                workspace,
-                channel,
-                device,
-            } => WorkspaceId::parse(&workspace).map(|workspace| Self::Unfounded {
-                workspace,
-                channel,
-                device,
-            }),
             _ => None,
         }
     }
@@ -301,15 +285,9 @@ pub trait ChannelDirectory: collab_types::signer::MaybeSendSync {
     fn announce_at(&self, at: u64) {
         tilo_identity_host::policy_change::wake_at(at.saturating_mul(1_000_000_000));
     }
-    /// Whether this device hosts `workspace`: every genesis of its channels
-    /// passes through it, so it creates a group it holds none of as soon as
-    /// it needs it. A device of a workspace hosted elsewhere creates one only
-    /// once the host said it carries no genesis of the channel
-    /// ([`InboundChannelGovernance::Unfounded`]). `true` by default.
-    fn hosts(&self, workspace: WorkspaceId) -> bool {
-        let _ = workspace;
-        true
-    }
+    /// Whether this device created `workspace` and so founds its group. Every
+    /// other device waits for the genesis and joins by Welcome.
+    fn founds(&self, workspace: WorkspaceId) -> bool;
 }
 
 /// The platform secret store's namespace holding a device's channel vault
@@ -521,10 +499,6 @@ struct Founding {
     /// Whether the policy, when last read, let this device read the channel
     /// and so create its group.
     allowed: bool,
-    /// The workspace's host said it carries no genesis of the channel...
-    unfounded: bool,
-    /// ...in answer to this device's own request.
-    answered: bool,
 }
 
 /// One channel this device takes part in.
@@ -1214,22 +1188,6 @@ impl ChannelEncryption {
 
     fn receive(&mut self, inbound: InboundChannelGovernance, now: Instant, wall: u64) {
         match inbound {
-            InboundChannelGovernance::Unfounded {
-                workspace,
-                channel,
-                device,
-            } => {
-                let this = self.device() == Some(device);
-                let Some(entry) = self
-                    .peers
-                    .get_mut(&channel)
-                    .filter(|entry| entry.workspace == workspace)
-                else {
-                    return;
-                };
-                entry.founding.unfounded = true;
-                entry.founding.answered |= this;
-            }
             InboundChannelGovernance::Frame { workspace, frame } => {
                 self.receive_frame(workspace, *frame, now, wall);
             }
@@ -1684,9 +1642,9 @@ impl ChannelEncryption {
         Ok(true)
     }
 
-    /// Create `channel`'s group once no genesis of it can be on its way
-    /// ([`ChannelDirectory::hosts`]) and the policy lets this device read the
-    /// channel. A device that has seen a genesis never creates one.
+    /// Create `channel`'s group when this device created the workspace
+    /// ([`ChannelDirectory::founds`]) and holds its keys. A device that has
+    /// seen a genesis never creates one.
     fn found(&mut self, channel: ChannelId, now: Instant, wall: u64) {
         let Some(entry) = self.peers.get(&channel) else {
             return;
@@ -1695,12 +1653,7 @@ impl ChannelEncryption {
             return;
         }
         let workspace = entry.workspace;
-        let hosted = self.directory.hosts(workspace);
-        let due = if entry.wanted {
-            hosted || entry.founding.answered
-        } else {
-            (hosted || entry.founding.unfounded) && now >= entry.founding.at
-        };
+        let due = self.directory.founds(workspace) && (entry.wanted || now >= entry.founding.at);
         let reads = self
             .directory
             .allowed_devices(workspace, wall)
@@ -1805,8 +1758,6 @@ impl ChannelEncryption {
                 founding: Founding {
                     at: found_at,
                     allowed: !self.reads_only(),
-                    unfounded: false,
-                    answered: false,
                 },
                 wanted: true,
                 held: Vec::new(),

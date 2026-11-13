@@ -21,8 +21,8 @@ tilo_automerge_isolate::test_worker!();
 #[global_allocator]
 static ALLOCATOR: tilo_test_env::held::Held = tilo_test_env::held::Held;
 
-#[path = "support/participant.rs"]
-mod participant;
+#[path = "support/native.rs"]
+mod native;
 
 #[path = "support/call.rs"]
 mod call;

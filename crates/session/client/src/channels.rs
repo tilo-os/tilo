@@ -610,12 +610,9 @@ impl ChannelDirectory for OwnerDirectory {
         )
     }
 
-    /// A workspace entered while hosted elsewhere is its host's: the host answers whether a channel
-    /// has a group.
-    fn hosts(&self, workspace: ModelWorkspaceId) -> bool {
-        !self
-            .owner
-            .with_current(workspace, |view| Ok(view.entered() && !view.hosted_here()))
+    fn founds(&self, workspace: ModelWorkspaceId) -> bool {
+        self.owner
+            .with_current(workspace, |view| Ok(view.founded_here()))
             .unwrap_or(false)
     }
 

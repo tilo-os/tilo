@@ -89,7 +89,6 @@ async fn a_reconnect_resumes_after_the_last_position_instead_of_replaying_histor
         "127.0.0.1:0".parse().unwrap(),
     )
     .await;
-    let mut laptop = crate::participant::Participant::start(&host.relay, &root).await;
 
     let author = start_peer(
         host.iroh(),
@@ -149,7 +148,6 @@ async fn a_reconnect_resumes_after_the_last_position_instead_of_replaying_histor
     drop(host.web);
     host.relay.shutdown().await;
     let host = restart_host(&root, &host_device, state.path()).await;
-    laptop.reconnect(&host.relay, &root).await;
     author.send(Cmd::Reconnect).unwrap();
     ready(&[&author]).await;
     author.write(route(), &say(&mut doc, "missed")).unwrap();

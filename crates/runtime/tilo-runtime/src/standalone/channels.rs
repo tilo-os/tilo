@@ -98,10 +98,8 @@ impl ChannelDirectory for Directory {
         self.joined.key_holders(workspace, now)
     }
 
-    /// A workspace joined through another device's host is that host's to
-    /// answer for.
-    fn hosts(&self, workspace: WorkspaceId) -> bool {
-        !self.joined.hosted_elsewhere(workspace)
+    fn founds(&self, workspace: WorkspaceId) -> bool {
+        self.joined.founded_here(workspace)
     }
 }
 

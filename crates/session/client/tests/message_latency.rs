@@ -47,7 +47,6 @@ const MESSAGES: usize = 20;
 struct Pages {
     a: Link,
     b: Link,
-    _laptop: crate::participant::Participant,
     host: crate::support::TestHost,
     _state: tempfile::TempDir,
     _host_device: crate::support::Device,
@@ -78,9 +77,6 @@ impl Pages {
             &[bob_person],
         )
         .await;
-        // Ada's laptop takes part in the workspace's channels, as a member's own
-        // device does: it creates their key scope and admits the devices that ask.
-        let laptop = crate::participant::Participant::start(&host.relay, &ada_root).await;
         // Ada's page is a device of hers in her own workspace.
         let a = start_peer(
             host.iroh(),
@@ -90,6 +86,7 @@ impl Pages {
         );
         a.join_placed(crate::support::WORKSPACE, "Workspace")
             .unwrap();
+        crate::support::in_workspace(&a, crate::support::workspace()).await;
         // Bob's page enters the same workspace through its door, on the
         // invitation its owner issued for him.
         let granted = crate::support::door(
@@ -116,7 +113,6 @@ impl Pages {
         Self {
             a,
             b,
-            _laptop: laptop,
             host,
             _state: state,
             _host_device: host_device,

@@ -80,22 +80,20 @@ fn a_genesis_is_kept_for_the_policy_that_names_its_signer_later() {
     );
 }
 
-/// A device of a workspace hosted elsewhere founds none of its channels
-/// before the host answered its request, however long that takes: the host
-/// may carry the channel's genesis, and a second one would split the channel
-/// under the members already in it. Once the host says it carries none, the
-/// device founds the group at once.
+/// A device that entered a workspace another device created never founds
+/// its group, however long it waits: the creator founds it, and a second
+/// genesis would split the workspace's keys.
 #[test]
-fn a_device_founds_a_channel_once_the_host_says_it_has_no_group() {
+fn a_device_that_entered_a_workspace_never_founds_its_group() {
     let workspace = Arc::new(Workspace::default());
-    workspace
-        .silent
-        .store(true, std::sync::atomic::Ordering::SeqCst);
     let workspace_id = WorkspaceId::new();
     let channel = collab_types::workspace_scope(&workspace_id.to_string());
     let policy = Policy::readers([1]);
     let dir = tempfile::tempdir().unwrap();
     let mut entered = device(&workspace, workspace_id, 0, 1, &policy, dir.path());
+    entered
+        .founds
+        .store(false, std::sync::atomic::Ordering::SeqCst);
     let mut now = Instant::now();
 
     assert!(matches!(
@@ -103,28 +101,9 @@ fn a_device_founds_a_channel_once_the_host_says_it_has_no_group() {
         ChannelAccess::Waiting
     ));
     run(&mut [&mut entered], &mut now, 30);
-    assert!(
-        !entered.service.peers[&channel].peer.knows_group(),
-        "no group is founded while the host has not answered"
-    );
-
-    workspace
-        .silent
-        .store(false, std::sync::atomic::Ordering::SeqCst);
-    let asked = now;
-    while matches!(
+    assert!(!entered.service.peers[&channel].peer.knows_group());
+    assert!(matches!(
         entered.service.access(workspace_id, now),
         ChannelAccess::Waiting
-    ) {
-        run(&mut [&mut entered], &mut now, 1);
-    }
-    assert!(
-        ready_epoch(&entered.service.access(workspace_id, now)).is_some(),
-        "a host that carries no genesis leaves the channel to this device to found"
-    );
-    assert!(
-        now.duration_since(asked) <= Duration::from_secs(1),
-        "founded as soon as the host's answer arrived, not after a wait: {:?}",
-        now.duration_since(asked)
-    );
+    ));
 }

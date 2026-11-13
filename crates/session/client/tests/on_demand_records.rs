@@ -128,8 +128,6 @@ async fn a_join_replays_eager_records_and_a_page_opens_the_rest() {
         "127.0.0.1:0".parse().unwrap(),
     )
     .await;
-    // Records are sealed: a participant admits each page to them.
-    let _laptop = crate::participant::Participant::start(&host.relay, &root).await;
     let peer = |device: crate::support::Device| {
         start_peer(
             host.iroh(),

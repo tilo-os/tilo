@@ -6,6 +6,9 @@ use std::path::Path;
 use std::sync::atomic::Ordering;
 
 struct Device {
+    /// Whether this device founds the workspace's group: the one that
+    /// created it ([`create`]).
+    founds: Arc<std::sync::atomic::AtomicBool>,
     service: ChannelEncryption,
     gates: Arc<Gates>,
     endpoint: Endpoint,
@@ -37,6 +40,8 @@ fn sealed_device(
 ) -> Device {
     workspace.queues.lock().unwrap().entry(id).or_default();
     let gates = Arc::new(Gates::default());
+    // The first device created the workspace.
+    let founds = Arc::new(std::sync::atomic::AtomicBool::new(id == 0));
     let service = ChannelEncryption::open(
         ChannelEncryptionConfig {
             state: Arc::new(ChannelsDir::new(dir.join("channels"))),
@@ -46,11 +51,13 @@ fn sealed_device(
         },
         Box::new(Directory {
             policy: policy.clone(),
+            founds: Arc::clone(&founds),
         }),
         Arc::clone(&gates) as Arc<dyn ChannelGates>,
     )
     .unwrap();
     Device {
+        founds,
         service,
         gates,
         endpoint: Endpoint {
@@ -71,18 +78,15 @@ fn run(devices: &mut [&mut Device], now: &mut Instant, seconds: u64) {
     }
 }
 
-/// `device` opens `channel` and creates its group, as it does once the
-/// workspace's host said it carries no genesis of it.
+/// `device` creates the workspace and founds its group.
 fn create(
     device: &mut Device,
     workspace_id: WorkspaceId,
     channel: ChannelId,
     now: Instant,
 ) -> ChannelAccess {
+    device.founds.store(true, Ordering::SeqCst);
     device.service.access(workspace_id, now);
-    if let Some(entry) = device.service.peers.get_mut(&channel) {
-        entry.founding.answered = true;
-    }
     device.service.found(channel, now, 1_000);
     device.service.access(workspace_id, now)
 }
@@ -476,6 +480,8 @@ fn only_a_group_member_or_an_unfinished_member_has_a_pump_deadline() {
     let mut now = Instant::now();
     let mut owner = device(&workspace, workspace_id, 0, 1, &policy, owner_dir.path());
     let mut member = device(&workspace, workspace_id, 1, 2, &policy, member_dir.path());
+    // The member, the one device that reads the workspace, created it.
+    member.founds.store(true, Ordering::SeqCst);
     assert_eq!(owner.service.next_pump_deadline(now), None, "no channel");
     assert_eq!(member.service.next_pump_deadline(now), None, "no channel");
 
@@ -961,8 +967,7 @@ fn a_new_channel_announces_its_genesis_to_the_workspace() {
         .into_iter()
         .filter_map(|inbound| match inbound {
             InboundChannelGovernance::Frame { frame, .. } => Some(frame),
-            InboundChannelGovernance::AccessRequest { .. }
-            | InboundChannelGovernance::Unfounded { .. } => None,
+            InboundChannelGovernance::AccessRequest { .. } => None,
         })
         .collect();
     assert_eq!(genesis.len(), 1, "announced once per session");
@@ -1587,9 +1592,7 @@ fn without_a_store_nothing_is_due() {
     )));
     let gates = Arc::new(Gates::default());
     let mut service = ChannelEncryption::without_store(
-        Box::new(Directory {
-            policy: policy.clone(),
-        }),
+        Box::new(Directory::new(policy.clone())),
         Arc::clone(&gates) as Arc<dyn ChannelGates>,
     );
     let endpoint = Endpoint::join(&workspace, workspace_id, 0);
@@ -1616,7 +1619,7 @@ fn without_a_store_nothing_is_due() {
         "no governance was sent"
     );
     // The workspace is a governed one too: still no state of its own.
-    let mut governed = ChannelEncryption::without_store(Box::new(Directory { policy }), gates);
+    let mut governed = ChannelEncryption::without_store(Box::new(Directory::new(policy)), gates);
     assert!(matches!(
         governed.access(workspace_id, now),
         ChannelAccess::NoSecretStore
@@ -1671,6 +1674,7 @@ fn a_reader_with_custody_that_signs_later_reads_a_participants_channel() {
     let reader = |seed: u8, id: usize, dir: &Path| {
         workspace.queues.lock().unwrap().entry(id).or_default();
         Device {
+            founds: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             service: ChannelEncryption::open(
                 ChannelEncryptionConfig {
                     state: Arc::new(ChannelsDir::new(dir.join("channels"))),
@@ -1678,9 +1682,7 @@ fn a_reader_with_custody_that_signs_later_reads_a_participants_channel() {
                     signer: Arc::new(LaterSigner(key(seed))),
                     role: Role::Reader,
                 },
-                Box::new(Directory {
-                    policy: policy.clone(),
-                }),
+                Box::new(Directory::new(policy.clone())),
                 Arc::new(Gates::default()),
             )
             .unwrap(),
@@ -1767,14 +1769,14 @@ fn requests(device: &Device) -> usize {
 #[test]
 fn a_waiting_request_is_asked_again_when_the_policy_moves() {
     let workspace = Arc::new(Workspace::default());
-    // A group the device is not in yet: its host answers nothing.
-    workspace.silent.store(true, Ordering::SeqCst);
     let workspace_id = WorkspaceId::new();
     let policy = Policy::readers([2]);
     let epoch = Arc::new(std::sync::atomic::AtomicU64::new(1));
     *policy.announces.lock().unwrap() = Some(Announcements::Own(Arc::clone(&epoch)));
     let (dir, listener_dir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
     let mut waiting = device(&workspace, workspace_id, 0, 2, &policy, dir.path());
+    // A group the device did not create and is not in yet.
+    waiting.founds.store(false, Ordering::SeqCst);
     // Another endpoint hears what the device says; it takes no part in the
     // channel, so the request goes unanswered.
     let listener = device(&workspace, workspace_id, 1, 3, &policy, listener_dir.path());
@@ -1976,8 +1978,7 @@ fn a_competing_genesis_is_judged_once_the_device_names_the_record() {
             .into_iter()
             .find_map(|inbound| match inbound {
                 InboundChannelGovernance::Frame { frame, .. } => Some(*frame),
-                InboundChannelGovernance::AccessRequest { .. }
-                | InboundChannelGovernance::Unfounded { .. } => None,
+                InboundChannelGovernance::AccessRequest { .. } => None,
             })
             .unwrap();
         (workspace, founder, genesis)

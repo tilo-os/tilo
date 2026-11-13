@@ -623,19 +623,6 @@ async fn a_device_serves_the_workspace_its_engine_holds() {
     )
     .await;
     assert_eq!(heard.author, b_key.verifying_key().to_bytes());
-    // The device holding the workspace carries no genesis of the channel: it tells the device that
-    // asked, which creates the group at once rather than waiting to hear of one.
-    let unfounded = NeighbourMsg::MlsChannelUnfounded {
-        workspace: WORKSPACE.into(),
-        channel: channel(),
-        device: collab_types::Ed25519PublicKey::from_bytes(b_key.verifying_key().to_bytes()),
-    };
-    hears(
-        &mut b_heard,
-        &unfounded,
-        "the host says it carries no group",
-    )
-    .await;
     assert!(
         !heard.landed,
         "channel governance is never the workspace's state"

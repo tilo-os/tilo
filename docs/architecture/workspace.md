@@ -298,16 +298,16 @@ from asking for it through the action API, but it is not a security boundary:
 data that must stay away from some members belongs in another workspace, or in
 a person's personal resources.
 
-**One genesis, created once.** The group starts from one genesis. Whoever
-holds its state and sees none creates it; everyone else waits, asks, and
-joins by the Welcome that admits it. A page never creates a group it was not
-admitted to. Two geneses made at once reconcile like two commits: every
-device keeps the group whose genesis has the lower digest, and a device in
-the other starts over and joins the winner by Welcome, whose bundle brings
-the keys its writes were sealed under. A record's cleartext writes stay the
-base its sealed writes are changes over: a device joining after the seal
-takes that base in from the host's replay, while a live cleartext write is
-refused.
+**One genesis, made by the founder.** The workspace's governance names the
+device that created it (`founder`). That device makes the group's genesis;
+every other device waits, asks, and joins by the Welcome that admits it, and
+no answer from a host makes it found a group of its own. If two geneses ever
+meet, they reconcile like two commits: every device keeps the group whose
+genesis has the lower digest, and a device in the other starts over and joins
+the winner by Welcome, whose bundle brings the keys its writes were sealed
+under. A record's cleartext writes stay the base its sealed writes are
+changes over: a device joining after the seal takes that base in from the
+host's replay, while a live cleartext write is refused.
 
 A store never enters the group and never holds a key. It keeps and forwards
 sealed ops, and refuses ones that are not signed by a member's device. To

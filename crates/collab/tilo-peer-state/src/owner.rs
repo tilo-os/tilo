@@ -307,6 +307,11 @@ impl NativeCommittedView {
     pub fn hosted_here(&self) -> bool {
         self.record.hosted_here()
     }
+    /// Whether this device created the workspace, and so founds its MLS group.
+    #[must_use]
+    pub fn founded_here(&self) -> bool {
+        self.peer.governance().founder() == Some(self.device().device_public_key)
+    }
     /// Whether this device entered a workspace that existed before it: it
     /// redeemed an invitation, or a host vouched for it as a further device of
     /// its person. What the workspace holds reaches it from the workspace's

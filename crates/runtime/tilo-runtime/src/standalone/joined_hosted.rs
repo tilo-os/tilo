@@ -110,11 +110,6 @@ impl Joined {
         self.hosted_by_own(workspace) == Some(true)
     }
 
-    /// Whether `workspace` is one this device joined through another device's host.
-    pub(in crate::standalone) fn hosted_elsewhere(&self, workspace: WorkspaceId) -> bool {
-        self.hosted_by_own(workspace) == Some(false)
-    }
-
     /// Whether this device's own host hosts `workspace`; `None` for a workspace
     /// whose host is not known here.
     fn hosted_by_own(&self, workspace: WorkspaceId) -> Option<bool> {

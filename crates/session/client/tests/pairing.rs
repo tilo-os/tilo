@@ -150,7 +150,6 @@ async fn a_paired_device_is_the_same_person_and_keeps_working_after_reconnecting
         "127.0.0.1:0".parse().unwrap(),
     )
     .await;
-    let _laptop = crate::participant::Participant::start(&host.relay, &root).await;
     let approver = MemberApprover::new(host.iroh());
     let page = host.iroh();
 

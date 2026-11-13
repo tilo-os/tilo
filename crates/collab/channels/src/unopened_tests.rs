@@ -20,6 +20,9 @@ impl ChannelDirectory for LateReaders {
             .load(Ordering::SeqCst)
             .then(|| [public(21)].into_iter().collect())
     }
+    fn founds(&self, _: WorkspaceId) -> bool {
+        true
+    }
     fn policy_epoch(&self) -> Option<u64> {
         Some(self.epoch.load(Ordering::SeqCst))
     }

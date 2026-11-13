@@ -99,7 +99,6 @@ async fn a_member_compacts_a_sealed_route_the_host_cannot_read() {
     )
     .await;
     let route = route();
-    let _laptop = crate::participant::Participant::start(&host.relay, &root).await;
     let https = || host.iroh();
     let [a, b, c] = [a, b, c].map(|device| {
         let peer = start_peer(https(), device.cert, host_device.cert.clone(), device.key);

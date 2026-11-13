@@ -84,6 +84,7 @@ impl Channels {
         adopt_earlier_state(&state_root.join(ROOMS), &root)?;
         let directory = Directory {
             states: Arc::new(Mutex::new(HashMap::new())),
+            device: device.verifying_key().to_bytes(),
         };
         let service = ChannelEncryption::open(
             ChannelEncryptionConfig {
@@ -272,6 +273,8 @@ struct Directory {
     /// to the same document the workspace holds. Shared, so the pump reads it
     /// on its own thread without reaching for the workspace.
     states: Arc<Mutex<HashMap<String, StatePeer>>>,
+    /// The relay's own device key.
+    device: [u8; 32],
 }
 
 impl Directory {
@@ -298,6 +301,11 @@ impl ChannelDirectory for Directory {
                 .map(Ed25519PublicKey::from_bytes)
                 .collect(),
         )
+    }
+    fn founds(&self, workspace: WorkspaceId) -> bool {
+        lock(&self.states)
+            .get(&workspace.to_string())
+            .is_some_and(|state| state.governance().founder() == Some(self.device))
     }
 }
 

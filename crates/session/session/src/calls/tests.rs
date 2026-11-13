@@ -143,6 +143,9 @@ impl ChannelDirectory for Directory {
     ) -> Option<std::collections::BTreeSet<Ed25519PublicKey>> {
         Some(self.admitted.clone())
     }
+    fn founds(&self, _workspace: WorkspaceId) -> bool {
+        true
+    }
 }
 
 /// One channel's keys, as the device `device` of the workspace whose vault key is `vault` runs

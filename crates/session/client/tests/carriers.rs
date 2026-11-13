@@ -254,7 +254,6 @@ async fn the_persons_root_pairs_a_new_device(carrier: Carrier) {
 
 async fn documents_sync_both_ways_until_the_device_is_revoked(carrier: Carrier) {
     let ada = Ada::start().await;
-    let _channels = crate::participant::Participant::start(&ada.host.relay, &ada.root).await;
     let (key, cert, host_cert) = ada.certified(&ada.host.over(carrier)).await;
     let page = page(&ada.host, carrier, key, &cert, &host_cert);
     page.join_placed(WORKSPACE, "Workspace").unwrap();

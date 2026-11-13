@@ -386,6 +386,13 @@ impl Joined {
         )
     }
 
+    /// Whether this device created `workspace`, and so founds its group.
+    pub(super) fn founded_here(&self, workspace: WorkspaceId) -> bool {
+        self.owner
+            .with_current(workspace, |view| Ok(view.founded_here()))
+            .unwrap_or(false)
+    }
+
     fn invited_workspace(&self, invitation: &str) -> Result<WorkspaceId, String> {
         let now = tilo_clock::try_unix_now_ns().ok_or("the clock is before the Unix epoch")?;
         let join = tilo_peer_state::join::decode_and_verify_invitation_text(

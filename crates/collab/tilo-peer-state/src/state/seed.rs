@@ -6,6 +6,10 @@ use super::{SeedDocument, SeedState};
 use automerge::{AutoCommit, ObjType, ROOT, transaction::Transactable};
 use tilo_user_identity::DeviceCert;
 
+/// The workspace document's key naming the device that created it
+/// ([`crate::PeerGovernance::founder`]).
+pub(crate) const FOUNDER: &str = "founder";
+
 /// A new workspace governed by `authority`: its governance
 /// ([`seed_workspace`]), named `name`, with no windows and no app records.
 ///
@@ -67,6 +71,12 @@ pub fn seed_workspace(
         .map_err(err)?;
     doc.put(ROOT, "owner", hex::encode(authority.user_public_key))
         .map_err(err)?;
+    doc.put(
+        ROOT,
+        FOUNDER,
+        hex::encode(authority.device_public_key).as_str(),
+    )
+    .map_err(err)?;
     doc.put_object(ROOT, "invitation_receipts_v1", ObjType::Map)
         .map_err(err)?;
     let names = doc.put_object(ROOT, "peers", ObjType::Map).map_err(err)?;

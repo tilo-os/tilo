@@ -176,6 +176,15 @@ impl PeerGovernance<'_> {
             .is_ok()
     }
 
+    /// The device that created the workspace: it founds the workspace's MLS
+    /// group, and no other device does.
+    pub fn founder(self) -> Option<[u8; 32]> {
+        let doc = self.peer.core.workspace_doc.as_ref()?;
+        let (value, _) = doc.get(ROOT, super::seed::FOUNDER).ok()??;
+        let hex = value.into_string().ok()?;
+        <[u8; 32]>::try_from(hex::decode(hex).ok()?).ok()
+    }
+
     /// The devices that hold the workspace's keys at `now`: every device of
     /// its members. The workspace's one MLS group follows this set.
     pub fn key_holders(self, now: SystemTime) -> Result<BTreeSet<[u8; 32]>, String> {

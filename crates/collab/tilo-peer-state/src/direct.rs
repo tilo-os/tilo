@@ -753,31 +753,14 @@ impl DirectSync {
     }
 
     /// Answer `message` when it is a member's access request: with the
-    /// geneses of its channel this host carries, so the device asks to join
-    /// the group rather than create one, or with word that it carries none
-    /// ([`NeighbourMsg::MlsChannelUnfounded`]), so the device creates the
-    /// group at once instead of waiting to hear of one. A genesis made beside
-    /// the one the answer names is resolved by the channel's members.
+    /// geneses of its group this host carries, so the device asks to join
+    /// the group.
     fn answer_request(&self, message: &NeighbourMsg) {
-        let NeighbourMsg::MlsAccessRequest {
-            workspace, request, ..
-        } = message
-        else {
+        let NeighbourMsg::MlsAccessRequest { request, .. } = message else {
             return;
         };
         let known = self.0.geneses.lock_recover().get(&request.channel).cloned();
-        let answers = known.unwrap_or_else(|| {
-            vec![Authored {
-                from: self.device(),
-                message: NeighbourMsg::MlsChannelUnfounded {
-                    workspace: workspace.clone(),
-                    channel: request.channel,
-                    device: request.device,
-                },
-                published: true,
-            }]
-        });
-        for answer in answers {
+        for answer in known.unwrap_or_default() {
             let _ = self.0.outgoing.send(answer);
         }
     }

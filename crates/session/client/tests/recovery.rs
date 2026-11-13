@@ -33,7 +33,6 @@ async fn refresh_asks_the_restarted_host_for_the_workspace_again() {
         "127.0.0.1:0".parse().unwrap(),
     )
     .await;
-    let _laptop = crate::participant::Participant::start(&host.relay, &root).await;
     let peer = start_peer(
         host.iroh(),
         browser.cert.clone(),

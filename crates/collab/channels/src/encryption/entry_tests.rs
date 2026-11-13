@@ -20,6 +20,9 @@ impl ChannelDirectory for Unknown {
     fn allowed_devices(&self, _: WorkspaceId, _: u64) -> Option<BTreeSet<Ed25519PublicKey>> {
         None
     }
+    fn founds(&self, _: WorkspaceId) -> bool {
+        false
+    }
 }
 
 fn service(
@@ -50,7 +53,7 @@ fn a_device_entering_opens_the_desktop_before_the_workspace_governance_arrives()
     let policy = Policy::readers([1, 2]);
     let (host_dir, page_dir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
     let mut host = service(
-        Box::new(Directory { policy }),
+        Box::new(Directory::new(policy)),
         1,
         Role::Participant,
         host_dir.path(),
@@ -62,7 +65,6 @@ fn a_device_entering_opens_the_desktop_before_the_workspace_governance_arrives()
     // The workspace's group exists, its host in it.
     let mut now = tilo_clock::now();
     host.access(workspace_id, now);
-    host.peers.get_mut(&scope).unwrap().founding.answered = true;
     host.found(scope, now, 1_000);
     assert!(matches!(
         host.access(workspace_id, now),

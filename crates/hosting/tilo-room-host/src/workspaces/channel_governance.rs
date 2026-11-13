@@ -117,13 +117,7 @@ impl Workspaces {
         message: neighbour_wire::NeighbourMsg,
         carried: Carried,
     ) -> Result<(), String> {
-        // A host's word that a channel has no group is its own to say.
-        if message.channel_workspace() != Some(workspace)
-            || matches!(
-                message,
-                neighbour_wire::NeighbourMsg::MlsChannelUnfounded { .. }
-            )
-        {
+        if message.channel_workspace() != Some(workspace) {
             return Ok(());
         }
         let state = self

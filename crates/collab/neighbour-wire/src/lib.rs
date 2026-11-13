@@ -44,7 +44,7 @@ use serde::{Deserialize, Serialize};
 /// [`NeighbourMsg::IdentityHello`] carries it first, at a variant index that
 /// never changes ([`IDENTITY_HELLO_INDEX`]), so every version reads another
 /// device's number before anything else it says.
-pub const PEER_PROTOCOL_VERSION: u32 = 43;
+pub const PEER_PROTOCOL_VERSION: u32 = 44;
 
 /// [`NeighbourMsg::IdentityHello`]'s postcard variant index, frozen: the one
 /// message every version decodes far enough to learn the sender's
@@ -755,18 +755,6 @@ pub enum NeighbourMsg {
         user_public_key: [u8; 32],
         hosts: Vec<PersonalHost>,
     },
-    /// A workspace's host answering `device`'s access request for `channel`
-    /// when it carries no genesis of it: no group exists yet, so `device`
-    /// creates it now rather than waiting to hear of one. A host carrying a
-    /// genesis answers with it instead. Live only, never retained, and
-    /// unsigned: a false one makes a second genesis, which the channel's
-    /// members resolve to one. Appended to preserve every existing Postcard
-    /// discriminant.
-    MlsChannelUnfounded {
-        workspace: String,
-        channel: collab_types::ChannelId,
-        device: collab_types::Ed25519PublicKey,
-    },
 }
 
 /// Where one of the person's workspaces is hosted, as their other devices
@@ -862,8 +850,7 @@ impl NeighbourMsg {
             | Self::LivePresence { .. }
             | Self::SurfaceViewRequest { .. }
             | Self::WriteRefusals { .. }
-            | Self::PersonalHosts { .. }
-            | Self::MlsChannelUnfounded { .. } => false,
+            | Self::PersonalHosts { .. } => false,
         }
     }
 
@@ -873,9 +860,9 @@ impl NeighbourMsg {
     #[must_use]
     pub fn channel_workspace(&self) -> Option<&str> {
         match self {
-            Self::MlsGovernance { workspace, .. }
-            | Self::MlsAccessRequest { workspace, .. }
-            | Self::MlsChannelUnfounded { workspace, .. } => Some(workspace),
+            Self::MlsGovernance { workspace, .. } | Self::MlsAccessRequest { workspace, .. } => {
+                Some(workspace)
+            }
             _ => None,
         }
     }
@@ -915,7 +902,6 @@ impl NeighbourMsg {
             Self::RecordContentLacks { .. } => "RecordContentLacks",
             Self::WriteRefusals { .. } => "WriteRefusals",
             Self::PersonalHosts { .. } => "PersonalHosts",
-            Self::MlsChannelUnfounded { .. } => "MlsChannelUnfounded",
         }
     }
 }
@@ -1137,14 +1123,6 @@ mod tests {
                         signature: Signature::from_bytes([0xCD; 64]),
                     }),
                     delivery: 8,
-                },
-            ),
-            (
-                "channel unfounded",
-                NeighbourMsg::MlsChannelUnfounded {
-                    workspace: WORKSPACE.into(),
-                    channel,
-                    device: Ed25519PublicKey::from_bytes([2; 32]),
                 },
             ),
         ]
@@ -1510,7 +1488,7 @@ mod tests {
         message.kind()
     }
 
-    const VARIANT_COUNT: usize = 31;
+    const VARIANT_COUNT: usize = 30;
 
     /// Postcard encodings pinned byte for byte. Peers running older builds
     /// decode these frames, so a change here is a wire break, not a refactor.
@@ -1571,7 +1549,7 @@ mod tests {
             "identity hello",
             concat!(
                 // The variant index and the sender's peer protocol version.
-                "0b2b",
+                "0b2c",
                 "01010101010101010101010101010101010101010101010101010101010101",
                 "0102020202020202020202020202020202020202020202020202020202020202",
                 "02064c6170746f70010000000a00400303030303030303030303030303030303",
@@ -1694,14 +1672,6 @@ mod tests {
                 "40cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
                 "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
                 "cd08",
-            ),
-        ),
-        (
-            "channel unfounded",
-            concat!(
-                "1f2436623366396131302d303030302d343030302d383030302d303030303030",
-                "3030303030631055555555555555555555555555555555020202020202020202",
-                "0202020202020202020202020202020202020202020202",
             ),
         ),
         ("live presence", "1a0303010203"),
