@@ -424,96 +424,101 @@ mod tests {
         }
     }
 
-    #[test]
-    fn openai_body_carries_tool_turns_and_the_profiles_limit_field() {
-        let profile = endpoint_profile(
-            ProviderProtocol::OpenAiCompatible,
-            "https://example.test/v1",
-        );
-        let body = body(&profile, "m", &tool_turns()).unwrap();
-        assert_eq!(body["model"], "m");
-        assert_eq!(body["max_tokens"], 300);
-        assert_eq!(
-            body["messages"][0],
-            json!({"role": "system", "content": "Be brief."})
-        );
-        assert_eq!(
-            body["messages"][2]["tool_calls"][0]["function"]["arguments"],
-            "{\"city\":\"Ghent\"}"
-        );
-        assert_eq!(
-            body["messages"][3],
-            json!({"role": "tool", "tool_call_id": "call_1", "content": "sunny"})
-        );
-        assert_eq!(body["tools"][0]["function"]["name"], "weather");
-        assert_eq!(body["tool_choice"], "auto");
-        let openai = endpoint_profile(
-            ProviderProtocol::OpenAiCompatible,
-            "https://api.openai.com/v1",
-        );
-        let body = super::body(&openai, "m", &tool_turns()).unwrap();
-        assert_eq!(body["max_completion_tokens"], 300);
-        assert!(body.get("max_tokens").is_none());
-    }
+    tilo_test_env::scenario! {
+        /// The neutral conversation written as an OpenAI and an Anthropic body, and answers read from both.
+        fn a_neutral_conversation_becomes_each_dialects_body_and_its_answer_is_read_back;
 
-    #[test]
-    fn anthropic_body_lifts_the_system_prompt_and_pairs_tool_blocks() {
-        let profile = endpoint_profile(ProviderProtocol::Anthropic, "https://api.anthropic.com");
-        let body = body(&profile, "claude", &tool_turns()).unwrap();
-        assert_eq!(body["system"], "Be brief.");
-        assert_eq!(body["messages"][1]["content"][0]["type"], "tool_use");
-        assert_eq!(body["messages"][2]["role"], "user");
-        assert_eq!(body["messages"][2]["content"][0]["tool_use_id"], "call_1");
-        assert_eq!(body["tool_choice"], json!({"type": "auto"}));
-    }
+        phase openai_body_carries_tool_turns_and_the_profiles_limit_field;
+        {
+            let profile = endpoint_profile(
+                ProviderProtocol::OpenAiCompatible,
+                "https://example.test/v1",
+            );
+            let body = body(&profile, "m", &tool_turns()).unwrap();
+            assert_eq!(body["model"], "m");
+            assert_eq!(body["max_tokens"], 300);
+            assert_eq!(
+                body["messages"][0],
+                json!({"role": "system", "content": "Be brief."})
+            );
+            assert_eq!(
+                body["messages"][2]["tool_calls"][0]["function"]["arguments"],
+                "{\"city\":\"Ghent\"}"
+            );
+            assert_eq!(
+                body["messages"][3],
+                json!({"role": "tool", "tool_call_id": "call_1", "content": "sunny"})
+            );
+            assert_eq!(body["tools"][0]["function"]["name"], "weather");
+            assert_eq!(body["tool_choice"], "auto");
+            let openai = endpoint_profile(
+                ProviderProtocol::OpenAiCompatible,
+                "https://api.openai.com/v1",
+            );
+            let body = super::body(&openai, "m", &tool_turns()).unwrap();
+            assert_eq!(body["max_completion_tokens"], 300);
+            assert!(body.get("max_tokens").is_none());
+        }
 
-    #[test]
-    fn answers_read_text_tool_calls_and_stop_reasons() {
-        let openai = response(
-            ProviderProtocol::OpenAiCompatible,
-            r#"{"choices":[{"finish_reason":"tool_calls","message":{"content":null,
+        phase anthropic_body_lifts_the_system_prompt_and_pairs_tool_blocks;
+        {
+            let profile = endpoint_profile(ProviderProtocol::Anthropic, "https://api.anthropic.com");
+            let body = body(&profile, "claude", &tool_turns()).unwrap();
+            assert_eq!(body["system"], "Be brief.");
+            assert_eq!(body["messages"][1]["content"][0]["type"], "tool_use");
+            assert_eq!(body["messages"][2]["role"], "user");
+            assert_eq!(body["messages"][2]["content"][0]["tool_use_id"], "call_1");
+            assert_eq!(body["tool_choice"], json!({"type": "auto"}));
+        }
+
+        phase answers_read_text_tool_calls_and_stop_reasons;
+        {
+            let openai = response(
+                ProviderProtocol::OpenAiCompatible,
+                r#"{"choices":[{"finish_reason":"tool_calls","message":{"content":null,
                "tool_calls":[{"id":"c","type":"function","function":{"name":"w","arguments":"{\"a\":1}"}}]}}],
                "usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}"#,
-        )
-        .unwrap();
-        assert_eq!(openai.stop_reason, StopReason::ToolCalls);
-        assert_eq!(openai.tool_calls().unwrap()[0].input, json!({"a": 1}));
-        assert_eq!(openai.usage.total_tokens, 5);
-        let anthropic = response(
-            ProviderProtocol::Anthropic,
-            r#"{"content":[{"type":"text","text":"Hi"}],"stop_reason":"max_tokens",
+            )
+            .unwrap();
+            assert_eq!(openai.stop_reason, StopReason::ToolCalls);
+            assert_eq!(openai.tool_calls().unwrap()[0].input, json!({"a": 1}));
+            assert_eq!(openai.usage.total_tokens, 5);
+            let anthropic = response(
+                ProviderProtocol::Anthropic,
+                r#"{"content":[{"type":"text","text":"Hi"}],"stop_reason":"max_tokens",
                "usage":{"input_tokens":4,"output_tokens":1}}"#,
-        )
-        .unwrap();
-        assert_eq!(
-            anthropic.message.content,
-            vec![Content::Text { text: "Hi".into() }]
-        );
-        assert_eq!(anthropic.stop_reason, StopReason::OutputLimit);
-        assert!(response(ProviderProtocol::Anthropic, "{}").is_err());
-        assert!(
-            response(
-                ProviderProtocol::OpenAiCompatible,
-                r#"{"choices":[{"message":{"tool_calls":[{"id":"c","function":{"name":"w","arguments":"[1]"}}]}}]}"#
             )
-            .is_err(),
-            "tool arguments must be an object"
-        );
-        assert!(
-            response(
-                ProviderProtocol::OpenAiCompatible,
-                r#"{"choices":[{"finish_reason":"surprise","message":{"content":"Hi"}}]}"#
-            )
-            .is_err(),
-            "an unknown finish reason is a malformed answer"
-        );
-        assert!(
-            response(
-                ProviderProtocol::OpenAiCompatible,
-                r#"{"choices":[{"message":{"tool_calls":[{"id":"c","function":{"name":"w"}}]}}]}"#
-            )
-            .is_err(),
-            "a tool call without arguments is a malformed answer"
-        );
+            .unwrap();
+            assert_eq!(
+                anthropic.message.content,
+                vec![Content::Text { text: "Hi".into() }]
+            );
+            assert_eq!(anthropic.stop_reason, StopReason::OutputLimit);
+            assert!(response(ProviderProtocol::Anthropic, "{}").is_err());
+            assert!(
+                response(
+                    ProviderProtocol::OpenAiCompatible,
+                    r#"{"choices":[{"message":{"tool_calls":[{"id":"c","function":{"name":"w","arguments":"[1]"}}]}}]}"#
+                )
+                .is_err(),
+                "tool arguments must be an object"
+            );
+            assert!(
+                response(
+                    ProviderProtocol::OpenAiCompatible,
+                    r#"{"choices":[{"finish_reason":"surprise","message":{"content":"Hi"}}]}"#
+                )
+                .is_err(),
+                "an unknown finish reason is a malformed answer"
+            );
+            assert!(
+                response(
+                    ProviderProtocol::OpenAiCompatible,
+                    r#"{"choices":[{"message":{"tool_calls":[{"id":"c","function":{"name":"w"}}]}}]}"#
+                )
+                .is_err(),
+                "a tool call without arguments is a malformed answer"
+            );
+        }
     }
 }

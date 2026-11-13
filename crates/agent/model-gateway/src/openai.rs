@@ -293,147 +293,162 @@ pub fn backoff(retry: u32, asked_for: Option<Duration>) -> Duration {
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_provider_refusal_is_logged_by_its_identifiers_alone() {
-        let body = br#"{"error":{"message":"Function tools with reasoning_effort are not supported for sk-proj-SECRET","type":"invalid_request_error","param":"reasoning_effort","code":"unsupported_parameter"}}"#;
-        assert_eq!(
-            error_fields(body),
-            " type=invalid_request_error param=reasoning_effort code=unsupported_parameter"
-        );
-        let hostile = br#"{"error":{"type":"sk-proj-SECRET","param":"tools[0].function.name","code":"Bearer abc"}}"#;
-        assert_eq!(error_fields(hostile), " param=tools[0].function.name");
-        assert_eq!(error_fields(b"<html>"), "");
-        assert_eq!(
-            error_fields(br#"{"type":"error","code":"rate_limit"}"#),
-            " type=error code=rate_limit"
-        );
-    }
+    tilo_test_env::scenario! {
+        /// What a failed answer becomes: its log fields, its classification and the wait before asking again.
+        fn provider_failures_are_classified_logged_and_waited_out_without_their_text;
 
-    #[test]
-    fn a_key_is_a_uuid_and_the_same_for_the_same_request() {
-        let body = json!({"model": "m", "messages": []});
-        let key = turn_key(b"run", 0, &body);
-        assert_eq!(key.len(), 36);
-        assert_eq!(key.chars().nth(14), Some('8'));
-        assert_eq!(key, turn_key(b"run", 0, &body));
-        assert_ne!(key, turn_key(b"run", 1, &body));
-        assert_ne!(key, turn_key(b"other", 0, &body));
-    }
-
-    #[test]
-    fn the_metered_target_drops_what_it_would_refuse() {
-        let body = json!({
-            "model": "m", "messages": [], "tools": [], "tool_choice": "required",
-            "max_tokens": 4096, "stream_options": {}, "logprobs": true,
-            "response_format": {"type": "json_schema"}, "user": "x",
-        });
-        let shaped = Target::CloudMetered.shape(body.clone());
-        assert_eq!(
-            shaped,
-            json!({"model": "m", "messages": [], "tools": [], "tool_choice": "required",
-                   "max_completion_tokens": 2048})
-        );
-        assert_eq!(Target::Standard.shape(body.clone()), body);
-        let json_object = Target::CloudMetered
-            .shape(json!({"model": "m", "response_format": {"type": "json_object"}}));
-        assert_eq!(json_object["response_format"]["type"], "json_object");
-    }
-
-    #[test]
-    fn cloud_failures_say_what_happened() {
-        let broke = Failure::from_http(
-            402,
-            r#"{"error":"Included credit is insufficient for this request","code":"insufficient_credit"}"#,
-            None,
-        );
-        assert_eq!(broke.kind, Kind::OutOfCredits);
-        assert!(!broke.retryable());
-        assert!(broke.to_string().starts_with(OUT_OF_CREDITS));
-        assert!(broke.to_string().contains("insufficient_credit"));
-        let pending = Failure::from_http(409, r#"{"error":"x","code":"request_pending"}"#, None);
-        assert_eq!(pending.kind, Kind::Pending);
-        assert!(!pending.retryable());
-        // An interrupted exchange may already have been billed; do not turn
-        // better error classification into a newly retryable paid operation.
-        assert!(!Failure::transport(false, false).retryable());
-        assert!(Failure::transport(true, false).retryable());
-        let limited = Failure::from_http(429, "", Some("2"));
-        assert!(limited.retryable());
-        assert_eq!(limited.retry_after, Some(Duration::from_secs(2)));
-        let busy = Failure::from_http(
-            503,
-            r#"{"error":"AI service unavailable; retain this request ID","code":"service_unavailable"}"#,
-            None,
-        );
-        assert!(busy.retryable());
-        let off = Failure::from_http(503, r#"{"error":"x","code":"service_disabled"}"#, None);
-        assert!(!off.retryable());
-        let quoted = Failure::from_http(
-            401,
-            r#"{"error":{"message":"Incorrect API key provided: sk-abc","code":"invalid_api_key"}}"#,
-            None,
-        );
-        assert!(!quoted.to_string().contains("sk-abc"));
-        assert_eq!(quoted.kind, Kind::Unauthorized);
-    }
-
-    #[test]
-    fn a_tool_turn_is_read_and_echoed_in_the_accepted_shape() {
-        let turn = read_turn(&json!({"choices": [{"message": {
-            "role": "assistant", "content": null, "refusal": null,
-            "tool_calls": [{"id": "c1", "type": "function", "index": 0,
-                "function": {"name": "plan", "arguments": "{\"why\":\"x\"}"}}]
-        }, "finish_reason": "tool_calls"}]}))
-        .unwrap();
-        assert_eq!(turn.calls[0].name, "plan");
-        assert_eq!(turn.calls[0].input["why"], "x");
-        assert_eq!(
-            turn.message,
-            json!({"role": "assistant", "content": null, "tool_calls": [
-                {"id": "c1", "type": "function", "function": {"name": "plan", "arguments": "{\"why\":\"x\"}"}}]})
-        );
-    }
-
-    /// Vertex AI's Gemini signs each call; the signature is replayed with
-    /// it, or the next turn is refused.
-    #[test]
-    fn a_signed_tool_call_is_echoed_with_its_signature() {
-        let signature = json!({"google": {"thought_signature": "c2ln"}});
-        let turn = read_turn(&json!({"choices": [{"message": {
-            "role": "assistant",
-            "tool_calls": [{"id": "c1", "type": "function", "extra_content": signature,
-                "function": {"name": "plan", "arguments": "{}"}}]
-        }}]}))
-        .unwrap();
-        assert_eq!(turn.message["tool_calls"][0]["extra_content"], signature);
-    }
-
-    #[test]
-    fn provider_reasoning_is_replayed_without_becoming_final_text() {
-        let response = json!({"choices":[{"message":{"content":"done","reasoning_content":"provider reasoning","tool_calls":[]}}]});
-        let turn = read_turn(&response).unwrap();
-        assert_eq!(turn.text.as_deref(), Some("done"));
-        assert_eq!(turn.message["reasoning_content"], "provider reasoning");
-        assert_eq!(turn.message["content"], "done");
-        for invalid in [json!({}), json!([]), json!(true), json!(17)] {
-            let malformed =
-                json!({"choices":[{"message":{"content":"done","reasoning_content":invalid}}]});
-            assert!(read_turn(&malformed).is_err());
+        phase a_provider_refusal_is_logged_by_its_identifiers_alone;
+        {
+            let body = br#"{"error":{"message":"Function tools with reasoning_effort are not supported for sk-proj-SECRET","type":"invalid_request_error","param":"reasoning_effort","code":"unsupported_parameter"}}"#;
+            assert_eq!(
+                error_fields(body),
+                " type=invalid_request_error param=reasoning_effort code=unsupported_parameter"
+            );
+            let hostile = br#"{"error":{"type":"sk-proj-SECRET","param":"tools[0].function.name","code":"Bearer abc"}}"#;
+            assert_eq!(error_fields(hostile), " param=tools[0].function.name");
+            assert_eq!(error_fields(b"<html>"), "");
+            assert_eq!(
+                error_fields(br#"{"type":"error","code":"rate_limit"}"#),
+                " type=error code=rate_limit"
+            );
         }
-        for absent in [
-            json!({"content":"done"}),
-            json!({"content":"done","reasoning_content":null}),
-        ] {
-            let turn = read_turn(&json!({"choices":[{"message":absent}]})).unwrap();
-            assert!(turn.message.get("reasoning_content").is_none());
+
+        phase cloud_failures_say_what_happened;
+        {
+            let broke = Failure::from_http(
+                402,
+                r#"{"error":"Included credit is insufficient for this request","code":"insufficient_credit"}"#,
+                None,
+            );
+            assert_eq!(broke.kind, Kind::OutOfCredits);
+            assert!(!broke.retryable());
+            assert!(broke.to_string().starts_with(OUT_OF_CREDITS));
+            assert!(broke.to_string().contains("insufficient_credit"));
+            let pending = Failure::from_http(409, r#"{"error":"x","code":"request_pending"}"#, None);
+            assert_eq!(pending.kind, Kind::Pending);
+            assert!(!pending.retryable());
+            // An interrupted exchange may already have been billed; do not turn
+            // better error classification into a newly retryable paid operation.
+            assert!(!Failure::transport(false, false).retryable());
+            assert!(Failure::transport(true, false).retryable());
+            let limited = Failure::from_http(429, "", Some("2"));
+            assert!(limited.retryable());
+            assert_eq!(limited.retry_after, Some(Duration::from_secs(2)));
+            let busy = Failure::from_http(
+                503,
+                r#"{"error":"AI service unavailable; retain this request ID","code":"service_unavailable"}"#,
+                None,
+            );
+            assert!(busy.retryable());
+            let off = Failure::from_http(503, r#"{"error":"x","code":"service_disabled"}"#, None);
+            assert!(!off.retryable());
+            let quoted = Failure::from_http(
+                401,
+                r#"{"error":{"message":"Incorrect API key provided: sk-abc","code":"invalid_api_key"}}"#,
+                None,
+            );
+            assert!(!quoted.to_string().contains("sk-abc"));
+            assert_eq!(quoted.kind, Kind::Unauthorized);
+        }
+
+        phase backoff_doubles_and_honours_a_bounded_retry_after;
+        {
+            assert_eq!(backoff(1, None), Duration::from_millis(500));
+            assert_eq!(backoff(3, None), Duration::from_secs(2));
+            assert_eq!(backoff(9, None), LONGEST_WAIT);
+            assert_eq!(backoff(1, Some(Duration::from_secs(60))), LONGEST_WAIT);
         }
     }
 
-    #[test]
-    fn backoff_doubles_and_honours_a_bounded_retry_after() {
-        assert_eq!(backoff(1, None), Duration::from_millis(500));
-        assert_eq!(backoff(3, None), Duration::from_secs(2));
-        assert_eq!(backoff(9, None), LONGEST_WAIT);
-        assert_eq!(backoff(1, Some(Duration::from_secs(60))), LONGEST_WAIT);
+    tilo_test_env::scenario! {
+        /// The idempotency key of a turn and the body its target accepts.
+        fn a_request_is_keyed_and_shaped_for_its_target;
+
+        phase a_key_is_a_uuid_and_the_same_for_the_same_request;
+        {
+            let body = json!({"model": "m", "messages": []});
+            let key = turn_key(b"run", 0, &body);
+            assert_eq!(key.len(), 36);
+            assert_eq!(key.chars().nth(14), Some('8'));
+            assert_eq!(key, turn_key(b"run", 0, &body));
+            assert_ne!(key, turn_key(b"run", 1, &body));
+            assert_ne!(key, turn_key(b"other", 0, &body));
+        }
+
+        phase the_metered_target_drops_what_it_would_refuse;
+        {
+            let body = json!({
+                "model": "m", "messages": [], "tools": [], "tool_choice": "required",
+                "max_tokens": 4096, "stream_options": {}, "logprobs": true,
+                "response_format": {"type": "json_schema"}, "user": "x",
+            });
+            let shaped = Target::CloudMetered.shape(body.clone());
+            assert_eq!(
+                shaped,
+                json!({"model": "m", "messages": [], "tools": [], "tool_choice": "required",
+                       "max_completion_tokens": 2048})
+            );
+            assert_eq!(Target::Standard.shape(body.clone()), body);
+            let json_object = Target::CloudMetered
+                .shape(json!({"model": "m", "response_format": {"type": "json_object"}}));
+            assert_eq!(json_object["response_format"]["type"], "json_object");
+        }
+    }
+
+    tilo_test_env::scenario! {
+        /// Reading a tool turn and sending it back in the next request.
+        fn tool_turns_and_reasoning_are_echoed_in_the_shape_the_provider_accepts;
+
+        phase a_tool_turn_is_read_and_echoed_in_the_accepted_shape;
+        {
+            let turn = read_turn(&json!({"choices": [{"message": {
+                "role": "assistant", "content": null, "refusal": null,
+                "tool_calls": [{"id": "c1", "type": "function", "index": 0,
+                    "function": {"name": "plan", "arguments": "{\"why\":\"x\"}"}}]
+            }, "finish_reason": "tool_calls"}]}))
+            .unwrap();
+            assert_eq!(turn.calls[0].name, "plan");
+            assert_eq!(turn.calls[0].input["why"], "x");
+            assert_eq!(
+                turn.message,
+                json!({"role": "assistant", "content": null, "tool_calls": [
+                    {"id": "c1", "type": "function", "function": {"name": "plan", "arguments": "{\"why\":\"x\"}"}}]})
+            );
+        }
+
+        phase a_signed_tool_call_is_echoed_with_its_signature;
+        // Vertex AI's Gemini signs each call; the signature is replayed with
+        // it, or the next turn is refused.
+        {
+            let signature = json!({"google": {"thought_signature": "c2ln"}});
+            let turn = read_turn(&json!({"choices": [{"message": {
+                "role": "assistant",
+                "tool_calls": [{"id": "c1", "type": "function", "extra_content": signature,
+                    "function": {"name": "plan", "arguments": "{}"}}]
+            }}]}))
+            .unwrap();
+            assert_eq!(turn.message["tool_calls"][0]["extra_content"], signature);
+        }
+
+        phase provider_reasoning_is_replayed_without_becoming_final_text;
+        {
+            let response = json!({"choices":[{"message":{"content":"done","reasoning_content":"provider reasoning","tool_calls":[]}}]});
+            let turn = read_turn(&response).unwrap();
+            assert_eq!(turn.text.as_deref(), Some("done"));
+            assert_eq!(turn.message["reasoning_content"], "provider reasoning");
+            assert_eq!(turn.message["content"], "done");
+            for invalid in [json!({}), json!([]), json!(true), json!(17)] {
+                let malformed =
+                    json!({"choices":[{"message":{"content":"done","reasoning_content":invalid}}]});
+                assert!(read_turn(&malformed).is_err());
+            }
+            for absent in [
+                json!({"content":"done"}),
+                json!({"content":"done","reasoning_content":null}),
+            ] {
+                let turn = read_turn(&json!({"choices":[{"message":absent}]})).unwrap();
+                assert!(turn.message.get("reasoning_content").is_none());
+            }
+        }
     }
 }

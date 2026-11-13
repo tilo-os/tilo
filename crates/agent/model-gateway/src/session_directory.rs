@@ -146,73 +146,78 @@ mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
 
-    #[test]
-    fn trusted_chat_grant_preserves_narrow_identity() {
-        // The grant expires a minute after this instant, however long the
-        // test takes. The clock is handed to the directory, so no other test
-        // of this process reads it.
-        let at = tilo_clock::unix_now_ms();
-        let dir = tempfile::tempdir().unwrap();
-        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o700)).unwrap();
-        let token = "c".repeat(64);
-        let path = dir.path().join(session_name(&token));
-        fs::write(
-            &path,
-            format!(
-                r#"{{"caller":"chat","manage_credentials":true,"expires_unix_ms":{}}}"#,
-                at.saturating_add(60_000)
-            ),
-        )
-        .unwrap();
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
-        let mut headers = hyper::HeaderMap::new();
-        headers.insert("authorization", format!("Bearer {token}").parse().unwrap());
-        let session = SessionDirectory::new_with_clock(dir.path().to_owned(), Arc::new(move || at))
-            .unwrap()
-            .authorize(&headers)
-            .unwrap();
-        assert!(matches!(session.caller(), Caller::Chat));
-        assert!(!crate::caller::permitted(
-            session.as_ref(),
-            &crate::Request::SecretStatus {
-                profile_id: "profile".into()
-            }
-        ));
-    }
+    tilo_test_env::scenario! {
+        /// Grants read from a session directory of the case's own, with the clock handed in.
+        fn session_grants_are_narrow_private_expiring_and_revocable;
 
-    #[test]
-    fn grants_are_private_expiring_and_revocable() {
-        // The grant expires a minute after this instant, however long the
-        // test takes. The clock is handed to the directory, so no other test
-        // of this process reads it.
-        let at = tilo_clock::unix_now_ms();
-        let dir = tempfile::tempdir().unwrap();
-        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o700)).unwrap();
-        let authorizer =
-            SessionDirectory::new_with_clock(dir.path().to_owned(), Arc::new(move || at)).unwrap();
-        let token = "a".repeat(64);
-        let path = dir.path().join(session_name(&token));
-        fs::write(
-            &path,
-            format!(
-                r#"{{"caller":"settings","manage_credentials":true,"expires_unix_ms":{}}}"#,
-                at.saturating_add(60_000)
-            ),
-        )
-        .unwrap();
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
-        let mut headers = hyper::HeaderMap::new();
-        headers.insert("authorization", format!("Bearer {token}").parse().unwrap());
-        let session = authorizer.authorize(&headers).unwrap();
-        assert!(session.active());
-        assert!(session.may_manage_credentials());
-        fs::remove_file(&path).unwrap();
-        assert!(!session.active());
-        assert!(authorizer.authorize(&headers).is_none());
-        fs::write(&path, r#"{"caller":"agent","expires_unix_ms":0}"#).unwrap();
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
-        assert!(authorizer.authorize(&headers).is_none());
-        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o755)).unwrap();
-        assert!(SessionDirectory::new(dir.path().to_owned()).is_err());
+        phase trusted_chat_grant_preserves_narrow_identity;
+        {
+            // The grant expires a minute after this instant, however long the
+            // test takes. The clock is handed to the directory, so no other test
+            // of this process reads it.
+            let at = tilo_clock::unix_now_ms();
+            let dir = tempfile::tempdir().unwrap();
+            fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o700)).unwrap();
+            let token = "c".repeat(64);
+            let path = dir.path().join(session_name(&token));
+            fs::write(
+                &path,
+                format!(
+                    r#"{{"caller":"chat","manage_credentials":true,"expires_unix_ms":{}}}"#,
+                    at.saturating_add(60_000)
+                ),
+            )
+            .unwrap();
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+            let mut headers = hyper::HeaderMap::new();
+            headers.insert("authorization", format!("Bearer {token}").parse().unwrap());
+            let session = SessionDirectory::new_with_clock(dir.path().to_owned(), Arc::new(move || at))
+                .unwrap()
+                .authorize(&headers)
+                .unwrap();
+            assert!(matches!(session.caller(), Caller::Chat));
+            assert!(!crate::caller::permitted(
+                session.as_ref(),
+                &crate::Request::SecretStatus {
+                    profile_id: "profile".into()
+                }
+            ));
+        }
+
+        phase grants_are_private_expiring_and_revocable;
+        {
+            // The grant expires a minute after this instant, however long the
+            // test takes. The clock is handed to the directory, so no other test
+            // of this process reads it.
+            let at = tilo_clock::unix_now_ms();
+            let dir = tempfile::tempdir().unwrap();
+            fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o700)).unwrap();
+            let authorizer =
+                SessionDirectory::new_with_clock(dir.path().to_owned(), Arc::new(move || at)).unwrap();
+            let token = "a".repeat(64);
+            let path = dir.path().join(session_name(&token));
+            fs::write(
+                &path,
+                format!(
+                    r#"{{"caller":"settings","manage_credentials":true,"expires_unix_ms":{}}}"#,
+                    at.saturating_add(60_000)
+                ),
+            )
+            .unwrap();
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+            let mut headers = hyper::HeaderMap::new();
+            headers.insert("authorization", format!("Bearer {token}").parse().unwrap());
+            let session = authorizer.authorize(&headers).unwrap();
+            assert!(session.active());
+            assert!(session.may_manage_credentials());
+            fs::remove_file(&path).unwrap();
+            assert!(!session.active());
+            assert!(authorizer.authorize(&headers).is_none());
+            fs::write(&path, r#"{"caller":"agent","expires_unix_ms":0}"#).unwrap();
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+            assert!(authorizer.authorize(&headers).is_none());
+            fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o755)).unwrap();
+            assert!(SessionDirectory::new(dir.path().to_owned()).is_err());
+        }
     }
 }

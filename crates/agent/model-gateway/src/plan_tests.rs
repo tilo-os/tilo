@@ -843,121 +843,126 @@ fn send_plan(
     (result, sending.into_inner())
 }
 
-/// Plan asks again only for a provider that provably did no work, never
-/// once a frame reached the caller, at most five times in all, waiting what
-/// the provider asked for (else a doubling pause from a second), and only
-/// with room left for an answer.
-#[test]
-fn plan_send_replays_only_unprocessed_refusals_within_its_budget() {
-    let answered: Outcome = || Ok("answer");
-    let limited: Outcome = || Err(refused(Some(429), true, None));
-    let overloaded_for_two: Outcome =
-        || Err(refused(Some(529), true, Some(Duration::from_secs(2))));
-    let unreachable: Outcome = || Err(refused(None, true, None));
-    let failed: Outcome = || Err(refused(Some(500), false, None));
+tilo_test_env::scenario! {
+    /// The replay rule and the classification it rests on, without the dispatch subprocess.
+    fn a_plan_is_sent_again_only_for_an_unprocessed_refusal_within_its_budget;
 
-    // Phase: a rate limit, an overload or a refused connection, then an answer.
-    for refusal in [limited, unreachable] {
-        let (result, sending) = send_plan(Duration::from_secs(20), false, &[refusal, answered]);
+    phase plan_send_replays_only_unprocessed_refusals_within_its_budget;
+    // Plan asks again only for a provider that provably did no work, never
+    // once a frame reached the caller, at most five times in all, waiting what
+    // the provider asked for (else a doubling pause from a second), and only
+    // with room left for an answer.
+    {
+        let answered: Outcome = || Ok("answer");
+        let limited: Outcome = || Err(refused(Some(429), true, None));
+        let overloaded_for_two: Outcome =
+            || Err(refused(Some(529), true, Some(Duration::from_secs(2))));
+        let unreachable: Outcome = || Err(refused(None, true, None));
+        let failed: Outcome = || Err(refused(Some(500), false, None));
+
+        // Phase: a rate limit, an overload or a refused connection, then an answer.
+        for refusal in [limited, unreachable] {
+            let (result, sending) = send_plan(Duration::from_secs(20), false, &[refusal, answered]);
+            assert_eq!(result.ok(), Some("answer"));
+            assert_eq!(sending.calls, 2);
+            assert_eq!(sending.waits, [Duration::from_secs(1)]);
+        }
+        let (result, sending) = send_plan(
+            Duration::from_secs(20),
+            false,
+            &[overloaded_for_two, answered],
+        );
         assert_eq!(result.ok(), Some("answer"));
-        assert_eq!(sending.calls, 2);
-        assert_eq!(sending.waits, [Duration::from_secs(1)]);
+        assert_eq!(
+            sending.waits,
+            [Duration::from_secs(2)],
+            "Retry-After is honoured"
+        );
+
+        // Phase: at most five attempts, and the error counts them.
+        let (result, sending) = send_plan(Duration::from_secs(60), false, &[limited]);
+        let failure = result.err().unwrap();
+        assert_eq!(sending.calls, 5);
+        assert_eq!(
+            sending.waits,
+            [1, 2, 4, 8].map(Duration::from_secs),
+            "a busy shared quota is ridden out with a doubling pause"
+        );
+        assert_eq!(failure.status, Some(429));
+        assert!(failure.why.ends_with("(5 attempts)"), "{}", failure.why);
+
+        // Phase: a shorter budget stops asking once a pause would leave no room
+        // to answer.
+        let (result, sending) = send_plan(Duration::from_secs(20), false, &[limited]);
+        assert!(result.is_err());
+        assert_eq!(sending.calls, 4);
+        assert_eq!(sending.waits, [1, 2, 4].map(Duration::from_secs));
+
+        // Phase: a failure that may have done the work is never sent again.
+        let (result, sending) = send_plan(Duration::from_secs(20), false, &[failed, answered]);
+        let failure = result.err().unwrap();
+        assert_eq!(sending.calls, 1);
+        assert!(sending.waits.is_empty());
+        assert_eq!(failure.why, "provider returned HTTP 500");
+
+        // Phase: nothing is sent again once a frame reached the caller.
+        let (result, sending) = send_plan(Duration::from_secs(20), true, &[limited, answered]);
+        assert!(result.is_err());
+        assert_eq!(sending.calls, 1);
+        assert!(sending.waits.is_empty());
+
+        // Phase: a wait that would leave no room to answer ends the Plan instead.
+        let (result, sending) = send_plan(
+            Duration::from_secs(6),
+            false,
+            &[overloaded_for_two, answered],
+        );
+        assert_eq!(result.err().unwrap().status, Some(529));
+        assert_eq!(sending.calls, 1);
+        assert!(sending.waits.is_empty());
     }
-    let (result, sending) = send_plan(
-        Duration::from_secs(20),
-        false,
-        &[overloaded_for_two, answered],
-    );
-    assert_eq!(result.ok(), Some("answer"));
-    assert_eq!(
-        sending.waits,
-        [Duration::from_secs(2)],
-        "Retry-After is honoured"
-    );
 
-    // Phase: at most five attempts, and the error counts them.
-    let (result, sending) = send_plan(Duration::from_secs(60), false, &[limited]);
-    let failure = result.err().unwrap();
-    assert_eq!(sending.calls, 5);
-    assert_eq!(
-        sending.waits,
-        [1, 2, 4, 8].map(Duration::from_secs),
-        "a busy shared quota is ridden out with a doubling pause"
-    );
-    assert_eq!(failure.status, Some(429));
-    assert!(failure.why.ends_with("(5 attempts)"), "{}", failure.why);
+    phase only_a_refused_connection_a_rate_limit_or_an_overload_is_unprocessed;
+    // A refused connection never reached the provider and a rate limit or
+    // overload did no work there; an exhausted quota and every other status
+    // leave the outcome as it was.
+    {
+        let closed = {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.local_addr().unwrap().port()
+        };
+        let mut profile = ProviderProfile::local_vllm();
+        profile.endpoint = format!("http://127.0.0.1:{closed}/v1");
+        let http = provider_client().unwrap();
+        let failure = tilo_rt::block_on(rig_adapter::legacy(
+            &http,
+            &profile,
+            None,
+            serde_json::json!({"model": "test-model"}),
+            Duration::from_secs(5),
+            None,
+            true,
+        ))
+        .unwrap()
+        .err()
+        .unwrap();
+        assert!(failure.unprocessed, "{}", failure.why);
+        assert!(!failure.outcome_unknown, "{}", failure.why);
+        assert_eq!(failure.status, None);
 
-    // Phase: a shorter budget stops asking once a pause would leave no room
-    // to answer.
-    let (result, sending) = send_plan(Duration::from_secs(20), false, &[limited]);
-    assert!(result.is_err());
-    assert_eq!(sending.calls, 4);
-    assert_eq!(sending.waits, [1, 2, 4].map(Duration::from_secs));
-
-    // Phase: a failure that may have done the work is never sent again.
-    let (result, sending) = send_plan(Duration::from_secs(20), false, &[failed, answered]);
-    let failure = result.err().unwrap();
-    assert_eq!(sending.calls, 1);
-    assert!(sending.waits.is_empty());
-    assert_eq!(failure.why, "provider returned HTTP 500");
-
-    // Phase: nothing is sent again once a frame reached the caller.
-    let (result, sending) = send_plan(Duration::from_secs(20), true, &[limited, answered]);
-    assert!(result.is_err());
-    assert_eq!(sending.calls, 1);
-    assert!(sending.waits.is_empty());
-
-    // Phase: a wait that would leave no room to answer ends the Plan instead.
-    let (result, sending) = send_plan(
-        Duration::from_secs(6),
-        false,
-        &[overloaded_for_two, answered],
-    );
-    assert_eq!(result.err().unwrap().status, Some(529));
-    assert_eq!(sending.calls, 1);
-    assert!(sending.waits.is_empty());
-}
-
-/// A refused connection never reached the provider and a rate limit or
-/// overload did no work there; an exhausted quota and every other status
-/// leave the outcome as it was.
-#[test]
-fn only_a_refused_connection_a_rate_limit_or_an_overload_is_unprocessed() {
-    let closed = {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        listener.local_addr().unwrap().port()
-    };
-    let mut profile = ProviderProfile::local_vllm();
-    profile.endpoint = format!("http://127.0.0.1:{closed}/v1");
-    let http = provider_client().unwrap();
-    let failure = tilo_rt::block_on(rig_adapter::legacy(
-        &http,
-        &profile,
-        None,
-        serde_json::json!({"model": "test-model"}),
-        Duration::from_secs(5),
-        None,
-        true,
-    ))
-    .unwrap()
-    .err()
-    .unwrap();
-    assert!(failure.unprocessed, "{}", failure.why);
-    assert!(!failure.outcome_unknown, "{}", failure.why);
-    assert_eq!(failure.status, None);
-
-    assert!(refused_unprocessed(
-        429,
-        br#"{"error":{"type":"rate_limit_error"}}"#
-    ));
-    assert!(refused_unprocessed(429, b""));
-    assert!(refused_unprocessed(
-        529,
-        br#"{"error":{"type":"overloaded_error"}}"#
-    ));
-    assert!(!refused_unprocessed(429, QUOTA_BODY.as_bytes()));
-    for status in [400, 401, 402, 408, 409, 500, 502, 503, 504] {
-        assert!(!refused_unprocessed(status, b""), "HTTP {status}");
+        assert!(refused_unprocessed(
+            429,
+            br#"{"error":{"type":"rate_limit_error"}}"#
+        ));
+        assert!(refused_unprocessed(429, b""));
+        assert!(refused_unprocessed(
+            529,
+            br#"{"error":{"type":"overloaded_error"}}"#
+        ));
+        assert!(!refused_unprocessed(429, QUOTA_BODY.as_bytes()));
+        for status in [400, 401, 402, 408, 409, 500, 502, 503, 504] {
+            assert!(!refused_unprocessed(status, b""), "HTTP {status}");
+        }
     }
 }
 

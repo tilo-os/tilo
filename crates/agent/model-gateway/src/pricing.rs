@@ -205,58 +205,63 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_million_tokens_costs_the_rows_price() {
-        let price = price_of("claude-sonnet-4-5").expect("a priced model");
-        assert_eq!(price.of(&usage(1_000_000, 0, 0, 0)), 3_000_000);
-        assert_eq!(price.of(&usage(0, 0, 0, 1_000_000)), 15_000_000);
-    }
+    tilo_test_env::scenario! {
+        /// The price table applied to a turn's usage.
+        fn a_turn_costs_what_its_models_row_charges_for_the_tokens_counted;
 
-    #[test]
-    fn the_most_specific_row_names_the_price() {
-        let opus = cost_micros("claude-opus-4-1", &usage(1_000_000, 0, 0, 0));
-        let sonnet = cost_micros("claude-sonnet-4-5", &usage(1_000_000, 0, 0, 0));
-        let haiku = cost_micros("claude-haiku-4-5", &usage(1_000_000, 0, 0, 0));
-        assert_eq!((opus, sonnet, haiku), (15_000_000, 3_000_000, 1_000_000));
-        assert_eq!(
-            cost_micros("gpt-4o-mini", &usage(1_000_000, 0, 0, 0)),
-            150_000
-        );
-        assert_eq!(cost_micros("gpt-4o", &usage(1_000_000, 0, 0, 0)), 2_500_000);
-    }
+        phase a_million_tokens_costs_the_rows_price;
+        {
+            let price = price_of("claude-sonnet-4-5").expect("a priced model");
+            assert_eq!(price.of(&usage(1_000_000, 0, 0, 0)), 3_000_000);
+            assert_eq!(price.of(&usage(0, 0, 0, 1_000_000)), 15_000_000);
+        }
 
-    #[test]
-    fn a_cached_prompt_is_charged_what_its_provider_charges() {
-        // A provider counts the tokens it read from its cache in the input;
-        // they cost a tenth of it at Anthropic, half at OpenAI.
-        let cached = usage(1_000_000, 1_000_000, 0, 0);
-        assert_eq!(cost_micros("claude-sonnet-4-5", &cached), 300_000);
-        assert_eq!(cost_micros("gpt-4o", &cached), 1_250_000);
-        // Written to the cache: a quarter more than the input.
-        let written = usage(1_000_000, 0, 1_000_000, 0);
-        assert_eq!(cost_micros("claude-sonnet-4-5", &written), 3_750_000);
-        // Half cached, half not: each part at its own price.
-        let half = usage(1_000_000, 500_000, 0, 0);
-        assert_eq!(cost_micros("claude-sonnet-4-5", &half), 1_650_000);
-    }
+        phase the_most_specific_row_names_the_price;
+        {
+            let opus = cost_micros("claude-opus-4-1", &usage(1_000_000, 0, 0, 0));
+            let sonnet = cost_micros("claude-sonnet-4-5", &usage(1_000_000, 0, 0, 0));
+            let haiku = cost_micros("claude-haiku-4-5", &usage(1_000_000, 0, 0, 0));
+            assert_eq!((opus, sonnet, haiku), (15_000_000, 3_000_000, 1_000_000));
+            assert_eq!(
+                cost_micros("gpt-4o-mini", &usage(1_000_000, 0, 0, 0)),
+                150_000
+            );
+            assert_eq!(cost_micros("gpt-4o", &usage(1_000_000, 0, 0, 0)), 2_500_000);
+        }
 
-    #[test]
-    fn a_model_with_no_price_is_not_charged() {
-        assert_eq!(
-            cost_micros("llama-3.3-70b", &usage(1_000_000, 0, 0, 1_000)),
-            0
-        );
-        assert_eq!(cost_micros("my-local-model", &usage(10, 0, 0, 10)), 0);
-        assert!(price_of("llama-3.3-70b").is_none());
-    }
+        phase a_cached_prompt_is_charged_what_its_provider_charges;
+        {
+            // A provider counts the tokens it read from its cache in the input;
+            // they cost a tenth of it at Anthropic, half at OpenAI.
+            let cached = usage(1_000_000, 1_000_000, 0, 0);
+            assert_eq!(cost_micros("claude-sonnet-4-5", &cached), 300_000);
+            assert_eq!(cost_micros("gpt-4o", &cached), 1_250_000);
+            // Written to the cache: a quarter more than the input.
+            let written = usage(1_000_000, 0, 1_000_000, 0);
+            assert_eq!(cost_micros("claude-sonnet-4-5", &written), 3_750_000);
+            // Half cached, half not: each part at its own price.
+            let half = usage(1_000_000, 500_000, 0, 0);
+            assert_eq!(cost_micros("claude-sonnet-4-5", &half), 1_650_000);
+        }
 
-    #[test]
-    fn a_prompt_never_costs_more_than_its_tokens_are_counted() {
-        // More cached tokens than the candidate says were used is a broken
-        // count, not a windfall: only the counted input is charged.
-        let broken = usage(10, 1_000, 1_000, 0);
-        assert_eq!(cost_micros("claude-sonnet-4-5", &broken), 3);
-        // A reply with no usage counted costs nothing.
-        assert_eq!(cost_micros("claude-sonnet-4-5", &Usage::default()), 0);
+        phase a_model_with_no_price_is_not_charged;
+        {
+            assert_eq!(
+                cost_micros("llama-3.3-70b", &usage(1_000_000, 0, 0, 1_000)),
+                0
+            );
+            assert_eq!(cost_micros("my-local-model", &usage(10, 0, 0, 10)), 0);
+            assert!(price_of("llama-3.3-70b").is_none());
+        }
+
+        phase a_prompt_never_costs_more_than_its_tokens_are_counted;
+        {
+            // More cached tokens than the candidate says were used is a broken
+            // count, not a windfall: only the counted input is charged.
+            let broken = usage(10, 1_000, 1_000, 0);
+            assert_eq!(cost_micros("claude-sonnet-4-5", &broken), 3);
+            // A reply with no usage counted costs nothing.
+            assert_eq!(cost_micros("claude-sonnet-4-5", &Usage::default()), 0);
+        }
     }
 }

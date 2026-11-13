@@ -197,63 +197,68 @@ mod tests {
         }
     }
 
-    #[test]
-    fn provider_control_panel_identity_is_exact() {
-        for app in ["so.tilo.settings", "so.tilo.model-providers"] {
-            assert!(provider_admin_app(app));
-        }
-        for app in [
-            "model-providers",
-            "Model Providers",
-            "so.tilo.model-providers.evil",
-            "so.tilo.settings.evil",
-            "so.tilo.chat",
-            "so.tilo.agent",
-            "*",
-        ] {
-            assert!(!provider_admin_app(app), "{app}");
-        }
-    }
+    tilo_test_env::scenario! {
+        /// Who may administer providers through the gateway.
+        fn provider_management_needs_the_exact_panel_identity_and_live_settings_custody;
 
-    #[test]
-    fn legacy_management_requires_live_settings_custody_permission() {
-        for request in [
-            crate::Request::GetProviderConfig,
-            crate::Request::SetProviderConfig {
-                expected_revision: "stale".into(),
-                config: agent_provider_config::ProviderConfig::default(),
-            },
-            crate::Request::CredentialStatus {
-                profile_id: "profile".into(),
-            },
-            crate::Request::MigrateApiKey {
-                profile_id: "profile".into(),
-                original_endpoint: "https://original.example".into(),
-            },
-            crate::Request::RemoveLegacyApiKey {
-                profile_id: "profile".into(),
-            },
-        ] {
-            assert!(permitted(
-                &Authenticated(Caller::Settings, true, true),
-                &request
-            ));
-            assert!(!permitted(
-                &Authenticated(Caller::Settings, false, true),
-                &request
-            ));
-            assert!(!permitted(
-                &Authenticated(Caller::Settings, true, false),
-                &request
-            ));
-            assert!(!permitted(
-                &Authenticated(Caller::Agent, true, true),
-                &request
-            ));
-            assert!(!permitted(
-                &Authenticated(Caller::Photos, true, true),
-                &request
-            ));
+        phase provider_control_panel_identity_is_exact;
+        {
+            for app in ["so.tilo.settings", "so.tilo.model-providers"] {
+                assert!(provider_admin_app(app));
+            }
+            for app in [
+                "model-providers",
+                "Model Providers",
+                "so.tilo.model-providers.evil",
+                "so.tilo.settings.evil",
+                "so.tilo.chat",
+                "so.tilo.agent",
+                "*",
+            ] {
+                assert!(!provider_admin_app(app), "{app}");
+            }
+        }
+
+        phase legacy_management_requires_live_settings_custody_permission;
+        {
+            for request in [
+                crate::Request::GetProviderConfig,
+                crate::Request::SetProviderConfig {
+                    expected_revision: "stale".into(),
+                    config: agent_provider_config::ProviderConfig::default(),
+                },
+                crate::Request::CredentialStatus {
+                    profile_id: "profile".into(),
+                },
+                crate::Request::MigrateApiKey {
+                    profile_id: "profile".into(),
+                    original_endpoint: "https://original.example".into(),
+                },
+                crate::Request::RemoveLegacyApiKey {
+                    profile_id: "profile".into(),
+                },
+            ] {
+                assert!(permitted(
+                    &Authenticated(Caller::Settings, true, true),
+                    &request
+                ));
+                assert!(!permitted(
+                    &Authenticated(Caller::Settings, false, true),
+                    &request
+                ));
+                assert!(!permitted(
+                    &Authenticated(Caller::Settings, true, false),
+                    &request
+                ));
+                assert!(!permitted(
+                    &Authenticated(Caller::Agent, true, true),
+                    &request
+                ));
+                assert!(!permitted(
+                    &Authenticated(Caller::Photos, true, true),
+                    &request
+                ));
+            }
         }
     }
 }
