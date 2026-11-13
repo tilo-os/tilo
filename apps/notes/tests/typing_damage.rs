@@ -71,6 +71,31 @@ struct Host {
     parts: Option<ui::scene_parts::SectionParts>,
     /// The host frames since the last look.
     presented: Vec<Presented>,
+    /// The renderers this host's frames are checked on, made at the first
+    /// check and kept, as a host keeps its renderer from frame to frame.
+    oracle: Option<Oracle>,
+}
+
+/// The two renderers a host's frames are checked on: `retained` presents
+/// frames sparsely over what it holds, `full` draws a frame whole. A check
+/// begins by drawing its first frame whole on `retained` and ends by drawing
+/// its last frame whole on `full`, so neither shows what an earlier check
+/// drew. Making a pair compiles the renderer's shaders again, most of a
+/// second on a software GPU: a host makes them once, not once a check.
+struct Oracle {
+    retained: ui::offscreen::OffscreenRenderer,
+    full: ui::offscreen::OffscreenRenderer,
+}
+
+impl Oracle {
+    /// Renderers the size of the app in the host's scene at `scale`.
+    fn at_scale(scale: f64) -> Self {
+        let (width, height) = scene_size(scale);
+        Self {
+            retained: ui::offscreen::OffscreenRenderer::new(width, height),
+            full: ui::offscreen::OffscreenRenderer::new(width, height),
+        }
+    }
 }
 
 impl Host {
@@ -88,6 +113,7 @@ impl Host {
             scene: Scene::new(),
             parts: None,
             presented: Vec::new(),
+            oracle: None,
         }
     }
 
@@ -224,6 +250,9 @@ fn area(rects: &[Rect], scale: f64) -> f64 {
     let (width, height) = scene_size(scale);
     let app = Rect::new(0.0, 0.0, f64::from(width), f64::from(height));
     let mut covered = vec![vec![false; width as usize]; height as usize];
+    // Each pixel is counted once, as the first rect over it covers it: the
+    // count reads the pixels the rects cover, not the whole app.
+    let mut count = 0_usize;
     for rect in rects {
         let rect = rect.intersect(app);
         // A rect wholly outside the app (or the region a test watches)
@@ -233,10 +262,12 @@ fn area(rects: &[Rect], scale: f64) -> f64 {
         }
         let rect = rect.expand();
         for row in &mut covered[rect.y0 as usize..rect.y1 as usize] {
-            row[rect.x0 as usize..rect.x1 as usize].fill(true);
+            let cells = &mut row[rect.x0 as usize..rect.x1 as usize];
+            count = count.saturating_add(cells.iter().filter(|cell| !**cell).count());
+            cells.fill(true);
         }
     }
-    covered.iter().flatten().filter(|cell| **cell).count() as f64
+    count as f64
 }
 
 /// Every pixel of the app at scale 1.
@@ -265,8 +296,10 @@ struct Repainted {
 
 /// Present `frames` over `before` as the host does at `scale`, each only
 /// where its damage says, and require the pixels of a full render of the
-/// last one. Pixels are the host's scene pixels; `within` is in the app's.
+/// last one, on the host's `oracle`. Pixels are the host's scene pixels;
+/// `within` is in the app's.
 fn present_and_compare(
+    oracle: &mut Oracle,
     before: &Scene,
     frames: &[Presented],
     (theme, scale): (&Theme, f64),
@@ -278,8 +311,7 @@ fn present_and_compare(
     let pixels_in_app = u64::from(width).saturating_mul(u64::from(height));
     let within = within.map(|region| Affine::scale(scale).transform_rect_bbox(region));
     let app_area = app_area_at(scale);
-    let mut retained = ui::offscreen::OffscreenRenderer::new(width, height);
-    let mut full = ui::offscreen::OffscreenRenderer::new(width, height);
+    let Oracle { retained, full } = oracle;
     let _ = retained.render(before, background);
     let mut repainted = Repainted::default();
     for (scene, damage) in frames {
@@ -328,6 +360,12 @@ fn present_and_compare(
         .zip(expected.chunks_exact(stride))
         .enumerate()
     {
+        // A row the sparse repaint left byte for byte as the full render
+        // drew it holds no differing pixel: only a row that differs is read
+        // pixel by pixel, which an unoptimised test build does slowly.
+        if actual == expected {
+            continue;
+        }
         for (x, (a, e)) in actual
             .chunks_exact(4)
             .zip(expected.chunks_exact(4))
@@ -367,8 +405,10 @@ fn measure(
     change(app, host);
     let elapsed = started.elapsed();
     let frames = std::mem::take(&mut host.presented);
+    let scale = host.scale;
+    let oracle = host.oracle.get_or_insert_with(|| Oracle::at_scale(scale));
     (
-        present_and_compare(&before, &frames, (theme, host.scale), label, None),
+        present_and_compare(oracle, &before, &frames, (theme, scale), label, None),
         elapsed,
     )
 }
@@ -387,7 +427,16 @@ fn measure_within(
     change(app, host);
     let elapsed = started.elapsed();
     let frames = std::mem::take(&mut host.presented);
-    let repainted = present_and_compare(&before, &frames, (theme, host.scale), label, Some(region));
+    let scale = host.scale;
+    let oracle = host.oracle.get_or_insert_with(|| Oracle::at_scale(scale));
+    let repainted = present_and_compare(
+        oracle,
+        &before,
+        &frames,
+        (theme, scale),
+        label,
+        Some(region),
+    );
     (repainted, elapsed)
 }
 
