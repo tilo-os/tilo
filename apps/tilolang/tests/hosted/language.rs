@@ -151,3 +151,26 @@ fn a_language_chosen_while_hosted_windows_are_open_relabels_them() {
         "no English word is left in Tasks' window: {shown:?}"
     );
 }
+
+/// A person whose desktop speaks German presses New task in Tasks' Today, types a task and
+/// presses Enter: the task is made, due today, and stands in Today's list, as it does in English.
+#[test]
+fn a_task_typed_into_todays_entry_in_german_stands_in_today() {
+    use ui::winit::keyboard::NamedKey;
+
+    let mut tasks = Session::in_language(TASKS, "ada", "de-DE");
+    let mut pressed = Vec::new();
+    named(tasks.window.root(), "Neue Aufgabe", &mut pressed);
+    let new_task = *pressed.first().expect("the bar's New task reads in German");
+    tasks
+        .window
+        .click_at(new_task.center().x, new_task.center().y);
+    tasks.window.type_text("Pflanzen giessen");
+    tasks.window.press_key(NamedKey::Enter);
+    tasks.settle();
+    let titles = tasks.titles();
+    assert!(
+        titles.iter().any(|title| title == "Pflanzen giessen"),
+        "the task typed in Today stands in Today's list: {titles:?}"
+    );
+}
