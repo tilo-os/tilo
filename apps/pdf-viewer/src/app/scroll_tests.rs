@@ -254,14 +254,19 @@ fn report(label: &str, samples: &[FrameSample]) {
     }
 }
 
-/// The knobs that make `measure_sustained_scroll` measure something other
-/// than what `sustained_scroll_never_waits_on_rendering` drives and reports.
-const SUSTAINED_SCROLL_KNOBS: [&str; 5] = [
+/// Every knob `measure_sustained_scroll` reads: the five of its own body,
+/// the device scale `drive_scroll` draws at and the frame-by-frame trace
+/// `report` prints. With any of them set it is asked for a measurement and
+/// runs; with none it would be `sustained_scroll_never_waits_on_rendering`
+/// again.
+const SUSTAINED_SCROLL_KNOBS: [&str; 7] = [
     "PDF_SCROLL_FILE",
     "PDF_SCROLL_GPU",
     "PDF_SCROLL_SIZE",
     "PDF_SCROLL_SPEED",
     "PDF_SCROLL_FRAMES",
+    "PDF_SCROLL_SCALE",
+    "PDF_SCROLL_TRACE",
 ];
 
 #[test]
