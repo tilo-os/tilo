@@ -117,3 +117,68 @@ fn a_window_one_person_moves_is_where_the_other_sees_it() {
         "one strip holds both windows"
     );
 }
+
+/// A change of the layout is one step of the person who made it: their undo takes back their own
+/// change and never another person's, and a desk reopened reads the layout the workspace keeps.
+#[test]
+fn an_undo_takes_back_the_persons_own_change_and_never_another_persons() {
+    let (site, _ada, _bob, mut ada_laptop, bob_laptop) = two_people_at_a_site();
+    show(&ada_laptop, &site);
+    show(&bob_laptop, &site);
+    let _hers = ada_laptop.window(NOTES, "Ada's notes");
+    waited(
+        "Ada's window on the site and both desks",
+        &site,
+        &[&ada_laptop, &bob_laptop],
+        || {
+            titles_at(&site) == ["Ada's notes"]
+                && titles_on(&ada_laptop, &site) == ["Ada's notes"]
+                && titles_on(&bob_laptop, &site) == ["Ada's notes"]
+        },
+    );
+    let _his = bob_laptop.window(NOTES, "Bob's notes");
+    let both = ["Ada's notes", "Bob's notes"];
+    waited(
+        "both windows on the site and both desks",
+        &site,
+        &[&ada_laptop, &bob_laptop],
+        || {
+            titles_at(&site) == both
+                && titles_on(&ada_laptop, &site) == both
+                && titles_on(&bob_laptop, &site) == both
+        },
+    );
+
+    // Ada takes back her last step: her window is the one that goes, and Bob's is not hers to take.
+    let undone = ada_laptop.act(
+        "so.tilo.session",
+        "shell:arrangement\u{1f}undo",
+        &serde_json::json!({}),
+    );
+    assert!(
+        undone.get("err").is_none(),
+        "Ada takes her step back: {undone}\n{}",
+        ada_laptop.log()
+    );
+    waited(
+        "Ada's window gone from the site and both desks, Bob's still there",
+        &site,
+        &[&ada_laptop, &bob_laptop],
+        || {
+            titles_at(&site) == ["Bob's notes"]
+                && titles_on(&ada_laptop, &site) == ["Bob's notes"]
+                && titles_on(&bob_laptop, &site) == ["Bob's notes"]
+        },
+    );
+
+    // Reopened, her desk is the layout the workspace keeps.
+    ada_laptop.stop();
+    ada_laptop.start();
+    show(&ada_laptop, &site);
+    waited(
+        "a reopened desk shows the layout the workspace keeps",
+        &site,
+        &[&ada_laptop],
+        || titles_on(&ada_laptop, &site) == ["Bob's notes"],
+    );
+}

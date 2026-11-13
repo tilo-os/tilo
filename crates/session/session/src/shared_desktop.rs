@@ -776,7 +776,14 @@ impl SharedDesktops {
                     // takes it back, whichever of their devices asks for it.
                     let after = taken.record.get_heads();
                     self.held(key, |held| {
-                        if let Some(log) = held.undo.as_mut() {
+                        // A write can land before this device read the layout (the first window a
+                        // session opens goes out on the pass before the record is read): the history
+                        // begins here, and the change it makes is the first step in it.
+                        let log = held.undo.get_or_insert_with(|| {
+                            let mut from = taken.record.clone();
+                            UndoLog::new(&mut from)
+                        });
+                        {
                             log.record_committed_span(
                                 &taken.record,
                                 taken.before.clone(),
@@ -851,9 +858,10 @@ impl SharedDesktops {
         let engine = &engine;
         let key = (room, Route::layout());
         if self.held(&key, |held| held.writing.is_some()) {
-            // The layout is being written: the step is taken on the look that follows that write.
+            // The layout is being written: the step is taken on the look that follows that write,
+            // so the person's undo is one they can see coming rather than one refused.
             self.held(&key, |held| held.pending_step = Some(redo));
-            return false;
+            return true;
         }
         let Some(sealed) = self.sealed(engine, &key) else {
             return false;
@@ -885,7 +893,7 @@ impl SharedDesktops {
             self.fold_into(room, &doc, &desk, workspace, salt, &device);
         }
         handle.replace_tree(tree);
-        let own = handle.revision();
+        let own = handle.read(|tree| tree.external_revision);
         let heads = doc.committed_heads();
         let notes = self.notes.of_workspace(room);
         self.held(&key, |held| {

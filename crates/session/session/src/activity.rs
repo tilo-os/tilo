@@ -473,8 +473,9 @@ impl Activity {
     }
 
     /// Keep what `tree` shows of this device: the workspace in front and the displays' partition.
-    pub fn keep_shown(&self, tree: &DesktopTree) -> bool {
-        self.0.shown.keep(tree)
+    /// Read at `revision` of the desk, so a desk that did not move is not read.
+    pub fn keep_shown(&self, revision: Option<u64>, tree: impl FnOnce() -> DesktopTree) -> bool {
+        self.0.shown.keep(revision, tree)
     }
 
     /// The workspace a change the model wrote back leaves the desk at, if one is waiting.

@@ -16,7 +16,9 @@ impl Shared {
         if crate::termination::asked() {
             return;
         }
-        self.activity.keep_shown(&self.handle.read(Clone::clone));
+        self.activity.keep_shown(Some(self.handle.revision()), || {
+            self.handle.read(Clone::clone)
+        });
     }
 
     /// [`Self::keep_desk`], and wait for what was written: what ends the session.
@@ -25,7 +27,8 @@ impl Shared {
             tilo_durable_writer::global().flush();
             return;
         }
-        self.activity.keep_shown(&self.handle.read(Clone::clone));
+        self.activity
+            .keep_shown(None, || self.handle.read(Clone::clone));
         tilo_durable_writer::global().flush();
     }
 

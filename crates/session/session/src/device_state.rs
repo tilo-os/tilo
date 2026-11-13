@@ -4,7 +4,7 @@
 //! small file written away from the frame. Nothing else of the layout is here: the strips, window
 //! groups and tabs are the workspace's layout record ([`tilo_desktop_model::shared_record`]).
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -77,6 +77,8 @@ pub(crate) struct DeviceState {
     at: Option<PathBuf>,
     /// What was last written, so a pass that changed nothing writes nothing.
     kept: RefCell<Shown>,
+    /// The desk revision the last look found, so a desk that did not move is not read.
+    seen: Cell<Option<u64>>,
 }
 
 impl DeviceState {
@@ -90,6 +92,7 @@ impl DeviceState {
         Self {
             at: Some(at),
             kept: RefCell::new(kept),
+            seen: Cell::default(),
         }
     }
 
@@ -98,9 +101,17 @@ impl DeviceState {
         self.kept.borrow().applied(tree)
     }
 
-    /// Keep what `tree` shows. Whether it changed since it was last kept.
-    pub(crate) fn keep(&self, tree: &DesktopTree) -> bool {
-        let shown = Shown::of(tree);
+    /// Keep what `tree` shows, read at `revision` of the desk: a pass that finds the desk where
+    /// the last one left it keeps nothing. `None` reads it now, whatever moved. Whether it changed
+    /// since it was last kept.
+    pub(crate) fn keep(&self, revision: Option<u64>, tree: impl FnOnce() -> DesktopTree) -> bool {
+        if let Some(revision) = revision {
+            if self.seen.get() == Some(revision) {
+                return false;
+            }
+            self.seen.set(Some(revision));
+        }
+        let shown = Shown::of(&tree());
         {
             let mut kept = self.kept.borrow_mut();
             if *kept == shown {
@@ -155,6 +166,7 @@ impl Default for DeviceState {
         Self {
             at: None,
             kept: RefCell::default(),
+            seen: Cell::default(),
         }
     }
 }
@@ -181,11 +193,21 @@ mod tests {
     fn the_workspace_in_front_is_kept_and_shown_where_the_desk_still_holds_it() {
         let state = DeviceState::default();
         let first = desk(1);
-        assert!(state.keep(&first), "what was never kept is written");
-        assert!(!state.keep(&first), "an unchanged desk writes nothing");
+        assert!(
+            state.keep(Some(1), || first.clone()),
+            "what was never kept is written"
+        );
+        assert!(
+            !state.keep(Some(1), || first.clone()),
+            "a desk that did not move is not read"
+        );
+        assert!(
+            !state.keep(Some(2), || first.clone()),
+            "an unchanged desk writes nothing"
+        );
         let mut second = desk(2);
         second.active = WorkspaceSlot(2);
-        assert!(state.keep(&second));
+        assert!(state.keep(Some(3), || second.clone()));
         let mut reopened = desk(2);
         reopened.active = WorkspaceSlot(0);
         assert!(state.applied(&mut reopened));
