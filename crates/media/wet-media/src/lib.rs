@@ -1,27 +1,14 @@
-//! # Wet media
+//! Wet media: deterministic simulations of real paint over vector marks. A
+//! painting is stored as its marks (strokes and filled regions with a colour
+//! and a medium) and this crate turns a layer's marks into the pixels that
+//! paint would leave; the same marks give the same pixels on every machine, so
+//! a painting syncs as marks and each collaborator simulates it locally.
 //!
-//! Deterministic simulations of real paint over vector marks. A painting is
-//! stored as its marks (brush strokes and filled regions with a colour and a
-//! medium); this crate turns a layer's marks into the pixels that paint would
-//! leave. The same marks give the same pixels on every machine, so a
-//! painting syncs as marks and each collaborator simulates it locally.
-//!
-//! * [`MediumEngine`] is one kind of paint ([`watercolour`], [`oil`]).
-//! * [`Preset`] is shareable data over an engine: parameters, a suggested
-//!   ground and a palette of named pigments ([`presets::builtin`]).
-//! * [`LayerPainter`] keeps one layer's simulation in step with its marks,
-//!   re-simulating only what changed.
-//! * [`Heightfield`] is the support (paper grain, linen weave) both the
-//!   simulation and the display read.
-//!
-//! ## Engines beyond the built-in ones
-//!
-//! [`MediumEngine`] and [`LayerSim`] are the whole contract: an engine
-//! receives marks in cell coordinates with a seed, and returns straight-alpha
-//! sRGB pixels and a [`Blend`]. A third-party engine implements the same
-//! contract behind a sandbox boundary (a WebAssembly or WGSL module receiving
-//! the serialised [`Mark`]s), so it can neither read the document nor reach
-//! the network, and a preset naming it is plain data like any other.
+//! [`MediumEngine`] is one kind of paint ([`watercolour`], [`oil`]),
+//! [`Preset`] is shareable data over an engine, and [`LayerPainter`] keeps one
+//! layer's simulation in step with its marks. An engine outside this crate
+//! implements the same contract behind a sandbox boundary, so it can neither
+//! read the document nor reach the network.
 
 #![cfg_attr(
     test,

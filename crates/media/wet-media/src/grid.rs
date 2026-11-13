@@ -1,7 +1,6 @@
 //! Cell grids and the few conversions between continuous canvas positions and
 //! cells. Every simulation field is a row-major `Vec` of one value per cell.
 
-/// A float to a cell index, clamped to `0..len`.
 #[allow(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
@@ -15,7 +14,6 @@ pub(crate) fn cell(value: f32, len: usize) -> usize {
     (value as usize).min(max)
 }
 
-/// A cell count or index as a float.
 #[allow(
     clippy::cast_precision_loss,
     reason = "grid dimensions are far below the 2^24 limit of exact f32 integers"
@@ -24,12 +22,10 @@ pub(crate) fn float(value: usize) -> f32 {
     value as f32
 }
 
-/// An index as hash input.
 pub(crate) fn key(value: usize) -> u64 {
     u64::try_from(value).unwrap_or(u64::MAX)
 }
 
-/// A seed-mixing integer as a unit float in `0..1`.
 #[allow(
     clippy::cast_precision_loss,
     reason = "only the top 24 bits are kept, which f32 represents exactly"
@@ -38,7 +34,6 @@ pub(crate) fn unit(bits: u64) -> f32 {
     ((bits >> 40) as f32) / 16_777_216.0
 }
 
-/// An inclusive-exclusive rectangle of cells.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Area {
     pub x0: usize,
@@ -55,8 +50,6 @@ impl Area {
         y1: 0,
     };
 
-    /// The cells covering `[min, max]` grown by `margin`, inside a
-    /// `width` by `height` grid.
     pub(crate) fn around(
         min: (f32, f32),
         max: (f32, f32),
@@ -94,7 +87,6 @@ impl Area {
         self.width() == 0 || self.height() == 0
     }
 
-    /// The layer cell at a row-major `index` into this area's cells.
     pub(crate) fn position(self, index: usize) -> (usize, usize) {
         let span = self.width().max(1);
         let column = index.checked_rem(span).unwrap_or(0);
@@ -118,7 +110,6 @@ impl Area {
     }
 }
 
-/// A copy of the cells of `area` from a `width`-wide field, row-major.
 pub(crate) fn extract(field: &[f32], width: usize, area: Area) -> Vec<f32> {
     let mut local = Vec::with_capacity(area.width().saturating_mul(area.height()));
     for y in area.y0..area.y1 {
@@ -129,7 +120,6 @@ pub(crate) fn extract(field: &[f32], width: usize, area: Area) -> Vec<f32> {
     local
 }
 
-/// Write a local copy made by [`extract`] back into its field.
 pub(crate) fn store(field: &mut [f32], width: usize, area: Area, local: &[f32]) {
     let span = area.width();
     if span == 0 {
@@ -144,12 +134,10 @@ pub(crate) fn store(field: &mut [f32], width: usize, area: Area, local: &[f32]) 
     }
 }
 
-/// The row-major index of a cell.
 pub(crate) fn at(width: usize, x: usize, y: usize) -> usize {
     y.saturating_mul(width).saturating_add(x)
 }
 
-/// A field value, or `default` outside the grid.
 pub(crate) fn read<T: Copy>(field: &[T], width: usize, x: usize, y: usize, default: T) -> T {
     if x >= width {
         return default;
@@ -186,8 +174,6 @@ pub(crate) fn box_blur(field: &[f32], width: usize, height: usize, radius: usize
     result
 }
 
-/// One pass of a running-sum box blur along a line, averaging the cells of
-/// the window that lie on the line.
 fn blur_line<'a>(
     line: impl Iterator<Item = f32> + Clone,
     out: impl Iterator<Item = &'a mut f32>,
@@ -212,7 +198,6 @@ fn blur_line<'a>(
     }
 }
 
-/// Hermite smoothstep of `value` between `edge0` and `edge1`.
 pub(crate) fn smoothstep(edge0: f32, edge1: f32, value: f32) -> f32 {
     let span = edge1 - edge0;
     if span.abs() < f32::EPSILON {

@@ -2,7 +2,6 @@
 
 use crate::grid::{Area, at, box_blur, cell, float};
 
-/// Coverage `0..=1` over `area` of a layer grid.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Coverage {
     pub area: Area,
@@ -10,7 +9,6 @@ pub(crate) struct Coverage {
 }
 
 impl Coverage {
-    /// Coverage at a layer cell; zero outside the area.
     pub(crate) fn get(&self, x: usize, y: usize) -> f32 {
         if x < self.area.x0 || y < self.area.y0 || x >= self.area.x1 || y >= self.area.y1 {
             return 0.0;
@@ -115,7 +113,6 @@ pub(crate) fn brush_footprint(
     let total = crate::brush::length(samples);
     let floor = taper_floor.clamp(0.0, 1.0);
     let radius = |sample: &crate::brush::Sample| {
-        // `taper` eases from 0.35 to 1; stretch that onto floor..=1.
         let eased = (crate::brush::taper(sample.distance, total, size) - 0.35) / 0.65;
         (size * 0.5 * (0.4 + 0.6 * sample.pressure) * (floor + (1.0 - floor) * eased)).max(0.5)
     };
@@ -139,7 +136,6 @@ pub(crate) fn brush_footprint(
     let mut last: Option<(f32, f32)> = None;
     for sample in samples {
         let r = radius(sample);
-        // A dab every third of a radius covers the stroke without gaps.
         if let Some((x, y)) = last
             && (sample.x - x).hypot(sample.y - y) < r / 3.0
         {
@@ -177,16 +173,10 @@ pub(crate) fn brush_footprint(
     }
 }
 
-/// How much of the paint an eraser takes off each cell, `0..=1`: its
-/// footprint, softened by its hardness, cut to its clip and scaled by its
-/// strength.
 pub(crate) fn erase_coverage(erase: &crate::engine::Erase, grid: (usize, usize)) -> Coverage {
     let samples = crate::brush::smooth(&erase.points, 0.5);
     let size = erase.size.max(0.5);
     let softness = 1.0 - erase.hardness.clamp(0.0, 1.0);
-    // A soft eraser fades over the outer half of its radius: the footprint
-    // shrinks by a quarter of that span and a box blur of the same reach
-    // ramps from the half radius out to the full one.
     let reach = softness * size * 0.125;
     let radius = cell(reach, 256);
     let mut coverage = brush_footprint(&samples, size - reach * 2.0, 1.0, grid, reach + 2.0);
@@ -204,8 +194,6 @@ pub(crate) fn erase_coverage(erase: &crate::engine::Erase, grid: (usize, usize))
     coverage
 }
 
-/// Scale a `width`-wide layer field by `1 - coverage` where the coverage
-/// lies: what an eraser leaves of it.
 pub(crate) fn lift(field: &mut [f32], width: usize, coverage: &Coverage) {
     let area = coverage.area;
     for (local, taken) in coverage.values.iter().enumerate() {

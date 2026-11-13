@@ -6,31 +6,22 @@ use serde::{Deserialize, Serialize};
 
 use crate::colour::{Rgb, from_linear, to_linear};
 
-/// How a field's colour runs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum FieldKind {
-    /// Along the line from `from` to `to`.
     Linear,
-    /// Outward from `from`, reaching the last stop at the distance of `to`.
     Radial,
 }
 
-/// A colour gradient over the canvas, in the coordinates of its mark.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ColourField {
     pub kind: FieldKind,
     pub from: (f32, f32),
     pub to: (f32, f32),
-    /// Offsets `0..=1` in ascending order, with linear colours and how
-    /// much paint is laid there, `0..=1`: a stop at zero fades the paint
-    /// out, so a glow or a bank of mist dies away into what is beneath.
     pub stops: Vec<(f32, Rgb, f32)>,
 }
 
 impl ColourField {
-    /// A field through `stops` (offset, colour, alpha), in any order;
-    /// `None` with fewer than two.
     pub fn new(
         kind: FieldKind,
         from: (f32, f32),
@@ -54,7 +45,6 @@ impl ColourField {
         })
     }
 
-    /// This field with its coordinates multiplied by `scale`.
     #[must_use]
     pub fn scaled(&self, scale: f32) -> Self {
         Self {
@@ -64,7 +54,6 @@ impl ColourField {
         }
     }
 
-    /// This field moved by `(dx, dy)` cells.
     #[must_use]
     pub fn translated(&self, dx: f32, dy: f32) -> Self {
         Self {
@@ -74,19 +63,14 @@ impl ColourField {
         }
     }
 
-    /// The colour at a position. Stops mix in sRGB, as a painter judges a
-    /// gradation by eye, so a dark-to-light run has no muddy middle.
     pub fn at(&self, x: f32, y: f32) -> Rgb {
         self.sample(x, y).0
     }
 
-    /// How much paint is laid at a position, `0..=1`.
     pub fn alpha(&self, x: f32, y: f32) -> f32 {
         self.sample(x, y).1
     }
 
-    /// The colour and alpha at a position. Toward a faded stop the colour
-    /// stays that of the paint still being laid.
     pub fn sample(&self, x: f32, y: f32) -> (Rgb, f32) {
         let (dx, dy) = (self.to.0 - self.from.0, self.to.1 - self.from.1);
         let t = match self.kind {
@@ -112,8 +96,6 @@ impl ColourField {
                 };
                 let (from_weight, to_weight) = (below.2 * (1.0 - share), stop.2 * share);
                 let alpha = from_weight + to_weight;
-                // Weigh each stop's colour by its paint, so fading toward
-                // a clear stop does not drift toward that stop's colour.
                 let colour_share = if alpha > 1e-6 {
                     to_weight / alpha
                 } else {
@@ -173,7 +155,6 @@ mod tests {
         );
     }
 
-    /// Toward a clear stop the paint thins out but keeps its own colour.
     #[test]
     fn a_field_fades_out_toward_a_clear_stop() {
         let glow = Rgb::from_srgb8(250, 230, 190);

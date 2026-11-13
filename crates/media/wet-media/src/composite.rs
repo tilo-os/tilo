@@ -9,8 +9,6 @@ fn unit(value: u8) -> f32 {
     f32::from(value) / 255.0
 }
 
-/// Draw straight-alpha sRGB `layer` over opaque `backdrop` (both RGBA8 of
-/// the same size) with `blend` at `opacity`.
 pub fn onto(backdrop: &mut [u8], layer: &[u8], blend: Blend, opacity: f32) {
     let opacity = opacity.clamp(0.0, 1.0);
     for (under, over) in backdrop.chunks_exact_mut(4).zip(layer.chunks_exact(4)) {
