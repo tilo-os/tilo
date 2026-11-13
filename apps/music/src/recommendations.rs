@@ -61,17 +61,14 @@ impl Default for Preferences {
 }
 
 impl Preferences {
-    /// Whether `track` was dismissed.
     pub fn is_dismissed(&self, track: &str) -> bool {
         self.dismissed.contains(&track.to_owned())
     }
 
-    /// Whether `artist` is preferred.
     pub fn prefers(&self, artist: &str) -> bool {
         self.preferred_artists.contains(&artist.to_owned())
     }
 
-    /// The path of `input`'s switch.
     pub fn input_path(input: Input) -> tilo_resource::Path<Library, bool> {
         let paths = Library::paths().recommendations;
         match input {

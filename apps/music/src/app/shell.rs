@@ -1,14 +1,5 @@
-//! Music in the window's shell (`resource.rs`): the shell keeps the
-//! sidebar and the transport, and this window says what they show.
-//!
-//! The library is the one truth. Each sync this window declares the
-//! sidebar's places (the destinations, the person's kept views and the
-//! playlists) through a [`NavFeed`], and what plays through a
-//! [`TransportFeed`]; what the person chose in either comes back as the
-//! window's own actions, never stored on the shell's side. The transport's
-//! controls run Music's own playback effects ([`Music::transport_actions`]),
-//! the ones an agent invokes, so the person and an agent steer one player
-//! the same way.
+//! Music in the window's shell: this window declares the sidebar's places and what
+//! plays, and what the person chose comes back as the window's own actions.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -31,8 +22,7 @@ pub(crate) struct Playing {
     duration_ms: AtomicU64,
 }
 
-/// `effect` on this device's player row, which offers it whatever plays:
-/// the control follows the row's own offer of it.
+/// `effect` on this device's player row, which offers it whatever plays.
 fn on_player(effect: &MusicEffect) -> Option<ui::tilo_actions::ActionBinding<()>> {
     let player = ui::tilo_actions::ResourceSpec::new(
         crate::actions::PLAYER_RESOURCE_ID,
@@ -47,7 +37,6 @@ fn on_player(effect: &MusicEffect) -> Option<ui::tilo_actions::ActionBinding<()>
 type Arguments<I> =
     Box<dyn Fn(I) -> Result<serde_json::Map<String, serde_json::Value>, String> + Send + Sync>;
 
-/// An effect a transport control invokes with what its input makes of it.
 struct Invokes<I> {
     id: &'static str,
     arguments: Arguments<I>,
@@ -63,8 +52,7 @@ impl<I: 'static> Binds<MusicEffect, I> for Invokes<I> {
     }
 }
 
-/// The library's destinations in sidebar order: their icon, label and the
-/// view they open.
+/// The sidebar's destinations, in order: icon, label and the view they open.
 const DESTINATIONS: [(Icon, &str, View); 8] = [
     (Icon::Home, "Home", View::Home),
     (Icon::LayoutGrid, "Browse", View::Browse),
@@ -79,7 +67,6 @@ const DESTINATIONS: [(Icon, &str, View); 8] = [
 const PLAYLISTS: &str = "playlists";
 const NEW_PLAYLIST: &str = "new-playlist";
 
-/// The sidebar row id of the place that opens `view`, if one does.
 pub(super) fn place_id(view: &View) -> Option<String> {
     match view {
         View::Kept(id) => Some(format!("music.kept:{id}")),
@@ -91,7 +78,6 @@ pub(super) fn place_id(view: &View) -> Option<String> {
     }
 }
 
-/// The view the sidebar row `id` opens.
 pub(super) fn place_view(id: &str) -> Option<View> {
     if let Some(kept) = id.strip_prefix("music.kept:") {
         return Some(View::Kept(kept.to_owned()));
@@ -104,10 +90,7 @@ pub(super) fn place_view(id: &str) -> Option<View> {
 }
 
 impl Music {
-    /// This window in a shell: its sidebar shows what `places` shows, its
-    /// band's transport what `transport` shows, the shell's own buttons
-    /// join the window bar through `bar`, and `pane` is the shell's front
-    /// screen in a narrow window.
+    /// This window in a shell: its sidebar, the band's transport and the shell's buttons.
     #[must_use]
     pub fn in_shell(
         mut self,
@@ -123,10 +106,7 @@ impl Music {
         self
     }
 
-    /// The transport's controls, each bound to the playback effect an agent
-    /// invokes: play and pause, previous and next, shuffle, repeat, mute and
-    /// liking what plays on the player row, the scrubber's position and the
-    /// volume on the library.
+    /// The transport's controls, each bound to the playback effect an agent invokes too.
     pub(crate) fn transport_actions(
         &self,
         actions: &ui::framework::Actions<Library>,
@@ -176,9 +156,8 @@ impl Music {
         }
     }
 
-    /// Declare the sidebar's places and what plays. A page this window
-    /// opened by itself (an album from a song, a search) comes to the
-    /// front of a narrow window, as one the sidebar opened does.
+    /// Declare the sidebar's places and what plays; a page the window opened itself comes to
+    /// the front of a narrow window.
     pub(super) fn show_shell(&mut self) {
         if self.shown_view.as_ref() != Some(&self.view) {
             if self.shown_view.is_some()
@@ -192,8 +171,8 @@ impl Music {
         self.show_transport();
     }
 
-    /// Hand the shell's sidebar the destinations, the person's kept views
-    /// and the playlists, with the one that is open chosen.
+    /// Hand the sidebar the destinations, the kept views and the playlists, with the open one
+    /// chosen.
     fn show_places(&self) {
         let destinations = DESTINATIONS
             .iter()
@@ -221,8 +200,6 @@ impl Music {
             .filter_map(|playlist| {
                 let id = place_id(&View::Playlist(playlist.id.clone()))?;
                 let count = u32::try_from(playlist.len()).unwrap_or(u32::MAX);
-                // Each playlist by its cover (its songs' covers, or its
-                // initials), so the names line up with the places above.
                 let cover = self.art_image(&playlist.id);
                 Some(
                     NavItem::new(id, playlist.name.clone())
@@ -241,7 +218,6 @@ impl Music {
         self.places.show(sections, place_id(&self.view));
     }
 
-    /// What plays, as the transport in the shell's band shows it.
     fn show_transport(&self) {
         let pb = &self.pb;
         let idle = pb.current.is_none() && pb.queue.is_empty();
@@ -292,8 +268,7 @@ impl Music {
         self.transport.show(state);
     }
 
-    /// Run what the person chose in the shell's sidebar and its transport
-    /// as the window's own actions.
+    /// Run what the person chose in the sidebar and the transport as the window's actions.
     pub(super) fn take_shell_events(&mut self, state: &mut ui::widget::Edits<'_>) {
         for chosen in self.places.take_chosen() {
             if let Some(view) = place_view(&chosen) {
@@ -313,7 +288,6 @@ impl Music {
                 TransportEvent::Lyrics => Action::Nav(View::Lyrics),
                 TransportEvent::Queue => Action::ToggleQueue,
                 TransportEvent::More(anchor) => Action::OpenPlayerMenu(anchor),
-                // The cover opens Now Playing, and closes it again.
                 TransportEvent::OpenPlaying => self.now_playing_toggle(),
             };
             self.dispatch(action, state);

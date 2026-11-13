@@ -1,8 +1,5 @@
-//! The bundled offline sample library.
-//!
-//! Screenshot scenarios and tests can browse this catalogue without a
-//! network. The live app starts empty. Every track carries a synthetic
-//! `yt_id`; the streaming path replaces these with real search results.
+//! The bundled offline sample library, so captures and tests browse a catalogue with no
+//! network; the live app starts empty.
 
 use base64::Engine as _;
 use ui::tilo_resource::{Id, Invoke};
@@ -48,11 +45,8 @@ fn track(
     }
 }
 
-/// A sample album's bundled cover, by its id, as the portable `data:` picture
-/// the window and the shell's now-playing card read: the sample library is
-/// catalog data with no artwork of its own, and a capture of it should show a
-/// song the way a real album does. Each cover is drawn from the album's id, so
-/// it is the same picture every run and no two albums share one.
+/// A sample album's cover as a `data:` picture, drawn from its id so it is the same every
+/// run and no two albums share one.
 #[must_use]
 pub fn sample_cover(album_id: &str) -> String {
     /// A tile the size of a cover thumbnail.
@@ -67,10 +61,7 @@ pub fn sample_cover(album_id: &str) -> String {
     for y in 0..EDGE {
         for x in 0..EDGE {
             let (fx, fy) = (x as f32 / EDGE as f32, y as f32 / EDGE as f32);
-            // A diagonal wash between the two colours, lit from the top left.
             let t = ((fx + fy) * 0.5).clamp(0.0, 1.0);
-            // One soft disc where the light falls, so the tile reads as art
-            // rather than a swatch.
             let glow = (((x as f32 - centre).powi(2) + (y as f32 - centre).powi(2)).sqrt() / reach)
                 .clamp(0.0, 1.0);
             let light = (1.0 - glow).powi(3) * 0.35;
@@ -114,7 +105,6 @@ fn hsv(hue: f32, saturation: f32, value: f32) -> [f32; 3] {
     [channel(5.0), channel(3.0), channel(1.0)]
 }
 
-/// A linear channel as the 8-bit sRGB value a picture carries.
 fn to_srgb(channel: f32) -> u8 {
     let channel = channel.clamp(0.0, 1.0);
     let gamma = if channel <= 0.003_130_8 {
@@ -131,7 +121,6 @@ fn to_srgb(channel: f32) -> u8 {
     byte
 }
 
-/// Build the full seeded library: catalog + playlists + user-authored state.
 pub fn sample_library() -> Library {
     let mut lib = Library::default();
     seed_artists(&mut lib);
@@ -184,7 +173,6 @@ fn seed_tracks(lib: &mut Library) {
     }
 }
 
-/// Aurora Skies — Glasslight + Paper Boats.
 fn aurora_skies_tracks() -> Vec<Track> {
     vec![
         track(
@@ -262,7 +250,6 @@ fn aurora_skies_tracks() -> Vec<Track> {
     ]
 }
 
-/// Midnight Transit — After Hours Drive + VHS Sunsets.
 fn midnight_transit_tracks() -> Vec<Track> {
     vec![
         track(
@@ -323,7 +310,6 @@ fn midnight_transit_tracks() -> Vec<Track> {
     ]
 }
 
-/// Kavi & The Tide — Riverstone.
 fn kavi_tracks() -> Vec<Track> {
     vec![
         track(
@@ -365,7 +351,6 @@ fn kavi_tracks() -> Vec<Track> {
     ]
 }
 
-/// Lumen Theory — Pulsewidth + Strata.
 fn lumen_theory_tracks() -> Vec<Track> {
     vec![
         track(
@@ -422,7 +407,6 @@ fn lumen_theory_tracks() -> Vec<Track> {
     ]
 }
 
-/// Sable Quartet — Nocturnes for Strings.
 fn sable_quartet_tracks() -> Vec<Track> {
     vec![
         track(
@@ -455,7 +439,6 @@ fn sable_quartet_tracks() -> Vec<Track> {
     ]
 }
 
-/// Neon Harbor — Harbor Lights.
 fn neon_harbor_tracks() -> Vec<Track> {
     vec![
         track(
@@ -527,8 +510,7 @@ fn seed_playlists(lib: &mut Library) {
     }
 }
 
-/// A populated "Liked Songs" + a couple saved albums so the screenshots show
-/// the like/heart affordances in their active state.
+/// A populated Liked Songs and saved albums, so the like affordances show active.
 fn seed_liked_and_saved(lib: &mut Library) {
     for id in ["tk_g1", "tk_p1", "tk_u1", "tk_h1", "tk_r3", "tk_a4"] {
         lib.liked.insert(id.into());
@@ -538,10 +520,7 @@ fn seed_liked_and_saved(lib: &mut Library) {
     }
 }
 
-/// The sample catalogue as the actions that build it in a library: every
-/// track imported with its album and artist, the playlists put in place
-/// with their tracks, and the likes, saved albums and followed artists set.
-/// Screenshot scenarios stage it through the same door as every edit.
+/// The sample catalogue as the actions that build it, through the same door as every edit.
 pub fn sample_actions() -> Vec<Invoke<Library>> {
     let lib = sample_library();
     let paths = Library::paths();

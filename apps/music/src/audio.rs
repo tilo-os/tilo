@@ -1,33 +1,14 @@
-//! Audio output.
-//!
-//! Every source Music plays itself — a `YouTube` stream, a local or cached
-//! file — goes through the shared media engine ([`media::MediaEngine`]), the
-//! same playback layer as the video player and Tube: `GStreamer` on the
-//! desktop, the page's media element on the web. It is built to play sound
-//! only, so a stream that also carries a picture never has it decoded.
-//! Spotify tracks play through Spotify's own native transport
-//! ([`spotify_audio`]), which this type drives the same way.
-//!
-//! ## System dependency (host + OS image)
-//!
-//! Audible output needs the host `GStreamer` runtime, including an audio sink
-//! (WASAPI on Windows) and AAC/Opus decoders. On Fedora, install:
-//! - a `GStreamer` **audio sink** plugin — `gstreamer1-plugin-pipewire`
-//!   (`pipewiresink`) and/or `gstreamer1-plugins-good` (`pulsesink`), plus a
-//!   running PipeWire/Pulse server. Without one, `autoaudiosink` silently
-//!   falls back to `fakesink` and the user hears nothing.
-//! - an **AAC / Opus decoder** for the streams `YouTube` serves —
-//!   `gstreamer1-libav` (`avdec_aac`, `avdec_opus`) and/or
-//!   `gstreamer1-plugins-bad-free` (`faad`).
-//! - `gstreamer1-plugins-good` for `souphttpsrc`, which streams the URL.
+//! Audio output: every source Music plays goes through the shared media engine,
+//! `GStreamer` on the desktop and the page's media element on the web. Spotify tracks
+//! go through Spotify's own transport. Audible output needs the host's `GStreamer`
+//! sink and AAC/Opus plugins: without a sink plugin `autoaudiosink` falls back to
+//! `fakesink` and nothing is heard.
 
 #[cfg(feature = "spotify-native")]
 pub(crate) use tilo_spotify as spotify_audio;
 use ui::lock::MutexRecover as _;
 
-/// The UI-owned audio handle: the media engine for streams and files, the
-/// native transport for Spotify. Nothing native is built until the first
-/// source is loaded.
+/// The audio handles: the media engine, and Spotify's native transport.
 pub struct AudioEngine {
     #[cfg(feature = "spotify-native")]
     native: Option<spotify_audio::NativeAudio>,
@@ -38,8 +19,7 @@ pub struct AudioEngine {
     duration_known: bool,
     eos: bool,
     error: std::sync::Mutex<Option<String>>,
-    /// What the last stopped source rendered: a stopped source keeps its
-    /// evidence of having played until the next one loads.
+    /// What the last stopped source rendered, until the next one loads.
     rendered_before_stop: u64,
 }
 
@@ -65,7 +45,7 @@ impl AudioEngine {
         }
     }
 
-    /// Start an independently authorized native Spotify transport, never a URL resolver.
+    /// Start Spotify's own transport, never a URL resolver.
     pub fn load_spotify(&mut self, uri: &str, account: &str) -> Result<(), String> {
         self.stop();
         #[cfg(feature = "spotify-native")]
@@ -87,7 +67,6 @@ impl AudioEngine {
         }
     }
 
-    /// Safe, device-local diagnostics for the resource action door.
     pub fn spotify_startup_stage(&self) -> Option<&'static str> {
         #[cfg(feature = "spotify-native")]
         {
@@ -120,8 +99,7 @@ impl AudioEngine {
         None
     }
 
-    /// Point the engine at `uri` (an `http(s)://` stream or a `file://`
-    /// track), paused at the start.
+    /// Point the engine at `uri`, an `http(s)` stream or a `file:` path, paused at the start.
     pub fn load(&mut self, uri: &str) {
         #[cfg(feature = "spotify-native")]
         {
@@ -144,8 +122,7 @@ impl AudioEngine {
         engine.set_volume(volume);
     }
 
-    /// Poll while a loaded source has not rendered sound yet; a stopped
-    /// engine keeps no idle window repainting.
+    /// Poll while a loaded source has not rendered sound; a stopped engine repaints nothing.
     pub fn needs_poll(&self) -> bool {
         Self::is_live()
             && self.current_uri.is_some()
@@ -177,8 +154,7 @@ impl AudioEngine {
         }
     }
 
-    /// Stop and release the source: the pipeline is torn down, and the next
-    /// load builds a fresh one.
+    /// Stop and release the source; the next load builds a fresh pipeline.
     pub fn stop(&mut self) {
         self.rendered_before_stop = self.frames_rendered();
         #[cfg(feature = "spotify-native")]
@@ -193,8 +169,7 @@ impl AudioEngine {
         self.engine = None;
     }
 
-    /// Seek to `ms`. The engine holds a seek asked before the source is
-    /// ready and applies it once it is.
+    /// Seek to `ms`, held until the source is ready.
     pub fn seek_ms(&mut self, ms: u64) {
         #[cfg(feature = "spotify-native")]
         if let Some(native) = &self.native {
@@ -250,15 +225,12 @@ impl AudioEngine {
         Self::is_live() && self.current_uri.is_some()
     }
 
-    /// Whether this build plays anything: `GStreamer` on the desktop, the
-    /// page's media element on the web.
     pub fn is_live() -> bool {
         cfg!(feature = "audio") || media::available(media::Feature::Playback)
     }
 
-    /// Whether the engine is playing a loaded source that has not failed.
-    /// The now-playing indicator reads this so it only reflects genuine
-    /// playback, never a fake timer.
+    /// Whether a loaded source is playing and has not failed; the now-playing indicator reads
+    /// this, so it never follows a timer.
     pub fn is_playing_real(&self) -> bool {
         #[cfg(feature = "spotify-native")]
         if let Some(native) = &self.native {
@@ -272,9 +244,8 @@ impl AudioEngine {
                 .is_some_and(media::MediaEngine::is_playing)
     }
 
-    /// Describe what plays to the system's now-playing controls the
-    /// platform's own player reaches (a page's Media Session). Where the
-    /// app's MPRIS service is what the system hears, nothing more is said.
+    /// Describe what plays to the platform player's own controls, where the app's MPRIS is
+    /// not what the system hears.
     pub fn set_now_playing(&mut self, now: &media::NowPlaying) {
         #[cfg(not(feature = "audio"))]
         if let Some(engine) = &mut self.engine {
@@ -284,9 +255,7 @@ impl AudioEngine {
         let _ = now;
     }
 
-    /// What the platform player's system controls asked since this was
-    /// last taken: next and previous track, and the play, pause and seek
-    /// it carried out already.
+    /// What the platform player's controls asked since this was last taken.
     pub fn take_now_playing_actions(&mut self) -> Vec<media::NowPlayingAction> {
         #[cfg(not(feature = "audio"))]
         return self
@@ -307,8 +276,7 @@ impl AudioEngine {
             && self.frames_rendered() > 0
     }
 
-    /// Drain what the engine reported since the last frame. Returns whether
-    /// the source failed; [`Self::take_error`] says why.
+    /// Drain what the engine reported since the last frame; whether the source failed.
     pub fn pump(&mut self) -> bool {
         #[cfg(feature = "spotify-native")]
         if let Some(native) = &self.native {
@@ -349,11 +317,9 @@ impl AudioEngine {
         self.eos
     }
 
-    /// How much decoded audio has reached the output since the source
-    /// loaded. Non-zero proves sound is really coming out, not merely that
-    /// the pipeline said it was playing. In a page, whose media element
-    /// reports no buffers, its metadata having loaded is what proves the
-    /// source decodes.
+    /// How much decoded audio reached the output: non-zero proves sound rather than a pipeline
+    /// that says it plays. A page's media element reports no buffers, so loaded metadata is
+    /// its proof.
     pub fn frames_rendered(&self) -> u64 {
         #[cfg(feature = "spotify-native")]
         if let Some(native) = &self.native {
@@ -369,9 +335,7 @@ impl AudioEngine {
         }
     }
 
-    /// Factory name of the concrete sink the output plugged (`pipewiresink`,
-    /// `pulsesink`, `alsasink`), once it has one; `fakesink` means no real
-    /// sink plugin is installed and nothing is heard.
+    /// The sink the output plugged, once it has one; `fakesink` means nothing is heard.
     pub fn actual_audio_sink_name(&self) -> Option<String> {
         #[cfg(feature = "spotify-native")]
         if let Some(native) = &self.native {
@@ -396,14 +360,11 @@ impl AudioEngine {
         None
     }
 
-    /// Whether the plugged sink is a real audio sink, not a `fakesink`.
     pub fn audio_sink_is_real(&self) -> Option<bool> {
         self.actual_audio_sink_name()
             .map(|name| !name.contains("fakesink"))
     }
 
-    /// Where a source stands on its way to sound, for a test's failure
-    /// message.
     #[cfg(test)]
     pub fn diagnostics(&self) -> String {
         format!(
@@ -421,9 +382,7 @@ impl AudioEngine {
     }
 }
 
-/// A device-local transfer for an offline cache request. It exposes only
-/// aggregate progress and a terminal result; paths and bytes stay within the
-/// storage/audio layers.
+/// A device-local transfer for an offline copy: progress and a terminal result only.
 pub struct OfflineDownload {
     cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
     fetched: std::sync::Arc<std::sync::atomic::AtomicU64>,
@@ -432,7 +391,6 @@ pub struct OfflineDownload {
 }
 
 impl OfflineDownload {
-    /// Start downloading a resolved source into the device-local cache.
     pub fn start(
         track_id: String,
         uri: String,
@@ -512,10 +470,8 @@ fn next_download_id() -> u64 {
     N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
-/// Fetch `uri` whole into `path`, publishing progress, until it ends, fails
-/// or is cancelled. The source must declare its length, and the file must
-/// come to exactly that length: a body that stops short or runs over is not
-/// a track.
+/// Fetch `uri` whole into `path` while publishing progress. The source declares a length
+/// and the file must match it: a body short or long is not a track.
 #[cfg(feature = "live")]
 fn download(
     uri: &str,
@@ -526,8 +482,7 @@ fn download(
 ) -> Result<(), String> {
     use std::io::{Read, Write};
     use std::sync::atomic::Ordering::Relaxed;
-    // A blocking client applies its timeout to each connect, read and write,
-    // so a stalled source fails instead of holding the download forever.
+    // The blocking client times out each read and write, so a stalled source fails.
     let client = tilo_net::http::blocking_client()
         .connect_timeout(std::time::Duration::from_secs(10))
         .timeout(std::time::Duration::from_secs(30))

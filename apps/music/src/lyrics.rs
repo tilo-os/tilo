@@ -1,42 +1,22 @@
-//! Lyrics — a synced-or-plain lyrics layer with a pluggable source.
-//!
-//! Lyrics for the now-playing track are shown in a dedicated view. A track's
-//! lyrics may be **synced** (time-stamped per line, so the current line can be
-//! highlighted against the playhead) or **plain** (an unsynced block). The
-//! data model is the same either way: a `Vec<LyricsLine>` whose timestamps are
-//! `None` for plain lyrics.
-//!
-//! ## Bundled and live lyrics
-//! A small **bundled** library of sample lyrics ([`bundled`]) is always
-//! compiled so the `--shots` screenshot and the offline first-run show a
-//! populated, highlightable lyrics view with zero network. The **live** fetch
-//! from [LRCLIB](https://lrclib.net) (`GET https://lrclib.net/api/get` keyed
-//! on track + artist + album + duration, returning `syncedLyrics` /
-//! `plainLyrics`) is gated behind the `live` cargo feature and runs as a
-//! task on the app runtime (`tilo_net`), so the UI never blocks. The pure LRC parser below is always
-//! compiled and unit-tested, so the contract is exercised even offline.
+//! Lyrics: a synced or plain lyrics layer, with a bundled library always present and
+//! an LRCLIB fetch under `live`, run on the app runtime so the UI never blocks.
 
-/// One line of lyrics. `at_ms` is the line's start time for synced lyrics, or
-/// `None` for an unsynced (plain) block.
+/// One lyric line; `at_ms` is its start for synced lyrics.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LyricsLine {
-    /// Line start time in milliseconds (synced lyrics only).
+    /// Line start time in milliseconds, synced lyrics only.
     pub at_ms: Option<u64>,
     pub text: String,
 }
 
-/// A resolved lyrics result for one track.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Lyrics {
     pub lines: Vec<LyricsLine>,
-    /// Whether any line carries a timestamp (i.e. the lyrics are synced).
     pub synced: bool,
 }
 
 impl Lyrics {
-    /// The index of the line that should be highlighted at `position_ms` for
-    /// synced lyrics: the last line whose timestamp is `<= position_ms`.
-    /// Returns `None` for plain lyrics or before the first timestamped line.
+    /// The line to highlight at `position_ms`; `None` for plain lyrics or before the first.
     pub fn current_line(&self, position_ms: u64) -> Option<usize> {
         if !self.synced {
             return None;
@@ -55,9 +35,8 @@ impl Lyrics {
     }
 }
 
-/// Parse an LRC body (`[mm:ss.xx] text` lines) into synced [`LyricsLine`]s.
-/// Lines without a leading timestamp are treated as plain (`at_ms = None`).
-/// Metadata tags (`[ar:…]`, `[ti:…]`, etc.) are skipped.
+/// Parse an LRC body (`[mm:ss.xx] text`); a line without a timestamp stays plain and
+/// `[ar:…]` tags are skipped.
 pub fn parse_lrc(body: &str) -> Lyrics {
     let mut lines = Vec::new();
     let mut synced = false;
@@ -73,7 +52,6 @@ pub fn parse_lrc(body: &str) -> Lyrics {
                 text: text.to_string(),
             });
         } else if line.starts_with('[') && line.contains(':') && line.ends_with(']') {
-            // A metadata tag like [ar:Artist] — skip.
         } else {
             lines.push(LyricsLine {
                 at_ms: None,
@@ -84,8 +62,7 @@ pub fn parse_lrc(body: &str) -> Lyrics {
     Lyrics { lines, synced }
 }
 
-/// Parse a leading `[mm:ss.xx]` (or `[mm:ss]`) timestamp, returning the
-/// milliseconds + the remaining text. `None` if there's no valid timestamp.
+/// A leading `[mm:ss.xx]` timestamp in milliseconds, with the text after it.
 fn parse_lrc_timestamp(line: &str) -> Option<(u64, &str)> {
     let rest = line.strip_prefix('[')?;
     let close = rest.find(']')?;
@@ -93,13 +70,12 @@ fn parse_lrc_timestamp(line: &str) -> Option<(u64, &str)> {
     let after = after.strip_prefix(']').unwrap_or(after);
     let (mm, ss) = ts.split_once(':')?;
     let minutes: u64 = mm.trim().parse().ok()?;
-    // Seconds may carry a fractional part: `ss` or `ss.xx`.
     let seconds: f64 = ss.trim().parse().ok()?;
     let ms = minutes * 60_000 + (seconds * 1000.0).round() as u64;
     Some((ms, after.trim_start()))
 }
 
-/// Build a plain (unsynced) lyrics block from raw text.
+/// A plain, unsynced block from raw text.
 pub fn plain(body: &str) -> Lyrics {
     let lines = body
         .lines()
@@ -125,13 +101,7 @@ pub struct TrackMeta {
     pub duration_s: u32,
 }
 
-/// Resolve lyrics for a track. Tries the bundled library first (always
-/// present for the seed tracks + offline), then the live source when the
-/// `live` feature is enabled. Returns `None` when nothing is available.
-///
-/// This is the resolution seam the worker ([`LyricsWorker`]) runs on the app
-/// runtime; the bundled path makes it usable offline / in `--shots` with no
-/// network.
+/// Bundled lyrics first, then LRCLIB under `live`; `None` when there are none.
 pub async fn resolve(meta: &TrackMeta) -> Option<Lyrics> {
     if let Some(l) = bundled::for_track(&meta.track_id) {
         return Some(l);
@@ -139,9 +109,7 @@ pub async fn resolve(meta: &TrackMeta) -> Option<Lyrics> {
     live_fetch(meta).await
 }
 
-/// The live LRCLIB fetch. Without an HTTP stack (the `live` feature pulls
-/// `tilo-net`) this is a stub that documents the request it *would*
-/// make and returns `None` (the worker treats this as "no lyrics right now").
+/// Without `live` this is a stub that returns `None`.
 #[cfg(not(feature = "live"))]
 #[allow(clippy::unused_async, reason = "the same signature as the live fetch")]
 async fn live_fetch(meta: &TrackMeta) -> Option<Lyrics> {
@@ -149,22 +117,8 @@ async fn live_fetch(meta: &TrackMeta) -> Option<Lyrics> {
     None
 }
 
-/// Real synced-or-plain lyrics from LRCLIB. Compiled whenever an HTTP stack is
-/// available (the `live` build), so `--features live,audio` fetches
-/// real lyrics for the playing track.
-///
-/// - **normalisation** — `YouTube` titles/artists carry noise (`(Official Music
-///   Video)`, `… - Topic`, `feat. …`) that never matches LRCLIB's clean
-///   metadata. [`lrclib_url`] / [`lrclib_search_url`] normalise both before
-///   querying, so `Californication (Official Music Video)` by
-///   `Red Hot Chili Peppers - Topic` actually resolves.
-/// - **timeout** — each request is bounded by an 8 s timeout.
-/// - **cache** — an answer (hit *or* miss) is memoised by normalised
-///   identity, so a revisit / prefetch is instant and never re-hammers LRCLIB.
-///   A request LRCLIB could not answer (the network, 429, 5xx) is not an
-///   answer and is not cached: the next visit asks again.
-/// - **fallback** — an exact `/api/get` miss (`YouTube` durations rarely match
-///   to the second) falls back to `/api/search`.
+/// Lyrics from LRCLIB under `live`: an 8 s timeout, normalised metadata, hits and misses
+/// cached, an exact lookup falling back to search.
 #[cfg(feature = "live")]
 async fn live_fetch(meta: &TrackMeta) -> Option<Lyrics> {
     let key = cache_key(meta);
@@ -178,7 +132,6 @@ async fn live_fetch(meta: &TrackMeta) -> Option<Lyrics> {
     result
 }
 
-/// The shared LRCLIB client.
 #[cfg(feature = "live")]
 fn lrclib_client() -> Option<&'static tilo_net::Client> {
     static CLIENT: std::sync::OnceLock<Option<tilo_net::Client>> = std::sync::OnceLock::new();
@@ -196,18 +149,15 @@ fn lrclib_client() -> Option<&'static tilo_net::Client> {
 #[cfg(feature = "live")]
 async fn live_fetch_uncached(meta: &TrackMeta) -> Result<Option<Lyrics>, Unreachable> {
     let client = lrclib_client().ok_or(Unreachable)?;
-    // 1. Exact match by (normalised) track/artist/album/duration.
+    // Exact match first, by the normalised track, artist, album and duration.
     if let Some(l) = lrclib_from_object(client, &lrclib_url(meta)).await? {
         return Ok(Some(l));
     }
-    // 2. Fuzzy search fallback — YouTube durations rarely match LRCLIB's to the
-    //    second, so `/api/get` frequently 404s. `/api/search` returns candidates
-    //    (best first); take the first with real synced (then plain) lyrics.
+    // Durations rarely match LRCLIB's to the second: search, best candidate first.
     lrclib_from_search(client, meta).await
 }
 
-/// LRCLIB could not be asked (the network, a rate limit, a server error):
-/// unlike a miss, this says nothing about the track, so it is not cached.
+/// LRCLIB could not be asked, unlike a miss: nothing is cached, so the next visit asks again.
 #[cfg(feature = "live")]
 struct Unreachable;
 
@@ -230,8 +180,7 @@ async fn get_text(client: &tilo_net::Client, url: &str) -> Result<Option<String>
     }
 }
 
-/// Parse a single LRCLIB record (from `/api/get`) into [`Lyrics`], preferring
-/// synced over plain. `None` on a 404 / empty record.
+/// A `/api/get` record as lyrics, synced preferred.
 #[cfg(feature = "live")]
 async fn lrclib_from_object(
     client: &tilo_net::Client,
@@ -245,7 +194,7 @@ async fn lrclib_from_object(
         .and_then(|json| lyrics_from_record(&json)))
 }
 
-/// Search LRCLIB by track + artist and return the best candidate's lyrics.
+/// Search LRCLIB by track and artist: the best candidate's lyrics.
 #[cfg(feature = "live")]
 async fn lrclib_from_search(
     client: &tilo_net::Client,
@@ -258,13 +207,11 @@ async fn lrclib_from_search(
     Ok(best_candidate(&body))
 }
 
-/// The best of LRCLIB's search candidates: the first with synced lyrics,
-/// else the first with plain ones.
+/// The first candidate with synced lyrics, else the first with plain ones.
 #[cfg(feature = "live")]
 fn best_candidate(body: &str) -> Option<Lyrics> {
     let arr: serde_json::Value = serde_json::from_str(body).ok()?;
     let list = arr.as_array()?;
-    // Prefer the first candidate carrying synced lyrics; else the first plain.
     for rec in list {
         if rec
             .get("syncedLyrics")
@@ -282,7 +229,6 @@ fn best_candidate(body: &str) -> Option<Lyrics> {
     None
 }
 
-/// Extract synced-then-plain lyrics from one LRCLIB JSON record.
 #[cfg(feature = "live")]
 fn lyrics_from_record(json: &serde_json::Value) -> Option<Lyrics> {
     if let Some(synced) = json.get("syncedLyrics").and_then(|v| v.as_str())
@@ -298,14 +244,12 @@ fn lyrics_from_record(json: &serde_json::Value) -> Option<Lyrics> {
     None
 }
 
-/// Collapse internal runs of whitespace to a single space and trim the ends.
 fn collapse_ws(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// Keywords that mark a bracketed segment as a *tag* (a video/remaster/quality
-/// note) rather than part of the actual song name — so it's dropped from the
-/// LRCLIB query. Genuine parentheticals like `(Acoustic)` are kept.
+/// Bracketed segments naming a video, remaster or quality note rather than the song;
+/// `(Acoustic)` stays.
 const TITLE_TAG_KEYWORDS: &[&str] = &[
     "official",
     "video",
@@ -335,8 +279,7 @@ fn segment_is_tag(seg: &str) -> bool {
     })
 }
 
-/// Cut a trailing `feat.` / `ft.` / `featuring` credit off a title (LRCLIB keys
-/// on the base song name, not the featured-artist list).
+/// Drop a trailing `feat.` credit: LRCLIB keys on the base song name.
 fn strip_feat(s: &str) -> String {
     let low = s.to_ascii_lowercase();
     for marker in [" feat.", " feat ", " ft.", " ft ", " featuring "] {
@@ -347,10 +290,8 @@ fn strip_feat(s: &str) -> String {
     s.to_string()
 }
 
-/// Normalise a (`YouTube`) track title for an LRCLIB lookup: drop bracketed tag
-/// segments (`(Official Music Video)`, `[Remastered 2011]`, …) and any trailing
-/// `feat.` credit, then collapse whitespace. Idempotent on already-clean titles,
-/// so a plain `Neon Mileage` is returned unchanged.
+/// A `YouTube` title for an LRCLIB lookup: tag segments and `feat.` credits dropped and
+/// whitespace collapsed; a clean title is returned unchanged.
 pub fn normalize_title(raw: &str) -> String {
     let mut out = String::with_capacity(raw.len());
     let mut chars = raw.chars();
@@ -374,7 +315,6 @@ pub fn normalize_title(raw: &str) -> String {
             seg.push(c);
         }
         if !segment_is_tag(&seg) {
-            // Keep a genuine parenthetical (e.g. `(Acoustic)`).
             out.push(ch);
             out.push_str(&seg);
             if closed {
@@ -385,8 +325,7 @@ pub fn normalize_title(raw: &str) -> String {
     collapse_ws(&strip_feat(&out))
 }
 
-/// Normalise a (`YouTube` Music) artist name for an LRCLIB lookup: strip the
-/// auto-generated `… - Topic` channel suffix and collapse whitespace.
+/// A `YouTube` artist name without its auto-generated `- Topic` suffix.
 pub fn normalize_artist(raw: &str) -> String {
     let mut s = collapse_ws(raw);
     if s.to_ascii_lowercase().ends_with(" - topic") {
@@ -396,8 +335,7 @@ pub fn normalize_artist(raw: &str) -> String {
     s
 }
 
-/// Build the LRCLIB `/api/search?track_name=…&artist_name=…` URL from the
-/// normalised metadata.
+/// The LRCLIB `/api/search` URL for a track.
 #[cfg(feature = "live")]
 fn lrclib_search_url(meta: &TrackMeta) -> String {
     format!(
@@ -407,9 +345,8 @@ fn lrclib_search_url(meta: &TrackMeta) -> String {
     )
 }
 
-/// Build the LRCLIB `/api/get` request URL for a track from its normalised
-/// metadata. Always compiled so the request contract is documented + testable
-/// even offline.
+/// The LRCLIB `/api/get` URL for a track, compiled in every build so the contract stays
+/// testable offline.
 pub fn lrclib_url(meta: &TrackMeta) -> String {
     format!(
         "https://lrclib.net/api/get?track_name={}&artist_name={}&album_name={}&duration={}",
@@ -420,10 +357,8 @@ pub fn lrclib_url(meta: &TrackMeta) -> String {
     )
 }
 
-/// Process-wide memo of resolved lyrics keyed by normalised (title, artist), so
-/// a revisit / prefetch of the same song is instant and never re-hammers
-/// LRCLIB. Caches misses (`None`) too, so a track without lyrics isn't refetched
-/// on every visit.
+/// Lyrics memoised by normalised title and artist, misses included, so a track without
+/// lyrics is not asked again.
 #[cfg(feature = "live")]
 fn cache_key(meta: &TrackMeta) -> String {
     format!(
@@ -441,8 +376,6 @@ fn lyrics_cache() -> &'static std::sync::Mutex<std::collections::HashMap<String,
     CACHE.get_or_init(Default::default)
 }
 
-/// The result of a lyrics cache lookup: no entry at all, a cached miss (a
-/// prior lookup found no lyrics for this track), or a cached hit.
 #[cfg(feature = "live")]
 enum CacheEntry {
     Absent,
@@ -469,10 +402,7 @@ fn cache_put(key: String, value: Option<Lyrics>) {
     }
 }
 
-/// The lyrics worker: each request resolves as a task on the app runtime and
-/// delivers over a channel. The default live build can fetch network lyrics;
-/// builds without `live` resolve bundled lyrics through the same
-/// interface.
+/// Resolves each request on the app runtime and delivers over a channel.
 pub struct LyricsWorker {
     tx: std::sync::mpsc::Sender<(String, Lyrics)>,
     rx: std::sync::mpsc::Receiver<(String, Lyrics)>,
@@ -484,14 +414,10 @@ impl LyricsWorker {
         Self { tx, rx }
     }
 
-    /// Request lyrics for a track. Non-blocking; the result arrives via
-    /// [`Self::poll`].
+    /// Request lyrics for a track; the result arrives through [`Self::poll`].
     pub fn request(&self, meta: TrackMeta) {
         let tx = self.tx.clone();
-        // ALWAYS deliver a result for the requested track — an empty `Lyrics`
-        // on a miss — so the UI clears its "Finding lyrics…" pending state and
-        // shows "No lyrics found" instead of hanging forever when a lookup
-        // misses or a fetch fails.
+        // Always deliver a result, an empty one on a miss, so the view never waits forever.
         match ui::rt::try_app() {
             Ok(runtime) => drop(runtime.spawn(async move {
                 let lyrics = resolve(&meta).await.unwrap_or_default();
@@ -503,7 +429,6 @@ impl LyricsWorker {
         }
     }
 
-    /// Drain any resolved lyrics that have arrived (track id + lyrics).
     pub fn poll(&self) -> Option<(String, Lyrics)> {
         self.rx.try_recv().ok()
     }
@@ -515,12 +440,10 @@ impl Default for LyricsWorker {
     }
 }
 
-/// The bundled offline sample lyrics keyed by seed track id. Synced where it
-/// makes a more interesting screenshot; plain otherwise.
+/// Sample lyrics for the seed tracks, synced where a capture shows it better.
 pub mod bundled {
     use super::{Lyrics, parse_lrc, plain};
 
-    /// Look up bundled lyrics for a seed track id, if any.
     pub fn for_track(track_id: &str) -> Option<Lyrics> {
         let lrc = match track_id {
             "tk_g1" => GLASSLIGHT_LRC,
@@ -714,7 +637,6 @@ mod tests {
                 normalize_title("Californication (Acoustic)"),
                 "Californication (Acoustic)"
             );
-            // Already clean → unchanged (idempotent).
             assert_eq!(normalize_title("Neon Mileage"), "Neon Mileage");
         }
 
@@ -733,10 +655,6 @@ mod tests {
             );
         }
 
-        // Phase `lrclib_query_normalizes_youtube_metadata`.
-        // A YouTube-flavoured title + a `… - Topic` artist must produce a
-        // well-formed, normalised LRCLIB query, not one that carries the raw
-        // noise through and misses on `/api/get`.
         {
             let meta = TrackMeta {
                 track_id: "yt:abc".into(),

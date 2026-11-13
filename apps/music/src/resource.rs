@@ -1,11 +1,6 @@
-//! Music's library as the framework resource: the shared catalog,
-//! playlists, likes and recommendation feedback are the [`Library`] model;
-//! what this device plays and keeps offline is the surface's.
-//!
-//! Likes, saved albums, followed artists, recommendation feedback and a
-//! playlist's name, cover and tracks are field edits at their paths; the
-//! verbs are the operations that are more than setting a field: making and
-//! deleting a playlist, and bringing a catalogue song into the library.
+//! Music's library as the framework resource: the shared catalogue, playlists, likes and
+//! recommendation feedback. Field edits at their paths; the verbs are the operations
+//! that are more than setting a field.
 
 use ui::framework::{Command, ResourceApp, RunMode, ViewCx};
 use ui::i18n::EmbeddedCatalog;
@@ -19,13 +14,7 @@ use crate::model::{Album, CatalogueTrack, Library, Playlist};
 ui::embedded_catalog!(static CATALOG, ["de-DE", "en-US"]);
 
 impl Library {
-    /// What the record holds: the shared catalogue, the playlists, the likes and the
-    /// recommendation feedback.
-    ///
-    /// It answers through [`fields`](tilo_resource::read::fields): a caller
-    /// with no window open reads the record as it reads any app's record, and
-    /// a named item is read from the record's table or by the read its own
-    /// type gives it.
+    /// What the record holds: the catalogue, the playlists, the likes and the feedback.
     pub fn read_document(
         &self,
         item: Option<&tilo_resource::Id>,
@@ -82,10 +71,8 @@ impl Library {
 
     /// Add a song to the library.
     ///
-    /// A catalogue song, with its album and artist, so it stays playable,
-    /// likeable and listable on every device. What the library holds
-    /// already is kept as it is. Content from outside the library: nobody's
-    /// undo step takes it back.
+    /// A catalogue song, with its album and artist, so it stays playable, likeable and
+    /// listable on every device; nobody's undo step takes it back.
     #[action(external)]
     pub fn import_track(
         &mut self,
@@ -115,8 +102,7 @@ impl Library {
 }
 
 impl Library {
-    /// Songs, albums, artists, playlists and what each playlist holds, and
-    /// the recommendations' settings.
+    /// The library's rows for the palette.
     fn search_entries(&self) -> Vec<SearchEntry> {
         let mut entries = crate::search_type::library_entries(self);
         entries.push(
@@ -129,12 +115,10 @@ impl Library {
         entries
     }
 
-    /// The path of the playlist `id`.
     pub fn playlist_paths(id: &str) -> <Playlist as tilo_resource::Model>::Paths<Library> {
         Library::paths().playlists.item(&Id::from_raw(id))
     }
 
-    /// The edit that likes or unlikes `track`.
     pub fn like(track: &str, liked: bool) -> tilo_resource::Edit<Library> {
         let liked_songs = Library::paths().liked;
         if liked {
@@ -144,7 +128,6 @@ impl Library {
         }
     }
 
-    /// The edit that saves or unsaves `album`.
     pub fn save_album(album: &str, saved: bool) -> tilo_resource::Edit<Library> {
         let saved_albums = Library::paths().saved_albums;
         if saved {
@@ -154,7 +137,6 @@ impl Library {
         }
     }
 
-    /// The edit that follows or unfollows `artist`.
     pub fn follow_artist(artist: &str, followed: bool) -> tilo_resource::Edit<Library> {
         let followed_artists = Library::paths().followed_artists;
         if followed {
@@ -164,7 +146,6 @@ impl Library {
         }
     }
 
-    /// The edit that adds `track` to the end of `playlist`.
     pub fn add_to_playlist(
         &self,
         playlist: &str,
@@ -178,14 +159,12 @@ impl Library {
         ))
     }
 
-    /// The edit that takes `track` out of `playlist`.
     pub fn remove_from_playlist(playlist: &str, track: &str) -> tilo_resource::Edit<Library> {
         Self::playlist_paths(playlist)
             .tracks
             .remove(&Id::from_raw(track))
     }
 
-    /// The edit that moves `track` to position `to` in `playlist`.
     pub fn move_in_playlist(
         playlist: &str,
         track: &str,
@@ -196,11 +175,7 @@ impl Library {
             .move_to(&Id::from_raw(track), to)
     }
 
-    /// What the library alone describes as rows: the destinations the window
-    /// opens and the albums it holds, each opened by one action. Songs carry
-    /// this device's offline copies and artists the provider's follow state,
-    /// and a playlist shows the songs it holds, which the window publishes
-    /// beside the library.
+    /// What the library alone describes as rows: the destinations and the albums it holds.
     fn places(&self) -> Vec<Derived<Self>> {
         let limit = crate::actions::OPEN_RESOURCE_CATEGORY_LIMIT;
         crate::actions::NAVIGATION_VIEWS
@@ -210,8 +185,6 @@ impl Library {
             .collect()
     }
 
-    /// The row `id` names, when the published page leaves it out: a
-    /// destination, or any album the library holds.
     fn place(&self, id: &str) -> Option<tilo_actions::ResourceSpec> {
         if let Some(view) = crate::actions::parse_view_resource_id(id) {
             return crate::actions::known_view_label(view)
@@ -224,7 +197,6 @@ impl Library {
     }
 }
 
-/// The row opening the destination `id`, labelled `label`.
 fn view_place(id: &str, label: &str) -> Derived<Library> {
     Derived::new(label)
         .of_kind("music.view")
@@ -237,7 +209,6 @@ fn view_place(id: &str, label: &str) -> Derived<Library> {
         ))
 }
 
-/// An album of the library as a row: opening its page is all it offers.
 fn album_place(album: &Album) -> Derived<Library> {
     Derived::new(album.title.clone())
         .of_kind("music.album")
@@ -250,9 +221,8 @@ fn album_place(album: &Album) -> Derived<Library> {
         ))
 }
 
-/// The screenshot scenarios: the sample library (`empty` has none) with the
-/// view state each stages. A capture never reaches the catalogue, so every
-/// scenario comes out the same on every machine.
+/// The capture scenarios; a capture never reaches the catalogue, so each comes out the
+/// same on every machine.
 const SCENARIOS: &[&str] = &[
     "sidebar",
     "collapsed",
@@ -313,7 +283,6 @@ impl ResourceApp for MusicShell {
         crate::commands::COMMANDS
     }
 
-    /// Every scenario but `empty` shows the sample library.
     fn scenario(name: Option<&str>) -> Vec<Invoke<Library>> {
         if matches!(
             name,
@@ -351,9 +320,7 @@ impl ResourceApp for MusicShell {
     }
 
     fn view(cx: &mut ViewCx<Library>) -> Element {
-        // Only a window someone uses plays audio, reads this device's
-        // playback profile and reaches the network; a capture and a past
-        // version show the library alone.
+        // Only a window someone uses plays audio, reads the profile and reaches the network.
         let music = match cx.mode() {
             RunMode::Live => {
                 let mut music = Music::new();
@@ -362,13 +329,9 @@ impl ResourceApp for MusicShell {
             }
             RunMode::Capture | RunMode::Past => Music::offline(),
         };
-        // A search hit, or an agent's `open`, plays the song or shows the
-        // page the row it names does.
+        // A search hit or an agent's `open` plays the song, or shows the page it names.
         cx.on_open(music.opener());
-        // The shell keeps the sidebar (the destinations, kept views and
-        // playlists as a list), its width, its drawer in a narrow window
-        // and its keys, and the transport across the window's foot: what
-        // plays belongs to the window, whatever page is open.
+        // The shell keeps the sidebar and the transport; what plays belongs to the window.
         let places = ui::widget::NavFeed::new();
         let transport = ui::widget::TransportFeed::new();
         let pane = ui::LocalState::new(ui::widget::NavPane::Content);
@@ -416,9 +379,6 @@ mod tests {
         Invoke::edit(edit).unwrap()
     }
 
-    /// History stands beside Music's slots in the window's bar: no band of
-    /// the window's own above the page and no control of Music's own; the
-    /// bar's History opens the framework's History.
     #[test]
     fn history_is_the_window_bars_beside_musics_slots() {
         use ui::widget::Widget as _;
@@ -599,8 +559,6 @@ mod tests {
         })
     }
 
-    /// Deleting a playlist runs at once, since Undo takes it back: the host
-    /// asks nothing, and one Undo brings the playlist back with its songs.
     #[test]
     fn deleting_a_playlist_runs_at_once_and_one_undo_brings_it_back() {
         let mut app = TestApp::<MusicShell>::new().unwrap();
@@ -682,8 +640,6 @@ mod tests {
         );
     }
 
-    /// A search hit's or an agent's `open` plays the song or shows the page
-    /// of the row its anchor names; an anchor naming nothing is refused.
     #[test]
     fn opening_an_anchor_plays_or_shows_its_row() {
         let mut app = TestApp::<MusicShell>::capture(Some("sidebar")).unwrap();
@@ -703,10 +659,6 @@ mod tests {
         );
     }
 
-    /// Rows offer the library's edits bound to what they show: an album
-    /// is saved, an artist followed, a recommendation input switched, a
-    /// suggestion hidden and shown again, an artist preferred; a song in a
-    /// playlist is moved and taken out.
     #[test]
     fn rows_offer_their_bound_field_edits() {
         let mut app = TestApp::<MusicShell>::capture(Some("sidebar")).unwrap();
@@ -740,7 +692,6 @@ mod tests {
         let playlist = app.state().playlist("pl_morning").cloned().unwrap();
         let ids = playlist.track_ids();
         let surface = app.surface_mut::<MusicApp>().state();
-        // What each row offers follows what it shows.
         let inputs: Vec<&str> = surface
             .row_edits("music.recommendation-input:likes")
             .iter()
@@ -776,8 +727,6 @@ mod tests {
         );
     }
 
-    /// A playlist's row renames it, sets its cover and adds a song of the
-    /// library at its end, each asking for its value.
     #[test]
     fn playlist_rows_rename_cover_and_add_songs() {
         let mut app = TestApp::<MusicShell>::capture(Some("sidebar")).unwrap();
@@ -836,9 +785,6 @@ mod tests {
         );
     }
 
-    /// An agent reaches the edits of rows shown inside other rows through
-    /// the published tree: a song of a playlist moves and comes out, an
-    /// input of the recommendations switches.
     #[test]
     fn nested_rows_offer_their_edits_in_the_published_tree() {
         let mut app = TestApp::<MusicShell>::capture(Some("sidebar")).unwrap();
@@ -979,14 +925,8 @@ mod reach_tests {
     use ui::framework::ResourceApp as _;
     use ui::framework::testing::{TestApp, unreachable_actions};
 
-    /// The walk's slices: a drive of one scenario walks dozens of actions,
-    /// so each slice is its own test and they run side by side.
     const SLICES: usize = 6;
 
-    /// Every action the app publishes is reachable by address in a drive of
-    /// every `SLICES`th scenario from `slice`: none is advertised yet
-    /// handled only by a click. The scenarios stage fixtures; the app
-    /// someone opens acts on this machine, so it is not walked.
     fn walk(slice: usize) {
         for scenario in super::MusicShell::scenarios()
             .iter()
@@ -1033,8 +973,6 @@ mod reach_tests {
         walk(5);
     }
 
-    /// The window bar's sidebar button flips the sidebar on every click, in a
-    /// window wide enough to dock it and in a narrow one.
     #[test]
     fn the_window_bars_sidebar_button_flips_the_sidebar() {
         ui::framework::testing::check_window_sidebar_button(

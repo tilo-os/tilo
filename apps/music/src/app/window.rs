@@ -1,11 +1,5 @@
-//! The Music window as a bound view: the [`Music`] it shares with the
-//! view's effect handler and what the view publishes, and [`MusicApp`], the
-//! widget that hosts it.
-//!
-//! Effects and publications reach the [`Music`] between frames; the window
-//! reaches it while it syncs, lays out, draws and takes input, lending it
-//! the page's embedded widgets for that, which it holds as its children
-//! otherwise.
+//! The Music window as a bound view: the [`Music`] it shares with the effect handler, and
+//! [`MusicApp`], the widget that hosts it.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -31,30 +25,20 @@ use crate::actions::MusicEffect;
 use crate::model::Library;
 use ui::widget::DrawChild;
 
-/// The [`Music`] as the window and the view's effect handler share it.
 type Shared = Rc<RefCell<Music>>;
 
-/// The window: the shared [`Music`], following the library the document
-/// holds, with the page's embedded widgets as its children.
 pub struct MusicApp {
     music: Shared,
-    /// The page's embedded widgets, lent to [`Self::music`] while it draws,
-    /// lays out, syncs or takes input.
     page: Page,
-    /// The library as the document holds it, shown as it changes; `None`
-    /// for a window outside the framework.
     live: Option<Live<Library>>,
     /// The `(revision, loads)` of the library last shown.
     presented: Option<(u64, u64)>,
-    /// The capture scenario to stage once the library is shown.
     staged: Rc<RefCell<Option<String>>>,
-    /// The tooltip under the pointer, as the page last said.
     tooltip: Option<String>,
     rect: Rect,
 }
 
 impl MusicApp {
-    /// The window over `music`, holding the widgets embedded in its page.
     fn over(mut music: Music) -> Self {
         let page = std::mem::take(&mut music.page);
         Self {
@@ -68,13 +52,11 @@ impl MusicApp {
         }
     }
 
-    /// What the window shows, shared with the view's effect handler.
     #[cfg(test)]
     pub(crate) fn state(&self) -> std::cell::RefMut<'_, Music> {
         self.music.borrow_mut()
     }
 
-    /// Run `step` on the [`Music`] with the page's widgets lent to it.
     fn lend<T>(&mut self, step: impl FnOnce(&mut Music) -> T) -> T {
         let mut music = self.music.borrow_mut();
         std::mem::swap(&mut music.page, &mut self.page);
@@ -86,8 +68,6 @@ impl MusicApp {
 }
 
 impl Music {
-    /// Answer one of Music's effects, invoked by a control, the palette, an
-    /// agent or a script.
     fn answer_effect(&mut self, effect: MusicEffect, cx: &mut EffectCx<Library>) -> EffectAnswer {
         // The song that plays is the one playing as the effect runs, not
         // the one a control saw when it was bound.
@@ -122,11 +102,7 @@ impl Music {
     }
 }
 
-/// The view of the library: `music` takes part in the resource, answers
-/// Music's effects and publishes this device's player, queue, open file
-/// and offline songs as rows, the library's edits bound to them, and the
-/// songs the live catalogue found, which it looks the platform search's
-/// queries up in.
+/// The view of the library: `music` answers Music's effects and publishes this device's rows.
 pub(crate) fn window(cx: &ViewCx<Library>, mut music: Music) -> Element {
     music.attach_dispatcher(cx.dispatcher());
     music.attach_actions(cx.actions());
@@ -165,7 +141,6 @@ pub(crate) fn window(cx: &ViewCx<Library>, mut music: Music) -> Element {
             // an album, following an artist, taking a song out of a playlist
             // or moving it, and the recommendations' switches and feedback.
             .row_edits(move |row| edits.borrow().row_edits(row))
-            // The songs the live search found that the library does not hold.
             .search_entries(move || entries.borrow().live_search_entries())
             .search_query(move |query| music.borrow_mut().queue_catalogue_query(query.text())),
         Box::new(window),

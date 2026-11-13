@@ -1,8 +1,3 @@
-//! A remote stream its source cuts off partway through: `YouTube` serves the
-//! first segment of a URL its CDN will not serve whole and refuses the rest,
-//! so the pipeline runs out of bytes about a minute into the song. Playback
-//! has to pick the song up where it stopped, not take the cut for its end.
-
 use super::stream_cut::{StreamCut, StreamCutAction, stream_cut_action};
 use super::*;
 
@@ -47,10 +42,8 @@ fn a_stream_cut_short_resumes_once_per_spot() {
     );
 }
 
-/// 8 kHz mono 16-bit PCM: one second is this many bytes.
 const BYTES_PER_SECOND: usize = 16_000;
 
-/// A WAV of `seconds` of a 440 Hz tone.
 fn tone_wav(seconds: usize) -> Vec<u8> {
     let data_len = u32::try_from(seconds * BYTES_PER_SECOND).unwrap();
     let mut wav = Vec::new();
@@ -78,11 +71,6 @@ fn tone_wav(seconds: usize) -> Vec<u8> {
     wav
 }
 
-/// Serve `/full` as the whole song and `/cut` as what a CDN that stops
-/// serving a URL partway through hands the player: the song's own header,
-/// which declares its whole length, then only the first `cut_s` seconds.
-/// Byte ranges are honoured, so a resume can seek. The server lives as long
-/// as the test process.
 fn serve_song(song: Vec<u8>, cut_s: usize) -> String {
     use std::io::{BufRead as _, BufReader, Write as _};
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -156,17 +144,10 @@ fn resolved(url: String) -> crate::backend::ResolvedStream {
     }
 }
 
-/// The song ends a second in, as a cut stream does: the app resolves a
-/// fresh URL and resumes at that second rather than moving to the next
-/// song, plays on past the cut, and moves on only at the song's real end.
-/// The real decode pipeline over local HTTP, scaled from a minute to a
-/// second, and seeking over the rest once past the cut, so it runs in a few
-/// seconds of real time.
 #[test]
 #[cfg(feature = "audio")]
 #[serial_test::serial(audio_backend)]
 fn a_song_cut_off_by_its_source_resumes_where_it_stopped() {
-    // Longer than the end slack past the cut, so the cut is not the end.
     let song_s = 8;
     let cut_s = 1;
     let base = serve_song(tone_wav(song_s), cut_s);
@@ -234,7 +215,6 @@ fn a_song_cut_off_by_its_source_resumes_where_it_stopped() {
             && app.audio.frames_rendered() > 0
         {
             past_cut = true;
-            // Past the cut on the fresh URL: skip to the last half second.
             app.audio
                 .seek_ms(u64::try_from(song_s).unwrap() * 1_000 - 500);
         }

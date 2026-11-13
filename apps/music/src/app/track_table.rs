@@ -1,13 +1,5 @@
-//! The track list every view shares (songs, an album, a playlist, liked
-//! songs, downloads, the queue) as the toolkit's [`DataTable`], embedded in
-//! the page the app paints.
-//!
-//! The table owns its rows: their lift under the pointer, the press that
-//! plays one, the right-click that opens its menu and the row's actions,
-//! which are ordinary [`Button`]s mounted for the row under the pointer. The
-//! page scrolls as a whole, so the table is windowed by the app's scroll
-//! ([`DataTable::host_scrolled`]). What a row asks for comes back as a
-//! [`RowEvent`] the app turns into its own action.
+//! The track list every view shares, as the toolkit's [`DataTable`]: rows lift under the
+//! pointer, and what a row asks for comes back as a [`RowEvent`].
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -24,7 +16,6 @@ use vello::kurbo::{Point, Rect};
 use super::page_part::Placed;
 use super::render::{paint_equalizer, square_around, text_line, text_right_in_band};
 
-/// A song's offline state, as its row shows it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Offline {
     Streamed,
@@ -34,30 +25,27 @@ pub(super) enum Offline {
     Failed,
 }
 
-/// One row of a track table: everything its cells show.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct TrackCell {
     pub id: String,
     pub title: String,
     pub artist: String,
-    /// The second column's text: the album, or a download's status.
+    /// The second column: the album, or a download's status.
     pub second: String,
     pub number: u32,
     pub duration: String,
     pub playback: Playback,
     pub liked: bool,
     pub offline: Offline,
-    /// Why the download failed, in full: the retry control's tooltip.
+    /// Why the download failed; the retry control's tooltip.
     pub offline_error: Option<String>,
     /// A file opened from disk: it is neither liked nor downloaded.
     pub local: bool,
 }
 
-/// Whether a row is the track playing now.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Playback {
     Idle,
-    /// The current track, paused.
     Paused,
     Playing,
 }
@@ -65,14 +53,11 @@ pub(super) enum Playback {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Second {
     Album,
-    /// A download's status in words (the downloads view).
     Status,
 }
 
-/// The actions a row offers under the pointer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Actions {
-    /// Like and a compact menu for track management.
     Track,
     Download,
 }
@@ -86,14 +71,12 @@ impl Actions {
     }
 }
 
-/// How a table is built: its columns and their measured widths. A table is
-/// rebuilt when this changes.
+/// The table's columns and their measured widths; a change rebuilds the table.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct Shape {
     pub numbers: bool,
     pub second: Option<Second>,
-    /// The title column's width beside a second column: as wide as its
-    /// widest line. Alone, the title takes the room.
+    /// The title column's width beside a second one; alone, the title takes the room.
     pub title_width: Option<f32>,
     pub header: bool,
     pub actions: Actions,
@@ -101,19 +84,16 @@ pub(super) struct Shape {
     pub index_width: f32,
     pub duration_width: f32,
     pub action_width: f32,
-    /// Rows spring to their new places when the songs change: the queue,
-    /// whose order the person changes in place.
+    /// Rows spring to their new places: the queue, whose order the person changes.
     pub moves: bool,
 }
 
-/// What a row asked for; the index is the row's place in the table.
+/// What a row asked for, by its place in the table.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) enum RowEvent {
     Play(usize),
-    /// The row was added to or taken out of the selection (Ctrl or Shift
-    /// with the press): nothing plays.
+    /// The row joined or left the selection; nothing plays.
     Select(usize),
-    /// A drag began on the row: the selected songs go with it.
     Drag(usize),
     Menu(usize, Rect),
     Like(usize),
@@ -123,14 +103,12 @@ pub(super) enum RowEvent {
 
 type Events = Rc<RefCell<Vec<RowEvent>>>;
 
-/// A track table and the host that lays it out in the painted page.
 pub(super) struct TrackTableHost {
     pub(super) host: Placed<DataTable<TrackCell>>,
     shape: Shape,
     rows: Vec<TrackCell>,
     selected: Option<usize>,
     events: Events,
-    /// A row a capture shows under the pointer.
     staged_pointer: Option<usize>,
 }
 
@@ -147,8 +125,7 @@ impl TrackTableHost {
         }
     }
 
-    /// Bring the table up to date with this frame's rows and the row that
-    /// stays lifted (a row whose menu is open, a membership being shown).
+    /// Bring the table up to date, keeping the lifted row.
     pub(super) fn update(
         &mut self,
         shape: Shape,
@@ -167,8 +144,7 @@ impl TrackTableHost {
             self.rows = rows;
         }
         if selected != self.selected || selected.is_some() {
-            // A revealed row is lifted alone; when the reveal ends, the
-            // person's own selection is theirs again.
+            // A revealed row is lifted alone; afterwards the person's own selection returns.
             let mut selection = ui::selection::SelectionModel::new();
             if let Some(row) = selected {
                 selection.select_only(row);
@@ -179,17 +155,14 @@ impl TrackTableHost {
         self.host.unplace();
     }
 
-    /// Whether rows are on their way after the songs changed.
     pub(super) fn rows_moving(&self) -> bool {
         ui::widget::Widget::needs_animation_frame(self.host.widget())
     }
 
-    /// The rows selected, by their place in the table.
     pub(super) fn selected_rows(&self) -> Vec<usize> {
         self.host.widget().selected_rows()
     }
 
-    /// The songs selected, in the table's order.
     pub(super) fn selected_ids(&self) -> Vec<String> {
         self.selected_rows()
             .into_iter()
@@ -197,8 +170,7 @@ impl TrackTableHost {
             .collect()
     }
 
-    /// Select the rows of the songs `ids`, as they were selected before; a
-    /// song no longer in the table is left out.
+    /// Select the songs `ids` that are still in the table.
     pub(super) fn select_ids(&mut self, ids: &[String]) {
         let mut selection = ui::selection::SelectionModel::new();
         for (row, cell) in self.rows.iter().enumerate() {
@@ -213,9 +185,7 @@ impl TrackTableHost {
         &self.rows
     }
 
-    /// Lay the table out from `top` across `[left, right]` and paint the
-    /// part of it inside `clip` (the page's viewport). Returns the y below
-    /// the table.
+    /// Lay the table out from `top` and paint the part inside `clip`; returns the y below it.
     pub(super) fn place(
         &mut self,
         ctx: &mut PaintCtx<'_>,
@@ -223,23 +193,19 @@ impl TrackTableHost {
         top: f64,
         clip: Rect,
     ) -> f64 {
-        // The table learns its header and row heights from the theme when
-        // it is laid out; a first layout (or one staged for a capture, which
-        // brings the pointer over a row) is solved again against them.
+        // The table learns its header and row heights from the theme, so a first layout or a
+        // staged capture is solved again against them.
         let mut bottom = top;
         for pass in 0..2 {
             let table = self.host.widget_mut();
             let header = table.header_height();
             bottom = top + table.content_height();
             let shown_top = top.max(clip.y0);
-            // Leave breathing room above the transport and never paint the
-            // beginning of a row that cannot fit in full.
+            // Room above the transport, and never half a row.
             let limit = bottom.min(clip.y1 - f64::from(ctx.theme.tokens.spacing.rhythm.related));
             let height = f64::from(self.shape.row_height);
             let complete = ((limit - top - header) / height).floor().max(0.0);
             let shown_bottom = top + header + complete * height;
-            // Less than a header and a sliver of a row in view: nothing to
-            // show.
             if shown_bottom - shown_top <= header + 1.0 {
                 return bottom;
             }
@@ -260,13 +226,10 @@ impl TrackTableHost {
         bottom
     }
 
-    /// For a capture: show row `index` as it is under the pointer, with its
-    /// actions, in the next frame.
     pub(super) fn stage_pointer(&mut self, index: usize) {
         self.staged_pointer = Some(index);
     }
 
-    /// Bring the pointer over row `index`; whether it is in view.
     fn point_at_row(&mut self, index: usize) -> bool {
         let table = self.host.widget();
         let Some(row) = table.row_rect(index) else {
@@ -277,12 +240,10 @@ impl TrackTableHost {
         true
     }
 
-    /// What the rows asked for since the last call.
     pub(super) fn take_events(&self) -> Vec<RowEvent> {
         std::mem::take(&mut *self.events.borrow_mut())
     }
 
-    /// Where row `index` stands, when it is in view.
     pub(super) fn row_rect(&self, index: usize) -> Option<Rect> {
         let table = self.host.visible()?;
         let rect = table.row_rect(index)?;
@@ -290,8 +251,7 @@ impl TrackTableHost {
         (rect.y1 > body_top && rect.y0 < table.get_rect().y1).then_some(rect)
     }
 
-    /// Where the control `name` ("like", "offline", "more")
-    /// of row `index` stands, while the row shows its actions.
+    /// Where the named control of row `index` stands, while the row shows its actions.
     #[cfg(test)]
     pub(super) fn control_rect(&self, index: usize, name: &str) -> Option<Rect> {
         let id = format!("music.track.{index}.{name}");
@@ -304,7 +264,6 @@ impl TrackTableHost {
     }
 }
 
-/// The space a cell keeps on each side of its text.
 fn cell_pad(theme: &Theme) -> f64 {
     f64::from(theme.tokens.spacing.s2)
 }
@@ -361,8 +320,7 @@ fn build_table(shape: Shape, theme: &Theme, events: &Events) -> DataTable<TrackC
         },
     ))
     .with_widget(move |row: &TrackCell, index| action_buttons(row, index, actions, &sink));
-    // A download's one action (cancel, remove, retry) stays in view; a
-    // song's actions show under the pointer over its quiet marks.
+    // A download's one action stays in view; a song's show under the pointer.
     columns.push(if actions == Actions::Download {
         action_column
     } else {
@@ -388,8 +346,7 @@ fn build_table(shape: Shape, theme: &Theme, events: &Events) -> DataTable<TrackC
         .host_scrolled()
         .with_row_height(shape.row_height)
         .on_row_click_view("music.tracks", move |row, ctrl, shift| {
-            // A press plays the song; with Ctrl or Shift it selects instead,
-            // for several songs to drag onto a playlist at once.
+            // A press plays the song; Ctrl or Shift selects instead, for dragging several at once.
             play.borrow_mut().push(if ctrl || shift {
                 RowEvent::Select(row)
             } else {
@@ -412,8 +369,7 @@ fn build_table(shape: Shape, theme: &Theme, events: &Events) -> DataTable<TrackC
     table
 }
 
-/// The index cell: Play under the pointer, the equalizer for the playing
-/// track, else the track's number.
+/// The index cell: Play under the pointer, the equalizer for the playing song, else the number.
 fn paint_index(
     row: &TrackCell,
     scene: &mut vello::Scene,
@@ -452,8 +408,6 @@ fn paint_index(
     }
 }
 
-/// The song over its artist, centred on the row as one block; the playing
-/// song's title is strong.
 fn paint_title(
     row: &TrackCell,
     scene: &mut vello::Scene,
@@ -495,7 +449,6 @@ fn paint_title(
     );
 }
 
-/// A download's status in words, in danger ink when it failed.
 fn paint_status(
     row: &TrackCell,
     scene: &mut vello::Scene,
@@ -525,8 +478,7 @@ fn paint_status(
     );
 }
 
-/// Where action `k` stands in the actions cell: the buttons run from the
-/// cell's leading edge, each a small control's square.
+/// Where action `k` stands in the actions cell.
 fn action_slot(cell: Rect, k: usize, theme: &Theme) -> Rect {
     let side = action_side(theme);
     let x0 = cell.x0 + side * k as f64;
@@ -534,7 +486,6 @@ fn action_slot(cell: Rect, k: usize, theme: &Theme) -> Rect {
     Rect::new(x0, mid - side / 2.0, x0 + side, mid + side / 2.0)
 }
 
-/// One action button's side.
 pub(super) fn action_side(theme: &Theme) -> f64 {
     ButtonFace::height(ControlSize::Small, theme)
 }
@@ -557,7 +508,6 @@ fn paint_quiet_actions(ctx: &mut PaintCtx<'_>, row: &TrackCell, cell: Rect) {
     }
 }
 
-/// The offline button of a row: its glyph, its name and what a press asks.
 fn offline_button(row: &TrackCell) -> (Icon, &'static str) {
     match row.offline {
         Offline::Failed => (Icon::Refresh, "Retry download"),
@@ -567,7 +517,6 @@ fn offline_button(row: &TrackCell) -> (Icon, &'static str) {
     }
 }
 
-/// The row's actions as buttons, in the order the quiet marks stand.
 fn action_buttons(
     row: &TrackCell,
     index: usize,

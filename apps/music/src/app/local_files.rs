@@ -5,8 +5,7 @@ use ui::widget::Continuable as _;
 use ui::widget::toast::ToastKind;
 
 impl Music {
-    /// The invocation of the library's Open audio file, as the window bar's
-    /// slot runs it through the window's controls.
+    /// The invocation of the library's Open audio file, as the bar's slot runs it.
     pub(super) fn open_file_invocation() -> Option<tilo_actions::ControlInvocation> {
         let resource = tilo_actions::ResourceSpec::new(
             "music.library",
@@ -44,8 +43,7 @@ impl Music {
         self.register_playback_start(invocation, request, frames_before, resuming)
     }
 
-    /// Cache hits still need decoder evidence. Only an already loaded source
-    /// being resumed may reuse prior PCM together with confirmed playback.
+    /// Cache hits still need decoder evidence: only a resumed, loaded source may reuse PCM.
     pub(super) fn register_playback_start(
         &mut self,
         invocation: tilo_actions::InvocationId,
@@ -99,8 +97,7 @@ impl Music {
                     .glob("*.wma"),
             )
             .all_files();
-        // Where files have no paths (a browser page) the chooser hands over
-        // the file's contents instead.
+        // Where files have no paths the chooser hands over the file's contents.
         let pick = if tilo_paths::availability(tilo_paths::Feature::NativePaths)
             == tilo_paths::Availability::Available
         {
@@ -123,7 +120,6 @@ impl Music {
         };
         let invocation = *invocation;
         let stopped = || Err("The file picker stopped without a result".to_string());
-        // What was chosen, nothing (`None`), or why it could not be.
         let chosen: Option<Result<Chosen, String>> = match pick {
             super::LocalFilePick::Path(receiver) => match receiver.try_recv() {
                 Ok(ui::portal::PortalOutcome::Opened(path)) => Some(
@@ -182,8 +178,7 @@ impl Music {
             });
     }
 
-    /// Open one explicitly requested device-private file. The same operation
-    /// serves command-line launches and the exported resource action.
+    /// Open one device-private file; the same operation serves launches and the action.
     pub(crate) fn open_local_file(&mut self, source: &str) -> Result<u64, String> {
         if !crate::audio::AudioEngine::is_live() {
             return Err("This Music build does not include audio playback".into());
@@ -192,8 +187,7 @@ impl Music {
         self.play_local_file(file)
     }
 
-    /// Open a file the host handed over as contents: from where it is when
-    /// it has a path, else from a page-local copy of its bytes.
+    /// Open a file the host handed over as contents, from its path or a page-local copy.
     pub(crate) fn open_local_contents(
         &mut self,
         file: &ui::portal::PickedContents,
@@ -230,8 +224,7 @@ impl Music {
         }
     }
 
-    /// The open file to reopen next time. One playing from a page-local
-    /// copy of its bytes is gone with the page, so it is not kept.
+    /// The open file to reopen next time; one playing from a page-local copy is not kept.
     pub(super) fn kept_local_file(&self) -> Option<crate::local_file::LocalFile> {
         self.local_file
             .clone()
@@ -254,8 +247,7 @@ impl Music {
         self.playhead_ms = 0.0;
         self.bound_track.clone_from(&self.pb.current);
         self.shuffle_order.clear();
-        // Persistence failure must not start a new decoder behind a failed
-        // operation. Restore the old device intent before returning the error.
+        // Persistence failure must not start a decoder behind a failed operation.
         if let Err(error) = self.persist_device_profile() {
             self.local_file = previous_file;
             self.pb = previous_playback;
@@ -310,7 +302,6 @@ impl Music {
             .next_worker_request_id()
             .ok_or("Music request identity space is exhausted")?;
         self.supersede_resource_stream_if_needed(request);
-        // Retire any previous online resolution before accepting local intent.
         self.active_resolve_request = None;
         self.resolve_in_flight = 0;
         self.playback_error = None;
@@ -737,7 +728,6 @@ mod tests {
             check_cached_source_switch(true);
         }
 
-        // Phase `cached_play_actions_wait_for_decoder_success_or_failure`.
         {
             for queue_item in [false, true] {
                 for valid_audio in [false, true] {
@@ -917,7 +907,6 @@ mod tests {
             )
             .unwrap();
         if paused_selection {
-            // A paused selection waits for its source until it plays.
             let pause = crate::actions::effect_payload(&crate::actions::MusicEffect::PlayPause);
             assert!(matches!(
                 app.start_effect(tilo_actions::InvocationId::new(), &pause)
@@ -1048,8 +1037,6 @@ mod tests {
         app.audio.stop();
     }
 
-    /// Three seconds of a 440 Hz tone, 8 kHz 16-bit mono: silence would not
-    /// show that the decoder produced the file's samples.
     fn wav(path: &std::path::Path) {
         let bytes = 48_000u32;
         let mut data = Vec::new();
@@ -1077,15 +1064,9 @@ mod tests {
         std::fs::write(path, data).unwrap();
     }
 
-    /// Drive the app until the file's decoded tone reaches the sink and, when
-    /// the app is playing, the engine confirms it is playing and the sink
-    /// keeps receiving it.
     #[cfg(feature = "audio")]
     fn wait_for_audio(app: &mut Music) {
         let until = tilo_test_env::hang_deadline();
-        // First audio can arrive before the asynchronous Playing transition.
-        // Keep driving production tick until the engine confirms it, within
-        // the deadline.
         while app.audio.frames_rendered() == 0
             || app.audio.needs_poll()
             || (app.pb.playing && !app.audio.is_playing_confirmed())
@@ -1398,8 +1379,6 @@ mod tests {
         }
     }
 
-    /// Deliver `outcome` as the answer to an Open audio file chooser that
-    /// asked for contents, as a browser page's does.
     fn answer_contents(app: &mut Music, outcome: ui::portal::ContentsOutcome) {
         let (sender, receiver) = std::sync::mpsc::channel();
         sender.send(outcome).unwrap();
@@ -1408,8 +1387,6 @@ mod tests {
         app.drain_local_file_pick();
     }
 
-    /// A file a page hands over by its contents is checked the same way as
-    /// one chosen by path, and a refusal says why rather than nothing.
     #[test]
     fn a_file_chosen_by_contents_that_music_cannot_play_says_why() {
         let mut app = Music::without_profile();
@@ -1435,8 +1412,6 @@ mod tests {
         assert!(failed, "the Open audio file effect settles as failed");
     }
 
-    /// A file playing from a page-local copy of its bytes is not kept to
-    /// reopen: the copy is gone with the page.
     #[test]
     fn a_file_playing_from_a_page_copy_is_not_kept() {
         let mut app = Music::without_profile();
@@ -1450,8 +1425,6 @@ mod tests {
         );
     }
 
-    /// A file a page hands over by its contents, with no place on the
-    /// device, plays from those contents.
     #[test]
     #[cfg(feature = "audio")]
     fn a_file_chosen_by_contents_plays() {
@@ -1496,7 +1469,6 @@ mod tests {
                 "--nocapture",
             ])
             .env(CHILD, &path)
-            // An existing directory cannot be atomically replaced by a profile file.
             .env("TILO_MUSIC_PROFILE", dir.path())
             .env("XDG_DATA_HOME", dir.path().join("data"))
             .env("XDG_CONFIG_HOME", dir.path().join("config"))

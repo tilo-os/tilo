@@ -1,26 +1,19 @@
-//! Music's toolbar, as slots in the window's bar ([`ui::window_toolbar`]).
-//!
-//! The bar shows the library's toggle, Back while there is somewhere to go
-//! back to, the destination (or the album, artist or playlist) as the
-//! window's location, and the one action of the page: on Home open an
-//! audio file, on Playlists New playlist. Search is the bar's own.
+//! Music's slots in the window's bar: the library toggle, Back, the location and the page's
+//! one action.
 
 use ui::window_toolbar::{ToolbarLocation, WindowToolbar};
 
 use super::{Action, Music, View};
 
-/// What an entry of the window's bar asks for.
 #[derive(Clone, Debug, PartialEq)]
 pub(super) enum BarCommand {
     Back,
     /// Open an audio file, through the window's controls.
     OpenFile,
-    /// The window's own action.
     Run(Action),
 }
 
 impl Music {
-    /// The window bar's slots for what the window shows now.
     fn window_toolbar(&self) -> WindowToolbar {
         // The shell's own: the sidebar's toggle, Back in a narrow window.
         let mut toolbar = self
@@ -52,14 +45,11 @@ impl Music {
         toolbar
     }
 
-    /// Declare the window bar's slots.
     pub(super) fn declare_window_toolbar(&self) {
         ui::window_toolbar::declare(Some(self.window_toolbar()));
     }
 
-    /// Run what the person did in the window's bar: the shell's own buttons
-    /// through the shell, Back here, Open audio file as the library's action, through the
-    /// window's controls, New playlist as the window's own action.
+    /// Run what the person did in the bar.
     pub(super) fn take_window_toolbar_events(&mut self, state: &mut ui::widget::Edits<'_>) {
         for event in ui::window_toolbar::take_events() {
             if self.bar.as_ref().is_some_and(|bar| bar.event(&event)) {
