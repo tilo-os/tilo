@@ -33,7 +33,6 @@ use tokio::sync::{Notify, Semaphore};
 pub const HOST_ONLY_GATEWAY: Ipv4Addr = Ipv4Addr::new(192, 168, 251, 1);
 const GUEST_ADDRESS: Ipv4Addr = Ipv4Addr::new(192, 168, 251, 2);
 const MAX_HEAD_BYTES: usize = 16 * 1024;
-/// How long the guest proxy gets for each read and write of a request head.
 const HEAD_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Opaque proxy details carried only over the mutually-authenticated bridge.
@@ -95,7 +94,6 @@ impl GuestNetworkProxy {
         )
     }
 
-    /// Injectable listener address for tests and service integration checks.
     pub fn start_at(
         address: SocketAddr,
         hosts: &[String],
@@ -159,8 +157,6 @@ impl GuestNetworkProxy {
         &self.binding
     }
 
-    /// Tear down every tunnel immediately. This is idempotent and is called
-    /// by both explicit lease revocation and `Drop`.
     pub fn revoke(&self) {
         self.shutdown.store(true, Ordering::Release);
         self.active_connections.shutdown_all();
@@ -194,7 +190,6 @@ fn lease_policy(hosts: &[String]) -> Result<EgressPolicy, GuestNetworkError> {
     Ok(EgressPolicy::from_grants(hosts.iter().map(String::as_str)))
 }
 
-/// What every connection of one lease shares.
 struct Lease {
     policy: EgressPolicy,
     token: String,
@@ -242,7 +237,6 @@ async fn serve(
     }
 }
 
-/// Bound one read or write of the request head by [`HEAD_TIMEOUT`].
 async fn within_head_timeout<T>(io: impl Future<Output = io::Result<T>>) -> io::Result<T> {
     tokio::time::timeout(HEAD_TIMEOUT, io)
         .await
@@ -272,8 +266,6 @@ async fn serve_connect(mut client: tokio::net::TcpStream, lease: &Lease) -> io::
     if lease.shutdown.load(Ordering::Acquire) {
         return write_response(&mut client, "502 Bad Gateway").await;
     }
-    // Keep independent descriptor references in the lease.  Shutting these
-    // down on revoke ends both directions of the copy below.
     let client = client.into_std()?;
     let upstream = upstream.into_std()?;
     let _tunnel = lease.active_connections.register(
@@ -574,7 +566,6 @@ mod tests {
         }
     }
 
-    /// Send a CONNECT for `localhost:port` carrying the lease token.
     fn send_connect(stream: &mut TcpStream, port: u16, token: &str) {
         stream
             .write_all(
@@ -602,7 +593,6 @@ mod tests {
         })
     }
 
-    /// Read a response head from the relay.
     fn read_response(stream: &mut TcpStream) -> String {
         let mut head = Vec::new();
         let mut byte = [0_u8; 1];
@@ -626,7 +616,6 @@ mod tests {
         .unwrap();
         let token = proxy.binding().token.clone();
 
-        // The one slot: a tunnel that stays open.
         let mut first = TcpStream::connect(proxy.binding().endpoint).unwrap();
         first
             .set_read_timeout(Some(tilo_test_env::hang_bound()))
@@ -635,9 +624,6 @@ mod tests {
         assert!(read_response(&mut first).starts_with("HTTP/1.1 200"));
         let (held, _) = service.accept().unwrap();
 
-        // The kernel queues a second connection; the relay leaves it there.
-        // A relay accepting past its limit would take it off the queue as
-        // soon as it arrived.
         let mut second = TcpStream::connect(proxy.binding().endpoint).unwrap();
         send_connect(&mut second, port, &token);
         let relay_port = proxy.binding().endpoint.port();
@@ -652,7 +638,6 @@ mod tests {
         }
         second.set_nonblocking(false).unwrap();
 
-        // Closing the tunnel frees the slot; the waiting CONNECT is served.
         drop(first);
         drop(held);
         second

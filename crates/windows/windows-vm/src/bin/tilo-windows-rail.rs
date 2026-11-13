@@ -70,8 +70,6 @@ fn run() -> Result<u8, String> {
         let status = command
             .env("DISPLAY", &display)
             .env("XAUTHORITY", &authority)
-            // Harmless for FreeRDP and required by Java child windows that a
-            // published application may create in the RAIL session.
             .env("_JAVA_AWT_WM_NONREPARENTING", "1")
             .stdin(Stdio::inherit())
             .stdout(Stdio::inherit())
@@ -137,9 +135,6 @@ fn split_private_arguments(
 }
 
 fn validate_portal_drive(path: &Path) -> Result<(), String> {
-    // Keep this helper's trust root identical to the descriptor store's,
-    // including the headless fallback.  A helper that validates a different
-    // root would turn a valid opaque portal lease into an ambient path check.
     let lease_root = windows_vm::portal_lease_root();
     if !path.is_absolute() || !path.starts_with(&lease_root) {
         return Err("read-only drive is outside the Tilo portal lease root".to_string());

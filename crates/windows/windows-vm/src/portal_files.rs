@@ -46,11 +46,6 @@ struct LeaseDocument {
     projection: PathBuf,
 }
 
-/// Tilo's host-side mapping from opaque portal IDs to opened document handles.
-///
-/// A store may be shared by the portal bridge and the RAIL capability broker;
-/// neither Windows, `FreeRDP`, nor an untrusted manager client can resolve a
-/// handle to its source path.
 #[derive(Debug)]
 pub struct PortalDocumentStore {
     root: PathBuf,
