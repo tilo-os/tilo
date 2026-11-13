@@ -17,9 +17,7 @@ use tilolang_cli::package::{self, BuildOptions};
 use tilolang_tilo::bundle::Bundle;
 use tilolang_tilo::upgrade::{Upgrade, compare};
 
-mod support;
-
-use support::{copy_package, packages};
+use crate::support::{copy_package, packages};
 
 #[test]
 fn a_saved_build_is_the_generation_the_app_reads() {

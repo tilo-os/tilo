@@ -8,9 +8,7 @@ use std::process::Command;
 
 use tilolang_cli::layout_check::{self, Kind, Options};
 
-fn manifest() -> &'static Path {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-}
+use crate::manifest;
 
 #[test]
 fn every_kind_of_broken_layout_is_caught_at_the_view_that_breaks_it() {
@@ -258,11 +256,33 @@ fn a_desk_longer_and_wider_than_its_window_scrolls_inside_it() {
     );
 }
 
+/// The frames one layout may take: the layout itself, and one more for each change the app
+/// answers it with.
+const FRAMES_PER_LAYOUT: u64 = 30;
+
+/// The layout nodes one layout may build: every node of the tree the frame rebuilds, 142 of them
+/// for a board of lanes and cards.
+const NODES_PER_LAYOUT: u64 = 180;
+
+/// The text shaped outside the renderer's cache, per layout: these strings are the same on every
+/// layout, so the cache holds all of them after the first, and only a stage's own words are shaped
+/// again: 10 a layout for the board.
+const SHAPED_PER_LAYOUT: u64 = 14;
+
+/// One check of the board fixture, read for what it found and then for what it cost.
+///
 /// A board's lanes are as tall as the page they are in: a lane holding as many cards as the pane
 /// shows draws every one of them under its heading, and a lane holding more keeps them all inside
 /// the view that scrolls them.
+///
+/// What a layout costs is held in the toolkit's own units rather than in time: a check lays every
+/// view of an app out from every scenario, at every size, display scale and text scale, and what it
+/// spends per layout is what makes a run fast or slow. Wall time says nothing on a machine other
+/// work shares, so this holds a layout to the frames the toolkit lays out, the layout nodes it
+/// builds and the text it shapes outside the cache — counters that the same sources give the
+/// same numbers on any machine, in any build profile.
 #[test]
-fn a_board_lane_draws_every_card_it_has_room_for() {
+fn a_board_lane_draws_every_card_it_has_room_for_and_a_layout_costs_no_more_work_than_it_did() {
     let report = layout_check::check(&Options {
         dirs: vec![manifest().join("tests/layout_check/board")],
         ..Options::default()
@@ -278,6 +298,33 @@ fn a_board_lane_draws_every_card_it_has_room_for() {
         report.findings.is_empty(),
         "no lane loses the cards it has room for:\n{}",
         layout_check::render(&report)
+    );
+
+    // What that same check cost, a layout.
+    let layouts = u64::try_from(report.layouts).expect("layouts fit");
+    assert!(
+        layouts >= 40,
+        "every layout of the app runs, not {layouts} of them"
+    );
+    let per_layout = |count: u64| count / layouts;
+    let work = report.work;
+    assert!(
+        per_layout(work.frames) <= FRAMES_PER_LAYOUT,
+        "a layout costs at most {FRAMES_PER_LAYOUT} frames, not {} ({} frames over {layouts} layouts)",
+        per_layout(work.frames),
+        work.frames
+    );
+    assert!(
+        per_layout(work.nodes) <= NODES_PER_LAYOUT,
+        "a layout builds at most {NODES_PER_LAYOUT} layout nodes, not {} ({} nodes over {layouts} layouts)",
+        per_layout(work.nodes),
+        work.nodes
+    );
+    assert!(
+        per_layout(work.shaped) <= SHAPED_PER_LAYOUT,
+        "a layout shapes at most {SHAPED_PER_LAYOUT} runs outside the cache, not {} ({} over {layouts} layouts)",
+        per_layout(work.shaped),
+        work.shaped
     );
 }
 
