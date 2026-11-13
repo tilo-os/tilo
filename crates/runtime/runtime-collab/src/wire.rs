@@ -712,11 +712,11 @@ mod tests {
         )
         .joined_at(Some(5))
         .claiming_self();
-        for collaborators in [vec![bare.clone()], vec![full.clone()], vec![bare, full]] {
+        for members in [vec![bare.clone()], vec![full.clone()], vec![bare, full]] {
             let frame = HostFrame::Event {
                 subscription: 2,
                 event: Event::Context(ContextUpdate::Snapshot {
-                    collaborators,
+                    members,
                     permissions: vec!["edit".into()],
                     apps: Vec::new(),
                 }),

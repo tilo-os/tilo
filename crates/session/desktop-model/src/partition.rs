@@ -6,7 +6,7 @@
 //! Which display that is depends on the monitors this device happens to
 //! have, so the partition is per-device layout state. It is persisted with
 //! the device's own desktop and is never projected into a workspace document or
-//! the device's whole-desktop document: a collaborator has their own
+//! the device's whole-desktop document: a member has their own
 //! monitors and their own partition of the same strip.
 //!
 //! Groups belong to a physical monitor, not to the port or output number it
@@ -16,11 +16,11 @@
 //! the backend's current output ids, which it maps through the displays
 //! last reconciled.
 //!
-//! Group order stays the strip's, which is shared with every collaborator:
+//! Group order stays the strip's, which is shared with every member:
 //! a display's sub-row is the strip's groups that belong to it, in strip
 //! order. Nothing here ever reorders a strip. Unplugging a monitor or moving
 //! a group to another display changes only where groups are shown, so a
-//! collaborator's strip never reorders because of this device's monitors.
+//! member's strip never reorders because of this device's monitors.
 
 use std::collections::{BTreeMap, BTreeSet};
 use tilo_sort::CompactSort as _;

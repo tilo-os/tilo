@@ -2,7 +2,7 @@
 //!
 //! The overview is the one desktop surface that deliberately reveals the
 //! complete layout hierarchy: workspace -> strip -> window group -> tab.
-//! It also attaches present collaborators to the tab they are looking at.
+//! It also attaches present members to the tab they are looking at.
 //! Permissions and the full sharing inventory belong to workspace settings;
 //! keeping them out of this projection lets the overview remain a spatial
 //! explanation instead of becoming a second settings screen.
@@ -127,7 +127,7 @@ pub struct OverviewTab {
     pub is_active: bool,
     /// The application the tab shows, drawn by its mark.
     pub app: WindowApp,
-    /// Present collaborators whose published focus points at this tab. The local person is
+    /// Members here whose published focus points at this tab. The local person is
     /// deliberately absent: an untouched solo workspace should look like a desktop, not a
     /// collaboration dashboard.
     pub people: Vec<WorkspacePerson>,
@@ -239,7 +239,7 @@ pub fn workspace_people(
         .map(|(id, role)| {
             // Being the local user isn't evidence of being in *this*
             // workspace — you're only in the one you're looking at. These are
-            // two independent conditions (are-you-a-listed-collaborator,
+            // two independent conditions (are-you-a-listed-member,
             // are-you-the-local-user-in-the-active-workspace), not a mixed-up
             // field pairing, despite the superficial `a == b && c == d`
             // shape.
@@ -881,7 +881,7 @@ mod workspace_tests {
             );
         }
 
-        fn collaborator_focus_is_attached_to_the_tab_not_the_workspace_header() {
+        fn a_members_focus_is_attached_to_the_tab_not_the_workspace_header() {
             let mut w = ws("Design");
             let strip_id = StripId(fresh_id());
             let tab_id = 71;
@@ -930,6 +930,6 @@ mod workspace_tests {
         presence_is_who_is_here_now_not_who_is_a_member();
         a_workspace_you_are_not_in_does_not_report_you_as_here();
         spatial_projection_preserves_strip_group_and_tab_nesting();
-        collaborator_focus_is_attached_to_the_tab_not_the_workspace_header();
+        a_members_focus_is_attached_to_the_tab_not_the_workspace_header();
     }
 }

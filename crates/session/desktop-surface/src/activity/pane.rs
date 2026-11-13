@@ -971,7 +971,7 @@ impl WorkspaceActivityPane {
 
     fn issuer_name(&self, run: &AgentRun) -> String {
         run.issued_by.as_deref().map_or_else(
-            || t("activity-unknown-collaborator"),
+            || t("activity-unknown-member"),
             |actor| self.source.authors().resolve(actor).name,
         )
     }

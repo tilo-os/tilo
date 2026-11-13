@@ -175,7 +175,7 @@ impl From<StoredWorkspace> for Workspace {
     }
 }
 
-/// Stable identifier for a person. The compositor's collaborator table
+/// Stable identifier for a person. The compositor's member table
 /// keys on this; a peer's Ed25519 key hex is a valid value, and so is
 /// the local user's account name.
 pub type UserId = String;

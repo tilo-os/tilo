@@ -37,7 +37,7 @@ mod tests {
         busy_workspace_written_by(None)
     }
 
-    /// [`busy_workspace`], but the half-hour is a collaborator's: what Catch up exists to show.
+    /// [`busy_workspace`], but the half-hour is a member's: what Catch up exists to show.
     fn peers_busy_workspace() -> (WorkspaceTree, WorkspaceSlot, String) {
         busy_workspace_written_by(Some(ActorId::from(b"ada-device".as_slice())))
     }
@@ -1533,7 +1533,7 @@ mod tests {
             "two actors wrote to this workspace; contributors = {:?}",
             pane.contributors
         );
-        // bootstrap_demo seeds a Research collaborator id "bob" named "Bob" with a cursor colour.
+        // bootstrap_demo seeds a Research member id "bob" named "Bob" with a cursor colour.
         // seed_roster_colours registers that display name on the handle actor, so history shows
         // "Bob" rather than the raw handle — same person, roster wins for colour and label.
         let bob = pane
@@ -1744,7 +1744,7 @@ mod tests {
             .iter()
             .filter(|entry| !author_is_local(&entry.author, &pane.local_user()))
             .count();
-        assert!(others > 0, "the fixture is a collaborator's work");
+        assert!(others > 0, "the fixture is a member's work");
         assert_eq!(pane.digest.total_changes, others);
         assert!(!pane.digest.briefs.is_empty());
         assert!(pane.digest.headline().is_some());

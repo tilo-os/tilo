@@ -4674,7 +4674,7 @@ async fn spawn_op_stream(
     }
 }
 
-/// Bridge `channel`'s collaborator/permissions context stream into
+/// Bridge `channel`'s member/permissions context stream into
 /// [`CollabEvent::Context`] on `inbound_tx`.
 #[allow(
     clippy::future_not_send,
@@ -6908,7 +6908,7 @@ fn translate_presence_event(evt: runtime_collab::PresenceEvent) -> Option<Collab
     // Every variant must carry a decodable semantic `PresenceKey`.
     // An undecodable scope cannot truthfully identify a target. Drop
     // it instead of inventing a tab and making malformed presence
-    // look like a collaborator left some unrelated surface.
+    // look like a member left some unrelated surface.
     let key: PresenceKey = match postcard::from_bytes(&evt.key_bytes) {
         Ok(key) => key,
         Err(error) => {

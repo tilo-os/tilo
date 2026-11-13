@@ -2143,7 +2143,7 @@ fn avatar_stack_has_breathing_room_to_tray_pill() {
     let tray = bar.tray_pill_rect();
     assert!(
         avatar.width() > 0.0,
-        "test seeded one collaborator but avatar_stack_rect is empty",
+        "test seeded one member but avatar_stack_rect is empty",
     );
     let gap = tray.x0 - avatar.x1;
     assert!(

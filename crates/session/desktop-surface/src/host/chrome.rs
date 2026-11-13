@@ -467,7 +467,7 @@ pub trait ChromeSource {
     fn people_revision(&self) -> u64 {
         0
     }
-    /// Place who is here in `tree`, as the active workspace's collaborators.
+    /// Place who is here in `tree`, as the active workspace's members and their presence.
     fn place_people(&self, _tree: &mut DesktopTree) {}
     /// Ask `answer` what this person may change here, as this host knows their standing.
     fn with_standing<R>(&self, answer: impl FnOnce(&Standing<'_>) -> R) -> R;

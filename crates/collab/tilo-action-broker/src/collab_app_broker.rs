@@ -7111,7 +7111,7 @@ impl AppBrokerState {
         }
     }
 
-    /// One arm of [`Self::fanout_to_route`]: the workspace's collaborator +
+    /// One arm of [`Self::fanout_to_route`]: the workspace's member +
     /// permission context.
     fn fanout_context<'a>(
         channels: impl Iterator<Item = &'a mut ChannelSubscribers>,
@@ -7460,7 +7460,7 @@ impl AppBrokerState {
         }
         // A task agent's row comes only from its own verified, revalidated
         // task delegation ([`Self::native_membership_roster`]): that is its
-        // certification, beside a collaborator's membership.
+        // certification, beside a member's membership.
         if let Some(agent) = actor
             .strip_prefix("agent:")
             .filter(|agent| tilo_peer_state::join::task_delegation::is_task_agent(agent))

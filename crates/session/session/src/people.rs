@@ -1,7 +1,7 @@
 //! Who is here: the roster the bar's faces open, and every other person's pointer where they are
 //! working. The roster can also be kept on screen, waiting at an edge of the desk with a mirror of
 //! each person's screen beside their row, pressed to follow them.
-//! The roster reads the desk's collaborators, which the collaboration plane writes each frame
+//! The roster reads the desk's member rows and presence, which the collaboration plane writes each frame
 //! ([`crate::sync`]): the one feed the bar's faces and the launcher's Happening now list read too.
 //! Everyone's pointer is the plane's tile pointer, drawn over the tile of the tab they are on, in
 //! their own colour.
@@ -553,7 +553,7 @@ pub struct Given {
     pub handle: DesktopHandle,
     /// Who is here, when this session takes part in the collaboration plane.
     pub sync: Option<Rc<crate::sync::Client>>,
-    /// Who is here, written into a copy of the desk's tree as its collaborators: what the bar's
+    /// Who is here, written into a copy of the desk's tree as its members and their presence: what the bar's
     /// faces are drawn from, so the roster they open lists the same people. A host that hears
     /// some of them on a track of its own (the runs a workspace's host speaks for) writes them
     /// in here as it does for the bar.
@@ -646,7 +646,7 @@ struct Panel {
     /// names the root key they are here by.
     seated: String,
     sync: Option<Rc<crate::sync::Client>>,
-    /// Who is here, written into the desk's collaborators as the bar's faces read them
+    /// Who is here, written into the desk's member rows as the bar's faces read them
     /// ([`Given::here`]).
     here: Rc<dyn Fn(&mut DesktopTree)>,
     /// What each window of the desk shows, by its tab: where a person's record stands, so the
@@ -1075,7 +1075,7 @@ impl Panel {
         }
     }
 
-    /// Read who is here, as the plane wrote them into the desk's collaborators this frame: the
+    /// Read who is here, as the plane wrote them into the desk's member rows this frame: the
     /// roster, each person's screen with its windows named by the records this desk shows, and the
     /// workspace it is of: the panel's title, kept on screen or opened from the bar.
     fn read_roster(&self, shown: &mut Shown) {

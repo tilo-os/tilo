@@ -411,7 +411,7 @@ pub(crate) struct SessionChrome {
     /// notification centre.
     notifications_only: bool,
     /// Who is here, when this session takes part in the collaboration plane: the bar's trees carry
-    /// them as the active workspace's collaborators.
+    /// them as the active workspace's members and their presence.
     sync: Option<Rc<crate::sync::Client>>,
     /// What each window of the desk shows, as its app reports it: where a person's record stands,
     /// so the roster places them in the window they work in.

@@ -191,7 +191,7 @@ impl TopBarChrome {
     }
 
     /// Named viewers for disclosure prose. Transport ids are joined to the active workspace's live
-    /// roster through `Collaborator::session` ; an unknown session remains visible under its
+    /// roster through the presence session ; an unknown session remains visible under its
     /// deterministic peer handle.
     pub(super) fn sharing_viewers(&self) -> Vec<(u64, String, Option<bool>, bool)> {
         let Some(chrome) = self.chrome.as_ref() else {

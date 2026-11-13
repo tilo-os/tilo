@@ -147,7 +147,7 @@ fn keep_on_screen_and_put_back_take_the_pointer_at_twice_the_scale() {
 }
 
 /// The roster lists whoever the bar's faces are drawn from: on a page, an agent's run the
-/// workspace's host speaks for is heard on a track of its own and is in the desk's collaborators
+/// workspace's host speaks for is heard on a track of its own and is in the desk's member rows
 /// only as the page writes them in, and the roster lists it with its Follow.
 #[test]
 fn the_roster_lists_who_the_bar_shows() {

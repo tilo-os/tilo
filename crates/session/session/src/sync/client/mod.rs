@@ -352,7 +352,7 @@ pub(crate) struct Seat {
     /// What the session's channels hear and say on this plane. What the engine holds, so a session
     /// that runs no channel service has none.
     link: Option<Arc<ChannelLink>>,
-    /// The collaborator's devices the plane heard at another peer protocol version since the last
+    /// The member's devices the plane heard at another peer protocol version since the last
     /// call: what the person is answered.
     versions: std::sync::mpsc::Receiver<crate::network::VersionMismatch>,
     /// The records' content this session keeps and asks the workspaces for: `None` until the
@@ -807,7 +807,7 @@ impl Seat {
         self.engine.as_ref()
     }
 
-    /// The collaborator's devices the plane heard at another peer protocol version since the last
+    /// The member's devices the plane heard at another peer protocol version since the last
     /// call, each once per device and version.
     #[cfg(target_os = "linux")]
     pub(crate) fn take_version_mismatches(&self) -> Vec<crate::network::VersionMismatch> {
@@ -960,7 +960,7 @@ impl Roster {
     }
 
     #[cfg(target_os = "linux")]
-    /// Who is here, written into `tree`'s active workspace as its collaborators: the roster every
+    /// Who is here, written into `tree`'s active workspace as its members and their presence: the roster every
     /// surface that lists people reads.
     pub(crate) fn show(
         &self,
@@ -1617,7 +1617,7 @@ impl Client {
         self.hosting.seat.device_actions()
     }
 
-    /// The collaborator's devices the plane heard at another peer protocol version.
+    /// The member's devices the plane heard at another peer protocol version.
     #[cfg(target_os = "linux")]
     pub(crate) fn take_version_mismatches(&self) -> Vec<crate::network::VersionMismatch> {
         self.hosting.seat.take_version_mismatches()
@@ -1783,7 +1783,7 @@ impl Client {
     }
 
     #[cfg(target_os = "linux")]
-    /// Who is here, written into `tree`'s active workspace as its collaborators.
+    /// Who is here, written into `tree`'s active workspace as its members.
     pub(crate) fn show(
         &self,
         tree: &mut DesktopTree,

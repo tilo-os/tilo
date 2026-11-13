@@ -347,16 +347,16 @@ fn workspace_control_event_bytes(
 
 fn context_event_bytes(
     members: &[Member],
-    collaborator_capacity: usize,
+    members_capacity: usize,
     permissions: &[String],
     permission_capacity: usize,
     apps: &[collab_types::history::NamedApp],
     meter: &mut ByteMeter,
 ) {
-    meter.add_product(collaborator_capacity, std::mem::size_of::<Member>());
-    for collaborator in members {
-        meter.string_capacity(&collaborator.id.key());
-        meter.string_capacity(&collaborator.name);
+    meter.add_product(members_capacity, std::mem::size_of::<Member>());
+    for member in members {
+        meter.string_capacity(&member.id.key());
+        meter.string_capacity(&member.name);
     }
     meter.add_product(permission_capacity, std::mem::size_of::<String>());
     for permission in permissions {

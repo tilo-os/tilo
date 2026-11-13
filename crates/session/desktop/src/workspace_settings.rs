@@ -825,7 +825,7 @@ pub fn member_row_name(
         .map_or_else(|| person_name(ws, local_user, id), str::to_owned)
 }
 
-/// A person or agent as every workspace-settings pane names them: their collaborator name, the
+/// A person or agent as every workspace-settings pane names them: their member name, the
 /// viewer included; the viewer by the name this device knows them by when the workspace has none;
 /// else a shortened id.
 fn person_name(ws: &Workspace, local_user: &str, id: &str) -> String {
@@ -1581,7 +1581,7 @@ mod permissions_tests {
         }
 
         {
-            // A 64-hex person key is what the model records; the row names the collaborator, and
+            // A 64-hex person key is what the model records; the row names the member, and
             // the viewer's own grant reads "you".
             let ada = "ad".repeat(32);
             let bea = "be".repeat(32);

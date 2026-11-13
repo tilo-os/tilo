@@ -59,7 +59,7 @@ pub const WORKSPACE_SCHEDULE_CLAIMS_KEY: &str = "schedule_claims_v1";
 pub const WORKSPACE_DOOR_KEY: &str = "door_v1";
 
 /// Project a workspace's shortcuts as one map value per shortcut id, so two
-/// collaborators saving different shortcuts concurrently merge as two keys.
+/// members saving different shortcuts concurrently merge as two keys.
 /// A key this workspace no longer holds is deleted, which is how deleting a
 /// shortcut reaches the workspace: a peer's addition lands in the local list when
 /// its change is merged, before this runs again.

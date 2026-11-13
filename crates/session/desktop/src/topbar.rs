@@ -339,7 +339,7 @@ pub struct TopBarChrome {
     /// Where the last layout stood the bar.
     laid_out: BarStanding,
     /// The compact bar a display other than the primary carries: workspace navigation and the
-    /// centre widget only. Session controls, the tray and collaborators live on the primary
+    /// centre widget only. Session controls, the tray and who is here live on the primary
     /// display's full bar.
     variant: BarVariant,
     /// The display a compact bar stands on, as [`Placement`] names it; the full bar carries none,
@@ -410,7 +410,7 @@ pub struct TopBarChrome {
     people_count_rect: Rect,
     /// When someone here was first seen in a call, so their ring breathes from its start.
     call_since: Option<Instant>,
-    /// Collaborators beyond the three avatars; nonzero paints a "+N" chip.
+    /// Members beyond the three avatars; nonzero paints a "+N" chip.
     face_overflow: usize,
     /// Copied off the chrome on each revision bump. Empty until something polls — an empty reading
     /// paints no indicator rather than a plausible default.
@@ -752,7 +752,7 @@ impl TopBarChrome {
     }
 
     /// Where the full bar's session side stands: the tray, application tray, media and sharing
-    /// indicators, collaborators and the continuity offer. A compact bar on another display
+    /// indicators, who is here and the continuity offer. A compact bar on another display
     /// carries none of these. Returns where the person's own avatar leaves room beside it, for the
     /// ask.
     fn place_session_clusters(
