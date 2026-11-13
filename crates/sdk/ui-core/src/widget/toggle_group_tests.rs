@@ -1289,3 +1289,59 @@ fn a_strip_told_of_a_finger_stands_as_tall_as_its_target() {
         );
     }
 }
+
+/// A strip whose choices each run their own action — a setting's cases — runs the choice pressed
+/// and chooses nothing itself: what it fills is the case the setting holds, which the app sets.
+#[test]
+fn a_strip_of_choices_runs_the_choice_pressed_and_holds_what_the_setting_says() {
+    fn binding(edge: &str) -> crate::tilo_actions::ActionBinding<()> {
+        let spec = crate::tilo_actions::ActionSpec::typed_operation(
+            &format!("dock_{edge}"),
+            "Dock edge",
+            "Move the dock",
+            crate::tilo_actions::OperationKind::Effect,
+            "fixture.edge",
+            vec![],
+            |_| crate::tilo_actions::EncodedAction::encode_operation("fixture.edge", &()).unwrap(),
+        );
+        let resource = crate::tilo_actions::ResourceSpec::new("fixture", "fixture", "Fixture")
+            .with_action(spec.clone());
+        crate::tilo_actions::ActionBinding::new(&resource, &spec, |()| serde_json::Map::new())
+            .unwrap()
+    }
+    let edges = ["top", "bottom", "left", "right"];
+    let mut group = ToggleGroup::new(edges.iter().map(|edge| Segment::new(*edge)).collect(), 1);
+    group.set_presses(
+        edges
+            .iter()
+            .map(|edge| Press::Action(crate::widget::ActionEmitter::new(binding(edge))))
+            .collect(),
+    );
+    let mut text = TextRenderer::new();
+    group.adopt_theme(&Theme::dark());
+    group.measure_naturals(&mut text);
+    group.apply_layout_external(Rect::new(0.0, 0.0, 344.0, 36.0));
+
+    assert!(Widget::perform_semantic_action(
+        &mut group,
+        "segment:2",
+        &crate::a11y::Action::Activate,
+        &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
+        &automerge::ROOT,
+    ));
+    assert_eq!(
+        group.selected(),
+        1,
+        "the strip holds the case the setting says, not the one pressed"
+    );
+    let invocation = crate::widget::controls::take_control_invocation(&mut group)
+        .expect("the choice pressed queues its own action");
+    assert_eq!(
+        invocation.address,
+        crate::tilo_actions::ActionAddress::new("fixture", "dock_left")
+    );
+    assert!(
+        crate::widget::controls::take_control_invocation(&mut group).is_none(),
+        "one press runs one choice"
+    );
+}

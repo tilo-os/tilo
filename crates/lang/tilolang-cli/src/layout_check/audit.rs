@@ -394,17 +394,13 @@ fn heading_boxes(node: &InspectionNode, clip: Rect, out: &mut Vec<Rect>) {
     }
 }
 
-/// The boxes of what `node` shows a person, its own and its descendants': the words it names things
-/// with and the controls it offers, each as much of it as can be seen. A box that paints its own
-/// words — an empty state, a row, a card — shows them by its name.
-fn named_boxes(node: &InspectionNode, clip: Rect, out: &mut Vec<Rect>) {
+/// Whether `node`, or anything it holds, gives a person something to read or to press: the words a
+/// box paints itself, a control, or what stands inside it.
+fn shows_anything(node: &InspectionNode) -> bool {
     if floats(&node.widget) {
-        return;
+        return false;
     }
-    let inner = node
-        .child_clip
-        .map_or(clip, |child_clip| clip.intersect(rect(child_clip)));
-    let shows = is_text(node)
+    if is_text(node)
         || node.semantics.as_ref().is_some_and(|access| {
             !access.state.hidden
                 && (access
@@ -412,17 +408,11 @@ fn named_boxes(node: &InspectionNode, clip: Rect, out: &mut Vec<Rect>) {
                     .as_deref()
                     .is_some_and(|name| !name.trim().is_empty())
                     || interactive(access.role))
-        });
-    if shows {
-        let seen = rect(node.rect).intersect(clip);
-        if has_area(seen) {
-            out.push(seen);
-        }
-        return;
+        })
+    {
+        return true;
     }
-    for child in &node.children {
-        named_boxes(child, inner, out);
-    }
+    node.children.iter().any(shows_anything)
 }
 
 /// The title of a surface that says what it is for and shows nothing under it, with the band that
@@ -443,17 +433,24 @@ fn shows_nothing_under_its_title(node: &InspectionNode, own: Rect) -> Option<(Re
     let mut headings = Vec::new();
     heading_boxes(node, own, &mut headings);
     let title = headings.first().copied()?;
-    let mut content = headings;
-    named_boxes(node, own, &mut content);
-    // What stands beside the title is the header's own band: a subtitle, a count, the control that
-    // closes it. What stands under the band is the surface's body.
-    let band = content
+    // The surface's own parts, as it lays them out: the band its header stands in — what overlaps
+    // the first part — and everything the surface puts under that band.
+    let standing: Vec<&InspectionNode> = node
+        .children
         .iter()
-        .filter(|box_| box_.y0 < title.y1 - EPSILON)
-        .fold(title, |band, box_| band.union(*box_));
-    if content
+        .filter(|child| !floats(&child.widget))
+        .filter(|child| has_area(rect(child.rect).intersect(own)))
+        .collect();
+    let first = standing.first().map(|child| rect(child.rect))?;
+    let band = standing
         .iter()
-        .any(|box_| box_.y0 >= band.y1 - EPSILON && has_area(box_.intersect(own)))
+        .map(|child| rect(child.rect))
+        .filter(|part| part.y0 < first.y1 - EPSILON)
+        .fold(first, |band, part| band.union(part));
+    if standing
+        .iter()
+        .filter(|child| rect(child.rect).y0 >= band.y1 - EPSILON)
+        .any(|child| shows_anything(child))
     {
         return None;
     }
