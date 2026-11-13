@@ -242,6 +242,10 @@ mod tests {
 
     tilo_test_env::scenario! {
         /// The PCM stream between the service and its speech worker.
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "fixture arithmetic in test bodies, which the lint skips in a plain test"
+        )]
         fn the_private_speech_stream_is_exact_ordered_and_budgeted;
 
         phase private_stream_preserves_pcm_and_finishes_once;

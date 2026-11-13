@@ -287,6 +287,10 @@ mod tests {
 
     tilo_test_env::scenario! {
         /// Acoustic admission and the automatic pause, each case on a recogniser of its own.
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "fixture arithmetic in test bodies, which the lint skips in a plain test"
+        )]
         fn pauses_noise_and_silence_never_lose_or_invent_speech;
 
         phase acoustic_admission_defers_noise_without_caching_or_losing_original_speech;
@@ -440,6 +444,10 @@ mod tests {
 
     tilo_test_env::scenario! {
         /// What crosses the worker boundary when a draft is deferred, interrupted or finished.
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "fixture arithmetic in test bodies, which the lint skips in a plain test"
+        )]
         fn worker_boundaries_and_interruptions_keep_the_confirmed_prefix_and_all_audio;
 
         phase worker_boundary_keeps_confirmed_prefix_and_revises_only_the_tail;
