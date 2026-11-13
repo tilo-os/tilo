@@ -1195,6 +1195,7 @@ doc = false
 "tilo-extension" = { path = "../../../crates/system/extension-helper", default-features = false, features = [] }
 "tilo-fabric-core" = { path = "../../../crates/collab/fabric-core", default-features = false, features = [] }
 "tilo-face" = { path = "../../../crates/platform/tilo-face", default-features = false, features = [] }
+"tilo-failure" = { path = "../../../crates/platform/tilo-failure", default-features = false, features = [] }
 "tilo-feedback" = { path = "../../../crates/collab/feedback", default-features = false, features = [] }
 "tilo-feedback-review" = { path = "../../../crates/collab/feedback-review", default-features = false, features = [] }
 "tilo-feedback-transport" = { path = "../../../crates/collab/feedback-transport", default-features = false, features = [] }
@@ -2409,6 +2410,7 @@ doc = false
 "tilo-doc" = { path = "../../../crates/doc/tilo-doc", default-features = false, features = [] }
 "tilo-documents" = { path = "../../../crates/system/documents", default-features = false, features = [] }
 "tilo-face" = { path = "../../../crates/platform/tilo-face", default-features = false, features = [] }
+"tilo-failure" = { path = "../../../crates/platform/tilo-failure", default-features = false, features = [] }
 "tilo-feedback" = { path = "../../../crates/collab/feedback", default-features = false, features = [] }
 "tilo-feedback-review" = { path = "../../../crates/collab/feedback-review", default-features = false, features = [] }
 "tilo-files" = { path = "../../../crates/platform/tilo-files", default-features = false, features = ["json", "test-support", "watch"] }

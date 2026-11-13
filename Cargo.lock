@@ -28618,6 +28618,7 @@ dependencies = [
  "tilo-extension",
  "tilo-fabric-core",
  "tilo-face",
+ "tilo-failure",
  "tilo-feedback",
  "tilo-feedback-review",
  "tilo-feedback-transport",
