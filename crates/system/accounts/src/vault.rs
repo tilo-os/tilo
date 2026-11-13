@@ -9,6 +9,25 @@
 //! with the authenticator; this module owns only the account vault's format identity.
 //!
 //! # Key custody
+//!
+//! Windows protects keys with current-user DPAPI and private file ACLs, including
+//! explicit-root stores. Existing private plaintext keys migrate only after
+//! authenticated restoration, and an existing key that becomes unavailable is
+//! never replaced.
+//! The person's own store has one key custody on every host Tilo runs on:
+//! [`SecretVault::open`] holds the key in the platform's secret store
+//! (`tilo-secrets`: the Secret Service on Linux, the Keychain on macOS) where
+//! one answers, and otherwise in an owner-only `vault.key` beside the
+//! ciphertext. An owner-only key left by that fallback migrates into the
+//! secret store once it answers, after a verified round trip.
+//! [`SecretVault::open_in`] opens a store of someone else's root (a capture,
+//! an imported copy, a test's) under its own private key, so such a store
+//! never reads or replays the person's key.
+//!
+//! Failed loads are recorded for callers and prevent saves until recovery and
+//! reopen. Saves revalidate existing ciphertext before replacement; a missing
+//! key never authorizes re-keying an existing vault. The convenience `save`
+//! method logs errors, while `try_save` returns them to the caller.
 
 use std::collections::BTreeMap;
 use std::io::Read as _;
