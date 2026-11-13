@@ -749,18 +749,45 @@ mod tests {
         );
     }
 
+    /// Every retired command still reads from the bytes a workspace holds and
+    /// is refused, with the reason of what retired it.
     #[test]
-    fn a_retired_agent_membership_command_reads_and_is_refused() {
-        for held in [[0x00, 0x01, b'a', 0x02].as_slice(), &[0x01, 0x01, b'a']] {
+    fn a_retired_command_reads_and_is_refused() {
+        let grant_for_task = [
+            &[0x03, 0x01, b't', 0x06][..],
+            b"room:r",
+            &[0x01, 0x00, 0x02],
+        ]
+        .concat();
+        for (case, held, reason) in [
+            (
+                "add agent",
+                [0x00, 0x01, b'a', 0x02].as_slice(),
+                RETIRED_AGENT_MEMBERSHIP,
+            ),
+            (
+                "remove agent",
+                [0x01, 0x01, b'a'].as_slice(),
+                RETIRED_AGENT_MEMBERSHIP,
+            ),
+            (
+                "grant app authorship",
+                [0x02, 0x01, b'x'].as_slice(),
+                RETIRED_APP_AUTHORSHIP,
+            ),
+            (
+                "grant for task",
+                grant_for_task.as_slice(),
+                RETIRED_TASK_GRANTS,
+            ),
+            (
+                "revoke for task",
+                [0x04, 0x01, b't', 0x01, b'g'].as_slice(),
+                RETIRED_TASK_GRANTS,
+            ),
+        ] {
             let command = postcard::from_bytes::<WorkspaceMembershipCommand>(held).unwrap();
-            assert_eq!(command.validate(), Err(RETIRED_AGENT_MEMBERSHIP.into()));
+            assert_eq!(command.validate(), Err(reason.into()), "{case}");
         }
-    }
-
-    #[test]
-    fn a_retired_task_grant_command_reads_and_is_refused() {
-        let held = [0x04, 0x01, b't', 0x01, b'g'];
-        let command = postcard::from_bytes::<WorkspaceMembershipCommand>(&held).unwrap();
-        assert_eq!(command.validate(), Err(RETIRED_TASK_GRANTS.into()));
     }
 }

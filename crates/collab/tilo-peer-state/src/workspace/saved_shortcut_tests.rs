@@ -72,70 +72,117 @@ fn revoked(device: &Device) -> tilo_user_identity::RevocationEntry {
     entry
 }
 
+/// One row per reason a shortcut names, or does not name, who saved it: the
+/// saver is proven only by their own device's signature over the shortcut as
+/// it stands, in the workspace it was saved in, under a certificate that is
+/// valid and not revoked at that instant.
 #[test]
-fn the_savers_own_device_proves_who_saved_it() {
-    let ada = device(1, 2);
-    let saved = ada.saves(WORKSPACE, shortcut("water"));
-    assert_eq!(
-        proven_saver(WORKSPACE, &saved, &RevocationList::new(), NOW_NS),
-        Some(ada.person())
-    );
-}
-
-#[test]
-fn a_named_saver_without_their_devices_proof_is_no_saver() {
+fn a_shortcut_proves_its_saver_only_by_their_own_valid_device_in_its_workspace() {
     let ada = device(1, 2);
     let bob = device(3, 4);
     let none = RevocationList::new();
+    let saved = ada.saves(WORKSPACE, shortcut("water"));
 
     let mut unproven = shortcut("water");
     unproven.saved_by = Some(ada.person());
-    assert_eq!(proven_saver(WORKSPACE, &unproven, &none, NOW_NS), None);
-
     // Bob's device signing a shortcut that names Ada.
     let mut forged = bob.saves(WORKSPACE, shortcut("water"));
     forged.saved_by = Some(ada.person());
-    assert_eq!(proven_saver(WORKSPACE, &forged, &none, NOW_NS), None);
-
     // Ada's proof on a shortcut changed after she saved it.
     let mut changed = ada.saves(WORKSPACE, shortcut("water"));
     changed.name = "Something else".into();
-    assert_eq!(proven_saver(WORKSPACE, &changed, &none, NOW_NS), None);
-}
 
-#[test]
-fn a_shortcut_copied_into_another_workspace_proves_nothing_there() {
-    let ada = device(1, 2);
-    let saved = ada.saves(WORKSPACE, shortcut("water"));
-    assert_eq!(
-        proven_saver(OTHER_WORKSPACE, &saved, &RevocationList::new(), NOW_NS),
-        None
-    );
-}
+    let mut no_ada = RevocationList::new();
+    no_ada.insert(revoked(&ada)).unwrap();
+    let mut no_bob = RevocationList::new();
+    no_bob.insert(revoked(&bob)).unwrap();
 
-#[test]
-fn a_device_revoked_after_it_saved_proves_nothing_from_then() {
-    let ada = device(1, 2);
-    let saved = ada.saves(WORKSPACE, shortcut("water"));
-    let mut revocations = RevocationList::new();
-    revocations.insert(revoked(&ada)).unwrap();
-    assert_eq!(proven_saver(WORKSPACE, &saved, &revocations, NOW_NS), None);
-}
+    // Ada's device under a certificate that expires at `NOW_NS`.
+    let mut expiring = device(1, 2);
+    expiring.cert.expires_at_ns = Some(NOW_NS);
+    tilo_user_identity::sign_device_cert(&mut expiring.cert, &expiring.root).unwrap();
+    let brief = expiring.saves(WORKSPACE, shortcut("water"));
 
-#[test]
-fn an_expired_certificate_proves_nothing() {
-    let mut ada = device(1, 2);
-    ada.cert.expires_at_ns = Some(NOW_NS);
-    tilo_user_identity::sign_device_cert(&mut ada.cert, &ada.root).unwrap();
-    let saved = ada.saves(WORKSPACE, shortcut("water"));
-    assert_eq!(
-        proven_saver(WORKSPACE, &saved, &RevocationList::new(), NOW_NS - 1),
-        Some(ada.person())
-    );
-    assert_eq!(
-        proven_saver(WORKSPACE, &saved, &RevocationList::new(), NOW_NS),
-        None
-    );
+    for (case, workspace, subject, revocations, now_ns, expected) in [
+        (
+            "the saver's own device",
+            WORKSPACE,
+            &saved,
+            &none,
+            NOW_NS,
+            Some(ada.person()),
+        ),
+        (
+            "named without a proof",
+            WORKSPACE,
+            &unproven,
+            &none,
+            NOW_NS,
+            None,
+        ),
+        (
+            "signed by another's device",
+            WORKSPACE,
+            &forged,
+            &none,
+            NOW_NS,
+            None,
+        ),
+        (
+            "changed after it was saved",
+            WORKSPACE,
+            &changed,
+            &none,
+            NOW_NS,
+            None,
+        ),
+        (
+            "copied to another workspace",
+            OTHER_WORKSPACE,
+            &saved,
+            &none,
+            NOW_NS,
+            None,
+        ),
+        (
+            "its device revoked since",
+            WORKSPACE,
+            &saved,
+            &no_ada,
+            NOW_NS,
+            None,
+        ),
+        (
+            "another's device revoked",
+            WORKSPACE,
+            &saved,
+            &no_bob,
+            NOW_NS,
+            Some(ada.person()),
+        ),
+        (
+            "a nanosecond before expiry",
+            WORKSPACE,
+            &brief,
+            &none,
+            NOW_NS - 1,
+            Some(ada.person()),
+        ),
+        (
+            "at the instant of expiry",
+            WORKSPACE,
+            &brief,
+            &none,
+            NOW_NS,
+            None,
+        ),
+    ] {
+        assert_eq!(
+            proven_saver(workspace, subject, revocations, now_ns),
+            expected,
+            "{case}"
+        );
+    }
 }
 
 #[test]

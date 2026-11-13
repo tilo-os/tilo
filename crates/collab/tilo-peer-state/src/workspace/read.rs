@@ -421,46 +421,51 @@ mod tests {
     use automerge::{AutoCommit, ROOT, transaction::Transactable};
     use tilo_automerge::ApplyIncoming;
 
+    /// `strict_map` answers the one map a key holds and refuses every other
+    /// shape of it, one row each.
     #[test]
-    fn workspace_read_adapter_returns_the_actual_single_map_identity() {
-        let mut document = AutoCommit::new();
-        let object = document.put_object(ROOT, "channels", ObjType::Map).unwrap();
-        document.commit();
-        assert_eq!(
-            strict_map(&LegacyRead(&document), &ROOT, "channels").unwrap(),
-            object
-        );
-    }
-
-    #[test]
-    fn workspace_read_adapter_refuses_absent_or_non_map_values() {
-        let mut document = AutoCommit::new();
-        assert_eq!(
-            strict_map(&LegacyRead(&document), &ROOT, "channels"),
-            Err(ReadError::Visitor(MediaPolicyError::Conflict))
-        );
-        document.put(ROOT, "channels", "wrong kind").unwrap();
-        document.commit();
-        assert_eq!(
-            strict_map(&LegacyRead(&document), &ROOT, "channels"),
-            Err(ReadError::Visitor(MediaPolicyError::Conflict))
-        );
-    }
-
-    #[test]
-    fn workspace_read_adapter_refuses_actual_concurrent_map_objects() {
-        let mut first = AutoCommit::new();
-        let mut second = first.fork();
-        first.put_object(ROOT, "channels", ObjType::Map).unwrap();
-        first.commit();
+    fn workspace_read_adapter_returns_the_single_map_and_refuses_every_other_shape() {
+        let absent = AutoCommit::new();
+        let mut scalar = AutoCommit::new();
+        scalar.put(ROOT, "channels", "wrong kind").unwrap();
+        scalar.commit();
+        let mut single = AutoCommit::new();
+        let object = single.put_object(ROOT, "channels", ObjType::Map).unwrap();
+        single.commit();
+        let mut concurrent = AutoCommit::new();
+        let mut second = concurrent.fork();
+        concurrent
+            .put_object(ROOT, "channels", ObjType::Map)
+            .unwrap();
+        concurrent.commit();
         second.put_object(ROOT, "channels", ObjType::Map).unwrap();
         second.commit();
-        first.merge_incoming(&mut second).unwrap();
-        assert_eq!(first.get_all(ROOT, "channels").unwrap().len(), 2);
-        assert_eq!(
-            strict_map(&LegacyRead(&first), &ROOT, "channels"),
-            Err(ReadError::Visitor(MediaPolicyError::Conflict))
-        );
+        concurrent.merge_incoming(&mut second).unwrap();
+        assert_eq!(concurrent.get_all(ROOT, "channels").unwrap().len(), 2);
+        for (case, document, expected) in [
+            ("the actual single map", &single, Ok(object)),
+            (
+                "an absent key",
+                &absent,
+                Err(ReadError::Visitor(MediaPolicyError::Conflict)),
+            ),
+            (
+                "a value that is not a map",
+                &scalar,
+                Err(ReadError::Visitor(MediaPolicyError::Conflict)),
+            ),
+            (
+                "two concurrent map objects",
+                &concurrent,
+                Err(ReadError::Visitor(MediaPolicyError::Conflict)),
+            ),
+        ] {
+            assert_eq!(
+                strict_map(&LegacyRead(document), &ROOT, "channels"),
+                expected,
+                "{case}"
+            );
+        }
     }
 
     /// Each key with every value a lookup by key reads for it.

@@ -99,24 +99,19 @@ mod tests {
             "time-dependent validity is never cached"
         );
         assert_eq!(
+            verified.current_typed(9).unwrap(),
+            verified.as_ref(),
+            "a current certificate is answered as the one that was verified"
+        );
+        assert!(
+            matches!(verified.current_typed(0), Err(DeviceCertError::NotYetValid)),
+            "before its issue time"
+        );
+        assert_eq!(
             crate::state::CERTIFICATE_VERIFICATIONS.with(std::cell::Cell::get),
             0
         );
         assert!(VerifiedCertificate::new(certificate(), 10).is_err());
-    }
-
-    #[test]
-    fn typed_current_certificate_checks_time() {
-        let verified = VerifiedCertificate::new(certificate(), 9).unwrap();
-        assert_eq!(verified.current_typed(9).unwrap(), verified.as_ref());
-        assert!(matches!(
-            verified.current_typed(10),
-            Err(DeviceCertError::Expired)
-        ));
-        assert!(matches!(
-            verified.current_typed(0),
-            Err(DeviceCertError::NotYetValid)
-        ));
     }
 
     #[test]
