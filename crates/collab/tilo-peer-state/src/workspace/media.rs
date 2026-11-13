@@ -940,40 +940,96 @@ mod workspace_media_tests {
         }
     }
 
+    /// One row per policy outside the schema or its bounds: none encodes, and
+    /// none parses from the bytes a writer could put in its place.
     #[test]
-    fn schema_version_zero_counters_keys_and_empty_denials_are_rejected() {
-        for changed in [
-            edited(|v| v.version = 2),
-            edited(|v| v.authorization_revision = 0),
-            edited(|v| v.workspace = [0; 16]),
-            edited(|v| v.calls.get_mut(&[7; 32]).unwrap().epoch = 0),
-            edited(|v| {
-                let call = v.calls.remove(&[7; 32]).unwrap();
-                v.calls.insert([0; 32], call);
-            }),
-            edited(|v| {
-                v.calls.get_mut(&[7; 32]).unwrap().denied.insert(
-                    [8; 32],
-                    DirectionsV1 {
-                        publish: false,
-                        subscribe: false,
-                    },
-                );
-            }),
-            edited(|v| {
-                v.calls.get_mut(&[7; 32]).unwrap().denied.insert(
-                    [0; 32],
+    fn policies_outside_the_schema_or_its_bounds_neither_encode_nor_parse() {
+        let mut too_many_calls = policy();
+        for key in 1u8..=65 {
+            let mut call = policy().calls.remove(&[7; 32]).unwrap();
+            call.binding.channel_id = format!("voice-{key}");
+            call.binding.channel_object = format!("{key}@01");
+            too_many_calls.calls.insert([key; 32], call);
+        }
+        let mut too_many_denials = policy();
+        for key in 1u8..=129 {
+            too_many_denials
+                .calls
+                .get_mut(&[7; 32])
+                .unwrap()
+                .denied
+                .insert(
+                    [key; 32],
                     DirectionsV1 {
                         publish: true,
                         subscribe: false,
                     },
                 );
-            }),
+        }
+        let mut duplicate_binding = policy();
+        let bound_twice = duplicate_binding.calls[&[7; 32]].clone();
+        duplicate_binding.calls.insert([8; 32], bound_twice);
+        for (case, changed) in [
+            ("an unknown version", edited(|v| v.version = 2)),
+            ("revision zero", edited(|v| v.authorization_revision = 0)),
+            ("the nil workspace", edited(|v| v.workspace = [0; 16])),
+            (
+                "epoch zero",
+                edited(|v| v.calls.get_mut(&[7; 32]).unwrap().epoch = 0),
+            ),
+            (
+                "the zero call id",
+                edited(|v| {
+                    let call = v.calls.remove(&[7; 32]).unwrap();
+                    v.calls.insert([0; 32], call);
+                }),
+            ),
+            (
+                "a denial that denies nothing",
+                edited(|v| {
+                    v.calls.get_mut(&[7; 32]).unwrap().denied.insert(
+                        [8; 32],
+                        DirectionsV1 {
+                            publish: false,
+                            subscribe: false,
+                        },
+                    );
+                }),
+            ),
+            (
+                "a denial of the zero root",
+                edited(|v| {
+                    v.calls.get_mut(&[7; 32]).unwrap().denied.insert(
+                        [0; 32],
+                        DirectionsV1 {
+                            publish: true,
+                            subscribe: false,
+                        },
+                    );
+                }),
+            ),
+            ("65 calls", too_many_calls),
+            ("129 denials in one call", too_many_denials),
+            (
+                "a record id of 1025 bytes",
+                edited(|v| v.calls.get_mut(&[7; 32]).unwrap().binding.record_id = "x".repeat(1025)),
+            ),
+            (
+                "a channel id of 129 bytes",
+                edited(|v| v.calls.get_mut(&[7; 32]).unwrap().binding.channel_id = "x".repeat(129)),
+            ),
+            (
+                "a channel id with a NUL",
+                edited(|v| {
+                    v.calls.get_mut(&[7; 32]).unwrap().binding.channel_id = "bad\0key".into();
+                }),
+            ),
+            ("two calls bound to one channel", duplicate_binding),
         ] {
-            assert!(encode(&changed).is_err());
+            assert!(encode(&changed).is_err(), "{case} encodes");
             let mut doc = workspace();
             raw(&mut doc, &changed);
-            assert!(parse(&doc).is_err());
+            assert!(parse(&doc).is_err(), "{case} parses");
         }
     }
 
@@ -1028,158 +1084,159 @@ mod workspace_media_tests {
         );
     }
 
+    /// One row per transition: the policy before, the policy after, the mode
+    /// it is judged in, and whether it stands.
     #[test]
-    fn collection_string_and_wire_bounds_reject_before_use() {
-        let mut too_many = policy();
-        for key in 1u8..=65 {
-            let mut call = policy().calls.remove(&[7; 32]).unwrap();
-            call.binding.channel_id = format!("voice-{key}");
-            call.binding.channel_object = format!("{key}@01");
-            too_many.calls.insert([key; 32], call);
-        }
-        let mut denied = policy();
-        for key in 1u8..=129 {
-            denied.calls.get_mut(&[7; 32]).unwrap().denied.insert(
-                [key; 32],
-                DirectionsV1 {
-                    publish: true,
-                    subscribe: false,
-                },
-            );
-        }
-        for value in [
-            too_many,
-            denied,
-            edited(|v| v.calls.get_mut(&[7; 32]).unwrap().binding.record_id = "x".repeat(1025)),
-            edited(|v| v.calls.get_mut(&[7; 32]).unwrap().binding.channel_id = "x".repeat(129)),
-            edited(|v| v.calls.get_mut(&[7; 32]).unwrap().binding.channel_id = "bad\0key".into()),
-        ] {
-            assert!(encode(&value).is_err());
-            let mut doc = workspace();
-            raw(&mut doc, &value);
-            assert!(parse(&doc).is_err());
-        }
-        let mut doc = workspace();
-        doc.put(ROOT, FIELD, ScalarValue::Bytes(vec![0; 256 * 1024 + 1]))
-            .unwrap();
-        assert_eq!(parse(&doc), Err(MediaPolicyError::Capacity));
-    }
-
-    #[test]
-    fn duplicate_bindings_and_noncanonical_map_order_are_rejected() {
-        let mut value = policy();
-        value.calls.insert([8; 32], value.calls[&[7; 32]].clone());
-        assert!(encode(&value).is_err());
-        let mut doc = workspace();
-        raw(&mut doc, &value);
-        assert!(parse(&doc).is_err());
-        // Map ABI is length followed by key/value pairs; descending keys are noncanonical.
-        let call = policy().calls[&[7; 32]].clone();
-        let other = edited(|v| {
-            let binding = &mut v.calls.get_mut(&[7; 32]).unwrap().binding;
-            binding.channel_id = "other".into();
-            binding.channel_object = "2@01".into();
-        })
-        .calls[&[7; 32]]
-            .clone();
-        let mut valid = policy();
-        valid.calls.insert([8; 32], other.clone());
-        assert!(
-            encode(&valid).is_ok(),
-            "the descending-map fixture has valid bindings"
-        );
-        let mut bytes = postcard::to_allocvec(&(1u8, [1u8; 16], 1u64, [3u8; 32], 2u8)).unwrap();
-        bytes.extend(postcard::to_allocvec(&([8u8; 32], other)).unwrap());
-        bytes.extend(postcard::to_allocvec(&([7u8; 32], call)).unwrap());
-        doc.put(ROOT, FIELD, ScalarValue::Bytes(bytes)).unwrap();
-        assert_eq!(parse(&doc), Err(MediaPolicyError::Malformed));
-    }
-
-    #[test]
-    fn new_authoring_starts_at_one_but_authenticated_history_may_start_later() {
-        let value = edited(|v| {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one row per transition: the table stays in one place"
+    )]
+    fn a_policy_transition_stands_only_where_its_counters_and_bindings_allow() {
+        use TransitionMode::{Admission, Authoring, Restore};
+        let old = policy();
+        let later = edited(|v| {
             v.authorization_revision = 5;
             v.calls.get_mut(&[7; 32]).unwrap().epoch = 9;
         });
-        assert!(validate_policy_transition(None, Some(&value), TransitionMode::Authoring).is_err());
-        assert!(validate_policy_transition(None, Some(&value), TransitionMode::Admission).is_ok());
-        assert!(validate_policy_transition(None, Some(&value), TransitionMode::Restore).is_ok());
-        assert!(
-            validate_policy_transition(None, Some(&policy()), TransitionMode::Authoring).is_ok()
-        );
-    }
-
-    #[test]
-    fn basis_and_moderation_cannot_change_at_the_same_counter() {
-        for value in [
-            edited(|v| v.authorization_basis = [4; 32]),
-            edited(|v| v.calls.get_mut(&[7; 32]).unwrap().allowed.publish = false),
-            edited(|v| v.calls.get_mut(&[7; 32]).unwrap().phase = CallPhaseV1::Ended),
-        ] {
-            assert!(
-                validate_policy_transition(
-                    Some(&policy()),
-                    Some(&value),
-                    TransitionMode::Admission
-                )
-                .is_err()
-            );
-        }
-    }
-
-    #[test]
-    fn authoring_requires_one_step_and_replay_cannot_erase_or_rebind() {
-        let old = policy();
-        let changed = edited(|v| {
+        let basis = edited(|v| v.authorization_basis = [4; 32]);
+        let direction = edited(|v| v.calls.get_mut(&[7; 32]).unwrap().allowed.publish = false);
+        let phase = edited(|v| v.calls.get_mut(&[7; 32]).unwrap().phase = CallPhaseV1::Ended);
+        let rebound = edited(|v| {
             v.calls.get_mut(&[7; 32]).unwrap().binding.record_id = "uuid:other".into();
             v.calls.get_mut(&[7; 32]).unwrap().epoch = 2;
         });
-        assert!(
-            validate_policy_transition(Some(&old), Some(&changed), TransitionMode::Admission)
-                .is_err()
-        );
-        assert!(validate_policy_transition(Some(&old), None, TransitionMode::Admission).is_err());
-        let mut erased = old.clone();
-        erased.calls.clear();
-        assert!(
-            validate_policy_transition(Some(&old), Some(&erased), TransitionMode::Admission)
-                .is_err()
-        );
-        let mut changed = old.clone();
-        changed.authorization_basis = [4; 32];
-        changed.authorization_revision = 3;
-        assert!(
-            validate_policy_transition(Some(&old), Some(&changed), TransitionMode::Authoring)
-                .is_err()
-        );
-        assert!(
-            validate_policy_transition(Some(&old), Some(&changed), TransitionMode::Admission)
-                .is_ok()
-        );
-    }
-
-    #[test]
-    fn ended_restart_and_moderation_use_epoch_without_global_revision() {
-        let old = policy();
-        let mut ended = old.clone();
-        ended.calls.get_mut(&[7; 32]).unwrap().phase = CallPhaseV1::Ended;
-        ended.calls.get_mut(&[7; 32]).unwrap().epoch = 2;
-        assert!(
-            validate_policy_transition(Some(&old), Some(&ended), TransitionMode::Authoring).is_ok()
-        );
-        let mut restart = old.clone();
-        restart.calls.get_mut(&[7; 32]).unwrap().epoch = 3;
-        assert!(
-            validate_policy_transition(Some(&ended), Some(&restart), TransitionMode::Authoring)
-                .is_ok()
-        );
-        assert!(
-            validate_policy_transition(Some(&restart), Some(&old), TransitionMode::Admission)
-                .is_err()
-        );
-        assert!(
-            validate_policy_transition(Some(&old), Some(&old), TransitionMode::Authoring).is_ok()
-        );
+        let erased = edited(|v| v.calls.clear());
+        let skipped = edited(|v| {
+            v.authorization_basis = [4; 32];
+            v.authorization_revision = 3;
+        });
+        let ended = edited(|v| {
+            v.calls.get_mut(&[7; 32]).unwrap().phase = CallPhaseV1::Ended;
+            v.calls.get_mut(&[7; 32]).unwrap().epoch = 2;
+        });
+        let restart = edited(|v| v.calls.get_mut(&[7; 32]).unwrap().epoch = 3);
+        let second = edited(|v| v.authorization_revision = 2);
+        let moved = edited(|v| v.workspace = [2; 16]);
+        for (case, before, after, mode, stands) in [
+            (
+                "first policy past one, authored",
+                None,
+                Some(&later),
+                Authoring,
+                false,
+            ),
+            (
+                "first policy past one, admitted",
+                None,
+                Some(&later),
+                Admission,
+                true,
+            ),
+            (
+                "first policy past one, restored",
+                None,
+                Some(&later),
+                Restore,
+                true,
+            ),
+            (
+                "first policy at one, authored",
+                None,
+                Some(&old),
+                Authoring,
+                true,
+            ),
+            (
+                "basis changed, same revision",
+                Some(&old),
+                Some(&basis),
+                Admission,
+                false,
+            ),
+            (
+                "direction changed, same epoch",
+                Some(&old),
+                Some(&direction),
+                Admission,
+                false,
+            ),
+            (
+                "phase changed, same epoch",
+                Some(&old),
+                Some(&phase),
+                Admission,
+                false,
+            ),
+            (
+                "call bound to another record",
+                Some(&old),
+                Some(&rebound),
+                Admission,
+                false,
+            ),
+            ("policy taken away", Some(&old), None, Admission, false),
+            ("call erased", Some(&old), Some(&erased), Admission, false),
+            (
+                "revision two steps on, authored",
+                Some(&old),
+                Some(&skipped),
+                Authoring,
+                false,
+            ),
+            (
+                "revision two steps on, admitted",
+                Some(&old),
+                Some(&skipped),
+                Admission,
+                true,
+            ),
+            (
+                "call ended one epoch on",
+                Some(&old),
+                Some(&ended),
+                Authoring,
+                true,
+            ),
+            (
+                "ended call restarted one epoch on",
+                Some(&ended),
+                Some(&restart),
+                Authoring,
+                true,
+            ),
+            (
+                "restarted call replayed back",
+                Some(&restart),
+                Some(&old),
+                Admission,
+                false,
+            ),
+            (
+                "unchanged policy, authored",
+                Some(&old),
+                Some(&old),
+                Authoring,
+                true,
+            ),
+            ("no policy before or after", None, None, Admission, true),
+            (
+                "revision that went back",
+                Some(&second),
+                Some(&old),
+                Admission,
+                false,
+            ),
+            (
+                "policy moved to another workspace",
+                Some(&old),
+                Some(&moved),
+                Admission,
+                false,
+            ),
+        ] {
+            let judged = validate_policy_transition(before, after, mode);
+            assert_eq!(judged.is_ok(), stands, "{case}: {judged:?}");
+        }
     }
 
     #[test]
@@ -1291,18 +1348,6 @@ mod workspace_media_tests {
         assert_eq!(parse(&doc), Err(MediaPolicyError::Capacity));
     }
 
-    #[test]
-    fn duplicate_wire_keys_cannot_be_normalized_into_a_valid_map() {
-        let call = policy().calls[&[7; 32]].clone();
-        let mut bytes = postcard::to_allocvec(&(1u8, [1u8; 16], 1u64, [3u8; 32], 2u8)).unwrap();
-        for _ in 0..2 {
-            bytes.extend(postcard::to_allocvec(&([7u8; 32], &call)).unwrap());
-        }
-        let mut doc = workspace();
-        doc.put(ROOT, FIELD, ScalarValue::Bytes(bytes)).unwrap();
-        assert_eq!(parse(&doc), Err(MediaPolicyError::Malformed));
-    }
-
     fn wire_prefix(calls: usize) -> Vec<u8> {
         postcard::to_allocvec(&(1u8, [1u8; 16], 1u64, [3u8; 32], calls)).unwrap()
     }
@@ -1333,42 +1378,76 @@ mod workspace_media_tests {
         );
     }
 
+    /// One row per wire shape judged before any row of it is built: what the
+    /// bytes count, and the order and number of their keys.
     #[test]
-    fn excessive_map_counts_return_capacity_before_reading_missing_rows() {
-        // No call rows follow: Capacity must be detected at the count, before EOF.
-        assert_eq!(parse_wire(wire_prefix(65)), Err(MediaPolicyError::Capacity));
-        let mut bytes = wire_prefix(1);
-        append_call_prefix(&mut bytes, 1, 129);
-        // No denial rows follow, so a decoder that starts them reports Malformed.
-        assert_eq!(parse_wire(bytes), Err(MediaPolicyError::Capacity));
-    }
-
-    #[test]
-    fn shared_denial_budget_stops_before_decoding_the_513th_row() {
+    fn wire_counts_and_keys_are_judged_before_their_rows_are_read() {
+        use MediaPolicyError::{Capacity, Malformed, UnsupportedVersion};
+        let call = policy().calls[&[7; 32]].clone();
+        let mut duplicate_keys =
+            postcard::to_allocvec(&(1u8, [1u8; 16], 1u64, [3u8; 32], 2u8)).unwrap();
+        for _ in 0..2 {
+            duplicate_keys.extend(postcard::to_allocvec(&([7u8; 32], &call)).unwrap());
+        }
+        // Map ABI is length followed by key/value pairs; descending keys are noncanonical.
+        let other = edited(|v| {
+            let binding = &mut v.calls.get_mut(&[7; 32]).unwrap().binding;
+            binding.channel_id = "other".into();
+            binding.channel_object = "2@01".into();
+        })
+        .calls[&[7; 32]]
+            .clone();
+        let mut valid = policy();
+        valid.calls.insert([8; 32], other.clone());
+        assert!(
+            encode(&valid).is_ok(),
+            "the descending-map fixture has valid bindings"
+        );
+        let mut descending_keys =
+            postcard::to_allocvec(&(1u8, [1u8; 16], 1u64, [3u8; 32], 2u8)).unwrap();
+        descending_keys.extend(postcard::to_allocvec(&([8u8; 32], other)).unwrap());
+        descending_keys.extend(postcard::to_allocvec(&([7u8; 32], call)).unwrap());
+        let mut denials_over = wire_prefix(1);
+        append_call_prefix(&mut denials_over, 1, 129);
+        let denial = DirectionsV1 {
+            publish: true,
+            subscribe: false,
+        };
         let mut rows = Vec::new();
         for id in 1u8..=4 {
             append_call_prefix(&mut rows, id, 128);
             for root in 1u8..=128 {
-                rows.extend(
-                    postcard::to_allocvec(&(
-                        [root; 32],
-                        DirectionsV1 {
-                            publish: true,
-                            subscribe: false,
-                        },
-                    ))
-                    .unwrap(),
-                );
+                rows.extend(postcard::to_allocvec(&([root; 32], &denial)).unwrap());
             }
         }
         let mut exact = wire_prefix(4);
         exact.extend(&rows);
         assert!(parse_wire(exact).is_ok(), "512 complete rows are valid");
-        let mut over = wire_prefix(5);
-        over.extend(rows);
-        append_call_prefix(&mut over, 5, 1);
-        // The 513th row is absent: a post-allocation global check cannot pass this.
-        assert_eq!(parse_wire(over), Err(MediaPolicyError::Capacity));
+        let mut budget_over = wire_prefix(5);
+        budget_over.extend(rows);
+        append_call_prefix(&mut budget_over, 5, 1);
+        let version_two = postcard::to_allocvec(&(2u8, [1u8; 16], 1u64, [3u8; 32], 0u8)).unwrap();
+        for (case, bytes, expected) in [
+            ("one call key twice", duplicate_keys, Malformed),
+            ("call keys in descending order", descending_keys, Malformed),
+            // No call rows follow: Capacity must be detected at the count, before EOF.
+            ("65 calls counted and none sent", wire_prefix(65), Capacity),
+            // The most calls a policy holds: the count passes, the missing rows do not.
+            ("64 calls counted and none sent", wire_prefix(64), Malformed),
+            // No denial rows follow, so a decoder that starts them reports Malformed.
+            ("129 denials counted and none sent", denials_over, Capacity),
+            // The 513th row is absent: a post-allocation global check cannot pass this.
+            ("a 513th denial counted and not sent", budget_over, Capacity),
+            (
+                "one byte past a policy's size",
+                vec![0; 256 * 1024 + 1],
+                Capacity,
+            ),
+            ("no bytes at all", Vec::new(), Malformed),
+            ("version 2 on the wire", version_two, UnsupportedVersion),
+        ] {
+            assert_eq!(parse_wire(bytes), Err(expected), "{case}");
+        }
     }
 
     #[test]

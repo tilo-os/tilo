@@ -456,13 +456,14 @@ fn workspace_first_receiver(author: &StatePeer, key: &SigningKey, now: SystemTim
 }
 
 fn assert_invalid_then_valid_chat(
+    case: &str,
     mut receiver: StatePeer,
     author: &StatePeer,
     key: &SigningKey,
     now: SystemTime,
     expected: media::WorkspaceMediaV1,
 ) {
-    assert!(receiver.exact_admissions_selected());
+    assert!(receiver.exact_admissions_selected(), "{case}");
     let origin = TransportOrigin::RelayDelta(key.verifying_key().to_bytes());
     let bad_bytes = edited_chat(author, 2).0;
     let (bad, coverage) = author
@@ -480,12 +481,16 @@ fn assert_invalid_then_valid_chat(
     assert_eq!(
         error,
         AdmissionError::Rejected(media::MediaPolicyError::Binding.to_string()),
-        "the signed snapshot must reach the exact Chat binding guard"
+        "{case}: the signed snapshot must reach the exact Chat binding guard"
     );
-    assert_eq!(bytes, receiver.durable().unwrap());
-    assert_eq!(floors, receiver.replay_floors());
-    assert_eq!(index, receiver.core.exact_admissions.encode().unwrap());
-    assert!(receiver.validated_media_policy().is_err());
+    assert_eq!(bytes, receiver.durable().unwrap(), "{case}");
+    assert_eq!(floors, receiver.replay_floors(), "{case}");
+    assert_eq!(
+        index,
+        receiver.core.exact_admissions.encode().unwrap(),
+        "{case}"
+    );
+    assert!(receiver.validated_media_policy().is_err(), "{case}");
 
     // A different snapshot needs its own authentic coverage and a higher
     // sequence. Continue the same workspace history so the malicious candidate and
@@ -509,12 +514,23 @@ fn assert_invalid_then_valid_chat(
         .receive_from_report(origin, message(&mut workspace), now)
         .unwrap();
     let admitted = receiver.receive_from_report(origin, valid, now).unwrap();
-    assert!(matches!(admitted.primary(), InputDisposition::Accepted(_)));
-    assert_eq!(receiver.validated_media_policy().unwrap(), Some(expected));
+    assert!(
+        matches!(admitted.primary(), InputDisposition::Accepted(_)),
+        "{case}"
+    );
+    assert_eq!(
+        receiver.validated_media_policy().unwrap(),
+        Some(expected),
+        "{case}"
+    );
 }
 
+/// A receiver that took the workspace before its Chat holds the policy
+/// unvalidated, refuses at the binding guard a snapshot that breaks the
+/// binding and then takes the valid one: restored from what it kept before
+/// Chat arrived, and as it runs.
 #[test]
-fn workspace_media_workspace_first_restore_preserves_pending_exact_chat() {
+fn workspace_media_workspace_first_receiver_reaches_binding_guard_restored_and_live() {
     let (mut author, key, now) = fixture();
     let value = policy(&author);
     install_policy(&mut author, &key, now, &value).unwrap();
@@ -536,20 +552,8 @@ fn workspace_media_workspace_first_restore_preserves_pending_exact_chat() {
     assert_eq!(bytes, restored.durable().unwrap());
     assert!(restored.exact_admissions_selected());
     assert!(restored.validated_media_policy().is_err());
-    assert_invalid_then_valid_chat(restored, &author, &key, now, value);
-}
-
-#[test]
-fn workspace_media_strict_missing_chat_snapshot_reaches_binding_guard() {
-    let (mut author, key, now) = fixture();
-    let value = policy(&author);
-    install_policy(&mut author, &key, now, &value).unwrap();
-    author
-        .publication_mut()
-        .bootstrap_messages(&key, now)
-        .unwrap();
-    let receiver = workspace_first_receiver(&author, &key, now);
-    assert_invalid_then_valid_chat(receiver, &author, &key, now, value);
+    assert_invalid_then_valid_chat("restored", restored, &author, &key, now, value.clone());
+    assert_invalid_then_valid_chat("live", receiver, &author, &key, now, value);
 }
 #[test]
 fn workspace_media_exact_record_foreign_workspace_and_alias_are_not_substitutes() {
