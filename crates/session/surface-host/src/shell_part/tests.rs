@@ -578,35 +578,62 @@ fn a_press_on_a_dock_app_asks_the_session_to_open_it() {
     );
 }
 
+/// A window fullscreen on the display a part stands on owns that display: the part steps aside,
+/// with not a row of it over the window and no pointer taken there, and it is back over the
+/// whole screen when the window leaves fullscreen. A window fullscreen on another display
+/// leaves the part standing.
 #[test]
-fn a_part_on_a_fullscreen_display_steps_aside_and_comes_back() {
-    let (mut part, _link) = part();
-    assert!(!part.aside(), "no window owns the display: the part stands");
-    assert_eq!(part.widgets.placement().size, (1280, 800), "the screen");
-    // A fullscreen window takes the display the part stands on: it draws nothing there.
-    part.set_fullscreen(vec!["HEADLESS-1".to_owned()]);
-    assert!(part.aside(), "the part stepped aside");
-    assert_eq!(
-        part.widgets.placement().size.1,
-        1,
-        "nothing of the part covers the window"
-    );
-    assert!(
-        !part.accepts_pointer(100.0, 10.0),
-        "the window under it takes the pointer"
-    );
-    assert!(
-        part.layers().is_empty(),
-        "not a row of the part is handed to the compositor over the window"
-    );
-    // The window leaves fullscreen: the part is back, over the whole screen.
-    part.set_fullscreen(Vec::new());
-    assert!(!part.aside());
-    assert_eq!(
-        part.widgets.placement().size,
-        (1280, 800),
-        "back over the screen"
-    );
+fn a_part_steps_aside_only_for_a_window_fullscreen_on_its_own_display() {
+    let rows: [(&[&str], bool); 4] = [
+        (&["HEADLESS-1"], true),
+        (&["HEADLESS-2"], false),
+        (&["HEADLESS-2", "HEADLESS-1"], true),
+        (&[], false),
+    ];
+    let packages = compiled();
+    for (fullscreen, aside) in rows {
+        let (mut part, _link) = part_of(&packages, reading(), (1280, 800));
+        assert!(!part.aside(), "no window owns the display: the part stands");
+        assert_eq!(part.widgets.placement().size, (1280, 800), "the screen");
+        // The displays fullscreen windows take: the part stands on `HEADLESS-1`.
+        part.set_fullscreen(fullscreen.iter().map(|name| (*name).to_owned()).collect());
+        assert_eq!(
+            part.aside(),
+            aside,
+            "with a window fullscreen on {fullscreen:?}"
+        );
+        if aside {
+            // The window took the display the part stands on: it draws nothing there.
+            assert_eq!(
+                part.widgets.placement().size.1,
+                1,
+                "nothing of the part covers the window on {fullscreen:?}"
+            );
+            assert!(
+                !part.accepts_pointer(100.0, 10.0),
+                "the window under it takes the pointer on {fullscreen:?}"
+            );
+            assert!(
+                part.layers().is_empty(),
+                "not a row of the part is handed to the compositor over the window on \
+                 {fullscreen:?}"
+            );
+        } else {
+            assert_eq!(
+                part.widgets.placement().size,
+                (1280, 800),
+                "the part stands over its screen with {fullscreen:?} fullscreen"
+            );
+        }
+        // The window leaves fullscreen: the part is back, over the whole screen.
+        part.set_fullscreen(Vec::new());
+        assert!(!part.aside(), "back after {fullscreen:?}");
+        assert_eq!(
+            part.widgets.placement().size,
+            (1280, 800),
+            "back over the screen after {fullscreen:?}"
+        );
+    }
 }
 
 #[test]
@@ -686,17 +713,6 @@ fn a_part_whose_display_went_stands_nowhere_until_it_comes_back() {
         (1280, 800),
         "its whole screen"
     );
-}
-
-#[test]
-fn a_fullscreen_window_on_another_display_leaves_this_part_standing() {
-    let (mut part, _link) = part();
-    part.set_fullscreen(vec!["HEADLESS-2".to_owned()]);
-    assert!(
-        !part.aside(),
-        "the window owns the other display: this part stands"
-    );
-    assert_eq!(part.widgets.placement().size, (1280, 800));
 }
 
 /// The person's arrangement: one strip on the desk, its one place a foreign window's (no
