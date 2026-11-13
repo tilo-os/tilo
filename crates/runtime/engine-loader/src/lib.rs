@@ -1,21 +1,13 @@
 //! Engine libraries the shared runtime opens the first time something uses
-//! them.
+//! them: code beside `libruntime_dylib.so` that only some apps need.
 //!
-//! An engine library (`crates/runtime/engines/`) is code beside
-//! `libruntime_dylib.so` that only some apps need. Most are named
-//! `DT_NEEDED` by their apps, so the loader maps and relocates them at exec.
-//! Some are reached by the toolkit on behalf of every app, but only once a
-//! person does something particular: searching a large index (tantivy),
-//! highlighting code (the syntax grammars), compiling ad-block filter lists.
-//! No app names those; the toolkit opens them here on first use, so an app
-//! that never searches, highlights or blocks never maps them.
-//!
-//! An engine exports one entry function under an unmangled name, whose type
-//! the runtime side defines and the engine crate is checked against at
-//! compile time. The library is found the way the loader found the runtime
-//! (the runtime bundle's `lib/`, on the sandbox's library path), opened with
-//! its symbols local, and never closed: what it hands out lives as long as
-//! the process.
+//! Engines the toolkit reaches on every app's behalf — searching a large
+//! index (tantivy), highlighting code (the syntax grammars), compiling
+//! ad-block filter lists — are opened here rather than named by the app, so
+//! an app that never searches, highlights or blocks never maps them. A
+//! library opened here is never closed: what it hands out lives as long as
+//! the process. An engine exports one entry function under an unmangled name,
+//! whose type the runtime side defines.
 
 use std::fmt;
 
@@ -76,8 +68,7 @@ mod imp {
 
     use super::LoadError;
 
-    /// An open library. Never closed: its code and data stay mapped for as
-    /// long as anything it handed out may be used, which is the process.
+    /// An open library. Never closed: the process uses what it handed out.
     struct Handle(*mut c_void);
 
     // SAFETY: a `dlopen` handle may be used from any thread.
@@ -159,7 +150,6 @@ mod tests {
             matches!(missing, Err(LoadError::Open { ref library, .. }) if library == "libtilo_no_such_engine.so"),
             "{missing:?}"
         );
-        // The C library is open in every process; it has no such entry.
         // SAFETY: as above.
         let absent = unsafe { entry::<fn()>("libc.so.6", "tilo_no_such_entry") };
         assert!(
