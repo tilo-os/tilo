@@ -2555,9 +2555,17 @@ pub fn edit_action(
         .ok_or_else(|| format!("the package declares no type `{type_name}`"))?;
     let schema =
         lookup(&declared.id).ok_or_else(|| format!("the type `{type_name}` is not registered"))?;
+    // A caller names the field as its type declares it; it is stored under its id.
+    let named = field;
+    let field = declared
+        .fields
+        .iter()
+        .find(|declared| declared.name == named)
+        .map(|declared| declared.id.as_str())
+        .ok_or_else(|| format!("the type `{type_name}` has no field `{named}`"))?;
     let schema_field = schema
         .field(field)
-        .ok_or_else(|| format!("the type `{type_name}` has no field `{field}`"))?;
+        .ok_or_else(|| format!("the type `{type_name}` has no field `{named}`"))?;
     let op = match (schema_field.kind, value) {
         (MergeKind::Text, Json::String(text)) => EditOp::Replace { text: text.clone() },
         (MergeKind::Register, value) => EditOp::Set {
@@ -2626,7 +2634,7 @@ fn edit_types(meta: &Meta, type_name: &str, planner: &Arc<dyn Planner>) -> [Arc<
             label,
             ExecutionLocus::ClientLocal,
             vec![
-                ActionParam::required("field", ParamType::Text, "The field id"),
+                ActionParam::required("field", ParamType::Text, "The field's name"),
                 ActionParam::required("value", ty, "The new value"),
             ],
             move |target: &Target, args: &ActionArgs| {

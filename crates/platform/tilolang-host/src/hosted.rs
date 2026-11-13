@@ -2179,7 +2179,7 @@ fn door_ask(
         Invocation::Edit {
             app,
             target,
-            field_id,
+            field,
             value,
             ..
         } => {
@@ -2189,7 +2189,8 @@ fn door_ask(
             };
             let value = tilolang_tilo::runtime::value::to_argument(value).unwrap_or_default();
             let arguments = serde_json::Map::from_iter([
-                ("field".to_owned(), field_id.clone().into()),
+                // The field as its type names it, which the door's edit takes.
+                ("field".to_owned(), field.clone().into()),
                 ("value".to_owned(), value),
             ]);
             Some((

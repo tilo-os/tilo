@@ -347,7 +347,7 @@ impl tilolang_tilo::runtime::delegate::Invoker for PlaceInvoker {
             }
             Invocation::Edit {
                 target,
-                field_id,
+                field,
                 value,
                 ..
             } => {
@@ -359,7 +359,7 @@ impl tilolang_tilo::runtime::delegate::Invoker for PlaceInvoker {
                     resource: target.id_string(),
                     action: action.to_owned(),
                     arguments: BTreeMap::from([
-                        ("field".to_owned(), field_id.clone().into()),
+                        ("field".to_owned(), field.clone().into()),
                         (
                             "value".to_owned(),
                             tilolang_tilo::runtime::value::to_argument(value).unwrap_or_default(),

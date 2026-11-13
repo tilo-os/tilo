@@ -124,10 +124,12 @@ fn a_bound_fields_edit_names_a_verb_the_surface_publishes() {
         action.kind,
         action.action_id
     );
+    // What was typed is the edit the change records, never the text it leaves: the change names
+    // the field, and its edit carries the words.
     assert_eq!(
         action.args,
-        json!({"field": title, "value": "Groceries"}),
-        "the verb's arguments are the ones it publishes"
+        json!({"field": title}),
+        "a keystroke's change names the field it edits"
     );
 }
 

@@ -897,8 +897,8 @@ fn call_of(
             app,
             target,
             field,
-            field_id,
             value,
+            ..
         } => {
             let (action, value) = match value {
                 Value::Text(text) => (crate::action::EDIT_TEXT_ACTION, json!(text)),
@@ -914,7 +914,8 @@ fn call_of(
                 "app": app,
                 "resource": resource_id(app, &target.id_string()),
                 "action": action,
-                "arguments": {"field": field_id, "value": value},
+                // The field as its type names it, which the door's edit takes.
+                "arguments": {"field": field, "value": value},
             }))
         }
     }
