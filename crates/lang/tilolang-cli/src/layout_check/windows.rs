@@ -83,8 +83,8 @@ fn menu_labels(node: &tilo_ui_host::UiNode) -> Vec<String> {
         .collect()
 }
 
-/// The catch-up a window's mark opens: each item it changed, newest first, with who and when, and
-/// the one move that marks them all seen.
+/// The catch-up a window's mark opens: a row per record someone changed, newest first, with who
+/// changed it and when, and the one move that marks them all seen.
 fn the_catch_up_names_each_item_it_changed(window: &tilo_ui_host::UiNode) {
     let content = window
         .children
@@ -117,17 +117,17 @@ fn the_catch_up_names_each_item_it_changed(window: &tilo_ui_host::UiNode) {
         !nodes_of(content, "ui.Avatar").is_empty() && !nodes_of(content, "ui.Time").is_empty(),
         "each step says who made it and when: {content:?}"
     );
-    // A line reads as history writes a sentence: the name
-    // first, then what they did ("Scout marked it done").
+    // A row's line reads as history writes a sentence: the name first, then what they did
+    // ("Scout marked it done"). A face alone does not say who.
     let mut rows = Vec::new();
     nodes(content, "row", &mut rows);
     let steps: Vec<&tilo_ui_host::UiNode> = rows
         .into_iter()
-        .filter(|row| row.key.contains("~step-"))
+        .filter(|row| row.key.contains("~step"))
         .collect();
     assert!(
         !steps.is_empty(),
-        "the catch-up holds a line per step: {content:?}"
+        "the catch-up holds a line per record it changed: {content:?}"
     );
     let mut lines = Vec::new();
     for step in &steps {

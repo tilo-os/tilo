@@ -14,9 +14,10 @@
 //!   has not seen go, with who removed it;
 //! - a bound text field takes the changer's colour (`changed_by`), and says what it held before
 //!   the change (`previous`);
-//! - a window's header holds a mark with how many of the items its lists show are new, and by
-//!   whom: what the person finds by scrolling it, never items put somewhere the window keeps
-//!   closed.
+//! - a window's header holds a mark with how many records its document holds a new change of,
+//!   and by whom: what the person finds by scrolling it, never items put somewhere the window
+//!   keeps closed. What it opens says, per record, who changed it and what — a page of each
+//!   record's history read from the person's mark, so a record edited many times is one row.
 //!
 //! A view that places `ui.ChangeMark(r)` itself has it filled in here, and the host places no
 //! mark of its own for `r` in that view. Every mark activates to the run that made the change
@@ -61,6 +62,22 @@ const LIST_ROW: &str = "ui.ListRow";
 /// document holds more. It is the page a window reads of a place as well: what it shows, and
 /// the most a number it reads is allowed to cost.
 pub(crate) const WINDOW_PAGE: usize = 128;
+
+/// How many changes of one record the catch-up reads to say what changed of it: the newest of
+/// them, and how many there are, so what opening a window costs does not grow with the length
+/// of a record's history.
+pub(crate) const CATCH_UP_PAGE: usize = 16;
+
+/// What someone else changed of one record of a window's document since the person last looked:
+/// the newest changes of it read, and how many it holds, which the row says it folds.
+struct Changed {
+    at: ResourceRef,
+    /// The newest changes of it since the person's seen mark, oldest first
+    /// ([`CATCH_UP_PAGE`] of them at most): the row says the newest.
+    versions: Vec<Version>,
+    /// How many changes the record holds since that mark.
+    total: usize,
+}
 
 /// The pseudo-field a mark reads versions through: of a resource, every version of it, and of
 /// a document, every version of every resource in it. A mark reads what a step made, not only
@@ -483,12 +500,13 @@ impl Core {
         Ok(())
     }
 
-    /// A window's header mark: how many changes of what it shows (its resource and everything
-    /// in its document) are unseen, who made them, and the catch-up that says each in words.
+    /// A window's header mark: how many records of what it shows (its resource and everything
+    /// in its document) someone changed that the person has not seen, who made them, and the
+    /// catch-up that says each in words.
     ///
     /// It counts a page of the document's resources, read from the index, and says when the
-    /// document holds more; only those whose newest change is unseen are read for their own
-    /// versions, their unseen ones being the steps the catch-up lists.
+    /// document holds more; only those whose newest change is unseen are read for a page of
+    /// their own changes since the person's mark.
     fn mark_window(
         &self,
         node: &mut UiNode,
@@ -510,6 +528,67 @@ impl Core {
             Err(crate::store::StoreError::NotFound(_)) => return Ok(()),
             Err(error) => return Err(error.into()),
         };
+        let changed = self.changed_since(&at, viewer, window, within, acc);
+        if changed.is_empty() {
+            return Ok(());
+        }
+        // Everything unseen, oldest first, for who made it and what the newest change did: the
+        // page comes newest first and a record's steps in the log's order, so reading the
+        // records the other way round is oldest first, and the one the log holds last is what
+        // the mark says was done.
+        let unseen: Vec<Version> = changed
+            .iter()
+            .rev()
+            .flat_map(|changed| changed.versions.iter().cloned())
+            .collect();
+        let mut mark = UiNode::empty(CHANGE_MARK, &format!("{}~change", node.key));
+        mark.props.insert("of".to_owned(), Value::resource(&at));
+        mark.props.insert("window".to_owned(), Value::Bool(true));
+        // The document holds more resources than the page read: what it counted of them is a
+        // lower bound, and the mark says so.
+        if more {
+            mark.props.insert("more".to_owned(), Value::Bool(true));
+        }
+        self.fill_mark(&mut mark, &at, &unseen, viewer, acc);
+        let (count, added) = self.window_count(&at, &changed, viewer)?;
+        mark.props.insert("count".to_owned(), Value::Int(count));
+        if added {
+            mark.props.insert("added".to_owned(), Value::Bool(true));
+        }
+        // Activating the chip opens the catch-up, so what the chip does is show its list, not
+        // the run of the newest step.
+        mark.events.remove("activate");
+        // The catch-up: a row per record someone changed, saying who and what.
+        let content = self.catch_up(&mark.key.clone(), &changed, viewer, acc);
+        mark.children
+            .push(slot("content", &mark.key.clone(), content));
+        // First among the actions of the title it marks: a window that lists items beside what
+        // they open has a header over its list, and a window narrow enough to show one column
+        // shows that one, so the mark stands there whatever the width and wherever the app put
+        // its own actions. A window of one surface says it in its content header.
+        let name = if place(node, "overview").is_some() || place(node, OVERVIEW_ACTIONS).is_some() {
+            OVERVIEW_ACTIONS
+        } else {
+            ACTIONS
+        };
+        match place(node, name) {
+            Some(actions) => actions.children.insert(0, mark),
+            None => node.children.push(slot(name, &node.key, mark)),
+        }
+        Ok(())
+    }
+
+    /// The records of what a window of `at` shows that someone changed since `viewer` last
+    /// looked, newest first: each with the newest changes of it since their mark (a page of
+    /// them) and how many it holds since then.
+    fn changed_since(
+        &self,
+        at: &ResourceRef,
+        viewer: &Principal,
+        window: &str,
+        within: Vec<(String, Version)>,
+        acc: &mut Acc,
+    ) -> Vec<Changed> {
         let runs = self.seen_runs(&viewer.0);
         // The window of an item shows that item; the window of a document every item in it,
         // each counted once (the document's own versions are its collections moving as they
@@ -518,7 +597,7 @@ impl Core {
             Some(_) => resource == window,
             None => resource != at.doc,
         };
-        let mut groups: Vec<(ResourceRef, Vec<Version>)> = Vec::new();
+        let mut changed: Vec<Changed> = Vec::new();
         for (resource, newest) in within.into_iter().filter(|(r, _)| shown(r)) {
             self.note_seen_reads(viewer, &resource, acc);
             let mark = self.seen_mark(&viewer.0, &resource);
@@ -541,134 +620,72 @@ impl Core {
                 rid.ty = ty;
             }
             acc.reads.push((resource.clone(), DOC_VERSIONS.to_owned()));
-            let Ok(versions) = self.store.borrow().versions(&rid) else {
+            // The newest changes of it since the person last saw it: a page of them, whatever
+            // the length of the record's history.
+            let Ok(since) = self
+                .store
+                .borrow()
+                .versions_since(&rid, mark.as_ref(), CATCH_UP_PAGE)
+            else {
                 continue;
             };
-            let unseen = crate::seen::unseen(&versions, &viewer.0, mark.as_ref(), &runs);
+            let unseen = crate::seen::unseen_after(&since.versions, &viewer.0, &runs);
             if !unseen.is_empty() {
-                groups.push((rid, unseen));
+                changed.push(Changed {
+                    at: rid,
+                    versions: unseen,
+                    total: since.total,
+                });
             }
         }
         // A change a record made from `resource` stands under both, as that record's own
         // change and as a change to what it was made from: each counts once, where the record
         // that made it stands.
         let mut own: std::collections::HashSet<String> = std::collections::HashSet::new();
-        for (rid, versions) in &groups {
-            let resource = rid.id_string();
-            for version in versions {
+        for changed in &changed {
+            let resource = changed.at.id_string();
+            for version in &changed.versions {
                 if version.resource == resource {
                     own.insert(version.change.clone());
                 }
             }
         }
-        for (rid, versions) in &mut groups {
-            let resource = rid.id_string();
-            versions
+        for changed in &mut changed {
+            let resource = changed.at.id_string();
+            changed
+                .versions
                 .retain(|version| version.resource == resource || !own.contains(&version.change));
         }
-        groups.retain(|(_, versions)| !versions.is_empty());
-        if groups.is_empty() {
-            return Ok(());
-        }
-        // Everything unseen, oldest first, for who made it and what the newest change did: the
-        // page comes newest first and a group's steps in the log's order, so reading the groups
-        // the other way round is oldest first, and the one the log holds last is what the mark
-        // says was done.
-        let unseen: Vec<Version> = groups
-            .iter()
-            .rev()
-            .flat_map(|(_, versions)| versions.iter().cloned())
-            .collect();
-        let mut mark = UiNode::empty(CHANGE_MARK, &format!("{}~change", node.key));
-        mark.props.insert("of".to_owned(), Value::resource(&at));
-        mark.props.insert("window".to_owned(), Value::Bool(true));
-        // The document holds more resources than the page read: what it counted of them is a
-        // lower bound, and the mark says so.
-        if more {
-            mark.props.insert("more".to_owned(), Value::Bool(true));
-        }
-        self.fill_mark(&mut mark, &at, &unseen, viewer, acc);
-        let (count, added) = self.window_count(&at, &unseen, viewer, acc)?;
-        mark.props.insert("count".to_owned(), Value::Int(count));
-        if added {
-            mark.props.insert("added".to_owned(), Value::Bool(true));
-        }
-        // Activating the chip opens the catch-up, so what the chip does is show its list, not
-        // the run of the newest step.
-        mark.events.remove("activate");
-        // The catch-up: what changed, item by item, each step in the words history says it in.
-        let content = self.catch_up(&mark.key.clone(), &groups, viewer, acc);
-        mark.children
-            .push(slot("content", &mark.key.clone(), content));
-        // First among the actions of the title it marks: a window that lists items beside what
-        // they open has a header over its list, and a window narrow enough to show one column
-        // shows that one, so the mark stands there whatever the width and wherever the app put
-        // its own actions. A window of one surface says it in its content header.
-        let name = if place(node, "overview").is_some() || place(node, OVERVIEW_ACTIONS).is_some() {
-            OVERVIEW_ACTIONS
-        } else {
-            ACTIONS
-        };
-        match place(node, name) {
-            Some(actions) => actions.children.insert(0, mark),
-            None => node.children.push(slot(name, &node.key, mark)),
-        }
-        Ok(())
+        changed.retain(|changed| !changed.versions.is_empty());
+        changed
     }
 
     /// How many of what a window of `at` shows are new to `viewer`, and whether every change it
     /// counts only put items in — so what it says is new rather than changed.
     ///
-    /// A window counts the items the changes were made over rather than the versions that made
-    /// them: what the person catches up on. The window of one resource that holds items of its
-    /// own ([`Self::unread_count_of`]) counts the items it shows the person has not read, which
-    /// is the number the place that opens it shows on its badge ([`Self::mark_nav_item`]): one
+    /// A window counts the records someone changed since the person last looked, which is what
+    /// its catch-up lists a row of: one number, one row per record, however many changes one
+    /// record holds. The window of one resource that holds items of its own
+    /// ([`Self::unread_count_of`]) counts the items it shows the person has not read, which is
+    /// the number the place that opens it shows on its badge ([`Self::mark_nav_item`]): one
     /// count for one thing, read from one place.
     fn window_count(
         &self,
         at: &ResourceRef,
-        unseen: &[Version],
+        changed: &[Changed],
         viewer: &Principal,
-        acc: &Acc,
     ) -> Result<(i64, bool), RuntimeError> {
-        let counted = Self::counted_in(at, unseen, acc);
         // Every change only put items in: what is new is said as new, not as changed.
-        let added = counted
+        let added = changed
             .iter()
+            .flat_map(|changed| &changed.versions)
             .all(|version| self.puts_items_in(version, at));
         if at.item.is_some()
             && let Some(unread) = self.unread_count_of(&viewer.0, at)?
         {
             return Ok((unread, added));
         }
-        let count = counted.iter().fold(0i64, |sum, version| {
-            sum.saturating_add(i64::from(version.count.max(1)))
-        });
-        Ok((count, added))
-    }
-
-    /// The versions a window's mark counts: the changes of what the window *lists*, which is
-    /// what the person finds by scrolling it. A change of the window's own document that put
-    /// items into a collection the window does not list — a channel's threads, which its
-    /// transcript never shows — is named by the window's catch-up and not counted on the page.
-    /// Every change of everything else in the document counts as it did.
-    fn counted_in<'a>(at: &ResourceRef, unseen: &'a [Version], acc: &Acc) -> Vec<&'a Version> {
-        let listed: std::collections::HashSet<&crate::ids::FieldId> = acc
-            .listed
-            .iter()
-            .filter(|(doc, _)| doc == &at.doc)
-            .map(|(_, field)| field)
-            .collect();
-        let own = at.id_string();
-        unseen
-            .iter()
-            .filter(|version| {
-                version.resource != own
-                    || version.kind != VersionKind::Changed
-                    || listed.is_empty()
-                    || version.fields.iter().any(|field| listed.contains(field))
-            })
-            .collect()
+        Ok((i64::try_from(changed.len()).unwrap_or(i64::MAX), added))
     }
 
     /// The type of the resource `at` shows: its ref names one, and a window's mark stands for
@@ -702,13 +719,15 @@ impl Core {
         })
     }
 
-    /// The catch-up a window's mark opens (*Since you looked*): the changes it counts, grouped
-    /// by the item they changed, newest first, each step in the words history says it in, and
-    /// the one move that marks them all seen.
+    /// The catch-up a window's mark opens (*Since you looked*): a row per record someone changed
+    /// since the person last looked, newest first, saying who changed it and what the newest
+    /// change did in the words history says it in — and, where the record holds more than one
+    /// change since, how many, as history folds a step's changes into one entry — and the one
+    /// move that marks them all seen.
     fn catch_up(
         &self,
         key: &str,
-        groups: &[(ResourceRef, Vec<Version>)],
+        changed: &[Changed],
         viewer: &Principal,
         acc: &mut Acc,
     ) -> UiNode {
@@ -723,58 +742,13 @@ impl Core {
             .props
             .insert("role".to_owned(), Value::text("heading"));
         stack.children.push(title);
-        for (group, (rid, versions)) in groups.iter().enumerate() {
-            let group_key = format!("{key}~since-{group}");
-            let mut held = UiNode::empty("stack", &group_key);
-            held.props.insert("gap".to_owned(), Value::text("tight"));
-            // The item it changed, by its title: pressing it opens the item, which marks it
-            // seen.
-            let mut item = UiNode::empty("ui.Button", &format!("{group_key}~item"));
-            item.props.insert(
-                "label".to_owned(),
-                Value::Text(self.item_title(rid, versions.last())),
-            );
-            item.props.insert("role".to_owned(), Value::text("plain"));
-            item.events.insert(
-                "press".to_owned(),
-                self.retained(
-                    Value::Action(ActionRef::new(
-                        crate::host_ui::OPEN_ACTION,
-                        vec![Value::resource(rid)],
-                    )),
-                    acc,
-                ),
-            );
-            held.children.push(item);
-            for (step, version) in versions.iter().enumerate() {
-                held.children.push(self.step_line(
-                    &format!("{group_key}~step-{step}"),
-                    rid,
-                    version,
-                    viewer,
-                ));
-            }
-            // A step of a run offers the run, as the mark did: pressing it shows what the
-            // run did.
-            if let Some(run) = versions.last().and_then(|v| v.run.as_ref()) {
-                let mut review = UiNode::empty("ui.Button", &format!("{group_key}~run"));
-                review
-                    .props
-                    .insert("label".to_owned(), Value::text(run.title.clone()));
-                review.props.insert("role".to_owned(), Value::text("plain"));
-                review.events.insert(
-                    "press".to_owned(),
-                    self.retained(
-                        Value::Action(ActionRef::new(
-                            crate::host_ui::REVIEW_ACTION,
-                            vec![Value::Text(run.id.clone()), Value::resource(rid)],
-                        )),
-                        acc,
-                    ),
-                );
-                held.children.push(review);
-            }
-            stack.children.push(held);
+        for (row, changed) in changed.iter().enumerate() {
+            stack.children.push(self.catch_up_row(
+                &format!("{key}~since-{row}"),
+                changed,
+                viewer,
+                acc,
+            ));
         }
         // One move for all of it.
         let mut footer = UiNode::empty("row", &format!("{key}~since-actions"));
@@ -789,9 +763,9 @@ impl Core {
         // The one move of the whole catch-up: it reads as the panel's action, not as a line of
         // the list above it.
         all.props.insert("role".to_owned(), Value::text("primary"));
-        let ids = groups
+        let ids = changed
             .iter()
-            .map(|(rid, _)| Value::text(rid.id_string()))
+            .map(|changed| Value::text(changed.at.id_string()))
             .collect();
         all.events.insert(
             "press".to_owned(),
@@ -806,6 +780,86 @@ impl Core {
         footer.children.push(all);
         stack.children.push(footer);
         stack
+    }
+
+    /// One row of a catch-up: what a record someone changed is called, what was done to it in
+    /// one line, how many changes it holds since the person looked, and the run that made the
+    /// newest of them.
+    fn catch_up_row(
+        &self,
+        row_key: &str,
+        changed: &Changed,
+        viewer: &Principal,
+        acc: &mut Acc,
+    ) -> UiNode {
+        let Changed {
+            at: rid,
+            versions,
+            total,
+        } = changed;
+        let mut held = UiNode::empty("stack", row_key);
+        held.props.insert("gap".to_owned(), Value::text("tight"));
+        // The item it changed, by its title: pressing it opens the item, which marks it seen.
+        let mut item = UiNode::empty("ui.Button", &format!("{row_key}~item"));
+        item.props.insert(
+            "label".to_owned(),
+            Value::Text(self.item_title(rid, versions.last())),
+        );
+        item.props.insert("role".to_owned(), Value::text("plain"));
+        item.events.insert(
+            "press".to_owned(),
+            self.retained(
+                Value::Action(ActionRef::new(
+                    crate::host_ui::OPEN_ACTION,
+                    vec![Value::resource(rid)],
+                )),
+                acc,
+            ),
+        );
+        held.children.push(item);
+        // What was done to it, one line: its newest change, as history says a step of a record:
+        // who, what they did, and when.
+        let Some(newest) = versions.last() else {
+            return held;
+        };
+        held.children
+            .push(self.step_line(&format!("{row_key}~step"), rid, newest, viewer));
+        // Changed more than once since the person looked: the row says how many, as history
+        // says the changes a step folds.
+        if *total > 1 {
+            let mut many = UiNode::empty("ui.Text", &format!("{row_key}~changes"));
+            many.props.insert(
+                "value".to_owned(),
+                Value::Text(self.word_args(
+                    "tilolang-history-changes",
+                    &[("count".to_owned(), total.to_string())],
+                    &format!("{total} changes"),
+                )),
+            );
+            many.props.insert("role".to_owned(), Value::text("caption"));
+            many.props.insert("secondary".to_owned(), Value::Bool(true));
+            held.children.push(many);
+        }
+        // A step of a run offers the run, as the mark did: pressing it shows what the run did.
+        if let Some(run) = newest.run.as_ref() {
+            let mut review = UiNode::empty("ui.Button", &format!("{row_key}~run"));
+            review
+                .props
+                .insert("label".to_owned(), Value::text(run.title.clone()));
+            review.props.insert("role".to_owned(), Value::text("plain"));
+            review.events.insert(
+                "press".to_owned(),
+                self.retained(
+                    Value::Action(ActionRef::new(
+                        crate::host_ui::REVIEW_ACTION,
+                        vec![Value::Text(run.id.clone()), Value::resource(rid)],
+                    )),
+                    acc,
+                ),
+            );
+            held.children.push(review);
+        }
+        held
     }
 
     /// One step of a catch-up: the face of who made it, what they did in the words history

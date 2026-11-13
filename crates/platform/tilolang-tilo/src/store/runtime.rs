@@ -497,26 +497,16 @@ impl Store for TiloStore {
     }
 
     fn versions(&self, at: &ResourceRef) -> Result<Vec<Version>, StoreError> {
-        let id = at.id_string();
-        // The chunk a resource is read and written in holds its whole log: reading one page's
-        // history costs that chunk, not the workspace's every version.
-        let chunks = self.held().versions_chunks(at);
-        let mut held: Vec<Version> = Vec::new();
-        for chunk in chunks {
-            held.extend(self.versions_in(chunk).of(&id).cloned().unwrap_or_default());
-        }
-        if !held.is_empty() {
-            return Ok(held);
-        }
-        // A resource no chunk that routed it holds — one the record no longer has — is in
-        // whichever chunk's changes made its versions.
-        let chunks: Vec<ChunkNo> = self.held().chunks.numbers().collect();
-        for chunk in chunks {
-            if let Some(versions) = self.versions_in(chunk).of(&id) {
-                return Ok(versions.clone());
-            }
-        }
-        Ok(Vec::new())
+        Ok(versions::all(self, at))
+    }
+
+    fn versions_since(
+        &self,
+        at: &ResourceRef,
+        mark: Option<&tilolang_runtime::seen::SeenMark>,
+        page: usize,
+    ) -> Result<tilolang_runtime::store::SinceVersions, StoreError> {
+        Ok(versions::since(self, at, mark, page))
     }
 
     fn versions_within(&self, doc: &DocId) -> Result<BTreeMap<String, Vec<Version>>, StoreError> {

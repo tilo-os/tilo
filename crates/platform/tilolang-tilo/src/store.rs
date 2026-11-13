@@ -333,6 +333,9 @@ pub struct ReadStats {
     /// The changes those derivations read: the log of the chunks holding a history that was
     /// asked for, never the workspace's.
     pub version_changes: u64,
+    /// Versions the store handed out: what asking for a record's history costs, which a
+    /// catch-up reads a page of rather than the whole of a record's log.
+    pub versions_read: u64,
 }
 
 mod listed;
@@ -420,6 +423,8 @@ struct Inner {
     versions_built: std::cell::Cell<u64>,
     /// The changes those derivations read.
     version_changes: std::cell::Cell<u64>,
+    /// Versions handed out.
+    versions_read: std::cell::Cell<u64>,
     /// How `now` reads and where the person is, as the host names them: the time the columns that
     /// read the clock are written at ([`crate::index::Clock`]).
     clock: ClockSource,
@@ -754,6 +759,7 @@ impl TiloStore {
                 evaluated: std::cell::Cell::new(0),
                 versions_built: std::cell::Cell::new(0),
                 version_changes: std::cell::Cell::new(0),
+                versions_read: std::cell::Cell::new(0),
                 clock: ClockSource::default(),
                 listed: RefCell::default(),
                 txns: HashMap::new(),
@@ -850,6 +856,14 @@ impl TiloStore {
         self.held().stats
     }
 
+    /// Count `count` versions the store handed out.
+    pub(super) fn count_versions_read(&self, count: usize) {
+        let held = self.held();
+        let read = held.versions_read.get();
+        held.versions_read
+            .set(read.saturating_add(u64::try_from(count).unwrap_or(u64::MAX)));
+    }
+
     /// How much the store read so far.
     #[must_use]
     pub fn read_stats(&self) -> ReadStats {
@@ -865,6 +879,7 @@ impl TiloStore {
             evaluated: inner.evaluated.get(),
             versions: inner.versions_built.get(),
             version_changes: inner.version_changes.get(),
+            versions_read: inner.versions_read.get(),
         }
     }
 

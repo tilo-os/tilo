@@ -716,6 +716,31 @@ pub fn versions_in<'c>(
     versions
 }
 
+/// The versions of a resource after the one a person's seen mark names: the newest page of
+/// them, and how many there are ([`Store::versions_since`]).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SinceVersions {
+    /// The newest `page` of them, oldest first ([`Version::order`]): what a catch-up reads to
+    /// say who changed the resource and what they did.
+    pub versions: Vec<Version>,
+    /// How many the resource has after the mark, those read included: what a catch-up says it
+    /// folds, counted without copying the log.
+    pub total: usize,
+}
+
+impl SinceVersions {
+    /// The versions of `all` (oldest first) from `from` on, the newest `page` of them.
+    #[must_use]
+    pub fn page(all: &[Version], from: usize, page: usize) -> Self {
+        let total = all.len().saturating_sub(from);
+        let start = all.len().saturating_sub(total.min(page));
+        Self {
+            versions: all.get(start..).unwrap_or_default().to_vec(),
+            total,
+        }
+    }
+}
+
 /// The last version of `versions` (oldest first) that changed the field `field`
 /// ([`Store::field_changed`]): the one that made the resource when none after it names the
 /// field, since making it set them. `None` for a resource the log holds no version of.
@@ -1669,6 +1694,26 @@ pub trait Store {
     ///
     /// As [`Store::history`].
     fn versions(&self, at: &ResourceRef) -> Result<Vec<Version>, StoreError>;
+
+    /// The versions of the resource `at` after the one the seen mark `mark` names, else from
+    /// its making, the newest `page` of them, oldest first, with how many there are: what a
+    /// window's catch-up reads of a record someone changed since the person last looked. A
+    /// store with an index reads them from the place the mark names in the resource's log, so
+    /// what opening the window costs is the page, not the length of the record's history.
+    ///
+    /// # Errors
+    ///
+    /// As [`Store::versions`].
+    fn versions_since(
+        &self,
+        at: &ResourceRef,
+        mark: Option<&crate::seen::SeenMark>,
+        page: usize,
+    ) -> Result<SinceVersions, StoreError> {
+        let all = self.versions(at)?;
+        let from = mark.map_or(0, |mark| crate::seen::after_mark(&all, mark));
+        Ok(SinceVersions::page(&all, from, page))
+    }
 
     /// The first version of the resource `at` (`created(r)`), or its last (`updated(r)`,
     /// `last`). A store with an index keeps both per resource, so a view showing them, or a
