@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use super::{AutoCommit, CodeApp, EditorDoc, LspStatus, TreeId};
+use ui::widget::toast::ToastKind;
 
 /// A file the language server is formatting.
 pub(crate) struct PendingFormat {
@@ -114,11 +115,14 @@ impl CodeApp {
         match formatted {
             Ok(next) if next != current => {
                 if let Err(error) = self.dispatch_text_action(doc, key, &current, &next) {
-                    self.note(format!("Could not format the file: {error}"), true);
+                    Self::note(
+                        format!("Could not format the file: {error}"),
+                        ToastKind::Error,
+                    );
                 }
             }
             Ok(_) => {}
-            Err(error) => self.note(format!("Not formatted: {error}"), true),
+            Err(error) => Self::note(format!("Not formatted: {error}"), ToastKind::Error),
         }
         self.after_format(doc, pending.node, pending.then);
     }

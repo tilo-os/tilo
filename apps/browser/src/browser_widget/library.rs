@@ -476,7 +476,7 @@ impl BrowserWidget {
     pub(super) fn build_library_composition(
         &self,
         theme: &Theme,
-        notices: &[crate::notice::Notice],
+        notices: &[ui::widget::BannerNotice],
     ) -> Box<dyn Widget> {
         let current = SECTIONS
             .iter()
@@ -498,7 +498,10 @@ impl BrowserWidget {
             }
         });
 
-        let mut parts: Vec<Element> = notices.iter().map(|notice| notice.widget(false)).collect();
+        let mut parts: Vec<Element> = notices
+            .iter()
+            .map(|notice| Box::new(crate::settings::notice_banner(notice)) as Element)
+            .collect();
         if let Some(header) = header {
             parts.push(Box::new(header));
         }

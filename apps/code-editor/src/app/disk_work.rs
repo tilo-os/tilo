@@ -13,6 +13,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use ui::lock::MutexRecover as _;
+use ui::widget::toast::ToastKind;
 
 use super::CodeApp;
 
@@ -125,7 +126,10 @@ impl CodeApp {
         });
         if let Err(error) = spawned {
             self.disk_work.waiting.remove(&id);
-            self.note(format!("Could not reach the disk: {error}"), true);
+            Self::note(
+                format!("Could not reach the disk: {error}"),
+                ToastKind::Error,
+            );
         }
     }
 

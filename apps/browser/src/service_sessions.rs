@@ -4,6 +4,7 @@ use ui::tilo_resource::Effect;
 use ui::webview::{
     ServiceSessionReply, ServiceSessionRequest, SharedEngine, WebViewCommand, WebViewEngine,
 };
+use ui::widget::BannerNotice;
 
 mod forget;
 pub use forget::PendingForget;
@@ -117,8 +118,8 @@ impl PendingView {
     pub fn attach_waker(&mut self, waker: ui::WakeHandle) {
         self.waker = Some(waker);
     }
-    pub fn notice() -> crate::notice::Notice {
-        crate::notice::Notice::neutral("Opening your account…")
+    pub fn notice() -> BannerNotice {
+        BannerNotice::neutral("Opening your account…")
     }
     pub fn report(&self) -> serde_json::Value {
         serde_json::json!({"session_id": self.id, "status":"opening", "authenticated":false, "engine_shutdown_confirmed":false})
@@ -530,18 +531,18 @@ impl ServiceView {
             "engine_shutdown_confirmed": self.close_complete(),
             "native_restart_readback_verified": self.native_restart_readback_verified})
     }
-    pub fn notice(&self) -> Option<crate::notice::Notice> {
+    pub fn notice(&self) -> Option<BannerNotice> {
         match self.status {
-            "forgotten" => Some(crate::notice::Notice::neutral(
+            "forgotten" => Some(BannerNotice::neutral(
                 CATALOG.t("browser-service-forgotten"),
             )),
-            "forgetting" => Some(crate::notice::Notice::neutral(
+            "forgetting" => Some(BannerNotice::neutral(
                 CATALOG.t("browser-service-forgetting"),
             )),
-            "waiting" | "importing" | "restarting" | "verifying" => Some(
-                crate::notice::Notice::neutral(format!("Opening {}…", self.selection.label())),
-            ),
-            "needs-reconnect" => Some(crate::notice::Notice::warning(format!(
+            "waiting" | "importing" | "restarting" | "verifying" => Some(BannerNotice::neutral(
+                format!("Opening {}…", self.selection.label()),
+            )),
+            "needs-reconnect" => Some(BannerNotice::warning(format!(
                 "Sign in to {} again",
                 self.selection.label()
             ))),
@@ -549,8 +550,8 @@ impl ServiceView {
                 if self.selection.service == Service::Discord && self.expected_origins == 0 =>
             {
                 Some(
-                    crate::notice::Notice::neutral("Sign in to Discord")
-                        .with_message(CATALOG.t("browser-service-sign-in-hint")),
+                    BannerNotice::neutral("Sign in to Discord")
+                        .message(CATALOG.t("browser-service-sign-in-hint")),
                 )
             }
             _ => None,

@@ -7,6 +7,7 @@
 //! and Replace (Ctrl+H) open the bar's search; the editor draws no find
 //! field of its own.
 
+use ui::widget::toast::ToastKind;
 use ui::widget::{FindMatch, FindOptions, Findable};
 use ui::window_toolbar::SearchOpening;
 
@@ -70,12 +71,12 @@ impl Findable for CodeApp {
             self.find_matches = matches;
             return 0;
         }
-        self.note(
+        Self::note(
             match count {
                 1 => "Replaced 1 match".to_string(),
                 n => format!("Replaced {n} matches"),
             },
-            false,
+            ToastKind::Success,
         );
         count
     }

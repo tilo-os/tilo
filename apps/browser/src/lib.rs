@@ -71,7 +71,6 @@ pub mod history;
 pub mod imported_folders;
 pub mod library;
 pub mod native_blocker;
-pub mod notice;
 pub mod omnibox;
 pub mod page_dialogs;
 pub mod page_menu;
