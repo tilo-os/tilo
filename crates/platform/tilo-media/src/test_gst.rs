@@ -12,6 +12,13 @@
 ///
 /// A registry file the environment or the test already named is kept, and a run with
 /// no fixture directory keeps the cache home's.
+///
+/// So does a machine with a system extension merged. A codec pack swaps libraries
+/// beneath plugin files whose size and time the cache goes by, and the stamp that makes
+/// a process rescan after a merge or an unmerge (`crate::extensions`) is kept in the
+/// cache home, which is fresh in every test process. A cache written while a pack was
+/// merged would list the pack's elements to a run after the unmerge, where a fresh scan
+/// never did; one only ever written without a pack is right whenever none is merged.
 pub(crate) fn shared_registry() {
     static NAMED: std::sync::Once = std::sync::Once::new();
     NAMED.call_once(|| {
@@ -21,6 +28,15 @@ pub(crate) fn shared_registry() {
             .any(|key| std::env::var_os(key).is_some())
         {
             return;
+        }
+        #[cfg(any(gst_decode, gst_encode, gst_realtime))]
+        {
+            let merged = crate::extensions::extension_stamp(std::path::Path::new(
+                crate::extensions::EXTENSION_RELEASE_DIR,
+            ));
+            if !merged.is_empty() {
+                return;
+            }
         }
         let Some(cache) = std::env::var_os("TILO_TEST_CACHE_DIR").filter(|dir| !dir.is_empty())
         else {
