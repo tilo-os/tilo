@@ -1152,7 +1152,7 @@ impl Map {
                 state: ElementState::Pressed,
                 button: MouseButton::Right,
                 ..
-            } => {
+            } if self.rect.contains(self.cursor) => {
                 let at = self.camera.to_canvas(self.rect.origin(), self.cursor);
                 let pin = self.pin_under(self.cursor - self.rect.origin().to_vec2());
                 self.context.fire(Some(crate::component::Value::List(vec![
@@ -1173,7 +1173,11 @@ impl Map {
                 // no further than a click reports its point (`press`), and one that travelled
                 // more reports the rectangle it covered (`frame`). A press on a pin is the pin's,
                 // not the canvas's, and the map keeps nothing for it.
-                if self.over_pin(self.cursor - self.rect.origin().to_vec2()) {
+                // A press outside the map (the desk's bar over it, a panel beside it) is not one
+                // on the canvas, whatever reaches the map of it.
+                if !self.rect.contains(self.cursor)
+                    || self.over_pin(self.cursor - self.rect.origin().to_vec2())
+                {
                     self.free_press = None;
                 } else {
                     self.free_press = Some(FreePress {

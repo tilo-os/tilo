@@ -300,3 +300,32 @@ fn a_middle_press_and_a_wheel_report_nothing() {
     }
     assert_eq!(reported(&queue), Vec::new(), "a middle press pans");
 }
+
+/// A press that lands outside the map is no pointing at the canvas, whatever of it reaches the
+/// map: the desk's bar stands over the canvas in the Desktop style, and a press on its bell or
+/// its window menu that the map answered as a click on the canvas opened the caret there and
+/// closed what the press had opened.
+#[test]
+fn a_press_outside_the_map_reports_nothing() {
+    let queue = crate::Intents::default();
+    let mut host = harness(&queue, MapCamera::default());
+    let device = winit::event::DeviceId::dummy();
+    host.dispatch_to_root(&WindowEvent::CursorMoved {
+        device_id: device,
+        position: winit::dpi::PhysicalPosition::new(900.0, 300.0),
+    });
+    for button in [MouseButton::Left, MouseButton::Right] {
+        for state in [ElementState::Pressed, ElementState::Released] {
+            host.dispatch_to_root(&WindowEvent::MouseInput {
+                device_id: device,
+                state,
+                button,
+            });
+        }
+    }
+    assert_eq!(
+        reported(&queue),
+        Vec::new(),
+        "a press beside the map is not the canvas's"
+    );
+}
