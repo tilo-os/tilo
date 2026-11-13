@@ -30,10 +30,9 @@ pub const APP_ID: &str = "so.tilo.invite";
 /// buttons, not the code, are what the sheet is about.
 pub const CODE_MAX_PX: usize = 144;
 
-/// The narrowest each module is drawn: an invitation's own bytes make a code
-/// so dense that its squares are counted rather than guessed at, and below
-/// this they turn to speckle. Two pixels a module make that whole code
-/// shorter than the sheet, so a scanner can take it in at once.
+/// The narrowest each module is drawn: below this the squares turn to
+/// speckle. A code too dense to fit [`CODE_MAX_PX`] at this width (an
+/// invitation's own bytes, with no short link) is not drawn at all.
 pub const CODE_MODULE_PX: u32 = 2;
 
 /// The widest each module is drawn: a link is a few dozen modules, and squares
@@ -732,8 +731,14 @@ fn handover_parts(
         .with_read_only(true)
         .with_accessible_name(&created.link_label);
     let drawn = QrWidget::new(created.code.clone()).with_id("invite-code");
-    let px = module_px(drawn.total_modules());
-    let code = drawn.with_module_px(px).with_alt(created.alt.clone());
+    let modules = drawn.total_modules();
+    let px = module_px(modules);
+    // A code that cannot be drawn this small (an invitation's own text, with
+    // no short link to stand for it) is left out: it would be the sheet's
+    // largest thing and still too dense to scan off a screen. Copy hands it
+    // over.
+    let code = (modules.saturating_mul(usize::try_from(px).unwrap_or(usize::MAX)) <= CODE_MAX_PX)
+        .then(|| drawn.with_module_px(px).with_alt(created.alt.clone()));
     let mut parts: Vec<Element> = vec![
         caption(&created.link_label),
         Box::new(text),
@@ -763,7 +768,9 @@ fn handover_parts(
     }
     parts.push(caption(&created.brings));
     parts.push(caption(&created.lasts));
-    parts.push(Box::new(code));
+    if let Some(code) = code {
+        parts.push(Box::new(code));
+    }
     parts
 }
 

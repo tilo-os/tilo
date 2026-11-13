@@ -310,3 +310,22 @@ fn on_a_phone_the_link_follows_the_choice_and_the_code_comes_last_and_small() {
         "the link, not the code, is the widest thing handed over"
     );
 }
+
+/// An invitation handed over as its own text, with no short link for it, is too dense for a code
+/// a phone reads off a screen: the sheet leaves the code out rather than let it fill the sheet,
+/// and the link and its Copy stay.
+#[test]
+fn an_invitation_too_dense_for_a_small_code_is_handed_over_by_copy_alone() {
+    fn drawn(node: &ui::headless::InspectionNode, id: &str) -> bool {
+        (node.test_id.as_deref() == Some(id) && node.rect[2] > 0.0)
+            || node.children.iter().any(|child| drawn(child, id))
+    }
+    let mut invite = with_link();
+    if let Some(created) = invite.created.as_mut() {
+        created.code = vec![b'x'; 1200];
+    }
+    let (mut app, _seat) = seated(invite);
+    let root = app.harness().inspection().root;
+    assert!(!drawn(&root, "invite-code"), "no code fills the sheet");
+    assert!(drawn(&root, "invite-link") && drawn(&root, "invite-copy-link"));
+}
