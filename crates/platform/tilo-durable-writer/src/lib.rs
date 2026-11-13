@@ -1,25 +1,12 @@
 //! Durable session state written off the frame thread.
 //!
-//! Saving the workspace tree replaces three files and fsyncs each one and
-//! its directory. On a virtual disk that is tens of milliseconds, which a
-//! keypress that switches workspaces must not wait for. Callers take a
-//! snapshot of what they want on disk while they still hold the state, and
-//! hand the write to this module's thread:
-//!
-//! - **Latest wins.** Writes are keyed by the file they produce. A newer
-//!   write for a file that has not started yet replaces the queued one, so a
-//!   burst of mutations costs one or two writes, never one per mutation.
-//! - **Ordered.** Queued writes run one at a time, oldest first; a write that
-//!   replaced an older one keeps the older one's place in line.
-//! - **Bounded delay.** Nothing waits for a quiet period: a write starts as
-//!   soon as the one before it finishes.
-//! - **Barriers.** [`DurableWriter::flush`] returns once everything submitted
-//!   before it is on disk. Session exit, logout, suspend and any in-process
-//!   reader of the files call it.
-//!
-//! Crash safety is the job's own: every job writes through an atomic
-//! replace. [`keep`] is that job for the usual case — a file of this device's
-//! own state, private and crash-safe.
+//! Saving the workspace tree replaces three files and fsyncs each one and its
+//! directory: tens of milliseconds on a virtual disk, which a keypress must not
+//! wait for. Callers snapshot what they want on disk and hand the write to this
+//! module's thread, where a newer write replaces a queued one for the same file,
+//! writes run one at a time oldest first, and [`DurableWriter::flush`] returns once
+//! everything submitted before it is on disk. Each job writes through an atomic
+//! replace; [`keep`] is that job for a file of this device's own state.
 
 use parking_lot::{Condvar, Mutex};
 use std::collections::HashMap;
@@ -36,8 +23,8 @@ enum WriteKey {
 }
 
 struct Queued {
-    /// The oldest submission this entry stands for. A replacement keeps it,
-    /// so a barrier taken before the first submission waits for the newest.
+    /// The oldest submission this entry stands for: a replacement keeps it, so
+    /// a barrier taken before the first submission waits for the newest.
     ticket: u64,
     job: Job,
 }
@@ -45,7 +32,6 @@ struct Queued {
 #[derive(Default)]
 struct Queue {
     queued: HashMap<WriteKey, Queued>,
-    /// Ticket of the write in progress.
     running: Option<u64>,
     submitted: u64,
 }
@@ -75,28 +61,26 @@ impl Queue {
 struct Shared {
     queue: Mutex<Queue>,
     work: Condvar,
-    /// Signalled when a write finishes.
     done: Condvar,
 }
 
 #[cfg(any(test, feature = "test-support"))]
 thread_local! {
-    /// Writes this thread handed to [`DurableWriter::submit`], so a test can
-    /// tell a call that queued a write from one that found nothing to do.
+        /// Writes handed to [`DurableWriter::submit`] on this thread, so a test can
+        /// tell a call that queued a write from one that found nothing to do.
     pub static SUBMITS_ON_THIS_THREAD: std::cell::Cell<usize> =
         const { std::cell::Cell::new(0) };
 }
 
-/// A single background thread that performs queued state writes.
 pub struct DurableWriter {
     shared: Arc<Shared>,
-    /// `None` when the thread could not be started; writes then happen on
-    /// the caller's thread, as they would without this module.
+    /// `None` when the thread could not be started: writes then happen on the
+    /// caller's thread.
     thread: Option<std::thread::ThreadId>,
 }
 
 impl DurableWriter {
-    /// Start a writer thread. It runs for the life of the process.
+    /// Start a writer thread, for the life of the process.
     #[must_use]
     pub fn spawn(name: &str) -> Self {
         let shared = Arc::new(Shared {
@@ -149,11 +133,10 @@ impl DurableWriter {
 
     /// Queue a command whose completion must not be replaced by a later
     /// snapshot. Admission is bounded and never falls back to blocking the
-    /// caller when the worker is unavailable.
+    /// caller.
     ///
     /// # Errors
-    /// Returns an error if the worker is unavailable or 32 commands already
-    /// await storage. Existing coalesced snapshot writes keep their contract.
+    /// The worker is unavailable, or 32 commands already await storage.
     pub fn submit_ordered(&self, job: impl FnOnce() + Send + 'static) -> std::io::Result<()> {
         if self.thread.is_none() {
             return Err(std::io::Error::other("the state writer is unavailable"));
@@ -188,21 +171,19 @@ impl DurableWriter {
         Ok(())
     }
 
-    /// Wait until every write submitted before this call is on disk.
     pub fn flush(&self) {
         self.flush_within(None);
     }
 
-    /// [`Self::flush`], giving up after `limit`. Returns whether everything
-    /// was written. A barrier on the writer's own thread returns at once: the
-    /// write it would wait for is the one running it.
+    /// [`Self::flush`], giving up after `limit`; returns whether everything was
+    /// written. On the writer's own thread it returns at once: the write it
+    /// would wait for is the one running it.
     pub fn flush_timeout(&self, limit: Duration) -> bool {
         self.flush_within(Instant::now().checked_add(limit))
     }
 
-    /// How many submitted writes are on disk: it advances whenever the
-    /// writer completes one, so two equal readings a while apart mean it
-    /// completed nothing in between.
+    /// How many submitted writes are on disk: two equal readings a while apart
+    /// mean nothing completed in between.
     pub fn progress(&self) -> u64 {
         self.shared.queue.lock().durable_through()
     }
@@ -263,21 +244,16 @@ fn run(shared: &Shared) {
     }
 }
 
-/// The process's state writer.
 pub fn global() -> &'static DurableWriter {
     static WRITER: OnceLock<DurableWriter> = OnceLock::new();
     WRITER.get_or_init(|| DurableWriter::spawn("tilo-state-writer"))
 }
 
-/// Keep `path` as `bytes`: the file is written away from the caller's thread,
-/// and a write of it that has not started is replaced by this one, so a burst
-/// of saves is one write of the newest. The file and its directory are the
-/// person's own (`0600` in a `0700` directory), and the write is a crash-safe
-/// replacement of the one before.
+/// Keep `path` as `bytes`: written off the caller's thread, replacing a write
+/// of the file that has not started, into a `0600` file in a `0700` directory,
+/// by a crash-safe replacement of the file before.
 ///
-/// This is what every piece of this device's own state is written with, from
-/// the desk to the emoji recents: one writer, one policy for how a burst of
-/// changes reaches the disk.
+/// Every piece of this device's own state is written with it.
 pub fn keep(path: impl Into<PathBuf>, bytes: Vec<u8>) {
     let path = path.into();
     global().submit(path.clone(), move || {
@@ -292,8 +268,6 @@ mod tests {
     use super::*;
     use std::sync::mpsc;
 
-    /// A writer whose thread is parked inside a job until the returned
-    /// sender is used, so the test controls what is queued behind it.
     fn blocked_writer() -> (DurableWriter, mpsc::Sender<()>) {
         let writer = DurableWriter::spawn("durable-writer-test");
         let (release, wait) = mpsc::channel::<()>();
@@ -306,9 +280,6 @@ mod tests {
         (writer, release)
     }
 
-    /// The ready-made job for a file of this device's own state: written
-    /// with the newest bytes, private, and crash-safe in a directory of the
-    /// person's own.
     #[test]
     fn keep_writes_a_private_file_of_the_persons_own() {
         use std::os::unix::fs::PermissionsExt as _;
@@ -352,8 +323,8 @@ mod tests {
         assert!(writer.progress() > before);
     }
 
-    /// A write replaced before it ran is dropped, and what it owned may
-    /// queue a write of its own as it goes (a policy export does).
+    /// A write replaced before it ran is dropped, and what it owned may queue a
+    /// write of its own as it goes (a policy export does).
     #[test]
     fn a_replaced_write_may_queue_another_as_it_is_dropped() {
         struct QueuesOnDrop(Arc<DurableWriter>, Arc<Mutex<Vec<&'static str>>>);
