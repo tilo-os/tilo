@@ -6,7 +6,7 @@
 //! needs an account, an API key or a hosted service.
 //!
 //! Most engine scrapers and the merge are ported from metasearch2 by mat-1 (CC0-1.0);
-//! Google is asked the way SearXNG's `google_cse` engine asks it (AGPL-3.0-or-later).
+//! Google is asked the way `SearXNG`'s `google_cse` engine asks it (AGPL-3.0-or-later).
 //! `PROVENANCE.md` beside this crate records both.
 
 pub mod engines;
