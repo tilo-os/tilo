@@ -708,8 +708,8 @@ try {
       && ['done', 'stopped'].includes(document.documentElement.dataset.arrival);
     return open && kept?.name === ${JSON.stringify(named)} ? chosen.room : '';
   })()`;
-  const first = await stranger.tab.evaluate(opened).catch(() => '');
-  if (first) await fail(`a workspace named ${named} was open before the person made one: ${first}`);
+  const before = await stranger.tab.evaluate(opened).catch(() => '');
+  if (before) await fail(`a workspace named ${named} was open before the person made one: ${before}`);
   await pressText(stranger.tab, 'Create', '.tilo-entry-card');
   const made = await until(stranger.tab, opened, 'the second workspace opening', stepLimit(10));
   if (made === report.returned?.room) await fail(`the second workspace is the first one again: ${made}`);

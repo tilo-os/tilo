@@ -343,11 +343,14 @@ relay_env() {
   # Production's door: only people invited, or declared by the operator
   # (stack.sh owner), join, and a stranger leaves an address on its wait
   # list. TILO_SH_ADMISSION=open lets anyone in as a guest instead, for the
-  # checks whose visitors arrive as strangers.
-  case ${TILO_SH_ADMISSION:-invite} in
+  # checks whose visitors arrive as strangers. A service started again later
+  # (`restart relay`) serves the door the stack was brought up with, which its
+  # state keeps: the restart carries no environment of the up that made it.
+  local admission=${TILO_SH_ADMISSION:-$(cat "$state/admission" 2>/dev/null || echo invite)}
+  case $admission in
     invite) env+=(TILO_ROOMS_ADMISSION=invite TILO_ROOMS_WAIT_LIST_MAX=500) ;;
     open) env+=(TILO_ROOMS_ADMISSION=open) ;;
-    *) die "TILO_SH_ADMISSION is invite (production's) or open, not $TILO_SH_ADMISSION" ;;
+    *) die "TILO_SH_ADMISSION is invite (production's) or open, not $admission" ;;
   esac
   # Not here: the moderation and summary model keys (no model is asked
   # locally), and the Discord bridge's real server unless --discord.
@@ -1183,6 +1186,7 @@ up_native() {
   say "built and laid out ($((SECONDS - began))s)"
   echo native > "$state/mode"
   use_mode native
+  echo "${TILO_SH_ADMISSION:-invite}" > "$state/admission"
   make_secrets
   # The stack's own TLS first: the VM host's member device joins the workspace
   # at the relay, whose home relay is that TLS origin, so the host is given the
@@ -1344,6 +1348,7 @@ up_images() {
 
   echo images > "$state/mode"
   use_mode images
+  echo "${TILO_SH_ADMISSION:-invite}" > "$state/admission"
   make_secrets
   # The relay's own device, which its VM host's member takes the workspaces'
   # runs from: made here, before either starts, so the relay starts once with
@@ -1480,7 +1485,7 @@ down() {
     # account's user namespace: only that namespace removes them.
     podman_ unshare rm -rf "$state/relay" "$state/api" "$state/tls" "$state/secrets" "$state/seed" "$state/mail" "$state/owner" 2>/dev/null \
       || rm -rf "$state/relay" "$state/api" "$state/tls" "$state/secrets" "$state/seed" "$state/mail" "$state/owner"
-    rm -rf "${runs:?}" "$state/trust-bundle.pem" "$state/mode"
+    rm -rf "${runs:?}" "$state/trust-bundle.pem" "$state/mode" "$state/admission"
     say "stopped, and its state is gone (builds kept in $native, images in $state/images)"
   else
     say "stopped; its state stays in $state (stack.sh down --wipe deletes it)"
