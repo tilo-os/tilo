@@ -40,7 +40,7 @@ tilo = Tilo()
 workspace = tilo.workspace(tilo.workspaces.create("Files and letters").id)
 
 # Bytes go up once, and the reference is what the apps take.
-reference = workspace.files.upload(b"passport scan, in bytes", name="passport.txt")
+reference = workspace.files.upload(b"passport scan, in bytes")
 print("uploaded:", reference)
 
 # An action that makes a file answers a reference to it.
@@ -61,7 +61,6 @@ const workspace = tilo.workspace((await tilo.workspaces.create("Files and letter
 // Bytes go up once, and the reference is what the apps take.
 const reference = await workspace.files.upload(
   new TextEncoder().encode("passport scan, in bytes"),
-  "passport.txt",
 );
 console.log("uploaded:", reference);
 

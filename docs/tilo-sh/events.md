@@ -38,7 +38,7 @@ async def main() -> None:
     workspace = tilo.workspace((await tilo.workspaces.create("Watching")).id)
 
     async def first_event():
-        async for event in workspace.watch(wait_ms=5000):
+        async for event in workspace.watch():
             return event
         raise RuntimeError("the watch ended without an event")
 
@@ -61,7 +61,7 @@ const tilo = new Tilo();
 const workspace = tilo.workspace((await tilo.workspaces.create("Watching")).id);
 
 async function firstEvent() {
-  for await (const event of workspace.watch(null, 5000)) {
+  for await (const event of workspace.watch()) {
     return event;
   }
   throw new Error("the watch ended without an event");
@@ -85,12 +85,13 @@ prints. A `change` event names the record's path and the sentence a person would
 
 A `Run` has the same stream narrowed to itself: `run.output()` answers its events, from `started` to
 `succeeded`, `failed` or `cancelled`, and stops there. That is how a caller follows a long action without
-polling `status`.
+polling its status.
 
 ## Tools
 
-A watch is the `tilo_watch` call of the API a workspace serves, so any MCP client that can call a tool can
-watch, and both SDKs wrap it. The `tilo` command has no watch verb today.
+A watch is the workspace's event stream (`GET /v1/workspaces/{workspace}/events`, resumed with
+`Last-Event-ID`), so anything that speaks the API can watch, and both SDKs wrap it. The `tilo` command has
+no watch verb today.
 
 ## Where next
 

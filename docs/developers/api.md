@@ -69,7 +69,8 @@ again, which is how a client awaits it. Keys are remembered for 24 hours per key
 ## Runs and attribution
 
 Every call is a step of a run, which History, activity and presence name. A call names its run
-with `Tilo-Run: <id>` and, the first time, `Tilo-Run-Title: <words>`; every call carrying the
+with `Tilo-Run: <id>` and its title with `Tilo-Run-Title: <words>` — on every call of the run,
+since each step's row is named by the title of the call that made it; every call carrying the
 same id is one run, one undo step per app (`POST …/runs/{run}/undo` takes it back). Without
 `Tilo-Run` each call is a run of its own, named for the key ("Visa backend #3").
 

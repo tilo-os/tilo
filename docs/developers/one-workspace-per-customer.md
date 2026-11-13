@@ -40,7 +40,7 @@ for applicant in ["Jane Doe", "Amir Haddad"]:             # one per customer, no
     workspace = tilo.workspace(tilo.workspaces.create(f"Applicant: {applicant}").id)
 
     # Their files: the bytes go up once, then an app takes the reference.
-    workspace.files.upload(b"a passport scan, in bytes", name="passport.png")
+    workspace.files.upload(b"a passport scan, in bytes")
 
     # A key for this applicant's agent: it reaches this workspace alone.
     key = workspace.keys.mint(name=f"{applicant}'s agent")
@@ -79,7 +79,7 @@ for (const applicant of ["Jane Doe", "Amir Haddad"]) {       // one per customer
   const workspace = tilo.workspace((await tilo.workspaces.create(`Applicant: ${applicant}`)).id);
 
   // Their files: the bytes go up once, then an app takes the reference.
-  await workspace.files.upload(new TextEncoder().encode("a passport scan, in bytes"), "passport.png");
+  await workspace.files.upload(new TextEncoder().encode("a passport scan, in bytes"));
 
   // A key for this applicant's agent: it reaches this workspace alone.
   const key = await workspace.keys.mint(`${applicant}'s agent`);

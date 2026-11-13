@@ -9,7 +9,7 @@ Three places name the host, and they agree:
 
 | | How |
 | :--- | :--- |
-| The SDKs | `TILO_DOOR` in the environment, or `Tilo(door="…")` / `new Tilo({ door: "…" })` |
+| The SDKs | `TILO_API_URL` in the environment, or `Tilo(url="…")` / `new Tilo({ url: "…" })` |
 | The command | `--door`, or `TILO_DOOR` |
 | An agent's MCP client | the URL you add: `<host>/mcp`, or `<host>/w/<workspace>/mcp` for one workspace |
 
