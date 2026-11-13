@@ -1279,9 +1279,10 @@ fn native_retained_runtime() -> tempfile::TempDir {
 
 /// Exercise the shipped ELF entry point, including argument parsing and stdin:
 /// no interpreter or fixture executable participates in this command path.
-fn native_retained_command(command: &str, args: &[&str], input: &[u8]) -> Output {
-    let runtime = native_retained_runtime();
-    let mut child = Command::new(runtime.path().join("tilo-staging-handoff"))
+/// `runtime` is one test's staged pair: the commands only read it, and staging
+/// it again for each of them copied both executables every time.
+fn native_retained_command(runtime: &Path, command: &str, args: &[&str], input: &[u8]) -> Output {
+    let mut child = Command::new(runtime.join("tilo-staging-handoff"))
         .arg(command)
         .args(args)
         .stdin(Stdio::piped())
@@ -1299,11 +1300,20 @@ fn native_retained_command(command: &str, args: &[&str], input: &[u8]) -> Output
 #[test]
 fn native_authenticated_retained_delivery_matches_candidate_responses() {
     use std::os::unix::fs::PermissionsExt;
+    let runtime = native_retained_runtime();
+    let deliver = |target: &str, input: &[u8]| {
+        native_retained_command(
+            runtime.path(),
+            "deliver-retained",
+            &["--target-var", target],
+            input,
+        )
+    };
     for case in authenticated_parity_cases() {
         let temporary = tempfile::tempdir().unwrap();
         let target = temporary.path().to_str().unwrap();
         let input = case["input"].as_str().unwrap().as_bytes();
-        let result = native_retained_command("deliver-retained", &["--target-var", target], input);
+        let result = deliver(target, input);
         let seed = temporary.path().join("lib/tilo/migration-plan.json");
         assert!(result.stdout.is_empty(), "{}: {result:?}", case["name"]);
         if let Some(refusal) = case.get("refusal") {
@@ -1337,14 +1347,14 @@ fn native_authenticated_retained_delivery_matches_candidate_responses() {
             fs::metadata(&seed).unwrap().permissions().mode() & 0o777,
             0o600
         );
-        let retry = native_retained_command("deliver-retained", &["--target-var", target], input);
+        let retry = deliver(target, input);
         assert!(retry.status.success(), "{retry:?}");
         assert_eq!(fs::read(&seed).unwrap(), contents);
         let mut conflicting = plan.clone();
         conflicting["home"]["inode"] = json!(999);
         let conflicting = serde_json::to_vec(&conflicting).unwrap();
         fs::write(&seed, &conflicting).unwrap();
-        let retry = native_retained_command("deliver-retained", &["--target-var", target], input);
+        let retry = deliver(target, input);
         assert_eq!(retry.status.code(), Some(1), "{retry:?}");
         assert_eq!(
             fs::read(&seed).unwrap(),
@@ -1356,6 +1366,7 @@ fn native_authenticated_retained_delivery_matches_candidate_responses() {
 
 #[test]
 fn native_authenticated_retained_commands_reject_unbounded_or_ambiguous_input() {
+    let runtime = native_retained_runtime();
     let temporary = tempfile::tempdir().unwrap();
     let duplicate = br#"{"schema":1,"schema":1}"#.to_vec();
     let invalid_utf8 = vec![0xff];
@@ -1371,7 +1382,7 @@ fn native_authenticated_retained_commands_reject_unbounded_or_ambiguous_input() 
                 vec!["--disk", "/dev/no-such-staging-parity-disk"],
             ),
         ] {
-            let result = native_retained_command(command, &args, &input);
+            let result = native_retained_command(runtime.path(), command, &args, &input);
             assert_eq!(result.status.code(), Some(1), "{command}: {result:?}");
             assert!(result.stdout.is_empty(), "{result:?}");
             assert!(
@@ -1385,7 +1396,9 @@ fn native_authenticated_retained_commands_reject_unbounded_or_ambiguous_input() 
 
 #[test]
 fn native_retained_preflight_without_a_source_never_probes_the_disk() {
+    let runtime = native_retained_runtime();
     let result = native_retained_command(
+        runtime.path(),
         "preflight-retained",
         &["--disk", "/dev/no-such-staging-parity-disk"],
         br#"{"schema":1}"#,
