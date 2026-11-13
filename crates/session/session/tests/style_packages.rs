@@ -162,7 +162,9 @@ fn make_it_mine_copies_strips_into_a_selectable_style() {
     .expect("completed");
     assert_eq!(installed["ok"], true, "{installed}");
     // The edited copy is what the switch now lists: its view's own doc line is the one name a
-    // style has everywhere, and the reinstalled package is what the session read.
+    // style has everywhere, the reinstalled package loads (a reinstall clears a failure, as
+    // `desk_styles::a_fixed_style_package_brings_the_style_back_live` holds), and the store
+    // moving is what made the session read it again.
     let copy = format!("{}:strips", tilo_session::style_packages::COPY_ID);
     common::until(
         &mut session,
@@ -171,7 +173,7 @@ fn make_it_mine_copies_strips_into_a_selectable_style() {
             desk(session)
                 .styles
                 .iter()
-                .any(|style| style.style == copy && style.line == "My strips")
+                .any(|style| style.style == copy && style.line == "My strips" && style.loads)
         },
     );
 }
