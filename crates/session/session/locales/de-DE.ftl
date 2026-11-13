@@ -194,6 +194,7 @@ session-display-builtin = Eingebauter Bildschirm
 session-display-external = Externer Bildschirm
 session-clipboard = Zwischenablage
 session-quick-settings = Schnelleinstellungen
+session-desk-styles = Schreibtischstile
 session-devices = Geräte
 session-devices-press = Eines deiner Geräte drücken
 session-bluetooth-app = Bluetooth

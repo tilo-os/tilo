@@ -1406,7 +1406,7 @@ d-wz5iufcx = Grund
     .doc = Warum sie fehlgeschlagen ist, in den Worten der App; leer, solange es besser läuft.
 
 d-m3of3jpo = Anordnungsverweis
-    .doc = Eine Ressource, die eine Anfrage gefunden hat: ihre Adresse, der Name, unter dem sie läuft, und ihre Art – dieselben drei Angaben, mit denen der Datensatz eines Platzes benannt ist.
+    .doc = Eine Ressource, die eine Anfrage gefunden hat: ihre Adresse, der Name, unter dem sie läuft, und ihre Art. Der Datensatz eines Platzes ist mit denselben drei Angaben benannt.
     .noun = { $count ->
         [one] Anordnungsverweis
        *[other] Anordnungsverweise
@@ -1463,7 +1463,7 @@ d-4vtnv5px = Anfrage wiederholen
 d-4vtnv5px-place = Platz
 
 d-mtt6d3af = Hier als Tab
-    .doc = Macht den Platz, dessen Fensterleiste auf die Reihe `s` gezogen wurde, zu einem Tab dieser Reihe – so zieht eine Person die Leiste eines Fensters auf die eines anderen, um Tabs zu bilden, und dieselbe Anordnungsaktion, die „In … als Tab verschieben“ im Fenstermenü ausführt.
+    .doc = Macht den Platz, dessen Fensterleiste auf die Reihe `s` gezogen wurde, zu einem Tab dieser Reihe. So zieht eine Person die Leiste eines Fensters auf die eines anderen, um Tabs zu bilden, und „In … als Tab verschieben“ im Fenstermenü führt dieselbe Anordnungsaktion aus.
 
 d-mtt6d3af-v = V
 

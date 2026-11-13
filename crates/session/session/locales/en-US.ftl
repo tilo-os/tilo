@@ -190,6 +190,7 @@ session-display-builtin = Built-in display
 session-display-external = External display
 session-clipboard = Clipboard
 session-quick-settings = Quick Settings
+session-desk-styles = Desk styles
 session-devices = Devices
 session-devices-press = Press one of your devices
 session-bluetooth-app = Bluetooth

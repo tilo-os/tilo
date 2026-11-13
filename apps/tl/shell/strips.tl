@@ -275,9 +275,9 @@ fn window_record(shown: Option<ArrangementPlace>) -> Text {
     if let p = shown { p.record } else { "" }
 }
 
-/// Tab the place whose window's bar was dragged onto the strip `s` into that strip — how a person
-/// drags one window's bar onto another's to make its tabs, and the same arranging action the
-/// window's menu's "Move into … as a tab" runs. The place lands after the strip's other tabs and
+/// Tab the place whose window's bar was dragged onto the strip `s` into that strip: a person drags
+/// one window's bar onto another's to make its tabs, and the window's menu's "Move into … as a
+/// tab" runs the same arranging action. The place lands after the strip's other tabs and
 /// comes to the front of them, so the window shows what was dropped on it. A place already in
 /// this strip is only brought to the front, so dropping a window on itself raises it rather than
 /// standing a second place. The strip comes forward with it.

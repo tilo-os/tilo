@@ -408,7 +408,7 @@ d-wz5iufcx = Reason
     .doc = Why it failed, in the app's own words; empty while it does better.
 
 d-m3of3jpo = Arrangement ref
-    .doc = A resource a query found: its address, the name it goes by, and its kind — the same three words a place's record is named by.
+    .doc = A resource a query found: its address, the name it goes by, and its kind, the same three words a place's record is named by.
     .noun = { $count ->
         [one] arrangement ref
        *[other] arrangement refs
@@ -1107,7 +1107,7 @@ d-4vtnv5px = Query retry
 d-4vtnv5px-place = Place
 
 d-mtt6d3af = Tab it here
-    .doc = Tab the place whose window's bar was dragged onto the strip `s` into that strip — how a person drags one window's bar onto another's to make its tabs, and the same arranging action the window's menu's "Move into … as a tab" runs.
+    .doc = Tab the place whose window's bar was dragged onto the strip `s` into that strip: a person drags one window's bar onto another's to make its tabs, and the window's menu's "Move into … as a tab" runs the same arranging action.
 
 d-mtt6d3af-v = V
 
