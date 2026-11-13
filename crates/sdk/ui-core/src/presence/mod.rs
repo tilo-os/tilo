@@ -2886,7 +2886,7 @@ mod string_id_wrapper_tests {
         // phase: participant_kind_survives_name_resolution
         {
             let mut ctx = PresenceCtx::empty();
-            let scribe = UserId("agent-scribe".into());
+            let scribe = UserId("agent:scribe".into());
             ctx.set_display_name(scribe.clone(), "Scribe");
             ctx.set_participant_kind(&scribe, true);
             assert!(ctx.is_agent(&scribe));
@@ -2899,7 +2899,7 @@ mod string_id_wrapper_tests {
             );
             assert_eq!(ctx.display_name(&scribe), "Editorial helper · Agent");
             ctx.set_participant_kind(&scribe, false);
-            assert!(ctx.user(&scribe).id.is_person());
+            assert!(!ctx.is_agent(&scribe));
             assert_eq!(ctx.display_name(&scribe), "Editorial helper");
         }
         // phase: an_unnamed_peer_is_a_guest_and_never_its_id
