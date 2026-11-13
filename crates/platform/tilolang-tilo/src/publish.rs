@@ -832,15 +832,10 @@ type Reached = std::collections::BTreeMap<String, std::collections::BTreeSet<Str
 
 /// What `shown` reaches, by the record it is in: each record with the paths of the resources
 /// under it that `shown` names, and the path each of them is reached by from the record down.
-fn reached_by_doc(shown: &[String]) -> std::collections::BTreeMap<String, Reached> {
+fn reached_by_doc(app: &str, shown: &[String]) -> std::collections::BTreeMap<String, Reached> {
+    let prefix = resource_id(app, "");
     let mut out: std::collections::BTreeMap<String, Reached> = std::collections::BTreeMap::new();
     for id in shown {
-        // Each is published by the app that holds its record: a window of one app shows
-        // another's records, and the app holding one is that record's own.
-        let Some(app) = app_of(id) else {
-            continue;
-        };
-        let prefix = resource_id(app, "");
         let Some(path) = id.strip_prefix(prefix.as_str()) else {
             continue;
         };
@@ -1170,6 +1165,7 @@ impl Publications {
         &mut self,
         host: &crate::host::Host,
         planner: &Arc<dyn Planner>,
+        app: &str,
         shown: &[String],
     ) -> Vec<Rc<ResourceSpec>> {
         let snapshot = host.store().snapshot();
@@ -1177,7 +1173,7 @@ impl Publications {
             .shown
             .as_ref()
             .is_some_and(|(at, ids)| Arc::ptr_eq(at, &snapshot) && ids.as_slice() == shown);
-        let reach = reached_by_doc(shown);
+        let reach = reached_by_doc(app, shown);
         if !stands {
             // What the window no longer reaches is no longer published: a window scrolled away
             // from a record holds no part of it.
@@ -1214,14 +1210,15 @@ impl Publications {
 
     /// The record of the resource `address` names, published down to it: what an invocation is
     /// resolved against when the window shows nothing of it. `None` when the address is no
-    /// resource of a package this host loaded.
+    /// resource of `app`.
     pub fn addressed(
         &mut self,
         host: &crate::host::Host,
         planner: &Arc<dyn Planner>,
+        app: &str,
         address: &str,
     ) -> Option<Rc<ResourceSpec>> {
-        let reached = reached_by_doc(&[address.to_owned()]);
+        let reached = reached_by_doc(app, &[address.to_owned()]);
         let (doc, reached) = reached.into_iter().next()?;
         let whole = self.whole_of(host, planner, &doc)?;
         let snapshot = host.store().snapshot();

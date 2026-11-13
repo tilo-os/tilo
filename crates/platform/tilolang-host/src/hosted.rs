@@ -236,7 +236,7 @@ impl Surface {
         let trees = {
             let mut publications = self.publications.borrow_mut();
             match shown {
-                Some(shown) => publications.reached(&self.host, &self.planner, shown),
+                Some(shown) => publications.reached(&self.host, &self.planner, &self.app, shown),
                 None => publications.everything(&self.host, &self.planner),
             }
         };
@@ -271,7 +271,7 @@ impl Surface {
         if let Some(tree) =
             self.publications
                 .borrow_mut()
-                .addressed(&self.host, &self.planner, address)
+                .addressed(&self.host, &self.planner, &self.app, address)
             && let Some(spec) = find(&tree, address)
         {
             resources.push(spec);

@@ -178,7 +178,7 @@ fn a_window_publishes_what_it_reaches_and_the_whole_workspace_when_asked() {
     // What the window shows of one item: its record, published down to it, and nothing of the
     // other two the record holds.
     let shown = [resource_id(APP, &format!("{root}/{}", ids[1]))];
-    let trees = published.reached(&ada.host, &planner, &shown);
+    let trees = published.reached(&ada.host, &planner, APP, &shown);
     let reached = trees.first().expect("the item's record is published");
     assert_eq!(reached.id.as_str(), resource_id(APP, &root));
     assert_eq!(
@@ -196,7 +196,7 @@ fn a_window_publishes_what_it_reaches_and_the_whole_workspace_when_asked() {
         "what the window shows of three items reads one record"
     );
     // Nothing moved and the window shows what it showed: a frame reads nothing again.
-    let again = published.reached(&ada.host, &planner, &shown);
+    let again = published.reached(&ada.host, &planner, APP, &shown);
     assert!(
         Rc::ptr_eq(&again[0], &trees[0]),
         "a frame that showed the same read the record again"
@@ -213,7 +213,7 @@ fn a_window_publishes_what_it_reaches_and_the_whole_workspace_when_asked() {
         ["milk", "eggs", "bread"],
         "the whole workspace is read when it is asked for"
     );
-    let again = published.reached(&ada.host, &planner, &shown);
+    let again = published.reached(&ada.host, &planner, APP, &shown);
     assert_eq!(
         again[0]
             .children
@@ -765,7 +765,7 @@ fn a_host_without_frames_publishes_the_whole_workspace_and_takes_a_change_in_aft
     assert!(!windowed.is_building());
     // What the window shows is read on the frame that shows it, and only that.
     let shown = [resource_id(APP, &format!("{root}/{}", ids[1]))];
-    assert_eq!(windowed.reached(&ada.host, &planner, &shown).len(), 1);
+    assert_eq!(windowed.reached(&ada.host, &planner, APP, &shown).len(), 1);
     assert_eq!(
         windowed.visited(),
         1,

@@ -13,7 +13,7 @@ use tilo_render_protocol::patch::Lane;
 
 use super::{Instance, Shown};
 use crate::publish::resource_id;
-use crate::runtime::{ResourceRef, UiNode, Value, ViewInstance};
+use crate::runtime::{UiNode, Value};
 
 impl Instance {
     /// The root view and, when a row went somewhere, the detail view.
@@ -23,11 +23,10 @@ impl Instance {
             .filter_map(|lane| self.lane(lane))
     }
 
-    /// The published resources the window shows, as the app that holds each publishes it
+    /// The published resources the window shows, as the app publishes them
     /// (`tl:so.tilo.lang.tasks:root-fjqi4yze`): each lane's own, every resource the view it
-    /// shows refers to or runs an action on, and the items of the rows its lists hold — a
-    /// row's actions are published on its resource, whether or not the list has rendered that
-    /// row yet.
+    /// shows refers to, and the items of the rows its lists hold — a row's actions are published
+    /// on its resource, whether or not the list has rendered that row yet.
     #[must_use]
     pub fn shown_resources(&self) -> BTreeSet<String> {
         let mut out = BTreeSet::new();
@@ -37,9 +36,7 @@ impl Instance {
             for path in view.shown_refs() {
                 out.insert(resource_id(&self.app, &path));
             }
-            let tree = view.tree();
-            referents(tree, &mut out);
-            runs(tree, &view, &mut out);
+            referents(view.tree(), &self.app, &mut out);
         }
         out
     }
@@ -55,59 +52,31 @@ impl Instance {
     }
 }
 
-/// The resource `target` names — a record, or an item of one — as the app that publishes its
-/// type publishes it. A view of one app shows another's records (Today's places are Tasks'
-/// tasks), and a record is published by the app that declares its type, whichever app's view
-/// reached it.
-fn published(target: &ResourceRef) -> String {
-    let path = target.id_string();
-    match crate::schema::lookup(&target.ty) {
-        Some(schema) => resource_id(&schema.app, &path),
-        None => path,
-    }
-}
-
-/// Every resource the props of `node` and its children refer to.
-fn referents(node: &UiNode, out: &mut BTreeSet<String>) {
+/// Every resource the props of `node` and its children refer to, as the app publishes it.
+fn referents(node: &UiNode, app: &str, out: &mut BTreeSet<String>) {
     for value in node.props.values() {
-        referred(value, out);
+        referred(value, app, out);
     }
     for child in &node.children {
-        referents(child, out);
-    }
-}
-
-/// Every resource the actions the controls of `node` and its children run act on: an action's
-/// subject is the record it changes, and what a window draws a control for, it reaches.
-fn runs(node: &UiNode, view: &ViewInstance, out: &mut BTreeSet<String>) {
-    for event in node.events.keys() {
-        let Some(action) = view.event_action(&node.key, event) else {
-            continue;
-        };
-        for arg in &action.acting().args {
-            referred(arg, out);
-        }
-    }
-    for child in &node.children {
-        runs(child, view, out);
+        referents(child, app, out);
     }
 }
 
 /// Every resource `value` refers to, at any depth.
-fn referred(value: &Value, out: &mut BTreeSet<String>) {
+fn referred(value: &Value, app: &str, out: &mut BTreeSet<String>) {
     match value {
         Value::Ref(reference) => {
-            out.insert(published(&reference.target));
+            out.insert(resource_id(app, &reference.target.id_string()));
         }
         Value::List(items) | Value::Tuple(items) => {
             for item in items {
-                referred(item, out);
+                referred(item, app, out);
             }
         }
-        Value::Opt(Some(item)) => referred(item, out),
+        Value::Opt(Some(item)) => referred(item, app, out),
         Value::Enum(found) => {
             for field in found.fields.values() {
-                referred(field, out);
+                referred(field, app, out);
             }
         }
         _ => {}
