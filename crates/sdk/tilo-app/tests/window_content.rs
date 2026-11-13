@@ -5,6 +5,7 @@
 
 use std::cell::RefCell;
 
+use tilo_app::framework::testing::{TEST_WORKSPACE, live_window_in_workspace};
 use tilo_app::prelude::*;
 use tilo_app::tilo_resource::Bytes;
 use tilo_app::tilo_resource::content;
@@ -100,4 +101,45 @@ fn two_windows_in_two_workspaces_keep_their_content_apart() {
 
     // Outside both windows there is no store to reach.
     assert!(content::current().is_none());
+}
+
+#[test]
+fn two_windows_of_one_workspace_seal_the_same_picture_under_one_reference() {
+    let mut first = TestApp::<AlbumApp>::in_workspace(TEST_WORKSPACE).unwrap();
+    let mut second = TestApp::<AlbumApp>::in_workspace(TEST_WORKSPACE).unwrap();
+    let one = picture("the same picture, kept twice");
+    first
+        .invoke(Album::ATTACH.with(Bytes::to_keep(one.clone())))
+        .unwrap();
+    second
+        .invoke(Album::ATTACH.with(Bytes::to_keep(one)))
+        .unwrap();
+
+    let firsts = first.state().pictures;
+    let seconds = second.state().pictures;
+    let kept = firsts[0].reference().expect("kept in the first window");
+    assert!(tilo_content::is_sealed(&kept), "{kept}");
+    assert_eq!(
+        kept,
+        seconds[0].reference().expect("kept in the second window"),
+        "both windows seal it under the workspace's secret, so it is one item"
+    );
+}
+
+#[test]
+fn a_live_window_whose_record_has_no_route_is_refused_before_it_writes() {
+    // A host that names no workspace: its records have no route, so what the
+    // window would store for them is sealed under a key nothing else carries.
+    let refused = live_window_in_workspace::<AlbumApp>("no-workspace-id")
+        .err()
+        .expect("a window with no route to keep content on does not open");
+    let reason = refused.to_string();
+    assert!(
+        reason.contains("no workspace on this device"),
+        "the refusal says why: {reason}"
+    );
+    assert!(
+        SEEN.with(|seen| seen.borrow().is_empty()),
+        "the album never drew, so nothing was given to write with"
+    );
 }

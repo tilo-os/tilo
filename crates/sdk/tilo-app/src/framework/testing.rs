@@ -163,27 +163,64 @@ pub fn drive_live_window_writing_after<A: ResourceApp, T>(
     Ok(seen)
 }
 
-/// The live window `A` opens on the profile at `directory`, mounted on `host`
-/// as a real window is: the component, with the content store the host lends
-/// every window, so an action past the history budget keeps its large parts
-/// there rather than being refused.
+/// The live window `A` opens on `host`, mounted as a real window is: the
+/// component, with the content store the host lends every window, so an
+/// action past the history budget keeps its large parts there rather than
+/// being refused.
 fn live_window<A: ResourceApp>(
     mut host: ApplicationHost,
     directory: &std::path::Path,
 ) -> Result<ui_core::App, LaunchError> {
+    let (component, _, inputs) = live_window_component::<A>(&mut host, directory)?;
+    ui_core::App::from_component(component, inputs)
+}
+
+/// [`live_window`] as the harness a test reads what a window publishes and
+/// shows through: the component, the content store it was lent and what the
+/// host hands a window's runtime.
+fn live_window_component<A: ResourceApp>(
+    host: &mut ApplicationHost,
+    directory: &std::path::Path,
+) -> Result<
+    (
+        ui_core::application::AppComponent,
+        tilo_content::ContentStore,
+        ComponentRunnerInputs,
+    ),
+    LaunchError,
+> {
     let definition = definition::<A>();
     let mut prepared = prepare_on(
-        &mut host,
+        host,
         definition,
         INSTANCE,
         None,
         ComponentRunnerInputs::from_native_process(),
     )?;
-    prepared
-        .context
-        .provide_content(super::headless::window_content(directory));
+    let content = super::headless::window_content(directory);
+    prepared.context.provide_content(content.clone());
     let component = definition.instantiate(prepared.context, prepared.target, prepared.restore)?;
-    ui_core::App::from_component(component, prepared.runner_inputs)
+    Ok((component, content, prepared.runner_inputs))
+}
+
+/// The live window `A` opens on a host that keeps its records in `workspace`,
+/// mounted as a real one is: what it shows and publishes, read through
+/// [`FrameHarness`], and the content store the host lent it.
+pub fn live_window_in_workspace<A: ResourceApp>(
+    workspace: &str,
+) -> Result<(FrameHarness, tilo_content::ContentStore), LaunchError> {
+    let profile = profile_directory().map_err(operation)?;
+    let mut host = ApplicationHost::new(
+        profile.path().join("state"),
+        "test-device".into(),
+        workspace,
+        UserId(AUTHOR.into()),
+        role_permissions(AUTHOR, Role::Owner),
+        tilo_actions::ActionContext::default(),
+    )?;
+    let (component, content, inputs) = live_window_component::<A>(&mut host, profile.path())?;
+    let harness = FrameHarness::from_component(component, (1024, 768), inputs)?;
+    Ok((harness, content))
 }
 
 /// The record window `instance` of `A` kept in the test workspace while `A` kept

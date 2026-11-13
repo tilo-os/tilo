@@ -99,24 +99,6 @@ pub(crate) fn data_dir_content(directory: &std::path::Path) -> tilo_content::Con
     )
 }
 
-/// The content secret of `workspace`'s members, which every window of it in
-/// this process holds.
-fn workspace_secret(workspace: &str) -> Option<tilo_seal::SymmetricKey> {
-    static SECRETS: std::sync::OnceLock<
-        std::sync::Mutex<std::collections::HashMap<String, tilo_seal::SymmetricKey>>,
-    > = std::sync::OnceLock::new();
-    let generated = tilo_seal::SymmetricKey::generate().ok()?;
-    Some(
-        SECRETS
-            .get_or_init(Default::default)
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .entry(workspace.to_owned())
-            .or_insert(generated)
-            .clone(),
-    )
-}
-
 impl Profile {
     /// The workspace the app opens in: the profile's own, or the one a
     /// `--data-dir` profile is kept in.
@@ -2130,32 +2112,6 @@ fn profile_host(
     })
 }
 
-/// Hold `profile`'s workspace keys on the route of `prepared`'s record, as a
-/// device does: what the app stores is then sealed under its members' secret,
-/// so the same bytes stored twice are one item under one reference. A record
-/// this host cannot name a route for would seal its content under a key of its
-/// own, which no other reader of the record holds; it is refused instead.
-fn hold_workspace_keys(
-    opening: &Opening,
-    prepared: &PreparedComponentInputs,
-    profile: &Profile,
-) -> Result<(), LaunchError> {
-    let record = prepared.context.record();
-    let route = prepared
-        .context
-        .records()
-        .wire_route(&record.id)
-        .map_err(|error| {
-            operation(format!(
-                "{}'s record {} names no route on this host: {error}",
-                opening.id, record.id
-            ))
-        })?;
-    ui_core::collaboration::record_content::ContentLane::of(&route)
-        .hold_secret(workspace_secret(profile.workspace()));
-    Ok(())
-}
-
 /// Open the app `opening` describes as `launch` says, `configure` given its
 /// host context before it is instantiated.
 fn open_app(
@@ -2194,7 +2150,7 @@ fn open_app(
         (_, named) => prepare_on(&mut host, definition, instance, named, inputs)?,
     };
     let checkout = prepared.context.record().clone();
-    hold_workspace_keys(opening, &prepared, &profile)?;
+    super::app::hold_workspace_keys(&prepared.context, profile.workspace())?;
     hand_launch(definition, arguments, &mut prepared)?;
     prepared.context.provide_launch_options(options);
     if private {

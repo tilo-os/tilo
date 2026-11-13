@@ -12,7 +12,11 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
-const PERSONAL_WORKSPACE: &str = "personal";
+/// The workspace a launch outside every workspace keeps its records in: this
+/// device's own. A workspace is named by an id, so the records kept in it have
+/// a route to travel on and the content their windows store has somewhere to
+/// go.
+pub const PERSONAL_WORKSPACE: &str = "d1a4f6b2-3c58-4e07-9b6a-70e2c5d81f43";
 /// Names the directory the launcher keeps the person records of an app in ([`crate::record::person`]):
 /// one per app, bound into its launches in every workspace, so a record of the person's is one record
 /// on the device.
