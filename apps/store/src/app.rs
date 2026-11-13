@@ -1774,12 +1774,16 @@ impl StoreState {
                     (Some(path), None) if path.as_os_str().len() <= 4096 => {
                         crate::package_import::Input::Path(path.into())
                     }
-                    (None, Some(hash)) if ui::framework::content::valid_hash(&hash) => {
+                    // The launch handed the package's content reference: a plain address,
+                    // or one sealed under the workspace the window keeps it in.
+                    (None, Some(reference))
+                        if ui::framework::content::valid_reference(&reference) =>
+                    {
                         crate::package_import::Input::Content(
                             self.package_content
                                 .clone()
                                 .ok_or_else(|| CATALOG.t("store-package-unavailable"))?,
-                            hash,
+                            reference,
                         )
                     }
                     _ => return Err(CATALOG.t("store-package-source-required")),
