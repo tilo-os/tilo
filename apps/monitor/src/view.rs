@@ -1637,34 +1637,38 @@ pub(crate) fn process_detail(detail: Option<&ProcessDetail<'_>>) -> Element {
 mod tests {
     use super::*;
 
-    #[test]
-    fn cadence_reads_in_words() {
-        let labels: Vec<String> = Cadence::all().into_iter().map(Cadence::label).collect();
-        assert_eq!(labels.len(), INTERVALS.len() + 1);
-        assert_eq!(labels[0], "Every second");
-        assert_eq!(labels[1], "Every 1.5 seconds");
-        assert_eq!(labels[5], "Paused");
-    }
+    tilo_test_env::scenario! {
+        fn the_view_words_cadences_axes_and_values;
 
-    #[test]
-    fn throughput_scales_end_on_a_round_number_above_the_peak() {
-        for (peak, top) in [(5.1e6, 8e6), (3.4e6, 8e6), (2.9e6, 4e6), (0.0, 2.0)] {
-            assert!((axis_top(peak) - top).abs() < 1.0, "{peak} → {top}");
-            let below_top = top * (GRID_DIVISIONS - 1) as f32 / GRID_DIVISIONS as f32;
-            assert!(peak <= below_top, "the peak stays under the label band");
+        phase cadence_reads_in_words;
+        {
+            let labels: Vec<String> = Cadence::all().into_iter().map(Cadence::label).collect();
+            assert_eq!(labels.len(), INTERVALS.len() + 1);
+            assert_eq!(labels[0], "Every second");
+            assert_eq!(labels[1], "Every 1.5 seconds");
+            assert_eq!(labels[5], "Paused");
         }
-    }
 
-    #[test]
-    fn values_split_from_their_units() {
-        assert_eq!(
-            value_and_unit("8.6 GiB"),
-            ("8.6".to_owned(), "GiB".to_owned())
-        );
-        assert_eq!(
-            value_and_unit("2.4 MB/s"),
-            ("2.4".to_owned(), "MB/s".to_owned())
-        );
-        assert_eq!(value_and_unit("12"), ("12".to_owned(), String::new()));
+        phase throughput_scales_end_on_a_round_number_above_the_peak;
+        {
+            for (peak, top) in [(5.1e6, 8e6), (3.4e6, 8e6), (2.9e6, 4e6), (0.0, 2.0)] {
+                assert!((axis_top(peak) - top).abs() < 1.0, "{peak} → {top}");
+                let below_top = top * (GRID_DIVISIONS - 1) as f32 / GRID_DIVISIONS as f32;
+                assert!(peak <= below_top, "the peak stays under the label band");
+            }
+        }
+
+        phase values_split_from_their_units;
+        {
+            assert_eq!(
+                value_and_unit("8.6 GiB"),
+                ("8.6".to_owned(), "GiB".to_owned())
+            );
+            assert_eq!(
+                value_and_unit("2.4 MB/s"),
+                ("2.4".to_owned(), "MB/s".to_owned())
+            );
+            assert_eq!(value_and_unit("12"), ("12".to_owned(), String::new()));
+        }
     }
 }
