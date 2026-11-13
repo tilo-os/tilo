@@ -8,7 +8,7 @@ use ui::framework::testing::HostedApp;
 
 const NOTES: &str = "so.tilo.lang.notes";
 /// The workspace `--data-dir` opens.
-const WORKSPACE: &str = "personal";
+const WORKSPACE: &str = ui::framework::testing::DATA_DIR_WORKSPACE;
 
 /// A directory of its own, removed when the test ends.
 struct Scratch(std::path::PathBuf);
@@ -85,7 +85,11 @@ fn a_kept_workspace_shows_before_its_record_and_goes_on_as_the_window_of_the_rec
     {
         let mut app = HostedApp::open_data_dir(definition, "ada", &scratch.0).unwrap();
         settle(&mut app);
-        assert!(said(&mut app).iter().any(|said| said.contains("Item 0")));
+        let shown = said(&mut app);
+        assert!(
+            shown.iter().any(|said| said.contains("Item 0")),
+            "the first window shows the notebook: {shown:?}"
+        );
     }
     // The next one shows the notes on its first frame, and the record once it is had.
     let mut app = HostedApp::open_data_dir(definition, "ada", &scratch.0).unwrap();

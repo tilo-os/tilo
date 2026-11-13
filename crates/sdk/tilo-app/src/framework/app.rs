@@ -1543,7 +1543,7 @@ pub(crate) const DATA_DIR_INSTANCE: u64 = 0;
 /// The workspace a `--data-dir` profile keeps its records in. A workspace is
 /// named by a UUID, so the records kept in it have a route to travel on.
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) const DATA_DIR_WORKSPACE: &str = "a7d3e1f4-6b28-4c05-9e3a-71f2b8c4d590";
+pub const DATA_DIR_WORKSPACE: &str = "a7d3e1f4-6b28-4c05-9e3a-71f2b8c4d590";
 
 #[cfg(not(target_arch = "wasm32"))]
 /// The host of an explicit `--data-dir` profile: one personal workspace in
