@@ -1,17 +1,15 @@
 //! Stable slice sorting compiled once for every call site.
 //!
-//! std's `sort_by` and its relatives are generic over the comparator, so
-//! every call site compiles its own copy of the whole sort (driftsort and
-//! its small-sort and merge helpers, several kilobytes each in a release
-//! build). The toolkit and the models under it sort small lists in a few
-//! hundred places; in the web desktop's start module those copies came to
+//! std's `sort_by` and its relatives are generic over the comparator, so every
+//! call site compiles its own copy of the whole sort (several kilobytes each in
+//! a release build); in the web desktop's start module those copies came to
 //! about half a megabyte.
 //!
-//! [`CompactSort`] sorts with one shared, non-generic merge sort over
-//! indices: each call site adds only its comparator and a small in-place
-//! permutation for its element type. It is stable, `O(n log n)`, and
-//! allocates two index vectors, which suits the short lists of interface
-//! and model code; keep std's sorts for large, hot data.
+//! [`CompactSort`] sorts with one shared, non-generic merge sort over indices:
+//! each call site adds only its comparator and a small in-place permutation for
+//! its element type. It is stable, `O(n log n)`, and allocates two index
+//! vectors, which suits the short lists of interface and model code; keep std's
+//! sorts for large, hot data.
 //!
 //! ```
 //! use tilo_sort::CompactSort as _;
@@ -23,8 +21,6 @@
 
 use std::cmp::Ordering;
 
-/// Stable sorting of a slice through one shared merge sort; see the crate
-/// documentation.
 pub trait CompactSort<T> {
     /// Sort with a comparator, like `[T]::sort_by`. Stable.
     fn compact_sort_by(&mut self, compare: impl FnMut(&T, &T) -> Ordering);
@@ -63,7 +59,7 @@ impl<T> CompactSort<T> for [T] {
     }
 }
 
-/// Runs this long are sorted by insertion before merging.
+/// Runs this long go through insertion sort before merging.
 const RUN: usize = 8;
 
 /// The sorted order of `len` items as their indices: `order[k]` is the index
@@ -139,7 +135,6 @@ fn permute<T>(items: &mut [T], mut order: Vec<usize>) {
 mod tests {
     use super::CompactSort as _;
 
-    /// A small deterministic generator, so the tests need no dependency.
     fn numbers(seed: u64, len: usize, range: u64) -> Vec<u64> {
         let mut state = seed | 1;
         (0..len)
