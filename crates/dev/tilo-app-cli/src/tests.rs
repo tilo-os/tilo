@@ -79,8 +79,6 @@ fn minimal_generated_graph_app(root: &Path) {
     .unwrap();
 }
 
-/// add screen resolves the app and emits a valid graph; every screen template is valid, accessible and
-/// model-bound; the screen template wires locales, navigation and graph atomically.
 #[test]
 #[allow(
     clippy::too_many_lines,
@@ -280,8 +278,6 @@ fn add_screen_emits_valid_accessible_model_bound_graphs_with_their_wiring() {
     }
 }
 
-/// A malformed translation prevents all screen publication; add screen extends only a generated
-/// registry; push and back navigation are wired atomically.
 #[test]
 #[allow(
     clippy::too_many_lines,
@@ -472,9 +468,6 @@ fn add_screen_publishes_all_or_nothing_into_generated_registries_only() {
     }
 }
 
-/// The add wizard builds a reviewed linked settings screen, cancels before writing and requires a
-/// terminal, reviews and builds a typed form component, creates, registers and mounts a display
-/// component, and mounts an interactive form component.
 #[test]
 #[allow(
     clippy::too_many_lines,
@@ -619,8 +612,6 @@ fn the_add_wizard_reviews_before_building_screens_and_components() {
     }
 }
 
-/// The component wizard exposes the source-agnostic tree, sparse list, sparse table and advanced
-/// text templates.
 #[test]
 fn the_component_wizard_exposes_every_component_template() {
     {
@@ -668,9 +659,6 @@ fn the_component_wizard_exposes_every_component_template() {
     }
 }
 
-/// add component registers typed accessible Rust without overwriting work; mount validation
-/// publishes nothing on failure; generated graph apps auto-register compatible components;
-/// template replacement requires compatible graph props; stateful form components mount.
 #[test]
 #[allow(
     clippy::too_many_lines,
@@ -1139,8 +1127,6 @@ fn component_registry_returns_the_last_registration_directly() {
     );
 }
 
-/// List, table and text components preserve their generic sparse, column and model boundaries and
-/// expose the standard polygon and custom engine paths.
 #[test]
 fn component_templates_keep_their_generic_model_boundaries() {
     {
@@ -1232,8 +1218,6 @@ fn component_templates_keep_their_generic_model_boundaries() {
     }
 }
 
-/// Component generation is dry-run safe and localises template copy, refuses an app-owned registry
-/// and Rust keywords, and a generated file batch rolls back an earlier publication.
 #[test]
 #[allow(
     clippy::too_many_lines,
@@ -1410,9 +1394,6 @@ fn component_generation_is_safe_localised_and_transactional() {
     }
 }
 
-/// Screen scenarios scaffold a reachable semantic workflow and reject an app root without the
-/// router; planning is deterministic and prevalidates the suite; a named plan carries its viewport;
-/// execution isolates state and accumulates failures.
 #[test]
 #[allow(
     clippy::too_many_lines,
@@ -1660,8 +1641,6 @@ fn screen_scenarios_scaffold_plan_and_run_isolated_workflows() {
     }
 }
 
-/// add artifact protects work with a side-effect-free dry run and rejects traversal and non-app
-/// directories.
 #[test]
 fn add_artifact_protects_work_and_stays_inside_the_app() {
     {
@@ -1763,11 +1742,6 @@ fn add_artifact_protects_work_and_stays_inside_the_app() {
     }
 }
 
-/// add locale registers immediately and protects app-owned setup; the Fluent contract reports
-/// missing and stale entries; an invalid source is rejected before publishing; locale sync
-/// preserves translations and can resolve drift, validates every catalog before publishing any;
-/// a catalog that is already there is registered without replacing its text; an app-owned
-/// registry is never rewritten.
 #[test]
 #[allow(
     clippy::too_many_lines,
@@ -2120,9 +2094,6 @@ fn locales_are_registered_validated_and_synced_without_losing_translations() {
     }
 }
 
-/// The UI graph builder round-trips structural edits atomically; property edits are nested, typed
-/// and atomic; edit batches mix operations and roll back together; the tools insert, inspect and
-/// edit app components.
 #[test]
 #[allow(
     clippy::too_many_lines,
@@ -2407,8 +2378,6 @@ fn ui_graph_edits_are_typed_atomic_and_roll_back_together() {
     }
 }
 
-/// The explicit UI builder plan is deterministic, the source-checkout builder manifest is
-/// discoverable, and UI graph init protects existing work without force.
 #[test]
 fn the_ui_builder_is_planned_deterministically_and_found_from_a_checkout() {
     {
@@ -2454,9 +2423,6 @@ fn the_ui_builder_is_planned_deterministically_and_found_from_a_checkout() {
     }
 }
 
-/// A complete starter is created; standalone non-interactive creation discovers the toolkit;
-/// discovery follows the executable ancestry; new app preflights workspace registration, publishes
-/// the tree and workspace member together, and a staged failure restores both.
 #[test]
 #[allow(
     clippy::too_many_lines,
@@ -2677,9 +2643,6 @@ fn new_apps_are_created_whole_with_their_workspace_registration() {
     }
 }
 
-/// The interactive wizard retries invalid fields and builds the selected template, declines before
-/// publishing any files, prompts and retries the toolkit path before review, accepts the discovered
-/// toolkit default, and reports end of input as cancellation.
 #[test]
 #[allow(
     clippy::too_many_lines,
@@ -2867,9 +2830,6 @@ fn the_interactive_wizard_retries_declines_and_cancels_cleanly() {
     }
 }
 
-/// The framework is recognised from the parsed items, so a path-qualified
-/// `#[resource]` attribute and a `ResourceApp` kept outside `src/lib.rs`
-/// count, while the same words in a comment or a string do not.
 #[test]
 fn doctor_recognises_the_framework_by_its_parsed_items() {
     let app = |files: &[(&str, &str)]| {
@@ -2916,9 +2876,6 @@ fn doctor_recognises_the_framework_by_its_parsed_items() {
     assert_eq!(mentioned[1].0, DoctorStatus::Fail, "{mentioned:#?}");
 }
 
-/// Doctor accumulates actionable failures, accepts registered document actions without widget
-/// glue, finds the SDK in target-specific dependencies, and rejects one invalid
-/// target-specific UI dependency.
 #[test]
 #[allow(
     clippy::too_many_lines,
@@ -3018,8 +2975,6 @@ fn doctor_reports_actionable_failures_in_app_manifests() {
     }
 }
 
-/// Doctor validates generated screens, locales and scenarios, preflights graph component factories
-/// and typed props, and marks app-owned component contexts unverifiable.
 #[test]
 #[allow(
     clippy::too_many_lines,
@@ -3201,9 +3156,6 @@ fn doctor_validates_generated_screens_components_and_contracts() {
     }
 }
 
-/// A dry run writes nothing; the summary prints copyable commands for shell-unsafe paths;
-/// ambiguous or unsafe names are rejected; the workspace-relative UI path is computed; the template
-/// prompt accepts names and shortcuts.
 #[test]
 fn creation_inputs_are_validated_and_printed_safely() {
     {
@@ -3285,8 +3237,6 @@ fn creation_inputs_are_validated_and_printed_safely() {
     }
 }
 
-/// The starter, document, collection and graph templates each compose the toolkit patterns they
-/// are meant to start from.
 #[test]
 #[allow(
     clippy::too_many_lines,
@@ -3486,8 +3436,6 @@ fn each_template_composes_the_toolkit_patterns_it_teaches() {
     }
 }
 
-/// Every template uses the toolkit resource action host and generates valid Rust and actions, and
-/// generated README commands work in a workspace or standalone.
 #[test]
 #[allow(
     clippy::too_many_lines,
@@ -3677,9 +3625,6 @@ fn every_template_generates_valid_rust_actions_and_working_readme_commands() {
     }
 }
 
-/// The standalone UI path is discovered and overridable; task plans discover the app and forward
-/// after the separator; quality plans scope format and clippy to the package; tasks refuse to spawn
-/// when doctor fails.
 #[test]
 #[allow(
     clippy::too_many_lines,
@@ -3869,8 +3814,6 @@ fn app_task_plans_are_scoped_to_the_app_and_gated_by_doctor() {
     }
 }
 
-/// Shot plans use the standard launch flags and forward app options; inspection plans build a strict
-/// payload from an actions file and reject a non-array file.
 #[test]
 fn shot_and_inspection_plans_are_built_strictly() {
     {
@@ -3969,8 +3912,6 @@ fn shot_and_inspection_plans_are_built_strictly() {
     }
 }
 
-/// Sizes parse in decimal and binary units, `[budget]` refuses unknown keys, ELF sections are
-/// read without trusting the file, and overruns name what is over and by how much.
 #[test]
 fn package_size_is_reported_against_the_app_budget() {
     assert_eq!(size::parse_size("4096").unwrap(), 4096);
@@ -4082,9 +4023,6 @@ fn package_size_is_reported_against_the_app_budget() {
     );
 }
 
-/// Package specs use the manifest entrypoint and package name, artifact collection is scoped to the
-/// manifest, output is not replaced before building, the payload overlay copies nested files and
-/// rejects symlinks, and profile names are safe Cargo arguments.
 #[test]
 #[allow(
     clippy::too_many_lines,
@@ -4303,9 +4241,6 @@ fn packaging_is_scoped_safe_and_never_clobbers_output() {
     }
 }
 
-/// The dev loop watches app and local UI source, ignores build and editor noise, detects a newer
-/// edit while draining, selects the default binary and reports failures, and passes app arguments and
-/// working directory to the rebuilt binary.
 #[test]
 #[allow(
     clippy::too_many_lines,
@@ -4767,8 +4702,6 @@ fn doctor_accepts_the_cli_only_agent_without_a_published_surface() {
     }));
 }
 
-/// A standalone app builds what the workspace tests: every `[patch]` the SDK's graph uses, the
-/// lockfile, compiler, target flags and profiles, with the SDK from a checkout or from git.
 #[test]
 #[allow(
     clippy::too_many_lines,
@@ -4875,7 +4808,6 @@ fn standalone_apps_build_against_the_sdk_the_workspace_tests() {
         assert!(doctor_app(&app).unwrap().is_ready());
     }
 
-    // Phase: `--ui-path` may name the checkout itself, not only one of its SDK crates.
     {
         let temp = tempfile::tempdir().unwrap();
         let app = temp.path().join("reading-list");
@@ -4891,7 +4823,6 @@ fn standalone_apps_build_against_the_sdk_the_workspace_tests() {
         );
     }
 
-    // Phase: without a checkout the SDK and every fork come from one pinned git commit.
     {
         let temp = tempfile::tempdir().unwrap();
         let app = temp.path().join("reading-list");
@@ -4931,7 +4862,6 @@ fn standalone_apps_build_against_the_sdk_the_workspace_tests() {
         assert!(report.summary().contains(rev), "{}", report.summary());
     }
 
-    // Phase: on the published SDK the app names tilo-app by version, alone.
     {
         let temp = tempfile::tempdir().unwrap();
         let app = temp.path().join("reading-list");
@@ -4975,7 +4905,6 @@ fn standalone_apps_build_against_the_sdk_the_workspace_tests() {
         );
     }
 
-    // Phase: Cargo's caches are never mistaken for a checkout to build against.
     {
         let home = Path::new("/home/ada/.cargo");
         assert!(standalone::in_cargo_cache(
@@ -4990,8 +4919,6 @@ fn standalone_apps_build_against_the_sdk_the_workspace_tests() {
     }
 }
 
-/// Inside the Tilo workspace the toolkit comes in as a dependency with the flags the host and the
-/// library share; a standalone app links every artifact for its target dynamically instead.
 #[test]
 fn thin_dev_builds_link_the_toolkit_dynamically_inside_and_outside_the_workspace() {
     let manifest = Path::new("/apps/notes/Cargo.toml");
@@ -5810,7 +5737,6 @@ fn seal_script(path: &Path) {
     std::fs::remove_file(&draft).unwrap();
 }
 
-/// `--ui-path` may name either SDK crate of a checkout; both resolve to the same checkout.
 #[test]
 fn ui_path_accepts_either_sdk_crate() {
     for crate_dir in ["ui-core", "tilo-app"] {
@@ -5823,8 +5749,6 @@ fn ui_path_accepts_either_sdk_crate() {
     }
 }
 
-/// The dev loop supplies a runtime host only to an outside app that has none,
-/// and finds it in the checkout the app's `tilo-app` dependency resolves to.
 #[test]
 fn the_dev_loop_supplies_a_runtime_host_only_where_none_serves() {
     let env = |pairs: &'static [(&'static str, &'static str)]| {
@@ -5883,8 +5807,6 @@ fn the_dev_loop_supplies_a_runtime_host_only_where_none_serves() {
     assert_eq!(sdk_root_from_metadata(&without), None);
 }
 
-/// Only an edit confined to `locales/*.ftl` skips the build; anything else in
-/// the same batch, a removed file, or a nested path still rebuilds.
 #[test]
 fn catalog_only_edits_reload_without_a_build() {
     let app = Path::new("/apps/demo");
@@ -5970,9 +5892,6 @@ fn files_under(root: &Path) -> BTreeSet<PathBuf> {
     files
 }
 
-/// Each example in the checkout is exactly what `tilo-app new --from-example`
-/// renders for it under its own identity: the generated files are the ones
-/// `new` writes, and the example's own files are the ones the CLI embeds.
 #[test]
 fn every_example_is_what_new_renders_for_it() {
     let root = checkout_root();
@@ -6024,10 +5943,6 @@ fn every_example_is_what_new_renders_for_it() {
     }
 }
 
-/// Threads and the std clock are absent on the web: the web rules (W1, W2)
-/// record them apart as what makes an app native-only, an app for every
-/// platform fails on them (strict mode), and the web build refuses it before
-/// building anything.
 #[test]
 fn portability_lint_records_what_the_web_target_cannot_run() {
     let root = tempfile::tempdir().unwrap();
@@ -6123,8 +6038,6 @@ pub fn device_only() {
     assert!(!app.join("target/tilo-app").exists());
 }
 
-/// Every example is listed with its lesson in examples/README.md, and every
-/// example passes the portability lint.
 #[test]
 fn every_example_is_indexed_and_portable() {
     let root = checkout_root();
@@ -6151,8 +6064,6 @@ fn every_example_is_indexed_and_portable() {
     assert!(examples::find("list").is_err());
 }
 
-/// An app started from an example outside the checkout is renamed throughout
-/// and passes the same structural checks as an app from a template.
 #[test]
 fn an_app_from_an_example_is_renamed_and_ready() {
     for example in examples::ALL {

@@ -599,8 +599,6 @@ mod tests {
         assert!(found[0].message.starts_with("missing c-d"));
     }
 
-    /// Fluent keeps the last of two entries with one id, so a catalogue that
-    /// defines a message twice cannot say which text a person reads.
     #[test]
     fn a_catalogue_that_defines_a_message_twice_fails() {
         let temp = tempfile::tempdir().unwrap();

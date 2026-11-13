@@ -1232,9 +1232,6 @@ mod tests {
         assert!(found.findings.is_empty(), "{}", found.render());
     }
 
-    /// The file a receiver reads holds what it decides with: verb kinds and
-    /// footprints, field layouts and read-only marks, without the text that
-    /// stays in the code.
     #[test]
     fn a_written_surface_reads_as_what_receivers_decide_with() {
         let mut book = resource(1, "String", &["rename"]);
@@ -1260,8 +1257,6 @@ mod tests {
         assert_eq!(render(&[value["resources"][0].clone()]).unwrap(), text);
     }
 
-    /// What an action answers with is part of the file, its schema without
-    /// the prose the types' doc comments put in it.
     #[test]
     fn an_actions_answer_reads_back_with_its_type() {
         let mut book = resource(1, "String", &["rename"]);
@@ -1291,8 +1286,6 @@ mod tests {
         assert_eq!(surface.types[0].name, "Renamed");
     }
 
-    /// A file written before its app published read actions stays current
-    /// without them; once it has them, a read verb it lacks is drift.
     #[test]
     fn a_file_written_before_read_actions_takes_them_when_written_again() {
         let before = vec![normalized(&resource(1, "String", &["rename"]))];
@@ -1449,8 +1442,6 @@ mod tests {
         assert!(parsed.view.is_none());
     }
 
-    /// A verb, effect or view under an id the framework publishes its own
-    /// action under is refused, whichever it is; other ids pass.
     #[test]
     fn an_action_with_a_framework_id_is_refused() {
         let mut now = report(&[resource(1, "String", &["rename", "undo"])]);
@@ -1488,12 +1479,6 @@ mod tests {
         assert!(!is_framework_app(temp.path()));
     }
 
-    /// Messages publishes verbs and field edits, so every one of them has to
-    /// read in the app's own words: the live report and the catalogue it is
-    /// checked against are the app's, not a fixture standing in for it. The
-    /// report is the one `messages --surface` prints, taken in this process
-    /// from the app linked into the test rather than by building and running
-    /// its binary here, which made the test as slow as a cold build of the app.
     #[test]
     fn messages_history_reads_in_its_own_words() {
         let app_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/messages");

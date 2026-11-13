@@ -569,10 +569,6 @@ mod tests {
     use super::*;
     use tilo_test_env::SpawnUnderEnvLock as _;
 
-    /// The revision step reads the SDK pin from a lock a build resolved, from
-    /// the app's manifest when the lock is still the scaffold's seed (which
-    /// names no SDK source), and falls back to `main` only when neither pins
-    /// one: a CLI from another revision than the app's SDK may not build it.
     #[test]
     fn the_revision_step_reads_the_lock_then_the_app_manifest() {
         use crate::standalone::{Baseline, SdkSource, Standalone};

@@ -41,9 +41,6 @@ fn the_preview_follows_the_inputs_and_undo_reverts() {
     assert_eq!(App::label(&app.state()), "Untitled document");
 }
 
-/// Clearing is destructive but Undo takes it back, so it runs at once and
-/// undo restores the document; the document is stored and survives a
-/// relaunch.
 #[test]
 fn clearing_runs_at_once_with_undo_and_the_document_survives_a_relaunch() {
     let mut app = TestApp::<App>::new().expect("the app opens");
