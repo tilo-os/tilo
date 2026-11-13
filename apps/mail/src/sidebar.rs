@@ -14,14 +14,12 @@ use crate::account::AccountStore;
 use crate::model::Folder;
 use crate::state::{Command, MailState, Shared};
 
-/// The id of the per-account settings action on each section header.
 const ACCOUNT_SETTINGS: &str = "account-settings";
 
 pub(crate) fn folder_row_id(account: usize, folder: Folder) -> String {
     format!("{account}/{}", folder.as_key())
 }
 
-/// The account and folder a row id names.
 pub(crate) fn parse_folder_row(id: &str) -> Option<(usize, Folder)> {
     let (account, folder) = id.split_once('/')?;
     Some((account.parse().ok()?, Folder::from_key(folder)?))
@@ -31,21 +29,16 @@ fn section_id(account: usize) -> String {
     format!("account-{account}")
 }
 
-/// The row id of every account's inbox together.
 pub(crate) const ALL_INBOXES: &str = "all/inbox";
 
-/// The row id of the messages `account` still has to send.
 fn outbox_row_id(account: usize) -> String {
     format!("{account}/outbox")
 }
 
-/// The account whose outbox a row id names.
 fn parse_outbox_row(id: &str) -> Option<usize> {
     id.strip_suffix("/outbox")?.parse().ok()
 }
 
-/// The sidebar's destinations for the current state: with more than one
-/// account, every inbox together first, then each account's folders.
 pub(crate) fn sections(state: &MailState) -> Vec<NavSection> {
     let mut sections = Vec::new();
     if state.accounts.accounts.len() > 1 {
@@ -68,7 +61,6 @@ pub(crate) fn sections(state: &MailState) -> Vec<NavSection> {
     sections
 }
 
-/// One section per account, listing its folders.
 fn account_sections(state: &MailState) -> Vec<NavSection> {
     state
         .accounts
@@ -100,7 +92,6 @@ fn account_sections(state: &MailState) -> Vec<NavSection> {
                         };
                     }
                     match folder {
-                        // Unread mail is what waits for the person.
                         Folder::Inbox => match u32_of_usize(state.mailbox.unread_count(folder)) {
                             0 => item,
                             unread => item.live_count(unread),
@@ -145,7 +136,6 @@ fn account_sections(state: &MailState) -> Vec<NavSection> {
         .collect()
 }
 
-/// The row that shows the open folder.
 pub(crate) fn selected_row(state: &MailState) -> Option<String> {
     if state.all_inboxes {
         return Some(ALL_INBOXES.to_owned());
@@ -156,13 +146,6 @@ pub(crate) fn selected_row(state: &MailState) -> Option<String> {
     (!state.accounts.is_empty()).then(|| folder_row_id(state.accounts.active, state.folder))
 }
 
-/// The accounts-and-folders sidebar: the toolkit list, following the
-/// accounts and the open folder and reporting choices into `shared`.
-///
-/// A section header's button opens Settings' External Accounts page: it runs
-/// the published [`MailEffect::AccountSettings`](crate::actions::MailEffect)
-/// when `settings` binds it, so the header, the window bar's own entry and
-/// an agent all reach the same action.
 pub fn sidebar(shared: &Shared, settings: Option<ActionBinding<String>>) -> NavList {
     let on_select = shared.clone();
     let follow = shared.clone();

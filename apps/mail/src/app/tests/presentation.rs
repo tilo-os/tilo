@@ -20,7 +20,6 @@ fn presentation_state_stays_local() {
             app.shared.borrow_mut().set_active_account(1);
             app.compose.set_format(ComposeFormat::Text);
         }
-        // A second app sharing the document receives only domain state.
         let mut app2 = MailApp::new_sample();
         app2.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
         app2.sync(&doc, &automerge::ROOT);

@@ -28,7 +28,6 @@ const EVENT: &str = "BEGIN:VEVENT\r\nUID:a@tilo\r\nSUMMARY:Review\r\nBEGIN:VALAR
 
 #[test]
 fn calendar_invitation_acceptance_is_structural_and_honours_overrides() {
-    // Phase `calendar_invitation_accepts_a_request_and_its_overrides`.
     {
         assert!(valid_calendar_invitation(&invitation(EVENT)));
         let override_event = "BEGIN:VEVENT\r\nUID:a@tilo\r\nRECURRENCE-ID;VALUE=DATE:20260619\r\nSTATUS:CANCELLED\r\nEND:VEVENT\r\n";
@@ -40,7 +39,6 @@ fn calendar_invitation_acceptance_is_structural_and_honours_overrides() {
         assert!(valid_calendar_invitation(&folded));
     }
 
-    // Phase `calendar_invitation_is_checked_structurally_not_textually`.
     {
         let lookalike = EVENT.replace("SUMMARY:Review", "SUMMARY:BEGIN:VEVENT");
         assert!(
@@ -108,7 +106,6 @@ fn ids(ids: &[&str]) -> Vec<String> {
     ids.iter().map(|id| (*id).to_owned()).collect()
 }
 
-/// A message fetched from `account` as its server has it.
 fn fetched(id: &str, read: bool, folder: Folder) -> IngestBaseline {
     IngestBaseline {
         id: id.into(),
@@ -121,15 +118,12 @@ fn fetched(id: &str, read: bool, folder: Folder) -> IngestBaseline {
     }
 }
 
-/// Flags overlay the loaded mail; a delayed fetch never overwrites what the
-/// reader did, and a message deleted for good stays deleted.
 #[test]
 #[allow(
     clippy::too_many_lines,
     reason = "one scenario test keeps each phase and its fixture visible"
 )]
 fn flags_and_purges_converge_without_resurrection() {
-    // Phase `flags_persist_and_overlay`.
     {
         let mut mail = Replica::<Mail>::new();
         let mut mb = sample_mailbox();
@@ -151,7 +145,6 @@ fn flags_and_purges_converge_without_resurrection() {
         assert!(fresh.get(id).unwrap().read);
     }
 
-    // Phase `delayed_ingestion_never_overwrites_a_reader_change`.
     {
         let mut mail = Replica::<Mail>::new();
         let mut mailbox = sample_mailbox();
@@ -174,7 +167,6 @@ fn flags_and_purges_converge_without_resurrection() {
         assert!(mailbox.get(id).is_some_and(|message| message.read));
     }
 
-    // Phase `purge_removes_the_hydrated_copy_and_a_stale_fetch_cannot_bring_it_back`.
     {
         let mut mail = Replica::<Mail>::new();
         let mut mailbox = sample_mailbox();
@@ -216,7 +208,6 @@ fn flags_and_purges_converge_without_resurrection() {
         );
     }
 
-    // Phase `field_edits_overlay_flags_folder_and_labels`.
     {
         let mut mail = Replica::<Mail>::new();
         let mut mb = sample_mailbox();
@@ -258,7 +249,6 @@ fn flags_and_purges_converge_without_resurrection() {
     reason = "one scenario test keeps each phase and its fixture visible"
 )]
 fn drafts_labels_and_folders_round_trip_and_stay_bounded() {
-    // Phase `draft_round_trips_and_discards`.
     {
         let mut mail = Replica::<Mail>::new();
         let content = tilo_content::ContentStore::memory();
@@ -282,7 +272,6 @@ fn drafts_labels_and_folders_round_trip_and_stay_bounded() {
         assert!(mail.state().unwrap().draft.is_empty(), "discard clears it");
     }
 
-    // Phase `labels_add_remove_and_stay_a_set`.
     {
         let mut mail = Replica::<Mail>::new();
         register(&mut mail, "m1", Folder::Inbox);
@@ -306,7 +295,6 @@ fn drafts_labels_and_folders_round_trip_and_stay_bounded() {
         );
     }
 
-    // Phase `local_folder_registry_crud`.
     {
         let mut mail = Replica::<Mail>::new();
         let folders = Mail::paths().folders;
@@ -350,7 +338,6 @@ fn drafts_labels_and_folders_round_trip_and_stay_bounded() {
         );
     }
 
-    // Phase `saving_an_unchanged_draft_writes_nothing`.
     {
         let mut mail = Replica::<Mail>::new();
         let draft = Draft {
@@ -371,7 +358,6 @@ fn drafts_labels_and_folders_round_trip_and_stay_bounded() {
         );
     }
 
-    // Phase `draft_text_is_unicode_safe_and_bounded`.
     {
         let mut mail = Replica::<Mail>::new();
         let draft = Draft {
@@ -398,7 +384,6 @@ fn drafts_labels_and_folders_round_trip_and_stay_bounded() {
     }
 }
 
-/// Save `draft` as the composer does: the fields that changed.
 fn save(mail: &mut Replica<Mail>, draft: &Draft) {
     apply(
         mail,
@@ -410,10 +395,6 @@ fn save(mail: &mut Replica<Mail>, draft: &Draft) {
     .unwrap();
 }
 
-/// Where the mailbox and the server differ, the server has to be told; once
-/// it confirms, nothing is left. A change taken back before then leaves
-/// nothing to tell, and a message that exists only here never goes to a
-/// server.
 #[test]
 fn server_updates_follow_the_mailbox_until_the_server_confirms() {
     let mut mail = Replica::<Mail>::new();
@@ -494,9 +475,6 @@ fn server_updates_follow_the_mailbox_until_the_server_confirms() {
     assert!(updates(&mail).is_empty(), "a local message stays local");
 }
 
-/// A flag the server changed since it last reported it (another mail client
-/// read the message) is adopted; one it reports unchanged never overwrites a
-/// change still on its way to it.
 #[test]
 fn a_fetch_adopts_server_changes_and_keeps_changes_on_their_way() {
     let mut mail = Replica::<Mail>::new();
@@ -522,12 +500,8 @@ fn a_fetch_adopts_server_changes_and_keeps_changes_on_their_way() {
     );
 }
 
-/// Batch verbs act on every message they name or refuse; purge deletes all
-/// of them or none, a stale or unknown id changes nothing, two readers'
-/// flags on one message merge.
 #[test]
 fn batch_verbs_fail_closed_and_converge() {
-    // Phase `purge_refuses_mixed_or_stale_ids_without_deleting_a_valid_subset`.
     {
         let mut mail = Replica::<Mail>::new();
         register(&mut mail, "inbox", Folder::Inbox);
@@ -544,7 +518,6 @@ fn batch_verbs_fail_closed_and_converge() {
         assert_eq!(mail.heads(), before);
     }
 
-    // Phase `purge_merges_to_peers_and_refuses_late_flag_resurrection`.
     {
         let mut a = Replica::<Mail>::new();
         register(&mut a, "m", Folder::Trash);
@@ -568,7 +541,6 @@ fn batch_verbs_fail_closed_and_converge() {
         );
     }
 
-    // Phase `unknown_messages_are_refused_without_orphan_flags`.
     {
         let mut mail = Replica::<Mail>::new();
         assert!(
@@ -588,7 +560,6 @@ fn batch_verbs_fail_closed_and_converge() {
         assert!(mail.state().unwrap().messages.is_empty());
     }
 
-    // Phase `duplicate_and_excess_ids_are_one_bounded_target_set`.
     {
         let mut mail = Replica::<Mail>::new();
         register(&mut mail, "m", Folder::Inbox);
@@ -601,7 +572,6 @@ fn batch_verbs_fail_closed_and_converge() {
         assert_eq!(state(&mail, "m").unwrap().folder, Folder::Archive);
     }
 
-    // Phase `concurrent_same_message_flag_edits_merge_without_losing_either_field`.
     {
         let mut read_replica = Replica::<Mail>::new();
         register(&mut read_replica, "m", Folder::Inbox);
@@ -622,8 +592,6 @@ fn batch_verbs_fail_closed_and_converge() {
     }
 }
 
-/// A blank line in a draft's text separates paragraphs; it is no empty
-/// paragraph of its own.
 #[test]
 fn a_blank_line_in_the_draft_text_only_separates_paragraphs() {
     let mut mail = Replica::<Mail>::new();
@@ -683,7 +651,6 @@ fn the_draft_body_is_rich_text_started_and_edited_at_its_path() {
         "no body to edit yet"
     );
 
-    // A reply quote: a paragraph per line, `> ` lines quoted.
     apply(
         &mut mail,
         Mail::START_DRAFT_BODY.with(mailbox::StartDraftBody {
@@ -719,7 +686,6 @@ fn the_draft_body_is_rich_text_started_and_edited_at_its_path() {
     .unwrap();
     assert_eq!(text(&mail)[0].1, "Thanks, Ada.");
 
-    // A reopened draft starts from its HTML part.
     apply(
         &mut mail,
         Mail::START_DRAFT_BODY.with(mailbox::StartDraftBody {
@@ -747,18 +713,15 @@ fn the_draft_body_is_rich_text_started_and_edited_at_its_path() {
     );
 }
 
-/// The sample mailbox window as the framework hosts it.
 fn sample_window() -> TestApp<MailShell> {
     ui::i18n::I18nManager::init("en-US");
     TestApp::<MailShell>::capture(Some("wide")).expect("the sample mailbox captures")
 }
 
-/// Everything the window publishes, as the host's palette and agents see it.
 fn published(app: &mut TestApp<MailShell>) -> Vec<ResourceSpec> {
     app.harness().resources()
 }
 
-/// The published mailbox root.
 fn mailbox_root(resources: &[ResourceSpec]) -> &ResourceSpec {
     let mut roots = resources.iter().filter(|r| r.kind == "mail.mailbox");
     let root = roots.next().expect("a published mailbox");
@@ -766,7 +729,6 @@ fn mailbox_root(resources: &[ResourceSpec]) -> &ResourceSpec {
     root
 }
 
-/// The published resource `id`, wherever it sits in the tree.
 fn find<'a>(resources: &'a [ResourceSpec], id: &str) -> Option<&'a ResourceSpec> {
     resources.iter().find_map(|resource| {
         if resource.id.as_str() == id {
@@ -777,13 +739,11 @@ fn find<'a>(resources: &'a [ResourceSpec], id: &str) -> Option<&'a ResourceSpec>
     })
 }
 
-/// Resolve `id` as the host resolves an address the tree does not list.
 fn resolve(app: &mut TestApp<MailShell>, id: &str) -> Option<ResourceSpec> {
     let harness = app.harness();
     ui::resources::resource(harness.root_widget(), &harness.state().doc, id)
 }
 
-/// The ids of the mailbox's messages in the Inbox.
 fn inbox_ids(mail: &Mail) -> Vec<String> {
     mail.messages
         .iter()
@@ -800,16 +760,12 @@ fn message_place(id: &str) -> String {
     )
 }
 
-/// The mailbox tree: open vs neutral preview, a bounded page of messages
-/// under each folder, stable thread/account addresses, and purge on what is
-/// in the Trash.
 #[test]
 #[allow(
     clippy::too_many_lines,
     reason = "one scenario test keeps each merged phase and its fresh fixture visible"
 )]
 fn mailbox_publishes_bounded_stable_places() {
-    // Phase `a_loaded_message_distinguishes_open_from_read_state_neutral_preview`.
     {
         let mut app = sample_window();
         let unread = app
@@ -860,7 +816,6 @@ fn mailbox_publishes_bounded_stable_places() {
         ));
     }
 
-    // Phase `ctrl_k_publishes_the_mailbox_tree`.
     {
         let mut live = TestApp::<MailShell>::new().unwrap();
         let live_resources = published(&mut live);
@@ -921,7 +876,6 @@ fn mailbox_publishes_bounded_stable_places() {
             "an inbox child is a message"
         );
 
-        // A loaded thread stays addressable though the tree does not list it.
         let thread = app
             .with_surface::<MailApp, _>(|mail| {
                 mail.state().shared_mailbox().threads_in(Folder::Inbox)[0].clone()
@@ -954,7 +908,6 @@ fn mailbox_publishes_bounded_stable_places() {
         );
     }
 
-    // Phase `a_large_mailbox_does_not_expand_the_published_tree`.
     {
         let mut app = TestApp::<MailShell>::new().unwrap();
         let count = OPEN_MESSAGE_LIMIT * 5;
@@ -989,7 +942,6 @@ fn mailbox_publishes_bounded_stable_places() {
         );
     }
 
-    // Phase `threads_keep_distinct_stable_resource_addresses`.
     {
         let mut app = sample_window();
         let threads = app
@@ -1017,7 +969,6 @@ fn mailbox_publishes_bounded_stable_places() {
         }
     }
 
-    // Phase `account_resource_uses_a_durable_id_not_its_display_index`.
     {
         let mut app = sample_window();
         let resources = published(&mut app);
@@ -1053,7 +1004,6 @@ fn mailbox_publishes_bounded_stable_places() {
         );
     }
 
-    // Phase `a_trashed_message_offers_its_permanent_deletion_confirmed`.
     {
         let mut mail = Replica::<Mail>::new();
         register(&mut mail, "m", Folder::Trash);
@@ -1080,8 +1030,6 @@ fn mailbox_publishes_bounded_stable_places() {
     }
 }
 
-/// The window a contract seed was staged in, and the message the seed
-/// moved to Trash: the resources are what that very window publishes.
 struct Seeded {
     app: TestApp<MailShell>,
     trashed: String,
@@ -1095,8 +1043,6 @@ fn with_seeded<R>(f: impl FnOnce(&mut Seeded) -> R) -> R {
     SEEDED.with_borrow_mut(|seeded| f(seeded.as_mut().expect("the contract seed ran first")))
 }
 
-/// The sample mailbox after a reader trashed one message, labelled another,
-/// created a local folder and saved a draft — all through the mailbox.
 fn mailbox_seed() -> AutoCommit {
     let mut app = sample_window();
     let ids = inbox_ids(&app.state());
@@ -1175,8 +1121,6 @@ ui::action_contract_tests! {
     ],
 }
 
-/// The on-screen affordance and the palette make the identical edit: the
-/// message's archive control and the place's archive verb.
 #[test]
 fn the_archive_affordance_and_the_palette_edit_alike() {
     let mut st = MailState::new_sample(crate::avatars::Avatars::new());
@@ -1205,9 +1149,6 @@ fn the_archive_affordance_and_the_palette_edit_alike() {
     assert_eq!(folder(&read(&doc)), folder(&palette.state().unwrap()));
 }
 
-/// An agent sends in one call and the message waits in the outbox; undo
-/// takes it back unsent before a device holding the account delivers it,
-/// and history reads it back as the app's sentence.
 #[test]
 fn a_message_is_sent_through_the_outbox_and_undo_takes_it_back_unsent() {
     use ui::tilo_actions::{ActionInvoker, ActorKind};
@@ -1276,8 +1217,6 @@ fn a_message_is_sent_through_the_outbox_and_undo_takes_it_back_unsent() {
     assert!(app.state().outgoing().is_empty(), "cancelled unsent");
 }
 
-/// What an agent does for a person reads back in the reader's language as
-/// the app's sentences.
 #[test]
 fn history_entries_render_as_the_apps_sentences() {
     use ui::tilo_actions::{ActionInvoker, ActorKind};

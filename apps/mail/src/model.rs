@@ -20,14 +20,8 @@ use uuid::Uuid;
 
 pub use accounts::email::{AccountConfig, AuthMethod};
 
-/// Stable identifier for a single message. In the live app this is derived
-/// from the RFC 5322 `Message-ID` header; for synthetic/sample messages we
-/// mint a v4 UUID.
 pub type MessageId = Uuid;
 
-/// The canonical system folders every account has. We keep them as an enum
-/// (rather than free-form strings) so routing — archive/delete/move — is
-/// total and exhaustively checked by the compiler.
 #[derive(
     Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize, Model, JsonSchema,
 )]
@@ -40,12 +34,10 @@ pub enum Folder {
     Drafts,
     Archive,
     Trash,
-    /// Spam / junk.
     Junk,
 }
 
 impl Folder {
-    /// Display order in the sidebar.
     pub const ALL: [Folder; 7] = [
         Folder::Inbox,
         Folder::Starred,
@@ -56,7 +48,6 @@ impl Folder {
         Folder::Trash,
     ];
 
-    /// The catalogue message naming this folder.
     pub fn message(self) -> &'static str {
         match self {
             Folder::Inbox => "mail-folder-inbox",
@@ -69,9 +60,6 @@ impl Folder {
         }
     }
 
-    /// The themed vector [`Icon`] shown to the left of the folder name. These
-    /// come from the shared `ui` lucide set so they render as crisp strokes at
-    /// any scale — never a font-dependent emoji that falls back to tofu.
     pub fn icon(self) -> Icon {
         match self {
             Folder::Inbox => Icon::Inbox,
@@ -84,10 +72,6 @@ impl Folder {
         }
     }
 
-    /// The stable string key this folder is stored under in the CRDT (and the
-    /// key a [`crate::resource::Mail::move_messages`] carries). The inverse of
-    /// [`Folder::from_key`]. Kept here (rather than in `doc`) so the action layer
-    /// and the persistence layer share one canonical spelling.
     pub fn as_key(self) -> &'static str {
         match self {
             Folder::Inbox => "inbox",
@@ -100,9 +84,6 @@ impl Folder {
         }
     }
 
-    /// Parse a folder key produced by [`Folder::as_key`]. Returns `None` for an
-    /// unrecognised key (e.g. a user-defined local folder id), so a caller can
-    /// treat it as a no-op rather than substituting a wrong folder.
     pub fn from_key(s: &str) -> Option<Folder> {
         Some(match s {
             "inbox" => Folder::Inbox,
@@ -116,11 +97,8 @@ impl Folder {
         })
     }
 
-    /// IMAP mailbox name this folder maps to on a typical server. Used by
-    /// the transport layer when issuing `SELECT`.
     pub fn imap_name(self) -> &'static str {
         match self {
-            // Starred is virtual: filtered by \Flagged within the inbox.
             Folder::Inbox | Folder::Starred => "INBOX",
             Folder::Sent => "Sent",
             Folder::Drafts => "Drafts",
@@ -131,7 +109,6 @@ impl Folder {
     }
 }
 
-/// A single email address with an optional display name.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Addr {
     pub name: Option<String>,
@@ -154,8 +131,6 @@ impl Addr {
         }
     }
 
-    /// Best display string: the name if present, otherwise the local-part
-    /// of the address, otherwise the full address.
     pub fn display(&self) -> String {
         if let Some(n) = &self.name
             && !n.is_empty()
@@ -165,10 +140,6 @@ impl Addr {
         self.email.clone()
     }
 
-    /// RFC 5322 mailbox rendering: `Name <email>` or bare `email`. A name
-    /// holding a separator, a quote or other punctuation the address
-    /// grammar reserves is quoted, so "Lovelace, Ada" reads back as one
-    /// recipient rather than two.
     pub fn rfc5322(&self) -> String {
         match &self.name {
             Some(n) if !n.is_empty() => {
@@ -184,38 +155,23 @@ impl Addr {
     }
 }
 
-/// A decoded attachment. When the bytes are present locally (`hydrated`) they
-/// are held in `content`, so the reader can save the real file to disk; in the
-/// live app the bytes are hydrated on demand (same projection-vs-hydration
-/// story as the Tilo FUSE layer) and `content` is empty until then.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Attachment {
     pub filename: String,
     pub mime: String,
     pub size: u64,
-    /// Whether the bytes are present locally (vs. server-side only).
     pub hydrated: bool,
-    /// Portable draft-content identity when this attachment is a Drafts
-    /// projection. Incoming mail leaves this absent; drafts use it to reopen
-    /// with the same content-addressed bytes on any collaborator.
     #[serde(default)]
     pub content_id: Option<String>,
-    /// The decoded bytes, when hydrated. Never serialised into the shared
-    /// settings store (it holds message content, not settings).
     #[serde(skip, default)]
     pub content: Vec<u8>,
-    /// The bytes are kept on this device with the message's other kept mail
-    /// (`crate::store`), to be read when the attachment is opened or saved.
     #[serde(default)]
     pub kept: bool,
-    /// The `Content-ID` of a part the message's HTML shows in place
-    /// (`cid:`): an image of the message rather than a file attached to it.
     #[serde(default)]
     pub inline_id: Option<String>,
 }
 
 impl Attachment {
-    /// A metadata-only attachment (no bytes yet — projection, not hydrated).
     pub fn projected(filename: impl Into<String>, mime: impl Into<String>, size: u64) -> Self {
         Self {
             filename: filename.into(),
@@ -229,7 +185,6 @@ impl Attachment {
         }
     }
 
-    /// A fully-hydrated attachment carrying its decoded bytes.
     pub fn hydrated(
         filename: impl Into<String>,
         mime: impl Into<String>,
@@ -247,18 +202,14 @@ impl Attachment {
         }
     }
 
-    /// Whether the bytes are on this device and this attachment can be
-    /// opened or saved.
     pub fn is_downloadable(&self) -> bool {
         self.hydrated && (!self.content.is_empty() || self.kept)
     }
 
-    /// Human-readable size, e.g. `14 KiB`, `1.2 MiB`.
     pub fn size_human(&self) -> String {
         ui::format::size(self.size)
     }
 
-    /// Coarse category used to pick a themed vector [`Icon`] for the chip.
     pub fn icon(&self) -> Icon {
         let m = self.mime.to_ascii_lowercase();
         if m.starts_with("image/") {
@@ -279,58 +230,32 @@ impl Attachment {
     }
 }
 
-/// A single message. The immutable corpus fields (from/to/subject/body/…)
-/// come from the server or sample corpus; the mutable flags
-/// (read/starred/folder) are mirrored into the CRDT so they sync and undo.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Message {
     pub id: MessageId,
-    /// RFC 5322 `Message-ID` (without angle brackets), if known.
     pub rfc_message_id: Option<String>,
-    /// Canonical RFC thread anchor used for grouping: the oldest `References`
-    /// token when present, otherwise `In-Reply-To`. The transport deliberately
-    /// retains the root rather than a display-subject heuristic.
     pub in_reply_to: Option<String>,
     pub from: Addr,
     pub to: Vec<Addr>,
     pub cc: Vec<Addr>,
     pub subject: String,
-    /// Plain-text body (the parsed text/plain part, or an HTML-stripped
-    /// fallback).
     pub body: String,
-    /// The original `text/html` part, when the message carried one. Rendered
-    /// sandboxed in the reader's `WebView` (remote content blocked by default);
-    /// `None` for plain-text-only mail, which renders as text. Never
-    /// serialised into the shared settings store — it is message content.
     #[serde(default)]
     pub html_body: Option<String>,
     pub attachments: Vec<Attachment>,
-    /// Minutes since the Unix epoch — coarse, but enough for relative
-    /// "2h ago" style rendering without pulling `chrono`.
     pub timestamp_min: i64,
     pub read: bool,
     pub starred: bool,
     pub folder: Folder,
     /// User-applied labels/tags, mirrored from the CRDT (`flags/<id>/labels`).
-    /// These are set exclusively through field edits of
-    /// [`crate::resource::MessageState::labels`] and overlaid onto the
-    /// in-memory message by [`crate::resource::Mail::apply_flags`]; empty for a
-    /// message that has never been tagged.
     #[serde(default)]
     pub labels: Vec<String>,
-    /// The account whose server holds the message (its address); empty for
-    /// mail that is only here (the sample, a draft).
     #[serde(default)]
     pub account: String,
-    /// Where its server holds the message, as last reported: `None` for
-    /// mail that is only here. A message moved here keeps where it was
-    /// until the server reports where it put it.
     #[serde(default)]
     pub server: Option<ServerPlace>,
 }
 
-/// Where a server holds a message: its folder, its UID there, and the
-/// numbering (UIDVALIDITY) that UID belongs to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ServerPlace {
     pub folder: Folder,
@@ -339,13 +264,10 @@ pub struct ServerPlace {
 }
 
 impl Message {
-    /// Normalise a subject for threading: strip leading `Re:` / `Fwd:`
-    /// chains and collapse whitespace.
     pub fn thread_subject(&self) -> String {
         normalize_subject(&self.subject)
     }
 
-    /// First non-empty line of the body, used as the list snippet.
     pub fn snippet(&self) -> String {
         let s = self
             .body
@@ -361,8 +283,6 @@ impl Message {
         self.shown_attachments().next().is_some()
     }
 
-    /// The files attached to the message, with their indices: every
-    /// attachment but the images its HTML shows in place.
     pub fn shown_attachments(&self) -> impl Iterator<Item = (usize, &Attachment)> {
         self.attachments
             .iter()
@@ -371,11 +291,7 @@ impl Message {
     }
 }
 
-/// Strip `Re:` / `RE:` / `Fwd:` / `FW:` prefixes (possibly repeated) and
-/// trim, so replies thread under the original subject.
 pub fn normalize_subject(subject: &str) -> String {
-    /// Reply/forward markers stripped from the front of a subject, matched
-    /// case-insensitively.
     const PREFIXES: [&str; 3] = ["re:", "fwd:", "fw:"];
 
     let mut s = subject.trim();
@@ -395,9 +311,6 @@ pub fn normalize_subject(subject: &str) -> String {
     s.to_string()
 }
 
-/// Normalise an RFC `Message-ID` / `In-Reply-To` token to the spelling used by
-/// the transport's stable message ids. Empty/malformed headers are discarded
-/// rather than becoming a shared thread key.
 fn canonical_message_id(value: Option<&str>) -> Option<String> {
     let value = value?
         .trim()
@@ -407,9 +320,6 @@ fn canonical_message_id(value: Option<&str>) -> Option<String> {
     (!value.is_empty()).then(|| value.to_string())
 }
 
-/// Resolve one message's durable thread root. The parent header itself is a
-/// valid anchor when the parent is not loaded yet; that is what makes a reply's
-/// resource address survive incremental history hydration.
 fn thread_anchor(
     message: &Message,
     messages: &HashMap<MessageId, Message>,
@@ -438,78 +348,49 @@ fn thread_anchor(
     }
 }
 
-/// A conversation: 1+ messages connected through RFC `Message-ID` /
-/// `In-Reply-To`, ordered oldest → newest. `id` is the root RFC identity (or
-/// the root message id for legacy mail with no RFC identity), so it remains
-/// stable when older members are hydrated later. The list pane renders one row
-/// per thread.
 #[derive(Clone, Debug)]
 pub struct Thread {
-    /// Stable protocol/root identity, never derived from a display subject.
     pub id: String,
     pub subject: String,
     pub message_ids: Vec<MessageId>,
 }
 
-/// Which representation the compose body is authored in. Persisted so the
-/// user's choice is remembered across compose windows and sessions.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum ComposeFormat {
-    /// WYSIWYG rich text, serialised to an HTML MIME part on send.
     #[default]
     Html,
-    /// Plain text, serialised to a `text/plain` MIME part on send.
     Text,
 }
 
-/// A draft message being composed. Persisted to the CRDT so it survives a
-/// crash and syncs across peers.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Draft {
-    /// Explicit sender for a reviewed Contacts draft; never follows the sidebar.
     #[serde(default)]
     pub sender: Option<DraftSender>,
     pub to: String,
     pub cc: String,
     pub bcc: String,
     pub subject: String,
-    /// Plain-text body (always populated; the canonical text alternative).
     pub body: String,
-    /// HTML body, set when the draft was authored in WYSIWYG mode. Sent as the
-    /// `text/html` part alongside `body` as the `text/plain` alternative.
     #[serde(default)]
     pub html_body: Option<String>,
     /// Bounded RFC 5545 METHOD:REQUEST payload for a calendar invitation.
-    /// Stored inline so a collaborative draft never grants a host-path read.
     #[serde(default)]
     pub calendar_ics: Option<String>,
-    /// Verified portable attachment metadata.  `content_id` names bytes in
-    /// the content store; no participant's filesystem path is persisted or replicated.
     #[serde(default)]
     pub attachments: Vec<DraftAttachment>,
-    /// If this draft is a reply, the message it answers.
     pub in_reply_to: Option<MessageId>,
-    /// How the message names itself and the conversation on the wire, set
-    /// when it is handed to a server: its own `Message-ID`, and the
-    /// `In-Reply-To` and `References` of a reply. Not part of the draft
-    /// anyone edits.
     #[serde(skip)]
     pub wire: WireIds,
 }
 
-/// The identities a sent message carries in its headers.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct WireIds {
-    /// Its own `Message-ID`, without angle brackets.
     pub message_id: Option<String>,
-    /// The message it answers.
     pub in_reply_to: Option<String>,
-    /// The conversation it belongs to, oldest first.
     pub references: Vec<String>,
 }
 
 impl Draft {
-    /// Whether the persisted composition has any content or reviewed sender.
     pub fn is_empty(&self) -> bool {
         self.to.is_empty()
             && self.cc.is_empty()
@@ -523,15 +404,12 @@ impl Draft {
     }
 }
 
-/// Exact sending account reviewed when preparing a Contacts draft.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 pub struct DraftSender {
     pub account: String,
     pub email: String,
 }
 
-/// Metadata for one staged draft attachment. The content is addressed by a
-/// verified content-store identity and materialized only at the send boundary.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 pub struct DraftAttachment {
     pub content_id: String,
@@ -542,50 +420,30 @@ pub struct DraftAttachment {
 
 tilo_resource::json_model!(DraftSender, DraftAttachment);
 
-/// The whole mailbox aggregate: an account, its messages, and the derived
-/// folder/thread structure. Pure logic — the widgets ask it questions.
 #[derive(Clone, Debug)]
 pub struct Mailbox {
     pub account: AccountConfig,
     pub messages: HashMap<MessageId, Message>,
-    /// Insertion order is irrelevant; folder views sort by timestamp.
     pub order: Vec<MessageId>,
-    /// Monotonically changes whenever a field represented in Mail's durable
-    /// search catalogue changes. The palette can therefore retain its index
-    /// across keystrokes instead of repeatedly walking the loaded mailbox.
     search_revision: u64,
-    /// The conversations of the folder last asked for, kept until the
-    /// mailbox changes: the list and the reader ask for them every frame.
     threads: RefCell<HashMap<Folder, ThreadMemo>>,
 }
 
-/// One folder's conversations at one revision of the mailbox.
 #[derive(Clone, Debug)]
 struct ThreadMemo {
     revision: u64,
     threads: Rc<[Thread]>,
-    /// The conversation each message belongs to, by its index in `threads`.
     of_message: Rc<HashMap<MessageId, usize>>,
 }
 
 /// A bounded, newest-first page from the locally-loaded mailbox search.
-///
-/// Mail's list filter runs on every edit and paint-adjacent selection update,
-/// unlike the retained global-search catalogue.  Returning the work performed
-/// makes that hot path honest: callers can keep interaction latency bounded
-/// even when an account has a very large locally hydrated history.
 #[derive(Clone, Debug)]
 pub struct MailboxSearchPage<'a> {
     pub messages: Vec<&'a Message>,
-    /// Number of in-scope messages whose searchable fields were inspected.
     pub inspected: usize,
-    /// `true` when the caller's work or result limit stopped enumeration.
     pub truncated: bool,
 }
 
-/// Process-local sequence for retained in-memory projections. A fresh mailbox
-/// must not accidentally share revision zero with a previous account whose
-/// catalogue is still retained by the app shell.
 static NEXT_SEARCH_REVISION: AtomicU64 = AtomicU64::new(1);
 
 fn next_search_revision() -> u64 {
@@ -609,17 +467,12 @@ impl Mailbox {
         }
     }
 
-    /// Revision of the loaded searchable corpus and its resource-facing flags.
     #[must_use]
     pub fn search_revision(&self) -> u64 {
         self.search_revision
     }
 
     /// Mark a direct in-place edit as visible to retained projections.
-    ///
-    /// Most callers should use the mailbox mutation methods below. This tiny
-    /// escape hatch keeps the document reconciliation path honest without
-    /// exposing the revision field itself.
     pub fn touch_search_revision(&mut self) {
         self.search_revision = next_search_revision();
     }
@@ -636,22 +489,17 @@ impl Mailbox {
         self.messages.get(&id)
     }
 
-    /// The message to change in place. Whatever the caller changes may
-    /// change a folder's conversations, so the mailbox counts as changed.
     pub fn get_mut(&mut self, id: MessageId) -> Option<&mut Message> {
         self.touch_search_revision();
         self.messages.get_mut(&id)
     }
 
-    /// Whether the mailbox shows `message`: it belongs to the account the
-    /// mailbox is open on, or to no account (mail that is only here).
     fn shows(&self, message: &Message) -> bool {
         message.account.is_empty()
             || self.account.email.is_empty()
             || message.account == self.account.email
     }
 
-    /// Open the mailbox on `account`: its folders show that account's mail.
     pub fn set_account(&mut self, account: AccountConfig) {
         if self.account.email != account.email {
             self.touch_search_revision();
@@ -659,13 +507,10 @@ impl Mailbox {
         self.account = account;
     }
 
-    /// Number of unread messages routed to `folder` (Starred is virtual).
     pub fn unread_count(&self, folder: Folder) -> usize {
         self.messages_in(folder).iter().filter(|m| !m.read).count()
     }
 
-    /// Number of unread messages of `account` in `folder`, whichever
-    /// account the mailbox is open on.
     pub fn unread_count_of(&self, account: &str, folder: Folder) -> usize {
         self.messages
             .values()
@@ -673,12 +518,10 @@ impl Mailbox {
             .count()
     }
 
-    /// The messages of `account`, every folder.
     pub fn of_account<'a>(&'a self, account: &'a str) -> impl Iterator<Item = &'a Message> + 'a {
         self.messages.values().filter(move |m| m.account == account)
     }
 
-    /// The message `account`'s server holds in `folder` under `uid`.
     pub fn by_uid(&self, account: &str, folder: Folder, uid: u32) -> Option<&Message> {
         self.messages.values().find(|m| {
             m.account == account
@@ -687,13 +530,10 @@ impl Mailbox {
         })
     }
 
-    /// Total messages visible in `folder`.
     pub fn count(&self, folder: Folder) -> usize {
         self.messages_in(folder).len()
     }
 
-    /// All messages routed into `folder`, newest first. `Starred` is a
-    /// virtual folder: any starred message not in Trash.
     pub fn messages_in(&self, folder: Folder) -> Vec<&Message> {
         let mut v: Vec<&Message> = self
             .order
@@ -709,36 +549,20 @@ impl Mailbox {
         v
     }
 
-    /// Group the messages of `folder` into RFC-linked threads, each ordered
-    /// oldest→newest, and order those threads by most-recent activity.
-    ///
-    /// A matching subject is intentionally *not* evidence of a conversation:
-    /// unrelated "Status update" messages must stay separately addressable.
-    /// Legacy messages that have neither a usable `Message-ID` nor a usable
-    /// `In-Reply-To` receive their own UUID-backed thread identity. A reply
-    /// with a `References` root retains that root even when intermediate or
-    /// older members are hydrated later. An `In-Reply-To`-only partial chain
-    /// can only anchor at its unloaded immediate parent until more history is
-    /// available; this is the RFC's unavoidable information limit.
     pub fn threads_in(&self, folder: Folder) -> Vec<Thread> {
         self.threads(folder).to_vec()
     }
 
-    /// The conversations of `folder`, as [`Self::threads_in`] orders them,
-    /// computed once per change of the mailbox.
     pub fn threads(&self, folder: Folder) -> Rc<[Thread]> {
         self.memo(folder).threads
     }
 
-    /// The conversation of `folder` that holds message `id`, oldest message
-    /// first.
     pub fn thread_of(&self, folder: Folder, id: MessageId) -> Option<Thread> {
         let memo = self.memo(folder);
         let index = *memo.of_message.get(&id)?;
         memo.threads.get(index).cloned()
     }
 
-    /// The conversation of `folder` whose root is `root`.
     pub fn thread_rooted(&self, folder: Folder, root: &str) -> Option<Thread> {
         self.memo(folder)
             .threads
@@ -801,7 +625,6 @@ impl Mailbox {
                     })
             })
             .collect();
-        // Order threads by their newest message, descending.
         threads.sort_by(|a, b| {
             let an = a
                 .message_ids
@@ -821,12 +644,6 @@ impl Mailbox {
     }
 
     /// Search loaded mail with explicit work and result bounds.
-    ///
-    /// The newest loaded messages are considered first, then matches are kept
-    /// in timestamp-descending order. A result is still a canonical message id
-    /// and callers resolve the complete message lazily when it is opened; this
-    /// method only prevents typing a broad query from walking unbounded bodies
-    /// or scheduling an unbounded amount of row paint.
     pub fn search_page(
         &self,
         query: &str,
@@ -909,7 +726,6 @@ impl Mailbox {
         self.move_to(id, Folder::Archive);
     }
 
-    /// Move to Trash, or permanently drop if already in Trash.
     pub fn delete(&mut self, id: MessageId) {
         let in_trash = self.messages.get(&id).map(|m| m.folder == Folder::Trash);
         match in_trash {
@@ -923,9 +739,6 @@ impl Mailbox {
         }
     }
 
-    /// Remove a hydrated message without applying the usual first-delete
-    /// move-to-Trash affordance. Used when a replicated purge tombstone is
-    /// reconciled from the document.
     pub fn purge(&mut self, id: MessageId) {
         if self.messages.remove(&id).is_some() {
             self.order.retain(|candidate| *candidate != id);
@@ -952,10 +765,6 @@ mod tests {
         assert!(!format!("{config:?}").contains("private-mail-password"));
     }
 
-    /// A reply's `To`, a reply-all's `Cc` and a picked contact are written
-    /// as `Name <address>` and read back as recipients. A name written
-    /// "Last, First" (or holding any other separator or quote) stays one
-    /// recipient with its whole name, not a stray "Last" beside "First".
     #[test]
     fn a_written_recipient_reads_back_as_the_same_one() {
         for name in [
@@ -1012,7 +821,6 @@ mod tests {
             assert_eq!(normalize_subject("Plain"), "Plain");
         }
 
-        // Phase `threads_follow_rfc_reply_links_without_merging_same_subject_mail`.
         {
             let mut mb = Mailbox::default();
             let mut first = msg("Launch plan", 100, Folder::Inbox);
@@ -1027,7 +835,6 @@ mod tests {
             mb.insert(unrelated);
             let threads = mb.threads_in(Folder::Inbox);
             assert_eq!(threads.len(), 2);
-            // Most-recent-first: "Launch plan" (200) before "Lunch?" (150).
             assert_eq!(threads[0].subject, "Launch plan");
             assert_eq!(threads[0].message_ids.len(), 2);
             assert_eq!(threads[0].id, "launch-root@example.test");
@@ -1038,8 +845,6 @@ mod tests {
         {
             let mut mb = Mailbox::default();
             // C's raw mail held `References: <launch-root> <launch-middle>`;
-            // transport stores the oldest/root token in `in_reply_to`. At this
-            // point neither B nor A has been hydrated yet.
             let mut latest = msg("Re: Launch plan", 300, Folder::Inbox);
             latest.rfc_message_id = Some("launch-latest@example.test".into());
             latest.in_reply_to = Some("launch-root@example.test".into());

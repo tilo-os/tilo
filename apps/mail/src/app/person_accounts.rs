@@ -5,9 +5,6 @@
 use super::{AccountConfig, AccountStore, EngineRequest, MailApp, MessageId};
 
 impl MailApp {
-    /// Show the person's accounts when their record moved: each account's
-    /// settings from the record, its password from this device's vault. A
-    /// newly shown active account is connected.
     pub(super) fn adopt_person_accounts(&mut self) {
         let root = self.state().accounts_persist.root();
         let Some((record, seen)) = &mut self.person_accounts else {
@@ -22,7 +19,6 @@ impl MailApp {
         let mut adopted = if self.custody.is_some() {
             AccountStore::without_secrets(&person.store())
         } else if let Some(root) = root {
-            // A profile of its own (a test, `--data-dir`) keeps its vault.
             let vault = match accounts::AccountCredentials::open_in(&root) {
                 Ok(vault) => vault,
                 Err(error) => {
@@ -102,7 +98,6 @@ impl MailApp {
         self.dirty = true;
     }
 
-    /// Whether the active account waits for custody to release its secret.
     pub(super) fn awaits_active_secret(&self) -> bool {
         let Some(custody) = &self.custody else {
             return false;
@@ -116,9 +111,6 @@ impl MailApp {
             })
     }
 
-    /// Take in the secrets custody released: each goes to its account, and
-    /// the active account connects once it has its own. One custody refused
-    /// is said on the account, never passed over.
     pub(super) fn take_released_secrets(&mut self) {
         let wake = self
             .waker
@@ -155,7 +147,6 @@ impl MailApp {
             }
         }
         drop(st);
-        // The active account signs in now that it has its secret.
         if connect && self.state().engine.is_some() {
             let (cfg, folder) = {
                 let st = self.shared.borrow();
@@ -170,17 +161,12 @@ impl MailApp {
     }
 }
 
-/// Whether an account signs in with a secret custody keeps for it: a
-/// password account whose sign-in is set up.
 fn needs_released_secret(config: &AccountConfig) -> bool {
     config.auth == crate::model::AuthMethod::Password
         && !config.import_pending
         && config.password.is_empty()
 }
 
-/// Keep each secret custody released before with its account while the
-/// account's settings are the same, and ask custody for the secret of
-/// each account that has none.
 fn keep_released_secrets(
     custody: Option<&mut crate::custody::SecretRelease>,
     adopted: &mut AccountStore,

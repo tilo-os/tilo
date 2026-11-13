@@ -12,27 +12,19 @@ use ui::i18n::{ArgValue, EmbeddedCatalog};
 // per thread on first use; a host's manager is joined, never replaced.
 ui::embedded_catalog!(pub static CATALOG, ["de-DE", "en-US"]);
 
-/// The catalogue, which every host mounting Mail loads before its view.
 pub fn catalog() -> &'static EmbeddedCatalog {
     &CATALOG
 }
 
-/// Resolve a Mail string key.
 pub fn t(key: &str) -> String {
     CATALOG.t(key)
 }
 
-/// The subject a message with none is listed under.
 pub fn no_subject() -> String {
     CATALOG.t("mail-no-subject")
 }
 
 /// Resolve a Mail string key that interpolates variables.
-///
-/// The values are the app's own words — an operation's label, a participant's
-/// name — so the *sentence* around them stays in the catalogue and only the
-/// nouns are substituted. Building the line with `format!` instead would put
-/// English word order in the source and leave nothing to translate.
 pub fn t_args(key: &str, args: &[(&str, ArgValue)]) -> String {
     CATALOG.t_args(key, args)
 }
@@ -75,9 +67,6 @@ mod tests {
     }
 }
 
-/// German is one of the languages the app ships, and it reads in German: the
-/// copy comes from `locales/de-DE.ftl`, never from the English source
-/// catalogue beside it.
 #[cfg(test)]
 mod german_window {
     #[test]

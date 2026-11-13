@@ -39,8 +39,6 @@ use crate::util::{format_absolute, local_minutes};
 
 pub(crate) use html::is_openable;
 
-/// How the reader sets a message's text: the theme's body size, which
-/// headings are scaled from, and the quieter ink of quoted lines.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct BodyStyle {
     font_px: f32,
@@ -58,20 +56,13 @@ impl BodyStyle {
     }
 }
 
-/// Whether `theme` is a dark one: its reading ground is dark.
 fn is_dark(theme: &Theme) -> bool {
     ui::color::relative_luminance(theme.tokens.colors.surfaces.content) < 0.4
 }
 
-/// The open message's text: a read-only field, so it can be selected and
-/// copied and its addresses open.
 struct BodyText {
-    /// The message, whether its HTML part is shown, and whether the quote
-    /// it ends with is shown.
     key: (MessageId, bool, bool),
-    /// Whether the message ends with a quote that is folded away.
     folded: bool,
-    /// The style the runs were set in.
     style: BodyStyle,
     input: TextInput,
 }
@@ -113,9 +104,6 @@ impl BodyText {
     }
 }
 
-/// `body` without the quote it ends with: the replied-to message under
-/// its "On …, X wrote:" line. The second value says whether there was one.
-/// A message that is all quote keeps it.
 fn split_trailing_quote(body: &str) -> (&str, bool) {
     let lines: Vec<&str> = body.split('\n').collect();
     let line = |index: usize| lines.get(index).copied().unwrap_or_default();
@@ -146,8 +134,6 @@ fn split_trailing_quote(body: &str) -> (&str, bool) {
     (shown, true)
 }
 
-/// A plain-text body as runs, quoted lines quieter, and where the
-/// addresses it names go, in byte ranges of the runs' text.
 fn plain_runs(
     body: &str,
     quiet: [u8; 3],
@@ -168,16 +154,11 @@ fn plain_runs(
     (runs, links)
 }
 
-/// An HTML body as runs, and where its links go, in byte ranges of the
-/// runs' text. `body_px` is the size a heading is scaled from.
-/// The runs of an HTML body, where its links go, and whether a quote it ends
-/// with was folded away (`show_quote` keeps it).
 fn html_runs(html: &str, body_px: f32, quiet: [u8; 3], show_quote: bool) -> HtmlRuns {
     let mut runs = Vec::new();
     let mut links = Vec::new();
     let mut at = 0;
     let mut read = crate::html_text::render(html);
-    // The quoted runs at the end, and the blank ones among them.
     let quote_from = read
         .iter()
         .rposition(|run| !run.quote && !run.text.trim().is_empty())
@@ -211,7 +192,6 @@ fn html_runs(html: &str, body_px: f32, quiet: [u8; 3], show_quote: bool) -> Html
     (runs, links, folded)
 }
 
-/// What [`html_runs`] makes of a body.
 type HtmlRuns = (
     Vec<ui::RichSpan>,
     Vec<(std::ops::Range<usize>, String)>,
@@ -239,7 +219,6 @@ fn recipients_line(message: &Message) -> String {
     }
 }
 
-/// Paint state shared by the reader's painters.
 struct Flow<'a, 'b> {
     ctx: PaintCtx<'b>,
     state: &'a MailState,
@@ -248,7 +227,6 @@ struct Flow<'a, 'b> {
     y: f64,
     pointer: Point,
     attachments: Vec<(Rect, MessageId, usize)>,
-    /// The save buttons beside them.
     saves: Vec<(Rect, MessageId, usize)>,
 }
 
@@ -261,7 +239,6 @@ impl Flow<'_, '_> {
         self.ctx.line_box(role)
     }
 
-    /// Paint `text` wrapped to the column and move below it.
     fn paragraph(&mut self, text: &str, style: &TextStyle, dim: bool) {
         let theme = self.ctx.theme;
         let ink = if dim {
@@ -272,7 +249,6 @@ impl Flow<'_, '_> {
         self.y += self.wrapped_at(text, style, ink, Point::new(self.x, self.y), self.width);
     }
 
-    /// `text` wrapped to `width` at `at`; returns how tall it is.
     fn wrapped_at(
         &mut self,
         text: &str,
@@ -287,7 +263,6 @@ impl Flow<'_, '_> {
         f64::from(height)
     }
 
-    /// One line elided into `width` at `x`, top at `y`.
     fn line_at(
         &mut self,
         text: &str,
@@ -303,8 +278,6 @@ impl Flow<'_, '_> {
         self.ctx.text(&elided, style, ink, at, None);
     }
 
-    /// The sender block of one message: avatar, name, address, date and
-    /// recipients. Moves below it.
     fn sender(&mut self, message: &Message) {
         let theme = self.ctx.theme;
         let spacing = &theme.tokens.spacing;
@@ -374,7 +347,6 @@ impl Flow<'_, '_> {
             full_w,
         );
         y += caption_h;
-        // Every recipient shows: the line wraps rather than eliding names.
         let to = recipients_line(message);
         if !to.is_empty() {
             y += self.wrapped_at(&to, &caption, theme.text_dim, Point::new(text_x, y), full_w);
@@ -382,7 +354,6 @@ impl Flow<'_, '_> {
         self.y = y.max(self.y + side);
     }
 
-    /// The message's attachments as chips that wrap; each one saves its file.
     fn attachments(&mut self, message: &Message) {
         let theme = self.ctx.theme;
         let gap = f64::from(theme.tokens.spacing.s2);
@@ -430,13 +401,10 @@ impl Flow<'_, '_> {
     }
 }
 
-/// The remote-content banner's actions, as last painted.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 struct RemoteButtons {
-    /// Load this message's remote images.
     load: Option<Rect>,
     always: Option<Rect>,
-    /// Stop loading them for its sender.
     stop: Option<Rect>,
 }
 
@@ -462,8 +430,6 @@ enum RemoteChoice {
     Stop,
 }
 
-/// What the open HTML message asks of its remote content: how much it
-/// names, and whether the person allowed it for the message or its sender.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct RemoteState {
     count: usize,
@@ -471,7 +437,6 @@ struct RemoteState {
     sender: bool,
 }
 
-/// A match of find in a message's text: the message and the byte range.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct TextMatch {
     message: MessageId,
@@ -486,54 +451,28 @@ struct TextMatch {
 pub struct MessageReader {
     shared: Shared,
     rect: Rect,
-    /// The conversation's viewport: wheel, keyboard, bar and accessible
-    /// scrolling.
     region: ScrollRegion,
-    /// The theme the reader was last drawn with, for the region's lanes.
     theme: Theme,
     pointer: Point,
-    /// Attachment chips `(rect, message, index)` as last painted.
     attachments: Vec<(Rect, MessageId, usize)>,
-    /// The save button beside each attachment chip, as last painted.
     attachment_saves: Vec<(Rect, MessageId, usize)>,
     remote_buttons: RemoteButtons,
-    /// The conversation the scroll offset belongs to.
     shown: Option<MessageId>,
     html: html::HtmlBody,
-    /// The message the HTML body shows.
     html_message: Option<MessageId>,
-    /// How many messages the mailbox held when the reader last looked for
-    /// HTML mail to start its engine for.
     warm_checked: Option<usize>,
-    /// The reader's furthest scroll, as last painted: past it, the wheel
-    /// scrolls an HTML body taller than the reader.
     scroll_max: f64,
-    /// The text of each message shown open, as last painted: the newest
-    /// always, and the earlier ones the person opened.
     bodies: HashMap<MessageId, BodyText>,
-    /// The message whose text has the pointer's selection and the keys.
     active: Option<MessageId>,
-    /// Earlier messages of the conversation shown open. The newest is
-    /// always open; an earlier one opens when it is unread or clicked.
     expanded: HashSet<MessageId>,
-    /// The header of each earlier message as last painted: a click opens
-    /// or closes that message.
     headers: Vec<(Rect, MessageId)>,
-    /// Messages whose closing quote the person unfolded.
     quotes_open: HashSet<MessageId>,
-    /// The "show the quote" button under each folded message, as painted.
     quote_buttons: Vec<(Rect, MessageId)>,
-    /// The outbox page's "Cancel sending" button, as painted, and the queued
-    /// message it takes back.
     cancel_button: Option<(Rect, String)>,
-    /// What find matched in the messages' text, in reading order, and the
-    /// current one.
     text_matches: Vec<TextMatch>,
     text_current: Option<usize>,
-    /// The query find runs in the HTML body.
     html_query: Option<String>,
     focused: bool,
-    /// A button is held over the text: the pointer is selecting.
     selecting: bool,
     dirty: bool,
 }
@@ -570,8 +509,6 @@ impl MessageReader {
         }
     }
 
-    /// Start the HTML engine once there is HTML mail to show, before the
-    /// person opens one: opening a message never waits for a process.
     fn warm(&mut self, state: &MailState) {
         if self.html.started() {
             return;
@@ -591,34 +528,27 @@ impl MessageReader {
         }
     }
 
-    /// Inject the HTML-body engine (tests observe the commands the reader
-    /// sends). Call before the first HTML mail is drawn.
     #[cfg(test)]
     pub(crate) fn set_html_engine(&mut self, engine: SharedEngine) {
         self.html.set_engine(engine);
     }
 
-    /// How the HTML loaded into the engine is set, if any.
     #[cfg(test)]
     pub(crate) fn html_loaded(&self) -> Option<html::Setting> {
         self.html.loaded()
     }
 
-    /// The attachment chips as last painted, for tests.
     #[cfg(test)]
     pub(crate) fn attachment_rects(&self) -> &[(Rect, MessageId, usize)] {
         &self.attachments
     }
 
-    /// The "Load images" button as last painted, for tests.
     #[cfg(test)]
     pub(crate) fn remote_button(&self) -> Option<Rect> {
         self.remote_buttons.load
     }
 
     /// The open queued message, or, with none open, how the outbox works.
-    /// Nothing here sends or edits: the words are the words that will go,
-    /// and the server's refusal is why they have not.
     fn paint_outbox(&mut self, ctx: &mut PaintCtx<'_>, state: &MailState) {
         let theme = ctx.theme;
         let r = self.rect;
@@ -681,7 +611,6 @@ impl MessageReader {
             Some(wide),
         );
         y += ctx.line_box(TextRole::Body) + f64::from(spacing.rhythm.section);
-        // Why it has not gone: the server's refusal, or that it waits.
         let why = match &queued.reason {
             Some(reason) => format!("The server refused this message: {reason}"),
             None => "This message has not been sent yet.".to_owned(),
@@ -713,7 +642,6 @@ impl MessageReader {
         );
         self.cancel_button = hit.action.map(|rect| (rect, queued.id.clone()));
         y = banner.y1 + f64::from(spacing.rhythm.section);
-        // The words that will go.
         let body_h = (r.y1
             - y
             - ButtonFace::height(ControlSize::Regular, theme)
@@ -724,7 +652,6 @@ impl MessageReader {
     }
 
     fn paint_empty(&self, ctx: &mut PaintCtx<'_>, state: &MailState) {
-        // Mail is still arriving: nothing to say about a selection yet.
         if state.first_fetch.is_some() && state.mailbox.messages.is_empty() {
             return;
         }
@@ -749,9 +676,6 @@ impl MessageReader {
         );
     }
 
-    /// Paint the remote-content banner for an HTML body that names remote
-    /// content, at the flow's cursor: what is blocked and the buttons that
-    /// load it for this message or always for its sender.
     fn paint_remote_line(&mut self, flow: &mut Flow<'_, '_>, remote: RemoteState) {
         let theme = flow.ctx.theme;
         let t = crate::i18n::t;
@@ -807,9 +731,6 @@ impl MessageReader {
         flow.y += height;
     }
 
-    /// The message text as a field the person can select and copy, its
-    /// addresses links: an HTML body read into styled runs, a plain one
-    /// with its quoted lines quieter. Moves below it.
     fn paint_body(
         &mut self,
         flow: &mut Flow<'_, '_>,
@@ -863,7 +784,6 @@ impl MessageReader {
         }
         flow.y += height;
         if body.folded {
-            // The quote it ends with waits behind a quiet button.
             flow.y += f64::from(theme.tokens.spacing.s2);
             let side = ButtonFace::height(ControlSize::Small, theme);
             let label = crate::i18n::t("mail-show-quoted");
@@ -885,11 +805,6 @@ impl MessageReader {
         }
     }
 
-    /// Prepare and load the open message's HTML for the engine, as the
-    /// person set it: its remote content or not, dark or light. Returns how
-    /// it asks for remote content, or `None` when it is not shown in the
-    /// engine (no isolated renderer, the person reads its text, or it is
-    /// too large for one).
     fn load_html(
         &mut self,
         state: &MailState,
@@ -943,7 +858,6 @@ impl MessageReader {
         let shared = self.shared.clone();
         let state = shared.borrow();
         self.warm(&state);
-        // What this frame paints is all that can be pressed.
         self.remote_buttons = RemoteButtons::default();
         self.quote_buttons.clear();
         let messages = state.selected_thread_messages();
@@ -1009,7 +923,6 @@ impl MessageReader {
             saves: Vec::new(),
         };
 
-        // The conversation's subject, and how many messages it holds.
         let title = flow.style(TextRole::Title);
         let subject = head.thread_subject();
         let subject = if subject.trim().is_empty() {
@@ -1052,7 +965,6 @@ impl MessageReader {
         flow.y += f64::from(spacing.s6);
 
         let mut webview_rect = None;
-        // The HTML body fills the reader and scrolls inside its own view.
         let mut html_fills = false;
         let count = messages.len();
         self.headers.clear();
@@ -1148,7 +1060,6 @@ impl MessageReader {
         drop(flow);
         drop(state);
 
-        // The HTML body, now that the shared borrow is released.
         if let Some(rect) = webview_rect {
             self.html.place(rect);
             self.html.draw(scene, t, tr, theme, presence, r);
@@ -1156,8 +1067,6 @@ impl MessageReader {
         self.drain_html();
     }
 
-    /// Act on what the HTML body's engine said: a followed link opens in
-    /// the Browser, a new size lays the reader out again.
     fn drain_html(&mut self) {
         let said = self.html.drain();
         if said.dirty {
@@ -1255,10 +1164,6 @@ impl MessageReader {
         false
     }
 
-    /// The reader's menu for the open message at `point`: the link under
-    /// the pointer (its real address, to open or copy), copying and
-    /// selecting the text, and reading the message as plain text or as
-    /// it was formatted.
     fn open_menu(&self, point: Point) -> bool {
         let Some(head) = self.shown else {
             return false;
@@ -1302,7 +1207,6 @@ impl MessageReader {
         true
     }
 
-    /// Carry out what the reader's menu chose for the HTML body.
     fn take_reader_requests(&mut self) {
         let requests = std::mem::take(&mut self.shared.borrow_mut().reader_requests);
         for request in requests {
@@ -1314,19 +1218,10 @@ impl MessageReader {
         }
     }
 
-    /// Whether the wheel `event` scrolls the HTML body rather than the
-    /// reader: only an engine that cannot say how tall its document is,
-    /// whose body fills the reader. A body sized to its document never
-    /// scrolls inside; the reader scrolls it with the conversation.
     fn wheel_scrolls_body(&self, event: &WindowEvent) -> bool {
         matches!(event, WindowEvent::MouseWheel { .. }) && !self.html.measures()
     }
 
-    /// Give the message text the pointer and the keys: selecting, copying and
-    /// opening its links. The wheel stays the reader's, which scrolls.
-    ///
-    /// A press on another message's text moves the selection and the keys
-    /// there: one message's text is active at a time.
     fn forward_to_body(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if matches!(event, WindowEvent::MouseWheel { .. })
             || (self.html.is_focused() && matches!(event, WindowEvent::KeyboardInput { .. }))
@@ -1367,8 +1262,6 @@ impl MessageReader {
         }
     }
 
-    /// What the pointer at `point` lights up: an attachment chip, the
-    /// remote-content buttons, a quote button.
     fn hover_at(&self, point: Point) -> (Option<usize>, Option<RemoteChoice>, Option<usize>) {
         (
             self.attachments
@@ -1382,8 +1275,6 @@ impl MessageReader {
         )
     }
 
-    /// The text matches of `query` under `options` in the open messages'
-    /// text, in reading order.
     fn find_in_text(&mut self, query: &str, options: FindOptions) -> Vec<FindMatch> {
         self.text_matches.clear();
         self.text_current = None;
@@ -1412,7 +1303,6 @@ impl MessageReader {
             } else {
                 text.to_lowercase()
             };
-            // Lower-casing keeps byte offsets only where it keeps lengths.
             if haystack.len() != text.len() {
                 continue;
             }
@@ -1469,8 +1359,6 @@ impl Findable for MessageReader {
         let _ = self.find("", FindOptions::default());
     }
 
-    /// The HTML body's engine finds and steps on its own; the text's
-    /// matches step through the bar.
     fn step(&mut self, forward: bool) -> bool {
         match (&self.html_query, self.html.rect()) {
             (Some(query), Some(_)) if self.text_matches.is_empty() => {
@@ -1493,8 +1381,6 @@ impl Findable for MessageReader {
 }
 
 impl MessageReader {
-    /// Scroll the reader so the span from `y0` to `y1` (as drawn) is in
-    /// sight, inside its margins: a find match in the text or the mail.
     fn bring_into_view(&mut self, y0: f64, y1: f64) {
         let margin = f64::from(self.theme.tokens.spacing.s6);
         let offset = self.region.offset().y;
@@ -1514,8 +1400,6 @@ impl MessageReader {
         self.dirty = true;
     }
 
-    /// Whether the window's find acts on the open message: one is shown and
-    /// the reader holds the keyboard (or a find in it is running).
     fn offers_find(&self) -> bool {
         self.shown.is_some()
             && (self.focused || self.html_query.is_some() || !self.text_matches.is_empty())
@@ -1523,9 +1407,6 @@ impl MessageReader {
 }
 
 impl Widget for MessageReader {
-    /// Find in the open message while the reader has the keyboard: Ctrl+F
-    /// and the window bar's search find where the person is, the message
-    /// they read; from the list they search the folder.
     fn provide<'a>(&'a self, request: &mut ui::widget::capability::Request<'a, '_>) {
         if self.offers_find() && request.wants::<dyn Findable>() {
             request.provide::<dyn Findable>(self);
@@ -1659,8 +1540,6 @@ impl Widget for MessageReader {
         "MailReader"
     }
 
-    /// The reader takes the keyboard while a message is open, so its text
-    /// can be selected and copied from the keys.
     fn is_focusable(&self) -> bool {
         !self.bodies.is_empty() || self.html.rect().is_some()
     }
@@ -1687,8 +1566,6 @@ impl Widget for MessageReader {
         self.rect
     }
 
-    /// Over a link of an HTML message, the address it really opens; over an
-    /// attachment, what a press does.
     fn tooltip(&self) -> Option<std::borrow::Cow<'_, str>> {
         let point = self.pointer;
         if self.html.rect().is_some_and(|rect| rect.contains(point))
@@ -1729,13 +1606,11 @@ impl Widget for MessageReader {
                 .any(|body| body.input.needs_animation_frame())
     }
 
-    /// A glide after a flick scrolls the message as the wheel does.
     fn update(&mut self, _state: &ui::widget::AppModel, _path: &ui::widget::ModelPath) -> bool {
         self.dirty |= self.region.advance();
         false
     }
 
-    /// An HTML message still on its way to the screen.
     fn has_pending_visual_work(&self) -> bool {
         self.html.pending()
     }
@@ -1766,7 +1641,6 @@ impl Widget for MessageReader {
     }
 }
 
-/// The words of a queued message, line by line, as many as fit in `body`.
 fn paint_queued_body(ctx: &mut PaintCtx<'_>, body: Rect, text: &str) {
     if body.height() <= 0.0 || text.trim().is_empty() {
         return;
@@ -1809,7 +1683,6 @@ mod tests {
         MailState::shared(MailState::new_sample(crate::avatars::Avatars::new()))
     }
 
-    /// A reader of `w`×`h` showing message `id`, opened as a row click opens it.
     fn reader_for(shared: &Shared, id: MessageId, w: f64, h: f64) -> MessageReader {
         let mut doc = crate::resource::TestMail::doc();
         shared
@@ -1821,8 +1694,6 @@ mod tests {
         reader
     }
 
-    /// An engine that paints a mail's pages as Chromium does: each with the
-    /// document's end mark (`crate::html_mail::END_MARK`).
     fn html_engine() -> std::sync::Arc<TestEngine> {
         let engine = TestEngine::new();
         engine.mark_page_end();
@@ -1851,8 +1722,6 @@ mod tests {
         );
     }
 
-    /// The message body, plain or HTML, grows once with the text size and
-    /// the UI scale: as tall as the theme's body type, never scaled twice.
     #[test]
     fn message_bodies_grow_once_at_enlarged_scales() {
         let shared = shared();
@@ -1890,8 +1759,6 @@ mod tests {
         }
     }
 
-    /// At a large text size a long sender name keeps its line: the date
-    /// moves below it, and every recipient shows, wrapped, above the body.
     #[test]
     fn sender_details_reflow_rather_than_elide_at_large_text() {
         let shared = shared();
@@ -1959,8 +1826,6 @@ mod tests {
             .id
     }
 
-    /// An HTML body is as tall as its document, so the reader scrolls the
-    /// conversation and the body as one page, however tall the body is.
     #[test]
     fn an_html_body_is_as_tall_as_its_document_and_scrolls_with_the_reader() {
         use ui::webview::WebViewEvent;
@@ -2028,12 +1893,6 @@ mod tests {
         );
     }
 
-    /// The body appears with the engine's first frame of the page at the
-    /// size it is shown at. Grown to its document's height, the view has no
-    /// such frame until the engine paints again, and a body drawn then is a
-    /// blank sheet that flashes before the mail. Once shown, it stays: a
-    /// frame the engine delivers late, for another size or before the page
-    /// drew, never replaces the mail with a blank sheet.
     #[test]
     fn an_opened_html_mail_is_never_presented_blank() {
         use ui::webview::WebViewEvent;
@@ -2064,8 +1923,7 @@ mod tests {
             reader.html.rect().is_none() && reader.html.pending(),
             "hidden, and still on its way, until the engine paints it"
         );
-        // The engine paints the grown view before the page has drawn there:
-        // its background, at the right size, without the page.
+        // The engine paints the grown view before the page has drawn there.
         engine.paint_before_page();
         present(&mut reader, "grown, painted before the page");
         assert!(
@@ -2086,7 +1944,6 @@ mod tests {
         present(&mut reader, "a late blank frame");
         assert!(reader.html.rect().is_some(), "the message stays on screen");
 
-        // A later resize keeps the last frame up until the next one comes.
         engine.hold_frames(true);
         engine.push_event(WebViewEvent::DocumentSize {
             width: 912.0,
@@ -2098,11 +1955,6 @@ mod tests {
         assert!(reader.html.rect().is_some(), "the message stays on screen");
     }
 
-    /// On a dense display the body appears with the page painted at that
-    /// display's scale. Held back until it has painted, it still tells the
-    /// engine the scale it will be shown at; a frame painted at another
-    /// scale is not the page on screen, and drawn, it is a page at half
-    /// size in a blank sheet.
     #[test]
     fn an_html_body_appears_painted_at_the_scale_it_is_shown_at() {
         use ui::webview::WebViewEvent;
@@ -2145,14 +1997,12 @@ mod tests {
         assert!(reader.html.rect().is_some() && reader.html.draws_page());
     }
 
-    /// The `(message, remote)` the HTML view has loaded.
     fn loaded(reader: &MessageReader) -> Option<(MessageId, bool)> {
         reader
             .html_loaded()
             .map(|setting| (setting.message, setting.remote))
     }
 
-    /// The `data:` document the engine was last told to show, decoded.
     fn shown_document(engine: &TestEngine) -> String {
         use base64::Engine as _;
         let url = engine
@@ -2188,7 +2038,6 @@ mod tests {
             Some((id, false)),
             "the HTML body loads with remote content blocked"
         );
-        // The engine refuses every web request before the document loads.
         let commands = engine.commands();
         let rules = commands
             .iter()
@@ -2203,7 +2052,6 @@ mod tests {
         assert!(!document.contains("track.fieldnotes.example"), "{document}");
         assert!(document.contains("img-src data:;"));
 
-        // "Load images" loads this message's, and only this message's.
         let button = reader.remote_button().expect("the Load images button");
         assert!(reader.press(
             button.center(),
@@ -2242,7 +2090,6 @@ mod tests {
             "the message stays allowed while the window is open"
         );
 
-        // "Always for this sender" is the person's preference.
         shared.borrow_mut().remote_messages.clear();
         draw(&mut reader);
         assert_eq!(loaded(&reader), Some((id, false)));
@@ -2317,7 +2164,6 @@ mod tests {
             })
             .collect();
         assert_eq!(opened, ["https://fieldnotes.example/read"]);
-        // A page that leaves the mail is shown the mail again; nothing opens.
         engine.push_event(WebViewEvent::UriChanged(
             "https://elsewhere.example/".into(),
         ));
@@ -2396,9 +2242,6 @@ mod tests {
         );
     }
 
-    /// Ctrl+F does what the window bar's search does: with the message in
-    /// hand it finds in the message; with the list focused the reader offers
-    /// no find, and the key reaches Mail, which searches the folder.
     #[test]
     fn find_is_the_messages_once_the_reader_has_the_keyboard() {
         let shared = shared();

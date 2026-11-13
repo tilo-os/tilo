@@ -1,14 +1,11 @@
-//! The open message's HTML body: a sealed document ([`crate::html_mail`]) in
-//! an isolated engine, laid out as tall as the document and as wide as the
-//! reader, sharp at the display's scale.
+//! The open message's HTML body: a sealed document ([`crate::html_mail`]) in an isolated
+//! engine, laid out as tall as the document and as wide as the reader.
 //!
-//! The engine runs in its own sandboxed process over a throwaway profile, in
-//! the mode for sealed documents: its page never navigates, a link the
-//! person follows comes back here to open in the Browser, and the address
-//! under the pointer is reported so the reader can say where a link goes.
-//! Before a document loads the engine's request filter refuses every web
-//! request unless the person allowed this message's remote content; the
-//! document's own policy and the sanitizer refuse them again.
+//! The engine runs in a sandboxed process over a throwaway profile, in the mode for sealed
+//! documents: its page never navigates, a link the person follows comes back here to open in
+//! the Browser, and the address under the pointer is reported. Before a document loads its
+//! request filter refuses every web request unless the person allowed this message's remote
+//! content.
 
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -25,14 +22,8 @@ use crate::html_mail::{InlinePart, Policy, Prepared};
 use crate::model::MessageId;
 use ui::widget::DrawChild;
 
-/// The smallest the reader zooms a wide mail out to fit: the engine's
-/// furthest zoom out (1.2⁻⁵).
 const MIN_FIT: f64 = 0.401_877_572;
 
-/// The engine for HTML mail: the packaged Chromium runtime when the image has
-/// it, over a throwaway profile (no cookies or storage survive the process),
-/// sealed; otherwise the deterministic test engine, whose frames are never
-/// shown.
 fn new_engine() -> (SharedEngine, bool) {
     #[cfg(feature = "live")]
     if let Some(engine) = native_engine() {
@@ -64,8 +55,6 @@ fn native_engine() -> Option<SharedEngine> {
     }
 }
 
-/// How a message's HTML is set: which message, with its remote content or
-/// not, in a dark reader or a light one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Setting {
     pub message: MessageId,
@@ -73,84 +62,48 @@ pub(crate) struct Setting {
     pub dark: bool,
 }
 
-/// The loaded document as its engine measured it, in the reader's logical
-/// pixels, and the width of the view it was laid out in.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct Measured {
     pub height: f64,
     pub width: f64,
 }
 
-/// What the engine said since the last frame that the reader acts on.
 #[derive(Debug, Default)]
 pub(super) struct Said {
-    /// Links the person followed, to open in the Browser.
     pub open: Vec<String>,
-    /// The layout or the view changed: draw again.
     pub dirty: bool,
-    /// Where the active find match is, top and bottom in the view's
-    /// logical pixels: the reader scrolls it into sight.
     pub found_at: Option<(f64, f64)>,
 }
 
-/// How far a loaded document is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum Stage {
-    /// The page before it is still shown.
     Loading,
-    /// It replaced the page before it.
     Committed,
-    /// It finished loading.
     Finished,
 }
 
 pub(super) struct HtmlBody {
     engine: Option<SharedEngine>,
-    /// True only for a real isolated renderer; the deterministic test
-    /// engine is never presented as message content.
     live: bool,
     view: Option<WebView>,
-    /// The document last prepared, and how.
     prepared: Option<(Setting, Prepared)>,
     loaded: Option<Setting>,
-    /// How far the loaded document is: the sizes the engine reports are
-    /// of it once it replaced the one before, and of its content once it
-    /// finished loading.
     stage: Stage,
-    /// The last size the engine reported for the loaded document before it
-    /// finished loading, in CSS pixels (width, height).
     early_size: Option<(f64, f64)>,
     measured: Option<Measured>,
-    /// The view width the body is being measured at: it is laid out a
-    /// sliver tall, and not drawn, until its engine says how tall it is.
     measuring: Option<f64>,
-    /// The page zoom that fits the document to the view's width (1 when it
-    /// fits as it is), and the width it was found for.
     zoom: f64,
     zoom_width: Option<f64>,
-    /// The view's rect as last drawn.
     rect: Option<Rect>,
-    /// The address of the link under the pointer.
     hovered: String,
-    /// The page has the keyboard: the person pressed in it.
     focused: bool,
     next_request: u32,
-    /// The copy waiting for the page's selection.
     copying: Option<u32>,
-    /// The find the engine is answering, and what it last said: `(total,
-    /// current)` with `current` 0-based.
     finding: Option<u32>,
     found: Option<(usize, Option<usize>)>,
 }
 
-/// Whether `frame` is the page's own: its document's end mark
-/// ([`crate::html_mail::END_MARK`]) is in its bottom-right corner, one level
-/// off what lies beside it on the same row. A frame the engine painted at a
-/// new size before the page drew there has one colour across that row (the
-/// page's background, which Chromium fills the new part with) or nothing.
 fn is_page(frame: &ui::webview::Frame) -> bool {
-    /// How far left of the corner the colour beside the mark is read, in
-    /// pixels: past the mark at any device scale up to 8.
     const BESIDE: usize = 16;
     let (width, height) = (frame.width as usize, frame.height as usize);
     let row = height.saturating_sub(2) * width;
@@ -164,8 +117,6 @@ fn is_page(frame: &ui::webview::Frame) -> bool {
     }
 }
 
-/// Whether the engine's latest frame is the page's own at the size `view`
-/// is shown at.
 fn shows_page(view: &WebView) -> bool {
     if !view.has_fitting_frame() {
         return false;
@@ -201,8 +152,6 @@ impl HtmlBody {
         }
     }
 
-    /// Start the engine, so the first HTML mail opens without waiting for
-    /// it. Text-only use starts none.
     pub fn warm(&mut self) {
         if self.engine.is_none() {
             let (engine, live) = new_engine();
@@ -221,13 +170,10 @@ impl HtmlBody {
         self.engine.is_some()
     }
 
-    /// Whether HTML is shown in the engine (an isolated renderer runs).
     pub fn live(&self) -> bool {
         self.live
     }
 
-    /// Whether the engine says how tall its document is: the body is then
-    /// sized to it, and otherwise fills the reader.
     pub fn measures(&self) -> bool {
         self.engine
             .as_ref()
@@ -250,7 +196,6 @@ impl HtmlBody {
         self.focused
     }
 
-    /// The document for `setting`, prepared once for it.
     pub fn prepare(
         &mut self,
         setting: Setting,
@@ -284,7 +229,6 @@ impl HtmlBody {
         prepared
     }
 
-    /// The document prepared last, if it is for `setting`.
     pub fn prepared(&self, setting: Setting) -> Option<&Prepared> {
         self.prepared
             .as_ref()
@@ -306,11 +250,6 @@ impl HtmlBody {
         }))
     }
 
-    /// Load the prepared document for `setting`, unless it is loaded.
-    /// The engine's request rules come first, so nothing the document
-    /// names is fetched under the rules of the one before it. Returns
-    /// whether the document can be shown: one too large for the engine is
-    /// not.
     pub fn load(&mut self, setting: Setting) -> bool {
         if self.loaded == Some(setting) {
             return true;
@@ -339,7 +278,6 @@ impl HtmlBody {
             enabled: Some(true),
         });
         engine.send(WebViewCommand::Navigate(url));
-        // Each mail is set at its own size.
         engine.send(WebViewCommand::SetZoomLevel(0.0));
         self.zoom = 1.0;
         self.zoom_width = None;
@@ -354,8 +292,6 @@ impl HtmlBody {
         true
     }
 
-    /// Nothing HTML is shown: forget what was loaded, so returning to an
-    /// HTML mail loads it again, blocked again.
     pub fn unload(&mut self) {
         self.loaded = None;
         self.rect = None;
@@ -363,10 +299,6 @@ impl HtmlBody {
         self.hovered.clear();
     }
 
-    /// The height to lay the body out at in a view `width` wide, and the
-    /// room to keep for it: its document's whole height, so the reader
-    /// scrolls the conversation and the mail as one page; a sliver until
-    /// that is known, keeping the room it had at another width.
     pub fn layout(&mut self, width: f64, sliver: f64) -> (f64, f64) {
         if let Some(doc) = self
             .measured
@@ -379,7 +311,6 @@ impl HtmlBody {
             .zoom_width
             .is_some_and(|fitted| (fitted - width).abs() >= 0.5)
         {
-            // A new width: measure the mail at its own size again.
             self.zoom = 1.0;
             self.zoom_width = None;
             if let Some(engine) = &self.engine {
@@ -393,15 +324,12 @@ impl HtmlBody {
         (sliver, kept)
     }
 
-    /// Place the view at `rect`, for the next [`Self::draw`].
     pub fn place(&mut self, rect: Rect) {
         if let Some(view) = self.view() {
             view.place(rect);
         }
     }
 
-    /// Once measured, draw the view where it was placed, inside `clip`: a
-    /// light document on a sheet of its own with rounded corners.
     pub fn draw(
         &mut self,
         scene: &mut Scene,
@@ -448,9 +376,6 @@ impl HtmlBody {
         self.rect = Some(rect);
     }
 
-    /// Act on what the engine said: a followed link, the document's size, the
-    /// link under the pointer, a selection to copy, where find landed. A
-    /// mail never navigates its own view.
     pub fn drain(&mut self) -> Said {
         let mut said = Said::default();
         let Some(engine) = self.view.as_ref().map(|view| view.engine().clone()) else {
@@ -471,8 +396,7 @@ impl HtmlBody {
                     self.stage = self.stage.max(Stage::Committed);
                 }
                 WebViewEvent::UriChanged(uri) if !uri.is_empty() && uri != "about:blank" => {
-                    // An engine that cannot seal its page left the mail:
-                    // show the mail again. Nothing opens without a click.
+                    // An engine that cannot seal its page left the mail.
                     self.loaded = None;
                     said.dirty = true;
                 }
@@ -529,10 +453,6 @@ impl HtmlBody {
         said
     }
 
-    /// The engine measured its document, in CSS pixels. A document wider
-    /// than the view is zoomed out to fit it, so a mail laid out for a
-    /// wider window reads without scrolling sideways. Returns whether the
-    /// reader's layout changes.
     fn document_size(&mut self, css_width: f64, css_height: f64) -> bool {
         let Some(width) = self
             .measuring
@@ -564,10 +484,6 @@ impl HtmlBody {
         changed
     }
 
-    /// Give the page a pointer or key event: moving over it, pressing and
-    /// dragging to select, the wheel when `wheel` says the body scrolls,
-    /// and keys while it has them. A right press is the reader's (its
-    /// menu); Ctrl+C copies the page's selection to the system clipboard.
     pub fn forward(
         &mut self,
         event: &WindowEvent,
@@ -612,7 +528,6 @@ impl HtmlBody {
                 } else if command
                     && matches!(&key.logical_key, winit::keyboard::Key::Character(c) if c.eq_ignore_ascii_case("f"))
                 {
-                    // Find is the window's.
                 } else {
                     self.forward_raw(event, ctx);
                 }
@@ -636,8 +551,6 @@ impl HtmlBody {
         }
     }
 
-    /// Copy what the page has selected to the system clipboard, once the
-    /// engine says what it is.
     pub fn copy(&mut self) {
         let Some(engine) = self.engine.clone() else {
             return;
@@ -649,7 +562,6 @@ impl HtmlBody {
         });
     }
 
-    /// Select the whole document.
     pub fn select_all(&self) {
         if let Some(engine) = &self.engine {
             for down in [true, false] {
@@ -670,7 +582,6 @@ impl HtmlBody {
         self.next_request
     }
 
-    /// Find `query` in the page; the engine says where.
     pub fn find(&mut self, query: &str) {
         let Some(engine) = self.engine.clone() else {
             return;
@@ -691,7 +602,6 @@ impl HtmlBody {
         });
     }
 
-    /// Step to the next or previous match of the find running.
     pub fn step(&self, query: &str, forward: bool) {
         if let (Some(engine), Some(id)) = (&self.engine, self.finding) {
             engine.send(WebViewCommand::Find {
@@ -713,21 +623,17 @@ impl HtmlBody {
             .is_some_and(Widget::needs_animation_frame)
     }
 
-    /// The view draws a frame of the page's own: what it shows beyond its
-    /// placeholder.
     #[cfg(test)]
     pub fn draws_page(&mut self) -> bool {
         self.view.as_mut().is_some_and(WebView::refresh_frame)
     }
 
-    /// The loaded document is not on screen yet.
     pub fn pending(&self) -> bool {
         self.live
             && self.loaded.is_some()
             && (self.measuring.is_some()
                 || self.stage != Stage::Finished
                 || !self.view.as_ref().is_some_and(|view| {
-                    // Placed at the height it was measured at, and painted there.
                     let placed = view.get_rect().height();
                     self.measured
                         .is_none_or(|doc| (placed - doc.height.ceil().max(1.0)).abs() < 0.5)
@@ -742,7 +648,6 @@ impl HtmlBody {
     }
 }
 
-/// A link a mail may open: a web or a mail address.
 pub(crate) fn is_openable(url: &str) -> bool {
     let lower = url.trim_start().to_ascii_lowercase();
     ["https://", "http://", "mailto:"]
@@ -776,10 +681,6 @@ mod tests {
         }
     }
 
-    /// Chromium paints a grown view before the page has drawn there in the
-    /// page's own background colour: on a dark mail that is the reader's
-    /// dark ground, not white. Only the end mark, one level off its row,
-    /// tells the page's frame from it, on a light page and a dark one.
     #[test]
     fn the_page_is_told_by_its_end_mark_on_any_background() {
         for ground in [[0xff_u8, 0xff, 0xff, 0xff], [18, 20, 23, 0xff]] {

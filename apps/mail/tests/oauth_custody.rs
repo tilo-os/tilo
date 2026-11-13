@@ -27,8 +27,6 @@ fn registration(issuer: OAuthIssuer) -> Registration {
         .expect("the committed client table registers Google and Microsoft")
 }
 
-/// A custodian over `root` whose `issuer` requests go to `server`, with the
-/// committed client table for everything else.
 fn custodian(root: &Path, issuer: OAuthIssuer, server: &FakeAuthorizationServer) -> Custodian {
     Custodian::for_root(Some(root.to_path_buf())).with_issuer_endpoints(issuer, server.provider())
 }
@@ -197,7 +195,6 @@ fn outlook_signs_in_with_the_shared_microsoft_client_and_mail_scopes() {
         "Microsoft's public client has no secret"
     );
 
-    // Near expiry, the next access token comes from a refresh by custody.
     let expired = {
         let mut grant = sealed_grant(dir.path(), email);
         grant["tokens"]["obtained_at"] = 1.into();
@@ -231,17 +228,13 @@ fn a_revoked_grant_asks_mail_to_sign_in_again() {
     server.revoke_all_refresh_tokens();
 
     let error = oauth::access_token(&custodian, email, OAuthProvider::Google, true).unwrap_err();
-    // "OAuth" marks the Mail account as needing sign-in.
     assert!(
         error.contains("OAuth") && error.contains("sign in again"),
         "{error}"
     );
-    // The dead grant is not handed out again.
     assert!(oauth::access_token(&custodian, email, OAuthProvider::Google, false).is_err());
 }
 
-/// A selected Microsoft mailbox keeps its canonical identity and sealed grant
-/// across installation; Mail consumes the shared account, not a local preset.
 #[test]
 fn selected_microsoft_account_loads_and_refreshes_after_portable_import() {
     use account_custody::portable::{import_sealed_accounts, seal_selected_accounts};

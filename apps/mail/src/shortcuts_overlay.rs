@@ -37,8 +37,6 @@ const ROWS: &[(&str, &[&str])] = &[
     ("Close this list", &["Esc"]),
 ];
 
-/// A small, local presentation overlay. It owns no mailbox state: every
-/// shortcut it lists runs through the app's normal action routes.
 pub struct MailShortcutsOverlay {
     visible: bool,
     viewport: Rect,
@@ -167,8 +165,6 @@ impl MailShortcutsOverlay {
         self.layout = Some(layout);
     }
 
-    /// Handle only while visible. The sheet is modal: an Escape or a key
-    /// meant to dismiss it never reaches Mail's actions underneath.
     pub fn handle_event(&mut self, event: &WindowEvent, scale_factor: f64) -> bool {
         if !self.visible {
             return false;

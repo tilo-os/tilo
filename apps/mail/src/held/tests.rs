@@ -135,7 +135,6 @@ fn draft(app: &mut TestApp<MailShell>, subject: &str, body: &str) -> Result<(), 
     drafted.map(drop).map_err(|refused| refused.to_string())
 }
 
-/// A person saving the draft as the composer does when it closes.
 fn save_as_a_person(app: &mut TestApp<MailShell>, subject: &str, body: &str) {
     app.call(
         "save-draft",
@@ -147,7 +146,6 @@ fn save_as_a_person(app: &mut TestApp<MailShell>, subject: &str, body: &str) {
     app.settle();
 }
 
-/// The drafts of their own, by id, oldest first.
 fn drafts(app: &TestApp<MailShell>) -> Vec<(String, crate::resource::DraftState)> {
     app.state()
         .drafts
@@ -236,7 +234,6 @@ fn a_draft_a_person_is_writing_is_left_alone_beside_new_ones() {
     assert_eq!(app.state().draft.body, "Friday? Or Monday.");
     let [(id, _)]: [(String, crate::resource::DraftState); 1] =
         drafts(&app).try_into().expect("one draft");
-    // Each is discarded on its own.
     app.call_confirmed("discard-draft", json!({ "draft": id }))
         .unwrap();
     app.settle();
@@ -344,8 +341,6 @@ fn held_mail_shows_in_the_window_and_moves_with_the_mailbox_verbs() {
     );
 }
 
-/// The window bar's sidebar button flips the sidebar on every click, in a
-/// window wide enough to dock it and in a narrow one.
 #[test]
 fn the_window_bars_sidebar_button_flips_the_sidebar() {
     ui::framework::testing::check_window_sidebar_button(|| {
@@ -354,8 +349,6 @@ fn the_window_bars_sidebar_button_flips_the_sidebar() {
     .unwrap_or_else(|error| panic!("{error}"));
 }
 
-/// A past version reads through the `read` door with the mailbox as it stood
-/// then, and draws in the app's own view.
 #[test]
 fn a_past_version_reads_and_shows_its_mail() {
     let mut app = TestApp::<MailShell>::new().unwrap();

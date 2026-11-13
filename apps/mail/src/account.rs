@@ -1,21 +1,15 @@
 //! Mail's view of the shared multi-account store.
 //!
-//! ## One shared store, one vault
-//! Account *management* in Tilo lives in the **Settings app**, not in Mail —
-//! the same way display, network, and Bluetooth settings do. Mail only
-//! *consumes* the account list to fetch and send. The canonical store is the
-//! shared [`accounts`] crate: a single JSON document under
-//! `$XDG_CONFIG_HOME/tilo/accounts/` holding every account of every type, with
-//! credentials kept out of it entirely and sealed in the encrypted
+//! Account management lives in Settings, not in Mail, which only consumes the account list to
+//! fetch and send. The canonical store is the shared [`accounts`] crate: one JSON document
+//! under `$XDG_CONFIG_HOME/tilo/accounts/` holding every account of every type, with
+//! credentials kept out of it and sealed in the encrypted
 //! [`accounts::AccountCredentials`].
 //!
-//! This module is the mail-side adapter over that store. It keeps the
-//! ergonomic in-memory shapes the rest of the app works with — [`Account`]
-//! (an [`AccountConfig`] plus per-account sidebar state) and [`AccountStore`]
-//! (the list plus the active index) — and hydrates them from the shared store
-//! and vault ([`AccountStore::load_in`]). The type-specific connection settings
-//! ([`AccountConfig`]) are serialised into each shared account's opaque
-//! `config`; the password is read back from the vault, never from the JSON.
+//! This module keeps the shapes the rest of the app works with, [`Account`] and
+//! [`AccountStore`], and hydrates them from that store and vault
+//! ([`AccountStore::load_in`]). The connection settings are serialised into each account's
+//! opaque `config`; the password is read back from the vault, never from the JSON.
 
 use std::path::Path;
 
@@ -29,29 +23,17 @@ use ui::tilo_resource::{Id, Invoke};
 
 use crate::model::{AccountConfig, Folder};
 
-/// The account-type id Mail contributes to the shared store.
 pub const TYPE_ID: &str = accounts::email::TYPE_ID;
 
-/// The app that keeps email accounts: this one.
 pub const KEEPER: &str = accounts::email::KEEPER;
 
-/// A single configured mail account: its connection settings plus the
-/// per-account UI state Mail needs (sidebar expand/collapse).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Account {
-    /// Stable id (the email at creation time is a fine natural key, but we
-    /// keep an explicit field so a later rename doesn't reshuffle the store).
     pub id: String,
-    /// Connection + identity settings — exactly what the setup form collects
-    /// and the transport layer consumes.
     pub config: AccountConfig,
     /// Whether this account's folder list is collapsed in the sidebar.
-    /// Per-account so a user can keep work expanded and personal collapsed;
-    /// kept in the person's Mail preferences, not the shared account store.
     #[serde(skip)]
     pub collapsed: bool,
-    /// A short accent hint (0..8) used to tint the account's avatar disc so
-    /// multiple accounts are visually distinct at a glance.
     #[serde(default)]
     pub tint: u8,
 }
@@ -71,9 +53,6 @@ impl Account {
         }
     }
 
-    /// The opaque, secret-free config payload persisted into a shared
-    /// [`StoredAccount`]. The password is `#[serde(skip)]` on [`AccountConfig`],
-    /// so it never reaches this JSON — it lives only in the vault.
     fn to_stored(&self) -> StoredAccount {
         let type_id = if self.config.import_pending {
             accounts::thunderbird::PENDING_TYPE
@@ -89,9 +68,6 @@ impl Account {
         stored
     }
 
-    /// Rebuild a mail account from a shared [`StoredAccount`], reading the
-    /// password back from `vault`. `None` when the stored config does not
-    /// deserialise (a store written by a newer type version).
     fn from_stored(stored: &StoredAccount, vault: Option<&AccountCredentials>) -> Option<Self> {
         let payload = stored.config_as::<StoredConfig>()?;
         let mut config = payload.config;
@@ -110,20 +86,15 @@ impl Account {
     }
 }
 
-/// The opaque config payload a mail [`Account`] serialises into a shared
-/// [`StoredAccount`]. The `#[serde(skip)]` password on [`AccountConfig`] keeps
-/// the credential out of this JSON by construction.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct StoredConfig {
     #[serde(flatten)]
     config: AccountConfig,
 }
 
-/// Mail's in-memory account list: the accounts plus which one is shown.
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct AccountStore {
     pub accounts: Vec<Account>,
-    /// Index of the account whose mailbox is currently shown. Clamped on read.
     pub active: usize,
 }
 
@@ -139,8 +110,6 @@ impl AccountStore {
         }
     }
 
-    /// The accounts kept under the config root `config_root`, none when its
-    /// credentials cannot be opened.
     pub fn load_in(config_root: &Path) -> Self {
         Self::try_load_in(config_root).unwrap_or_else(|_| {
             tracing::error!("mail account credentials could not be opened");
@@ -148,7 +117,6 @@ impl AccountStore {
         })
     }
 
-    /// Load accounts under an explicit root, returning custody failures.
     pub fn try_load_in(config_root: &Path) -> Result<Self, String> {
         let credentials = AccountCredentials::open_in(config_root)?;
         Ok(Self::from_shared(
@@ -157,19 +125,14 @@ impl AccountStore {
         ))
     }
 
-    /// Project the shared accounts using the trusted account-owner credentials.
     pub fn from_store(shared: &SharedStore, vault: &AccountCredentials) -> Self {
         Self::from_shared(shared, Some(vault))
     }
 
-    /// Project the shared accounts without their secrets: a window in a
-    /// session, whose secrets the session's custody releases to it one
-    /// account at a time ([`crate::custody`]).
     pub fn without_secrets(shared: &SharedStore) -> Self {
         Self::from_shared(shared, None)
     }
 
-    /// The accounts kept under `config_root`, without their secrets.
     pub fn load_without_secrets_in(config_root: &Path) -> Self {
         Self::without_secrets(&SharedStore::load_in(config_root))
     }
@@ -256,10 +219,7 @@ impl AccountStore {
         shared.save_in(config_root)
     }
 
-    /// The edits that make the person's accounts hold these mail accounts:
-    /// each new or changed one saved, each mail account the person has that
-    /// Mail no longer holds removed, and the shown one active. With them, the
-    /// ids removed, whose secrets go too.
+    /// The edits that make the person's accounts hold these mail accounts.
     pub fn edits_for(
         &self,
         person: &PersonAccounts,
@@ -288,9 +248,6 @@ impl AccountStore {
         (edits, removed)
     }
 
-    /// Keep this device's secrets of these mail accounts under `config_root`:
-    /// each password, an OAuth account's sealed token left as it is, and the
-    /// secrets of the `removed` accounts dropped.
     pub fn keep_secrets_in(
         &self,
         config_root: &Path,
@@ -327,8 +284,6 @@ impl AccountStore {
         self.accounts.len()
     }
 
-    /// The active account, clamped so an out-of-range `active` index (e.g. from
-    /// a store an account was removed from) never panics.
     pub fn active_account(&self) -> Option<&Account> {
         if self.accounts.is_empty() {
             return None;
@@ -349,10 +304,8 @@ impl AccountStore {
         }
     }
 
-    /// Add (or replace, by id) an account and make it active.
     pub fn upsert(&mut self, account: Account) {
         if let Some(idx) = self.accounts.iter().position(|a| a.id == account.id) {
-            // `idx` came from `position` on this same vec, so the slot exists.
             if let Some(slot) = self.accounts.get_mut(idx) {
                 *slot = account;
             }
@@ -376,10 +329,6 @@ impl AccountStore {
         }
     }
 
-    /// The set of folders to show for a given account. For now every account
-    /// uses the canonical system folder set; a future change can read the live
-    /// IMAP folder tree per account (the transport layer already maps each
-    /// [`Folder`] to its server mailbox name).
     pub fn folders_for(_account: &Account) -> [Folder; 7] {
         Folder::ALL
     }
@@ -453,7 +402,6 @@ mod tests {
             store.upsert(Account::new(cfg("b@y.example", "B")));
             store.set_active(1);
             store.remove("b@y.example");
-            // active was 1, now only index 0 exists — must clamp, not panic.
             assert_eq!(store.active_account().unwrap().config.email, "a@x.example");
         }
 
@@ -518,7 +466,6 @@ mod tests {
 
         {
             let root = temp_root();
-            // Sign-in sealed an OAuth token before the account is saved.
             let id = AccountId::from("g@gmail.com");
             {
                 let mut vault = SecretVault::open_in(&root);
@@ -531,13 +478,11 @@ mod tests {
                 );
                 vault.save();
             }
-            // Persist an OAuth (passwordless) account with that id.
             let mut c = cfg("g@gmail.com", "G");
             c.auth = crate::model::AuthMethod::OAuth;
             c.password.clear();
             let store = AccountStore::single(c);
             store.persist_in(&root).expect("persist");
-            // The OAuth token must NOT be clobbered by the password-secret path.
             let secret = SecretVault::open_in(&root)
                 .get(&id)
                 .expect("token survives");
@@ -552,7 +497,6 @@ mod tests {
             let store = AccountStore::single(c);
             store.persist_in(&root).expect("persist");
 
-            // The plaintext store must never carry the password …
             let store_json =
                 std::fs::read_to_string(accounts::store_path_in(&root)).expect("store written");
             assert!(
@@ -560,7 +504,6 @@ mod tests {
                 "password must not reach the shared store JSON"
             );
 
-            // … but a reload recovers it from the vault.
             let back = AccountStore::load_in(&root);
             assert_eq!(
                 back.accounts[0].config.password, "hunter2",
@@ -601,9 +544,6 @@ mod tests {
         }
     }
 
-    /// A mail account Settings saved in the person's accounts record reads
-    /// back in Mail as it was, its password from this device's vault and
-    /// never from the record.
     #[test]
     fn a_mail_account_from_the_persons_record_reads_back_with_the_devices_password() {
         use accounts::person::PersonAccounts;

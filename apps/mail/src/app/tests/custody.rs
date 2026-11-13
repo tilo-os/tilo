@@ -52,7 +52,6 @@ Date: Thu, 29 Oct 2026 07:00:00 +0000\r\n\r\nHello.\r\n",
         .cloned()
         .expect("the account is the person's");
     assert_eq!(account.type_id.as_str(), crate::account::TYPE_ID);
-    // The password is no setting of the account's.
     assert!(!account.config.to_string().contains("app-password"));
 
     // A Mail window opens no vault: custody releases it the secret. The
@@ -79,8 +78,6 @@ Date: Thu, 29 Oct 2026 07:00:00 +0000\r\n\r\nHello.\r\n",
     drop(imap);
 }
 
-/// The window signs in with the secret custody released and the inbox
-/// arrives: the account on show is the person's, its password held in memory.
 fn wait_signed_in_with_the_inbox(mail: &mut TestApp<MailShell>) {
     let held = 1;
     let deadline = tilo_test_env::hang_deadline();
@@ -111,8 +108,6 @@ fn wait_signed_in_with_the_inbox(mail: &mut TestApp<MailShell>) {
     }
 }
 
-/// The account chosen again is kept in the person's record; its secret stays
-/// custody's, released into memory and never into a vault of Mail's own.
 fn the_choice_is_kept_and_the_secret_stays_custodys(
     mail: &mut TestApp<MailShell>,
     mail_root: &std::path::Path,
@@ -138,8 +133,6 @@ fn the_choice_is_kept_and_the_secret_stays_custodys(
     );
 }
 
-/// Custody releases nothing for an account of a type Mail does not keep, and
-/// Mail says so instead of signing in with nothing.
 #[test]
 fn custody_releases_nothing_mail_does_not_keep() {
     let kept = tempfile::tempdir().unwrap();

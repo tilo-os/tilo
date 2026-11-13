@@ -16,18 +16,17 @@ use ui::collaboration::browser_service_sessions::{
 };
 use zeroize::Zeroizing;
 
-/// What custody answered for one account.
 pub(crate) enum Released {
-    /// The account's secret.
     Secret {
         account: String,
         password: Zeroizing<String>,
     },
-    /// Why custody did not release it.
-    Refused { account: String, error: String },
+    Refused {
+        account: String,
+        error: String,
+    },
 }
 
-/// The window's requests to custody: one under way, the rest waiting.
 pub(crate) struct SecretRelease {
     source: Source,
     waiting: VecDeque<String>,
@@ -35,15 +34,11 @@ pub(crate) struct SecretRelease {
 }
 
 impl SecretRelease {
-    /// Custody on the window's route, captured while the window is built:
-    /// `None` outside a session (a test, a `--data-dir` profile), whose
-    /// explicit root keeps its own vault.
+    /// Custody on the window's route, captured while the window is built.
     pub(crate) fn capture() -> Option<Self> {
         Client::capture().map(|client| Self::from(Source::Route(Box::new(client))))
     }
 
-    /// Custody answered as the session answers, from the person's accounts
-    /// and vault under `root` (tests: the root a Settings window keeps).
     #[cfg(test)]
     pub(crate) fn kept_under(root: std::path::PathBuf) -> Self {
         Self::from(Source::Root(root))
@@ -57,8 +52,6 @@ impl SecretRelease {
         }
     }
 
-    /// Ask for `account`'s secret, once however often it is asked for while
-    /// waiting.
     pub(crate) fn ask(&mut self, account: &str) {
         if self
             .asking
@@ -71,7 +64,6 @@ impl SecretRelease {
         self.waiting.push_back(account.to_owned());
     }
 
-    /// Whether `account`'s secret is asked for and not answered yet.
     pub(crate) fn awaits(&self, account: &str) -> bool {
         self.asking
             .as_ref()
@@ -79,8 +71,6 @@ impl SecretRelease {
             || self.waiting.iter().any(|waiting| waiting == account)
     }
 
-    /// Take custody's answers in and send the next request; `wake` wakes the
-    /// window when an answer arrives.
     pub(crate) fn poll(&mut self, wake: Option<&ui::WakeHandle>) -> Vec<Released> {
         let mut released = Vec::new();
         loop {
@@ -114,23 +104,18 @@ impl SecretRelease {
     }
 }
 
-/// A request to custody, under way or answered at once.
 enum Asked {
     Pending(String, Pending),
     Answered(Released),
 }
 
-/// Where custody answers.
 enum Source {
-    /// The session, on the window's own route.
     Route(Box<Client>),
-    /// The decision the session makes, over a root's own stores (tests).
     #[cfg(test)]
     Root(std::path::PathBuf),
 }
 
 impl Source {
-    /// Ask for `account`'s secret.
     fn ask(&self, account: String, wake: Option<&ui::WakeHandle>) -> Asked {
         match self {
             Self::Route(client) => match client.request(

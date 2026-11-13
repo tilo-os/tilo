@@ -13,8 +13,6 @@ use ui::window_toolbar::{ToolbarAction, ToolbarLocation, WindowToolbar};
 use crate::model::Folder;
 use crate::state::{BulkAction, Command, CtxAction, MailState};
 
-/// What can be done to the selected messages: Done, triage, then read
-/// state and Select all in the menu.
 fn bulk_items(bar: &BarCommands<Command>, state: &MailState) -> Vec<ToolbarAction> {
     let ids = state.selected_bulk_ids();
     let all_trash = !ids.is_empty()
@@ -62,8 +60,6 @@ fn bulk_items(bar: &BarCommands<Command>, state: &MailState) -> Vec<ToolbarActio
     ]
 }
 
-/// The open message's actions: Reply and Archive in the row, the rest in
-/// the menu.
 fn message_items(bar: &BarCommands<Command>, state: &MailState) -> Vec<ToolbarAction> {
     let Some(message) = state.selected.and_then(|id| state.mailbox.get(id)) else {
         return Vec::new();
@@ -131,12 +127,6 @@ fn message_items(bar: &BarCommands<Command>, state: &MailState) -> Vec<ToolbarAc
     items
 }
 
-/// The bar's actions: New message and the open message's (or the
-/// selection's) actions, then selecting several, writing to a contact and
-/// adding an account in the menu. While a message is written (`composing`)
-/// Discard draft and Close take the place of New message and the open
-/// message's actions. Before any account, nothing but those: the empty
-/// window says what to do.
 pub(crate) fn bar_items(
     bar: &BarCommands<Command>,
     state: &MailState,
@@ -225,8 +215,6 @@ pub(crate) fn bar_items(
     items
 }
 
-/// Where the window is: the open folder, every inbox, or how many messages
-/// are selected.
 pub(crate) fn location(state: &MailState, composing: Option<&str>) -> String {
     if let Some(heading) = composing {
         return heading.to_owned();
@@ -261,9 +249,6 @@ pub(crate) fn location(state: &MailState, composing: Option<&str>) -> String {
     }
 }
 
-/// The bar's slots: `base` (the shell's own) with the location (what is
-/// open: the message being written, the open message, else the folder) and
-/// `items`.
 pub(crate) fn toolbar(
     mut base: WindowToolbar,
     state: &MailState,
@@ -271,7 +256,6 @@ pub(crate) fn toolbar(
     first_run: bool,
     composing: Option<&str>,
 ) -> WindowToolbar {
-    // Before any account there is nothing open: the window is Mail.
     let label = if first_run && composing.is_none() {
         crate::i18n::t("mail-title")
     } else {
@@ -301,7 +285,6 @@ mod tests {
             .collect()
     }
 
-    /// The command a press on `item` queues.
     fn command(bar: &BarCommands<Command>, item: &ToolbarAction) -> Option<Command> {
         bar.pressed(&ui::window_toolbar::ToolbarEvent::Action {
             id: item.id.clone(),
