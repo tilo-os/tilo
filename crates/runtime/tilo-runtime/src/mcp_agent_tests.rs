@@ -2996,3 +2996,5 @@ fn an_action_the_person_must_allow_answers_pending_with_the_ask() {
         assert!(text.contains("requires confirmation"), "{text}");
     });
 }
+#[path = "mcp_status_tests.rs"]
+mod status;

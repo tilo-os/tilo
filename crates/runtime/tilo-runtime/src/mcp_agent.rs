@@ -163,9 +163,9 @@ fn tools() -> Vec<Value> {
         ),
         (
             "tilo_status",
-            "How an invocation went (cancel: stop it, undo: take its run back).",
+            "How an invocation went, or with no id this session's (cancel: stop it, undo: take its run back).",
             json!({"invocation_id":string,"cancel":{"type":"boolean"},"undo":{"type":"boolean"}}),
-            json!(["invocation_id"]),
+            json!([]),
             json!({"readOnlyHint":false,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}),
         ),
     ]
@@ -2471,6 +2471,10 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         wait_ms: Option<u64>,
         structured: bool,
     ) -> Result<Reply, String> {
+        // Every call is an invocation of the session's own, named here when
+        // the caller named none, so `tilo_status` and a watch know it too.
+        let invocation =
+            Some(invocation.unwrap_or_else(|| tilo_actions::InvocationId::new().0.to_string()));
         let asked = invocation.clone();
         if let Some(id) = asked.as_deref() {
             self.watch_run_started(id, path);
