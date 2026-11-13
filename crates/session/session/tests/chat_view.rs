@@ -546,7 +546,8 @@ fn an_attachment_chip_dragged_out_of_the_transcript_places_its_resource_on_the_c
         session.shell_refusals()
     );
     // The video's strip stands where it was dropped, not at the origin: its canvas point is the
-    // map point under the pointer where the drag ended.
+    // map point under the pointer where the drag ended, on the framed canvas's grid (`frames_snap`,
+    // a frame's pitch), so one of its coordinates may snap to the grid's first line.
     let place_key = crate::common::places(&session)
         .into_iter()
         .find(|place| place.record == DROPPED)
@@ -555,7 +556,7 @@ fn an_attachment_chip_dragged_out_of_the_transcript_places_its_resource_on_the_c
     let strip =
         crate::common::strip_of(&session, place_key).expect("the video's place has a strip");
     assert!(
-        strip.canvas_x > 0 && strip.canvas_y > 0,
+        (strip.canvas_x, strip.canvas_y) != (0, 0),
         "the drop places the video at the point it was let go, not the origin: {strip:?}"
     );
     shot(&mut session, root.path(), "dragged-out.png");
