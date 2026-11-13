@@ -1787,12 +1787,23 @@ mod tests {
         let published = super::device_surfaces();
         let committed = tilolang_tilo::platform_apps::device_surfaces()
             .unwrap_or_else(|why| panic!("device-surface.json does not read: {why}"));
-        if committed != published {
-            let text = serde_json::to_string_pretty(&serde_json::json!({ "resources": published }))
-                .expect("a surface writes as JSON");
-            panic!(
-                "crates/session/session/device-surface.json is not what the session publishes; write:\n{text}"
-            );
+        if committed == published {
+            return;
         }
+        let text = serde_json::to_string_pretty(&serde_json::json!({ "resources": published }))
+            .expect("a surface writes as JSON");
+        // `UPDATE_SNAPSHOTS=1` writes the file the session publishes, as the session package's
+        // own snapshot test does: a resource whose verbs changed is regenerated in place rather
+        // than pasted from a failing run.
+        if std::env::var_os("UPDATE_SNAPSHOTS").is_some_and(|v| v == "1") {
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("device-surface.json");
+            std::fs::write(&path, &text).expect("device-surface.json is written");
+            return;
+        }
+        panic!(
+            "crates/session/session/device-surface.json is not what the session publishes; \
+             regenerate it with UPDATE_SNAPSHOTS=1 cargo nextest run -p tilo-session --lib \
+             device_surface, or write what it publishes:\n{text}"
+        );
     }
 }

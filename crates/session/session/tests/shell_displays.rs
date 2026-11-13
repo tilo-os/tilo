@@ -238,6 +238,65 @@ fn a_shell_on_a_scaled_display_draws_at_that_scale() {
     );
 }
 
+/// A fractional scale is a scale like any other: a display at 1.75 draws the shell's part at 1.75,
+/// its buffer the display's pixels (one and three quarters each way per logical point), and the
+/// part's logical rectangle the same logical size a 1 scale would give. A nested session on a
+/// desktop panel at 175% — a laptop panel of this size among them — reads that scale from its
+/// window and draws the same way.
+#[test]
+fn a_shell_on_a_fractional_scale_display_draws_at_that_scale() {
+    let _settled = ui::motion::testing::settled();
+    // The display's mode is its logical size times its scale, as `--size WxH --scale 1.75` names
+    // them: a 1600x1000 desktop at 1.75 is a 2800x1750 output.
+    let (logical_width, logical_height) = (1600, 1000);
+    let scale = 1.75;
+    let width = (f64::from(logical_width) * scale).round() as i32;
+    let height = (f64::from(logical_height) * scale).round() as i32;
+    let mut session = crate::common::headless_on(
+        &[OutputConfig::new("HEADLESS-1", width, height).with_scale(scale)],
+        options(),
+    );
+    until(&mut session, |session| !session.shell_parts().is_empty());
+    let part = session
+        .shell_parts()
+        .into_iter()
+        .find(|part| part.output == "HEADLESS-1")
+        .expect("the display's part");
+    assert!(
+        (part.scale - scale).abs() < f64::EPSILON,
+        "the part draws at 1.75, the display's scale: {part:?}"
+    );
+    // The part stands on the display's rectangle in the logical layout, which is its mode over its
+    // scale: the logical size the person asked for, not the physical pixels.
+    assert_eq!(
+        (part.rect.2, part.rect.3),
+        (
+            u32::try_from(logical_width).expect("width"),
+            u32::try_from(logical_height).expect("height"),
+        ),
+        "the part is the logical 1600x1000, not the 2800x1750 pixels: {part:?}"
+    );
+    // Its buffer is drawn at the display's pixels: one logical point is 1.75 buffer pixels, so the
+    // shell is as crisp as the panel rather than a 1600-wide picture stretched over 2800.
+    for _ in 0..120 {
+        session.settle_services();
+        session.step(Duration::from_millis(1)).unwrap();
+    }
+    session.compositor().render().unwrap();
+    let shot = session
+        .compositor()
+        .screenshot("HEADLESS-1")
+        .expect("a frame");
+    assert_eq!(
+        (shot.width, shot.height),
+        (
+            u32::try_from(width).expect("width"),
+            u32::try_from(height).expect("height"),
+        ),
+        "the frame is the display's 2800x1750 pixels"
+    );
+}
+
 /// The shell's bar sits at the top of the display at every scale: its band starts at the display's
 /// very top and covers the same logical height at 2 as at 1, rather than being a band drawn at one
 /// scale and stretched over twice the area (which puts its edge where the panel's pixels say not).

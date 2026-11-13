@@ -88,6 +88,9 @@ d-5kokd6gv = Windows
 d-pdaqdidq = Tray
     .doc = The running applications' tray items, in the order they registered.
 
+d-s7dh3s7h = Apps
+    .doc = The applications installed on this device: what the launcher lists and opens.
+
 d-n2fzxj5u = Styles
     .doc = The desk styles every installed package offers, as the session publishes them: each a view of the arrangement (`shell.md` §6), listed by its own words.
 
@@ -138,6 +141,28 @@ d-eihyiyeb = Reason
     .doc = Why the style does not load, in the runtime's words, when it does not; empty when it does.
 
 d-zxwtaxaw-filter-loads = Loads
+
+d-dkwmlyh7 = App
+    .doc = An application installed on this device, as the launcher lists it: its package id, its name in the person's language, the glyph it shows, and how it opens.
+    .noun = { $count ->
+        [one] app
+       *[other] apps
+    }
+
+d-wabxc4xe = Key
+    .doc = Its package id, which `open_app` names it by.
+
+d-dhizmikp = Name
+    .doc = Its name in the person's interface language.
+
+d-bkmyu6to = Icon
+    .doc = The glyph it shows, by the platform icon's kebab-case name.
+
+d-fxhx35ly = Category
+    .doc = Its category (`work`, `media`, `play`, `system`), empty when it named none.
+
+d-vebrnbn2 = Description
+    .doc = What it is for, in a few words; empty when it offers none.
 
 d-bynckgvt = Workspace
     .doc = A workspace on this device.
@@ -884,6 +909,9 @@ d-5yz5iwzs = Remove from the dock
 d-aitkuflo = Open item
     .doc = What a press on a dock item does, by the app the item stands for: a window of that app on this desk comes to the front, so the desk says which window the person is in and the top bar's commands are its own; the window is the one the item was drawn for, so a press never opens a second copy.
 
+d-5giytccr = Open first
+    .doc = Enter's work on a query: the first app the text finds opens, so typing "no" and pressing Enter opens Notes; a query that names no app is what search everywhere answers, as Enter has always done for what the desk's own rows do not hold.
+
 d-vjnksgzm = Seed waiting
     .doc = Two notices a sender left and the person has not seen: what the shell stages on a desk it shows before the person has caught up, so the bar's bell has something to count.
 
@@ -901,6 +929,15 @@ d-chvuqgur = A note place
 
 d-tnecawb6 = A foreign place
     .doc = A place of a kind this build has no record for: it stands as it is, which is what a place another shell made looks like (§2).
+
+d-mtt6d3af = Tab it here
+    .doc = Tab the place whose window's bar was dragged onto the strip `s` into that strip — how a person drags one window's bar onto another's to make its tabs, and the same arranging action the window's menu's "Move into … as a tab" runs.
+
+d-n2ez6yop = Rearrange
+    .doc = Rank the place `place` at `at` among its strip's tabs: what dragging a pill within the window's bar does, as the desk's own `move` with the place it goes before.
+
+d-d64rg4sw = Its own window
+    .doc = Give the place `place` a window of its own: what dragging a tab out of its window's bar does, as the desk's own `split-right` for the window in front.
 
 d-b3rfswle = Show place
     .doc = Shows the place `place` and brings its strip forward with it: what choosing a tab does, and the same arranging action a script or an agent runs.
@@ -1008,12 +1045,16 @@ d-lwt7iwsj = Dock tile
 
 d-dpqvjh2f = Launcher
     .w-search-apps-windows-actions-and-files = Search apps, windows, actions and files
+    .w-apps = Apps
+    .w-all-apps = All apps
     .w-windows = Windows
     .w-recent-windows = Recent windows
     .w-nothing-here-matches = Nothing here matches
     .w-search-everywhere-for-it = Search everywhere for it
     .w-open-as-a-tab = Open as a tab
     .w-search-everywhere-for = Search everywhere for { $query }
+
+d-7womqcp3 = App row
 
 d-tst43bqy = Window row
 
@@ -1208,6 +1249,9 @@ d-p5wzoqr5 = Window controls
     .w-restore = Restore
     .w-maximize = Maximize
     .w-close = Close
+
+d-6bfcv6wf = Window actions
+    .w-window-actions = Window actions
 
 d-z4vc77e6 = Place controls
     .w-pin-place = Pin place

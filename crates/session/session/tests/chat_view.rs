@@ -801,6 +801,14 @@ fn an_attachment_chip_dragged_out_of_the_transcript_places_its_resource_on_the_c
     const SHARED: &str = "I rewrote my window compositor in Rust and it changed EVERYTHING!!!";
     const DROPPED: &str = "tube.video:vid_rust_async";
     place(&mut session, "chat.workspace.channels:c_general");
+    // The Frames canvas snaps a place let go to the style's grid by default, so it lands on the
+    // cell nearest the pointer rather than exactly where it was let go (`snap_x`/`snap_y`,
+    // `canvas.tl`; `frames_snap`, the style's own setting). This test reads where the drop lands
+    // against the point it was let go at, so it turns the grid off — what the person's own
+    // "Snap places to a grid" toggle does — and the place then stands at that exact point.
+    session
+        .run_shell_setting("set_frames_snap", vec![serde_json::json!(false)])
+        .expect("the Frames grid turns off");
     common::until(&mut session, "the channel's page", |session| {
         session.shell_says(SHARED)
     });

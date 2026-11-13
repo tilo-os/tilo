@@ -422,21 +422,23 @@ const KEY_ARROW_RIGHT: u32 = 106;
 /// own content (a place's frame), never the bar naming the window in front.
 const BAR_FOOT: f64 = 40.0;
 
-/// The live run's failure: an agent opened Mail "beside" the conversation, and the pan to what it
-/// opened took the conversation out of the viewport — its top at y -544, its composer unreachable
-/// — so the person lost their chat. Opening something beside a place keeps that place in view: the
-/// camera moves so what arrived and the place it came from both stand on the screen, zooming out
-/// only as far as the two need.
+/// The live run's failure: an agent opened Mail "beside" the conversation and the camera zoomed
+/// everything into the viewport, so the conversation and every place were drawn as a narrow
+/// column. Opening something beside a place brings what opened into view by **panning**, never by
+/// zooming: the camera never changes the person's zoom, so every place keeps the size it was
+/// drawn at and reads at the size the person was reading it at (`shell.md` §3). What opened
+/// stands wholly in view; the conversation keeps its place and its size on the canvas, and when
+/// the two cannot both stand in the viewport at that zoom the person pans back to the rest.
 #[test]
-fn opening_beside_a_conversation_keeps_the_conversation_in_view() {
+fn opening_beside_a_conversation_opens_it_without_shrinking_the_conversation() {
     let _settled = ui::motion::testing::settled();
     let root = common::private_home();
     let mut session = common::seeded_session(root.path());
     let notes = note_ids(&session);
     assert!(notes.len() >= 2, "the seed keeps two notes: {notes:?}");
     // The conversation far down the canvas, past the viewport's foot: the place an agent opens
-    // beside it stands further still, so showing what arrived moves the camera — and must not
-    // take the conversation out of view doing it.
+    // beside it stands further still, so showing what arrived moves the camera — and the camera
+    // pans to it, never zooming the conversation into a narrow column to fit both.
     let conversation = place(&mut session, &notes[0], 0, 3000, 720, 520);
     let inbox = root_of(&session, ".Mail");
     let titled = common::window_name_of(&session, &notes[0]);
@@ -468,6 +470,16 @@ fn opening_beside_a_conversation_keeps_the_conversation_in_view() {
         conversation_in_view,
     );
     let _ = conversation;
+    // The conversation's width as it is drawn now: the size the person is reading it at. Opening
+    // a place beside it never shrinks it.
+    let conversation_width = on_canvas(&mut session, &titled)
+        .into_iter()
+        .map(|(_, _, w, _)| w)
+        .fold(0.0_f64, f64::max);
+    assert!(
+        conversation_width > 300.0,
+        "the conversation is drawn at its place's width: {conversation_width}"
+    );
 
     // Mail opened beside the conversation, as an agent does for "show me my mails".
     session
@@ -482,21 +494,22 @@ fn opening_beside_a_conversation_keeps_the_conversation_in_view() {
     until(&mut session, "mail beside the conversation", |session| {
         common::placed(session, &inbox) == 1
     });
-    // What arrived stands in view, and so does the conversation it came from.
+    // What arrived stands wholly in view: the camera panned to it.
     let mail_in_view = |session: &mut Session| {
         let mail = common::window_name_of(session, &inbox);
         on_canvas(session, &mail).into_iter().any(in_view)
     };
     until(&mut session, "mail's frame in view", mail_in_view);
+    // And the conversation keeps the size it was drawn at: the camera panned, it never zoomed the
+    // conversation into a narrow column to fit both on the screen.
+    let after = on_canvas(&mut session, &titled)
+        .into_iter()
+        .map(|(_, _, w, _)| w)
+        .fold(0.0_f64, f64::max);
     assert!(
-        conversation_in_view(&mut session),
-        "the conversation stays in view when what opened beside it is shown: {:?} and {:?} \
-         against the display",
-        on_canvas(&mut session, &titled),
-        {
-            let mail = common::window_name_of(&session, &inbox);
-            on_canvas(&mut session, &mail)
-        }
+        (after - conversation_width).abs() <= 1.0,
+        "the conversation is drawn at the width it was, {conversation_width}, never shrunk to fit \
+         what opened beside it: {after}"
     );
 }
 

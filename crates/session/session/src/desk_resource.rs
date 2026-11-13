@@ -38,6 +38,9 @@ pub(crate) struct DeskKey {
     not_responding: u64,
     /// The desk styles' revision: a package installed or taken away moves it (shell.md §6).
     styles: u64,
+    /// The app lists' generation: an app installed or taken away moves the launcher's list of
+    /// them. The lists' own worker reads them, so this is its latest reading's identity.
+    apps: usize,
 }
 
 /// The kind of the desk's resource: the origin kind a shell's type holds.
@@ -151,6 +154,20 @@ pub(crate) enum DeskEffect {
     CloseSurface {
         #[param("The surface")]
         surface: String,
+    },
+    /// Tell the person something, as an app's `notify` does.
+    /// It rises as a banner over the desk and waits in the centre until they dismiss it: the one
+    /// way a script, an agent or the REPL posts the same notice an app's `notify` does, so what
+    /// they say reaches the person the same way.
+    Notify {
+        #[param("What happened, in a short sentence")]
+        title: String,
+        #[param("What it says, under the title")]
+        body: Option<String>,
+        #[param("Who it is from: an app's name, or the agent's; empty for the session's own")]
+        from: Option<String>,
+        #[param("Its kind: `info`, `success`, `warning` or `error`")]
+        kind: Option<String>,
     },
     /// Clear the notification centre, which Undo puts back.
     ClearNotices,
@@ -735,6 +752,12 @@ impl Desk {
                 self.surfaces.overlays.here(),
             ),
             styles: self.styles.borrow().revision,
+            // The app lists' generation: the worker reads them again when the store moves and
+            // hands out a new one, so an install or a removal moves this — and, the generation
+            // being a rising count, never a freed reading's reused address.
+            apps: crate::app_icons::app_lists_snapshot().map_or(0, |(generation, _)| {
+                usize::try_from(generation).unwrap_or(usize::MAX)
+            }),
             agents: self.seats.revision(),
             revealed: self.surfaces.overlays.revealed(std::time::Instant::now()),
             // Which apps stopped answering is the compositor's, published through the handle beside
@@ -852,6 +875,23 @@ impl Desk {
             notices: notices(&self.notices),
             notice_actions: notice_actions(&self.notices),
             badges: self.signals.badges(),
+            apps: crate::app_icons::app_lists_snapshot()
+                .map(|(_, lists)| {
+                    lists
+                        .applications
+                        .iter()
+                        .map(|app| shell_part::AppReading {
+                            key: app.id.clone(),
+                            name: app.title.clone(),
+                            icon: ui::icons::app_glyph(&app.id, app.category.as_deref())
+                                .name()
+                                .to_owned(),
+                            category: app.category.clone().unwrap_or_default(),
+                            description: app.description.clone().unwrap_or_default(),
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
             people,
             tray: self.tray_items(),
             styles: self.styles.borrow().list.clone(),
@@ -1315,6 +1355,50 @@ pub(crate) fn desk_spec(label: String) -> ResourceSpec {
     resource
 }
 
+impl Desk {
+    /// The notification centre's effects: post a notice, clear the centre, run a notice's
+    /// action or dismiss one. `None` for any other effect.
+    fn notice_effect(&self, effect: &DeskEffect) -> Option<Result<Started, DoorError>> {
+        let id_of = |notice: &str| {
+            notice
+                .parse::<u64>()
+                .map_err(|_| DoorError::InvalidArguments(format!("`{notice}` is no notice's id")))
+        };
+        match effect {
+            DeskEffect::Notify {
+                title,
+                body,
+                from,
+                kind,
+            } => {
+                self.notices.post(notice(
+                    title,
+                    body.as_deref(),
+                    from.as_deref(),
+                    kind.as_deref(),
+                ));
+            }
+            DeskEffect::ClearNotices => {
+                self.notices.clear_all();
+            }
+            DeskEffect::ActOnNotice { notice, action } => match id_of(notice) {
+                Ok(id) => {
+                    self.notices.invoke_action(id, action);
+                }
+                Err(error) => return Some(Err(error)),
+            },
+            DeskEffect::DismissNotice { notice } => match id_of(notice) {
+                Ok(id) => {
+                    self.notices.dismiss_history(id);
+                }
+                Err(error) => return Some(Err(error)),
+            },
+            _ => return None,
+        }
+        Some(Ok(Started::Done(tilo_actions::ActionOutput::default())))
+    }
+}
+
 impl Service for Desk {
     fn resources(&self) -> Vec<ResourceSpec> {
         vec![desk_spec(self.person.clone())]
@@ -1349,6 +1433,9 @@ impl Service for Desk {
         if let Some(answer) = self.invitation(&effect) {
             return answer;
         }
+        if let Some(answer) = self.notice_effect(&effect) {
+            return answer;
+        }
         if let DeskEffect::ShowInvite { workspace } = &effect {
             return self.show_invite(workspace.as_deref());
         }
@@ -1368,10 +1455,6 @@ impl Service for Desk {
             self.surfaces.close(surface);
             return Ok(Started::Done(tilo_actions::ActionOutput::default()));
         }
-        if matches!(effect, DeskEffect::ClearNotices) {
-            self.notices.clear_all();
-            return Ok(Started::Done(tilo_actions::ActionOutput::default()));
-        }
         if let DeskEffect::WalkSwitcher { steps, scope } = &effect {
             self.walk_switcher(scope.as_deref(), steps.unwrap_or(1));
             return Ok(Started::Done(tilo_actions::ActionOutput::default()));
@@ -1382,20 +1465,6 @@ impl Service for Desk {
         }
         if matches!(effect, DeskEffect::CommitSwitcher) {
             self.commit_switcher();
-            return Ok(Started::Done(tilo_actions::ActionOutput::default()));
-        }
-        if let DeskEffect::ActOnNotice { notice, action } = &effect {
-            let id = notice.parse::<u64>().map_err(|_| {
-                DoorError::InvalidArguments(format!("`{notice}` is no notice's id"))
-            })?;
-            self.notices.invoke_action(id, action);
-            return Ok(Started::Done(tilo_actions::ActionOutput::default()));
-        }
-        if let DeskEffect::DismissNotice { notice } = &effect {
-            let id = notice.parse::<u64>().map_err(|_| {
-                DoorError::InvalidArguments(format!("`{notice}` is no notice's id"))
-            })?;
-            self.notices.dismiss_history(id);
             return Ok(Started::Done(tilo_actions::ActionOutput::default()));
         }
         let DeskEffect::SwitchWorkspace { workspace } = effect else {
@@ -1421,6 +1490,28 @@ impl Service for Desk {
             })
             .map_err(DoorError::Failed)?;
         Ok(Started::Done(tilo_actions::ActionOutput::default()))
+    }
+}
+
+/// The notice the desk's `notify` posts: its title and body, its kind as the centre's severity
+/// (`info` unless `warning` or `error`), and who it is from when that is named.
+fn notice(
+    title: &str,
+    body: Option<&str>,
+    from: Option<&str>,
+    kind: Option<&str>,
+) -> tilo_desktop_surface::notifications::Notification {
+    use tilo_desktop_surface::notifications::{Notification, NotificationSeverity};
+    let severity = match kind {
+        Some("warning") => NotificationSeverity::Warning,
+        Some("error") => NotificationSeverity::Error,
+        _ => NotificationSeverity::Info,
+    };
+    let notification = Notification::new(title.to_owned(), body.unwrap_or_default().to_owned())
+        .with_severity(severity);
+    match from.filter(|from| !from.is_empty()) {
+        Some(from) => notification.with_app_name(from),
+        None => notification,
     }
 }
 
