@@ -1,21 +1,14 @@
-//! A relay host on this machine's loopback, and device keys no other run shares.
+//! A relay host on this machine's loopback, and device keys no other run shares, so tests that let
+//! a session take part never reach the person's relays on the internet nor meet another run there.
+//! [`loopback`] is the relay such a test uses: one packet relay for the process on `127.0.0.1`.
+//! [`Host`] is a person's host governing one workspace, for the rest of a journey (an invitation,
+//! its address, the workspace it hosts). Both mint their keys fresh, because a key shared with a
+//! run beside it would make the two one Iroh node answering each other's dials, so [`signing_key`]
+//! mixes the run and the test into every key it hands out.
 //!
-//! A test that lets a session take part as somebody used to name the person's relays, which are
-//! number 0's out on the internet: every run of the test reached them, and two runs met there.
-//! [`loopback`] is the relay such a test uses instead — one packet relay for the process, on
-//! `127.0.0.1` — and [`Host`] is a person's host, governing one workspace, that a test needs the
-//! rest of the way (an invitation, its address, the workspace it hosts). Both mint their keys
-//! fresh: a key one run shared with another running beside it would make the two one Iroh node,
-//! each answering the other's dials, so [`signing_key`] mixes the run (and the test) into every
-//! key it hands out.
-//!
-//! A host runs on its own thread with its own runtime, so a test may start one from inside a
-//! runtime or beside one, and the relay's work keeps running beside the test's.
-//!
-//! Beside its packet relay, a relay out on the internet answers QUIC address discovery, which is
-//! how an endpoint learns where a relay sees it from and takes that relay as home. This crate
-//! serves that on this machine too, so a test's endpoints pick their relay at once instead of
-//! waiting out a probe that nothing answers.
+//! A host runs on its own thread with its own runtime, so a test may start one inside a runtime or
+//! beside one. The relay also answers QUIC address discovery, so a test's endpoints pick their
+//! relay at once instead of waiting out a probe nothing answers.
 
 #![allow(
     clippy::arithmetic_side_effects,
