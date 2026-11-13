@@ -6,6 +6,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use automerge::ReadDoc as _;
+use automerge::transaction::Transactable as _;
+use tilo_actions::Described;
 use tilo_automerge::ApplyIncoming as _;
 use tilolang_runtime::ids::{AppId, DocId};
 use tilolang_runtime::store::{ChangeSummary, FieldKey, ListingChange};
@@ -15,7 +17,7 @@ use super::{
     mirror_of, name_version_changes, note_derived, note_versions, record_splices, told_differently,
     write_as_a_known_actor,
 };
-use crate::action::DynEdit;
+use crate::action::{DynAction, DynEdit};
 use crate::chunk::{self, ChunkNo};
 use crate::index::derive::Reached;
 use crate::index::overlay::Overlay;
@@ -131,6 +133,36 @@ impl TiloStore {
         };
         let read = self.held().chunks.mirror(chunk).is_some();
         let moved = read && self.catch_up(chunk);
+        (out, moved)
+    }
+
+    /// Have the store write an action's writes as `author` (the record's holder) where they are
+    /// the only open writes of their chunk, so they become the action's change as written
+    /// ([`Self::written_as`]).
+    pub fn set_author(&self, author: &[u8]) {
+        self.changing().author = Some(automerge::ActorId::from(author));
+    }
+
+    /// Whether the store's open writes into chunk `chunk` are the action `part` by `author`
+    /// exactly: each of its edits in its order, written under `author` with the ids replaying it
+    /// mints, and nothing else open in the chunk. Then they are its change as replaying it writes
+    /// it, to commit as it stands ([`Self::commit_open`]), with what it did as history names it,
+    /// read before its first write.
+    #[must_use]
+    pub fn written_as(&self, chunk: ChunkNo, part: &DynAction, author: &[u8]) -> Option<Described> {
+        self.held().written_as(chunk, part, author)
+    }
+
+    /// Commit the open writes of chunk `chunk`, which [`Self::written_as`] found to be an
+    /// action's part, with `commit`: the action is written once. Its new change is derived as
+    /// [`Self::write_chunk`] derives one; also whether anything moved.
+    pub fn commit_open<R>(&self, chunk: ChunkNo, commit: impl FnOnce(&mut Doc) -> R) -> (R, bool) {
+        let out = {
+            let mut inner = self.mutate();
+            inner.stats.written_once = inner.stats.written_once.saturating_add(1);
+            commit(inner.chunks.open_held(chunk))
+        };
+        let moved = self.catch_up(chunk);
         (out, moved)
     }
 
@@ -275,6 +307,39 @@ struct Derived {
 }
 
 impl Inner {
+    /// Whether the open writes of chunk `chunk` are the action `part` by `author`, written as
+    /// replaying it writes ([`TiloStore::written_as`]); with what it did, read before its first
+    /// write. `None` when they are not.
+    fn written_as(&self, chunk: ChunkNo, part: &DynAction, author: &[u8]) -> Option<Described> {
+        let doc = self.chunks.mirror(chunk)?;
+        if doc.get_actor().to_bytes() != author || doc.pending_ops() == 0 {
+            return None;
+        }
+        let mut writes = self.local.iter().filter(|write| write.chunk == chunk);
+        let mut subject = None;
+        for (index, edit) in part.edits.iter().enumerate() {
+            let write = writes.next()?;
+            let same = !write.derived
+                && write.index == index
+                && write.edit.bare() == edit.bare()
+                && write.app.as_str() == written_under(edit, &part.app);
+            if !same {
+                return None;
+            }
+            subject = subject.or(write.subject.as_ref());
+        }
+        if writes.next().is_some() {
+            return None;
+        }
+        // The part's subject is read for the app the action is of, as replaying it reads it.
+        let subject = match subject {
+            Some((read, subject)) if read.as_str() == part.app => subject.clone(),
+            Some(_) => return None,
+            None => None,
+        };
+        Some(part.described_with(|_| subject))
+    }
+
     /// Take a copy of the record `doc` as the mirror of `chunk`, and tell every reader.
     fn copy_record(&mut self, chunk: ChunkNo, doc: &Doc) {
         self.chunks.insert(chunk, mirror_of(doc.clone()));
@@ -531,6 +596,24 @@ impl Inner {
             }
         }
         out
+    }
+}
+
+/// The app `edit` of an action of `app` is written under: the one it is addressed to, else the
+/// action's.
+fn written_under<'a>(mut edit: &'a DynEdit, mut app: &'a str) -> &'a str {
+    loop {
+        match edit {
+            DynEdit::In {
+                app: within,
+                edit: inner,
+            } => {
+                app = within;
+                edit = inner;
+            }
+            DynEdit::Chunk { edit: inner, .. } => edit = inner,
+            _ => return app,
+        }
     }
 }
 

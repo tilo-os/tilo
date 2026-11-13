@@ -126,9 +126,29 @@ impl Peer {
         if changes.is_empty() {
             return false;
         }
+        let held = self.doc.get_heads();
         self.doc
             .load_incoming_whole(&changes)
             .expect("a peer takes every change");
+        // The peer replays the action each change records and gets that change, to the byte.
+        let mut registry = ui::tilo_actions::ActionRegistry::new();
+        tilolang_tilo::history::register(&mut registry);
+        let arrived: Vec<_> = self
+            .doc
+            .get_changes(&held)
+            .iter()
+            .map(automerge::Change::hash)
+            .collect();
+        for change in arrived {
+            assert!(
+                matches!(
+                    ui::tilo_actions::verify_change(&mut self.doc, change, &registry),
+                    Ok(ui::tilo_actions::Verified::Reproduced
+                        | ui::tilo_actions::Verified::NothingRecorded)
+                ),
+                "the peer reproduces every change it takes"
+            );
+        }
         self.host.sync_from(&self.doc);
         self.host.wait_index();
         true
@@ -432,8 +452,14 @@ fn a_peer_sees_each_letter_and_one_undo_takes_the_burst_back_on_both() {
     let mut typed = String::new();
     for letter in "twenty characters in".chars() {
         typed.push(letter);
+        let written = store(&session).stats().written_once;
         session.window.type_text(&letter.to_string());
         session.settle();
+        assert_eq!(
+            store(&session).stats().written_once,
+            written + 1,
+            "the letter is written into the record once, as the change it makes"
+        );
         assert!(peer.take(&session), "the letter reached the peer");
         assert_eq!(
             peer.body().trim_end(),

@@ -73,7 +73,8 @@ use tilolang_runtime::store::{
 use tilolang_runtime::value::ResourceRef;
 
 use crate::action::{
-    Authorship, DynAction, DynEdit, RECORDS_KEY, apply_edits, outbox_entries, read_resource,
+    Authorship, DynAction, DynEdit, RECORDS_KEY, apply_edits, edit_seed, outbox_entries,
+    read_resource, read_subject, subject_of,
 };
 use crate::background::Waker;
 use crate::chunk::{self, ChunkNo, Chunks, Stamps};
@@ -195,6 +196,13 @@ struct LocalWrite {
     chunk: ChunkNo,
     edit: DynEdit,
     seed: Vec<u8>,
+    /// Its place among the store's writes into its chunk when it was written: the ids it mints
+    /// are drawn from it, as replaying its action draws them ([`crate::action::edit_seed`]).
+    index: usize,
+    /// For the first write of an action into its chunk that names a resource, that resource as
+    /// the chunk held it before the write, read for the action's app: what the action's history
+    /// entry is titled by ([`crate::action::read_subject`]).
+    subject: Option<(AppId, Option<crate::action::Subject>)>,
     touched: Vec<FieldKey>,
     /// The collection items it added, removed or moved, by each collection they joined or
     /// left.
@@ -306,6 +314,9 @@ pub struct StoreStats {
     pub incremental_syncs: u64,
     /// Syncs that had to copy the whole record: the mirror held a change of its own.
     pub full_syncs: u64,
+    /// Actions whose writes the store made became their change as written, with nothing
+    /// applied a second time ([`TiloStore::commit_open`]).
+    pub written_once: u64,
     /// Indexes built from the record whole, there being none to read (or none to trust).
     pub builds: u64,
     /// Indexes brought up to date from the heads they were stamped with.
@@ -411,6 +422,10 @@ struct Inner {
     /// Whether the store holds the record's chunks as their holder's one copy
     /// ([`TiloStore::adopt`]): the chunks above the record it has not read yet are among them.
     adopted: bool,
+    /// Who the record's holder writes as: an action's writes into a chunk with no other open
+    /// writes are made under this actor, so they are the change the holder commits for it
+    /// ([`TiloStore::commit_open`]).
+    author: Option<automerge::ActorId>,
     /// The chunks the store asked its source for and the source cannot give: they are not on
     /// this device yet, or the peer holding them is away. Each is asked for once and waited on:
     /// the sync that brings it reads it then ([`Inner::attach_document`]), and a window reads
@@ -766,6 +781,7 @@ impl TiloStore {
                 loader: None,
                 chunk_loader: None,
                 adopted: false,
+                author: None,
                 waited: BTreeSet::new(),
                 wake: None,
                 doc_reads: std::cell::Cell::default(),
@@ -1975,12 +1991,23 @@ impl Inner {
         // A run's manifest is written before what it places reads it: the next edit of the same
         // action sees the run the last one recorded.
         let manifest = matches!(edit.bare(), DynEdit::RunChunk { .. });
-        let applied = apply_edits(
-            self.chunks.open(chunk),
-            app,
-            std::slice::from_ref(&edit),
-            seed,
-        );
+        let mut held = self.local.iter().filter(|write| write.chunk == chunk);
+        let index = held.clone().count();
+        let named = held.any(|write| subject_of(write.edit.bare()));
+        let doc = self.chunks.open(chunk);
+        // An action's first write into a chunk that holds no other open writes writes as the
+        // record's holder, who commits it as the action's change.
+        if !derived
+            && index == 0
+            && doc.pending_ops() == 0
+            && let Some(author) = self.author.as_ref()
+            && doc.get_actor() != author
+        {
+            doc.set_actor(author.clone());
+        }
+        let subject = (!derived && !named && subject_of(edit.bare()))
+            .then(|| (AppId::from(app), read_subject(app, edit.bare(), doc)));
+        let applied = apply_edits(doc, app, std::slice::from_ref(&edit), &edit_seed(index));
         if manifest {
             self.chunks.reread_placement();
         }
@@ -1989,6 +2016,8 @@ impl Inner {
             chunk,
             edit,
             seed: seed.to_vec(),
+            index,
+            subject,
             touched: touched.to_vec(),
             items,
             placed,

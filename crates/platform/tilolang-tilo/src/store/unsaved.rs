@@ -26,7 +26,7 @@ use automerge::ChangeHash;
 use tilolang_runtime::ids::{AppId, DocId, TypeId};
 use tilolang_runtime::store::{ChangeNote, ChangeSummary, FieldKey, ListingChange, Version};
 
-use crate::action::{DynEdit, Made, apply_edits};
+use crate::action::{DynEdit, Made, apply_edits, edit_seed};
 use crate::chunk::{ChunkNo, Chunks, Stamps};
 use crate::index as idx;
 use crate::index::derive::Derive;
@@ -315,7 +315,7 @@ impl Inner {
                     mirror,
                     &write.app,
                     std::slice::from_ref(&write.edit),
-                    &write.seed,
+                    &edit_seed(write.index),
                 ) {
                     tracing::error!(app = %write.app, %error, "a pending write did not apply again");
                 }
@@ -396,7 +396,7 @@ impl Inner {
                     mirror,
                     &write.app,
                     std::slice::from_ref(&write.edit),
-                    &write.seed,
+                    &edit_seed(write.index),
                 ) {
                     tracing::error!(app = %write.app, %error, "a write did not apply again");
                 }

@@ -1392,18 +1392,45 @@ pub fn outbox_entries(doc: &Doc, app: &str, id: &str) -> Vec<StoredEntry> {
         .collect()
 }
 
+/// The seed the `index`th edit an action writes into one chunk mints ids from: known before the
+/// action is whole, so the store that writes an action edit by edit writes what replaying the
+/// action writes ([`tilo_actions::commit_written`]).
+#[must_use]
+pub fn edit_seed(index: usize) -> [u8; 8] {
+    u64::try_from(index).unwrap_or(u64::MAX).to_le_bytes()
+}
+
+/// The resource an action writes first, as the record read before the action wrote it: its
+/// published id, its type, and its title ([`DynAction::subject`]).
+pub type Subject = (String, &'static crate::schema::TypeSchema, Option<String>);
+
 impl Action for DynAction {
     fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
-        let payload =
-            serde_json::to_vec(self).map_err(|error| ActionError::Refused(error.to_string()))?;
         // The package that wrote this action, installed: its record's type resolves by that
         // package version, whatever other version of the app the thread loaded last (a receiver
         // replaying a peer's action, two versions in one process).
         let _package = self.package_schemas();
-        apply_edits(doc, &self.app, &self.edits, &payload)
+        for (index, edit) in self.edits.iter().enumerate() {
+            apply_edits(
+                doc,
+                &self.app,
+                std::slice::from_ref(edit),
+                &edit_seed(index),
+            )?;
+        }
+        Ok(())
     }
 
     fn describe(&self, doc: &Doc) -> Option<Described> {
+        Some(self.described_with(|edit| read_subject(&self.app, edit, doc)))
+    }
+}
+
+impl DynAction {
+    /// What the action did, as history names it, with `read` reading the subject of an edit of a
+    /// resource the record held before the action ([`read_subject`]).
+    #[must_use]
+    pub fn described_with(&self, read: impl FnOnce(&DynEdit) -> Option<Subject>) -> Described {
         let _package = self.package_schemas();
         let args = self
             .args
@@ -1420,28 +1447,23 @@ impl Action for DynAction {
         // History names the resource as it reads, by its title and never by its id: the item
         // the action wrote (a note of the notebook), else the record; one without a title yet
         // by what its type says it is called then ("Created Notebook", "Pin: Untitled").
-        let Some((at, schema, title)) = self.subject(doc) else {
-            return Some(described);
+        let Some((at, schema, title)) = self.subject(read) else {
+            return described;
         };
-        Some(described.on(at, title.unwrap_or_else(|| schema.untitled())))
+        described.on(at, title.unwrap_or_else(|| schema.untitled()))
     }
-}
 
-impl DynAction {
-    /// The resource this action writes first, as the record reads before it applies: its
-    /// published id (an item of a record by its path), its type, and its title, the first text
-    /// among its own fields. A resource the action creates is read from the record it creates.
-    fn subject(
-        &self,
-        doc: &Doc,
-    ) -> Option<(String, &'static crate::schema::TypeSchema, Option<String>)> {
+    /// The resource this action writes first: its published id (an item of a record by its
+    /// path), its type, and its title, the first text among its own fields. A resource the
+    /// action creates is read from the record it creates; any other `read` reads.
+    fn subject(&self, read: impl FnOnce(&DynEdit) -> Option<Subject>) -> Option<Subject> {
         // What it describes is what it wrote of a resource, not the run entry it records first.
         let edit = self
             .edits
             .iter()
             .map(DynEdit::bare)
-            .find(|edit| !matches!(edit, DynEdit::RunChunk { .. }))?;
-        let (id, path) = match edit {
+            .find(|edit| subject_of(edit))?;
+        match edit {
             DynEdit::Create { id, record } => {
                 let schema = record
                     .get(crate::schema::TYPE_KEY)
@@ -1451,7 +1473,7 @@ impl DynAction {
                     self.written_text(id, None, field)
                         .or_else(|| record.get(field).and_then(Json::as_str).map(str::to_owned))
                 });
-                return Some((id.clone(), schema, title));
+                Some((id.clone(), schema, title))
             }
             DynEdit::Insert {
                 id, item, record, ..
@@ -1464,8 +1486,27 @@ impl DynAction {
                     self.written_text(id, Some(item), field)
                         .or_else(|| record.get(field).and_then(Json::as_str).map(str::to_owned))
                 });
-                return Some((format!("{id}/{item}"), schema, title));
+                Some((format!("{id}/{item}"), schema, title))
             }
+            edit => read(edit),
+        }
+    }
+}
+
+/// Whether `edit` (bare) is what an action that writes it first is described by: anything but
+/// the run entry it records first.
+#[must_use]
+pub fn subject_of(edit: &DynEdit) -> bool {
+    !matches!(edit, DynEdit::RunChunk { .. })
+}
+
+/// The resource the bare `edit` of an action of `app` writes, as `doc` holds it before the edit:
+/// its published id, its type, and its title. `None` for an edit that makes its resource (the
+/// action's own edits say what it is) or names none.
+#[must_use]
+pub fn read_subject(app: &str, edit: &DynEdit, doc: &Doc) -> Option<Subject> {
+    {
+        let (id, path) = match edit {
             DynEdit::Edit { id, edit } => {
                 // The last item the path goes down to.
                 let item = edit.path().iter().rev().find_map(|segment| match segment {
@@ -1482,9 +1523,13 @@ impl DynAction {
             | DynEdit::OutboxMark { id, .. }
             | DynEdit::Migrated { id, .. }
             | DynEdit::TriggerRan { id, .. } => (id, None),
-            DynEdit::In { .. } | DynEdit::Chunk { .. } | DynEdit::RunChunk { .. } => return None,
+            DynEdit::Create { .. }
+            | DynEdit::Insert { .. }
+            | DynEdit::In { .. }
+            | DynEdit::Chunk { .. }
+            | DynEdit::RunChunk { .. } => return None,
         };
-        let root = crate::reads::resource_obj(doc, &self.app, id)?;
+        let root = crate::reads::resource_obj(doc, app, id)?;
         let root_ty = crate::reads::type_at(doc, &root)?;
         let at = tilolang_runtime::value::ResourceRef {
             doc: id.clone(),
@@ -1494,7 +1539,7 @@ impl DynAction {
         let located = crate::reads::locate_ref(
             doc,
             None,
-            (&AppId::from(self.app.as_str()), &root_ty),
+            (&AppId::from(app), &root_ty),
             &at,
             &crate::items::Nested::default(),
         )

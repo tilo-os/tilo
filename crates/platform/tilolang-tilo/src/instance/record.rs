@@ -526,15 +526,22 @@ impl InstanceRecord {
                 return;
             }
             if let Some(host) = instance.host() {
-                self.chunks = Docs::Store(host.store().clone());
+                self.held_by(host.store());
             }
             return;
         }
         instance.sync_held(moved);
         // A host started over on a new build took the chunks over from the last one.
         if let Some(host) = instance.host() {
-            self.chunks = Docs::Store(host.store().clone());
+            self.held_by(host.store());
         }
+    }
+
+    /// Read and write the chunks through `store` from here on, which writes as the person at
+    /// the window: what they do there is written once, as the change it makes.
+    fn held_by(&mut self, store: &crate::store::TiloStore) {
+        store.set_author(self.person.as_bytes());
+        self.chunks = Docs::Store(store.clone());
     }
 
     /// Have `host`'s store hold the record's chunks from here on, the one copy of each, which
@@ -543,7 +550,7 @@ impl InstanceRecord {
     pub fn hold_in(&mut self, host: &crate::host::Host) {
         if let Docs::Own(chunks) = &mut self.chunks {
             host.adopt(std::mem::take(chunks));
-            self.chunks = Docs::Store(host.store().clone());
+            self.held_by(host.store());
         }
     }
 
@@ -664,17 +671,21 @@ impl InstanceRecord {
     /// (a write into a run that begins there, before that chunk arrives), with the writer that
     /// keeps it on disk like the record's own.
     fn write_chunk<R>(&mut self, chunk: ChunkNo, write: impl FnOnce(&mut Doc) -> R) -> R {
+        self.keep_on_disk(chunk);
+        let (out, moved) = self.chunks.write_chunk(chunk, write);
+        self.moved |= moved;
+        out
+    }
+
+    /// Start the on-disk copy of chunk `chunk`, before it is written: a chunk this replica
+    /// writes to keeps its own copy, so the change goes to disk with the record's own.
+    fn keep_on_disk(&mut self, chunk: ChunkNo) {
         let Self { writers, route, .. } = self;
         if let Some(writers) = writers.as_mut()
             && !writers.chunks.contains_key(&chunk)
         {
-            // A chunk this replica writes to keeps its own copy: it is started before the doc
-            // is written, so the change goes to disk with the record's own.
             let _ = writers.start(route, chunk);
         }
-        let (out, moved) = self.chunks.write_chunk(chunk, write);
-        self.moved |= moved;
-        out
     }
 
     /// The heads chunk `chunk` holds: none when this replica holds no such chunk.
@@ -1063,7 +1074,7 @@ impl InstanceRecord {
             .unwrap_or_default();
         let context = ActionContext::for_resource(resource, kind, kind)
             .with_source_invocation(Some(invocation));
-        self.apply_on(chunk, &action, encoded, context, invoker, ambient)?;
+        self.apply_on(chunk, (&action, None), encoded, context, invoker, ambient)?;
         let words = &self.words;
         self.chunks.read(|chunks| {
             let Some(doc) = chunks.held(chunk) else {
@@ -1468,7 +1479,7 @@ impl InstanceRecord {
                 .map_err(|error| RecordError::Refused(error.to_string()))?;
             match self.apply_on(
                 chunk,
-                &part,
+                (&part, Some(&part)),
                 encoded,
                 context.clone(),
                 invoker.clone(),
@@ -1531,10 +1542,14 @@ impl InstanceRecord {
     /// ([`collaboration::app_surface::refusal`]): a change the workspace refuses is taken out of
     /// the chunk again, with all of it, so it is never kept here, built on and written to disk
     /// while the workspace holds none of it.
+    ///
+    /// `part`, when `action` is the part of a tilolang action the instance's store wrote, is
+    /// committed as the store wrote it when that is how replaying it writes it
+    /// ([`crate::store::TiloStore::written_as`]), rather than written a second time.
     fn apply_on(
         &mut self,
         chunk: ChunkNo,
-        action: &dyn tilo_actions::Action,
+        (action, part): (&dyn tilo_actions::Action, Option<&DynAction>),
         encoded: EncodedAction,
         mut context: ActionContext,
         invoker: ActionInvoker,
@@ -1548,32 +1563,53 @@ impl InstanceRecord {
         let workspace = self.route.cluster_id.to_string();
         let app = self.route.app_id.clone();
         let record_id = self.chunk_record(chunk);
-        let (before, refused) = self.write_chunk(chunk, |doc| {
-            let before = doc.committed_heads();
-            tilo_actions::apply_local_with_context(
-                doc,
-                action,
-                encoded,
-                Some(author.as_bytes()),
-                context,
-            )
-            .map_err(|error| RecordError::Refused(error.to_string()))?;
-            // The change is a step of whoever made it, by the invoker its entry names: their
-            // Undo takes it back.
-            doc.commit();
-            let record = collab_types::Record {
-                workspace: &workspace,
-                app: &app,
-                record: &record_id,
-            };
-            let Some(why) = refusal_of(&record, doc, &before) else {
-                return Ok((before, None));
-            };
-            fork_back(doc, &before).map_err(|error| {
-                RecordError::Refused(format!("{why}; and it could not be taken out: {error}"))
-            })?;
-            Ok((before, Some(why)))
-        })?;
+        let record = collab_types::Record {
+            workspace: &workspace,
+            app: &app,
+            record: &record_id,
+        };
+        self.keep_on_disk(chunk);
+        // What the store wrote of the action is its change when it wrote it as the author, and
+        // as replaying the action writes it: committed as it stands, never written twice.
+        let written = match (&self.chunks, part) {
+            (Docs::Store(store), Some(part)) => store
+                .written_as(chunk, part, author.as_bytes())
+                .map(|described| (store.clone(), part, described)),
+            _ => None,
+        };
+        let (before, refused) = if let Some((store, part, described)) = written {
+            let (out, moved) = store.commit_open(chunk, |doc| {
+                let before = doc.committed_heads();
+                tilo_actions::commit_written(
+                    doc,
+                    part,
+                    encoded,
+                    author.as_bytes(),
+                    context,
+                    Some(described),
+                )
+                .map_err(|error| RecordError::Refused(error.to_string()))?;
+                kept_or_refused(&record, doc, before)
+            });
+            self.moved |= moved;
+            out?
+        } else {
+            self.write_chunk(chunk, |doc| {
+                let before = doc.committed_heads();
+                tilo_actions::apply_local_with_context(
+                    doc,
+                    action,
+                    encoded,
+                    Some(author.as_bytes()),
+                    context,
+                )
+                .map_err(|error| RecordError::Refused(error.to_string()))?;
+                // The change is a step of whoever made it, by the invoker its entry names: their
+                // Undo takes it back.
+                doc.commit();
+                kept_or_refused(&record, doc, before)
+            })?
+        };
         if let Some(why) = refused {
             tracing::warn!(%app, chunk, %why, "workspace: a change the workspace refuses was not kept");
             return Err(RecordError::Refused(format!(
@@ -1785,8 +1821,6 @@ impl InstanceRecord {
     }
 }
 
-/// The route chunk `chunk` of the record on `route` travels on: `route` itself for [`FIRST`], the
-/// chunk's record's above it ([`chunk::record_id`]).
 /// Why the workspace refuses what `doc`, the chunk `record`, holds past `before`, when it does.
 fn refusal_of(
     record: &collab_types::Record<'_>,
@@ -1812,6 +1846,24 @@ fn fork_back(doc: &mut Doc, before: &[ChangeHash]) -> Result<(), automerge::Auto
     Ok(())
 }
 
+/// What `doc`, the chunk `record`, holds past `before` once an action wrote it: kept, with the
+/// heads before it, or taken out again, with why the workspace refuses it.
+fn kept_or_refused(
+    record: &collab_types::Record<'_>,
+    doc: &mut Doc,
+    before: Vec<ChangeHash>,
+) -> Result<(Vec<ChangeHash>, Option<String>), RecordError> {
+    let Some(why) = refusal_of(record, doc, &before) else {
+        return Ok((before, None));
+    };
+    fork_back(doc, &before).map_err(|error| {
+        RecordError::Refused(format!("{why}; and it could not be taken out: {error}"))
+    })?;
+    Ok((before, Some(why)))
+}
+
+/// The route chunk `chunk` of the record on `route` travels on: `route` itself for [`FIRST`], the
+/// chunk's record's above it ([`chunk::record_id`]).
 fn chunk_route(route: &RouteSpec, chunk: ChunkNo) -> RouteSpec {
     if chunk == FIRST {
         return route.clone();
