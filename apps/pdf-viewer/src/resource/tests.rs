@@ -8,26 +8,36 @@ use ui::tilo_resource::Effect;
 fn duplicating_a_rotated_page_keeps_its_orientation_and_source() {
     use ui::tilo_resource::Replica;
 
-    for rotation in [90, 180, 270] {
+    // The degrees asked for, and the orientation the page then has: a turn
+    // is kept within one revolution, whichever way and however far it goes.
+    for (degrees, rotation) in [
+        (0, 0),
+        (90, 90),
+        (180, 180),
+        (270, 270),
+        (360, 0),
+        (450, 90),
+        (-90, 270),
+    ] {
         let mut replica = Replica::<PdfMarkup>::load(&PdfMarkup::planned(2)).expect("record");
         replica
-            .apply(crate::actions::rotate_page_action("source-1", rotation))
-            .expect("rotate original");
+            .apply(crate::actions::rotate_page_action("source-1", degrees))
+            .unwrap_or_else(|error| panic!("rotate original by {degrees}: {error:?}"));
         replica
             .apply(
                 PdfMarkup::DUPLICATE_PAGE.with((Id::from_raw("source-1"), Some("copy".to_owned()))),
             )
-            .expect("duplicate rotated page");
+            .unwrap_or_else(|error| panic!("duplicate the page turned by {degrees}: {error:?}"));
         let state = replica.state().expect("state");
         let original = state
             .pages
             .get(&Id::from_raw("source-1"))
             .expect("original");
         let copy = state.pages.get(&Id::from_raw("copy")).expect("copy");
-        assert_eq!(copy.rotation, rotation);
-        assert_eq!(copy, original);
+        assert_eq!(copy.rotation, rotation, "turned by {degrees}");
+        assert_eq!(copy, original, "turned by {degrees}");
         let ids: Vec<_> = state.pages.iter().map(|(id, _)| id.as_str()).collect();
-        assert_eq!(ids, ["source-1", "copy", "source-2"]);
+        assert_eq!(ids, ["source-1", "copy", "source-2"], "turned by {degrees}");
     }
 }
 
@@ -174,17 +184,36 @@ fn older_markup_keeps_its_annotations_and_leaves_old_threads_behind() {
 
 #[test]
 fn a_relative_path_is_refused_for_every_path_action() {
-    for id in ["open-pdf", "save-as"] {
+    // Every effect that takes a path, by every way a path is relative.
+    let relative = [
+        "notes.pdf",
+        "./notes.pdf",
+        "../notes.pdf",
+        "~/notes.pdf",
+        "",
+    ];
+    let absolute = std::env::temp_dir().join("notes.pdf");
+    let absolute = absolute.to_str().expect("a UTF-8 temporary directory");
+    for id in ["open-pdf", "save-as", "insert-pages"] {
+        for path in relative {
+            let mut arguments = serde_json::Map::new();
+            arguments.insert("path".into(), path.into());
+            let Err(error) = PdfEffect::decode(id, &arguments) else {
+                panic!("{id} takes the relative {path:?}");
+            };
+            assert!(
+                matches!(
+                    &error,
+                    ui::tilo_resource::EffectDecodeError::Argument { name, source }
+                        if name == "path" && source.to_string().contains("absolute")
+                ),
+                "{id} with {path:?}: {error}"
+            );
+        }
         let mut arguments = serde_json::Map::new();
-        arguments.insert("path".into(), "notes.pdf".into());
-        let error = PdfEffect::decode(id, &arguments).expect_err(id);
-        assert!(
-            matches!(
-                &error,
-                ui::tilo_resource::EffectDecodeError::Argument { name, source }
-                    if name == "path" && source.to_string().contains("absolute")
-            ),
-            "{id}: {error}"
-        );
+        arguments.insert("path".into(), absolute.into());
+        if let Err(error) = PdfEffect::decode(id, &arguments) {
+            panic!("{id} refuses the absolute {absolute:?}: {error}");
+        }
     }
 }
