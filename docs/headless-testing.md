@@ -1,15 +1,15 @@
 # Headless testing: captures, control, and a desktop with no display
 
-This guide covers testing Tilo **without opening a window**: a session on the offscreen backend, the control socket that drives it, the Python harnesses that put the tree's own apps on its desk, and the ways to measure what the frame loop does. Every command below writes PNG and JSON to disk; nothing needs a display server attached to your terminal.
+This guide covers testing Tilo **without opening a window**: a session on the offscreen backend, the control socket that drives it, the Python harnesses that put the tree's own apps in it, and the ways to measure what the frame loop does. Every command below writes PNG and JSON to disk; nothing needs a display server attached to your terminal.
 
 Four layers, each useful on its own:
 
 1. **`tilo-session --backend headless`** — the real session binary, painting into an off-screen texture instead of a display, publishing the same sockets and files a login session does.
-2. **`tilo-control` / `TILO_TEST_CONTROL`** — JSON over a unix socket: click, drag, type, invoke an action, snapshot, read the desk.
+2. **`tilo-control` / `TILO_TEST_CONTROL`** — JSON over a unix socket: click, drag, type, invoke an action, snapshot, read the layout.
 3. **`scripts/headless-examples/`** — short Python harnesses that spawn a session, drive it and put it down.
 4. **`tilo-app dev` and `scripts/agent-loop/session.py`** — an app rebuilt on every source change, in a session of its own.
 
-The session binary is `tilo-session` (`crates/session/session`, bin `tilo-session`). There is no `shell` crate: its desktop is the session's, its scenarios are `crates/session/session/tests/`, and what it published for the login is now published by the compositor and the session.
+The session binary is `tilo-session` (`crates/session/session`); its scenarios are `crates/session/session/tests/`.
 
 ## What a session publishes
 
@@ -133,7 +133,7 @@ qc type "hello"                              # one press+release per character
 qc modifiers ctrl,shift                      # comma-separated set; empty clears all
 qc snapshot /tmp/state.png                   # PNG to disk
 qc windows                                   # open windows: workspace/strip, group, tab, app
-qc state-dump --pretty                       # the live desk + chrome as JSON, without history
+qc state-dump --pretty                       # the live layout + chrome as JSON, without history
 qc state-dump --history                      # … with effect receipts and audit trails
 qc watch on                                  # stream frames, for a headless session drawing nothing
 qc raw '{"op":"list_targets"}'               # escape hatch for unwrapped commands
@@ -177,7 +177,7 @@ echo '{"op":"pinch","fingers":2,"scale":1.25}' | nc -U "$TILO_TEST_CONTROL"
 # Capture a PNG of the current state:
 echo '{"op":"snapshot","path":"/tmp/state.png"}' | nc -U "$TILO_TEST_CONTROL"
 
-# The live desk + chrome as JSON. A workspace's append-only history (effect
+# The live layout + chrome as JSON. A workspace's append-only history (effect
 # receipts, task audit trails) is left out; add "include_history":true to get
 # it. `peers` is who is here: this session's own row, and one row per
 # workspace it takes part in with everyone present there, as the roster every
@@ -210,17 +210,12 @@ echo '{"op":"record_read","app":"notes","records":["notebook"]}' | nc -U "$TILO_
 # The compositor's own memory report (see "Idle memory"):
 echo '{"op":"process_memory"}' | nc -U "$TILO_TEST_CONTROL"
 
-# Mint the throwaway identity a development login opens its desk with:
+# Mint the throwaway identity a development login opens its layout with:
 echo '{"op":"provision_test_identity"}' | nc -U "$TILO_TEST_CONTROL"
 ```
 
-The full set is [`Op::ALL`] in `crates/session/session/src/test_control.rs`, where the `Op` enum and its comments are the source of truth:
-`actions_cancel`, `actions_enumerate`, `actions_invoke`, `actions_status`,
-`click_at`, `click_named`, `drag`, `key`, `key_down`, `key_up`, `list_targets`,
-`modifiers`, `pinch`, `pointer_button`, `pointer_move`, `process_memory`,
-`profile_start`, `profile_status`, `profile_stop`, `provision_test_identity`,
-`record_read`, `scroll`, `search_rows`, `snapshot`, `state_dump`, `swipe`,
-`type`, `unlock`, `watch`, `windows`.
+The full set is `Op::ALL` in `crates/session/session/src/test_control.rs`, where the
+`Op` enum and its comments are the source of truth.
 
 ### Response shapes
 
@@ -275,7 +270,7 @@ Read the ids the app publishes (`apps/tl/<app>/app.ids`) rather than its words; 
 - `first-frame.py`, `startup-frame-timeline.py` — what a session's first frame costs
 - `session-e2e.py`, `canvas-e2e.py`, `tilolang-e2e.py`, `files-clipboard-e2e.py`, `agent-chat-e2e.py` — whole flows, each on a session of its own
 - `agent-seats-proof.py`, `session-lock-proof.py` — the proofs `tools/ci/session-proofs.sh` runs
-- `notes-persist-proof.py`, `notes-caret-proof.py`, `desk-restore-proof.py`, `audio-absent-proof.py` — proofs that need the tree's apps built
+- `notes-persist-proof.py`, `notes-caret-proof.py`, `desk-restore-proof.py`, `audio-absent-proof.py` — proofs that need the tree's apps built (the restore proof checks that a session comes back to the layout it had)
 
 `scripts/headless-examples/README.md` says what each proof asserts.
 
@@ -292,11 +287,11 @@ Titles are display text, not identities. Two results can both say "Open Calculat
 
 Inspect `kind`, `subtitle` and the `(provider, id)` pair before choosing, keep the pair, and pass both to `actions invoke`; never substitute the first same-named result when the intended app is absent. `score` ranks results but does not establish identity.
 
-After launch, enumerate again and inspect the app actions' `application`, `resource`, `operation`, `params` and `contract` fields. Invoke the returned pair with its declared arguments, adding `--wait` so the answer is the result and not the admission. To follow a pending receipt, use `actions status ID --wait`, never a sleep-and-retry loop. Then read back the affected resource or the desk's state to verify the effect. A descriptor alone does not prove execution, and a visible tile alone does not prove the app has rendered. A packaged app is up when a process of it runs from the session's store — `/var/tilo-apps/<application id>/`, the only place its binary sits inside the sandbox — and the desk holds its window (`windows`); what it draws is proved by a control it offers (`list-targets`) pressed, and what that changes. `real_apps.Session.answering` waits for the first two and leaves the last to the check.
+After launch, enumerate again and inspect the app actions' `application`, `resource`, `operation`, `params` and `contract` fields. Invoke the returned pair with its declared arguments, adding `--wait` so the answer is the result and not the admission. To follow a pending receipt, use `actions status ID --wait`, never a sleep-and-retry loop. Then read back the affected resource or the session's state to verify the effect. A descriptor alone does not prove execution, and a visible tile alone does not prove the app has rendered. A packaged app is up when a process of it runs from the session's store — `/var/tilo-apps/<application id>/`, the only place its binary sits inside the sandbox — and the session holds its window (`windows`); what it draws is proved by a control it offers (`list-targets`) pressed, and what that changes. `real_apps.Session.answering` waits for the first two and leaves the last to the check.
 
 ## A session with the tree's own apps
 
-The recipes above start the session alone: it lists no applications, so a click on Notes in the desk finds nothing to start. Showing a real app's window with real content needs a session that has the apps *installed* and starts them through `tilo-launcher` and its sandbox, as an image does. One harness does that, `scripts/headless-examples/real_apps.py`; the checks that drive apps (`tilolang-e2e.py`, `canvas-e2e.py`) are built on it.
+The recipes above start the session alone: it lists no applications, so a click on Notes finds nothing to start. Showing a real app's window with real content needs a session that has the apps *installed* and starts them through `tilo-launcher` and its sandbox, as an image does. One harness does that, `scripts/headless-examples/real_apps.py`; the checks that drive apps (`tilolang-e2e.py`, `canvas-e2e.py`) are built on it.
 
 ```bash
 # Once per tree: the session's programs, the apps, and the runtime they link.
@@ -311,7 +306,7 @@ python3 scripts/headless-examples/real_apps.py --start --open file-explorer --op
 
 The build takes the app list from `TILO_NESTED_APPS`. Through a remote-exec prefix, pass it in the program's own environment — `<prefix> env TILO_NESTED_APPS="notes …" dist/dev/nested-session-build.sh`, which is what the harness does — because a builder runs with its environment, not this machine's.
 
-`--start` starts `dist/dev/nested-session.sh` headless on lavapipe alone (`--software`: it never opens this machine's GPU) on a private runtime directory and a throwaway identity. The session also starts its own surfaces — the lock screen, the quick settings panel and the on-screen keyboard, beside its executable — and its own sound server: `pipewire`, `pipewire-pulse`, `wireplumber` and `pw-cli` must be on `PATH`, and it refuses to start without them rather than start as half a desktop. That sound is the session's own: its WirePlumber runs without the audio and Bluetooth monitors, so the only output is the session's null sink and the machine's cards and Bluetooth stay the host's. The apps it installs are `--apps` (default: Notes, Files, Chat, Settings, Terminal), signed with the session's own key and installed through `tilo-install` into the session's store — the same path the image's `/usr/share/tilo-apps` is built through. `--open APP` launches it through the desktop's own launcher (`applications so.tilo.<app>`) and waits until a process of it runs from the session's store with its window on the desk; `--shot` writes a PNG of the whole desktop. `--keep` leaves the session running and prints its ready JSON — the control socket, the runtime directory and the state directory — so `tilo-control` drives it from anywhere:
+`--start` starts `dist/dev/nested-session.sh` headless on lavapipe alone (`--software`: it never opens this machine's GPU) on a private runtime directory and a throwaway identity. The session also starts its own surfaces — the lock screen, the quick settings panel and the on-screen keyboard, beside its executable — and its own sound server: `pipewire`, `pipewire-pulse`, `wireplumber` and `pw-cli` must be on `PATH`, and it refuses to start without them rather than start as half a desktop. That sound is the session's own: its WirePlumber runs without the audio and Bluetooth monitors, so the only output is the session's null sink and the machine's cards and Bluetooth stay the host's. The apps it installs are `--apps` (default: Notes, Files, Chat, Settings, Terminal), signed with the session's own key and installed through `tilo-install` into the session's store — the same path the image's `/usr/share/tilo-apps` is built through. `--open APP` launches it through the session's own launcher (`applications so.tilo.<app>`) and waits until a process of it runs from the session's store with its window in the layout; `--shot` writes a PNG of the whole desktop. `--keep` leaves the session running and prints its ready JSON — the control socket, the runtime directory and the state directory — so `tilo-control` drives it from anywhere:
 
 ```bash
 TILO_TEST_CONTROL=<control from the ready line> <build>/bin/tilo-control actions list
@@ -327,11 +322,11 @@ prepare(state, apps="notes", built=False)          # idempotent
 with Session(state) as session:                    # fresh desktop, headless
     session.start()
     session.launch("notes")                        # through the launcher
-    session.answering("notes")                     # its process runs, its window is on the desk
+    session.answering("notes")                     # its process runs, its window is in the layout
     session.snapshot(out / "notes.png")
 ```
 
-`session.click_named(name)` presses an app's own control, `session.wait_target(name)` waits for one to be laid out, `session.windows()` reads the desk, `session.type(text)` and `session.key(...)` type, `session.actions()` and `session.invoke(provider, id)` read and invoke what the apps publish. There is no `foreign_frames` op and `list_targets` names dedupe across surfaces, so readiness is the process plus the window, never a frame op.
+`session.click_named(name)` presses an app's own control, `session.wait_target(name)` waits for one to be laid out, `session.windows()` reads the layout, `session.type(text)` and `session.key(...)` type, `session.actions()` and `session.invoke(provider, id)` read and invoke what the apps publish. There is no `foreign_frames` op and `list_targets` names dedupe across surfaces, so readiness is the process plus the window, never a frame op.
 
 ## An app under development: `tilo-app dev`
 
@@ -488,7 +483,7 @@ printf '{"op":"threads"}\n' | socat - UNIX-CONNECT:"$TILO_TEST_CONTROL.live"
 
 A heartbeat asks the loop, through a calloop ping source, to acknowledge a wake. One it does not acknowledge within the budget is a stall, and the answer carries every thread's state and kernel wait channel; when the main thread is blocked it also carries the backtraces of the threads blocked in a system call. A main thread still working is not interrupted, and neither is a thread that is running, faulting in a page or inside the allocator, because a backtrace is captured by a signal handler that allocates.
 
-Every build, release included, also runs the main-loop watchdog (`crates/session/liveness/src/watchdog.rs`). It needs no client: a thread of its own notices a session thread that has slept without running once, outside the loop's wait, for longer than any wait it makes is bounded at (`LONGEST_BOUNDED_WAIT`, plus one sample), writes the same thread dump to stderr and the journal, and exits with status 70, which hands DRM master and the VT back and ends the session at the greeter. A loop that is working, starved of CPU, idle, stopped, under a debugger or in the kernel's uninterruptible sleep is never ended, nor one sampled across a suspend. `main_thread_reads` (`crates/session/session/tests/main_thread_reads.rs`) is the audit that keeps the loop's own threads off paths that read the desk.
+Every build, release included, also runs the main-loop watchdog (`crates/session/liveness/src/watchdog.rs`). It needs no client: a thread of its own notices a session thread that has slept without running once, outside the loop's wait, for longer than any wait it makes is bounded at (`LONGEST_BOUNDED_WAIT`, plus one sample), writes the same thread dump to stderr and the journal, and exits with status 70, which hands DRM master and the VT back and ends the session at the greeter. A loop that is working, starved of CPU, idle, stopped, under a debugger or in the kernel's uninterruptible sleep is never ended, nor one sampled across a suspend. `main_thread_reads` (`crates/session/session/tests/main_thread_reads.rs`) keeps the loop's own threads off paths that read the layout.
 
 ## Where to look in source
 
@@ -505,7 +500,3 @@ Every build, release included, also runs the main-loop watchdog (`crates/session
 | App headless drive | `crates/sdk/ui-core/src/headless/` |
 | Offscreen renderer | `crates/sdk/ui-core/src/offscreen.rs` |
 | Example harnesses | `scripts/headless-examples/` |
-
-## What is still missing
-
-There is no known first-party app without the shared deterministic `--shots` path. Hardware- and service-backed states still need separate installed-image or live-provider evidence: a deterministic screenshot is visual evidence, not proof that an external device, network service or codec works.
