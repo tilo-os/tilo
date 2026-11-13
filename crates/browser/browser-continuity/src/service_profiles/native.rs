@@ -711,507 +711,523 @@ mod tests {
         }
     }
 
-    #[test]
-    fn native_admission_creates_private_children_and_prepares_a_profile() {
-        let root = fixture_root();
-        let path = root.path().join("data").join("browser");
-        let granted = GrantedRoot::admit_native(&path).unwrap();
-        for directory in [root.path().join("data"), path.clone()] {
-            assert_eq!(
-                std::fs::metadata(directory).unwrap().permissions().mode() & 0o777,
-                0o700
-            );
+    tilo_test_env::scenario! {
+        fn admission_takes_only_a_private_granted_root;
+
+        phase native_admission_creates_private_children_and_prepares_a_profile;
+        {
+            let root = fixture_root();
+            let path = root.path().join("data").join("browser");
+            let granted = GrantedRoot::admit_native(&path).unwrap();
+            for directory in [root.path().join("data"), path.clone()] {
+                assert_eq!(
+                    std::fs::metadata(directory).unwrap().permissions().mode() & 0o777,
+                    0o700
+                );
+            }
+            let profile = Profile::prepare(&granted, &selection()).unwrap();
+            assert!(profile.path().unwrap().starts_with(path));
         }
-        let profile = Profile::prepare(&granted, &selection()).unwrap();
-        assert!(profile.path().unwrap().starts_with(path));
+
+        phase native_admission_rejects_aliases_relative_paths_and_uncontrolled_creation;
+        {
+            let root = fixture_root();
+            assert!(GrantedRoot::admit_native(Path::new("relative/browser")).is_err());
+            let alias = root.path().join("alias");
+            symlink(root.path(), &alias).unwrap();
+            assert!(GrantedRoot::admit_native(&alias.join("missing")).is_err());
+            assert!(!root.path().join("missing").exists());
+            let parent = root.path().join("shared");
+            std::fs::create_dir(&parent).unwrap();
+            std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o777)).unwrap();
+            assert!(GrantedRoot::admit_native(&parent.join("missing")).is_err());
+            assert!(!parent.join("missing").exists());
+            assert_eq!(
+                std::fs::metadata(&parent).unwrap().permissions().mode() & 0o777,
+                0o777
+            );
+            assert!(GrantedRoot::admit_native(&parent).is_err());
+        }
+
+        phase granted_root_rejects_mismatched_handles_aliases_and_uncontrolled_namespaces;
+        {
+            let root = fixture_root();
+            let other = fixture_root();
+            assert!(
+                GrantedRoot::from_file(open_root(root.path()).unwrap(), other.path().to_owned())
+                    .is_err()
+            );
+            let alias = root.path().join("alias");
+            symlink(other.path(), &alias).unwrap();
+            assert!(GrantedRoot::from_file(open_root(other.path()).unwrap(), alias).is_err());
+            let file = root.path().join("not-directory");
+            std::fs::write(&file, b"not a root").unwrap();
+            assert!(GrantedRoot::from_file(File::open(&file).unwrap(), file).is_err());
+            let held = open_root(root.path()).unwrap();
+            std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o777)).unwrap();
+            assert!(GrantedRoot::from_file(held, root.path().to_owned()).is_err());
+        }
+
+        phase retained_grant_never_admits_replaced_engine_path;
+        {
+            let root = fixture_root();
+            let named = root.path().join("granted");
+            std::fs::create_dir(&named).unwrap();
+            std::fs::set_permissions(&named, std::fs::Permissions::from_mode(0o700)).unwrap();
+            let granted = grant(&named);
+            let displaced = root.path().join("displaced");
+            std::fs::rename(&named, &displaced).unwrap();
+            std::fs::create_dir(&named).unwrap();
+            std::fs::set_permissions(&named, std::fs::Permissions::from_mode(0o700)).unwrap();
+            assert!(Profile::prepare(&granted, &selection()).is_err());
+            assert_eq!(std::fs::read_dir(&named).unwrap().count(), 0);
+            assert!(displaced.join("service-sessions").is_dir());
+        }
+
+        phase aliases_and_nonprivate_namespaces_are_refused;
+        {
+            let root = fixture_root();
+            let outside = fixture_root();
+            symlink(outside.path(), root.path().join("service-sessions")).unwrap();
+            assert!(Profile::prepare_in(root.path(), &selection()).is_err());
+            assert_eq!(std::fs::read_dir(outside.path()).unwrap().count(), 0);
+            std::fs::remove_file(root.path().join("service-sessions")).unwrap();
+            std::fs::create_dir(root.path().join("service-sessions")).unwrap();
+            std::fs::set_permissions(
+                root.path().join("service-sessions"),
+                std::fs::Permissions::from_mode(0o755),
+            )
+            .unwrap();
+            assert!(Profile::prepare_in(root.path(), &selection()).is_err());
+        }
     }
 
-    #[test]
-    fn native_admission_rejects_aliases_relative_paths_and_uncontrolled_creation() {
-        let root = fixture_root();
-        assert!(GrantedRoot::admit_native(Path::new("relative/browser")).is_err());
-        let alias = root.path().join("alias");
-        symlink(root.path(), &alias).unwrap();
-        assert!(GrantedRoot::admit_native(&alias.join("missing")).is_err());
-        assert!(!root.path().join("missing").exists());
-        let parent = root.path().join("shared");
-        std::fs::create_dir(&parent).unwrap();
-        std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o777)).unwrap();
-        assert!(GrantedRoot::admit_native(&parent.join("missing")).is_err());
-        assert!(!parent.join("missing").exists());
-        assert_eq!(
-            std::fs::metadata(&parent).unwrap().permissions().mode() & 0o777,
-            0o777
-        );
-        assert!(GrantedRoot::admit_native(&parent).is_err());
-    }
+    tilo_test_env::scenario! {
+        fn forgetting_a_profile_keeps_its_fence_and_its_place;
 
-    #[test]
-    fn granted_root_rejects_mismatched_handles_aliases_and_uncontrolled_namespaces() {
-        let root = fixture_root();
-        let other = fixture_root();
-        assert!(
-            GrantedRoot::from_file(open_root(root.path()).unwrap(), other.path().to_owned())
-                .is_err()
-        );
-        let alias = root.path().join("alias");
-        symlink(other.path(), &alias).unwrap();
-        assert!(GrantedRoot::from_file(open_root(other.path()).unwrap(), alias).is_err());
-        let file = root.path().join("not-directory");
-        std::fs::write(&file, b"not a root").unwrap();
-        assert!(GrantedRoot::from_file(File::open(&file).unwrap(), file).is_err());
-        let held = open_root(root.path()).unwrap();
-        std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o777)).unwrap();
-        assert!(GrantedRoot::from_file(held, root.path().to_owned()).is_err());
-    }
-
-    #[test]
-    fn retained_grant_never_admits_replaced_engine_path() {
-        let root = fixture_root();
-        let named = root.path().join("granted");
-        std::fs::create_dir(&named).unwrap();
-        std::fs::set_permissions(&named, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let granted = grant(&named);
-        let displaced = root.path().join("displaced");
-        std::fs::rename(&named, &displaced).unwrap();
-        std::fs::create_dir(&named).unwrap();
-        std::fs::set_permissions(&named, std::fs::Permissions::from_mode(0o700)).unwrap();
-        assert!(Profile::prepare(&granted, &selection()).is_err());
-        assert_eq!(std::fs::read_dir(&named).unwrap().count(), 0);
-        assert!(displaced.join("service-sessions").is_dir());
-    }
-
-    #[test]
-    fn forget_closed_fences_reuse_cleans_orphans_and_is_retryable() {
-        let root = fixture_root();
-        let selected = selection();
-        let mut profile = Profile::prepare_in(root.path(), &selected).unwrap();
-        let path = profile.path().unwrap().to_owned();
-        std::fs::write(path.join("credentials"), b"private").unwrap();
-        profile.complete().unwrap();
-        assert_eq!(
+        phase forget_closed_fences_reuse_cleans_orphans_and_is_retryable;
+        {
+            let root = fixture_root();
+            let selected = selection();
+            let mut profile = Profile::prepare_in(root.path(), &selected).unwrap();
+            let path = profile.path().unwrap().to_owned();
+            std::fs::write(path.join("credentials"), b"private").unwrap();
+            profile.complete().unwrap();
+            assert_eq!(
+                Profile::forget_closed_in(
+                    root.path(),
+                    selected.identity_public_key,
+                    &selected.session_id
+                )
+                .unwrap_err()
+                .kind(),
+                io::ErrorKind::WouldBlock
+            );
+            assert!(!marker_exists(&profile.parent).unwrap());
+            let orphan = path
+                .parent()
+                .unwrap()
+                .join(format!("attempt-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir(&orphan).unwrap();
+            std::fs::set_permissions(&orphan, std::fs::Permissions::from_mode(0o700)).unwrap();
+            std::fs::write(orphan.join("cookies"), b"orphan-secret").unwrap();
+            drop(profile);
             Profile::forget_closed_in(
                 root.path(),
                 selected.identity_public_key,
-                &selected.session_id
+                &selected.session_id,
             )
-            .unwrap_err()
-            .kind(),
-            io::ErrorKind::WouldBlock
-        );
-        assert!(!marker_exists(&profile.parent).unwrap());
-        let orphan = path
-            .parent()
-            .unwrap()
-            .join(format!("attempt-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir(&orphan).unwrap();
-        std::fs::set_permissions(&orphan, std::fs::Permissions::from_mode(0o700)).unwrap();
-        std::fs::write(orphan.join("cookies"), b"orphan-secret").unwrap();
-        drop(profile);
-        Profile::forget_closed_in(
-            root.path(),
-            selected.identity_public_key,
-            &selected.session_id,
-        )
-        .unwrap();
-        assert!(!path.exists());
-        assert!(!orphan.exists());
-        assert!(!path.parent().unwrap().join(RECEIPT).exists());
-        assert!(path.parent().unwrap().join(FORGETTING).exists());
-        assert!(Profile::prepare_in(root.path(), &selected).is_err());
-        // A lost or failed canonical reply must not require reopening credentials.
-        Profile::forget_closed_in(
-            root.path(),
-            selected.identity_public_key,
-            &selected.session_id,
-        )
-        .unwrap();
-        assert!(Profile::prepare_in(root.path(), &selected).is_err());
-    }
-
-    #[test]
-    fn forget_never_opened_selection_persists_fence_and_rejects_alias() {
-        let root = fixture_root();
-        let selected = selection();
-        assert!(
-            Profile::forget_closed_in(root.path(), selected.identity_public_key, "../outside")
-                .is_err()
-        );
-        Profile::forget_closed_in(
-            root.path(),
-            selected.identity_public_key,
-            &selected.session_id,
-        )
-        .unwrap();
-        assert!(Profile::prepare_in(root.path(), &selected).is_err());
-        Profile::forget_closed_in(
-            root.path(),
-            selected.identity_public_key,
-            &selected.session_id,
-        )
-        .unwrap();
-    }
-
-    #[test]
-    fn service_profile_lease_receipt_and_identity_isolation() {
-        let root = fixture_root();
-        let selected = selection();
-        let mut profile = Profile::prepare_in(root.path(), &selected).unwrap();
-        let path = profile.path().unwrap().to_path_buf();
-        assert!(profile.needs_import());
-        assert_eq!(
-            Profile::prepare_in(root.path(), &selected)
-                .err()
-                .unwrap()
-                .kind(),
-            io::ErrorKind::WouldBlock
-        );
-        std::fs::write(path.join("installed-cookie-fixture"), b"CEF fixture").unwrap();
-        profile.complete().unwrap();
-        assert!(!profile.needs_import());
-        drop(profile);
-        let reopened = Profile::prepare_in(root.path(), &selected).unwrap();
-        assert!(!reopened.needs_import());
-        assert_eq!(reopened.path().unwrap(), path);
-        assert_eq!(
-            std::fs::read(path.join("installed-cookie-fixture")).unwrap(),
-            b"CEF fixture"
-        );
-        drop(reopened);
-        let mut changed = selected;
-        changed.cookies[0].value = "different-private-cookie".into();
-        assert!(Profile::prepare_in(root.path(), &changed).is_err());
-        changed.identity_public_key = [8; 32];
-        let mut other = Profile::prepare_in(root.path(), &changed).unwrap();
-        assert!(other.needs_import());
-        assert_ne!(other.path().unwrap(), path);
-        other.cancel_after_engine_exit().unwrap();
-        assert!(path.is_dir());
-    }
-
-    #[test]
-    fn incomplete_attempt_is_never_reused_and_cleanup_does_not_follow_links() {
-        let root = fixture_root();
-        let outside = fixture_root();
-        std::fs::write(outside.path().join("untouched"), b"original").unwrap();
-        let selected = selection();
-        let first = Profile::prepare_in(root.path(), &selected).unwrap();
-        let first_path = first.path().unwrap().to_path_buf();
-        std::fs::write(first_path.join("partial"), b"not complete").unwrap();
-        drop(first); // Represents abandonment; no exit acknowledgement, so retain it.
-        let mut next = Profile::prepare_in(root.path(), &selected).unwrap();
-        let next_path = next.path().unwrap().to_path_buf();
-        assert_ne!(first_path, next_path);
-        assert!(next.needs_import());
-        symlink(outside.path(), next_path.join("outside-link")).unwrap();
-        std::fs::create_dir(next_path.join("cache")).unwrap();
-        std::fs::write(next_path.join("cache/data"), b"partial cookie cache").unwrap();
-        next.cancel_after_engine_exit().unwrap();
-        assert!(!next_path.exists());
-        assert!(first_path.is_dir());
-        assert_eq!(
-            std::fs::read(outside.path().join("untouched")).unwrap(),
-            b"original"
-        );
-    }
-
-    #[test]
-    fn cleanup_remains_on_held_parent_after_ambient_namespace_replacement() {
-        let root = fixture_root();
-        let selected = selection();
-        let mut profile = Profile::prepare_in(root.path(), &selected).unwrap();
-        let path = profile.path().unwrap().to_path_buf();
-        let parent = path.parent().unwrap();
-        let displaced = parent.with_file_name("displaced-original");
-        std::fs::rename(parent, &displaced).unwrap();
-        std::fs::create_dir(parent).unwrap();
-        let replacement = parent.join(path.file_name().unwrap());
-        std::fs::create_dir(&replacement).unwrap();
-        std::fs::write(replacement.join("untouched"), b"replacement").unwrap();
-        assert!(profile.path().is_err());
-        profile.cancel_after_engine_exit().unwrap();
-        assert!(!displaced.join(path.file_name().unwrap()).exists());
-        assert_eq!(
-            std::fs::read(replacement.join("untouched")).unwrap(),
-            b"replacement"
-        );
-    }
-
-    #[test]
-    fn forget_completed_profile_keeps_other_sessions_and_never_follows_links() {
-        let root = fixture_root();
-        let outside = fixture_root();
-        std::fs::write(outside.path().join("untouched"), b"original").unwrap();
-        let selected = selection();
-        let mut profile = Profile::prepare_in(root.path(), &selected).unwrap();
-        let path = profile.path().unwrap().to_owned();
-        profile.complete().unwrap();
-        let mut other_selection = selected.clone();
-        other_selection.session_id = "other-selected-session".into();
-        let mut other = Profile::prepare_in(root.path(), &other_selection).unwrap();
-        other.complete().unwrap();
-        let other_path = other.path().unwrap().to_owned();
-        symlink(outside.path(), path.join("outside-link")).unwrap();
-        // Even replacement of the receipt cannot redirect deletion.
-        std::fs::remove_file(path.parent().unwrap().join(RECEIPT)).unwrap();
-        symlink(
-            outside.path().join("untouched"),
-            path.parent().unwrap().join(RECEIPT),
-        )
-        .unwrap();
-        profile.begin_forget().unwrap();
-        assert!(profile.path().is_err());
-        assert!(path.exists(), "fencing alone deleted a live profile");
-        assert_eq!(
-            Profile::prepare_in(root.path(), &selected)
-                .err()
-                .unwrap()
-                .kind(),
-            io::ErrorKind::WouldBlock
-        );
-        profile.cleanup_after_engine_exit().unwrap();
-        assert!(!path.exists());
-        assert!(!path.parent().unwrap().join(RECEIPT).exists());
-        assert!(path.parent().unwrap().join(FORGETTING).exists());
-        assert!(other_path.is_dir());
-        assert!(!other.needs_import());
-        assert_eq!(
-            std::fs::read(outside.path().join("untouched")).unwrap(),
-            b"original"
-        );
-        drop(profile);
-        assert!(Profile::prepare_in(root.path(), &selected).is_err());
-    }
-
-    #[test]
-    fn forget_remains_on_held_namespace_after_parent_replacement() {
-        let root = fixture_root();
-        let selected = selection();
-        let mut profile = Profile::prepare_in(root.path(), &selected).unwrap();
-        let path = profile.path().unwrap().to_owned();
-        profile.complete().unwrap();
-        profile.begin_forget().unwrap();
-        let parent = path.parent().unwrap();
-        let displaced = parent.with_file_name("displaced-selected-session");
-        std::fs::rename(parent, &displaced).unwrap();
-        std::fs::create_dir(parent).unwrap();
-        let replacement = parent.join(path.file_name().unwrap());
-        std::fs::create_dir(&replacement).unwrap();
-        std::fs::write(parent.join(RECEIPT), b"replacement receipt").unwrap();
-        profile.cleanup_after_engine_exit().unwrap();
-        assert!(!displaced.join(path.file_name().unwrap()).exists());
-        assert!(!displaced.join(RECEIPT).exists());
-        assert!(displaced.join(FORGETTING).exists());
-        assert!(replacement.exists());
-        assert_eq!(
-            std::fs::read(parent.join(RECEIPT)).unwrap(),
-            b"replacement receipt"
-        );
-    }
-
-    #[test]
-    fn partial_forget_retains_durable_fence_and_can_retry_under_same_lease() {
-        let root = fixture_root();
-        let selected = selection();
-        let mut profile = Profile::prepare_in(root.path(), &selected).unwrap();
-        let path = profile.path().unwrap().to_owned();
-        profile.complete().unwrap();
-        profile.begin_forget().unwrap();
-        let receipt = path.parent().unwrap().join(RECEIPT);
-        std::fs::remove_file(&receipt).unwrap();
-        std::fs::create_dir(&receipt).unwrap(); // Inject receipt deletion failure.
-        assert!(profile.cleanup_after_engine_exit().is_err());
-        assert!(path.parent().unwrap().join(FORGETTING).exists());
-        assert!(!path.exists());
-        std::fs::remove_dir(&receipt).unwrap();
-        profile.cleanup_after_engine_exit().unwrap();
-        drop(profile);
-        assert!(Profile::prepare_in(root.path(), &selected).is_err());
-    }
-
-    #[test]
-    fn forgotten_profile_is_not_reused_after_abandoning_cleanup() {
-        let root = fixture_root();
-        let selected = selection();
-        let mut profile = Profile::prepare_in(root.path(), &selected).unwrap();
-        profile.complete().unwrap();
-        let path = profile.path().unwrap().to_owned();
-        profile.begin_forget().unwrap();
-        drop(profile); // Crash boundary: durable receipt and profile still exist.
-        assert!(path.exists());
-        assert!(path.parent().unwrap().join(RECEIPT).exists());
-        assert!(Profile::prepare_in(root.path(), &selected).is_err());
-    }
-
-    #[test]
-    fn recovery_after_owner_drop_is_lease_held_and_keeps_fence() {
-        let root = fixture_root();
-        let selected = selection();
-        let mut profile = Profile::prepare_in(root.path(), &selected).unwrap();
-        profile.complete().unwrap();
-        let path = profile.path().unwrap().to_owned();
-        std::fs::write(path.join("credential"), b"secret").unwrap();
-        profile.begin_forget().unwrap();
-        assert!(
-            Profile::retry_forget_in(
+            .unwrap();
+            assert!(!path.exists());
+            assert!(!orphan.exists());
+            assert!(!path.parent().unwrap().join(RECEIPT).exists());
+            assert!(path.parent().unwrap().join(FORGETTING).exists());
+            assert!(Profile::prepare_in(root.path(), &selected).is_err());
+            // A lost or failed canonical reply must not require reopening credentials.
+            Profile::forget_closed_in(
                 root.path(),
                 selected.identity_public_key,
-                &selected.session_id
+                &selected.session_id,
             )
-            .is_err()
-        );
-        assert!(path.join("credential").exists());
-        drop(profile);
-        Profile::retry_forget_in(
-            root.path(),
-            selected.identity_public_key,
-            &selected.session_id,
-        )
-        .unwrap();
-        assert!(!path.exists());
-        assert!(!path.parent().unwrap().join(RECEIPT).exists());
-        assert!(path.parent().unwrap().join(FORGETTING).exists());
-        assert!(Profile::prepare_in(root.path(), &selected).is_err());
-        // A marker-only completed deletion is an idempotent local recovery.
-        Profile::retry_forget_in(
-            root.path(),
-            selected.identity_public_key,
-            &selected.session_id,
-        )
-        .unwrap();
-    }
-
-    #[test]
-    fn recovery_retries_partial_deletion_after_owner_drop() {
-        let root = fixture_root();
-        let selected = selection();
-        let mut profile = Profile::prepare_in(root.path(), &selected).unwrap();
-        profile.complete().unwrap();
-        let path = profile.path().unwrap().to_owned();
-        let mut nested = path.clone();
-        for _ in 0..66 {
-            nested = nested.join("nested");
-            std::fs::create_dir(&nested).unwrap();
+            .unwrap();
+            assert!(Profile::prepare_in(root.path(), &selected).is_err());
         }
-        std::fs::write(nested.join("credential"), b"secret").unwrap();
-        profile.begin_forget().unwrap();
-        assert!(profile.cleanup_after_engine_exit().is_err());
-        drop(profile);
-        assert!(
-            Profile::retry_forget_in(
+
+        phase forget_never_opened_selection_persists_fence_and_rejects_alias;
+        {
+            let root = fixture_root();
+            let selected = selection();
+            assert!(
+                Profile::forget_closed_in(root.path(), selected.identity_public_key, "../outside")
+                    .is_err()
+            );
+            Profile::forget_closed_in(
                 root.path(),
                 selected.identity_public_key,
-                &selected.session_id
+                &selected.session_id,
             )
-            .is_err()
-        );
-        std::fs::remove_dir_all(path.join("nested")).unwrap();
-        Profile::retry_forget_in(
-            root.path(),
-            selected.identity_public_key,
-            &selected.session_id,
-        )
-        .unwrap();
-        assert!(!path.exists());
-        assert!(Profile::prepare_in(root.path(), &selected).is_err());
+            .unwrap();
+            assert!(Profile::prepare_in(root.path(), &selected).is_err());
+            Profile::forget_closed_in(
+                root.path(),
+                selected.identity_public_key,
+                &selected.session_id,
+            )
+            .unwrap();
+        }
+
+        phase forget_completed_profile_keeps_other_sessions_and_never_follows_links;
+        {
+            let root = fixture_root();
+            let outside = fixture_root();
+            std::fs::write(outside.path().join("untouched"), b"original").unwrap();
+            let selected = selection();
+            let mut profile = Profile::prepare_in(root.path(), &selected).unwrap();
+            let path = profile.path().unwrap().to_owned();
+            profile.complete().unwrap();
+            let mut other_selection = selected.clone();
+            other_selection.session_id = "other-selected-session".into();
+            let mut other = Profile::prepare_in(root.path(), &other_selection).unwrap();
+            other.complete().unwrap();
+            let other_path = other.path().unwrap().to_owned();
+            symlink(outside.path(), path.join("outside-link")).unwrap();
+            // Even replacement of the receipt cannot redirect deletion.
+            std::fs::remove_file(path.parent().unwrap().join(RECEIPT)).unwrap();
+            symlink(
+                outside.path().join("untouched"),
+                path.parent().unwrap().join(RECEIPT),
+            )
+            .unwrap();
+            profile.begin_forget().unwrap();
+            assert!(profile.path().is_err());
+            assert!(path.exists(), "fencing alone deleted a live profile");
+            assert_eq!(
+                Profile::prepare_in(root.path(), &selected)
+                    .err()
+                    .unwrap()
+                    .kind(),
+                io::ErrorKind::WouldBlock
+            );
+            profile.cleanup_after_engine_exit().unwrap();
+            assert!(!path.exists());
+            assert!(!path.parent().unwrap().join(RECEIPT).exists());
+            assert!(path.parent().unwrap().join(FORGETTING).exists());
+            assert!(other_path.is_dir());
+            assert!(!other.needs_import());
+            assert_eq!(
+                std::fs::read(outside.path().join("untouched")).unwrap(),
+                b"original"
+            );
+            drop(profile);
+            assert!(Profile::prepare_in(root.path(), &selected).is_err());
+        }
+
+        phase forget_remains_on_held_namespace_after_parent_replacement;
+        {
+            let root = fixture_root();
+            let selected = selection();
+            let mut profile = Profile::prepare_in(root.path(), &selected).unwrap();
+            let path = profile.path().unwrap().to_owned();
+            profile.complete().unwrap();
+            profile.begin_forget().unwrap();
+            let parent = path.parent().unwrap();
+            let displaced = parent.with_file_name("displaced-selected-session");
+            std::fs::rename(parent, &displaced).unwrap();
+            std::fs::create_dir(parent).unwrap();
+            let replacement = parent.join(path.file_name().unwrap());
+            std::fs::create_dir(&replacement).unwrap();
+            std::fs::write(parent.join(RECEIPT), b"replacement receipt").unwrap();
+            profile.cleanup_after_engine_exit().unwrap();
+            assert!(!displaced.join(path.file_name().unwrap()).exists());
+            assert!(!displaced.join(RECEIPT).exists());
+            assert!(displaced.join(FORGETTING).exists());
+            assert!(replacement.exists());
+            assert_eq!(
+                std::fs::read(parent.join(RECEIPT)).unwrap(),
+                b"replacement receipt"
+            );
+        }
+
+        phase partial_forget_retains_durable_fence_and_can_retry_under_same_lease;
+        {
+            let root = fixture_root();
+            let selected = selection();
+            let mut profile = Profile::prepare_in(root.path(), &selected).unwrap();
+            let path = profile.path().unwrap().to_owned();
+            profile.complete().unwrap();
+            profile.begin_forget().unwrap();
+            let receipt = path.parent().unwrap().join(RECEIPT);
+            std::fs::remove_file(&receipt).unwrap();
+            std::fs::create_dir(&receipt).unwrap(); // Inject receipt deletion failure.
+            assert!(profile.cleanup_after_engine_exit().is_err());
+            assert!(path.parent().unwrap().join(FORGETTING).exists());
+            assert!(!path.exists());
+            std::fs::remove_dir(&receipt).unwrap();
+            profile.cleanup_after_engine_exit().unwrap();
+            drop(profile);
+            assert!(Profile::prepare_in(root.path(), &selected).is_err());
+        }
+
+        phase forgotten_profile_is_not_reused_after_abandoning_cleanup;
+        {
+            let root = fixture_root();
+            let selected = selection();
+            let mut profile = Profile::prepare_in(root.path(), &selected).unwrap();
+            profile.complete().unwrap();
+            let path = profile.path().unwrap().to_owned();
+            profile.begin_forget().unwrap();
+            drop(profile); // Crash boundary: durable receipt and profile still exist.
+            assert!(path.exists());
+            assert!(path.parent().unwrap().join(RECEIPT).exists());
+            assert!(Profile::prepare_in(root.path(), &selected).is_err());
+        }
     }
 
-    #[test]
-    fn recovery_finishes_receipt_removal_after_attempt_was_deleted() {
-        let root = fixture_root();
-        let selected = selection();
-        let mut profile = Profile::prepare_in(root.path(), &selected).unwrap();
-        profile.complete().unwrap();
-        let path = profile.path().unwrap().to_owned();
-        profile.begin_forget().unwrap();
-        let receipt = path.parent().unwrap().join(RECEIPT);
-        std::fs::remove_file(&receipt).unwrap();
-        std::fs::create_dir(&receipt).unwrap();
-        assert!(profile.cleanup_after_engine_exit().is_err());
-        assert!(!path.exists());
-        drop(profile);
-        assert!(
-            Profile::retry_forget_in(
-                root.path(),
-                selected.identity_public_key,
-                &selected.session_id
-            )
-            .is_err()
-        );
-        std::fs::remove_dir(&receipt).unwrap();
-        Profile::retry_forget_in(
-            root.path(),
-            selected.identity_public_key,
-            &selected.session_id,
-        )
-        .unwrap();
-        assert!(path.parent().unwrap().join(FORGETTING).exists());
-        assert!(!receipt.exists());
+    tilo_test_env::scenario! {
+        fn a_prepared_profile_is_leased_and_cleaned_up_in_place;
+
+        phase service_profile_lease_receipt_and_identity_isolation;
+        {
+            let root = fixture_root();
+            let selected = selection();
+            let mut profile = Profile::prepare_in(root.path(), &selected).unwrap();
+            let path = profile.path().unwrap().to_path_buf();
+            assert!(profile.needs_import());
+            assert_eq!(
+                Profile::prepare_in(root.path(), &selected)
+                    .err()
+                    .unwrap()
+                    .kind(),
+                io::ErrorKind::WouldBlock
+            );
+            std::fs::write(path.join("installed-cookie-fixture"), b"CEF fixture").unwrap();
+            profile.complete().unwrap();
+            assert!(!profile.needs_import());
+            drop(profile);
+            let reopened = Profile::prepare_in(root.path(), &selected).unwrap();
+            assert!(!reopened.needs_import());
+            assert_eq!(reopened.path().unwrap(), path);
+            assert_eq!(
+                std::fs::read(path.join("installed-cookie-fixture")).unwrap(),
+                b"CEF fixture"
+            );
+            drop(reopened);
+            let mut changed = selected;
+            changed.cookies[0].value = "different-private-cookie".into();
+            assert!(Profile::prepare_in(root.path(), &changed).is_err());
+            changed.identity_public_key = [8; 32];
+            let mut other = Profile::prepare_in(root.path(), &changed).unwrap();
+            assert!(other.needs_import());
+            assert_ne!(other.path().unwrap(), path);
+            other.cancel_after_engine_exit().unwrap();
+            assert!(path.is_dir());
+        }
+
+        phase incomplete_attempt_is_never_reused_and_cleanup_does_not_follow_links;
+        {
+            let root = fixture_root();
+            let outside = fixture_root();
+            std::fs::write(outside.path().join("untouched"), b"original").unwrap();
+            let selected = selection();
+            let first = Profile::prepare_in(root.path(), &selected).unwrap();
+            let first_path = first.path().unwrap().to_path_buf();
+            std::fs::write(first_path.join("partial"), b"not complete").unwrap();
+            drop(first); // Represents abandonment; no exit acknowledgement, so retain it.
+            let mut next = Profile::prepare_in(root.path(), &selected).unwrap();
+            let next_path = next.path().unwrap().to_path_buf();
+            assert_ne!(first_path, next_path);
+            assert!(next.needs_import());
+            symlink(outside.path(), next_path.join("outside-link")).unwrap();
+            std::fs::create_dir(next_path.join("cache")).unwrap();
+            std::fs::write(next_path.join("cache/data"), b"partial cookie cache").unwrap();
+            next.cancel_after_engine_exit().unwrap();
+            assert!(!next_path.exists());
+            assert!(first_path.is_dir());
+            assert_eq!(
+                std::fs::read(outside.path().join("untouched")).unwrap(),
+                b"original"
+            );
+        }
+
+        phase cleanup_remains_on_held_parent_after_ambient_namespace_replacement;
+        {
+            let root = fixture_root();
+            let selected = selection();
+            let mut profile = Profile::prepare_in(root.path(), &selected).unwrap();
+            let path = profile.path().unwrap().to_path_buf();
+            let parent = path.parent().unwrap();
+            let displaced = parent.with_file_name("displaced-original");
+            std::fs::rename(parent, &displaced).unwrap();
+            std::fs::create_dir(parent).unwrap();
+            let replacement = parent.join(path.file_name().unwrap());
+            std::fs::create_dir(&replacement).unwrap();
+            std::fs::write(replacement.join("untouched"), b"replacement").unwrap();
+            assert!(profile.path().is_err());
+            profile.cancel_after_engine_exit().unwrap();
+            assert!(!displaced.join(path.file_name().unwrap()).exists());
+            assert_eq!(
+                std::fs::read(replacement.join("untouched")).unwrap(),
+                b"replacement"
+            );
+        }
     }
 
-    #[test]
-    fn unsafe_recovery_marker_never_authorizes_deletion() {
-        let root = fixture_root();
-        let selected = selection();
-        let mut profile = Profile::prepare_in(root.path(), &selected).unwrap();
-        profile.complete().unwrap();
-        let path = profile.path().unwrap().to_owned();
-        profile.begin_forget().unwrap();
-        drop(profile);
-        let marker = path.parent().unwrap().join(FORGETTING);
-        let attestation = std::fs::read(&marker).unwrap();
-        std::fs::remove_file(&marker).unwrap();
-        symlink(path.parent().unwrap().join(RECEIPT), &marker).unwrap();
-        assert!(
-            Profile::retry_forget_in(
-                root.path(),
-                selected.identity_public_key,
-                &selected.session_id
-            )
-            .is_err()
-        );
-        assert!(path.exists());
-        std::fs::remove_file(&marker).unwrap();
-        std::fs::write(&marker, b"tilo-browser-local-forgetting-v1\n").unwrap();
-        std::fs::set_permissions(&marker, std::fs::Permissions::from_mode(0o600)).unwrap();
-        assert!(
-            Profile::retry_forget_in(
-                root.path(),
-                selected.identity_public_key,
-                &selected.session_id
-            )
-            .is_err()
-        );
-        assert!(path.exists());
-        let mut forged: Receipt = serde_json::from_slice(&attestation).unwrap();
-        forged.input = [0; 32];
-        std::fs::write(&marker, serde_json::to_vec(&forged).unwrap()).unwrap();
-        assert!(
-            Profile::retry_forget_in(
-                root.path(),
-                selected.identity_public_key,
-                &selected.session_id
-            )
-            .is_err()
-        );
-        assert!(path.exists());
-        assert!(Profile::prepare_in(root.path(), &selected).is_err());
-    }
+    tilo_test_env::scenario! {
+        fn recovery_after_an_owner_dropped_finishes_only_what_it_may;
 
-    #[test]
-    fn aliases_and_nonprivate_namespaces_are_refused() {
-        let root = fixture_root();
-        let outside = fixture_root();
-        symlink(outside.path(), root.path().join("service-sessions")).unwrap();
-        assert!(Profile::prepare_in(root.path(), &selection()).is_err());
-        assert_eq!(std::fs::read_dir(outside.path()).unwrap().count(), 0);
-        std::fs::remove_file(root.path().join("service-sessions")).unwrap();
-        std::fs::create_dir(root.path().join("service-sessions")).unwrap();
-        std::fs::set_permissions(
-            root.path().join("service-sessions"),
-            std::fs::Permissions::from_mode(0o755),
-        )
-        .unwrap();
-        assert!(Profile::prepare_in(root.path(), &selection()).is_err());
+        phase recovery_after_owner_drop_is_lease_held_and_keeps_fence;
+        {
+            let root = fixture_root();
+            let selected = selection();
+            let mut profile = Profile::prepare_in(root.path(), &selected).unwrap();
+            profile.complete().unwrap();
+            let path = profile.path().unwrap().to_owned();
+            std::fs::write(path.join("credential"), b"secret").unwrap();
+            profile.begin_forget().unwrap();
+            assert!(
+                Profile::retry_forget_in(
+                    root.path(),
+                    selected.identity_public_key,
+                    &selected.session_id
+                )
+                .is_err()
+            );
+            assert!(path.join("credential").exists());
+            drop(profile);
+            Profile::retry_forget_in(
+                root.path(),
+                selected.identity_public_key,
+                &selected.session_id,
+            )
+            .unwrap();
+            assert!(!path.exists());
+            assert!(!path.parent().unwrap().join(RECEIPT).exists());
+            assert!(path.parent().unwrap().join(FORGETTING).exists());
+            assert!(Profile::prepare_in(root.path(), &selected).is_err());
+            // A marker-only completed deletion is an idempotent local recovery.
+            Profile::retry_forget_in(
+                root.path(),
+                selected.identity_public_key,
+                &selected.session_id,
+            )
+            .unwrap();
+        }
+
+        phase recovery_retries_partial_deletion_after_owner_drop;
+        {
+            let root = fixture_root();
+            let selected = selection();
+            let mut profile = Profile::prepare_in(root.path(), &selected).unwrap();
+            profile.complete().unwrap();
+            let path = profile.path().unwrap().to_owned();
+            let mut nested = path.clone();
+            for _ in 0..66 {
+                nested = nested.join("nested");
+                std::fs::create_dir(&nested).unwrap();
+            }
+            std::fs::write(nested.join("credential"), b"secret").unwrap();
+            profile.begin_forget().unwrap();
+            assert!(profile.cleanup_after_engine_exit().is_err());
+            drop(profile);
+            assert!(
+                Profile::retry_forget_in(
+                    root.path(),
+                    selected.identity_public_key,
+                    &selected.session_id
+                )
+                .is_err()
+            );
+            std::fs::remove_dir_all(path.join("nested")).unwrap();
+            Profile::retry_forget_in(
+                root.path(),
+                selected.identity_public_key,
+                &selected.session_id,
+            )
+            .unwrap();
+            assert!(!path.exists());
+            assert!(Profile::prepare_in(root.path(), &selected).is_err());
+        }
+
+        phase recovery_finishes_receipt_removal_after_attempt_was_deleted;
+        {
+            let root = fixture_root();
+            let selected = selection();
+            let mut profile = Profile::prepare_in(root.path(), &selected).unwrap();
+            profile.complete().unwrap();
+            let path = profile.path().unwrap().to_owned();
+            profile.begin_forget().unwrap();
+            let receipt = path.parent().unwrap().join(RECEIPT);
+            std::fs::remove_file(&receipt).unwrap();
+            std::fs::create_dir(&receipt).unwrap();
+            assert!(profile.cleanup_after_engine_exit().is_err());
+            assert!(!path.exists());
+            drop(profile);
+            assert!(
+                Profile::retry_forget_in(
+                    root.path(),
+                    selected.identity_public_key,
+                    &selected.session_id
+                )
+                .is_err()
+            );
+            std::fs::remove_dir(&receipt).unwrap();
+            Profile::retry_forget_in(
+                root.path(),
+                selected.identity_public_key,
+                &selected.session_id,
+            )
+            .unwrap();
+            assert!(path.parent().unwrap().join(FORGETTING).exists());
+            assert!(!receipt.exists());
+        }
+
+        phase unsafe_recovery_marker_never_authorizes_deletion;
+        {
+            let root = fixture_root();
+            let selected = selection();
+            let mut profile = Profile::prepare_in(root.path(), &selected).unwrap();
+            profile.complete().unwrap();
+            let path = profile.path().unwrap().to_owned();
+            profile.begin_forget().unwrap();
+            drop(profile);
+            let marker = path.parent().unwrap().join(FORGETTING);
+            let attestation = std::fs::read(&marker).unwrap();
+            std::fs::remove_file(&marker).unwrap();
+            symlink(path.parent().unwrap().join(RECEIPT), &marker).unwrap();
+            assert!(
+                Profile::retry_forget_in(
+                    root.path(),
+                    selected.identity_public_key,
+                    &selected.session_id
+                )
+                .is_err()
+            );
+            assert!(path.exists());
+            std::fs::remove_file(&marker).unwrap();
+            std::fs::write(&marker, b"tilo-browser-local-forgetting-v1\n").unwrap();
+            std::fs::set_permissions(&marker, std::fs::Permissions::from_mode(0o600)).unwrap();
+            assert!(
+                Profile::retry_forget_in(
+                    root.path(),
+                    selected.identity_public_key,
+                    &selected.session_id
+                )
+                .is_err()
+            );
+            assert!(path.exists());
+            let mut forged: Receipt = serde_json::from_slice(&attestation).unwrap();
+            forged.input = [0; 32];
+            std::fs::write(&marker, serde_json::to_vec(&forged).unwrap()).unwrap();
+            assert!(
+                Profile::retry_forget_in(
+                    root.path(),
+                    selected.identity_public_key,
+                    &selected.session_id
+                )
+                .is_err()
+            );
+            assert!(path.exists());
+            assert!(Profile::prepare_in(root.path(), &selected).is_err());
+        }
     }
 }
