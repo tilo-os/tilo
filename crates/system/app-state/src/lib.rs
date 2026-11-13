@@ -109,12 +109,39 @@ fn io_err(context: impl Into<String>, source: io::Error) -> StoreError {
     }
 }
 
-/// The app id an environment or a caller names, checked against the app id
-/// grammar: never a path, so it can be one directory below the data home.
-/// `TILO_PACKAGE_ID` is treated as untrusted (an app can set its own
-/// environment).
+/// Check the app id a caller names as a single directory name — the
+/// containment boundary. `TILO_PACKAGE_ID` is treated as untrusted (an app
+/// can set its own environment), so anything that could escape its own
+/// directory is rejected rather than sanitised.
 fn checked_app_id(id: &str) -> Result<AppId, StoreError> {
-    AppId::parse(id).map_err(|_| StoreError::AppId(id.to_owned(), "is not an app id"))
+    if id.is_empty() {
+        return Err(StoreError::AppId(id.to_string(), "must not be empty"));
+    }
+    if Path::new(id).is_absolute() {
+        return Err(StoreError::AppId(
+            id.to_string(),
+            "must not be an absolute path",
+        ));
+    }
+    if id.contains('/') || id.contains('\\') {
+        return Err(StoreError::AppId(
+            id.to_string(),
+            "must not contain a path separator",
+        ));
+    }
+    if id == "." || id == ".." {
+        return Err(StoreError::AppId(
+            id.to_string(),
+            "must not be a relative directory reference",
+        ));
+    }
+    if id.contains('\0') {
+        return Err(StoreError::AppId(
+            id.to_string(),
+            "must not contain a NUL byte",
+        ));
+    }
+    Ok(AppId::new(id))
 }
 
 /// Validate a record key as a single directory name — same boundary as
