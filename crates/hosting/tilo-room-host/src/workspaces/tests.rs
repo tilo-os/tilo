@@ -704,10 +704,19 @@ fn a_workspace_is_restored_by_its_governing_device_and_no_other() {
 fn a_workspace_name_must_be_printable_and_short() {
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    for name in ["", "   ", "a\u{7}b", &"x".repeat(81)] {
+    for name in ["a\u{7}b", &"x".repeat(81)] {
         assert!(
             GovernedWorkspace::create(dir.path(), name, &cert, &key, None, SystemTime::now())
                 .is_err()
+        );
+    }
+    // A workspace nobody named is founded with no name: every reader shows it
+    // in their own language.
+    for name in ["", "   "] {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(
+            GovernedWorkspace::create(dir.path(), name, &cert, &key, None, SystemTime::now())
+                .is_ok()
         );
     }
 }

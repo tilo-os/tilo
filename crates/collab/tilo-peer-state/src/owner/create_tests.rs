@@ -243,18 +243,29 @@ async fn a_workspace_names_its_own_host_again_once_the_relay_it_is_reached_throu
 }
 
 #[tokio::test]
-async fn a_workspace_is_founded_by_its_own_device_with_a_name() {
+async fn a_workspace_is_founded_by_its_own_device_named_or_not() {
     let directory = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
     let owner = open_file(&directory.path().join("workspaces.json")).unwrap();
     let key = SigningKey::from_bytes(&[13; 32]);
     let device = testing::certificate(&SigningKey::from_bytes(&[14; 32]), &key, "A's desktop");
     let other = SigningKey::from_bytes(&[15; 32]);
     let now = SystemTime::now();
+    // A workspace nobody named is founded with no name, which every reader
+    // shows in their own language; a name too long is still refused.
     let unnamed = WorkspaceId::new();
     let hint = testing::own_host_hint_here(unnamed, &device, &key);
     assert_eq!(
         owner
             .create_workspace(unnamed, "  ", &device, &key, Some(&hint), now)
+            .await
+            .unwrap(),
+        unnamed
+    );
+    let long = WorkspaceId::new();
+    let hint = testing::own_host_hint_here(long, &device, &key);
+    assert_eq!(
+        owner
+            .create_workspace(long, &"n".repeat(81), &device, &key, Some(&hint), now)
             .await
             .unwrap_err(),
         "workspace name must contain 1–80 characters"

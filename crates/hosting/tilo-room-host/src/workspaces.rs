@@ -343,7 +343,7 @@ impl GovernedWorkspace {
         device: Option<&DeviceKeys>,
         now: SystemTime,
     ) -> Result<Self, String> {
-        let name = valid_name(name)?;
+        let name = tilo_peer_state::workspace_membership::valid_founding_name(name)?;
         let workspace = uuid::Uuid::parse_str(workspace)
             .map_err(|_| "a room is a UUID".to_owned())?
             .hyphenated()

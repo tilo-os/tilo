@@ -452,6 +452,20 @@ impl AppAction {
     }
 }
 
+/// The name a workspace is founded with, trimmed: none, which every reader
+/// shows in their own language, or a name [`valid_workspace_name`] takes.
+///
+/// # Errors
+///
+/// A name that is too long or holds control characters.
+pub fn valid_founding_name(name: &str) -> Result<&str, String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Ok(name);
+    }
+    valid_workspace_name(name)
+}
+
 /// The workspace's name, trimmed, when it is 1 to 80 characters and no control
 /// characters.
 pub fn valid_workspace_name(name: &str) -> Result<&str, String> {

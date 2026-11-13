@@ -7,7 +7,7 @@
 use crate::join::TransportHint;
 use crate::owner::record::StoredWorkspace;
 use crate::owner::{NativeCommittedView, NativeWorkspaceOwner, WorkspaceId, publication};
-use crate::workspace_membership::valid_workspace_name;
+use crate::workspace_membership::valid_founding_name;
 use crate::{StatePeer, workspace_seed};
 use collab_types::signer::DeviceSigner;
 use neighbour_wire::NeighbourMsg;
@@ -41,7 +41,7 @@ impl NativeWorkspaceOwner {
         host_hint: Option<&TransportHint>,
         now: SystemTime,
     ) -> Result<WorkspaceId, String> {
-        let name = valid_workspace_name(name)?;
+        let name = valid_founding_name(name)?;
         if device.device_public_key != signer.device_public_key() {
             return Err("a workspace is founded with its own device's key".into());
         }
