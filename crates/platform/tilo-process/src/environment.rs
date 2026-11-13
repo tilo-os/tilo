@@ -16,9 +16,9 @@ mod native;
 #[cfg(feature = "native")]
 pub use native::process_environment;
 
-//! Inert, app-owned resume projection sent only to the local shell: the bytes are
-//! opaque to the toolkit, so each app can version its own schema, and the shell
-//! validates size and path redaction before keeping them.
+/// Inert, app-owned resume projection sent only to the local shell: the bytes are
+/// opaque to the toolkit, so each app can version its own schema, and the shell
+/// validates size and path redaction before keeping them.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ContinuationMetadata {
     pub schema_version: u16,
