@@ -835,6 +835,43 @@ impl Core {
         self.named(&Principal::new(who.to_owned()))
     }
 
+    /// What several people are called, as a sentence names them: "Bo", "Bo and Scout", "Bo, Scout
+    /// and Kit", and past three "Bo, Scout and 3 others" — the faces beside them count the rest.
+    pub(crate) fn names(&self, people: &[String]) -> String {
+        let args = |pairs: &[(&str, &str)]| -> Vec<(String, String)> {
+            pairs
+                .iter()
+                .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
+                .collect()
+        };
+        let first = people.first().cloned().unwrap_or_default();
+        let second = people.get(1).cloned().unwrap_or_default();
+        match people.len() {
+            0 | 1 => first,
+            2 => self.word_args(
+                "tilolang-names-two",
+                &args(&[("first", &first), ("second", &second)]),
+                &format!("{first} and {second}"),
+            ),
+            3 => {
+                let third = people.get(2).cloned().unwrap_or_default();
+                self.word_args(
+                    "tilolang-names-three",
+                    &args(&[("first", &first), ("second", &second), ("third", &third)]),
+                    &format!("{first}, {second} and {third}"),
+                )
+            }
+            more => {
+                let rest = more.saturating_sub(2).to_string();
+                self.word_args(
+                    "tilolang-names-more",
+                    &args(&[("first", &first), ("second", &second), ("count", &rest)]),
+                    &format!("{first}, {second} and {rest} others"),
+                )
+            }
+        }
+    }
+
     /// What the host calls `who`, and that a view showing it read it: the window calling someone
     /// something else runs again the boundaries that show a name, and no others.
     pub(crate) fn named(&self, who: &Principal) -> String {

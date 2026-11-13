@@ -2142,3 +2142,131 @@ fn a_list_opens_the_page_of_its_first_row_in_every_run() {
         "every run opens the same task: {opened:?}"
     );
 }
+
+#[test]
+fn a_narrow_channels_mark_opens_its_catch_up() {
+    // The channel opens scrolled to its newest message, so rows stand above the list's viewport,
+    // under the window's header: the mark the header holds is where the person's finger lands,
+    // and it opens the catch-up as a sheet across the window's foot.
+    on_a_windows_stack(|| {
+        tilo_ui_host::i18n::ensure();
+        ui::clock::freeze_for_capture();
+        let packages = app_packages("chat");
+        let mut channels = stage::Staged::over(
+            "so.tilo.lang.chat",
+            &packages,
+            "a team's channels",
+            (320, 568),
+            ui::Theme::light(),
+            None,
+            &[],
+        )
+        .expect("the scenario stages");
+        channels
+            .lay_out_moving((320, 568), ui::Theme::light(), input_at((320, 568)))
+            .expect("the app lays out");
+        let mark = shown_floating_rect(&channels, "ChangeMark").expect("the header shows its mark");
+        assert!(
+            mark.y0 >= 0.0 && mark.y1 <= 56.0,
+            "the mark stands in the window's header: {mark:?}"
+        );
+        channels
+            .press_at(mark.center().x, mark.center().y)
+            .expect("the mark presses");
+        channels
+            .freshen()
+            .expect("the app lays out with its catch-up open");
+        let sheet =
+            shown_floating_rect(&channels, "Popover").expect("the narrow mark opens its catch-up");
+        let (_, frame) = channels.harness().frame_extent((320, 568));
+        assert!(
+            sheet.x0 >= 0.0
+                && sheet.x1 <= 320.0
+                && sheet.width() >= 300.0
+                && sheet.y1 <= frame
+                && sheet.y1 >= frame - 24.0,
+            "the catch-up stands as a sheet across the window's foot: {sheet:?} of {frame}"
+        );
+    });
+}
+
+#[test]
+fn a_task_two_people_changed_names_them_both_in_its_catch_up() {
+    // One row for the task however many changed it: everyone who did is named on the line, with a
+    // face each, and what it says is the newest change's words.
+    tilo_ui_host::i18n::ensure();
+    ui::clock::freeze_for_capture();
+    let packages = tasks_packages();
+    let mut page = stage::Staged::over(
+        "so.tilo.lang.tasks",
+        &packages,
+        "a task two people changed",
+        (1280, 800),
+        ui::Theme::light(),
+        None,
+        &[],
+    )
+    .expect("the scenario stages");
+    page.lay_out((1280, 800), ui::Theme::light(), input_at((1280, 800)), 1.0)
+        .expect("the app lays out");
+    let window = {
+        let composed = page.composed().expect("the page composes");
+        window_mark(&composed).expect("the page says what changed since the person looked")
+    };
+    assert_eq!(
+        window.props.get("count"),
+        Some(&tilo_render_protocol::patch::Value::Int(1)),
+        "the task changed, once: {window:?}"
+    );
+    let content = window
+        .children
+        .iter()
+        .find(|child| {
+            child.kind == "slot"
+                && child.props.get("name")
+                    == Some(&tilo_render_protocol::patch::Value::text("content"))
+        })
+        .and_then(|slot| slot.children.first())
+        .unwrap_or_else(|| panic!("the mark opens its catch-up: {window:?}"));
+    let mut rows = Vec::new();
+    nodes(content, "row", &mut rows);
+    let steps: Vec<&tilo_ui_host::UiNode> = rows
+        .into_iter()
+        .filter(|row| row.key.contains("~step"))
+        .collect();
+    assert_eq!(
+        steps.len(),
+        1,
+        "the task stands as one row, not one per change: {content:?}"
+    );
+    let step = steps[0];
+    let faces = nodes_of(step, "ui.Avatar")
+        .into_iter()
+        .filter(|face| {
+            matches!(
+                face.props.get("who"),
+                Some(tilo_render_protocol::patch::Value::Principal(_))
+            )
+        })
+        .count();
+    assert_eq!(
+        faces, 2,
+        "a face for each of the two who changed it: {step:?}"
+    );
+    let words: Vec<String> = nodes_of(step, "ui.Text")
+        .into_iter()
+        .filter_map(|text| match text.props.get("value") {
+            Some(tilo_render_protocol::patch::Value::Text(value)) => Some(value.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        words.first().map(String::as_str),
+        Some("Bo and Scout"),
+        "the line names both who changed the task, in the order they changed it: {words:?}"
+    );
+    assert!(
+        words.get(1).is_some_and(|said| said == "marked it done"),
+        "and goes on with the newest change's words: {words:?}"
+    );
+}

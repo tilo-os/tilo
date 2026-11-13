@@ -1816,7 +1816,11 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
             } => self.pressed_row.take(),
             _ => None,
         };
-        if !taking_press && !self.drag_scroll.is_tracking() && !self.reorder.is_tracking() {
+        if !taking_press
+            && !self.drag_scroll.is_tracking()
+            && !self.reorder.is_tracking()
+            && self.pointer_reaches_rows(event, ctx)
+        {
             let reached = self.rows_reached(event);
             if let Some(rows) = self.mounted.get_mut(reached) {
                 crate::widget::route_to_mounted(

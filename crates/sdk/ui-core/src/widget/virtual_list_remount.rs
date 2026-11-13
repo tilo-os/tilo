@@ -197,6 +197,30 @@ impl<M: ListModel> VirtualList<M> {
         }
     }
 
+    /// Whether `event`'s pointer stands over the list at all: clipping is an interaction boundary
+    /// as well as a paint boundary, so a row scrolled past the viewport takes nothing from above
+    /// or below it, where it is painted nowhere. A row holding a drag it began inside the list
+    /// keeps the pointer wherever it goes.
+    pub(super) fn pointer_reaches_rows(
+        &self,
+        event: &winit::event::WindowEvent,
+        ctx: &crate::widget::EventCtx<'_>,
+    ) -> bool {
+        use winit::event::WindowEvent;
+        let at = match event {
+            WindowEvent::CursorMoved { position, .. } => Some(ctx.logical(position)),
+            WindowEvent::Touch(touch) => Some(ctx.logical(touch.location)),
+            WindowEvent::MouseInput { .. } | WindowEvent::MouseWheel { .. } => self.last_cursor,
+            _ => return true,
+        };
+        let Some(at) = at else { return true };
+        self.rect.contains(at)
+            || self
+                .mounted
+                .iter()
+                .any(|row| row.widget.wants_pointer_capture())
+    }
+
     pub(super) fn draw_keep(
         &self,
         opacity: f32,

@@ -792,9 +792,9 @@ impl Core {
         stack
     }
 
-    /// One row of a catch-up: what a record someone changed is called, what was done to it in
-    /// one line, how many changes it holds since the person looked, and the run that made the
-    /// newest of them.
+    /// One row of a catch-up: what a record someone changed is called, everyone who changed it
+    /// and what the newest of them did in one line, how many changes it holds since the person
+    /// looked, and the run that made the newest of them.
     fn catch_up_row(
         &self,
         row_key: &str,
@@ -827,13 +827,13 @@ impl Core {
             ),
         );
         held.children.push(item);
-        // What was done to it, one line: its newest change, as history says a step of a record:
-        // who, what they did, and when.
+        // Who changed it, and what the newest of them did, one line: as history says a step of a
+        // record — who, what they did, and when.
         let Some(newest) = versions.last() else {
             return held;
         };
         held.children
-            .push(self.step_line(&format!("{row_key}~step"), rid, newest, viewer));
+            .push(self.step_line(&format!("{row_key}~step"), rid, versions, viewer));
         // Changed more than once since the person looked: the row says how many, as history
         // says the changes a step folds.
         if *changes > 1 {
@@ -872,38 +872,52 @@ impl Core {
         held
     }
 
-    /// One step of a catch-up: the face of who made it, what they did in the words history
-    /// says it in, and when.
+    /// One step of a catch-up: the faces of everyone who made one of `versions`, their names, and
+    /// what the newest of them did in the words history says it in, and when.
     fn step_line(
         &self,
         key: &str,
         of: &ResourceRef,
-        version: &Version,
+        versions: &[Version],
         viewer: &Principal,
     ) -> UiNode {
         let mut line = UiNode::empty("row", key);
         line.props.insert("gap".to_owned(), Value::text("tight"));
         line.props.insert("align".to_owned(), Value::text("center"));
-        let mut face = UiNode::empty("ui.Avatar", &format!("{key}~face"));
-        face.props.insert(
-            "who".to_owned(),
-            Value::Principal(Principal::new(version.who.clone())),
-        );
-        line.children.push(face);
-        // The line leads with the name, as history writes a sentence: name, then what they did
+        // Everyone who changed it since the person looked, oldest first, each once: a record two
+        // people changed shows both their faces and names them both, as the window's chip does.
+        let mut changers: Vec<&str> = Vec::new();
+        for version in versions {
+            if !changers.contains(&version.who.as_str()) {
+                changers.push(version.who.as_str());
+            }
+        }
+        for (index, who) in changers.iter().enumerate() {
+            let mut face = UiNode::empty("ui.Avatar", &format!("{key}~face-{index}"));
+            face.props.insert(
+                "who".to_owned(),
+                Value::Principal(Principal::new((*who).to_owned())),
+            );
+            line.children.push(face);
+        }
+        // The line leads with the names, as history writes a sentence: name, then what they did
         // ("Scout marked it done"). A face alone does not say who.
-        let mine = version.run.is_none() && viewer.0 == version.who;
+        let names: Vec<String> = changers
+            .iter()
+            .map(|who| self.actor(who, viewer.0 == *who))
+            .collect();
         let mut who = UiNode::empty("ui.Text", &format!("{key}~who"));
-        who.props.insert(
-            "value".to_owned(),
-            Value::Text(self.actor(&version.who, mine)),
-        );
+        who.props
+            .insert("value".to_owned(), Value::Text(self.names(&names)));
         who.props.insert("role".to_owned(), Value::text("label"));
         line.children.push(who);
+        let Some(newest) = versions.last() else {
+            return line;
+        };
         let mut said = UiNode::empty("ui.Text", &format!("{key}~said"));
         said.props.insert(
             "value".to_owned(),
-            Value::Text(self.version_line(version, of, &viewer.0)),
+            Value::Text(self.version_line(newest, of, &viewer.0)),
         );
         said.props.insert("truncate".to_owned(), Value::Bool(true));
         line.children.push(said);
@@ -912,7 +926,7 @@ impl Core {
         line.children
             .push(UiNode::empty("spacer", &format!("{key}~gap")));
         let mut at = UiNode::empty("ui.Time", &format!("{key}~at"));
-        at.props.insert("at".to_owned(), Value::text(&version.at));
+        at.props.insert("at".to_owned(), Value::text(&newest.at));
         at.props.insert("role".to_owned(), Value::text("caption"));
         at.props.insert("secondary".to_owned(), Value::Bool(true));
         line.children.push(at);

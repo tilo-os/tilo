@@ -2284,3 +2284,35 @@ fn a_closed_rows_checkbox_is_one_control_under_one_row() {
         .expect("the box is operated");
     assert_eq!(toggled.get(), Some(true), "the tick reaches the row's box");
 }
+
+/// A row scrolled past the list's viewport is painted nowhere, so it takes no press either: a
+/// press above the list reaches what stands there, never a row the list keeps out of sight.
+#[test]
+fn a_press_above_the_list_reaches_no_row_scrolled_out_of_view() {
+    let presses = Rc::new(Cell::new(0));
+    let counted = Rc::clone(&presses);
+    let model = VecListModel::new(vec![1_u64, 2], |key| *key).unwrap();
+    let mut list = VirtualList::new(model, 24.0, move |_, _, _| {
+        Box::new(ProbeRow::new("row", 24.0, true, Rc::clone(&counted)))
+    })
+    .with_viewport_height(48.0);
+    list.set_scroll_offset(10.0);
+    let (taffy, node) = lay_out(&mut list, 300.0);
+    // The list stands sixty pixels down its page, and its first row ten pixels above it: the row
+    // is drawn nowhere, and a finger above the list lands on the page, not on it.
+    list.apply_layout(&taffy, node, Point::new(0.0, 60.0));
+    assert_eq!(list.get_rect(), Rect::new(0.0, 60.0, 300.0, 108.0));
+    let above = cursor(55.0);
+    dispatch(&mut list, &above, &taffy, node);
+    dispatch(&mut list, &left(ElementState::Pressed), &taffy, node);
+    assert_eq!(
+        presses.get(),
+        0,
+        "a press above the list reaches no row of it"
+    );
+    // Where the list shows the row, the press is the row's.
+    let on_it = cursor(70.0);
+    dispatch(&mut list, &on_it, &taffy, node);
+    dispatch(&mut list, &left(ElementState::Pressed), &taffy, node);
+    assert_eq!(presses.get(), 1, "a press on the row reaches it");
+}
