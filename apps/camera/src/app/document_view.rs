@@ -23,7 +23,6 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::DrawChild;
 
-/// The visible choices of one document setting, in index order.
 pub(super) fn choice_labels(choice: DocumentChoice) -> &'static [&'static str] {
     match choice {
         // Until a scanner answers the field says so, never its raw index.
@@ -35,7 +34,6 @@ pub(super) fn choice_labels(choice: DocumentChoice) -> &'static [&'static str] {
     }
 }
 
-/// The scanner field while no scanner is found.
 const NO_SCANNER: &str = "No scanner found";
 
 const CHOICES: [DocumentChoice; 5] = [
@@ -122,7 +120,6 @@ pub(super) struct DocumentLayout {
 }
 
 impl CameraApp {
-    /// Show the current scanners and settings in the dropdowns.
     pub(super) fn present_document_controls(&mut self) {
         let scanners: Vec<String> = self
             .scanner_devices
@@ -190,7 +187,6 @@ impl CameraApp {
         }
     }
 
-    /// Place the settings, the scan button and the page for `full`.
     pub(super) fn document_layout(full: Rect, theme: &Theme) -> DocumentLayout {
         let m = HudMetrics::of(theme);
         let spacing = &theme.tokens.spacing;
@@ -425,7 +421,6 @@ impl CameraApp {
         top
     }
 
-    /// The page, as large as `room` allows, or the crop editor over it.
     fn draw_page_image(&mut self, scene: &mut Scene, t: Affine, theme: &Theme, room: Rect) {
         let colors = theme.tokens.colors.clone();
         if let Some(editor) = self.document_crop_editor.as_mut() {
@@ -480,8 +475,6 @@ impl CameraApp {
 mod tests {
     use super::*;
 
-    /// A staged page was scanned with the sample's scanner, and the
-    /// settings name that scanner.
     #[test]
     fn a_staged_page_names_the_scanner_it_came_from() {
         let mut app = CameraApp::sample();

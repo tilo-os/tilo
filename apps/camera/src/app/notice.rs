@@ -24,12 +24,10 @@ impl Notice {
         Self::default()
     }
 
-    /// Something worked: the picture saved, the text copied.
     pub(super) fn show(&mut self, text: impl Into<String>) {
         self.show_kind(ToastKind::Success, text);
     }
 
-    /// Something needs the person's attention but is not a failure.
     pub(super) fn warn(&mut self, text: impl Into<String>) {
         self.show_kind(ToastKind::Warning, text);
     }
@@ -51,13 +49,11 @@ impl Notice {
         self.text.show(text.into());
     }
 
-    /// Work under way, which stays while it runs.
     pub(super) fn show_progress(&mut self, text: impl Into<String>) {
         self.kind = ToastKind::Info;
         self.text.show_progress(text.into());
     }
 
-    /// The severity of the message shown now.
     pub(super) fn kind(&self) -> ToastKind {
         self.kind
     }
@@ -96,17 +92,13 @@ impl std::ops::Deref for Notice {
     }
 }
 
-/// The bar action id of a notice's button.
 pub(super) const NOTICE_ACTION: &str = "camera.notice-action";
 
 /// What a message that asks the person to act lets them do from the bar.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum NoticeAction {
-    /// Scan the page again, after a scan that failed.
     ScanAgain,
-    /// Start recognizing the selected page's text again.
     RecognizeAgain,
-    /// Look for cameras again.
     RefreshCameras,
 }
 
@@ -139,7 +131,6 @@ impl CameraApp {
         self.toast_action = Some((text, action));
     }
 
-    /// The action of the message up, if it carries one.
     fn notice_action(&self) -> Option<NoticeAction> {
         let shown = self.toast.as_deref()?;
         self.toast_action
@@ -187,8 +178,6 @@ impl CameraApp {
 mod tests {
     use super::*;
 
-    /// A result says so in the window's bar, a failure as one, and the bar
-    /// lets it go once its owner does.
     #[test]
     fn a_result_is_the_window_bars_notice() {
         let mut app = CameraApp::sample();
@@ -208,9 +197,6 @@ mod tests {
         assert_eq!(ui::window_toolbar::notice(), None);
     }
 
-    /// The severity is carried with the message, so the words cannot change
-    /// it: a failure that thanks the person is still a failure, and a success
-    /// that mentions a failure is still a success.
     #[test]
     fn rewording_a_message_cannot_change_how_serious_it_is() {
         let mut app = CameraApp::sample();

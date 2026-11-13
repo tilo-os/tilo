@@ -194,8 +194,6 @@ mod tests {
         );
     }
 
-    /// A preference set through its effect is the person's or this device's
-    /// setting, not an edit of the record.
     #[test]
     fn preferences_are_settings_of_the_person_and_the_device() {
         let mut app = TestApp::<CameraShell>::new().unwrap();
@@ -214,9 +212,6 @@ mod tests {
         assert_eq!(app.versions().len(), versions, "no edit of the record");
     }
 
-    /// Every screenshot is a capture of sample frames at a fixed time, its
-    /// recent capture staged through actions and its mode and timer through
-    /// fixtures.
     #[test]
     fn captures_stage_the_record_and_the_preferences() {
         let mut viewfinder = TestApp::<CameraShell>::capture(None).unwrap();

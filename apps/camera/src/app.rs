@@ -1,19 +1,15 @@
 //! Root widget for the Camera app.
 //!
-//! A canvas-heavy app: rather than composing dozens of taffy nodes, the
-//! root occupies a single layout node and paints every screen (Camera,
-//! Scanner, and Settings) straight into the Vello scene, hit-testing
-//! its own controls.
+//! A canvas-heavy app: the root occupies one layout node and paints every
+//! screen (Camera, Scanner, Settings) straight into the Vello scene,
+//! hit-testing its controls.
 //!
-//! A shutter press writes verified media bytes and retains one contextual
-//! recent-capture handoff. Photos and Video Player own collection browsing,
-//! favorites, deletion, and metadata. The Automerge document (see
-//! [`crate::resource`]) holds the recent handoff, scan history, and granular capture
-//! preferences. A
-//! live viewfinder needs a camera; when none is
-//! present the camera/scanner screens say so honestly rather than faking a
-//! feed. The hermetic `--shots` / test path uses a self-contained sample
-//! source so screenshots and tests never touch the disk or a device.
+//! A shutter press writes verified media bytes and keeps one recent-capture
+//! handoff; Photos and Video Player own collection browsing, favorites, deletion
+//! and metadata. The document ([`crate::resource`]) has the handoff, scan
+//! history and capture preferences. A live viewfinder needs a camera, and with
+//! none the camera and scanner screens say so. The `--shots` and test path uses
+//! a sample source, never the disk or a device.
 
 #[cfg(test)]
 use automerge::AutoCommit;
@@ -26,8 +22,6 @@ use std::sync::mpsc;
 use tilo_clock::unix_now_i64;
 use ui::time::{Duration, Instant};
 
-/// How long a scanned Wi-Fi password stays on the clipboard: long enough to
-/// paste it into the network settings.
 const WIFI_PASSWORD_ON_CLIPBOARD_FOR: Duration = Duration::from_secs(60);
 #[cfg(test)]
 #[cfg(test)]
@@ -68,22 +62,12 @@ mod window_bar;
 
 pub(crate) use store::window;
 
-/// Payload composited into the sample scanner poster (hermetic path only).
 const SCAN_PAYLOAD: &str = "WIFI:T:WPA2;S:Tilo Lounge;P:welcome-aboard;H:false;;";
-/// Single decoded-size budget for the contextual recent-capture preview.
 const THUMB: (u32, u32) = (512, 342);
-/// Renderer/upload admission limit for external camera data. This mirrors the
-/// capture callback limit and remains here for the feature-off/test path: no
-/// caller can smuggle malformed pixels into an `Image`.
 const MAX_FRAME_PIXELS: u64 = 8_847_360; // 4096 × 2160
 const MAX_FRAME_BYTES: usize = 48 * 1024 * 1024;
-/// Keep only the current and immediately superseded thumbnail while an async
-/// recent-capture handoff changes; Camera never owns a browsing cache.
 const MAX_THUMB_CACHE: usize = 2;
 
-/// A deterministic paper-like fixture for screenshots and interaction tests.
-/// It deliberately contains varied blocks, rules and columns so crop,
-/// rotation, scaling and page previews exercise real contrast and geometry.
 fn sample_document_image() -> ui::image_codec::DecodedImage {
     let colour = |x: u32, y: u32| -> [u8; 3] {
         let in_rect = |x0, y0, x1, y1| x >= x0 && x < x1 && y >= y0 && y < y1;
@@ -150,38 +134,23 @@ type DocumentPreview = (
 /// centre and side.
 type ScanViewKey = (u32, u32, i32, i32, u32);
 
-/// Where newly captured pixels are projected.
 enum Storage {
-    /// Live: real files under this directory; `None` when no directory
-    /// resolves, keeping captures only in the content store.
     Disk(Option<PathBuf>),
-    /// Hermetic (screenshots/tests): in-memory procedural samples.
     Sample,
 }
 
-/// The reason a live viewfinder cannot be opened when a device was present.
-/// This stays distinct from the ordinary "no camera connected" state so we
-/// never mislead someone whose portal/device permission was denied.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum CameraIssue {
-    /// Deterministic/headless equivalent of normal device discovery finding
-    /// no camera. Runtime discovery represents this as `None` so retries can
-    /// immediately reopen a newly attached device.
     NoDevice,
     PermissionDenied,
     StartFailed,
 }
 
-/// Whether Camera runs in a web page, where the browser, not the system,
-/// grants camera access and lists the cameras.
 const IN_BROWSER: bool = matches!(
     tilo_capture::ACCESS_GRANTOR,
     tilo_capture::AccessGrantor::Browser
 );
 
-/// The no-picture title and message for `issue`. Each names only what is
-/// known: a failed start says nothing about which camera, since the page or
-/// the system may not have told Camera of any.
 fn no_feed_copy(issue: Option<CameraIssue>, in_browser: bool) -> (&'static str, &'static str) {
     match issue {
         Some(CameraIssue::NoDevice) | None => (
@@ -203,8 +172,6 @@ fn no_feed_copy(issue: Option<CameraIssue>, in_browser: bool) -> (&'static str, 
     }
 }
 
-/// An in-progress video recording. Encoding is exclusively worker-owned; UI
-/// retains only the start time needed to paint the elapsed indicator.
 struct RecState {
     started: i64,
 }
@@ -266,12 +233,10 @@ impl DocumentChoice {
         Self::Language,
     ];
 
-    /// The setting [`crate::actions::SCAN_SETTINGS`] names `key`.
     fn of(key: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|choice| choice.key() == key)
     }
 
-    /// Its name among [`crate::actions::SCAN_SETTINGS`].
     const fn key(self) -> &'static str {
         match self {
             Self::Scanner => "scanner",
@@ -296,9 +261,8 @@ impl Default for DocumentSettings {
     }
 }
 
-/// A local, physical-capture countdown.  It intentionally is not document
-/// state: a peer changing a preference may replicate the preferred delay, but
-/// must never arm or replay this device's shutter.
+/// A local countdown, never document state: a peer may replicate a preferred
+/// delay, but must never arm or replay this device's shutter.
 struct Countdown {
     due: Instant,
     mode: CaptureMode,
@@ -307,20 +271,14 @@ struct Countdown {
 #[derive(Clone, Debug)]
 enum Action {
     Nav(Screen),
-    /// Dismiss an overlay screen (Settings) back to the viewfinder
-    /// it was opened from.
     Back,
     Shutter,
-    /// Hand off browsing to Photos. Camera never renders or mutates a
-    /// collection browser itself.
     OpenPhotos,
     OpenRecentCapture,
     SetMode(CaptureMode),
     CycleFacing,
     DismissScan,
     Scan(usize),
-    /// Choose an existing image through the system portal and scan it without
-    /// turning Camera into a media browser.
     ImportScanImage,
     CaptureDocument,
     ApplyDocumentCrop,
@@ -356,65 +314,44 @@ pub struct CameraApp {
     node: Option<NodeId>,
 
     storage: Storage,
-    /// Where capture bytes live; documents carry only their `media_id`. The
-    /// worker holds a clone.
     content: tilo_content::ContentStore,
 
     screen: Screen,
     mode: CaptureMode,
     facing: Facing,
-    /// Whether the last look at this device found more than one camera.
     multiple_cameras: bool,
-    /// The capture preferences on screen: the person's and this device's.
     settings: Settings,
-    /// Where they are kept, in a live window.
     preferences: Option<(
         Setting<CapturePreferences>,
         Setting<CameraDevicePreferences>,
     )>,
-    /// The record's scan history, as last presented.
     scans: Vec<ScanEntry>,
 
     // One contextual recent-capture handoff. Camera never owns a media library.
     captures: Vec<Capture>,
 
     // ephemeral UI state
-    /// The viewfinder screen the Settings overlay was opened from,
-    /// so its back button returns there rather than always to Camera.
     return_to: Screen,
     scan_dismissed: bool,
     scanned: Option<ScannedCode>,
     scan_gen: (u32, u32),
-    /// The result of the last action, shown for a notice's lifetime.
     toast: notice::Notice,
-    /// What the person can do about the message up, when it asks them to
-    /// act: kept with the message it belongs to, so a later message without
-    /// one shows none.
     toast_action: Option<(String, notice::NoticeAction)>,
-    /// The last copy, whose outcome can arrive after its confirmation.
     copy: ui::CopyWatch,
     last_mouse: Point,
     document_scan: crate::document_scan::ScanSession,
     document_settings: DocumentSettings,
-    /// The scan settings, as standard dropdowns placed by the document view.
     document_controls: document_view::DocumentControls,
-    /// The capture settings sheet shown over the viewfinder.
     settings_sheet: settings_sheet::SettingsSheet,
-    /// Actions raised by the retained controls, applied after their event.
     ui_queue: settings_sheet::ActionQueue,
-    /// The camera list a failed start offers, anchored on its action.
     chooser: Popover,
     chooser_anchor: Rect,
     tooltip: ui::widget::TooltipHost,
-    /// Icon-only controls of the last frame and their names.
     tooltip_targets: Vec<(Rect, String)>,
-    /// The theme of the last layout, for placing hosted controls.
     layout_theme: Theme,
-    /// Whether the last layout tree holds the document controls.
     built_with_document: bool,
     scanner_devices: Vec<tilo_capture::scanner::Scanner>,
     selected_scanner: Option<String>,
-    /// Set while the file chooser for a document export is open.
     document_export_pending: Rc<Cell<bool>>,
     document_crop_selection: ui::LocalState<CropSelection>,
     document_crop_editor: Option<ImageCropEditor>,
@@ -433,9 +370,7 @@ pub struct CameraApp {
     latest_frame: Option<FrameBuf>,
     frame_gen: u64,
     io_generation: u64,
-    /// The shared preview pipeline; the recent-capture peek is requested from it.
     thumb_service: thumbnail::ThumbnailService,
-    /// Captures whose preview is still being generated, by pipeline key.
     thumb_pending: HashMap<String, thumbnail::ThumbKey>,
     thumb_failed: HashSet<String>,
     scan_generation: u64,
@@ -445,27 +380,18 @@ pub struct CameraApp {
     pending_video: Option<(ui::tilo_actions::InvocationId, u64)>,
     pending_scan_import: Option<ui::tilo_actions::InvocationId>,
     pending_document_job: Option<ui::tilo_actions::InvocationId>,
-    /// The answers owed to the effects whose work is still settling: a
-    /// photo or clip being saved, a chosen image being scanned, a document
-    /// page being scanned or read.
     replies: HashMap<ui::tilo_actions::InvocationId, EffectReply>,
     camera_issue: Option<CameraIssue>,
     selected_camera: Option<String>,
-    /// The host supplies this preference before deciding whether to pump
-    /// animation frames. Capture itself still runs; only decorative frame
-    /// pumping is settled under reduced motion.
     motion_reduced: bool,
     #[cfg(feature = "live-capture")]
     camera: Option<crate::capture::Capture>,
-    /// The `(device, width, height)` the live pipeline is currently open on,
-    /// so device/resolution changes trigger a re-open.
     #[cfg(feature = "live-capture")]
     cam_config: Option<(String, u32, u32)>,
 
     // render caches
     cam_view: Option<(u32, u32, u8, Image)>,
     live_view: Option<(u64, Image)>,
-    /// The sample scan feed for `(width, height, guide x, guide y, guide side)`.
     scan_view: Option<(ScanViewKey, Image)>,
     thumbs: HashMap<String, Image>,
 
@@ -473,24 +399,12 @@ pub struct CameraApp {
     active_touch: Option<TouchTarget>,
     dirty: bool,
 
-    /// Photos the sample shutter took, registered on the next sync.
     sample_captures: Vec<crate::record::SharedCapture>,
-    /// Where the record's edits go, once the view attached the window.
     dispatcher: Option<ui::framework::Dispatcher<crate::record::Record>>,
-    /// What the window shares with the view's effect handler.
     store: store::Shared,
-    /// The window bar's entries.
     bar: window_bar::Bar,
-    /// The time a screenshot is taken at, in Unix seconds; `None` reads the
-    /// machine's clock.
     clock: Option<i64>,
-    /// The last-capture thumbnail invokes Photos through the shell's typed
-    /// application-open boundary. Camera never imports Photos or serializes a
-    /// side-channel payload; Photos receives only a verified portable hash.
     photos_handoff: Option<ActionEmitter<String>>,
-    /// The unconditional Photos destination for browsing the user's library.
-    /// Unlike `photos_handoff`, it carries no capture bytes because Photos
-    /// owns its own collection and entry point.
     photos_browse: Option<ActionEmitter<()>>,
     video_handoff: Option<ActionEmitter<String>>,
 }
@@ -726,7 +640,6 @@ impl CameraApp {
         true
     }
 
-    /// True while a video recording is in progress.
     pub(crate) fn is_recording(&self) -> bool {
         self.recording.is_some()
     }
@@ -781,9 +694,8 @@ impl CameraApp {
         }
     }
 
-    /// Complete a local countdown from `sync`, the lifecycle boundary that is
-    /// also called by reduced-motion wakeups.  No peer action and no resource
-    /// replay can reach this path.
+    /// Complete a local countdown from `sync` (also the reduced-motion wakeup). No
+    /// peer action and no resource replay reaches this path.
     fn poll_countdown(&mut self) {
         let Some(countdown) = self.countdown.as_ref() else {
             return;
@@ -807,8 +719,7 @@ impl CameraApp {
         self.dirty = true;
     }
 
-    /// Begin a recording. Honest about missing hardware: with no live feed the
-    /// disk/live source can't record, so it says so instead of faking a clip.
+    /// Begin a recording. With no live feed it says so instead of faking a clip.
     fn start_recording(&mut self) {
         if !self.feed_active() {
             self.toast.warn("Connect a camera to record");
@@ -836,8 +747,8 @@ impl CameraApp {
         self.dirty = true;
     }
 
-    /// Finish the recording by submitting its AVI mux/verification to the
-    /// bounded finalizer. `sync` publishes the resulting canonical capture.
+    /// Finish the recording: the AVI is muxed and verified by the bounded worker,
+    /// and `sync` publishes the capture.
     fn stop_recording(
         &mut self,
         invocation: Option<ui::tilo_actions::InvocationId>,
@@ -873,7 +784,6 @@ impl CameraApp {
         Ok(())
     }
 
-    /// Whether a live viewfinder feed is currently available.
     fn feed_active(&self) -> bool {
         // A forced unavailable state is used by the hermetic screenshot/test
         // path. `Storage::Sample` normally supplies a procedural viewfinder,
@@ -913,9 +823,8 @@ impl CameraApp {
         camera_devices(matches!(self.storage, Storage::Disk(_)))
     }
 
-    /// Whether a real camera is open with pictures to pull every frame. A
-    /// camera still waiting for the person's answer has none, and its
-    /// answer wakes the app by itself.
+    /// Whether a real camera is open with pictures to pull every frame. One waiting
+    /// for the person's answer has none; that answer wakes the app.
     fn viewfinder_streaming(&self) -> bool {
         #[cfg(feature = "live-capture")]
         {
@@ -941,9 +850,8 @@ impl CameraApp {
         self.regions.push((rect, action));
     }
 
-    /// A stable semantic target for a hand-painted control. It is derived
-    /// from the same `Action` the pointer hit map holds, so it cannot drift
-    /// into a second accessibility-only command path.
+    /// A stable semantic target for a hand-painted control, derived from the same
+    /// `Action` the pointer hit map holds.
     fn a11y_target(action: &Action) -> String {
         match action {
             Action::Nav(screen) => format!("camera.nav:{}", screen.as_str()),
@@ -1148,7 +1056,6 @@ impl CameraApp {
             .with_action_target(Self::a11y_target(action))
     }
 
-    /// Where edits go before the framework attaches the surface: nowhere.
     #[cfg(not(test))]
     fn unattached_dispatcher() -> Option<ui::framework::Dispatcher<crate::record::Record>> {
         None
@@ -1167,8 +1074,6 @@ impl CameraApp {
         ))
     }
 
-    /// Invoke `effect` as the row `row` offers it, through the same door as
-    /// the palette and agents: a button on screen runs exactly what they do.
     fn invoke_on(&mut self, row: &str, effect: &CameraEffect) {
         match &self.dispatcher {
             Some(dispatcher) => dispatcher.effect_on(row, effect),
@@ -1176,8 +1081,6 @@ impl CameraApp {
         }
     }
 
-    /// Bind the settings sheet and the document scan settings to the
-    /// resource's published effects.
     pub(crate) fn attach_actions(
         &mut self,
         actions: &ui::framework::Actions<crate::record::Record>,
@@ -1186,7 +1089,6 @@ impl CameraApp {
         self.document_controls.attach(actions);
     }
 
-    /// Edit the record through `dispatcher` from now on.
     pub(crate) fn attach_dispatcher(
         &mut self,
         dispatcher: ui::framework::Dispatcher<crate::record::Record>,
@@ -1195,8 +1097,6 @@ impl CameraApp {
         self.dispatcher = Some(dispatcher);
     }
 
-    /// Read the time from `now` (Unix seconds) instead of the machine's
-    /// clock, as a screenshot does.
     pub(crate) fn set_clock(&mut self, now: i64) {
         self.clock = Some(now);
     }
@@ -1238,15 +1138,12 @@ impl CameraApp {
         self.present_controls();
     }
 
-    /// The current time in Unix seconds.
     fn now_secs(&self) -> i64 {
         self.clock.unwrap_or_else(unix_now_i64)
     }
 
-    /// Apply one of the record's verbs — the single mutation path shared
-    /// with the palette and agents — to the document the event was handed,
-    /// through the framework's dispatcher: checked, attributed, one undo
-    /// step, replicated.
+    /// Apply one of the record's verbs, the single mutation path shared with the
+    /// palette and agents, through the framework's dispatcher.
     fn perform_action(
         &mut self,
         doc: &mut ui::widget::Edits<'_>,
@@ -1281,7 +1178,6 @@ impl CameraApp {
         }
     }
 
-    /// The compact context Ctrl+K needs to build Camera's canonical resources.
     #[cfg(test)]
     pub(crate) fn camera_resource_ctx(&self) -> crate::actions::CameraResourceCtx {
         self.camera_resource_ctx_with_recent(
@@ -1366,7 +1262,6 @@ impl CameraApp {
         self.present_controls();
     }
 
-    /// The screen under the settings sheet, or the screen itself.
     fn base_screen(&self) -> Screen {
         if self.screen == Screen::Settings {
             self.return_to
@@ -1375,7 +1270,6 @@ impl CameraApp {
         }
     }
 
-    /// Apply the actions the hosted controls raised during the last event.
     fn drain_ui_queue(&mut self, doc: &mut ui::widget::Edits<'_>, root: &ObjId) {
         let actions: Vec<Action> = self.ui_queue.borrow_mut().drain(..).collect();
         for action in actions {
@@ -1383,8 +1277,6 @@ impl CameraApp {
         }
     }
 
-    /// Show the current settings in the hosted controls, and the settings
-    /// sheet while it is the screen.
     fn present_controls(&mut self) {
         let lenses = self.has_lenses_to_switch();
         self.settings_sheet.present(&self.settings, lenses);
@@ -1818,9 +1710,8 @@ impl CameraApp {
         }
     }
 
-    /// Open Photos' own library entry point. This intentionally accepts no
-    /// Camera-owned media id: browsing is Photos' concern, whereas the recent
-    /// tile above is the explicit verified-capture handoff.
+    /// Open Photos' library. It takes no Camera media id: browsing is Photos'
+    /// concern, and the recent tile is the verified-capture handoff.
     fn open_photos(&mut self) {
         let Some(handoff) = self.photos_browse.as_mut() else {
             self.toast
@@ -1849,7 +1740,6 @@ impl CameraApp {
         self.use_lens(self.facing.next());
     }
 
-    /// Look through `facing`.
     fn use_lens(&mut self, facing: Facing) {
         if facing != self.facing {
             self.facing = facing;
@@ -1907,7 +1797,6 @@ impl CameraApp {
         self.preferences = Some((person, device));
     }
 
-    /// Show `person` and `device` preferences a capture stages.
     pub(crate) fn stage_preferences(
         &mut self,
         person: CapturePreferences,
@@ -1916,7 +1805,6 @@ impl CameraApp {
         self.settings = Settings::from_parts(person, device);
     }
 
-    /// Film or photograph, as a capture stages.
     pub(crate) fn stage_mode(&mut self, mode: CaptureMode) {
         self.mode = mode;
     }
@@ -1925,12 +1813,10 @@ impl CameraApp {
         self.mode
     }
 
-    /// The capture preferences on screen.
     pub fn capture_settings(&self) -> Settings {
         self.settings
     }
 
-    /// The record's scan history and recent capture, as presented.
     pub(crate) fn present_record(&mut self, state: &crate::record::Record) {
         self.scans.clone_from(&state.scans);
         // Camera retains exactly one collaborative handoff. Photos and Video
@@ -2132,7 +2018,6 @@ impl CameraApp {
         Ok(false)
     }
 
-    /// Answer the caller waiting for `invocation`, if any still is.
     fn settle(
         &mut self,
         invocation: ui::tilo_actions::InvocationId,
@@ -2340,12 +2225,10 @@ impl CameraApp {
 
     #[cfg(feature = "live-capture")]
     fn poll_camera(&mut self) {
-        // Only the live/disk storage drives a real capture device. The sample
-        // storage backs `--shots`, the test suite and any headless render; it
-        // synthesizes its viewfinder frame, so it must never enumerate or open
-        // /dev/video*. The `native-capture` feature compiles the pipeline in; this
-        // runtime check is what decides whether it actually runs — keeping the
-        // hermetic path device-free even in a default (feature-on) build.
+        // Only the live storage drives a real capture device: the sample storage backs
+        // `--shots` and tests and synthesises its frame, so it must never enumerate or
+        // open /dev/video*. The `native-capture` feature compiles the pipeline in; this
+        // check decides whether it runs, keeping the sample path device-free.
         if !matches!(self.storage, Storage::Disk(_)) {
             return;
         }
@@ -2403,7 +2286,6 @@ impl CameraApp {
         self.drain_camera();
     }
 
-    /// Take what the open camera has: its end, or its newest picture.
     #[cfg(feature = "live-capture")]
     fn drain_camera(&mut self) {
         // A start the user refused, or a camera that went away, ends the
@@ -2438,7 +2320,6 @@ fn cycle<T: Copy + PartialEq>(all: &[T], cur: T) -> T {
     all.get(next).copied().unwrap_or(cur)
 }
 
-/// The empty-state category for a capture that could not start.
 #[cfg(feature = "live-capture")]
 fn camera_issue_for(error: Option<&tilo_capture::CaptureError>) -> CameraIssue {
     match error {
@@ -2490,7 +2371,6 @@ type Failure<'a> = (&'a str, String, bool);
 struct ChooserOpen(Rc<Cell<bool>>);
 
 impl ChooserOpen {
-    /// Mark `open`, unless a chooser is open already.
     fn open(open: &Rc<Cell<bool>>) -> Option<Self> {
         (!open.replace(true)).then(|| Self(Rc::clone(open)))
     }
@@ -3427,9 +3307,6 @@ mod tests {
         }
     }
 
-    /// Without a picture the viewfinder offers only what can still do
-    /// something: no capture settings, no lens switch, and a shutter that
-    /// reads as unavailable. Photos and the settings stay in the window bar.
     #[test]
     fn without_a_picture_the_capture_controls_step_aside() {
         let (mut app, doc, _) = sample_app();
@@ -3460,9 +3337,6 @@ mod tests {
         assert!(shutter.state.disabled, "nothing to capture: {shutter:?}");
     }
 
-    /// The no-picture copy claims only what is known, as whole sentences,
-    /// and points a page's visitor at the browser, which holds the
-    /// permission there.
     #[test]
     fn the_no_picture_copy_claims_no_camera_it_has_not_seen() {
         let issues = [
@@ -3484,7 +3358,6 @@ mod tests {
         assert!(desktop.contains("system settings"), "{desktop}");
     }
 
-    /// Photo and Codes give the same reason for having no picture.
     #[test]
     fn photo_and_codes_agree_on_why_there_is_no_picture() {
         for (issue, title) in [
@@ -3501,7 +3374,6 @@ mod tests {
         }
     }
 
-    /// The default lens is a choice only where there is more than one camera.
     #[test]
     fn settings_offer_a_default_lens_only_with_lenses_to_choose() {
         let (mut app, mut doc, root) = sample_app();
@@ -3649,9 +3521,6 @@ mod tests {
         assert!(app.captures.iter().any(Capture::is_video));
     }
 
-    /// Viewfinder washes and HUD ink are chrome on media: they come from the
-    /// theme scrim, and the ink clears body-text contrast on it in every
-    /// shipped preset (including high contrast).
     #[test]
     fn viewfinder_chrome_follows_the_theme() {
         use ui::a11y::contrast_ratio;
@@ -3668,8 +3537,6 @@ mod tests {
         }
     }
 
-    /// The sample camera over a record holding the screenshots' recent
-    /// capture.
     fn sample_app() -> (CameraApp, AutoCommit, ObjId) {
         let mut app = CameraApp::sample();
         let mut doc = AutoCommit::new();
@@ -3684,15 +3551,12 @@ mod tests {
         (app, doc, root)
     }
 
-    /// Hand `app` the record as the framework presents it.
     fn present(app: &mut CameraApp, doc: &AutoCommit) {
         let state = <Camera as ui::tilo_resource::Resource>::read(doc).unwrap();
         app.present_record(&state);
     }
 
     impl CameraApp {
-        /// One frame as the framework runs it: the surface syncs, then is
-        /// handed the record its actions left.
         fn sync_record(&mut self, doc: &mut AutoCommit, root: &ObjId) {
             Widget::update(self, doc, root);
             Widget::settle(self, &mut Edits::lend(doc), root);
@@ -3702,9 +3566,6 @@ mod tests {
         }
     }
 
-    /// The camera record holds the recent capture and the scan history
-    /// alone: the mode, the lens and the capture preferences are never
-    /// written into it.
     #[test]
     fn the_camera_record_holds_no_preferences() {
         use automerge::ReadDoc as _;
@@ -3743,10 +3604,6 @@ mod tests {
         );
     }
 
-    /// Mount `app` over the case's `doc` in the production frame host and run
-    /// one full frame (sync → layout → draw) at a given viewport. CPU-only; no
-    /// GPU needed (rasterization is skipped — we only exercise layout + scene
-    /// build).
     fn render_at(app: CameraApp, doc: AutoCommit, w: f32, h: f32) -> Framed<CameraApp> {
         render_with_theme(app, doc, w, h, Theme::dark())
     }
@@ -3776,7 +3633,6 @@ mod tests {
         Framed::new(state, app, viewport((w, h)), theme)
     }
 
-    /// Rebuild and run the next frame of an already-rendered app at `w`x`h`.
     fn rerender_at(app: &mut Framed<CameraApp>, w: f32, h: f32) {
         Framed::harness_mut(app)
             .relayout_themed(viewport((w, h)), Theme::dark())
@@ -3791,7 +3647,6 @@ mod tests {
             .handled
     }
 
-    /// Every control the camera exposes, by semantic target.
     fn control_bounds(app: &CameraApp) -> Vec<(String, Rect)> {
         app.accessibility()
             .expect("camera has a semantic window")
@@ -4116,10 +3971,6 @@ mod tests {
         }
     }
 
-    /// A camera waiting for the person's answer runs no frame loop and sets
-    /// no timer. Their answer, either way, wakes the window, and the next
-    /// look shows it: the viewfinder streams, or the honest permission
-    /// state. The camera is the macOS sandbox broker's, whose host asks.
     #[cfg(all(unix, feature = "live-capture"))]
     #[test]
     fn a_camera_waiting_for_permission_sleeps_until_the_answer_wakes_it() {
@@ -4525,13 +4376,10 @@ mod tests {
     }
 
     thread_local! {
-        /// Where [`DiskCamera`] saves its captures.
         static CAPTURE_DIR: std::cell::RefCell<Option<PathBuf>> =
             const { std::cell::RefCell::new(None) };
     }
 
-    /// A live window whose captures go to [`CAPTURE_DIR`], fed the frames a
-    /// test pushes instead of a camera's.
     struct DiskCamera;
 
     impl ui::framework::ResourceApp for DiskCamera {
@@ -4548,8 +4396,6 @@ mod tests {
         }
     }
 
-    /// A live window over the sample camera and document scanner: effects
-    /// run, no device is touched.
     struct SampleCamera;
 
     impl ui::framework::ResourceApp for SampleCamera {
@@ -4562,7 +4408,6 @@ mod tests {
         }
     }
 
-    /// A live [`DiskCamera`] saving into the fresh directory `name`.
     fn disk_camera(name: &str) -> (ui::framework::testing::TestApp<DiskCamera>, PathBuf) {
         let dir = std::env::temp_dir().join(format!(
             "camera-{name}-{}-{}",
@@ -4577,7 +4422,6 @@ mod tests {
         )
     }
 
-    /// Feed `app` the viewfinder frame `seed`.
     fn push_frame(app: &mut ui::framework::testing::TestApp<DiskCamera>, seed: u8) {
         assert_eq!(
             app.with_surface::<CameraApp, _>(|camera| {
@@ -4587,8 +4431,6 @@ mod tests {
         );
     }
 
-    /// A photo whose caller cancelled it while it was being saved is
-    /// dropped when it arrives, with its file: nothing is registered.
     #[test]
     fn a_cancelled_capture_is_discarded_with_its_file() {
         let (mut app, dir) = disk_camera("photo-cancelled");
@@ -5069,7 +4911,6 @@ mod tests {
         }
     }
 
-    /// A real QR code rasterized losslessly as PNG bytes.
     fn qr_png(payload: &str) -> Vec<u8> {
         let m = crate::scan::encode(payload).expect("encode");
         let (scale, quiet) = (8usize, 4usize);
@@ -5100,8 +4941,6 @@ mod tests {
         library::encode_photo(&fb, PhotoFormat::Png).unwrap().1
     }
 
-    /// Scanning an existing image and exporting scanned pages go through the
-    /// host's file chooser, from the palette, an agent or the screen alike.
     #[test]
     fn the_file_chooser_feeds_the_code_scanner_and_takes_the_document_export() {
         let dir = std::env::temp_dir().join(format!(
@@ -5161,10 +5000,6 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// Open Photos, in a window its host serves in process (a page), asks
-    /// that session to open Photos in the window's workspace: the same
-    /// request a native window hands its broker. Without a session it says
-    /// why instead of claiming Photos isn't there.
     #[test]
     fn open_photos_asks_the_window_s_session_to_open_photos() {
         let mut app = ui::framework::testing::TestApp::<SampleCamera>::new().unwrap();
@@ -5201,9 +5036,6 @@ mod tests {
         );
     }
 
-    /// The camera publishes its screens as views, and the capture pipeline,
-    /// the code scanner and the document scanner as rows offering only
-    /// effects bound to them.
     #[test]
     fn the_rows_offer_the_camera_effects_on_what_they_act_on() {
         let mut app = ui::framework::testing::TestApp::<SampleCamera>::new().unwrap();

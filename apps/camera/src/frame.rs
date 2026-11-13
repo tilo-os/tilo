@@ -108,7 +108,6 @@ fn lerp(a: Rgb, b: Rgb, t: f32) -> Rgb {
     )
 }
 
-/// Cheap deterministic value hash → [0,1).
 fn hash01(mut n: u32) -> f32 {
     n = (n << 13) ^ n;
     let m = (n
@@ -182,7 +181,6 @@ fn palette(seed: u8) -> Palette {
     }
 }
 
-/// Sky gradient above the horizon, darkened ground gradient below it.
 fn paint_sky_and_ground(buf: &mut FrameBuf, pal: &Palette, w: i32, h: i32, horizon: i32) {
     for y in 0..h {
         if y < horizon {
@@ -201,7 +199,6 @@ fn paint_sky_and_ground(buf: &mut FrameBuf, pal: &Palette, w: i32, h: i32, horiz
     }
 }
 
-/// Sun disc with glow above the horizon (styles 1 and 5).
 fn paint_sun_glow(buf: &mut FrameBuf, pal: &Palette, w: i32, h: i32, horizon: i32) {
     let cx = w as f32 * 0.5;
     let cy = horizon as f32 - h as f32 * 0.12;
@@ -219,7 +216,6 @@ fn paint_sun_glow(buf: &mut FrameBuf, pal: &Palette, w: i32, h: i32, horizon: i3
     }
 }
 
-/// City skyline: vertical building blocks with lit windows (style 2).
 fn paint_city_skyline(buf: &mut FrameBuf, pal: &Palette, seed: u8, w: i32, h: i32, horizon: i32) {
     let mut x = 0;
     let mut col = 0u32;
@@ -256,7 +252,6 @@ fn paint_city_skyline(buf: &mut FrameBuf, pal: &Palette, seed: u8, w: i32, h: i3
     }
 }
 
-/// Soft bokeh circles in the upper area (style 3).
 fn paint_bokeh(buf: &mut FrameBuf, pal: &Palette, seed: u8, w: i32, horizon: i32) {
     for i in 0..26u32 {
         let bx = (hash01(i * 17 + u32::from(seed)) * w as f32) as i32;
@@ -275,7 +270,6 @@ fn paint_bokeh(buf: &mut FrameBuf, pal: &Palette, seed: u8, w: i32, horizon: i32
     }
 }
 
-/// Layered mountain ridges (the default style).
 fn paint_mountain_ridges(
     buf: &mut FrameBuf,
     pal: &Palette,
@@ -299,7 +293,6 @@ fn paint_mountain_ridges(
     }
 }
 
-/// Dispatches to the composition matching the palette's `style`.
 fn paint_style(buf: &mut FrameBuf, pal: &Palette, seed: u8, w: i32, h: i32, horizon: i32) {
     match pal.style {
         1 | 5 => paint_sun_glow(buf, pal, w, h, horizon),
@@ -309,7 +302,6 @@ fn paint_style(buf: &mut FrameBuf, pal: &Palette, seed: u8, w: i32, h: i32, hori
     }
 }
 
-/// Subtle film grain + corner vignette so it reads as a photo.
 fn paint_grain_and_vignette(buf: &mut FrameBuf, seed: u8, w: i32, h: i32) {
     for y in 0..h {
         for x in 0..w {
@@ -338,14 +330,12 @@ fn paint_scene(buf: &mut FrameBuf, seed: u8) {
     paint_grain_and_vignette(buf, seed, w, h);
 }
 
-/// Live-preview viewfinder for the Camera screen (no code in frame).
 pub fn viewfinder(seed: u8, w: u32, h: u32) -> FrameBuf {
     let mut buf = FrameBuf::new(w, h);
     paint_scene(&mut buf, seed);
     buf
 }
 
-/// A small procedural thumbnail for a stored capture.
 pub fn thumbnail(seed: u8, w: u32, h: u32) -> FrameBuf {
     let mut buf = FrameBuf::new(w, h);
     paint_scene(&mut buf, seed);
@@ -448,7 +438,6 @@ impl FrameBuf {
     }
 }
 
-/// BT.601 luma of an RGBA frame — the greyscale buffer the QR detector wants.
 pub fn luma(buf: &FrameBuf) -> Vec<u8> {
     to_luma(buf)
 }
@@ -467,7 +456,6 @@ pub fn rgba_to_rgb(rgba: &[u8]) -> Vec<u8> {
     out
 }
 
-/// BT.601 luma of an RGBA buffer.
 fn to_luma(buf: &FrameBuf) -> Vec<u8> {
     let n = (buf.w * buf.h) as usize;
     let mut out = vec![0u8; n];
