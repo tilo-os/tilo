@@ -124,7 +124,7 @@ pub fn paint_material(
 /// Geometry is encoded as plain logical-pixel arrays rather than renderer
 /// types so sandbox services, Wayland protocol shims, and test transports
 /// can all carry the same messages.
-pub const FLOATING_SURFACE_PROTOCOL_VERSION: u16 = 27;
+pub const FLOATING_SURFACE_PROTOCOL_VERSION: u16 = 28;
 pub const FLOATING_SURFACE_SERVICE: &str = "shell-ui";
 
 mod wire;

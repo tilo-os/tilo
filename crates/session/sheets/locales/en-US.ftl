@@ -266,14 +266,6 @@ wireless-stop = Stop
 wireless-wait = Wait
 wireless-protocols = Miracast, Google Cast, AirPlay and FCast
 display-sheet-saving-layout = Saving display layout…
-display-remote-heading = Your other screens
-display-remote-title = Display { $number }: { $name } on { $device }
-display-remote-row-description = Include this screen in your shared display layout
-display-remote-offline = Offline
-display-remote-offline-excluded = Offline, not in the layout
-display-remote-switched-off = Switched off on its device
-display-remote-in-layout = In layout
-display-remote-out-of-layout = Not in layout
 
 ## The system sheets the shell asks with on an app's or a service's behalf
 portal-sheet-description = Asked by Tilo, not by the app. Enter answers, Escape declines.

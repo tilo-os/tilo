@@ -2252,11 +2252,12 @@ dictation-language-ur = Urdu
 dictation-language-hu = Hungarian
 dictation-language-ro = Romanian
 dictation-language-fi = Finnish
-display-devices-title = Screens on your devices
-display-device-screen = { $screen } on { $device }, { $status }
+display-device-screen = { $screen } on { $device }
 display-device-online = Online
 display-device-offline = Offline
-display-device-switched-off = Switched off on that device
+display-device-apart = Online, away from your other screens
+display-screen-device = Device
+display-screen-status = Status
 
 
 a11y-dictation-literal = Literal dictation
@@ -2344,14 +2345,9 @@ settings-disk-unlock-too-many = The disk unlock answer lists more disks than thi
 settings-disk-unlock-malformed = The disk unlock answer could not be read: { $error }
 
 # Shared display arrangement, independent of device input permission.
-display-shared-title = Your shared display layout
-display-shared-description = Displays keep their device's layout. Inclusion and order follow you across devices; remote input requires separate permission.
-display-shared-include = Include in the shared layout
-display-shared-order = Display number
 display-shared-read-only = Shared display inspection is read-only.
 display-shared-unavailable = That display is no longer observed.
 display-shared-stale = The arrangement changed. Refresh this display and try again.
-display-shared-order-invalid = Choose a display number from the current list.
 display-shared-save-failed = The arrangement could not be saved: { $error }
 display-shared-saved = Shared display arrangement saved.
 display-shared-auto-input = Let your other devices use this screen
@@ -2967,8 +2963,6 @@ settings-effect-place-display = Place a display beside another
 settings-effect-move-display = Move a display's corner
 settings-effect-move-device-display = Move device display
 settings-effect-inspect-shared-displays = Inspect shared displays
-settings-effect-include-shared-display = Include a display in the shared layout
-settings-effect-order-shared-display = Set a display's place in the order
 settings-effect-mirror-display = Mirror or extend a display
 settings-effect-set-display-mode = Set resolution and refresh rate
 settings-effect-rotate-display = Rotate a display

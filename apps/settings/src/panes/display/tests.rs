@@ -789,7 +789,7 @@ fn mirroring_and_extending_are_staged() {
     );
 }
 
-fn display_with_modes(
+pub(super) fn display_with_modes(
     connector: &str,
     label: &str,
     builtin: bool,
@@ -1142,25 +1142,15 @@ fn a_trusted_display_tool_is_listed_and_can_be_asked_again() {
 }
 #[test]
 fn peer_displays_are_inspectable_accessible_and_not_an_input_grant() {
-    fn accessible_names(widget: &dyn Widget, names: &mut Vec<String>) {
-        fn collect(node: &ui::a11y::AccessNode, names: &mut Vec<String>) {
-            if let Some(name) = &node.name {
-                names.push(name.clone());
-            }
-            for child in &node.children {
-                collect(child, names);
-            }
-        }
-        if let Some(node) = widget.accessibility() {
-            collect(&node, names);
-        }
-        for child in widget.children() {
-            accessible_names(child, names);
-        }
-    }
     let _guard = crate::prefs::test_env::ConfigGuard::new();
     let mut pane = laptop_with_monitor();
-    assert!(pane.build_device_arrangement_card(&dispatcher()).is_none());
+    let tiles = |pane: &DisplayModel| {
+        pane.arrangement_canvas(&dispatcher(), &pane.connected_outputs())
+            .accessibility()
+            .unwrap()
+            .children
+    };
+    assert_eq!(tiles(&pane).len(), 2, "this device's two displays alone");
     pane.person_devices = vec![settings_store::person_displays::PersonDevice {
         device: "certified-peer".into(),
         label: "Peer laptop".into(),
@@ -1182,16 +1172,16 @@ fn peer_displays_are_inspectable_accessible_and_not_an_input_grant() {
             enabled: true,
         }],
     }];
-    let card = pane
-        .build_device_arrangement_card(&dispatcher())
-        .expect("discovered peer has a real canvas");
-    let mut names = Vec::new();
-    let arrangement = provider_settings_ui::widgets::page(vec![card]);
-    accessible_names(arrangement.as_ref(), &mut names);
+    let peer = tiles(&pane)
+        .into_iter()
+        .find(|tile| {
+            tile.name
+                .as_ref()
+                .is_some_and(|name| name.contains("Peer laptop"))
+        })
+        .expect("the peer's screen is on the one canvas");
     assert!(
-        names
-            .iter()
-            .any(|name| name.contains("Peer laptop") && name.contains("Offline")),
+        peer.description.as_ref().unwrap().contains("Offline"),
         "assistive users receive actual peer and offline state"
     );
     let inspection = pane.inspection();
@@ -1219,7 +1209,7 @@ fn test_ids(widget: &dyn Widget, ids: &mut Vec<String>) {
     }
 }
 
-fn page_ids(app: &mut App) -> Vec<String> {
+pub(super) fn page_ids(app: &mut App) -> Vec<String> {
     frame(app);
     let mut ids = Vec::new();
     test_ids(app.harness().root_widget(), &mut ids);
@@ -1572,7 +1562,7 @@ fn the_pending_display_change_is_read_through_the_settings_document() {
     }
 }
 
-fn page_words(widget: &dyn Widget, words: &mut Vec<String>) {
+pub(super) fn page_words(widget: &dyn Widget, words: &mut Vec<String>) {
     if let Some(node) = widget.accessibility() {
         words.extend(
             node.name

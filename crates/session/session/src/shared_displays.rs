@@ -7,9 +7,7 @@
 
 use crate::platform::fabric::SharedLink;
 use settings_store::hardware::{DisplayHardwareSnapshot, DisplaySet};
-use settings_store::person_displays::{
-    Arrangement, DeviceOutput, Layout, PersonDevice, PersonDisplays,
-};
+use settings_store::person_displays::{DeviceOutput, PersonDevice, PersonDisplays};
 use tilo_network_actor::fabric::{
     DisplayConnectorPlacement, DisplayOutputObservation, DisplayRect,
 };
@@ -189,18 +187,6 @@ impl Publisher {
         }
         moved
     }
-}
-
-/// The person's devices and the arrangement they make, as Settings and this session last published
-/// them. `None` when no device of theirs published a view, which is every session that takes part
-/// as nobody.
-pub(crate) fn person() -> Option<(PersonDisplays, Layout)> {
-    let view = PersonDisplays::published()
-        .map(|view| view.as_ref().clone())
-        .or_else(PersonDisplays::load)?;
-    let arrangement = Arrangement::load();
-    let layout = view.layout(&arrangement);
-    Some((view, layout))
 }
 
 #[cfg(test)]

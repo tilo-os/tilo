@@ -281,11 +281,10 @@ impl SharedInput {
             .map(|device| device.as_str().to_owned())
             .collect();
         let reachable = |display: &ResolvedDisplay| {
-            display.enabled
-                && (display.local
-                    || (display.online
-                        && (display.device == active.device.as_str()
-                            || leased.contains(&display.device))))
+            display.local
+                || (display.online
+                    && (display.device == active.device.as_str()
+                        || leased.contains(&display.device)))
         };
         let Some(step) = state
             .layout
@@ -789,7 +788,7 @@ fn latency(samples: &std::collections::VecDeque<u64>) -> Json {
 
 /// A screen of another of the person's devices the pointer may go to.
 fn other_device(display: &ResolvedDisplay) -> bool {
-    !display.local && display.online && display.enabled
+    !display.local && display.online
 }
 
 /// How far `delta` from `from` pushes past the edges of `display` .
@@ -889,7 +888,6 @@ mod tests {
             builtin: true,
             local,
             online: true,
-            enabled: true,
             order: 0,
             local_rect: Rect { x: 0, ..rect },
             rect,

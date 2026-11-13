@@ -14,6 +14,11 @@ enum = "FloatingSurfaceClientMessage"
 reason = "an app and the session shell speak it as newline-delimited JSON over a local socket, never by position, and both ends are the same build: an app at another protocol number is answered with `VersionMismatch` and closed, so no bytes written before are read back"
 
 [[break]]
+file = "crates/sdk/ui-core/src/floating_surface/wire.rs"
+enum = "FloatingSurfaceHostMessage"
+reason = "the session shell's half of the same connection: newline-delimited JSON over a local socket, never by position, between ends of one protocol number, so no bytes written before are read back"
+
+[[break]]
 file = "crates/collab/collab-types/src/caps.rs"
 enum = "PrincipalWire"
 reason = "the workspace principal changes name in place, from `Room` to `Workspace`: its postcard position (4) and every byte written before stay the same, a stored subject and a signed authority revision over it still read and verify, and JSON written before under the old name still reads it"

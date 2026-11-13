@@ -772,9 +772,9 @@ fn person_display_fixture() -> Vec<settings_store::person_displays::PersonDevice
             "eDP-1",
             "Built-in display",
             true,
-            960,
-            540,
-            2000,
+            1920,
+            1080,
+            1000,
         ),
         (
             "fixture-desktop",

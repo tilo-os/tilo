@@ -752,9 +752,6 @@ display-arrangement-item = Bildschirm { $number }: { $name }
 display-arrangement-item-primary = Bildschirm { $number }: { $name }, Hauptbildschirm
 display-arrangement-item-position = { $width } × { $height } bei { $x }, { $y }
 
-device-display-session-unavailable = Die Tilo-Sitzung ist nicht verfügbar.
-device-display-request-pending = Eine Anfrage zur Bildschirmposition steht bereits aus.
-device-display-session-disconnected = Die Verbindung zur Tilo-Sitzung wurde getrennt.
 
 app-activate-window = Dieses Fenster anzeigen
 app-activate-window-description = Das Fenster dieser App in den Vordergrund holen.
@@ -780,8 +777,8 @@ widget-documents-in-workspace = In diesem Arbeitsbereich
 record-unavailable-title = Dieses Dokument kann nicht geöffnet werden
 record-unavailable-hint = Es ist auf diesem Gerät gerade nicht verfügbar. Vielleicht ist es noch unterwegs, oder es wurde verschoben oder gelöscht.
 display-arrangement-offline = Offline
-display-arrangement-excluded = Nicht im Layout
-display-arrangement-offline-excluded = Offline, nicht in der Anordnung
+display-arrangement-apart = Abseits
+display-arrangement-offline-apart = Offline, abseits
 display-arrangement-item-status = { $position }; { $status }
 display-arrangement-caption-status = { $status }: { $name }
 

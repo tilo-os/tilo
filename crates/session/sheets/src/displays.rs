@@ -5,9 +5,7 @@
 //! attached displays allow, and only those: with one display it says so and
 //! offers what is reachable instead. A choice stages a display change the
 //! compositor applies at once and restores unless the person keeps it, so
-//! Keep and Revert stand under the layouts while it waits. Between them and
-//! the wireless receivers, the person's other devices' screens are listed,
-//! each with whether it takes part in their shared display layout. Wireless
+//! Keep and Revert stand under the layouts while it waits. Wireless
 //! receivers are the lower section, with the chosen one's stream options
 //! and, for an `AirPlay` receiver, its PIN.
 //!
@@ -65,18 +63,6 @@ pub enum DisplaysEffect {
     /// Revert the display change waiting for an answer
     #[effect(own_device, idempotent)]
     Revert,
-    /// Include one of your other devices' screens in your shared display layout, or leave it out
-    #[effect(own_device)]
-    Include {
-        #[param("The device the screen belongs to")]
-        device: String,
-        #[param("The screen, by its output name on that device")]
-        output: String,
-        #[param("The arrangement revision the choice was made against")]
-        revision: u64,
-        #[param("Whether the screen takes part in the layout")]
-        include: bool,
-    },
     /// Choose a wireless display to stream to
     #[effect(own_device, kind = "read")]
     Choose {
@@ -218,49 +204,6 @@ pub enum Band {
     Refused(String),
 }
 
-/// One of the person's other devices' screens.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Screen {
-    pub device: String,
-    pub output: String,
-    /// The arrangement revision of this screen as the sheet shows it.
-    pub revision: u64,
-    pub name: String,
-    pub number: usize,
-    pub device_label: String,
-    pub online: bool,
-    /// Its device shows something on it.
-    pub active: bool,
-    /// Takes part in the shared layout.
-    pub enabled: bool,
-}
-
-impl Screen {
-    fn title(&self) -> String {
-        t_args(
-            "display-remote-title",
-            &[
-                ("number", ui::i18n::ArgValue::Text(self.number.to_string())),
-                ("name", ui::i18n::ArgValue::Text(self.name.clone())),
-                (
-                    "device",
-                    ui::i18n::ArgValue::Text(self.device_label.clone()),
-                ),
-            ],
-        )
-    }
-
-    fn detail(&self) -> String {
-        t(match (self.online, self.enabled, self.active) {
-            (false, false, _) => "display-remote-offline-excluded",
-            (false, true, _) => "display-remote-offline",
-            (true, false, _) => "display-remote-out-of-layout",
-            (true, true, false) => "display-remote-switched-off",
-            (true, true, true) => "display-remote-in-layout",
-        })
-    }
-}
-
 /// Where a receiver's stream stands.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum Link {
@@ -318,9 +261,6 @@ pub struct Sheet {
     /// one display and no receiver.
     pub layouts: Vec<LayoutRow>,
     pub band: Band,
-    pub screens: Vec<Screen>,
-    /// The person may change the shared layout here.
-    pub screens_editable: bool,
     pub receivers: Vec<Receiver>,
     pub discovery: Discovery,
     pub stream: Option<Stream>,
@@ -387,10 +327,6 @@ impl Sheet {
         if self.confirming() {
             spots.extend([Spot::Keep, Spot::Revert]);
         }
-        spots.extend(self.screens.iter().map(|screen| Spot::Screen {
-            device: screen.device.clone(),
-            output: screen.output.clone(),
-        }));
         if self.asks_pin {
             spots.push(Spot::Pin);
         }
@@ -401,7 +337,7 @@ impl Sheet {
     }
 
     /// Where the keyboard starts: the current layout, else the first that
-    /// can be chosen, else the other devices' screens.
+    /// can be chosen, else the first row there is.
     fn first_spot(&self) -> Option<Spot> {
         self.current()
             .or_else(|| {
@@ -416,13 +352,12 @@ impl Sheet {
 }
 
 /// Where the keyboard is in the sheet. Rows are known by who they are, so
-/// the highlight stays on a screen another device moved in the list.
+/// the highlight stays on a receiver that moved in the list.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Spot {
     Layout(Layout),
     Keep,
     Revert,
-    Screen { device: String, output: String },
     Pin,
     Receiver { id: String },
 }
@@ -583,7 +518,6 @@ impl ResourceApp for DisplaysApp {
             "two-displays",
             "confirming",
             "one-display",
-            "other-screens",
             "receivers",
             "refused",
         ]
@@ -601,11 +535,6 @@ impl ResourceApp for DisplaysApp {
             },
             Some("one-display") => Sheet {
                 discovery: Discovery::Searching,
-                ..Sheet::default()
-            },
-            Some("other-screens") => Sheet {
-                screens: sample_screens(),
-                screens_editable: true,
                 ..Sheet::default()
             },
             Some("receivers") => Sheet {
@@ -655,33 +584,6 @@ fn two_display_layouts(current: Layout) -> Vec<LayoutRow> {
             stages: true,
         })
         .collect()
-}
-
-fn sample_screens() -> Vec<Screen> {
-    vec![
-        Screen {
-            device: "desk-pc".to_owned(),
-            output: "DP-1".to_owned(),
-            revision: 3,
-            name: "Dell U2723QE".to_owned(),
-            number: 2,
-            device_label: "Desk PC".to_owned(),
-            online: true,
-            active: true,
-            enabled: true,
-        },
-        Screen {
-            device: "tablet".to_owned(),
-            output: "DSI-1".to_owned(),
-            revision: 1,
-            name: "Built-in".to_owned(),
-            number: 3,
-            device_label: "Tablet".to_owned(),
-            online: false,
-            active: false,
-            enabled: false,
-        },
-    ]
 }
 
 fn sample_receivers() -> Vec<Receiver> {
@@ -766,22 +668,6 @@ fn activate(sheet: &Sheet, spot: &Spot, dispatch: &Dispatcher<DisplaySheet>) -> 
             }
             None
         }
-        Spot::Screen { device, output } => {
-            if let Some(screen) = sheet
-                .screens
-                .iter()
-                .find(|screen| &screen.device == device && &screen.output == output)
-                && sheet.screens_editable
-            {
-                dispatch.effect(&DisplaysEffect::Include {
-                    device: screen.device.clone(),
-                    output: screen.output.clone(),
-                    revision: screen.revision,
-                    include: !screen.enabled,
-                });
-            }
-            Some(spot.clone())
-        }
         Spot::Pin => Some(Spot::Pin),
         Spot::Receiver { id } => {
             let receiver = sheet.receivers.iter().find(|receiver| &receiver.id == id)?;
@@ -815,9 +701,6 @@ fn sheet(shown: &Shown, parts: &Parts) -> Element {
     body = body.push(layouts(sheet, spot.as_ref(), parts));
     if let Some(band) = band(sheet, spot.as_ref(), parts) {
         body = body.push(band);
-    }
-    if !sheet.screens.is_empty() {
-        body = body.push(screens(sheet, spot.as_ref(), parts));
     }
     body = body.push(wireless(sheet, spot.as_ref(), parts));
     body = body.push(Box::new(
@@ -914,38 +797,6 @@ fn band(sheet: &Sheet, spot: Option<&Spot>, parts: &Parts) -> Option<Element> {
             ))
         }
     }
-}
-
-/// The person's other devices' screens, each with whether it is in the
-/// shared layout.
-fn screens(sheet: &Sheet, spot: Option<&Spot>, parts: &Parts) -> Element {
-    let mut column = Column::new()
-        .with_gap(ui::tokens::Spacing::BASE.s1)
-        .push(Box::new(
-            Text::new(&t("display-remote-heading")).with_role(TextRole::Label),
-        ));
-    for screen in &sheet.screens {
-        let here = Spot::Screen {
-            device: screen.device.clone(),
-            output: screen.output.clone(),
-        };
-        let press = parts.clone();
-        let pressed = here.clone();
-        column = column.push(Box::new(
-            ListRow::new(
-                format!("display-screen-{}-{}", screen.device, screen.output),
-                screen.title(),
-            )
-            .subtitle(screen.detail())
-            .icon(ui::icons::Icon::Monitor)
-            .checked(screen.enabled)
-            .selected(spot == Some(&here))
-            .with_enabled(sheet.screens_editable)
-            .tooltip(t("display-remote-row-description"))
-            .on_effect(move || press.act(&pressed)),
-        ));
-    }
-    Box::new(column)
 }
 
 /// Wireless receivers: the heading with its search, the chosen one's
@@ -1352,12 +1203,9 @@ impl ui::widget::Decorator for Keys {
                     self.act(&spot);
                 }
             }
-            Key::Named(NamedKey::Space) => match spot {
-                Some(spot @ Spot::Screen { .. }) => self.act(&spot),
-                _ => {
-                    self.stream(" ");
-                }
-            },
+            Key::Named(NamedKey::Space) => {
+                self.stream(" ");
+            }
             Key::Character(c) if c.eq_ignore_ascii_case("r") => {
                 self.dispatch.effect(&DisplaysEffect::Search);
             }

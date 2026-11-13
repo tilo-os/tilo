@@ -2252,11 +2252,12 @@ dictation-language-ur = Urdu
 dictation-language-hu = Ungarisch
 dictation-language-ro = Rumänisch
 dictation-language-fi = Finnisch
-display-devices-title = Bildschirme auf deinen Geräten
-display-device-screen = { $screen } auf { $device }, { $status }
+display-device-screen = { $screen } auf { $device }
 display-device-online = Online
 display-device-offline = Offline
-display-device-switched-off = Auf dem Gerät ausgeschaltet
+display-device-apart = Online, abseits deiner anderen Bildschirme
+display-screen-device = Gerät
+display-screen-status = Status
 
 
 a11y-dictation-literal = Wörtliches Diktieren
@@ -2344,14 +2345,9 @@ settings-disk-unlock-too-many = Die Antwort nennt mehr Festplatten, als dieser C
 settings-disk-unlock-malformed = Die Antwort zum Entsperren der Festplatte war nicht lesbar: { $error }
 
 # Gemeinsame Anzeigeanordnung, unabhängig von der Eingabeberechtigung.
-display-shared-title = Deine gemeinsame Anzeigeanordnung
-display-shared-description = Anzeigen behalten die Anordnung ihres Geräts. Einbindung und Reihenfolge folgen dir auf andere Geräte; die Fernsteuerung benötigt eine separate Berechtigung.
-display-shared-include = In die gemeinsame Anordnung aufnehmen
-display-shared-order = Anzeigennummer
 display-shared-read-only = Die gemeinsame Anzeigeübersicht ist schreibgeschützt.
 display-shared-unavailable = Diese Anzeige wird nicht mehr erkannt.
 display-shared-stale = Die Anordnung wurde geändert. Aktualisiere diese Anzeige und versuche es erneut.
-display-shared-order-invalid = Wähle eine Anzeigennummer aus der aktuellen Liste.
 display-shared-save-failed = Die Anordnung konnte nicht gespeichert werden: { $error }
 display-shared-saved = Gemeinsame Anzeigeanordnung gespeichert.
 display-shared-auto-input = Deine anderen Geräte dürfen diesen Bildschirm nutzen
@@ -2967,8 +2963,6 @@ settings-effect-place-display = Bildschirm neben einem anderen anordnen
 settings-effect-move-display = Ecke eines Bildschirms verschieben
 settings-effect-move-device-display = Gerätebildschirm verschieben
 settings-effect-inspect-shared-displays = Geteilte Bildschirme ansehen
-settings-effect-include-shared-display = Bildschirm im geteilten Layout einbeziehen
-settings-effect-order-shared-display = Position eines Bildschirms in der Reihenfolge festlegen
 settings-effect-mirror-display = Bildschirm spiegeln oder erweitern
 settings-effect-set-display-mode = Auflösung und Bildwiederholrate festlegen
 settings-effect-rotate-display = Bildschirm drehen

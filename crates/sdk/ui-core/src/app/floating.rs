@@ -65,11 +65,6 @@ pub(super) struct FloatingRuntime {
     pub host_theme: Option<crate::Theme>,
     network_status_active: bool,
     host_shell_allow: Option<std::rc::Weak<std::cell::RefCell<crate::widget::HostShellAllow>>>,
-    display_move: Option<(
-        u64,
-        std::rc::Weak<std::cell::RefCell<crate::widget::DeviceDisplayMoveReply>>,
-    )>,
-    next_display_move: u64,
     pub presentations: HashMap<String, FloatingSurfacePresentation>,
     pub active_ids: HashSet<String>,
     pub prepared_ids: HashSet<String>,
@@ -201,8 +196,6 @@ impl FloatingRuntime {
             host_theme: None,
             network_status_active: false,
             host_shell_allow: None,
-            display_move: None,
-            next_display_move: 0,
             presentations: HashMap::new(),
             active_ids: HashSet::new(),
             prepared_ids: HashSet::new(),
@@ -492,21 +485,10 @@ impl App {
         // nowhere to go, and no later connection hears it.
         self.floating.sideways = 0.0;
         let mut changed = if let Some(intent) = self.take_native_host_intent() {
-            match intent {
-                crate::widget::AppHostIntent::AllowHostShell { reply } => {
-                    if let Some(reply) = reply.upgrade() {
-                        reply.borrow_mut().answer = Some(false);
-                    }
-                }
-                crate::widget::AppHostIntent::MoveDeviceDisplay { reply, .. } => {
-                    if let Some(reply) = reply.upgrade() {
-                        reply.borrow_mut().result =
-                            Some(Err(crate::i18n::I18nManager::lookup_plain(
-                                "device-display-session-unavailable",
-                            )));
-                    }
-                }
-                _ => {}
+            if let crate::widget::AppHostIntent::AllowHostShell { reply } = intent
+                && let Some(reply) = reply.upgrade()
+            {
+                reply.borrow_mut().answer = Some(false);
             }
             true
         } else {
@@ -626,33 +608,10 @@ impl App {
         changed: &mut bool,
     ) -> Result<(), String> {
         if let Some(intent) = self.take_native_host_intent() {
-            match intent {
-                crate::widget::AppHostIntent::AllowHostShell { reply } => {
-                    self.floating.host_shell_allow = Some(reply);
-                    client.send(
-                        &crate::floating_surface::FloatingSurfaceClientMessage::AllowHostShell,
-                    )?;
-                }
-                crate::widget::AppHostIntent::MoveDeviceDisplay {
-                    request: placement,
-                    reply,
-                } => {
-                    if self.floating.display_move.is_some() {
-                        if let Some(reply) = reply.upgrade() {
-                            reply.borrow_mut().result =
-                                Some(Err(crate::i18n::I18nManager::lookup_plain(
-                                    "device-display-request-pending",
-                                )));
-                        }
-                    } else if reply.upgrade().is_some() {
-                        self.floating.next_display_move =
-                            self.floating.next_display_move.wrapping_add(1);
-                        let request = self.floating.next_display_move;
-                        self.floating.display_move = Some((request, reply));
-                        client.send(&crate::floating_surface::FloatingSurfaceClientMessage::MoveDeviceDisplay { request, placement })?;
-                    }
-                }
-                _ => {}
+            if let crate::widget::AppHostIntent::AllowHostShell { reply } = intent {
+                self.floating.host_shell_allow = Some(reply);
+                client
+                    .send(&crate::floating_surface::FloatingSurfaceClientMessage::AllowHostShell)?;
             }
             *changed = true;
         }
@@ -1090,18 +1049,6 @@ impl App {
                         self.floating.capture_acknowledged = Some(*generation);
                     }
                 }
-                FloatingSurfaceHostMessage::DeviceDisplayMoveResult { request, result } => {
-                    if self
-                        .floating
-                        .display_move
-                        .as_ref()
-                        .is_some_and(|(pending, _)| pending == request)
-                        && let Some((_, reply)) = self.floating.display_move.take()
-                        && let Some(reply) = reply.upgrade()
-                    {
-                        reply.borrow_mut().result = Some(result.clone());
-                    }
-                }
                 FloatingSurfaceHostMessage::HostShellAllowed { allowed } => {
                     if let Some(reply) = self
                         .floating
@@ -1347,13 +1294,6 @@ impl App {
         if self.floating.network_status_active {
             tilo_host::network_status::clear_host_status();
             self.floating.network_status_active = false;
-        }
-        if let Some((_, reply)) = self.floating.display_move.take()
-            && let Some(reply) = reply.upgrade()
-        {
-            reply.borrow_mut().result = Some(Err(crate::i18n::I18nManager::lookup_plain(
-                "device-display-session-disconnected",
-            )));
         }
         if let Some(reply) = self
             .floating
@@ -1884,50 +1824,6 @@ mod host_shell_allow_tests {
             "a disconnected connection is never restored"
         );
         assert_eq!(calls.get(), 2);
-    }
-
-    #[test]
-    fn display_move_reply_matches_exact_request_and_disconnect_never_replays_it() {
-        let mut app = App::new_with_controlled_inputs(
-            crate::State::new(),
-            Box::new(crate::widget::Container::new()),
-        );
-        let reply = std::rc::Rc::new(std::cell::RefCell::new(
-            crate::widget::DeviceDisplayMoveReply::default(),
-        ));
-        app.floating.display_move = Some((7, std::rc::Rc::downgrade(&reply)));
-        let message = FloatingSurfaceHostMessage::DeviceDisplayMoveResult {
-            request: 8,
-            result: Ok(()),
-        };
-        let wire = serde_json::to_vec(&message).unwrap();
-        app.apply_floating_host_messages(vec![serde_json::from_slice(&wire).unwrap()]);
-        assert!(
-            reply.borrow().result.is_none(),
-            "another gesture cannot acknowledge this move"
-        );
-        app.apply_floating_host_messages(vec![
-            FloatingSurfaceHostMessage::DeviceDisplayMoveResult {
-                request: 7,
-                result: Ok(()),
-            },
-        ]);
-        assert_eq!(reply.borrow_mut().result.take(), Some(Ok(())));
-        assert!(app.floating.display_move.is_none());
-        app.floating.display_move = Some((9, std::rc::Rc::downgrade(&reply)));
-        app.reattach_after_floating_service_loss();
-        assert!(reply.borrow_mut().result.take().unwrap().is_err());
-        assert!(app.floating.display_move.is_none());
-        app.apply_floating_host_messages(vec![
-            FloatingSurfaceHostMessage::DeviceDisplayMoveResult {
-                request: 9,
-                result: Ok(()),
-            },
-        ]);
-        assert!(
-            reply.borrow().result.is_none(),
-            "late success cannot revive a disconnected gesture"
-        );
     }
 
     #[test]

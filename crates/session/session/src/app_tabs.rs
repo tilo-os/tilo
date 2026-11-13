@@ -1003,10 +1003,8 @@ impl Answers<'_> {
                 }
                 None => refuse(&reply, &app, &name, NO_WINDOW),
             },
-            // The device's displays are placed in Settings, and its own shell is what a window of
-            // Terminal asks about: neither is asked here.
-            FloatingSurfaceClientMessage::MoveDeviceDisplay { .. }
-            | FloatingSurfaceClientMessage::DeviceShellOutcome { .. } => {
+            // The device's own shell is what a window of Terminal asks about: not asked here.
+            FloatingSurfaceClientMessage::DeviceShellOutcome { .. } => {
                 refuse(&reply, &app, &name, NO_DEVICE);
             }
             // What is kept of a window's changes, in the person's words: the session keeps no model
@@ -1197,8 +1195,8 @@ const NO_WINDOW_SHARE: &str = "this session shares no window live";
 /// An app asked about what a person selected, and for an agent to work from it.
 const NO_AGENT: &str = "this session asks no window about a selection";
 
-/// An app asked to move a device's display, or answered a device-shell operation.
-const NO_DEVICE: &str = "this session moves no device display here";
+/// An app answered a device-shell operation.
+const NO_DEVICE: &str = "this session runs no device-shell operation here";
 
 /// An app asked for its changes described.
 const NO_HISTORY: &str = "this session describes no history";

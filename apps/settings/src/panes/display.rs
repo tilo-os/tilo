@@ -32,7 +32,7 @@ use crate::prefs::{DisplayPrefs, NightLightPrefs, PendingDisplayChange};
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
 use provider_settings_ui::widgets::{
-    Item, SettingsSection, block, note, rows, section, setting_row, setting_row_described,
+    Item, SettingsSection, note, rows, section, setting_row, setting_row_described,
 };
 use settings_store::hardware::{
     DisplayConfig, DisplayHardwareSnapshot, DisplaySet, DisplayTransaction,
@@ -104,7 +104,8 @@ pub enum DisplayEffect {
     #[effect(returns, row)]
     MoveDisplay { display: String, x: i32, y: i32 },
     /// Place a device's screens in the person's shared layout by where one of them goes: where
-    /// they meet another device's screens is where the pointer crosses between the two.
+    /// they meet another device's screens is where the pointer crosses between the two, and a
+    /// device placed apart from the others is out of its reach.
     #[effect(returns, row)]
     MoveDeviceDisplay {
         display: String,
@@ -115,22 +116,6 @@ pub enum DisplayEffect {
     /// Inspect the observed displays and their shared arrangement, including offline devices.
     #[effect(view, returns, kind = "read")]
     InspectSharedDisplays,
-    /// Include a display in the shared layout. This does not allow remote input.
-    #[effect(returns, row, idempotent)]
-    IncludeSharedDisplay {
-        device: String,
-        output: String,
-        revision: u64,
-        on: bool,
-    },
-    /// Set a display's one-based position in the person's display order.
-    #[effect(returns, row, idempotent)]
-    OrderSharedDisplay {
-        device: String,
-        output: String,
-        revision: u64,
-        order: u32,
-    },
     /// Show another display's picture, or extend the workspace. Staged
     /// until applied.
     #[effect(returns, row)]
@@ -908,7 +893,6 @@ pub struct DisplayModel {
     pending_brightness: Option<f32>,
     notice: Option<String>,
     arrangement_drag: LocalState<super::display_arrangement::ArrangementGesture>,
-    device_arrangement_drag: LocalState<super::display_arrangement::ArrangementGesture>,
     selected: LocalState<String>,
     selected_seen: u64,
     identify_window: Option<(Instant, Instant)>,
@@ -1008,9 +992,6 @@ impl DisplayModel {
             pending_brightness: None,
             notice: None,
             arrangement_drag: LocalState::new(
-                super::display_arrangement::ArrangementGesture::default(),
-            ),
-            device_arrangement_drag: LocalState::new(
                 super::display_arrangement::ArrangementGesture::default(),
             ),
             selected: LocalState::new(String::new()),
@@ -1146,9 +1127,6 @@ impl DisplayModel {
             arrangement_drag: LocalState::new(
                 super::display_arrangement::ArrangementGesture::default(),
             ),
-            device_arrangement_drag: LocalState::new(
-                super::display_arrangement::ArrangementGesture::default(),
-            ),
             selected: LocalState::new(String::new()),
             selected_seen: 0,
             identify_window: None,
@@ -1165,7 +1143,11 @@ impl DisplayModel {
         self
     }
 
+    /// This device's display the canvas has chosen; none while another device's screen is.
     fn selected_output(&self) -> Option<&DisplayOutput> {
+        if self.selected_screen().is_some() {
+            return None;
+        }
         let connected = self.connected_outputs();
         let chosen = self.selected.with(Clone::clone);
         connected
@@ -1185,6 +1167,9 @@ impl DisplayModel {
     }
 
     fn normalize_selection(&mut self) {
+        if self.selected_screen().is_some() {
+            return;
+        }
         let effective = self
             .selected_output()
             .map(|output| output.connector.clone())
@@ -1663,8 +1648,6 @@ impl DisplayModel {
         }
         self.changed = true;
         let reported = match effect {
-            DisplayEffect::IncludeSharedDisplay { .. }
-            | DisplayEffect::OrderSharedDisplay { .. } => self.edit_shared_display(effect),
             DisplayEffect::InspectSharedDisplays => Err(t("display-shared-read-only")),
             DisplayEffect::MoveDeviceDisplay {
                 display,
@@ -2113,26 +2096,35 @@ impl DisplayModel {
         self.notice = notice;
     }
 
+    /// The canvas of this device's displays and, beside them where the person's layout places
+    /// them, their other devices' screens.
     fn arrangement_canvas(
         &self,
         dispatcher: &ui::framework::Dispatcher<Settings>,
         connected: &[&DisplayOutput],
     ) -> super::display_arrangement::DisplayArrangement {
-        let displays = self.arranged_displays(connected);
-        let moves = displays
-            .iter()
-            .filter(|display| display.movable)
-            .filter_map(|display| {
-                let connector = display.connector.clone();
-                self.output_binding(
-                    dispatcher,
-                    &display.connector,
-                    effect(DisplayEffect::MOVE_DISPLAY)
-                        .map(move |(x, y): (i32, i32)| (connector.clone(), x, y)),
-                )
-                .map(|binding| (display.connector.clone(), binding))
-            })
-            .collect();
+        let mut displays = self.arranged_displays(connected);
+        let ((dx, dy), mut moves) = self.join_other_screens(dispatcher, &mut displays);
+        moves.extend(
+            displays
+                .iter()
+                .filter(|display| display.movable && display.movement_group.is_none())
+                .filter_map(|display| {
+                    let connector = display.connector.clone();
+                    self.output_binding(
+                        dispatcher,
+                        &display.connector,
+                        effect(DisplayEffect::MOVE_DISPLAY).map(move |(x, y): (i32, i32)| {
+                            (
+                                connector.clone(),
+                                x.saturating_sub(dx),
+                                y.saturating_sub(dy),
+                            )
+                        }),
+                    )
+                    .map(|binding| (display.connector.clone(), binding))
+                }),
+        );
         super::display_arrangement::DisplayArrangement::new(
             displays,
             moves,

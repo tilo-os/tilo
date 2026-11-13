@@ -2180,8 +2180,7 @@ pub use tile_host::{
 mod app_widget;
 pub(crate) use app_widget::BoundAppWidget;
 pub use app_widget::{
-    AppCommand, AppHostIntent, AppWidget, DeviceDisplayMoveReply, HostShellAllow, IconDescriptor,
-    WindowPublication,
+    AppCommand, AppHostIntent, AppWidget, HostShellAllow, IconDescriptor, WindowPublication,
 };
 pub mod input_hint;
 pub mod shortcut_recorder;

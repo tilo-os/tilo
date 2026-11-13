@@ -1,6 +1,6 @@
 //! The Super+P display sheet as a person, a screen reader and an agent meet
 //! it: the layouts the displays allow, Keep and Revert while a change
-//! waits, the other devices' screens, the wireless receivers, and every
+//! waits, the wireless receivers, and every
 //! choice going to the shell.
 
 #![allow(
@@ -12,7 +12,7 @@
 
 use tilo_sheets::displays::{
     Band, Discovery, DisplaysApp, DisplaysEffect, DisplaysSeat, Layout, LayoutRow, Link, Receiver,
-    Screen, Sheet,
+    Sheet,
 };
 use ui::framework::testing::HeadlessApp;
 
@@ -62,20 +62,6 @@ fn two_displays() -> Sheet {
             })
             .collect(),
         ..Sheet::default()
-    }
-}
-
-fn screen(device: &str, output: &str, revision: u64, enabled: bool) -> Screen {
-    Screen {
-        device: device.to_owned(),
-        output: output.to_owned(),
-        revision,
-        name: output.to_owned(),
-        number: 2,
-        device_label: device.to_owned(),
-        online: true,
-        active: true,
-        enabled,
     }
 }
 
@@ -225,52 +211,6 @@ fn a_refusal_is_said() {
             .description()
             .is_some_and(|text| text.contains("no longer permits"))
     );
-}
-
-#[test]
-fn a_screen_is_included_against_the_revision_shown_and_followed_when_rows_move() {
-    let sheet = Sheet {
-        screens: vec![
-            screen("desk", "DP-1", 4, true),
-            screen("tablet", "DSI-1", 9, false),
-        ],
-        screens_editable: true,
-        ..Sheet::default()
-    };
-    let (mut app, seat) = seated(sheet.clone());
-    key(&mut app, "ArrowDown");
-    key(&mut app, "Space");
-    assert_eq!(
-        seat.take_asked(),
-        [DisplaysEffect::Include {
-            device: "tablet".to_owned(),
-            output: "DSI-1".to_owned(),
-            revision: 9,
-            include: true,
-        }]
-    );
-    // A collaborator reorders the screens: the highlight stays on the
-    // tablet's.
-    let mut moved = sheet;
-    moved.screens.reverse();
-    seat.show(moved);
-    app.settle();
-    key(&mut app, "Enter");
-    assert!(matches!(
-        seat.take_asked().as_slice(),
-        [DisplaysEffect::Include { device, .. }] if device == "tablet"
-    ));
-}
-
-#[test]
-fn screens_the_person_may_not_arrange_are_shown_but_not_changed() {
-    let (mut app, seat) = seated(Sheet {
-        screens: vec![screen("desk", "DP-1", 4, true)],
-        screens_editable: false,
-        ..Sheet::default()
-    });
-    key(&mut app, "Enter");
-    assert!(seat.take_asked().is_empty());
 }
 
 fn receivers() -> Sheet {

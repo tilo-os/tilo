@@ -5,7 +5,7 @@
 # App ↔ shell: what an app and the session shell say on the shell-ui
 # connection the launcher hands the app.
 name = "shell-ui"
-version = 27
+version = 28
 version_const = "crates/sdk/ui-core/src/floating_surface.rs:FLOATING_SURFACE_PROTOCOL_VERSION"
 encoding = "json"
 served_to_apps = true
@@ -28,7 +28,6 @@ sources = [
     "crates/sdk/ui-core/src/tokens/finish.rs",
     "crates/sdk/ui-core/src/tokens/selector.rs",
     "crates/sdk/ui-core/src/tokens/response.rs",
-    "crates/system/settings-store/src/device_displays.rs",
     "crates/collab/actions/src/context.rs",
     "crates/collab/actions/src/selection.rs",
     "crates/collab/reference/src/attached.rs",
@@ -126,24 +125,6 @@ Finish = "tokens::Finish: an object of `painter` (a painter set's name, text) an
 "Depth::outline" = "unit"
 "Depth::shadow" = "struct"
 "Depth::shadow.strength" = "f32"
-"DeviceDisplay" = "struct"
-"DeviceDisplay.connector" = "String"
-"DeviceDisplay.device" = "String"
-"DeviceDisplay.device_label" = "String"
-"DeviceDisplay.height" = "u32"
-"DeviceDisplay.label" = "String"
-"DeviceDisplay.local" = "bool"
-"DeviceDisplay.online" = "bool"
-"DeviceDisplay.output_id" = "Option<String> optional"
-"DeviceDisplay.revision" = "u64 optional"
-"DeviceDisplay.scale_milli" = "u16"
-"DeviceDisplay.width" = "u32"
-"DeviceDisplay.x" = "i32"
-"DeviceDisplay.y" = "i32"
-"DeviceDisplayMove" = "struct deny_unknown_fields"
-"DeviceDisplayMove.screen" = "DeviceDisplay"
-"DeviceDisplayMove.x" = "i32"
-"DeviceDisplayMove.y" = "i32"
 "DeviceShellOperation" = "enum internal tag=operation deny_unknown_fields"
 "DeviceShellOperation::inspect" = "unit"
 "DeviceShellOperation::read" = "struct"
@@ -198,9 +179,6 @@ Finish = "tokens::Finish: an object of `painter` (a painter set's name, text) an
 "FloatingSurfaceClientMessage::embeds.instance" = "Option<u64> optional"
 "FloatingSurfaceClientMessage::hello" = "struct"
 "FloatingSurfaceClientMessage::hello.version" = "u16"
-"FloatingSurfaceClientMessage::move_device_display" = "struct"
-"FloatingSurfaceClientMessage::move_device_display.placement" = "DeviceDisplayMove"
-"FloatingSurfaceClientMessage::move_device_display.request" = "u64"
 "FloatingSurfaceClientMessage::open_app_search" = "struct"
 "FloatingSurfaceClientMessage::open_app_search.instance" = "Option<u64> optional"
 "FloatingSurfaceClientMessage::open_app_search.request" = "SearchRequest"
@@ -297,9 +275,6 @@ Finish = "tokens::Finish: an object of `painter` (a painter set's name, text) an
 "FloatingSurfaceHostMessage::closed.id" = "String"
 "FloatingSurfaceHostMessage::desktop_bounds" = "struct"
 "FloatingSurfaceHostMessage::desktop_bounds.bounds" = "[f64; 4]"
-"FloatingSurfaceHostMessage::device_display_move_result" = "struct"
-"FloatingSurfaceHostMessage::device_display_move_result.request" = "u64"
-"FloatingSurfaceHostMessage::device_display_move_result.result" = "Result<(), String>"
 "FloatingSurfaceHostMessage::device_shell_operation" = "struct"
 "FloatingSurfaceHostMessage::device_shell_operation.operation" = "DeviceShellOperation"
 "FloatingSurfaceHostMessage::device_shell_operation.request" = "u64"
@@ -338,6 +313,7 @@ Finish = "tokens::Finish: an object of `painter` (a painter set's name, text) an
 "FloatingSurfaceHostMessage::recipients.request" = "u64"
 "FloatingSurfaceHostMessage::recipients.rows" = "Vec<Recipient>"
 "FloatingSurfaceHostMessage::share_selection" = "struct"
+"FloatingSurfaceHostMessage::share_selection.pointing" = "bool optional"
 "FloatingSurfaceHostMessage::share_selection.to" = "Vec<Recipient> optional"
 "FloatingSurfaceHostMessage::suspended" = "struct"
 "FloatingSurfaceHostMessage::suspended.id" = "String"

@@ -40,6 +40,9 @@ fn t(key: &str) -> String {
 #[derive(Clone, Debug, PartialEq)]
 pub struct ArrangedDisplay {
     pub connector: String,
+    /// The device whose screens move together with this one. A device's screens go where they
+    /// are dropped, apart from the others too; a screen with no group is placed against the
+    /// other ungrouped ones, as one desktop has no gaps.
     pub movement_group: Option<String>,
     /// Certified shared identity and layout state; absent for native-only or legacy tiles.
     pub shared: Option<SharedDisplayState>,
@@ -58,24 +61,25 @@ pub struct SharedDisplayState {
     pub device: String,
     pub output: String,
     pub online: bool,
-    pub included: bool,
+    /// It meets a screen of another of the person's devices, so the pointer crosses onto it.
+    pub reachable: bool,
 }
 
 impl ArrangedDisplay {
     fn status(&self) -> Option<String> {
         let shared = self.shared.as_ref()?;
-        match (shared.online, shared.included) {
+        match (shared.online, shared.reachable) {
             (true, true) => None,
             (false, true) => Some(t("display-arrangement-offline")),
-            (true, false) => Some(t("display-arrangement-excluded")),
-            (false, false) => Some(t("display-arrangement-offline-excluded")),
+            (true, false) => Some(t("display-arrangement-apart")),
+            (false, false) => Some(t("display-arrangement-offline-apart")),
         }
     }
 
     fn muted(&self) -> bool {
         self.shared
             .as_ref()
-            .is_some_and(|shared| !shared.online || !shared.included)
+            .is_some_and(|shared| !shared.online || !shared.reachable)
     }
 }
 
@@ -485,6 +489,28 @@ impl DisplayArrangement {
             .collect()
     }
 
+    /// Where a drop of `connector` held at `group` (its group's bounds) comes to rest: a
+    /// device's screens stay where they were dropped, and an ungrouped screen is brought into
+    /// contact with the other ungrouped ones.
+    fn rest(&self, connector: &str, group: Placement, threshold: i32) -> Placement {
+        let grouped = self
+            .displays
+            .iter()
+            .any(|display| display.connector == connector && display.movement_group.is_some());
+        if grouped {
+            return group;
+        }
+        let desktop = self
+            .displays
+            .iter()
+            .filter(|display| {
+                display.movement_group.is_none() && !self.moves_together(connector, display)
+            })
+            .map(|display| display.placement)
+            .collect::<Vec<_>>();
+        placement::settle(group, &desktop, threshold)
+    }
+
     fn group_bounds(&self, connector: &str, destination: Placement) -> Placement {
         let screens = self
             .displays
@@ -633,9 +659,9 @@ impl DisplayArrangement {
             self.settle_view(now);
             return true;
         }
-        let bounds = placement::settle(
+        let bounds = self.rest(
+            &drag.connector,
             self.group_bounds(&drag.connector, preview),
-            &self.others(&drag.connector),
             mapping.snap_threshold(),
         );
         let settled = self.align_group(&drag.connector, preview, bounds);
@@ -1466,19 +1492,19 @@ mod tests {
     }
 
     #[test]
-    fn certified_shared_tiles_expose_independent_availability_and_inclusion() {
+    fn certified_shared_tiles_expose_independent_availability_and_reach() {
         let mut canvas = canvas();
         canvas.displays[0].shared = Some(SharedDisplayState {
             device: "laptop".into(),
             output: "edid:panel".into(),
             online: false,
-            included: true,
+            reachable: true,
         });
         canvas.displays[1].shared = Some(SharedDisplayState {
             device: "desk".into(),
             output: "edid:panel".into(),
             online: true,
-            included: false,
+            reachable: false,
         });
         let before = canvas.accessibility().unwrap();
         assert!(
@@ -1493,14 +1519,14 @@ mod tests {
                 .description
                 .as_ref()
                 .unwrap()
-                .contains("Not in layout")
+                .contains("Apart")
         );
         assert!(
             before.children[1]
                 .description
                 .as_ref()
                 .unwrap()
-                .contains("Not in layout")
+                .contains("Apart")
         );
         assert!(
             !before.children[1]
@@ -1526,7 +1552,7 @@ mod tests {
         canvas.displays[1].shared.as_mut().unwrap().online = false;
         let offline_excluded = canvas.accessibility().unwrap();
         let description = offline_excluded.children[1].description.as_ref().unwrap();
-        assert!(description.contains("Offline") && description.contains("not in the layout"));
+        assert!(description.contains("Offline") && description.contains("apart"));
     }
 
     #[test]

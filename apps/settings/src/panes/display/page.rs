@@ -1,8 +1,8 @@
 //! The Displays page as view code over the person's night light, this device's
 //! display preferences and the displays' arrangement, and what the area reads
-//! of the displays: the change being tried, the arrangement canvas, the
-//! selected display's settings, the person's other devices' displays and the
-//! trusted layout tools.
+//! of the displays: the change being tried, the arrangement canvas of this
+//! device's displays and the person's other devices' screens, the chosen
+//! screen's settings and the trusted layout tools.
 
 use std::rc::Rc;
 
@@ -91,20 +91,16 @@ fn page(
     // no brightness outside the selected display's. Then the comforts that
     // are not one display's, and the displays of other devices.
     let mut cards: Vec<SettingsSection> = model.safety_card(cx, actions).into_iter().collect();
-    cards.push(model.arrangement_card(actions, dispatcher, &connected));
+    cards.push(model.arrangement_card(cx, actions, dispatcher, &connected));
     if let Some(notice) = &model.notice {
         cards.push(section(&t("display-card-title"), rows(vec![note(notice)])));
     }
-    if let Some(output) = model.selected_output() {
+    if let Some(screen) = model.selected_screen() {
+        cards.push(model.screen_card(&screen));
+    } else if let Some(output) = model.selected_output() {
         cards.push(model.output_card(cx, actions, dispatcher, output, &connected));
     }
     cards.push(night_light_card(cx));
-    if let Some(shared) = model.build_shared_displays_card(cx, dispatcher) {
-        cards.push(shared);
-    }
-    if let Some(devices) = model.build_device_arrangement_card(dispatcher) {
-        cards.push(devices);
-    }
     if let Some(tools) = model.trusted_tools_card(cx, dispatcher) {
         cards.push(tools);
     }
@@ -154,13 +150,15 @@ fn night_light_card(cx: &ViewCx<NightLightPrefs>) -> SettingsSection {
 }
 
 impl DisplayModel {
-    /// The arrangement card: the canvas of the connected displays, which is
-    /// also where a display is chosen (by pointer, touch, keyboard or screen
-    /// reader). Identify sits in the card's header. See
-    /// [`Self::connected_outputs`] for why disconnected ports aren't
-    /// enumerated.
+    /// The arrangement card: the canvas of the connected displays and the
+    /// person's other devices' screens, which is also where a screen is
+    /// chosen (by pointer, touch, keyboard or screen reader). Identify sits
+    /// in the card's header; under the canvas, once there are other devices,
+    /// whether they may use this screen. See [`Self::connected_outputs`] for
+    /// why disconnected ports aren't enumerated.
     fn arrangement_card(
         &self,
+        cx: &ViewCx<NightLightPrefs>,
         actions: &Actions<Settings>,
         dispatcher: &Dispatcher<Settings>,
         connected: &[&DisplayOutput],
@@ -183,17 +181,26 @@ impl DisplayModel {
                 .role(ui::widget::ButtonRole::Secondary),
             DisplayEffect::IdentifyDisplays,
         );
-        let caption = if connected.len() > 1 {
+        let others = self.with_other_devices().is_some();
+        let caption = if connected.len() > 1 || others {
             t("display-caption-switch")
         } else if disconnected == 0 {
             t("display-caption-second")
         } else {
             t("display-caption-port")
         };
+        let mut content = vec![note(&caption), block(Box::new(canvas))];
+        if others {
+            content.extend(record_item(
+                cx,
+                &cx.settings::<super::shared_displays::AutomaticDisplayPrefs>(),
+                super::shared_displays::automatic_input,
+            ));
+        }
         provider_settings_ui::widgets::section_with(
             &t("display-card-title"),
             Box::new(identify),
-            rows(vec![note(&caption), block(Box::new(canvas))]),
+            rows(content),
         )
     }
 

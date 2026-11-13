@@ -215,11 +215,6 @@ pub enum FloatingSurfaceClientMessage {
     ActionMarkers {
         markers: Vec<crate::PaintedActionMarker>,
     },
-    /// A typed Settings request on the existing authenticated app connection.
-    MoveDeviceDisplay {
-        request: u64,
-        placement: settings_store::device_displays::DeviceDisplayMove,
-    },
     /// Bounded response to a trusted owner operation on this same connection.
     DeviceShellOutcome {
         request: u64,
@@ -483,11 +478,6 @@ pub enum FloatingSurfaceHostMessage {
     /// Its shape never changes, so an app of any version reads it.
     VersionMismatch {
         shell: u16,
-    },
-    /// Admission/delivery result. The owner's published topology confirms application.
-    DeviceDisplayMoveResult {
-        request: u64,
-        result: Result<(), String>,
     },
     /// The authenticated device owner selected Terminal's device-shell target.
     DeviceShellOperation {

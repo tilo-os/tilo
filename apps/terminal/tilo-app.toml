@@ -73,7 +73,7 @@ open-uri = "via-host"
 # `TILO_SVC_USH_FD`.
 ush    = "required@22"
 # Authenticated permission prompt for the device shell.
-shell-ui = "optional@27"
+shell-ui = "optional@28"
 collab = "optional@22"
 tilo-fs = "optional@22"
 
