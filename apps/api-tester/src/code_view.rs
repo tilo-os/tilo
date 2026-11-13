@@ -376,10 +376,10 @@ mod tests {
     use super::*;
     use ui::headless::FrameHarness;
 
-    /// The view mounted in a 600 by 400 window. Mounting runs a frame, and so does every event
-    /// and `relayout`: the view is laid out and drawn into the frame's scene, which is where
-    /// it records its folds and what it painted. No test here reads pixels, so none
-    /// rasterises that scene.
+    /// The view mounted in a 600 by 400 window. Mounting runs a frame, and so do `relayout`
+    /// and an event that changes something: the view is laid out and drawn into the frame's
+    /// scene, which is where it records its folds and what it painted. No test here reads
+    /// pixels, so none rasterises that scene.
     fn harness(view: CodeView) -> FrameHarness {
         FrameHarness::for_root(ui::State::new(), view, (600, 400), Theme::dark())
     }
