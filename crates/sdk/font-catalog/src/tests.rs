@@ -117,27 +117,25 @@ fn smallest_asset() -> (&'static Asset, Vec<u8>) {
 }
 
 #[test]
-fn verify_trust_still_rejects_a_modified_font() {
-    let (asset, mut bytes) = smallest_asset();
-    let dir = tempfile::tempdir().unwrap();
-    *bytes.last_mut().unwrap() ^= 1;
-    std::fs::write(asset.path_in(dir.path()).unwrap(), &bytes).unwrap();
-    let error = asset.verify_with(dir.path(), Trust::Verify).unwrap_err();
-    assert!(error.problem.contains("SHA-256"), "{error}");
-}
-
-#[test]
-fn immutable_trust_still_hashes_a_file_that_is_not_immutable() {
-    // A caller that claims `Immutable` for a writable root gains nothing:
-    // the production probe refuses the file, so it is hashed and refused.
-    let (asset, mut bytes) = smallest_asset();
-    let dir = tempfile::tempdir().unwrap();
-    *bytes.last_mut().unwrap() ^= 1;
-    let path = asset.path_in(dir.path()).unwrap();
-    std::fs::write(&path, &bytes).unwrap();
-    assert!(!file_is_immutable(&path));
-    let error = asset.verify_with(dir.path(), Trust::Immutable).unwrap_err();
-    assert!(error.problem.contains("SHA-256"), "{error}");
+fn a_modified_font_is_hashed_and_refused_whatever_trust_is_claimed() {
+    for (row, trust) in [
+        ("verify_trust_still_rejects_a_modified_font", Trust::Verify),
+        // A caller that claims `Immutable` for a writable root gains nothing:
+        // the production probe refuses the file, so it is hashed and refused.
+        (
+            "immutable_trust_still_hashes_a_file_that_is_not_immutable",
+            Trust::Immutable,
+        ),
+    ] {
+        let (asset, mut bytes) = smallest_asset();
+        let dir = tempfile::tempdir().unwrap();
+        *bytes.last_mut().unwrap() ^= 1;
+        let path = asset.path_in(dir.path()).unwrap();
+        std::fs::write(&path, &bytes).unwrap();
+        assert!(!file_is_immutable(&path), "{row}");
+        let error = asset.verify_with(dir.path(), trust).unwrap_err();
+        assert!(error.problem.contains("SHA-256"), "{row}: {error}");
+    }
 }
 
 #[test]
