@@ -1,6 +1,6 @@
 //! Explicit owner migration reads from a recognized native application keychain.
-//! Ordinary `SecretStore` remains app-scoped. This API neither writes nor deletes
-//! foreign items and must be called only after the owner selects this account.
+//! Ordinary [`SecretStore`] stays app-scoped, and this API neither writes nor deletes
+//! foreign items.
 use crate::{Secret, SecretError};
 
 mod chromium;
@@ -8,16 +8,10 @@ mod goa;
 pub use chromium::{ChromiumBrand, ChromiumKey};
 pub use goa::{GoaCredential, GoaCredentials, GoaProvider, GoaRegistration};
 
-/// One exact HTTP credential used by the native Nextcloud client.
-/// The key format is defined by Nextcloud's `AbstractCredentials::keychainKey`:
-/// <https://github.com/nextcloud/desktop/blob/master/src/libsync/creds/abstractcredentials.cpp>
-/// `QtKeychain`'s libsecret attributes are `user`, `server`, and `type`:
-/// <https://github.com/frankosterfeld/qtkeychain/blob/main/qtkeychain/libsecret.cpp>
 pub struct NextcloudCredential {
     key: String,
 }
 impl NextcloudCredential {
-    /// Construct the precise key for the selected native account; no wildcard search.
     pub fn new(server: &str, username: &str, account_id: &str) -> Result<Self, SecretError> {
         if !server.starts_with("https://")
             || server.len() > 2048

@@ -14,13 +14,11 @@
 )]
 
 //! App-scoped secret storage: one API on Linux, macOS, Windows and the web.
+//! App-scoped secret storage: one API on Linux, macOS, Windows and the web.
 //!
-//! A [`SecretStore`] belongs to one app ([`SecretStore::for_app`]); its keys
-//! name that app's secrets and no other app's. [`SecretStore::memory`] keeps
-//! them in the process, for tests.
-//!
-//! | Target | Backend | [`Protection`] |
-//! |---|---|---|
+//! A [`SecretStore`] belongs to one app ([`SecretStore::for_app`]), and its keys name
+//! that app's secrets and no other app's. [`SecretStore::memory`] keeps them in the
+//! process, for tests.
 //! | Linux | the freedesktop Secret Service over D-Bus (GNOME Keyring, `KWallet`) | [`Protection::OsKeychain`] |
 //! | macOS | the login Keychain's generic passwords | [`Protection::OsKeychain`] |
 //! | Windows | generic credentials in the user's Credential Manager (DPAPI-encrypted, this machine only) | [`Protection::OsKeychain`] |
@@ -71,9 +69,6 @@ pub mod web;
 mod windows;
 
 pub use caps::{Availability, Feature, Unsupported, availability, available};
-/// A process that holds the device identity proves it to
-/// `tilo-secret-service`, which cannot read a non-dumpable process's
-/// executable (see the module docs of `device_proof`).
 #[cfg(target_os = "linux")]
 pub use device_proof::{arm as arm_device_proof, prove as prove_device_caller};
 
@@ -97,30 +92,23 @@ impl fmt::Debug for Secret {
     }
 }
 
-/// How the stored secrets are protected.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Protection {
-    /// The operating system's keychain holds them, unlocked with the user's
-    /// session.
     OsKeychain,
-    /// Encrypted under a key the browser will not export through `WebCrypto`;
-    /// this is not a boundary against a compromised browser or origin.
+    /// Encrypted under a key the browser will not export through `WebCrypto`; not a
+    /// boundary against a compromised browser or origin.
     BrowserWrapped,
-    /// Sealed in owner-only files under a key file beside them: as private
-    /// as the machine's disk and the Unix account that owns them.
+    /// Sealed in owner-only files under a key file beside them: as private as the
+    /// machine's disk and the Unix account that owns them.
     LocalFile,
     /// In this process only; gone when it exits.
     Memory,
 }
 
-/// Why a secret could not be read, stored or deleted.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SecretError {
-    /// No secret store answers on this session (no Secret Service running).
     Unavailable(String),
-    /// This target cannot do what was asked; see [`availability`].
     Unsupported(Unsupported),
-    /// The user dismissed the unlock prompt, or the store refused access.
     Denied,
     /// The key is empty or has control characters.
     InvalidKey,
@@ -141,25 +129,16 @@ impl fmt::Display for SecretError {
 
 impl std::error::Error for SecretError {}
 
-/// Options for [`SecretStore::put`].
 #[derive(Clone, Debug, Default)]
 pub struct PutOptions {
-    /// What a keyring manager shows for the item. Defaults to the app id and
-    /// key.
     pub label: Option<String>,
 }
 
-/// A synchronous secret store for one process: the desktop backends,
-/// [`SecretStore::memory`], or a host's own. Every call names the app.
 pub trait SecretBackend: Send + Sync {
     fn protection(&self) -> Protection;
     fn get(&self, app: &str, key: &str) -> Result<Option<Secret>, SecretError>;
-    /// Store `value`, replacing any secret under `key`.
     fn put(&self, app: &str, key: &str, value: &[u8], label: &str) -> Result<(), SecretError>;
-    /// Delete the secret under `key`; deleting a missing key succeeds.
     fn delete(&self, app: &str, key: &str) -> Result<(), SecretError>;
-    /// Whether the store answers at all on this session, without touching a
-    /// secret.
     fn probe(&self) -> Result<(), SecretError> {
         Ok(())
     }
@@ -172,7 +151,6 @@ enum Backend {
     Web,
 }
 
-/// One app's secrets.
 #[derive(Clone)]
 pub struct SecretStore {
     app: String,
@@ -189,9 +167,6 @@ impl fmt::Debug for SecretStore {
 }
 
 impl SecretStore {
-    /// The app `app_id`'s secrets in this target's secret store, or in the
-    /// thread's [`scope_thread`] store, or in the process's own after
-    /// [`keep_in_memory_for_process`].
     pub fn for_app(app_id: &str) -> Self {
         Self {
             app: app_id.to_owned(),
@@ -202,7 +177,6 @@ impl SecretStore {
         }
     }
 
-    /// Secrets kept in this process, for tests. Each call is a fresh store.
     pub fn memory(app_id: &str) -> Self {
         Self::with_backend(app_id, Arc::new(MemoryBackend::default()))
     }
@@ -214,11 +188,8 @@ impl SecretStore {
         }
     }
 
-    /// Start an immutable write, returning its key only after durable custody.
-    /// `None` means pending: retry the same namespace and bytes on a later turn.
-    /// Browser retries may propose a new final key segment; the first key wins.
-    /// A completed acknowledgement is consumed once, so retain it across retries
-    /// of a larger transaction. Injected backends keep their persistence contract.
+    /// Start an immutable write, returning its key only after durable custody. `None` means
+    /// pending: retry the same namespace and bytes on a later turn.
     pub fn seal_blocking(
         &self,
         key: &str,
@@ -234,8 +205,8 @@ impl SecretStore {
         Ok(Some(key.to_owned()))
     }
 
-    /// Whether page custody has asynchronous operations awaiting a retry.
-    /// Native and host-injected synchronous stores never stage operations here.
+    /// Whether page custody has asynchronous operations awaiting a retry; native and
+    /// host-injected synchronous stores never stage operations here.
     pub fn pending() -> bool {
         #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
         {
@@ -259,7 +230,6 @@ impl SecretStore {
         }
     }
 
-    /// The secret under `key`, or `None`.
     pub async fn get(&self, key: &str) -> Result<Option<Secret>, SecretError> {
         check_key(key)?;
         match &self.backend {
@@ -272,7 +242,6 @@ impl SecretStore {
         }
     }
 
-    /// Store `value` under `key`, replacing any earlier secret.
     pub async fn put(
         &self,
         key: &str,
@@ -294,7 +263,6 @@ impl SecretStore {
         }
     }
 
-    /// Delete the secret under `key`. Deleting a missing key succeeds.
     pub async fn delete(&self, key: &str) -> Result<(), SecretError> {
         check_key(key)?;
         match &self.backend {
@@ -394,8 +362,6 @@ impl SecretStore {
     }
 }
 
-/// The secret of one document item in an app's [`SecretStore`]; see
-/// [`SecretStore::item`].
 #[derive(Clone, Debug)]
 pub struct ItemSecret {
     store: SecretStore,
@@ -404,18 +370,15 @@ pub struct ItemSecret {
 }
 
 impl ItemSecret {
-    /// The store key: `<purpose>/<item id>`.
     #[must_use]
     pub fn key(&self) -> &str {
         &self.key
     }
 
-    /// The secret, or `None` when this device has none for the item.
     pub async fn get(&self) -> Result<Option<Secret>, SecretError> {
         self.store.get(&self.key).await
     }
 
-    /// Keep `value` as the item's secret, replacing any earlier one.
     pub async fn put(&self, value: &[u8]) -> Result<(), SecretError> {
         let options = PutOptions {
             label: Some(self.label.clone()),
@@ -423,7 +386,6 @@ impl ItemSecret {
         self.store.put(&self.key, value, options).await
     }
 
-    /// Forget the item's secret, as when the item is deleted.
     pub async fn delete(&self) -> Result<(), SecretError> {
         self.store.delete(&self.key).await
     }
@@ -456,19 +418,15 @@ impl ItemSecret {
         self.store.delete_blocking(&self.key)
     }
 
-    /// Whether this device holds the item's secret, for availability such
-    /// as "secret present here". An unavailable store holds none.
     #[must_use]
     pub fn present_blocking(&self) -> bool {
         matches!(self.get_blocking(), Ok(Some(_)))
     }
 }
 
-/// Whether what this build puts in the system store stays readable by later
-/// builds of the same program. On macOS only a Developer ID signature does
-/// (see the `macos` backend): an ad-hoc or dev build's Keychain items belong
-/// to that exact build, and a later one fails on them rather than ask. Always
-/// true elsewhere.
+/// Whether what this build puts in the system store stays readable by later builds of
+/// the same program. On macOS only a Developer ID signature does; an ad-hoc or dev
+/// signature's items are readable by that build alone.
 #[must_use]
 pub fn items_outlive_rebuilds() -> bool {
     #[cfg(target_os = "macos")]
@@ -479,10 +437,9 @@ pub fn items_outlive_rebuilds() -> bool {
 
 static PROCESS_BACKEND: std::sync::OnceLock<Arc<dyn SecretBackend>> = std::sync::OnceLock::new();
 
-/// From now on, every [`SecretStore::for_app`] in this process shares one
-/// in-memory store and never reaches the platform's (which may prompt, and
-/// holds the user's real secrets). For harnesses that mount real apps
-/// headless; stores created earlier keep their backend.
+/// From now on, every [`SecretStore::for_app`] in this process shares one in-memory store
+/// and never reaches the platform's, which may prompt and holds the user's real
+/// secrets.
 pub fn keep_in_memory_for_process() {
     PROCESS_BACKEND.get_or_init(|| Arc::new(MemoryBackend::default()));
 }
@@ -505,18 +462,13 @@ impl Drop for SecretsScope {
     }
 }
 
-/// From now until the guard drops, every [`SecretStore::for_app`] this
-/// thread creates keeps its secrets in `backend`, never the platform's
-/// store. A host gives a participant it runs on its own thread (an agent)
-/// secrets apart from the host user's this way. A store keeps the backend
-/// it was created with, wherever it is used later.
+/// From now until the guard drops, every [`SecretStore::for_app`] this thread creates
+/// keeps its secrets in `backend`, never the platform's store.
 pub fn scope_thread(backend: Arc<dyn SecretBackend>) -> SecretsScope {
     let earlier = THREAD_BACKEND.with(|scoped| scoped.borrow_mut().replace(backend));
     SecretsScope { earlier }
 }
 
-/// Run `work` with this thread's [`scope_thread`] store lifted, then
-/// restore it.
 pub fn unscoped<R>(work: impl FnOnce() -> R) -> R {
     let _scope = SecretsScope {
         earlier: THREAD_BACKEND.with(|scoped| scoped.borrow_mut().take()),
@@ -524,9 +476,6 @@ pub fn unscoped<R>(work: impl FnOnce() -> R) -> R {
     work()
 }
 
-/// A fresh store that keeps secrets in this process: for [`scope_thread`],
-/// or for a host whose apps' stores ([`SecretStore::with_backend`]) share one
-/// process-lifetime map.
 #[must_use]
 pub fn memory_backend() -> Arc<dyn SecretBackend> {
     Arc::new(MemoryBackend::default())
@@ -561,12 +510,8 @@ async fn off_thread<T: Send + 'static>(
         })
 }
 
-/// Names the directory of a file-backed store that replaces the system
-/// store for every process given it.
 pub const SECRETS_DIR_ENV: &str = "TILO_SECRETS_DIR";
 
-/// The store the machine provides: the file-backed one where
-/// [`SECRETS_DIR_ENV`] names a directory, else the system's.
 fn machine_backend() -> Backend {
     #[cfg(unix)]
     if let Some(dir) = std::env::var_os(SECRETS_DIR_ENV).filter(|dir| !dir.is_empty()) {
@@ -692,7 +637,6 @@ impl SecretBackend for UnsupportedBackend {
     }
 }
 
-/// Secrets in a map, keyed by app and key.
 #[derive(Default)]
 struct MemoryBackend {
     secrets: Mutex<HashMap<(String, String), Secret>>,
@@ -828,8 +772,6 @@ mod tests {
         ));
     }
 
-    /// The real store is exercised only where a developer asks for it: it
-    /// writes the login keychain (and may prompt).
     #[test]
     fn the_system_store_conforms_when_asked() {
         if std::env::var_os("TILO_SECRETS_SYSTEM_TEST").is_none() {

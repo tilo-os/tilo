@@ -1,13 +1,10 @@
-//! Secrets in owner-only files, for a machine with no keychain: a headless
-//! node or server whose sessions have no Secret Service.
+//! Secrets in owner-only files, for a machine with no keychain: a headless node or
+//! server whose sessions have no Secret Service.
 //!
-//! The store is one mode-0700 directory. `store.key`, a random 256-bit key
-//! written once with an exclusive create, seals each secret as a
-//! `tilo-seal` envelope bound to its app and key; the secret's file is named
-//! by a digest of those, so a listing shows no app or key name. The key
-//! lives beside the secrets, so the store is exactly as private as the disk
-//! and the Unix account that own the directory: put it on an encrypted
-//! volume. [`Protection::LocalFile`] says so.
+//! The store is one mode-0700 directory. `store.key`, a random 256-bit key written once
+//! with an exclusive create, seals each secret as a `tilo-seal` envelope bound to its app
+//! and key, in a file named by a digest of those, so a listing shows no name. The store
+//! is exactly as private as the disk it is on.
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read as _, Write as _};
@@ -21,10 +18,8 @@ use crate::{Protection, Secret, SecretBackend, SecretError};
 
 const KEY_FILE: &str = "store.key";
 const SUFFIX: &str = "secret";
-/// Larger files are not secrets this store wrote.
 const MAX_FILE_BYTES: u64 = 1 << 20;
 
-/// A file-backed store rooted at one directory.
 pub(crate) struct FileStore {
     dir: PathBuf,
     key: SymmetricKey,
@@ -35,7 +30,6 @@ fn failed(what: &str, error: impl std::fmt::Display) -> SecretError {
 }
 
 impl FileStore {
-    /// Open the store in `dir`, creating it and its key on first use.
     pub(crate) fn open(dir: &Path) -> Result<Self, SecretError> {
         fs::create_dir_all(dir).map_err(|error| failed("secret store directory", error))?;
         let meta = fs::symlink_metadata(dir).map_err(|error| failed("secret store", error))?;
@@ -108,8 +102,8 @@ impl SecretBackend for FileStore {
     }
 }
 
-/// The bytes of `path`, a regular file this user owns that nobody else may
-/// read, or `None` when there is none.
+/// The bytes of `path`, a regular file this user owns that nobody else may read, or
+/// `None` when there is none.
 fn read_private(path: &Path) -> Result<Option<Vec<u8>>, SecretError> {
     let mut file = match OpenOptions::new()
         .read(true)
@@ -159,8 +153,6 @@ fn sync_dir(dir: &Path) -> io::Result<()> {
     File::open(dir)?.sync_all()
 }
 
-/// The store's key, created once. Concurrent first openers converge on
-/// whichever key reached the disk first.
 fn load_or_create_key(path: &Path) -> Result<SymmetricKey, SecretError> {
     let from = |bytes: &[u8]| {
         SymmetricKey::from_slice(bytes).map_err(|error| failed("secret store key", error))
@@ -225,7 +217,6 @@ mod tests {
             SecretStore::with_backend("so.tilo.other", Arc::new(FileStore::open(&dir).unwrap()));
         assert_eq!(other.get_blocking("kept").unwrap(), None);
 
-        // Nothing on disk names the app or holds the secret in the clear.
         for entry in fs::read_dir(&dir).unwrap() {
             let entry = entry.unwrap();
             let mode = entry.metadata().unwrap().permissions().mode();
@@ -240,14 +231,12 @@ mod tests {
             0o700
         );
 
-        // A secret file moved under another key does not open.
         let moved = FileStore::open(&dir).unwrap();
         let from = moved.path(&FileStore::record("so.tilo.secrets-test", "kept"));
         let to = moved.path(&FileStore::record("so.tilo.secrets-test", "stolen"));
         fs::copy(&from, &to).unwrap();
         assert!(reopened.get_blocking("stolen").is_err());
 
-        // A file others may read is refused rather than trusted.
         fs::set_permissions(&from, fs::Permissions::from_mode(0o644)).unwrap();
         assert!(reopened.get_blocking("kept").is_err());
     }
