@@ -1574,8 +1574,15 @@ pub(crate) async fn run(
             Some(path) => {
                 // A socket left by a workspace that stopped answers nobody.
                 let _ = std::fs::remove_file(path);
+                // The volume's path is longer than a socket's name may be on some
+                // deployments, so it is bound through its directory.
+                let bound = tilo_files::native::socket::bind(path)
+                    .with_context(|| format!("bind {}", path.display()))?;
+                bound
+                    .set_nonblocking(true)
+                    .with_context(|| format!("bind {}", path.display()))?;
                 Some(
-                    tokio::net::UnixListener::bind(path)
+                    tokio::net::UnixListener::from_std(bound)
                         .with_context(|| format!("bind {}", path.display()))?,
                 )
                 .map(|socket| {
