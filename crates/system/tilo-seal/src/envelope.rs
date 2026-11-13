@@ -1,6 +1,8 @@
 //! At-rest envelopes: XChaCha20-Poly1305 under a symmetric key or a
 //! password, with a self-describing, versioned header.
 //!
+//! Layout (version 1, all integers little-endian):
+//!
 //! ```text
 //! 0..5    magic  "TSEAL"
 //! 5       format version = 0x01
@@ -13,6 +15,13 @@
 //! ..      nonce (24 random bytes)
 //! ..      ciphertext + 16-byte tag
 //! ```
+//!
+//! The AEAD associated data is the whole header (magic through nonce),
+//! then the [`Label`] string and caller context, each length-prefixed.
+//! Every header field is therefore authenticated, and an envelope moved to
+//! another purpose or record (a different [`Context`]) fails to open.
+//! Nonces are 192-bit random values, so no counter state is needed and
+//! collisions are negligible for any realistic number of writes per key.
 
 use argon2::{Algorithm, Argon2, Params, Version};
 use chacha20poly1305::aead::{Aead as _, KeyInit as _, Payload};
