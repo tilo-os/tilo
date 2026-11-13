@@ -1,8 +1,6 @@
-//! A publisher's side of the Tilo registry: keys, signed entries, and the
-//! registry's HTTP API for uploads, entries and publisher applications.
-//!
-//! `tilo-app publish`, `tilo-app apply` and the App Publisher app use this;
-//! so can any CI that would rather not shell out.
+//! A publisher's side of the Tilo registry: keys, signed entries, and the registry's HTTP API for
+//! uploads, entries and publisher applications. `tilo-app publish`, `tilo-app apply` and the App
+//! Publisher app use this; so can any CI that would rather not shell out.
 
 pub mod bot;
 pub mod client;

@@ -1,9 +1,7 @@
-//! The signed registry entry that publishes one build of a package.
-//!
-//! Everything in the entry that describes the package — id, version,
-//! category, target — comes from the signed package itself, so an entry
-//! cannot describe a package as something it is not. The registry checks the
-//! same things again; these checks only fail early, on the publisher's side.
+//! The signed registry entry that publishes one build of a package. Everything in the entry that
+//! describes the package (id, version, category, target) comes from the signed package itself, so
+//! an entry cannot describe a package as something it is not. The registry checks the same things
+//! again; these checks only fail early.
 
 use std::path::PathBuf;
 
@@ -19,15 +17,13 @@ pub enum Platform {
     /// Native Tilo OS thin app (`x86_64` or `aarch64`).
     #[default]
     TiloOs,
-    /// Self-contained executable for Linux desktops other than Tilo OS
-    /// (`x86_64` or `aarch64`).
+    /// Self-contained executable for Linux desktops other than Tilo OS (`x86_64` or `aarch64`).
     Linux,
     /// Self-contained Windows executable (`x86_64` or `aarch64`).
     Windows,
     /// Self-contained macOS executable (`x86_64` or `aarch64`).
     Macos,
-    /// Android package, an APK or AAB (`aarch64` or `x86_64`). Tilo OS never
-    /// installs it.
+    /// Android package, an APK or AAB (`aarch64` or `x86_64`). Tilo OS never installs it.
     Android,
 }
 
@@ -44,8 +40,7 @@ impl Platform {
         }
     }
 
-    /// The platform a package was built for: its signed `[target]`, or
-    /// Tilo OS when it has none.
+    /// The platform a package was built for: its signed `[target]`, or Tilo OS when it has none.
     #[must_use]
     pub fn of(manifest: &Manifest) -> Option<Self> {
         let Some(target) = &manifest.target else {
@@ -57,9 +52,9 @@ impl Platform {
     }
 }
 
-/// Publisher-authored, localizable store presentation. JSON uses the same
-/// signed wire types as the registry entry, so no lossy conversion or locale
-/// normalization happens between authoring and signing.
+/// Publisher-authored, localizable store presentation. JSON uses the same signed wire types as the
+/// registry entry, so no lossy conversion or locale normalization happens between authoring and
+/// signing.
 #[derive(Clone, Debug, Deserialize)]
 pub struct EntryMetadata {
     pub name: registry_types::LocalizedText,
@@ -86,11 +81,10 @@ pub fn check_package(tapp_bytes: &[u8], publisher: [u8; 32]) -> Result<Checked> 
     check_package_with(tapp_bytes, publisher, None)
 }
 
-/// [`check_package`] for a package whose payload blobs the `.tapp` need not
-/// carry: each missing blob is read from `objects` (the directory
-/// `tilo-app-package split` wrote, published beside the thin `.tapp`) and
-/// checked against its hash, so the payload shape and size limits are
-/// checked on what installs will actually materialize.
+/// [`check_package`] for a package whose payload blobs the `.tapp` need not carry: each missing blob
+/// is read from `objects` (the directory `tilo-app-package split` wrote, published beside the thin
+/// `.tapp`) and checked against its hash, so the payload limits are checked on what installs will
+/// materialise.
 pub fn check_package_with(
     tapp_bytes: &[u8],
     publisher: [u8; 32],
@@ -160,10 +154,8 @@ pub fn check_package_with(
     })
 }
 
-/// Build the entry from the package's own manifest: id, name,
-/// category, version come from inside the signed package, so a
-/// registry row cannot describe a package as something it is not.
-/// The entry keeps `previous`'s versions within `retention`.
+/// Build the entry from the package's own manifest: id, name, category and version come from inside
+/// the signed package. The entry keeps `previous`'s versions within `retention`.
 pub fn build_entry(
     tapp_bytes: &[u8],
     url: &str,
@@ -194,9 +186,8 @@ pub struct ThinPackage<'a> {
     pub objects: &'a ObjectDir,
 }
 
-/// [`build_entry`] for a thin `.tapp` whose payload objects (the directory
-/// `tilo-app-package split` wrote) are hosted beside it at `url`; the payload
-/// is checked from `package.objects` (see [`check_package_with`]).
+/// [`build_entry`] for a thin `.tapp` whose payload objects (the directory `tilo-app-package split`
+/// wrote) are hosted beside it at `url`; the payload is checked from `package.objects`.
 ///
 /// # Errors
 ///

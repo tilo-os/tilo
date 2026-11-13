@@ -1,9 +1,6 @@
-//! Reading + verifying `.tapp` bytes on the registry's edges.
-//!
-//! A registry server reviewing an upload and an installer taking a
-//! download both open a `.tapp`; the archive format itself lives in
-//! [`tilo_app_package::tapp`], and this module adds the registry's
-//! checks on top of it.
+//! Reading and verifying `.tapp` bytes on the registry's edges. A registry server reviewing an
+//! upload and an installer taking a download both open a `.tapp`; the archive format itself lives
+//! in [`tilo_app_package::tapp`], and this module adds the registry's checks on top of it.
 
 use anyhow::{Context, Result, anyhow, bail};
 
@@ -11,19 +8,17 @@ use tilo_app_package::{DiscardBlobs, Manifest, PackageId, Tapp, Verification, ve
 
 pub use tilo_app_package::tapp::TAPP_FORMAT_VERSION;
 
-/// The pieces of a `.tapp` a caller commonly needs.
 pub struct TappMeta {
     /// Content-addressed package identity.
     pub package_id: PackageId,
     pub manifest: Manifest,
-    /// The decoded archive: metadata plus the sizes of carried blobs, each
-    /// already checked against its hash.
+    /// The decoded archive: metadata plus the sizes of carried blobs, each already checked against
+    /// its hash.
     pub tapp: Tapp,
 }
 
-/// Enforce the application materialization and entry-count budgets without
-/// writing the payload to disk. Needs the full form, which carries every
-/// payload size.
+/// Enforce the application materialisation and entry-count budgets without writing the payload to
+/// disk. Needs the full form, which carries every payload size.
 pub fn validate_payload_shape(meta: &TappMeta) -> Result<()> {
     let tapp = &meta.tapp;
     let missing = tapp.missing();
@@ -36,9 +31,8 @@ pub fn validate_payload_shape(meta: &TappMeta) -> Result<()> {
     validate_payload_shape_with(meta, |hash| tapp.carried.get(hash).copied())
 }
 
-/// [`validate_payload_shape`] for a package that may be thin: `len_of`
-/// reports the verified length of each payload blob, carried or held
-/// elsewhere, and `None` for one that is unknown.
+/// [`validate_payload_shape`] for a package that may be thin: `len_of` reports the verified length of
+/// each payload blob, carried or held elsewhere, and `None` for one that is unknown.
 pub fn validate_payload_shape_with(
     meta: &TappMeta,
     len_of: impl FnMut(&tilo_app_package::BlobHash) -> Option<u64>,
@@ -57,9 +51,8 @@ pub fn validate_payload_shape_with(
     Ok(())
 }
 
-/// Decode a `.tapp`, checking the metadata hash chain and every carried
-/// payload blob. Does NOT check the signature — call [`verify_bytes`] for
-/// that.
+/// Decode a `.tapp`, checking the metadata hash chain and every carried payload blob. Does not check
+/// the signature; call [`verify_bytes`] for that.
 pub fn load(bytes: &[u8]) -> Result<TappMeta> {
     let tapp = tilo_app_package::tapp::read(bytes, &mut DiscardBlobs).context("decode .tapp")?;
     Ok(TappMeta {
@@ -110,17 +103,15 @@ pub(crate) mod test_fixture {
     use tilo_app_package::pack::{SigningIdentity, pack};
     use tilo_app_package::{Manifest, PackageId};
 
-    /// A signed, full `.tapp` for `so.tilo.editor@1.0.0`. Returns the bytes
-    /// and its [`PackageId`].
+    /// A signed, full `.tapp` for `so.tilo.editor@1.0.0`, and its [`PackageId`].
     pub fn signed_tapp(identity: &SigningIdentity) -> (Vec<u8>, PackageId) {
         let packed = signed_package(identity);
         let bytes = tilo_app_package::tapp::to_bytes(&packed.meta, Some(&packed)).unwrap();
         (bytes, packed.id())
     }
 
-    /// The packed fixture itself, for tests that re-sign or rewrite it.
-    /// The payload directory lives in a leaked temp dir so the result can
-    /// still stream its files.
+    /// The packed fixture itself, for tests that re-sign or rewrite it. The payload directory lives
+    /// in a leaked temp dir so the result can still stream its files.
     pub fn signed_package(identity: &SigningIdentity) -> tilo_app_package::Packed {
         let pubhex = hex::encode(identity.public_key_bytes());
         let dir = tempfile::tempdir().unwrap().keep();

@@ -1,8 +1,7 @@
-//! Publisher keys. A machine keeps its key in the secret store, where
-//! `tilo-app` and the App Publisher app both find it through [`stored`],
-//! [`create`] and [`discover`]. Anywhere else — a file a command names, the
-//! CI secret in [`KEY_ENV`], a backup — a key is the one key file format,
-//! `{"secret_key_hex": "<64 hex digits>"}` ([`registry_types::key_file`]).
+//! Publisher keys. A machine keeps its key in the secret store, where `tilo-app` and the App
+//! Publisher app both find it through [`stored`], [`create`] and [`discover`]. Anywhere else (a
+//! file a command names, the CI secret in [`KEY_ENV`], a backup) a key is the one key file format,
+//! `{"secret_key_hex": "<64 hex digits>"}`.
 
 use std::path::Path;
 
@@ -16,9 +15,8 @@ use tilo_secrets::{ItemSecret, Secret, SecretError, SecretStore};
 /// The environment variable CI puts a publisher key in.
 pub const KEY_ENV: &str = "TILO_PUBLISHER_KEY";
 
-/// The app whose secrets hold the publisher key: the App Publisher's. Secret
-/// stores are scoped per app, and the key belongs to the app that manages
-/// it; `tilo-app` addresses the same app's secret so both see one key.
+/// The app whose secrets hold the publisher key: the App Publisher's. Secret stores are scoped per
+/// app, and `tilo-app` addresses the same app's secret so both see one key.
 pub const SECRETS_APP: &str = "so.tilo.publisher";
 
 /// The key's purpose and item in [`SECRETS_APP`]'s store: one key per
@@ -26,8 +24,8 @@ pub const SECRETS_APP: &str = "so.tilo.publisher";
 const PURPOSE: &str = "publisher-key";
 const ITEM: &str = "signing";
 
-/// [`SECRETS_APP`]'s secrets in this machine's secret store, for a caller
-/// with no host to hand it the App Publisher's store.
+/// [`SECRETS_APP`]'s secrets in this machine's secret store, for a caller with no host to hand it
+/// the App Publisher's store.
 #[must_use]
 pub fn machine_store() -> SecretStore {
     SecretStore::for_app(SECRETS_APP)
@@ -94,8 +92,7 @@ pub fn create(store: &SecretStore) -> Result<SigningKey> {
     Ok(key)
 }
 
-/// The key named by `path`, else the one in [`KEY_ENV`], else the one in
-/// `store`.
+/// The key named by `path`, else the one in [`KEY_ENV`], else the one in `store`.
 pub fn resolve(path: Option<&Path>, store: &SecretStore) -> Result<SigningKey> {
     if let Some(path) = path {
         return load(path);
@@ -107,10 +104,8 @@ pub fn resolve(path: Option<&Path>, store: &SecretStore) -> Result<SigningKey> {
     })
 }
 
-/// The key in [`KEY_ENV`], else the one in `store`, or `None` when neither
-/// has one. An empty [`KEY_ENV`] counts as unset, which is what a CI secret
-/// missing from a pull request expands to; a machine with no secret store
-/// (a CI runner) holds no key.
+/// The key in [`KEY_ENV`], else the one in `store`, or `None` when neither has one. An empty
+/// [`KEY_ENV`] counts as unset, which is what a CI secret missing from a pull request expands to.
 pub fn discover(store: &SecretStore) -> Result<Option<SigningKey>> {
     if let Ok(text) = std::env::var(KEY_ENV)
         && !text.trim().is_empty()
