@@ -1586,17 +1586,20 @@ fn the_canvas_pans_to_a_window_arriving_past_its_edge_carrying_every_well() {
     arriving.strip = "s2".to_owned();
     arrangement.places.push(arriving);
     link.publish_arrangement(arrangement);
-    // The frames of the way are the ones the part asks for: it is drawn as the session's loop
-    // draws it, until it names no further frame (`next_deadline`), for the two seconds at most
-    // the way may take.
+    // The frames of the way are drawn 8 ms apart for the two seconds at most the way may take.
+    // The way is over once a frame drew nothing and the part has nothing left to turn for
+    // (`due`: a reading to take in, a turn that ran out of exchanges, space or input the window
+    // owes its views) and names no further frame (`next_deadline`: the camera's glide and every
+    // other motion of the tree ask for theirs there). A frame after that would draw nothing
+    // either, so every frame that draws is among the ones read.
     let started = std::time::Instant::now();
     let mut frames = Vec::new();
     while started.elapsed() < std::time::Duration::from_secs(2) {
-        part.prepare_frame();
+        let drew = part.prepare_frame();
         if let (Some(one), Some(two)) = (wells.well("p1"), wells.well("p2")) {
             frames.push((one, two));
         }
-        if SurfaceHost::next_deadline(&part).is_none() {
+        if !drew && !part.due() && SurfaceHost::next_deadline(&part).is_none() {
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(8));
