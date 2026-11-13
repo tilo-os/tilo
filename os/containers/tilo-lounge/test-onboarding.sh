@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # A stranger's way into tilo.sh, end to end, on a whole tilo.sh of this run's
-# own: the Lounge relay, the front door, the web entry and production's Caddy,
+# own: the Lounge relay, the API server, the web entry and production's Caddy,
 # started the way production's manifests start them (os/containers/tilo-sh's
 # stack.sh), so the door a stranger meets here is the one tilo.sh runs — taking
 # people by invitation, keeping a wait list, and mailing through a sink this run

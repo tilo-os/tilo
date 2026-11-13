@@ -111,7 +111,7 @@ without a display. Close the window or press Ctrl-C to stop either.
 control socket, and an MCP agent with the session's agent key, which its door
 admits without a click); `--ready FILE` writes the same as JSON for a script.
 
-`cargo web` builds the desktop bundle and serves it with the relay, front door
+`cargo web` builds the desktop bundle and serves it with the relay, API server
 and web entry production runs, on 127.0.0.1; it loads the page's modules and
 runtime back before it prints the address, and fails naming what is missing.
 The stack keeps running until `cargo web down`. It needs the
