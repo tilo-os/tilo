@@ -250,7 +250,7 @@ A hosted window's composition moves a control — an app's "new note" stands in 
 
 - the record kind it acts on, then the operation, in the app's own ids, joined by `\x1f` (`U+001F`): `tl.so.tilo.lang.notes.Notebook\x1fqymo5lg2` for a notebook's `new_note` (`qymo5lg2` is the id `apps/tl/notes/app.ids` gives that declaration), or `mavvhka7\x1folsyp3aw` for a note's `body` field;
 - in the accessibility tree, as the node's author id (`AccessNode::action`, AT-SPI's `accessible id`), and in `list_targets`, as `identity`;
-- `click_named` takes that `identity` instead of a `name`, and presses the control wherever the window draws it.
+- `click_named` takes that `identity` instead of a `name`, and presses the control wherever the window draws it; an invocation that names the same kind and operation at the app's door runs the same action, so a tool that read a control can also call what it does.
 
 Read the ids the app publishes (`apps/tl/<app>/app.ids`) rather than its words; `scripts/headless-examples/tilolang-e2e.py` builds them with `doing(app, type, action)`, naming the app holding the records when the action is another app's (`doing("today", "Tasks", "morning_cleanup", on="tasks")`).
 
