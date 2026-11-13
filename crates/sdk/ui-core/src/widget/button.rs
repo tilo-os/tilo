@@ -2337,7 +2337,10 @@ impl Widget for Button {
     /// shows its paint.
     fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
         cx.element("button");
-        match self.composed_face(cx.theme()) {
+        let face = crate::composition::HTML_CODE
+            .get()
+            .and_then(|code| (code.button)(self, cx.theme()));
+        match face {
             Some(face) => cx.face(face),
             None => cx.picture(),
         }

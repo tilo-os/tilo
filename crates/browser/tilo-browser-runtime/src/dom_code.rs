@@ -147,6 +147,9 @@ pub struct DomCode {
 /// The HTML presentation's code this build links.
 #[must_use]
 pub fn builtin_dom() -> DomCode {
+    // The toolkit's own code that only a page shows (a control's face) comes
+    // with the presenter, the only code that composes.
+    ui::composition::HTML_CODE.install(ui::composition::builtin_html());
     DomCode {
         draw: crate::browser::draw_dom_frame,
         paint,

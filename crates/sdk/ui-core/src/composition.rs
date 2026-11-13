@@ -18,6 +18,31 @@
 
 use serde::Serialize;
 
+/// The code that composes what only a page shows: a control's face, its
+/// icon as SVG outlines. A widget's `html` reaches it through
+/// [`HTML_CODE`] rather than calling it, because every widget's `html`
+/// stands in its vtable and so in a program's start module; a page that
+/// never composes (the canvas) does not wait for this code.
+#[derive(Clone, Copy)]
+pub struct HtmlCode {
+    pub(crate) button: fn(&crate::widget::Button, &crate::theme::Theme) -> Option<Face>,
+}
+
+/// The code this build links; only the HTML presenter names it.
+#[must_use]
+pub fn builtin_html() -> HtmlCode {
+    HtmlCode {
+        button: crate::widget::Button::composed_face,
+    }
+}
+
+crate::lazy_code! {
+    /// What only a page shows. A program built with `lazy-html-faces`
+    /// has its HTML presenter install it (`HTML_CODE.install(builtin_html())`);
+    /// until then a face shows as its paint.
+    pub static HTML_CODE: HtmlCode = builtin_html, feature = "lazy-html-faces";
+}
+
 /// What a widget shows of its own, besides its children.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]

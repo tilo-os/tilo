@@ -77,6 +77,11 @@ lazy-hyphenation = []
 # then images are left out. The browser desktop uses this to keep them out of
 # its start module.
 lazy-image-decode = []
+# The code that words a control's face for a page (`composition::HTML_CODE`:
+# its icon as SVG outlines, its words and ground) is not linked: the HTML
+# presenter hands it over when it arrives, as it alone composes. The browser
+# desktop uses this to keep it out of its start module.
+lazy-html-faces = []
 # A theme's surface shader (the WGSL front end and the interpreter that
 # draws it) is not linked: the program fetches its code the first time a
 # theme states a shader (`part_paint::SURFACE_SHADER`); until then such

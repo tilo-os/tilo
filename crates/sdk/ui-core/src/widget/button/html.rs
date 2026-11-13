@@ -63,7 +63,7 @@ impl Button {
     /// The face as a page shows it, in the colours and geometry `draw`
     /// paints it in; `None` for a face that is a picture (a transport
     /// control, a count on its icon).
-    pub(super) fn composed_face(&self, theme: &Theme) -> Option<crate::composition::Face> {
+    pub(crate) fn composed_face(&self, theme: &Theme) -> Option<crate::composition::Face> {
         if self.transport.is_some() || self.count.is_some() {
             return None;
         }
