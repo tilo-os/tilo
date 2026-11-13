@@ -486,7 +486,7 @@ fn changed_at(path: &Path, root: &Path) -> Option<(String, String, String)> {
         return None;
     }
     let record = match rest {
-        [records, record, ..] if *records == app_state::RECORDS_DIR => (*record).to_owned(),
+        [records, record, ..] if *records == app_state::DOCUMENTS_DIR => (*record).to_owned(),
         _ => String::new(),
     };
     Some(((*workspace).to_owned(), (*app).to_owned(), record))

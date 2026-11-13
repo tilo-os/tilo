@@ -346,7 +346,7 @@ fn write_index(home: &tilo_test_env::TestHome, rows: &[(&str, &str)]) {
 
 /// Where the record document lives.
 fn record_path(home: &tilo_test_env::TestHome) -> std::path::PathBuf {
-    app_state::DocStore::workspace_record_dir_at(home.data(), PACKAGE, WORKSPACE, RECORD)
+    app_state::DocStore::workspace_document_dir_at(home.data(), PACKAGE, WORKSPACE, RECORD)
         .expect("the record's directory")
         .join(app_state::DOCUMENT_FILE)
 }

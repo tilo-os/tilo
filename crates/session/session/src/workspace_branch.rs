@@ -464,7 +464,7 @@ fn environment_records(parts: &[&str], from: &str) -> bool {
                 TERMINAL,
                 app_state::WORKSPACES_DIR,
                 from,
-                app_state::RECORDS_DIR,
+                app_state::DOCUMENTS_DIR,
             ]
     })
 }
@@ -473,7 +473,12 @@ fn environment_records(parts: &[&str], from: &str) -> bool {
 /// when it is a record: `<app dir>/…/<app>/rooms/<workspace>/records/<record>`.
 fn record_of(parts: &[&str], workspace: &str) -> Option<(String, String)> {
     let at = parts.windows(3).position(|window| {
-        window == [app_state::WORKSPACES_DIR, workspace, app_state::RECORDS_DIR]
+        window
+            == [
+                app_state::WORKSPACES_DIR,
+                workspace,
+                app_state::DOCUMENTS_DIR,
+            ]
     })?;
     let app = parts.get(at.checked_sub(1)?)?;
     let record = parts.get(at.checked_add(3)?)?;
@@ -607,7 +612,7 @@ fn branch_environments(places: &Places, from: WorkspaceId, to: WorkspaceId) -> R
             .join(TERMINAL)
             .join(app_state::WORKSPACES_DIR)
             .join(&room)
-            .join(app_state::RECORDS_DIR)
+            .join(app_state::DOCUMENTS_DIR)
             .is_dir()
     });
     if !has_environments {

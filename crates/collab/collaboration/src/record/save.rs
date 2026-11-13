@@ -80,7 +80,7 @@ pub fn record_document(
     home: &str,
     record_key: &str,
 ) -> Result<DocStore, StoreError> {
-    app_state::validate_record_identity(package, home, record_key)?;
+    app_state::validate_document_identity(package, home, record_key)?;
     DocStore::shared(
         Rc::clone(documents),
         StorageKey::document(package, home, record_key),

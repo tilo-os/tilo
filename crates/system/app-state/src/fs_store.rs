@@ -32,10 +32,10 @@ use durable_store::{
 };
 
 use crate::{
-    ACTOR_FILE, CANONICAL_GATE, DEFAULT_DEBOUNCE, DOCUMENT_FILE, LOAD_HINT_FILE, LOCK_FILE,
-    RECORD_SUCCESSOR_CLAIM, RECORDS_DIR, StoreError, WORKSPACES_DIR, acquire_gate,
+    ACTOR_FILE, CANONICAL_GATE, DEFAULT_DEBOUNCE, DOCUMENT_FILE, DOCUMENT_SUCCESSOR_CLAIM,
+    DOCUMENTS_DIR, LOAD_HINT_FILE, LOCK_FILE, StoreError, WORKSPACES_DIR, acquire_gate,
     acquire_writer_lock, checked_app_id, claim_marker, ensure_state_dir, io_err, open_directory,
-    same_file, sync_directory_ancestors, validate_absolute_directory, validate_record_key,
+    same_file, sync_directory_ancestors, validate_absolute_directory, validate_document_key,
 };
 use prepared::{Access, Preparation, Snapshot};
 use tilo_lock::MutexRecover as _;
@@ -342,7 +342,7 @@ fn workspace_indexes_in(root: &Path) -> Result<Vec<(String, String)>, SeamError>
             let entry =
                 entry.map_err(|e| io_err(format!("listing {}", workspaces.display()), e))?;
             if let Some(workspace) = entry.file_name().to_str().map(str::to_owned)
-                && validate_record_key(&workspace).is_ok()
+                && validate_document_key(&workspace).is_ok()
                 && entry.path().is_dir()
             {
                 indexes.push((app.clone(), workspace));
@@ -359,19 +359,19 @@ fn target_in(root: &Path, key: &StorageKey) -> Result<Target, SeamError> {
             workspace,
             document,
         } => {
-            validate_record_key(workspace)?;
-            validate_record_key(document)?;
+            validate_document_key(workspace)?;
+            validate_document_key(document)?;
             Ok(Target::Document(
                 app_dir_in(root, app.as_str())?
                     .join(WORKSPACES_DIR)
                     .join(workspace)
-                    .join(RECORDS_DIR)
+                    .join(DOCUMENTS_DIR)
                     .join(document),
             ))
         }
         StorageKey::App { app } => Ok(Target::Document(app_dir_in(root, app.as_str())?)),
         StorageKey::WorkspaceIndex { app, workspace } => {
-            validate_record_key(workspace)?;
+            validate_document_key(workspace)?;
             Ok(Target::Document(
                 app_dir_in(root, app.as_str())?
                     .join(WORKSPACES_DIR)
@@ -417,7 +417,7 @@ impl From<StoreError> for SeamError {
             StoreError::WriterBusy { path } => Self::Busy(path.display().to_string()),
             StoreError::SourceChanged { path } => Self::SourceChanged(path.display().to_string()),
             StoreError::Opening(key) => Self::Opening(key),
-            StoreError::AppId(key, reason) | StoreError::RecordKey(key, reason) => {
+            StoreError::AppId(key, reason) | StoreError::DocumentKey(key, reason) => {
                 Self::InvalidKey {
                     key,
                     reason: reason.to_owned(),
@@ -984,12 +984,12 @@ impl DurableStore for FsStore {
     }
 
     fn claim(&self, key: &StorageKey, claimant: &str) -> Result<bool, SeamError> {
-        validate_record_key(claimant)?;
+        validate_document_key(claimant)?;
         let marker = match key {
             // A workspace record adopted under a new identity (see
             // `ui::RecordCheckout::formerly`): the claimant is its successor.
             StorageKey::Document { .. } => match self.target(key)? {
-                Target::Document(directory) => directory.join(RECORD_SUCCESSOR_CLAIM),
+                Target::Document(directory) => directory.join(DOCUMENT_SUCCESSOR_CLAIM),
                 Target::View(_) => {
                     return Err(SeamError::InvalidKey {
                         key: key.to_string(),
@@ -1014,12 +1014,12 @@ impl DurableStore for FsStore {
     /// Records whose document file holds committed bytes. A write still in
     /// its debounce window is not listed until it commits.
     fn documents(&self, app: &str, workspace: &str) -> Result<Vec<String>, SeamError> {
-        validate_record_key(workspace)?;
+        validate_document_key(workspace)?;
         let directory = self
             .app_dir(app)?
             .join(WORKSPACES_DIR)
             .join(workspace)
-            .join(RECORDS_DIR);
+            .join(DOCUMENTS_DIR);
         let entries = match fs::read_dir(&directory) {
             Ok(entries) => entries,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -1033,7 +1033,7 @@ impl DurableStore for FsStore {
             let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
                 continue;
             };
-            if validate_record_key(&name).is_err() {
+            if validate_document_key(&name).is_err() {
                 continue;
             }
             if fs::metadata(entry.path().join(DOCUMENT_FILE)).is_ok_and(|m| m.len() > 0) {
@@ -2346,7 +2346,7 @@ mod tests {
                 .unwrap();
             store.flush(None).unwrap();
             let directory =
-                DocStore::workspace_record_dir_at(tmp.path(), "so.tilo.test", "room-a", "rec")
+                DocStore::workspace_document_dir_at(tmp.path(), "so.tilo.test", "room-a", "rec")
                     .unwrap();
             assert_eq!(fs::read(directory.join(DOCUMENT_FILE)).unwrap(), b"doc");
             assert_eq!(
@@ -2581,7 +2581,7 @@ mod tests {
             let key = record("rec");
             let _lease = store.lease(&key).unwrap();
             let directory =
-                DocStore::workspace_record_dir_at(tmp.path(), "so.tilo.test", "room-a", "rec")
+                DocStore::workspace_document_dir_at(tmp.path(), "so.tilo.test", "room-a", "rec")
                     .unwrap();
             store.faults().sync_failure = Some(fs::canonicalize(&directory).unwrap());
             let revision = store
@@ -2606,7 +2606,7 @@ mod tests {
             let key = record("rec");
             let _lease = store.lease(&key).unwrap();
             let directory =
-                DocStore::workspace_record_dir_at(tmp.path(), "so.tilo.test", "room-a", "rec")
+                DocStore::workspace_document_dir_at(tmp.path(), "so.tilo.test", "room-a", "rec")
                     .unwrap();
             fs::remove_file(directory.join(CANONICAL_GATE)).unwrap();
             fs::write(directory.join(CANONICAL_GATE), b"replacement").unwrap();

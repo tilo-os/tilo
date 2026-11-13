@@ -51,17 +51,19 @@ pub const ACTOR_FILE: &str = "actor";
 pub const LOAD_HINT_FILE: &str = "state.hashes";
 pub const CANONICAL_GATE: &str = "canonical.lock";
 pub const LOCK_FILE: &str = "writer.lock";
-/// Subdirectory holding one directory per record. See [`DocStore::open_workspace_record`].
-pub const RECORDS_DIR: &str = "records";
+/// Subdirectory holding one directory per document. See
+/// [`DocStore::open_workspace_document`]. The name every device already
+/// stores, so it stays.
+pub const DOCUMENTS_DIR: &str = "records";
 /// Subdirectory holding one directory per workspace: that workspace's index
-/// of the records it holds. See [`DocStore::open_workspace`].
+/// of the documents it holds. See [`DocStore::open_workspace`].
 ///
 /// The name is what every device already stores, so it stays: a directory
 /// that exists must keep opening.
 pub const WORKSPACES_DIR: &str = "rooms";
-/// Marker in a workspace record's directory naming the one record that
-/// adopted it under a new identity.
-const RECORD_SUCCESSOR_CLAIM: &str = "successor-claim";
+/// Marker in a workspace's directory naming the one document that adopted
+/// it under a new identity.
+const DOCUMENT_SUCCESSOR_CLAIM: &str = "successor-claim";
 
 /// Everything that can go wrong opening, reading or writing a store.
 #[derive(Debug, thiserror::Error)]
@@ -81,8 +83,8 @@ pub enum StoreError {
     AppId(String, &'static str),
     /// The record key could not be turned into a directory name (distinct from
     /// [`StoreError::AppId`] so the message names which input was wrong).
-    #[error("invalid record key {0:?}: {1}")]
-    RecordKey(String, &'static str),
+    #[error("invalid document key {0:?}: {1}")]
+    DocumentKey(String, &'static str),
     #[error("{context}: {source}")]
     Io {
         context: String,
@@ -149,24 +151,27 @@ fn checked_app_id(id: &str) -> Result<AppId, StoreError> {
 /// identity can be a file path where `..` could enable traversal. Rejected
 /// rather than sanitised, since silently rewriting a bad key could make two
 /// records share one file.
-fn validate_record_key(key: &str) -> Result<(), StoreError> {
+fn validate_document_key(key: &str) -> Result<(), StoreError> {
     if key.is_empty() {
-        return Err(StoreError::RecordKey(key.to_string(), "must not be empty"));
+        return Err(StoreError::DocumentKey(
+            key.to_string(),
+            "must not be empty",
+        ));
     }
     if Path::new(key).is_absolute() || key.contains('/') || key.contains('\\') {
-        return Err(StoreError::RecordKey(
+        return Err(StoreError::DocumentKey(
             key.to_string(),
             "must not contain a path separator",
         ));
     }
     if key == "." || key == ".." {
-        return Err(StoreError::RecordKey(
+        return Err(StoreError::DocumentKey(
             key.to_string(),
             "must not be a relative directory reference",
         ));
     }
     if key.contains('\0') {
-        return Err(StoreError::RecordKey(
+        return Err(StoreError::DocumentKey(
             key.to_string(),
             "must not contain a NUL byte",
         ));
@@ -176,21 +181,21 @@ fn validate_record_key(key: &str) -> Result<(), StoreError> {
 
 /// Validate the identifiers of a workspace-scoped record without resolving
 /// any path, so a caller can refuse a bad namespace before choosing a store.
-pub fn validate_record_identity(
+pub fn validate_document_identity(
     app: &str,
     workspace: &str,
     record: &str,
 ) -> Result<(), StoreError> {
     checked_app_id(app)?;
-    validate_record_key(workspace)?;
-    validate_record_key(record)
+    validate_document_key(workspace)?;
+    validate_document_key(record)
 }
 
 /// Validate the identifiers of a workspace's index document, as
-/// [`validate_record_identity`] does a record's.
+/// [`validate_document_identity`] does a record's.
 pub fn validate_workspace_identity(app: &str, workspace: &str) -> Result<(), StoreError> {
     checked_app_id(app)?;
-    validate_record_key(workspace)
+    validate_document_key(workspace)
 }
 
 /// One Automerge document handled by hand: load it, save or append it, and
@@ -254,12 +259,12 @@ impl DocStore {
     ///
     /// Returns an error when an identifier is invalid or the workspace-scoped
     /// store cannot be created, locked, or loaded.
-    pub fn open_workspace_record(
+    pub fn open_workspace_document(
         app_id: &str,
         workspace_key: &str,
         record_key: &str,
     ) -> Result<Self, StoreError> {
-        validate_record_identity(app_id, workspace_key, record_key)?;
+        validate_document_identity(app_id, workspace_key, record_key)?;
         Self::shared(
             Self::native_store(),
             StorageKey::document(app_id, workspace_key, record_key),
@@ -271,7 +276,7 @@ impl DocStore {
     /// id can never resolve to a record's document and merge the two.
     pub fn open_workspace(app_id: &str, workspace_key: &str) -> Result<Self, StoreError> {
         checked_app_id(app_id)?;
-        validate_record_key(workspace_key)?;
+        validate_document_key(workspace_key)?;
         Self::shared(
             Self::native_store(),
             StorageKey::workspace_index(app_id, workspace_key),
@@ -350,21 +355,21 @@ impl DocStore {
     }
 
     /// Resolve one record under an explicit profile root without consulting the environment.
-    pub fn workspace_record_dir_at(
+    pub fn workspace_document_dir_at(
         profile_root: &Path,
         app: &str,
         workspace: &str,
         record: &str,
     ) -> Result<PathBuf, StoreError> {
         checked_app_id(app)?;
-        validate_record_key(workspace)?;
-        validate_record_key(record)?;
+        validate_document_key(workspace)?;
+        validate_document_key(record)?;
         validate_absolute_directory(profile_root)?;
         Ok(profile_root
             .join(app)
             .join(WORKSPACES_DIR)
             .join(workspace)
-            .join(RECORDS_DIR)
+            .join(DOCUMENTS_DIR)
             .join(record))
     }
 
@@ -681,7 +686,7 @@ fn decode_canonical_with(
 /// Validate a canonical app/workspace identity independently of its storage adapter.
 pub fn validate_record_namespace(app: &str, workspace: &str) -> Result<(), StoreError> {
     checked_app_id(app)?;
-    validate_record_key(workspace)
+    validate_document_key(workspace)
 }
 
 /// `fsync` a directory and every ancestor up to the store's provisioned
@@ -817,7 +822,7 @@ fn read_claim(marker: &Path) -> Result<ClaimState, StoreError> {
     if owner.is_empty() || owner.contains('\n') || owner.contains('\r') {
         return Ok(ClaimState::Malformed);
     }
-    if validate_record_key(owner).is_err() {
+    if validate_document_key(owner).is_err() {
         return Ok(ClaimState::Malformed);
     }
     Ok(ClaimState::Owner(owner.to_string()))

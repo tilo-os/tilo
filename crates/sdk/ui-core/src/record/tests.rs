@@ -592,7 +592,7 @@ fn canonical_records_persist_through_the_host_store_and_report_save_status() {
         );
         assert!(matches!(failure, Err(RecordOpenError::Store(_))));
         assert!(store.open_records().is_empty());
-        let directory = app_state::DocStore::workspace_record_dir_at(
+        let directory = app_state::DocStore::workspace_document_dir_at(
             &tmp.path().join("state"),
             "so.tilo.test",
             "workspace-a",
@@ -977,7 +977,7 @@ fn records_persist_per_file_and_never_alias_across_workspaces() {
             .join("so.tilo.test-records")
             .join(app_state::WORKSPACES_DIR)
             .join(workspace_id)
-            .join(app_state::RECORDS_DIR);
+            .join(app_state::DOCUMENTS_DIR);
         let entries: Vec<_> = std::fs::read_dir(&dir)
             .expect("records directory exists")
             .filter_map(Result::ok)

@@ -165,7 +165,7 @@ fn key(package: &str, workspace: &str, id: &RecordId) -> Result<StorageKey, Tran
         ));
     }
     let record = id.storage_key();
-    app_state::validate_record_identity(package, workspace, &record)?;
+    app_state::validate_document_identity(package, workspace, &record)?;
     Ok(StorageKey::document(package, workspace, record))
 }
 

@@ -1265,14 +1265,14 @@ impl RecordSet {
         if want.id.is_package_primary() {
             // The package-primary document is the workspace's own document
             // (`<package>/rooms/<workspace>`), never a minted record beneath it.
-            app_state::validate_record_identity(&self.app_id, &self.home, "index")?;
+            app_state::validate_document_identity(&self.app_id, &self.home, "index")?;
             return Ok((
                 Rc::clone(backend),
                 StorageKey::workspace_index(&self.app_id, &self.home),
             ));
         }
         let record = want.id.storage_key();
-        app_state::validate_record_identity(&self.app_id, &self.home, &record)?;
+        app_state::validate_document_identity(&self.app_id, &self.home, &record)?;
         Ok((
             Rc::clone(backend),
             StorageKey::document(&self.app_id, &self.home, record),
@@ -1681,7 +1681,7 @@ impl RecordOwners {
         if self.portable.is_some() {
             app_state::validate_record_namespace(app_id, workspace_id)?;
         } else {
-            app_state::validate_record_identity(app_id, workspace_id, "validation")?;
+            app_state::validate_document_identity(app_id, workspace_id, "validation")?;
         }
         if let Some(cache) = &self.portable
             && let Some(owner) =
