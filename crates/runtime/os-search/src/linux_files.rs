@@ -116,78 +116,82 @@ fn quoted(runtime: &Path) -> io::Result<String> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn every_file_names_the_bus_the_runtime_serves() {
-        let home = tempfile::tempdir().unwrap();
-        let (data, config) = (home.path().join("data"), home.path().join("config"));
-        let runtime = Path::new("/opt/Tilo Apps/bin/tilo-runtime");
-        write(&data, &config, runtime).unwrap();
-        let read = |path: PathBuf| std::fs::read_to_string(path).unwrap();
+    tilo_test_env::scenario! {
+        fn the_files_a_linux_desktop_reads;
 
-        // GNOME Shell reads providers from `$XDG_DATA_DIRS` only.
-        let export = data.join("tilo/export/share");
-        let provider =
-            read(export.join("gnome-shell/search-providers/so.tilo.Runtime.search-provider.ini"));
-        assert!(
-            provider.contains("\nBusName=so.tilo.Runtime\n"),
-            "{provider}"
-        );
-        assert!(provider.contains("\nObjectPath=/so/tilo/Runtime/SearchProvider\n"));
-        assert!(provider.contains("\nDesktopId=so.tilo.Runtime.desktop\n"));
-        assert!(provider.contains("\nVersion=2\n"));
-        assert_eq!(
-            read(config.join("environment.d/60-tilo-search.conf")),
-            format!(
-                "XDG_DATA_DIRS=${{XDG_DATA_DIRS:-/usr/local/share/:/usr/share/}}:{}\n",
-                export.display()
-            )
-        );
+        phase every_file_names_the_bus_the_runtime_serves;
+        {
+            let home = tempfile::tempdir().unwrap();
+            let (data, config) = (home.path().join("data"), home.path().join("config"));
+            let runtime = Path::new("/opt/Tilo Apps/bin/tilo-runtime");
+            write(&data, &config, runtime).unwrap();
+            let read = |path: PathBuf| std::fs::read_to_string(path).unwrap();
 
-        let entry = read(data.join("applications/so.tilo.Runtime.desktop"));
-        assert!(!entry.contains("NoDisplay"), "{entry}");
-        assert!(
-            entry.contains("\nExec=\"/opt/Tilo Apps/bin/tilo-runtime\" --daemon\n"),
-            "{entry}"
-        );
+            // GNOME Shell reads providers from `$XDG_DATA_DIRS` only.
+            let export = data.join("tilo/export/share");
+            let provider =
+                read(export.join("gnome-shell/search-providers/so.tilo.Runtime.search-provider.ini"));
+            assert!(
+                provider.contains("\nBusName=so.tilo.Runtime\n"),
+                "{provider}"
+            );
+            assert!(provider.contains("\nObjectPath=/so/tilo/Runtime/SearchProvider\n"));
+            assert!(provider.contains("\nDesktopId=so.tilo.Runtime.desktop\n"));
+            assert!(provider.contains("\nVersion=2\n"));
+            assert_eq!(
+                read(config.join("environment.d/60-tilo-search.conf")),
+                format!(
+                    "XDG_DATA_DIRS=${{XDG_DATA_DIRS:-/usr/local/share/:/usr/share/}}:{}\n",
+                    export.display()
+                )
+            );
 
-        let runner = read(data.join("krunner/dbusplugins/so.tilo.Runtime.desktop"));
-        assert!(runner.contains("\nX-Plasma-API=DBus\n"), "{runner}");
-        assert!(runner.contains("\nX-Plasma-DBusRunner-Service=so.tilo.Runtime\n"));
-        assert!(runner.contains("\nX-Plasma-DBusRunner-Path=/so/tilo/Runtime/KRunner\n"));
+            let entry = read(data.join("applications/so.tilo.Runtime.desktop"));
+            assert!(!entry.contains("NoDisplay"), "{entry}");
+            assert!(
+                entry.contains("\nExec=\"/opt/Tilo Apps/bin/tilo-runtime\" --daemon\n"),
+                "{entry}"
+            );
 
-        let service_path = data.join("dbus-1/services/so.tilo.Runtime.service");
-        assert_eq!(
-            read(service_path.clone()),
-            "[D-BUS Service]\nName=so.tilo.Runtime\nExec=\"/opt/Tilo Apps/bin/tilo-runtime\" --daemon\n"
-        );
+            let runner = read(data.join("krunner/dbusplugins/so.tilo.Runtime.desktop"));
+            assert!(runner.contains("\nX-Plasma-API=DBus\n"), "{runner}");
+            assert!(runner.contains("\nX-Plasma-DBusRunner-Service=so.tilo.Runtime\n"));
+            assert!(runner.contains("\nX-Plasma-DBusRunner-Path=/so/tilo/Runtime/KRunner\n"));
 
-        let modified = || {
-            std::fs::metadata(&service_path)
-                .unwrap()
-                .modified()
-                .unwrap()
-        };
-        let before = modified();
-        write(&data, &config, runtime).unwrap();
-        assert_eq!(before, modified());
-    }
+            let service_path = data.join("dbus-1/services/so.tilo.Runtime.service");
+            assert_eq!(
+                read(service_path.clone()),
+                "[D-BUS Service]\nName=so.tilo.Runtime\nExec=\"/opt/Tilo Apps/bin/tilo-runtime\" --daemon\n"
+            );
 
-    #[test]
-    fn a_path_the_formats_cannot_quote_is_refused() {
-        let (data, config) = (
-            Path::new("/home/a/.local/share"),
-            Path::new("/home/a/.config"),
-        );
-        for path in [
-            "tilo-runtime",
-            "/opt/$HOME/tilo-runtime",
-            "/opt/a\"b",
-            "/opt/100%",
-            "/opt/a\nb",
-        ] {
-            assert!(files(data, config, Path::new(path)).is_err(), "{path:?}");
+            let modified = || {
+                std::fs::metadata(&service_path)
+                    .unwrap()
+                    .modified()
+                    .unwrap()
+            };
+            let before = modified();
+            write(&data, &config, runtime).unwrap();
+            assert_eq!(before, modified());
         }
-        let runtime = Path::new("/usr/bin/tilo-runtime");
-        assert!(files(Path::new("/home/$USER/.local/share"), config, runtime).is_err());
+
+        phase a_path_the_formats_cannot_quote_is_refused;
+        {
+            let (data, config) = (
+                Path::new("/home/a/.local/share"),
+                Path::new("/home/a/.config"),
+            );
+            for path in [
+                "tilo-runtime",
+                "/opt/$HOME/tilo-runtime",
+                "/opt/a\"b",
+                "/opt/100%",
+                "/opt/a\nb",
+            ] {
+                assert!(files(data, config, Path::new(path)).is_err(), "{path:?}");
+            }
+            let runtime = Path::new("/usr/bin/tilo-runtime");
+            assert!(files(Path::new("/home/$USER/.local/share"), config, runtime).is_err());
+        }
     }
 }
