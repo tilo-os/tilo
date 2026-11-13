@@ -26,7 +26,7 @@ use tilo_compositor::InputEvent;
 use tilo_session::Session;
 
 use crate::common::{
-    CANVAS, CANVAS_CARET, KEY_ESCAPE, click, drag, frame_and_say, key, on_screen, places,
+    CANVAS, CANVAS_CARET, KEY_ESCAPE, PERSON, click, drag, frame_and_say, key, on_screen, places,
     point_and_say, point_to, private_home, seeded_session, until, wait_for,
 };
 
@@ -52,14 +52,11 @@ fn place_on_screen(
     session: &Session,
     place: &tilo_session::arrangement::PlaceReading,
 ) -> Option<(f64, f64, f64, f64)> {
-    let title = if place.name.is_empty() {
-        &place.title
-    } else {
-        &place.name
-    };
-    session
-        .shell_controls(title)
+    // A place on the canvas is named on its handle by its own title, a window by its name.
+    [&place.title, &place.name]
         .into_iter()
+        .filter(|name| !name.is_empty())
+        .flat_map(|name| session.shell_controls(name))
         .filter(|(_, _, w, h)| *w > 0.0 && *h > 0.0)
         .max_by(|a, b| (a.2 * a.3).total_cmp(&(b.2 * b.3)))
 }
@@ -282,6 +279,21 @@ fn what_is_found_at_a_click_stands_at_the_point() {
         "its surface's top-left is where the person clicked: {:?} for {at:?}",
         (px, py)
     );
+    // A click names no size: the place is as tall as what it shows, up to a window's height, and
+    // never stands taller than that most.
+    let strip =
+        crate::common::strip(&session, crate::common::number(&inbox.strip)).expect("its strip");
+    assert!(
+        strip.canvas_hugs,
+        "a thing found at a click hugs what it shows: {strip:?}"
+    );
+    let (_, _, _, ph) = place_on_screen(&session, &inbox).expect("its surface");
+    #[allow(clippy::cast_precision_loss, reason = "canvas pixels")]
+    let most = strip.canvas_height as f64;
+    assert!(
+        ph <= most + 0.5,
+        "it stands no taller than its most: {ph} of {most}"
+    );
 }
 
 /// Every placed strip's canvas box, by the resource its place shows: `(x, y, w, h)` in canvas
@@ -406,8 +418,8 @@ fn a_question_stands_its_turn_at_the_caret() {
     );
     assert_eq!(
         (tw, th),
-        (520, 240),
-        "a clicked turn takes an answer's own measure"
+        (520, 480),
+        "a clicked turn takes an answer's own measure, and hugs its words up to a window's height"
     );
 }
 
@@ -758,10 +770,11 @@ fn a_right_click_on_a_place_opens_its_actions() {
     assert!(!offered.is_empty(), "the inbox offers actions: {inbox:?}");
     // The pointer over the place shows its handle; a right-click on its name opens the menu.
     point_to(&mut session, (px + pw * 0.5, py + ph * 0.5));
-    let title = if inbox.name.is_empty() {
-        &inbox.title
-    } else {
+    // The handle names the place by its own title (its caption), a window by its name.
+    let title = if inbox.title.is_empty() {
         &inbox.name
+    } else {
+        &inbox.title
     };
     let handle = wait_for(&mut session, "the place's handle", |session| {
         session
@@ -920,6 +933,187 @@ fn a_places_size_action_sizes_it() {
         (strip.canvas_width, strip.canvas_height),
         (600, 450),
         "the place takes the size: {strip:?}"
+    );
+}
+
+/// What the empty canvas says to assistive technology: the description its map carries, when it
+/// carries one.
+fn canvas_says(session: &Session) -> Option<String> {
+    session.a11y_windows().into_iter().find_map(|(_, _, tree)| {
+        tree.nodes.into_iter().find_map(|(_, node)| {
+            (node.label() == Some(CANVAS))
+                .then(|| node.description().map(str::to_owned))
+                .flatten()
+        })
+    })
+}
+
+/// The canvas is the whole screen (`canvas.md` §7): no dock, and a bar that keeps only the time,
+/// the notices and the person. The desk style and the workspaces are in the person's own menu,
+/// never in a control that is always there, and choosing another style from it shows it.
+#[test]
+fn the_canvas_is_the_whole_screen() {
+    let _settled = ui::motion::testing::settled();
+    let root = private_home();
+    let mut session = seeded_session(root.path());
+    until(&mut session, "the canvas's bar", |session| {
+        on_screen(session, "Notifications").is_some()
+            && crate::common::person_menu(session).is_some()
+    });
+    let labels = session.accessible_labels();
+    for gone in ["Launcher", "Dock", "Workspaces", "Showing Frames", "Tilo"] {
+        assert!(
+            on_screen(&session, gone).is_none(),
+            "the canvas keeps no {gone}: {labels:?}"
+        );
+    }
+    // The person's menu holds the styles and the workspaces.
+    let menu = crate::common::person_menu(&session).expect("the person's menu");
+    crate::common::press(&mut session, &menu);
+    until(&mut session, "the person's menu", |session| {
+        on_screen(session, "Strips").is_some() && on_screen(session, "Workspaces").is_some()
+    });
+    crate::common::press(&mut session, "Strips");
+    until(&mut session, "the strips", |session| {
+        on_screen(session, CANVAS).is_none()
+            && crate::common::preset_menu(session).as_deref() == Some("Showing Strips")
+    });
+    assert!(
+        on_screen(&session, "Launcher").is_some(),
+        "the strips keep their dock: the canvas alone is the whole screen"
+    );
+}
+
+/// The empty canvas says once, quietly, what it is for; the first ask puts it away, and it stays
+/// away when the canvas is empty again: it is the person's record, not the canvas's state.
+#[test]
+fn the_empty_canvas_says_once_what_it_is_for() {
+    let _settled = ui::motion::testing::settled();
+    let root = private_home();
+    let mut session = seeded_session(root.path());
+    until(&mut session, "the hint", |session| {
+        canvas_says(session).as_deref() == Some("Click anywhere and say what you want")
+    });
+    let (x, y, w, h) = on_screen(&session, CANVAS).expect("the canvas");
+    point_and_say(&mut session, (x + w * 0.2, y + h * 0.2), "my mails");
+    let inbox = wait_for(&mut session, "the inbox placed", |session| {
+        places(session)
+            .into_iter()
+            .find(|place| place.record.contains("so.tilo.lang.mail"))
+    });
+    assert!(
+        canvas_says(&session).is_none(),
+        "asked once, it says nothing"
+    );
+    // The canvas empty again: the place closed, as its handle's close does.
+    session
+        .arrangement()
+        .borrow_mut()
+        .ask(
+            PERSON,
+            tilo_session::arrangement::ArrangementAction::Close {
+                place: crate::common::number(&inbox.key),
+            },
+            tilo_session::arrangement::Busy::default(),
+        )
+        .unwrap_or_else(|error| panic!("the inbox closes: {error}"));
+    until(&mut session, "the canvas empty", |session| {
+        places(session).is_empty()
+    });
+    for _ in 0..10 {
+        session.step(Duration::from_millis(16)).unwrap();
+    }
+    assert!(
+        canvas_says(&session).is_none(),
+        "said once, it is not said again"
+    );
+}
+
+/// A turn asked near the canvas's trailing edge stands wholly in view: the canvas pans to it and
+/// never zooms. (That its card hugs its words is the map's, `map_canvas_tests`; this test's stand-in
+/// for Chat publishes no reading of the turn for it to hug.)
+#[test]
+fn a_turn_asked_at_the_edge_is_panned_into_view() {
+    let _settled = ui::motion::testing::settled();
+    let root = private_home();
+    let mut session = seeded_session(root.path());
+    let (x, y, w, h) = on_screen(&session, CANVAS).expect("the canvas");
+    let at = (x + w * 0.92, y + h * 0.1);
+    point_and_say(&mut session, at, "what is on my task list?");
+    until(&mut session, "the ask sent", |session| {
+        session.settle_services();
+        session
+            .read("session:send-to")
+            .and_then(|sent| sent.as_array().map(|sent| !sent.is_empty()))
+            .unwrap_or(false)
+    });
+    chat_holds(&session, CONVERSATION, "q1");
+    let turn = wait_for(&mut session, "the turn placed", |session| {
+        places(session)
+            .into_iter()
+            .find(|place| place.record.starts_with("chat.workspace.turns:"))
+    });
+    for _ in 0..60 {
+        session.step(Duration::from_millis(16)).unwrap();
+    }
+    let (tx, ty, tw, th) = wait_for(&mut session, "the turn on screen", |session| {
+        place_on_screen(session, &turn)
+    });
+    assert!(
+        tx >= x - 0.5 && tx + tw <= x + w + 0.5 && ty >= y - 0.5 && ty + th <= y + h + 0.5,
+        "the turn stands wholly in view: {:?} in {:?}",
+        (tx, ty, tw, th),
+        (x, y, w, h)
+    );
+    let (_, _, box_w, _) = canvas_box(&session, "chat.workspace.turns:").expect("its box");
+    #[allow(clippy::cast_precision_loss, reason = "canvas pixels")]
+    let zoom = tw / box_w as f64;
+    assert!(
+        (zoom - 1.0).abs() < 0.02,
+        "the canvas panned and kept its zoom: {zoom}"
+    );
+}
+
+/// The whole conversation is reached from the turn's handle, not a button in its card: what the
+/// turn's own action runs stands Chat's page of the conversation beside the turn.
+#[test]
+fn the_whole_conversation_is_reached_from_the_turns_handle() {
+    let _settled = ui::motion::testing::settled();
+    let root = private_home();
+    let mut session = seeded_session(root.path());
+    let (x, y, w, h) = on_screen(&session, CANVAS).expect("the canvas");
+    point_and_say(&mut session, (x + w * 0.1, y + h * 0.1), "what is due?");
+    until(&mut session, "the ask sent", |session| {
+        session.settle_services();
+        session
+            .read("session:send-to")
+            .and_then(|sent| sent.as_array().map(|sent| !sent.is_empty()))
+            .unwrap_or(false)
+    });
+    chat_holds(&session, CONVERSATION, "q4");
+    let turn = wait_for(&mut session, "the turn placed", |session| {
+        places(session)
+            .into_iter()
+            .find(|place| place.record.starts_with("chat.workspace.turns:"))
+    });
+    let (tx, _, tw, _) = canvas_box(&session, "chat.workspace.turns:").expect("the turn's box");
+    // What the turn's own `conversation` action runs, as its handle's menu offers it (the action
+    // itself is the conversations service's, which this test's stand-in for Chat bypasses).
+    session
+        .arrangement()
+        .borrow_mut()
+        .open_conversation_of(PERSON, &turn.record)
+        .unwrap_or_else(|error| panic!("the turn opens its conversation: {error}"));
+    let whole = wait_for(&mut session, "the conversation placed", |session| {
+        places(session)
+            .into_iter()
+            .find(|place| place.record == "chat.workspace.channels:c_ask")
+    });
+    assert_eq!(whole.shown_as, "page", "it stands as Chat's page");
+    let (cx, _, _, _) = canvas_box(&session, "chat.workspace.channels:").expect("its box");
+    assert!(
+        cx >= tx + tw,
+        "it stands beside the turn: {cx} beside {tx}+{tw}"
     );
 }
 

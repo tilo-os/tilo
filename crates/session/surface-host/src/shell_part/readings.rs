@@ -555,6 +555,7 @@ pub(super) fn strip_fields(s: &ArrangementStripReading) -> Vec<(&'static str, Va
         ("canvas_y", Value::Int(s.canvas_y)),
         ("canvas_width", Value::Int(s.canvas_width)),
         ("canvas_height", Value::Int(s.canvas_height)),
+        ("canvas_hugs", Value::Bool(s.canvas_hugs)),
         ("shell", text(&s.shell)),
     ]
 }

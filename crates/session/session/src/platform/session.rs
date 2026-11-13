@@ -1339,6 +1339,7 @@ impl Session {
             .add(Box::new(crate::conversations::TurnSummonses::new(
                 Rc::clone(&conversations),
                 sends.clone(),
+                Rc::clone(&arrangement),
             )));
         services
             .borrow_mut()

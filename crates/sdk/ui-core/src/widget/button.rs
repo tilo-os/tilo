@@ -545,6 +545,7 @@ impl Button {
             || fresh.label.is_empty() != self.label.is_empty()
             || fresh.role != self.role
             || fresh.control_size != self.control_size
+            || fresh.faces != self.faces
         {
             return false;
         }

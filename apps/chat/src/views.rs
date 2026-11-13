@@ -1373,7 +1373,7 @@ mod tests {
         )
     }
 
-    fn view_cx(channel: &Channel) -> ViewCx {
+    pub(super) fn view_cx(channel: &Channel) -> ViewCx {
         ViewCx::new(
             channel.resource(),
             "page",
@@ -1386,7 +1386,7 @@ mod tests {
     }
 
     /// Every text a tree shows, in its props.
-    fn texts(node: &Node) -> Vec<String> {
+    pub(super) fn texts(node: &Node) -> Vec<String> {
         let mut out: Vec<String> = node
             .props
             .values()
@@ -1401,8 +1401,25 @@ mod tests {
         out
     }
 
+    /// The paragraphs a tree's rich text shows, as read: what a reader sees of a reply.
+    pub(super) fn rich_texts(node: &Node) -> Vec<String> {
+        let mut out: Vec<String> = node
+            .props
+            .values()
+            .filter_map(|value| match value {
+                Value::Rich(rich) => Some(rich.blocks.iter().map(|block| block.text.clone())),
+                _ => None,
+            })
+            .flatten()
+            .collect();
+        for child in &node.children {
+            out.extend(rich_texts(child));
+        }
+        out
+    }
+
     /// Every node of the tree, in order.
-    fn walk(node: &Node) -> Vec<&Node> {
+    pub(super) fn walk(node: &Node) -> Vec<&Node> {
         let mut out = vec![node];
         for child in &node.children {
             out.extend(walk(child));
@@ -1411,12 +1428,12 @@ mod tests {
     }
 
     /// Whether the tree holds a node of `kind`.
-    fn has_kind(node: &Node, kind: &str) -> bool {
+    pub(super) fn has_kind(node: &Node, kind: &str) -> bool {
         node.kind == kind || node.children.iter().any(|child| has_kind(child, kind))
     }
 
     /// Whether every node passes the catalogue check the host applies.
-    fn passes(tree: &Node) {
+    pub(super) fn passes(tree: &Node) {
         let validator = tilo_view::patch::validate::Validator::new(
             tilo_view::node::catalogue(),
             tilo_view::patch::validate::PatchLimits::default(),
@@ -1475,7 +1492,7 @@ mod tests {
     }
 
     /// Every node of the tree whose key holds `suffix` and whose kind is `kind`.
-    fn keyed<'a>(tree: &'a Node, kind: &str, suffix: &str) -> Vec<&'a Node> {
+    pub(super) fn keyed<'a>(tree: &'a Node, kind: &str, suffix: &str) -> Vec<&'a Node> {
         walk(tree)
             .into_iter()
             .filter(|node| node.kind == kind && node.key.contains(suffix))
@@ -2808,20 +2825,25 @@ mod tests {
         assert!(Turn::of(&channel, "missing").is_none());
         let tree = turn::turn(&turn_of_q1, &view_cx(&channel));
         assert!(
-            tree.kind == "page" && !tree.props.contains_key("fill"),
-            "the turn is a page keeping its gutter at its sides, as the canvas's other views do: \
-             {} {:?}",
+            tree.kind == "stack"
+                && tree.props.get("padding") == Some(&Value::text("section"))
+                && !tree.props.contains_key("fill"),
+            "the turn is a card keeping its padding at its sides and hugging its words, never a \
+             page that takes its pane's height: {} {:?}",
             tree.kind,
             tree.props
         );
         let said = texts(&tree);
         assert!(
-            said.iter().any(|text| text == "what is due?")
-                && said.iter().any(|text| text == "Two tasks are due.")
-                && said.iter().any(|text| text == "1 step")
-                && said.iter().any(|text| text == "Whole conversation"),
-            "the turn says the question, the reply, its folded steps and the way to the whole \
-             conversation: {said:?}"
+            !said.iter().any(|text| text == "what is due?")
+                && rich_texts(&tree) == ["Two tasks are due."]
+                && said.iter().any(|text| text == "Open Tasks"),
+            "the card says the reply and its one folded step; the question is its place's caption, \
+             never said twice: {said:?}"
+        );
+        assert!(
+            !said.iter().any(|text| text == "Whole conversation") && !has_kind(&tree, "ui.Button"),
+            "the card holds no button: the whole conversation is reached from its handle: {said:?}"
         );
     }
 

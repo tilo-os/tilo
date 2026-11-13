@@ -53,6 +53,8 @@ pub struct HoverToolbar {
     /// The person uses a touchscreen: nothing hovers, so only focus shows the toolbar (a long
     /// press offers the same on the row's menu).
     touch: bool,
+    /// Where its controls stand, which says what focus shows them.
+    stands: Stands,
 }
 
 impl HoverToolbar {
@@ -63,6 +65,7 @@ impl HoverToolbar {
             crate::widget::arrange::Slot::new(row),
             controls,
             Stands::Straddling,
+            None,
         )
     }
 
@@ -76,11 +79,33 @@ impl HoverToolbar {
     pub fn above(row: Element, controls: Vec<Element>, band: f64) -> Self {
         let mut slot = crate::widget::arrange::Slot::new(row);
         slot.fit = crate::widget::arrange::Fit::fill(1.0);
-        Self::around(slot, controls, Stands::Above(band))
+        Self::around(slot, controls, Stands::Above(band), None)
     }
 
-    /// The row in `row`, with `controls` shown on hover and focus where `stands` says.
-    fn around(row: crate::widget::arrange::Slot, controls: Vec<Element>, stands: Stands) -> Self {
+    /// [`Self::above`], with `caption` standing at the band's leading end at rest as well as on
+    /// hover: what the content is, said quietly while its controls are away (a place on a canvas
+    /// names what it shows). The band is as tall either way, so nothing moves when the controls
+    /// come.
+    #[must_use]
+    pub fn above_captioned(
+        row: Element,
+        controls: Vec<Element>,
+        band: f64,
+        caption: Element,
+    ) -> Self {
+        let mut slot = crate::widget::arrange::Slot::new(row);
+        slot.fit = crate::widget::arrange::Fit::fill(1.0);
+        Self::around(slot, controls, Stands::Above(band), Some(caption))
+    }
+
+    /// The row in `row`, with `controls` shown on hover and focus where `stands` says, and
+    /// `caption` at rest in a band over it.
+    fn around(
+        row: crate::widget::arrange::Slot,
+        controls: Vec<Element>,
+        stands: Stands,
+        caption: Option<Element>,
+    ) -> Self {
         let shown = Rc::new(Shown::default());
         let mut bar = Row::row().gap(Rhythm::Tight);
         for control in controls {
@@ -106,12 +131,20 @@ impl HoverToolbar {
                 // The band is as tall as it is told whatever the controls are, so the content
                 // under it stands where its pin says; the controls sit at its trailing end, on
                 // its foot.
-                let bar = Stack::row()
+                let mut bar = Stack::row()
                     .fill_width()
                     .fill_height()
+                    .gap(Rhythm::Related)
                     .distribute(crate::widget::arrange::Distribute::End)
-                    .align(Align::End)
-                    .push(Box::new(face));
+                    .align(Align::End);
+                // The caption takes the band's room up to the controls, at its leading end,
+                // a tight step above the content's edge as the controls stand.
+                if let Some(caption) = caption {
+                    let mut said = crate::widget::arrange::Slot::new(caption);
+                    said.fit = crate::widget::arrange::Fit::fill(1.0);
+                    bar = bar.push_slot(said);
+                }
+                let bar = bar.push(Box::new(face));
                 #[expect(
                     clippy::cast_possible_truncation,
                     reason = "a band a few dozen pixels tall"
@@ -138,6 +171,25 @@ impl HoverToolbar {
             hovered: false,
             focused: false,
             touch: false,
+            stands,
+        }
+    }
+
+    /// Whether focus is where it shows the controls. Over a row (a message), focus anywhere in
+    /// the row does, as hover does. Over content of its own in a band (a place on a canvas), only
+    /// focus in the controls does: the content's own focus — a field, a list, a text being read —
+    /// is the content's, and a handle shown for it would stand over a place at rest. The pointer
+    /// shows them, and Tab reaches them, which shows them too.
+    fn focus_shows(&self) -> bool {
+        match self.stands {
+            Stands::Straddling => focus_within(&self.layers),
+            Stands::Above(_) => self
+                .layers
+                .children()
+                .into_iter()
+                .next()
+                .and_then(|column| column.children().into_iter().next())
+                .is_some_and(focus_within),
         }
     }
 
@@ -205,7 +257,7 @@ impl Decorator for HoverToolbar {
             _ => {}
         }
         self.layers.handle_event(event, ctx);
-        self.focused = focus_within(&self.layers);
+        self.focused = self.focus_shows();
         self.follow(None);
     }
 
@@ -217,7 +269,7 @@ impl Decorator for HoverToolbar {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        self.focused = focus_within(&self.layers);
+        self.focused = self.focus_shows();
         self.follow(Some(theme));
         self.layers
             .draw_child(scene, transform, text, theme, presence);

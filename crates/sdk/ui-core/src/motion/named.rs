@@ -775,6 +775,9 @@ impl WindowMotion {
         shortcut: Shortcut::Lands,
     };
     const START_SCALE: f64 = 0.96;
+    /// How large content that grows out of where it was asked starts: half its size, so the
+    /// eye reads it coming out of the caret rather than fading in beside it.
+    const GROWN_START_SCALE: f64 = 0.5;
 
     /// The pose of a window's content at `progress` of its opening, in a frame `rect`.
     #[must_use]
@@ -792,6 +795,30 @@ impl WindowMotion {
                 rect.center(),
                 Self::START_SCALE + (1.0 - Self::START_SCALE) * p,
             ),
+        }
+    }
+
+    /// The pose of content at `progress` of its opening, laid out at `rect`, as it grows out of
+    /// the point `from` it answers (a canvas place out of the caret or the rectangle the person
+    /// asked at): its top-leading corner travels from `from` to its place while it scales up
+    /// from half its size and fades in, on the same opening as [`Self::content_pose`]. Reduced
+    /// motion fades it in where it stands.
+    #[must_use]
+    pub fn grown_pose(progress: f64, rect: Rect, from: Point, motion: EffectiveMotion) -> Pose {
+        let p = progress.clamp(0.0, 1.0);
+        if motion.reduced() || p >= 1.0 {
+            return Pose {
+                opacity: unit_opacity(p),
+                transform: Affine::IDENTITY,
+            };
+        }
+        let scale = Self::GROWN_START_SCALE + (1.0 - Self::GROWN_START_SCALE) * p;
+        let corner = from.lerp(rect.origin(), p);
+        Pose {
+            opacity: unit_opacity(p),
+            transform: Affine::translate(corner.to_vec2())
+                * Affine::scale(scale)
+                * Affine::translate(-rect.origin().to_vec2()),
         }
     }
 }

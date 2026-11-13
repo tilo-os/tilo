@@ -154,3 +154,73 @@ fn focus_first(widget: &mut dyn Widget, done: &mut bool) {
         focus_first(child, done);
     }
 }
+
+/// A place on a canvas under its handle band: its content (a field it focuses) and the handle's
+/// one control.
+fn place() -> Laid {
+    let content = Box::new(
+        crate::widget::Container::new()
+            .with_no_padding()
+            .with_width(560.0)
+            .with_child(Box::new(Button::new("inside", "Inside the place"))),
+    );
+    let mut bar = HoverToolbar::above(
+        content,
+        vec![Box::new(Button::icon_only(
+            "close",
+            crate::icons::Icon::X,
+            "Close",
+        ))],
+        44.0,
+    );
+    let (taffy, node) = laid_out(&mut bar);
+    drawn(&mut bar);
+    Laid { bar, taffy, node }
+}
+
+/// Focus `name`'s button under `widget`.
+fn focus_named(widget: &mut dyn Widget, label: &str, done: &mut bool) {
+    if *done {
+        return;
+    }
+    if widget.is_focusable()
+        && widget.name() == "Button"
+        && widget
+            .accessibility()
+            .and_then(|node| node.name)
+            .is_some_and(|name| name == label)
+    {
+        widget.set_focus(true);
+        *done = true;
+        return;
+    }
+    for child in widget.children_mut() {
+        focus_named(child, label, done);
+    }
+}
+
+/// A place's handle never shows at rest (`canvas.md` §2, §7): focus in what the place holds — a
+/// field, a row, an answer being read — is the content's, and leaves the handle away. Hover shows
+/// it, and so does focus in the handle's own controls, which Tab reaches.
+#[test]
+fn a_places_handle_stays_away_for_focus_in_its_content() {
+    let _settled = crate::motion::testing::settled();
+    let mut laid = place();
+    let mut focused = false;
+    for child in Widget::children_mut(&mut laid.bar) {
+        focus_named(child, "Inside the place", &mut focused);
+    }
+    assert!(focused, "the content's button took focus");
+    drawn(&mut laid.bar);
+    assert!(
+        !laid.bar.is_shown(),
+        "focus in the place's content leaves its handle away"
+    );
+    let mut on_handle = false;
+    for child in Widget::children_mut(&mut laid.bar) {
+        focus_named(child, "Close", &mut on_handle);
+    }
+    assert!(on_handle, "the handle's control is in the focus order");
+    drawn(&mut laid.bar);
+    assert!(laid.bar.is_shown(), "focus in the handle shows it");
+}
