@@ -418,14 +418,34 @@ fn survey(app: &str) -> Vec<ActionDescriptor> {
     .survey()
 }
 
+/// What a new record of each of `apps` publishes: one worker an app.
+fn surveyed(apps: &[&str]) -> Vec<(String, Vec<ActionDescriptor>)> {
+    apps.iter()
+        .map(|app| ((*app).to_owned(), survey(app)))
+        .collect()
+}
+
 /// The context of an agent granted `apps` planning `task`, with a record
 /// of each of `open` open, as the participant builds it: in mode `all`,
 /// every app's reference for an agent granted at most four, else those
 /// open or named; in mode `relevant`, every app's, with their names.
-fn agent_context(apps: &[&str], open: &[&str], task: &str, catalog: Catalog) -> PlanContext {
+/// `published` is what a new record of each app publishes ([`surveyed`]).
+fn agent_context(
+    published: &[(String, Vec<ActionDescriptor>)],
+    apps: &[&str],
+    open: &[&str],
+    task: &str,
+    catalog: Catalog,
+) -> PlanContext {
     let surveys: Vec<(String, Vec<ActionDescriptor>)> = apps
         .iter()
-        .map(|app| ((*app).to_owned(), survey(app)))
+        .map(|app| {
+            published
+                .iter()
+                .find(|(surveyed, _)| surveyed == app)
+                .cloned()
+                .unwrap()
+        })
         .collect();
     let native = crate::AppCatalogue::native();
     PlanContext {
@@ -511,6 +531,10 @@ fn the_planning_prompt_measured_per_section() {
     let video = "so.tilo.video-editor";
     let handler = [CHAT, SHEETS, PDF, NOTES, MAIL];
     let rhea = [video, NOTES, MAIL];
+    // A new record of an app publishes the same operations every time it is
+    // asked (the hash printed below stands on that), so each app is asked
+    // once, not once for every case and mode it appears in.
+    let published = surveyed(&[CHAT, SHEETS, PDF, NOTES, MAIL, video]);
     let reply = "Reply briefly in her WhatsApp channel in Chat that her update is on its way.";
     let cases = [
         (
@@ -541,7 +565,7 @@ fn the_planning_prompt_measured_per_section() {
     for (name, apps, open, task) in cases {
         let mut totals = Vec::new();
         for catalog in [Catalog::All, Catalog::Relevant] {
-            let context = agent_context(apps, open, task, catalog);
+            let context = agent_context(&published, apps, open, task, catalog);
             let (request, _) = first_request(task, &context);
             let measured = sections(&request);
             let total: usize = measured.iter().map(|(_, size)| size).sum();
