@@ -310,6 +310,71 @@ mod tests {
     }
 
     #[test]
+    fn a_header_past_the_budget_is_refused_before_any_pixel_is_decoded() {
+        // A real 6x4 PNG whose header is rewritten to declare another size: the width and
+        // the height are the eight bytes at 16, big-endian.
+        let png = encode_png(&ramp(6, 4)).expect("encode");
+        assert_eq!(size(&png), Some((6, 4)));
+        for (w, h, kept) in [
+            (8_192_u32, 4_096_u32, true),
+            (33_554_432, 1, true),
+            (8_193, 4_096, false),
+            (33_554_433, 1, false),
+            (u32::MAX, u32::MAX, false),
+            (0, 4, false),
+            (6, 0, false),
+        ] {
+            let mut declared = png.clone();
+            declared[16..20].copy_from_slice(&w.to_be_bytes());
+            declared[20..24].copy_from_slice(&h.to_be_bytes());
+            assert_eq!(
+                size(&declared),
+                kept.then_some((w, h)),
+                "a header declaring {w}x{h}"
+            );
+            if !kept {
+                assert!(
+                    decode(&declared).is_none(),
+                    "decoding a header declaring {w}x{h}"
+                );
+            }
+        }
+
+        // The encoded bound is asked before the header is read: exactly the bound is still
+        // an image, one byte past it is not.
+        let mut padded = vec![0_u8; MAX_ENCODED_BYTES + 1];
+        padded[..png.len()].copy_from_slice(&png);
+        assert_eq!(size(&padded[..MAX_ENCODED_BYTES]), Some((6, 4)));
+        assert_eq!(size(&padded), None);
+        assert!(decode(&padded).is_none());
+    }
+
+    #[test]
+    fn a_buffer_is_exactly_its_dimensions_or_it_is_no_image() {
+        for (w, h, len, ok) in [
+            (2_u32, 1_u32, 8_usize, true),
+            (1, 1, 4, true),
+            (2, 1, 7, false),
+            (2, 1, 9, false),
+            (0, 1, 0, false),
+            (1, 0, 0, false),
+            (0, 0, 0, false),
+        ] {
+            assert_eq!(
+                Rgba::new(w, h, vec![0; len]).is_some(),
+                ok,
+                "{len} bytes as {w}x{h}"
+            );
+        }
+
+        let image = ramp(3, 2);
+        assert_eq!(image.pixel(2, 1), Some([2, 1, 0, 255]));
+        for (x, y) in [(3, 1), (2, 2), (u32::MAX, 0), (0, u32::MAX)] {
+            assert_eq!(image.pixel(x, y), None, "pixel ({x}, {y}) of a 3x2 image");
+        }
+    }
+
+    #[test]
     fn exif_orientation_uprights_pixels_and_is_read_from_real_jpeg_bytes() {
         let source = ramp(3, 2);
         let cases = [

@@ -512,6 +512,121 @@ mod tests {
     }
 
     #[test]
+    fn the_file_depth_and_size_bounds_hold_at_their_edges() {
+        let directory = tempfile::tempdir().unwrap();
+        let one = directory.path().join("one.png");
+        png(&one);
+        png(&directory.path().join("two.png"));
+        fs::write(directory.path().join("ignore.txt"), "not an image").unwrap();
+        let options = |limits: ImportLimits| ImportOptions {
+            limits,
+            ..ImportOptions::default()
+        };
+        // Every row reads the folder into a store and under a cancel flag of its own.
+        let index = |limits: ImportLimits| {
+            index_directory(
+                directory.path(),
+                &ContentStore::memory(),
+                options(limits),
+                &AtomicBool::new(false),
+                |_| {},
+            )
+            .unwrap()
+        };
+
+        for (max_files, found, limit_reached) in
+            [(0, 0, true), (1, 1, true), (2, 2, false), (3, 2, false)]
+        {
+            let report = index(ImportLimits {
+                max_files,
+                ..ImportLimits::default()
+            });
+            assert_eq!(
+                (report.discovered, report.photos.len(), report.limit_reached),
+                (found, found, limit_reached),
+                "at most {max_files} files of two"
+            );
+            assert_eq!(
+                report.failures,
+                Vec::<ImportFailure>::new(),
+                "at most {max_files} files of two"
+            );
+        }
+
+        let album = directory.path().join("album");
+        fs::create_dir(&album).unwrap();
+        png(&album.join("three.png"));
+        let too_deep = ImportFailure::new(album, tr("photos-import-too-deep"), false);
+        for (max_depth, photos, refused) in [(0, 2, true), (1, 3, false)] {
+            let report = index(ImportLimits {
+                max_depth,
+                ..ImportLimits::default()
+            });
+            assert_eq!(report.photos.len(), photos, "folders {max_depth} deep");
+            let failures: &[ImportFailure] = if refused {
+                std::slice::from_ref(&too_deep)
+            } else {
+                &[]
+            };
+            assert_eq!(report.failures, failures, "folders {max_depth} deep");
+        }
+
+        let len = fs::metadata(&one).unwrap().len();
+        let empty = directory.path().join("empty.jpg");
+        fs::write(&empty, b"").unwrap();
+        for (path, max_encoded_bytes, kept) in [
+            (&one, len, true),
+            (&one, len - 1, false),
+            (&empty, len, false),
+        ] {
+            let indexed = index_file(
+                path,
+                &ContentStore::memory(),
+                options(ImportLimits {
+                    max_encoded_bytes,
+                    ..ImportLimits::default()
+                }),
+                &AtomicBool::new(false),
+            );
+            assert_eq!(
+                indexed.map(|indexed| (indexed.photo.image.width, indexed.photo.image.height)),
+                if kept {
+                    Ok((2, 1))
+                } else {
+                    Err(tr("photos-import-too-large"))
+                },
+                "{} within {max_encoded_bytes} bytes",
+                path.display()
+            );
+        }
+    }
+
+    #[test]
+    fn a_root_that_is_no_folder_of_its_own_is_refused() {
+        let directory = tempfile::tempdir().unwrap();
+        let file = directory.path().join("one.png");
+        png(&file);
+        for (root, refusal) in [
+            (file, "photos-import-folder-link"),
+            (
+                directory.path().join("missing"),
+                "photos-import-folder-unavailable",
+            ),
+            #[cfg(unix)]
+            (PathBuf::from("/"), "photos-import-folder-unavailable"),
+        ] {
+            let refused = index_directory(
+                &root,
+                &ContentStore::memory(),
+                ImportOptions::default(),
+                &AtomicBool::new(false),
+                |_| {},
+            );
+            assert_eq!(refused.unwrap_err(), tr(refusal), "{}", root.display());
+        }
+    }
+
+    #[test]
     fn imports_keep_source_bytes_with_real_exif_upright_dimensions() {
         eprintln!("phase exif_reader_has_no_synthetic_fallback_for_a_plain_png");
         {
