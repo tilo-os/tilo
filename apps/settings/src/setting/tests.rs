@@ -193,6 +193,58 @@ fn assert_nothing_found(app: &mut TestApp<SettingsShell>, after: &str) {
     );
 }
 
+/// What a search finds, asked as the window asks it and without a window:
+/// nothing for nothing typed, a setting by its name, each setting once and
+/// only on a page this build has, and the same whatever space surrounds the
+/// words.
+#[test]
+fn a_search_finds_each_setting_once_and_only_on_a_page_this_build_has() {
+    ui::i18n::I18nManager::init("en-US");
+    let ids = |query: &str| -> Vec<&'static str> {
+        super::matching(query)
+            .iter()
+            .map(|setting| setting.id)
+            .collect()
+    };
+    for nothing in ["", " ", "\t \n"] {
+        assert!(
+            ids(nothing).is_empty(),
+            "{nothing:?} finds nothing, got {:?}",
+            ids(nothing)
+        );
+    }
+    for entry in &crate::area::registry().settings {
+        let setting = index::setting(entry.id)
+            .unwrap_or_else(|| panic!("{} is not in the settings index", entry.id));
+        let name = crate::i18n::t(&setting.name_key());
+        let hits = super::matching(&name);
+        assert!(
+            hits.iter().any(|hit| hit.id == entry.id),
+            "{}: its name {name:?} finds it, got {:?}",
+            entry.id,
+            ids(&name)
+        );
+        let mut once = std::collections::HashSet::new();
+        for hit in &hits {
+            assert!(once.insert(hit.id), "{name:?} finds {} twice", hit.id);
+            assert!(
+                Category::from_slug(hit.page).is_some(),
+                "{name:?} finds {} on {}, a page this build has not",
+                hit.id,
+                hit.page
+            );
+        }
+    }
+    for words in ["high contrast", "screen reader"] {
+        assert!(!ids(words).is_empty(), "{words:?} finds a setting");
+        assert_eq!(
+            ids(&format!("  {words}\t")),
+            ids(words),
+            "{words:?}: the space around the words changes nothing"
+        );
+    }
+}
+
 fn widget<'a>(root: &'a dyn Widget, id: &str) -> Option<&'a dyn Widget> {
     if root.test_id() == Some(id) {
         return Some(root);
