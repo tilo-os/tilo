@@ -180,7 +180,7 @@ fn session(
         person: PERSON.to_owned(),
         shell: true,
         collab: false,
-        services: vec![Box::new(seeded)],
+        services: seeded,
         questions: Some(Questions::new()),
         action_plane: ActionPlane::At(root.join("plane.sock")),
         agent_door: Some(root.join("agent.sock")),
@@ -313,8 +313,8 @@ fn client_items(session: &Session, kind: &str) -> Vec<(String, String)> {
 
 /// "youtube videos of <creator>" typed on the canvas places that creator's channel, live: the
 /// channel is not in the client's records when the person types, and the client's own search
-/// action asks its origin (here a **scripted test origin**, not YouTube), whose answer becomes the
-/// channel's record and then the place. Nothing here is special-cased for YouTube: the query names
+/// action asks its origin (here a **scripted test origin**, not `YouTube`), whose answer becomes the
+/// channel's record and then the place. Nothing here is special-cased for `YouTube`: the query names
 /// the client by its app and the channel by its type, and the app's own search action answers it
 /// (search.md §4, §7; shell.md §8 "Finding what to place").
 #[test]

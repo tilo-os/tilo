@@ -900,6 +900,7 @@ impl Session {
                     desk(),
                     wells,
                     presentation.theme.clone(),
+                    options.state.as_deref(),
                 )
                 .map_err(|why| {
                     Error::Backend(tilo_compositor::BackendError(format!(

@@ -2655,7 +2655,7 @@ impl<'a> Parser<'a> {
                 UiKind::On {
                     event,
                     param,
-                    at,
+                    at: Box::new(at),
                     action,
                 }
             }

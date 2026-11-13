@@ -860,8 +860,9 @@ impl SessionSearch {
             // on, so the same words name the same type on every run.
             let Some((order, kind)) = own
                 .iter()
-                .position(|action| action.address.resource.as_str() == resource.as_str())
-                .map(|at| (at, own[at].resource_kind.clone()))
+                .enumerate()
+                .find(|(_, action)| action.address.resource.as_str() == resource.as_str())
+                .map(|(at, action)| (at, action.resource_kind.clone()))
             else {
                 continue;
             };
@@ -898,8 +899,8 @@ impl SessionSearch {
         } else {
             narrowed
         };
-        let (app, kind, rest, _) = candidates.first()?.clone();
-        if candidates.iter().any(|(other, ..)| *other != *app) {
+        let (app, kind, rest, _) = candidates.first()?;
+        if candidates.iter().any(|(other, ..)| other != app) {
             return None;
         }
         Some((app.clone(), kind.clone(), rest.clone()))

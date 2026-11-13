@@ -20,7 +20,7 @@
 use std::time::Duration;
 
 use serde_json::{Map, Value, json};
-use tilo_service::{Questions, Service as _, Started};
+use tilo_service::{Questions, Started};
 use tilo_session::{ActionPlane, Options, Session};
 use tilo_sheets::portal::PortalEffect;
 use tilolang_tilo::records_service::RecordService;
@@ -281,7 +281,7 @@ fn a_record_the_sessions_services_publish_is_found_through_the_door() {
         person: PERSON.to_owned(),
         shell: true,
         collab: false,
-        services: vec![Box::new(apps)],
+        services: apps,
         questions: Some(questions),
         action_plane: ActionPlane::At(root.path().join("plane.sock")),
         agent_door: Some(root.path().join("agent.sock")),
@@ -618,7 +618,7 @@ fn a_placed_record_is_drawn_through_its_own_apps_view() {
         person: PERSON.to_owned(),
         shell: true,
         collab: false,
-        services: vec![Box::new(apps)],
+        services: apps,
         questions: Some(questions),
         action_plane: ActionPlane::At(root.path().join("plane.sock")),
         agent_door: Some(root.path().join("agent.sock")),
@@ -693,7 +693,7 @@ fn my_mails_on_the_canvas_places_mails_root() {
         person: PERSON.to_owned(),
         shell: true,
         collab: false,
-        services: vec![Box::new(apps)],
+        services: apps,
         questions: Some(questions),
         action_plane: ActionPlane::At(root.path().join("plane.sock")),
         agent_door: Some(root.path().join("agent.sock")),
@@ -1000,7 +1000,7 @@ fn seeded_thread(session: &Session, id: &str) -> bool {
 /// the kind `withheld` (the app that publishes it never does, or the session's watch has not seen
 /// it): what a place whose data never arrives meets.
 struct Withholding {
-    inner: RecordService,
+    inner: Box<dyn tilo_service::Service>,
     withheld: &'static str,
     /// The ids of the resources of that kind, found once.
     ids: std::cell::RefCell<Option<std::collections::BTreeSet<String>>>,
@@ -1084,13 +1084,17 @@ fn a_place_whose_reading_never_arrives_leaves_the_rest_of_the_screen_working() {
         person: PERSON.to_owned(),
         shell: true,
         collab: false,
-        services: vec![Box::new(Withholding {
-            inner: apps,
-            // Every task's reading never comes: the window of the one placed has no record to
-            // draw.
-            withheld: "tl.so.tilo.lang.tasks.Task",
-            ids: std::cell::RefCell::new(None),
-        })],
+        // Every task's reading never comes: the window of the one placed has no record to draw.
+        services: apps
+            .into_iter()
+            .map(|inner| {
+                Box::new(Withholding {
+                    inner,
+                    withheld: "tl.so.tilo.lang.tasks.Task",
+                    ids: std::cell::RefCell::new(None),
+                }) as Box<dyn tilo_service::Service>
+            })
+            .collect(),
         questions: Some(Questions::new()),
         action_plane: ActionPlane::At(root.path().join("plane.sock")),
         agent_door: Some(root.path().join("agent.sock")),
@@ -1173,7 +1177,7 @@ fn the_repl_finds_what_place_found_places() {
         person: PERSON.to_owned(),
         shell: true,
         collab: false,
-        services: vec![Box::new(apps)],
+        services: apps,
         questions: Some(questions),
         action_plane: ActionPlane::At(root.path().join("plane.sock")),
         agent_door: Some(root.path().join("agent.sock")),

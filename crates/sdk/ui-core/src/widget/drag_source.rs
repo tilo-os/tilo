@@ -13,6 +13,7 @@
 //! `activate`, the chip's `press` and every control inside keep working exactly as they would
 //! without the wrapper.
 
+use crate::widget::DrawChild as _;
 use std::collections::HashMap;
 
 use taffy::{NodeId, TaffyTree};
@@ -224,7 +225,8 @@ impl Decorator for DragSource {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        self.column.draw(scene, transform, text, theme, presence);
+        self.column
+            .draw_child(scene, transform, text, theme, presence);
         self.dirty = false;
     }
 

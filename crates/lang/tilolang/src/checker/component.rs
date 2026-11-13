@@ -975,7 +975,13 @@ impl Checker<'_> {
                     param,
                     at,
                     action,
-                } => self.component_event(n, d, event, (param.as_ref(), at.as_ref()), action),
+                } => self.component_event(
+                    n,
+                    d,
+                    event,
+                    (param.as_ref(), at.as_ref().as_ref()),
+                    action,
+                ),
                 _ => content.push(s.clone()),
             }
         }

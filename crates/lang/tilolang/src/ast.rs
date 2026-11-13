@@ -833,11 +833,13 @@ pub enum UiKind {
     /// `on activate: open(c)`: what the event `activate` of a `ui.*` component does. An event
     /// that carries a value names it, `on select(x: Note): open(x)`, and passes it on as an
     /// argument of the action; one that also says where it lands names that second,
-    /// `on drop(moved: Task, at: Int): place(moved, at)`.
+    /// `on drop(moved: Task, at: Int): place(moved, at)`. Where it lands is boxed: most events
+    /// name one value, and the two optional names beside the action are what makes this the
+    /// widest variant of [`UiKind`].
     On {
         event: Ident,
         param: Option<EventParam>,
-        at: Option<EventParam>,
+        at: Box<Option<EventParam>>,
         action: Expr,
     },
 }

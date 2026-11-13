@@ -37,7 +37,7 @@ fn session(root: &std::path::Path) -> Session {
         person: PERSON.to_owned(),
         shell: true,
         collab: false,
-        services: vec![Box::new(crate::common::seeded_apps())],
+        services: crate::common::seeded_apps(),
         questions: Some(Questions::new()),
         action_plane: ActionPlane::At(root.join("plane.sock")),
         agent_door: Some(root.join("agent.sock")),
@@ -90,8 +90,10 @@ fn root_of(session: &Session, app: &str) -> String {
         .resources()
         .into_iter()
         .find(|spec| spec.id.as_str().starts_with(&prefix))
-        .map(|spec| spec.id.as_str().to_owned())
-        .unwrap_or_else(|| panic!("{app}'s root is published"))
+        .map_or_else(
+            || panic!("{app}'s root is published"),
+            |spec| spec.id.as_str().to_owned(),
+        )
 }
 
 /// Open `resource` beside the place showing `beside`, through the arrangement's own `open`, as an

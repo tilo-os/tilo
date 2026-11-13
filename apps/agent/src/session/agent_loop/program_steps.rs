@@ -3,6 +3,7 @@
 //! ([`crate::programs`]).
 
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 
 use anyhow::Result;
 use serde_json::{Value, json};
@@ -42,7 +43,7 @@ impl ProgramWorld {
             }
             let mut lines = String::new();
             for (alias, root) in &self.served {
-                lines.push_str(&format!("- `{alias}`: its record is a `{alias}.{root}`\n"));
+                let _ = writeln!(lines, "- `{alias}`: its record is a `{alias}.{root}`");
             }
             return format!(
                 "Apps your `{}` programs can use, open or not (`find({{alias}}.{{Type}})` finds \

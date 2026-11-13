@@ -1399,7 +1399,7 @@ impl Printer<'_> {
                     Some(ty) => format!("{}: {}", p.name.name, print_type(ty)),
                     None => p.name.name.clone(),
                 };
-                let carried = match (param, at) {
+                let carried = match (param, at.as_ref()) {
                     (Some(p), Some(at)) => format!("({}, {})", named(p), named(at)),
                     (Some(p), None) => format!("({})", named(p)),
                     _ => String::new(),

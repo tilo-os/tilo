@@ -351,6 +351,8 @@ mod sheets;
 #[cfg(target_os = "linux")]
 pub mod shell;
 #[cfg(target_os = "linux")]
+mod shell_record;
+#[cfg(target_os = "linux")]
 mod shortcut_guide;
 #[cfg(target_os = "linux")]
 mod slot_binding;

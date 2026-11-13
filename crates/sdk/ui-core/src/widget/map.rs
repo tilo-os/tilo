@@ -337,6 +337,10 @@ pub struct Map {
     placed: Rc<RefCell<HashMap<String, crate::motion::Placed>>>,
     /// Where the region laid each pin out last, by key, written by its own solve.
     laid: Rc<RefCell<HashMap<String, Rect>>>,
+    /// Where each pin stands on the canvas, in the order of `pins`, as the region reads it at each
+    /// solve: a pin moved in place ([`Described::set_props`]) is laid out where it stands now,
+    /// though the region was built while it stood elsewhere.
+    standing: Rc<RefCell<Vec<PinPlace>>>,
 
     /// The place that arrived on the map and is to be shown: the camera pans to it before the
     /// places are laid out, so a window a person just opened stands where they can see it.
@@ -390,8 +394,6 @@ pub struct Map {
     key: String,
     /// What each pin stands for, by its key, as its view named it: what pointing at it reports.
     items: HashMap<String, String>,
-    /// Where each pin stands, in draw order: what the region's policy lays them out at.
-    places_cell: Rc<std::cell::RefCell<Vec<PinPlace>>>,
     /// The pin whose view a change inside it is patching (`part_views`), by its index: `None`
     /// while the change is to the pins themselves.
     editing: Option<usize>,
@@ -455,6 +457,7 @@ impl Map {
             key_pan: f64::from(crate::tokens::Metrics::BASE.wheel_line),
             placed: Rc::default(),
             laid: Rc::default(),
+            standing: Rc::default(),
             reveal: None,
             glide: None,
             shown: Rc::default(),
@@ -474,7 +477,6 @@ impl Map {
             key: String::new(),
             items: HashMap::new(),
             editing: None,
-            places_cell: Rc::default(),
         }
     }
 
@@ -830,6 +832,11 @@ impl Map {
             .and_then(|any| any.downcast_mut::<Manual>())
     }
 
+    /// Say where every pin stands now to the region that lays them out.
+    fn stand_pins(&self) {
+        *self.standing.borrow_mut() = self.pins.iter().map(|(_, place, _)| *place).collect();
+    }
+
     /// Build the region that places the pins on the camera: from the views it holds now (taken
     /// back out of the region built last), at the places and zoom the map is at.
     fn rebuild_region(&mut self, _theme: &Theme) {
@@ -848,11 +855,8 @@ impl Map {
             views.push(view);
         }
         views.truncate(self.pins.len());
-        // Where the pins stand, shared with the region's policy like the camera: a place moved
-        // or sized in place re-solves the region at its new place rather than the one it was
-        // built with.
-        *self.places_cell.borrow_mut() = self.pins.iter().map(|(_, place, _)| *place).collect();
-        let places = Rc::clone(&self.places_cell);
+        self.stand_pins();
+        let places = Rc::clone(&self.standing);
         let keys: Vec<String> = self.pins.iter().map(|(key, _, _)| key.clone()).collect();
         // The camera is read at each solve, not when the region is built: a pan, a zoom or a
         // glide of the camera lays the places out again without building the region again.
@@ -1025,7 +1029,8 @@ impl Described for Map {
                 band: band_of(pin.band),
             };
         }
-        *self.places_cell.borrow_mut() = self.pins.iter().map(|(_, place, _)| *place).collect();
+        // The region built before reads where the pins stand now at its next solve.
+        self.stand_pins();
         self.dirty = true;
         self.invalidation.invalidate();
         true
@@ -1105,6 +1110,7 @@ impl SlotViews for Map {
         } else if let Some((_, _, slot)) = self.pins.get_mut(at) {
             *slot = view;
         }
+        self.stand_pins();
     }
 
     fn remove(&mut self, index: usize) {
@@ -1121,6 +1127,7 @@ impl SlotViews for Map {
                 let _ = region.remove_child(index);
             }
         }
+        self.stand_pins();
     }
 
     fn move_view(&mut self, from: usize, to: usize) {
@@ -1134,6 +1141,7 @@ impl SlotViews for Map {
                 region.move_child(from, to);
             }
         }
+        self.stand_pins();
     }
 
     fn replace(&mut self, index: usize, view: Element) {

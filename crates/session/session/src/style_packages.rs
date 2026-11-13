@@ -352,7 +352,7 @@ fn rewrite_shell_names(body: &str) -> String {
     let mut word = String::new();
     // The character before the word being read: `.` means the word is a field, not a name.
     let mut before = '\0';
-    let mut flush = |word: &mut String, before: char, out: &mut String| {
+    let flush = |word: &mut String, before: char, out: &mut String| {
         if word.is_empty() {
             return;
         }

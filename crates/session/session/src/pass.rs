@@ -55,6 +55,8 @@ impl Session {
         // hands them.
         self.read_controls();
         self.shared.feed_agents();
+        // The apps' records the services run over are the workspace's, once the session holds it.
+        self.shared.keep_app_records();
         let mut services = self.shared.services.borrow_mut();
         // What the packages the session runs itself (the shell) wrote into the records their parts
         // share, published with every app's before the door answers this pass.
@@ -448,6 +450,11 @@ impl Session {
             self.step(timeout)?;
         }
         self.shared.keep_desk_now();
+        // The shell's own record, written out whole and waited on: the next session starts from
+        // exactly the desk choices this one left.
+        if let Some(shell) = &self.shell {
+            shell.flush_record();
+        }
         // Nothing of this session outlives it: an ordered end publishes the lock state the next one
         // recovers, and one that ends any other way keeps the armed record, which recovers locked.
         if let Some(recovery) = self.recovery.take()
