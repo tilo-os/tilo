@@ -30,7 +30,7 @@ use std::sync::Arc;
 use collaboration::action_directory::PublishedDirectory;
 use collaboration::history_source::verbs::{self, EDIT_TYPE, HistoryEdit, VIEW_TYPE};
 use collaboration::{
-    CollabEvent, CollabRequest, DocumentMutation, SurfacePublication, WorkspaceCommit,
+    CollabEvent, CollabRequest, DocumentMutation, SurfaceDelta, SurfacePublication, WorkspaceCommit,
 };
 use tilo_actions::{
     ActionAddress, ActionContext, ActionDescriptor, ActionInvoker, ActionRegistry, ActorKind,
@@ -1858,7 +1858,13 @@ impl Hosted {
             self.directory.withdraw();
             self.directory_behind = false;
             self.directory_from = None;
-            self.offer(&[]);
+            if !self
+                .published
+                .as_ref()
+                .is_some_and(|(held, _)| held.is_empty())
+            {
+                say_catalogue(&mut self.instance, &[], |_| true, false);
+            }
             if self
                 .published
                 .as_ref()
@@ -1883,7 +1889,6 @@ impl Hosted {
         self.refused.clear();
         let mut descriptors = tilo_actions::door::survey(&resources);
         self.answer_what_the_window_shows(&mut descriptors);
-        self.offer(&descriptors);
         // The directory is built when a caller asks for it: what the surface holds is the
         // snapshot's input, not the answer to a question nobody asked.
         if self
@@ -1899,7 +1904,7 @@ impl Hosted {
             .as_ref()
             .map(|(held, state)| (state, held.as_slice()));
         let (delta, state) = SurfacePublication::next(prior, &descriptors);
-        // A surface the connection did not take is offered again on the next frame.
+        self.offer(&delta, &descriptors);
         if delta.is_empty()
             || self
                 .record
@@ -1908,37 +1913,37 @@ impl Hosted {
         {
             self.published = Some((descriptors, state));
             self.published_from = Some((surface, inputs));
+        } else {
+            // A surface the connection did not take is offered again on the next frame, whole:
+            // the window took this change, and what the broker holds is older.
+            self.published = None;
+            self.published_from = None;
         }
     }
 
     /// Offer the window the person's command palette `descriptors`, the actions the instance
     /// publishes on its connection: the window offers them the way it offers its own, with the
-    /// labels, keys and icons the app gives them. Nothing is sent while the broker's copy is
-    /// what the window holds.
-    fn offer(&mut self, descriptors: &[ActionDescriptor]) {
-        let unchanged = self
-            .published
-            .as_ref()
-            .is_some_and(|(held, _)| held.as_slice() == descriptors);
-        if !unchanged {
-            self.say_actions(ActionCatalogue::All, descriptors);
+    /// labels, keys and icons the app gives them. The window holds what the broker holds, so it
+    /// is sent what `delta` changes of that; all of it when the broker starts over.
+    fn offer(&mut self, delta: &SurfaceDelta, descriptors: &[ActionDescriptor]) {
+        if delta.reset {
+            say_catalogue(&mut self.instance, descriptors, |_| true, false);
+            return;
         }
-    }
-
-    /// Tell the window `catalogue` of `descriptors`, as the action directory carries them.
-    fn say_actions(
-        &mut self,
-        catalogue: fn(Vec<u8>) -> ActionCatalogue,
-        descriptors: &[ActionDescriptor],
-    ) {
-        match serde_json::to_vec(descriptors) {
-            Ok(actions) => {
-                self.instance.say(ToUi::Actions(catalogue(actions)));
-                // The window takes it now, not on the frame after.
-                self.instance.flush();
-            }
-            Err(error) => tracing::error!(%error, "an action catalogue did not encode"),
+        if delta.is_empty() {
+            return;
         }
+        let changed: HashSet<&str> = delta
+            .resources
+            .iter()
+            .map(|resource| resource.resource.as_str())
+            .collect();
+        say_catalogue(
+            &mut self.instance,
+            descriptors,
+            |resource| changed.contains(resource),
+            true,
+        );
     }
 
     /// Run the next action the person chose at the window as their own step: the same door an
@@ -2041,12 +2046,12 @@ impl Hosted {
             return false;
         };
         // The window's palette shows the labels the person types into, which are what moved.
-        let relabeled: Vec<tilo_actions::ActionDescriptor> = descriptors
-            .iter()
-            .filter(|descriptor| changed.contains(&descriptor.address.resource.as_str()))
-            .cloned()
-            .collect();
-        self.say_actions(ActionCatalogue::Relabeled, &relabeled);
+        say_catalogue(
+            &mut self.instance,
+            descriptors,
+            |resource| changed.contains(&resource),
+            true,
+        );
         if !delta.is_empty()
             && !self
                 .record
@@ -2650,4 +2655,40 @@ impl Applier {
         use base64::Engine as _;
         base64::engine::general_purpose::STANDARD.encode(self.record.changes_since(before))
     }
+}
+
+/// Tell the window of `instance` the actions `descriptors` offers: all of them, or, `changed`
+/// only, the actions of the resources `changed` names with every resource offered, in order
+/// ([`ActionCatalogue::Changed`]).
+fn say_catalogue(
+    instance: &mut Instance,
+    descriptors: &[ActionDescriptor],
+    names: impl Fn(&str) -> bool,
+    changed: bool,
+) {
+    let mut resources: Vec<String> = Vec::new();
+    let mut actions: Vec<&ActionDescriptor> = Vec::with_capacity(descriptors.len());
+    for descriptor in descriptors {
+        let resource = descriptor.address.resource.as_str();
+        if changed && !resources.iter().rev().any(|held| held == resource) {
+            resources.push(resource.to_owned());
+        }
+        if names(resource) {
+            actions.push(descriptor);
+        }
+    }
+    let actions = match serde_json::to_vec(&actions) {
+        Ok(actions) => actions,
+        Err(error) => {
+            tracing::error!(%error, "an action catalogue did not encode");
+            return;
+        }
+    };
+    instance.say(ToUi::Actions(if changed {
+        ActionCatalogue::Changed { actions, resources }
+    } else {
+        ActionCatalogue::All(actions)
+    }));
+    // The window takes it now, not on the frame after.
+    instance.flush();
 }

@@ -22,6 +22,7 @@ use ui::host_operation::{ResourceOperation, ResourceOperationStart, ResourceOper
 use ui::resources::PublishesResources;
 
 use crate::window::AppWindow;
+use tilo_render_protocol::patch as wire;
 
 /// The operation type of the window's own declaration of the actions its app published:
 /// choosing one hands the action's address to the app, which runs it as the person's step.
@@ -53,9 +54,50 @@ impl Chosen {
 
 /// The actions the app sent the window, as [`ToUi::Actions`] carries them: its directory's
 /// descriptor JSON.
-pub(crate) fn read(bytes: &[u8]) -> Result<Vec<ActionDescriptor>, String> {
+fn read(bytes: &[u8]) -> Result<Vec<ActionDescriptor>, String> {
     serde_json::from_slice(bytes)
         .map_err(|error| format!("the app's action catalogue did not read back: {error}"))
+}
+
+/// Take what the app offers the window now into `held`, the actions it holds: every action;
+/// the actions of the resources whose labels moved, from an app of an earlier build; or what
+/// changed ([`wire::ActionCatalogue::Changed`]).
+pub(crate) fn take(
+    held: &mut Vec<ActionDescriptor>,
+    catalogue: wire::ActionCatalogue,
+) -> Result<(), String> {
+    match catalogue {
+        wire::ActionCatalogue::All(actions) => *held = read(&actions)?,
+        wire::ActionCatalogue::Relabeled(actions) => replace(held, read(&actions)?),
+        wire::ActionCatalogue::Changed { actions, resources } => {
+            replace(held, read(&actions)?);
+            let order: std::collections::HashMap<&str, usize> = resources
+                .iter()
+                .enumerate()
+                .map(|(at, resource)| (resource.as_str(), at))
+                .collect();
+            held.retain(|action| order.contains_key(action.address.resource.as_str()));
+            held.sort_by_key(|action| order.get(action.address.resource.as_str()).copied());
+        }
+    }
+    Ok(())
+}
+
+/// Every action of each resource `incoming` names, in place of what `held` holds of that
+/// resource: where it sits, or after the rest for a resource it did not hold.
+fn replace(held: &mut Vec<ActionDescriptor>, mut incoming: Vec<ActionDescriptor>) {
+    while let Some(first) = incoming.first() {
+        let resource = first.address.resource.clone();
+        let theirs: Vec<_> = incoming
+            .extract_if(.., |action| action.address.resource == resource)
+            .collect();
+        let at = held
+            .iter()
+            .position(|action| action.address.resource == resource)
+            .unwrap_or(held.len());
+        held.retain(|action| action.address.resource != resource);
+        held.splice(at..at, theirs);
+    }
 }
 
 impl AppWindow {

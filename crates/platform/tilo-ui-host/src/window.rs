@@ -728,32 +728,9 @@ impl AppWindow {
         }
     }
 
-    /// What the app offers the person at the window now: every action, or the actions of the
-    /// resources whose labels moved, which replace theirs where they sit.
+    /// What the app offers the person at the window now ([`crate::catalogue::take`]).
     fn take_actions(&mut self, catalogue: wire::ActionCatalogue) -> Result<(), String> {
-        match catalogue {
-            wire::ActionCatalogue::All(actions) => self.actions = crate::catalogue::read(&actions)?,
-            wire::ActionCatalogue::Relabeled(actions) => {
-                for action in crate::catalogue::read(&actions)? {
-                    if let Some(held) = self
-                        .actions
-                        .iter_mut()
-                        .find(|held| held.address == action.address)
-                    {
-                        *held = action;
-                    } else {
-                        // An action the window does not hold yet: it takes its place after
-                        // those it knows of its resource.
-                        let at = self
-                            .actions
-                            .iter()
-                            .rposition(|held| held.address.resource == action.address.resource)
-                            .map_or(self.actions.len(), |last| last.saturating_add(1));
-                        self.actions.insert(at, action);
-                    }
-                }
-            }
-        }
+        crate::catalogue::take(&mut self.actions, catalogue)?;
         // The window publishes each action as the resource its controls stand on.
         let published = self.catalogue();
         self.bind_published(&published);

@@ -419,6 +419,11 @@ fn a_batch_that_breaks_the_protocol_shows_the_error_state_and_nothing_else() {
 /// What the app published for the window: a resource with one action, as the catalogue
 /// carries it.
 fn catalogue_of(label: &str, shortcut: Option<&str>) -> Vec<u8> {
+    catalogue_on("tasks:1", label, shortcut)
+}
+
+/// [`catalogue_of`], on the resource `resource`.
+fn catalogue_on(resource: &str, label: &str, shortcut: Option<&str>) -> Vec<u8> {
     use tilo_actions::{ActionSpec, OperationKind, ResourceSpec};
     let mut spec = ActionSpec::operation(
         "new",
@@ -429,15 +434,34 @@ fn catalogue_of(label: &str, shortcut: Option<&str>) -> Vec<u8> {
     )
     .unwrap();
     spec.type_mut().state.shortcut = shortcut.map(str::to_owned);
-    let resource = ResourceSpec::new("tasks:1", "test.tasks", "Tasks").with_action(spec);
+    let resource = ResourceSpec::new(resource, "test.tasks", "Tasks").with_action(spec);
     serde_json::to_vec(&tilo_actions::door::survey(&[resource])).expect("encodes")
 }
 
-/// The window offers the actions its app publishes, and a catalogue of labels that moved
-/// replaces the action it holds where it sits, with the key the app gives it now.
+/// The window offers the actions its app publishes. A change replaces the actions of the
+/// resources it names, with the key the app gives them now, adds those of a resource that
+/// joined, drops those of one the app no longer offers, and holds them in the app's order; a
+/// relabeling from an app of an earlier build replaces an action where it sits.
 #[test]
 fn a_published_catalogue_is_what_the_windows_palette_offers() {
     let (mut app, mut window) = window();
+    let offered = |window: &AppWindow| {
+        window
+            .actions()
+            .iter()
+            .map(|action| {
+                (
+                    action.address.resource.clone(),
+                    action.action_label.clone(),
+                    action.state.shortcut.clone(),
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    let one = |resource: &str, label: &str, key: &str| {
+        (resource.to_owned(), label.to_owned(), Some(key.to_owned()))
+    };
+    let resources = |names: &[&str]| names.iter().map(|name| (*name).to_owned()).collect();
     send(
         &mut app,
         &[ToUi::Actions(wire::ActionCatalogue::All(catalogue_of(
@@ -446,13 +470,7 @@ fn a_published_catalogue_is_what_the_windows_palette_offers() {
         )))],
     );
     window.receive();
-    assert_eq!(
-        window.actions().first().map(|action| (
-            action.action_label.as_str(),
-            action.state.shortcut.as_deref()
-        )),
-        Some(("New task", Some("Ctrl+n")))
-    );
+    assert_eq!(offered(&window), [one("tasks:1", "New task", "Ctrl+n")]);
     send(
         &mut app,
         &[ToUi::Actions(wire::ActionCatalogue::Relabeled(
@@ -461,12 +479,38 @@ fn a_published_catalogue_is_what_the_windows_palette_offers() {
     );
     window.receive();
     assert_eq!(
-        window.actions().first().map(|action| (
-            action.action_label.as_str(),
-            action.state.shortcut.as_deref()
-        )),
-        Some(("Create task", Some("Ctrl+enter"))),
+        offered(&window),
+        [one("tasks:1", "Create task", "Ctrl+enter")],
         "one action, relabeled in place"
+    );
+    send(
+        &mut app,
+        &[ToUi::Actions(wire::ActionCatalogue::Changed {
+            actions: catalogue_on("tasks:2", "Add", Some("Ctrl+a")),
+            resources: resources(&["tasks:2", "tasks:1"]),
+        })],
+    );
+    window.receive();
+    assert_eq!(
+        offered(&window),
+        [
+            one("tasks:2", "Add", "Ctrl+a"),
+            one("tasks:1", "Create task", "Ctrl+enter"),
+        ],
+        "a resource that joined is offered where the app offers it"
+    );
+    send(
+        &mut app,
+        &[ToUi::Actions(wire::ActionCatalogue::Changed {
+            actions: catalogue_of("New task", Some("Ctrl+n")),
+            resources: resources(&["tasks:1"]),
+        })],
+    );
+    window.receive();
+    assert_eq!(
+        offered(&window),
+        [one("tasks:1", "New task", "Ctrl+n")],
+        "a resource the app no longer offers takes its actions with it"
     );
 }
 

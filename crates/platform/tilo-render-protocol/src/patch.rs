@@ -540,9 +540,32 @@ pub enum ActionCatalogue {
     /// Every action the app offers the window, in the order it offers them. Carried as bytes,
     /// not a byte at a time: a catalogue is large, and goes out with every change of it.
     All(#[serde(with = "serde_bytes")] Vec<u8>),
-    /// The actions of the resources whose labels moved: they replace those resources' actions
-    /// in the window, at the cost of what changed rather than of the whole surface.
+    /// The actions of the resources whose labels moved, from an app of an earlier build: they
+    /// replace those resources' actions in the window.
     Relabeled(#[serde(with = "serde_bytes")] Vec<u8>),
+    /// What changed of the catalogue, at the cost of what changed rather than of the whole
+    /// surface: every action of each resource that joined or changed (`actions`), which
+    /// replace what the window holds of those resources, and every resource the app offers
+    /// actions on, in the order it offers them (`resources`): the window drops the actions of
+    /// any other, and holds the rest in that order.
+    Changed {
+        #[serde(with = "serde_bytes")]
+        actions: Vec<u8>,
+        resources: Vec<String>,
+    },
+}
+
+impl ActionCatalogue {
+    /// The bytes it carries.
+    #[must_use]
+    pub fn bytes(&self) -> usize {
+        match self {
+            Self::All(actions) | Self::Relabeled(actions) => actions.len(),
+            Self::Changed { actions, resources } => resources
+                .iter()
+                .fold(actions.len(), |n, r| n.saturating_add(r.len())),
+        }
+    }
 }
 
 /// What an app sends its window.

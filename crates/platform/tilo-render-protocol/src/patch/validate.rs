@@ -185,11 +185,7 @@ impl<'a> Validator<'a> {
             | ToUi::Activate
             | ToUi::Took { .. } => Ok(()),
             ToUi::Actions(catalogue) => {
-                let actions = match catalogue {
-                    super::ActionCatalogue::All(actions)
-                    | super::ActionCatalogue::Relabeled(actions) => actions,
-                };
-                if actions.len() > self.limits.string_bytes as usize {
+                if catalogue.bytes() > self.limits.string_bytes as usize {
                     return Err(Refused::invalid("over the limit of bytes in a catalogue"));
                 }
                 Ok(())
