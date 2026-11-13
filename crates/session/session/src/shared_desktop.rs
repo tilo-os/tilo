@@ -299,7 +299,8 @@ pub(crate) struct SharedDesktops {
     written_windows: RefCell<HashMap<WorkspaceId, BTreeSet<u64>>>,
     /// The windows each workspace's layout held when this desk was last laid out from it: a window
     /// of this device's that is not among them is one it opened since, which the layout has not
-    /// taken in yet.
+    /// taken in yet. Before the first layout, the windows the desk held when it first looked at the
+    /// workspace ([`Self::first_look`]).
     recorded: RefCell<HashMap<WorkspaceId, BTreeSet<u64>>>,
     /// The engine's revision and this desk's own at the last look.
     seen: Cell<Option<(u64, u64)>>,
@@ -416,6 +417,7 @@ impl SharedDesktops {
             if room.is_nil() {
                 continue;
             }
+            self.first_look(room, || windows_of(workspace));
             let key = (room, Route::layout());
             let known = self.held(&key, |held| held.revision);
             let Some((mut doc, revision)) = Self::record(engine, &key, known).ok().flatten() else {
@@ -443,15 +445,8 @@ impl SharedDesktops {
             self.opened_by.borrow_mut().insert(room, desk.opened_by);
             let mine = |id: u64| local != 0 && peer_salt_of(id) == local;
             let closed = self.closed_since_written(room, workspace);
-            let recorded = self.recorded.borrow_mut().insert(room, tabs_of(&desk.tree));
-            // A desk this session has not laid out from the record yet keeps nothing apart: what it
-            // holds that the record does not may be what someone closed while it was away.
-            let opened_here = |id: u64| {
-                mine(id)
-                    && recorded
-                        .as_ref()
-                        .is_some_and(|recorded| !recorded.contains(&id))
-            };
+            let recorded = self.laid_out(room, tabs_of(&desk.tree));
+            let opened_here = |id: u64| mine(id) && !recorded.contains(&id);
             let kept = device::Kept {
                 // A strip this device made and left empty stays on its own desk: the record never
                 // holds an empty strip it made, and an empty row arriving here is nobody else's to
@@ -469,6 +464,25 @@ impl SharedDesktops {
             changed |= device::fold(&doc, workspace, device, &kept);
         }
         changed
+    }
+
+    /// Note what the desk holds when this session first looks at `room`: what it was left with,
+    /// which someone may have closed meanwhile, is the first layout's to keep. A window opened
+    /// after that, as a fresh desk's first one can be before the layout is read, stays.
+    fn first_look(&self, room: WorkspaceId, windows: impl FnOnce() -> BTreeSet<u64>) {
+        self.recorded
+            .borrow_mut()
+            .entry(room)
+            .or_insert_with(windows);
+    }
+
+    /// Take `holds`, the windows the layout of `room` holds now, as what this desk is laid out
+    /// from, and answer what it was laid out from before ([`Self::first_look`] before the first).
+    fn laid_out(&self, room: WorkspaceId, holds: BTreeSet<u64>) -> BTreeSet<u64> {
+        self.recorded
+            .borrow_mut()
+            .insert(room, holds)
+            .unwrap_or_default()
     }
 
     /// Show every workspace in `tree` as the person here last left it.
@@ -1175,6 +1189,26 @@ mod tests {
             "the windows of this desk the record holds"
         );
         assert!(desktops.held(&key, |held| held.kept.is_some()));
+    }
+
+    /// A window opened before the layout is first read stays; one the desk was left with is the
+    /// layout's to keep.
+    #[test]
+    fn a_window_opened_before_the_layout_is_read_stays_and_one_left_from_before_is_laid_out() {
+        let desktops = SharedDesktops::default();
+        desktops.first_look(room(), || [3].into_iter().collect());
+        desktops.first_look(room(), || [3, 4].into_iter().collect());
+        let first = desktops.laid_out(room(), [5].into_iter().collect());
+        assert_eq!(
+            first,
+            [3].into_iter().collect(),
+            "4 opened since the first look"
+        );
+        assert_eq!(
+            desktops.laid_out(room(), [4, 5].into_iter().collect()),
+            [5].into_iter().collect(),
+            "from then on, what the last layout held"
+        );
     }
 
     /// A save that failed is written again by the next look, on the record it read, and the person
