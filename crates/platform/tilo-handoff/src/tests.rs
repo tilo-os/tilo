@@ -81,229 +81,241 @@ fn package_digest_other() -> [u8; 32] {
     digest(b"other package ciphertext")
 }
 
-#[test]
-fn public_handoff_carries_no_private_path_and_round_trips() {
-    let identity = identity();
-    let handoff = PublicHandoff::from_identity(&identity, "a".repeat(64), 4096);
-    assert!(handoff.valid());
-    let encoded = handoff.encode().unwrap();
-    let text = std::str::from_utf8(&encoded).unwrap();
-    assert!(!text.contains('/'));
-    assert!(!text.contains("home"));
-    assert!(!text.contains("token"));
-    assert!(!text.contains("password"));
-    assert_eq!(PublicHandoff::decode(&encoded).unwrap(), handoff);
-}
+tilo_test_env::scenario! {
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+    )]
+    fn proofs_codes_and_receipts_bind_exactly_what_was_approved;
 
-#[test]
-fn a_descriptor_with_a_bad_ticket_digest_or_expiry_is_refused() {
-    let identity = identity();
-    let good = PublicHandoff::from_identity(&identity, "b".repeat(64), 1024);
-    for mutate in [
-        |value: &mut PublicHandoff| value.ticket = "ticket\nwith control".into(),
-        |value: &mut PublicHandoff| value.package_sha256 = "not-a-digest".into(),
-        |value: &mut PublicHandoff| value.package_bytes = 0,
-        |value: &mut PublicHandoff| value.operation_id = "operation".into(),
-        |value: &mut PublicHandoff| value.identity_public_key = [0; 32],
-    ] {
-        let mut value = good.clone();
-        mutate(&mut value);
-        assert!(!value.valid());
-        assert!(value.encode().is_err());
+    phase a_certified_device_proof_binds_operation_package_person_and_ephemeral;
+    {
+        let identity = identity();
+        let package = hex::encode(package_digest());
+        let root = signer(1);
+        let device = signer(2);
+        let ephemeral = signer(3);
+        let now = 1_000;
+        let frame = request(&identity, &package, &root, &device, &ephemeral, now);
+        let verified = transport::verify_device(&frame, now, &identity, &package);
+        assert!(verified.is_some());
+        let (label, device_key, ephemeral_key, cert) = verified.unwrap();
+        assert_eq!(label, "Destination");
+        assert_eq!(device_key, device.verifying_key().to_bytes());
+        assert_eq!(ephemeral_key, ephemeral.verifying_key().to_bytes());
+        assert_eq!(cert.user_public_key, identity.identity_public_key);
+
+        let mut other = identity.clone();
+        other.operation_id = uuid::Uuid::new_v4().to_string();
+        assert!(transport::verify_device(&frame, now, &other, &package).is_none());
+        assert!(transport::verify_device(&frame, now, &identity, &hex::encode([9; 32])).is_none());
+        let mut other_person = identity.clone();
+        other_person.identity_public_key = signer(4).verifying_key().to_bytes();
+        assert!(transport::verify_device(&frame, now, &other_person, &package).is_none());
+
+        let foreign_root = signer(5);
+        let foreign = request(&identity, &package, &foreign_root, &device, &ephemeral, now);
+        assert!(transport::verify_device(&foreign, now, &identity, &package).is_none());
+
+        // A changed signature, expired certificate or non-zero ephemeral key
+        // alone is refused.
+        let mut tampered = request(&identity, &package, &root, &device, &ephemeral, now);
+        if let transport::Frame::Request { signature, .. } = &mut tampered {
+            signature[0] ^= 1;
+        }
+        assert!(transport::verify_device(&tampered, now, &identity, &package).is_none());
+        let mut expired = request(&identity, &package, &root, &device, &ephemeral, now);
+        if let transport::Frame::Request { device_cert, .. } = &mut expired {
+            device_cert.issued_at_ns = now.saturating_sub(10);
+            device_cert.expires_at_ns = Some(now - 1);
+            sign_device_cert(device_cert.as_mut(), &root).unwrap();
+        }
+        assert!(transport::verify_device(&expired, now, &identity, &package).is_none());
     }
-    assert!(good.valid_at(1_999));
-    assert!(!good.valid_at(2_000));
-}
 
-#[test]
-fn a_certified_device_proof_binds_operation_package_person_and_ephemeral() {
-    let identity = identity();
-    let package = hex::encode(package_digest());
-    let root = signer(1);
-    let device = signer(2);
-    let ephemeral = signer(3);
-    let now = 1_000;
-    let frame = request(&identity, &package, &root, &device, &ephemeral, now);
-    let verified = transport::verify_device(&frame, now, &identity, &package);
-    assert!(verified.is_some());
-    let (label, device_key, ephemeral_key, cert) = verified.unwrap();
-    assert_eq!(label, "Destination");
-    assert_eq!(device_key, device.verifying_key().to_bytes());
-    assert_eq!(ephemeral_key, ephemeral.verifying_key().to_bytes());
-    assert_eq!(cert.user_public_key, identity.identity_public_key);
-
-    let mut other = identity.clone();
-    other.operation_id = uuid::Uuid::new_v4().to_string();
-    assert!(transport::verify_device(&frame, now, &other, &package).is_none());
-    assert!(transport::verify_device(&frame, now, &identity, &hex::encode([9; 32])).is_none());
-    let mut other_person = identity.clone();
-    other_person.identity_public_key = signer(4).verifying_key().to_bytes();
-    assert!(transport::verify_device(&frame, now, &other_person, &package).is_none());
-
-    let foreign_root = signer(5);
-    let foreign = request(&identity, &package, &foreign_root, &device, &ephemeral, now);
-    assert!(transport::verify_device(&foreign, now, &identity, &package).is_none());
-
-    // A changed signature, expired certificate or non-zero ephemeral key
-    // alone is refused.
-    let mut tampered = request(&identity, &package, &root, &device, &ephemeral, now);
-    if let transport::Frame::Request { signature, .. } = &mut tampered {
-        signature[0] ^= 1;
-    }
-    assert!(transport::verify_device(&tampered, now, &identity, &package).is_none());
-    let mut expired = request(&identity, &package, &root, &device, &ephemeral, now);
-    if let transport::Frame::Request { device_cert, .. } = &mut expired {
-        device_cert.issued_at_ns = now.saturating_sub(10);
-        device_cert.expires_at_ns = Some(now - 1);
-        sign_device_cert(device_cert.as_mut(), &root).unwrap();
-    }
-    assert!(transport::verify_device(&expired, now, &identity, &package).is_none());
-}
-
-#[test]
-fn only_the_approved_device_can_sign_the_package_receipt() {
-    let device = signer(7);
-    let operation = uuid::Uuid::new_v4().to_string();
-    let package = hex::encode(package_digest());
-    let message = transport::receipt_bytes(
-        &operation,
-        &package,
-        transport::ReceiptStage::PreparedPackageImported,
-    )
-    .unwrap();
-    let signature = device.sign(&message).to_bytes();
-    assert!(transport::verify_receipt_signature(
-        &operation,
-        &package,
-        transport::ReceiptStage::PreparedPackageImported,
-        &device.verifying_key().to_bytes(),
-        &signature,
-    ));
-    let mut tampered = signature;
-    tampered[0] ^= 1;
-    assert!(!transport::verify_receipt_signature(
-        &operation,
-        &package,
-        transport::ReceiptStage::PreparedPackageImported,
-        &device.verifying_key().to_bytes(),
-        &tampered,
-    ));
-    assert!(!transport::verify_receipt_signature(
-        &operation,
-        &package,
-        transport::ReceiptStage::PreparedPackageImported,
-        &signer(8).verifying_key().to_bytes(),
-        &signature,
-    ));
-    assert!(!transport::verify_receipt_signature(
-        &operation,
-        &hex::encode([9; 32]),
-        transport::ReceiptStage::PreparedPackageImported,
-        &device.verifying_key().to_bytes(),
-        &signature,
-    ));
-}
-
-#[test]
-fn the_human_code_and_hpke_aad_bind_package_and_person() {
-    let operation = uuid::Uuid::new_v4().to_string();
-    let device = [1; 32];
-    let ephemeral = [2; 32];
-    let package = package_digest();
-    let person = [3; 32];
-    let code = verification_code(&operation, &device, &ephemeral, &package, &person);
-    assert_eq!(code.len(), 6);
-    assert!(code.bytes().all(|byte| byte.is_ascii_digit()));
-    assert_eq!(
-        code,
-        verification_code(&operation, &device, &ephemeral, &package, &person)
-    );
-    assert_ne!(
-        code,
-        verification_code(
+    phase only_the_approved_device_can_sign_the_package_receipt;
+    {
+        let device = signer(7);
+        let operation = uuid::Uuid::new_v4().to_string();
+        let package = hex::encode(package_digest());
+        let message = transport::receipt_bytes(
             &operation,
-            &device,
-            &ephemeral,
-            &package_digest_other(),
-            &person
+            &package,
+            transport::ReceiptStage::PreparedPackageImported,
         )
-    );
-    assert_ne!(
-        code,
-        verification_code(&operation, &device, &ephemeral, &package, &[4; 32])
-    );
-    assert_ne!(
-        code,
-        verification_code("another", &device, &ephemeral, &package, &person)
-    );
-
-    let aad = handoff_aad(&operation, &package, &person);
-    assert_ne!(
-        aad,
-        handoff_aad(&operation, &package_digest_other(), &person)
-    );
-    assert_ne!(aad, handoff_aad(&operation, &package, &[4; 32]));
-}
-
-#[test]
-fn only_the_exact_package_receipt_names_the_imported_stage() {
-    let operation = uuid::Uuid::new_v4().to_string();
-    let package = package_digest();
-    assert!(transport::receipt_matches(
-        &operation,
-        &package,
-        &operation,
-        &hex::encode(package),
-        transport::ReceiptStage::PreparedPackageImported,
-    ));
-    assert!(!transport::receipt_matches(
-        &operation,
-        &package,
-        &uuid::Uuid::new_v4().to_string(),
-        &hex::encode(package),
-        transport::ReceiptStage::PreparedPackageImported,
-    ));
-    assert!(!transport::receipt_matches(
-        &operation,
-        &package,
-        &operation,
-        &hex::encode([9; 32]),
-        transport::ReceiptStage::PreparedPackageImported,
-    ));
-}
-
-#[test]
-fn the_private_descriptor_reader_refuses_links_and_public_files() {
-    use std::os::unix::fs::{PermissionsExt as _, symlink};
-
-    let fixture = tempfile::tempdir().unwrap();
-    let state = fixture.path().join(".local/state/tilo");
-    std::fs::create_dir_all(&state).unwrap();
-    for path in [
-        fixture.path().join(".local"),
-        fixture.path().join(".local/state"),
-        state.clone(),
-    ] {
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        .unwrap();
+        let signature = device.sign(&message).to_bytes();
+        assert!(transport::verify_receipt_signature(
+            &operation,
+            &package,
+            transport::ReceiptStage::PreparedPackageImported,
+            &device.verifying_key().to_bytes(),
+            &signature,
+        ));
+        let mut tampered = signature;
+        tampered[0] ^= 1;
+        assert!(!transport::verify_receipt_signature(
+            &operation,
+            &package,
+            transport::ReceiptStage::PreparedPackageImported,
+            &device.verifying_key().to_bytes(),
+            &tampered,
+        ));
+        assert!(!transport::verify_receipt_signature(
+            &operation,
+            &package,
+            transport::ReceiptStage::PreparedPackageImported,
+            &signer(8).verifying_key().to_bytes(),
+            &signature,
+        ));
+        assert!(!transport::verify_receipt_signature(
+            &operation,
+            &hex::encode([9; 32]),
+            transport::ReceiptStage::PreparedPackageImported,
+            &device.verifying_key().to_bytes(),
+            &signature,
+        ));
     }
-    let handoff = PublicHandoff::from_identity(&identity(), "c".repeat(64), 1024);
-    let bytes = handoff.encode().unwrap();
-    let descriptor = state.join(DESCRIPTOR_FILE);
-    std::fs::write(&descriptor, &bytes).unwrap();
-    std::fs::set_permissions(&descriptor, std::fs::Permissions::from_mode(0o600)).unwrap();
-    assert_eq!(
-        read_descriptor(fixture.path()).unwrap().as_ref(),
-        Some(&handoff)
-    );
 
-    std::fs::set_permissions(&descriptor, std::fs::Permissions::from_mode(0o644)).unwrap();
-    assert!(read_descriptor(fixture.path()).is_err());
-    std::fs::remove_file(&descriptor).unwrap();
-    let real = fixture.path().join("real.json");
-    std::fs::write(&real, &bytes).unwrap();
-    std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o600)).unwrap();
-    symlink(&real, &descriptor).unwrap();
-    assert!(read_descriptor(fixture.path()).is_err());
+    phase the_human_code_and_hpke_aad_bind_package_and_person;
+    {
+        let operation = uuid::Uuid::new_v4().to_string();
+        let device = [1; 32];
+        let ephemeral = [2; 32];
+        let package = package_digest();
+        let person = [3; 32];
+        let code = verification_code(&operation, &device, &ephemeral, &package, &person);
+        assert_eq!(code.len(), 6);
+        assert!(code.bytes().all(|byte| byte.is_ascii_digit()));
+        assert_eq!(
+            code,
+            verification_code(&operation, &device, &ephemeral, &package, &person)
+        );
+        assert_ne!(
+            code,
+            verification_code(
+                &operation,
+                &device,
+                &ephemeral,
+                &package_digest_other(),
+                &person
+            )
+        );
+        assert_ne!(
+            code,
+            verification_code(&operation, &device, &ephemeral, &package, &[4; 32])
+        );
+        assert_ne!(
+            code,
+            verification_code("another", &device, &ephemeral, &package, &person)
+        );
+
+        let aad = handoff_aad(&operation, &package, &person);
+        assert_ne!(
+            aad,
+            handoff_aad(&operation, &package_digest_other(), &person)
+        );
+        assert_ne!(aad, handoff_aad(&operation, &package, &[4; 32]));
+    }
+
+    phase only_the_exact_package_receipt_names_the_imported_stage;
+    {
+        let operation = uuid::Uuid::new_v4().to_string();
+        let package = package_digest();
+        assert!(transport::receipt_matches(
+            &operation,
+            &package,
+            &operation,
+            &hex::encode(package),
+            transport::ReceiptStage::PreparedPackageImported,
+        ));
+        assert!(!transport::receipt_matches(
+            &operation,
+            &package,
+            &uuid::Uuid::new_v4().to_string(),
+            &hex::encode(package),
+            transport::ReceiptStage::PreparedPackageImported,
+        ));
+        assert!(!transport::receipt_matches(
+            &operation,
+            &package,
+            &operation,
+            &hex::encode([9; 32]),
+            transport::ReceiptStage::PreparedPackageImported,
+        ));
+    }
+}
+
+tilo_test_env::scenario! {
+    fn a_handoff_descriptor_round_trips_and_is_refused_when_wrong_or_exposed;
+
+    phase public_handoff_carries_no_private_path_and_round_trips;
+    {
+        let identity = identity();
+        let handoff = PublicHandoff::from_identity(&identity, "a".repeat(64), 4096);
+        assert!(handoff.valid());
+        let encoded = handoff.encode().unwrap();
+        let text = std::str::from_utf8(&encoded).unwrap();
+        assert!(!text.contains('/'));
+        assert!(!text.contains("home"));
+        assert!(!text.contains("token"));
+        assert!(!text.contains("password"));
+        assert_eq!(PublicHandoff::decode(&encoded).unwrap(), handoff);
+    }
+
+    phase a_descriptor_with_a_bad_ticket_digest_or_expiry_is_refused;
+    {
+        let identity = identity();
+        let good = PublicHandoff::from_identity(&identity, "b".repeat(64), 1024);
+        for mutate in [
+            |value: &mut PublicHandoff| value.ticket = "ticket\nwith control".into(),
+            |value: &mut PublicHandoff| value.package_sha256 = "not-a-digest".into(),
+            |value: &mut PublicHandoff| value.package_bytes = 0,
+            |value: &mut PublicHandoff| value.operation_id = "operation".into(),
+            |value: &mut PublicHandoff| value.identity_public_key = [0; 32],
+        ] {
+            let mut value = good.clone();
+            mutate(&mut value);
+            assert!(!value.valid());
+            assert!(value.encode().is_err());
+        }
+        assert!(good.valid_at(1_999));
+        assert!(!good.valid_at(2_000));
+    }
+
+    phase the_private_descriptor_reader_refuses_links_and_public_files;
+    {
+        use std::os::unix::fs::{PermissionsExt as _, symlink};
+
+        let fixture = tempfile::tempdir().unwrap();
+        let state = fixture.path().join(".local/state/tilo");
+        std::fs::create_dir_all(&state).unwrap();
+        for path in [
+            fixture.path().join(".local"),
+            fixture.path().join(".local/state"),
+            state.clone(),
+        ] {
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let handoff = PublicHandoff::from_identity(&identity(), "c".repeat(64), 1024);
+        let bytes = handoff.encode().unwrap();
+        let descriptor = state.join(DESCRIPTOR_FILE);
+        std::fs::write(&descriptor, &bytes).unwrap();
+        std::fs::set_permissions(&descriptor, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert_eq!(
+            read_descriptor(fixture.path()).unwrap().as_ref(),
+            Some(&handoff)
+        );
+
+        std::fs::set_permissions(&descriptor, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(read_descriptor(fixture.path()).is_err());
+        std::fs::remove_file(&descriptor).unwrap();
+        let real = fixture.path().join("real.json");
+        std::fs::write(&real, &bytes).unwrap();
+        std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o600)).unwrap();
+        symlink(&real, &descriptor).unwrap();
+        assert!(read_descriptor(fixture.path()).is_err());
+    }
 }
 
 #[expect(

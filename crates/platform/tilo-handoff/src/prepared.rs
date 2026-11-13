@@ -290,50 +290,6 @@ mod tests {
         sealed.encode().unwrap()
     }
 
-    #[test]
-    fn the_sidecar_must_name_the_exact_package_bytes() {
-        let package = b"the exact canonical prepared package";
-        let directory = tempfile::tempdir().unwrap();
-        let sidecar = directory.path().join("tpm-handoff.json");
-        let package_path = directory.path().join("prepared-setup.sealed");
-        std::fs::write(&sidecar, encoded_sidecar(Sha256::digest(package).into())).unwrap();
-        std::fs::write(&package_path, package).unwrap();
-        preflight_handoff(&sidecar, &package_path).unwrap();
-
-        std::fs::write(&package_path, b"another canonical prepared package").unwrap();
-        let error = preflight_handoff(&sidecar, &package_path)
-            .expect_err("a sidecar for another package must be refused");
-        assert!(error.to_string().contains("another package"));
-    }
-
-    #[test]
-    fn a_linked_or_edited_sidecar_is_refused() {
-        let package = b"the exact canonical prepared package";
-        let directory = tempfile::tempdir().unwrap();
-        let sidecar = directory.path().join("tpm-handoff.json");
-        let linked = directory.path().join("linked.json");
-        let package_path = directory.path().join("prepared-setup.sealed");
-        std::fs::write(&sidecar, encoded_sidecar(Sha256::digest(package).into())).unwrap();
-        std::fs::write(&package_path, package).unwrap();
-        std::os::unix::fs::symlink(&sidecar, &linked).unwrap();
-        assert!(preflight_handoff(&linked, &package_path).is_err());
-
-        let mut edited = encoded_sidecar(Sha256::digest(package).into());
-        let field = b"\"seal_nonce\"";
-        let position = edited
-            .windows(field.len())
-            .position(|window| window == field)
-            .unwrap();
-        let digit = position
-            + edited[position..]
-                .iter()
-                .position(u8::is_ascii_digit)
-                .unwrap();
-        edited[digit] = if edited[digit] == b'0' { b'1' } else { b'0' };
-        std::fs::write(&sidecar, edited).unwrap();
-        assert!(preflight_handoff(&sidecar, &package_path).is_err());
-    }
-
     fn fixture(directory: &Path, package: &[u8]) -> (std::path::PathBuf, std::path::PathBuf) {
         let sidecar = directory.join("tpm-handoff.json");
         let package_path = directory.join("prepared-setup.sealed");
@@ -342,164 +298,224 @@ mod tests {
         (sidecar, package_path)
     }
 
-    #[test]
-    fn an_oversized_package_is_refused_before_it_is_read() {
-        let directory = tempfile::tempdir().unwrap();
-        let (sidecar, package_path) = fixture(directory.path(), b"a package");
-        std::fs::File::create(&package_path)
-            .unwrap()
-            .set_len(MAX_PACKAGE.saturating_add(1))
-            .unwrap();
-        let error = preflight_handoff(&sidecar, &package_path)
-            .expect_err("an oversized package must be refused");
-        assert!(error.to_string().contains("bounded regular file"));
+    tilo_test_env::scenario! {
+        fn oversized_or_changing_files_are_refused_while_they_are_read;
+
+        phase an_oversized_package_is_refused_before_it_is_read;
+        {
+            let directory = tempfile::tempdir().unwrap();
+            let (sidecar, package_path) = fixture(directory.path(), b"a package");
+            std::fs::File::create(&package_path)
+                .unwrap()
+                .set_len(MAX_PACKAGE.saturating_add(1))
+                .unwrap();
+            let error = preflight_handoff(&sidecar, &package_path)
+                .expect_err("an oversized package must be refused");
+            assert!(error.to_string().contains("bounded regular file"));
+        }
+
+        phase an_oversized_sidecar_is_refused_before_it_is_read;
+        {
+            let directory = tempfile::tempdir().unwrap();
+            let (sidecar, package_path) = fixture(directory.path(), b"a package");
+            std::fs::File::create(&sidecar)
+                .unwrap()
+                .set_len(MAX_SIDECAR.saturating_add(1))
+                .unwrap();
+            let error = preflight_handoff(&sidecar, &package_path)
+                .expect_err("an oversized sidecar must be refused");
+            assert!(error.to_string().contains("bounded regular file"));
+        }
+
+        phase a_package_that_grows_while_it_is_hashed_is_refused;
+        {
+            let expected = 8_u64;
+            let mut bytes = vec![0_u8; usize::try_from(expected).unwrap()];
+            bytes.push(1);
+            let error = digest_exact_bounded(
+                std::io::Cursor::new(bytes),
+                expected,
+                MAX_PACKAGE,
+                PACKAGE_CHANGED,
+            )
+            .expect_err("a growing package must be refused");
+            assert!(error.to_string().contains("changed"));
+        }
+
+        phase a_package_that_shrinks_while_it_is_hashed_is_refused;
+        {
+            let expected = 8_u64;
+            let bytes = vec![0_u8; usize::try_from(expected.saturating_sub(1)).unwrap()];
+            let error = digest_exact_bounded(
+                std::io::Cursor::new(bytes),
+                expected,
+                MAX_PACKAGE,
+                PACKAGE_CHANGED,
+            )
+            .expect_err("a truncated package must be refused");
+            assert!(error.to_string().contains("changed"));
+        }
+
+        phase a_sidecar_that_grows_while_it_is_read_is_refused;
+        {
+            let expected = 4_u64;
+            let mut bytes = vec![0_u8; usize::try_from(expected).unwrap()];
+            bytes.push(1);
+            let error = read_exact_bounded(
+                std::io::Cursor::new(bytes),
+                expected,
+                MAX_SIDECAR,
+                SIDECAR_CHANGED,
+            )
+            .expect_err("a growing sidecar must be refused");
+            assert!(error.to_string().contains("changed"));
+        }
+
+        phase a_package_changed_after_it_is_opened_is_refused;
+        {
+            let directory = tempfile::tempdir().unwrap();
+            let package = b"the exact canonical prepared package";
+            let (sidecar, package_path) = fixture(directory.path(), package);
+            let (mut held, before) =
+                open_pinned(&package_path, MAX_PACKAGE, PACKAGE_NOT_BOUNDED).unwrap();
+            std::fs::write(&package_path, b"another package, another length").unwrap();
+            let error = digest_held(&mut held, &before, MAX_PACKAGE, PACKAGE_CHANGED)
+                .expect_err("a package changed after opening must be refused");
+            assert!(error.to_string().contains("changed"));
+            assert!(preflight_handoff(&sidecar, &package_path).is_err());
+        }
+
+        phase a_sidecar_changed_after_it_is_opened_is_refused;
+        {
+            let directory = tempfile::tempdir().unwrap();
+            let package = b"the exact canonical prepared package";
+            let (sidecar, _package_path) = fixture(directory.path(), package);
+            let (mut held, before) = open_pinned(&sidecar, MAX_SIDECAR, SIDECAR_NOT_BOUNDED).unwrap();
+            std::fs::write(&sidecar, encoded_sidecar([9; 32])).unwrap();
+            let error = read_held(&mut held, &before, MAX_SIDECAR, SIDECAR_CHANGED)
+                .expect_err("a sidecar changed after opening must be refused");
+            assert!(error.to_string().contains("changed"));
+        }
     }
 
-    #[test]
-    fn an_oversized_sidecar_is_refused_before_it_is_read() {
-        let directory = tempfile::tempdir().unwrap();
-        let (sidecar, package_path) = fixture(directory.path(), b"a package");
-        std::fs::File::create(&sidecar)
-            .unwrap()
-            .set_len(MAX_SIDECAR.saturating_add(1))
-            .unwrap();
-        let error = preflight_handoff(&sidecar, &package_path)
-            .expect_err("an oversized sidecar must be refused");
-        assert!(error.to_string().contains("bounded regular file"));
+    tilo_test_env::scenario! {
+        fn links_and_parent_components_are_never_followed_to_a_handoff;
+
+        phase a_linked_parent_directory_is_not_followed_for_the_sidecar;
+        {
+            let directory = tempfile::tempdir().unwrap();
+            let real = directory.path().join("real");
+            std::fs::create_dir(&real).unwrap();
+            let (_sidecar, package_path) = fixture(&real, b"the exact package");
+            let linked = directory.path().join("linked");
+            std::os::unix::fs::symlink(&real, &linked).unwrap();
+            assert!(preflight_handoff(&linked.join("tpm-handoff.json"), &package_path).is_err());
+        }
+
+        phase a_linked_parent_directory_is_not_followed_for_the_package;
+        {
+            let directory = tempfile::tempdir().unwrap();
+            let real = directory.path().join("real");
+            std::fs::create_dir(&real).unwrap();
+            let (sidecar, _package_path) = fixture(&real, b"the exact package");
+            let linked = directory.path().join("linked");
+            std::os::unix::fs::symlink(&real, &linked).unwrap();
+            assert!(preflight_handoff(&sidecar, &linked.join("prepared-setup.sealed")).is_err());
+        }
+
+        phase a_linked_package_is_refused;
+        {
+            let directory = tempfile::tempdir().unwrap();
+            let (sidecar, package_path) = fixture(directory.path(), b"the exact package");
+            let linked = directory.path().join("linked.sealed");
+            std::os::unix::fs::symlink(&package_path, &linked).unwrap();
+            assert!(preflight_handoff(&sidecar, &linked).is_err());
+        }
+
+        phase a_parent_component_traversal_is_refused;
+        {
+            let directory = tempfile::tempdir().unwrap();
+            let (_sidecar, package_path) = fixture(directory.path(), b"the exact package");
+            let nested = directory.path().join("nested");
+            std::fs::create_dir(&nested).unwrap();
+            let traversed = nested.join("..").join("tpm-handoff.json");
+            let error = preflight_handoff(&traversed, &package_path)
+                .expect_err("a path with a parent component must be refused");
+            assert!(error.to_string().contains("plain path"));
+        }
     }
 
-    #[test]
-    fn a_package_that_grows_while_it_is_hashed_is_refused() {
-        let expected = 8_u64;
-        let mut bytes = vec![0_u8; usize::try_from(expected).unwrap()];
-        bytes.push(1);
-        let error = digest_exact_bounded(
-            std::io::Cursor::new(bytes),
-            expected,
-            MAX_PACKAGE,
-            PACKAGE_CHANGED,
-        )
-        .expect_err("a growing package must be refused");
-        assert!(error.to_string().contains("changed"));
-    }
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+        )]
+        fn a_prepared_handoff_is_read_only_as_the_exact_sidecar_and_package;
 
-    #[test]
-    fn a_package_that_shrinks_while_it_is_hashed_is_refused() {
-        let expected = 8_u64;
-        let bytes = vec![0_u8; usize::try_from(expected.saturating_sub(1)).unwrap()];
-        let error = digest_exact_bounded(
-            std::io::Cursor::new(bytes),
-            expected,
-            MAX_PACKAGE,
-            PACKAGE_CHANGED,
-        )
-        .expect_err("a truncated package must be refused");
-        assert!(error.to_string().contains("changed"));
-    }
+        phase the_sidecar_must_name_the_exact_package_bytes;
+        {
+            let package = b"the exact canonical prepared package";
+            let directory = tempfile::tempdir().unwrap();
+            let sidecar = directory.path().join("tpm-handoff.json");
+            let package_path = directory.path().join("prepared-setup.sealed");
+            std::fs::write(&sidecar, encoded_sidecar(Sha256::digest(package).into())).unwrap();
+            std::fs::write(&package_path, package).unwrap();
+            preflight_handoff(&sidecar, &package_path).unwrap();
 
-    #[test]
-    fn a_sidecar_that_grows_while_it_is_read_is_refused() {
-        let expected = 4_u64;
-        let mut bytes = vec![0_u8; usize::try_from(expected).unwrap()];
-        bytes.push(1);
-        let error = read_exact_bounded(
-            std::io::Cursor::new(bytes),
-            expected,
-            MAX_SIDECAR,
-            SIDECAR_CHANGED,
-        )
-        .expect_err("a growing sidecar must be refused");
-        assert!(error.to_string().contains("changed"));
-    }
+            std::fs::write(&package_path, b"another canonical prepared package").unwrap();
+            let error = preflight_handoff(&sidecar, &package_path)
+                .expect_err("a sidecar for another package must be refused");
+            assert!(error.to_string().contains("another package"));
+        }
 
-    #[test]
-    fn a_truncated_sidecar_file_is_refused() {
-        let directory = tempfile::tempdir().unwrap();
-        let package = b"the exact canonical prepared package";
-        let (sidecar, package_path) = fixture(directory.path(), package);
-        let full = std::fs::read(&sidecar).unwrap();
-        std::fs::write(&sidecar, full.get(..1).unwrap()).unwrap();
-        assert!(preflight_handoff(&sidecar, &package_path).is_err());
-    }
+        phase a_linked_or_edited_sidecar_is_refused;
+        {
+            let package = b"the exact canonical prepared package";
+            let directory = tempfile::tempdir().unwrap();
+            let sidecar = directory.path().join("tpm-handoff.json");
+            let linked = directory.path().join("linked.json");
+            let package_path = directory.path().join("prepared-setup.sealed");
+            std::fs::write(&sidecar, encoded_sidecar(Sha256::digest(package).into())).unwrap();
+            std::fs::write(&package_path, package).unwrap();
+            std::os::unix::fs::symlink(&sidecar, &linked).unwrap();
+            assert!(preflight_handoff(&linked, &package_path).is_err());
 
-    #[test]
-    fn a_package_changed_after_it_is_opened_is_refused() {
-        let directory = tempfile::tempdir().unwrap();
-        let package = b"the exact canonical prepared package";
-        let (sidecar, package_path) = fixture(directory.path(), package);
-        let (mut held, before) =
-            open_pinned(&package_path, MAX_PACKAGE, PACKAGE_NOT_BOUNDED).unwrap();
-        std::fs::write(&package_path, b"another package, another length").unwrap();
-        let error = digest_held(&mut held, &before, MAX_PACKAGE, PACKAGE_CHANGED)
-            .expect_err("a package changed after opening must be refused");
-        assert!(error.to_string().contains("changed"));
-        assert!(preflight_handoff(&sidecar, &package_path).is_err());
-    }
+            let mut edited = encoded_sidecar(Sha256::digest(package).into());
+            let field = b"\"seal_nonce\"";
+            let position = edited
+                .windows(field.len())
+                .position(|window| window == field)
+                .unwrap();
+            let digit = position
+                + edited[position..]
+                    .iter()
+                    .position(u8::is_ascii_digit)
+                    .unwrap();
+            edited[digit] = if edited[digit] == b'0' { b'1' } else { b'0' };
+            std::fs::write(&sidecar, edited).unwrap();
+            assert!(preflight_handoff(&sidecar, &package_path).is_err());
+        }
 
-    #[test]
-    fn a_sidecar_changed_after_it_is_opened_is_refused() {
-        let directory = tempfile::tempdir().unwrap();
-        let package = b"the exact canonical prepared package";
-        let (sidecar, _package_path) = fixture(directory.path(), package);
-        let (mut held, before) = open_pinned(&sidecar, MAX_SIDECAR, SIDECAR_NOT_BOUNDED).unwrap();
-        std::fs::write(&sidecar, encoded_sidecar([9; 32])).unwrap();
-        let error = read_held(&mut held, &before, MAX_SIDECAR, SIDECAR_CHANGED)
-            .expect_err("a sidecar changed after opening must be refused");
-        assert!(error.to_string().contains("changed"));
-    }
+        phase a_truncated_sidecar_file_is_refused;
+        {
+            let directory = tempfile::tempdir().unwrap();
+            let package = b"the exact canonical prepared package";
+            let (sidecar, package_path) = fixture(directory.path(), package);
+            let full = std::fs::read(&sidecar).unwrap();
+            std::fs::write(&sidecar, full.get(..1).unwrap()).unwrap();
+            assert!(preflight_handoff(&sidecar, &package_path).is_err());
+        }
 
-    #[test]
-    fn a_linked_parent_directory_is_not_followed_for_the_sidecar() {
-        let directory = tempfile::tempdir().unwrap();
-        let real = directory.path().join("real");
-        std::fs::create_dir(&real).unwrap();
-        let (_sidecar, package_path) = fixture(&real, b"the exact package");
-        let linked = directory.path().join("linked");
-        std::os::unix::fs::symlink(&real, &linked).unwrap();
-        assert!(preflight_handoff(&linked.join("tpm-handoff.json"), &package_path).is_err());
-    }
-
-    #[test]
-    fn a_linked_parent_directory_is_not_followed_for_the_package() {
-        let directory = tempfile::tempdir().unwrap();
-        let real = directory.path().join("real");
-        std::fs::create_dir(&real).unwrap();
-        let (sidecar, _package_path) = fixture(&real, b"the exact package");
-        let linked = directory.path().join("linked");
-        std::os::unix::fs::symlink(&real, &linked).unwrap();
-        assert!(preflight_handoff(&sidecar, &linked.join("prepared-setup.sealed")).is_err());
-    }
-
-    #[test]
-    fn a_linked_package_is_refused() {
-        let directory = tempfile::tempdir().unwrap();
-        let (sidecar, package_path) = fixture(directory.path(), b"the exact package");
-        let linked = directory.path().join("linked.sealed");
-        std::os::unix::fs::symlink(&package_path, &linked).unwrap();
-        assert!(preflight_handoff(&sidecar, &linked).is_err());
-    }
-
-    #[test]
-    fn a_parent_component_traversal_is_refused() {
-        let directory = tempfile::tempdir().unwrap();
-        let (_sidecar, package_path) = fixture(directory.path(), b"the exact package");
-        let nested = directory.path().join("nested");
-        std::fs::create_dir(&nested).unwrap();
-        let traversed = nested.join("..").join("tpm-handoff.json");
-        let error = preflight_handoff(&traversed, &package_path)
-            .expect_err("a path with a parent component must be refused");
-        assert!(error.to_string().contains("plain path"));
-    }
-
-    #[test]
-    fn the_shared_reader_returns_the_sidecar_it_verified() {
-        let directory = tempfile::tempdir().unwrap();
-        let package = b"the exact canonical prepared package";
-        let (sidecar, package_path) = fixture(directory.path(), package);
-        let sealed = read_prepared_handoff(&sidecar, &package_path).unwrap();
-        assert_eq!(
-            sealed.package_sha256(),
-            <[u8; 32]>::from(Sha256::digest(package))
-        );
+        phase the_shared_reader_returns_the_sidecar_it_verified;
+        {
+            let directory = tempfile::tempdir().unwrap();
+            let package = b"the exact canonical prepared package";
+            let (sidecar, package_path) = fixture(directory.path(), package);
+            let sealed = read_prepared_handoff(&sidecar, &package_path).unwrap();
+            assert_eq!(
+                sealed.package_sha256(),
+                <[u8; 32]>::from(Sha256::digest(package))
+            );
+        }
     }
 }
