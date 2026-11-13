@@ -1,32 +1,29 @@
-//! Later builds of a running app whose payload is its module, as the directory protocol puts
-//! them there.
+//! Later builds of a running app whose payload is its module, as the directory
+//! protocol puts them there.
 //!
-//! An app whose payload is code its runtime interprets — a tilolang package — can take a later
-//! build while it runs. The writer publishes each build as a numbered generation directory
-//! beside the last, then names it in a [`CURRENT_FILE`] by one rename; the reader watches that
-//! file and reads the generation it names. A running app is never pointed at a directory that
-//! is still being written, and a build that fails to publish leaves the one before it current.
+//! An app whose payload is code its runtime interprets (a tilolang package) can
+//! take a later build while it runs. The writer publishes each build as a
+//! numbered generation directory beside the last, then names it in a
+//! [`CURRENT_FILE`] by one rename; the reader watches that file and reads the
+//! generation it names. A running app is never pointed at a directory still
+//! being written, and a build that fails to publish leaves the one before it
+//! current.
 //!
-//! Who writes depends on what runs the app: a session's launcher hands a verified reinstall over
-//! (`crates/packaging/launcher/src/live_module.rs`), and `tilolang dev` runs its own app on this
-//! desktop (`crates/lang/tilolang-cli/src/dev.rs`). Both publish here, and the app reads the
-//! generations the same way (`apps/tilolang/src/updates.rs`).
+//! A session's launcher hands a verified reinstall over
+//! (`crates/packaging/launcher/src/live_module.rs`), and `tilolang dev` runs its
+//! own app on this desktop (`crates/lang/tilolang-cli/src/dev.rs`).
 
 use std::io;
 use std::path::{Path, PathBuf};
 
-/// The variable that names the updates directory to the app.
 pub const UPDATES_ENV: &str = "TILO_APP_MODULE_UPDATES";
-/// The file in it that names the current generation.
 pub const CURRENT_FILE: &str = "current";
-/// The suffix a generation is written under until it is complete.
 const PARTIAL: &str = ".partial";
 
 fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())
 }
 
-/// The updates directory [`UPDATES_ENV`] names, when it names one.
 #[must_use]
 pub fn dir_from_env() -> Option<PathBuf> {
     std::env::var_os(UPDATES_ENV)
@@ -34,8 +31,9 @@ pub fn dir_from_env() -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
-/// Make `dir` and its parents, private to its owner where the platform has modes: what an app
-/// reads is the tool's own, as a session's launcher keeps its copy.
+/// Make `dir` and its parents, private to its owner where the platform has
+/// modes: an app reads what the tool wrote, as a session's launcher keeps its
+/// copy.
 pub fn make_dir(dir: &Path) -> io::Result<()> {
     #[cfg(unix)]
     {
@@ -51,12 +49,10 @@ pub fn make_dir(dir: &Path) -> io::Result<()> {
     }
 }
 
-/// The generation `dir`'s [`CURRENT_FILE`] names, once one was published.
 pub fn current(dir: &Path) -> io::Result<Option<u64>> {
     let path = dir.join(CURRENT_FILE);
     let text = match std::fs::read_to_string(&path) {
         Ok(text) => text,
-        // No build was published yet.
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error),
     };
@@ -72,16 +68,17 @@ pub fn current(dir: &Path) -> io::Result<Option<u64>> {
         .map_err(|_| invalid(format!("{} names no build: {name:?}", path.display())))
 }
 
-/// Publish the payload tree at `payload` as the next generation in `dir`, and name it current;
-/// the generation's number.
+/// Publish the payload tree at `payload` as the next generation in `dir` and
+/// name it current; the generation's number.
 pub fn publish(dir: &Path, payload: &Path) -> io::Result<u64> {
     publish_with(dir, |generation| copy_tree(payload, generation))
 }
 
-/// Publish a generation that `write` fills, and name it current; the generation's number.
+/// Publish a generation that `write` fills, and name it current; the
+/// generation's number.
 ///
-/// A writer that holds the payload itself (a compiled bundle) writes it straight into the
-/// generation this makes, and nothing is staged or copied.
+/// A writer that holds the payload itself (a compiled bundle) writes it
+/// straight into the generation this makes; nothing is staged or copied.
 pub fn publish_with(dir: &Path, write: impl FnOnce(&Path) -> io::Result<()>) -> io::Result<u64> {
     make_dir(dir)?;
     let generation = match current(dir)? {
@@ -124,8 +121,8 @@ pub fn forget_before(dir: &Path, current: u64) {
     }
 }
 
-/// Copy the payload tree `from` into `to`: regular files and directories, nothing else (a
-/// payload holds no links).
+/// Copy the payload tree `from` into `to`: regular files and directories, and
+/// nothing else (a payload holds no links).
 fn copy_tree(from: &Path, to: &Path) -> io::Result<()> {
     std::fs::create_dir_all(to)?;
     for entry in std::fs::read_dir(from)? {
@@ -145,7 +142,6 @@ fn copy_tree(from: &Path, to: &Path) -> io::Result<()> {
 mod tests {
     use super::*;
 
-    /// A payload tree with one file naming `text`.
     fn payload(root: &Path, text: &str) -> PathBuf {
         let dir = root.join(text);
         std::fs::create_dir_all(dir.join("imports")).unwrap();
@@ -206,8 +202,6 @@ mod tests {
         assert_eq!(generations(&updates), ["2", "3"]);
     }
 
-    /// A writer that holds the payload writes it straight into the generation, which names
-    /// what it wrote and keeps the generation before it as a copy does.
     #[test]
     fn a_writer_publishes_the_generation_it_fills_itself() {
         let out = tempfile::tempdir().unwrap();
@@ -252,8 +246,6 @@ mod tests {
     fn a_generation_is_never_read_half_written() {
         let out = tempfile::tempdir().unwrap();
         let updates = out.path().join("updates");
-        // A publish that stopped before its rename leaves its staging directory, named so no
-        // reader takes it.
         std::fs::create_dir_all(updates.join("1.partial")).unwrap();
         assert_eq!(current(&updates).unwrap(), None);
         assert_eq!(publish(&updates, &payload(out.path(), "one")).unwrap(), 1);
