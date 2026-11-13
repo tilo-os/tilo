@@ -51,8 +51,9 @@ function answeredWithError(error) {
  *   address, the browser refused its certificate); `no-connection`: neither
  *   answered; a file of this site's own that did not come while the site
  *   answers is no host that is down (`hostIsSite`), and reads as below;
- * - `host-silent`: the page reached the host, which never let it in, or
- *   answered that it does not (`not-let-in`);
+ * - `host-refused`: the host answered the page's join with a no, and said
+ *   why (`not-let-in`, with the session's `permission-required`);
+ * - `host-silent`: the page reached the host, which never let it in;
  * - `host-error`: the host answered with an error;
  * - `desktop`: the host let the person in and the desktop did not start;
  *   `stopped`: the desktop stopped after it was drawn;
@@ -71,7 +72,9 @@ export function failureCause(error, {settled = null, admitted = false, drawn = f
   if (error?.name === 'AdmissionError') return code === 'no-access' ? 'no-access' : 'refused';
   if (error?.name === 'CustodyError' && code === 'custody-busy') return 'custody-busy';
   if (drawn) return 'stopped';
-  // Connected, and the host never let the page in, or said it does not.
+  // Connected, and the host said no, with its reason.
+  if (error?.code === 'not-let-in' && error.sessionErrorCode === 'permission-required') return 'host-refused';
+  // Connected, and the host never let the page in.
   if (error?.code === 'not-let-in' || error?.name === 'TimeoutError' && error.connected) return 'host-silent';
   if (unanswered(error)) {
     if (online === false) return 'offline';
@@ -117,6 +120,8 @@ export const SCREENS = {
     'This site loads, so your connection works. Either the host is down, or this browser doesn’t trust its certificate. Open { $host } to see which, then try again.'],
   'no-connection': ['Can’t connect to { $host }', 'Can’t connect to { $host }',
     'This site doesn’t answer either. Check your connection, then try again.'],
+  'host-refused': ['{ $host } refused this tab entry to { $workspace }', '{ $host } refused this tab entry',
+    'It said: { $reason }. If you expected to get in, copy the technical details below and send them to whoever runs this site.'],
   'host-silent': ['{ $host } didn’t let this tab into { $workspace }', '{ $host } didn’t let this tab in',
     'The host answered, but didn’t let this tab in. Try again. If it stops again, copy the technical details below and send them to whoever runs this site.'],
   'host-error': ['{ $host } couldn’t open { $workspace }', '{ $host } couldn’t open this workspace',
@@ -151,7 +156,9 @@ export function failureScreen(cause, {workspace = null, host = null, step = null
   const address = hostName(host) ?? say('entry-failure-the-host', 'the host');
   const [stepId, stepEnglish] = STEPS[step] ?? STEPS.load;
   const args = {workspace, host: address, step: say(stepId, stepEnglish),
-    reason: String(error?.message ?? '').trim() || say('entry-failure-refused-fallback', 'This link or invitation can’t be used.')};
+    // A host's refusal of the join says its own reason; any other refusal is the page's words for it.
+    reason: String((cause === 'host-refused' ? error?.sessionError : null) ?? error?.message ?? '').trim()
+      || say('entry-failure-refused-fallback', 'This link or invitation can’t be used.')};
   return {
     cause,
     heading: workspace ? say(`entry-failure-${key}`, named, args) : say(`entry-failure-${key}-unnamed`, unnamed, args),

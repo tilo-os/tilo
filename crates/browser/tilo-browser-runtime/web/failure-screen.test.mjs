@@ -33,6 +33,10 @@ test('each failure is told apart by what the page knows of it', () => {
     // Reached the host, which never let the page in: no connection problem.
     [Object.assign(new DOMException('Workspace admission timed out', 'TimeoutError'), {connected: true}), {}, 'host-silent'],
     [Object.assign(new DOMException('Workspace admission timed out', 'TimeoutError'), {connected: false}), {}, 'unreachable'],
+    // The host answered the join with a no, and its reason.
+    [Object.assign(new Error('the host did not let this tab in: device not in workspace membership'),
+      {code: 'not-let-in', sessionError: 'device not in workspace membership', sessionErrorCode: 'permission-required', connected: true}), {}, 'host-refused'],
+    [Object.assign(new Error('this tab is not in its workspace yet'), {code: 'not-let-in'}), {}, 'host-silent'],
     [new Error('device lost'), {admitted: true, drawn: true}, 'stopped'],
     [new Error('RuntimeError: unreachable executed'), {}, 'loading'],
   ];
@@ -212,4 +216,19 @@ test('while the failure screen shows, nothing else of the page shows beside or o
   assert.match(html, /@media \(max-width: 480px\) \{[^}]*\[data-failure\] #arrival-failure[^@]*\.failure-actions \{ flex-direction: column/);
   // A stop before the page's modules ran grows its words up from Try again, never under it.
   assert.match(html, /\[data-arrival=stopped\] #status \{ top: auto; bottom: calc\(50% - 64px\); \}/);
+});
+
+test('a host that refused the tab is said to have refused it, with its reason', () => {
+  const error = Object.assign(new Error('the host did not let this tab in: device not in workspace membership'),
+    {code: 'not-let-in', phase: 'admitting', sessionError: 'device not in workspace membership',
+      sessionErrorCode: 'permission-required', connected: true});
+  const cause = failureCause(error);
+  assert.equal(cause, 'host-refused');
+  const screen = failureScreen(cause, {workspace: 'My workspace', host: 'https://127.0.0.1:24100', step: 'join', error});
+  assert.equal(screen.heading, '127.0.0.1:24100 refused this tab entry to My workspace');
+  assert.match(screen.body, /^It said: device not in workspace membership\. /);
+  for (const name of ['en-US', 'de-DE']) {
+    const localized = failureScreen(cause, {workspace: 'My workspace', host: 'https://127.0.0.1:24100', error, messages: locale(name)});
+    assert.match(localized.body, /device not in workspace membership/, name);
+  }
 });
