@@ -589,8 +589,6 @@ async fn a_sealed_invitation_outlives_the_relay_it_was_left_on() {
     let lapsing = "ponmlkjihgfedcba";
     let delete = "a".repeat(43);
     let sealed = "c2VhbGVkIGludml0YXRpb24";
-    let now = tilo_clock::unix_now_ns();
-    let lapse_at = now + 1_000_000_000;
 
     let leaving = |expires_at_ns| {
         serde_json::to_vec(&Stored {
@@ -615,6 +613,10 @@ async fn a_sealed_invitation_outlives_the_relay_it_was_left_on() {
     // and one that lapses while it is down.
     let first = relay_at(&state, signer.identity(), RelayConfig::default()).await;
     let (addr, serving) = serve_web(Arc::new(web_of(&first, &signer))).await;
+    // Dated once the relay is up: starting one can take longer than the
+    // second the lapsing invitation lives.
+    let now = tilo_clock::unix_now_ns();
+    let lapse_at = now + 1_000_000_000;
     for (handle, expires_at_ns) in [(keeping, now + 600_000_000_000), (lapsing, lapse_at)] {
         let body = leaving(expires_at_ns);
         let (status, head, _) = exchange(addr, &post(handle, &body), &body).await;
