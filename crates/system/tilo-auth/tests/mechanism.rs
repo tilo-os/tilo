@@ -78,6 +78,9 @@ impl Fixture {
         self.luks_image_named("disk.img")
     }
 
+    /// The keyslots area has room for eight keyslots, of which these tests
+    /// use two: luksFormat fills the whole area with random bytes, and the
+    /// default is 16 MiB of them.
     fn luks_image_named(&self, name: &str) -> PathBuf {
         let img = self.scratch.path().join(name);
         let f = std::fs::File::create(&img).expect("create image");
@@ -91,6 +94,8 @@ impl Fixture {
                 "--type",
                 "luks2",
                 "--batch-mode",
+                "--luks2-keyslots-size",
+                "2M",
                 "--pbkdf",
                 "pbkdf2",
                 "--pbkdf-force-iterations",

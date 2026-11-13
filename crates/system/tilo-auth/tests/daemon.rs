@@ -50,6 +50,10 @@ const FAST: PasswordParams = PasswordParams {
     p_cost: 1,
 };
 
+/// Room for eight keyslots, of which these tests use three. luksFormat fills
+/// the whole area with random bytes, and the default is 16 MiB of them.
+const KEYSLOTS_AREA: [&str; 2] = ["--luks2-keyslots-size", "2M"];
+
 #[derive(Clone, Default)]
 struct OldPasswords {
     passwords: Arc<Mutex<HashMap<String, String>>>,
@@ -340,6 +344,7 @@ fn machine(with_tpm: bool, old: &[(&str, &str)], ada_uid: u32) -> Option<Machine
     assert!(
         Command::new("cryptsetup")
             .args(["luksFormat", "--type", "luks2", "--batch-mode"])
+            .args(KEYSLOTS_AREA)
             .args(pbkdf)
             .arg("--key-file")
             .arg(&pass)
