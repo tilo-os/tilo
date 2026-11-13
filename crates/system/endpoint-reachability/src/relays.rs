@@ -67,37 +67,6 @@ mod tests {
             .collect()
     }
 
-    /// Unset, a device binds exactly as it did before the setting existed: number 0's relays and
-    /// its DNS.
-    #[test]
-    fn the_default_is_number_0s_relays_and_dns() {
-        let default = EndpointRelays::for_choice(&Relays::N0);
-        assert_eq!(
-            urls(&default),
-            iroh::endpoint::default_relay_mode()
-                .relay_map()
-                .urls::<Vec<_>>()
-                .iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>(),
-            "the relays are number 0's own"
-        );
-        assert!(!default.relays.is_empty(), "a device relays by default");
-        assert!(default.n0_dns, "and is found on number 0's DNS");
-
-        let absent = EndpointRelays::for_choice(&Relays::parse(""));
-        assert_eq!(urls(&absent), urls(&default));
-    }
-
-    /// One relay of the person's own, and nothing of number 0's: no relay of its in the map, and
-    /// no lookup of its either.
-    #[test]
-    fn the_persons_own_relay_is_the_only_one_and_reaches_no_number_0_dns() {
-        let own = EndpointRelays::for_choice(&Relays::Own("https://relay.example.com.".into()));
-        assert_eq!(urls(&own), ["https://relay.example.com./"]);
-        assert!(!own.n0_dns, "nothing asks number 0's DNS");
-    }
-
     /// An endpoint built from the setting wakes the person's relay, and names it as its home: the
     /// address its peers are given names their relay, not number 0's.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -142,23 +111,58 @@ mod tests {
         endpoint.close().await;
     }
 
-    #[test]
-    fn no_relay_leaves_the_map_empty_and_number_0_dns_off() {
-        let none = EndpointRelays::for_choice(&Relays::None);
-        assert_eq!(none.relays, RelayMap::empty());
-        assert!(!none.n0_dns);
-    }
+    tilo_test_env::scenario! {
+        fn a_relay_choice_decides_the_relay_map_and_number_0s_dns;
 
-    /// A setting nobody can dial through must not leave the device unreachable: it keeps the
-    /// relays it had.
-    #[test]
-    fn a_relay_that_is_not_a_url_leaves_the_device_on_number_0s_relays() {
-        let broken = EndpointRelays::for_choice(&Relays::Own("not a relay".into()));
-        assert_eq!(
-            urls(&broken),
-            urls(&EndpointRelays::for_choice(&Relays::N0))
-        );
-        assert!(broken.n0_dns);
+        phase the_default_is_number_0s_relays_and_dns;
+        // Unset, a device binds exactly as it did before the setting existed: number 0's relays and
+        // its DNS.
+        {
+            let default = EndpointRelays::for_choice(&Relays::N0);
+            assert_eq!(
+                urls(&default),
+                iroh::endpoint::default_relay_mode()
+                    .relay_map()
+                    .urls::<Vec<_>>()
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>(),
+                "the relays are number 0's own"
+            );
+            assert!(!default.relays.is_empty(), "a device relays by default");
+            assert!(default.n0_dns, "and is found on number 0's DNS");
+
+            let absent = EndpointRelays::for_choice(&Relays::parse(""));
+            assert_eq!(urls(&absent), urls(&default));
+        }
+
+        phase the_persons_own_relay_is_the_only_one_and_reaches_no_number_0_dns;
+        // One relay of the person's own, and nothing of number 0's: no relay of its in the map, and
+        // no lookup of its either.
+        {
+            let own = EndpointRelays::for_choice(&Relays::Own("https://relay.example.com.".into()));
+            assert_eq!(urls(&own), ["https://relay.example.com./"]);
+            assert!(!own.n0_dns, "nothing asks number 0's DNS");
+        }
+
+        phase no_relay_leaves_the_map_empty_and_number_0_dns_off;
+        {
+            let none = EndpointRelays::for_choice(&Relays::None);
+            assert_eq!(none.relays, RelayMap::empty());
+            assert!(!none.n0_dns);
+        }
+
+        phase a_relay_that_is_not_a_url_leaves_the_device_on_number_0s_relays;
+        // A setting nobody can dial through must not leave the device unreachable: it keeps the
+        // relays it had.
+        {
+            let broken = EndpointRelays::for_choice(&Relays::Own("not a relay".into()));
+            assert_eq!(
+                urls(&broken),
+                urls(&EndpointRelays::for_choice(&Relays::N0))
+            );
+            assert!(broken.n0_dns);
+        }
     }
 
     /// The setting is read where a device's settings are: a person's choice reaches every

@@ -320,34 +320,38 @@ mod tests {
         host.close().await;
     }
 
-    /// The lookup is said on each network the device has an IPv4 address
-    /// on, and on no loopback.
-    #[test]
-    fn the_lookup_is_said_on_every_network_the_device_is_on() {
-        let addrs = BTreeMap::from([
-            (
-                4711,
-                vec![
-                    IpAddr::V4(Ipv4Addr::new(10, 0, 2, 15)),
-                    IpAddr::V4(Ipv4Addr::new(192, 168, 1, 7)),
-                    IpAddr::V4(Ipv4Addr::LOCALHOST),
-                    "fe80::1".parse().unwrap(),
-                ],
-            ),
-            (4712, vec![IpAddr::V4(Ipv4Addr::new(192, 168, 1, 7))]),
-        ]);
-        assert_eq!(
-            networks(&addrs).into_iter().collect::<Vec<_>>(),
-            [Ipv4Addr::new(10, 0, 2, 15), Ipv4Addr::new(192, 168, 1, 7)]
-        );
-    }
+    tilo_test_env::scenario! {
+        fn the_local_lookup_names_its_networks_and_its_peers;
 
-    /// A peer's advertised name reads back as its endpoint, and nothing
-    /// else reads as one.
-    #[test]
-    fn a_peer_is_named_by_its_key() {
-        let id = SecretKey::from_bytes(&[7; 32]).public();
-        assert_eq!(endpoint_of(&peer_name(&id)), Some(id));
-        assert_eq!(endpoint_of("not-a-key"), None);
+        phase the_lookup_is_said_on_every_network_the_device_is_on;
+        // The lookup is said on each network the device has an IPv4 address
+        // on, and on no loopback.
+        {
+            let addrs = BTreeMap::from([
+                (
+                    4711,
+                    vec![
+                        IpAddr::V4(Ipv4Addr::new(10, 0, 2, 15)),
+                        IpAddr::V4(Ipv4Addr::new(192, 168, 1, 7)),
+                        IpAddr::V4(Ipv4Addr::LOCALHOST),
+                        "fe80::1".parse().unwrap(),
+                    ],
+                ),
+                (4712, vec![IpAddr::V4(Ipv4Addr::new(192, 168, 1, 7))]),
+            ]);
+            assert_eq!(
+                networks(&addrs).into_iter().collect::<Vec<_>>(),
+                [Ipv4Addr::new(10, 0, 2, 15), Ipv4Addr::new(192, 168, 1, 7)]
+            );
+        }
+
+        phase a_peer_is_named_by_its_key;
+        // A peer's advertised name reads back as its endpoint, and nothing
+        // else reads as one.
+        {
+            let id = SecretKey::from_bytes(&[7; 32]).public();
+            assert_eq!(endpoint_of(&peer_name(&id)), Some(id));
+            assert_eq!(endpoint_of("not-a-key"), None);
+        }
     }
 }
