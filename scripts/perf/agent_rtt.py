@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Agent round trip: what an agent waits for on the control socket and MCP.
+"""Agent round trip: what an agent waits for on the control socket.
 
 An agent drives Tilo through typed actions: it lists them, reads the state
 and invokes one by address. This times those calls on the path an agent
@@ -26,15 +26,12 @@ persistent connection:
   agent.invoke.local.throughput  microseconds per completed no-op while
                                  `--clients` connections invoke at once,
                                  one sample per second of `--duration`
-  agent.invoke.mcp.noop          the no-op as an MCP tools/call through
-                                 scripts/tilo-mcp-server.py
   agent.invoke.local.app.accept  with --app PROVIDER:ID only
   agent.invoke.local.app         the same, complete (wait_ms)
 
 The no-op is `so.tilo.session/desktop:chrome␟reopen-closed` (`tilo_session::
 desktop_surface::ChromeEffect::ReopenClosed`): a session service action that
 needs no consent, and with nothing closed reopens nothing and changes nothing.
-It is nullary, so the MCP tool call carries no arguments either.
 
 Either point it at a running desktop (`--socket`; on a real session that
 is `$XDG_RUNTIME_DIR/tilo-session/admin-control.sock`, which serves these
@@ -74,12 +71,10 @@ sys.path.insert(0, str(REPO / "tools" / "perf"))
 import record  # noqa: E402
 
 SPAWN = REPO / "scripts" / "headless-examples" / "spawn-headless.sh"
-MCP_SERVER = REPO / "scripts" / "tilo-mcp-server.py"
 NOOP = ("so.tilo.session", "desktop:chrome\u001freopen-closed")
 TERMINAL = frozenset({"succeeded", "failed", "cancelled"})
 # Generous: the answer leaves as soon as the invocation settles.
 WAIT_MS = 5000
-MCP_PROTOCOL = "2025-06-18"
 
 
 class BenchError(RuntimeError):
@@ -249,84 +244,6 @@ def throughput(socket_path: str, address: tuple[str, str], clients: int,
         "loaded_p99_ms": round(record.nearest_rank(ordered, 99), 4),
     }
     return samples, meta
-
-
-class McpClient:
-    """The MCP stdio server, started over `socket_path`, spoken to as a model would."""
-
-    def __init__(self, socket_path: str):
-        self.process = subprocess.Popen(
-            [sys.executable, str(MCP_SERVER), "--socket", socket_path],
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-            text=True, bufsize=1)
-        self.next_id = 0
-
-    def close(self) -> None:
-        if self.process.poll() is None:
-            self.process.terminate()
-            try:
-                self.process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                self.process.kill()
-                self.process.wait()
-        for stream in (self.process.stdin, self.process.stdout):
-            if stream is not None:
-                stream.close()
-
-    def send(self, method: str, params: dict[str, Any] | None = None) -> None:
-        payload: dict[str, Any] = {"jsonrpc": "2.0", "method": method}
-        if params is not None:
-            payload["params"] = params
-        self._write(payload)
-
-    def _write(self, payload: dict[str, Any]) -> None:
-        assert self.process.stdin is not None
-        self.process.stdin.write(json.dumps(payload) + "\n")
-        self.process.stdin.flush()
-
-    def call(self, method: str, params: dict[str, Any]) -> tuple[int, dict[str, Any]]:
-        """One request; (nanoseconds until its reply line, reply)."""
-        assert self.process.stdout is not None
-        self.next_id += 1
-        want = self.next_id
-        start = time.perf_counter_ns()
-        self._write({"jsonrpc": "2.0", "id": want, "method": method, "params": params})
-        while True:
-            line = self.process.stdout.readline()
-            if not line:
-                raise BenchError("the MCP server exited")
-            elapsed = time.perf_counter_ns() - start
-            try:
-                reply = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if reply.get("id") == want:
-                return elapsed, reply
-
-
-def mcp_noop(socket_path: str, address: tuple[str, str], warmup: int,
-             samples: int) -> list[float]:
-    client = McpClient(socket_path)
-    try:
-        _, reply = client.call("initialize", {
-            "protocolVersion": MCP_PROTOCOL, "capabilities": {},
-            "clientInfo": {"name": "agent-rtt", "version": "1"}})
-        if "result" not in reply:
-            raise BenchError(f"MCP initialize failed: {reply}")
-        client.send("notifications/initialized")
-        params = {"name": "tilo_invoke_action",
-                  "arguments": {"provider": address[0], "id": address[1]}}
-        timings = []
-        for index in range(warmup + samples):
-            elapsed, reply = client.call("tools/call", params)
-            result = reply.get("result") or {}
-            if "error" in reply or result.get("isError"):
-                raise BenchError(f"MCP tools/call failed: {json.dumps(reply)[:400]}")
-            if index >= warmup:
-                timings.append(elapsed / 1e6)
-        return timings
-    finally:
-        client.close()
 
 
 @contextlib.contextmanager
@@ -539,10 +456,6 @@ def run(args: argparse.Namespace, socket_path: str) -> list[tuple[str, str, list
     if args.clients:
         samples, meta = throughput(socket_path, noop, args.clients, args.duration)
         results.append(("agent.invoke.local.throughput", "us", samples, {**common, **meta}))
-    if args.mcp:
-        results.append(("agent.invoke.mcp.noop", "ms", mcp_noop(
-            socket_path, noop, args.warmup, args.samples),
-            {**common, "transport": f"MCP stdio ({MCP_SERVER.name}) over {args.transport}"}))
     return results
 
 
@@ -584,8 +497,6 @@ def main(argv: list[str] | None = None) -> int:
                         help="concurrent clients for the throughput run; 0 skips it")
     parser.add_argument("--duration", type=float, default=10.0,
                         help="seconds of the throughput run")
-    parser.add_argument("--mcp", action=argparse.BooleanOptionalAction, default=True,
-                        help="also time the no-op through the MCP server")
     parser.add_argument("--transport", default=None,
                         help="how the socket is reached, recorded in each record's meta")
     parser.add_argument("--env-json", type=Path,

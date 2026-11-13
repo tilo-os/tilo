@@ -539,11 +539,10 @@ name = "developer-scripts"
 inputs = [
   "scripts/tests/", "scripts/app-launch-sweep.py",
   "scripts/headless-examples/",
-  "scripts/runtime-mcp-proof.py", "scripts/tilo-mcp-server.py", "scripts/agent-loop/",
+  "scripts/runtime-mcp-proof.py", "scripts/agent-loop/",
 ]
 suites = [
   "scripts/tests/test_agent_loop_usage.py",
-  "scripts/tests/test_tilo_mcp_server.py",
 ]
 
 [[group]]

@@ -11,13 +11,12 @@ isolated session and exercises semantic invocation.
 
 ## Proofs
 
-Three proofs start a headless session of their own, on a scratch home, and read
+Two proofs start a headless session of their own, on a scratch home, and read
 every claim back off that session rather than off the thing that asked for it.
-`tools/ci/session-proofs.sh` runs all three, and the nightly workflow runs that.
+`tools/ci/session-proofs.sh` runs both, and the nightly workflow runs that.
 
 | Proof | What it asserts |
 |---|---|
-| `mcp-live-proof.py` | A model drives the desktop over MCP: the tools and resources it is offered, taking Setup's way forward and watching the desk move on to its second step, and a refusal arriving as an error with the compositor's own code. |
 | `agent-seats-proof.py` | Two agents at the session's agent door, each admitted as itself through the workspace's governance, each served its own tools, the desk's Stop ending one of their connections alone. |
 | `session-lock-proof.py` | The desk's own lock action locks the session, the lock screen's own frame covers the desk, a password that is not the person's is refused, and the person's own password brings the desk back. |
 

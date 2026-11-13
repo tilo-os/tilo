@@ -260,13 +260,12 @@ Every widget in the tree exposes a name through either:
 ```
 
 - `spawn-headless.sh` — start a session on a scratch profile and wait for its socket
-- `_control.py`, `tilo_client.py` — the two-line client every script uses
 - `reaper.py` — takes a session down, process group and all
 - `list-targets.py`, `click-and-snapshot.py`, `keyboard-flow.py`, `drag-demo.py`, `full-loop.py` — one op each
 - `action-api-demo.py` — discovery and semantic invocation by `(provider, id)`
 - `first-frame.py`, `startup-frame-timeline.py` — what a session's first frame costs
 - `session-e2e.py`, `canvas-e2e.py`, `tilolang-e2e.py`, `files-clipboard-e2e.py`, `agent-chat-e2e.py` — whole flows, each on a session of its own
-- `mcp-live-proof.py`, `agent-seats-proof.py`, `session-lock-proof.py` — the proofs `tools/ci/session-proofs.sh` runs
+- `agent-seats-proof.py`, `session-lock-proof.py` — the proofs `tools/ci/session-proofs.sh` runs
 - `notes-persist-proof.py`, `notes-caret-proof.py`, `desk-restore-proof.py`, `audio-absent-proof.py` — proofs that need the tree's apps built
 
 `scripts/headless-examples/README.md` says what each proof asserts.
@@ -450,7 +449,7 @@ For a source-matched fixture, opt into `TILO_FRAME_CPU_TRACE` through its suppor
 
 ### What an agent waits for
 
-`scripts/perf/agent_rtt.py` times the control socket: `actions list`, `state dump`, a no-op invoke, throughput under concurrent clients and the same no-op through the MCP server. `--socket PATH` drives a running session; `--spawn SHELL` starts one through `spawn-headless.sh` and removes it on exit.
+`scripts/perf/agent_rtt.py` times the control socket: `actions list`, `state dump`, a no-op invoke and throughput under concurrent clients. `--socket PATH` drives a running session; `--spawn SHELL` starts one through `spawn-headless.sh` and removes it on exit.
 
 `scripts/perf/agent_task.py` times a whole task the way an agent in the login runs it: a scripted, streamed fake model drives `tilo-runtime-mcp --connect` through the session's agent door, creates a note in Notes, writes its body, finds it by title and reads it back, and the record splits the time between Tilo, the model and the agent loop. It needs a session where apps start, with Notes installed.
 

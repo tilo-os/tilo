@@ -358,8 +358,8 @@ source = "consecutive rechunked main builds 418,858,093-819,840,811 B before the
 # Agent round trip (scripts/perf/agent_rtt.py): one headless compositor on
 # the shared `runner` class, a release build with `dev-overrides` and thin
 # LTO, timed from the client's side of the control socket. Targets from the
-# KPIs ("actions invoke round trip, local", "MCP tool call");
-# reported, not enforced, until three nightly records exist.
+# KPIs ("actions invoke round trip, local"); reported, not enforced, until
+# three nightly records exist.
 #
 # Tolerances are measured. Two runs of the same code, 35 minutes apart on
 # `runner` (Perf / scheduled 87525 and 87819), spread by p50 x1.12 (no-op)
@@ -416,15 +416,6 @@ p50_tolerance = 2.0
 p99_tolerance = 2.5
 min_delta = 300.0
 source = "provisional: derived from the no-op p50 target"
-
-[kpi."agent.invoke.mcp.noop"]
-unit = "ms"
-p50 = 3.0
-p99 = 7.0
-p50_tolerance = 1.5
-p99_tolerance = 2.0
-min_delta = 0.5
-source = "KPI: MCP tool call <= local invoke + 2 ms"
 
 # Native task steps (apps/agent `native_task_benchmark`, a release test on
 # `runner`): the agent's own task loop with a scripted model and a broker
