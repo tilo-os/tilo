@@ -165,480 +165,411 @@ impl Env {
     }
 }
 
-tilo_test_env::scenario! {
-    fn apps_install_update_and_uninstall;
-
-    phase installs_list_verify_report_and_serve_thin_packages;
-    {
-        {
-            let env = Env::new();
-            let v1 = env.tapp("1.0.0", b"version one", None);
-
-            let (ok, out, err) = env.cmd(&["install", v1.to_str().unwrap()]);
-            assert!(ok, "install failed: {out}{err}");
-            assert!(out.contains("installed: so.tilo.lifecycle 1.0.0"), "{out}");
-            assert!(env.payload_root().join("bin/app").exists());
-            assert_eq!(
-                std::fs::read(env.payload_root().join("bin/app")).unwrap(),
-                b"version one"
-            );
-            assert!(
-                env.registry_toml().contains("version = \"1.0.0\""),
-                "{}",
-                env.registry_toml()
-            );
-
-            let (ok, out, _) = env.cmd(&["list"]);
-            assert!(ok);
-            assert!(out.contains("so.tilo.lifecycle"), "{out}");
-            assert!(out.contains("1.0.0"), "{out}");
-
-            let (ok, out, err) = env.cmd(&["verify"]);
-            assert!(ok, "verify failed: {out}{err}");
-            assert!(out.contains("ok       so.tilo.lifecycle 1.0.0"), "{out}");
-
-            // From here on the payload and the saved data are treated differently.
-            env.seed_state();
-
-            let v2 = env.tapp("1.1.0", b"version two", None);
-            let (ok, out, err) = env.cmd(&[
-                "update",
-                "so.tilo.lifecycle",
-                "--from",
-                v2.to_str().unwrap(),
-            ]);
-            assert!(ok, "update failed: {out}{err}");
-            assert!(
-                out.contains("updated: so.tilo.lifecycle 1.0.0 -> 1.1.0"),
-                "{out}"
-            );
-            assert_eq!(
-                std::fs::read(env.payload_root().join("bin/app")).unwrap(),
-                b"version two",
-                "the payload must be the new version's"
-            );
-            assert!(env.registry_toml().contains("version = \"1.1.0\""));
-            assert!(
-                env.state_exists("personal") && env.state_exists("b7c1-workspace"),
-                "an update must keep the user's data"
-            );
-
-            // Verification follows the swap: the record is the new version's.
-            let (ok, out, err) = env.cmd(&["verify", "so.tilo.lifecycle"]);
-            assert!(ok, "verify after update failed: {out}{err}");
-            assert!(out.contains("ok       so.tilo.lifecycle 1.1.0"), "{out}");
-
-            let installed_tree = env.payload_root();
-            let (ok, out, err) = env.cmd(&["uninstall", "so.tilo.lifecycle", "--keep-state"]);
-            assert!(ok, "uninstall failed: {out}{err}");
-            assert!(
-                out.contains("uninstalled: so.tilo.lifecycle 1.1.0"),
-                "{out}"
-            );
-            assert!(!installed_tree.exists(), "the payload must be gone");
-            assert!(
-                !env.registry_toml().contains("so.tilo.lifecycle"),
-                "the registry entry must be gone: {}",
-                env.registry_toml()
-            );
-            assert!(
-                env.state_exists("personal"),
-                "--keep-state must keep the user's data"
-            );
-        }
-        // A tampered payload is caught and named precisely enough to act on.
-        {
-            let env = Env::new();
-            let v1 = env.tapp("1.0.0", b"one", None);
-            assert!(env.cmd(&["install", v1.to_str().unwrap()]).0);
-            assert!(env.cmd(&["verify"]).0);
-
-            // Installed files are read-only; whoever tampers makes them writable.
-            let target = env.payload_root().join("bin/app");
-            let mut permissions = std::fs::metadata(&target).unwrap().permissions();
-            std::os::unix::fs::PermissionsExt::set_mode(&mut permissions, 0o755);
-            std::fs::set_permissions(&target, permissions).unwrap();
-            std::fs::write(&target, b"malicious").unwrap();
-
-            let (ok, out, err) = env.cmd(&["verify", "so.tilo.lifecycle"]);
-            assert!(!ok, "a tampered payload must fail verification: {out}{err}");
-            assert!(out.contains("FAILED   so.tilo.lifecycle"), "{out}");
-            assert!(out.contains("modified: bin/app"), "{out}");
-        }
-        {
-            let env = Env::new();
-            let v1 = env.tapp("1.0.0", b"one", None);
-            assert!(env.cmd(&["install", v1.to_str().unwrap()]).0);
-            env.seed_state();
-
-            let (ok, out, err) = env.cmd(&["info", "so.tilo.lifecycle"]);
-            assert!(ok, "{out}{err}");
-            assert!(out.contains("runtime       : (none declared)"), "{out}");
-            assert!(out.contains("integrity     : recorded"), "{out}");
-            assert!(out.contains("saved data    : 2 workspace(s)"), "{out}");
-            assert!(out.contains("personal"), "{out}");
-        }
-        // A thin package is metadata only: it installs when the content store holds its payload, and is
-        // refused when nothing can supply it.
-        {
-            let env = Env::new();
-            let full = env.tapp("1.0.0", b"one", None);
-            let thin = thin_of(&full);
-            assert!(std::fs::metadata(&thin).unwrap().len() < 16 * 1024);
-
-            let (ok, out, err) = env.cmd(&["install", thin.to_str().unwrap()]);
-            assert!(
-                !ok,
-                "a thin package with no payload source must not install: {out}"
-            );
-            assert!(err.contains("payload blob"), "{err}");
-            assert!(
-                !env.payload_root().exists(),
-                "a refused install leaves nothing behind"
-            );
-
-            assert!(env.cmd(&["install", full.to_str().unwrap()]).0);
-            let (ok, out, err) = env.cmd(&["install", thin.to_str().unwrap(), "--force"]);
-            assert!(ok, "{out}{err}");
-            assert!(out.contains("already in the content store"), "{out}");
-            let (ok, out, err) = env.cmd(&["verify", "so.tilo.lifecycle"]);
-            assert!(ok, "{out}{err}");
-        }
-    }
-
-    phase uninstall_keeps_state_unless_purged;
-    {
-        // Deleting notes is not undoable, so it takes an explicit instruction, and the uninstall says
-        // how much it is about to delete first.
-        {
-            let env = Env::new();
-            let v1 = env.tapp("1.0.0", b"one", None);
-            let (ok, _, err) = env.cmd(&["install", v1.to_str().unwrap()]);
-            assert!(ok, "{err}");
-            env.seed_state();
-
-            let (ok, out, err) = env.cmd(&["uninstall", "so.tilo.lifecycle", "--purge"]);
-            assert!(ok, "{out}{err}");
-            assert!(
-                out.contains("state    : deleted in 2 workspace(s)"),
-                "{out}"
-            );
-            assert!(!env.state_exists("personal"));
-            assert!(!env.state_exists("b7c1-workspace"));
-        }
-        // A non-interactive uninstall keeps user data: there is nobody to ask.
-        {
-            let env = Env::new();
-            let v1 = env.tapp("1.0.0", b"one", None);
-            assert!(env.cmd(&["install", v1.to_str().unwrap()]).0);
-            env.seed_state();
-
-            // No --purge, no --keep-state, and stdin is not a terminal.
-            let (ok, out, err) = env.cmd(&["uninstall", "so.tilo.lifecycle"]);
-            assert!(ok, "{out}{err}");
-            assert!(
-                env.state_exists("personal"),
-                "user data must survive an unattended uninstall: {out}"
-            );
-            assert!(out.contains("no terminal to ask on"), "{out}");
-        }
-    }
-
-    phase dry_runs_and_runtime_dependencies_are_reported_before_anything_changes;
-    {
-        {
-            let env = Env::new();
-            let v1 = env.tapp("1.0.0", b"one", None);
-
-            let (ok, out, err) = env.cmd(&["install", v1.to_str().unwrap(), "--dry-run"]);
-            assert!(ok, "{out}{err}");
-            assert!(
-                out.contains("plan: install so.tilo.lifecycle 1.0.0"),
-                "{out}"
-            );
-            assert!(out.contains("signature : verified"), "{out}");
-            assert!(out.contains("(nothing was written)"), "{out}");
-            assert!(
-                !env.payload_root().exists(),
-                "--dry-run must not unpack anything"
-            );
-            assert!(
-                env.registry_toml().is_empty(),
-                "--dry-run must not touch the registry"
-            );
-
-            assert!(env.cmd(&["install", v1.to_str().unwrap()]).0);
-            env.seed_state();
-            let v2 = env.tapp("2.0.0", b"two", None);
-            let (ok, out, _) = env.cmd(&[
-                "update",
-                "so.tilo.lifecycle",
-                "--from",
-                v2.to_str().unwrap(),
-                "--dry-run",
-            ]);
-            assert!(ok);
-            assert!(
-                out.contains("plan: update so.tilo.lifecycle 1.0.0 -> 2.0.0"),
-                "{out}"
-            );
-            assert!(out.contains("state     : KEPT"), "{out}");
-            assert_eq!(
-                std::fs::read(env.payload_root().join("bin/app")).unwrap(),
-                b"one",
-                "--dry-run must not swap the payload"
-            );
-
-            let (ok, out, _) = env.cmd(&["uninstall", "so.tilo.lifecycle", "--dry-run"]);
-            assert!(ok);
-            assert!(
-                out.contains("plan: uninstall so.tilo.lifecycle 1.0.0"),
-                "{out}"
-            );
-            assert!(out.contains("saved data: 2 workspace(s)"), "{out}");
-            assert!(out.contains("(nothing was removed)"), "{out}");
-            assert!(env.payload_root().exists());
-        }
-        // Refusing an install whose runtime bundle is absent keeps "installed" and "launchable" the same
-        // thing, and the message names the command that fixes it.
-        {
-            let env = Env::new();
-            let pkg = env.tapp("1.0.0", b"one", Some("tilo-runtime/2025.06"));
-
-            let (ok, out, err) = env.cmd(&["install", pkg.to_str().unwrap()]);
-            assert!(!ok, "install must refuse: {out}{err}");
-            assert!(
-                err.contains("needs runtime `tilo-runtime/2025.06`"),
-                "{err}"
-            );
-            assert!(
-                err.contains("app install so.tilo.lifecycle"),
-                "the refusal must name the command that fixes it: {err}"
-            );
-            assert!(err.contains("--ignore-missing-runtime"), "{err}");
-            assert!(
-                !env.payload_root().exists(),
-                "a refused install must leave nothing behind"
-            );
-
-            // The escape hatch installs it, and says the package cannot launch.
-            let (ok, out, err) =
-                env.cmd(&["install", pkg.to_str().unwrap(), "--ignore-missing-runtime"]);
-            assert!(ok, "{out}{err}");
-            assert!(err.contains("will not launch until it is"), "{err}");
-
-            // `list` keeps saying so.
-            let (_, out, _) = env.cmd(&["list"]);
-            assert!(out.contains("tilo-runtime/2025.06 (MISSING)"), "{out}");
-        }
-        {
-            let env = Env::new();
-            let pkg = env.tapp("1.0.0", b"one", Some("tilo-runtime/2025.06"));
-            let (ok, out, err) = env.cmd(&["install", pkg.to_str().unwrap(), "--dry-run"]);
-            assert!(ok, "{out}{err}");
-            assert!(out.contains("tilo-runtime/2025.06 MISSING"), "{out}");
-            assert!(out.contains("--ignore-missing-runtime"), "{out}");
-        }
-    }
-
-    phase updates_refuse_downgrades_foreign_packages_and_unapproved_publishers;
-    {
-        // An older version over a newer one is nearly always a mis-resolve, so it is refused unless
-        // asked for.
-        {
-            let env = Env::new();
-            let v2 = env.tapp("2.0.0", b"two", None);
-            assert!(env.cmd(&["install", v2.to_str().unwrap()]).0);
-
-            let v1 = env.tapp("1.0.0", b"one", None);
-            let (ok, out, err) = env.cmd(&[
-                "update",
-                "so.tilo.lifecycle",
-                "--from",
-                v1.to_str().unwrap(),
-            ]);
-            assert!(!ok, "{out}{err}");
-            assert!(err.contains("is not newer"), "{err}");
-            assert_eq!(
-                std::fs::read(env.payload_root().join("bin/app")).unwrap(),
-                b"two",
-                "a refused update must not have swapped anything"
-            );
-
-            let (ok, out, err) = env.cmd(&[
-                "update",
-                "so.tilo.lifecycle",
-                "--from",
-                v1.to_str().unwrap(),
-                "--allow-downgrade",
-            ]);
-            assert!(ok, "{out}{err}");
-            assert_eq!(
-                std::fs::read(env.payload_root().join("bin/app")).unwrap(),
-                b"one"
-            );
-        }
-        {
-            let env = Env::new();
-            let v1 = env.tapp("1.0.0", b"one", None);
-            assert!(env.cmd(&["install", v1.to_str().unwrap()]).0);
-            let (ok, out, err) = env.cmd(&[
-                "update",
-                "so.tilo.lifecycle",
-                "--from",
-                v1.to_str().unwrap(),
-            ]);
-            assert!(ok, "{out}{err}");
-            assert!(out.contains("is already current"), "{out}");
-        }
-        // A `.tapp` for a different package is never swapped into this one's slot.
-        {
-            let env = Env::new();
-            let v1 = env.tapp("1.0.0", b"one", None);
-            assert!(env.cmd(&["install", v1.to_str().unwrap()]).0);
-
-            let build = env.home.path().join("other");
-            let payload = build.join("payload");
-            write_payload(&payload, b"other app");
-            let src = manifest_src("9.0.0", &env.pub_hex, None)
-                .replace("so.tilo.lifecycle", "so.tilo.impostor");
-            let manifest = Manifest::from_toml_str(&src).unwrap();
-            let other = build.join("other.tapp");
-            build_tapp(&other, &manifest, &env.sk, &payload);
-
-            let (ok, out, err) = env.cmd(&[
-                "update",
-                "so.tilo.lifecycle",
-                "--from",
-                other.to_str().unwrap(),
-            ]);
-            assert!(!ok, "{out}{err}");
-            assert!(err.contains("so.tilo.impostor"), "{err}");
-            assert_eq!(
-                std::fs::read(env.payload_root().join("bin/app")).unwrap(),
-                b"one"
-            );
-        }
-        // A local tapp has no registry owner's signed publisher authorisation, so matching the package
-        // id is not enough: an unrelated key must not take over the update slot.
-        {
-            let env = Env::new();
-            let v1 = env.tapp("1.0.0", b"one", None);
-            assert!(env.cmd(&["install", v1.to_str().unwrap()]).0);
-
-            let (replacement_key, replacement_pub_hex) = fresh_key();
-            let build = env.home.path().join("replacement-publisher");
-            let payload = build.join("payload");
-            write_payload(&payload, b"new publisher");
-            let manifest =
-                Manifest::from_toml_str(&manifest_src("2.0.0", &replacement_pub_hex, None)).unwrap();
-            let replacement = build.join("replacement.tapp");
-            build_tapp(&replacement, &manifest, &replacement_key, &payload);
-
-            let (ok, out, err) = env.cmd(&[
-                "update",
-                "so.tilo.lifecycle",
-                "--from",
-                replacement.to_str().unwrap(),
-            ]);
-            assert!(!ok, "publisher takeover must be refused: {out}{err}");
-            assert!(err.contains("changed publisher"), "{err}");
-            assert!(err.contains("--require-publisher"), "{err}");
-            assert_eq!(
-                std::fs::read(env.payload_root().join("bin/app")).unwrap(),
-                b"one",
-                "a refused publisher change must preserve the installed payload"
-            );
-            assert!(env.registry_toml().contains(&env.pub_hex));
-
-            let (ok, out, err) = env.cmd(&[
-                "update",
-                "so.tilo.lifecycle",
-                "--from",
-                replacement.to_str().unwrap(),
-                "--require-publisher",
-                &replacement_pub_hex,
-            ]);
-            assert!(ok, "explicit publisher rotation failed: {out}{err}");
-            assert_eq!(
-                std::fs::read(env.payload_root().join("bin/app")).unwrap(),
-                b"new publisher"
-            );
-            assert!(env.registry_toml().contains(&replacement_pub_hex));
-        }
-    }
-
-    phase cohort_selection_preserves_user_holds_pins_and_state_through_the_real_installer;
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "each phase keeps one former test's body verbatim"
+)]
+fn installs_list_verify_report_and_serve_thin_packages() {
     {
         let env = Env::new();
-        let first = env.tapp("0.1.73018", b"public selected app", None);
-        let next = env.tapp("0.1.0", b"paired current cohort app", None);
-        let (ok, out, err) = env.cmd(&["install", "--pinned", first.to_str().unwrap()]);
-        assert!(ok, "{out}{err}");
-        let store = package_store::PackageStore::at(env.tilo_apps());
-        store
-            .update_row("so.tilo.lifecycle", |row| row.held = true)
-            .unwrap();
-        let held = store
-            .registry()
-            .unwrap()
-            .find("so.tilo.lifecycle")
-            .unwrap()
-            .clone();
-        let before = env.registry_toml();
-        let (ok, out, err) = env.cmd(&[
-            "install",
-            "--force",
-            "--preserve-held",
-            next.to_str().unwrap(),
-        ]);
-        assert!(ok, "{out}{err}");
-        assert!(out.contains("\"preserved\":true"), "{out}");
-        assert!(out.contains(&held.package_id_hex), "{out}");
-        assert_eq!(env.registry_toml(), before);
+        let v1 = env.tapp("1.0.0", b"version one", None);
+
+        let (ok, out, err) = env.cmd(&["install", v1.to_str().unwrap()]);
+        assert!(ok, "install failed: {out}{err}");
+        assert!(out.contains("installed: so.tilo.lifecycle 1.0.0"), "{out}");
+        assert!(env.payload_root().join("bin/app").exists());
         assert_eq!(
             std::fs::read(env.payload_root().join("bin/app")).unwrap(),
-            b"public selected app"
+            b"version one"
         );
-        store
-            .update_row("so.tilo.lifecycle", |row| row.held = false)
-            .unwrap();
+        assert!(
+            env.registry_toml().contains("version = \"1.0.0\""),
+            "{}",
+            env.registry_toml()
+        );
+
+        let (ok, out, _) = env.cmd(&["list"]);
+        assert!(ok);
+        assert!(out.contains("so.tilo.lifecycle"), "{out}");
+        assert!(out.contains("1.0.0"), "{out}");
+
+        let (ok, out, err) = env.cmd(&["verify"]);
+        assert!(ok, "verify failed: {out}{err}");
+        assert!(out.contains("ok       so.tilo.lifecycle 1.0.0"), "{out}");
+
+        // From here on the payload and the saved data are treated differently.
+        env.seed_state();
+
+        let v2 = env.tapp("1.1.0", b"version two", None);
         let (ok, out, err) = env.cmd(&[
-            "install",
-            "--force",
-            "--preserve-held",
-            next.to_str().unwrap(),
+            "update",
+            "so.tilo.lifecycle",
+            "--from",
+            v2.to_str().unwrap(),
         ]);
-        assert!(ok, "{out}{err}");
-        assert!(out.contains("\"preserved\":false"), "{out}");
-        let selected = store
-            .registry()
-            .unwrap()
-            .find("so.tilo.lifecycle")
-            .unwrap()
-            .clone();
-        assert!(selected.pinned);
-        assert!(!selected.held);
-        assert_ne!(selected.package_id_hex, held.package_id_hex);
-        assert_eq!(selected.version, "0.1.0");
+        assert!(ok, "update failed: {out}{err}");
+        assert!(
+            out.contains("updated: so.tilo.lifecycle 1.0.0 -> 1.1.0"),
+            "{out}"
+        );
         assert_eq!(
             std::fs::read(env.payload_root().join("bin/app")).unwrap(),
-            b"paired current cohort app"
+            b"version two",
+            "the payload must be the new version's"
         );
-        assert!(out.contains(&selected.package_id_hex), "{out}");
-        let before = env.registry_toml();
-        let wrong = "00".repeat(32);
+        assert!(env.registry_toml().contains("version = \"1.1.0\""));
+        assert!(
+            env.state_exists("personal") && env.state_exists("b7c1-workspace"),
+            "an update must keep the user's data"
+        );
+
+        // Verification follows the swap: the record is the new version's.
+        let (ok, out, err) = env.cmd(&["verify", "so.tilo.lifecycle"]);
+        assert!(ok, "verify after update failed: {out}{err}");
+        assert!(out.contains("ok       so.tilo.lifecycle 1.1.0"), "{out}");
+
+        let installed_tree = env.payload_root();
+        let (ok, out, err) = env.cmd(&["uninstall", "so.tilo.lifecycle", "--keep-state"]);
+        assert!(ok, "uninstall failed: {out}{err}");
+        assert!(
+            out.contains("uninstalled: so.tilo.lifecycle 1.1.0"),
+            "{out}"
+        );
+        assert!(!installed_tree.exists(), "the payload must be gone");
+        assert!(
+            !env.registry_toml().contains("so.tilo.lifecycle"),
+            "the registry entry must be gone: {}",
+            env.registry_toml()
+        );
+        assert!(
+            env.state_exists("personal"),
+            "--keep-state must keep the user's data"
+        );
+    }
+    // A tampered payload is caught and named precisely enough to act on.
+    {
+        let env = Env::new();
+        let v1 = env.tapp("1.0.0", b"one", None);
+        assert!(env.cmd(&["install", v1.to_str().unwrap()]).0);
+        assert!(env.cmd(&["verify"]).0);
+
+        // Installed files are read-only; whoever tampers makes them writable.
+        let target = env.payload_root().join("bin/app");
+        let mut permissions = std::fs::metadata(&target).unwrap().permissions();
+        std::os::unix::fs::PermissionsExt::set_mode(&mut permissions, 0o755);
+        std::fs::set_permissions(&target, permissions).unwrap();
+        std::fs::write(&target, b"malicious").unwrap();
+
+        let (ok, out, err) = env.cmd(&["verify", "so.tilo.lifecycle"]);
+        assert!(!ok, "a tampered payload must fail verification: {out}{err}");
+        assert!(out.contains("FAILED   so.tilo.lifecycle"), "{out}");
+        assert!(out.contains("modified: bin/app"), "{out}");
+    }
+    {
+        let env = Env::new();
+        let v1 = env.tapp("1.0.0", b"one", None);
+        assert!(env.cmd(&["install", v1.to_str().unwrap()]).0);
+        env.seed_state();
+
+        let (ok, out, err) = env.cmd(&["info", "so.tilo.lifecycle"]);
+        assert!(ok, "{out}{err}");
+        assert!(out.contains("runtime       : (none declared)"), "{out}");
+        assert!(out.contains("integrity     : recorded"), "{out}");
+        assert!(out.contains("saved data    : 2 workspace(s)"), "{out}");
+        assert!(out.contains("personal"), "{out}");
+    }
+    // A thin package is metadata only: it installs when the content store holds its payload, and is
+    // refused when nothing can supply it.
+    {
+        let env = Env::new();
+        let full = env.tapp("1.0.0", b"one", None);
+        let thin = thin_of(&full);
+        assert!(std::fs::metadata(&thin).unwrap().len() < 16 * 1024);
+
+        let (ok, out, err) = env.cmd(&["install", thin.to_str().unwrap()]);
+        assert!(
+            !ok,
+            "a thin package with no payload source must not install: {out}"
+        );
+        assert!(err.contains("payload blob"), "{err}");
+        assert!(
+            !env.payload_root().exists(),
+            "a refused install leaves nothing behind"
+        );
+
+        assert!(env.cmd(&["install", full.to_str().unwrap()]).0);
+        let (ok, out, err) = env.cmd(&["install", thin.to_str().unwrap(), "--force"]);
+        assert!(ok, "{out}{err}");
+        assert!(out.contains("already in the content store"), "{out}");
+        let (ok, out, err) = env.cmd(&["verify", "so.tilo.lifecycle"]);
+        assert!(ok, "{out}{err}");
+    }
+}
+
+#[test]
+fn uninstall_keeps_state_unless_purged() {
+    // Deleting notes is not undoable, so it takes an explicit instruction, and the uninstall says
+    // how much it is about to delete first.
+    {
+        let env = Env::new();
+        let v1 = env.tapp("1.0.0", b"one", None);
+        let (ok, _, err) = env.cmd(&["install", v1.to_str().unwrap()]);
+        assert!(ok, "{err}");
+        env.seed_state();
+
+        let (ok, out, err) = env.cmd(&["uninstall", "so.tilo.lifecycle", "--purge"]);
+        assert!(ok, "{out}{err}");
+        assert!(
+            out.contains("state    : deleted in 2 workspace(s)"),
+            "{out}"
+        );
+        assert!(!env.state_exists("personal"));
+        assert!(!env.state_exists("b7c1-workspace"));
+    }
+    // A non-interactive uninstall keeps user data: there is nobody to ask.
+    {
+        let env = Env::new();
+        let v1 = env.tapp("1.0.0", b"one", None);
+        assert!(env.cmd(&["install", v1.to_str().unwrap()]).0);
+        env.seed_state();
+
+        // No --purge, no --keep-state, and stdin is not a terminal.
+        let (ok, out, err) = env.cmd(&["uninstall", "so.tilo.lifecycle"]);
+        assert!(ok, "{out}{err}");
+        assert!(
+            env.state_exists("personal"),
+            "user data must survive an unattended uninstall: {out}"
+        );
+        assert!(out.contains("no terminal to ask on"), "{out}");
+    }
+}
+
+#[test]
+fn dry_runs_and_runtime_dependencies_are_reported_before_anything_changes() {
+    {
+        let env = Env::new();
+        let v1 = env.tapp("1.0.0", b"one", None);
+
+        let (ok, out, err) = env.cmd(&["install", v1.to_str().unwrap(), "--dry-run"]);
+        assert!(ok, "{out}{err}");
+        assert!(
+            out.contains("plan: install so.tilo.lifecycle 1.0.0"),
+            "{out}"
+        );
+        assert!(out.contains("signature : verified"), "{out}");
+        assert!(out.contains("(nothing was written)"), "{out}");
+        assert!(
+            !env.payload_root().exists(),
+            "--dry-run must not unpack anything"
+        );
+        assert!(
+            env.registry_toml().is_empty(),
+            "--dry-run must not touch the registry"
+        );
+
+        assert!(env.cmd(&["install", v1.to_str().unwrap()]).0);
+        env.seed_state();
+        let v2 = env.tapp("2.0.0", b"two", None);
         let (ok, out, _) = env.cmd(&[
-            "install",
-            "--force",
-            "--preserve-held",
-            "--require-publisher",
-            &wrong,
-            first.to_str().unwrap(),
+            "update",
+            "so.tilo.lifecycle",
+            "--from",
+            v2.to_str().unwrap(),
+            "--dry-run",
         ]);
-        assert!(!ok);
-        assert!(!out.contains("cohort-selection:"));
-        assert_eq!(env.registry_toml(), before);
+        assert!(ok);
+        assert!(
+            out.contains("plan: update so.tilo.lifecycle 1.0.0 -> 2.0.0"),
+            "{out}"
+        );
+        assert!(out.contains("state     : KEPT"), "{out}");
+        assert_eq!(
+            std::fs::read(env.payload_root().join("bin/app")).unwrap(),
+            b"one",
+            "--dry-run must not swap the payload"
+        );
+
+        let (ok, out, _) = env.cmd(&["uninstall", "so.tilo.lifecycle", "--dry-run"]);
+        assert!(ok);
+        assert!(
+            out.contains("plan: uninstall so.tilo.lifecycle 1.0.0"),
+            "{out}"
+        );
+        assert!(out.contains("saved data: 2 workspace(s)"), "{out}");
+        assert!(out.contains("(nothing was removed)"), "{out}");
+        assert!(env.payload_root().exists());
+    }
+    // Refusing an install whose runtime bundle is absent keeps "installed" and "launchable" the same
+    // thing, and the message names the command that fixes it.
+    {
+        let env = Env::new();
+        let pkg = env.tapp("1.0.0", b"one", Some("tilo-runtime/2025.06"));
+
+        let (ok, out, err) = env.cmd(&["install", pkg.to_str().unwrap()]);
+        assert!(!ok, "install must refuse: {out}{err}");
+        assert!(
+            err.contains("needs runtime `tilo-runtime/2025.06`"),
+            "{err}"
+        );
+        assert!(
+            err.contains("app install so.tilo.lifecycle"),
+            "the refusal must name the command that fixes it: {err}"
+        );
+        assert!(err.contains("--ignore-missing-runtime"), "{err}");
+        assert!(
+            !env.payload_root().exists(),
+            "a refused install must leave nothing behind"
+        );
+
+        // The escape hatch installs it, and says the package cannot launch.
+        let (ok, out, err) =
+            env.cmd(&["install", pkg.to_str().unwrap(), "--ignore-missing-runtime"]);
+        assert!(ok, "{out}{err}");
+        assert!(err.contains("will not launch until it is"), "{err}");
+
+        // `list` keeps saying so.
+        let (_, out, _) = env.cmd(&["list"]);
+        assert!(out.contains("tilo-runtime/2025.06 (MISSING)"), "{out}");
+    }
+    {
+        let env = Env::new();
+        let pkg = env.tapp("1.0.0", b"one", Some("tilo-runtime/2025.06"));
+        let (ok, out, err) = env.cmd(&["install", pkg.to_str().unwrap(), "--dry-run"]);
+        assert!(ok, "{out}{err}");
+        assert!(out.contains("tilo-runtime/2025.06 MISSING"), "{out}");
+        assert!(out.contains("--ignore-missing-runtime"), "{out}");
+    }
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "each phase keeps one former test's body verbatim"
+)]
+fn updates_refuse_downgrades_foreign_packages_and_unapproved_publishers() {
+    // An older version over a newer one is nearly always a mis-resolve, so it is refused unless
+    // asked for.
+    {
+        let env = Env::new();
+        let v2 = env.tapp("2.0.0", b"two", None);
+        assert!(env.cmd(&["install", v2.to_str().unwrap()]).0);
+
+        let v1 = env.tapp("1.0.0", b"one", None);
+        let (ok, out, err) = env.cmd(&[
+            "update",
+            "so.tilo.lifecycle",
+            "--from",
+            v1.to_str().unwrap(),
+        ]);
+        assert!(!ok, "{out}{err}");
+        assert!(err.contains("is not newer"), "{err}");
+        assert_eq!(
+            std::fs::read(env.payload_root().join("bin/app")).unwrap(),
+            b"two",
+            "a refused update must not have swapped anything"
+        );
+
+        let (ok, out, err) = env.cmd(&[
+            "update",
+            "so.tilo.lifecycle",
+            "--from",
+            v1.to_str().unwrap(),
+            "--allow-downgrade",
+        ]);
+        assert!(ok, "{out}{err}");
+        assert_eq!(
+            std::fs::read(env.payload_root().join("bin/app")).unwrap(),
+            b"one"
+        );
+    }
+    {
+        let env = Env::new();
+        let v1 = env.tapp("1.0.0", b"one", None);
+        assert!(env.cmd(&["install", v1.to_str().unwrap()]).0);
+        let (ok, out, err) = env.cmd(&[
+            "update",
+            "so.tilo.lifecycle",
+            "--from",
+            v1.to_str().unwrap(),
+        ]);
+        assert!(ok, "{out}{err}");
+        assert!(out.contains("is already current"), "{out}");
+    }
+    // A `.tapp` for a different package is never swapped into this one's slot.
+    {
+        let env = Env::new();
+        let v1 = env.tapp("1.0.0", b"one", None);
+        assert!(env.cmd(&["install", v1.to_str().unwrap()]).0);
+
+        let build = env.home.path().join("other");
+        let payload = build.join("payload");
+        write_payload(&payload, b"other app");
+        let src = manifest_src("9.0.0", &env.pub_hex, None)
+            .replace("so.tilo.lifecycle", "so.tilo.impostor");
+        let manifest = Manifest::from_toml_str(&src).unwrap();
+        let other = build.join("other.tapp");
+        build_tapp(&other, &manifest, &env.sk, &payload);
+
+        let (ok, out, err) = env.cmd(&[
+            "update",
+            "so.tilo.lifecycle",
+            "--from",
+            other.to_str().unwrap(),
+        ]);
+        assert!(!ok, "{out}{err}");
+        assert!(err.contains("so.tilo.impostor"), "{err}");
+        assert_eq!(
+            std::fs::read(env.payload_root().join("bin/app")).unwrap(),
+            b"one"
+        );
+    }
+    // A local tapp has no registry owner's signed publisher authorisation, so matching the package
+    // id is not enough: an unrelated key must not take over the update slot.
+    {
+        let env = Env::new();
+        let v1 = env.tapp("1.0.0", b"one", None);
+        assert!(env.cmd(&["install", v1.to_str().unwrap()]).0);
+
+        let (replacement_key, replacement_pub_hex) = fresh_key();
+        let build = env.home.path().join("replacement-publisher");
+        let payload = build.join("payload");
+        write_payload(&payload, b"new publisher");
+        let manifest =
+            Manifest::from_toml_str(&manifest_src("2.0.0", &replacement_pub_hex, None)).unwrap();
+        let replacement = build.join("replacement.tapp");
+        build_tapp(&replacement, &manifest, &replacement_key, &payload);
+
+        let (ok, out, err) = env.cmd(&[
+            "update",
+            "so.tilo.lifecycle",
+            "--from",
+            replacement.to_str().unwrap(),
+        ]);
+        assert!(!ok, "publisher takeover must be refused: {out}{err}");
+        assert!(err.contains("changed publisher"), "{err}");
+        assert!(err.contains("--require-publisher"), "{err}");
+        assert_eq!(
+            std::fs::read(env.payload_root().join("bin/app")).unwrap(),
+            b"one",
+            "a refused publisher change must preserve the installed payload"
+        );
+        assert!(env.registry_toml().contains(&env.pub_hex));
+
+        let (ok, out, err) = env.cmd(&[
+            "update",
+            "so.tilo.lifecycle",
+            "--from",
+            replacement.to_str().unwrap(),
+            "--require-publisher",
+            &replacement_pub_hex,
+        ]);
+        assert!(ok, "explicit publisher rotation failed: {out}{err}");
+        assert_eq!(
+            std::fs::read(env.payload_root().join("bin/app")).unwrap(),
+            b"new publisher"
+        );
+        assert!(env.registry_toml().contains(&replacement_pub_hex));
     }
 }
 
@@ -652,215 +583,280 @@ fn thin_of(full: &Path) -> PathBuf {
     thin
 }
 
-tilo_test_env::scenario! {
-    fn the_desktop_contract;
+#[test]
+fn desktop_contract_installs_above_thin_limit_without_shared_runtime() {
+    let env = Env::new();
+    let pkg = env.desktop_tapp(
+        &vec![0; 3 * 1024 * 1024],
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+    );
+    let (ok, out, err) = env.cmd(&[
+        "install",
+        pkg.to_str().unwrap(),
+        "--require-publisher",
+        &env.pub_hex,
+    ]);
+    assert!(ok, "{out}{err}");
+    assert_eq!(
+        std::fs::metadata(env.payload_root().join("bin/app"))
+            .unwrap()
+            .len(),
+        3 * 1024 * 1024
+    );
+    assert!(!env.xdg_data().join("tilo-runtime").exists());
+}
 
-    phase desktop_contract_installs_above_thin_limit_without_shared_runtime;
-    {
-        let env = Env::new();
-        let pkg = env.desktop_tapp(
-            &vec![0; 3 * 1024 * 1024],
-            std::env::consts::OS,
+#[test]
+fn desktop_contract_refuses_foreign_platform_and_architecture() {
+    for (platform, arch) in [
+        (
+            if std::env::consts::OS == "linux" {
+                "windows"
+            } else {
+                "linux"
+            },
             std::env::consts::ARCH,
-        );
+        ),
+        (
+            std::env::consts::OS,
+            if std::env::consts::ARCH == "x86_64" {
+                "aarch64"
+            } else {
+                "x86_64"
+            },
+        ),
+    ] {
+        let env = Env::new();
+        let pkg = env.desktop_tapp(b"foreign", platform, arch);
         let (ok, out, err) = env.cmd(&[
             "install",
             pkg.to_str().unwrap(),
             "--require-publisher",
             &env.pub_hex,
         ]);
-        assert!(ok, "{out}{err}");
-        assert_eq!(
-            std::fs::metadata(env.payload_root().join("bin/app"))
-                .unwrap()
-                .len(),
-            3 * 1024 * 1024
-        );
-        assert!(!env.xdg_data().join("tilo-runtime").exists());
-    }
-
-    phase desktop_contract_refuses_foreign_platform_and_architecture;
-    {
-        for (platform, arch) in [
-            (
-                if std::env::consts::OS == "linux" {
-                    "windows"
-                } else {
-                    "linux"
-                },
-                std::env::consts::ARCH,
-            ),
-            (
-                std::env::consts::OS,
-                if std::env::consts::ARCH == "x86_64" {
-                    "aarch64"
-                } else {
-                    "x86_64"
-                },
-            ),
-        ] {
-            let env = Env::new();
-            let pkg = env.desktop_tapp(b"foreign", platform, arch);
-            let (ok, out, err) = env.cmd(&[
-                "install",
-                pkg.to_str().unwrap(),
-                "--require-publisher",
-                &env.pub_hex,
-            ]);
-            assert!(!ok, "{out}");
-            assert!(err.contains("cannot run on"), "{err}");
-            assert!(env.registry_toml().is_empty());
-        }
-    }
-
-    phase desktop_contract_keeps_both_archive_size_limits;
-    {
-        for desktop in [false, true] {
-            let env = Env::new();
-            let limit = if desktop {
-                tilo_app_package::MAX_DESKTOP_APP_TAPP_BYTES
-            } else {
-                tilo_app_package::MAX_APP_TAPP_BYTES
-            };
-            // The payload is at its ceiling and the signed tar adds metadata: the installer rejects that
-            // oversized archive.
-            let body = vec![0; usize::try_from(limit).unwrap() - b"payload data".len()];
-            let pkg = if desktop {
-                env.desktop_tapp(&body, std::env::consts::OS, std::env::consts::ARCH)
-            } else {
-                env.tapp("0.2.0", &body, None)
-            };
-            let (ok, out, err) = env.cmd(&[
-                "install",
-                pkg.to_str().unwrap(),
-                "--require-publisher",
-                &env.pub_hex,
-            ]);
-            assert!(!ok, "{out}");
-            assert!(err.contains(&format!("at most {limit} bytes")), "{err}");
-            assert!(env.registry_toml().is_empty());
-        }
+        assert!(!ok, "{out}");
+        assert!(err.contains("cannot run on"), "{err}");
+        assert!(env.registry_toml().is_empty());
     }
 }
 
-tilo_test_env::scenario! {
-    fn apps_need_their_runtimes;
-
-    phase an_app_is_not_installed_or_updated_without_the_runtimes_it_requires;
-    // An app that requires a further runtime by exact version is installed and updated with it on every
-    // path: an app replaced while its engine is absent would not start.
-    {
+#[test]
+fn desktop_contract_keeps_both_archive_size_limits() {
+    for desktop in [false, true] {
         let env = Env::new();
-        let engine = "tilo-runtime/2026.10.9-chromium";
-
-        let v1 = env.tapp_requiring_runtime("1.0.0", b"one", engine);
-        let (ok, out, err) = env.cmd(&["install", v1.to_str().unwrap()]);
-        assert!(!ok, "install must refuse: {out}{err}");
-        assert!(err.contains(&format!("pins runtime `{engine}`")), "{err}");
-        assert!(err.contains("app install so.tilo.lifecycle"), "{err}");
-        assert!(!env.payload_root().exists());
-
-        let (ok, out, err) = env.cmd(&["install", v1.to_str().unwrap(), "--ignore-missing-runtime"]);
-        assert!(ok, "{out}{err}");
-
-        // A build pinning an engine this device lacks does not replace the working one.
-        let v2 = env.tapp_requiring_runtime("2.0.0", b"two", "tilo-runtime/2026.10.23-chromium");
+        let limit = if desktop {
+            tilo_app_package::MAX_DESKTOP_APP_TAPP_BYTES
+        } else {
+            tilo_app_package::MAX_APP_TAPP_BYTES
+        };
+        // The payload is at its ceiling and the signed tar adds metadata: the installer rejects that
+        // oversized archive.
+        let body = vec![0; usize::try_from(limit).unwrap() - b"payload data".len()];
+        let pkg = if desktop {
+            env.desktop_tapp(&body, std::env::consts::OS, std::env::consts::ARCH)
+        } else {
+            env.tapp("0.2.0", &body, None)
+        };
         let (ok, out, err) = env.cmd(&[
-            "update",
-            "so.tilo.lifecycle",
-            "--from",
-            v2.to_str().unwrap(),
-        ]);
-        assert!(!ok, "update must refuse: {out}{err}");
-        assert!(err.contains("2026.10.23-chromium"), "{err}");
-        assert_eq!(
-            std::fs::read(env.payload_root().join("bin/app")).unwrap(),
-            b"one",
-            "the working build stays"
-        );
-
-        let bundle = env
-            .xdg_data()
-            .join("tilo-runtime")
-            .join("2026.10.23-chromium");
-        std::fs::create_dir_all(&bundle).unwrap();
-        std::fs::write(bundle.join("bundle.toml"), b"").unwrap();
-        let (ok, out, err) = env.cmd(&[
-            "update",
-            "so.tilo.lifecycle",
-            "--from",
-            v2.to_str().unwrap(),
-        ]);
-        assert!(ok, "{out}{err}");
-        assert_eq!(
-            std::fs::read(env.payload_root().join("bin/app")).unwrap(),
-            b"two"
-        );
-    }
-
-    phase selected_runtime_inventory_uses_the_real_catalog_and_xdg_bundle_path;
-    {
-        let env = Env::new();
-        let archive = env.tapp(
-            "1.0.0",
-            b"actual selected payload",
-            Some("tilo-runtime/2026.07"),
-        );
-        let (ok, _, error) = env.cmd(&[
             "install",
-            "--allow-self-signed",
-            "--ignore-missing-runtime",
-            archive.to_str().unwrap(),
+            pkg.to_str().unwrap(),
+            "--require-publisher",
+            &env.pub_hex,
         ]);
-        assert!(ok, "{error}");
-        let host = env.home.path().join("fixture-host");
-        std::fs::create_dir_all(&host).unwrap();
-        let library = env.home.path().join("library.so");
-        std::fs::write(&library, b"selected runtime bytes").unwrap();
-        let identity = env.home.path().join("identity.json");
-        std::fs::write(
-            &identity,
-            serde_json::json!({"secret_key_hex":"11".repeat(32)}).to_string(),
-        )
-        .unwrap();
-        let runtime = env.xdg_data().join("tilo-runtime/2026.07");
-        runtime_bundle::build_bundle_with(
-            &runtime,
-            "2026.07",
-            &runtime_bundle::BuildOptions {
-                from: Some(&host),
-                identity: Some(&identity),
-                extra_libs: &[library],
-                ..Default::default()
-            },
-        )
-        .unwrap();
-        let before = env.registry_toml();
-        let (ok, output, error) = env.cmd(&["list", "--json", "--runtime-paths"]);
-        assert!(ok, "{error}");
-        let snapshot: serde_json::Value = serde_json::from_str(&output).unwrap();
-        assert_eq!(snapshot["apps"][0]["id"], "so.tilo.lifecycle");
-        assert_eq!(snapshot["apps"][0]["runtime"], "tilo-runtime/2026.07");
-        assert_eq!(
-            snapshot["runtime_paths"]["2026.07"],
-            runtime.to_str().unwrap()
-        );
-        assert!(
-            !runtime.starts_with(env.home.path().join(".local/share")),
-            "must honor actual XDG_DATA_HOME"
-        );
-        let (ok, output, error) = env.cmd(&["list", "--json"]);
-        assert!(ok, "{error}");
-        assert!(
-            serde_json::from_str::<serde_json::Value>(&output)
-                .unwrap()
-                .is_array()
-        );
-        assert!(!env.cmd(&["list", "--runtime-paths"]).0);
-        assert_eq!(
-            env.registry_toml(),
-            before,
-            "inspection never changes a selection"
-        );
+        assert!(!ok, "{out}");
+        assert!(err.contains(&format!("at most {limit} bytes")), "{err}");
+        assert!(env.registry_toml().is_empty());
     }
+}
+
+#[test]
+fn cohort_selection_preserves_user_holds_pins_and_state_through_the_real_installer() {
+    let env = Env::new();
+    let first = env.tapp("0.1.73018", b"public selected app", None);
+    let next = env.tapp("0.1.0", b"paired current cohort app", None);
+    let (ok, out, err) = env.cmd(&["install", "--pinned", first.to_str().unwrap()]);
+    assert!(ok, "{out}{err}");
+    let store = package_store::PackageStore::at(env.tilo_apps());
+    store
+        .update_row("so.tilo.lifecycle", |row| row.held = true)
+        .unwrap();
+    let held = store
+        .registry()
+        .unwrap()
+        .find("so.tilo.lifecycle")
+        .unwrap()
+        .clone();
+    let before = env.registry_toml();
+    let (ok, out, err) = env.cmd(&[
+        "install",
+        "--force",
+        "--preserve-held",
+        next.to_str().unwrap(),
+    ]);
+    assert!(ok, "{out}{err}");
+    assert!(out.contains("\"preserved\":true"), "{out}");
+    assert!(out.contains(&held.package_id_hex), "{out}");
+    assert_eq!(env.registry_toml(), before);
+    assert_eq!(
+        std::fs::read(env.payload_root().join("bin/app")).unwrap(),
+        b"public selected app"
+    );
+    store
+        .update_row("so.tilo.lifecycle", |row| row.held = false)
+        .unwrap();
+    let (ok, out, err) = env.cmd(&[
+        "install",
+        "--force",
+        "--preserve-held",
+        next.to_str().unwrap(),
+    ]);
+    assert!(ok, "{out}{err}");
+    assert!(out.contains("\"preserved\":false"), "{out}");
+    let selected = store
+        .registry()
+        .unwrap()
+        .find("so.tilo.lifecycle")
+        .unwrap()
+        .clone();
+    assert!(selected.pinned);
+    assert!(!selected.held);
+    assert_ne!(selected.package_id_hex, held.package_id_hex);
+    assert_eq!(selected.version, "0.1.0");
+    assert_eq!(
+        std::fs::read(env.payload_root().join("bin/app")).unwrap(),
+        b"paired current cohort app"
+    );
+    assert!(out.contains(&selected.package_id_hex), "{out}");
+    let before = env.registry_toml();
+    let wrong = "00".repeat(32);
+    let (ok, out, _) = env.cmd(&[
+        "install",
+        "--force",
+        "--preserve-held",
+        "--require-publisher",
+        &wrong,
+        first.to_str().unwrap(),
+    ]);
+    assert!(!ok);
+    assert!(!out.contains("cohort-selection:"));
+    assert_eq!(env.registry_toml(), before);
+}
+
+/// An app that requires a further runtime by exact version is installed and updated with it on every
+/// path: an app replaced while its engine is absent would not start.
+#[test]
+fn an_app_is_not_installed_or_updated_without_the_runtimes_it_requires() {
+    let env = Env::new();
+    let engine = "tilo-runtime/2026.10.9-chromium";
+
+    let v1 = env.tapp_requiring_runtime("1.0.0", b"one", engine);
+    let (ok, out, err) = env.cmd(&["install", v1.to_str().unwrap()]);
+    assert!(!ok, "install must refuse: {out}{err}");
+    assert!(err.contains(&format!("pins runtime `{engine}`")), "{err}");
+    assert!(err.contains("app install so.tilo.lifecycle"), "{err}");
+    assert!(!env.payload_root().exists());
+
+    let (ok, out, err) = env.cmd(&["install", v1.to_str().unwrap(), "--ignore-missing-runtime"]);
+    assert!(ok, "{out}{err}");
+
+    // A build pinning an engine this device lacks does not replace the working one.
+    let v2 = env.tapp_requiring_runtime("2.0.0", b"two", "tilo-runtime/2026.10.23-chromium");
+    let (ok, out, err) = env.cmd(&[
+        "update",
+        "so.tilo.lifecycle",
+        "--from",
+        v2.to_str().unwrap(),
+    ]);
+    assert!(!ok, "update must refuse: {out}{err}");
+    assert!(err.contains("2026.10.23-chromium"), "{err}");
+    assert_eq!(
+        std::fs::read(env.payload_root().join("bin/app")).unwrap(),
+        b"one",
+        "the working build stays"
+    );
+
+    let bundle = env
+        .xdg_data()
+        .join("tilo-runtime")
+        .join("2026.10.23-chromium");
+    std::fs::create_dir_all(&bundle).unwrap();
+    std::fs::write(bundle.join("bundle.toml"), b"").unwrap();
+    let (ok, out, err) = env.cmd(&[
+        "update",
+        "so.tilo.lifecycle",
+        "--from",
+        v2.to_str().unwrap(),
+    ]);
+    assert!(ok, "{out}{err}");
+    assert_eq!(
+        std::fs::read(env.payload_root().join("bin/app")).unwrap(),
+        b"two"
+    );
+}
+
+#[test]
+fn selected_runtime_inventory_uses_the_real_catalog_and_xdg_bundle_path() {
+    let env = Env::new();
+    let archive = env.tapp(
+        "1.0.0",
+        b"actual selected payload",
+        Some("tilo-runtime/2026.07"),
+    );
+    let (ok, _, error) = env.cmd(&[
+        "install",
+        "--allow-self-signed",
+        "--ignore-missing-runtime",
+        archive.to_str().unwrap(),
+    ]);
+    assert!(ok, "{error}");
+    let host = env.home.path().join("fixture-host");
+    std::fs::create_dir_all(&host).unwrap();
+    let library = env.home.path().join("library.so");
+    std::fs::write(&library, b"selected runtime bytes").unwrap();
+    let identity = env.home.path().join("identity.json");
+    std::fs::write(
+        &identity,
+        serde_json::json!({"secret_key_hex":"11".repeat(32)}).to_string(),
+    )
+    .unwrap();
+    let runtime = env.xdg_data().join("tilo-runtime/2026.07");
+    runtime_bundle::build_bundle_with(
+        &runtime,
+        "2026.07",
+        &runtime_bundle::BuildOptions {
+            from: Some(&host),
+            identity: Some(&identity),
+            extra_libs: &[library],
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let before = env.registry_toml();
+    let (ok, output, error) = env.cmd(&["list", "--json", "--runtime-paths"]);
+    assert!(ok, "{error}");
+    let snapshot: serde_json::Value = serde_json::from_str(&output).unwrap();
+    assert_eq!(snapshot["apps"][0]["id"], "so.tilo.lifecycle");
+    assert_eq!(snapshot["apps"][0]["runtime"], "tilo-runtime/2026.07");
+    assert_eq!(
+        snapshot["runtime_paths"]["2026.07"],
+        runtime.to_str().unwrap()
+    );
+    assert!(
+        !runtime.starts_with(env.home.path().join(".local/share")),
+        "must honor actual XDG_DATA_HOME"
+    );
+    let (ok, output, error) = env.cmd(&["list", "--json"]);
+    assert!(ok, "{error}");
+    assert!(
+        serde_json::from_str::<serde_json::Value>(&output)
+            .unwrap()
+            .is_array()
+    );
+    assert!(!env.cmd(&["list", "--runtime-paths"]).0);
+    assert_eq!(
+        env.registry_toml(),
+        before,
+        "inspection never changes a selection"
+    );
 }

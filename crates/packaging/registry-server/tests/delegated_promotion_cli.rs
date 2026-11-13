@@ -314,641 +314,637 @@ async fn networkless_publisher_reverifies_content_addressed_bytes_and_delegated_
     assert_eq!(response.status(), reqwest::StatusCode::SERVICE_UNAVAILABLE);
 }
 
-tilo_test_env::scenario! {
-    fn delegated_promotion;
+#[test]
+fn collector_reuses_staged_bytes_and_leaves_uncollectable_submissions_pending() {
+    let temp = tempfile::tempdir().unwrap();
+    let storage = Storage::open(temp.path()).unwrap();
+    let publisher_key = SigningKey::from_bytes(&[55; 32]);
+    let publisher = SigningIdentity::from_signing_key(publisher_key.clone());
+    let publisher_hex = hex::encode(publisher.public_key_bytes());
+    allow(&storage, &publisher_hex, true);
+    let (bytes, package_id) = signed_tapp(&publisher);
+    let digest = blake3::hash(&bytes).to_hex().to_string();
+    let submission = |id: &str, url: &str, blake3_hex: &str| {
+        let entry = registry_types::RegistryEntry {
+            name: "Editor".into(),
+            description: "Editor".into(),
+            tagline: "Edit video on Tilo OS".into(),
+            categories: vec!["Productivity".into()],
+            versions: vec![crate::support::version(
+                "1.0.0",
+                1,
+                crate::support::tapp(
+                    url,
+                    hex::encode(package_id.as_bytes()),
+                    bytes.len() as u64,
+                    blake3_hex,
+                    None,
+                ),
+            )],
+            ..crate::support::entry(id, publisher_hex.clone(), Vec::new())
+        };
+        PendingSubmission {
+            submission_id: id.into(),
+            submitted_at_unix: 1,
+            change: sign_change_request(EntryAction::Add, entry, &publisher_key),
+        }
+    };
+    // The advertised URL no longer serves these bytes, but the registry already holds them under
+    // the digest the publisher signed.
+    let collectable = submission(
+        "so.tilo.editor",
+        "https://apps.tilo.so/artifacts/gone/editor-x86_64.tapp",
+        &digest,
+    );
+    let uncollectable = submission(
+        "so.tilo.viewer",
+        "file:///untrusted/viewer-x86_64.tapp",
+        &"cc".repeat(32),
+    );
+    storage.save_pending(&collectable).unwrap();
+    storage.save_pending(&uncollectable).unwrap();
+    storage.save_staged_artifact(&digest, &bytes).unwrap();
 
-    phase collector_reuses_staged_bytes_and_leaves_uncollectable_submissions_pending;
-    {
+    let collected = run(
+        temp.path(),
+        &["collect-first-party", "--publisher-pubkey", &publisher_hex],
+    );
+    assert!(!collected.status.success());
+    let report: serde_json::Value = serde_json::from_slice(&collected.stdout).unwrap();
+    assert_eq!(report["status"], "incomplete");
+    assert_eq!(report["collected"], 1);
+    assert_eq!(report["failed"][0]["submission"], "so.tilo.viewer");
+    let staged = storage.load_staged_promotion().unwrap().unwrap();
+    assert_eq!(staged.submissions, vec![collectable]);
+    assert_eq!(staged.artifacts.len(), 1);
+    assert_eq!(staged.artifacts[0].blake3_hex, digest);
+    assert!(
+        storage
+            .load_pending("so.tilo.viewer")
+            .unwrap()
+            .is_some_and(|pending| pending == uncollectable)
+    );
+}
+
+#[test]
+fn thin_app_promotion_waits_for_its_exact_native_runtime() {
+    let temp = tempfile::tempdir().unwrap();
+    let storage = Storage::open(temp.path()).unwrap();
+    let owner = SigningKey::from_bytes(&[61; 32]);
+    let channel = SigningKey::from_bytes(&[62; 32]);
+    let publisher_key = SigningKey::from_bytes(&[63; 32]);
+    let publisher = SigningIdentity::from_signing_key(publisher_key.clone());
+    let publisher_hex = hex::encode(publisher.public_key_bytes());
+    let owner_hex = hex::encode(owner.verifying_key().to_bytes());
+    storage
+        .save_identity(&crate::support::identity(
+            owner_hex.clone(),
+            "https://registry.test",
+        ))
+        .unwrap();
+    allow(&storage, &publisher_hex, true);
+    let owner_path = temp.path().join("owner.seed");
+    let channel_path = temp.path().join("channel.seed");
+    secret(&owner_path, &owner);
+    secret(&channel_path, &channel);
+    ok(
+        temp.path(),
+        &authorize(
+            &owner_path,
+            &hex::encode(channel.verifying_key().to_bytes()),
+            &publisher_hex,
+            "1",
+        ),
+    );
+    let runtime = "tilo-runtime/2026.07+native.00112233445566778899aabbccddeeff";
+    let app = native_submission(&publisher_key, "so.tilo.editor", "x86_64", runtime, false);
+    stage_native_submissions(&storage, &publisher_hex, std::slice::from_ref(&app));
+    let arguments = publish_args(&channel_path, None);
+    let missing = ok(temp.path(), &arguments);
+    let deferred: serde_json::Value = serde_json::from_slice(&missing.stdout).unwrap();
+    assert_eq!(deferred["status"], "deferred");
+    assert_eq!(deferred["published"], 0);
+    assert_eq!(deferred["deferred"], 1);
+    assert!(storage.load_snapshot().unwrap().is_none());
+    assert!(storage.load_promotion_transaction().unwrap().is_none());
+    assert!(storage.load_pending("so.tilo.editor").unwrap().is_some());
+    assert!(storage.load_staged_promotion().unwrap().is_some());
+
+    let wrong_arch = native_submission(
+        &publisher_key,
+        "so.tilo.runtime.arm",
+        "aarch64",
+        runtime,
+        true,
+    );
+    let arm_app = native_submission(&publisher_key, "so.tilo.arm-app", "aarch64", runtime, false);
+    let held_request = storage.load_pending("so.tilo.editor").unwrap().unwrap();
+    stage_native_submissions(
+        &storage,
+        &publisher_hex,
+        &[app.clone(), arm_app, wrong_arch],
+    );
+    let mismatched = ok(temp.path(), &arguments);
+    let partial: serde_json::Value = serde_json::from_slice(&mismatched.stdout).unwrap();
+    assert_eq!(partial["status"], "published");
+    assert_eq!(partial["promoted"], 2);
+    let partial_snapshot = storage.load_snapshot().unwrap().unwrap();
+    registry_types::verify_snapshot(
+        &partial_snapshot,
+        &owner_hex,
+        partial_snapshot.issued_at_unix,
+    )
+    .unwrap();
+    assert!(ids(&partial_snapshot).contains(&"so.tilo.arm-app"));
+    assert!(ids(&partial_snapshot).contains(&"so.tilo.runtime.arm"));
+    assert!(!ids(&partial_snapshot).contains(&"so.tilo.editor"));
+    assert_eq!(
+        storage.load_pending("so.tilo.editor").unwrap().unwrap(),
+        held_request
+    );
+    assert!(storage.load_pending("so.tilo.arm-app").unwrap().is_none());
+    assert!(
+        storage
+            .load_pending("so.tilo.runtime.arm")
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        storage.load_staged_artifact(&app.1.blake3_hex).unwrap(),
+        app.2
+    );
+    assert!(storage.load_promotion_transaction().unwrap().is_none());
+    assert!(storage.load_staged_promotion().unwrap().is_none());
+
+    // A provider offered in the predecessor is insufficient if this batch removes it. The new ARM
+    // request must stay pending, while the exact x86 provider and its app can publish.
+    let newly_missing = native_submission(
+        &publisher_key,
+        "so.tilo.new-arm-app",
+        "aarch64",
+        runtime,
+        false,
+    );
+    let removed_provider = partial_snapshot
+        .entries
+        .iter()
+        .find(|entry| entry.package_id == "so.tilo.runtime.arm")
+        .unwrap()
+        .clone();
+    let removal = PendingSubmission {
+        submission_id: "so.tilo.runtime.arm".into(),
+        submitted_at_unix: 2,
+        change: sign_change_request(EntryAction::Delete, removed_provider, &publisher_key),
+    };
+    let exact = native_submission(&publisher_key, "so.tilo.runtime", "x86_64", runtime, true);
+    stage_native_submissions(
+        &storage,
+        &publisher_hex,
+        &[app, exact, newly_missing.clone()],
+    );
+    storage.save_pending(&removal).unwrap();
+    let mut removal_stage = storage.load_staged_promotion().unwrap().unwrap();
+    removal_stage.submissions.push(removal);
+    storage.save_staged_promotion(&removal_stage).unwrap();
+    ok(temp.path(), &arguments);
+    let snapshot = storage.load_snapshot().unwrap().unwrap();
+    registry_types::verify_snapshot(&snapshot, &owner_hex, snapshot.issued_at_unix).unwrap();
+    assert_eq!(snapshot.entries.len(), 3);
+    assert!(storage.load_pending("so.tilo.editor").unwrap().is_none());
+    assert!(storage.load_pending("so.tilo.runtime").unwrap().is_none());
+    assert!(!ids(&snapshot).contains(&"so.tilo.new-arm-app"));
+    assert!(!ids(&snapshot).contains(&"so.tilo.runtime.arm"));
+    assert_eq!(
+        storage
+            .load_pending("so.tilo.new-arm-app")
+            .unwrap()
+            .unwrap(),
+        newly_missing.0
+    );
+    assert_eq!(
+        storage
+            .load_staged_artifact(&newly_missing.1.blake3_hex)
+            .unwrap(),
+        newly_missing.2
+    );
+}
+
+#[test]
+fn selected_partial_inventory_recovers_without_consuming_deferred_requests() {
+    for journal_saved in [false, true] {
         let temp = tempfile::tempdir().unwrap();
         let storage = Storage::open(temp.path()).unwrap();
-        let publisher_key = SigningKey::from_bytes(&[55; 32]);
-        let publisher = SigningIdentity::from_signing_key(publisher_key.clone());
-        let publisher_hex = hex::encode(publisher.public_key_bytes());
+        let owner = SigningKey::from_bytes(&[71; 32]);
+        let channel = SigningKey::from_bytes(&[72; 32]);
+        let publisher = SigningKey::from_bytes(&[73; 32]);
+        let owner_hex = hex::encode(owner.verifying_key().to_bytes());
+        let publisher_hex = hex::encode(publisher.verifying_key().to_bytes());
+        storage
+            .save_identity(&crate::support::identity(
+                owner_hex.clone(),
+                "https://registry.test",
+            ))
+            .unwrap();
         allow(&storage, &publisher_hex, true);
-        let (bytes, package_id) = signed_tapp(&publisher);
-        let digest = blake3::hash(&bytes).to_hex().to_string();
-        let submission = |id: &str, url: &str, blake3_hex: &str| {
-            let entry = registry_types::RegistryEntry {
-                name: "Editor".into(),
-                description: "Editor".into(),
-                tagline: "Edit video on Tilo OS".into(),
-                categories: vec!["Productivity".into()],
-                versions: vec![crate::support::version(
-                    "1.0.0",
-                    1,
-                    crate::support::tapp(
-                        url,
-                        hex::encode(package_id.as_bytes()),
-                        bytes.len() as u64,
-                        blake3_hex,
-                        None,
-                    ),
-                )],
-                ..crate::support::entry(id, publisher_hex.clone(), Vec::new())
+        let owner_path = temp.path().join("owner.seed");
+        let channel_path = temp.path().join("channel.seed");
+        secret(&owner_path, &owner);
+        secret(&channel_path, &channel);
+        ok(
+            temp.path(),
+            &authorize(
+                &owner_path,
+                &hex::encode(channel.verifying_key().to_bytes()),
+                &publisher_hex,
+                "1",
+            ),
+        );
+        let absent_runtime = "tilo-runtime/2026.07+native.00000000000000000000000000000000";
+        let offered_runtime = "tilo-runtime/2026.07+native.11111111111111111111111111111111";
+        let held = native_submission(&publisher, "so.tilo.held", "x86_64", absent_runtime, false);
+        let ready = native_submission(
+            &publisher,
+            "so.tilo.ready",
+            "x86_64",
+            offered_runtime,
+            false,
+        );
+        let provider = native_submission(
+            &publisher,
+            "so.tilo.runtime",
+            "x86_64",
+            offered_runtime,
+            true,
+        );
+        stage_native_submissions(
+            &storage,
+            &publisher_hex,
+            &[held.clone(), ready.clone(), provider.clone()],
+        );
+        let mut selected = storage.load_staged_promotion().unwrap().unwrap();
+        selected
+            .submissions
+            .retain(|pending| pending.submission_id != "so.tilo.held");
+        selected
+            .artifacts
+            .retain(|artifact| artifact.submission_id != "so.tilo.held");
+        // Model a crash at either durable boundary of subset selection. No approval, snapshot
+        // publication, or deletion has happened yet.
+        storage.save_staged_promotion(&selected).unwrap();
+        if journal_saved {
+            let authorization = storage.load_channel_authorization().unwrap().unwrap();
+            let now = tilo_clock::unix_now();
+            let mut candidate = SignedRegistrySnapshot {
+                protocol: registry_types::PACKAGE_FORMAT_VERSION,
+                sequence: 1,
+                issued_at_unix: now,
+                expires_at_unix: now + 3600,
+                previous_snapshot_hash_hex: String::new(),
+                moderation_head_hex: String::new(),
+                publishers: authorization.publishers.clone(),
+                entries: vec![
+                    ready.0.change.entry.clone(),
+                    provider.0.change.entry.clone(),
+                ],
+                owner_signature_hex: String::new(),
+                channel_authorization: None,
             };
-            PendingSubmission {
-                submission_id: id.into(),
-                submitted_at_unix: 1,
-                change: sign_change_request(EntryAction::Add, entry, &publisher_key),
-            }
-        };
-        // The advertised URL no longer serves these bytes, but the registry already holds them under
-        // the digest the publisher signed.
-        let collectable = submission(
-            "so.tilo.editor",
-            "https://apps.tilo.so/artifacts/gone/editor-x86_64.tapp",
-            &digest,
+            registry_types::sign_snapshot_delegated(&mut candidate, &channel, authorization)
+                .unwrap();
+            registry_types::verify_snapshot(&candidate, &owner_hex, now).unwrap();
+            storage
+                .save_promotion_transaction(&PromotionJournal {
+                    publisher_pubkey_hex: publisher_hex.clone(),
+                    reviewer: "test".into(),
+                    reason: "recover selected subset".into(),
+                    submissions: selected.submissions.clone(),
+                    candidate_snapshot: candidate,
+                })
+                .unwrap();
+        }
+        let args = publish_args(&channel_path, None);
+        let recovered = ok(temp.path(), &args);
+        let result: serde_json::Value = serde_json::from_slice(&recovered.stdout).unwrap();
+        assert_eq!(result["promoted"], 2);
+        let snapshot = storage.load_snapshot().unwrap().unwrap();
+        registry_types::verify_snapshot(&snapshot, &owner_hex, snapshot.issued_at_unix).unwrap();
+        assert_eq!(snapshot.entries.len(), 2);
+        assert!(!ids(&snapshot).contains(&"so.tilo.held"));
+        assert_eq!(
+            storage.load_pending("so.tilo.held").unwrap().unwrap(),
+            held.0
         );
-        let uncollectable = submission(
-            "so.tilo.viewer",
-            "file:///untrusted/viewer-x86_64.tapp",
-            &"cc".repeat(32),
+        assert_eq!(
+            storage.load_staged_artifact(&held.1.blake3_hex).unwrap(),
+            held.2
         );
-        storage.save_pending(&collectable).unwrap();
-        storage.save_pending(&uncollectable).unwrap();
-        storage.save_staged_artifact(&digest, &bytes).unwrap();
-
-        let collected = run(
+        assert!(storage.load_pending("so.tilo.ready").unwrap().is_none());
+        assert!(storage.load_pending("so.tilo.runtime").unwrap().is_none());
+        assert!(storage.load_staged_promotion().unwrap().is_none());
+        assert!(storage.load_promotion_transaction().unwrap().is_none());
+        ok(temp.path(), &args);
+        assert_eq!(storage.load_snapshot().unwrap().unwrap(), snapshot);
+        // The ordinary collector can reconsider the untouched held request from its retained bytes,
+        // and it still cannot publish without its SDK.
+        ok(
             temp.path(),
             &["collect-first-party", "--publisher-pubkey", &publisher_hex],
         );
-        assert!(!collected.status.success());
-        let report: serde_json::Value = serde_json::from_slice(&collected.stdout).unwrap();
-        assert_eq!(report["status"], "incomplete");
-        assert_eq!(report["collected"], 1);
-        assert_eq!(report["failed"][0]["submission"], "so.tilo.viewer");
-        let staged = storage.load_staged_promotion().unwrap().unwrap();
-        assert_eq!(staged.submissions, vec![collectable]);
-        assert_eq!(staged.artifacts.len(), 1);
-        assert_eq!(staged.artifacts[0].blake3_hex, digest);
-        assert!(
-            storage
-                .load_pending("so.tilo.viewer")
-                .unwrap()
-                .is_some_and(|pending| pending == uncollectable)
-        );
-    }
-
-    phase thin_app_promotion_waits_for_its_exact_native_runtime;
-    {
-        let temp = tempfile::tempdir().unwrap();
-        let storage = Storage::open(temp.path()).unwrap();
-        let owner = SigningKey::from_bytes(&[61; 32]);
-        let channel = SigningKey::from_bytes(&[62; 32]);
-        let publisher_key = SigningKey::from_bytes(&[63; 32]);
-        let publisher = SigningIdentity::from_signing_key(publisher_key.clone());
-        let publisher_hex = hex::encode(publisher.public_key_bytes());
-        let owner_hex = hex::encode(owner.verifying_key().to_bytes());
-        storage
-            .save_identity(&crate::support::identity(
-                owner_hex.clone(),
-                "https://registry.test",
-            ))
-            .unwrap();
-        allow(&storage, &publisher_hex, true);
-        let owner_path = temp.path().join("owner.seed");
-        let channel_path = temp.path().join("channel.seed");
-        secret(&owner_path, &owner);
-        secret(&channel_path, &channel);
-        ok(
-            temp.path(),
-            &authorize(
-                &owner_path,
-                &hex::encode(channel.verifying_key().to_bytes()),
-                &publisher_hex,
-                "1",
-            ),
-        );
-        let runtime = "tilo-runtime/2026.07+native.00112233445566778899aabbccddeeff";
-        let app = native_submission(&publisher_key, "so.tilo.editor", "x86_64", runtime, false);
-        stage_native_submissions(&storage, &publisher_hex, std::slice::from_ref(&app));
-        let arguments = publish_args(&channel_path, None);
-        let missing = ok(temp.path(), &arguments);
-        let deferred: serde_json::Value = serde_json::from_slice(&missing.stdout).unwrap();
-        assert_eq!(deferred["status"], "deferred");
-        assert_eq!(deferred["published"], 0);
-        assert_eq!(deferred["deferred"], 1);
-        assert!(storage.load_snapshot().unwrap().is_none());
-        assert!(storage.load_promotion_transaction().unwrap().is_none());
-        assert!(storage.load_pending("so.tilo.editor").unwrap().is_some());
-        assert!(storage.load_staged_promotion().unwrap().is_some());
-
-        let wrong_arch = native_submission(
-            &publisher_key,
-            "so.tilo.runtime.arm",
-            "aarch64",
-            runtime,
-            true,
-        );
-        let arm_app = native_submission(&publisher_key, "so.tilo.arm-app", "aarch64", runtime, false);
-        let held_request = storage.load_pending("so.tilo.editor").unwrap().unwrap();
-        stage_native_submissions(
-            &storage,
-            &publisher_hex,
-            &[app.clone(), arm_app, wrong_arch],
-        );
-        let mismatched = ok(temp.path(), &arguments);
-        let partial: serde_json::Value = serde_json::from_slice(&mismatched.stdout).unwrap();
-        assert_eq!(partial["status"], "published");
-        assert_eq!(partial["promoted"], 2);
-        let partial_snapshot = storage.load_snapshot().unwrap().unwrap();
-        registry_types::verify_snapshot(
-            &partial_snapshot,
-            &owner_hex,
-            partial_snapshot.issued_at_unix,
-        )
-        .unwrap();
-        assert!(ids(&partial_snapshot).contains(&"so.tilo.arm-app"));
-        assert!(ids(&partial_snapshot).contains(&"so.tilo.runtime.arm"));
-        assert!(!ids(&partial_snapshot).contains(&"so.tilo.editor"));
+        let deferred = ok(temp.path(), &args);
+        let result: serde_json::Value = serde_json::from_slice(&deferred.stdout).unwrap();
+        assert_eq!(result["status"], "deferred");
+        assert_eq!(storage.load_snapshot().unwrap().unwrap(), snapshot);
         assert_eq!(
-            storage.load_pending("so.tilo.editor").unwrap().unwrap(),
-            held_request
-        );
-        assert!(storage.load_pending("so.tilo.arm-app").unwrap().is_none());
-        assert!(
-            storage
-                .load_pending("so.tilo.runtime.arm")
-                .unwrap()
-                .is_none()
+            storage.load_pending("so.tilo.held").unwrap().unwrap(),
+            held.0
         );
         assert_eq!(
-            storage.load_staged_artifact(&app.1.blake3_hex).unwrap(),
-            app.2
+            storage.load_staged_artifact(&held.1.blake3_hex).unwrap(),
+            held.2
         );
-        assert!(storage.load_promotion_transaction().unwrap().is_none());
-        assert!(storage.load_staged_promotion().unwrap().is_none());
-
-        // A provider offered in the predecessor is insufficient if this batch removes it. The new ARM
-        // request must stay pending, while the exact x86 provider and its app can publish.
-        let newly_missing = native_submission(
-            &publisher_key,
-            "so.tilo.new-arm-app",
-            "aarch64",
-            runtime,
-            false,
-        );
-        let removed_provider = partial_snapshot
-            .entries
-            .iter()
-            .find(|entry| entry.package_id == "so.tilo.runtime.arm")
-            .unwrap()
-            .clone();
-        let removal = PendingSubmission {
-            submission_id: "so.tilo.runtime.arm".into(),
-            submitted_at_unix: 2,
-            change: sign_change_request(EntryAction::Delete, removed_provider, &publisher_key),
-        };
-        let exact = native_submission(&publisher_key, "so.tilo.runtime", "x86_64", runtime, true);
-        stage_native_submissions(
-            &storage,
-            &publisher_hex,
-            &[app, exact, newly_missing.clone()],
-        );
-        storage.save_pending(&removal).unwrap();
-        let mut removal_stage = storage.load_staged_promotion().unwrap().unwrap();
-        removal_stage.submissions.push(removal);
-        storage.save_staged_promotion(&removal_stage).unwrap();
-        ok(temp.path(), &arguments);
-        let snapshot = storage.load_snapshot().unwrap().unwrap();
-        registry_types::verify_snapshot(&snapshot, &owner_hex, snapshot.issued_at_unix).unwrap();
-        assert_eq!(snapshot.entries.len(), 3);
-        assert!(storage.load_pending("so.tilo.editor").unwrap().is_none());
-        assert!(storage.load_pending("so.tilo.runtime").unwrap().is_none());
-        assert!(!ids(&snapshot).contains(&"so.tilo.new-arm-app"));
-        assert!(!ids(&snapshot).contains(&"so.tilo.runtime.arm"));
-        assert_eq!(
-            storage
-                .load_pending("so.tilo.new-arm-app")
-                .unwrap()
-                .unwrap(),
-            newly_missing.0
-        );
-        assert_eq!(
-            storage
-                .load_staged_artifact(&newly_missing.1.blake3_hex)
-                .unwrap(),
-            newly_missing.2
-        );
-    }
-
-    phase selected_partial_inventory_recovers_without_consuming_deferred_requests;
-    {
-        for journal_saved in [false, true] {
-            let temp = tempfile::tempdir().unwrap();
-            let storage = Storage::open(temp.path()).unwrap();
-            let owner = SigningKey::from_bytes(&[71; 32]);
-            let channel = SigningKey::from_bytes(&[72; 32]);
-            let publisher = SigningKey::from_bytes(&[73; 32]);
-            let owner_hex = hex::encode(owner.verifying_key().to_bytes());
-            let publisher_hex = hex::encode(publisher.verifying_key().to_bytes());
-            storage
-                .save_identity(&crate::support::identity(
-                    owner_hex.clone(),
-                    "https://registry.test",
-                ))
-                .unwrap();
-            allow(&storage, &publisher_hex, true);
-            let owner_path = temp.path().join("owner.seed");
-            let channel_path = temp.path().join("channel.seed");
-            secret(&owner_path, &owner);
-            secret(&channel_path, &channel);
-            ok(
-                temp.path(),
-                &authorize(
-                    &owner_path,
-                    &hex::encode(channel.verifying_key().to_bytes()),
-                    &publisher_hex,
-                    "1",
-                ),
-            );
-            let absent_runtime = "tilo-runtime/2026.07+native.00000000000000000000000000000000";
-            let offered_runtime = "tilo-runtime/2026.07+native.11111111111111111111111111111111";
-            let held = native_submission(&publisher, "so.tilo.held", "x86_64", absent_runtime, false);
-            let ready = native_submission(
-                &publisher,
-                "so.tilo.ready",
-                "x86_64",
-                offered_runtime,
-                false,
-            );
-            let provider = native_submission(
-                &publisher,
-                "so.tilo.runtime",
-                "x86_64",
-                offered_runtime,
-                true,
-            );
-            stage_native_submissions(
-                &storage,
-                &publisher_hex,
-                &[held.clone(), ready.clone(), provider.clone()],
-            );
-            let mut selected = storage.load_staged_promotion().unwrap().unwrap();
-            selected
-                .submissions
-                .retain(|pending| pending.submission_id != "so.tilo.held");
-            selected
-                .artifacts
-                .retain(|artifact| artifact.submission_id != "so.tilo.held");
-            // Model a crash at either durable boundary of subset selection. No approval, snapshot
-            // publication, or deletion has happened yet.
-            storage.save_staged_promotion(&selected).unwrap();
-            if journal_saved {
-                let authorization = storage.load_channel_authorization().unwrap().unwrap();
-                let now = tilo_clock::unix_now();
-                let mut candidate = SignedRegistrySnapshot {
-                    protocol: registry_types::PACKAGE_FORMAT_VERSION,
-                    sequence: 1,
-                    issued_at_unix: now,
-                    expires_at_unix: now + 3600,
-                    previous_snapshot_hash_hex: String::new(),
-                    moderation_head_hex: String::new(),
-                    publishers: authorization.publishers.clone(),
-                    entries: vec![
-                        ready.0.change.entry.clone(),
-                        provider.0.change.entry.clone(),
-                    ],
-                    owner_signature_hex: String::new(),
-                    channel_authorization: None,
-                };
-                registry_types::sign_snapshot_delegated(&mut candidate, &channel, authorization)
-                    .unwrap();
-                registry_types::verify_snapshot(&candidate, &owner_hex, now).unwrap();
-                storage
-                    .save_promotion_transaction(&PromotionJournal {
-                        publisher_pubkey_hex: publisher_hex.clone(),
-                        reviewer: "test".into(),
-                        reason: "recover selected subset".into(),
-                        submissions: selected.submissions.clone(),
-                        candidate_snapshot: candidate,
-                    })
-                    .unwrap();
-            }
-            let args = publish_args(&channel_path, None);
-            let recovered = ok(temp.path(), &args);
-            let result: serde_json::Value = serde_json::from_slice(&recovered.stdout).unwrap();
-            assert_eq!(result["promoted"], 2);
-            let snapshot = storage.load_snapshot().unwrap().unwrap();
-            registry_types::verify_snapshot(&snapshot, &owner_hex, snapshot.issued_at_unix).unwrap();
-            assert_eq!(snapshot.entries.len(), 2);
-            assert!(!ids(&snapshot).contains(&"so.tilo.held"));
-            assert_eq!(
-                storage.load_pending("so.tilo.held").unwrap().unwrap(),
-                held.0
-            );
-            assert_eq!(
-                storage.load_staged_artifact(&held.1.blake3_hex).unwrap(),
-                held.2
-            );
-            assert!(storage.load_pending("so.tilo.ready").unwrap().is_none());
-            assert!(storage.load_pending("so.tilo.runtime").unwrap().is_none());
-            assert!(storage.load_staged_promotion().unwrap().is_none());
-            assert!(storage.load_promotion_transaction().unwrap().is_none());
-            ok(temp.path(), &args);
-            assert_eq!(storage.load_snapshot().unwrap().unwrap(), snapshot);
-            // The ordinary collector can reconsider the untouched held request from its retained bytes,
-            // and it still cannot publish without its SDK.
-            ok(
-                temp.path(),
-                &["collect-first-party", "--publisher-pubkey", &publisher_hex],
-            );
-            let deferred = ok(temp.path(), &args);
-            let result: serde_json::Value = serde_json::from_slice(&deferred.stdout).unwrap();
-            assert_eq!(result["status"], "deferred");
-            assert_eq!(storage.load_snapshot().unwrap().unwrap(), snapshot);
-            assert_eq!(
-                storage.load_pending("so.tilo.held").unwrap().unwrap(),
-                held.0
-            );
-            assert_eq!(
-                storage.load_staged_artifact(&held.1.blake3_hex).unwrap(),
-                held.2
-            );
-            // An item bound of one must not continually recollect the app while its needed provider
-            // sorts beyond the cutoff. Publish the provider, then reconsider the exact unchanged held
-            // app in the next batch.
-            let restored = native_submission(
-                &publisher,
-                "so.tilo.runtime.held",
-                "x86_64",
-                absent_runtime,
-                true,
-            );
-            stage_native_submissions(&storage, &publisher_hex, &[held.clone(), restored.clone()]);
-            let collect_one = [
-                "collect-first-party",
-                "--publisher-pubkey",
-                &publisher_hex,
-                "--max-items",
-                "1",
-            ];
-            ok(temp.path(), &collect_one);
-            let selected = storage.load_staged_promotion().unwrap().unwrap();
-            assert_eq!(selected.submissions, vec![restored.0]);
-            ok(temp.path(), &args);
-            assert_eq!(
-                storage.load_pending("so.tilo.held").unwrap().unwrap(),
-                held.0
-            );
-            ok(temp.path(), &collect_one);
-            ok(temp.path(), &args);
-            let complete = storage.load_snapshot().unwrap().unwrap();
-            registry_types::verify_snapshot(&complete, &owner_hex, complete.issued_at_unix).unwrap();
-            assert_eq!(complete.sequence, snapshot.sequence + 2);
-            assert!(
-                complete
-                    .entries
-                    .iter()
-                    .any(|entry| entry == &held.0.change.entry)
-            );
-            assert!(storage.load_pending("so.tilo.held").unwrap().is_none());
-        }
-    }
-
-    phase delegated_refresh_preserves_incomplete_stage_and_transaction_recovery;
-    {
-        let temp = tempfile::tempdir().unwrap();
-        let storage = Storage::open(temp.path()).unwrap();
-        let owner = SigningKey::from_bytes(&[61; 32]);
-        let channel = SigningKey::from_bytes(&[62; 32]);
-        let publisher_key = SigningKey::from_bytes(&[63; 32]);
-        let publisher = SigningIdentity::from_signing_key(publisher_key.clone());
-        let publisher_hex = hex::encode(publisher.public_key_bytes());
-        let owner_hex = hex::encode(owner.verifying_key().to_bytes());
-        storage
-            .save_identity(&crate::support::identity(
-                owner_hex.clone(),
-                "https://registry.test",
-            ))
-            .unwrap();
-        allow(&storage, &publisher_hex, true);
-        let owner_path = temp.path().join("owner.seed");
-        let channel_path = temp.path().join("channel.seed");
-        secret(&owner_path, &owner);
-        secret(&channel_path, &channel);
-        ok(
-            temp.path(),
-            &authorize(
-                &owner_path,
-                &hex::encode(channel.verifying_key().to_bytes()),
-                &publisher_hex,
-                "1",
-            ),
-        );
-        let retained = native_submission(
-            &publisher_key,
-            "so.tilo.runtime.retained",
+        // An item bound of one must not continually recollect the app while its needed provider
+        // sorts beyond the cutoff. Publish the provider, then reconsider the exact unchanged held
+        // app in the next batch.
+        let restored = native_submission(
+            &publisher,
+            "so.tilo.runtime.held",
             "x86_64",
-            "tilo-runtime/2026.07+native.ffeeddccbbaa99887766554433221100",
+            absent_runtime,
             true,
         );
-        stage_native_submissions(&storage, &publisher_hex, &[retained]);
-        assert!(
-            run(
-                temp.path(),
-                &[
-                    "publish-staged-first-party",
-                    "--channel-key-file",
-                    channel_path.to_str().unwrap()
-                ]
-            )
-            .status
-            .success()
-        );
-        ok(
-            temp.path(),
-            &[
-                "sign-snapshot",
-                "--owner-key-file",
-                owner_path.to_str().unwrap(),
-            ],
-        );
-        // An authentic expired catalogue can be renewed; consumers still reject those old bytes at the
-        // current time until renewal is published.
-        let mut expired = storage.load_snapshot().unwrap().unwrap();
-        expired.previous_snapshot_hash_hex = registry_types::snapshot_hash(&expired).unwrap();
-        expired.sequence += 1;
-        expired.issued_at_unix = 1;
-        expired.expires_at_unix = 2;
-        registry_types::sign_snapshot(&mut expired, &owner).unwrap();
-        assert!(registry_types::verify_snapshot(&expired, &owner_hex, 3).is_err());
-        std::fs::write(
-            storage.snapshot_path(),
-            serde_json::to_vec(&expired).unwrap(),
-        )
-        .unwrap();
-        let refresh = refresh_args(&channel_path, "3600");
-        ok(temp.path(), &refresh);
-        let original = storage.load_snapshot().unwrap().unwrap();
-        registry_types::verify_snapshot(&original, &owner_hex, original.issued_at_unix).unwrap();
-
-        let runtime = "tilo-runtime/2026.07+native.00112233445566778899aabbccddeeff";
-        let app = native_submission(&publisher_key, "so.tilo.editor", "x86_64", runtime, false);
-        stage_native_submissions(&storage, &publisher_hex, std::slice::from_ref(&app));
-        let arguments = publish_args(&channel_path, None);
-        let missing = ok(temp.path(), &arguments);
-        let deferred: serde_json::Value = serde_json::from_slice(&missing.stdout).unwrap();
-        assert_eq!(deferred["status"], "deferred");
-        assert_eq!(deferred["published"], 0);
-        assert_eq!(deferred["deferred"], 1);
-        assert_eq!(storage.load_snapshot().unwrap().unwrap(), original);
-        assert!(storage.load_promotion_transaction().unwrap().is_none());
-        assert!(storage.load_pending("so.tilo.editor").unwrap().is_some());
-        assert!(storage.load_staged_promotion().unwrap().is_some());
-
-        let staged = storage.load_staged_promotion().unwrap().unwrap();
-        let stage_bytes = std::fs::read(temp.path().join("first-party-promotion.staged.json")).unwrap();
-        let pending = storage.load_pending("so.tilo.editor").unwrap().unwrap();
-        ok(temp.path(), &refresh);
-        let current = storage.load_snapshot().unwrap().unwrap();
-        registry_types::verify_snapshot(&current, &owner_hex, current.issued_at_unix).unwrap();
-        assert_eq!(current.sequence, original.sequence + 1);
-        assert_eq!(current.entries, original.entries);
-        assert_eq!(current.publishers, original.publishers);
-        assert_eq!(
-            current.previous_snapshot_hash_hex,
-            registry_types::snapshot_hash(&original).unwrap()
-        );
-        assert_eq!(storage.load_staged_promotion().unwrap().unwrap(), staged);
-        assert_eq!(
-            storage.load_pending("so.tilo.editor").unwrap().unwrap(),
-            pending
-        );
-        assert_eq!(
-            std::fs::read(temp.path().join("first-party-promotion.staged.json")).unwrap(),
-            stage_bytes
-        );
-        let invalid_lifetime = run(temp.path(), &refresh_args(&channel_path, "0"));
-        assert!(!invalid_lifetime.status.success());
-        assert_eq!(storage.load_snapshot().unwrap().unwrap(), current);
-        assert_eq!(storage.load_staged_promotion().unwrap().unwrap(), staged);
-        let mut tampered = current.clone();
-        tampered.owner_signature_hex = "00".repeat(64);
-        std::fs::write(
-            storage.snapshot_path(),
-            serde_json::to_vec(&tampered).unwrap(),
-        )
-        .unwrap();
-        let invalid_signature = run(temp.path(), &refresh);
-        assert!(!invalid_signature.status.success());
-        assert_eq!(storage.load_snapshot().unwrap().unwrap(), tampered);
-        assert_eq!(storage.load_staged_promotion().unwrap().unwrap(), staged);
-        std::fs::write(
-            storage.snapshot_path(),
-            serde_json::to_vec(&current).unwrap(),
-        )
-        .unwrap();
-
-        let authorization = storage.load_channel_authorization().unwrap().unwrap();
-        let mut expired_authorization = authorization.clone();
-        expired_authorization.not_before_unix = 1;
-        expired_authorization.expires_at_unix = 2;
-        registry_types::sign_channel_authorization(&mut expired_authorization, &owner).unwrap();
-        storage
-            .save_channel_authorization(&expired_authorization)
-            .unwrap();
-        assert!(!run(temp.path(), &refresh).status.success());
-        assert_eq!(storage.load_snapshot().unwrap().unwrap(), current);
-        assert_eq!(storage.load_staged_promotion().unwrap().unwrap(), staged);
-        storage.save_channel_authorization(&authorization).unwrap();
-
-        let journal = PromotionJournal {
-            publisher_pubkey_hex: publisher_hex.clone(),
-            reviewer: "test".into(),
-            reason: "recovery".into(),
-            submissions: staged.submissions.clone(),
-            candidate_snapshot: current.clone(),
-        };
-        storage.save_promotion_transaction(&journal).unwrap();
-        let blocked = run(temp.path(), &refresh);
-        assert!(!blocked.status.success());
-        assert!(String::from_utf8_lossy(&blocked.stderr).contains("active first-party promotion"));
-        assert_eq!(storage.load_snapshot().unwrap().unwrap(), current);
-        assert_eq!(
-            storage.load_promotion_transaction().unwrap().unwrap(),
-            journal
-        );
-        assert_eq!(storage.load_staged_promotion().unwrap().unwrap(), staged);
-        storage.delete_promotion_transaction().unwrap();
-
-        let wrong_arch = native_submission(
-            &publisher_key,
-            "so.tilo.runtime.arm",
-            "aarch64",
-            runtime,
-            true,
-        );
-        let arm_app = native_submission(&publisher_key, "so.tilo.arm-app", "aarch64", runtime, false);
-        let held_request = storage.load_pending("so.tilo.editor").unwrap().unwrap();
-        stage_native_submissions(
-            &storage,
+        stage_native_submissions(&storage, &publisher_hex, &[held.clone(), restored.clone()]);
+        let collect_one = [
+            "collect-first-party",
+            "--publisher-pubkey",
             &publisher_hex,
-            &[app.clone(), arm_app, wrong_arch],
-        );
-        let mismatched = ok(temp.path(), &arguments);
-        let partial: serde_json::Value = serde_json::from_slice(&mismatched.stdout).unwrap();
-        assert_eq!(partial["status"], "published");
-        assert_eq!(partial["promoted"], 2);
-        let partial_snapshot = storage.load_snapshot().unwrap().unwrap();
-        registry_types::verify_snapshot(
-            &partial_snapshot,
-            &owner_hex,
-            partial_snapshot.issued_at_unix,
-        )
-        .unwrap();
-        assert!(ids(&partial_snapshot).contains(&"so.tilo.arm-app"));
-        assert!(ids(&partial_snapshot).contains(&"so.tilo.runtime.arm"));
-        assert!(!ids(&partial_snapshot).contains(&"so.tilo.editor"));
+            "--max-items",
+            "1",
+        ];
+        ok(temp.path(), &collect_one);
+        let selected = storage.load_staged_promotion().unwrap().unwrap();
+        assert_eq!(selected.submissions, vec![restored.0]);
+        ok(temp.path(), &args);
         assert_eq!(
-            storage.load_pending("so.tilo.editor").unwrap().unwrap(),
-            held_request
+            storage.load_pending("so.tilo.held").unwrap().unwrap(),
+            held.0
         );
-        assert!(storage.load_pending("so.tilo.arm-app").unwrap().is_none());
+        ok(temp.path(), &collect_one);
+        ok(temp.path(), &args);
+        let complete = storage.load_snapshot().unwrap().unwrap();
+        registry_types::verify_snapshot(&complete, &owner_hex, complete.issued_at_unix).unwrap();
+        assert_eq!(complete.sequence, snapshot.sequence + 2);
         assert!(
-            storage
-                .load_pending("so.tilo.runtime.arm")
-                .unwrap()
-                .is_none()
+            complete
+                .entries
+                .iter()
+                .any(|entry| entry == &held.0.change.entry)
         );
-        assert_eq!(
-            storage.load_staged_artifact(&app.1.blake3_hex).unwrap(),
-            app.2
-        );
-        assert!(storage.load_promotion_transaction().unwrap().is_none());
-        assert!(storage.load_staged_promotion().unwrap().is_none());
-        assert_eq!(partial_snapshot.sequence, current.sequence + 1);
+        assert!(storage.load_pending("so.tilo.held").unwrap().is_none());
+    }
+}
 
-        let exact = native_submission(&publisher_key, "so.tilo.runtime", "x86_64", runtime, true);
-        stage_native_submissions(&storage, &publisher_hex, &[app, exact]);
-        ok(temp.path(), &arguments);
-        let snapshot = storage.load_snapshot().unwrap().unwrap();
-        registry_types::verify_snapshot(&snapshot, &owner_hex, snapshot.issued_at_unix).unwrap();
-        assert_eq!(snapshot.entries.len(), 5);
-        assert_eq!(snapshot.sequence, current.sequence + 2);
-        assert!(storage.load_staged_promotion().unwrap().is_none());
-        assert!(storage.load_promotion_transaction().unwrap().is_none());
-        assert!(storage.load_pending("so.tilo.editor").unwrap().is_none());
-        assert!(storage.load_pending("so.tilo.runtime").unwrap().is_none());
-        ok(
+#[test]
+fn delegated_refresh_preserves_incomplete_stage_and_transaction_recovery() {
+    let temp = tempfile::tempdir().unwrap();
+    let storage = Storage::open(temp.path()).unwrap();
+    let owner = SigningKey::from_bytes(&[61; 32]);
+    let channel = SigningKey::from_bytes(&[62; 32]);
+    let publisher_key = SigningKey::from_bytes(&[63; 32]);
+    let publisher = SigningIdentity::from_signing_key(publisher_key.clone());
+    let publisher_hex = hex::encode(publisher.public_key_bytes());
+    let owner_hex = hex::encode(owner.verifying_key().to_bytes());
+    storage
+        .save_identity(&crate::support::identity(
+            owner_hex.clone(),
+            "https://registry.test",
+        ))
+        .unwrap();
+    allow(&storage, &publisher_hex, true);
+    let owner_path = temp.path().join("owner.seed");
+    let channel_path = temp.path().join("channel.seed");
+    secret(&owner_path, &owner);
+    secret(&channel_path, &channel);
+    ok(
+        temp.path(),
+        &authorize(
+            &owner_path,
+            &hex::encode(channel.verifying_key().to_bytes()),
+            &publisher_hex,
+            "1",
+        ),
+    );
+    let retained = native_submission(
+        &publisher_key,
+        "so.tilo.runtime.retained",
+        "x86_64",
+        "tilo-runtime/2026.07+native.ffeeddccbbaa99887766554433221100",
+        true,
+    );
+    stage_native_submissions(&storage, &publisher_hex, &[retained]);
+    assert!(
+        run(
             temp.path(),
             &[
-                "rollback-snapshot",
-                "--to-sequence",
-                &original.sequence.to_string(),
-                "--owner-key-file",
-                owner_path.to_str().unwrap(),
-                "--valid-for-seconds",
-                "3600",
-            ],
-        );
-        let rolled_back = storage.load_snapshot().unwrap().unwrap();
-        registry_types::verify_snapshot(&rolled_back, &owner_hex, rolled_back.issued_at_unix).unwrap();
-        assert_eq!(rolled_back.sequence, snapshot.sequence + 1);
-        assert_eq!(rolled_back.entries, original.entries);
-        assert!(storage.load_staged_promotion().unwrap().is_none());
-        assert!(storage.load_promotion_transaction().unwrap().is_none());
-    }
+                "publish-staged-first-party",
+                "--channel-key-file",
+                channel_path.to_str().unwrap()
+            ]
+        )
+        .status
+        .success()
+    );
+    ok(
+        temp.path(),
+        &[
+            "sign-snapshot",
+            "--owner-key-file",
+            owner_path.to_str().unwrap(),
+        ],
+    );
+    // An authentic expired catalogue can be renewed; consumers still reject those old bytes at the
+    // current time until renewal is published.
+    let mut expired = storage.load_snapshot().unwrap().unwrap();
+    expired.previous_snapshot_hash_hex = registry_types::snapshot_hash(&expired).unwrap();
+    expired.sequence += 1;
+    expired.issued_at_unix = 1;
+    expired.expires_at_unix = 2;
+    registry_types::sign_snapshot(&mut expired, &owner).unwrap();
+    assert!(registry_types::verify_snapshot(&expired, &owner_hex, 3).is_err());
+    std::fs::write(
+        storage.snapshot_path(),
+        serde_json::to_vec(&expired).unwrap(),
+    )
+    .unwrap();
+    let refresh = refresh_args(&channel_path, "3600");
+    ok(temp.path(), &refresh);
+    let original = storage.load_snapshot().unwrap().unwrap();
+    registry_types::verify_snapshot(&original, &owner_hex, original.issued_at_unix).unwrap();
+
+    let runtime = "tilo-runtime/2026.07+native.00112233445566778899aabbccddeeff";
+    let app = native_submission(&publisher_key, "so.tilo.editor", "x86_64", runtime, false);
+    stage_native_submissions(&storage, &publisher_hex, std::slice::from_ref(&app));
+    let arguments = publish_args(&channel_path, None);
+    let missing = ok(temp.path(), &arguments);
+    let deferred: serde_json::Value = serde_json::from_slice(&missing.stdout).unwrap();
+    assert_eq!(deferred["status"], "deferred");
+    assert_eq!(deferred["published"], 0);
+    assert_eq!(deferred["deferred"], 1);
+    assert_eq!(storage.load_snapshot().unwrap().unwrap(), original);
+    assert!(storage.load_promotion_transaction().unwrap().is_none());
+    assert!(storage.load_pending("so.tilo.editor").unwrap().is_some());
+    assert!(storage.load_staged_promotion().unwrap().is_some());
+
+    let staged = storage.load_staged_promotion().unwrap().unwrap();
+    let stage_bytes = std::fs::read(temp.path().join("first-party-promotion.staged.json")).unwrap();
+    let pending = storage.load_pending("so.tilo.editor").unwrap().unwrap();
+    ok(temp.path(), &refresh);
+    let current = storage.load_snapshot().unwrap().unwrap();
+    registry_types::verify_snapshot(&current, &owner_hex, current.issued_at_unix).unwrap();
+    assert_eq!(current.sequence, original.sequence + 1);
+    assert_eq!(current.entries, original.entries);
+    assert_eq!(current.publishers, original.publishers);
+    assert_eq!(
+        current.previous_snapshot_hash_hex,
+        registry_types::snapshot_hash(&original).unwrap()
+    );
+    assert_eq!(storage.load_staged_promotion().unwrap().unwrap(), staged);
+    assert_eq!(
+        storage.load_pending("so.tilo.editor").unwrap().unwrap(),
+        pending
+    );
+    assert_eq!(
+        std::fs::read(temp.path().join("first-party-promotion.staged.json")).unwrap(),
+        stage_bytes
+    );
+    let invalid_lifetime = run(temp.path(), &refresh_args(&channel_path, "0"));
+    assert!(!invalid_lifetime.status.success());
+    assert_eq!(storage.load_snapshot().unwrap().unwrap(), current);
+    assert_eq!(storage.load_staged_promotion().unwrap().unwrap(), staged);
+    let mut tampered = current.clone();
+    tampered.owner_signature_hex = "00".repeat(64);
+    std::fs::write(
+        storage.snapshot_path(),
+        serde_json::to_vec(&tampered).unwrap(),
+    )
+    .unwrap();
+    let invalid_signature = run(temp.path(), &refresh);
+    assert!(!invalid_signature.status.success());
+    assert_eq!(storage.load_snapshot().unwrap().unwrap(), tampered);
+    assert_eq!(storage.load_staged_promotion().unwrap().unwrap(), staged);
+    std::fs::write(
+        storage.snapshot_path(),
+        serde_json::to_vec(&current).unwrap(),
+    )
+    .unwrap();
+
+    let authorization = storage.load_channel_authorization().unwrap().unwrap();
+    let mut expired_authorization = authorization.clone();
+    expired_authorization.not_before_unix = 1;
+    expired_authorization.expires_at_unix = 2;
+    registry_types::sign_channel_authorization(&mut expired_authorization, &owner).unwrap();
+    storage
+        .save_channel_authorization(&expired_authorization)
+        .unwrap();
+    assert!(!run(temp.path(), &refresh).status.success());
+    assert_eq!(storage.load_snapshot().unwrap().unwrap(), current);
+    assert_eq!(storage.load_staged_promotion().unwrap().unwrap(), staged);
+    storage.save_channel_authorization(&authorization).unwrap();
+
+    let journal = PromotionJournal {
+        publisher_pubkey_hex: publisher_hex.clone(),
+        reviewer: "test".into(),
+        reason: "recovery".into(),
+        submissions: staged.submissions.clone(),
+        candidate_snapshot: current.clone(),
+    };
+    storage.save_promotion_transaction(&journal).unwrap();
+    let blocked = run(temp.path(), &refresh);
+    assert!(!blocked.status.success());
+    assert!(String::from_utf8_lossy(&blocked.stderr).contains("active first-party promotion"));
+    assert_eq!(storage.load_snapshot().unwrap().unwrap(), current);
+    assert_eq!(
+        storage.load_promotion_transaction().unwrap().unwrap(),
+        journal
+    );
+    assert_eq!(storage.load_staged_promotion().unwrap().unwrap(), staged);
+    storage.delete_promotion_transaction().unwrap();
+
+    let wrong_arch = native_submission(
+        &publisher_key,
+        "so.tilo.runtime.arm",
+        "aarch64",
+        runtime,
+        true,
+    );
+    let arm_app = native_submission(&publisher_key, "so.tilo.arm-app", "aarch64", runtime, false);
+    let held_request = storage.load_pending("so.tilo.editor").unwrap().unwrap();
+    stage_native_submissions(
+        &storage,
+        &publisher_hex,
+        &[app.clone(), arm_app, wrong_arch],
+    );
+    let mismatched = ok(temp.path(), &arguments);
+    let partial: serde_json::Value = serde_json::from_slice(&mismatched.stdout).unwrap();
+    assert_eq!(partial["status"], "published");
+    assert_eq!(partial["promoted"], 2);
+    let partial_snapshot = storage.load_snapshot().unwrap().unwrap();
+    registry_types::verify_snapshot(
+        &partial_snapshot,
+        &owner_hex,
+        partial_snapshot.issued_at_unix,
+    )
+    .unwrap();
+    assert!(ids(&partial_snapshot).contains(&"so.tilo.arm-app"));
+    assert!(ids(&partial_snapshot).contains(&"so.tilo.runtime.arm"));
+    assert!(!ids(&partial_snapshot).contains(&"so.tilo.editor"));
+    assert_eq!(
+        storage.load_pending("so.tilo.editor").unwrap().unwrap(),
+        held_request
+    );
+    assert!(storage.load_pending("so.tilo.arm-app").unwrap().is_none());
+    assert!(
+        storage
+            .load_pending("so.tilo.runtime.arm")
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        storage.load_staged_artifact(&app.1.blake3_hex).unwrap(),
+        app.2
+    );
+    assert!(storage.load_promotion_transaction().unwrap().is_none());
+    assert!(storage.load_staged_promotion().unwrap().is_none());
+    assert_eq!(partial_snapshot.sequence, current.sequence + 1);
+
+    let exact = native_submission(&publisher_key, "so.tilo.runtime", "x86_64", runtime, true);
+    stage_native_submissions(&storage, &publisher_hex, &[app, exact]);
+    ok(temp.path(), &arguments);
+    let snapshot = storage.load_snapshot().unwrap().unwrap();
+    registry_types::verify_snapshot(&snapshot, &owner_hex, snapshot.issued_at_unix).unwrap();
+    assert_eq!(snapshot.entries.len(), 5);
+    assert_eq!(snapshot.sequence, current.sequence + 2);
+    assert!(storage.load_staged_promotion().unwrap().is_none());
+    assert!(storage.load_promotion_transaction().unwrap().is_none());
+    assert!(storage.load_pending("so.tilo.editor").unwrap().is_none());
+    assert!(storage.load_pending("so.tilo.runtime").unwrap().is_none());
+    ok(
+        temp.path(),
+        &[
+            "rollback-snapshot",
+            "--to-sequence",
+            &original.sequence.to_string(),
+            "--owner-key-file",
+            owner_path.to_str().unwrap(),
+            "--valid-for-seconds",
+            "3600",
+        ],
+    );
+    let rolled_back = storage.load_snapshot().unwrap().unwrap();
+    registry_types::verify_snapshot(&rolled_back, &owner_hex, rolled_back.issued_at_unix).unwrap();
+    assert_eq!(rolled_back.sequence, snapshot.sequence + 1);
+    assert_eq!(rolled_back.entries, original.entries);
+    assert!(storage.load_staged_promotion().unwrap().is_none());
+    assert!(storage.load_promotion_transaction().unwrap().is_none());
 }
 
 fn native_submission(

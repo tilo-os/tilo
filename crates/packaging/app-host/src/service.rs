@@ -1097,6 +1097,10 @@ mod command_tests {
     }
 
     tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+        )]
         fn registry_catalogue_reads_and_installs_are_exact;
 
         phase an_unreadable_system_declaration_refuses_the_repository_saying_the_system_needs_an_update;
