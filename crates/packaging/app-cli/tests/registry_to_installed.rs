@@ -416,7 +416,6 @@ const PACKAGE_ID: &str = "so.tilo.catalogue-e2e";
     reason = "each phase keeps one former test's body verbatim"
 )]
 fn registry_entries_install_update_and_refuse_corrupted_downloads() {
-    // Phase `a_registry_entry_becomes_an_installed_app_the_desktop_can_see`.
     {
         let publisher = test_publisher();
         let owner = SigningKey::from_bytes(&[12; 32]);
@@ -498,7 +497,6 @@ fn registry_entries_install_update_and_refuse_corrupted_downloads() {
             after.apps
         );
     }
-    // Phase `an_installed_app_updates_from_a_newer_signed_registry_offer`.
     {
         const UPDATE_ID: &str = "so.tilo.app-update-e2e";
         let publisher = test_publisher();
@@ -551,7 +549,6 @@ fn registry_entries_install_update_and_refuse_corrupted_downloads() {
             "the launcher's registry reader must observe the updated manifest"
         );
     }
-    // Phase `a_corrupted_download_never_becomes_an_installed_app`.
     // Bytes that don't match the package they claim must not become an
     // installed app — the case of a compromised or buggy registry
     // handing over something other than what its signed entry described.
@@ -683,7 +680,6 @@ fn publish_and_install(
 
 #[test]
 fn installed_apps_keep_exactly_the_services_they_declared() {
-    // Phase `a_payload_with_no_manifest_is_published_as_declaring_no_services`.
     // A payload that is not part of a package still installs (the local
     // registry accepts --payload /bin/true), but is published as
     // declaring no services rather than silently passing for a package.
@@ -696,7 +692,6 @@ fn installed_apps_keep_exactly_the_services_they_declared() {
         let authored = authoring::author("so.tilo.bare", "Bare", &bin, None, &publisher).unwrap();
         assert_eq!(authored.source, authoring::ManifestSource::Synthesised);
     }
-    // Phase `an_app_installed_from_a_registry_keeps_the_services_it_declared`.
     // Installing an app and then opening it must reach the launcher with
     // the services its publisher declared: what a *newly installed* app
     // gets must equal what the package declared, service for service.

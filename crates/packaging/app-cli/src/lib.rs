@@ -1084,7 +1084,6 @@ mod tests {
 
     #[test]
     fn only_valid_signed_downloadable_entries_become_rows() {
-        // Phase `a_signed_entry_becomes_a_row_carrying_the_publishers_own_metadata`.
         {
             let v = verified(entry("so.tilo.sheets", "Sheets", vec!["Office"]));
             let app = entry_to_app(&v, "main").expect("an offerable entry");
@@ -1099,7 +1098,6 @@ mod tests {
             );
             assert_eq!(app.trust, "publisher-signed");
         }
-        // Phase `a_tampered_entry_never_becomes_a_row`.
         // An entry whose signature does not cover its own metadata must not
         // become something a user can activate — the name and download URL would be unattributed.
         {
@@ -1109,7 +1107,6 @@ mod tests {
             assert_eq!(v.trust, TrustLevel::Untrusted);
             assert!(entry_to_app(&v, "main").is_none());
         }
-        // Phase `an_entry_with_no_downloadable_version_is_not_offered`.
         {
             let mut e = entry("so.tilo.ghost", "Ghost", vec![]);
             e.versions.clear();
@@ -1124,7 +1121,6 @@ mod tests {
             );
             assert!(entry_to_app(&verified(blank), "main").is_none());
         }
-        // Phase `a_nameless_entry_is_invalid_signed_metadata`.
         {
             let e = entry("so.tilo.hex-editor", "", vec![]);
             assert!(e.validate().is_err());
@@ -1164,7 +1160,6 @@ mod tests {
 
     #[test]
     fn the_catalogue_selects_per_channel_first_registry_and_uninstalled_offers() {
-        // Phase `catalogue_selects_latest_release_independent_of_registry_array_order`.
         {
             let mut e = entry("so.tilo.timeline", "Timeline", vec![]);
             let older = RegistryVersion {
@@ -1203,7 +1198,6 @@ mod tests {
             );
             assert_eq!(app.tapp_size_bytes, 20);
         }
-        // Phase `catalogue_channels_separate_stable_and_continuous_updates`.
         {
             use tilo_app_package::version::ReleaseChannel;
             let mut e = entry("so.tilo.channel-test", "Channel", vec![]);
@@ -1239,7 +1233,6 @@ mod tests {
                 );
             }
         }
-        // Phase `installed_packages_are_subtracted`.
         {
             let a = entry_to_app(&verified(entry("so.tilo.a", "A", vec![])), "main").unwrap();
             let b = entry_to_app(&verified(entry("so.tilo.b", "B", vec![])), "main").unwrap();
@@ -1247,7 +1240,6 @@ mod tests {
             assert_eq!(out.len(), 1, "the installed one is gone: {out:?}");
             assert_eq!(out[0].package_id, "so.tilo.b");
         }
-        // Phase `the_first_registry_offering_an_id_wins`.
         {
             let first =
                 entry_to_app(&verified(entry("so.tilo.a", "A", vec![])), "primary").unwrap();
@@ -1264,7 +1256,6 @@ mod tests {
 
     #[test]
     fn json_contract_installed_versions_and_names_resolve_exactly() {
-        // Phase `the_json_envelope_field_names_are_the_contract`.
         // The wire contract with the compositor, pinned by exact field name.
         // A rename here without a matching change there would silently
         // produce an empty catalogue rather than an error — both tests must be edited together.
@@ -1301,7 +1292,6 @@ mod tests {
                 r#"{"apps":[{"package_id":"so.tilo.sheets","display_name":"Sheets","description":"a spreadsheet","tagline":"Native Tilo OS app","images":[],"supported_languages":["en"],"category":"Office","version":"2.0.0","registry":"main","download_url":"https://x/y.tapp","tapp_root_hash_hex":"abababababababababababababababababababababababababababababababab","tapp_size_bytes":10,"tapp_blake3_hex":"efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef","architecture":"x86_64","isa":"x86_64-v3","runtime":null,"publisher_pubkey_hex":"cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd","trust":"verified"}],"unreachable":[{"name":"mirror","detail":"connection refused"}]}"#
             );
         }
-        // Phase `installed_version_reads_the_canonical_package_table`.
         {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("manifest.toml");
@@ -1331,7 +1321,6 @@ mod tests {
             .unwrap();
             assert_eq!(installed_manifest_version(&path).as_deref(), Some("1.2.3"));
         }
-        // Phase `friendly_names_resolve_without_fuzzy_guessing`.
         {
             let browser = entry_to_app(
                 &verified(entry("so.tilo.browser", "Tilo Browser", vec![])),

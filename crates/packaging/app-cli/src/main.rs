@@ -1348,11 +1348,9 @@ mod tests {
 
     #[test]
     fn the_cli_surface_parses_and_names_both_public_commands() {
-        // Phase `command_tree_is_valid`.
         {
             Cli::command().debug_assert();
         }
-        // Phase `store_alias_help_names_the_command_the_user_typed`.
         {
             let help = Cli::command().bin_name("store").render_help().to_string();
             assert!(help.contains("Usage: store"), "{help}");
@@ -1362,7 +1360,6 @@ mod tests {
                 .to_string();
             assert!(help.contains("Usage: tilo app"), "{help}");
         }
-        // Phase `completion_scripts_cover_both_public_names`.
         {
             let mut output = Vec::new();
             clap_complete::generate(Shell::Bash, &mut Cli::command(), "app", &mut output);
@@ -1373,7 +1370,6 @@ mod tests {
             assert!(script.contains("_store()"), "{script}");
             assert!(script.contains("default store"), "{script}");
         }
-        // Phase `runtime_install_names_the_exact_runtime`.
         {
             let cli = Cli::try_parse_from([
                 "app",
@@ -1388,7 +1384,6 @@ mod tests {
                     if runtime == "tilo-runtime/2026.10.9-chromium"
             ));
         }
-        // Phase `concise_update_parses`.
         {
             let cli = Cli::try_parse_from(["app", "u", "browser"]).expect("short update parses");
             assert!(matches!(cli.cmd, Cmd::Update { app: Some(ref app), .. } if app == "browser"));
@@ -1397,13 +1392,11 @@ mod tests {
 
     #[test]
     fn updates_and_installs_report_what_they_checked_or_refused() {
-        // Phase `progress_units_are_readable`.
         {
             assert_eq!(human_bytes(999), "999 B");
             assert_eq!(human_bytes(1536), "1.5 KiB");
             assert_eq!(human_duration(Duration::from_secs(65)), "1m 05s");
         }
-        // Phase `bulk_update_always_reports_what_it_checked`.
         {
             assert_eq!(bulk_update_summary(0, 0, 0), "no apps are installed yet");
             assert_eq!(
@@ -1423,7 +1416,6 @@ mod tests {
                 "checked 2 of 3 installed apps; updated 1"
             );
         }
-        // Phase `bulk_update_fails_when_a_configured_repository_is_unreachable`.
         {
             let listing = app_cli::CatalogueListing {
                 apps: Vec::new(),
@@ -1437,7 +1429,6 @@ mod tests {
                 ExitCode::FAILURE
             );
         }
-        // Phase `install_refuses_an_already_installed_offer`.
         {
             let offer = CatalogueApp {
                 package_id: "so.tilo.browser".into(),

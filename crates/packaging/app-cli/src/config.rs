@@ -479,7 +479,6 @@ mod tests {
                 "a disabled registry is not consulted"
             );
         }
-        // Phase `an_empty_list_is_seeded_and_no_trust_writes_nothing`.
         // A sandboxed reader that could not see the trust anchor once wrote
         // `registry = []`; that file is the unconfigured state, not a choice.
         {
@@ -521,7 +520,6 @@ mod tests {
                 "the user's file is left for them to fix"
             );
         }
-        // Phase `no_seed_read_never_writes_a_file`.
         // The compositor's read must not materialise a config file — a
         // background timer that writes `~/.config` is a side effect the
         // user never asked for.

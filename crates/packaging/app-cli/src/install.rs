@@ -1207,7 +1207,6 @@ mod tests {
                 dev_override_from(true, INSTALL_BIN_ENV, Some("/dev/tilo-install".into()));
             assert_eq!(tilo_install_bin_from(honoured), "/dev/tilo-install");
         }
-        // Phase `the_install_invocation_never_relaxes_signature_checking`.
         // The one argv assertion that is a security property rather than
         // a formatting detail.
         {
@@ -1611,7 +1610,6 @@ mod tests {
                 "the installer's own reason has to survive to the user"
             );
         }
-        // Phase `a_silent_refusal_still_reports_the_exit_code`.
         // An empty installer complaint must still say *something* — "tilo-install refused it" with a code beats a blank line.
         {
             let msg = InstallError::Refused {
@@ -1627,7 +1625,6 @@ mod tests {
             assert_eq!(installer_complaint(""), "");
             assert_eq!(installer_complaint("   \n\n  "), "");
         }
-        // Phase `the_installers_own_name_prefix_is_stripped`.
         // The rendered toast already says who refused it, so the installer's
         // own name prefix would stutter — caught by looking at the rendered notification.
         {
@@ -1645,7 +1642,6 @@ mod tests {
                 "the sentence must not name the installer twice: {msg:?}"
             );
         }
-        // Phase `an_overlong_complaint_is_elided_rather_than_clipped`.
         // The notification card is two lines tall; a longer complaint is
         // elided here rather than cut off mid-word by the renderer.
         {

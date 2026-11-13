@@ -375,7 +375,6 @@ fn a_registry_build_for_another_runtime_fetches_that_runtime_or_is_refused() {
     )));
     assert!(!app_cli::runtime_installed(&needed));
 
-    // Phase `without_its_runtime_on_offer_the_app_is_refused_and_nothing_changes`.
     let first = snapshot(vec![app_entry.clone()], &owner, None);
     served.put("/entries", serde_json::to_vec(&first).unwrap());
     let offer = app_cli::available()
@@ -409,7 +408,6 @@ fn a_registry_build_for_another_runtime_fetches_that_runtime_or_is_refused() {
     );
     assert!(package_store::list_installed().unwrap().is_empty());
 
-    // Phase `with_its_runtime_on_offer_the_runtime_is_fetched_first`.
     let runtime_full = runtime_tapp(&registry_bundle, &needed, "0.1.7");
     let objects = root.join("objects");
     std::fs::create_dir_all(&objects).unwrap();
@@ -532,7 +530,6 @@ fn a_registry_build_for_another_runtime_fetches_that_runtime_or_is_refused() {
         .expect("the app is installed");
     assert_eq!(linked.version, "2.0.0");
 
-    // Phase `an_app_pinning_an_engine_installs_with_it_or_not_at_all`.
     // The Browser pins its engine runtime by exact version. Whatever installs
     // the Browser brings that engine first; where the registry offers none,
     // the install is refused and the working state stays.
