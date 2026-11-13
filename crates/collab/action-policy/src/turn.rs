@@ -164,7 +164,7 @@ pub fn authority(
     let Some(looked) = looked(turn) else {
         return Err(Held::Waiting);
     };
-    if !same_person(&looked.author, person) {
+    if !crate::same_person(&looked.author, person) {
         return Err(Held::AnotherAuthor);
     }
     if !looked.participant {
@@ -174,16 +174,6 @@ pub fn authority(
         return Err(Held::Ended);
     }
     Ok(roles::agent_grants(workspace, agent, person, &looked.bound))
-}
-
-/// Whether two ids name the same person: a member's root, with or without the
-/// `person:` prefix grants carry.
-fn same_person(a: &str, b: &str) -> bool {
-    root_of(a) == root_of(b)
-}
-
-fn root_of(id: &str) -> &str {
-    id.strip_prefix("person:").unwrap_or(id)
 }
 
 /// The node an agent's turn decides an action at.

@@ -64,7 +64,9 @@ pub fn is_issue_answer(grant: &Grant) -> bool {
 
 pub use grant::{Answer, Context, Grant, GrantId, Grantee, Lifetime, Role};
 pub use kind::{ActionKind, KindSet};
-pub use member::{Acting, Actor, AgentSessionId, AutomationId, MemberId, ResourceId};
+pub use member::{
+    Acting, Actor, AgentSessionId, AutomationId, MemberId, ResourceId, person_root, same_person,
+};
 pub use member_record::{member_record, member_record_id};
 pub use path::{Level, PathError, Segment, Specificity, TreePath};
 pub use roles::{Preset, PresetError, Rule};

@@ -37,10 +37,10 @@ impl PresenceCtx {
         let is_agent = placed.agent || self.is_agent(&placed.user);
         // An agent's tag carries the agent mark, so its name stands alone.
         let known = if is_agent {
-            self.names.get(&placed.user).cloned()
+            super::stored(&self.names, &placed.user).cloned()
         } else {
-            self.names
-                .contains_key(&placed.user)
+            super::stored(&self.names, &placed.user)
+                .is_some()
                 .then(|| self.display_name(&placed.user))
         };
         let name = known

@@ -68,6 +68,9 @@ impl MemberId {
         fn nonempty(id: &str) -> Option<String> {
             (!id.is_empty()).then(|| id.to_owned())
         }
+        if let Some(id) = key.strip_prefix("person:") {
+            return nonempty(id).map(Self::Person);
+        }
         if let Some(id) = key.strip_prefix("agent:") {
             return nonempty(id).map(Self::Agent);
         }
@@ -76,6 +79,20 @@ impl MemberId {
         }
         nonempty(key).map(Self::Person)
     }
+}
+
+/// A person's id however a record spells it: their root key, or `person:<root>` as grants, mentions
+/// and an agent's keeper carry it. Every rule that compares people or looks one up asks this, so
+/// one person is one member wherever an id came from.
+#[must_use]
+pub fn person_root(id: &str) -> &str {
+    id.strip_prefix("person:").unwrap_or(id)
+}
+
+/// Whether two ids name the same person, in either spelling ([`person_root`]).
+#[must_use]
+pub fn same_person(a: &str, b: &str) -> bool {
+    person_root(a) == person_root(b)
 }
 
 impl std::fmt::Display for MemberId {

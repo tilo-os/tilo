@@ -347,7 +347,7 @@ impl WorkspaceAgents {
             .agents
             .find_mut(&agent)
             .ok_or_else(|| no_such(&agent))?;
-        if !same_person(&found.keeper, &me) {
+        if !tilo_action_policy::same_person(&found.keeper, &me) {
             return Err(Refusal::new(
                 "only the agent's keeper sets the most it may spend in a day",
             ));
@@ -373,7 +373,7 @@ impl WorkspaceAgents {
             .agents
             .find_mut(&agent)
             .ok_or_else(|| no_such(&agent))?;
-        if !same_person(&found.keeper, &me) {
+        if !tilo_action_policy::same_person(&found.keeper, &me) {
             return Err(Refusal::new(
                 "only the agent's keeper counts what it spends",
             ));
@@ -404,7 +404,7 @@ impl WorkspaceAgents {
             .agents
             .find_mut(&agent)
             .ok_or_else(|| no_such(&agent))?;
-        if !same_person(&found.keeper, &me) {
+        if !tilo_action_policy::same_person(&found.keeper, &me) {
             return Err(Refusal::new(
                 "only the agent's keeper chooses the colour it is drawn in",
             ));
@@ -445,7 +445,7 @@ impl WorkspaceAgents {
             .agents
             .find_mut(&agent)
             .ok_or_else(|| no_such(&agent))?;
-        if !same_person(&found.keeper, &me) {
+        if !tilo_action_policy::same_person(&found.keeper, &me) {
             return Err(Refusal::new(
                 "only the agent's keeper chooses the model it plans with",
             ));
@@ -629,17 +629,6 @@ fn author(cx: &ActionCx) -> Result<String, Refusal> {
         .filter(|author| !author.is_empty() && author.len() <= MAX_KEEPER)
         .map(str::to_owned)
         .ok_or_else(|| Refusal::new("an agent is always made by someone"))
-}
-
-/// Whether two stored ids name the same person: a member's root, with or without the
-/// `person:` prefix grants carry.
-#[must_use]
-pub fn same_person(a: &str, b: &str) -> bool {
-    root_of(a) == root_of(b)
-}
-
-fn root_of(id: &str) -> &str {
-    id.strip_prefix("person:").unwrap_or(id)
 }
 
 fn person(id: &str) -> Result<String, Refusal> {

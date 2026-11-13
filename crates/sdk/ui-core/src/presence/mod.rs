@@ -2,6 +2,7 @@ use crate::permissions::UserId;
 use crate::time::{Duration, Instant, SystemTime};
 use collab_types::{Member, MemberId};
 use std::collections::HashMap;
+use tilo_action_policy::{person_root, same_person};
 use tilo_sort::CompactSort as _;
 
 pub mod capability;
@@ -799,6 +800,30 @@ impl DrawnNotes {
     }
 }
 
+/// The key `user`'s name, colour, kind and number are stored under: a person's
+/// root key, whichever spelling the record that names them uses
+/// ([`person_root`]). People are stored under it so one person is one entry —
+/// one name, one colour, one number — however a surface asks for them.
+fn person_key(user: UserId) -> UserId {
+    let root = person_root(&user.0);
+    if root.len() == user.0.len() {
+        user
+    } else {
+        UserId(root.to_owned())
+    }
+}
+
+/// What `map` holds for `user`, either spelling of a person's id: the answer
+/// [`person_key`] stored under.
+fn stored<'a, V>(map: &'a HashMap<UserId, V>, user: &UserId) -> Option<&'a V> {
+    let root = person_root(&user.0);
+    if root.len() == user.0.len() {
+        map.get(user)
+    } else {
+        map.get(&UserId(root.to_owned()))
+    }
+}
+
 impl PresenceCtx {
     /// True when the supplied rect falls entirely outside the active
     /// viewport, so a widget can skip its draw. Off-viewport widgets MUST
@@ -1036,7 +1061,7 @@ impl PresenceCtx {
         if id.0.trim().is_empty() {
             return;
         }
-        self.self_participant = Some((id, name.into()));
+        self.self_participant = Some((person_key(id), name.into()));
         self.refresh_labels();
     }
 
@@ -1068,20 +1093,18 @@ impl PresenceCtx {
     /// workspace's *name* for this session: a locally-sent frame is stamped `Bob`, the announced
     /// row `ada`, and a remote id is always `peer@<handle>`.
     pub fn is_own_identity(&self, user_id: &str) -> bool {
-        if user_id.trim().is_empty() {
+        let user_id = user_id.trim();
+        if user_id.is_empty() {
             return false;
         }
         if self
             .self_participant
             .as_ref()
-            .is_some_and(|(id, name)| id.0 == user_id || name.trim() == user_id.trim())
+            .is_some_and(|(id, name)| same_person(&id.0, user_id) || name.trim() == user_id)
         {
             return true;
         }
-        if self.own.is_empty() {
-            return false;
-        }
-        self.own.contains(&UserId(user_id.to_string()))
+        self.own.iter().any(|own| same_person(&own.0, user_id))
     }
 
     pub fn register_presence(&mut self, key: &PresenceKey, user: UserId) {
@@ -1466,6 +1489,7 @@ impl PresenceCtx {
     /// for the accepted formats). Malformed input silently clears the
     /// override, falling back to [`user_color`].
     pub fn set_color_override(&mut self, user: UserId, hex: &str) {
+        let user = person_key(user);
         match parse_hex_color(hex) {
             Some(rgb) => {
                 self.color_overrides.insert(user, rgb);
@@ -1481,6 +1505,7 @@ impl PresenceCtx {
     /// place of the colour their id derives here. Recolours a cursor already
     /// on screen.
     pub fn set_presence_hue(&mut self, user: UserId, hue: crate::tokens::PresenceHue) {
+        let user = person_key(user);
         let rgb = identity_rgb(hue);
         if self.color_overrides.get(&user) == Some(&rgb) {
             return;
@@ -1500,8 +1525,7 @@ impl PresenceCtx {
     }
 
     pub fn color_for(&self, user: &UserId) -> (u8, u8, u8) {
-        self.color_overrides
-            .get(user)
+        stored(&self.color_overrides, user)
             .copied()
             .unwrap_or_else(|| identity_rgb(self.identity_hue(user)))
     }
@@ -1519,8 +1543,7 @@ impl PresenceCtx {
     /// paints a person through one of the two, so their face, their caret and
     /// their byline are one colour.
     pub fn hue_for(&self, user: &UserId) -> crate::tokens::PresenceHue {
-        self.color_overrides
-            .get(user)
+        stored(&self.color_overrides, user)
             .and_then(|(red, green, blue)| {
                 crate::tokens::PresenceHue::nearest_to_srgb(*red, *green, *blue)
             })
@@ -1537,6 +1560,7 @@ impl PresenceCtx {
     /// it has no time for them. People who share a name are numbered by it,
     /// so a newcomer never takes an earlier member's number.
     pub fn set_joined_at(&mut self, user: UserId, joined: Option<u64>) {
+        let user = person_key(user);
         let changed = match joined {
             Some(at) => self.joined.insert(user, at) != Some(at),
             None => self.joined.remove(&user).is_some(),
@@ -1548,6 +1572,7 @@ impl PresenceCtx {
 
     /// Seeded from the collab roster. Overwrites any prior name.
     pub fn set_display_name(&mut self, user: UserId, name: impl Into<String>) {
+        let user = person_key(user);
         self.names.insert(user.clone(), name.into());
         self.refresh_labels();
         // Relabel any already-drawn pill too, in case the pointer arrived first.
@@ -1632,7 +1657,7 @@ impl PresenceCtx {
         user: impl AsRef<UserId>,
         kind: impl Into<ParticipantKind>,
     ) {
-        let user = user.as_ref().clone();
+        let user = person_key(user.as_ref().clone());
         let kind = kind.into();
         if self.participant_kinds.insert(user.clone(), kind) == Some(kind) {
             return;
@@ -1642,8 +1667,7 @@ impl PresenceCtx {
     }
 
     pub fn participant_kind(&self, user: &UserId) -> ParticipantKind {
-        self.participant_kinds
-            .get(user)
+        stored(&self.participant_kinds, user)
             .copied()
             .unwrap_or_default()
     }
@@ -1659,7 +1683,7 @@ impl PresenceCtx {
     pub fn set_acting_for(&mut self, user: impl AsRef<UserId>, person: Option<UserId>) {
         let user = user.as_ref().clone();
         match person {
-            Some(person) => self.acting_for.insert(user.clone(), person),
+            Some(person) => self.acting_for.insert(user.clone(), person_key(person)),
             None => self.acting_for.remove(&user),
         };
         let shown = self.display_name(&user);
@@ -1673,7 +1697,7 @@ impl PresenceCtx {
     /// The person `user` acts for, if it is an agent, a Shortcut or an app
     /// acting for one.
     pub fn acting_for(&self, user: &UserId) -> Option<&UserId> {
-        self.acting_for.get(user)
+        stored(&self.acting_for, user)
     }
 
     /// Replace which person each participant here is a device of, as the
@@ -1703,14 +1727,12 @@ impl PresenceCtx {
     /// carry their number ("Ada (2)", [`ParticipantLabels`]); software acting for a person is named
     /// with that person ("Claude for Ada"), else with its kind.
     pub fn display_name(&self, user: &UserId) -> String {
-        let name = self
-            .names
-            .get(user)
+        let name = stored(&self.names, user)
             .and_then(|name| shown_name(name))
             .or_else(|| {
                 self.self_participant
                     .as_ref()
-                    .filter(|(id, _)| id == user)
+                    .filter(|(id, _)| same_person(&id.0, &user.0))
                     .and_then(|(_, name)| shown_name(name))
             })
             .map(str::to_owned);
@@ -1732,16 +1754,16 @@ impl PresenceCtx {
     fn kind_label(&self, user: &UserId, name: &str) -> String {
         let kind = self.participant_kind(user);
         if kind == ParticipantKind::Person {
-            return self.labels.label(&user.0, name);
+            return self.labels.label(person_root(&user.0), name);
         }
         // Whom software acts for: "Claude for you", "Claude for Ada". A person the roster has not
         // named yet is left out rather than shown as their raw key.
-        if let Some(person) = self.acting_for.get(user) {
+        if let Some(person) = stored(&self.acting_for, user) {
             let me = self.self_id();
             let reader = Some(person) == me || Some(person) == me.and_then(|me| self.person_of(me));
-            let named = self.names.get(person).and_then(|named| {
+            let named = stored(&self.names, person).and_then(|named| {
                 crate::history_source::human_label(named, &person.0)
-                    .map(|named| self.labels.label(&person.0, named))
+                    .map(|named| self.labels.label(person_root(&person.0), named))
             });
             if reader || named.is_some() {
                 let person = named.unwrap_or_default();
@@ -1772,7 +1794,7 @@ impl PresenceCtx {
             name: self.display_name(user),
             avatar: None,
             colour: self.hue_for(user),
-            joined_at: self.joined.get(user).copied(),
+            joined_at: stored(&self.joined, user).copied(),
             is_self: self.is_own_identity(&user.0),
         }
     }
@@ -2023,7 +2045,8 @@ impl PresenceCtx {
         if self.is_own_identity(&user_id) {
             return;
         }
-        let uid = UserId(user_id.clone());
+        let uid = person_key(UserId(user_id.clone()));
+        let user_id = uid.0.clone();
         let (r, g, b) = self.color_for(&uid);
         let color = [
             f32::from(r) / 255.0,
@@ -2037,7 +2060,7 @@ impl PresenceCtx {
             || self.display_name(&uid),
             |name| {
                 if self.participant_kind(&uid) == ParticipantKind::Person {
-                    self.labels.label(&user_id, name)
+                    self.labels.label(&uid.0, name)
                 } else {
                     name.to_owned()
                 }
@@ -2067,6 +2090,7 @@ impl PresenceCtx {
     }
 
     pub fn remove_remote_cursor(&mut self, user_id: &str) {
+        let user_id = person_key(UserId(user_id.to_owned())).0;
         self.remote_cursors.retain(|c| c.user_id != user_id);
     }
 
@@ -2388,7 +2412,7 @@ impl PresenceCtx {
     }
 
     pub fn unregister_peer(&mut self, user_id: &str) {
-        let uid = UserId(user_id.to_owned());
+        let uid = person_key(UserId(user_id.to_owned()));
         self.availability.retain(|(_, who), _| *who != uid);
         self.participant_kinds.remove(&uid);
         self.acting_for.remove(&uid);

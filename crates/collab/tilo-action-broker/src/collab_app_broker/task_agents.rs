@@ -220,7 +220,7 @@ pub(super) fn admit_kept_agent(
     let keeper = roster
         .keeper(workspace, agent_id)
         .ok_or_else(|| format!("the workspace keeps no active agent {agent_id}"))?;
-    if !same_person(&keeper, &admitted.principal_id) {
+    if !tilo_action_policy::same_person(&keeper, &admitted.principal_id) {
         return Err(format!(
             "the agent {agent_id} is {keeper}'s to launch, not this session's"
         ));
@@ -230,9 +230,4 @@ pub(super) fn admit_kept_agent(
     admitted.display_handle = Some(agent_id.to_string());
     admitted.session_delegated = true;
     Ok(())
-}
-
-/// Whether `a` and `b` name the same person, either spelling of their id.
-fn same_person(a: &str, b: &str) -> bool {
-    a.strip_prefix("person:").unwrap_or(a) == b.strip_prefix("person:").unwrap_or(b)
 }

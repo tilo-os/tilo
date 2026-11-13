@@ -191,7 +191,7 @@ impl PresenceCtx {
         // Software the workspace's roster does not know (a Shortcut's run) is
         // named by the run it works in.
         if interaction.actor.kind.acts_for_someone()
-            && !self.names.contains_key(&user)
+            && super::stored(&self.names, &user).is_none()
             && let Some(group) = &interaction.group
         {
             self.set_display_name(user.clone(), group.label.clone());
