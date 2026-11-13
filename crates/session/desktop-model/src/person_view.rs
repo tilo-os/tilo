@@ -3,7 +3,8 @@
 //!
 //! It is the person's, not the workspace's and not a device's: it is kept in the workspace, so
 //! every device of theirs shows the layout the way they left it, and the people they work with
-//! see where they are looking ([`PersonView::front_strip`]).
+//! see where they are looking ([`PersonView::front_strip`]). What a display shows — its windows
+//! and whether one of them covers it — is the device's, and stays on it.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -29,7 +30,6 @@ const FRONT_GROUP: &str = "front_group";
 const FRONT_TAB: &str = "front_tab";
 const WIDTHS: &str = "widths";
 const MAXIMIZED: &str = "maximized";
-const FULLSCREEN: &str = "fullscreen";
 
 /// What one person sees of one workspace's layout.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -61,9 +61,6 @@ pub struct PersonView {
     /// The groups made as large as their display.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub maximized: BTreeSet<GroupId>,
-    /// The group covering its display, while one is.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub fullscreen: Option<GroupId>,
 }
 
 impl PersonView {
@@ -72,7 +69,6 @@ impl PersonView {
     pub fn of(tree: &DesktopTree, slot: WorkspaceSlot) -> Self {
         let mut view = Self {
             front_strip: tree.active_strip.get(&slot).copied(),
-            fullscreen: tree.active.eq(&slot).then_some(tree.fullscreen).flatten(),
             ..Self::default()
         };
         let Some(workspace) = tree.workspaces.iter().find(|held| held.slot == slot) else {
@@ -136,13 +132,6 @@ impl PersonView {
                 }
             }
         }
-        if tree.active == slot
-            && let Some(group) = self.fullscreen
-            && tree.fullscreen != Some(group)
-        {
-            tree.fullscreen = Some(group);
-            changed = true;
-        }
         changed
     }
 
@@ -155,7 +144,6 @@ impl PersonView {
             front_tab: field(doc, FRONT_TAB).unwrap_or_default(),
             widths: field(doc, WIDTHS).unwrap_or_default(),
             maximized: field(doc, MAXIMIZED).unwrap_or_default(),
-            fullscreen: field(doc, FULLSCREEN),
         }
     }
 
@@ -171,7 +159,6 @@ impl PersonView {
             (FRONT_TAB, serde_json::to_value(&self.front_tab)),
             (WIDTHS, serde_json::to_value(&self.widths)),
             (MAXIMIZED, serde_json::to_value(&self.maximized)),
-            (FULLSCREEN, serde_json::to_value(self.fullscreen)),
         ] {
             let value = value.unwrap_or(serde_json::Value::Null);
             tilo_automerge::json::write(doc, &ObjId::Root, key, &value).map_err(
@@ -286,7 +273,6 @@ mod tests {
             front_tab: BTreeMap::from([(21, 32)]),
             widths: BTreeMap::from([(21, WindowWidth::Fraction(700))]),
             maximized: BTreeSet::from([23]),
-            fullscreen: None,
         };
         assert!(her_view.applied(&mut hers, WorkspaceSlot(1)));
         let his_view = PersonView {
@@ -329,7 +315,6 @@ mod tests {
         let tree = layout();
         let view = PersonView {
             front_strip: Some(StripId(12)),
-            fullscreen: Some(23),
             ..PersonView::of(&tree, WorkspaceSlot(1))
         };
         let mut doc = AutoCommit::new();

@@ -129,6 +129,8 @@ mod invite;
 mod join;
 #[path = "launch.rs"]
 mod launch;
+#[path = "layout_view.rs"]
+mod layout_view;
 #[path = "live_revocation.rs"]
 mod live_revocation;
 #[path = "lockdown_live.rs"]

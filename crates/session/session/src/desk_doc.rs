@@ -210,7 +210,7 @@ impl DeskDoc {
         time: i64,
         shows: &[(tilo_desktop_model::TabId, String)],
     ) -> bool {
-        self.desk.record(desktop, time, shows, None)
+        self.desk.record_displays(desktop, time, shows, None)
     }
 
     /// [`Self::record`], and write even how the desk looks now: what ends the session, which the
@@ -222,6 +222,18 @@ impl DeskDoc {
         shows: &[(tilo_desktop_model::TabId, String)],
     ) -> bool {
         self.desk.record_now(desktop, time, shows, None)
+    }
+
+    /// [`Self::record_now`], leaving the layout and the person's view to the workspaces' records: the document
+    /// keeps the desk and what this device's displays show of it. What ends the session writes it,
+    /// and what the next one starts from is here.
+    pub(crate) fn record_displays_now(
+        &self,
+        desktop: &DesktopTree,
+        time: i64,
+        shows: &[(tilo_desktop_model::TabId, String)],
+    ) -> bool {
+        self.desk.record_displays_now(desktop, time, shows, None)
     }
 
     /// The document, for a reader that lists what happened to the desk.
@@ -271,12 +283,25 @@ impl crate::Shared {
             return;
         }
         let shows = self.notes.records().into_iter().collect::<Vec<_>>();
-        self.activity.desk().record_at(
-            self.handle.revision(),
-            || self.handle.read(Clone::clone),
-            crate::activity::now_seconds(),
-            &shows,
-        );
+        let desk = self.activity.desk();
+        let revision = self.handle.revision();
+        let tree = || self.handle.read(Clone::clone);
+        let time = crate::activity::now_seconds();
+        if self.views_in_records() {
+            desk.record_displays_at(revision, tree, time, &shows);
+        } else {
+            desk.record_at(revision, tree, time, &shows);
+        }
+    }
+
+    /// Whether the workspaces' records hold the person's view of the layout: a session in a
+    /// workspace with a person writes it there, and a desk no workspace holds keeps it here.
+    pub(crate) fn views_in_records(&self) -> bool {
+        self.engine.is_some()
+            && self
+                .sync
+                .as_ref()
+                .is_some_and(|sync| sync.own().user.is_some())
     }
 
     /// [`Self::keep_desk`], and write the desk as it looks now rather than
@@ -289,8 +314,12 @@ impl crate::Shared {
         }
         let tree = self.handle.read(Clone::clone);
         let shows = self.notes.records().into_iter().collect::<Vec<_>>();
-        self.activity
-            .record_desk_now(&tree, crate::activity::now_seconds(), &shows);
+        let time = crate::activity::now_seconds();
+        if self.views_in_records() {
+            self.activity.record_displays_now(&tree, time, &shows);
+        } else {
+            self.activity.record_desk_now(&tree, time, &shows);
+        }
         tilo_durable_writer::global().flush();
     }
 }

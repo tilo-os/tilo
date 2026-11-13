@@ -432,6 +432,17 @@ impl Activity {
         self.0.desk.record_now(tree, time, shows)
     }
 
+    /// [`Self::record_desk_now`] for a session whose workspace records hold the person's view of the
+    /// layout: the document keeps the desk and what this device's displays show.
+    pub fn record_displays_now(
+        &self,
+        tree: &DesktopTree,
+        time: i64,
+        shows: &[(tilo_desktop_model::TabId, String)],
+    ) -> bool {
+        self.0.desk.record_displays_now(tree, time, shows)
+    }
+
     /// The desk document, which the arrangement reads and changes too.
     pub fn desk(&self) -> std::rc::Rc<tilo_session_core::desk::Desk> {
         self.0.desk.desk()
