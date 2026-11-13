@@ -1,16 +1,6 @@
-include!("fixture_build.rs");
-
 use cfg_aliases::cfg_aliases;
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    emit_hex_fixture(include_str!("examples/data/icon.png.hex"), "icon.png")?;
-    emit_hex_fixture(include_str!("examples/data/cross.png.hex"), "cross.png")?;
-    emit_hex_fixture(include_str!("examples/data/cross2.png.hex"), "cross2.png")?;
-    emit_hex_fixture(
-        include_str!("examples/data/gradient.png.hex"),
-        "gradient.png",
-    )?;
-
+fn main() {
     // The script doesn't depend on our code.
     println!("cargo:rerun-if-changed=build.rs");
 
@@ -34,5 +24,4 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Winit defined cfgs.
     println!("cargo:rustc-check-cfg=cfg(unreleased_changelogs)");
-    Ok(())
 }
