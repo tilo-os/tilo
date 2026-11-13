@@ -1,15 +1,6 @@
-//! Owned native file leases for coordinating processes through a sentinel file.
-//!
-//! A lease should normally use a dedicated sentinel whose identity does not
-//! change while processes coordinate. Native file-lock behavior varies by
-//! platform and network filesystem; callers must validate filesystems whose
-//! lock semantics matter to them.
-//!
-//! [`FileLease`] consumes its open [`File`]. Callers must not retain duplicated
-//! handles to that same open file, because closing or unlocking a duplicate can
-//! affect the native lease on some platforms. This API promises locking only:
-//! it does not provide private file creation, attest the sentinel's identity, or
-//! durably publish its containing directory.
+//! Owned native file leases for coordinating processes through a sentinel file. A lease
+//! normally uses a dedicated lock file that is never replaced: a publication renames a
+//! new file into place, and a lease on the old one would coordinate nothing.
 
 use advisory_lock::{FileLock, LockMode, TryLockError};
 use std::error::Error;
@@ -17,11 +8,9 @@ use std::fmt;
 use std::fs::{File, Metadata};
 use std::io;
 
-/// The kind of native lease to acquire.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LeaseMode {
     Shared,
-    /// Excludes both shared and exclusive leases.
     Exclusive,
 }
 
@@ -39,7 +28,6 @@ impl From<LeaseMode> for LockMode {
 pub enum AcquireError {
     /// Another process or handle holds a conflicting lease.
     Busy,
-    /// The operating system could not attempt the lock operation.
     Io(io::Error),
 }
 
@@ -68,17 +56,12 @@ pub struct FileLease {
 }
 
 impl FileLease {
-    /// Block until `mode` can be acquired on `file`.
     pub fn acquire(file: File, mode: LeaseMode) -> io::Result<Self> {
         FileLock::lock(file, mode.into()).map(|lock| Self { lock })
     }
 
-    /// Attempt to acquire `mode` on `file` without blocking.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`AcquireError::Busy`] for a conflicting lease and preserves
-    /// any native locking failure as [`AcquireError::Io`].
+    /// Without blocking; [`AcquireError::Busy`] when another process or handle holds a conflicting
+    /// lease.
     pub fn try_acquire(file: File, mode: LeaseMode) -> Result<Self, AcquireError> {
         match FileLock::try_lock(file, mode.into()) {
             Ok(lock) => Ok(Self { lock }),
@@ -87,13 +70,12 @@ impl FileLease {
         }
     }
 
-    /// Query native identity through the handle that owns the lease.
+    /// Queries native identity through the handle that owns the lease.
     #[cfg(any(unix, windows))]
     pub fn identity(&self) -> io::Result<crate::native::atomic::FileIdentity> {
         crate::native::atomic::FileIdentity::of(self.lock.file())
     }
 
-    /// Read metadata through the handle that owns the lease.
     pub fn metadata(&self) -> io::Result<Metadata> {
         self.lock.file().metadata()
     }

@@ -1,39 +1,6 @@
-//! Watching a native directory, or a whole tree, for changes: the one watch
-//! behind [`Dir::watch`](crate::Dir::watch), [`super::watch_entries`] and
-//! the callbacks of [`watch_changes`] and its siblings.
-//!
-//! A [`Watcher`] reports, on a thread of its own, which paths changed and
-//! what each is now ([`Event`]). A reader that only cares that something
-//! changed asks for [`watch_changes`] (or [`watch_tree_changes`],
-//! [`watch_presence`]): the same watch, with the paths it does not care
-//! about dropped and the rest folded into one call per batch.
-//!
-//! On Linux the watch asks inotify for changes only: writes, creation,
-//! removal and renames, and the attributes of the watched directories
-//! themselves (where a FUSE filesystem raises
-//! [`super::CHANGE_SIGNAL_XATTR`]). Opening and reading a file are left out,
-//! and so are a file's attributes. The `notify` crate's inotify watch always
-//! includes opens, so its thread woke for every read of any file in the
-//! watched directory, the watching process's own included. Elsewhere
-//! `notify` reports the platform's events, and its access events are
-//! dropped.
-//!
-//! A reader that only cares which entries exist (a socket that is to appear,
-//! a device node, the directories on the way to a file) asks for
-//! [`Watcher::presence`], which leaves writes out too. Writes to an entry of
-//! `/dev` (every reply of a FUSE server to `/dev/fuse`, every write to
-//! `/dev/null` or `/dev/ptmx`) or of a home folder are frequent, and each one
-//! would otherwise wake the watch's thread for nothing.
-//!
-//! A reader that reads a file its writer stands behind ([`super::held`])
-//! asks for [`Watcher::released`] as well: the file is vouched for only while
-//! its writer holds it open, so the close of that descriptor is a change of
-//! what the name is worth, though the name and its bytes stay.
-//!
-//! A tree watch ([`Watcher::tree`]) watches every directory below the root
-//! as well, a subdirectory created or moved in from then on as soon as it is
-//! reported, without following links; [`Watcher::skip`] leaves chosen
-//! subdirectories (a build's output) out.
+//! Watching a native directory, or a whole tree, for changes: the one watch behind
+//! [`Dir::watch`](crate::Dir::watch) and [`super::watch_entries`]. Linux watches
+//! through one inotify instance for the process, macOS through `FSEvents`.
 
 use std::path::{Path, PathBuf};
 
@@ -42,37 +9,22 @@ use crate::watch::ChangeKind;
 /// The name of a watch's thread (Linux), as it shows in a wakeup report.
 pub const THREAD_NAME: &str = "tilo-dir-watch";
 
-/// The name of the thread that reads the process's one inotify instance and
-/// hands each watch its changes (Linux).
 #[cfg(target_os = "linux")]
 pub const HUB_THREAD_NAME: &str = "tilo-inotify";
 
-/// One change a [`Watcher`] reports.
-///
-/// `kind` is read from the filesystem when the change is delivered, not from
-/// the platform's event. Events arrive after the fact, and under load long
-/// after: by the time a write's rename is delivered the file may already be
-/// removed again. Mixing the two views reorders history: a rename looked up
-/// late says `Removed`, and the next event of the same burst, taken at its
-/// word, says `Changed` after it, for a file that is gone. Read at delivery,
-/// each change is the path's state at a later moment than the one before it,
-/// and any change after the last look raises another event, so the last
-/// change reported for a path is what the path is.
+/// One change a [`Watcher`] reports. `kind` is read from the filesystem when the change is delivered,
+/// not from the platform's event.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Event {
-    /// The changed entry's full path; for [`ChangeKind::Rescan`], and for
-    /// the end of the watch, the watched path.
+    /// The changed entry's full path; for [`ChangeKind::Rescan`] and the end of the watch, the watched
+    /// path.
     pub path: PathBuf,
-    /// [`ChangeKind::Created`] for an entry that is new or moved in and
-    /// still there, [`ChangeKind::Changed`] for one written or otherwise
-    /// still there, [`ChangeKind::Removed`] for one gone, and for the watched
-    /// path itself removed or moved away (the watch ends then);
-    /// [`ChangeKind::Rescan`] when changes may have been missed (an
-    /// overflowed or failed queue).
+    /// [`ChangeKind::Created`] for an entry that is new or moved in and still there,
+    /// [`ChangeKind::Changed`] for one written or otherwise changed.
     pub kind: ChangeKind,
 }
 
-/// A live watch; dropping it stops notifications.
+/// Dropping it stops notifications.
 pub struct ChangeWatch {
     #[cfg(target_os = "linux")]
     _watch: inotify_watch::DirectoryWatch,
@@ -80,31 +32,25 @@ pub struct ChangeWatch {
     _watcher: notify::RecommendedWatcher,
 }
 
-/// How deep a watch reaches below its directory.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Depth {
     /// The directory's own entries.
     Entries,
-    /// The directory's entries and those of every directory below it.
     Tree,
 }
 
-/// What a watch reports about the entries of its directory.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Reported {
-    /// Writes, creation, removal and renames.
     Changes,
-    /// Creation, removal and renames only.
     Entries,
-    /// [`Self::Changes`], and a writer closing an entry it held open for
-    /// writing ([`Watcher::released`]).
+    /// [`Self::Changes`], and a writer closing an entry it held open for writing
+    /// ([`Watcher::released`]).
     Released,
 }
 
 type Skip = Box<dyn Fn(&Path) -> bool + Send>;
 
-/// A watch to start on a native directory (or a file, for
-/// [`Watcher::entries`]): see the module docs.
+/// A watch to start on a native directory (or a file, for [`Watcher::entries`]): see the module docs.
 #[must_use = "a watcher watches nothing until it is started"]
 pub struct Watcher {
     root: PathBuf,
@@ -114,14 +60,10 @@ pub struct Watcher {
 }
 
 impl Watcher {
-    /// Watch the entries directly in `dir`, not what happens below its
-    /// subdirectories. A file is watched for writes to it.
     pub fn entries(dir: impl Into<PathBuf>) -> Self {
         Self::new(dir.into(), Depth::Entries)
     }
 
-    /// Watch every entry below `root`, at any depth: an entry of a
-    /// subdirectory, one created or moved in later included.
     pub fn tree(root: impl Into<PathBuf>) -> Self {
         Self::new(root.into(), Depth::Tree)
     }
@@ -135,31 +77,26 @@ impl Watcher {
         }
     }
 
-    /// Report only entries created, removed or renamed, not writes to them.
     pub fn presence(mut self) -> Self {
         self.reported = Reported::Entries;
         self
     }
 
-    /// Report a writer letting go of an entry, besides changes to it: the
-    /// entry's writable descriptor closed, which is when a file it stood
-    /// behind ([`super::held`]) is no longer vouched for, though the name and
-    /// its bytes stay.
+    /// Also reports a writer letting go of an entry: its writable descriptor closed, which is when a
+    /// file it stood behind is final.
     pub fn released(mut self) -> Self {
         self.reported = Reported::Released;
         self
     }
 
-    /// Leave the subdirectories `skip` accepts (given their full path), and
-    /// everything below them, out of a tree watch. Their own creation and
-    /// removal are still reported.
+    /// Leaves the subdirectories `skip` accepts, and everything below them, out of a tree watch.
     pub fn skip(mut self, skip: impl Fn(&Path) -> bool + Send + 'static) -> Self {
         self.skip = Box::new(skip);
         self
     }
 
-    /// Start watching: `on_events` is called on the watch's thread with each
-    /// batch of changes the platform delivers together, in order.
+    /// `on_events` runs on the watch's thread with each batch of changes the platform delivers
+    /// together, in order.
     pub fn start(
         self,
         on_events: impl FnMut(&[Event]) + Send + 'static,
@@ -178,14 +115,7 @@ impl Watcher {
         }
     }
 
-    /// Start watching, calling `on_change` once for each batch of changes in
-    /// which `names` accepts a changed entry's full path, the watched path
-    /// itself went away (the watch ends then), or changes may have been
-    /// missed.
-    ///
-    /// # Errors
-    ///
-    /// As [`Self::start`].
+    /// Calls `on_change` once for each batch in which `names` accepts a changed entry's full path.
     pub fn on_change(
         self,
         names: impl Fn(&Path) -> bool + Send + 'static,
@@ -205,10 +135,6 @@ impl Watcher {
     }
 }
 
-/// Call `on_change` when an entry of `directory` that `names` accepts (given
-/// its full path) is written, created, removed or renamed, when `directory`
-/// itself is removed or moved away (the watch ends then), and when changes
-/// may have been missed (an overflowed or failed queue).
 pub fn watch_changes(
     directory: &Path,
     names: impl Fn(&Path) -> bool + Send + 'static,
@@ -217,9 +143,6 @@ pub fn watch_changes(
     Watcher::entries(directory).on_change(names, on_change)
 }
 
-/// [`watch_changes`] for every entry below `root`, at any depth: an entry of
-/// a subdirectory, one created later included. `names` is given each changed
-/// entry's full path.
 pub fn watch_tree_changes(
     root: &Path,
     names: impl Fn(&Path) -> bool + Send + 'static,
@@ -228,9 +151,6 @@ pub fn watch_tree_changes(
     Watcher::tree(root).on_change(names, on_change)
 }
 
-/// Call `on_change` when an entry of `directory` that `names` accepts (given
-/// its full path) is created, removed or renamed, and when changes may have
-/// been missed. Writes to the entries are not reported.
 pub fn watch_presence(
     directory: &Path,
     names: impl Fn(&Path) -> bool + Send + 'static,
@@ -241,9 +161,8 @@ pub fn watch_presence(
         .on_change(names, on_change)
 }
 
-/// What `path` is now, given whether the platform said it was created.
-/// A dangling symlink is still an entry, and a name that cannot be looked up
-/// for any other reason may have changed.
+/// What `path` is now, given whether the platform said it was created; a dangling symlink is still an
+/// entry.
 fn event_now(path: PathBuf, created: bool) -> Event {
     let kind = match std::fs::symlink_metadata(&path) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => ChangeKind::Removed,
@@ -253,9 +172,7 @@ fn event_now(path: PathBuf, created: bool) -> Event {
     Event { path, kind }
 }
 
-/// `native::atomic`'s temporary names: `.<name>.<pid>.<sequence>.tmp`. A
-/// write's hidden temporary sibling is left out; the rename that publishes
-/// it reports the real name.
+/// A write's hidden temporary sibling is left out; the rename that publishes it is reported.
 fn is_temporary(path: &Path) -> bool {
     path.file_name()
         .and_then(|name| name.to_str())
@@ -286,35 +203,31 @@ mod inotify_watch {
         .union(WatchMask::MOVED_FROM)
         .union(WatchMask::MOVED_TO);
 
-    /// Writes to the directory's entries besides [`ENTRIES`], and changes of
-    /// the directory's own attributes (a file's are dropped as they arrive).
-    /// Not `IN_CLOSE_WRITE`: every write already reports `IN_MODIFY`, and a
-    /// file opened for writing and closed unchanged (a lock file, a store
+    /// Writes to the directory's entries besides [`ENTRIES`], and changes of the directory's own
+    /// attributes (a file's are dropped as they arrive). Not `IN_CLOSE_WRITE`: every write already
+    /// reports `IN_MODIFY`, and a file opened for writing and closed unchanged (a lock file, a store
     /// opened read-write to be read) changed nothing.
     const CHANGES: WatchMask = ENTRIES.union(WatchMask::MODIFY).union(WatchMask::ATTRIB);
 
-    /// [`CHANGES`], and a writer closing a file it had opened for writing:
-    /// what a file its writer stands behind ([`super::super::held`]) is worth
-    /// ends with that close, though the name and its bytes stay.
+    /// [`CHANGES`], and a writer closing a file it had opened for writing: what a file its writer
+    /// stands behind ([`super::super::held`]) is worth ends with that close, though the name and its
+    /// bytes stay.
     const RELEASES: WatchMask = CHANGES.union(WatchMask::CLOSE_WRITE);
 
-    /// One directory, or a tree, watched by a thread of its own, which waits until the
-    /// process's one inotify instance ([`hub`]) hands it a change of its directories.
+    /// One directory or tree, watched by a thread that waits until the process's one inotify instance
+    /// hands it events.
     pub(super) struct DirectoryWatch {
         hub: Arc<Hub>,
         subscriber: u64,
         stopped: Arc<AtomicBool>,
     }
 
-    /// One event as the kernel reported it, owned, handed from the hub's reader to the
-    /// watch it is for.
     struct Raw {
         wd: WatchDescriptor,
         mask: EventMask,
         name: Option<OsString>,
     }
 
-    /// What the hub's reader hands a watch's thread.
     enum Delivery {
         Events(Vec<Raw>),
         /// The kernel's queue overflowed: changes may have been missed.
@@ -323,10 +236,8 @@ mod inotify_watch {
         Failed,
     }
 
-    /// Which watch wants a watched inode's events, and which of them.
     #[derive(Default)]
     struct Interest {
-        /// Each watch's subscriber id and the events it asked for.
         subscribers: Vec<(u64, WatchMask)>,
     }
 
@@ -337,16 +248,8 @@ mod inotify_watch {
         next: u64,
     }
 
-    /// The process's one inotify instance, shared by every watch.
-    ///
-    /// Each instance counts against the user's `fs.inotify.max_user_instances` (128 by
-    /// default), shared by every process of the user: a session whose every watch (the app
-    /// registry, the identity, each device and settings directory) opened an instance of its
-    /// own took about sixty, and a second session beside a desktop left later watches
-    /// failing with "Too many open files". The kernel gives one instance a watch descriptor
-    /// per inode, so two watches of one directory share it: the hub keeps who wants which
-    /// events of it, adds masks together, and removes the kernel's watch only once nobody
-    /// wants it.
+    /// The process's one inotify instance, shared by every watch: each instance counts against the
+    /// user's `fs.inotify.max_user_instances`.
     pub(super) struct Hub {
         watches: Watches,
         routes: Mutex<Routes>,
@@ -365,8 +268,8 @@ mod inotify_watch {
             id
         }
 
-        /// Watch `path` for `subscriber`'s `mask`. The routes stay locked while the kernel
-        /// adds the watch, so its first event finds the subscriber.
+        /// Watches `path` for `subscriber`'s `mask`. The routes stay locked while the kernel adds the
+        /// watch, so its first event finds the subscriber registered.
         fn add(
             &self,
             subscriber: u64,
@@ -390,7 +293,6 @@ mod inotify_watch {
             Ok(wd)
         }
 
-        /// `subscriber` no longer wants `wd`; the kernel's watch goes once nobody does.
         fn remove(&self, subscriber: u64, wd: &WatchDescriptor) {
             let mut routes = self.routes.lock_recover();
             let Some(interest) = routes.by_wd.get_mut(wd) else {
@@ -404,7 +306,6 @@ mod inotify_watch {
             drop(routes);
         }
 
-        /// `subscriber` is gone: every watch it held is let go.
         fn unsubscribe(&self, subscriber: u64) {
             let mut routes = self.routes.lock_recover();
             routes.senders.remove(&subscriber);
@@ -422,7 +323,6 @@ mod inotify_watch {
             drop(routes);
         }
 
-        /// Hand one read's events to the watches they are for, each in order.
         fn dispatch(&self, events: inotify::Events<'_>) {
             let mut routes = self.routes.lock_recover();
             let mut batches: HashMap<u64, Vec<Raw>> = HashMap::new();
@@ -475,9 +375,7 @@ mod inotify_watch {
         }
     }
 
-    /// The process's inotify instance, opened by the first watch and read by one thread of
-    /// its own for as long as the process runs. A failed instance is let go, so a later
-    /// watch opens a new one; failing to open one is the watch's error.
+    /// Opened by the first watch and read by a thread of its own for as long as the process runs.
     fn hub() -> std::io::Result<Arc<Hub>> {
         static HUB: Mutex<Option<Arc<Hub>>> = Mutex::new(None);
         let mut slot = HUB.lock_recover();
@@ -512,7 +410,6 @@ mod inotify_watch {
         Ok(hub)
     }
 
-    /// The directories of a tree watch, by their watches.
     struct Tree {
         hub: Arc<Hub>,
         subscriber: u64,
@@ -527,9 +424,8 @@ mod inotify_watch {
                 .add(self.subscriber, path, self.mask | WatchMask::DONT_FOLLOW)
         }
 
-        /// Watch every directory below `top` (not `top` itself), not following links. A
-        /// directory that goes away meanwhile is skipped; the first other failure is the
-        /// error, and the rest of the tree is still watched.
+        /// Every directory below `top`, not `top` itself, without following links; a directory that
+        /// goes away meanwhile is skipped.
         fn add_below(&mut self, top: &Path) -> std::io::Result<()> {
             let mut failed = None;
             let mut pending = vec![top.to_path_buf()];
@@ -565,21 +461,19 @@ mod inotify_watch {
             failed.map_or(Ok(()), Err)
         }
 
-        /// Watch `directory`, a new entry, and every directory below it.
         fn add(&mut self, directory: PathBuf) {
             if (self.skip)(&directory) {
                 return;
             }
-            // A directory the watch cannot reach is not reported later; the change that
-            // brought it is reported now, and a reader re-reads what it can.
+            // A directory the watch cannot reach is not reported later; the change that brought it is
+            // reported now, and a reader re-reads what it can.
             if let Ok(descriptor) = self.watch(&directory) {
                 let _ = self.add_below(&directory);
                 self.directories.insert(descriptor, directory);
             }
         }
 
-        /// Stop watching `directory` and what is below it: moved out of the tree, or moved
-        /// within it, which [`Self::add`] watches again under its new path.
+        /// Moved out of the tree, or moved within it, which [`Self::add`] watches again.
         fn forget(&mut self, directory: &Path) {
             let gone: Vec<WatchDescriptor> = self
                 .directories
@@ -594,14 +488,11 @@ mod inotify_watch {
         }
     }
 
-    /// What one inotify event means for a watch's thread.
     enum Step {
         Next,
-        /// The watched path went away.
         Ended,
     }
 
-    /// The thread's view of a watch: its directories and where it started.
     struct Reader {
         tree: Tree,
         root: PathBuf,
@@ -610,28 +501,27 @@ mod inotify_watch {
     }
 
     impl Reader {
-        /// Take in one event, adding what it reports to `batch`.
         fn take(&mut self, event: &Raw, batch: &mut Vec<Event>) -> Step {
             if event.mask.contains(EventMask::IGNORED) {
                 if event.wd == self.top {
-                    // The watched path itself went away, and its entries with it: a reader
-                    // must look again.
+                    // The watched path itself went away, and its entries with it: a reader must look
+                    // again.
                     return Step::Ended;
                 }
                 self.tree.directories.remove(&event.wd);
                 return Step::Next;
             }
             if event.wd == self.top && event.mask.contains(EventMask::MOVE_SELF) {
-                // Moved away, which ends the watch like a removal. Another watch of the same
-                // directory may keep the kernel's watch, so no `IN_IGNORED` need follow.
+                // Moved away, which ends the watch like a removal. Another watch of the same directory
+                // may keep the kernel's watch, so no `IN_IGNORED` need follow.
                 return Step::Ended;
             }
             let Some(parent) = self.tree.directories.get(&event.wd) else {
                 return Step::Next;
             };
             let Some(name) = &event.name else {
-                // The watched directory itself (or a watched file): its attributes,
-                // a write or a writer's close of the file.
+                // The watched directory itself (or a watched file): its attributes, a write or a
+                // writer's close of the file.
                 if event
                     .mask
                     .intersects(EventMask::ATTRIB | EventMask::MODIFY | EventMask::CLOSE_WRITE)
@@ -648,13 +538,12 @@ mod inotify_watch {
                     .mask
                     .intersects(EventMask::CREATE | EventMask::MOVED_TO)
                 {
-                    // Watched before the change is reported, so an entry written into
-                    // it after the reader looks is reported too.
+                    // Watched before the change is reported, so an entry written into it after the
+                    // reader looks is reported too.
                     self.tree.add(path.clone());
                 }
             }
-            // An entry's attributes are not a change of it; a watched directory
-            // reports its own.
+            // An entry's attributes are not a change of it; a watched directory reports its own.
             if !event.mask.contains(EventMask::ATTRIB) && !is_temporary(&path) {
                 let created = event
                     .mask
@@ -803,8 +692,6 @@ mod notify_watch {
             reported,
             skip,
         } = watcher;
-        // Taken before the watch starts, so a change made between the two is
-        // never mistaken for earlier history.
         #[cfg(target_os = "macos")]
         let started = Started::of(&root);
         let watched_root = root.clone();
@@ -819,7 +706,6 @@ mod notify_watch {
             let root = &callback_root;
             let event = match event {
                 Ok(event) if !event.need_rescan() => event,
-                // An overflowed or failed queue may have hidden a change.
                 _ => {
                     on_events(&[Event {
                         path: root.clone(),
@@ -836,16 +722,16 @@ mod notify_watch {
                 return;
             }
             let created = match event.kind {
-                // A writer closing a file it held open for writing: what a file it stood
-                // behind is worth ends there, though the name and its bytes stay.
+                // A writer closing a file it held open for writing: what a file it stood behind is
+                // worth ends there, though the name and bytes stay.
                 EventKind::Access(AccessKind::Close(AccessMode::Write))
                     if reported == Reported::Released =>
                 {
                     false
                 }
                 EventKind::Access(_) => return,
-                // A move in or out of the tree is a change of the watched
-                // entries even where only entries are reported.
+                // A move in or out of the tree is a change of the watched entries even where only
+                // entries are reported.
                 EventKind::Modify(ModifyKind::Name(_)) | EventKind::Create(_) => true,
                 EventKind::Modify(_) if reported == Reported::Entries => return,
                 _ => false,
@@ -854,8 +740,7 @@ mod notify_watch {
             let batch: Vec<Event> = event
                 .paths
                 .into_iter()
-                // A file's attributes are not a change of it; the watched
-                // directory reports its own.
+                // A file's attributes are not a change of it; the watched directory reports its own.
                 .filter(|path| !metadata || path == root)
                 .filter(|path| !is_temporary(path) && !skipped(path))
                 .map(|path| event_now(path, created))
@@ -864,8 +749,7 @@ mod notify_watch {
                 on_events(&batch);
             }
         };
-        // Links are not followed, as on Linux: a linked folder is not part of
-        // the tree.
+        // Links are not followed, as on Linux: a linked folder is not part of the tree.
         let config = notify::Config::default().with_follow_symlinks(false);
         let mut native = notify::RecommendedWatcher::new(handler, config).map_err(error)?;
         let mode = match depth {
@@ -884,30 +768,11 @@ mod notify_watch {
         }
     }
 
-    /// The watched directory as it was when its watch started.
-    ///
-    /// `FSEvents` numbers an event when its daemon gets to it, not when the
-    /// change was made, so a stream started "from now" can still be handed
-    /// what happened to the watched directory just before: its own creation
-    /// above all, when it was made a moment earlier. Reported, that history
-    /// would wake the watch's owner for a change it has read already, since
-    /// whoever starts a watch reads the directory once after it.
-    ///
-    /// So an event on the directory itself is dropped while the directory is
-    /// still the one that was watched, with the mode and owner it had then.
-    /// A removal, a replacement or a new mode or owner is reported. Changes
-    /// to its entries move its times too, but are reported by their own
-    /// names, so the times are not compared: a late report of the
-    /// directory's making must not pass as a change because an entry was
-    /// created since. The one change to the directory itself left unreported
-    /// is to its extended attributes, which only a Linux FUSE mount uses as a
-    /// signal ([`crate::native::CHANGE_SIGNAL_XATTR`]), and inotify reports
-    /// only what happens after its watch is added.
+    /// The watched directory as it was when its watch started. `FSEvents` numbers an event when its
+    /// daemon gets to it, not when the change happened, so a newer number does not mean a newer change.
     #[cfg(target_os = "macos")]
     struct Started {
-        /// The directory as watched.
         dir: std::path::PathBuf,
-        /// The same, canonical, as `FSEvents` names it.
         canonical: std::path::PathBuf,
         identity: Identity,
     }
@@ -922,8 +787,7 @@ mod notify_watch {
             })
         }
 
-        /// Whether `event` reports only what the directory went through
-        /// before its watch started.
+        /// Whether `event` reports only what the directory went through before its watch started.
         fn explains(&self, event: &notify::Event) -> bool {
             !event.paths.is_empty()
                 && event
@@ -934,7 +798,6 @@ mod notify_watch {
         }
     }
 
-    /// Which directory a path names, and who may do what in it.
     #[cfg(target_os = "macos")]
     #[derive(Debug, PartialEq, Eq)]
     struct Identity {
@@ -961,9 +824,8 @@ mod notify_watch {
     }
 }
 
-/// Filesystems whose entries can change without passing through this
-/// kernel, by `statfs` magic: FUSE, NFS, SMB, CIFS, SMB2, 9P, Ceph and the
-/// two AFS implementations.
+/// Filesystems whose entries can change without passing through this kernel, by `statfs` magic: FUSE,
+/// NFS, SMB, CIFS, SMB2, 9P, Ceph, AFS.
 #[cfg(target_os = "linux")]
 const REMOTE_FILESYSTEMS: [u32; 9] = [
     FUSE_SUPER_MAGIC,
@@ -977,11 +839,9 @@ const REMOTE_FILESYSTEMS: [u32; 9] = [
     0x5346_414F,
 ];
 
-/// `statfs` magic of FUSE.
 #[cfg(target_os = "linux")]
 const FUSE_SUPER_MAGIC: u32 = 0x6573_5546;
 
-/// [`crate::native::watch_sees_every_change`].
 #[cfg(target_os = "linux")]
 pub(crate) fn sees_every_change(dir: &Path) -> bool {
     let Ok(stat) = rustix::fs::statfs(dir) else {
@@ -999,8 +859,8 @@ pub(crate) fn sees_every_change(dir: &Path) -> bool {
     !REMOTE_FILESYSTEMS.contains(&magic)
 }
 
-/// Whether the FUSE filesystem holding `dir` says it tells the kernel of
-/// every change, by answering [`crate::native::CHANGE_SIGNAL_XATTR`] there.
+/// Whether the FUSE filesystem holding `dir` says it tells the kernel of every change, by answering
+/// [`crate::native::CHANGE_SIGNAL_XATTR`].
 #[cfg(target_os = "linux")]
 fn signals_every_change(dir: &Path) -> bool {
     let mut value = [0_u8; 8];
@@ -1008,16 +868,14 @@ fn signals_every_change(dir: &Path) -> bool {
         .is_ok_and(|len| value.get(..len) == Some(b"1".as_slice()))
 }
 
-/// Elsewhere the filesystem's type is not told apart, so a watch is trusted
-/// for local edits only.
+/// Elsewhere the filesystem's type is not told apart, so a watch is trusted for local edits only.
 #[cfg(not(target_os = "linux"))]
 pub(crate) fn sees_every_change(_dir: &Path) -> bool {
     false
 }
 
-/// [`Dir::watch`](crate::Dir::watch) and [`crate::native::watch_entries`]:
-/// the watch of `path` below `root`, its changes queued as paths relative to
-/// `root`.
+/// [`Dir::watch`](crate::Dir::watch) and [`crate::native::watch_entries`]: the watch of `path` below
+/// `root`, its changes queued as they arrive.
 pub(crate) fn stream(
     root: &Path,
     path: &crate::VPath,
@@ -1056,8 +914,7 @@ pub(crate) fn stream(
     Ok(crate::Watch::new(inbox, Box::new(source)))
 }
 
-/// `path` below `root` as a [`crate::VPath`]; `None` outside it or for a
-/// name that is not UTF-8.
+/// `path` below `root` as a [`crate::VPath`]; `None` outside it or for a name that is not UTF-8.
 fn relative(root: &Path, path: &Path) -> Option<crate::VPath> {
     let parts: Option<Vec<&str>> = path
         .strip_prefix(root)
@@ -1101,7 +958,6 @@ mod tests {
         false
     }
 
-    /// The events a watcher reports, collected.
     fn recorded(watcher: Watcher) -> (Arc<Mutex<Vec<Event>>>, ChangeWatch) {
         let seen = Arc::new(Mutex::new(Vec::new()));
         let record = Arc::clone(&seen);
@@ -1115,9 +971,8 @@ mod tests {
         tilo_test_env::wait_until(what, || seen.lock().expect("events").iter().any(&found));
     }
 
-    /// Every watch of a process shares one inotify instance, so watches past
-    /// the user's instance limit (128 by default, shared by all the user's
-    /// processes) still start, and each still hears its own directory.
+    /// Every watch of a process shares one inotify instance, so watches past the user's instance limit
+    /// do not fail.
     #[cfg(target_os = "linux")]
     #[test]
     fn more_watches_than_the_instance_limit_start_and_each_reports_its_own_changes() {
@@ -1141,8 +996,8 @@ mod tests {
         );
     }
 
-    /// Two watches of one directory share the kernel's watch of it: each
-    /// hears only what it asked for, and dropping one leaves the other.
+    /// Two watches of one directory share the kernel's watch of it: each hears only what it asked for,
+    /// and dropping one leaves the other.
     #[test]
     fn two_watches_of_one_directory_are_independent() {
         let dir = tempfile::tempdir().expect("temporary directory");
@@ -1316,11 +1171,10 @@ mod tests {
         assert_eq!(count.load(Ordering::SeqCst), 0, "a read wakes nothing");
     }
 
-    /// A file published with [`super::super::held::publish`] is vouched for only while its
-    /// writer holds it, and the hold ends with the close of the descriptor it published
-    /// through, leaving the name and its bytes as they were: a watch that reads such a file
-    /// asks for releases, and one that reads changes hears nothing of them. Only Linux
-    /// reports the close of a file opened for writing.
+    /// A file published with [`super::super::held::publish`] is vouched for only while its writer holds
+    /// it, and the hold ends with the close of the descriptor it published through, leaving the name
+    /// and its bytes as they were: a watch that reads such a file asks for releases, and one that reads
+    /// changes hears nothing of them. Only Linux reports the close of a file opened for writing.
     #[cfg(target_os = "linux")]
     #[test]
     fn a_writer_letting_go_is_reported_to_a_watch_that_asks_for_releases() {
@@ -1385,10 +1239,8 @@ mod tests {
         );
     }
 
-    /// Two atomic writes and a removal, all done before the watch's thread
-    /// got to them, as happens under load: each change is what its path is
-    /// when delivered, so the file is never reported changed after it is
-    /// gone, and its temporaries are not reported at all.
+    /// Two atomic writes and a removal, all done before the watch's thread got to them, as happens
+    /// under load: each change is what its file is now.
     #[test]
     fn a_file_removed_before_its_writes_are_delivered_is_never_reported_changed() {
         let dir = tempfile::tempdir().unwrap();
@@ -1427,10 +1279,8 @@ mod tests {
         stream(dir, &VPath::root(), false).unwrap()
     }
 
-    /// Every change `watch` reports up to and including the creation of
-    /// `name` in `dir`, which it makes. A watch reports in the order the
-    /// changes were made, so anything left over from before the watch began
-    /// is among them.
+    /// Every change `watch` reports up to and including the creation of `name` in `dir`, which it
+    /// makes.
     fn changes_until_made(watch: &Watch, dir: &Path, name: &str) -> Vec<Change> {
         std::fs::create_dir(dir.join(name)).unwrap();
         let made = VPath::new(name).unwrap();
@@ -1444,9 +1294,9 @@ mod tests {
         seen
     }
 
-    /// `FSEvents` can hand a watch the creation of the directory it watches
-    /// when the directory was made a moment before: the event is numbered
-    /// when its daemon gets to it. That is no change since the watch began.
+    /// `FSEvents` can hand a watch the creation of the directory it watches when the directory was made
+    /// a moment before: the event is numbered when its daemon gets to it. That is no change since the
+    /// watch began.
     #[test]
     fn a_watch_on_a_just_made_directory_reports_nothing_of_its_making() {
         for _ in 0..50 {
@@ -1457,8 +1307,8 @@ mod tests {
         }
     }
 
-    /// What the directory itself goes through after the watch began is
-    /// reported, as a change of the watched path.
+    /// What the directory itself goes through after the watch began is reported, as a change of the
+    /// watched path.
     #[cfg(unix)]
     #[test]
     fn a_change_to_the_watched_directory_itself_is_reported() {

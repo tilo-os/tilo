@@ -1,19 +1,11 @@
-//! The browser's origin-private file system (OPFS), through the async API the
-//! page's main thread may use, and Web Locks.
-//!
-//! Layout: `opfs://<profile>/<path>` is the directory `<profile>` at the top
-//! of the origin's OPFS, then the path's components.
-//!
-//! - A replacement writes through `createWritable()`, whose swap file the
-//!   browser commits atomically on `close()`. A new file's name appears,
-//!   empty, before its first commit.
-//! - Every operation that creates, replaces or removes names holds the
-//!   profile's Web Lock, so no-clobber creation and renames hold against every
-//!   `tilo-files` writer in every tab of the origin.
-//! - A rename uses `FileSystemHandle.move()` where the browser has it, and
-//!   otherwise copies, then removes, the file or directory tree. Chrome has
-//!   `move()` only on file handles, so a directory is always copied there.
-//! - OPFS keeps no directory modification times; they read as the epoch.
+//! The browser's origin-private file system, through the async API the page's main
+//! thread may use, and Web Locks. `opfs://<profile>/<path>` is the directory
+//! `<profile>` at the top of the origin's OPFS, then the path's components. A
+//! replacement writes through `createWritable()`, whose swap file the browser commits
+//! atomically on `close()`, and a new file's name appears empty before its first
+//! commit. Every operation that creates, replaces or removes names holds the profile's
+//! Web Lock, so no-clobber creation and renames hold against every writer in every tab.
+//! OPFS keeps no directory modification times; they read as the epoch.
 
 use js_sys::{Function, Object, Promise, Reflect, Uint8Array};
 use std::cell::Cell;
@@ -48,15 +40,13 @@ extern "C" {
         callback: &JsValue,
     ) -> Result<LockRequest, JsValue>;
 
-    /// The promise `request` returns, settled when the lock is released or
-    /// refused.
+    /// The promise `request` returns, settled when the lock is released or refused.
     type LockRequest;
 
     #[wasm_bindgen(method, js_name = then)]
     fn then_or_else(this: &LockRequest, on_fulfilled: &JsValue, on_rejected: &Function);
 }
 
-/// A [`Dir`](crate::Dir) in OPFS.
 #[derive(Clone, Debug)]
 pub(crate) struct Scope {
     profile: String,
@@ -94,7 +84,6 @@ impl Scope {
         &self.prefix
     }
 
-    /// The whole file and its modification time.
     pub(crate) async fn read_with_modified(
         &self,
         path: &VPath,
@@ -117,7 +106,6 @@ impl Scope {
         Ok((Uint8Array::new(&buffer).to_vec(), modified))
     }
 
-    /// The directory at `parts` below the scope's profile.
     async fn dir(
         &self,
         parts: &[&str],
@@ -160,7 +148,7 @@ impl Scope {
         write_file(&file, bytes).await
     }
 
-    /// Reload and replace while holding the same lock as every profile writer.
+    /// Reloads and replaces while holding the same lock as every profile writer.
     pub(crate) async fn update_atomic<F, Fut>(&self, path: &VPath, update: F) -> Result<(), FsError>
     where
         F: FnOnce(Option<Vec<u8>>) -> Fut,
@@ -182,8 +170,8 @@ impl Scope {
         let dir = self.dir(parents, true).await?;
         let file = file_handle(&dir, name, true).await?;
         if let Err(error) = write_file(&file, &bytes).await {
-            // Creating a new handle exposes an empty file before close(). It
-            // must not masquerade as a damaged existing vault on retry.
+            // Creating a new handle exposes an empty file before `close()`, which must not masquerade
+            // as a damaged existing vault on retry.
             if !existed {
                 await_js(dir.remove_entry(name), FsError::NotADirectory).await?;
             }
@@ -243,9 +231,8 @@ impl Scope {
             await_js(from_dir.remove_entry(from_name), FsError::NotADirectory).await?;
             return Ok(());
         }
-        // Chrome moves only file handles. A directory is copied whole, then
-        // the source removed; an interrupted move leaves both trees, never
-        // neither.
+        // Chrome moves only file handles, so a directory is copied whole and then the source removed;
+        // an interrupted move leaves both trees, never a lost one.
         let copied = child_dir(&to_dir, to_name, true).await?;
         if let Err(error) = copy_tree(source.unchecked_ref(), &copied).await {
             let _ = remove_tree(&to_dir, to_name).await;
@@ -362,16 +349,7 @@ fn property(target: &JsValue, name: &str) -> Option<JsValue> {
         .filter(|value| !value.is_undefined() && !value.is_null())
 }
 
-/// The origin's OPFS root.
-///
-/// Asking for it is the one call that fails for want of the whole file
-/// system rather than of one file: a session that keeps nothing (a private
-/// window) and a page whose site data is turned off have no tree to hand
-/// back, and say so by rejecting `getDirectory()` — `WebKit` answers
-/// `UnknownError`, "The operation failed for an unknown transient reason".
-/// That is this browser not having files, not a file operation going wrong,
-/// so a refused root is [`FsError::Unsupported`] and the caller reports a
-/// missing capability instead of an error.
+/// Asking for it is the one call that fails for want of the whole file system rather than of one file.
 async fn storage_root() -> Result<FileSystemDirectoryHandle, FsError> {
     let storage = property(&js_sys::global(), "navigator")
         .and_then(|navigator| property(&navigator, "storage"))
@@ -389,9 +367,7 @@ async fn storage_root() -> Result<FileSystemDirectoryHandle, FsError> {
     Ok(root.unchecked_into())
 }
 
-/// The [`FsError`] for a refused OPFS root. The browser's own words go to
-/// the console, once: a page without files meets this again on every file
-/// operation, and the first line is the one that says why.
+/// The browser's own words go to the console, once.
 fn refused_root(error: &JsValue) -> FsError {
     thread_local! {
         static WARNED: Cell<bool> = const { Cell::new(false) };
@@ -438,7 +414,6 @@ async fn file_handle(
     .unchecked_into())
 }
 
-/// Every entry of `dir`, in the browser's order.
 async fn children(dir: &FileSystemDirectoryHandle) -> Result<Vec<FileSystemHandle>, FsError> {
     let values = dir.values();
     let mut handles = Vec::new();
@@ -466,7 +441,6 @@ fn kind_of(handle: &FileSystemHandle) -> Kind {
     }
 }
 
-/// Copies every entry of `from` into the empty directory `to`.
 async fn copy_tree(
     from: &FileSystemDirectoryHandle,
     to: &FileSystemDirectoryHandle,
@@ -491,7 +465,6 @@ async fn copy_tree(
     Ok(())
 }
 
-/// Removes `name` from `parent` with everything below it.
 async fn remove_tree(parent: &FileSystemDirectoryHandle, name: &str) -> Result<(), FsError> {
     let options = FileSystemRemoveOptions::new();
     options.set_recursive(true);
@@ -519,9 +492,8 @@ async fn read_file(file: &FileSystemFileHandle) -> Result<Vec<u8>, FsError> {
     Ok(Uint8Array::new(&buffer).to_vec())
 }
 
-/// Replaces the file's contents through a swap file the browser commits on
-/// `close()`. The bytes are copied into JavaScript first: the stream reads
-/// them after this call yields, when wasm memory may have moved.
+/// A swap file the browser commits on `close()`. The bytes are copied into JavaScript first: the stream
+/// reads them after this call yields, when wasm memory may have moved.
 async fn write_file(file: &FileSystemFileHandle, bytes: &[u8]) -> Result<(), FsError> {
     let options = FileSystemCreateWritableOptions::new();
     options.set_keep_existing_data(false);
@@ -544,9 +516,8 @@ async fn write_file(file: &FileSystemFileHandle, bytes: &[u8]) -> Result<(), FsE
         .map(drop)
 }
 
-/// Waits for the Web Lock `name` in `mode`. The lock is held until the
-/// returned guard drops; dropping the future before the grant releases the
-/// lock as soon as it is granted.
+/// Waits for the Web Lock `name` in `mode`; dropping the future before the grant releases the lock as
+/// soon as it is granted.
 async fn acquire(name: &str, mode: LockMode) -> Result<WebLock, FsError> {
     let Some(locks) = property(&js_sys::global(), "navigator")
         .and_then(|navigator| property(&navigator, "locks"))
@@ -567,8 +538,8 @@ async fn acquire(name: &str, mode: LockMode) -> Result<WebLock, FsError> {
             "the browser did not run a promise executor".into(),
         ));
     };
-    // From here the guard exists, so any early return or a dropped future
-    // lets the lock go the moment it is granted.
+    // From here the guard exists, so any early return or a dropped future lets the lock go the moment
+    // it is granted.
     let guard = WebLock { release };
 
     let callback = Closure::once_into_js(move |_lock: JsValue| -> JsValue {
@@ -600,9 +571,7 @@ async fn await_js(promise: Promise, mismatch: FsError) -> Result<JsValue, FsErro
         .map_err(|error| js_error(&error, mismatch))
 }
 
-/// The [`FsError`] for a rejected storage call. `mismatch` is what a
-/// `TypeMismatchError` means at the call site: a file where a directory was
-/// expected, or the reverse.
+/// `mismatch` is what a `TypeMismatchError` means at the call site.
 fn js_error(error: &JsValue, mismatch: FsError) -> FsError {
     let name = property(error, "name")
         .and_then(|name| name.as_string())

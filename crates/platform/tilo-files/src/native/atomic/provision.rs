@@ -104,7 +104,6 @@ impl Error for ProvisionError {
         Some(&self.source)
     }
 }
-/// Recover directory effects through the compatibility I/O wrapper.
 pub fn directory_state(error: &io::Error) -> Option<DirectoryState> {
     error
         .get_ref()
@@ -459,7 +458,6 @@ fn checkpoint(kind: Kind, path: &Path, identity: Option<&FileIdentity>) -> io::R
     }
 }
 
-/// A changed existing namespace binding, distinct from native barrier I/O.
 #[derive(Debug)]
 struct BindingChanged(PathBuf);
 impl fmt::Display for BindingChanged {
@@ -482,7 +480,6 @@ fn binding_observation(error: io::Error, path: &Path) -> io::Error {
     }
 }
 
-/// An existing-chain failure retaining all admitted authority and commit obligations.
 #[derive(Debug)]
 pub struct DirectoryReconcileError {
     inner: ProvisionError,

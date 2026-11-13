@@ -1,5 +1,5 @@
-//! Fallback implementation for hosts other than Unix and Windows.
-//! Never compiled or reached on Windows; it has no native durability guarantee.
+//! Fallback implementation for hosts other than Unix and Windows. Never compiled or
+//! reached on Windows; it has no native durability guarantee.
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};

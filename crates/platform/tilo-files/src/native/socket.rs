@@ -1,16 +1,11 @@
-//! Local (Unix-domain) sockets named by a path of any length.
-//!
-//! The kernel takes a socket's path in a fixed buffer (`sun_path`: 108
-//! bytes on Linux, 104 on macOS), so a socket in a deep enough directory
-//! cannot be bound or reached by its path at all. Every Tilo socket that
-//! lives in a directory it does not choose (a profile, a state root, a
-//! worktree) binds and connects here instead: a path that does not fit is
-//! reached through its directory, opened first and named by its descriptor
-//! (`/proc/self/fd/<fd>/<name>`), so only the socket's own name has to fit.
-//!
-//! A path that fits is used as it is. Elsewhere than Linux and Android, a
-//! path that does not fit is refused with [`io::ErrorKind::InvalidInput`]
-//! naming the limit, never silently.
+//! Local (Unix-domain) sockets named by a path of any length. The kernel takes a
+//! socket's path in a fixed buffer (`sun_path`: 108 bytes on Linux, 104 on macOS), so a
+//! socket in a deep enough directory cannot be bound or reached by its path at all; a
+//! path that does not fit is reached through its directory, opened first and named by
+//! its descriptor (`/proc/self/fd/<fd>/<name>`), so only the socket's own name has to
+//! fit. A path that fits is used as it is. Elsewhere than Linux and Android a path that
+//! does not fit is refused with [`io::ErrorKind::InvalidInput`] naming the limit, never
+//! silently.
 
 use std::io;
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -19,30 +14,20 @@ use std::path::Path;
 /// The longest socket path the kernel takes, without its terminating NUL.
 #[cfg(any(target_os = "linux", target_os = "android"))]
 pub const MAX_PATH: usize = 107;
-/// The longest socket path the kernel takes, without its terminating NUL.
 #[cfg(not(any(target_os = "linux", target_os = "android")))]
 pub const MAX_PATH: usize = 103;
 
-/// Listen on a new socket at `path`, whatever its length.
-///
-/// # Errors
-/// What `bind(2)` says (`AddrInUse` where something is already there), or
-/// what opening the directory says for a path that does not fit.
+/// Listens on a new socket at `path`, whatever its length.
 pub fn bind(path: &Path) -> io::Result<UnixListener> {
     reach(path, |short| UnixListener::bind(short))
 }
 
-/// Connect to the socket at `path`, whatever its length.
-///
-/// # Errors
-/// What `connect(2)` says: `NotFound` where nothing is bound there,
-/// `ConnectionRefused` where nobody listens any more.
+/// Connects to the socket at `path`, whatever its length.
 pub fn connect(path: &Path) -> io::Result<UnixStream> {
     reach(path, |short| UnixStream::connect(short))
 }
 
-/// Call `act` with a name for `path` that fits the kernel's buffer, valid for
-/// as long as `act` runs.
+/// Calls `act` with a name for `path` that fits the kernel's buffer, valid for as long as `act` runs.
 fn reach<T>(path: &Path, act: impl FnOnce(&Path) -> io::Result<T>) -> io::Result<T> {
     if path.as_os_str().len() <= MAX_PATH {
         return act(path);

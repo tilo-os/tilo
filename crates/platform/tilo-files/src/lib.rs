@@ -1,63 +1,11 @@
-//! Files inside capability-scoped roots, through one API on Linux, macOS and
-//! the web.
-//!
-//! A [`Dir`] is opened from a [`tilo_paths::Location`] (an app's data,
-//! config, cache or state location, a picker grant) or made in memory for
-//! tests with [`Dir::memory`]. Every path below it is a [`VPath`]: relative,
-//! `/`-separated, never `..`, so a `Dir` cannot name anything outside itself
-//! except through symbolic links a native user created.
-//!
-//! # Backends
-//!
-//! | Location | Backend |
-//! |---|---|
-//! | `Location::Native` on Linux and macOS | `std::fs`, with [`native::atomic`] for crash-safe replacement and [`native::lock`] (`flock`) for locks |
-//! | `VirtualRoot::Memory` on every target | a map in this process, shared by every `Dir` on the same location; [`Dir::memory`] makes a private one |
-//! | `VirtualRoot::Opfs` on the web | the browser's origin-private file system, one directory per profile, and Web Locks; app `data`, `config` and `state` through the page's mirror once the host loaded it (`web`) |
-//!
-//! A location a target has no backend for (`Native` on the web, `Opfs`
-//! natively) is an [`FsError::Unsupported`] from [`Dir::open`].
-//!
-//! # Async first
-//!
-//! The browser's storage answers only asynchronously on the page's thread, so
-//! every operation is an `async fn`. On Linux and macOS these futures run the
-//! `std::fs` call to completion when first polled; they are `Send` there and
-//! not on the web, where they hold browser handles. [`blocking`] offers the
-//! same operations synchronously; on the web it answers from the page's
-//! mirror of the app's locations, and otherwise with
-//! [`FsError::Unsupported`].
-//!
-//! # Watching
-//!
-//! [`Dir::watch`] reports changes: from memory trees, from OPFS (this tab's
-//! and, through a `BroadcastChannel`, other tabs' `tilo-files` writers), and
-//! natively from inotify or `FSEvents` with the `watch` feature.
-//!
-//! # What a write guarantees
-//!
-//! - [`Dir::write_atomic`] leaves either the old or the new contents after a
-//!   crash. Natively: temp file, `fsync` (`F_FULLFSYNC` on macOS), rename,
-//!   directory `fsync`. On the web: an OPFS writable stream, whose swap file
-//!   the browser commits on close.
-//! - [`Dir::create_new`] and [`Dir::rename_noreplace`] never replace an
-//!   existing name. Natively they use a hard link and `renameat2`/`renameatx_np`;
-//!   on the web every writer of a profile holds one Web Lock while it creates
-//!   or replaces names.
-//! - Writes create missing parent directories, including the `Dir`'s root.
-//!
-//! # Not in this version
-//!
-//! - Trash, owner-only directories and extended attributes report
-//!   [`Availability::Unsupported`] (see [`Feature`]); [`Dir::trash`]
-//!   returns the error. The absorbed native modules still offer
-//!   owner-checked private files by path ([`native::private`]).
-//! - Reads and writes take whole buffers; there is no `open_read` stream.
-//!   `tilo-content`'s `DirBackend` streams and hashes while receiving behind
-//!   a synchronous trait, so it stays on `std::fs` until this crate streams
-//!   and the content trait can await (or the web backend moves into a
-//!   worker with synchronous access handles).
-//! - Native operations run on the polling thread rather than `tilo_rt::io`.
+//! Files inside capability-scoped roots, through one API on Linux, macOS and the web. A
+//! [`Dir`] is opened from a [`tilo_paths::Location`] and names nothing outside it:
+//! every path below it is a [`VPath`], relative and never `..`. Operations are `async`
+//! because the web's storage is; [`blocking`] offers the same synchronously.
+//! [`Dir::write_atomic`] leaves either the old or the new contents after a crash, and
+//! [`Dir::create_new`] and [`Dir::rename_noreplace`] never replace an existing name.
+//! Trash, owner-only directories and extended attributes are unsupported ([`Feature`]),
+//! and reads and writes take whole buffers.
 
 #![cfg_attr(
     not(all(target_arch = "wasm32", target_os = "unknown")),
@@ -98,9 +46,8 @@ pub use watch::{Change, ChangeKind, Next, Watch};
 
 use local::Local;
 
-/// A directory tree an app may use, and nothing outside it.
-///
-/// Cloning is cheap and the clone names the same tree.
+/// A directory tree an app may use, and nothing outside it. Cloning is cheap and the clone names the
+/// same tree.
 #[derive(Clone)]
 pub struct Dir {
     root: Root,
@@ -113,8 +60,8 @@ enum Root {
     Opfs(opfs::Scope),
 }
 
-/// What kind of entry a path names. A symbolic link reports its target's
-/// kind; [`Meta::symlink`] says whether the entry itself is a link.
+/// A symbolic link reports its target's kind; [`Meta::symlink`] says whether the entry itself is a
+/// link.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Kind {
     File,
@@ -123,36 +70,29 @@ pub enum Kind {
     Other,
 }
 
-/// One entry of [`Dir::list`].
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Entry {
     pub name: String,
     pub kind: Kind,
 }
 
-/// What [`Dir::metadata`] reports.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Meta {
     /// Bytes in a file; zero for a directory on backends without a size.
     pub len: u64,
-    /// The last modification; the Unix epoch where a backend keeps none
-    /// (directories on the web).
+    /// The Unix epoch where a backend keeps none (directories on the web).
     pub modified: tilo_clock::time::SystemTime,
     pub kind: Kind,
-    /// Unix permission bits, where the backend has them.
     pub mode: Option<u32>,
-    /// Whether the entry itself is a symbolic link.
     pub symlink: bool,
 }
 
-/// A held lock from [`Dir::lock`], released when dropped.
 #[must_use = "the lock is released when it is dropped"]
 pub struct Lock {
     mode: LockMode,
     _held: Held,
 }
 
-/// Each guard is held only for its release on drop.
 enum Held {
     Disk {
         _lock: native::lock::FileLock,
@@ -185,14 +125,8 @@ const INTO_ITSELF: &str = "a directory cannot move into itself";
 const UNKNOWN_ROOT: &str = "This build does not know the storage root.";
 
 impl Dir {
-    /// The tree at `location`. Nothing is created until something is
-    /// written.
-    ///
-    /// # Errors
-    ///
-    /// [`FsError::Unsupported`] for a location this target has no backend
-    /// for, and [`FsError::InvalidPath`] for an OPFS profile that is not one
-    /// path component.
+    /// The tree at `location`; nothing is created until something is written. [`FsError::Unsupported`]
+    /// for a location this target has no backend for.
     pub fn open(location: Location) -> Result<Self, FsError> {
         let root = match location {
             Location::Native(path) => native_root(path)?,
@@ -210,7 +144,6 @@ impl Dir {
         Ok(Self { root })
     }
 
-    /// An empty tree in memory that only this `Dir` and its clones see.
     #[must_use]
     pub fn memory() -> Self {
         Self {
@@ -218,12 +151,6 @@ impl Dir {
         }
     }
 
-    /// The whole file.
-    ///
-    /// # Errors
-    ///
-    /// [`FsError::NotFound`], [`FsError::IsADirectory`], or the backend's
-    /// failure.
     pub async fn read(&self, path: &VPath) -> Result<Vec<u8>, FsError> {
         match &self.root {
             Root::Local(local) => local.read(path),
@@ -235,15 +162,9 @@ impl Dir {
         }
     }
 
-    /// Replaces the file's contents with `bytes` so that a crash leaves
-    /// either the old contents or the new ones, creating missing parents.
-    ///
-    /// # Errors
-    ///
-    /// [`FsError::IsADirectory`], [`FsError::NotADirectory`] for a file in
-    /// the way of a parent, [`FsError::InvalidPath`] for the root, or the
-    /// backend's failure. Natively a failure of the final directory `fsync`
-    /// happens after the new contents are visible.
+    /// Replaces the contents so that a crash leaves either the old ones or the new ones, creating
+    /// missing parents. Natively a failing final directory `fsync` happens after the new contents are
+    /// visible.
     pub async fn write_atomic(&self, path: &VPath, bytes: &[u8]) -> Result<(), FsError> {
         below_root(path)?;
         match &self.root {
@@ -261,17 +182,10 @@ impl Dir {
         }
     }
 
-    /// Saves a user's document as [`write_atomic`](Self::write_atomic) does,
-    /// but natively through an existing symbolic link and keeping the
-    /// file's permission bits, so saving an edited file changes only its
-    /// contents. Dangling links and files with several names are refused
-    /// rather than detached. Natively the folder must exist: a chosen folder
-    /// that has gone (an unmounted drive) is an error, never recreated.
-    ///
-    /// # Errors
-    ///
-    /// As [`write_atomic`](Self::write_atomic); natively [`FsError::NotFound`]
-    /// for a missing folder and an unwritable or unsupported existing target.
+    /// Saves a document as [`write_atomic`](Self::write_atomic) does, but natively through an existing
+    /// symbolic link and keeping its permission bits, so editing a file changes only its contents. A
+    /// dangling link or a file with several names is refused rather than detached, and a chosen folder
+    /// that has gone is an error, never recreated.
     pub async fn save_document(&self, path: &VPath, bytes: &[u8]) -> Result<(), FsError> {
         below_root(path)?;
         match &self.root {
@@ -281,13 +195,8 @@ impl Dir {
         }
     }
 
-    /// [`write_atomic`](Self::write_atomic), readable only by this user:
-    /// natively the file is `0600` and its parent directory `0700`. Browser
-    /// and memory storage are private to the page or process already.
-    ///
-    /// # Errors
-    ///
-    /// As [`write_atomic`](Self::write_atomic).
+    /// [`write_atomic`](Self::write_atomic), readable only by this user: natively the file is `0600`
+    /// and its parent directory `0700`. Browser and memory storage are private already.
     pub async fn write_private(&self, path: &VPath, bytes: &[u8]) -> Result<(), FsError> {
         below_root(path)?;
         match &self.root {
@@ -297,13 +206,8 @@ impl Dir {
         }
     }
 
-    /// Publishes `bytes` at `path` only while nothing is there, creating
-    /// missing parents. Returns `false`, and changes nothing, when the name
-    /// is taken.
-    ///
-    /// # Errors
-    ///
-    /// [`FsError::InvalidPath`] for the root, or the backend's failure.
+    /// Publishes `bytes` only while nothing is there, creating missing parents; `false`, and nothing
+    /// changed, when the name is taken.
     pub async fn create_new(&self, path: &VPath, bytes: &[u8]) -> Result<bool, FsError> {
         below_root(path)?;
         match &self.root {
@@ -323,16 +227,10 @@ impl Dir {
         }
     }
 
-    /// Moves the file or directory at `from` to `to`, failing rather than
-    /// replacing anything at `to`. Missing parents of `to` are created.
-    ///
-    /// # Errors
-    ///
-    /// [`FsError::NotFound`] for `from`, [`FsError::AlreadyExists`] for `to`,
-    /// [`FsError::InvalidPath`] for the root or a move into itself, and
-    /// [`FsError::Unsupported`] where a backend cannot move this kind of
-    /// entry (directories in browsers without `FileSystemHandle.move`, and
-    /// natively on file systems without no-replace renames).
+    /// Moves `from` to `to`, failing rather than replacing anything at `to`, and creating missing
+    /// parents of `to`. [`FsError::Unsupported`] where a backend cannot move this kind of entry:
+    /// directories in browsers without `FileSystemHandle.move`, and natively on file systems without
+    /// no-replace renames.
     pub async fn rename_noreplace(&self, from: &VPath, to: &VPath) -> Result<(), FsError> {
         check_rename(from, to)?;
         match &self.root {
@@ -350,12 +248,6 @@ impl Dir {
         }
     }
 
-    /// Removes a file or an empty directory.
-    ///
-    /// # Errors
-    ///
-    /// [`FsError::NotFound`], [`FsError::DirectoryNotEmpty`],
-    /// [`FsError::InvalidPath`] for the root, or the backend's failure.
     pub async fn remove(&self, path: &VPath) -> Result<(), FsError> {
         below_root(path)?;
         match &self.root {
@@ -373,8 +265,6 @@ impl Dir {
         }
     }
 
-    /// Creates the directory and any missing parents; an existing directory
-    /// is success.
     pub async fn create_dir_all(&self, path: &VPath) -> Result<(), FsError> {
         match &self.root {
             Root::Local(local) => local.create_dir_all(path),
@@ -391,13 +281,8 @@ impl Dir {
         }
     }
 
-    /// The directory's entries, sorted by name. Natively, names that are not
-    /// UTF-8 cannot be [`VPath`] components and are left out.
-    ///
-    /// # Errors
-    ///
-    /// [`FsError::NotFound`] (including a root nothing was written to yet),
-    /// [`FsError::NotADirectory`], or the backend's failure.
+    /// Sorted by name; natively, names that are not UTF-8 cannot be [`VPath`] components and are left
+    /// out.
     pub async fn list(&self, path: &VPath) -> Result<Vec<Entry>, FsError> {
         match &self.root {
             Root::Local(local) => local.list(path),
@@ -409,11 +294,6 @@ impl Dir {
         }
     }
 
-    /// Size, modification time and kind of the entry.
-    ///
-    /// # Errors
-    ///
-    /// [`FsError::NotFound`], or the backend's failure.
     pub async fn metadata(&self, path: &VPath) -> Result<Meta, FsError> {
         match &self.root {
             Root::Local(local) => local.metadata(path),
@@ -425,22 +305,10 @@ impl Dir {
         }
     }
 
-    /// Waits for a lock on the lock file at `path`, created empty (with its
-    /// parents) when missing. Other processes, and on the web other tabs of
-    /// the origin, that lock the same path through `tilo-files` exclude one
-    /// another as `mode` says.
-    ///
-    /// Lock a dedicated file, not one you replace with
-    /// [`write_atomic`](Self::write_atomic): natively a replacement is a new
-    /// file, and the lock stays on the old one.
-    ///
-    /// Natively the wait blocks the polling thread until `tilo_rt::io`
-    /// carries file work; use [`blocking::try_lock`] to avoid waiting.
-    ///
-    /// # Errors
-    ///
-    /// [`FsError::InvalidPath`] for the root, [`FsError::Unsupported`] in a
-    /// browser without Web Locks, or the backend's failure.
+    /// Waits for a lock on the lock file at `path`, created empty with its parents. Lock a dedicated
+    /// file, not one replaced with [`write_atomic`](Self::write_atomic): natively the replacement is a
+    /// new file and the lock stays on the old one. Natively the wait blocks the polling thread until
+    /// `tilo_rt::io` carries file work; [`blocking::try_lock`] does not wait.
     pub async fn lock(&self, path: &VPath, mode: LockMode) -> Result<Lock, FsError> {
         below_root(path)?;
         let held = match &self.root {
@@ -453,14 +321,8 @@ impl Dir {
         Ok(Lock { mode, _held: held })
     }
 
-    /// Watches `path` (a file, or a directory and everything below it) for
-    /// changes. The watch reports paths relative to this `Dir`.
-    ///
-    /// # Errors
-    ///
-    /// [`FsError::Unsupported`] with [`Feature::Watch`] for native
-    /// directories in a build without the `watch` feature; natively,
-    /// [`FsError::NotFound`] when `path` does not exist yet.
+    /// `path` is a file, or a directory and everything below it; the watch reports paths relative to
+    /// this `Dir`.
     pub fn watch(&self, path: &VPath) -> Result<Watch, FsError> {
         match &self.root {
             Root::Local(Local::Memory(scope)) => Ok(Watch::new(scope.watch(path), Box::new(()))),
@@ -472,11 +334,7 @@ impl Dir {
         }
     }
 
-    /// Moves the entry to the user's trash. Not in this version.
-    ///
-    /// # Errors
-    ///
-    /// [`FsError::Unsupported`] with [`Feature::Trash`] on every target.
+    /// Not in this version.
     #[allow(
         clippy::unused_async,
         reason = "the signature is the API; backends arrive later"
@@ -486,12 +344,8 @@ impl Dir {
         Err(Unsupported::of(Feature::Trash).into())
     }
 
-    /// The operating-system path of `path`, for code that must hand one to a
-    /// native API. Portable code uses the operations above.
-    ///
-    /// # Errors
-    ///
-    /// [`Unsupported`] for browser and in-memory storage.
+    /// The operating-system path, for code that must hand one to a native API; portable code uses the
+    /// operations above.
     pub fn native_path(&self, path: &VPath) -> Result<PathBuf, Unsupported> {
         match &self.root {
             Root::Local(Local::Disk(root)) => Ok(disk::resolve(root, path)),
@@ -506,8 +360,6 @@ impl Dir {
         }
     }
 
-    /// The synchronous backend: native and memory trees, and on the web
-    /// OPFS locations the page mirrors.
     #[cfg_attr(
         not(all(target_arch = "wasm32", target_os = "unknown")),
         allow(
@@ -544,15 +396,8 @@ impl fmt::Debug for Dir {
     }
 }
 
-/// The directory holding the native file at `path`, and the file's name in
-/// it: how a file a native chooser, a drop or the command line named is
-/// reached through [`Dir`]'s operations (usually [`blocking`]).
-///
-/// # Errors
-///
-/// [`FsError::InvalidPath`] for a path with no file name, or one that is not
-/// UTF-8; [`FsError::Unsupported`] on the web, where no file has a native
-/// path.
+/// The directory holding the native file at `path`, and the file's name in it: how a file a chooser, a
+/// drop or the command line named is reached through [`Dir`]'s operations.
 pub fn file_at(path: &std::path::Path) -> Result<(Dir, VPath), FsError> {
     let name = path
         .file_name()
@@ -566,13 +411,8 @@ pub fn file_at(path: &std::path::Path) -> Result<(Dir, VPath), FsError> {
     Ok((Dir::open(Location::Native(parent))?, name))
 }
 
-/// `path` made absolute with every symbolic link resolved, as the native file
-/// system has it now: a stable identity for a file a chooser named.
-///
-/// # Errors
-///
-/// [`FsError::NotFound`] when something on the path does not exist, and
-/// [`FsError::Unsupported`] on the web.
+/// Absolute with every symbolic link resolved, as the native file system has it now: a stable identity
+/// for a file a chooser named.
 pub fn canonicalize(path: &std::path::Path) -> Result<PathBuf, FsError> {
     if cfg!(all(target_arch = "wasm32", target_os = "unknown")) {
         return Err(Unsupported::of(Feature::NativePaths).into());
@@ -580,10 +420,9 @@ pub fn canonicalize(path: &std::path::Path) -> Result<PathBuf, FsError> {
     Ok(std::fs::canonicalize(path)?)
 }
 
-/// A native path as a string that stays the same however the platform spells
-/// it: on Windows the `file:` URL, which normalizes the verbatim `\\?\` prefix
-/// canonicalization adds once a file exists; elsewhere the path itself. For
-/// keys derived from a document's location (a recovery slot's name).
+/// A native path as a string that stays the same however the platform spells it: on Windows the `file:`
+/// URL, which normalizes the verbatim `\\?\` prefix canonicalization adds once a file exists, elsewhere
+/// the path itself. For keys derived from a document's location.
 #[must_use]
 pub fn path_identity(path: &std::path::Path) -> String {
     #[cfg(windows)]

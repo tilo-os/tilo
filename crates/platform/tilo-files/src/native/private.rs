@@ -8,8 +8,8 @@ use std::path::Path;
 #[path = "private/windows.rs"]
 mod platform;
 
-/// Targets without an owner-checked filesystem, such as the browser, have no
-/// private files: every request is refused rather than weakened.
+/// Targets without an owner-checked filesystem, such as the browser, have no private files: every
+/// request is refused rather than weakened.
 #[cfg(not(any(unix, windows)))]
 mod platform {
     use super::{File, Path, io};
@@ -43,9 +43,9 @@ mod platform {
         restrict(path, &metadata)
     }
 
-    /// Mode `0700`, set only when the directory has another: a chmod that
-    /// changes nothing still tells every watcher of the directory that its
-    /// attributes changed, so a caller that only reads must not make one.
+    /// Mode `0700`, set only when the directory has another: a chmod that changes nothing still tells
+    /// every watcher of the directory that its attributes changed, so a caller that only reads must not
+    /// make one.
     pub fn restrict(path: &Path, metadata: &std::fs::Metadata) -> io::Result<()> {
         if metadata.permissions().mode() & 0o7777 == 0o700 {
             return Ok(());
@@ -73,11 +73,8 @@ mod platform {
     }
 }
 
-/// Make `options` create files that only their owner can read or write
-/// (mode `0600` on Unix; other platforms keep their default access).
-///
-/// Unlike [`create_new`] this adds no ownership validation, so it costs no
-/// extra system call.
+/// Make `options` create files only their owner can read or write (mode `0600` on Unix; other platforms
+/// keep their default access).
 #[inline]
 pub fn owner_only(options: &mut OpenOptions) -> &mut OpenOptions {
     #[cfg(unix)]
@@ -88,9 +85,8 @@ pub fn owner_only(options: &mut OpenOptions) -> &mut OpenOptions {
     options
 }
 
-/// Restrict an existing directory to its owner (mode `0700` on Unix; a no-op
-/// on platforms without permission bits). A directory that already has that
-/// mode is left untouched, so restricting it is not a change its watchers see.
+/// Mode `0700` on Unix, a no-op without permission bits; a directory already at that mode is left
+/// untouched, so restricting it is not a change its watchers see.
 pub fn restrict_directory(path: &Path) -> io::Result<()> {
     #[cfg(unix)]
     {
@@ -103,8 +99,7 @@ pub fn restrict_directory(path: &Path) -> io::Result<()> {
     }
 }
 
-/// Whether `metadata` grants no access to group or other users. Always `true`
-/// on platforms without Unix permission bits.
+/// Always `true` on platforms without Unix permission bits.
 #[inline]
 #[must_use]
 pub fn is_owner_only(metadata: &std::fs::Metadata) -> bool {
@@ -125,7 +120,6 @@ pub fn is_owner_only(metadata: &std::fs::Metadata) -> bool {
     }
 }
 
-/// Whether this process's effective user owns what `metadata` describes.
 /// Always `true` on platforms without Unix ownership.
 #[inline]
 #[must_use]
@@ -142,21 +136,15 @@ pub fn owned_by_me(metadata: &std::fs::Metadata) -> bool {
     }
 }
 
-/// Whether what `metadata` describes is [owned by this user](owned_by_me) and
-/// [closed to everyone else](is_owner_only).
 #[inline]
 #[must_use]
 pub fn private_to_me(metadata: &std::fs::Metadata) -> bool {
     owned_by_me(metadata) && is_owner_only(metadata)
 }
 
-/// Open an existing regular file the current user owns, for reading at most
-/// `max_len` bytes, and return it with its length.
-///
-/// A final symbolic link is never followed and the opened object must be the
-/// one inspected, so a rename cannot redirect the read. A file that grants
-/// access beyond its owner is narrowed to owner-only (`0600` on Unix) before
-/// it is returned. Other platforms check only the file type and length.
+/// Opens an existing regular file the current user owns, for reading at most `max_len` bytes, and
+/// returns it with its length. A file that grew, changed owner or was replaced while it was opened is
+/// refused.
 pub fn open_owned_for_read(path: &Path, max_len: u64) -> io::Result<(File, u64)> {
     #[cfg(unix)]
     {
@@ -216,18 +204,17 @@ pub fn open_owned_for_read(path: &Path, max_len: u64) -> io::Result<(File, u64)>
     }
 }
 
-/// Create or restrict a user-owned private directory.
+/// Creates or restricts a user-owned private directory.
 pub fn directory(path: &Path) -> io::Result<()> {
     platform::directory(path)
 }
-/// Open a private regular file, validating the opened object's owner and access.
+/// Opens a private regular file, validating the opened object's owner and access.
 pub fn read(path: &Path) -> io::Result<File> {
     platform::open(path, false, false, false)
 }
-/// Read an existing current-user encrypted regular file without changing it.
-/// Unix ciphertext may retain inherited read permissions; this API is only for
-/// authenticated ciphertext, never plaintext credentials or encryption keys.
-/// Other platforms retain the canonical private-file ACL requirements.
+/// Unix ciphertext may retain inherited read permissions; this is only for authenticated ciphertext,
+/// never plaintext credentials or encryption keys. Other platforms keep the canonical private-file ACL
+/// requirements.
 #[cfg(unix)]
 pub fn read_ciphertext(path: &Path) -> io::Result<File> {
     use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _};
@@ -245,28 +232,26 @@ pub fn read_ciphertext(path: &Path) -> io::Result<File> {
     Ok(file)
 }
 
-/// Read authenticated ciphertext using the canonical native ACL checks.
 #[cfg(not(unix))]
 pub fn read_ciphertext(path: &Path) -> io::Result<File> {
     read(path)
 }
 
-/// Exclusively create a file with user-only access from the moment of creation.
+/// User-only access from the moment of creation.
 pub fn create_new(path: &Path) -> io::Result<File> {
     platform::open(path, true, false, true)
 }
-/// Open or create a private file for read/write access; the caller acquires locks.
+/// Opens or creates a private file for read and write; the caller acquires locks.
 pub fn lock_file(path: &Path) -> io::Result<File> {
     platform::open(path, true, true, false)
 }
-/// Validate an existing file before truncating it, or create a new private file.
+/// Validates an existing file before truncating it, or creates a new private file.
 pub fn rewrite(path: &Path) -> io::Result<File> {
     let file = lock_file(path)?;
-    // Validate before truncating an existing file.
     file.set_len(0)?;
     Ok(file)
 }
-/// Flush a directory after publishing a private file.
+/// Flushes a directory after publishing a private file.
 pub fn sync_directory(path: &Path) -> io::Result<()> {
     let mut options = OpenOptions::new();
     options.read(true);
@@ -278,18 +263,14 @@ pub fn sync_directory(path: &Path) -> io::Result<()> {
     options.open(path)?.sync_all()
 }
 
-/// Atomically replace a private file using a private, exclusively created sibling.
-/// Existing destinations must pass the same checks as [`read`].
+/// Uses a private, exclusively created sibling; an existing destination must pass the same checks as
+/// [`read`].
 pub fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
     publish(path, bytes, true).map(|_| ())
 }
 
-/// Publish a complete private file only if its final name is still absent.
-/// Returns `false` when another writer already owns the name, without replacing it.
-///
-/// # Errors
-/// Returns creation, write, flush or hard-link errors. Filesystems must support
-/// same-directory hard links for the no-clobber publication guarantee.
+/// Publishes a complete private file only if its final name is still absent; `false` when another
+/// writer owns the name.
 pub fn create_atomic(path: &Path, bytes: &[u8]) -> io::Result<bool> {
     publish(path, bytes, false)
 }
@@ -301,8 +282,8 @@ fn publish(path: &Path, bytes: &[u8], replace: bool) -> io::Result<bool> {
             "private file has no filename",
         ));
     }
-    // The temp file is opened through [`create_new`], so it is validated as
-    // private and user-owned before any secret byte is written to it.
+    // The temp file is opened through [`create_new`], so it is validated as private and user-owned
+    // before any secret byte is written into it.
     if replace {
         match read(path) {
             Ok(_) => {}
@@ -315,13 +296,8 @@ fn publish(path: &Path, bytes: &[u8], replace: bool) -> io::Result<bool> {
     }
 }
 
-/// Bind a Unix socket at `path` that only its owner can connect to (mode
-/// `0600`), replacing a socket left there by a previous run. Any other kind
-/// of file at `path` is never removed. The parent directory must exist.
-///
-/// # Errors
-/// [`io::ErrorKind::AlreadyExists`] when `path` is not a socket, and the
-/// removal's, bind's or permission change's error otherwise.
+/// Binds a Unix socket at `path` that only its owner can connect to (mode `0600`), replacing a socket
+/// left there by a previous run.
 #[cfg(unix)]
 pub fn bind_socket(path: &Path) -> io::Result<std::os::unix::net::UnixListener> {
     use std::os::unix::fs::{FileTypeExt as _, PermissionsExt as _};
@@ -349,23 +325,15 @@ pub fn bind_socket(path: &Path) -> io::Result<std::os::unix::net::UnixListener> 
     Ok(listener)
 }
 
-/// The one listener systemd socket activation passed this process, or `None`
-/// when it was not socket-activated. The descriptor is marked close-on-exec
-/// and the `LISTEN_*` variables are cleared, so no child inherits the endpoint
-/// or the activation. A listener bound to a path other than `expected` is
-/// refused, so an unrelated inherited descriptor never becomes the endpoint;
-/// one without a pathname is accepted, as systemd may pass it unnamed.
-///
-/// # Errors
-///
-/// Returns an error when the activation does not pass exactly one open
-/// descriptor, the descriptor is bound elsewhere, or it cannot be marked
-/// close-on-exec.
+/// The one listener systemd socket activation passed this process, or `None` when it was not
+/// socket-activated. The descriptor is marked close-on-exec and the `LISTEN_*` variables are cleared,
+/// so no child inherits the endpoint or the activation; a listener bound to a path other than
+/// `expected` is refused, and one without a pathname is accepted, as systemd may pass it unnamed.
 ///
 /// # Safety
 ///
-/// Clears environment variables: no other thread may read or write the
-/// environment while this runs.
+/// Clears environment variables, so no other thread may read or write the environment while this
+/// runs.
 #[cfg(unix)]
 #[allow(
     clippy::disallowed_methods,
@@ -394,8 +362,8 @@ pub unsafe fn activated_socket(
     if unsafe { libc::fcntl(SYSTEMD_LISTEN_FD, libc::F_GETFD) } == -1 {
         return Err(io::Error::last_os_error());
     }
-    // SAFETY: the LISTEN_PID/LISTEN_FDS contract hands fd 3 to this process
-    // exactly once, and the variables are cleared below.
+    // SAFETY: the LISTEN_PID/LISTEN_FDS contract hands fd 3 to this process exactly once, and the
+    // variables are cleared below.
     let listener = unsafe { std::os::unix::net::UnixListener::from_raw_fd(SYSTEMD_LISTEN_FD) };
     if let Some(actual) = listener.local_addr()?.as_pathname()
         && actual != expected
@@ -406,8 +374,8 @@ pub unsafe fn activated_socket(
             expected.display()
         )));
     }
-    // systemd passes activation descriptors without close-on-exec.
-    // SAFETY: fcntl on an open descriptor with integer arguments.
+    // systemd passes activation descriptors without close-on-exec. SAFETY: fcntl on an open descriptor
+    // with integer arguments.
     if unsafe { libc::fcntl(SYSTEMD_LISTEN_FD, libc::F_SETFD, libc::FD_CLOEXEC) } == -1 {
         return Err(io::Error::last_os_error());
     }
@@ -517,8 +485,8 @@ mod tests {
             .unwrap()
             .write_all(b"must survive")
             .unwrap();
-        // icacls is the Windows ACL editor; grant the well-known Everyone SID
-        // explicitly so this fixture is independent of OS display language.
+        // icacls is the Windows ACL editor; grant the well-known Everyone SID explicitly so this
+        // fixture is independent of OS display language.
         let result = std::process::Command::new("icacls.exe")
             .arg(&path)
             .args(["/grant", "*S-1-1-0:(R)"])
@@ -590,8 +558,8 @@ mod tests {
         restrict_directory(&dir).unwrap();
         let restricted = std::fs::metadata(&dir).unwrap();
         assert_eq!(restricted.permissions().mode() & 0o7777, 0o700);
-        // A chmod, even to the mode it has, moves the change time and wakes
-        // every watcher of the directory.
+        // A chmod, even to the mode it has, moves the change time and wakes every watcher of the
+        // directory.
         std::thread::sleep(std::time::Duration::from_millis(20));
         restrict_directory(&dir).unwrap();
         directory(&dir).unwrap();

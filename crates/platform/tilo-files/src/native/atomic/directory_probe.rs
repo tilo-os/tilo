@@ -1,4 +1,4 @@
-//! Diagnostic-only directory experiment contract. Never a durability authority.
+//! A diagnostic directory experiment; never a durability authority.
 use std::{collections::BTreeMap, io, path::PathBuf};
 
 #[derive(Clone, Debug)]
@@ -29,16 +29,11 @@ pub struct Request {
     pub evidence: AnchorEvidence,
     pub candidate: Candidate,
     pub parent_access: ParentAccess,
-    /// Replay chain, or controller-provisioned reparse/denied fixture, relative to root.
+    /// The replay chain, or a controller-provisioned fixture, relative to the root.
     pub components: Vec<String>,
 }
 impl Request {
-    /// Check that the request is complete and bounded before any effect.
-    ///
-    /// # Errors
-    ///
-    /// Returns `InvalidInput` unless the request names an absolute root, the
-    /// local NTFS profile, external evidence and safe bounded components.
+    /// Checks that the request is complete and bounded before any effect.
     pub fn validate(&self) -> io::Result<()> {
         let invalid = || {
             io::Error::new(
@@ -85,7 +80,7 @@ pub struct Event {
     pub operation: String,
     pub fields: BTreeMap<String, String>,
 }
-/// The sink must flush each event to a stream outside the tested filesystem.
+/// The sink must flush each event outside the tested filesystem.
 pub type Sink<'a> = dyn FnMut(&Event) -> io::Result<()> + 'a;
 #[derive(Clone, Debug)]
 pub struct Outcome {
@@ -161,7 +156,7 @@ mod tests {
     }
 }
 
-/// Execute a bounded experiment. Success is operational observation, never qualification.
+/// Runs a bounded experiment; success is an operational observation, never qualification.
 pub fn run(request: &Request, sink: &mut Sink<'_>) -> Outcome {
     if let Err(error) = request.validate() {
         return Outcome::from_result(&Err(error), false);
@@ -189,9 +184,7 @@ pub fn run(request: &Request, sink: &mut Sink<'_>) -> Outcome {
     }
 }
 
-// These decisions are shared by the native caller and host regression tests.
-// The outer io::Result means an observation was incomplete. A Refused value
-// can only be constructed after a completed failing native return status.
+// Shared by the native caller and the host regression tests; the outer result is an observation.
 #[cfg(any(windows, test))]
 pub(crate) mod observation {
     use super::*;
@@ -250,8 +243,8 @@ pub(crate) mod observation {
                 "pending or unknown informational flush status: incomplete observation",
             ));
         }
-        // A failing native return is a complete rejection even when Windows
-        // leaves IOSB untouched. Success requires the actual completion fields.
+        // A failing native return is a complete rejection even when Windows leaves the status block
+        // untouched.
         if status == 0 && (completion != 0 || information == usize::MAX) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
