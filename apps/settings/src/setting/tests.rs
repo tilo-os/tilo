@@ -72,11 +72,13 @@ fn found(app: &mut TestApp<SettingsShell>) -> Vec<&'static str> {
 
 #[test]
 fn every_setting_row_is_an_indexed_setting_drawn_by_its_control() {
-    // One window, searched for each setting in turn. What a search finds and
-    // draws follows from the words typed and what the settings hold, and no
-    // row here changes a setting or sends the window input: a row sees the
-    // window as the first one did.
+    // One window, searched for each setting in turn. What a search finds
+    // follows from the words typed, what it draws is built anew from what it
+    // found, and no row here changes a setting or sends the window input.
+    // Each row checks that the window draws this search and nothing an
+    // earlier one left.
     let mut app = mounted();
+    assert_nothing_found(&mut app, "a window just opened");
     let mut ids = std::collections::HashSet::new();
     for entry in &crate::area::registry().settings {
         assert!(ids.insert(entry.id), "{} has two rows", entry.id);
@@ -89,6 +91,7 @@ fn every_setting_row_is_an_indexed_setting_drawn_by_its_control() {
             entry.id,
             found(&mut app)
         );
+        assert_shows_what_was_found(&mut app, entry.id);
         match entry.shown {
             super::Shown::Bound(_) => assert!(
                 control(app.harness().root_widget(), setting, content_left()).is_some(),
@@ -117,26 +120,77 @@ fn every_setting_row_is_an_indexed_setting_drawn_by_its_control() {
             ),
         }
     }
-    // Nothing typed, or only spaces: nothing is found, and no row of the last
-    // search stays in the window.
+    // Nothing typed, or only spaces: nothing is found, and nothing of the
+    // last search stays in the window.
     for nothing in ["", "   "] {
         search(&mut app, nothing);
-        assert!(
-            found(&mut app).is_empty(),
-            "{nothing:?} finds nothing, got {:?}",
-            found(&mut app)
-        );
-        assert!(
-            !shows_found_row(app.harness().root_widget()),
-            "{nothing:?}: no found setting is listed"
-        );
+        assert_nothing_found(&mut app, &format!("{nothing:?}"));
     }
 }
 
-fn shows_found_row(root: &dyn Widget) -> bool {
-    root.test_id()
-        .is_some_and(|id| id.starts_with("settings.found:"))
-        || root.children().into_iter().any(shows_found_row)
+/// The ids of the parts of the window a search draws: a listed setting
+/// (`settings.found:`), its button (`settings.found.show:`) and a found
+/// page's button (`settings.found.open:`).
+fn drawn_of_search(root: &dyn Widget, out: &mut Vec<String>) {
+    if let Some(id) = root.test_id().filter(|id| id.starts_with("settings.found")) {
+        out.push(id.to_owned());
+    }
+    for child in root.children() {
+        drawn_of_search(child, out);
+    }
+}
+
+/// The window draws what this search found and nothing of another: one
+/// section for each page the found settings are on, and no listed setting
+/// that is not among them.
+fn assert_shows_what_was_found(app: &mut TestApp<SettingsShell>, row: &str) {
+    let found = found(app);
+    let mut pages: Vec<&str> = found
+        .iter()
+        .filter_map(|id| index::setting(id))
+        .map(|setting| setting.page)
+        .collect();
+    pages.sort_unstable();
+    pages.dedup();
+    let mut drawn = Vec::new();
+    drawn_of_search(app.harness().root_widget(), &mut drawn);
+    let mut sections: Vec<&str> = drawn
+        .iter()
+        .filter_map(|id| id.strip_prefix("settings.found.open:"))
+        .collect();
+    sections.sort_unstable();
+    assert_eq!(
+        sections, pages,
+        "{row}: the window draws one section for each page of what was found ({found:?})"
+    );
+    for id in &drawn {
+        let listed = id
+            .strip_prefix("settings.found:")
+            .or_else(|| id.strip_prefix("settings.found.show:"));
+        if let Some(listed) = listed {
+            assert!(
+                found.contains(&listed),
+                "{row}: the window lists {listed}, which this search did not find ({found:?})"
+            );
+        }
+    }
+}
+
+/// The window shows its page and nothing a search found: no setting is
+/// found, and no part of what a search draws (a listed setting, its button,
+/// a found page's button) is in the window.
+fn assert_nothing_found(app: &mut TestApp<SettingsShell>, after: &str) {
+    assert!(
+        found(app).is_empty(),
+        "{after}: with nothing typed nothing is found, got {:?}",
+        found(app)
+    );
+    let mut drawn = Vec::new();
+    drawn_of_search(app.harness().root_widget(), &mut drawn);
+    assert!(
+        drawn.is_empty(),
+        "{after}: with nothing typed the window draws nothing a search found, got {drawn:?}"
+    );
 }
 
 fn widget<'a>(root: &'a dyn Widget, id: &str) -> Option<&'a dyn Widget> {
