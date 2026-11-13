@@ -242,6 +242,13 @@ pub const HOST_UNSUPPORTED_CODE: &str = "host_unsupported";
 /// opens: `open:path-ext:csv`. An opener naming none opens any file.
 pub const OPENS_PATH_EXTENSION_PREFIX: &str = "open:path-ext:";
 
+/// Prefix of the [`ActionContract::tags`] entries naming an outside capability
+/// an action's body hands an effect to with `outside(capability, ...)`:
+/// `outside:youtube.search`. A query naming a kind of an outside service (a
+/// `youtube.channel`) finds, through this, the app's own action that asks its
+/// origin for what the query names — the service's `search` capability.
+pub const OUTSIDE_CAPABILITY_PREFIX: &str = "outside:";
+
 /// Facet the executor writes on a change made by a verb its app marks
 /// `#[action(incoming_message)]`: a message someone received. The
 /// `IncomingMessage` trigger fires on it without knowing the app's schema.
@@ -857,6 +864,15 @@ impl ActionContract {
     /// own data. See [`UNTRUSTED_CONTENT_TAG`].
     pub fn carries_untrusted_content(&self) -> bool {
         self.tags.iter().any(|tag| tag == UNTRUSTED_CONTENT_TAG)
+    }
+
+    /// The outside capabilities the action hands an effect to
+    /// (`youtube.search`), as its tags record them. See
+    /// [`OUTSIDE_CAPABILITY_PREFIX`].
+    pub fn outside_capabilities(&self) -> impl Iterator<Item = &str> {
+        self.tags
+            .iter()
+            .filter_map(|tag| tag.strip_prefix(OUTSIDE_CAPABILITY_PREFIX))
     }
 
     /// Whether the action, once taken, can be undone: the host's undo

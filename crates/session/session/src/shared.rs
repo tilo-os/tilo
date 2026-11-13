@@ -61,6 +61,47 @@ impl Shared {
         {
             tracing::warn!(why, "an arranging action that waited could not be made");
         }
+        // A query the canvas stands asks its app for what it names. When the app's records hold
+        // resources of that kind it did not hold when it asked, that is what it found (one
+        // becomes the place; several show their rows). When the app's own search has finished —
+        // its state left `searching` — and nothing new of the kind came in, it matched nothing.
+        // A failure is never read from the app's records: it comes from the search's own
+        // invocation result, at `place_found` and Retry (shell.md §8).
+        let app_resources = self.services.borrow().resources();
+        let running: Vec<(
+            String,
+            arrangement::ArrangementQueryReading,
+            std::collections::BTreeSet<String>,
+        )> = arrangement
+            .queries_running()
+            .into_iter()
+            .filter_map(|query| {
+                let held = arrangement.held_when_asked(query.key.parse().ok()?)?;
+                Some((query.key.clone(), query, held))
+            })
+            .collect();
+        for (key, query, held) in running {
+            let fresh: Vec<arrangement::AnswerRef> = app_resources
+                .iter()
+                .flat_map(leaves)
+                .filter(|resource| {
+                    resource.kind == query.kind && !held.contains(resource.id.as_str())
+                })
+                .map(|resource| arrangement::AnswerRef {
+                    address: resource.id.as_str().to_owned(),
+                    title: resource.label.clone(),
+                    kind: resource.kind.clone(),
+                })
+                .collect();
+            if !fresh.is_empty() {
+                arrangement.answer_query_of(&key, Ok(fresh), underway);
+                continue;
+            }
+            // The search finished and nothing new of the kind came in: it matched nothing.
+            if search_finished(&self.services, &app_resources, &query.app) {
+                arrangement.answer_query_of(&key, Ok(Vec::new()), underway);
+            }
+        }
     }
 
     /// Whom this device follows, as its own presence word says: the window of theirs shown here comes forward each
@@ -330,4 +371,46 @@ impl Shared {
             self.people.borrow().dismiss();
         }
     }
+}
+
+/// Every resource of `resource` and its children, deepest last: what an app publishes of a kind
+/// is found among these, as a search's answer is read off the app's own records.
+fn leaves(resource: &tilo_actions::ResourceSpec) -> Vec<&tilo_actions::ResourceSpec> {
+    let mut out = vec![resource];
+    for child in &resource.children {
+        out.extend(leaves(child));
+    }
+    out
+}
+
+/// Whether the search the app `app` ran has finished: its own search state left `searching`. The
+/// state a search passes through is the app's words, not the system's, so this reads only whether
+/// a state word is still `searching` (the client that ships keeps `search_state`, but the fields a
+/// type names are its own, and the app is asked through its action for its result, never its
+/// records, when it fails). `None` while it still searches, or when the app keeps no such state.
+fn search_finished(
+    services: &std::rc::Rc<std::cell::RefCell<tilo_service::Services>>,
+    resources: &[tilo_actions::ResourceSpec],
+    app: &str,
+) -> bool {
+    let belongs = |resource: &tilo_actions::ResourceSpec| {
+        resource.id.as_str().starts_with(&format!("tl:{app}:"))
+    };
+    // The app's root: its one resource of the type a query naming the app means.
+    let Some(root) = resources.iter().flat_map(leaves).find(|resource| {
+        belongs(resource) && resource.resource_type.as_ref().is_some_and(|ty| ty.root)
+    }) else {
+        return false;
+    };
+    let Some(reading) = services.borrow().read(root.id.as_str()) else {
+        return false;
+    };
+    // A search has finished when no text of the root's reading is still the word it uses for
+    // searching. That is the one state every search keeps while it runs.
+    !reading
+        .as_object()
+        .into_iter()
+        .flatten()
+        .filter_map(|(_, value)| value.as_str())
+        .any(|text| text == "searching")
 }

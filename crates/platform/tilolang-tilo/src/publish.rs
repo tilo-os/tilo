@@ -281,6 +281,19 @@ pub fn action_type(
     if let Some(key) = &action.key {
         spec.type_mut().state.shortcut = Some(key.clone());
     }
+    // What it asks the service for: the capabilities its body's `outside(...)` calls name, so a
+    // query naming a kind of an outside service finds the app's own action that asks its origin
+    // (`outside:youtube.search`). The tag is the compiler's reading of the code, never a name a
+    // host invented.
+    {
+        let contract = &mut spec.type_mut().contract;
+        for capability in &action.outside {
+            let tag = format!("{}{capability}", tilo_actions::OUTSIDE_CAPABILITY_PREFIX);
+            if !contract.tags.contains(&tag) {
+                contract.tags.push(tag);
+            }
+        }
+    }
     spec.type_mut().contract.settle_confirmation();
     Arc::clone(spec.action_type())
 }

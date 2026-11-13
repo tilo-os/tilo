@@ -1016,6 +1016,7 @@ impl Checker<'_> {
         }
         let p = self.expr(&payload.value, None);
         self.st.facts.outside = true;
+        self.st.facts.outside_caps.insert(name.clone());
         match held {
             Some(third) => {
                 let at = self.expr_as(&third.value, &Ty::Time);

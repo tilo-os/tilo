@@ -1,7 +1,25 @@
-//! What text typed on the canvas finds and stands, as [`super::found`] reads the search.
+//! What text typed on the canvas finds and stands, and how a query starts.
 
-use super::{found, most_specific, placed};
+use super::{found, most_specific, placed, query_state_from_outcome};
 use tilo_desktop_search::{Hit, InvokeTarget, ResourceKind, Target};
+
+/// The query's starting state is the app's own search invocation result: a run that was taken
+/// keeps searching; a refusal or failure is the query `.failed` with the action's own reason —
+/// never a guess read from the app's records.
+#[test]
+fn a_refused_search_starts_the_query_failed_with_its_own_reason() {
+    assert_eq!(
+        query_state_from_outcome(Ok(())),
+        ("searching".to_owned(), String::new()),
+        "a search the app took is still searching"
+    );
+    let (state, reason) = query_state_from_outcome(Err("Type something to search for".into()));
+    assert_eq!(state, "failed", "a refused search is failed");
+    assert_eq!(
+        reason, "Type something to search for",
+        "with the action's own reason"
+    );
+}
 
 /// A row text typed on the canvas would stand for: what it opens, and what it is.
 fn opening(resource: &str, title: &str, kind: ResourceKind) -> Hit {

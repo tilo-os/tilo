@@ -376,6 +376,55 @@ d-x2vx3spj = Strips
 d-id3ec54i = Places
     .doc = Every place, each naming the strip it is in, so the views need not walk the tree.
 
+d-cwgjyyom = Queries
+    .doc = The queries the canvas stands while an app answers them, by the place that shows each: what the person typed, what it found, or why nothing did (shell.md §8).
+
+d-4upsk7w6 = Refs
+    .doc = The resources those queries found, each naming the query it is of.
+
+d-7kffjr3m = Arrangement query
+    .doc = A query a place shows while its app answers it: what the person typed, in which app, and what came of it.
+    .noun = { $count ->
+        [one] arrangement query
+       *[other] arrangement queries
+    }
+
+d-xzi3xvtd = Key
+    .doc = Its id: the place showing it.
+
+d-jng5s5ia = Text
+    .doc = What the person typed.
+
+d-z2kap7nl = In app
+    .doc = The app asked, by its canonical id.
+
+d-o4t3u6uj = Kind
+    .doc = The kind of resource the query names, as its app publishes it (`tube.channel`).
+
+d-7yczjvqr = State
+    .doc = How the search stands: `searching`, `one`, `several`, `none` or `failed`.
+
+d-pbohqhsd = Reason
+    .doc = Why it failed, in the app's own words; empty while it does better.
+
+d-iumkze5w = Arrangement ref
+    .doc = A resource a query found: its address, the name it goes by, and its kind — the same three words a place's record is named by.
+    .noun = { $count ->
+        [one] arrangement ref
+       *[other] arrangement refs
+    }
+
+d-feykwvpm = Key
+
+d-t2stnllu = Query
+    .doc = The query it is of, by its key.
+
+d-we4rghzd = Address
+
+d-k7an4fny = Title
+
+d-i54r2u2i = Kind
+
 d-wydxt4zu = Arrangement workspace
     .doc = A workspace the person's desk shows.
     .noun = { $count ->
@@ -933,6 +982,12 @@ d-chvuqgur = A note place
 d-tnecawb6 = A foreign place
     .doc = A place of a kind this build has no record for: it stands as it is, which is what a place another shell made looks like (§2).
 
+d-xqqabo45 = Query show
+    .doc = Show `found` in the place `place` while it shows a query: the same place, now the found resource (shell.md §8).
+
+d-rt7emlti = Query retry
+    .doc = Look for what the place `place`'s search names again.
+
 d-mtt6d3af = Tab it here
     .doc = Tab the place whose window's bar was dragged onto the strip `s` into that strip — how a person drags one window's bar onto another's to make its tabs, and the same arranging action the window's menu's "Move into … as a tab" runs.
 
@@ -1267,6 +1322,10 @@ d-z4vc77e6 = Place controls
 d-oyjbbzbk = Place content
 
 d-43am22do = Place view
+
+d-ivjygpfu = Query view
+    .w-retry = Retry
+    .w-nothing-matched = Nothing matched { $text }
 
 d-pjkvdmwk = Show style settings~present
 

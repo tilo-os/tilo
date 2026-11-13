@@ -69,7 +69,7 @@ pub(super) fn float_actions(key: &str) -> Vec<ActionSpec> {
 }
 
 /// The corner a `float` action names, the work area's bottom-right when it names none.
-pub(super) fn float_corner(text: Option<&str>) -> FloatCorner {
+fn float_corner(text: Option<&str>) -> FloatCorner {
     text.and_then(FloatCorner::parse).unwrap_or_default()
 }
 

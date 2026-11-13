@@ -209,9 +209,12 @@ view canvas_place(a: Arrangement, p: ArrangementPlace, lists: Bool) {
     }
 }
 
-/// Whether the place `p` draws its resource's view itself, rather than showing an app's window.
+/// Whether the place `p` draws its view itself — its resource's view, or the query it stands for
+/// while an app answers it — rather than showing an app's window.
 fn composed(p: ArrangementPlace) -> Bool {
-    if let r = placed_resource(p.record) { p.shown_as != "" or meta(r).opens } else { false }
+    if let q = query_of(p.key) {
+        true
+    } else if let r = placed_resource(p.record) { p.shown_as != "" or meta(r).opens } else { false }
 }
 
 /// A foreign window on the canvas: the shell's frame around the well its window shows in, its

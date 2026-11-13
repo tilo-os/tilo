@@ -101,6 +101,77 @@ destructive action empty(p: Pile) (icon: .trash) {
 }
 "#;
 
+/// A package with an action that asks an outside service, and one that asks nothing outside: what
+/// the platform tags, so a query naming a kind of that service finds the app's own search.
+const SEARCHES: &str = r#"app so.tilo.lang.searches "Searches"
+
+type Video (origin: youtube.video) {
+    key: Text
+    title: Text
+}
+
+type Note {
+    title: Text
+}
+
+root Video
+
+default view main for Video
+
+view main(v: Video) {
+    page {
+        text(v.title)
+    }
+}
+
+/// Searches the service for what the person types.
+action search(v: Video, query: Text) {
+    outside("youtube.search", query)
+}
+
+/// Renames the note.
+action rename(n: Note, title: Text) {
+    n.title = title
+}
+"#;
+
+/// An action's `outside(...)` capability is what the platform tags it with
+/// (`outside:youtube.search`), so text naming a kind of that outside service finds the app's own
+/// action that asks its origin; an action that asks nothing outside carries no such tag.
+#[test]
+fn an_outside_capability_is_published_as_the_actions_tag() {
+    let (_, packages) = Replica::new("ada", AutoCommit::new(), &[(SEARCHES, "")]);
+    let meta = &packages[0].meta;
+    let spec = |name: &str, kind: &str| {
+        let action = meta
+            .actions
+            .iter()
+            .find(|action| action.name == name)
+            .unwrap();
+        let planner: Arc<dyn Planner> = Arc::new(NoPlanner);
+        action_type(meta, &meta.kind_of(kind), action, &planner, &SourceWords)
+            .bind(Target::new("v".to_owned()))
+    };
+    let search = spec("search", "Video");
+    assert_eq!(
+        search
+            .action_type()
+            .contract
+            .outside_capabilities()
+            .collect::<Vec<_>>(),
+        vec!["youtube.search"]
+    );
+    let rename = spec("rename", "Note");
+    assert!(
+        rename
+            .action_type()
+            .contract
+            .outside_capabilities()
+            .next()
+            .is_none()
+    );
+}
+
 /// The native counterpart of the package's `Size`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
