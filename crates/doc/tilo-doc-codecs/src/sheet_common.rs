@@ -25,21 +25,16 @@ pub trait SheetProvider: Send + Sync {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ParsedWorkbook {
     pub sheets: Vec<ParsedSheet>,
-    /// Document properties (`title`/`author`/`created`/`modified`).
     pub properties: BTreeMap<String, String>,
-    /// Unmodeled package parts by part name (`xl/styles.xml`, `styles.xml`, …).
     pub preserved: BTreeMap<String, Vec<u8>>,
 }
 
-/// One parsed tab.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ParsedSheet {
     pub name: String,
     /// `(A1 reference, cell)` in document order; a later entry for a reference
     /// replaces an earlier one, as it does in a [`Workbook`].
     pub cells: Vec<(String, CellInput)>,
-    /// Whether the file keeps the tab hidden (`state="hidden"` or
-    /// `"veryHidden"` in an `.xlsx`): its cells still feed formulas.
     pub hidden: bool,
 }
 
@@ -62,24 +57,18 @@ impl ParsedWorkbook {
     }
 }
 
-/// Strip a namespace prefix (`table:table-cell` → `table-cell`).
 fn strip_prefix(raw: &[u8]) -> &[u8] {
-    // `splitn(2)` yields the part after the first colon, or nothing at all when
-    // the name carries no prefix.
     raw.splitn(2, |b| *b == b':').nth(1).unwrap_or(raw)
 }
 
-/// The local (prefix-stripped) name of a start/empty element (namespace prefixes vary across producers).
 pub(crate) fn local_name<'a>(e: &'a quick_xml::events::BytesStart<'a>) -> &'a [u8] {
     strip_prefix(e.name().into_inner())
 }
 
-/// The local (prefix-stripped) name of an end element (`</table:table-row>`).
 pub(crate) fn end_local_name<'a>(e: &'a quick_xml::events::BytesEnd<'a>) -> &'a [u8] {
     strip_prefix(e.name().into_inner())
 }
 
-/// Read an attribute by its local name (prefix-insensitive), unescaping its value.
 pub(crate) fn attr_local(e: &quick_xml::events::BytesStart, local: &[u8]) -> Option<String> {
     for a in e.attributes().flatten() {
         if strip_prefix(a.key.as_ref()) == local {

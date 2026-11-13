@@ -1,5 +1,6 @@
 //! A snapshot together with the binary content its images reference, fetched once up front so an
-//! exporter's recursive writers can embed it without threading a content source through each call.
+//! exporter's recursive writers can embed it without threading a content source through each
+//! call.
 
 use std::collections::BTreeMap;
 use std::ops::Deref;
@@ -7,8 +8,6 @@ use std::ops::Deref;
 use tilo_content::ContentSource;
 use tilo_doc::DocSnapshot;
 
-/// A [`DocSnapshot`] plus the bytes of every image it references that `content` could provide.
-/// Dereferences to the snapshot.
 pub(crate) struct Resolved<'a> {
     snap: &'a DocSnapshot,
     images: BTreeMap<String, Vec<u8>>,
@@ -32,7 +31,6 @@ impl<'a> Resolved<'a> {
         self.images.get(hash).map(Vec::as_slice)
     }
 
-    /// A different snapshot sharing this one's resolved images.
     #[cfg(any(feature = "epub", feature = "odt"))]
     pub(crate) fn with_snapshot<'b>(&self, snap: &'b DocSnapshot) -> Resolved<'b> {
         Resolved {

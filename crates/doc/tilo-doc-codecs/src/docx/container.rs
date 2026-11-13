@@ -4,7 +4,6 @@
 
 use crate::package::ZipPackage;
 
-/// Wrap a `w:body` inner XML into a complete `word/document.xml`.
 pub(crate) fn document_xml(body_inner: &str) -> String {
     format!(
         r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -12,17 +11,14 @@ pub(crate) fn document_xml(body_inner: &str) -> String {
     )
 }
 
-/// Build a minimal valid `.docx` with the given `w:body` inner XML.
 pub(crate) fn minimal_docx(body_inner: &str) -> Vec<u8> {
     build_docx("", "", body_inner)
 }
 
-/// As [`minimal_docx`], with explicit `word/styles.xml` inner content.
 pub(crate) fn minimal_docx_styled(styles_inner: &str, body_inner: &str) -> Vec<u8> {
     build_docx(styles_inner, "", body_inner)
 }
 
-/// As [`minimal_docx_styled`], plus `word/numbering.xml` inner content.
 pub(crate) fn minimal_docx_numbered(
     styles_inner: &str,
     numbering_inner: &str,
@@ -94,7 +90,6 @@ mod tests {
             assert!(c.get("word/document.xml").is_some());
             assert!(c.get("_rels/.rels").is_some());
 
-            // Re-write and re-read → identical part names + content.
             let out = c.write_opc().unwrap();
             let c2 = ZipPackage::read(&out).unwrap();
             let names1: Vec<_> = c.parts.iter().map(|(n, _)| n.clone()).collect();

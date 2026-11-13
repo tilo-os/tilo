@@ -1,26 +1,11 @@
-//! The body's final `w:sectPr` and the header/footer parts it references, kept consistent
-//! across an export.
+//! The body's final `w:sectPr` and the header/footer parts it references, kept consistent across
+//! an export.
 //!
-//! The canonical model holds one page header and one page footer; they are exported as the
-//! section's `default` header/footer, under the fixed relationship ids
-//! [`HEADER_REL_ID`]/[`FOOTER_REL_ID`]. An imported `.docx` also carries, verbatim:
-//!
-//! - its final `w:sectPr` (captured by the body parser as a fidelity block), whose page setup
-//!   (`w:pgSz`, `w:pgMar`, `w:titlePg`, …) is kept, and whose `first`/`even` header and footer
-//!   references are kept pointing at their original parts — qdoc does not model those
-//!   variants, so they pass through unedited;
-//! - the package's relationships, parts and content types.
-//!
-//! On export the section's `default` references are replaced by qdoc's, `w:cols` by the
-//! model's column setting, and every header/footer relationship no exported `w:sectPr`
-//! references any more is removed together with its part, that part's relationships and its
-//! content-type override.
-//!
-//! Section breaks inside the body (a `w:sectPr` in a paragraph's `w:pPr`) are kept verbatim
-//! with their paragraph (see `paragraph`), including their own page setup and columns. Their
-//! header/footer references get the same treatment as the final section's — `default` points
-//! at qdoc's header/footer (the model has one for the whole document), `first`/`even` stay
-//! while their part does — so every section shows the document's header and footer.
+//! The model holds one page header and one page footer, exported as the section's `default`
+//! header/footer under the fixed relationship ids [`HEADER_REL_ID`]/[`FOOTER_REL_ID`]. An imported
+//! `.docx` also carries its own final `w:sectPr` verbatim, whose page setup and `first`/`even`
+//! header and footer references pass through unedited; on export every header/footer relationship
+//! no exported `w:sectPr` references any more is removed with its part.
 
 use super::headers::{ExportedParts, FOOTER_REL_ID, HEADER_REL_ID, KeptRegions, normalize_target};
 use super::styles::attr_val;
@@ -55,8 +40,6 @@ const BEFORE_COLS: &[&[u8]] = &[
     b"w:pgNumType",
 ];
 
-/// Whether a fidelity block's XML is a `w:sectPr` — the section properties, which export
-/// rebuilds rather than copying into the body.
 pub(super) fn is_section_properties(xml: &str) -> bool {
     xml.trim_start()
         .strip_prefix("<w:sectPr")
@@ -64,7 +47,6 @@ pub(super) fn is_section_properties(xml: &str) -> bool {
         .is_some_and(|c| c == '>' || c == '/' || c.is_whitespace())
 }
 
-/// Which region a reference element is for.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Kind {
     Header,
@@ -73,7 +55,6 @@ enum Kind {
 
 impl Kind {
     fn of_rel_type(ty: &str) -> Option<Self> {
-        // Transitional and Strict OOXML share the `…/relationships/header` suffix.
         if ty.ends_with("/relationships/header") {
             Some(Self::Header)
         } else if ty.ends_with("/relationships/footer") {
@@ -92,7 +73,6 @@ impl Kind {
     }
 }
 
-/// One `Relationship` of `word/_rels/document.xml.rels`.
 struct Rel {
     id: String,
     kind: Option<Kind>,
@@ -132,22 +112,18 @@ fn document_rels(c: &ZipPackage) -> Vec<Rel> {
     out
 }
 
-/// A `w:headerReference`/`w:footerReference`.
 struct Reference {
     kind: Kind,
-    /// `w:type="default"`, or no `w:type` at all.
     is_default: bool,
     id: String,
 }
 
-/// A top-level child of the original `w:sectPr`: its element name and verbatim XML.
 struct Child {
     name: Vec<u8>,
     raw: String,
     reference: Option<Reference>,
 }
 
-/// The original `w:sectPr`'s start tag (`None` when self-closing) and its top-level children.
 fn split_sectpr(xml: &str) -> (Option<String>, Vec<Child>) {
     let mut reader = Reader::from_str(xml);
     let mut open: Option<String> = None;
@@ -211,7 +187,6 @@ fn split_sectpr(xml: &str) -> (Option<String>, Vec<Child>) {
     (open, children)
 }
 
-/// Remove every top-level `tag` element of `xml` for which `drop` holds.
 pub(super) fn remove_elements(
     xml: &str,
     tag: &[u8],
@@ -277,9 +252,6 @@ fn prune_header_footer_rels(c: &mut ZipPackage, rels: &[Rel], keep: &BTreeSet<St
         .filter(|r| !r.external && !dropped.contains(r.id.as_str()))
         .map(|r| r.part.as_str())
         .collect();
-    // Parts the dropped relationships reached, plus any `word/` header/footer part the
-    // content types still declare that no relationship reaches (left behind by an earlier
-    // export). Header/footer parts elsewhere (e.g. `word/glossary/`) belong to other rels.
     let content_types = c
         .get(CONTENT_TYPES)
         .map(|b| String::from_utf8_lossy(b).into_owned());
@@ -312,7 +284,6 @@ fn prune_header_footer_rels(c: &mut ZipPackage, rels: &[Rel], keep: &BTreeSet<St
     }
 }
 
-/// Part names (without the leading `/`) the content types declare as headers or footers.
 fn header_footer_overrides(content_types: &str) -> Vec<String> {
     let mut reader = Reader::from_str(content_types);
     let mut out = Vec::new();
@@ -335,8 +306,6 @@ fn header_footer_overrides(content_types: &str) -> Vec<String> {
     out
 }
 
-/// The first `word/{stem}N.xml` not already in the package. One more candidate than there
-/// are parts, so one is always free.
 fn free_part_name(c: &ZipPackage, stem: &str) -> String {
     (1..=c.parts.len().saturating_add(1))
         .map(|n| format!("word/{stem}{n}.xml"))
@@ -344,14 +313,10 @@ fn free_part_name(c: &ZipPackage, stem: &str) -> String {
         .unwrap_or_else(|| format!("word/{stem}.xml"))
 }
 
-/// Where this export writes its header/footer, and the `w:sectPr` that references them.
 pub(super) struct SectionPlan {
-    /// The complete final `w:sectPr`, or empty when the document needs none.
     pub sectpr: String,
     pub header_part: Option<String>,
-    /// The part qdoc's footer is written to, when there is a footer.
     pub footer_part: Option<String>,
-    /// The `first`/`even` header/footer relationships kept (they still resolve).
     kept_refs: BTreeSet<String>,
 }
 
@@ -383,8 +348,6 @@ impl SectionPlan {
         inner
     }
 
-    /// A section break's `w:sectPr` inside the body, for this export: its header/footer
-    /// references rebuilt like the final section's, everything else (page setup, columns) kept.
     pub fn section_break(&self, xml: &str) -> String {
         let (open, children) = split_sectpr(xml);
         let mut inner = self.references(&children);
@@ -463,7 +426,6 @@ pub(super) fn plan(
     plan
 }
 
-/// The `Relationship` element wiring `part` (a `word/…` name) in the document rels.
 pub(super) fn relationship_xml(id: &str, rel_type: &str, part: &str) -> String {
     format!(
         r#"<Relationship Id="{id}" Type="{rel_type}" Target="{}"/>"#,

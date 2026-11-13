@@ -1,19 +1,9 @@
-//! A Markdown document as the blocks a rich-text field holds, and back.
+//! A Markdown document as the blocks a rich-text field holds, and back: a codec's Markdown is
+//! imported into a scratch document and read as its blocks, and blocks are exported as Markdown.
 //!
-//! A rich-text field holds a document as its blocks — a heading, a paragraph, a list item, a
-//! quote, a table, a fence — each with the marks on its text. Markdown writes the same document
-//! as one text, so the two are read as one another here: a codec's Markdown is imported into a
-//! scratch document and read as its blocks, and blocks are exported as Markdown. Every caller
-//! that shows, edits or writes a document as text (a language's `RichText`, an exporter) reads
-//! it the same way.
-//!
-//! Two blocks are stored the way a view draws them rather than the way the codec models them:
-//!
-//! - A picture is the Markdown it is written as, `![alt](source)`, in a paragraph of its own:
-//!   that is the block an editor shows a picture by, and it writes back as the same line.
-//! - A table is one paragraph of its Markdown source, marked with its [`TABLE_SOURCE`]
-//!   attribute: an editor keeps a table it may edit as a grid of that source, and the codec's
-//!   cell blocks are gathered back into it.
+//! Two blocks are stored the way a view draws them: a picture is the Markdown it is written as,
+//! `![alt](source)`, in a paragraph of its own, and a table is one paragraph of its Markdown
+//! source marked with [`TABLE_SOURCE`].
 
 use std::collections::BTreeMap;
 
@@ -21,8 +11,6 @@ use tilo_doc::snapshot::{AttrVal, BlockView};
 
 use crate::format::CodecError;
 
-/// The attribute that marks a paragraph a table kept as its Markdown source, as a native
-/// document and an editor store one.
 pub const TABLE_SOURCE: &str = "table_source";
 
 /// A Markdown document as the blocks a rich-text field holds: headings, paragraphs, lists,
@@ -37,7 +25,6 @@ pub fn blocks_of_markdown(markdown: &str) -> Result<Vec<BlockView>, CodecError> 
     Ok(editor_blocks(&document.as_ref().materialize().blocks))
 }
 
-/// `blocks` as the Markdown a document of them is written as.
 #[must_use]
 pub fn markdown_of_blocks(blocks: &[BlockView]) -> String {
     String::from_utf8_lossy(&crate::markdown::export_views(
@@ -73,7 +60,6 @@ fn editor_blocks(blocks: &[BlockView]) -> Vec<BlockView> {
     out
 }
 
-/// The table a block is a cell of, when it is one.
 fn table_of(block: &BlockView) -> Option<String> {
     (block.kind == "cell").then(|| block.str_attr("table").unwrap_or_default().to_owned())
 }
@@ -102,7 +88,6 @@ fn table_paragraph(cells: &[BlockView]) -> BlockView {
 mod tests {
     use super::*;
 
-    /// The blocks of a document that says everything a note may say.
     fn document() -> Vec<BlockView> {
         blocks_of_markdown(
             "# Groceries\n\n- [ ] oat milk\n- [x] eggs\n\nText with **bold**, `code` and \

@@ -8,7 +8,6 @@ use quick_xml::reader::Reader;
 use std::collections::BTreeSet;
 use tilo_doc::model::DocMut;
 
-/// Collect the text content of every element matching `prop_of` into `meta.props`.
 pub(crate) fn import_elements(
     xml: &[u8],
     doc: &mut DocMut,
@@ -19,7 +18,6 @@ pub(crate) fn import_elements(
     }
 }
 
-/// Strip elements whose local-name is in `modeled_names`, returning the surviving inner XML.
 pub(crate) fn unmodeled_inner(xml: &[u8], container: &str, modeled_names: &[&[u8]]) -> String {
     let modeled: BTreeSet<&[u8]> = modeled_names.iter().copied().collect();
     let Some(inner) = element_inner(xml, container) else {
@@ -62,7 +60,6 @@ pub(crate) fn unmodeled_inner(xml: &[u8], container: &str, modeled_names: &[&[u8
                     out.extend_from_slice(t.into_inner().as_ref());
                 }
             }
-            // Copied through still escaped: `&amp;` has to stay `&amp;` in the output.
             Ok(Event::GeneralRef(r)) => {
                 if skip_depth == 0 {
                     out.push(b'&');
@@ -78,7 +75,6 @@ pub(crate) fn unmodeled_inner(xml: &[u8], container: &str, modeled_names: &[&[u8
     String::from_utf8_lossy(&out).into_owned()
 }
 
-/// Re-emit a start tag verbatim (name + attributes), self-closing if `empty`.
 fn append_start(out: &mut Vec<u8>, e: &BytesStart, empty: bool) {
     out.push(b'<');
     out.extend_from_slice(e.name().as_ref());
@@ -96,17 +92,13 @@ fn append_start(out: &mut Vec<u8>, e: &BytesStart, empty: bool) {
     }
 }
 
-/// Inner XML of the first element whose local-name is `local`. Shallow substring
-/// extraction, sufficient for the flat metadata parts.
 fn element_inner(xml: &[u8], local: &str) -> Option<Vec<u8>> {
     let text = String::from_utf8_lossy(xml);
-    // Find the opening tag: the local name preceded by `<` or `<prefix:`.
     let needle = local;
     let mut search_from = 0;
     let (open_tag_start, open_tag_gt) = loop {
         let rel = text.get(search_from..)?.find(needle)?;
         let pos = search_from.checked_add(rel)?;
-        // Validate it's an element name: preceded by `<` or `:` (after `<prefix`).
         let before = text.get(..pos)?.rfind('<')?;
         let between = text.get(before.checked_add(1)?..pos)?;
         // `between` must be empty or a `prefix:` (alnum + trailing colon).
@@ -125,13 +117,11 @@ fn element_inner(xml: &[u8], local: &str) -> Option<Vec<u8>> {
         }
         search_from = pos.checked_add(needle.len())?;
     };
-    // Self-closing?
     if text.as_bytes().get(open_tag_gt.wrapping_sub(1)) == Some(&b'/') {
         let _ = open_tag_start;
         return Some(Vec::new());
     }
     let inner_start = open_tag_gt.checked_add(1)?;
-    // The close tag: `</...local>`.
     let close_needle = format!("{needle}>");
     let mut from = inner_start;
     loop {

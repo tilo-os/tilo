@@ -1,16 +1,8 @@
-//! A document file read as Markdown, and Markdown written as a document file.
+//! A document file read as Markdown, and Markdown written as a document file: the two
+//! projections chained through a scratch [`Document`], by file extension.
 //!
-//! The projections in this crate move one format into a document resource
-//! and back out. Reading a file "as text" — to quote it, summarise it, mail
-//! its contents — and writing text "as a file" of a given type are the same
-//! two projections chained through a scratch [`Document`]: a `.docx` is
-//! imported and exported again as Markdown; Markdown is imported and
-//! exported again as `.odt`. This module is that chain, by file extension,
-//! so every caller converts the same way and gets the same refusal for a
-//! format it cannot read.
-//!
-//! Plain text (`.txt` and any extension this build has no codec for) is
-//! read line by line, one paragraph a line, never parsed as Markdown.
+//! Plain text (`.txt` and any extension this build has no codec for) is read line by line, one
+//! paragraph a line, never parsed as Markdown.
 
 use tilo_content::ContentInputs;
 use tilo_doc::Document;
@@ -18,16 +10,13 @@ use tilo_doc::Document;
 use crate::format::{CodecError, FormatProvider};
 use crate::markdown::MarkdownCodec;
 
-/// The largest file read as a document.
 pub const MAX_DOCUMENT_BYTES: usize = 32 * 1024 * 1024;
 
-/// How a file of some extension is read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Reading {
     Markdown,
     /// A document format this build has a codec for.
     Document,
-    /// Text, one paragraph a line.
     Text,
 }
 
@@ -42,8 +31,6 @@ pub fn reading(ext: &str) -> Reading {
     }
 }
 
-/// The document `bytes` of a file with extension `ext` hold, and the binary
-/// content (pictures) it names.
 pub fn import(ext: &str, bytes: &[u8]) -> Result<(Document, ContentInputs), CodecError> {
     if bytes.len() > MAX_DOCUMENT_BYTES {
         return Err(CodecError::Unsupported(format!(
@@ -81,12 +68,6 @@ fn import_text(document: &mut Document, bytes: &[u8]) -> Result<(), CodecError> 
     Ok(())
 }
 
-/// The text of a file with extension `ext`: Markdown for Markdown and
-/// document formats, the text itself for plain text.
-///
-/// # Errors
-///
-/// As [`import`].
 pub fn markdown_of(ext: &str, bytes: &[u8]) -> Result<String, CodecError> {
     match reading(ext) {
         Reading::Document => {
@@ -145,15 +126,8 @@ pub fn export(
     }
 }
 
-/// `markdown` written as a file with extension `ext`.
-///
-/// # Errors
-///
-/// As [`export`], or the Markdown does not import.
 pub fn from_markdown(markdown: &str, ext: &str) -> Result<Vec<u8>, CodecError> {
     match ext.to_ascii_lowercase().as_str() {
-        // Markdown and text are written as given: nothing is lost to a
-        // round trip through the document model.
         "md" | "markdown" | "txt" | "text" => Ok(markdown.as_bytes().to_vec()),
         _ => {
             let (document, inputs) = import("md", markdown.as_bytes())?;

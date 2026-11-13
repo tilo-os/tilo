@@ -22,10 +22,7 @@ use tilo_doc_codecs::{DocxCodec, FormatProvider, HtmlCodec, MarkdownCodec, OdtCo
 use crate::synth;
 
 const SIZES: [usize; 3] = [10_000, 1_000_000, 20_000_000];
-/// Markdown import plus export of a 1 MB document.
 const MD_1MB_BUDGET: Duration = Duration::from_millis(2_500);
-/// Per-byte cost (time, or peak memory) at 20 MB may be at most this multiple of the per-byte
-/// cost at 1 MB.
 const LINEARITY: f64 = 2.0;
 
 fn time<T>(f: impl FnOnce() -> T) -> (T, Duration) {
@@ -51,7 +48,6 @@ fn reset_peak_rss() {
     let _ = std::fs::write("/proc/self/clear_refs", "5");
 }
 
-/// Peak resident set since the last [`reset_peak_rss`], in bytes (`None` off Linux).
 fn peak_rss() -> Option<u64> {
     let status = std::fs::read_to_string("/proc/self/status").ok()?;
     let line = status.lines().find(|l| l.starts_with("VmHWM:"))?;
@@ -59,7 +55,6 @@ fn peak_rss() -> Option<u64> {
     Some(kb.saturating_mul(1024))
 }
 
-/// `(codec, size, import, export)` for every codec at one size.
 fn measure(size: usize) -> Vec<(&'static str, usize, Duration, Duration)> {
     let md = synth::markdown(size);
     let (doc, md_import) = time(|| import(&MarkdownCodec, &md));
@@ -95,7 +90,6 @@ fn measure(size: usize) -> Vec<(&'static str, usize, Duration, Duration)> {
     out
 }
 
-/// Peak resident memory of a Markdown import plus export of `size` bytes, per byte.
 #[allow(
     clippy::cast_precision_loss,
     reason = "peak memory in bytes, far below 2^52, compared as a ratio"

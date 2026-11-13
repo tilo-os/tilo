@@ -9,8 +9,6 @@ use tilo_doc_codecs::{DocxCodec, FormatProvider, OdtCodec};
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
-/// Every predefined entity, decimal and hex character references (one outside
-/// the BMP) and references directly next to each other and to text.
 const RAW: &str =
     "R&amp;D &lt;b&gt; &quot;q&quot; &apos;s&apos; &#8217;&#x2019;&#x1F600;&#65;&amp;&amp;";
 const TEXT: &str = "R&D <b> \"q\" 's' \u{2019}\u{2019}\u{1F600}A&&";
@@ -174,8 +172,6 @@ fn odt_with_references() -> Vec<u8> {
     ])
 }
 
-/// The body paragraph and table cell, header, footer, footnote, comment and
-/// metadata each hold exactly [`TEXT`].
 fn assert_references_resolved(snap: &DocSnapshot, format: &str) {
     let texts = |kind: &str| -> Vec<&str> {
         snap.blocks
@@ -215,7 +211,6 @@ fn assert_references_resolved(snap: &DocSnapshot, format: &str) {
 
 #[test]
 fn office_text_keeps_entity_references_and_drops_undeclared_ones() {
-    // Phase `docx_keeps_entity_and_character_references_in_text`.
     {
         let d = import(&DocxCodec, &docx_with_references());
         let snap = d.materialize();
@@ -238,7 +233,6 @@ fn office_text_keeps_entity_references_and_drops_undeclared_ones() {
         let reopened = import(&DocxCodec, &exported).materialize();
         assert_references_resolved(&reopened, "docx re-export");
     }
-    // Phase `odt_keeps_entity_and_character_references_in_text`.
     {
         let d = import(&OdtCodec, &odt_with_references());
         let snap = d.materialize();
@@ -260,10 +254,6 @@ fn office_text_keeps_entity_references_and_drops_undeclared_ones() {
         assert_references_resolved(&reopened, "odt re-export");
         assert_eq!(reopened.changes[0].author, TEXT, "tracked-change author");
     }
-    // Phase `undeclared_named_entities_are_dropped_without_losing_neighbours`.
-    // A named entity no DTD declares cannot occur in a well-formed part (a DTD is
-    // refused before parsing), so it stands for no character: the readers drop
-    // the reference and keep the text around it, as the spreadsheet readers do.
     {
         let docx = zip_of(&[(
             "word/document.xml",

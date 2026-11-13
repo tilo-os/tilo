@@ -1,5 +1,5 @@
-//! The format-provider contract: providers are pure transforms between file bytes and
-//! canonical-document changes.
+//! The format-provider contract: a provider transforms file bytes and canonical-document changes
+//! into one another, and nothing else.
 
 use tilo_content::{ContentInputs, ContentSource};
 use tilo_doc::model::{DocMut, DocRef};
