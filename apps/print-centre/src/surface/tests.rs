@@ -11,14 +11,12 @@ fn registry() -> ui::tilo_actions::ActionRegistry {
 }
 
 thread_local! {
-    /// What CUPS and SANE report to a live window in a test, instead of
-    /// asking the machine the test runs on.
     pub(super) static INSTALLED: std::cell::RefCell<Option<Snapshot>> =
         const { std::cell::RefCell::new(None) };
 }
 
-/// A live Print Centre whose refresh found the studio printer, its
-/// documents and its scanner.
+/// A live Print Centre whose refresh found the studio printer, its documents and its
+/// scanner.
 pub(super) fn live_with_studio() -> TestApp<PrintCentreShell> {
     INSTALLED.with(|installed| *installed.borrow_mut() = Some(demo_snapshot()));
     let mut app = TestApp::<PrintCentreShell>::new().expect("launch");
@@ -39,15 +37,12 @@ pub(super) fn centre(app: &mut TestApp<PrintCentreShell>) -> Shared {
         .expect("the Print Centre window is mounted")
 }
 
-/// The tree Print Centre publishes once a refresh has found printers,
-/// documents and scanners.
+/// The tree Print Centre publishes once a refresh has found printers, documents and
+/// scanners.
 fn populated_resources() -> Vec<ui::tilo_actions::ResourceSpec> {
     live_with_studio().harness().resources()
 }
 
-// The defaults' actions all take an argument; the sweep validates the
-// whole published surface (the pages, every printer, document and
-// scanner) and Ctrl+K.
 ui::action_contract_tests! {
     seed: ui::automerge::AutoCommit::new(),
     registry: registry(),
@@ -55,8 +50,7 @@ ui::action_contract_tests! {
     palette: ["Print document", "Open print queue", "Find network printers", "Open printer"],
 }
 
-/// Print Centre's own widget in a captured frame, without the window
-/// chrome around it.
+/// Print Centre's own widget in a captured frame, without the window chrome around it.
 fn print_centre(node: &ui::headless::InspectionNode) -> &ui::headless::InspectionNode {
     fn find(node: &ui::headless::InspectionNode) -> Option<&ui::headless::InspectionNode> {
         if node.widget == "ResourceApp" {
@@ -146,9 +140,6 @@ fn scenarios_and_resources_expose_real_navigation_and_backend_states() {
         let job = row_id(&surface, "print-centre.job");
         let scanner = row_id(&surface, "print-centre.scanner");
 
-        // A page opens through the effect a control sends, a printer
-        // through Print Centre's own view naming it; its row offers what
-        // can be done to it, not a view of the window.
         app.effect(&PrintCentreEffect::OpenHistory).unwrap();
         let frame = app.harness().inspection_json().unwrap();
         assert!(frame.contains("Shipping labels"), "{frame}");
@@ -176,7 +167,6 @@ fn scenarios_and_resources_expose_real_navigation_and_backend_states() {
             "a printing document can be cancelled"
         );
 
-        // Cancelling from the dashboard asks first, in the queue.
         app.effect(&PrintCentreEffect::ConfirmCancel {
             job: "Studio_printer-42".into(),
         })
@@ -187,8 +177,8 @@ fn scenarios_and_resources_expose_real_navigation_and_backend_states() {
             "{frame}"
         );
 
-        // Steps with nothing to act on are refused: no search found a
-        // printer to add, no page was scanned, no document is set up.
+        // Steps with nothing to act on are refused: no search found a printer to add, no
+        // page was scanned, no document is set up.
         assert!(
             app.effect(&PrintCentreEffect::AddPrinter {
                 printer: "ipps://studio.local/ipp/print".into()
@@ -374,8 +364,6 @@ fn phone_and_large_text_layouts_keep_actions_visible_and_measured() {
             let mut buttons = Vec::new();
             collect_buttons(surface, &mut buttons);
             buttons.sort_by(|left, right| left.y0.total_cmp(&right.y0));
-            // The document's own pager sits in its card, above the form;
-            // the two answers to the sheet are the last two buttons.
             let root_bottom_band = surface.rect[1] + surface.rect[3];
             let mut footer_buttons: Vec<&Rect> = buttons
                 .iter()
@@ -707,7 +695,6 @@ fn new_scanned_document_requires_consent_and_resets_only_the_document() {
     app.harness().key("Escape");
     app.settle();
     assert!(app.asking().is_none());
-    // Cancelling confirmation returns to the palette; dismiss it too.
     app.harness().key("Escape");
     app.settle();
     {
@@ -835,9 +822,6 @@ fn returning_to_scanning_preserves_unsaved_edits_and_pending_work() {
 
 #[test]
 fn a_scanned_page_is_decoded_by_the_toolkits_codec() {
-    // What the scanner wrote, decoded where the scan job runs: the page's
-    // own pixels, and its format is the codec's business, not a PNG-only
-    // decoder's.
     let pixels: Vec<u8> = (0..4_u8)
         .flat_map(|row| [row, 0, 0, 255].repeat(3))
         .collect();
@@ -938,18 +922,15 @@ fn scan_page_edits_invalidate_ocr_and_export_in_order() {
     }
 }
 
-/// The print form offers the options the chosen printer reports, and
-/// refuses a value it does not: a field the driver cannot honour is never
-/// drawn, and a choice it never listed is never sent.
+/// The print form offers the options the chosen printer reports, and refuses a value it
+/// does not: a field the driver cannot honour is never drawn, and a choice it never listed
+/// is never sent.
 #[test]
 fn the_form_offers_what_the_driver_reports_and_refuses_what_it_does_not() {
-    // The form's own state only: a print sheet here, not a window, so this
-    // test shares nothing with the ones that page a person for attention.
     let mut centre = PrintCentre::new();
     centre.selected_printer = Some("Studio_printer".into());
     centre.print_options = demo_printer_options();
 
-    // A value the driver reported is taken.
     centre
         .set_print_option("page-size", "A5")
         .expect("the printer reports A5");
@@ -964,8 +945,6 @@ fn the_form_offers_what_the_driver_reports_and_refuses_what_it_does_not() {
     assert_eq!(centre.print_choice.page_size.as_deref(), Some("A5"));
     assert!(centre.set_print_option("staple", "yes").is_err());
 
-    // A printer that reports no duplex mode draws no duplex choice: the
-    // plain both-sides toggle stands in its place.
     centre.print_options = os_actions::printing::PrinterOptions {
         duplex_modes: Vec::new(),
         ..demo_printer_options()
@@ -978,8 +957,8 @@ fn the_form_offers_what_the_driver_reports_and_refuses_what_it_does_not() {
     );
 }
 
-/// A forty-page document's card pages through it, and the range typed is
-/// what the job asks for — or the job does not leave the window.
+/// A forty-page document's card pages through it, and the range typed is what the job asks
+/// for — or the job does not leave the window.
 #[test]
 fn a_long_document_pages_and_a_range_is_checked_before_it_is_sent() {
     let mut centre = PrintCentre::new();
@@ -989,7 +968,6 @@ fn a_long_document_pages_and_a_range_is_checked_before_it_is_sent() {
     centre.preview_page = 0;
     centre.print_preview = demo_print_preview();
 
-    // The pager moves one page at a time and stops at either end.
     centre.preview_page = 0;
     centre.turn_preview_page(-1);
     assert_eq!(centre.preview_page, 0, "page one has nothing before it");

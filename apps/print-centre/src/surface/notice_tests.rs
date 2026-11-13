@@ -1,9 +1,5 @@
-//! A failure waits for a person, carrying Try again, and Try again asks for
-//! the very work that failed; a success is recorded and informs nobody.
-//!
-//! The rows are [`ui::attention`]'s: the same stack every app shows, so what
-//! is checked here is that print centre's outcomes reach it with the verb
-//! that asks again, and that the same work is asked for when it is pressed.
+//! A failure waits for a person, carrying Try again, and Try again asks for the very work
+//! that failed; a success is recorded and informs nobody.
 
 use super::stand_in;
 use crate::resource::{PrintCentreEffect, PrintCentreShell};
@@ -13,9 +9,6 @@ use ui::prelude::TestApp;
 type Window = TestApp<PrintCentreShell>;
 
 thread_local! {
-    /// The rows that were already waiting when this test opened its window:
-    /// another test in this process may have raised one with the same verb,
-    /// and it is not this test's to answer.
     static FOREIGN: std::cell::RefCell<Vec<ui::attention::ItemId>> =
         const { std::cell::RefCell::new(Vec::new()) };
 }
@@ -65,9 +58,9 @@ fn until_waiting(app: &mut Window, what: &str) -> ui::attention::Item {
     }
 }
 
-/// Wait until the row `item` left the stack and the work it asked for was
-/// asked again: `before` is how much of it had been asked before, so one
-/// further ask is the original failure and the one after it the answer.
+/// Wait until the row `item` left the stack and the work it asked for was asked again:
+/// `before` is how much of it had been asked before, so one further ask is the original
+/// failure and the one after it the answer.
 fn until_answered(
     app: &mut Window,
     item: &ui::attention::Item,
@@ -108,8 +101,8 @@ fn try_again(app: &mut Window, item: &ui::attention::Item) {
     app.settle();
 }
 
-/// Wait for the failure to wait, check it carries Try again and says why,
-/// let the stand-in `devices` (if any) work again, and press Try again.
+/// Wait for the failure to wait, check it carries Try again and says why, let the stand-in
+/// `devices` (if any) work again, and press Try again.
 fn fail_then_try_again(
     app: &mut Window,
     devices: Option<&stand_in::Shared>,
@@ -127,9 +120,8 @@ fn fail_then_try_again(
     item
 }
 
-/// Adding, preferring, pausing and resuming a printer, cancelling and
-/// retrying a document: Try again runs the same effect on the same printer
-/// or document.
+/// Adding, preferring, pausing and resuming a printer, cancelling and retrying a document:
+/// Try again runs the same effect on the same printer or document.
 #[test]
 fn a_failed_printer_or_document_operations_try_again_runs_it_again() {
     let _serial = crate::surface::serial();
@@ -151,8 +143,8 @@ fn a_failed_printer_or_document_operations_try_again_runs_it_again() {
         },
     ];
     for effect in &effects {
-        // The search for nearby printers is periodic: an answered failure
-        // must still find what it asked about.
+        // The search for nearby printers is periodic: an answered failure must still find
+        // what it asked about.
         centre(&mut app).borrow_mut().discovered =
             Some(Ok(super::super::demo_discovered_printers()));
         let before = asked(&devices).len();
@@ -166,9 +158,6 @@ fn a_failed_printer_or_document_operations_try_again_runs_it_again() {
             before,
             "the work asked again to go through",
         );
-        // Another test in this process may be asking the same stand-in for
-        // its own work: what matters is that the very work that failed is
-        // asked again.
         let asked = asked(&devices);
         let Some(first) = asked.get(before) else {
             panic!("the work was not asked at all: {asked:?}");
@@ -180,8 +169,8 @@ fn a_failed_printer_or_document_operations_try_again_runs_it_again() {
     }
 }
 
-/// Printing that failed: Try again prints the same document on the same
-/// printer with the same settings.
+/// Printing that failed: Try again prints the same document on the same printer with the
+/// same settings.
 #[test]
 fn a_failed_prints_try_again_prints_it_again() {
     let _serial = crate::surface::serial();
