@@ -1,7 +1,5 @@
-//! Weather as a resource: the saved places, their order and the default
-//! place ([`Weather`]). Reordering is the collection's move at its path;
-//! saving, making a place the default, moving it to the top and removing it
-//! are verbs, the last three offered on each place.
+//! Weather as a record: the saved places, their order and the default place,
+//! changed by field edits and verbs.
 
 use serde::{Deserialize, Serialize};
 use ui::prelude::*;
@@ -12,7 +10,6 @@ pub use crate::model::Weather;
 use crate::model::WeatherModel;
 use crate::model::{Place, SavedLocation};
 
-/// A place to save, as found by the search or named by an agent.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct PlaceDetails {
     /// City or place name
@@ -35,12 +32,6 @@ pub struct PlaceDetails {
 }
 
 impl Weather {
-    /// What the record holds: the saved places, their order and the default place.
-    ///
-    /// It answers through [`fields`](tilo_resource::read::fields): a caller
-    /// with no window open reads the record as it reads any app's record, and
-    /// a named item is read from the record's table or by the read its own
-    /// type gives it.
     pub fn read_document(
         &self,
         item: Option<&tilo_resource::Id>,
@@ -57,8 +48,7 @@ impl Weather {
 impl Weather {
     /// Save a place to follow.
     ///
-    /// A place already saved near the same coordinates is kept, not saved
-    /// twice.
+    /// A place near an already saved one is that place, not a second entry.
     #[action]
     pub fn save_location(
         &mut self,
@@ -72,8 +62,7 @@ impl Weather {
             .find(|(_, saved)| saved.near(place.latitude, place.longitude))
             .map(|(id, _)| id.clone());
         let id = existing.unwrap_or_else(|| {
-            // Places are keyed by uuid, the form the window and its fetches
-            // name them by.
+            // Places are keyed by uuid, the form the window names them by.
             let id = Weather::item(cx.uuid());
             self.places.push(
                 id.clone(),
@@ -135,7 +124,6 @@ impl Weather {
 }
 
 impl Weather {
-    /// Each saved place, found by its name, region and country.
     fn search(&self) -> Vec<SearchEntry> {
         self.model()
             .locations
@@ -154,7 +142,6 @@ impl Weather {
             .collect()
     }
 
-    /// Saving `location` as the default place, as the search does.
     pub fn save(location: &SavedLocation) -> Invoke<Self> {
         Self::SAVE_LOCATION.with(weather::SaveLocation {
             place: PlaceDetails {
@@ -171,12 +158,9 @@ impl Weather {
     }
 }
 
-/// What a capture shows in place of the network: the bundled forecasts of
-/// the sample places, and the units they are shown in.
 #[cfg(feature = "samples")]
 pub struct SampleForecasts(pub std::rc::Rc<WeatherModel>);
 
-/// Framework app: the weather window is the view of [`Weather`].
 pub struct WeatherShell;
 
 impl ResourceApp for WeatherShell {
@@ -228,8 +212,6 @@ impl ResourceApp for WeatherShell {
         )));
     }
 
-    /// Every scenario but the first-run onboarding shows the sample places,
-    /// the first of them the default.
     #[cfg(feature = "samples")]
     fn scenario(name: Option<&str>) -> Vec<Invoke<Weather>> {
         if name == Some("onboarding") {

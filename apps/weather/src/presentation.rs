@@ -1,11 +1,6 @@
-//! The saved-place row, shared by the live city list and the History
-//! preview. Pure presentation: no live `Core`, no services.
-//!
-//! A row is the toolkit's list row: the current condition's glyph leading,
-//! the place's name as the title, its current condition as the secondary
-//! line (its region before the first forecast arrives), and the current
-//! temperature as the row's trailing figure in tabular numerals. Selection, hover and the delete swipe are the
-//! row's own states.
+//! The saved-place row, shared by the live list and the History preview: the
+//! condition's glyph, the name, the condition or region under it, and the
+//! temperature trailing.
 use crate::{
     model::{SavedLocation, WeatherSnapshot},
     units::Units,
@@ -18,21 +13,15 @@ use ui::{
 };
 use vello::kurbo::Rect;
 
-/// Paints a row's leading glyph into its slot.
 type GlyphPainter = Box<dyn Fn(&mut PaintCtx<'_>, Rect)>;
 
-/// The text one saved-place row shows, owned so the row face can borrow it.
 pub(crate) struct PlaceRowText {
-    /// Paints the current sky's glyph; before the first forecast, a dim map
-    /// pin (as the overview's rail shows), so the slot never reads as a gap.
     glyph: GlyphPainter,
     secondary: String,
     temperature: Option<String>,
 }
 
 impl PlaceRowText {
-    /// The row text for `loc` with its latest `snapshot` (none before the
-    /// first fetch) in `units`.
     pub(crate) fn of(
         loc: &SavedLocation,
         snapshot: Option<&WeatherSnapshot>,
@@ -58,7 +47,6 @@ impl PlaceRowText {
         }
     }
 
-    /// The row face for `loc`, selected and interacting as given.
     pub(crate) fn face<'a>(
         &'a self,
         loc: &'a SavedLocation,
@@ -77,7 +65,6 @@ impl PlaceRowText {
     }
 }
 
-/// The painter for a row's leading condition glyph.
 fn glyph(sky: Option<(Sky, bool)>) -> GlyphPainter {
     Box::new(move |ctx, slot| {
         if let Some((sky, is_day)) = sky {
@@ -95,14 +82,12 @@ fn glyph(sky: Option<(Sky, bool)>) -> GlyphPainter {
     })
 }
 
-/// The height of one saved-place row in `theme`: every row has a title and
-/// a secondary line, so every row is this tall.
 pub(crate) fn row_height(text: &mut TextRenderer, theme: &Theme) -> f64 {
     ListRowFace::new("Ag").secondary("Ag").height(text, theme)
 }
 
-/// The same provider-owned observation as the forecast, published as bounded data.
-/// Zero timestamps are explicit capture fixtures, never reported as a live fetch.
+/// The observation as bounded data for the palette; a zero timestamp is a capture
+/// fixture, never a live fetch.
 pub(crate) fn morning_preview(
     snapshot: &WeatherSnapshot,
     units: Units,

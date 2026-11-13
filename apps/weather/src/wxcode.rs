@@ -1,12 +1,7 @@
-//! WMO weather-code interpretation.
-//!
-//! Open-Meteo reports conditions as WMO 4677 weather codes (`weather_code`).
-//! We collapse the ~28 distinct codes into a small [`Sky`] enum that drives
-//! both the human-readable label and the vector icon we draw in `icon.rs`.
-//! Kept deliberately code-table-driven so the mapping is auditable against
-//! the published WMO table.
+//! Open-Meteo's WMO 4677 weather codes, collapsed into a small [`Sky`] family
+//! that drives the label and the glyph; the table can be read against the
+//! published one.
 
-/// Coarse sky/condition family used for iconography + theming.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Sky {
     Clear,
@@ -25,8 +20,6 @@ pub enum Sky {
 }
 
 impl Sky {
-    /// The library glyph that stands for this sky where a row carries an
-    /// icon (the overview's rail): the sun or moon, a cloud, rain or snow.
     pub fn rail_icon(self, is_day: bool) -> ui::icons::Icon {
         use ui::icons::Icon;
         match self {
@@ -43,7 +36,6 @@ impl Sky {
         }
     }
 
-    /// Map a raw WMO code to a [`Sky`] family.
     pub fn from_code(code: i64) -> Sky {
         match code {
             0 => Sky::Clear,
@@ -63,8 +55,8 @@ impl Sky {
         }
     }
 
-    /// The catalogue message naming the sky for the exact code, finer than
-    /// the family: "Heavy rain" rather than "rain".
+    /// The message for this exact code, finer than the family: "Heavy rain", not
+    /// "rain".
     pub fn label_key(code: i64) -> &'static str {
         match code {
             0 => "weather-sky-clear",
@@ -99,13 +91,10 @@ impl Sky {
         }
     }
 
-    /// The sky as the page names it, in the reader's language.
     pub fn label(code: i64) -> String {
         crate::i18n::t(Self::label_key(code))
     }
 
-    /// Whether this sky family involves falling precipitation — used to
-    /// decide whether the icon should draw rain/snow strokes.
     pub fn is_wet(&self) -> bool {
         matches!(
             self,

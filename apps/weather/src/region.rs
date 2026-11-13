@@ -1,16 +1,13 @@
-//! Display units from the person's region & formats ([`tilo_locale`]).
+//! Display units from the person's region and formats ([`tilo_locale`]).
 //!
-//! Measurement units are a system preference owned by the Settings app's
-//! "Region & Formats" panel, not something Weather hosts its own toggle for.
-//! Weather derives its temperature/wind/precipitation display units from it
-//! and converts snapshots on the fly (a snapshot always records the units it
-//! was fetched in).
+//! Measurement units are a system preference owned by the Settings app, not
+//! something Weather has a toggle for. Weather derives its units from it and
+//! converts snapshots on the fly.
 
 use tilo_locale::{Locale, Measurement};
 
 use crate::units::Units;
 
-/// Imperial → °F + mph + inches; metric → °C + km/h + millimetres.
 pub fn units_for(measurement: Measurement) -> Units {
     match measurement {
         Measurement::Imperial => Units::IMPERIAL,
@@ -18,8 +15,7 @@ pub fn units_for(measurement: Measurement) -> Units {
     }
 }
 
-/// The person's display units. A missing or unreadable setting reads as
-/// metric.
+/// The person's display units; a missing or unreadable setting reads as metric.
 pub fn load_units() -> Units {
     units_for(ui::storage::Settings::<Locale>::shared().get().measurement)
 }

@@ -1,13 +1,6 @@
-//! Background networking (live binary only).
-//!
-//! `--shots` never touches this module — the offscreen frame renders the
-//! bundled [`crate::sample`] data. In the live app the [`WeatherApp`] owns
-//! one [`WeatherService`]: each [`Request`] becomes its own task on the shared
-//! app runtime, fetched through `tilo_net`, and its [`Response`] comes back on
-//! a channel whose sender wakes the UI. The widget drains responses
-//! (non-blocking) and applies them to the model on the next frame.
-//!
-//! [`WeatherApp`]: crate::app::WeatherApp
+//! Background fetches: each [`Request`] runs as its own task on the app runtime
+//! through `tilo_net`, and its [`Response`] wakes the UI on a channel. A capture
+//! never touches this.
 
 use std::sync::mpsc::{Receiver, Sender, channel};
 
@@ -17,10 +10,8 @@ use crate::api;
 use crate::model::{AirQuality, LocationId, SavedLocation, WeatherSnapshot};
 use crate::units::Units;
 
-/// How long one request may take before it counts as failed.
 pub(crate) const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 
-/// A job for the network worker.
 pub enum Request {
     Tracked {
         ticket: u64,
@@ -74,9 +65,8 @@ impl Request {
     }
 }
 
-/// Identifies which request produced a response. Keeping this on failures is
-/// important: a geocoding failure must not complete an unrelated forecast
-/// refresh that happens to be running at the same time.
+/// Which request produced a response: a geocode failure must not settle a forecast
+/// refresh.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RequestKind {
     Forecast,
@@ -84,7 +74,6 @@ pub enum RequestKind {
     Geocode,
 }
 
-/// A completed job (or a classified error for the status line).
 pub enum Response {
     Tracked {
         ticket: u64,
@@ -132,21 +121,17 @@ fn send_response(tx: &ResponseSender, context: Option<(u64, u64)>, response: Res
     });
 }
 
-/// Handle to the background fetches. Dropping it discards responses still
-/// in flight.
+/// Dropping it discards the responses still in flight.
 pub struct WeatherService {
     dispatch: Dispatch,
     rx: Receiver<Response>,
 }
 
-/// Where requests go.
 enum Dispatch {
-    /// Each request runs as a task on the app runtime.
     Live {
         client: Option<tilo_net::Client>,
         responses: ResponseSender,
     },
-    /// Tests: requests are handed to the test, which answers them.
     #[cfg(test)]
     Recorded(Sender<Request>),
 }
@@ -158,8 +143,6 @@ struct ResponseSender {
 }
 
 impl ResponseSender {
-    /// Delivers `response` and wakes the UI. The undelivered response is
-    /// dropped on failure: the receiver is gone, so nobody could consume it.
     fn send(&self, response: Response) -> Result<(), std::sync::mpsc::SendError<()>> {
         self.sender
             .send(response)
@@ -170,13 +153,11 @@ impl ResponseSender {
 }
 
 impl WeatherService {
-    /// A service whose requests run on the shared app runtime.
     pub fn spawn() -> Self {
         let (sender, rx) = channel::<Response>();
         let client = tilo_net::Client::builder()
             .user_agent("tilo-weather/0.1 (+https://open-meteo.com)")
-            // A reply that never comes must end as an error the forecast can
-            // show with Retry, not as "Loading the forecast" for good.
+            // A reply that never comes ends as an error the forecast shows with Retry.
             .timeout(REQUEST_TIMEOUT)
             .build()
             .ok();
@@ -192,7 +173,6 @@ impl WeatherService {
         }
     }
 
-    /// Queue a job, returning an exact failed completion if it cannot run.
     pub fn request(&self, req: Request) -> Option<Response> {
         match &self.dispatch {
             Dispatch::Live { client, responses } => match ui::rt::try_app() {
@@ -210,13 +190,11 @@ impl WeatherService {
         }
     }
 
-    /// Wait up to `timeout` for the next response (the standalone probe).
     pub fn wait(&self, timeout: std::time::Duration) -> Option<Response> {
         self.rx.recv_timeout(timeout).ok()
     }
 
-    /// An empty live queue and a permanently closed response channel are
-    /// different states. Drain buffered real outcomes before reporting closure.
+    /// Buffered real outcomes drain before closure is reported.
     pub(crate) fn drain_with_status(&self) -> (Vec<Response>, bool) {
         let mut out = Vec::new();
         loop {
@@ -229,7 +207,6 @@ impl WeatherService {
     }
 }
 
-/// Fetch and parse one request, and post its outcome.
 async fn serve(client: Option<tilo_net::Client>, req: Request, responses: ResponseSender) {
     let (req, context) = match req {
         Request::Tracked {

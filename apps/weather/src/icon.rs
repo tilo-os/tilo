@@ -1,13 +1,6 @@
-//! Vector weather glyphs drawn directly into the Vello scene.
-//!
-//! The glyphs (sun, moon, cloud, rain, snow, fog, lightning) are content: they
-//! depict the forecast, the way a chart depicts its series. They are drawn
-//! here rather than taken from an emoji font so they render headless in
-//! `--shots`, scale crisply at any size, and take every colour from the
-//! active [`Theme`]: the sun and the rain from the theme's data palette (the
-//! presence hues, equal in lightness and legible on both grounds), clouds,
-//! moon and snow from its ink tiers. Every glyph fits inside the supplied
-//! square-ish `rect` and is cut out of nothing, so it sits on any ground.
+//! The weather glyphs, drawn into the Vello scene so they render headless and
+//! scale crisply, with the sun and rain from the theme's data palette and the
+//! rest from its ink tiers.
 
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Circle, Line, Point, Rect, RoundedRect, Shape, Stroke, Vec2};
@@ -19,7 +12,6 @@ use ui::tokens::colors::PresenceHue;
 
 use crate::wxcode::Sky;
 
-/// Palette pulled from the theme for glyph strokes and fills.
 struct IconPalette {
     sun: Color,
     moon: Color,
@@ -43,16 +35,12 @@ fn palette(theme: &Theme) -> IconPalette {
     }
 }
 
-/// The colour precipitation is drawn in: the rain of the glyphs, and the
-/// drop that marks a chance of rain beside a reading.
 pub fn rain_colour(theme: &Theme) -> Color {
     theme.tokens.colors.presence.hue(PresenceHue::Sky)
 }
 
-/// The sun's colour: the theme's amber data hue, lifted halfway from its
-/// lightness to white. Yellow only reads as yellow when it is light, so the
-/// sun keeps the data palette's hue and chroma but never darkens into brown
-/// on a light ground.
+/// The palette's amber lifted halfway to white: yellow only reads as yellow when
+/// light, so the sun never darkens into brown on a light ground.
 pub fn sun_colour(theme: &Theme) -> Color {
     let presence = &theme.tokens.colors.presence;
     Oklch::new(
@@ -63,8 +51,6 @@ pub fn sun_colour(theme: &Theme) -> Color {
     .to_color()
 }
 
-/// Draw the icon for a sky family into `rect`. `is_day` swaps the sun for
-/// a moon on clear/mostly-clear skies.
 pub fn draw_icon(
     scene: &mut Scene,
     transform: Affine,
@@ -87,7 +73,6 @@ pub fn draw_icon(
             }
         }
         Sky::PartlyCloudy => {
-            // Sun/moon peeking behind a cloud.
             let orb = Point::new(cx - s * 0.16, cy - s * 0.18);
             if is_day {
                 draw_sun(scene, transform, orb, s * 0.17, &p);
@@ -119,7 +104,6 @@ pub fn draw_icon(
 }
 
 fn draw_sun(scene: &mut Scene, t: Affine, center: Point, r: f64, p: &IconPalette) {
-    // Rays.
     let stroke = Stroke::new((r * 0.22).max(1.5));
     for i in 0..8 {
         let a = f64::from(i) * std::f64::consts::TAU / 8.0;
@@ -134,9 +118,6 @@ fn draw_moon(scene: &mut Scene, t: Affine, center: Point, r: f64, p: &IconPalett
     scene.fill(Fill::NonZero, t, p.moon, None, &crescent(center, r));
 }
 
-/// The crescent of a moon of radius `r`: the disc less an offset disc, as
-/// one outline (the disc's arc outside the cut, then the cut's arc back),
-/// so it is a shape of its own and sits on any ground.
 fn crescent(center: Point, r: f64) -> BezPath {
     use std::f64::consts::TAU;
     let cut = center + Vec2::new(r * 0.55, -r * 0.18);
@@ -145,7 +126,6 @@ fn crescent(center: Point, r: f64) -> BezPath {
     let d = axis.hypot();
     let u = axis / d;
     let across = Vec2::new(-u.y, u.x);
-    // Where the two circles cross.
     let along = (r * r - cut_r * cut_r + d * d) / (2.0 * d);
     let half = (r * r - along * along).max(0.0).sqrt();
     let (p1, p2) = (
@@ -153,7 +133,6 @@ fn crescent(center: Point, r: f64) -> BezPath {
         center + u * along - across * half,
     );
     let angle = |c: Point, q: Point| (q.y - c.y).atan2(q.x - c.x);
-    // The arc of a circle from `from` to `to` that passes `via`.
     let arc = |c: Point, radius: f64, from: Point, to: Point, via: Point| {
         let start = angle(c, from);
         let span = (angle(c, to) - start).rem_euclid(TAU);
@@ -180,14 +159,10 @@ fn crescent(center: Point, r: f64) -> BezPath {
     path
 }
 
-/// A raindrop filling `rect`: the mark beside a chance of precipitation,
-/// the icon set's droplet filled in the rain's colour.
 pub fn draw_drop(scene: &mut Scene, t: Affine, rect: Rect, theme: &Theme) {
     ui::icons::Icon::Droplet.draw_filled(scene, t, rect, rain_colour(theme));
 }
 
-/// A rounded cloud: one outline, the union of a base capsule and three
-/// lobes, filled once.
 fn draw_cloud(scene: &mut Scene, t: Affine, rect: Rect, _p: &IconPalette, fill: Color) {
     let s = rect.width().min(rect.height());
     let cx = rect.x0 + rect.width() / 2.0;
