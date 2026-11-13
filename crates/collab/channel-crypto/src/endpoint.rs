@@ -460,7 +460,9 @@ impl SenderMediaKeys {
     pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
         let (mut wire, rest) = postcard::take_from_bytes::<SenderMediaWire>(bytes)
             .map_err(|error| Error::Serialization(error.to_string()))?;
-        let keys = std::mem::take(&mut wire.keys);
+        // The bytes are key material whether or not what follows parses, so
+        // they are wiped on every path out of here.
+        let keys = Zeroizing::new(std::mem::take(&mut wire.keys));
         if !rest.is_empty() || wire.version != WIRE_VERSION {
             return Err(Error::Serialization("malformed sender media keys".into()));
         }
@@ -470,10 +472,11 @@ impl SenderMediaKeys {
             ));
         }
         let mut decoded = BTreeMap::new();
-        for (stream, mut key) in keys {
-            let entry = SymmetricKey::from_bytes(key);
-            key.zeroize();
-            if decoded.insert(stream, entry).is_some() {
+        for (stream, key) in keys.iter() {
+            if decoded
+                .insert(*stream, SymmetricKey::from_bytes(*key))
+                .is_some()
+            {
                 return Err(Error::InvalidState("a media stream is named twice".into()));
             }
         }
