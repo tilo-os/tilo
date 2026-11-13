@@ -242,8 +242,6 @@ impl Described for WindowFrame {
         let column = Stack::stack()
             .fill_width()
             .fill_height()
-            // The bar sits on the content: a window is one surface, so nothing separates the
-            // two, whichever bar the window shows.
             .gap(Rhythm::None)
             .push_slot(slot(Box::new(own), bar_fit(tabbed)))
             .push_slot(slot(body.unwrap_or_else(empty), Fit::fill(1.0)));
@@ -275,8 +273,6 @@ impl Described for WindowFrame {
             rect: Rect::ZERO,
             bar: Rect::ZERO,
             pill: Rect::ZERO,
-            // A window a view places after the window has shown is one that just arrived (a
-            // place opened onto the desk): it comes in. One the first frame shows rests.
             placed: if crate::motion::window_has_shown() {
                 crate::motion::Placed::closed()
             } else {
@@ -289,13 +285,10 @@ impl Described for WindowFrame {
     }
 
     fn set_props(&mut self, props: WindowFrameProps) -> bool {
-        // A window that gains or loses its tabs is another bar and another body: only building
-        // it again shows that.
         if props.tabs.as_deref().is_some_and(holds_tabs) != self.tabbed {
             return false;
         }
         if self.name != props.name {
-            // The own bar shows the name: build it again with the new one.
             self.title = None;
         }
         self.key = props.key;
@@ -407,7 +400,6 @@ impl WindowFrame {
                 if let Some(column) = self.column() {
                     let _ = column.replace(BODY, view);
                 }
-                // New content: whether it has a header row to hold the bar is asked again.
                 self.merged = false;
             }
         }
@@ -696,13 +688,11 @@ impl Decorator for WindowFrame {
     ) -> NodeId {
         let m = HeaderRowMetrics::resolve(theme);
         self.offer_bar(&m);
-        // The room the bar has left of its controls' pill: what its tabs and its name share.
         let room = self.rect.width()
             - self.controls_width
             - crate::widget::window_controls::EDGE_INSET
             - crate::widget::window_controls::LEAD_GAP;
         self.build_bar(self.shape(), &m, theme, room);
-        // The controls stand in a row as tall as the bar's, centred in it.
         #[allow(
             clippy::cast_possible_truncation,
             reason = "a header row measure fits f32"
@@ -717,18 +707,15 @@ impl Decorator for WindowFrame {
         fit.height.max = Some(height);
         self.layers
             .set_placement(CONTROLS, fit, 1, Some(At::TopTrailing));
-        // The tabs and the name have the room the controls leave, never more: a window narrow
-        // enough that its bar cannot hold them both squeezes them, and the strip shows the
-        // titles it can, rather than the two covering each other.
+        // // The tabs and the name have the room the controls leave, never more: a window narrow // enough
+        // that its bar cannot hold them both squeezes them, and the strip shows the // titles it can,
+        // rather than the two covering each other.
         if room > 0.0 {
             #[allow(
                 clippy::cast_possible_truncation,
                 reason = "a window's bar room fits f32"
             )]
             let room = Length::Dp(room as f32);
-            // A window of several places shows them as its bar: the strip takes that room
-            // whole. The name beside it is the bar of a window of one, so it hugs what it
-            // says.
             let tabbed = self.tabbed;
             if let Some(row) = self.own_bar_row() {
                 let mut tabs = tabs_fit(tabbed);
@@ -787,7 +774,6 @@ impl Decorator for WindowFrame {
 
     fn collect_damage(&self, regions: &mut Vec<Rect>) {
         self.layers.collect_damage(regions);
-        // A moving window repaints the band between where it stands and where it was drawn.
         let now = crate::motion::frame_now();
         let drawn = self.placed.rect(now);
         if drawn != self.rect {
@@ -869,9 +855,6 @@ impl WindowFrame {
         rect: Rect,
     ) {
         let radius = SurfaceLevel::Window.radius(theme).min(rect.height() / 2.0);
-        // The window in front stands higher than the ones behind it: the theme's floating
-        // shadow under its own window shadow. One behind keeps the window's soft shadow alone,
-        // the lighter of the two, as a desktop shows which window has the keyboard.
         if self.focused {
             crate::surface::floating_shadow(scene, transform, rect, radius, 1.0, theme);
         }
@@ -883,9 +866,9 @@ impl WindowFrame {
             transform,
             &RoundedRect::from_rect(rect, radius),
         );
-        // The content under the window's own pill under the window's own controls: the pill
-        // stands over the app's header row where the app's row holds the bar, and over the
-        // frame's bar otherwise, so the window's controls are the frame's wherever they are.
+        // // The content under the window's own pill under the window's own controls: the pill // stands
+        // over the app's header row where the app's row holds the bar, and over the // frame's bar
+        // otherwise, so the window's controls are the frame's wherever they are.
         let pill = self.pill;
         {
             let mut children = self.layers.children_mut();
@@ -901,10 +884,6 @@ impl WindowFrame {
             }
         }
         scene.pop_layer();
-        // A shadow barely shows on a dark ground, so the window in front is told apart by its
-        // edge too: the theme's edge of the window with the keyboard, heavier than the rest
-        // edge the surface drew, on the same outline. A theme that draws its own border keeps
-        // that one.
         if self.focused
             && crate::surface::border(theme).is_none()
             && theme.finish(crate::tokens::SurfaceRole::Window).hairline()
@@ -1002,7 +981,7 @@ mod tests {
         for (theme, dark) in [(Theme::dark(), true), (Theme::light(), false)] {
             let front = rendered(&theme, true, rect);
             let behind = rendered(&theme, false, rect);
-            // The pixel row just outside the top edge, away from the corners: the edge.
+            // // The pixel row just outside the top edge, away from the corners: the edge.
             let edge = |rgba: &[u8]| from_ground(rgba, &theme, 120, 39);
             assert!(
                 edge(&front) > edge(&behind) + crate::tokens::colors::HAIRLINE_MIN_DELTA,
@@ -1015,8 +994,6 @@ mod tests {
                 "a window behind still has an edge on the ground: {}",
                 edge(&behind)
             );
-            // Below the window, past its edge: the shadow, lighter under a window behind (on a
-            // dark ground both may be too faint to tell apart, which is why the edge is there).
             let shadow = |rgba: &[u8]| from_ground(rgba, &theme, 120, 172);
             let lighter = if dark {
                 shadow(&front) >= shadow(&behind)
@@ -1093,7 +1070,6 @@ mod tests {
             (bar.height() - TAB_BAR_HEIGHT).abs() < 0.5,
             "one bar: {bar:?}"
         );
-        // The frame draws no name of its own over the tabs, and the content stands under them.
         let own = frame.layers.children()[CONTENT].children();
         let own = own[OWN_BAR].children();
         assert!(
@@ -1146,7 +1122,6 @@ mod tests {
         );
         let now = crate::motion::frame_now();
         let at = |x: f64| Rect::from_origin_size((x, 40.0), (240.0, 160.0));
-        // Its first placement rests where it is laid out: nothing asks for a frame.
         frame.placed.follow(
             at(40.0),
             true,
@@ -1159,8 +1134,6 @@ mod tests {
             "a window first placed rests where it is laid out"
         );
 
-        // Laid out at 400, it is drawn from where it stood and glides across the frames between
-        // (a person's change moves; a script's lands, as `motion::MotionSource::Action` says).
         frame.placed.follow(
             at(400.0),
             true,
@@ -1186,7 +1159,6 @@ mod tests {
             mid.x0 > start.x0 + 1.0 && mid.x0 < 400.0 - 1.0,
             "it is on its way: {mid:?}"
         );
-        // It reaches its place, and then rests: no frame is asked for.
         let arrived = frame
             .placed
             .movement()
@@ -1224,7 +1196,6 @@ mod tests {
             );
             let at = |x: f64| Rect::from_origin_size((x, 40.0), (240.0, 160.0));
             let now = crate::motion::frame_now();
-            // Its first placement, at rest.
             frame.placed.follow(
                 at(40.0),
                 true,
@@ -1232,7 +1203,6 @@ mod tests {
                 crate::tokens::MotionSource::Pointer,
                 now,
             );
-            // Laid out at 400, it lands there on the frame it changes.
             frame.placed.follow(
                 at(400.0),
                 true,
@@ -1258,9 +1228,6 @@ mod tests {
     fn a_drag_on_the_window_bar_carries_the_resource_it_holds() {
         use crate::widget::drag_bus;
         use taffy::TaffyTree;
-        // A window in a pane of its own: the frame is built in a layout tree and laid out at
-        // the room the pane gives it, as a pane lays a window out, and every event is dispatched
-        // against that same tree.
         let mut frame = Box::new(WindowFrame::from_props(
             "w",
             WindowFrameProps {
@@ -1276,8 +1243,6 @@ mod tests {
         let mut taffy = TaffyTree::<()>::new();
         let mut nodes = std::collections::HashMap::new();
         let node = Widget::build_layout(frame.as_mut(), &mut taffy, &theme, &mut nodes);
-        // The room a pane gives the window: a frame is laid out at an exact size, as a place on
-        // the canvas or a strip's window gives it.
         if let Ok(mut style) = taffy.style(node).cloned() {
             style.size = taffy::Size::from_lengths(480.0_f32, 360.0_f32);
             let _ = taffy.set_style(node, style);
@@ -1292,7 +1257,6 @@ mod tests {
             )
             .expect("the window solves its layout");
         Widget::apply_layout(frame.as_mut(), &taffy, node, rect.origin());
-        // The bar the frame lays out: where a person picks the window up.
         let bar = frame.bar;
         assert!(bar.height() > 0.0, "the frame draws a bar: {bar:?}");
         let mut send = |event: &WindowEvent| {
@@ -1310,7 +1274,6 @@ mod tests {
             send(&crate::synthetic_input::cursor_moved(from_x, from_y + dy));
         }
         let in_flight = drag_bus::current();
-        // Let go over a drop target below: the drop carries the same resource.
         let target = Rect::new(60.0, 200.0, 400.0, 320.0);
         send(&crate::synthetic_input::cursor_moved(200.0, 260.0));
         send(&crate::synthetic_input::mouse_release());
@@ -1336,7 +1299,6 @@ mod tests {
             "the drop carries the resource the bar holds"
         );
 
-        // A press inside the body travels no bar and publishes nothing: the content keeps it.
         let (bx, by) = (bar.x0 + bar.width() / 2.0, bar.y1 + 120.0);
         send(&crate::synthetic_input::cursor_moved(bx, by));
         send(&crate::synthetic_input::mouse_press());

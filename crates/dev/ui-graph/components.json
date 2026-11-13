@@ -5220,7 +5220,7 @@
     },
     {
       "name": "ToggleGroup",
-      "doc": "A small set of choices, one of which is made: an alignment, a density, a unit. The chosen one is a thumb lifted off the track. What switches what a window shows is [`ViewTabs`].",
+      "doc": "A small set of choices, one of which is made: an alignment, a density, a unit. The chosen one is a thumb lifted off the track.",
       "props": [
         {
           "name": "selected",
@@ -5404,7 +5404,7 @@
         },
         {
           "name": "hide_root",
-          "doc": "The tree's root node — the tree itself, labelled with its `name` — is not a row: the nodes at the top level are, at the first depth. Off, the tree's name stands over them as a row of its own. Hide it where a heading or a page title already names the tree.",
+          "doc": "The tree's root node — the tree itself, labelled with its `name` — is not a row: the nodes at the top level are, at the first depth. Off, the tree's name stands over them as a row of its own.",
           "type": "bool"
         },
         {
@@ -5506,7 +5506,7 @@
       "state": [
         {
           "name": "expanded",
-          "doc": "The nodes open now, by the resource each stands for. Given, it is where the view says the tree is; without it the tree keeps what a person opened. A view that says it only while it narrows the tree — a search opens the branches to what it found — leaves the person's own folding as it was: what they had opened comes back when the view stops saying it.",
+          "doc": "The nodes open now, by the resource each stands for. Given, it is where the view says the tree is; without it the tree keeps what a person opened.",
           "type": {
             "option": {
               "list": "resource"
@@ -5678,7 +5678,7 @@
         },
         {
           "name": "ungrouped_title",
-          "doc": "The title over the group of rows whose item names no group: a list grouped by a thing some items lack (a day, a place) heads those rows with it, never folding them under the last group that names one. The rows keep the order their list gives. `None` leaves them among the others.",
+          "doc": "The title over the group of rows whose item names no group: a list grouped by a thing some items lack (a day, a place) heads those rows with it, never folding them under the last group that names one. The rows keep the order their list gives.",
           "type": {
             "option": "text"
           }
@@ -5704,7 +5704,7 @@
         },
         {
           "name": "unseen_from",
-          "doc": "The item where the person looking has seen nothing yet (`first_unseen(c)`): the toolkit's [`SectionDivider`](crate::widget::conversation::SectionDivider) stands over the row that shows it, and while that is above the view a pill at the foot offers the way back to it ([`VirtualList::following_end`]). `None` draws neither. The list works out the row as it builds, so a list keeps its rows and only the two the divider moved between build again.",
+          "doc": "The item where the person looking has seen nothing yet (`first_unseen(c)`): the toolkit's [`SectionDivider`](crate::widget::conversation::SectionDivider) stands over the row that shows it, and while that is above the view a pill at the foot offers the way back to it ([`VirtualList::following_end`]). `None` draws neither.",
           "type": {
             "option": "resource"
           }
@@ -7722,7 +7722,7 @@
         },
         {
           "name": "detail",
-          "doc": "The item's document, shown in the row's place while the row stands open into it: a row with a document opens where it stands in the list when it is chosen, and the list's own motion grows the row to hold it. The document opens with the item's own leading control and title, in the row's column — the row becomes the item, its title written once — and what the item holds follows under them. Without a document, choosing the row opens the item elsewhere (`ui.VirtualList`'s `activate`).\nOnly the row standing open carries it: the runtime builds a row's document when the row opens and drops it when it closes, so a list of ten thousand rows on screen costs the one document a person reads.",
+          "doc": "The item's document, shown in the row's place while the row stands open into it: a row with a document opens where it stands in the list when it is chosen, and the list's own motion grows the row to hold it. The document opens with the item's own leading control and title, in the row's column — the row becomes the item, its title written once — and what the item holds follows under them.",
           "accepts": "view",
           "when_open": true
         }

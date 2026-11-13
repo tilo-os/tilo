@@ -11,8 +11,6 @@ pub(super) struct Preparation {
     style: TextStyle,
     width: f32,
     align: TextAlign,
-    /// The palette highlighted runs were coloured from. `None` for a layout
-    /// shaped without one, which no palette-keyed lookup accepts.
     syntax: Option<SyntaxPalette>,
 }
 
@@ -49,7 +47,6 @@ impl Preparation {
         })
     }
 
-    /// The wrap width the paragraph was prepared for.
     pub(super) fn width(&self) -> f32 {
         self.width
     }
@@ -89,11 +86,6 @@ impl Preparation {
     }
 }
 
-/// A bound text read: the object, where its document stood, and the text
-/// the field showed after reading it. A sync that finds all of it as it was
-/// reads nothing. Edits not yet committed leave the heads alone but not
-/// the document's operations (an insertion adds one) or the text's length
-/// (a deletion shortens it).
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct Adopted {
     obj: automerge::ObjId,
@@ -115,7 +107,6 @@ impl Adopted {
         }
     }
 
-    /// This read, with the field showing `text` after it.
     pub(super) fn showing(self, text: &str) -> Self {
         Self {
             shown: Self::fingerprint(text),

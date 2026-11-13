@@ -29,9 +29,6 @@ pub fn line_of_wheel() -> f64 {
     f64::from(crate::tokens::Metrics::BASE.wheel_line)
 }
 
-/// A wheel's touch gesture ends when it pauses this long: a trackpad keeps
-/// reporting while the fingers move and through the momentum after they
-/// lift, and a spun mouse wheel's notches come well inside it.
 pub const WHEEL_GESTURE_GAP: crate::time::Duration = crate::time::Duration::from_millis(200);
 
 /// Touch phases for a wheel whose platform reports none: a browser's wheel
@@ -44,7 +41,6 @@ pub const WHEEL_GESTURE_GAP: crate::time::Duration = crate::time::Duration::from
 /// trackpad's lift does. A line delta (a mouse wheel's notch) is no gesture.
 #[derive(Debug, Default)]
 pub struct PhaselessWheel {
-    /// The device and time of the gesture's last delta, while one runs.
     last: Option<(winit::event::DeviceId, crate::time::Instant)>,
 }
 
@@ -78,8 +74,6 @@ impl PhaselessWheel {
             .and_then(|(_, at)| at.checked_add(WHEEL_GESTURE_GAP))
     }
 
-    /// The `Ended` wheel event that closes a gesture paused since its
-    /// deadline, once.
     pub fn end_if_due(&mut self, now: crate::time::Instant) -> Option<winit::event::WindowEvent> {
         if self.deadline().is_none_or(|due| now < due) {
             return None;

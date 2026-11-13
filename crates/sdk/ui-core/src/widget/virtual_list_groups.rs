@@ -1,18 +1,5 @@
-//! The groups of a [`super::VirtualList`]: the heading a run of its rows stands under, the
-//! band it is drawn in, and whether the run is open.
-//!
-//! A model says which group each row is in ([`super::ListModel::group_at`]); rows of one
-//! group come together, and the list draws the heading over the group's first row, held at
-//! the top of the box while the person scrolls through it. A tail group holds the items done
-//! with, which the model stands last (the model's [`super::RowGroup::Tail`]): it stands under
-//! the list's tail title, closed until the person opens it, and its rows meanwhile take no
-//! room and are never built.
-//!
-//! A heading is a disclosure of the list's own, in its focus order: the arrow keys reach it
-//! like a row, Enter or Space folds and unfolds its group, and the accessibility tree carries
-//! it as a focusable disclosure, expanded while its rows show and holding how many of the rows
-//! under it are left to do, which an agent opens and closes by its [`HEADING_TARGET`].
-
+//! The groups of a [`super::VirtualList`]: the heading a run of its rows stands under, the band it
+//! is drawn in, and whether the run is open.
 use std::collections::HashMap;
 
 use vello::Scene;
@@ -25,57 +12,36 @@ use crate::theme::Theme;
 use crate::widget::section::{SectionHeaderFace, band_height, heading_count};
 use crate::widget::{Interaction, Tone};
 
-/// What an accessibility target naming a heading starts with: the rest is the heading, as
-/// [`super::VirtualList`] hands it to `perform_semantic_action`.
 pub(super) const HEADING_TARGET: &str = "group:";
 
-/// A group's heading, whether it is the list's tail, and the tone it reads in.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct Group {
-    /// What the heading says.
     pub heading: String,
-    /// Whether it is the list's tail: the items done with.
     pub tail: bool,
-    /// How the heading and its count read.
     pub tone: Tone,
 }
 
-/// A heading's band as the last layout placed it, in the list's own coordinates (a y of zero
-/// is the top of the box, as [`super::VirtualList::item_view_top`] reads).
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct Band {
-    /// The row whose group the band heads.
     pub index: usize,
-    /// Where the band stands.
     pub top: f64,
-    /// The heading the group reads.
     pub heading: String,
     /// Whether the group is closed: its rows take no room and are not built.
     pub closed: bool,
-    /// Whether it is the list's tail: the rows done with, which it counts as they stand.
     pub tail: bool,
-    /// How the heading and its count read.
     pub tone: Tone,
 }
 
-/// Which groups are open, by heading, and the bands the last layout placed.
 #[derive(Default)]
 pub(super) struct Groups {
-    /// Whether a heading's group shows its rows. A heading first seen takes the state its
-    /// group asks for: a tail group starts closed, any other open.
     open: HashMap<String, bool>,
-    /// The bands of the groups whose first row the last layout placed.
     pub(super) bands: Vec<Band>,
-    /// The rows heading a group folded away, as the last mount walked them.
     folded: Vec<usize>,
-    /// The heading a press is holding, until it is let go: a heading opens on the release, as
-    /// a button does, so starting a press and moving off it folds nothing.
     held: Option<String>,
     /// The band height the last theme asks, in logical pixels.
     pub height: f64,
 }
 
-/// What the row `index` is grouped by, without the model's help when it groups nothing.
 pub(super) fn group_of<M: ListModel>(model: &M, index: usize, tail: Option<&str>) -> Option<Group> {
     Some(match model.group_at(index)? {
         super::RowGroup::Heading { text, tone } => Group {
@@ -86,15 +52,12 @@ pub(super) fn group_of<M: ListModel>(model: &M, index: usize, tail: Option<&str>
         super::RowGroup::Tail => Group {
             heading: tail?.to_owned(),
             tail: true,
-            // The items done with read as quietly as they stand.
             tone: Tone::Neutral,
         },
     })
 }
 
 impl Groups {
-    /// The band height the theme asks, kept for laying the bands out. A heading is a target a
-    /// finger presses, so under a coarse pointer its band grows to the target a finger needs.
     pub(super) fn theme(
         &mut self,
         theme: &Theme,
@@ -118,7 +81,6 @@ impl Groups {
             .unwrap_or(!group.tail)
     }
 
-    /// Whether the heading's group is open, asking the model for the row's group.
     pub(super) fn shows<M: ListModel>(&self, model: &M, index: usize, tail: Option<&str>) -> bool {
         match group_of(model, index, tail) {
             None => true,
@@ -126,12 +88,10 @@ impl Groups {
         }
     }
 
-    /// Whether the row `index` starts its group: the heading over it.
     pub(super) fn starts<M: ListModel>(&self, model: &M, index: usize, tail: Option<&str>) -> bool {
         let Some(group) = group_of(model, index, tail) else {
             return false;
         };
-        // A row before a closed group starts it too.
         match index.checked_sub(1) {
             None => true,
             Some(before) => {
@@ -140,29 +100,24 @@ impl Groups {
         }
     }
 
-    /// Hold the heading a press landed on.
     pub(super) fn hold(&mut self, heading: String) {
         self.held = Some(heading);
     }
 
-    /// The heading a press holds, while it holds it.
     pub(super) fn held(&self) -> Option<&str> {
         self.held.as_deref()
     }
 
-    /// Let go of the heading a press held: the one it held.
     pub(super) fn release(&mut self) -> Option<String> {
         self.held.take()
     }
 
-    /// A heading's group opened or closed: whether it is open now.
     pub(super) fn toggle(&mut self, heading: &str) -> bool {
         let open = !self.open.get(heading).copied().unwrap_or(true);
         self.set_open(heading, open);
         open
     }
 
-    /// Show the heading's group's rows, or fold them away: whether that changed it.
     pub(super) fn set_open(&mut self, heading: &str, open: bool) -> bool {
         if self.open.get(heading).copied().unwrap_or(true) == open {
             return false;
@@ -171,7 +126,6 @@ impl Groups {
         true
     }
 
-    /// The band of the group the row `index` starts, as the layout placed it.
     pub(super) fn place(&mut self, index: usize, index_group: Group, top: f64, closed: bool) {
         // A group first placed takes the state its rows ask for, so a press on its heading
         // opens a tail group rather than closing what it never opened.
@@ -190,9 +144,6 @@ impl Groups {
         });
     }
 
-    /// The bands in view, the one holding the top of the box first, held at its top. `held` is
-    /// the group under the top of the box, whether it is closed, and the index of its first
-    /// row.
     pub(super) fn in_view(
         &mut self,
         held: Option<(Group, bool, usize)>,
@@ -227,22 +178,18 @@ impl Groups {
         bands
     }
 
-    /// Forget the folded groups the last mount walked.
     pub(super) fn clear_folded(&mut self) {
         self.folded.clear();
     }
 
-    /// The row `index` heads a folded group: its band stands where it would.
     pub(super) fn fold(&mut self, index: usize) {
         self.folded.push(index);
     }
 
-    /// The rows heading a folded group, as the last mount walked them.
     pub(super) fn take_folded(&mut self) -> Vec<usize> {
         std::mem::take(&mut self.folded)
     }
 
-    /// The band holding the y `local` of the list's box.
     pub(super) fn band_at(&self, local: f64) -> Option<Band> {
         let height = self.height;
         self.bands
@@ -254,8 +201,6 @@ impl Groups {
 }
 
 impl<M: ListModel> VirtualList<M> {
-    /// The title over the list's tail group: the items done with, after every other group,
-    /// closed until the person opens it. A list whose model names no tail reads as it did.
     #[must_use]
     pub fn with_tail_title(mut self, title: impl Into<String>) -> Self {
         self.tail_title = Some(title.into());
@@ -270,8 +215,6 @@ impl<M: ListModel> VirtualList<M> {
         self.headings_changed();
     }
 
-    /// The title of the view the list stands under, as its header reads it, and how many things
-    /// it counts beside it ([`Self::in_view`]).
     pub fn set_view_title(&mut self, title: Option<String>, count: Option<usize>) {
         if self.view_title == title && self.view_count == count {
             return;
@@ -281,17 +224,11 @@ impl<M: ListModel> VirtualList<M> {
         self.headings_changed();
     }
 
-    /// What heads the rows changed with the titles over them: each row is grouped anew, and
-    /// laid out again with the band it now takes or gives up.
     fn headings_changed(&mut self) {
         self.regrouped();
         self.visible_window_changed();
     }
 
-    /// Stand the list under a titled view: one whose rows all fall in one group heads no group
-    /// of them when that heading says what the view's title already says — the same words,
-    /// counting the same rows left to do — since the title over the list says it once. The rows
-    /// that say another heading, and a list of two groups or more, keep theirs.
     #[must_use]
     pub fn in_view(mut self, title: impl Into<String>, count: Option<usize>) -> Self {
         self.set_view_title(Some(title.into()), count);
@@ -310,10 +247,6 @@ impl<M: ListModel> VirtualList<M> {
         read
     }
 
-    /// Whether the rows say the view's title names their one group
-    /// ([`Self::heads_nothing`]): every row of the list in one group that is no tail, its
-    /// words the title's words and its count the count the title reads — the rows still to do,
-    /// which is what a number beside either of them counts.
     fn reads_heads_nothing(&self) -> bool {
         let Some(title) = self.view_title.as_deref() else {
             return false;
@@ -324,8 +257,6 @@ impl<M: ListModel> VirtualList<M> {
             return false;
         };
         let open = (0..len).filter(|index| !self.model.done(*index)).count();
-        // A tail heads the rows done with, a fold the person opens: it is the title's business
-        // how it reads, and the fold stays.
         if first.tail || first.heading != title || self.view_count.unwrap_or(0) != open {
             return false;
         }
@@ -335,10 +266,6 @@ impl<M: ListModel> VirtualList<M> {
         })
     }
 
-    /// The row's group, as the model names it: asked of the model once per row, while its
-    /// props stand as they were. A view whose title names the list's one group
-    /// ([`Self::heads_nothing`]) leaves its rows under no heading: the title says it, whatever
-    /// the model named them while it did not.
     pub(super) fn row_group(&mut self, index: usize) -> Option<Group> {
         if self.heads_nothing() {
             return None;
@@ -352,13 +279,11 @@ impl<M: ListModel> VirtualList<M> {
         group
     }
 
-    /// Forget what the rows were grouped by: their props changed.
     pub(super) fn regrouped(&mut self) {
         self.row_groups.clear();
         self.heads_nothing.set(None);
     }
 
-    /// Forget the group of the rows keyed `keys`: their props changed.
     pub(super) fn regroup_keys<'k>(&mut self, keys: impl IntoIterator<Item = &'k M::Key>)
     where
         M::Key: 'k,
@@ -369,16 +294,13 @@ impl<M: ListModel> VirtualList<M> {
         }
     }
 
-    /// Whether the row `index` takes room: its group is open.
     pub(super) fn row_open(&self, index: usize) -> bool {
-        // Nothing heads the rows: every one of them shows.
         self.heads_nothing()
             || self
                 .groups
                 .shows(&self.model, index, self.tail_title.as_deref())
     }
 
-    /// Whether the row `index` starts a group: the heading over it.
     pub(super) fn row_starts(&self, index: usize) -> bool {
         !self.heads_nothing()
             && self
@@ -386,8 +308,6 @@ impl<M: ListModel> VirtualList<M> {
                 .starts(&self.model, index, self.tail_title.as_deref())
     }
 
-    /// The height the row `index` takes in the layout: its own, with the band of the heading
-    /// over it when it starts a group; only that band while its group is closed.
     pub(super) fn grouped_height(&self, index: usize, height: f64) -> f64 {
         let band = self.band_room(index);
         if !self.row_open(index) {
@@ -396,9 +316,6 @@ impl<M: ListModel> VirtualList<M> {
         height + band
     }
 
-    /// The room the band of the heading the row `index` starts takes over it, and nothing over a
-    /// row that starts no group: the list's own content gutter, over the first band it draws, is
-    /// the viewport's lead ([`super::VirtualList::content_gutter`]), not a row's.
     pub(super) fn band_room(&self, index: usize) -> f64 {
         if self.row_starts(index) {
             self.groups.height
@@ -418,7 +335,6 @@ impl<M: ListModel> VirtualList<M> {
         Some(self.lift_rect(top + band, (height - band).max(0.0)))
     }
 
-    /// Place the band of the group the row `index` starts, if it starts one.
     pub(super) fn place_band(&mut self, index: usize, top: f64) {
         let Some(group) = self.row_group(index) else {
             return;
@@ -430,15 +346,11 @@ impl<M: ListModel> VirtualList<M> {
         self.groups.place(index, group, top, closed);
     }
 
-    /// Place the band of every group the layout holds: those whose first row is mounted, and
-    /// those whose rows are folded away under it, from where the viewport stands the row.
     pub(super) fn place_bands(&mut self, mounted: impl Iterator<Item = usize>) {
         let mut starts: Vec<usize> = std::mem::take(&mut self.groups.bands)
             .into_iter()
             .map(|band| band.index)
             .collect();
-        // A group folded away before the person ever opened it has no row of its own: the
-        // mount that walked its rows named the one heading it.
         starts.extend(self.groups.take_folded());
         for index in mounted {
             if self.row_starts(index) {
@@ -453,10 +365,7 @@ impl<M: ListModel> VirtualList<M> {
         }
     }
 
-    /// The bands the groups in view show, the one holding the top of the box first.
     pub(super) fn bands_in_view(&mut self) -> Vec<Band> {
-        // Where each group starts now: a scroll moves the bands with their rows, and the
-        // layout that placed them may be a frame behind.
         for band in &mut self.groups.bands {
             if let Some(top) = self.viewport.item_view_top(band.index) {
                 band.top = top;
@@ -475,9 +384,6 @@ impl<M: ListModel> VirtualList<M> {
         self.groups.in_view(held, viewport)
     }
 
-    /// The box the heading at `top` (the list's own coordinates) stands its content in: the
-    /// column its rows' content stands in, to the edge their facts end on, so a heading reads
-    /// on the same grid as the rows under it.
     pub(super) fn header_rect(&self, top: f64) -> Rect {
         let band = self.band_rect(top);
         let x0 = band.x0 + self.lead + self.chevron_column;
@@ -489,7 +395,6 @@ impl<M: ListModel> VirtualList<M> {
         )
     }
 
-    /// The box the band at `top` (the list's own coordinates) is drawn in.
     pub(super) fn band_rect(&self, top: f64) -> Rect {
         let x1 = if self.rows_beside_bar {
             self.rect.x1 - self.gutter
@@ -500,8 +405,6 @@ impl<M: ListModel> VirtualList<M> {
         Rect::new(self.rect.x0, top, x1, top + self.groups.height)
     }
 
-    /// Paint the heading of every group in view over the rows, the one holding the top of the
-    /// box at its top. The heading holding the keyboard wears its focus ring.
     pub(super) fn draw_bands(
         &mut self,
         scene: &mut Scene,
@@ -525,8 +428,6 @@ impl<M: ListModel> VirtualList<M> {
             .iter()
             .map(|band| self.band_rect(band.top))
             .collect::<Vec<_>>();
-        // A band hides what it slides over: the rows of the group it holds while they scroll
-        // under it, and the band of the group leaving at the top.
         for rect in &rects {
             scene.fill(
                 vello::peniko::Fill::NonZero,
@@ -537,8 +438,6 @@ impl<M: ListModel> VirtualList<M> {
             );
         }
         let radius = f64::from(theme.tokens.radii.item);
-        // The ring goes under the heading it belongs to, so both are drawn in one pass over
-        // the bands and the ring first.
         for band in &bands {
             let has_keyboard = focused.as_deref() == Some(band.heading.as_str());
             if has_keyboard {
@@ -598,9 +497,6 @@ impl<M: ListModel> VirtualList<M> {
         rows.filter(|index| !self.model.done(*index)).count()
     }
 
-    /// The rows standing under the band's heading: its group's, and each row after them that
-    /// names no group of its own — one whose item has not arrived yet stands there too, under
-    /// the heading the person reads it by — until the next heading.
     fn heading_under(&self, band: &Band) -> std::ops::Range<usize> {
         let len = self.model.len();
         let tail = self.tail_title.as_deref();
@@ -617,8 +513,6 @@ impl<M: ListModel> VirtualList<M> {
         start..end
     }
 
-    /// A press at `point` (the list's own coordinates) on a heading's band, held until it is
-    /// let go, the heading taking the keyboard. Whether a band was there.
     pub(super) fn hold_band(&mut self, point: Point) -> bool {
         if !self.rect.contains(point) {
             return false;
@@ -654,7 +548,6 @@ impl<M: ListModel> VirtualList<M> {
         true
     }
 
-    /// Lay the list out again after a group opened or closed: its rows mount, or let go.
     fn regroup(&mut self) {
         self.mounted_range = 0..0;
         self.remount = true;
@@ -663,18 +556,13 @@ impl<M: ListModel> VirtualList<M> {
     }
 }
 
-/// One stop of the list's keyboard: a group's heading, or one of its rows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Stop {
-    /// The heading over the group whose first row is this index.
     Heading(usize),
-    /// The row at this index.
     Row(usize),
 }
 
 impl<M: ListModel> VirtualList<M> {
-    /// The heading holding the keyboard, and the index of the first row under it, while the
-    /// rows still say the heading heads that group.
     fn heading_focus(&mut self) -> Option<(String, usize)> {
         let (heading, index) = self.focused_group.clone()?;
         if self
@@ -690,7 +578,6 @@ impl<M: ListModel> VirtualList<M> {
         Some((heading, start))
     }
 
-    /// The first row of the group the row `index` is in.
     fn group_start(&mut self, index: usize) -> usize {
         let Some(group) = self.row_group(index) else {
             return index;
@@ -706,8 +593,6 @@ impl<M: ListModel> VirtualList<M> {
         start
     }
 
-    /// The stop the row `index` is: its group's heading while the group is closed, the row
-    /// itself while it shows.
     fn stop_at(&mut self, index: usize) -> Stop {
         if self.row_open(index) {
             Stop::Row(index)
@@ -716,7 +601,6 @@ impl<M: ListModel> VirtualList<M> {
         }
     }
 
-    /// The index the keyboard is on: under the focused heading, or the focused row's.
     fn keyboard_index(&mut self) -> Option<usize> {
         if let Some((_, start)) = self.heading_focus() {
             return Some(start);
@@ -725,7 +609,6 @@ impl<M: ListModel> VirtualList<M> {
         self.model.index_of(&key)
     }
 
-    /// The stop the keyboard is on.
     fn keyboard_stop(&mut self) -> Option<Stop> {
         if let Some((_, start)) = self.heading_focus() {
             return Some(Stop::Heading(start));
@@ -734,8 +617,6 @@ impl<M: ListModel> VirtualList<M> {
         self.model.index_of(&key).map(Stop::Row)
     }
 
-    /// The stop after the keyboard's, down the list: a heading's group opens under it, or,
-    /// closed, the heading gives the keyboard to the heading below it.
     fn next_stop(&mut self) -> Option<Stop> {
         let count = self.model.len();
         match self.keyboard_stop()? {
@@ -753,8 +634,6 @@ impl<M: ListModel> VirtualList<M> {
                     below = below.saturating_add(1);
                 }
                 (below < count).then(|| {
-                    // The heading under a folded group is the stop the keyboard meets next,
-                    // standing over the rows it heads however they are.
                     if self.row_starts(below) {
                         Stop::Heading(below)
                     } else {
@@ -769,7 +648,6 @@ impl<M: ListModel> VirtualList<M> {
         }
     }
 
-    /// The stop before the keyboard's, up the list.
     fn prev_stop(&mut self) -> Option<Stop> {
         match self.keyboard_stop()? {
             Stop::Heading(start) => {
@@ -778,7 +656,6 @@ impl<M: ListModel> VirtualList<M> {
             }
             Stop::Row(index) => {
                 if self.row_starts(index) {
-                    // The heading over the row the keyboard is on comes first.
                     return Some(Stop::Heading(index));
                 }
                 let above = index.checked_sub(1)?;
@@ -787,18 +664,15 @@ impl<M: ListModel> VirtualList<M> {
         }
     }
 
-    /// The first stop of the list.
     fn first_stop(&mut self) -> Option<Stop> {
         (self.model.len() > 0).then(|| self.stop_at(0))
     }
 
-    /// The last stop of the list: the heading of a closed group its rows end under.
     fn last_stop(&mut self) -> Option<Stop> {
         let last = self.model.len().checked_sub(1)?;
         Some(self.stop_at(last))
     }
 
-    /// Hand the keyboard to `stop`, as the arrow keys and the page keys do. Whether it went.
     fn focus_stop(&mut self, stop: Stop, extend: bool) -> bool {
         match stop {
             Stop::Row(index) => self.focus_index(index, extend),
@@ -815,8 +689,6 @@ impl<M: ListModel> VirtualList<M> {
         }
     }
 
-    /// The index of the first row under the heading: where the last layout placed its band,
-    /// else where the keyboard left it.
     pub(super) fn heading_start(&self, heading: &str) -> Option<usize> {
         if let Some((focused, index)) = &self.focused_group
             && focused == heading
@@ -830,7 +702,6 @@ impl<M: ListModel> VirtualList<M> {
             .map(|band| band.index)
     }
 
-    /// Hand the keyboard to the heading `heading`. Whether it is there.
     pub(super) fn focus_heading(&mut self, heading: &str) -> bool {
         let Some(index) = self.heading_start(heading) else {
             return false;
@@ -841,14 +712,12 @@ impl<M: ListModel> VirtualList<M> {
         true
     }
 
-    /// Fold or unfold the heading's group, as a press on its band does.
     pub(super) fn toggle_heading(&mut self, heading: &str) -> bool {
         self.groups.toggle(heading);
         self.regroup();
         true
     }
 
-    /// Show or fold away the heading's group's rows: whether that changed it.
     pub(super) fn set_heading_open(&mut self, heading: &str, open: bool) -> bool {
         if !self.groups.set_open(heading, open) {
             return false;
@@ -857,18 +726,14 @@ impl<M: ListModel> VirtualList<M> {
         true
     }
 
-    /// The heading the keyboard is on, before a key the list takes itself.
     pub(super) fn heading_keyboard(&mut self) -> Option<String> {
         self.heading_focus().map(|(heading, _)| heading)
     }
 
-    /// The row the keyboard is on, for the keys that start where the keyboard is.
     pub(super) fn keyboard_row(&mut self) -> Option<usize> {
         self.keyboard_index()
     }
 
-    /// The arrow, home and end keys move the keyboard through the headings and rows: from
-    /// nowhere, to the first stop as a row list does.
     pub(super) fn move_stop(&mut self, key: &winit::keyboard::Key, extend: bool) -> Option<bool> {
         use winit::keyboard::{Key, NamedKey};
         let stop = match key {

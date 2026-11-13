@@ -6,18 +6,11 @@ use std::hash::Hash;
 
 use super::{DuplicateListKey, ListModel, TreeRow};
 
-/// Convenient fully-resident model. Database and paged sources generally
-/// implement [`ListModel`] directly instead.
 pub struct VecListModel<T, K> {
     items: Vec<T>,
     keys: Vec<K>,
     index: HashMap<K, usize>,
-    /// The item each row stands under, when its rows stand as a tree
-    /// ([`Self::with_parents`]): a model whose rows stand on their own has
-    /// none.
     parents: Option<HashMap<K, K>>,
-    /// The rows that take subtasks ([`ListModel::accepts_children`]) whether or not any
-    /// stands under them yet ([`Self::with_branches`]): a folder read when it opens.
     branches: Option<HashSet<K>>,
 }
 
@@ -25,7 +18,6 @@ impl<T, K> VecListModel<T, K>
 where
     K: Clone + Eq + Hash,
 {
-    /// Build the key index once.
     pub fn new(items: Vec<T>, mut key: impl FnMut(&T) -> K) -> Result<Self, DuplicateListKey> {
         let keys = items.iter().map(&mut key).collect::<Vec<_>>();
         let index = keys
@@ -46,8 +38,6 @@ where
         })
     }
 
-    /// No rows, for a host that shows its list before the first rows are read
-    /// ([`Self::push`] fills it).
     #[must_use]
     pub fn empty() -> Self {
         Self {
@@ -59,10 +49,6 @@ where
         }
     }
 
-    /// The rows stand as a tree: each under the row of the item `parent`
-    /// names, which stands over it in the same list
-    /// ([`VirtualList::with_tree`](super::VirtualList::with_tree)). A row
-    /// outside the tree names no parent, as does one pushed later.
     #[must_use]
     pub fn with_parents(mut self, mut parent: impl FnMut(&T) -> Option<K>) -> Self {
         self.parents = Some(
@@ -75,8 +61,6 @@ where
         self
     }
 
-    /// The rows that take subtasks: a folder is one before its contents are read, so it
-    /// shows the disclosure that opens it. Read when set, as [`Self::with_parents`] does.
     #[must_use]
     pub fn with_branches(mut self, mut branch: impl FnMut(&T) -> bool) -> Self {
         self.branches = Some(

@@ -38,7 +38,6 @@ fn ada() -> Vec<MentionCandidate> {
 
 #[test]
 fn a_prose_field_offers_emoji_and_mentions_by_default() {
-    // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();
     let mut input = focused_with_people(ada());
     type_text(&mut input, "hi @ad");
@@ -73,7 +72,6 @@ fn a_prose_field_offers_emoji_and_mentions_by_default() {
 
 #[test]
 fn plain_and_either_single_opt_out_suppress_what_they_name() {
-    // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();
     for (setting, mentions, emoji) in [
         (TextCompletion::PLAIN, false, false),
@@ -98,7 +96,6 @@ fn plain_and_either_single_opt_out_suppress_what_they_name() {
 
 #[test]
 fn a_search_secret_or_numeric_field_offers_nothing() {
-    // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();
     for mut input in [
         focused_with_people(ada()).with_kind(TextInputKind::Search),
@@ -128,7 +125,6 @@ fn a_search_secret_or_numeric_field_offers_nothing() {
 
 #[test]
 fn a_composing_field_offers_nothing() {
-    // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();
     let mut input = focused_with_people(ada());
     type_text(&mut input, "hi @ad");
@@ -148,7 +144,6 @@ fn a_composing_field_offers_nothing() {
 
 #[test]
 fn escape_dismisses_a_mention_and_a_new_token_opens_again() {
-    // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();
     let mut input = focused_with_people(ada());
     type_text(&mut input, "hi @ad");
@@ -429,7 +424,6 @@ fn the_drawer_is_a_list_that_names_its_count_and_selected_row() {
     assert!(options[0].state.selected);
 }
 
-/// Paint the field and its drawer, which floats in the overlay pass.
 fn paint_with_drawer(input: &mut TextInput, theme: &Theme) {
     draw_with_theme(input, theme);
     let presence = crate::presence::PresenceCtx::empty();
@@ -453,12 +447,9 @@ fn the_drawer_height_follows_its_rows_on_the_spring_and_lands_under_reduced_moti
         let mut input = focused_with_people(Vec::new());
         input.set_completion_sources(vec![channels()]);
         type_text(&mut input, "#");
-        // The first height is taken as it is: nothing grows on first paint.
         paint_with_drawer(&mut input, &theme);
         assert!(!input.completion.is_animating(), "opening does not grow");
         type_text(&mut input, "d");
-        // As a tap on a phone's keyboard asks; a hardware key's result lands at once, as every
-        // keyboard result does (`MotionSource::lands_at_once`).
         crate::motion::note_source(crate::tokens::MotionSource::Pointer);
         paint_with_drawer(&mut input, &theme);
         assert_eq!(

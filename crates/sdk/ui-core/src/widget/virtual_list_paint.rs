@@ -15,8 +15,6 @@ use super::{ListModel, RowSelection, VirtualList};
 use crate::widget::DrawChild;
 
 impl<M: ListModel> VirtualList<M> {
-    /// Paint the frame: the rows in the viewport, the scrollbar beside them, a row's menu
-    /// and the way back to what is new.
     pub(super) fn paint(
         &mut self,
         scene: &mut Scene,
@@ -41,10 +39,7 @@ impl<M: ListModel> VirtualList<M> {
             self.scroll_metrics().overflows(),
             self.motion,
         );
-        // After a long reveal the rows fade in where they landed.
         let opacity = self.scroll.to.opacity(crate::motion::frame_now());
-        // How far the rows the last presented frame showed moved on screen:
-        // the frame stands that much further along than that one did.
         let moved = self.moved_since_presented();
         let presented = self.shown.presented().map(|shown| shown.position);
         self.shown.note(ListShown {
@@ -71,7 +66,6 @@ impl<M: ListModel> VirtualList<M> {
             &self.rect,
         );
         let accent = theme.tokens.colors.intent.accent_ink;
-        // Past an end, fingers pull the rows through the rubber band.
         let frame_transform = transform;
         #[allow(
             clippy::arithmetic_side_effects,
@@ -79,7 +73,6 @@ impl<M: ListModel> VirtualList<M> {
         )]
         let transform = transform * Affine::translate((0.0, -self.give()));
         self.push_row_selection();
-        // Only the rows near the box: the list clips the others away.
         let near = self.placed_near();
         let boxes: Vec<(Option<Rect>, bool)> = self
             .mounted
@@ -98,8 +91,6 @@ impl<M: ListModel> VirtualList<M> {
             .iter()
             .map(|row| self.row_selection(row.index))
             .collect();
-        // A row moving after a change is drawn where it is on its way, and
-        // an arriving one at its opacity (`motion::ListChange`).
         let now = crate::time::now();
         let poses: Vec<(f64, f32)> = self
             .mounted
@@ -107,7 +98,6 @@ impl<M: ListModel> VirtualList<M> {
             .map(|row| self.row_motion.pose(&row.key, now))
             .collect();
         let pending_shape = self.pending_shape();
-        // The tree's chevrons are the list's own, over the rows of any view: one place folds.
         let tree = self.tree.clone();
         let chevrons = self.chevrons();
         // The row that grew into its item keeps its chevron on its own line, where it starts.
@@ -126,9 +116,6 @@ impl<M: ListModel> VirtualList<M> {
             let Some(row_rect) = row_rect else {
                 continue;
             };
-            // The lift the row's selection takes: around what the row shows, as a `ListRow`
-            // paints it, and what an audit holds it to. A row whose view keeps no content box
-            // of its own takes the box every other thing the list draws for its rows takes.
             let lift = (selection.selected && !self.delegate_selection).then(|| {
                 let content =
                     crate::widget::row_content_box(row.widget.as_ref()).unwrap_or(row_rect);
@@ -150,8 +137,6 @@ impl<M: ListModel> VirtualList<M> {
             }
             let row_rect = row_rect + vello::kurbo::Vec2::new(0.0, dy);
             let row_transform = transform * Affine::translate((0.0, dy));
-            // Each row is an element of its own on a page shown as HTML,
-            // kept by the row's key as rows scroll in and out.
             let row_key = crate::scene_parts::begin_item(
                 scene,
                 crate::scene_parts::item_key("ui.list-row", &row.key),
@@ -167,9 +152,6 @@ impl<M: ListModel> VirtualList<M> {
                     &row_rect.inflate(4.0, 4.0),
                 );
             }
-            // The same selection a ListRow paints, so a list of ListRows
-            // reads identically to a painted one; a run of selected rows is
-            // one lift. A delegate that owns its selection paints its own.
             if let Some(lift) = lift {
                 let lift = lift + vello::kurbo::Vec2::new(0.0, dy);
                 crate::chrome::paint_row_selection_joined(
@@ -197,15 +179,12 @@ impl<M: ListModel> VirtualList<M> {
                 .as_ref()
                 .and_then(|place| place(&self.model, row.index, &row.key))
             {
-                // Mist is painted in device space.
                 let device = transform.transform_rect_bbox(row_rect);
                 for user in presence.peers_on(&place) {
                     presence.draw_peer_mist(scene, theme, user, device);
                 }
             }
             let slot = row.widget.get_rect() + vello::kurbo::Vec2::new(0.0, dy);
-            // A row arriving at a height of its own is drawn as far as it
-            // stands there: the rest of its item shows as the row reaches it.
             let clipped = growing.then(|| {
                 let shown = self
                     .viewport
@@ -237,10 +216,6 @@ impl<M: ListModel> VirtualList<M> {
                 },
             );
             if let Some(marks) = tree.as_ref() {
-                // The chevron and the guides hang on the row's own box: the one its text, its
-                // leading control and the lift stand in. A finger's row takes a taller slot than
-                // its box (a collection row a touch can hit), so centring the chevron on the slot
-                // would drop it below the words it folds.
                 let shown = row.widget.get_rect();
                 let shown = if shown.height() > 0.0 {
                     shown
@@ -263,8 +238,6 @@ impl<M: ListModel> VirtualList<M> {
                         crate::ColorCompat::with_alpha_factor(guide_color, alpha),
                     );
                 }
-                // A row standing open folds its branch away: the document it grew into lists
-                // the rows, so its chevron reads folded.
                 let folded = marks.is_folded(&row.key) || open.as_ref() == Some(&row.key);
                 chevrons.paint(marks, scene, transform, theme, &row.key, line, folded);
                 if let Some(rect) = chevrons.rect(marks, theme, &row.key, line, folded) {
@@ -280,9 +253,7 @@ impl<M: ListModel> VirtualList<M> {
             }
             crate::scene_parts::end_widget(scene, row_key);
         }
-        // The headings over the groups, over the rows they hold.
         self.draw_bands(scene, transform, text_renderer, theme);
-        // A row renamed in place: the field over its label, kept on the row as it moves.
         self.place_rename();
         if let Some(field) = self.rename.as_mut() {
             field
@@ -315,8 +286,6 @@ impl<M: ListModel> VirtualList<M> {
             self.vbar
                 .draw(scene, transform, track, self.scroll_metrics(), theme, false);
         }
-        // The way back, over the foot of a transcript the reader has moved away from: to the
-        // first unread row, or to what is being said now.
         if let Some(pill) = self.jump_face() {
             pill.paint(&mut PaintCtx::new(scene, transform, text_renderer, theme));
         }

@@ -6,8 +6,6 @@ use crate::offscreen::OffscreenRenderer;
 use vello::kurbo::Vec2;
 use vello::peniko::Color;
 
-/// An app that fills its window with a colour it may change at any time,
-/// and can paint its whole document, twice the window's height.
 struct Repaints {
     rect: Rect,
     color: Rc<Cell<Color>>,
@@ -100,7 +98,6 @@ fn rgb((r, g, b): (u8, u8, u8)) -> Color {
     Color::from_rgb8(r, g, b)
 }
 
-/// The colour `scene` shows at `at`.
 fn shown(scene: &Scene, at: Point) -> (u8, u8, u8) {
     let mut renderer = OffscreenRenderer::new(SIZE.0, SIZE.1);
     let rgba = renderer.render(scene, Color::from_rgb8(0, 0, 0));
@@ -125,11 +122,6 @@ fn draw(host: &mut TileHost, tr: &mut TextRenderer, theme: &Theme) -> Scene {
     scene
 }
 
-// A window of an app the shell runs itself (the terminal, Files, Notes)
-// that repaints while the screenshot is open still shows, and is
-// captured as, what it showed when the screenshot opened, also once it
-// has moved and also when captured whole; the app keeps running, and
-// what it drew shows once the hold ends.
 #[test]
 fn an_in_process_window_that_repaints_while_held_shows_what_it_showed_when_held() {
     let theme = Theme::default();
@@ -157,7 +149,6 @@ fn an_in_process_window_that_repaints_while_held_shows_what_it_showed_when_held(
         "the app repainted; the window still shows what it showed when held"
     );
 
-    // The strip scrolls it: the held window moves with it.
     let moved = rect + Vec2::new(150.0, 0.0);
     host.rect = moved;
     let scene = draw(&mut host, &mut tr, &theme);
@@ -168,7 +159,6 @@ fn an_in_process_window_that_repaints_while_held_shows_what_it_showed_when_held(
         "and drawn where the window is now"
     );
 
-    // Captured whole: the complete document as it was when held.
     let complete = host
         .complete_content_rect()
         .expect("the held window has its complete document");
@@ -187,7 +177,6 @@ fn an_in_process_window_that_repaints_while_held_shows_what_it_showed_when_held(
     let low = Point::new(complete.center().x, complete.y1 - 10.0);
     assert_eq!(shown(&capture, low), OLD, "the whole document as held");
 
-    // Released: live again, where the app lays itself out.
     host.rect = rect;
     assert!(release_windows());
     assert!(!host.content_held());

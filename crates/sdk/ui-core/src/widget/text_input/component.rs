@@ -114,7 +114,6 @@ impl Described for TextInput {
             submit,
             select,
         } = props;
-        // Text given beside a field it binds nothing to is read-only: a message body, a log.
         let read_only = read_only || text.is_some();
         let change = changed_by.map(|by| {
             let note = change_note(&by, previous.as_deref());
@@ -127,8 +126,6 @@ impl Described for TextInput {
             value.name.clone()
         };
         let edits = value.clone();
-        // The id first: the field's `change` verb is published under the control it names,
-        // and a verb named before the id would answer to no control there is.
         let mut input = Self::from_state(&value.state)
             .with_id(key)
             .with_presence_path(value.path.clone())
@@ -154,7 +151,6 @@ impl Described for TextInput {
                 .multiline(true)
                 .with_min_lines(usize::try_from(lines.max(1)).unwrap_or(1));
         }
-        // A long title wraps rather than running out of a narrow window; Enter still ends it.
         if title {
             input = input
                 .with_text_role(TextRole::LargeTitle)
@@ -215,7 +211,6 @@ impl Described for TextInput {
         if autofocus {
             self.focus_wanted = true;
         }
-        // Room for as many lines as it is given, or the wrapping line of a title.
         self.set_multiline(title || lines.is_some());
         self.min_lines = lines.map_or(0, |lines| usize::try_from(lines.max(1)).unwrap_or(1));
         self.set_text_role(if title {

@@ -11,7 +11,6 @@ use vello_encoding::DrawTag;
 #[test]
 fn hosted_mode_swipes_commit_once_and_reject_scroll_cancel_and_multitouch() {
     use winit::event::TouchPhase::{Cancelled, Ended, Moved, Started};
-    // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();
     let selected = crate::LocalState::new(0_usize);
     let next = selected.clone();
@@ -69,7 +68,6 @@ fn hosted_mode_swipes_commit_once_and_reject_scroll_cancel_and_multitouch() {
 #[test]
 fn painted_strips_refuse_removed_changed_and_interrupted_touch_owners() {
     use winit::event::TouchPhase::{Cancelled, Ended, Started};
-    // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();
     let rects = [
         Rect::new(0.0, 0.0, 100.0, 48.0),
@@ -119,12 +117,10 @@ fn painted_strips_refuse_removed_changed_and_interrupted_touch_owners() {
     );
 }
 
-/// Fixed rect so tests can simulate clicks without a full taffy pass.
 fn group_at(segments: Vec<Segment>, selected: usize, rect: Rect) -> ToggleGroup {
     let mut g = ToggleGroup::new(segments, selected);
     g.rect = rect;
     g.outer = rect;
-    // Populate segment_rects manually (mirrors apply_layout).
     let n = g.segments.len();
     if n > 0 {
         let w = rect.width() / f64_of_usize(n);
@@ -162,7 +158,6 @@ fn touch(phase: winit::event::TouchPhase, point: Point) -> WindowEvent {
 
 #[test]
 fn a_vertical_rail_stacks_square_segments_bound_to_view_state() {
-    // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();
     let state = crate::LocalState::new('b');
     let mut rail = ToggleGroup::from_state(
@@ -204,7 +199,6 @@ fn a_vertical_rail_stacks_square_segments_bound_to_view_state() {
     dispatch(&mut rail, &mouse_press());
     assert_eq!(state.with(|value| *value), 'c');
 
-    // A value set elsewhere (a keyboard shortcut) is shown on sync.
     state.set('a');
     let doc = AutoCommit::new();
     Widget::sync(&mut rail, &doc, &automerge::ROOT);
@@ -218,7 +212,6 @@ fn a_vertical_rail_stacks_square_segments_bound_to_view_state() {
 
 #[test]
 fn a_press_focuses_without_a_ring_until_the_keys_are_used() {
-    // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();
     let mut g = group_at(
         vec![Segment::new("A"), Segment::new("B")],
@@ -238,7 +231,6 @@ fn a_press_focuses_without_a_ring_until_the_keys_are_used() {
 
 #[test]
 fn toggle_group_geometry_scales_labels_once_and_is_touch_sized() {
-    // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();
     {
         for scale in [1.0, 2.0] {
@@ -322,7 +314,6 @@ fn toggle_group_geometry_scales_labels_once_and_is_touch_sized() {
             vec![Segment::new("a"), Segment::new("b"), Segment::new("c")],
             0,
         );
-        // Lay it out with room for its labels, so it shows as a strip.
         g.adopt_theme(&Theme::dark());
         g.measure_naturals(&mut TextRenderer::new());
         g.apply_layout_external(Rect::new(0.0, 0.0, 240.0, g.strip_height()));
@@ -334,8 +325,6 @@ fn toggle_group_geometry_scales_labels_once_and_is_touch_sized() {
             "a separator stands only between two unchosen neighbours"
         );
 
-        // `>=` since fills/border/text also contribute `DrawTag::COLOR`
-        // entries; the floor proves the separator strokes were emitted.
         let theme = Theme::dark();
         let mut tr = TextRenderer::new();
         let presence = PresenceCtx::default();
@@ -406,10 +395,6 @@ fn toggle_group_geometry_scales_labels_once_and_is_touch_sized() {
         assert_eq!(group.shown_labels(), ["Monday", "Tuesday"]);
     }
 
-    // Case `segments_size_to_their_labels_before_any_label_shortens`.
-    // "Day / Week / Year" in a strip too narrow for three equal "Week"
-    // segments but wide enough for the three labels: no segment elides,
-    // the wider label gets the wider segment.
     {
         let theme = Theme::dark();
         let mut text = TextRenderer::new();
@@ -432,7 +417,6 @@ fn toggle_group_geometry_scales_labels_once_and_is_touch_sized() {
             "the labels differ in width: {naturals:?}"
         );
 
-        // Room for three equal widest segments: equal widths.
         group.set_rect_and_partition(Rect::new(0.0, 0.0, (widest * 3.0).ceil(), 32.0));
         let widths: Vec<f64> = group.segment_rects.iter().map(Rect::width).collect();
         assert!(
@@ -440,7 +424,6 @@ fn toggle_group_geometry_scales_labels_once_and_is_touch_sized() {
             "{widths:?}"
         );
 
-        // Less than that but room for every label: sized to the labels.
         let tight = (sum + widest * 3.0) / 2.0;
         group.set_rect_and_partition(Rect::new(0.0, 0.0, tight, 32.0));
         for (rect, natural) in group.segment_rects.iter().zip(&naturals) {
@@ -456,7 +439,6 @@ fn toggle_group_geometry_scales_labels_once_and_is_touch_sized() {
 
 #[test]
 fn a_disabled_segment_is_never_chosen_and_the_keys_step_over_it() {
-    // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();
     let mut g = group_at(
         vec![
@@ -485,7 +467,6 @@ fn a_disabled_segment_is_never_chosen_and_the_keys_step_over_it() {
 
 #[test]
 fn toggle_group_selection_follows_pointer_touch_and_keyboard() {
-    // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();
     {
         let g = ToggleGroup::new(vec![Segment::new("a"), Segment::new("b")], 0);
@@ -609,8 +590,6 @@ fn toggle_group_selection_follows_pointer_touch_and_keyboard() {
     }
 }
 
-// `TILO_SEGMENT_FRAMES=<dir>` writes each frame of the slide as a PNG strip to
-// look at.
 #[test]
 fn a_click_slides_the_chosen_pill_from_the_old_segment_to_the_new_one() {
     use crate::time::testing::with_monotonic_time;
@@ -639,7 +618,6 @@ fn a_click_slides_the_chosen_pill_from_the_old_segment_to_the_new_one() {
             (group.segment_rects[1], group.segment_rects[2])
         };
         assert!(to.x0 > from.x0, "{name}: Large sits right of Default");
-        // Rasterised on the CPU, so the strip needs no GPU.
         let write = |frame: &crate::headless::FrameHarness, ms: u64| {
             let Some(dir) = &strip else {
                 return;
@@ -680,7 +658,6 @@ fn a_click_slides_the_chosen_pill_from_the_old_segment_to_the_new_one() {
             let Some(pill) = group.last_thumb else {
                 continue;
             };
-            // On its way: strictly between the segments, moving one way.
             assert!(
                 pill.x0 > from.x0 && pill.x0 < to.x0,
                 "{name} at {ms} ms: the pill {pill:?} is between {from:?} and {to:?}"
@@ -764,8 +741,6 @@ fn hovering_a_segment_of_a_single_choice_draws_no_second_pill() {
     }
 }
 
-/// Choosing another segment by pointer slides the thumb there from the
-/// segment it left; a key's choice puts it there at once.
 #[test]
 fn the_thumb_slides_to_a_clicked_segment_and_lands_on_a_key() {
     use crate::time::testing::with_monotonic_time;
@@ -845,9 +820,6 @@ fn the_thumb_slides_to_a_clicked_segment_and_lands_on_a_key() {
     });
 }
 
-/// A focus change swaps the outer border colour, so the encoded stream
-/// differs between focused and unfocused renders. The strip has room for
-/// both labels, so it shows as a strip.
 fn group_draw_data(focused: bool, theme: &Theme) -> Vec<u32> {
     let mut g = ToggleGroup::new(vec![Segment::new("a"), Segment::new("b")], 0);
     let mut tr = TextRenderer::new();
@@ -865,11 +837,7 @@ fn group_draw_data(focused: bool, theme: &Theme) -> Vec<u32> {
 
 #[test]
 fn segment_colours_follow_selection_focus_and_style() {
-    // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();
-    // Case `focused_toggle_group_uses_the_focus_colour`.
-    // Uses high contrast (yellow focus vs white border) so the two colours
-    // are unambiguously different.
     {
         let theme = Theme::high_contrast();
         let unfocused = group_draw_data(false, &theme);
@@ -918,8 +886,6 @@ fn segment_colours_follow_selection_focus_and_style() {
                 assert!(hover.is_some(), "a hovered segment lifts");
                 assert_eq!(hover_ink, idle_ink, "the label holds its colour on hover");
             }
-            // A page tab is a selector like a window's tab: the same
-            // tier, so the two read as one family.
             let (fill, _) = segment_colors(&theme, SegmentedStyle::Tabs, true, false);
             assert_eq!(
                 fill,
@@ -940,7 +906,6 @@ fn segment_colours_follow_selection_focus_and_style() {
 
 #[test]
 fn accessibility_and_actions_expose_and_drive_the_selected_segment() {
-    // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();
     {
         use crate::a11y::Role;
@@ -965,9 +930,6 @@ fn accessibility_and_actions_expose_and_drive_the_selected_segment() {
     }
 
     {
-        // Nothing reads `captured` back in this test (only the accessibility
-        // value is asserted), so the closure can just own it — no need for
-        // the clone-and-keep-a-handle dance the other click test uses.
         let captured: Rc<RefCell<Option<usize>>> = Rc::new(RefCell::new(None));
         let mut g = group_at(
             vec![Segment::new("a"), Segment::new("b"), Segment::new("c")],
@@ -987,7 +949,6 @@ fn accessibility_and_actions_expose_and_drive_the_selected_segment() {
             "each segment is placed where it is drawn"
         );
 
-        // Click into segment 2 → value follows the new selection.
         dispatch(&mut g, &cursor_moved(250.0, 18.0));
         dispatch(&mut g, &mouse_press());
         assert_eq!(crate::testing::answer_controls(&mut g), 1);
@@ -1195,7 +1156,6 @@ fn strips_choose_nothing_many_or_icons_and_tabs_start_flush() {
             "the chosen tab scrolls into view: {last:?}"
         );
 
-        // Tabs with short labels take them before they scroll.
         let named = |short: bool| -> Vec<Segment> {
             [("Privacy & Security", "Privacy"), ("Apps & Files", "Apps")]
                 .iter()
@@ -1235,7 +1195,6 @@ fn strips_choose_nothing_many_or_icons_and_tabs_start_flush() {
         );
     }
 
-    // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();
     nothing_chosen_until_the_person_picks();
     a_bound_selection_follows_its_state_both_ways();
@@ -1294,9 +1253,6 @@ fn a_multi_select_toggle_runs_its_action_with_the_chosen_indices() {
     );
 }
 
-/// A strip laid out for a mouse, told afterwards that a finger chooses from it (the host says
-/// what it is used with after the widget is built), stands as tall as the finger's target, and
-/// so does every choice in it.
 #[test]
 fn a_strip_told_of_a_finger_stands_as_tall_as_its_target() {
     use crate::interaction::InteractionEnvironment;

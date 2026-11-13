@@ -13,7 +13,6 @@ use crate::testing::{Dispatch, dispatch};
 
 #[test]
 fn hovering_and_leaving_a_field_do_not_consume_a_siblings_pointer_movement() {
-    // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();
     let mut input = TextInput::local();
     input.rect = Rect::new(0.0, 0.0, 200.0, 40.0);
@@ -27,7 +26,6 @@ fn hovering_and_leaving_a_field_do_not_consume_a_siblings_pointer_movement() {
 
 #[test]
 fn a_field_under_another_surface_keeps_its_text_and_gives_up_the_caret() {
-    // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();
     let mut input = TextInput::local().with_initial_value("kept");
     input.set_focus(true);
@@ -69,9 +67,7 @@ fn a_field_under_another_surface_keeps_its_text_and_gives_up_the_caret() {
 
 #[test]
 fn caret_paints_with_real_line_geometry_and_can_be_suppressed() {
-    // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();
-    // Case `drag_preview_suppresses_caret_paint_without_blurring_or_clearing_ime`.
     {
         let mut input = TextInput::local().with_initial_value("editable");
         input.set_focus(true);
@@ -166,10 +162,6 @@ fn caret_paints_with_real_line_geometry_and_can_be_suppressed() {
         assert!((text_y_naive - text_y_correct - (line_height - body_size()) / 2.0).abs() < 0.01);
     }
 
-    // Case `single_line_band_is_the_control_height_and_grows_with_the_scaled_line`.
-    // The single-line band is a Regular control (32) at 1×, the height of a
-    // button beside it, and grows to line + `spacing.s1` a side once the
-    // scaled line no longer fits.
     {
         fn band_height(theme: &Theme) -> Dimension {
             let mut ti = TextInput::new(vec![PathSegment::Field("name".into())]);
@@ -203,9 +195,7 @@ fn caret_paints_with_real_line_geometry_and_can_be_suppressed() {
 
 #[test]
 fn caret_respects_graphemes_and_visual_bidi_order() {
-    // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();
-    // Case `programmatic_caret_never_splits_a_grapheme`.
     {
         let mut combining = TextInput::local().with_initial_value("a\u{301}b");
         combining.set_cursor_pos(1);
@@ -218,7 +208,6 @@ fn caret_respects_graphemes_and_visual_bidi_order() {
         assert_eq!(emoji.cursor_pos(), "👩‍👩‍👧‍👦".len());
     }
 
-    // Case `single_line_bidi_uses_visual_caret_hit_and_selection_geometry`.
     {
         let text = "abc אבג xyz";
         let mut ti = TextInput::local().with_initial_value(text);
@@ -245,7 +234,6 @@ fn caret_respects_graphemes_and_visual_bidi_order() {
         assert_eq!(bands.len(), 2, "mixed-direction selection stays disjoint");
     }
 
-    // Case `single_line_bidi_caret_retains_affinity_through_arrow_motion`.
     {
         let mut ti = TextInput::local().with_initial_value("abc אבג xyz");
         ti.apply_layout_external(Rect::new(0.0, 0.0, 400.0, 40.0));
@@ -298,7 +286,6 @@ fn caret_respects_graphemes_and_visual_bidi_order() {
         assert_ne!(left.affinity, right.affinity);
     }
 
-    // Case `rtl_arrow_keys_follow_visual_not_storage_direction`.
     {
         let text = "שלום";
         let mut ti = TextInput::local().with_initial_value(text);
@@ -340,27 +327,22 @@ fn caret_respects_graphemes_and_visual_bidi_order() {
 
 #[test]
 fn widget_metadata_reports_id_ime_content_cursor_and_scrim() {
-    // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();
-    // Case `permission_denied_overlay_alpha_matches_other_widgets`.
     {
         let expected = crate::tokens::colors::PERMISSION_DENIED_SCRIM;
         assert_eq!(TextInput::PERMISSION_DENIED_OVERLAY, expected);
     }
 
-    // Case `text_input_test_id_default_is_text_input`.
     {
         let ti = TextInput::new(Vec::new());
         assert_eq!(Widget::test_id(&ti), Some("text_input"));
     }
 
-    // Case `text_input_test_id_can_be_overridden`.
     {
         let ti = TextInput::new(Vec::new()).with_id("search_box");
         assert_eq!(Widget::test_id(&ti), Some("search_box"));
     }
 
-    // Case `ime_content_does_not_leak_secret_field_contents`.
     {
         let plain = TextInput::local();
         let secret = TextInput::local().with_secret(true);
@@ -374,7 +356,6 @@ fn widget_metadata_reports_id_ime_content_cursor_and_scrim() {
         );
     }
 
-    // Case `cursor_shape_is_text_over_rect`.
     {
         let mut ti = TextInput::local();
         ti.apply_layout_external(Rect::new(0.0, 0.0, 200.0, 40.0));
@@ -401,9 +382,7 @@ fn widget_metadata_reports_id_ime_content_cursor_and_scrim() {
 
 #[test]
 fn caret_and_selection_survive_widget_state_round_trip() {
-    // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();
-    // Case `selection_survives_widget_state_round_trip_and_legacy_state_still_loads`.
     {
         let mut original = TextInput::local().with_initial_value("hello world");
         original.core.set_selection(1, 5);
@@ -421,7 +400,6 @@ fn caret_and_selection_survive_widget_state_round_trip() {
         );
     }
 
-    // Case `caret_affinity_survives_widget_state_round_trip`.
     {
         let mut original = TextInput::local().with_initial_value("abc אבג");
         let position = TextPosition::with_affinity(4, TextAffinity::After);
@@ -437,9 +415,7 @@ fn caret_and_selection_survive_widget_state_round_trip() {
 
 #[test]
 fn highlighted_code_shares_bidi_geometry_and_scaled_gutter() {
-    // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();
-    // Case `highlighted_code_uses_shared_bidi_geometry_through_the_gutter`.
     {
         let text = "let אבג = 1;\nprintln!(\"ok\");";
         let mut ti = TextInput::local()
@@ -474,7 +450,6 @@ fn highlighted_code_shares_bidi_geometry_and_scaled_gutter() {
         );
     }
 
-    // Case `code_gutter_reserves_space_for_scaled_line_numbers`.
     {
         let source = (1..=12)
             .map(|line| format!("line {line}"))
@@ -509,7 +484,6 @@ fn highlighted_code_shares_bidi_geometry_and_scaled_gutter() {
         );
     }
 
-    // Case `code_gutter_numbers_do_not_apply_accessibility_scale_twice`.
     {
         let paragraph_style = TextStyle::new(26.0).with_letter_spacing(0.4);
         let number_style =
@@ -521,10 +495,7 @@ fn highlighted_code_shares_bidi_geometry_and_scaled_gutter() {
 
 #[test]
 fn a_collapsed_anchor_does_not_select_the_text_inserted_after_it() {
-    // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();
-    // A tap leaves the anchor where the caret was; the soft keyboard then
-    // commits a word and, separately, the space after it.
     let mut ti = TextInput::local();
     ti.set_focus(true);
     ti.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 40.0));
@@ -543,9 +514,7 @@ fn a_collapsed_anchor_does_not_select_the_text_inserted_after_it() {
 
 #[test]
 fn ime_preedit_is_shaped_underlined_and_committed_without_touching_the_document() {
-    // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();
-    // Case `ime_preedit_is_shaped_underlined_and_committed_atomically`.
     {
         let mut ti = TextInput::local().with_initial_value("ab");
         ti.set_cursor_pos(1);
@@ -587,7 +556,6 @@ fn ime_preedit_is_shaped_underlined_and_committed_without_touching_the_document(
         assert!(Widget::ime_cursor_rect(&ti).is_none());
     }
 
-    // Case `highlighted_code_shapes_visible_preedit_and_recolors_with_theme`.
     {
         let mut ti = TextInput::local()
             .multiline(true)
@@ -631,9 +599,7 @@ fn ime_preedit_is_shaped_underlined_and_committed_without_touching_the_document(
 
 #[test]
 fn shaped_layout_is_cached_until_display_inputs_or_fonts_change() {
-    // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();
-    // Case `shaped_paragraph_is_reused_until_its_display_inputs_change`.
     {
         let mut ti = TextInput::local().with_initial_value("office שלום");
         ti.apply_layout_external(Rect::new(0.0, 0.0, 400.0, 40.0));
@@ -658,7 +624,6 @@ fn shaped_layout_is_cached_until_display_inputs_or_fonts_change() {
         );
     }
 
-    // Case `multiline_reuse_refreshes_unchanged_paragraphs_after_font_generation`.
     {
         let mut input = TextInput::local()
             .multiline(true)
@@ -720,9 +685,6 @@ fn shaped_layout_is_cached_until_display_inputs_or_fonts_change() {
         );
     }
 
-    // Case `font_family_override_shapes_in_named_family`.
-    // The authoritative input layout resolves its ASCII glyphs from the
-    // requested named family rather than silently reverting to sans.
     {
         let mut tr = crate::font_catalog::fixture_renderer();
         let fam = crate::tokens::ReadingFace::Literata.family().to_owned();
@@ -766,9 +728,7 @@ fn shaped_layout_is_cached_until_display_inputs_or_fonts_change() {
 
 #[test]
 fn value_bindings_publish_user_edits_but_not_model_updates() {
-    // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();
-    // Case `on_change_reports_committed_user_edits_once`.
     {
         let changes = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
         let captured = std::rc::Rc::clone(&changes);
@@ -828,7 +788,6 @@ fn value_bindings_publish_user_edits_but_not_model_updates() {
         assert_eq!(&*changes.borrow(), &["ab", "a漢b"]);
     }
 
-    // Case `local_state_binding_is_two_way_across_multiple_inputs`.
     {
         let state = crate::LocalState::new(String::from("Ada"));
         let mut first = TextInput::from_state(&state);
@@ -862,7 +821,6 @@ fn value_bindings_publish_user_edits_but_not_model_updates() {
         assert_eq!(first.take_dirty(), None);
     }
 
-    // Case `local_state_binding_coexists_with_an_app_callback`.
     {
         let state = crate::LocalState::new(String::from("before"));
         let changes = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
@@ -883,7 +841,6 @@ fn value_bindings_publish_user_edits_but_not_model_updates() {
         assert_eq!(&*changes.borrow(), &["after"]);
     }
 
-    // Case `local_state_model_update_invalidates_multiline_measurement_only`.
     {
         let state = crate::LocalState::new(String::from("short"));
         let mut input = TextInput::from_state(&state).multiline(true);
@@ -901,7 +858,6 @@ fn value_bindings_publish_user_edits_but_not_model_updates() {
 
 #[test]
 fn unfocused_input_shows_start_and_placeholder() {
-    // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();
     // Case `unfocused_input_renders_from_start_not_caret`.
     // Otherwise caret-following scroll hides the first characters.
@@ -943,7 +899,6 @@ fn unfocused_input_shows_start_and_placeholder() {
         );
     }
 
-    // Case `placeholder_visible_while_empty_focused_or_not`.
     {
         let mut ti = TextInput::local().with_placeholder("Search…");
         assert_eq!(ti.placeholder(), "Search…");
@@ -978,8 +933,6 @@ fn unfocused_input_shows_start_and_placeholder() {
         );
     }
 
-    // Case `placeholder_emits_glyphs_when_shown`.
-    // Checks that the dim hint paints.
     {
         let theme = Theme::dark();
         let mut tr = TextRenderer::new();
@@ -1019,7 +972,6 @@ fn unfocused_input_shows_start_and_placeholder() {
         );
     }
 
-    // Case `an_unfocused_field_the_wheel_scrolled_keeps_its_scroll`.
     {
         for shaped in [false, true] {
             let text = "a long source row\n".repeat(80);
@@ -1065,7 +1017,6 @@ fn unfocused_input_shows_start_and_placeholder() {
         }
     }
 
-    // Case `snapshot_scroll_opt_in_preserves_unfocused_shaped_and_body_views`.
     {
         for shaped in [false, true] {
             for preserve in [false, true] {
@@ -1107,9 +1058,7 @@ fn unfocused_input_shows_start_and_placeholder() {
 
 #[test]
 fn disabled_input_is_inert_to_focus_keys_pointer_and_accessibility() {
-    // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();
-    // Case `disabled_input_is_not_focusable`.
     {
         let enabled = TextInput::new(Vec::new());
         assert!(Widget::is_focusable(&enabled), "default input is focusable");
@@ -1126,7 +1075,6 @@ fn disabled_input_is_inert_to_focus_keys_pointer_and_accessibility() {
         assert!(later.is_disabled());
     }
 
-    // Case `disabled_input_ignores_keyboard_input`.
     {
         let mut ti = TextInput::local().disabled(true);
         ti.set_focus(true); // even if somehow focused, the input is inert
@@ -1146,7 +1094,6 @@ fn disabled_input_is_inert_to_focus_keys_pointer_and_accessibility() {
         assert_eq!(on.value(), "x");
     }
 
-    // Case `disabled_input_ignores_pointer_input`.
     {
         let mut ti = TextInput::local().disabled(true);
         ti.apply_layout_external(Rect::new(0.0, 0.0, 200.0, 40.0));
@@ -1165,7 +1112,6 @@ fn disabled_input_is_inert_to_focus_keys_pointer_and_accessibility() {
         );
     }
 
-    // Case `disabled_input_ignores_middle_click`.
     {
         let mut ti = TextInput::local()
             .with_initial_value("unchanged")
@@ -1181,7 +1127,6 @@ fn disabled_input_is_inert_to_focus_keys_pointer_and_accessibility() {
         assert_eq!(ti.value(), "unchanged");
     }
 
-    // Case `accessibility_disabled_input_reports_disabled_and_not_focusable`.
     {
         let ti = TextInput::new(Vec::new()).disabled(true);
         let node = Widget::accessibility(&ti).unwrap();

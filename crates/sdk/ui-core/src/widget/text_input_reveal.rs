@@ -1,14 +1,5 @@
-//! The show/hide control every single-line secret [`super::TextInput`] carries
-//! at its trailing edge.
-//!
-//! It is a retained child of the field, so assistive technology sees a named
-//! button that an AT or agent activation toggles. Like every inline accessory
-//! of a field it is not a Tab stop: Tab moves from field to field, as on macOS
-//! with full keyboard access off. A pointer press toggles without taking
-//! focus, so typing continues in the field. Only the field's
-//! paint changes: the value never reaches the accessibility tree, a log, the
-//! clipboard or persisted state because of a reveal.
-
+//! The show/hide control every single-line secret [`super::TextInput`] carries at its trailing
+//! edge.
 use crate::i18n::widget_text;
 use std::collections::HashMap;
 
@@ -24,7 +15,6 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::{ModelPath, TaffyTreeExt, Widget};
 
-/// Fluent keys; the same string is the tooltip and the accessible name.
 const SHOW_LABEL: &str = "text-input-show-password";
 const HIDE_LABEL: &str = "text-input-hide-password";
 
@@ -39,12 +29,9 @@ pub(super) struct RevealToggle {
     hovered: bool,
     pressed: crate::pointer_replay::HeldPress,
     focused: bool,
-    /// A finger that went down on the control; it toggles on release.
     touch: Option<u64>,
     test_id: String,
 
-    /// Input or a new document value changed what this widget paints: it
-    /// repaints once, and rests after the frame draws it.
     dirty: bool,
 }
 
@@ -92,8 +79,6 @@ impl RevealToggle {
         };
     }
 
-    /// Width of the trailing square the control occupies inside a field of
-    /// `field_height`.
     pub(super) fn width_for(field_height: f64) -> f64 {
         field_height.clamp(24.0, 48.0)
     }
@@ -127,7 +112,6 @@ impl RevealToggle {
         true
     }
 
-    /// The tooltip claim for `point`, for hosts that hit-test only the field.
     pub(super) fn tooltip_at(&self, point: Point) -> Option<(Rect, String)> {
         self.contains(point)
             .then(|| (self.rect, widget_text(self.label())))
@@ -145,8 +129,6 @@ impl Widget for RevealToggle {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        // Out of flow at the trailing edge; the field positions the rect
-        // itself so embedded fields without a layout tree match exactly.
         #[allow(
             clippy::cast_possible_truncation,
             reason = "the control is a few dozen logical pixels, far inside f32"
@@ -174,8 +156,6 @@ impl Widget for RevealToggle {
         if self.rect.is_zero_area() {
             return;
         }
-        // A bar-sized control face inside the field's band, around the
-        // standard glyph.
         let metrics = &theme.tokens.metrics;
         let side = f64::from(metrics.bar_control_height).min(self.rect.height());
         let face = RoundedRect::from_rect(
@@ -187,7 +167,6 @@ impl Widget for RevealToggle {
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 transform,
-                // The field is the raised face; the control lifts off it.
                 theme.tokens.colors.lift_on(
                     theme.tokens.colors.surfaces.raised,
                     if self.pressed.is_held() { 1.0 } else { 0.5 },
@@ -214,7 +193,6 @@ impl Widget for RevealToggle {
         } else {
             theme.text_dim
         };
-        // The glyph names the action a press performs, as the label does.
         let icon = if self.revealed {
             Icon::EyeOff
         } else {
@@ -251,7 +229,6 @@ impl Widget for RevealToggle {
                 ..
             } => {
                 use crate::pointer_replay::{PressAt, Release};
-                // The field's id names the control across a rebuild.
                 let at = self
                     .hovered
                     .then_some(PressAt::one(&self.test_id, self.rect));

@@ -83,10 +83,10 @@
 "crates/sdk/ui-core/src/widget/list_row.rs" = 3500
 "crates/sdk/ui-core/src/widget/nav_shell.rs" = 4500
 "crates/sdk/ui-core/src/widget/tabs.rs" = 10500
-"crates/sdk/ui-core/src/widget/text_input.rs" = 7000
+"crates/sdk/ui-core/src/widget/text_input.rs" = 6500
 "crates/sdk/ui-core/src/widget/tile_host.rs" = 3500
 "crates/sdk/ui-core/src/widget/toolbar.rs" = 4000
-"crates/sdk/ui-core/src/widget/window_group.rs" = 6000
+"crates/sdk/ui-core/src/widget/window_group.rs" = 5500
 "crates/session/desktop-surface/src/activity/pane.rs" = 3500
 "crates/session/desktop-surface/src/activity/pane_tests.rs" = 3500
 "crates/session/desktop-surface/src/notifications/center.rs" = 3500

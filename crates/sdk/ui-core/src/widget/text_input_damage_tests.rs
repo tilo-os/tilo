@@ -42,8 +42,6 @@ fn an_edited_line_repaints_its_ink_that_rises_past_its_row() {
     let presence = crate::presence::PresenceCtx::empty();
     let mut renderer = TextRenderer::new();
     renderer.set_text_scale(theme.text_scale);
-    // The marked line's stacked accents rise through the rows above it;
-    // the first line is far enough above to stay clear of them.
     let marks = "\u{301}".repeat(10);
     let mut field = TextInput::local()
         .multiline(true)

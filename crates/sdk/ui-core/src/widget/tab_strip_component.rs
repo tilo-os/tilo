@@ -303,10 +303,6 @@ impl crate::widget::decorator::concrete::Decorator for TabStrip {
         &mut self.bar
     }
 
-    // The bar marks what the person did with its pills as the input arrives, and the view
-    // hears it only when the strip reports: every way input reaches the bar reports in the
-    // same pass, so a press, a drop or a key is the view's event in that frame.
-
     fn handle_event(
         &mut self,
         event: &winit::event::WindowEvent,
@@ -390,8 +386,6 @@ impl Described for TabStrip {
             props.tabs.iter().map(TabItemProps::descriptor).collect(),
             active,
         );
-        // A frame's strip holds tabs only: the window's controls, the new-tab
-        // control and the search field are the frame's own, beside it.
         bar = bar.without_new_tab();
         bar.set_show_maximize(false);
         let mut strip = Self { bar, tabs };
@@ -432,9 +426,6 @@ impl TabStrip {
             self.bar.set_attention(*id, tab.attention);
             self.bar.set_mark(*id, tab.busy.then_some(TabMark::Busy));
             self.bar.set_modified(*id, tab.modified);
-            // The bar shows one face beside the title; a strip with several people at one
-            // tab shows the first, as the bar's pill does, and every one of them to assistive
-            // technology through the faces the view drew.
             let holder = tab.presence.first().and_then(|face| {
                 let who = face.who.as_ref()?;
                 let name = face.name.clone().unwrap_or_else(|| who.name.clone());

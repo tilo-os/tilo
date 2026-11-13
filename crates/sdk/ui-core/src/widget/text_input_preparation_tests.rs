@@ -67,7 +67,6 @@ fn assert_cold_geometry(
     width: f32,
 ) {
     let display = input.layout_display_text();
-    // Syntax colours paint with the rows: highlighted code is shaped plain.
     let fresh = if input.paints_highlight() {
         RichTextLayout::shape_paragraphs_reusing_browser(
             &mut tr.font_system,

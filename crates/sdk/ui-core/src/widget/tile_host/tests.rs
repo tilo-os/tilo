@@ -10,8 +10,6 @@ fn window_edge_shadow_and_focus_ring_stay_off_app_pixels() {
     {
         use crate::offscreen::OffscreenRenderer;
 
-        // Tile inset far enough from the surface edge that the ambient
-        // shadow sprite has somewhere to land without wrapping.
         let (w, h) = (200u32, 200u32);
         let rect = Rect::new(50.0, 50.0, 150.0, 150.0);
         let mut host = TileHost::new(TileContent::App(Box::new(FloodFill { rect })));
@@ -29,8 +27,6 @@ fn window_edge_shadow_and_focus_ring_stay_off_app_pixels() {
         );
 
         let mut r = OffscreenRenderer::new(w, h);
-        // Distinct from both the flood colour and the card so a leak from
-        // any of the three is identifiable in the failure message.
         let rgba = r.render(&scene, vello::peniko::Color::from_rgb8(0, 0, 0xFF));
 
         let radius = f64::from(theme.tokens.radii.tile);
@@ -96,8 +92,6 @@ fn window_edge_shadow_and_focus_ring_stay_off_app_pixels() {
     {
         use crate::offscreen::OffscreenRenderer;
 
-        // Spanning the ramp: a dark app, two mid grounds, and the light
-        // chrome a word processor paints.
         let grounds: [(u8, u8, u8); 4] = [
             (0x10, 0x10, 0x12),
             (0x40, 0x40, 0x44),
@@ -147,12 +141,6 @@ fn window_edge_shadow_and_focus_ring_stay_off_app_pixels() {
         }
     }
 
-    // Case `focus_lights_the_card_s_edge_and_never_squares_off_its_corner`.
-    // Focus is a change to the window's own edge, staying inside the
-    // card's silhouette — not a square fence around the bounding box,
-    // which would double-line the rounded corner and paint on desktop
-    // diagonally outside it. Checked at the edge's flat and diagonally
-    // outside the corner, across every theme preset.
     {
         use crate::offscreen::OffscreenRenderer;
 
@@ -203,8 +191,6 @@ fn window_edge_shadow_and_focus_ring_stay_off_app_pixels() {
             let lit = shot(true);
             let dark = shot(false);
 
-            // Mid-span of the top edge: the band the stroke occupies sits
-            // just outside the card boundary.
             let (sample_x, sample_y) = (100u32, crate::num::u32_of_f64(rect.y0) - 1);
             let (lr, lg, lb, _) = OffscreenRenderer::sample(&lit, width, sample_x, sample_y);
             assert_eq!(
@@ -244,8 +230,6 @@ fn window_edge_shadow_and_focus_ring_stay_off_app_pixels() {
 }
 
 thread_local! {
-    /// The body each [`Scribe`] last saw, by its text; empty for a
-    /// document without one.
     static SEEN: std::cell::RefCell<std::collections::HashMap<String, String>> =
         std::cell::RefCell::default();
 }
@@ -309,10 +293,6 @@ impl crate::widget::app_widget::AppWidget for FloatingProbe {
     }
 }
 
-/// A tile filling its display draws its content edge to edge: no
-/// rounded clip around it and no edge over it, so the content's own
-/// drawing (a client's frame) is the last and unclipped thing it draws.
-/// A tile beside others keeps both.
 #[test]
 fn a_full_bleed_tile_draws_its_content_last_and_unclipped() {
     let rect = Rect::new(0.0, 0.0, 160.0, 100.0);
@@ -372,7 +352,6 @@ fn reaching_into_the_app_leaves_the_structure_alone() {
 
 #[test]
 fn tile_host_forwards_surfaces_and_only_unhandled_events() {
-    // Case `tile_host_forwards_the_complete_floating_surface_lifecycle`.
     {
         let acknowledged = std::rc::Rc::new(std::cell::Cell::new(false));
         let source = Rect::new(20.0, 30.0, 420.0, 255.0);
@@ -403,7 +382,6 @@ fn tile_host_forwards_surfaces_and_only_unhandled_events() {
         assert!(acknowledged.get());
     }
 
-    // Case `a_prehandled_event_never_reaches_the_hosted_app`.
     {
         let calls = std::rc::Rc::new(std::cell::Cell::new(0));
         let mut host = TileHost::new(TileContent::App(Box::new(EventProbe(calls.clone()))));
@@ -430,7 +408,6 @@ fn an_unresolved_tile_only_refuses_events_meant_for_it() {
         label: String::new(),
     });
     host.rect = Rect::new(0.0, 0.0, 100.0, 100.0);
-    // A closed document owner leaves the record unresolvable.
     host.history_lifetime.active.set(false);
     let mut taffy = TaffyTree::new();
     let mut node_map = std::collections::HashMap::new();
@@ -446,19 +423,16 @@ fn an_unresolved_tile_only_refuses_events_meant_for_it() {
         None,
         ElementState::Pressed,
     ));
-    // Pointer outside: passes through, and so does the press after it.
     assert!(!send(
         &mut host,
         &crate::synthetic_input::cursor_moved(250.0, 50.0)
     ));
     assert!(!send(&mut host, &crate::synthetic_input::mouse_press()));
-    // Pointer inside: refused.
     assert!(send(
         &mut host,
         &crate::synthetic_input::cursor_moved(50.0, 50.0)
     ));
     assert!(send(&mut host, &crate::synthetic_input::mouse_press()));
-    // Keys: refused only while this tile is the focused one.
     assert!(!send(&mut host, &key));
     host.set_focused(true);
     assert!(send(&mut host, &key));
@@ -495,8 +469,6 @@ impl crate::widget::app_widget::AppWidget for EventProbe {
     }
 }
 
-/// An app with a History of its own (as an embedded App is): records
-/// where the window told it its controls are.
 struct OwnHistoryProbe(std::rc::Rc<std::cell::Cell<Option<bool>>>);
 
 impl Widget for OwnHistoryProbe {
@@ -541,9 +513,6 @@ impl crate::widget::app_widget::AppWidget for OwnHistoryProbe {
     }
 }
 
-// An app that replaces a tile's content (its placeholder, an earlier
-// app) hears where the window presents its History and search, so it
-// draws neither beside the bar's.
 #[test]
 fn an_app_that_replaces_a_tiles_content_hears_the_window_presents_its_controls() {
     let first = std::rc::Rc::new(std::cell::Cell::new(None));
@@ -605,7 +574,6 @@ fn a_windows_application_runs_under_its_tab_for_a_panic_hook() {
         41,
         crate::widget::WindowWidth::Fraction(500),
     );
-    // A host swapped in after the group was built is named too.
     *group.host_for_tab_mut(41).unwrap() =
         TileHost::new(TileContent::App(Box::new(ScopeProbe(seen.clone()))));
     let mut taffy = TaffyTree::new();
@@ -617,7 +585,6 @@ fn a_windows_application_runs_under_its_tab_for_a_panic_hook() {
     assert_eq!(super::super::panic_scope::current(), None);
 }
 
-/// Backdate the spawn so its fade window has already elapsed.
 fn expire_spawn_animation(h: &mut TileHost) {
     h.spawned_at = crate::time::now().checked_sub(spawn_time() + Duration::from_millis(20));
 }
@@ -705,10 +672,6 @@ fn spawn_animation_is_in_flight_only_for_its_duration() {
     });
 }
 
-/// Fills its entire rect with one flat opaque colour, exactly as
-/// `FileExplorerWidget::paint_background` and every other hosted
-/// app's background pass does. Module-scoped (rather than nested in
-/// its one test) purely to keep that test's line count sane.
 struct FloodFill {
     rect: Rect,
 }
@@ -807,8 +770,6 @@ impl crate::widget::app_widget::AppWidget for Flood {
     }
 }
 
-/// An app that has been asked for and has not drawn: the two things
-/// its widget is allowed to say about itself.
 struct Starting {
     rect: Rect,
     drawn: std::rc::Rc<std::cell::Cell<bool>>,
@@ -868,7 +829,6 @@ impl crate::widget::app_widget::AppWidget for Starting {
     }
 }
 
-/// A presented app that remembers the transform it was drawn with.
 struct TransformProbe {
     rect: Rect,
     drawn_with: std::rc::Rc<std::cell::Cell<Option<Affine>>>,
@@ -972,7 +932,6 @@ pub(super) fn paint(host: &mut TileHost, theme: &Theme) -> Scene {
 
 #[test]
 fn an_arrived_app_after_a_visible_placeholder_still_asks_for_a_frame() {
-    // Case `retiring_the_placeholder_keeps_one_paint_so_the_app_replaces_it`.
     let t0 = crate::time::now();
     let (mut host, _) = crate::time::testing::with_monotonic_time(t0, || starting_host(false));
     let theme = Theme::default();
@@ -1046,10 +1005,6 @@ fn a_painted_placeholder_asks_for_the_frame_its_next_step_shows_in() {
 
 #[test]
 fn a_tile_holding_only_a_placeholder_reports_no_damage_once_its_steps_are_past() {
-    // Its tab shows the client's own buffer: the tile has no child to ask,
-    // and the toolkit's default reads that as "ask again". A desk keeps such
-    // a tile for every window, and painted itself again on every frame for
-    // as long as the session ran.
     let t0 = crate::time::now();
     let theme = Theme::default();
     let mut host = crate::time::testing::with_monotonic_time(t0, || {
@@ -1077,9 +1032,6 @@ fn a_tile_holding_only_a_placeholder_reports_no_damage_once_its_steps_are_past()
 
 #[test]
 fn a_tile_holds_its_place_opaquely_until_the_app_can_be_shown() {
-    // Case `visible_notice_replacement_tracks_new_content_readiness_without_hiding_the_tile`.
-    // On one instant: the replacement answers inside its frame budget, so
-    // it shows at once, with no placeholder to outlast.
     crate::time::testing::with_monotonic_time(crate::time::now(), || {
         let theme = Theme::default();
         let rect = Rect::new(50.0, 50.0, 150.0, 150.0);
@@ -1140,11 +1092,6 @@ fn a_tile_holds_its_place_opaquely_until_the_app_can_be_shown() {
         );
     });
 
-    // Case `a_tile_holding_a_place_does_not_paint_the_app_behind_it`.
-    // An unpresented app has only its own early buffer size, so painting
-    // it is the window appearing magnified then snapping down. The frame
-    // holds the place instead, since it's the one thing that knows the
-    // tab's size.
     {
         let theme = Theme::default();
         let (mut host, drawn) = starting_host(false);
@@ -1157,8 +1104,6 @@ fn a_tile_holds_its_place_opaquely_until_the_app_can_be_shown() {
         );
     }
 
-    // Case `a_tile_paints_the_app_as_soon_as_it_has_something_to_show`.
-    // And the moment it has something to show, it is what is shown.
     {
         let theme = Theme::default();
         let (mut host, drawn) = starting_host(true);
@@ -1198,8 +1143,6 @@ fn a_tile_holds_its_place_opaquely_until_the_app_can_be_shown() {
         let TileContent::App(app) = &mut host.content else {
             panic!("the app");
         };
-        // The app now says it has not drawn, as a client whose buffer
-        // stopped matching its tab mid-resize would.
         app.as_any_mut()
             .and_then(|app| app.downcast_mut::<Starting>())
             .expect("controlled app")
@@ -1212,9 +1155,6 @@ fn a_tile_holds_its_place_opaquely_until_the_app_can_be_shown() {
         );
     }
 
-    // Case `the_place_held_is_opaque`.
-    // What is in the tile while the place is held is the frame's own
-    // ground, not the desktop showing through.
     {
         use crate::offscreen::OffscreenRenderer;
         let theme = Theme::default();
@@ -1369,8 +1309,6 @@ fn focus_reaches_a_pixel_further_out_and_leaves_the_card_where_it_was() {
             renderer.render(&scene, ground)
         };
         let (lit, plain) = (shot(true), shot(false));
-        // The topmost painted row above the card's middle, and the
-        // leftmost painted column beside it: the outline's reach.
         let middle = crate::num::u32_of_f64(60.0 * scale);
         let reach = |rgba: &[u8]| {
             let painted = |x: u32, y: u32| {
@@ -1433,7 +1371,6 @@ fn window_history_control(driver: &crate::headless::FrameHarness) -> Option<bool
             .and_then(|access| find(access, target))
             .or_else(|| node.children.iter().find_map(|child| walk(child, target)))
     }
-    // The window's History control acts on its active tab.
     walk(
         &driver.inspection().root,
         crate::widget::tabs::WINDOW_HISTORY_TARGET,
@@ -1448,13 +1385,10 @@ fn a_desktop_window_presents_history_on_its_tab_not_in_a_band() {
         (host, TileHost::from_component(component))
     };
 
-    // Alone, the tile has nowhere else to put History: its own bar.
     let (_alone_host, alone_tile) = history_tile();
     let alone = harness(Box::new(alone_tile));
     assert!(alone.targets().contains_key("history-open"));
 
-    // In a desktop window, the window's tab carries it, and the tile
-    // draws no band (nor a header control) of its own.
     let (_host, tile) = history_tile();
     let group = WindowGroup::from_hosts(
         1,
@@ -1472,8 +1406,6 @@ fn a_desktop_window_presents_history_on_its_tab_not_in_a_band() {
     );
     assert_eq!(window_history_control(&driver), Some(false));
 
-    // The tab's control opens History through the tile's History door,
-    // and reads as on while it shows; pressed again, it closes.
     driver
         .perform_semantic_named(
             "tabs",
@@ -1503,7 +1435,6 @@ fn a_desktop_window_presents_history_on_its_tab_not_in_a_band() {
     assert!(!driver.targets().contains_key("activity_timeline"));
     assert_eq!(window_history_control(&driver), Some(false));
 
-    // Escape leaves History as well.
     press_tab(&mut driver);
     assert!(driver.targets().contains_key("activity_timeline"));
     driver.click_named("activity_timeline").unwrap();
@@ -1523,8 +1454,6 @@ fn a_desktop_window_presents_history_on_its_tab_not_in_a_band() {
 fn an_undrawn_tile_asks_for_no_wake_once_its_arrival_is_due() {
     let t0 = crate::time::now();
     for presented in [false, true] {
-        // The place held for a window while it opens, the window arriving
-        // into it: what an agent's `open` on another strip leaves there.
         let mut host = crate::time::testing::with_monotonic_time(t0, || {
             let rect = Rect::new(50.0, 50.0, 150.0, 150.0);
             let mut host = TileHost::new(TileContent::Notice {
@@ -1553,9 +1482,6 @@ fn an_undrawn_tile_asks_for_no_wake_once_its_arrival_is_due() {
     }
 }
 
-/// An app whose widgets replace themselves on every pass, as a list does
-/// while the rows it shows wait to be mounted: it keeps reporting the change
-/// until a build carries it out.
 struct Restless;
 
 impl Widget for Restless {
@@ -1608,7 +1534,6 @@ fn a_tile_whose_history_shows_a_version_leaves_the_hidden_apps_change_with_it() 
         .history
         .as_mut()
         .expect("the component registers a History with its tile");
-    // Narrow enough that an open History stands in the app's place.
     history.set_width(400.0);
     assert!(history.request_open(), "the History opens");
     history.refresh(&automerge::AutoCommit::new());
@@ -1616,8 +1541,6 @@ fn a_tile_whose_history_shows_a_version_leaves_the_hidden_apps_change_with_it() 
         !history.live_visible(),
         "the test needs the History to lay a version out in the app's place"
     );
-    // The tile's own installation asked for one composition; a build carries
-    // that out.
     let _ = tile.take_structure_change();
     for turn in 0..3 {
         assert_eq!(

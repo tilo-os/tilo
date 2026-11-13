@@ -136,8 +136,6 @@ fn an_edge_drag_sets_the_width_live_and_commits_it_once() {
     use taffy::Style;
     use taffy::prelude::TaffyMaxContent;
 
-    // (Re)build the taffy tree from the group's current state and run a
-    // full layout pass, returning the group's laid-out width.
     fn layout_width(g: &mut WindowGroup, theme: &Theme) -> f64 {
         let mut taffy = TaffyTree::<()>::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
@@ -247,7 +245,6 @@ fn an_edge_drag_sets_the_width_live_and_commits_it_once() {
             None,
             "pointer over the group body (not the edge band) defers",
         );
-        // An in-flight drag holds the cursor even off the band.
         g.begin_edge_drag(WindowEdge::Trailing);
         assert_eq!(
             Widget::cursor_shape(&g, Point::new(rect.center().x, cy)),
@@ -256,8 +253,6 @@ fn an_edge_drag_sets_the_width_live_and_commits_it_once() {
     }
 
     {
-        // A width a person set is a share, kept on every display (the
-        // default width stops growing past what reads well instead).
         let mut wide = make_group();
         wide.set_width(WindowWidth::Fraction(667));
         wide.set_strip_usable_px(3840.0);

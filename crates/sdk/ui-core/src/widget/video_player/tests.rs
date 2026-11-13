@@ -81,7 +81,6 @@ fn a_playing_video_shows_its_controls_then_a_progress_line_and_a_paused_one_keep
     );
 }
 
-/// The names of the controls the semantics tree lists now.
 fn listed_controls(vp: &VideoPlayer) -> Vec<String> {
     vp.accessibility()
         .map(|node| {
@@ -114,8 +113,6 @@ fn controls_that_hid_or_faded_leave_the_tree_with_the_frame_that_hides_them() {
         listed_controls(&vp)
     );
 
-    // The auto-hide deadline passes; no frame has been drawn since, so
-    // the screen still shows the controls, and the tree with it.
     vp.controls_visible_until = Some(crate::time::now());
     assert!(
         listed_controls(&vp)
@@ -135,7 +132,6 @@ fn controls_that_hid_or_faded_leave_the_tree_with_the_frame_that_hides_them() {
         "the progress line shows meanwhile"
     );
 
-    // In the last moments of the fade the controls are all but gone.
     vp.controls_visible_until = crate::time::now().checked_add(Duration::from_millis(5));
     assert!(vp.controls_opacity() < 0.5);
     draw_once(&mut vp);
@@ -167,7 +163,6 @@ fn a_reveal_reaches_the_screen_even_when_the_next_frame_comes_after_its_deadline
     let root = automerge::ROOT;
     vp.engine_mut().unwrap().play();
     vp.sync(&doc, &root);
-    // Playback starting shows the controls; once drawn, they hide.
     draw_once(&mut vp);
     vp.controls_visible_until = None;
     draw_once(&mut vp);
@@ -177,8 +172,6 @@ fn a_reveal_reaches_the_screen_even_when_the_next_frame_comes_after_its_deadline
         "hidden while playing"
     );
 
-    // The pointer moves; the page is so busy its next frame comes only
-    // after the auto-hide deadline.
     vp.show_controls();
     vp.controls_visible_until = Some(crate::time::now());
     draw_once(&mut vp);
@@ -247,7 +240,6 @@ fn transport_keys_and_surface_clicks_drive_the_engine() {
         assert_eq!(vp.position_ms(), 25_000, "→ seeks forward 5s");
         assert!(vp.handle_key_input(&Key::Named(NamedKey::ArrowLeft), ElementState::Pressed));
         assert_eq!(vp.position_ms(), 20_000, "← seeks back 5s");
-        // The seek propagated to the engine, not just the widget cache.
         assert_eq!(vp.engine().unwrap().position_ms(), 20_000);
     }
 
@@ -265,7 +257,6 @@ fn transport_keys_and_surface_clicks_drive_the_engine() {
         let mut scene = Scene::new();
         vp.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
         assert!(!vp.is_playing());
-        // Top-centre: clear of the controls bar, the scrub track, every button.
         dispatch(&mut vp, &cursor_moved(320.0, 40.0));
         assert!(dispatch(&mut vp, &mouse_press()), "surface click handled");
         assert!(vp.is_playing(), "surface click started playback");
@@ -701,9 +692,6 @@ fn controls_bar_lays_out_reachable_aligned_targets_at_every_size() {
         }
     }
 
-    // Case `a_wide_bar_paints_the_full_time_label`.
-    // The degrade is a last resort: on a bar with room the full
-    // "m:ss / m:ss" is painted, exactly as wide as it measures.
     {
         let mut vp = VideoPlayer::new();
         vp.rect = Rect::new(0.0, 0.0, 960.0, 540.0);
@@ -759,7 +747,6 @@ fn settings_surface_by_priority_and_round_trip_through_the_gear() {
         let mut vp = VideoPlayer::new();
         vp.rect = Rect::new(0.0, 0.0, 960.0, 540.0);
         vp.reveal_controls();
-        // A high-priority toggle (own icon) + a priority-0 choice (under the gear).
         vp.set_setting(PlayerSetting::toggle(
             "captions",
             Icon::FileText,
@@ -792,7 +779,6 @@ fn settings_surface_by_priority_and_round_trip_through_the_gear() {
 
     {
         let mut vp = VideoPlayer::new();
-        // Narrow bar + many priority settings ⇒ only the top few fit as icons.
         vp.rect = Rect::new(0.0, 0.0, 420.0, 236.0);
         vp.reveal_controls();
         for p in 1..=8 {
@@ -878,7 +864,6 @@ fn settings_surface_by_priority_and_round_trip_through_the_gear() {
         let mut vp = VideoPlayer::new();
         vp.rect = Rect::new(0.0, 0.0, 960.0, 540.0);
         vp.reveal_controls();
-        // Priority 0 ⇒ under the gear.
         vp.set_setting(PlayerSetting::toggle(
             "autoplay",
             Icon::Play,
@@ -985,8 +970,6 @@ fn accessibility_exposes_transport_state_and_truthful_controls() {
     }
 }
 
-/// Push mode through a real encoder and decoder. Needs the `realtime`
-/// feature of `media` (GStreamer); VP9 in software needs no GPU.
 #[cfg(feature = "realtime-video")]
 #[test]
 fn push_mode_feed_encoded_updates_latest_image() {
@@ -1037,8 +1020,6 @@ fn surface_paints_pushed_frames_or_a_placeholder() {
             image_count, 0,
             "no frame → no image draw in the empty state"
         );
-        // Only the letterbox: the app's empty state or error says what is
-        // missing, and no glyph is painted under its text.
         assert_eq!(
             scene.encoding().draw_tags.len(),
             1,
@@ -1069,7 +1050,6 @@ fn surface_paints_pushed_frames_or_a_placeholder() {
     }
 }
 
-/// Every pointer target the bar exposes, named, in one place.
 fn bar_targets(vp: &VideoPlayer) -> Vec<(String, Rect)> {
     let mut out = vec![
         ("play".to_string(), vp.play_button_rect),
@@ -1087,9 +1067,6 @@ fn bar_targets(vp: &VideoPlayer) -> Vec<(String, Rect)> {
     out
 }
 
-/// Paint once with the renderer at `scale` (the a11y text-scale
-/// convention the `Host` palette source uses), so the label is measured
-/// and drawn larger than the theme's type size says.
 fn draw_at_text_scale(vp: &mut VideoPlayer, scale: f32) {
     let theme = Theme::dark();
     let mut tr = TextRenderer::new();
@@ -1128,13 +1105,8 @@ fn controls_ink_and_edges_read_on_both_presets() {
             let idx = ((p.y as usize) * (w as usize) + p.x as usize) * 4;
             Color::from_rgb8(rgba[idx], rgba[idx + 1], rgba[idx + 2])
         };
-        // Inside the paused play triangle: for a glyph box of side `s` the
-        // triangle spans x ∈ [cx − 0.5s·½ … cx + 0.7s·½]; (cx − 4, cy) is
-        // well inside it at the 30px glyph.
         let c = vp.play_button_rect.center();
         let glyph = sample(Point::new(c.x - 4.0, c.y));
-        // A bare patch of the painted scrim: just right of the play target,
-        // above the scrub track, inside the bar.
         let bar = vp.controls_bar_rect(&Theme::dark());
         let scrim = sample(Point::new(vp.play_button_rect.x1 + 2.0, bar.y0 + 3.0));
         let ratio = crate::a11y::contrast_ratio(glyph, scrim);
@@ -1146,22 +1118,10 @@ fn controls_ink_and_edges_read_on_both_presets() {
         );
     }
 
-    // Case `ux1x_controls_bar_and_menu_edges_register_on_both_presets`.
-    // The controls bar's top hairline, its unfilled track and the open
-    // settings menu keep a **visible derived edge** at 1× on both presets
-    // (HIG §9.5). Before, all three wore `border_standard` — one fixed
-    // colour per theme, measured against neither theme's scrim, three
-    // shades from the dark raised menu — and the light theme's track was
-    // `text_dim` (near-black) on a near-black scrim.
-    //
-    // Writes `$UX1X_F4_OUT/<theme>/video_player.png` plus the harness
-    // inspection when that variable is set; asserts regardless.
     {
         use crate::offscreen::OffscreenRenderer;
         const EDGE_MIN: f64 = 0.008;
         let (w, h) = (640.0, 360.0);
-        // Evidence first, for both presets, so a failing assertion on one
-        // preset still leaves the other's PNG and inspection on disk.
         for theme in [Theme::dark(), Theme::light()] {
             let theme = theme.with_reduce_motion(true);
             if let Some(png) = ux1x_out(&theme, "video_player.png") {
@@ -1200,7 +1160,6 @@ fn controls_ink_and_edges_read_on_both_presets() {
             )]
             let lum = |x: f64, y: f64| lum_at(&rgba, w as u32, x, y);
 
-            // Controls Panel: its edge against its ground just inside it.
             let bar = vp.controls_bar_rect(&theme);
             let edge = lum(bar.x0, bar.center().y);
             let ground = lum(bar.x0 + 4.0, bar.center().y);
@@ -1210,8 +1169,6 @@ fn controls_ink_and_edges_read_on_both_presets() {
                 theme.name
             );
 
-            // Track: the unfilled end (past the 40 % buffered range) against
-            // the bare scrim beside it.
             let hit = vp.scrub_track_rect;
             let track = lum(hit.x1 - 3.0, hit.center().y);
             let beside = lum(hit.x1 - 3.0, hit.center().y - 7.0);
@@ -1252,7 +1209,6 @@ fn lum_at(rgba: &[u8], w: u32, x: f64, y: f64) -> f64 {
     crate::a11y::relative_luminance(Color::from_rgb8(r, g, b))
 }
 
-/// `$UX1X_F4_OUT/<theme>/<name>` when the 1× review asked for evidence.
 fn ux1x_out(theme: &Theme, name: &str) -> Option<std::path::PathBuf> {
     let dir =
         std::path::PathBuf::from(std::env::var_os("UX1X_F4_OUT")?).join(theme.name.to_lowercase());
@@ -1260,9 +1216,6 @@ fn ux1x_out(theme: &Theme, name: &str) -> Option<std::path::PathBuf> {
     Some(dir.join(name))
 }
 
-/// A player with the controls shown, a partly buffered track and the
-/// settings menu open on an expanded choice — every surface the bar
-/// paints, in one frame.
 fn ux1x_fixture() -> VideoPlayer {
     let mut vp = VideoPlayer::new();
     vp.buffering = 40;
@@ -1318,8 +1271,6 @@ fn element_pictures_reach_the_renderer_without_pixels() {
     assert_eq!(ids.len(), PICTURES as usize);
 }
 
-/// What plays reaches the engine's own system controls (a page's Media
-/// Session), and the player follows a press on them.
 #[test]
 fn the_engines_system_controls_hear_what_plays_and_the_player_follows_them() {
     let mut vp = VideoPlayer::new().with_engine(media::MediaEngine::new_synthesized());
@@ -1397,8 +1348,6 @@ fn a_german_desktop_hears_the_transport_in_german() {
         "entering fullscreen is named, not the state"
     );
 
-    // What a reader hears is the same words: the transport, the seek slider with its position and
-    // the keys that reach it.
     let node = Widget::accessibility(&vp).expect("the player is not presentational");
     assert_eq!(node.name.as_deref(), Some("Videoplayer"));
     assert_eq!(
@@ -1439,7 +1388,6 @@ fn a_german_desktop_hears_the_transport_in_german() {
         .collect();
     assert!(keys.contains(&"Leertaste"), "{keys:?}");
 
-    // The other direction of each toggle, in German as well.
     vp.play();
     assert_eq!(hover(&mut vp, play).as_deref(), Some("Pausieren"));
     vp.toggle_mute();
@@ -1450,7 +1398,6 @@ fn a_german_desktop_hears_the_transport_in_german() {
         Some("Vollbild verlassen")
     );
 
-    // Back to the source copy: the manager is thread-local, and the player's other tests read it.
     I18nManager::init("en-US");
     assert_eq!(
         hover(&mut vp, scrub).as_deref(),

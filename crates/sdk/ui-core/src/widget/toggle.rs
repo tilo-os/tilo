@@ -15,69 +15,35 @@ use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect, Stroke};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
-/// A switch: a `BoolControl` drawn as a pill whose knob slides to the
-/// checked side.
-///
-/// A click or a tap slides the knob and turns the track (a second click
-/// mid-flight reverses from where it is drawn); a drag holds the knob under
-/// the hand and lets it settle on the nearer side, carrying the release's
-/// velocity; Space, Enter and an assistive action land at once
-/// ([`SwitchMotion`]). Settled, it asks for no frames and repaints only
-/// when what it paints changes.
 pub struct Toggle {
     semantic_id: String,
     control: BoolControl,
-    /// Where the knob is drawn and how far the track has turned on.
     switch: SwitchMotion,
-    /// A pointer or a finger holding the switch.
     hold: Option<KnobHold>,
-    /// The last pointer x, where a press takes hold.
     pointer_x: f64,
-    /// The pill as last drawn, from the switch's origin, for a hand
-    /// dragging its knob.
     drawn_track: Rect,
-    /// The motion the person allows, as last drawn.
     motion: Option<crate::tokens::EffectiveMotion>,
-    /// How far a held knob moves before the hold is a drag, the theme's
-    /// click slop as last laid out: below it, a press is a click.
     slop: f64,
-    /// What the last presented frame painted, and what the frame being drawn
-    /// paints: the switch needs a redraw only when they differ.
     painted: Option<Painted>,
     drawing: Option<Painted>,
-    /// A view that builds the switch anew on each change: the one built in
-    /// its place goes on from its knob (`motion::keep`).
     hand_on: crate::motion::HandOn<KeptSwitch>,
 }
 
-/// What a switch leaves for the one a rebuild puts in its place: its knob,
-/// and the value it shows, so a successor showing another switch's value
-/// (another page, a row that moved) does not slide.
 struct KeptSwitch {
     switch: SwitchMotion,
 }
 
-/// What a switch's paint depends on besides its place and the theme:
-/// checked, hovered, focused, enabled, and the drawn knob position and
-/// tint (as bits, so a settled switch compares equal).
 type Painted = (bool, bool, bool, bool, u64, u32);
 
-/// A hand holding a switch: the pointer, or a finger dragging across it
-/// (which the touch emulator presents as the pointer).
 #[derive(Clone, Copy, Debug)]
 struct KnobHold {
-    /// Where the hold started.
     start_x: f64,
-    /// The knob's drawn position when the hold started.
     from: f64,
     dragged: bool,
-    /// The last two knob positions the hand set, for its velocity.
     last: Option<(crate::time::Instant, f64)>,
     previous: Option<(crate::time::Instant, f64)>,
 }
 
-/// A hand's last movement older than this is no velocity at release: it
-/// stopped before letting go.
 const STILL_AFTER: crate::time::Duration = crate::time::Duration::from_millis(80);
 
 impl KnobHold {
@@ -95,7 +61,6 @@ impl KnobHold {
         self.previous = self.last.replace((at, position));
     }
 
-    /// The knob's velocity (travel per second) when let go at `now`.
     fn velocity(&self, now: crate::time::Instant) -> f64 {
         match (self.previous, self.last) {
             (Some((t0, p0)), Some((t1, p1)))
@@ -126,8 +91,6 @@ impl Toggle {
         }
     }
 
-    /// What names the switch across rebuilds: an id it was given, else
-    /// nothing (it is known by its place).
     fn identity(&self) -> Option<&str> {
         self.control
             .id_override
@@ -135,16 +98,8 @@ impl Toggle {
             .or((self.semantic_id != "toggle").then_some(self.semantic_id.as_str()))
     }
 
-    /// Go on from the switch a rebuild dropped: its knob, on its way or at
-    /// rest. Showing what it showed, a change since moves from there as the
-    /// input that made it asks; showing something else, it rests where it
-    /// is.
     fn take_up(&mut self, kept: KeptSwitch) {
         self.switch = kept.switch;
-        // What the switch was going to, not how it was found, says whether it
-        // is this switch changed since: a value the one it replaces was
-        // heading for carries on as the input asks, and one it was not is
-        // another switch's — another page's, a row that moved — which rests.
         if self.switch.shown != Some(self.control.is_checked) {
             self.switch.snap(self.control.is_checked);
         }
@@ -173,7 +128,6 @@ impl Toggle {
         (self.drawn_track.width() - self.drawn_track.height()).max(1.0)
     }
 
-    /// Whether `point` is on the drawn knob, grown to a finger's reach.
     fn on_knob(&self, point: Point) -> bool {
         if self.drawn_track.area() <= 0.0 {
             return false;
@@ -189,10 +143,6 @@ impl Toggle {
         centre.distance(point) <= track.height()
     }
 
-    /// The held knob follows the hand to `x`, once it has moved past the
-    /// slop: 1:1 from where it was drawn when the hand took it, so it stays
-    /// under the hand however far the slop let the hand go first (a
-    /// finger's drag begins only past the touch slop).
     fn drag_to(&mut self, x: f64) {
         let travel = self.knob_travel();
         let Some(hold) = self.hold.as_mut() else {
@@ -243,9 +193,6 @@ impl Toggle {
     /// changes, not to keep the model in sync.
     pub fn from_state(state: &crate::LocalState<bool>) -> Self {
         let mut toggle = Self::new("toggle", "");
-        // A switch built over state alone says nothing of itself: the kind it
-        // is ("Toggle") is what its role already says, so what holds it (a
-        // row's caption) names it instead.
         toggle.control = BoolControl::local(state, None);
         toggle
     }
@@ -271,16 +218,11 @@ fn track_rect(target: Rect, theme: &Theme) -> Rect {
     Rect::from_center_size(target.center(), ToggleFace::size(theme))
 }
 
-/// The resolved colours of one switch face.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ToggleColors {
-    /// The track: the inverted fill when on, a lift of the ground when off.
     pub track: vello::peniko::Color,
     pub knob: vello::peniko::Color,
-    /// A ring round the knob where the knob is a raised object rather than
-    /// a glyph of its track (off, on a light material).
     pub knob_edge: Option<vello::peniko::Color>,
-    /// The track's rest edge, or your colour when focused.
     pub edge: vello::peniko::Color,
     pub edge_width: f64,
 }
@@ -292,8 +234,6 @@ impl ToggleColors {
         self.knob_edge.unwrap_or(self.knob)
     }
 
-    /// The face `tint` of the way from `off` to `on` (a switch turning):
-    /// exactly one or the other at either end.
     #[must_use]
     pub fn between(off: Self, on: Self, tint: f32) -> Self {
         if tint <= 0.0 {
@@ -316,8 +256,6 @@ impl ToggleColors {
     }
 }
 
-/// How a switch is drawn this frame: where its knob is along its travel
-/// (`0` off, `1` on) and how far its track has turned on (`0..=1`).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SwitchPose {
     pub knob: f64,
@@ -325,7 +263,6 @@ pub struct SwitchPose {
 }
 
 impl SwitchPose {
-    /// A switch at rest, on or off.
     #[must_use]
     pub fn at_rest(on: bool) -> Self {
         Self {
@@ -335,16 +272,6 @@ impl SwitchPose {
     }
 }
 
-/// The motion of one switch: the retained [`Toggle`] keeps one, and so does
-/// any host that paints switches itself ([`ToggleFace::pose`]), one per
-/// switch it shows.
-///
-/// A change a click or a finger caused slides the knob and turns the track
-/// (`motion::ControlChange`, `fast`, critically damped), and a second one
-/// mid-flight reverses from where it is drawn. A key, an assistive action or
-/// a value nobody just caused (a sync) lands at once. Reduced motion lands
-/// the knob and still cross-fades the tint. The first value shown rests.
-/// Settled, it asks for no frames.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SwitchMotion {
     knob: crate::motion::Thumb,
@@ -353,7 +280,6 @@ pub struct SwitchMotion {
 }
 
 impl SwitchMotion {
-    /// Show `on`, moving as `source` asks. The first value shown rests.
     #[track_caller]
     pub fn follow(
         &mut self,
@@ -373,9 +299,6 @@ impl SwitchMotion {
         }
     }
 
-    /// Show `on` as the input the person just made caused it
-    /// (`motion::recent_input`): a click slides, a key lands, and a change
-    /// nobody just caused (a sync, another device) lands.
     #[track_caller]
     pub fn follow_input(
         &mut self,
@@ -388,21 +311,16 @@ impl SwitchMotion {
         self.follow(on, motion, source, now);
     }
 
-    /// Rest on `on` at once.
     pub fn snap(&mut self, on: bool) {
         self.shown = Some(on);
         self.knob.snap(knob_end(on));
         self.tint.snap(on);
     }
 
-    /// The hand holds the knob at `knob` (`0..=1` of its travel): drawn
-    /// exactly there.
     pub fn hold(&mut self, knob: f64) {
         self.knob.track(knob);
     }
 
-    /// The hand let go: settle on `on`, carrying its `velocity` (travel per
-    /// second).
     #[track_caller]
     pub fn release(
         &mut self,
@@ -417,20 +335,16 @@ impl SwitchMotion {
             .set(on, motion, crate::tokens::MotionSource::Gesture, now);
     }
 
-    /// Where the knob is drawn at `now`, `0..=1` of its travel.
     #[track_caller]
     pub fn knob(&self, now: crate::time::Instant) -> f64 {
         self.knob.get(now)
     }
 
-    /// The knob and the cross-faded tint at `now`, whatever the motion.
     #[track_caller]
     fn drawn(&self, now: crate::time::Instant) -> (f64, f32) {
         (self.knob.get(now), self.tint.level(now))
     }
 
-    /// How to draw the switch at `now`: the tint follows the knob, or
-    /// cross-fades on its own where reduced motion lands the knob.
     #[track_caller]
     #[must_use]
     pub fn pose(
@@ -447,7 +361,6 @@ impl SwitchMotion {
         SwitchPose { knob, tint }
     }
 
-    /// Whether the switch is still on its way at `now`.
     #[track_caller]
     pub fn is_moving(&self, now: crate::time::Instant) -> bool {
         self.knob.is_moving(now) || self.tint.is_moving(now)
@@ -473,8 +386,6 @@ pub fn toggle_face_colors(theme: &Theme, on: bool, interact: Interaction) -> Tog
     // A lift of the window ground: lighter on a dark material, darker on a
     // light one, so a white knob always stands out from it.
     let off_track = colors.lift_on(colors.surfaces.content, 1.0);
-    // On is green, the colour every person reads as "on": an inverted
-    // (white) track on a black-and-white surface didn't read as on at all.
     let track = if on {
         colors.intent.on_state
     } else {
@@ -522,13 +433,10 @@ pub fn toggle_face_colors(theme: &Theme, on: bool, interact: Interaction) -> Tog
     }
 }
 
-/// Whether `colors` is a light material (dark ink on a light window
-/// ground), where a knob is a raised white object rather than an ink glyph.
 pub(crate) fn light_material(colors: &crate::tokens::colors::Colors) -> bool {
     crate::a11y::relative_luminance(colors.surfaces.content) > 0.5
 }
 
-/// The lowest contrast `ink` reaches over any of `grounds`.
 pub(crate) fn worst_contrast(ink: vello::peniko::Color, grounds: &[vello::peniko::Color]) -> f64 {
     grounds
         .iter()
@@ -561,9 +469,6 @@ pub(crate) fn ink_across(
     if worst_contrast(tone, grounds) >= min_ratio {
         return tone;
     }
-    // Both extremes, derived rather than spelled: `hairline_on` at full
-    // alpha is white or black for one ground, and the same call on that
-    // result is the other one.
     let one = Colors::hairline_on(*first, u8::MAX);
     let other = Colors::hairline_on(one, u8::MAX);
     let target = if worst_contrast(one, grounds) >= worst_contrast(other, grounds) {
@@ -598,8 +503,6 @@ impl ToggleFace {
             pose: SwitchPose::at_rest(on),
         }
     }
-    /// Draw the switch where its [`SwitchMotion`] is this frame rather than
-    /// at rest on its value.
     #[must_use]
     pub fn pose(mut self, pose: SwitchPose) -> Self {
         self.pose = pose;
@@ -634,8 +537,6 @@ impl ToggleFace {
             tint,
         )
     }
-    /// The switch's `(width, height)` in `theme`: size a painted host's
-    /// rect with it, so a painted switch matches the retained one.
     #[must_use]
     pub fn size(theme: &Theme) -> (f64, f64) {
         let scale = f64::from(theme.ui_scale);
@@ -646,10 +547,6 @@ impl ToggleFace {
     }
 }
 
-/// Build the accessibility node shared by retained toggles and
-/// context-specific toggle controls that own a different mutation channel.
-/// `accessible_name` is the name a reader hears, already in the language
-/// this thread reads.
 pub fn toggle_accessibility(
     on: bool,
     focused: bool,
@@ -669,9 +566,6 @@ pub fn toggle_accessibility(
 }
 
 impl Toggle {
-    /// Paints a themed switch inside `face.rect`, matching the retained
-    /// [`Toggle`]'s look. Callers keep their own hit-testing; only the
-    /// palette ([`toggle_face_colors`]) is shared.
     pub fn paint(scene: &mut Scene, transform: Affine, theme: &Theme, face: &ToggleFace) {
         let colors = face.colors(theme);
         let radius = face.rect.height() / 2.0;
@@ -810,8 +704,6 @@ impl Widget for Toggle {
         crate::widget::draw_gate_and_peer_focus(self, scene, transform, theme, presence);
     }
 
-    /// A fixed size: only the first layout (and a theme change, which
-    /// rebuilds the tree) needs one.
     fn is_layout_dirty(&self) -> bool {
         self.control.rect == Rect::ZERO
     }
@@ -820,22 +712,16 @@ impl Widget for Toggle {
         "Toggle"
     }
 
-    /// A switch repaints when what it paints changed since the frame on
-    /// screen, not on every frame: a settings page of them does not damage
-    /// every switch for a scroll or a keystroke elsewhere. A knob on its way
-    /// changes what it paints each frame; a settled one does not.
     fn needs_redraw(&self) -> bool {
         self.painted != Some(self.painted_now())
     }
 
-    /// Frames only while the knob or the tint is on its way.
     fn needs_animation_frame(&self) -> bool {
         self.switch.is_moving(crate::motion::frame_now())
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         if !self.control.effectively_enabled() {
-            // A knob a hand left part-way goes back to the value.
             if self.hold.take().is_some_and(|hold| hold.dragged) {
                 self.switch.snap(self.control.is_checked);
             }
@@ -859,8 +745,6 @@ impl Widget for Toggle {
                 button: MouseButton::Left,
                 ..
             } if self.control.is_hovered => {
-                // The press takes hold and changes nothing yet: let go, it
-                // is a click; moved, the hand takes the knob.
                 *ctx.handled = true;
                 self.control.pressed_into_focus |= !self.control.is_focused;
                 *ctx.focus_target = Some(ctx.node_id);
@@ -879,9 +763,6 @@ impl Widget for Toggle {
         }
     }
 
-    /// A finger on the knob drags it once it heads across; heading up or
-    /// down it scrolls the page, as anywhere else on the switch, where a
-    /// tap is a click.
     fn touch_claim(&self, point: Point) -> crate::interaction::TouchClaim {
         if self.control.effectively_enabled() && self.on_knob(point) {
             crate::interaction::TouchClaim::DragAcross
@@ -918,7 +799,6 @@ impl Widget for Toggle {
 
 bool_control_capabilities!(Toggle, "toggle");
 
-/// A switch a rebuild drops leaves its knob for the one put in its place.
 impl Drop for Toggle {
     fn drop(&mut self) {
         let switch = std::mem::take(&mut self.switch);
@@ -1420,9 +1300,6 @@ mod tests {
         assert!(!t.control.is_hovered);
     }
 
-    /// A switch is dirty only until the frame showing what it paints is
-    /// drawn, and again once its state changes: an idle switch adds no
-    /// damage to a frame.
     #[test]
     fn a_switch_repaints_only_when_what_it_paints_changes() {
         let theme = Theme::dark();
@@ -1454,8 +1331,6 @@ mod tests {
             frame(&mut t);
             assert!(!t.needs_redraw(), "and rests once drawn");
         }
-        // Drawn but not presented (a cache above it reused), nothing is
-        // known to be on screen: the next frame still repaints it.
         t.control.is_hovered = false;
         t.draw(
             &mut Scene::new(),
@@ -1530,7 +1405,6 @@ mod tests {
             );
             pose.knob
         });
-        // A second click mid-flight reverses from where the knob is drawn.
         with_monotonic_time(ms(t0, 40), || {
             crate::motion::note_source(MotionSource::Pointer);
             dispatch(&mut t, &mouse_press());
@@ -1577,7 +1451,6 @@ mod tests {
                 assert!(!t.needs_animation_frame(), "{source:?} lands");
             });
         }
-        // A value nobody just caused (another device, a sync) lands too.
         with_monotonic_time(ms(t0, 2_000), || {
             state.set(true);
             Widget::sync(&mut t, &doc, &automerge::ROOT);
@@ -1614,7 +1487,6 @@ mod tests {
         assert!(!t.switch.is_moving(ms(t0, 400)));
     }
 
-    /// A switch counting the changes it makes, bound to `state`.
     fn counted(state: &crate::LocalState<bool>) -> (Toggle, std::rc::Rc<std::cell::Cell<u32>>) {
         let changes = std::rc::Rc::new(std::cell::Cell::new(0));
         let count = std::rc::Rc::clone(&changes);
@@ -1665,8 +1537,6 @@ mod tests {
         }
         crate::testing::answer_controls(&mut t);
         assert_eq!(changes.get(), 0, "the knob moves; the value does not");
-        // Let go heading left, near the left: it settles off, where it
-        // began, and nothing changed.
         with_monotonic_time(ms(t0, 60), || dispatch(&mut t, &mouse_release()));
         assert!(!state.get(), "left on the off side");
         crate::testing::answer_controls(&mut t);
@@ -1675,7 +1545,6 @@ mod tests {
         let rest = t.switch.knob.settles_at().map_or(ms(t0, 60), |at| at);
         assert_eq!(t.switch.knob(rest), 0.0);
 
-        // Dragged past the middle and held still, it settles on: one change.
         let state = crate::LocalState::new(false);
         let (mut t, changes) = counted(&state);
         with_monotonic_time(t0, || {
@@ -1697,7 +1566,6 @@ mod tests {
         assert_eq!(changes.get(), 1, "a drag across changes the value once");
         assert_eq!(t.switch.knob(ms(t0, 2_000)), 1.0);
 
-        // A press let go off the switch, without a drag, is no click.
         with_monotonic_time(ms(t0, 3_000), || {
             dispatch(&mut t, &cursor_moved(30.0, 16.0));
             dispatch(&mut t, &mouse_press());
@@ -1709,9 +1577,6 @@ mod tests {
         assert_eq!(changes.get(), 1);
     }
 
-    /// Touch on a page of switches: a finger on a knob drags it once it
-    /// heads across, a vertical swipe from the same knob scrolls the page,
-    /// and a tap flips the switch.
     #[test]
     fn a_vertical_swipe_on_a_knob_scrolls_and_a_horizontal_one_drags_it() {
         use crate::widget::{Column, Scrollable};
@@ -1731,7 +1596,6 @@ mod tests {
             theme.clone(),
         );
         let offset = |frame: &crate::headless::FrameHarness| frame.root::<Scrollable>().offset_y();
-        // The knob of switch `index`, at rest off, where it is drawn now.
         let knob = |frame: &crate::headless::FrameHarness, index: usize| {
             let column = frame.root::<Scrollable>().children()[0];
             let track = track_rect(column.children()[index].get_rect(), &theme);
@@ -1757,7 +1621,6 @@ mod tests {
             at
         };
 
-        // Up from the knob: the page scrolls and the switch stays off.
         let mut swipe = vec![(1, Started, at.x, at.y)];
         for step in 1..=6 {
             swipe.push((1, Moved, at.x + 2.0, at.y - 10.0 * f64::from(step)));
@@ -1768,8 +1631,6 @@ mod tests {
         assert!(!states[1].get(), "the switch is untouched");
         assert!(states.iter().all(|state| !state.get()));
 
-        // Across from a knob still on screen, once the swipe's glide has
-        // come to rest: it is dragged to on, and the page stays.
         assert!(frame.settle_for_capture(crate::time::Duration::from_secs(5)));
         let scrolled = offset(&frame);
         let at = knob(&frame, 6);
@@ -1784,7 +1645,6 @@ mod tests {
         assert_eq!(states.iter().filter(|state| state.get()).count(), 1);
         assert_eq!(offset(&frame), scrolled, "a drag across does not scroll");
 
-        // A tap on the knob flips it back.
         let at = Point::new(at.x + 20.0, at.y);
         let _ = finger(
             &mut frame,
@@ -1816,7 +1676,6 @@ mod tests {
             on,
             "a pose at rest on is exactly the on face"
         );
-        // A host's motion: the first value rests, a click slides.
         let now = crate::time::now();
         let mut motion = SwitchMotion::default();
         motion.follow(

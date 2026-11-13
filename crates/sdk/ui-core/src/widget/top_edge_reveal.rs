@@ -37,8 +37,6 @@ use vello::kurbo::{Point, Rect};
 /// px. Thinner than the inset any header row keeps above its controls.
 pub const REVEAL_BAND_PX: f64 = crate::tokens::Metrics::BASE.icon_label_gap as f64;
 
-/// How long the pointer rests in the band before the bar shows. A little
-/// longer than a hover-open dwell: what lies under the band is the app's.
 pub const DWELL: Duration = Duration::from_millis(150);
 
 /// How far below the band a pushing pointer started, at most
@@ -48,26 +46,19 @@ pub const PUSH_TRAVEL_PX: f64 = crate::tokens::Spacing::BASE.s12 as f64;
 /// How recent the start of a push must be.
 pub const PUSH_WINDOW: Duration = Duration::from_millis(160);
 
-/// How long a shown bar waits for a pointer that stopped heading for one of
-/// its controls without arriving. The same hold the tab row uses.
 pub const AIM_HOLD: Duration = super::hover_intent::AIM_HOLD;
 
-/// How long a shown bar waits for a pointer that overshot into the desktop's
-/// top bar above it.
 pub const OVERSHOOT_GRACE: Duration = Duration::from_millis(300);
 
 /// Pointer speed (logical px per ms) above which a sample that is not
 /// braking is transit: on its way somewhere else.
 pub const TRANSIT_SPEED: f64 = 0.6;
 
-/// A pointer is braking while its speed has fallen to this share of its peak
-/// over the last few samples.
 pub const BRAKE_RATIO: f64 = 0.6;
 
 /// Peak speed a climb must reach to count as a push for the edge.
 pub const PUSH_SPEED: f64 = crate::tokens::motion::PUSH_SPEED;
 
-/// How far a touch that starts in the band drags down to show the bar.
 pub const TOUCH_SWIPE_PX: f64 = crate::tokens::Spacing::BASE.s6 as f64;
 
 /// The band at a display's top edge a finger swipes down from: wider than
@@ -75,15 +66,12 @@ pub const TOUCH_SWIPE_PX: f64 = crate::tokens::Spacing::BASE.s6 as f64;
 /// lands a few pixels in.
 pub const TOUCH_EDGE_PX: f64 = crate::tokens::Spacing::BASE.s3 as f64;
 
-/// Where the bar is, as laid out now.
 #[derive(Clone, Copy, Debug)]
 pub struct EdgeGeometry<'a> {
-    /// The window whose top edge the bar stands on.
     pub window: Rect,
     /// What the shown bar paints over the window (its chips, or a whole
     /// header row): a pointer on any of them keeps the bar.
     pub bar: &'a [Rect],
-    /// The bar's clickable controls, where they stand (or will stand).
     pub controls: &'a [Rect],
 }
 
@@ -103,13 +91,11 @@ impl EdgeGeometry<'_> {
         p.x >= band.x0 && p.x < band.x1 && p.y >= band.y0 && p.y < band.y1
     }
 
-    /// Above the window, within its span: the desktop's top bar.
     fn above(&self, p: Point) -> bool {
         p.y < self.window.y0 && p.x >= self.window.x0 && p.x < self.window.x1
     }
 }
 
-/// Why a shown bar waits before hiding while the pointer is off it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Hold {
     /// Heading for a control; hides at the instant unless confirmed again.
@@ -126,7 +112,6 @@ impl Hold {
     }
 }
 
-/// Reveal state of one top-edge bar. See the module docs.
 #[derive(Clone, Debug, Default)]
 pub struct TopEdgeReveal {
     shown: bool,
@@ -134,21 +119,17 @@ pub struct TopEdgeReveal {
     due: Option<Instant>,
     hold: Option<Hold>,
     pinned: bool,
-    /// A click in the band went to the app: no reveal until the pointer
-    /// leaves the band.
     suppressed: bool,
     path: Trajectory,
     touch_from: Option<Point>,
 }
 
 impl TopEdgeReveal {
-    /// Whether the bar shows (and its controls take the pointer).
     #[must_use]
     pub fn shown(&self) -> bool {
         self.shown
     }
 
-    /// Show or hide; returns whether that changed anything.
     fn set_shown(&mut self, shown: bool) -> bool {
         self.due = None;
         self.hold = None;
@@ -159,50 +140,35 @@ impl TopEdgeReveal {
         true
     }
 
-    /// Forget everything and hide at once (the window stopped being
-    /// maximized, or the bar's geometry is gone).
     pub fn reset(&mut self) {
         *self = Self::default();
     }
 
-    /// Hide now, e.g. after one of the bar's controls was used.
     pub fn hide(&mut self) -> bool {
         self.pinned = false;
         self.set_shown(false)
     }
 
-    /// Show the bar for keyboard use until [`Self::unpin`].
     pub fn pin(&mut self) -> bool {
         self.pinned = true;
         self.set_shown(true)
     }
 
-    /// Keyboard use ended; the pointer decides again on its next sample.
     pub fn unpin(&mut self) {
         self.pinned = false;
     }
 
-    /// A finger swiped down from the top edge, which the host read (a
-    /// display's edge, where the band is the bezel's): show the bar. It
-    /// stays until the pointer, or a tap, goes elsewhere. Returns whether
-    /// that changed anything.
     pub fn reveal_by_touch(&mut self) -> bool {
         self.pinned = false;
         self.touch_from = None;
         self.set_shown(true)
     }
 
-    /// A pointer sample. Returns whether `shown` changed.
     pub fn on_motion(&mut self, p: Point, geo: &EdgeGeometry<'_>, now: Instant) -> bool {
         let mut changed = self.settle(now);
-        // A repeated position (the host and the window both report the same
-        // sample) says nothing new.
         if self.path.last().is_some_and(|(last, _)| last == p) {
             return changed;
         }
-        // Recent positions the path came from: a cone from any of them
-        // toward a control counts, so neither one jittery sample nor the
-        // lag of an older apex after a turn misreads the heading.
         let apexes: Vec<Point> = self
             .path
             .samples()
@@ -219,9 +185,6 @@ impl TopEdgeReveal {
         let transit = self.path.in_transit(TRANSIT_SPEED, BRAKE_RATIO);
         if self.shown {
             let on_control = geo.controls.iter().any(|r| r.contains(p));
-            // On the bar the pointer may yet settle (a fast flick onto Close
-            // ends with a fast sample and then silence); one passing over it
-            // is off it by the next sample, which decides.
             let on_bar = on_control || in_band || geo.bar.iter().any(|r| r.contains(p));
             if on_bar {
                 self.hold = None;
@@ -255,21 +218,12 @@ impl TopEdgeReveal {
         }
         if self.pushed_up(p, geo, now) {
             changed |= self.set_shown(true);
-        } else if transit {
-            // Sweeping through the band: the rest counts from when it
-            // settles. A pointer that stops sends no further samples, so the
-            // dwell restarts at every fast sample and matures only once the
-            // samples stop or slow.
-            self.due = Some(now + DWELL);
-        } else if self.due.is_none() {
+        } else if transit || self.due.is_none() {
             self.due = Some(now + DWELL);
         }
         changed
     }
 
-    /// Whether the pointer at `p` (in the band) arrived pushing up from the
-    /// app's content and brakes at the edge, rather than slowing down on
-    /// something in its top row or passing on into the desktop's bar.
     fn pushed_up(&self, p: Point, geo: &EdgeGeometry<'_>, now: Instant) -> bool {
         if !self.path.braking(PUSH_SPEED, BRAKE_RATIO) {
             return false;
@@ -292,8 +246,6 @@ impl TopEdgeReveal {
         false
     }
 
-    /// A press. A press in the band while the bar hides goes to the app and
-    /// cancels any reveal until the pointer leaves the band.
     pub fn on_press(&mut self, p: Point, geo: &EdgeGeometry<'_>) {
         if !self.shown && geo.in_band(p) {
             self.suppressed = true;
@@ -313,12 +265,10 @@ impl TopEdgeReveal {
         self.set_shown(false)
     }
 
-    /// A touch went down at `p`.
     pub fn on_touch_start(&mut self, p: Point, geo: &EdgeGeometry<'_>) {
         self.touch_from = geo.in_band(p).then_some(p);
     }
 
-    /// A touch moved to `p`. Returns whether `shown` changed.
     pub fn on_touch_move(&mut self, p: Point) -> bool {
         match self.touch_from {
             Some(from) if p.y - from.y >= TOUCH_SWIPE_PX => {
@@ -329,13 +279,10 @@ impl TopEdgeReveal {
         }
     }
 
-    /// A touch lifted or was cancelled.
     pub fn on_touch_end(&mut self) {
         self.touch_from = None;
     }
 
-    /// Advance timers to `now` without a sample. Returns whether `shown`
-    /// changed.
     pub fn settle(&mut self, now: Instant) -> bool {
         if let Some(due) = self.due
             && now >= due
@@ -358,9 +305,7 @@ impl TopEdgeReveal {
         self.due.into_iter().chain(self.hold.map(Hold::until)).min()
     }
 
-    /// Test and shot fixture: as if the person had reached for the bar.
     pub fn force_shown(&mut self, shown: bool) {
-        // Time has passed, as far as the pointer's path is concerned.
         self.path.clear();
         self.pinned = false;
         self.due = None;
@@ -368,13 +313,10 @@ impl TopEdgeReveal {
         self.shown = shown;
     }
 
-    /// Test and shot clock control: settle as if the pending dwell or hold
-    /// had run out. Returns whether the bar shows now.
     pub fn elapse(&mut self) -> bool {
         if let Some(deadline) = self.deadline() {
             self.settle(deadline);
         }
-        // The pointer rested that long: its next move starts from rest.
         self.path.clear();
         self.shown
     }
@@ -403,8 +345,6 @@ mod tests {
         }
     }
 
-    /// Drive a straight path from `from` to `to` in `steps` samples spread
-    /// over `ms_total`, starting at `t`. Returns the instant of the last one.
     fn path(
         r: &mut TopEdgeReveal,
         from: Point,
@@ -439,7 +379,6 @@ mod tests {
     fn a_rest_in_the_band_shows_the_bar_after_the_dwell() {
         let t0 = crate::motion::frame_now();
         let mut r = TopEdgeReveal::default();
-        // Slow, careful approach from just below: no push credit.
         let t = path(
             &mut r,
             Point::new(600.0, 60.0),
@@ -483,8 +422,6 @@ mod tests {
     fn a_fast_move_that_stops_dead_in_the_band_still_rests_there() {
         let t0 = crate::motion::frame_now();
         let mut r = TopEdgeReveal::default();
-        // Fast all the way, then silence: the last sample was fast, but the
-        // pointer is resting in the band.
         let t = path(
             &mut r,
             Point::new(600.0, 400.0),
@@ -527,8 +464,6 @@ mod tests {
         let t0 = crate::motion::frame_now();
         let mut r = TopEdgeReveal::default();
         r.force_shown(true);
-        // From the band straight down through Restore into the app at a
-        // steady, fast pace: transit over the control, not aim.
         let x = RESTORE.center().x;
         r.on_motion(Point::new(x, 37.0), &geo(), t0);
         for i in 1..=8u32 {
@@ -542,10 +477,7 @@ mod tests {
         r.settle(ms(t0, 1000));
         assert!(!r.shown());
 
-        // A pointer flying from the title toward Restore and braking onto it
-        // is aiming at it: it stays.
         r.force_shown(true);
-        // Resting on the title first, so the path's recent history is there.
         for (i, dx) in [-6.0, -4.0, -2.0, 0.0].into_iter().enumerate() {
             let at = ms(t0, 980 + 5 * u64::try_from(i).unwrap());
             r.on_motion(TITLE.center() + (dx, 0.0), &geo(), at);
@@ -566,8 +498,6 @@ mod tests {
     fn aiming_at_the_apps_top_content_never_shows_the_bar() {
         let t0 = crate::motion::frame_now();
         let mut r = TopEdgeReveal::default();
-        // A quick flick up that stops on the app's top row (a tab at y=52),
-        // just below the band, and rests there.
         let t = path(
             &mut r,
             Point::new(300.0, 400.0),
@@ -579,7 +509,6 @@ mod tests {
         assert!(!r.shown());
         r.settle(ms(t, 2000));
         assert!(!r.shown(), "resting on the app's top content");
-        // A sideways sweep along the top row doesn't either.
         path(
             &mut r,
             Point::new(300.0, 52.0),
@@ -600,7 +529,6 @@ mod tests {
         r.on_motion(Point::new(600.0, 38.0), &geo(), ms(t0, 20));
         assert!(!r.shown(), "only the dwell can show it");
         assert!(r.deadline().is_some());
-        // ...and passing through into the app cancels the dwell.
         r.on_motion(Point::new(600.0, 90.0), &geo(), ms(t0, 40));
         assert_eq!(r.deadline(), None);
         r.settle(ms(t0, 500));
@@ -629,8 +557,6 @@ mod tests {
         let mut r = TopEdgeReveal::default();
         r.force_shown(true);
         r.on_motion(TITLE.center(), &geo(), t0);
-        // From the title chip across the app's top row toward Restore: off
-        // every chip on the way, but heading for a control the whole time.
         let t = path(
             &mut r,
             TITLE.center(),
@@ -640,13 +566,10 @@ mod tests {
             t0,
         );
         assert!(r.shown(), "heading for Restore");
-        // Stops short on the app's content: the hold lapses.
         assert!(r.deadline().is_some());
         r.settle(t + AIM_HOLD);
         assert!(!r.shown());
 
-        // Shown again from the band; moving down onto the app's top row,
-        // away from every chip, hides it at once.
         r.force_shown(true);
         r.on_motion(Point::new(600.0, 38.0), &geo(), ms(t, 1000));
         r.on_motion(Point::new(600.0, 46.0), &geo(), ms(t, 1020));
@@ -702,9 +625,6 @@ mod tests {
         assert!(!r.on_touch_move(Point::new(300.0, 400.0)));
     }
 
-    /// The model decides whether the bar shows and nothing more: whoever
-    /// draws the bar draws its motion. A motion here nobody drew asked the
-    /// frame pump for frames each time the bar came or went.
     #[test]
     fn showing_and_hiding_asks_for_no_frames() {
         let t0 = crate::motion::frame_now();

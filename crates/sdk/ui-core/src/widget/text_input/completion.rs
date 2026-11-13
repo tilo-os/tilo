@@ -10,10 +10,6 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 
 impl TextInput {
-    /// What this field offers inline: emoji from the toolkit's catalogue
-    /// and mentions from the workspace's roster, both by default for prose. A
-    /// secret or numeric field offers neither whatever its owner asks, so
-    /// nothing can be inserted into it and nothing echoes it.
     #[must_use]
     pub fn completion(&self) -> TextCompletion {
         if self.holds_secret() || self.kind.refuses_completion() {
@@ -23,45 +19,33 @@ impl TextInput {
             .unwrap_or_else(|| self.kind.default_completion())
     }
 
-    /// Set what the field offers inline. Mark a search field, a code field,
-    /// a URL or a terminal plain here: `:` and `@` are syntax there, so
-    /// completion is wrong rather than unavailable.
     #[must_use]
     pub fn with_completion(mut self, completion: TextCompletion) -> Self {
         self.set_completion(completion);
         self
     }
 
-    /// [`Self::with_completion`] on a live field.
     pub fn set_completion(&mut self, completion: TextCompletion) {
         self.completion_setting = Some(completion);
         self.refresh_completion();
     }
 
-    /// People the app knows of that the workspace's presence does not (someone
-    /// who wrote in a channel and has since left): offered after the
-    /// roster for `@` completion.
     #[must_use]
     pub fn with_mention_candidates(mut self, candidates: Vec<MentionCandidate>) -> Self {
         self.mention_candidates = candidates;
         self
     }
 
-    /// [`Self::with_mention_candidates`] on a live field.
     pub fn set_mention_candidates(&mut self, candidates: Vec<MentionCandidate>) {
         self.mention_candidates = candidates;
         self.refresh_completion();
     }
 
-    /// Whether a `:emoji:` or `@mention` candidate list is open beside the
-    /// caret.
     #[must_use]
     pub fn is_completion_open(&self) -> bool {
         self.completion.is_open()
     }
 
-    /// The roster completion ranks: what the last frame saw, plus the
-    /// app-supplied candidates, by name as the mention picker lists them.
     pub(super) fn completion_roster(&self) -> Vec<MentionCandidate> {
         let mut roster = self.mention_roster.clone();
         for extra in &self.mention_candidates {
@@ -97,11 +81,6 @@ impl TextInput {
             .follow(&self.text, self.core.caret(), &roster, setting);
     }
 
-    /// Complete from `sources`, one per trigger, as the system gives them
-    /// (the workspace's resources for `#`, the actions available here for
-    /// `/`): they take the place of the built-in `:` and `@` for their
-    /// triggers, and add the rest. They are given once; every keystroke
-    /// filters them here.
     pub fn set_completion_sources(
         &mut self,
         sources: Vec<crate::widget::completion::CompletionSource>,
@@ -111,14 +90,10 @@ impl TextInput {
         }
     }
 
-    /// Run `create` with the trigger and the typed name when the person picks
-    /// "Create …" in a drawer whose source allows it.
     pub fn set_on_completion_create(&mut self, create: impl FnMut(char, &str) + 'static) {
         self.on_completion_create = Some(Box::new(create));
     }
 
-    /// Run `start` with the command a person picked from a `/` drawer: its
-    /// owner turns the field into the command's chip and parameter fields.
     pub fn set_on_command(
         &mut self,
         start: impl FnMut(&crate::widget::completion::Candidate) + 'static,
@@ -126,8 +101,6 @@ impl TextInput {
         self.on_command = Some(Box::new(start));
     }
 
-    /// The token the open drawer answers, as typed (`@mi`), for tests and the
-    /// pending tint.
     #[must_use]
     pub fn pending_token(&self) -> Option<std::ops::Range<usize>> {
         self.completion
@@ -135,10 +108,6 @@ impl TextInput {
             .map(|token| token.start..token.end.min(self.text.len()))
     }
 
-    /// Put the pick in place of the token that offered it: the candidate's
-    /// inline text and a space (an emoji takes none), as one edit, so one
-    /// undo turns it back into what was typed. A command goes to the field's
-    /// owner; "Create …" to its create handler.
     pub(super) fn accept_completion(&mut self, pick: crate::widget::completion::Pick) -> bool {
         use crate::widget::completion::Pick;
         let Some(token) = self.completion.token().cloned() else {
@@ -196,8 +165,6 @@ impl TextInput {
         true
     }
 
-    /// Run `inserted` with the trigger, the range and the reference each time
-    /// a pick writes a candidate that names one: a rich field marks the run.
     pub fn set_on_reference_inserted(
         &mut self,
         inserted: impl FnMut(char, std::ops::Range<usize>, &str) + 'static,
@@ -205,8 +172,6 @@ impl TextInput {
         self.on_reference_inserted = Some(Box::new(inserted));
     }
 
-    /// The pending token, tinted: what is typed after a trigger while its
-    /// drawer is open stays in the field, marked as not yet text.
     pub(super) fn draw_pending_token(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
         let Some(range) = self.pending_token() else {
             return;

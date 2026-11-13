@@ -29,15 +29,11 @@ use crate::widget::{ButtonRole, ControlSize, Interaction, face_colors};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TransportControl {
     Previous,
-    /// Play while paused, pause while playing.
-    PlayPause {
-        playing: bool,
-    },
+    PlayPause { playing: bool },
     Next,
 }
 
 impl TransportControl {
-    /// The glyph the control shows now.
     #[must_use]
     pub const fn icon(self) -> Icon {
         match self {
@@ -48,7 +44,6 @@ impl TransportControl {
         }
     }
 
-    /// What the control does now, in the desktop's language: its accessible name and tooltip.
     #[must_use]
     pub fn name(self) -> String {
         crate::i18n::widget_format(
@@ -62,15 +57,12 @@ impl TransportControl {
         )
     }
 
-    /// Whether it is the transport's one prominent control.
     #[must_use]
     pub const fn is_play(self) -> bool {
         matches!(self, Self::PlayPause { .. })
     }
 }
 
-/// The face of one transport control at `rect` (a square: the circle is
-/// inscribed in it).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TransportFace {
     rect: Rect,
@@ -88,8 +80,6 @@ impl TransportFace {
         }
     }
 
-    /// The side of `control`'s square: play/pause is a large control,
-    /// previous and next regular ones.
     #[must_use]
     pub fn side(control: TransportControl, theme: &Theme) -> f64 {
         if control.is_play() {
@@ -133,8 +123,6 @@ impl TransportFace {
         self.rect
     }
 
-    /// Where a pointer activates the control: its square, grown about its
-    /// centre to the minimum pointer target.
     #[must_use]
     pub fn hit_rect(&self, theme: &Theme) -> Rect {
         let target = f64::from(theme.tokens.metrics.min_pointer_target);
@@ -143,7 +131,6 @@ impl TransportFace {
         self.rect.inflate(grow_x, grow_y)
     }
 
-    /// Paint the control.
     pub fn paint(scene: &mut Scene, transform: Affine, theme: &Theme, face: &Self) {
         let rect = face.rect;
         let side = rect.width().min(rect.height());
@@ -194,9 +181,6 @@ impl TransportFace {
     }
 }
 
-/// The solid media glyphs of `control` in the square `r`: a play triangle
-/// (its mass, not its box, centred), two pause bars, or a skip triangle
-/// against its stop bar. Corners are softened the way the icon set's are.
 fn glyph_shapes(control: TransportControl, r: Rect) -> Vec<BezPath> {
     let g = r.width();
     let at = |x: f64, y: f64| Point::new(r.x0 + x * g, r.y0 + y * g);
@@ -227,7 +211,6 @@ fn glyph_shapes(control: TransportControl, r: Rect) -> Vec<BezPath> {
     }
 }
 
-/// A triangle through `points` with each corner rounded by `radius`.
 fn rounded_triangle(points: [Point; 3], radius: f64) -> BezPath {
     let [a, b, c] = points;
     let mut path = BezPath::new();

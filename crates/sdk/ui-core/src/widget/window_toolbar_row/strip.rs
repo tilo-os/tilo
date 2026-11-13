@@ -1,36 +1,27 @@
-//! A notice's own strip, where the window is compact:
-//! the notice's whole text, on up to two lines, and its actions as buttons
-//! that name themselves, on the bar's own surface. The row stands as it does
-//! without a notice, and the strip comes and goes on the standard motion.
-//! The desktop's bar grows by the strip, so the window's content moves down
-//! once as the notice comes and back once it has gone; a window's own row
-//! ([`crate::slot_row`]) floats it over the app at the window's foot instead.
-
+//! A notice's own strip, where the window is compact: the notice's whole text, on up to two lines,
+//! and its actions as buttons that name themselves, on the bar's own surface. The row stands as it
+//! does without a notice, and the strip comes and goes on the standard motion. The desktop's bar
+//! grows by the strip, so the window's content moves down once as the notice comes and back once it
+//! has gone; a window's own row ([`crate::slot_row`]) floats it over the app at the window's foot
+//! instead.
 use super::paint::{labelled_face, layered};
 use super::{Affine, CONTROL_PX, LOCATION_ICON_PX, Point, Rect, Scene, TextRenderer, Theme};
 use crate::motion::Appearing;
 use crate::tokens::{EffectiveMotion, TextRole};
 use crate::window_toolbar::ToolbarNotice;
 
-/// The most lines of a notice's text the strip holds; past them it is cut
-/// short.
 const MAX_LINES: usize = 2;
 
-/// The strip, and the notice it says.
 #[derive(Clone, Debug, Default)]
 pub(super) struct NoticeStrip {
-    /// The notice it says, kept while it leaves.
     notice: Option<ToolbarNotice>,
-    /// A notice is up for it: what input acts on at once.
     open: bool,
     appearing: Appearing,
     motion: EffectiveMotion,
     measured: Option<Measured>,
-    /// Where it stands (`Rect::ZERO`: not placed).
     rect: Rect,
 }
 
-/// The strip as the theme draws its notice, `width` wide.
 #[derive(Clone, Debug, PartialEq)]
 struct Measured {
     text: String,
@@ -39,19 +30,13 @@ struct Measured {
     text_scale: u32,
     lines: Vec<String>,
     line_height: f64,
-    /// Between the icon and the text, the text and the buttons, and the
-    /// buttons; and around them all.
     gap: f64,
-    /// Where the text block stands, from the strip's origin: its icon,
-    /// then its lines.
     text_rect: Rect,
-    /// Where each button stands, from the strip's origin.
     buttons: Vec<Rect>,
     height: f64,
 }
 
 impl NoticeStrip {
-    /// Say `notice` (none: take the strip down, on the motion).
     pub(super) fn offer(&mut self, notice: Option<&ToolbarNotice>, motion: EffectiveMotion) {
         self.motion = motion;
         match notice {
@@ -153,8 +138,6 @@ impl NoticeStrip {
                     line_height,
                 );
             }
-            // The buttons on rows of their own under the text, right
-            // aligned, as many to a row as fit.
             let lines = clamp(width - lead);
             let text_h = rows_of(&lines);
             let mut rows: Vec<Vec<f64>> = Vec::new();
@@ -207,8 +190,6 @@ impl NoticeStrip {
         (self.height() - before).abs() > 0.5
     }
 
-    /// How tall the strip stands in the bar: its measured height while a
-    /// notice is up or still leaving, else none.
     pub(super) fn height(&self) -> f64 {
         match (&self.notice, &self.measured) {
             (Some(_), Some(measured)) if self.open || self.appearing.is_drawn() => measured.height,
@@ -216,8 +197,6 @@ impl NoticeStrip {
         }
     }
 
-    /// Stand at `rect`, the bar's room for it; a notice up comes in once it
-    /// has that room.
     pub(super) fn place(&mut self, rect: Rect) {
         self.rect = rect;
         if self.open && rect.area() > 0.0 {
@@ -229,23 +208,18 @@ impl NoticeStrip {
         self.rect
     }
 
-    /// Whether it still moves (its owner asks for frames), or waits for the
-    /// bar to make room for it.
     pub(super) fn needs_frame(&self) -> bool {
         self.appearing.is_moving()
             || (self.open && self.measured.is_some() && self.rect.area() <= 0.0)
             || (!self.open && self.notice.is_some() && !self.appearing.is_drawn())
     }
 
-    /// The notice up in it, while it takes input.
     pub(super) fn notice(&self) -> Option<&ToolbarNotice> {
         self.notice
             .as_ref()
             .filter(|_| self.open && self.rect.area() > 0.0)
     }
 
-    /// Where its buttons stand, in order (none: no notice up, or it has
-    /// none).
     pub(super) fn buttons(&self) -> Vec<Rect> {
         match (&self.measured, self.notice()) {
             (Some(measured), Some(_)) => measured
@@ -257,21 +231,18 @@ impl NoticeStrip {
         }
     }
 
-    /// Where its text stands, its kind's icon first.
     pub(super) fn text_rect(&self) -> Rect {
         self.measured.as_ref().map_or(Rect::ZERO, |measured| {
             measured.text_rect + self.rect.origin().to_vec2()
         })
     }
 
-    /// Whether its text stands whole, not cut short.
     pub(super) fn whole(&self) -> bool {
         self.measured
             .as_ref()
             .is_some_and(|measured| whole_text(&measured.lines, &measured.text))
     }
 
-    /// Paint it, button `hovered` and button `pressed` lifted.
     pub(super) fn paint(
         &self,
         scene: &mut Scene,
@@ -327,7 +298,6 @@ impl NoticeStrip {
     }
 }
 
-/// Whether `lines` hold all of `text`, not cut short.
 fn whole_text(lines: &[String], text: &str) -> bool {
     let letters = |text: &str| -> String { text.chars().filter(|c| !c.is_whitespace()).collect() };
     letters(&lines.concat()) == letters(text)

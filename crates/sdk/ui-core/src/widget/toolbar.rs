@@ -1,18 +1,6 @@
-//! The toolbar: a measured strip of commands with a shared `ContextMenu`
-//! for overflow, so every command stays reachable however narrow the window.
-//! The extent cache is the sole source for intrinsic sizing, fitting and placement.
-//!
-//! Commands are `Label`-role plain buttons; a toggle that is on is a lift;
-//! groups are split by hairline separators that never stand at the start or
-//! end of what is shown. A command can be disabled (dimmed, announced as
-//! disabled, inert), carry a dot (something new behind it), open a menu of
-//! its own, or rank above its neighbours for staying out of the More menu
-//! ([`Toolbar::with_priority`]). Hosted controls (a segmented strip, a
-//! number field, a colour well) stand in the row with
-//! [`Toolbar::push_element`]. A painted widget hosts one with
-//! [`Toolbar::lay_out_in`] (or [`Toolbar::lay_out_at`] once it has been
-//! measured). The band behind a window's toolbar row is [`paint_band`]
-//! with its controls inset by [`band_padding`].
+//! The toolbar: a measured strip of commands with a shared `ContextMenu` for overflow, so every
+//! command stays reachable however narrow the window. The extent cache is the sole source for
+//! intrinsic sizing, fitting and placement.
 use crate::num::{f32_of_f64, f64_of_usize};
 use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
@@ -49,13 +37,9 @@ pub enum Orientation {
     Vertical,
 }
 
-/// Paints a command's mark into the glyph square it is given.
 pub type GlyphPainter = fn(&mut Scene, Affine, Rect, &Theme);
 
-/// One command of a toolbar and what it carries.
 pub struct ToolbarCommand {
-    /// The command's visible label, or the accessible name and tooltip of
-    /// an icon-only command.
     pub label: String,
     /// Shown instead of the label when present.
     pub icon: Option<crate::icons::Icon>,
@@ -66,17 +50,10 @@ pub struct ToolbarCommand {
     /// label, icon or swatch (a product mark in its own colours); the label
     /// is its accessible name, tooltip and overflow row.
     pub glyph: Option<GlyphPainter>,
-    /// `Some` for a toggle; `Some(true)` paints the lift.
     pub active: Option<bool>,
-    /// What assistive technology and the More menu call it, when that
-    /// differs from the label (a toggle labelled "Aa" is "Match case").
     pub accessible_name: Option<String>,
-    /// A disabled command is dimmed, announced as disabled and inert.
     pub enabled: bool,
-    /// A dot at the command's corner: something new behind it.
     pub dot: bool,
-    /// Higher stays visible longer when the row is too narrow; equal
-    /// priorities give way from the end.
     pub priority: i32,
     /// `Some` opens a menu anchored to the command instead of running it.
     pub menu: Option<Vec<MenuItem>>,
@@ -108,8 +85,6 @@ impl ToolbarCommand {
         }
     }
 
-    /// The published action pressing the command runs: its bound action,
-    /// or the control it publishes for its own closure.
     fn published_address(&self) -> Option<tilo_actions::ActionAddress> {
         self.action
             .as_ref()
@@ -124,7 +99,6 @@ impl ToolbarCommand {
                 .is_none_or(super::ActionEmitter::is_available)
     }
 
-    /// The name it is announced and listed by.
     fn name(&self) -> &str {
         self.accessible_name.as_deref().unwrap_or(&self.label)
     }
@@ -154,9 +128,7 @@ pub struct Toolbar {
     orientation: Orientation,
     rect: Rect,
     item_rects: Vec<Rect>,
-    /// One past the last shown item.
     visible_count: usize,
-    /// Commands that went to the More menu.
     hidden: Vec<bool>,
     extents: Vec<Size<f32>>,
     chip_extent: Size<f32>,
@@ -164,7 +136,6 @@ pub struct Toolbar {
     font: TextStyle,
     padding: f32,
     minimum: f32,
-    /// Main-axis gap between siblings (`spacing.s3`, HIG §7b).
     gap: f32,
     overflow_rect: Rect,
     overflow_native: super::activation::NativeControl,
@@ -179,22 +150,15 @@ pub struct Toolbar {
     focus: Option<Target>,
     menu: ContextMenu,
     menu_indices: Vec<Option<usize>>,
-    /// A command's own menu, open, and the command it belongs to.
     item_menu: Option<(usize, ContextMenu)>,
     viewport: Option<Rect>,
     swallow_release: bool,
-    /// The last command run, drained by [`Toolbar::take_activated`].
     activated: Option<usize>,
-    /// A label, an item or the theme changed since the last placement.
     layout_dirty: bool,
-    /// The text scale the extents were measured at.
     measured_scale: Option<f32>,
-    /// Element nodes laid out apart from a host (a painted host).
     detached: Vec<Option<super::floating_surface::DetachedContent>>,
     theme: Theme,
-    /// What reaches the row: a finger's target is larger than a pointer's.
     interaction: crate::interaction::InteractionEnvironment,
-    /// What the frame being drawn and the one on screen show of the row.
     shown: crate::scroll_copy::ShownFrames<damage::BarShown>,
 }
 
@@ -221,7 +185,6 @@ impl Toolbar {
             intrinsic: Size::ZERO,
             font: crate::tokens::typography::stock().style(TextRole::Label),
             padding: 8.0,
-            // Replaced by `build_layout` from `theme.tokens.metrics`.
             minimum: crate::tokens::Metrics::BASE.min_pointer_target,
             gap: crate::tokens::Spacing::default().s3,
             overflow_rect: Rect::ZERO,
@@ -260,8 +223,6 @@ impl Toolbar {
     pub fn push_button(self, label: &str, on_click: impl FnMut() + 'static) -> Self {
         self.push_command(ToolbarCommand::new(label, Box::new(on_click)))
     }
-    /// An icon-only command; `label` is its accessible name, its tooltip and
-    /// its row in the overflow menu.
     #[must_use]
     pub fn push_icon(
         self,
@@ -273,16 +234,12 @@ impl Toolbar {
         command.icon = Some(icon);
         self.push_command(command)
     }
-    /// A command that is on or off (bold, a panel's visibility): a lift
-    /// while on, a checked row in the overflow menu.
     #[must_use]
     pub fn push_toggle(self, label: &str, active: bool, on_click: impl FnMut() + 'static) -> Self {
         let mut command = ToolbarCommand::new(label, Box::new(on_click));
         command.active = Some(active);
         self.push_command(command)
     }
-    /// An icon-only toggle (a panel's visibility, a view mode); `name` is
-    /// its accessible name, tooltip and overflow row.
     #[must_use]
     pub fn push_icon_toggle(
         self,
@@ -296,9 +253,6 @@ impl Toolbar {
         command.active = Some(active);
         self.push_command(command)
     }
-    /// A colour well (a marker or pen colour): the colour shows in the row,
-    /// pressing it runs `on_click` (open a picker); `name` is its accessible
-    /// name, tooltip and overflow row.
     #[must_use]
     pub fn push_swatch(
         self,
@@ -310,9 +264,6 @@ impl Toolbar {
         command.swatch = Some(color);
         self.push_command(command)
     }
-    /// A command shown as a mark `paint` draws in its glyph square (a
-    /// product mark in its own colours); `name` is its accessible name,
-    /// tooltip and overflow row.
     #[must_use]
     pub fn push_glyph(
         self,
@@ -324,8 +275,6 @@ impl Toolbar {
         command.glyph = Some(paint);
         self.push_command(command)
     }
-    /// A command that opens `items` as a menu anchored to it (Sort, Insert,
-    /// View). In the More menu it is a row with the same nested menu.
     #[must_use]
     pub fn push_menu(self, label: &str, items: Vec<MenuItem>) -> Self {
         let mut command = ToolbarCommand::new(label, Box::new(|| {}));
@@ -352,13 +301,11 @@ impl Toolbar {
         self
     }
 
-    /// Publish the last command's callback as an admitted transient view action.
     #[must_use]
     pub fn with_view(self, id: &str) -> Self {
         self.with_native(id, tilo_actions::OperationKind::View)
     }
 
-    /// Publish the last command's callback as an admitted local effect.
     #[must_use]
     pub fn with_effect(self, id: &str) -> Self {
         self.with_native(id, tilo_actions::OperationKind::Effect)
@@ -396,8 +343,6 @@ impl Toolbar {
         }
     }
 
-    /// The last pushed command is announced and listed as `name` (a toggle
-    /// labelled "Aa" named "Match case").
     #[must_use]
     pub fn with_accessible_name(mut self, name: &str) -> Self {
         if let Some(command) = self.last_command() {
@@ -406,9 +351,6 @@ impl Toolbar {
         self
     }
 
-    /// The last pushed command stays visible ahead of lower priorities when
-    /// the row is too narrow (default 0; equal priorities give way from the
-    /// end).
     #[must_use]
     pub fn with_priority(mut self, priority: i32) -> Self {
         if let Some(command) = self.last_command() {
@@ -428,7 +370,6 @@ impl Toolbar {
         self
     }
 
-    /// The last pushed command starts disabled.
     #[must_use]
     pub fn with_enabled(mut self, enabled: bool) -> Self {
         if let Some(command) = self.last_command() {
@@ -437,7 +378,6 @@ impl Toolbar {
         self
     }
 
-    /// Turn the toggle at `index` on or off (the host syncing from its model).
     pub fn set_active(&mut self, index: usize, on: bool) {
         if let Some(command) = self.command_mut(index)
             && command.active.is_some()
@@ -448,9 +388,6 @@ impl Toolbar {
         }
     }
 
-    /// Enable or disable the command at `index`: a disabled command is
-    /// dimmed, announced as disabled, and neither the pointer nor the
-    /// keyboard runs it.
     pub fn set_enabled(&mut self, index: usize, enabled: bool) {
         if let Some(command) = self.command_mut(index)
             && command.enabled != enabled
@@ -461,7 +398,6 @@ impl Toolbar {
         }
     }
 
-    /// Replace the label of the command at `index` (a zoom level, a count).
     pub fn set_label(&mut self, index: usize, label: &str) {
         if let Some(command) = self.command_mut(index)
             && command.label != label
@@ -474,7 +410,6 @@ impl Toolbar {
         }
     }
 
-    /// Show `color` in the colour well at `index`, named `name`.
     pub fn set_swatch(&mut self, index: usize, color: vello::peniko::Color, name: &str) {
         if let Some(command) = self.command_mut(index)
             && command.swatch.is_some()
@@ -488,7 +423,6 @@ impl Toolbar {
         }
     }
 
-    /// Replace the accessible name of the command at `index`.
     pub fn set_accessible_name(&mut self, index: usize, name: &str) {
         if let Some(command) = self.command_mut(index) {
             command.accessible_name = Some(name.to_string());
@@ -497,14 +431,12 @@ impl Toolbar {
         }
     }
 
-    /// Show or hide the dot at the corner of the command at `index`.
     pub fn set_dot(&mut self, index: usize, dot: bool) {
         if let Some(command) = self.command_mut(index) {
             command.dot = dot;
         }
     }
 
-    /// Replace the rows of the menu the command at `index` opens.
     pub fn set_menu(&mut self, index: usize, items: Vec<MenuItem>) {
         if let Some(command) = self.command_mut(index) {
             command.menu = Some(items.clone());
@@ -523,21 +455,16 @@ impl Toolbar {
         self.activated.take()
     }
 
-    /// Open the More menu (a stage hook that shows what overflowed).
     pub fn open_overflow(&mut self) {
         self.open_menu(false);
     }
 
-    /// Open the menu of the command at `index`, anchored to it (a stage
-    /// hook that shows a command's menu, like [`Self::open_overflow`]).
     pub fn open_command_menu(&mut self, index: usize) {
         if self.is_shown(index) {
             self.open_item_menu(index, false);
         }
     }
 
-    /// The menu the toolbar has open, if any: a command's own menu with the
-    /// command's index, or the More menu with `None`.
     pub fn shown_menu(&self) -> Option<(Option<usize>, &ContextMenu)> {
         if let Some((index, menu)) = &self.item_menu {
             return Some((Some(*index), menu));
@@ -545,15 +472,12 @@ impl Toolbar {
         self.menu.is_open().then_some((None, &self.menu))
     }
 
-    /// Close whatever menu the toolbar has open: another surface (a
-    /// palette, a sheet) takes over the window.
     pub fn close_menus(&mut self) {
         self.menu.close();
         self.item_menu = None;
         self.pressed = None;
     }
 
-    /// Where the item at `index` stands, while it is shown in the row.
     pub fn item_rect(&self, index: usize) -> Option<Rect> {
         self.item_rects
             .get(index)
@@ -561,7 +485,6 @@ impl Toolbar {
             .filter(|rect| !rect.is_zero_area())
     }
 
-    /// The size the whole row wants: every item, at the theme's metrics.
     pub fn intrinsic_size(&mut self, text: &mut TextRenderer, theme: &Theme) -> vello::kurbo::Size {
         self.resolve_theme(theme);
         self.update_measurements(text);
@@ -571,10 +494,6 @@ impl Toolbar {
         )
     }
 
-    /// Lay the toolbar out in `rect` without a taffy pass, for a painted
-    /// widget that hosts one in its own chrome. Measures with `text` in
-    /// `theme`, then fits and places the commands; draw and dispatch as
-    /// usual afterwards.
     pub fn lay_out_in(&mut self, rect: Rect, text: &mut TextRenderer, theme: &Theme) {
         self.resolve_theme(theme);
         self.measure_detached_elements(text, theme);
@@ -585,9 +504,6 @@ impl Toolbar {
         self.place_detached_elements();
     }
 
-    /// [`Self::lay_out_in`] from a layout pass that has no renderer: the
-    /// cached measurements place the commands, and they are measured only
-    /// when a label or the text scale changed since.
     pub fn lay_out_at(&mut self, rect: Rect, theme: &Theme) {
         if self.measured_scale != Some(theme.text_scale) || self.extents.len() != self.items.len() {
             crate::text_render::with_layout_renderer(theme, |text| {
@@ -644,7 +560,6 @@ impl Toolbar {
         self
     }
 
-    /// Whether the command at `index` is in the row (not in the More menu).
     fn is_shown(&self, index: usize) -> bool {
         index < self.visible_count && !self.hidden.get(index).copied().unwrap_or(false)
     }
@@ -668,8 +583,6 @@ impl Toolbar {
         self.menu.is_open()
     }
 
-    /// A separator's box: its hairline along the row, a command's height
-    /// across it.
     fn separator_size(&self) -> Size<f32> {
         match self.orientation {
             Orientation::Horizontal => Size {
@@ -719,7 +632,6 @@ impl Toolbar {
                 }
                 ToolbarItem::Button(command) => button(&command.label, text),
                 ToolbarItem::Spacer => Size::ZERO,
-                // A hosted control's size comes from its own layout.
                 ToolbarItem::Element(_) => previous.get(index).copied().unwrap_or(square),
                 ToolbarItem::Separator => self.separator_size(),
             })
@@ -745,7 +657,6 @@ impl Toolbar {
                         height: size.height + item.height,
                     },
                 });
-        // Siblings sit `gap` apart (HIG §7b): one gap per boundary.
         let gaps = self.gap * f32_of_f64(f64_of_usize(self.items.len().saturating_sub(1)));
         match self.orientation {
             Orientation::Horizontal => self.intrinsic.width += gaps,
@@ -753,8 +664,6 @@ impl Toolbar {
         }
     }
 
-    /// The main-axis extent the row takes with `hidden` commands in the
-    /// More menu (spacers at zero).
     fn used(&self, hidden: &[bool]) -> f64 {
         let gap = f64::from(self.gap);
         let visible = self.items.len();
@@ -763,7 +672,6 @@ impl Toolbar {
             ToolbarItem::Element(_) => true,
             ToolbarItem::Separator | ToolbarItem::Spacer => false,
         };
-        // Nothing after the last shown control takes room.
         let end = self
             .items
             .iter()
@@ -787,8 +695,6 @@ impl Toolbar {
         used + gap * f64_of_usize(count.saturating_sub(1))
     }
 
-    /// Which commands give way to the More menu in `axis_total`, by the
-    /// toolkit's one overflow rule ([`super::give_way`]).
     fn fit(&self, axis_total: f64) -> Vec<bool> {
         super::give_way(
             self.items.len(),
@@ -800,8 +706,6 @@ impl Toolbar {
         )
     }
 
-    /// The command at `index` and every command joined to it, through the
-    /// commands before and after it ([`Self::joined`]).
     fn joined_group(&self, index: usize) -> Vec<usize> {
         let commands: Vec<usize> = self
             .items
@@ -836,7 +740,6 @@ impl Toolbar {
         .max(0.0);
         let gap = f64::from(self.gap);
         self.hidden = self.fit(axis_total);
-        // One past the last item that stands in the row.
         self.visible_count = self
             .items
             .iter()
@@ -955,7 +858,6 @@ impl Toolbar {
         self.layout_dirty = false;
     }
 
-    /// Lay hosted controls out in their own trees, for a painted host.
     fn measure_detached_elements(&mut self, text: &mut TextRenderer, theme: &Theme) {
         let available = Size {
             width: taffy::AvailableSpace::MaxContent,
@@ -997,7 +899,6 @@ impl Toolbar {
         }
     }
 
-    /// Place the hosted controls of a painted host at their rects.
     fn place_detached_elements(&mut self) {
         for (index, item) in self.items.iter_mut().enumerate() {
             let (ToolbarItem::Element(element), Some(Some(content)), Some(rect)) =
@@ -1045,11 +946,9 @@ impl Toolbar {
                             } else if command.swatch.is_some() {
                                 row = row.with_icon(crate::icons::Icon::Palette);
                             }
-                            // A toggle's row shows its state with the check.
                             if let Some(active) = command.active {
                                 row = row.with_checked(active);
                             }
-                            // The row runs the command's own published action.
                             if let Some(address) = command.published_address() {
                                 row = row.for_action(address);
                             }
@@ -1093,7 +992,6 @@ impl Toolbar {
         }
     }
 
-    /// Open the menu of the command at `index`, anchored to it.
     fn open_item_menu(&mut self, index: usize, keyboard: bool) {
         let Some(items) = self.command(index).and_then(|c| c.menu.clone()) else {
             return;
@@ -1151,7 +1049,6 @@ impl Toolbar {
             self.invoke(index);
         }
         if self.menu.take_submenu_selection().is_some() {
-            // A pick in a command's nested menu ran its own action.
             self.menu.close();
         }
         if !self.menu.is_open() {
@@ -1306,10 +1203,7 @@ impl Toolbar {
         }
     }
 
-    /// The hosted controls' nodes under the toolbar's node, in item order.
     fn element_nodes(&self, taffy: &TaffyTree<()>, node: NodeId) -> Vec<(usize, NodeId)> {
-        // A painted host lays the toolbar out without a node of its own;
-        // only hosted controls have nodes to look up.
         if !self.has_elements() {
             return Vec::new();
         }
@@ -1487,7 +1381,6 @@ impl Widget for Toolbar {
         self.resolve_theme(theme);
         self.layout_dirty = true;
         self.detached.clear();
-        // Bootstrap only for legacy callers that skip renderer settlement.
         self.extents = self
             .items
             .iter()
@@ -1510,9 +1403,6 @@ impl Widget for Toolbar {
             ..Default::default()
         };
         let node = if self.has_elements() {
-            // Hosted controls are laid out by the host, out of flow; the
-            // toolbar sizes itself from its measured row in
-            // `adjust_layout_style`.
             let children: Vec<NodeId> = self
                 .items
                 .iter_mut()
@@ -1563,9 +1453,6 @@ impl Widget for Toolbar {
             let Ok(mut style) = tree.style(node).cloned() else {
                 return changed;
             };
-            // A row a manual layout places (a header's actions) takes the
-            // rect it is given, a hidden one none: its minimum is the
-            // placement's, and holding a minimum of its own would fight it.
             if style.position == taffy::Position::Absolute {
                 return changed;
             }
@@ -1583,8 +1470,6 @@ impl Widget for Toolbar {
             *cross = want;
             return tree.set_style(node, style).is_ok() || changed;
         }
-        // Hosted controls: their extents are what the host measured, and
-        // the toolbar's own basis is the whole row.
         for (index, child) in self.element_nodes(tree, node) {
             let size = tree.layout(child).map(|l| l.size).unwrap_or(Size::ZERO);
             if let Some(slot) = self.extents.get_mut(index)
@@ -1655,7 +1540,6 @@ impl Widget for Toolbar {
             self.menu.reanchor(self.overflow_rect, viewport);
         }
         self.menu.layout_within(text, theme);
-        // Explicit tiny allocations remain authoritative, including for glyph paint.
         scene.push_layer(
             vello::peniko::Fill::NonZero,
             vello::peniko::BlendMode::default(),
@@ -1685,8 +1569,6 @@ impl Widget for Toolbar {
                         command.accessible_name.clone(),
                     );
                     let open = self.item_menu.as_ref().is_some_and(|(i, _)| *i == index);
-                    // A colour well is a bare face (its lift on hover and
-                    // press) with the colour standing in for the label.
                     let (shown, name) = if swatch.is_some() || glyph.is_some() {
                         ("", name.as_deref().or(Some(label.as_str())))
                     } else {
@@ -1893,7 +1775,6 @@ impl Widget for Toolbar {
                     *ctx.focus_target = Some(ctx.node_id);
                     *ctx.handled = true;
                 } else if self.hovered.is_some() {
-                    // A disabled command swallows its press.
                     *ctx.handled = true;
                 }
             }
@@ -1942,7 +1823,6 @@ impl Widget for Toolbar {
             }
         }
     }
-    /// On touch every command is a finger's target, not a pointer's.
     fn set_interaction_environment(
         &mut self,
         environment: crate::interaction::InteractionEnvironment,
@@ -2078,8 +1958,6 @@ impl Widget for Toolbar {
                         AccessNode::new(Role::MenuItem)
                             .with_name(command.name().to_owned())
                             .with_action_target(format!("toolbar.item.{index}"))
-                            // A scrolled-out action still says where it stands in the rows,
-                            // so semantic focus can name it and then scroll it into view.
                             .with_bounds(self.menu.row_bounds(row).unwrap_or(Rect::ZERO))
                             .with_state(AccessState {
                                 focusable: true,
@@ -2217,8 +2095,6 @@ impl crate::widget::ResourceOperations for Toolbar {
     }
 }
 
-/// The dot on a command: your colour, at the corner of its rect, the
-/// mark an unread count has without the count.
 fn paint_dot(scene: &mut Scene, transform: Affine, rect: Rect, theme: &Theme) {
     let d = f64::from(theme.tokens.spacing.s2);
     let inset = f64::from(theme.tokens.spacing.s1);
@@ -2233,8 +2109,6 @@ fn paint_dot(scene: &mut Scene, transform: Affine, rect: Rect, theme: &Theme) {
 }
 
 impl Toolbar {
-    /// The theme's metrics for a toolbar: `Label` text, `s3` insets and
-    /// gaps, and the pointer target as every command's floor.
     fn resolve_theme(&mut self, theme: &Theme) {
         if (self.theme.text_scale - theme.text_scale).abs() > f32::EPSILON {
             self.layout_dirty = true;
@@ -2253,8 +2127,6 @@ impl Toolbar {
         self.gap = theme.tokens.spacing.s3;
     }
 
-    /// One command, painted as a plain button: bare at rest, a lift of the
-    /// ground under the pointer, and a full lift while a toggle is on.
     fn draw_button(
         &self,
         ctx: &mut PaintCtx<'_>,
@@ -2287,9 +2159,6 @@ impl Toolbar {
     }
 }
 
-/// The band behind a window's toolbar row: no fill of its own (the toolbar
-/// stands on its region's ground) and one derived hairline along its bottom
-/// edge, at `metrics.chrome_rule_px`.
 pub fn paint_band(scene: &mut Scene, transform: Affine, theme: &Theme, rect: Rect) {
     let rule = f64::from(theme.tokens.metrics.chrome_rule_px);
     if rule > 0.0 {
@@ -2303,9 +2172,6 @@ pub fn paint_band(scene: &mut Scene, transform: Affine, theme: &Theme, rect: Rec
     }
 }
 
-/// The inset of a toolbar band's controls from its edges: siblings' step
-/// across, the tightest step above and below so the band stays one control
-/// tall (HIG §7b).
 pub fn band_padding(theme: &Theme) -> taffy::Rect<taffy::LengthPercentage> {
     let spacing = &theme.tokens.spacing;
     let across = taffy::LengthPercentage::length(spacing.s3);
@@ -2317,9 +2183,6 @@ pub fn band_padding(theme: &Theme) -> taffy::Rect<taffy::LengthPercentage> {
         bottom: along,
     }
 }
-// =====================================================================
-// Tests
-// =====================================================================
 
 #[cfg(test)]
 mod tests {
@@ -2330,7 +2193,6 @@ mod tests {
     #[test]
     fn two_toolbar_overflow_actions_open_only_their_own_menu() {
         use crate::headless::Framed;
-        // Motion reads at its end: this test checks the resting frame.
         let _settled = crate::motion::testing::settled();
         let first = Toolbar::new(Orientation::Horizontal)
             .push_button("First toolbar long command", || {})
@@ -2397,7 +2259,6 @@ mod tests {
 
     #[test]
     fn nested_native_controls_keep_their_operation_route() {
-        // Motion reads at its end: this test checks the resting frame.
         let _settled = crate::motion::testing::settled();
         let calls = std::rc::Rc::new(std::cell::Cell::new(0));
         let count = calls.clone();
@@ -2429,7 +2290,6 @@ mod tests {
         use crate::headless::Framed;
         use std::cell::Cell;
         use std::rc::Rc;
-        // Motion reads at its end: this test checks the resting frame.
         let _settled = crate::motion::testing::settled();
         let press = || WindowEvent::KeyboardInput {
             device_id: winit::event::DeviceId::dummy(),
@@ -2491,7 +2351,6 @@ mod tests {
         use std::cell::Cell;
         use std::rc::Rc;
 
-        // Motion reads at its end: this test checks the resting frame.
         let _settled = crate::motion::testing::settled();
         for width in [800, 100] {
             let calls = Rc::new(Cell::new(0));
@@ -2546,7 +2405,6 @@ mod tests {
         use crate::widget::controls::{
             control_action_bindings, refresh_control_action_availability, take_control_invocation,
         };
-        // Motion reads at its end: this test checks the resting frame.
         let _settled = crate::motion::testing::settled();
         let resource = tilo_actions::ResourceSpec::new("doc:toolbar", "doc", "Document")
             .with_action(
@@ -2624,7 +2482,6 @@ mod tests {
     /// one, shows no stray rule.
     #[test]
     fn separators_only_stand_between_shown_commands() {
-        // Motion reads at its end: this test checks the resting frame.
         let _settled = crate::motion::testing::settled();
         let tb = Toolbar::new(Orientation::Horizontal)
             .push_separator()
@@ -2643,12 +2500,9 @@ mod tests {
         assert_eq!(shown, [false, true, false, false]);
     }
 
-    /// A painted mark is a pointer-target square the host draws into, named
-    /// by its label for assistive technology and the More menu.
     #[test]
     fn glyph_commands_are_named_squares_the_host_paints() {
         use std::cell::Cell;
-        // Motion reads at its end: this test checks the resting frame.
         let _settled = crate::motion::testing::settled();
         thread_local!(static PAINTED: Cell<Option<Rect>> = const { Cell::new(None) });
         fn mark(_: &mut Scene, _: Affine, rect: Rect, _: &Theme) {
@@ -2679,7 +2533,6 @@ mod tests {
 
     #[test]
     fn icon_commands_and_toggles_lay_out_in_a_painted_host() {
-        // Motion reads at its end: this test checks the resting frame.
         let _settled = crate::motion::testing::settled();
         let theme = Theme::dark();
         let mut text = TextRenderer::new();
@@ -2702,7 +2555,6 @@ mod tests {
         let node = Widget::accessibility(&tb).expect("toolbar semantics");
         assert_eq!(node.children[1].state.checked, Some(false));
 
-        // Squeezed, every command stays reachable through the overflow menu.
         tb.lay_out_in(Rect::new(0.0, 0.0, 90.0, 40.0), &mut text, &theme);
         assert!(tb.has_overflow());
         let reachable = tb.visible_count + tb.menu_indices.iter().flatten().count();
@@ -2711,7 +2563,6 @@ mod tests {
 
     #[test]
     fn a_colour_well_is_a_square_command_named_for_its_colour() {
-        // Motion reads at its end: this test checks the resting frame.
         let _settled = crate::motion::testing::settled();
         let theme = Theme::dark();
         let mut text = TextRenderer::new();
@@ -2748,9 +2599,6 @@ mod tests {
         t
     }
 
-    /// Drive a Toolbar through the full `build_layout` + `apply_layout`
-    /// pipeline at a fixed available width. Returns the toolbar with
-    /// `item_rects` and `visible_count` populated.
     fn lay_out(mut tb: Toolbar, axis_extent: f64) -> Toolbar {
         let theme = Theme::dark();
         let mut taffy: TaffyTree<()> = TaffyTree::new();
@@ -2780,8 +2628,6 @@ mod tests {
         tb
     }
 
-    /// Render `tb` into a fresh scene and return the scene so tests can
-    /// inspect `DrawTag::COLOR` counts.
     fn render(tb: &mut Toolbar) -> Scene {
         let theme = Theme::dark();
         let mut tr = TextRenderer::new();
@@ -2802,7 +2648,6 @@ mod tests {
 
     #[test]
     fn toolbar_lays_out_named_commands_separators_and_overflow() {
-        // Motion reads at its end: this test checks the resting frame.
         let _settled = crate::motion::testing::settled();
         {
             let tb = lay_out(n_button_toolbar(3), 100.0);
@@ -2874,7 +2719,6 @@ mod tests {
                     "visible item_rects[{i}] must be non-empty"
                 );
             }
-            // Overflow chip rect exists.
             assert!(
                 !tb.overflow_rect.is_zero_area(),
                 "overflow chip rect must be populated when has_overflow() is true"
@@ -2943,9 +2787,6 @@ mod tests {
                 "expected at least 3 COLOR fills (2 buttons + 1 separator), got {fills}"
             );
 
-            // Baseline comparison: a two-button toolbar (no separator) emits
-            // strictly fewer COLOR fills than the same toolbar with a
-            // separator wedged between them.
             let mut bare = lay_out(
                 Toolbar::new(Orientation::Horizontal)
                     .push_button("A", || {})
@@ -3059,8 +2900,6 @@ mod lifecycle_tests {
         tb.draw(&mut scene, Affine::IDENTITY, &mut text, &theme, &presence);
         tb.draw_overlay(&mut scene, Affine::IDENTITY, &mut text, &theme, &presence);
     }
-    /// Complete emitted controls through their actual published operation,
-    /// then sync, for the standalone geometry/event fixtures below.
     fn drain_native_controls(widget: &mut dyn Widget) {
         let mut doc = AutoCommit::new();
         while let Some(invocation) = crate::widget::controls::take_control_invocation(widget) {
@@ -3144,7 +2983,6 @@ mod lifecycle_tests {
     }
     #[test]
     fn commands_are_reachable_once_by_every_route_with_matching_semantic_bounds() {
-        // Motion reads at its end: this test checks the resting frame.
         let _settled = crate::motion::testing::settled();
         {
             let (mut tb, counts) = counted(2);
@@ -3309,7 +3147,6 @@ mod lifecycle_tests {
     }
     #[test]
     fn toolbar_lifecycle_measures_scales_orients_and_reconciles_overflow() {
-        // Motion reads at its end: this test checks the resting frame.
         let _settled = crate::motion::testing::settled();
         {
             for orientation in [Orientation::Horizontal, Orientation::Vertical] {
@@ -3372,9 +3209,6 @@ mod lifecycle_tests {
             assert!(tb.overflow_rect.x0 >= tb.rect.x0);
             tb.open_menu(true);
             tb.menu.focus_item(4);
-            // The row's used width is the packing model `place` sums: the five
-            // extents, the four sibling gaps between them, and the chip with
-            // its own gap (HIG §7b: siblings sit `s3` apart, the chip included).
             let width = tb
                 .extents
                 .iter()
@@ -3409,7 +3243,6 @@ mod lifecycle_tests {
     }
     #[test]
     fn overflow_popup_dismissal_restores_focus_without_click_through() {
-        // Motion reads at its end: this test checks the resting frame.
         let _settled = crate::motion::testing::settled();
         {
             let (mut tb, counts) = counted(5);
@@ -3576,7 +3409,6 @@ mod lifecycle_tests {
     #[test]
     #[ignore = "manual offscreen evidence; set TILO_UI_SCREENSHOT_DIR"]
     fn rendered_toolbar_overflow_fixtures() {
-        // Motion reads at its end: this test checks the resting frame.
         let _settled = crate::motion::testing::settled();
         let dir = crate::env::var("TILO_UI_SCREENSHOT_DIR").unwrap();
         std::fs::create_dir_all(&dir).unwrap();
@@ -3679,7 +3511,6 @@ mod command_state_tests {
 
     #[test]
     fn icon_toggles_disabled_commands_and_labels_follow_the_model() {
-        // Motion reads at its end: this test checks the resting frame.
         let _settled = crate::motion::testing::settled();
         let ran = Rc::new(Cell::new(0));
         let r = Rc::clone(&ran);
@@ -3721,7 +3552,6 @@ mod command_state_tests {
 
     #[test]
     fn priority_keeps_a_pair_together_and_the_more_menu_shows_state() {
-        // Motion reads at its end: this test checks the resting frame.
         let _settled = crate::motion::testing::settled();
         let mut tb = Toolbar::new(Orientation::Horizontal)
             .push_button("Insert table", || {})
@@ -3763,7 +3593,6 @@ mod command_state_tests {
 
     #[test]
     fn joined_commands_give_way_together() {
-        // Motion reads at its end: this test checks the resting frame.
         let _settled = crate::motion::testing::settled();
         let mut tb = Toolbar::new(Orientation::Horizontal)
             .push_button("Compile", || {})
@@ -3785,7 +3614,6 @@ mod command_state_tests {
 
     #[test]
     fn a_menu_command_opens_its_menu_under_itself() {
-        // Motion reads at its end: this test checks the resting frame.
         let _settled = crate::motion::testing::settled();
         let sorted = Rc::new(Cell::new(false));
         let mut tb = Toolbar::new(Orientation::Horizontal).push_menu(
@@ -3809,7 +3637,6 @@ mod command_state_tests {
 
     #[test]
     fn layout_from_cached_measurements_needs_no_renderer() {
-        // Motion reads at its end: this test checks the resting frame.
         let _settled = crate::motion::testing::settled();
         let mut tb = Toolbar::new(Orientation::Horizontal)
             .push_button("Bold", || {})

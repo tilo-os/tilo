@@ -21,8 +21,6 @@ use crate::motion::{Direction, WindowMotion};
 use crate::tokens::{EffectiveMotion, MotionSource};
 use crate::widget::DrawChild;
 
-/// How far a window's arrival has come `elapsed` after it spawned: it fades
-/// in and scales up in place (`motion::WindowMotion::OPEN`).
 fn spawn_progress(elapsed: Duration) -> f64 {
     WindowMotion::OPEN.progress_after(
         Direction::Enter,
@@ -32,7 +30,6 @@ fn spawn_progress(elapsed: Duration) -> f64 {
     )
 }
 
-/// How long a window's arrival runs.
 fn spawn_time() -> Duration {
     WindowMotion::OPEN.settle_time(
         Direction::Enter,
@@ -50,8 +47,6 @@ const EDGE_STROKE_WIDTH: f64 = 1.0;
 /// the card, so the extra pixel is desktop, never the app's own.
 pub(crate) const FOCUSED_EDGE_STROKE_WIDTH: f64 = 2.0;
 
-/// The widest edge any window draws, so one band repaints whichever weight
-/// the window beside it takes.
 const WIDEST_EDGE_STROKE_WIDTH: f64 = FOCUSED_EDGE_STROKE_WIDTH;
 
 /// Rects along `rect`'s outline that hold every pixel of an edge drawn
@@ -68,7 +63,6 @@ fn edge_bands(rect: Rect, radius: f64) -> Vec<Rect> {
     let (left, right) = (rect.x0 + corner, rect.x1 - corner);
     let (top, bottom) = (rect.y0 + corner, rect.y1 - corner);
     if left >= right || top >= bottom {
-        // Corners meeting: no straight side to keep thin.
         return vec![
             Rect::new(outer.x0, outer.y0, outer.x1, top.min(outer.y1)),
             Rect::new(outer.x0, bottom.max(outer.y0), outer.x1, outer.y1),
@@ -120,9 +114,6 @@ pub enum TileContent {
         kind: AppKind,
         label: String,
     },
-    /// Distinct from `Stub`'s "coming soon": `title` names the thing,
-    /// `detail` says what's actually the case (e.g. a peer's app not
-    /// installed here is absent, not coming soon).
     Notice {
         title: String,
         detail: String,
@@ -144,24 +135,14 @@ pub enum TileContent {
 /// the native window pads its widget damage).
 const APP_DAMAGE_REACH: f64 = 16.0;
 
-/// The app's drawings as a host comparing frames sees them
-/// ([`crate::scene_parts::DamageHint`]): which generation it painted last,
-/// where, and every widget's box then. A drawing at the same place changed
-/// where its widgets say ([`Widget::collect_damage`]) and where widgets a
-/// relayout moved were and are, as the native app window repaints; any
-/// other drawing repaints the window.
 #[derive(Debug)]
 struct ContentDamage {
     source: u64,
     generation: u64,
-    /// Where the last drawing placed the app, and its widgets' boxes then.
     painted: Option<(Affine, Vec<(crate::damage::WidgetIdentity, Rect)>)>,
-    /// The last few drawings' damage, each with the generation it was
-    /// measured from: a host may present only some of the drawings.
     steps: std::collections::VecDeque<(u64, Vec<Rect>)>,
 }
 
-/// How many drawings back a hint still says what changed.
 const APP_DAMAGE_STEPS: usize = 4;
 
 impl ContentDamage {
@@ -246,8 +227,6 @@ impl ContentDamage {
             }
         };
         rects.retain(|rect| !rect.is_zero_area());
-        // A host that presented an older drawing makes none of the copies:
-        // they repaint where they land.
         let repainted: Vec<Rect> = rects
             .iter()
             .copied()
@@ -277,7 +256,6 @@ impl ContentDamage {
         })
     }
 
-    /// The app was not drawn: its next drawing follows none.
     fn forget(&mut self) {
         self.painted = None;
         self.steps.clear();
@@ -303,8 +281,6 @@ fn planned_copies(
     (placement, clip): (Affine, Rect),
     scale: f64,
 ) -> (Vec<Rect>, (Vec<crate::scroll_copy::MovedRegion>, Vec<Rect>)) {
-    // A widget whose own damage covers its box (a block editor that grew
-    // by a paragraph) leaves its box to that damage.
     let covered = crate::damage::boxes_covered_by_own_damage(app);
     let uncovered = |boxes: &[(crate::damage::WidgetIdentity, Rect)]| -> Vec<_> {
         boxes
@@ -394,10 +370,7 @@ mod window_search;
 pub struct TileHost {
     content: TileContent,
     history: Option<crate::history_mode::host::HistoryChrome>,
-    /// A History registered before its code was in, installed once it is.
     pending_history: Option<crate::history_mode::HistoryRegistration>,
-    /// The person opened History before its code was in: it opens once it
-    /// is, and a quiet panel stands in its place meanwhile.
     history_opening: bool,
     /// Where the History control stands while History is closed: `None` in
     /// the app's own header row (a tile outside a desktop window), `Some`
@@ -420,21 +393,10 @@ pub struct TileHost {
     custody_scope: Option<crate::ControlDomain>,
     custody_renewal: Option<crate::control_custody::CustodyAttachment>,
     record_error: Option<String>,
-    /// The card shown for `record_error`, with the detail it was made for.
     error_card: Option<(String, super::EmptyState)>,
     record_transition_error: Option<String>,
-    /// Set by [`TileHost::replace_content`]; drained by
-    /// [`Widget::take_structure_dirty`]. Tells the layout pass this
-    /// tile's node shape changed even though no hosted widget reported
-    /// anything.
     structure_dirty: bool,
-    /// The tile's own layout node, as last built; `None` while it has none.
     node: Option<NodeId>,
-    /// The content took the place of a placeholder in this tile's retained
-    /// node ([`Self::take_place_of`]) and is laid out under it in place
-    /// ([`Widget::remount_children`]), not by rebuilding the host's tree.
-    /// Until then the tile names none of its content to the retained
-    /// layout's check: none of it is in the tree yet.
     remount: bool,
     /// Latched: once this tile has shown something, its window stays on
     /// screen for good. Must survive [`TileHost::replace_content`] — a
@@ -445,62 +407,32 @@ pub struct TileHost {
     /// Readiness of this occupant, separate from the tile's visibility.
     /// Reset on replacement so a visible notice cannot mark an app ready.
     content_was_presented: std::cell::Cell<bool>,
-    /// The tab this tile shows, named to [`panic_scope`](super::panic_scope)
-    /// while its application runs. Stamped by the owning `WindowGroup`.
     panic_scope: std::cell::Cell<Option<u64>>,
-    /// The window this tile's app is shown in, when its host draws the
-    /// app's slots in the window's bar ([`Self::set_hosted_window`]).
     hosted_window: Option<crate::hosted_window::HostedWindow>,
     rect: Rect,
-    /// The shape the app whose code is on its way declared for its window
-    /// ([`Self::with_arrival_shape`]); `None` for a tile that was told
-    /// nothing, which shows its ground.
     declared_arrival_shape: Option<super::SkeletonShape>,
     /// How far [`Self::offset_layout`] moved the tile from where layout put
     /// it. The content keeps its own layout rect, so it is drawn this much
     /// further right instead.
     content_shift: f64,
-    /// What the app drew last, for a host that repaints only where it
-    /// changed ([`ContentDamage`]).
     content_damage: ContentDamage,
     pub focused: bool,
-    /// Last pointer position, so a button press (which carries none) can be
-    /// attributed to this tile or to a neighbour.
     pointer: Option<Point>,
-    /// Adjacent canvas windows own exactly their layout rectangle, including
-    /// their border; neither outlines nor shadows may spill into a sibling.
     flush_edges: bool,
     /// The window's frame is growing past what this tile last drew (a
     /// window maximizing keeps its last layout until its frame rests): the
     /// frame's ground continues the tile, so no edge marks where it ends.
     inside_growing_frame: bool,
-    /// The window is drawn as a card of its own, and the card paints the
-    /// outline: the tile's own edge stays off, since a band along the tile
-    /// would be cut by the card's clip at every side the card's frame stands
-    /// outside it, leaving a stray arc under the bar.
     edge_by_card: bool,
-    /// The window fills its display ([`Widget::set_full_bleed`]): square,
-    /// unclipped and without an edge.
     full_bleed: bool,
-    /// The tile's bottom edge is the display's (a maximized window): its
-    /// lower corners are square, its upper ones stay round under its bar.
     square_bottom: bool,
-    /// `None` by default, matching the "animations only fire for runtime
-    /// insertions" rule `TabBar` uses.
     spawned_at: Option<Instant>,
-    /// What the window showed when the windows were held still
-    /// ([`TileHost::hold_content`]), drawn in place of the live content
-    /// until released.
     held: Option<held::HeldContent>,
     /// The arrival of content whose first frame is not drawn yet
     /// ([`arrival`]): from when it was asked for until its first frame has
     /// faded in.
     arrival: Option<arrival::TileArrival>,
-    /// When the content's first frame landed ([`Widget::presented`] turned
-    /// true), for the arrival to time its reveal by.
     content_presented_at: std::cell::Cell<Option<Instant>>,
-    /// The motion the arrival's cross-fade plays, latched from the theme at
-    /// draw.
     arrival_motion: EffectiveMotion,
 }
 
@@ -523,9 +455,6 @@ impl TileHost {
         self.content_shift += dx;
     }
 
-    /// How far the content is drawn from where it was laid out
-    /// (`Self::offset_layout`): what its app placed at `x` shows at
-    /// `x + content_shift()`.
     #[must_use]
     pub fn content_shift(&self) -> f64 {
         self.content_shift
@@ -579,8 +508,6 @@ impl TileHost {
         }
     }
 
-    /// Bind a prepared component's wake lifetime before mounting it in a group.
-    /// Setup failure retains the component's record and recovery reports.
     pub fn mount_component(
         mut component: crate::application::AppComponent,
         sink: impl Fn(crate::wake::WakeEvent) + Send + Sync + 'static,
@@ -623,8 +550,6 @@ impl TileHost {
         }
     }
 
-    /// An app shown with a History of its own (an App in a region of the
-    /// host's scene), rather than the one this tile hosts for a component.
     fn app_history(&self) -> Option<&dyn crate::widget::WindowHistory> {
         match &self.content {
             TileContent::App(app) => super::capability::capability::<
@@ -667,10 +592,6 @@ impl TileHost {
         Ok(())
     }
 
-    /// Run `visit` on the root of this tile's app, where the window's search
-    /// finds a document or a list ([`crate::widget::WindowSearch`]); `visit`
-    /// says whether it changed what the app shows. `None` for a tile with no
-    /// app (a placeholder, a notice).
     pub fn visit_search_root(
         &mut self,
         visit: &mut dyn FnMut(&mut dyn Widget) -> bool,
@@ -690,7 +611,6 @@ impl TileHost {
         Some(changed)
     }
 
-    /// What the window's search can act on in this tile's app.
     pub fn in_place_search(&mut self) -> crate::widget::InPlace {
         let mut found = crate::widget::InPlace::Nothing;
         let _ = self.visit_search_root(&mut |root| {
@@ -700,8 +620,6 @@ impl TileHost {
         found
     }
 
-    /// The style of the tile's own node: one holding its app, or a leaf
-    /// for a card drawn by the tile itself.
     fn node_style(holds_app: bool) -> Style {
         let fill = Size {
             width: Dimension::percent(1.0),
@@ -727,8 +645,6 @@ impl TileHost {
         }
     }
 
-    /// Build the app's layout (in its History's composition, when it has
-    /// one) for the tile's node to hold; `None` for a card, which has none.
     fn build_content(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -751,11 +667,9 @@ impl TileHost {
         Some(child)
     }
 
-    /// Inactive retained tiles have no nodes in the current Taffy tree.
     pub(crate) fn discard_layout_nodes(&mut self) {
         self.live_callback_node = None;
         self.node = None;
-        // With no node to lay the content out under, the next build does.
         self.structure_dirty |= std::mem::take(&mut self.remount);
         if let Some(history) = &mut self.history {
             history.discard_layout_nodes();
@@ -860,10 +774,6 @@ impl TileHost {
         tile
     }
 
-    /// Whether the app in this tile is asking the person to type: a text
-    /// field of it holds the keyboard (`Widget::ime_content`). A stub, a
-    /// notice, a window whose code is on its way, or another device's page
-    /// asks nothing.
     #[must_use]
     pub fn asking_for_input(&self) -> bool {
         match &self.content {
@@ -872,19 +782,12 @@ impl TileHost {
         }
     }
 
-    /// What the app whose code is on its way declared its window shows
-    /// meanwhile ([`crate::widget::SkeletonShape`]): the shape the app's
-    /// manifest declares, read from the registry before its code is in. A
-    /// tile told nothing shows its ground alone, as a window that declared
-    /// no shape does.
     #[must_use]
     pub fn with_arrival_shape(mut self, shape: super::SkeletonShape) -> Self {
         self.declared_arrival_shape = Some(shape);
         self
     }
 
-    /// Content whose first frame comes from `from`: an [`TileContent::Arriving`]
-    /// place for an app whose code a host serves.
     #[must_use]
     pub fn arriving_from(mut self, from: crate::arriving::Source) -> Self {
         if let Some(arrival) = &self.arrival
@@ -895,9 +798,6 @@ impl TileHost {
         self
     }
 
-    /// The arrival of the content now in the tile: `None` when it presented
-    /// at once and nothing stood before it, else timed from `since` (the
-    /// placeholder that stood before it), or from now.
     fn begin_arrival(&self, since: Option<Instant>) -> Option<arrival::TileArrival> {
         let pending = !self.content_presented();
         if !pending && since.is_none() {
@@ -916,8 +816,6 @@ impl TileHost {
         Some(arrival)
     }
 
-    /// Whether the content now in the tile has drawn its first frame: polls
-    /// it, latching the answer ([`Widget::presented`]).
     fn content_presented(&self) -> bool {
         let _ = Widget::presented(self);
         self.content_was_presented.get()
@@ -937,7 +835,6 @@ impl TileHost {
         Some(arrival)
     }
 
-    /// Note the content's first frame on the arrival, and show it once due.
     fn advance_arrival(&mut self, now: Instant) {
         let presented = self.content_presented();
         let at = self.content_presented_at.get();
@@ -954,7 +851,6 @@ impl TileHost {
         }
     }
 
-    /// The content's own update ([`Widget::update`]).
     fn update_content(&mut self, s: &AppModel, p: &ModelPath) -> bool {
         let _running = self.running();
         if !self.history_lifetime.active.get()
@@ -980,7 +876,6 @@ impl TileHost {
     #[must_use]
     pub fn arrival_step(&self, now: Instant) -> Option<crate::arriving::Step> {
         let arrival = self.arrival_now()?;
-        // A first frame that is due shows on the next frame drawn.
         let due = arrival.clock().shows_at().is_some_and(|at| now >= at);
         (!arrival.revealed() && !due).then(|| arrival.placeholder_step(now))
     }
@@ -992,8 +887,6 @@ impl TileHost {
         self.arrival_step(crate::time::now()).is_some()
     }
 
-    /// Until when the window's first frame waits for this tile's content:
-    /// a first frame from this device, inside its frame budget.
     #[must_use]
     pub fn holds_first_frame_until(&self, now: Instant) -> Option<Instant> {
         if self.content_presented() {
@@ -1013,7 +906,6 @@ impl TileHost {
         self.inside_growing_frame = inside;
     }
 
-    /// The window is drawn as a card whose outline the card paints over it.
     pub(crate) fn set_edge_by_card(&mut self, by_card: bool) {
         self.edge_by_card = by_card;
     }
@@ -1031,30 +923,19 @@ impl TileHost {
         }
     }
 
-    /// Show this tile's app in `window`: while the app runs, its
-    /// [`crate::window_toolbar`] calls act on `window`, where the host reads
-    /// its slots for the window's bar and hands back what the person did with
-    /// them ([`crate::window_slots::WindowSlots`]). For a host that runs
-    /// several apps in its own process and draws their bars.
     pub fn set_hosted_window(&mut self, window: crate::hosted_window::HostedWindow) {
         self.hosted_window = Some(window);
     }
 
-    /// The window this tile's app is shown in, if the host gave it one.
     #[must_use]
     pub fn hosted_window(&self) -> Option<&crate::hosted_window::HostedWindow> {
         self.hosted_window.as_ref()
     }
 
-    /// Whether the app's widgets may be laid out again in place under the
-    /// tile's node: not while a framework History composes around the app,
-    /// whose owners, custody and nodes are its own and are rebuilt with it.
     fn lays_out_in_place(&self) -> bool {
         self.history.is_none()
     }
 
-    /// Whether the tile's History composes the live app this pass. While it
-    /// shows a version in the app's place, nothing builds the app.
     fn composes_live_app(&self) -> bool {
         self.history
             .as_ref()
@@ -1260,8 +1141,6 @@ impl TileHost {
         self.custody_renewal = Some(self.history_lifetime.control_domain.renewal_from(&previous));
     }
 
-    /// Whether `event` is addressed to this tile: keys and IME go to the
-    /// focused tile, pointer events to the tile under the pointer.
     fn event_is_for_this_tile(&self, event: &WindowEvent, scale_factor: f64) -> bool {
         match event {
             WindowEvent::KeyboardInput { .. } | WindowEvent::Ime(_) => self.focused,
@@ -1296,10 +1175,6 @@ impl TileHost {
             TileContent::Arriving => "Arriving".into(),
         }
     }
-    /// The hosted app, to reach a capability or concrete type of it in
-    /// place. Unlike replacing the content, this leaves the tile's record,
-    /// History and layout alone: a change inside the app reports its own
-    /// structure.
     pub fn app_mut(&mut self) -> Option<&mut (dyn AppWidget + 'static)> {
         match &mut self.content {
             TileContent::App(app) => Some(app.as_mut()),
@@ -1324,8 +1199,6 @@ impl TileHost {
         self.structure_dirty = true;
         &mut self.content
     }
-    /// Replace a component after its complete closed-owner cleanup. The caller
-    /// retains returned reports until recovery is durably resolved.
     #[must_use]
     pub fn replace_component(
         &mut self,
@@ -1340,10 +1213,6 @@ impl TileHost {
         }
         crate::component_lifecycle::take_component_close_reports(self)
     }
-    /// Used when a window announced before it existed (a place reserved for it)
-    /// becomes the app; replacing the tab instead would hand focus
-    /// elsewhere. Flags a structural rebuild since `App` and the card
-    /// variants have different taffy shapes.
     pub fn replace_content(&mut self, content: TileContent) {
         if let TileContent::App(root) = &mut self.content {
             self.close_reports
@@ -1354,7 +1223,6 @@ impl TileHost {
                 ));
         }
         self.renew_history_lifetime();
-        // The slots were the outgoing app's; the new one declares its own.
         if let Some(window) = &self.hosted_window {
             window.declare(None);
         }
@@ -1379,17 +1247,11 @@ impl TileHost {
             Err(error) => self.record_error = Some(format!("History unavailable: {error}")),
             Ok(None) => {}
         }
-        // An app with a History of its own learns where the window presents
-        // its controls, as the content it replaces did: an app that replaced
-        // the content it replaced drew its own History and search beside the bar's.
         if let Some(tab_presents) = self.window_history
             && let Some(app) = self.app_history_mut()
         {
             app.set_window_presents_history(tab_presents);
         }
-        // Content replacing a placeholder still standing goes on with its
-        // arrival (a launch's place taken over by the window it asked for);
-        // content replacing shown content arrives afresh, or at once.
         let standing = self
             .arrival
             .as_ref()
@@ -1408,7 +1270,6 @@ impl TileHost {
         self.focused = focused;
     }
 
-    /// A call mid-animation restarts the curve.
     pub fn start_spawn_animation(&mut self) {
         self.spawned_at = Some(crate::time::now());
     }
@@ -1497,8 +1358,6 @@ impl TileHost {
         Some(rect)
     }
 
-    /// Exposed for tests to pin the curve shape without peeking into
-    /// Vello's scene buffer.
     #[cfg(test)]
     pub fn spawn_alpha(&self) -> Option<f32> {
         self.spawned_at.and_then(|t| {
@@ -1799,8 +1658,6 @@ impl Widget for TileHost {
         dyn crate::widget::ResourceOperations
     );
 
-    /// Lets a host that lays several tiles out in one tree find the window
-    /// around a widget (the palette centres on the focused one).
     fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
     }
@@ -1854,7 +1711,6 @@ impl Widget for TileHost {
         &mut self,
         request: &mut crate::bound_dispatch::ComponentRequest<'_>,
     ) -> Result<(), crate::bound_dispatch::BoundDispatchError> {
-        // A wake or a bound callback runs the app here, in its window.
         let _running = self.running();
         if let TileContent::App(live) = &mut self.content {
             live.visit_components(request)
@@ -1927,7 +1783,6 @@ impl Widget for TileHost {
             _ => false,
         }
     }
-    /// An app does not bring itself forward; only its desktop does.
     fn take_app_activation(&mut self) -> Option<crate::application::InstanceId> {
         None
     }
@@ -1977,7 +1832,6 @@ impl Widget for TileHost {
     }
     /// The app also while History keeps it inert.
     fn for_each_layout_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) -> bool {
-        // Content waiting to be laid out in place is in no layout yet.
         if self.remount {
             return true;
         }
@@ -2007,9 +1861,6 @@ impl Widget for TileHost {
         children
     }
 
-    /// The tile's own node fills the window whatever it shows, so a notice
-    /// or a stub has nothing to measure once laid out; app content and
-    /// History report their own.
     fn is_layout_dirty(&self) -> bool {
         if self.record_error.is_some() {
             return true;
@@ -2034,8 +1885,6 @@ impl Widget for TileHost {
         {
             return;
         }
-        // A component that asked to show another record in its place gets
-        // the tile: its record and history follow.
         if let TileContent::App(widget) = &mut self.content
             && let Some(replacement) = crate::component_lifecycle::take_replacement(widget.as_mut())
         {
@@ -2108,9 +1957,6 @@ impl Widget for TileHost {
 
     fn update(&mut self, s: &AppModel, p: &ModelPath) -> bool {
         let adopted = self.adopt_loaded_history();
-        // A placeholder step that came due (its wake deadline), or a first
-        // frame due to show, is a change of what the tile shows: the host
-        // that woke for it paints.
         let progress = self.arrival_progress();
         let now = crate::motion::frame_now();
         let arrival = self
@@ -2148,19 +1994,12 @@ impl Widget for TileHost {
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let _running = self.running();
         self.rect = crate::widget::layout_rect(taffy, node, origin);
-        // Content waiting to be laid out in place has no nodes yet.
         if self.remount {
             return;
         }
         if let TileContent::App(w) = &mut self.content {
-            // Guards a structural mismatch: content is `App` but the taffy
-            // node has no child yet (build_layout ran while content was
-            // still `Stub`, or structure_dirty hasn't fired).
             let children = taffy.children(node).unwrap_or_default();
             if let Some(&child_node) = children.first() {
-                // The tile is its app's window: what the app centres on its
-                // window (a dialog) centres on the tile, not on the screen
-                // the strip's shared tree is rooted at.
                 let rect = self.rect;
                 let origin = Point::new(rect.x0, rect.y0);
                 crate::widget::modal_dialog::within_window(node, rect, || {
@@ -2179,11 +2018,6 @@ impl Widget for TileHost {
             }
         }
     }
-    /// The app's top layer, over its own window: the tile is the viewport
-    /// its dialogs centre on, its menus and tooltips stay inside, as a
-    /// standalone app's window is. Without this the top layer would see the
-    /// whole screen the strip is drawn on and a dialog would centre there,
-    /// spilling past a window narrower than the screen.
     fn draw_overlay(
         &mut self,
         scene: &mut Scene,
@@ -2221,8 +2055,6 @@ impl Widget for TileHost {
         presence: &PresenceCtx,
     ) {
         let _running = self.running();
-        // Clear an expired spawn timestamp before branching, or it stays
-        // `Some` forever after the curve ends.
         if let Some(t) = self.spawned_at
             && crate::time::now().saturating_duration_since(t) >= spawn_time()
         {
@@ -2231,8 +2063,6 @@ impl Widget for TileHost {
         if theme.reduce_motion {
             self.spawned_at = None;
         }
-        // Wrap the steady-state paint in one alpha layer + centre-pivot
-        // scale so the whole tile fades/scales as one unit.
         if self.spawn_in_flight()
             && let Some(started) = self.spawned_at
         {
@@ -2283,11 +2113,6 @@ impl Widget for TileHost {
         if self.arrival_step(now).is_some() {
             return false;
         }
-        // A tile with nothing under it has nothing to ask: everything it
-        // shows is its arrival, answered above. The default reads "no child
-        // changed" as "ask again", and a tile whose tab holds the client's
-        // own buffer has no child at all, so it asked on every frame for as
-        // long as the session ran.
         let mut children = 0usize;
         self.for_each_child(&mut |_| children += 1);
         children > 0 && super::defaults::needs_redraw(&|visit| self.for_each_child(visit))
@@ -2347,7 +2172,6 @@ impl Widget for TileHost {
                 return;
             }
         }
-        // Same structural-mismatch guard as apply_layout above.
         let children = ctx.taffy.children(ctx.node_id).unwrap_or_default();
         let Some(child_node) = self
             .live_callback_node
@@ -2381,8 +2205,6 @@ impl Widget for TileHost {
                     .with_bounds(self.rect),
             );
         }
-        // Content on its way: the placeholder says what a screen reader
-        // needs, where it comes from and how much has come, and is busy.
         if let Some(step) = self.arrival_step(crate::time::now()) {
             let local = crate::arriving::Source::Local;
             let source = self
@@ -2417,8 +2239,6 @@ impl Widget for TileHost {
             TileContent::App(_) | TileContent::Stub { .. } | TileContent::Arriving => None,
         }
     }
-    /// Only an app can answer anything but `true` — a stub/notice is
-    /// painted by this process and is on screen the moment the tile is.
     fn presented(&self) -> bool {
         if !self.content_was_presented.get() {
             let now = match &self.content {
@@ -2453,8 +2273,6 @@ impl Widget for TileHost {
         let own = self
             .arrival_now()
             .and_then(|arrival| arrival.next_step_at(now));
-        // A first frame held for this device's content is drawn when its
-        // budget runs out, if it has not landed by then.
         let held = self.holds_first_frame_until(now);
         own.into_iter()
             .chain(held)
@@ -2476,18 +2294,11 @@ impl Widget for TileHost {
     fn take_structure_dirty(&mut self) -> bool {
         self.take_structure_change().rebuilds()
     }
-    /// The window's content is laid out again in place under the tile's
-    /// retained node ([`StructureChange::Children`](crate::widget::StructureChange)):
-    /// content that took a placeholder's place, and an app that replaced
-    /// widgets of its own, so the rest of the host's tree is kept. Only a
-    /// change of the tile itself rebuilds. Both flags are drained, so
-    /// neither is left set behind the other.
     fn take_structure_change(&mut self) -> crate::widget::StructureChange {
         use crate::widget::StructureChange;
         let swapped = std::mem::take(&mut self.structure_dirty);
         let composes_live = self.composes_live_app();
         let inner = match &mut self.content {
-            // Built whole when it is laid out in place.
             TileContent::App(w) if self.remount => {
                 let _ = w.take_structure_dirty();
                 StructureChange::None
@@ -2507,12 +2318,7 @@ impl Widget for TileHost {
         let rebuilds =
             swapped || matches!(inner, StructureChange::Described | StructureChange::Rebuild);
         match (rebuilds, self.node) {
-            // The tile's content, its History or the app's own widgets were
-            // replaced: they are built again under the tile's node, and
-            // nothing outside it. While a History around the app is busy
-            // (open, returning, reviewing), the host builds everything again.
             (true, Some(_)) if self.lays_out_in_place() => {
-                // The host lets go of every node under the tile's own.
                 self.remount = true;
                 self.live_callback_node = None;
                 if let Some(history) = &mut self.history {
@@ -2588,7 +2394,6 @@ impl crate::widget::ResourceOperations for TileHost {
         if !self.history_lifetime.active.get() {
             return Err("The current document owner is closed".into());
         }
-        // A closed or switching owner exposes no document.
         self.prepare_record_resolution()?;
         if scope.is_none() {
             self.install_live_custody(crate::control_custody::CustodyAttachment::Dynamic);
@@ -2613,8 +2418,6 @@ impl crate::widget::ResourceOperations for TileHost {
                 root,
             ),
         };
-        // Unscoped local work is polled straight from the app rather than
-        // through retained owner custody.
         if scope.is_none() {
             let started = start(doc.document_mut(), path)?;
             if matches!(
@@ -2901,8 +2704,6 @@ impl TileHost {
         } else {
             EDGE_STROKE_WIDTH
         };
-        // Fill the border's two contours directly. GPU stroking can leave
-        // solid tiles outside a rounded corner when its top crosses y=0.
         let outer_offset = if self.flush_edges { 0.0 } else { edge_width };
         let inner_offset = outer_offset - edge_width;
         let outer = RoundedRect::from_rect(
@@ -2924,8 +2725,6 @@ impl TileHost {
         );
     }
 
-    /// The tile's corners at `radius`: all round, or round only at the top
-    /// while its bottom edge is the display's ([`Self::set_square_bottom`]).
     fn corner_radii(&self, radius: f64) -> vello::kurbo::RoundedRectRadii {
         if self.square_bottom {
             vello::kurbo::RoundedRectRadii::new(radius, radius, 0.0, 0.0)
@@ -2934,7 +2733,6 @@ impl TileHost {
         }
     }
 
-    /// The tile's bottom edge is the display's: square its lower corners.
     pub fn set_square_bottom(&mut self, square: bool) {
         self.square_bottom = square;
     }
@@ -2975,8 +2773,6 @@ impl TileHost {
         );
     }
 
-    /// Content card + edge → hosted app or stub contents. Extracted from `draw` so the spawn-fade branch can
-    /// wrap the same paint under one scaled layer.
     fn draw_steady_state(
         &mut self,
         scene: &mut Scene,
@@ -2989,13 +2785,8 @@ impl TileHost {
             self.draw_full_bleed(scene, transform, tr, theme, presence);
             return;
         }
-        // A window lifts off the desktop ground on one soft shadow
-        // (`docs/design-language.md`, "Surfaces"), its own damage part so a
-        // tile that moves repaints where its shadow was.
         let radius = f64::from(theme.tokens.radii.tile);
         let shadow = theme.tokens.elevation.window;
-        // It falls below the tile only: tiles stand side by side, and a
-        // shadow reaching sideways would dim the neighbour's edge.
         if let Some(reach) = crate::surface::shadow_bounds(self.rect, &shadow) {
             let below = Rect::new(self.rect.x0, self.rect.y0, self.rect.x1, reach.y1);
             let key = crate::scene_parts::PartKey::new("ui.tile-shadow", ());
@@ -3024,8 +2815,6 @@ impl TileHost {
             transform,
             &shape,
         );
-        // Everything up to the matching pop is clipped to the tile, so the
-        // tile bounds whatever its content changes: a damage part.
         let content = crate::scene_parts::PartKey::new("ui.tile-content", ());
         let bounds = vec![transform.transform_rect_bbox(self.rect)];
         crate::scene_parts::part(scene, content, bounds, |scene| {
@@ -3033,9 +2822,6 @@ impl TileHost {
             self.draw_history_loading(scene, transform, tr, theme);
         });
         scene.pop_layer();
-        // The edge, and the focus ring it becomes, is a band along the
-        // tile's outline: corner squares and thin side bands, not the
-        // tile they surround.
         let edge = crate::scene_parts::PartKey::new("ui.tile-edge", ());
         let bounds = edge_bands(self.rect, radius)
             .into_iter()
@@ -3048,10 +2834,6 @@ impl TileHost {
         }
     }
 
-    /// A tile filling its display: the content edge to edge, square and
-    /// with no clip or edge around it. Nothing beside it needs setting
-    /// apart, and a client surface the content draws stays the last,
-    /// unclipped thing drawn there, which the display can scan out.
     fn draw_full_bleed(
         &mut self,
         scene: &mut Scene,
@@ -3075,9 +2857,6 @@ impl TileHost {
         });
     }
 
-    /// The tile's content inside its clip: the app (or a card in its
-    /// place), or, while its first frame is on its way, the framework's
-    /// placeholder ([`arrival`]), and the first frame fading in over it.
     fn draw_clipped_content(
         &mut self,
         scene: &mut Scene,
@@ -3096,10 +2875,6 @@ impl TileHost {
             .as_ref()
             .and_then(|arrival| arrival.paint_at(now))
         {
-            // Content on its way gets the placeholder in place of the app,
-            // not behind it: an early buffer is the client's own size, not
-            // the tab's, and painting it would show the window visibly
-            // resizing a moment after opening.
             Some(arrival::ArrivalPaint::Placeholder(step)) => {
                 self.paint_arrival_face(scene, transform, tr, theme, step);
                 if let Some(arrival) = self.arrival.as_mut() {
@@ -3136,7 +2911,6 @@ impl TileHost {
         }
     }
 
-    /// The placeholder at `step`, at the page margins of the tile.
     fn paint_arrival_face(
         &self,
         scene: &mut Scene,
@@ -3160,8 +2934,6 @@ impl TileHost {
             );
     }
 
-    /// The shape the content declared for its placeholder; none declared,
-    /// the window's ground alone.
     fn arrival_shape(&self) -> super::SkeletonShape {
         let declared = self.declared_arrival_shape;
         match &self.content {
@@ -3177,7 +2949,6 @@ impl TileHost {
         }
     }
 
-    /// How much of what the content's first frame waits on has come.
     fn arrival_progress(&self) -> Option<crate::arriving::Progress> {
         match &self.content {
             TileContent::App(app) if !self.content_was_presented.get() => app.arrival_progress(),
@@ -3185,7 +2956,6 @@ impl TileHost {
         }
     }
 
-    /// The app, or the card standing in its place.
     fn draw_content(
         &mut self,
         scene: &mut Scene,
@@ -3208,8 +2978,6 @@ impl TileHost {
                 card.draw_child(scene, transform, tr, theme, presence);
             }
         } else {
-            // The app and its history were laid out where the tile
-            // was; a moved tile draws them moved with it.
             let content_transform = if self.content_shift == 0.0 {
                 transform
             } else {
@@ -3222,16 +2990,9 @@ impl TileHost {
                         .as_ref()
                         .is_none_or(|history| history.live_visible())
                     {
-                        // The app is a damage part of its own, hinted
-                        // with its widgets' damage: a host comparing
-                        // frames repaints a typed character, not the
-                        // window.
                         let key = crate::scene_parts::PartKey::new("ui.tile-app", ());
                         crate::scene_parts::begin(scene, key);
                         w.draw_child(scene, content_transform, tr, theme, presence);
-                        // A host that keeps what it presented and moves it
-                        // copies a scroll: the app stands on the opaque
-                        // content ground the tile fills, which moves with it.
                         let copies = (crate::scroll_copy::host_copies()
                             && theme.tokens.colors.surfaces.content.components[3] >= 1.0)
                             .then(crate::scroll_copy::host_device_scale);
@@ -3257,7 +3018,6 @@ impl TileHost {
                 TileContent::Notice { title, detail } => {
                     draw_card_text(scene, transform, tr, theme, self.rect, title, detail);
                 }
-                // The arrival's placeholder stands in for it.
                 TileContent::Arriving => {}
             }
         }
@@ -3279,8 +3039,6 @@ fn draw_card_text(
     let mut content = super::EmptyStateContent::new(title);
     content.message = (!detail.is_empty()).then_some(detail);
     let mut paint = crate::paint::PaintCtx::new(scene, transform, tr, theme);
-    // These are explanatory status cards, not one-line diagnostic summaries.
-    // The shared stack wraps the full recovery text within the tile's gutter.
     super::EmptyState::paint(&mut paint, rect, &content, Point::new(-1.0, -1.0));
 }
 

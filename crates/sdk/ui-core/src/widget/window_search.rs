@@ -1,27 +1,6 @@
-//! Search in a window, in place.
-//!
-//! The window's bar carries one search control after the window's place: a click or Ctrl+F
-//! (⌘F) expands it into a field where it stands, and what is typed acts on the window's app —
-//! a document highlights every match with "3 of 12" and steps through them (Enter,
-//! Shift+Enter, F3), a list narrows ("12 of 40"). The search widens step by step: this view,
-//! then the whole app, then everywhere, both handing the query to the platform search
-//! ([`SearchHandoff`]).
-//!
-//! The app draws no field and keeps no find state: it provides the [`Findable`] document or
-//! the [`Filterable`](crate::widget::Filterable) list it already has, reached through the
-//! window's tile ([`SearchableWindow`]): an app in a process of its own is sent the query, the
-//! steps and the close ([`WindowSearch::take_remote_events`]) and answers with a count, its
-//! runtime running the same [`SearchDriver`] on its widgets. An app with neither opens the
-//! platform search narrowed to itself.
-//!
-//! An app whose views are queries over its resources offers more than a list: what is typed
-//! turns the window's view into a query view of them ([`Queryable`], [`InPlace::Query`]), so
-//! Enter or Down hands the keyboard to the results and Escape returns to the previous view.
-//!
-//! On a document the open search carries the find's options after the steps (`options`): Match
-//! case and Whole word, Regular expression or Text / Hex where the document offers them
-//! ([`FindAbilities`]), and for a document that can replace, Replace and Replace all. Each is a
-//! semantic action too, so assistive technology and agents set them without the panel.
+//! Search in a window, in place: the bar's control expands into a field where it stands,
+//! and what is typed acts on the window's app, a document's matches or a list narrowed.
+//! The search widens step by step until the platform search takes the query.
 
 mod options;
 mod query_view;
@@ -47,54 +26,34 @@ use crate::widget::{Button, ButtonFace, ButtonRole, ControlSize, SearchField, Wi
 use crate::window_toolbar::SearchOpening;
 use options::{Choice, OptionsPanel};
 
-/// The side of the resting control, the window bar's control size.
 const CONTROL_PX: f64 = super::window_controls::CONTROL_PX;
-/// The narrowest field, in control heights: below this the widening buttons
-/// give way first.
 fn field_min(theme: &Theme) -> f64 {
     6.0 * ControlSize::Small.height(theme)
 }
 
-/// What a window's search acts on in place, as its app offers it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum InPlace {
-    /// Nothing to search in place: the control opens the platform search.
     #[default]
     Nothing,
-    /// A document ([`Findable`]): matches are highlighted and stepped through.
     Document,
-    /// A list ([`Filterable`](crate::widget::Filterable)): it narrows to what matches.
     List,
-    /// The app's views ([`Queryable`]): the window narrows what its views list
-    /// to what matches, and finds in the document it shows beside them, if any.
     Query,
 }
 
-/// An app whose views are queries over its resources: the window's search
-/// turns the view shown into a query view, and closing it returns to the
-/// view before.
 pub trait Queryable {
-    /// The search opened on the window: the person focused the field and
-    /// may type next (an app warms its remote sources here).
     fn query_opened(&mut self) {}
 
-    /// What is typed is now `text` (empty when nothing is yet).
     fn set_query_text(&mut self, text: &str);
 
-    /// Enter or Down in the field: the keyboard goes to the results.
     fn enter_results(&mut self) {}
 
-    /// The search closed: show the view from before it opened, as it was.
     fn query_closed(&mut self);
 
-    /// What the field's counter shows, if anything.
     fn query_count(&self) -> Option<FilterCount> {
         None
     }
 }
 
-/// Run `visit` on the first [`Queryable`] in `widget`'s subtree; whether
-/// there was one.
 pub fn with_queryable(widget: &mut dyn Widget, visit: &mut dyn FnMut(&mut dyn Queryable)) -> bool {
     if let Some(target) = crate::widget::capability::capability_mut::<dyn Queryable>(&mut *widget) {
         visit(target);
@@ -107,12 +66,6 @@ pub fn with_queryable(widget: &mut dyn Widget, visit: &mut dyn FnMut(&mut dyn Qu
 }
 
 impl InPlace {
-    /// What `root`'s widgets offer: views that are queries win, since such an
-    /// app narrows what it lists to the search in place — and the document it
-    /// shows beside them is found in too
-    /// ([`SearchDriver::drive`]); then a document over a list, since a window
-    /// showing both (a sidebar of notes and the open note) is read in its
-    /// document; then a list, which narrows.
     pub fn of(root: &mut dyn Widget) -> Self {
         if with_queryable(root, &mut |_| ()) {
             Self::Query
@@ -126,17 +79,12 @@ impl InPlace {
     }
 }
 
-/// How far beyond the window a search goes when the person widens it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SearchReach {
-    /// The whole app the window shows.
     App,
-    /// Everything: the platform search unscoped.
     Everywhere,
 }
 
-/// A search the window hands to the platform search: the tab it came from,
-/// how far it reaches and what was typed.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SearchHandoff {
     pub tab: u64,
@@ -144,51 +92,34 @@ pub struct SearchHandoff {
     pub query: String,
 }
 
-/// The find engine behind a window's search, run where the app's widgets
-/// are: by the window for an app in its process, by the app's own runtime
-/// for an app in a process of its own. It finds or narrows when the query
-/// changed, follows the content when it changed under the search, steps, and
-/// stops when the search closed.
 #[derive(Debug, Default)]
 pub struct SearchDriver {
     in_place: InPlace,
     session: FindSession,
-    /// What the document's find offers beyond matching, as last driven.
     abilities: FindAbilities,
-    /// The query a list was last narrowed to.
     applied: Option<String>,
     count: Option<FilterCount>,
-    /// A find the document ran on its own that the search took over, until
-    /// the field it drives from takes its query ([`Self::take_adopted`]).
     adopted: Option<(String, FindOptions)>,
-    /// What of the document the search's options cover, in its coordinates
-    /// ([`Self::set_cover`]), and what the document was last told (it
-    /// starts out covered by nothing).
     cover: Option<Rect>,
     cover_told: Option<Rect>,
 }
 
 impl SearchDriver {
-    /// Start a search on what the app offers: the query runs afresh on what
-    /// it shows now.
     pub fn open(&mut self, in_place: InPlace) {
         self.in_place = in_place;
         self.forget();
     }
 
-    /// What the search acts on; [`InPlace::Nothing`] while none is open.
     #[must_use]
     pub fn in_place(&self) -> InPlace {
         self.in_place
     }
 
-    /// How many matches a document's search found.
     #[must_use]
     pub fn matches(&self) -> usize {
         self.session.matches()
     }
 
-    /// What the document's find offers beyond matching, as last driven.
     #[must_use]
     pub fn abilities(&self) -> FindAbilities {
         self.abilities
@@ -200,15 +131,11 @@ impl SearchDriver {
         self.session.position()
     }
 
-    /// What the field's counter shows: the current match of all of them in
-    /// a document, the rows shown of all rows in a list; none before
-    /// anything is typed.
     #[must_use]
     pub fn count(&self) -> Option<FilterCount> {
         self.count
     }
 
-    /// Forget what was found without telling the app (it went away).
     pub fn forget(&mut self) {
         self.session.forget();
         self.abilities = FindAbilities::default();
@@ -218,23 +145,14 @@ impl SearchDriver {
         self.cover_told = None;
     }
 
-    /// What of the document the search's options cover now, in the app's
-    /// coordinates (`None`: nothing). The next drive tells the document,
-    /// which shows the current match clear of it.
     pub fn set_cover(&mut self, cover: Option<Rect>) {
         self.cover = cover;
     }
 
-    /// The query and options of a find the document ran on its own
-    /// ([`Findable::take_own_find`]) that the last drive took over: the
-    /// field shows that query and drives with it from now on.
     pub fn take_adopted(&mut self) -> Option<(String, FindOptions)> {
         self.adopted.take()
     }
 
-    /// Carry `query` under `options` to the app's `root`, step when asked,
-    /// or stop when `finishing` (after which the driver is closed). Returns
-    /// whether anything the app shows changed.
     pub fn drive(
         &mut self,
         root: &mut dyn Widget,
@@ -298,15 +216,10 @@ impl SearchDriver {
                     self.applied = Some(query.to_owned());
                     self.count = count.filter(|_| !query.is_empty());
                 }
-                // The frame narrowed what it lists, and a page standing beside it is found in
-                // too: the words are the same, so the page shows them where they are read.
                 let (document, document_touched) =
                     self.drive_document(root, query, options, step, finishing);
                 touched |= document_touched;
                 if !finishing && !document.is_empty() && self.session.matches() > 0 {
-                    // Where the person is in the page wins the field's count, where the page
-                    // holds the words: it is the one the steps move through. Else the count is
-                    // the rows the frame narrowed to.
                     let session = &self.session;
                     let (current, total) = session.position().unwrap_or((0, session.matches()));
                     self.count = Some(FilterCount::new(current, total));
@@ -320,10 +233,6 @@ impl SearchDriver {
         touched
     }
 
-    /// Carry `query` to the document the window shows, when it shows one: what is typed is
-    /// found in it, the steps move through its matches and a replacement lands where the person
-    /// reads. Returns the text the search shows (empty while there is no document) and whether
-    /// anything the document shows changed.
     fn drive_document(
         &mut self,
         root: &mut dyn Widget,
@@ -338,8 +247,6 @@ impl SearchDriver {
         let cover = self.cover.filter(|_| !finishing);
         let cover_moved = self.cover_told != cover;
         self.cover_told = cover;
-        // The text the search shows: what the document holds, and none while no document
-        // stands in the window to be found in.
         let mut shown = String::new();
         let mut touched = false;
         with_findable(root, &mut |target: &mut dyn Findable| {
@@ -347,8 +254,6 @@ impl SearchDriver {
             *abilities = FindAbilities::of(target);
             let options = abilities.allow(options);
             if cover_moved {
-                // Told before anything is revealed, so what this
-                // drive reveals stands clear of it.
                 target.set_find_cover(cover);
             }
             if finishing {
@@ -358,8 +263,6 @@ impl SearchDriver {
             }
             let mut revealed = false;
             if let Some(own) = target.take_own_find() {
-                // The document went to a match on its own: the
-                // search runs its query from that match on.
                 let options = abilities.allow(own.options);
                 session.search(target, &own.query, options, Some(own.current));
                 shown.clone_from(&own.query);
@@ -380,8 +283,6 @@ impl SearchDriver {
                 revealed = true;
             }
             if cover_moved && !revealed {
-                // The options opened over the current match, or
-                // closed: it is shown again, clear of them.
                 touched |= session.reveal_current(target);
             }
             if let Some((total, current)) = target.take_engine_results() {
@@ -392,9 +293,6 @@ impl SearchDriver {
         (shown, touched)
     }
 
-    /// Replace the current match of the document's search for `query` under
-    /// `options` with `with`, or every match (`all`), and find again,
-    /// keeping the place. Returns whether the document changed.
     pub fn replace(
         &mut self,
         root: &mut dyn Widget,
@@ -403,8 +301,6 @@ impl SearchDriver {
         with: &str,
         all: bool,
     ) -> bool {
-        // A frame whose search narrows what it lists searches the page beside it as well, so a
-        // replacement reaches the page from either.
         if !matches!(self.in_place, InPlace::Document | InPlace::Query) || query.is_empty() {
             return false;
         }
@@ -426,34 +322,21 @@ impl SearchDriver {
     }
 }
 
-/// An app that runs inside a runtime of its own (an embedded app) and lets
-/// the window's search reach its widgets.
 pub trait SearchableWindow {
-    /// Run `visit` on the app's root widget, where the search finds the
-    /// view's document or list. `visit` says whether it changed anything the
-    /// app shows, so the app lays out and draws again only then; returns
-    /// what `visit` said.
     fn visit_search_root(&mut self, visit: &mut dyn FnMut(&mut dyn Widget) -> bool) -> bool;
 }
 
-/// What the person asked of the window's search, for the window to carry
-/// out: it knows the tab and its app.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum WindowSearchRequest {
-    /// Open the search: in place where the app offers it, else the platform
-    /// search narrowed to the app.
     Open,
-    /// Close it: the app stops highlighting or narrowing.
     Close,
     Widen(SearchReach),
 }
 
-/// A clickable part of the open search.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Part {
     Previous,
     Next,
-    /// The find's options and the replacement ([`options`]).
     Options,
     App,
     Everywhere,
@@ -473,14 +356,10 @@ impl Part {
     }
 }
 
-/// A toolkit message in the host's locale.
 fn tr(key: &str) -> String {
     crate::i18n::widget_format(key, &[])
 }
 
-/// What a key press asks of the window's search on `platform`: Find
-/// (Ctrl+F, ⌘F), or Find and Replace (Ctrl+H, ⌘⌥F). Ctrl+Shift+H stays
-/// History's.
 #[must_use]
 pub fn search_chord(
     event: &WindowEvent,
@@ -506,8 +385,7 @@ pub fn search_chord(
     let mac = platform.platform() == crate::platform::Platform::MacOs;
     let letter = |letter: &str| matches!(logical_key, Key::Character(text) if text.eq_ignore_ascii_case(letter));
     let alt = modifiers.alt_key();
-    // Option changes the character a Mac key types (⌥F is ƒ): the key itself
-    // names the chord there.
+    // Option changes the character a Mac key types (⌥F is ƒ), so the key names the chord.
     if mac
         && alt
         && (*physical_key == winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::KeyF)
@@ -524,80 +402,42 @@ pub fn search_chord(
     letter("f").then_some(SearchOpening::Find)
 }
 
-/// The window bar's search: a control that expands into a field in place.
 #[crate::component::not_a_component(system, "system search")]
 pub struct WindowSearch {
     presence: Presence,
     field: SearchField,
-    /// The resting control, where the field grows from.
     anchor: Rect,
-    /// The furthest the open search may reach: rightwards to the window's
-    /// own controls, or (trailing) leftwards to an app's location.
     limit: f64,
-    /// The furthest the search reaches back when the query would otherwise
-    /// be narrower than it can be typed in: over the location and the
-    /// app's other slots, or over the tabs it follows.
     cramped: f64,
-    /// Where the app's coordinates start in the search's: what the open
-    /// options cover of the app is told in the app's.
     frame_origin: Point,
-    /// What of the app in its own process the options were last said to
-    /// cover (it starts out covered by nothing).
     cover_sent: Option<Rect>,
-    /// The control ends an app's slots in the bar, so the open search grows
-    /// back over them, on the bar's ground.
     trailing: bool,
     ground: Option<vello::peniko::Color>,
-    /// The field as drawn this frame, and the open search's other parts.
     field_rect: Rect,
     parts: Vec<(Part, Rect)>,
-    /// Whether the parts after the field show (they fade in as it opens).
     parts_opacity: f32,
     hover: Option<Part>,
     rest_hover: bool,
     last_cursor: Point,
-    /// The field holds the keyboard: typing goes to the query, not the app.
     keyboard: bool,
-    /// What the window's app offers to search in place.
     in_place: InPlace,
-    /// The app's name, which "Search Notes" names.
     app_name: String,
     driver: SearchDriver,
-    /// The app runs in a process of its own: the search is carried to it as
-    /// events ([`Self::take_remote_events`]) instead of driven here.
     remote: bool,
-    /// The query the app in its own process was last sent.
     sent: Option<String>,
-    /// A step through a document's matches asked for since the last drive.
     step: Option<bool>,
-    /// The find's options as the person set them; they carry over from one
-    /// opening to the next. A mode the document does not offer runs as text
-    /// ([`FindAbilities::allow`]).
     options: FindOptions,
-    /// What the document's find offers beyond matching.
     abilities: FindAbilities,
-    /// The options and the replacement, under the field.
     panel: OptionsPanel,
-    /// The replacement field holds the search's keyboard, not the query.
     replacing: bool,
-    /// The replace chord asked for the replacement before the document said
-    /// whether it can replace: it gets the keyboard once it says so.
     replace_wanted: bool,
-    /// A replace asked for since the last drive: every match (`true`), or
-    /// the current one.
     replace: Option<bool>,
-    /// The options the app in its own process was last sent.
     options_sent: Option<FindOptions>,
-    /// The last find the app in its own process took over that the field
-    /// shows ([`Self::set_remote_adopted`]).
     adopted_serial: Option<u64>,
-    /// The search closed and the app has not yet been told.
     finishing: bool,
     requests: Vec<WindowSearchRequest>,
     motion: EffectiveMotion,
     platform: PlatformConventions,
-    /// The theme the field's controls are placed in, as last laid out: the
-    /// search places its own field, so it keeps the type it measured in.
     layout_theme: Theme,
 }
 
@@ -612,7 +452,6 @@ impl WindowSearch {
     pub fn new() -> Self {
         Self {
             presence: Presence::closed(),
-            // One close control: the field clears with the keyboard.
             field: SearchField::new()
                 .with_placeholder(&tr("window-search-placeholder"))
                 .with_count_slot()
@@ -655,7 +494,6 @@ impl WindowSearch {
         }
     }
 
-    /// Whether the search is open (or opening), whatever is drawn.
     #[must_use]
     pub fn is_open(&self) -> bool {
         self.presence.is_open()
@@ -666,14 +504,11 @@ impl WindowSearch {
         self.is_open() && self.keyboard
     }
 
-    /// What the search acts on in place while open.
     #[must_use]
     pub fn in_place(&self) -> InPlace {
         self.in_place
     }
 
-    /// Where the caret stands in the query, in bytes, while the field holds
-    /// the keyboard.
     #[must_use]
     pub fn caret_byte(&self) -> Option<usize> {
         self.has_keyboard()
@@ -681,66 +516,52 @@ impl WindowSearch {
             .flatten()
     }
 
-    /// The query typed so far.
     #[must_use]
     pub fn query(&self) -> &str {
         self.field.value()
     }
 
-    /// The replacement typed so far.
     #[must_use]
     pub fn replacement(&self) -> &str {
         self.panel.replace_field.value()
     }
 
-    /// The find's options, as the document runs them.
     #[must_use]
     pub fn options(&self) -> FindOptions {
         self.abilities.allow(self.options)
     }
 
-    /// What the document's find offers beyond matching.
     #[must_use]
     pub fn abilities(&self) -> FindAbilities {
         self.abilities
     }
 
-    /// Whether the options panel is open.
     #[must_use]
     pub fn options_open(&self) -> bool {
         self.is_open() && self.panel.is_open()
     }
 
-    /// The open options panel as laid out, in the search's coordinates.
     #[must_use]
     pub fn options_rect(&self) -> Option<Rect> {
         self.panel.rect().filter(|_| self.is_open())
     }
 
-    /// The narrowest the query is laid out: the parts after it give way
-    /// first, then the search reaches back over the app's slots.
     #[must_use]
     pub fn query_min_width(theme: &Theme) -> f64 {
         field_min(theme)
     }
 
-    /// The least room an open search keeps: its query at the narrowest and the parts that never
-    /// give way — the control that closes it and the options a document's search holds, which
-    /// keep the mode and Replace. A window's bar keeps its search this much room to reach back
-    /// over the app's slots, so a narrow window's query stays typeable.
     #[must_use]
     pub fn least_span(theme: &Theme) -> f64 {
         let sibling = f64::from(theme.tokens.spacing.s2);
         field_min(theme) + 2.0 * (CONTROL_PX + sibling)
     }
 
-    /// Whether the replacement field holds the keyboard.
     #[must_use]
     pub fn replacing(&self) -> bool {
         self.has_keyboard() && self.replacing
     }
 
-    /// `(current, total)` in a document, 1-based; `None` with no match.
     #[must_use]
     pub fn position(&self) -> Option<(usize, usize)> {
         if !self.remote {
@@ -752,8 +573,6 @@ impl WindowSearch {
             .map(|count| (count.shown, count.total))
     }
 
-    /// How many matches the document's search found, here or (for an app in
-    /// its own process) by the count it answered with.
     fn matches(&self) -> usize {
         if !self.remote {
             return self.driver.matches();
@@ -764,27 +583,22 @@ impl WindowSearch {
             .map_or(0, |count| count.total)
     }
 
-    /// Whether the search is carried to an app in a process of its own.
     #[must_use]
     pub fn is_remote(&self) -> bool {
         self.remote
     }
 
-    /// What the field's counter shows.
     #[must_use]
     pub fn count(&self) -> Option<FilterCount> {
         self.field.count()
     }
 
-    /// Name the window's app, for the widening button ("Search Notes").
     pub fn set_app_name(&mut self, name: &str) {
         if self.app_name != name {
             name.clone_into(&mut self.app_name);
         }
     }
 
-    /// Place the resting control: `anchor` is its square, `limit` the
-    /// furthest the open search may reach.
     pub fn place(&mut self, anchor: Rect, limit: f64) {
         self.anchor = anchor;
         self.limit = limit;
@@ -792,20 +606,12 @@ impl WindowSearch {
         self.trailing = false;
     }
 
-    /// Where the open search, placed after the tabs ([`Self::place`]), may
-    /// start back over them when a narrow window leaves the query too
-    /// narrow to type in.
     pub fn set_cramped_start(&mut self, x: f64) {
         if !self.trailing {
             self.cramped = x.min(self.anchor.x0);
         }
     }
 
-    /// Place the control at the end of an app's slots: open, the search ends
-    /// at `anchor` and reaches back as far as `reach`, covering the slots it
-    /// stands over on the bar's ground. Where that leaves the query too
-    /// narrow to type in (a narrow window), it reaches back as far as
-    /// `cramped` instead (the start of the app's slots).
     pub fn place_trailing(&mut self, anchor: Rect, reach: f64, cramped: f64) {
         self.anchor = anchor;
         self.limit = reach;
@@ -813,14 +619,10 @@ impl WindowSearch {
         self.trailing = true;
     }
 
-    /// Where the app's own coordinates start in the search's (the top left
-    /// of the frame it lays out in): what the open options cover of the
-    /// app is told to it in its coordinates ([`Findable::set_find_cover`]).
     pub fn set_frame_origin(&mut self, origin: Point) {
         self.frame_origin = origin;
     }
 
-    /// What the open options cover of the app, in its coordinates.
     fn cover(&self) -> Option<Rect> {
         self.panel
             .rect()
@@ -828,12 +630,10 @@ impl WindowSearch {
             .map(|rect| rect - self.frame_origin.to_vec2())
     }
 
-    /// The colour the bar stands on.
     pub fn set_ground(&mut self, ground: vello::peniko::Color) {
         self.ground = Some(ground);
     }
 
-    /// Move everything by `dx` (the strip panned under a laid-out window).
     pub(crate) fn offset_layout(&mut self, dx: f64) {
         let shift = vello::kurbo::Vec2::new(dx, 0.0);
         self.anchor = self.anchor + shift;
@@ -848,15 +648,11 @@ impl WindowSearch {
         self.field.apply_layout_external(field, &theme);
     }
 
-    /// The resting control's square.
     #[must_use]
     pub fn anchor(&self) -> Rect {
         self.anchor
     }
 
-    /// Whether `point` is on the control: its resting square, or the open
-    /// field and its buttons. A press there is the search's, never the
-    /// start of carrying the window by its bar.
     #[must_use]
     pub fn hit(&self, point: Point) -> bool {
         self.anchor.contains(point)
@@ -866,11 +662,8 @@ impl WindowSearch {
                     || self.panel.contains(point)))
     }
 
-    /// Open in place on what the app offers, the field holding the keyboard
-    /// with its query selected (so typing replaces it, as Find does).
     pub fn open(&mut self, in_place: InPlace, source: MotionSource) {
         self.in_place = in_place;
-        // A query view searches the whole app: the field says so.
         let hint = if in_place == InPlace::Query {
             self.app_label()
         } else {
@@ -880,7 +673,6 @@ impl WindowSearch {
         self.finishing = false;
         self.remote = false;
         self.sent = None;
-        // An app in its own process opens each search on the defaults.
         self.options_sent = Some(FindOptions::default());
         self.adopted_serial = None;
         self.abilities = FindAbilities::default();
@@ -890,7 +682,6 @@ impl WindowSearch {
         self.keyboard = true;
         self.focus_query();
         self.field.select_all();
-        // The query runs again on what the app shows now.
         self.driver.open(in_place);
         self.presence.show(
             true,
@@ -901,26 +692,18 @@ impl WindowSearch {
         );
     }
 
-    /// Open in place on an app that runs in a process of its own and offers
-    /// `in_place`: what is typed goes to it as events
-    /// ([`Self::take_remote_events`]), and it answers with the count
-    /// ([`Self::set_remote_count`]).
     pub fn open_remote(&mut self, in_place: InPlace, source: MotionSource) {
         self.open(in_place, source);
         self.remote = true;
         self.field.set_count(None);
     }
 
-    /// What the document of an app in its own process offers beyond
-    /// matching, as its window says.
     pub fn set_remote_abilities(&mut self, abilities: FindAbilities) {
         if self.remote {
             self.learn_abilities(abilities);
         }
     }
 
-    /// The document said what it offers: the panel shows that, and a
-    /// replace chord waiting for it is answered.
     fn learn_abilities(&mut self, abilities: FindAbilities) {
         self.abilities = abilities;
         if !abilities.replace && self.replacing {
@@ -931,10 +714,6 @@ impl WindowSearch {
         }
     }
 
-    /// The replace chord (Ctrl+H, ⌘⌥F) on the open search: the options open
-    /// with the replacement holding the keyboard, its text selected. Before
-    /// the document has said whether it can replace (the search just
-    /// opened), it does so once it says it can.
     pub fn focus_replacement(&mut self) {
         if !self.is_open() || self.in_place != InPlace::Document {
             return;
@@ -952,8 +731,6 @@ impl WindowSearch {
         self.panel.replace_field.select_all();
     }
 
-    /// Open the search as `opening` asks: in place on what the app offers,
-    /// with the replacement holding the keyboard for the replace chord.
     pub fn open_as(&mut self, in_place: InPlace, source: MotionSource, opening: SearchOpening) {
         self.open(in_place, source);
         if opening == SearchOpening::Replace {
@@ -961,15 +738,12 @@ impl WindowSearch {
         }
     }
 
-    /// The query field holds the search's keyboard.
     fn focus_query(&mut self) {
         self.replacing = false;
         self.panel.replace_field.set_focused(false);
         self.field.set_focused(true);
     }
 
-    /// Choose `choice` in the options: set an option (the next drive finds
-    /// again under it) or ask for a replace.
     fn choose(&mut self, choice: Choice) {
         match choice {
             Choice::Replace => self.request_replace(false),
@@ -978,21 +752,16 @@ impl WindowSearch {
         }
     }
 
-    /// Set the find's options (an agent, a test); the next drive finds again
-    /// under them.
     pub fn set_options(&mut self, options: FindOptions) {
         self.options = options;
     }
 
-    /// Replace the current match with what the replacement holds, or every
-    /// match (`all`), on the next drive.
     pub fn request_replace(&mut self, all: bool) {
         if self.in_place == InPlace::Document && self.abilities.replace {
             self.replace = Some(all);
         }
     }
 
-    /// Open or close the options panel.
     fn toggle_options(&mut self) {
         let open = !self.panel.is_open();
         self.panel.set_open(open);
@@ -1001,9 +770,6 @@ impl WindowSearch {
         }
     }
 
-    /// What the search asks of an app in its own process since the last
-    /// call: the query when it changed (the first time on opening), a step,
-    /// or the close.
     pub fn take_remote_events(&mut self) -> Vec<crate::window_toolbar::ToolbarEvent> {
         use crate::window_toolbar::ToolbarEvent;
         let mut events = Vec::new();
@@ -1056,10 +822,6 @@ impl WindowSearch {
         events
     }
 
-    /// Show `query` under `options` in the open search, as the find the
-    /// document ran on its own that the search took over: the field holds
-    /// it (selected, so typing replaces it) and the search runs it from now
-    /// on.
     fn show_query(&mut self, query: &str, options: FindOptions) {
         if self.field.value() != query {
             self.field.set_query(query);
@@ -1070,9 +832,6 @@ impl WindowSearch {
         self.options = options;
     }
 
-    /// The app in its own process took over a find its document ran on its
-    /// own ([`crate::window_toolbar::AdoptedQuery`]): the field shows it, and
-    /// it is what the app was last sent, so it is not sent back.
     pub fn set_remote_adopted(&mut self, adopted: &crate::window_toolbar::AdoptedQuery) {
         if !self.remote || !self.is_open() || self.adopted_serial == Some(adopted.serial) {
             return;
@@ -1083,7 +842,6 @@ impl WindowSearch {
         self.options_sent = Some(adopted.options);
     }
 
-    /// The count an app in its own process answered with.
     pub fn set_remote_count(&mut self, count: Option<FilterCount>) {
         if self.remote && self.is_open() {
             let count = count.filter(|_| !self.field.value().is_empty());
@@ -1093,8 +851,6 @@ impl WindowSearch {
         }
     }
 
-    /// Close: the field gives up the keyboard and the app is told on the
-    /// next drive to stop highlighting or narrowing.
     pub fn close(&mut self, source: MotionSource) {
         if !self.is_open() {
             return;
@@ -1117,8 +873,6 @@ impl WindowSearch {
         );
     }
 
-    /// Give the keyboard back to the app, leaving the search open with its
-    /// matches (a click into the content).
     pub fn release_keyboard(&mut self) {
         self.keyboard = false;
         self.field.set_focused(false);
@@ -1127,15 +881,12 @@ impl WindowSearch {
         self.replacing = false;
     }
 
-    /// Take the keyboard again (Ctrl+F on an open search).
     pub fn take_keyboard(&mut self) {
         self.keyboard = true;
         self.focus_query();
         self.field.select_all();
     }
 
-    /// Step to the next (or previous) match in a document; in a query view,
-    /// hand the keyboard to the results.
     pub fn step(&mut self, forward: bool) {
         match self.in_place {
             InPlace::Document => self.step = Some(forward),
@@ -1147,13 +898,10 @@ impl WindowSearch {
         }
     }
 
-    /// What the person asked for since the last call.
     pub fn take_requests(&mut self) -> Vec<WindowSearchRequest> {
         std::mem::take(&mut self.requests)
     }
 
-    /// Whether driving the app would change anything: a query not yet
-    /// carried to it, a step, or a close it has not heard of.
     #[must_use]
     pub fn wants_drive(&self) -> bool {
         self.finishing
@@ -1162,13 +910,8 @@ impl WindowSearch {
             || (self.is_open() && self.in_place != InPlace::Nothing)
     }
 
-    /// Carry the search to the app's `root`: find or narrow when the query
-    /// changed, follow the content when it changed under the search, step,
-    /// or stop when the search closed. Returns whether anything the app
-    /// shows changed.
     pub fn drive(&mut self, root: &mut dyn Widget) -> bool {
         if self.remote {
-            // An app in its own process is driven by its own runtime.
             return false;
         }
         let query = self.field.value().to_owned();
@@ -1203,8 +946,6 @@ impl WindowSearch {
         touched
     }
 
-    /// The app went away under an open search (its tab closed or another
-    /// became active): forget what was found without telling it.
     pub fn detach(&mut self) {
         self.driver.forget();
         self.finishing = false;
@@ -1218,8 +959,6 @@ impl WindowSearch {
         self.field.set_count(None);
     }
 
-    /// Route one event. Returns whether the search consumed it; the window
-    /// then stops it reaching the bar and the app.
     pub fn route(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) -> bool {
         let open = self.is_open();
         match event {
@@ -1229,7 +968,6 @@ impl WindowSearch {
                 self.hover = open.then(|| self.part_at(self.last_cursor)).flatten();
                 self.panel.set_hover(open.then_some(self.last_cursor));
                 if open {
-                    // A selection drag in a field follows the pointer.
                     let mut field_handled = false;
                     let field = if self.replacing {
                         &mut self.panel.replace_field
@@ -1244,7 +982,6 @@ impl WindowSearch {
                         },
                     );
                 }
-                // Over the open panel, what is beneath it is not hovered.
                 self.panel.contains(self.last_cursor)
             }
             WindowEvent::CursorLeft { .. } => {
@@ -1320,8 +1057,6 @@ impl WindowSearch {
                 return true;
             }
             if !self.field_rect.contains(point) && self.part_at(point).is_none() {
-                // A press outside closes the panel and does not reach what
-                // is beneath it, as for every popover.
                 self.toggle_options();
                 return true;
             }
@@ -1336,8 +1071,6 @@ impl WindowSearch {
             self.field.handle_event(event, ctx);
             return true;
         }
-        // A press anywhere else is the content's: the search stays open
-        // with its matches, and typing goes back to the app.
         self.release_keyboard();
         false
     }
@@ -1367,7 +1100,6 @@ impl WindowSearch {
         }
         if self.replacing {
             if chord == Some(SearchOpening::Find) {
-                // Find goes back to the query.
                 self.take_keyboard();
             } else {
                 self.replacement_key(key, event, ctx);
@@ -1375,7 +1107,6 @@ impl WindowSearch {
             return;
         }
         match key {
-            // The panel closes first, then the search.
             Key::Named(NamedKey::Escape) if self.panel.is_open() => self.toggle_options(),
             Key::Named(NamedKey::Escape) => self.requests.push(WindowSearchRequest::Close),
             Key::Named(NamedKey::Enter | NamedKey::F3)
@@ -1383,8 +1114,6 @@ impl WindowSearch {
             {
                 self.step(!modifiers.shift_key());
             }
-            // A query view searches the whole app already: Enter and Down go
-            // into its results, and Find again keeps the field.
             Key::Named(NamedKey::Enter | NamedKey::ArrowDown)
                 if self.in_place == InPlace::Query =>
             {
@@ -1397,19 +1126,14 @@ impl WindowSearch {
             {
                 self.field.select_all();
             }
-            // Nothing here matches, or this window has no document to step
-            // through: Enter widens to the whole app, as the next step does.
             Key::Named(NamedKey::Enter) if !self.field.value().is_empty() => {
                 self.requests
                     .push(WindowSearchRequest::Widen(SearchReach::App));
             }
-            // Find again widens: this view, then the whole app.
             Key::Character(text) if command && text.eq_ignore_ascii_case("f") => {
                 self.requests
                     .push(WindowSearchRequest::Widen(SearchReach::App));
             }
-            // Tab goes on to the replacement while the options show it;
-            // else it hands the keyboard back to the content, the search open.
             Key::Named(NamedKey::Tab) if self.panel.replace_field_rect().is_some() => {
                 self.focus_replacement();
             }
@@ -1418,8 +1142,6 @@ impl WindowSearch {
         }
     }
 
-    /// A key while the replacement holds the keyboard: Enter replaces the
-    /// current match, Tab goes back to the query, Escape closes the options.
     fn replacement_key(
         &mut self,
         key: &Key,
@@ -1444,9 +1166,6 @@ impl WindowSearch {
             .map(|(part, _)| *part)
     }
 
-    /// The resting control's tooltip: what it searches and the key that
-    /// opens it, "Search in this window (Ctrl+F)". A bare magnifier beside
-    /// an app's own search control left people guessing what it reached.
     fn rest_tooltip(&self) -> String {
         format!(
             "{} ({})",
@@ -1455,8 +1174,6 @@ impl WindowSearch {
         )
     }
 
-    /// The field holding the search's keyboard: the query, or the
-    /// replacement.
     fn keyboard_field(&self) -> &SearchField {
         if self.replacing {
             &self.panel.replace_field
@@ -1465,7 +1182,6 @@ impl WindowSearch {
         }
     }
 
-    /// The options control's name: what its panel holds.
     fn options_label(&self) -> String {
         tr(if self.abilities.replace {
             "window-search-replace-options"
@@ -1474,7 +1190,6 @@ impl WindowSearch {
         })
     }
 
-    /// The widening button's label: "Search Notes".
     fn app_label(&self) -> String {
         if self.app_name.is_empty() {
             tr("window-search-this-app")
@@ -1486,8 +1201,6 @@ impl WindowSearch {
         }
     }
 
-    /// Lay the open search out at `progress` of its opening: the field grows
-    /// from the resting control, the parts after it fade in at their place.
     fn layout(&mut self, progress: f64, text: &mut TextRenderer, theme: &Theme) {
         self.parts.clear();
         self.layout_theme = theme.clone();
@@ -1496,8 +1209,6 @@ impl WindowSearch {
         let height = ControlSize::Small.height(theme);
         let y0 = self.anchor.center().y - height / 2.0;
         let y1 = y0 + height;
-        // Where the open search may stand, left to right: from the control
-        // to its reach, or, cramped, as far back as `cramped` too.
         let span = |cramped: bool| match (self.trailing, cramped) {
             (true, false) => (self.limit, self.anchor.x1),
             (true, true) => (self.cramped, self.anchor.x1),
@@ -1516,13 +1227,7 @@ impl WindowSearch {
         let app_w = width_of(&app_label, text);
         let everywhere_w = width_of(&everywhere_label, text);
         let stepper = self.in_place == InPlace::Document;
-        // What follows the field, dropped from the widest reach inwards when
-        // the bar is narrow: everywhere, then the app, then Previous, then
-        // Next. A document's options never give way: they hold the mode and
-        // Replace, which a narrow window (a phone, a touch screen with no
-        // keyboard to press Enter on) needs as much as a wide one.
         let mut want_everywhere = true;
-        // A query view searches the whole app in place already.
         let mut want_app = self.in_place != InPlace::Query;
         let mut want_previous = stepper;
         let mut want_next = stepper;
@@ -1545,11 +1250,8 @@ impl WindowSearch {
             }
             w
         };
-        // The field's width when the bar has room for it: eleven controls.
         let field_max = 11.0 * height;
         let field_min = field_min(theme);
-        // Where the reach leaves the query too narrow to type in even once
-        // every part that gives way is gone, it reaches further back.
         let (lo, hi) = span(room_of(span(false)) - after(false, false, false, false) < field_min);
         let room = room_of((lo, hi));
         for give_way in 0..4 {
@@ -1565,13 +1267,10 @@ impl WindowSearch {
         }
         let after = after(want_everywhere, want_app, want_previous, want_next);
         let field_w = (room - after).clamp(CONTROL_PX, field_max);
-        // Open, the search starts at the control and reaches right; at the
-        // end of an app's slots it ends at the control and reaches back.
         let block = field_w + after;
         let start = if self.trailing {
             self.anchor.x1 - block
         } else {
-            // Cramped, it starts back over the tabs as far as it must.
             (hi - block).min(self.anchor.x0).max(lo)
         };
         let p = progress.clamp(0.0, 1.0);
@@ -1579,7 +1278,6 @@ impl WindowSearch {
         let drawn_w = CONTROL_PX + (field_w - CONTROL_PX) * p;
         self.field_rect = Rect::new(drawn_x0, y0, drawn_x0 + drawn_w, y1);
         self.field.apply_layout_external(self.field_rect, theme);
-        // The parts stand where the open search puts them, fading in.
         let mut x = start + field_w + sibling;
         let square = |x: f64| Rect::new(x, y0, x + CONTROL_PX, y1);
         if want_previous {
@@ -1619,7 +1317,6 @@ impl WindowSearch {
                 self.panel
                     .layout(field, anchor, span, self.abilities, text, theme);
             }
-            // The bar gave the options no room: they close.
             None => self.panel.set_open(false),
         }
     }
@@ -1673,11 +1370,6 @@ impl WindowSearch {
 }
 
 impl WindowSearch {
-    /// The options control to assistive technology and agents: a button
-    /// that expands the panel, holding the options and the replacement as
-    /// their own controls. They are there while the panel is closed too
-    /// (hidden from a screen reader's reading), so an agent sets an option
-    /// or replaces without opening it.
     fn options_node(&self, rect: Rect) -> crate::a11y::AccessNode {
         use crate::a11y::{AccessNode, AccessState, Role};
         let open = self.panel.is_open();
@@ -1710,7 +1402,6 @@ impl WindowSearch {
             if choice == Choice::Replace
                 && let Some(field) = self.panel.replace_field.accessibility()
             {
-                // The replacement comes before its buttons.
                 let mut field = field
                     .with_name(tr("find-bar-replace-placeholder"))
                     .with_action_target("window-search-replacement");
@@ -1730,8 +1421,6 @@ impl WindowSearch {
             .with_children(children)
     }
 
-    /// An action on one of the options or the replacement; `None` when
-    /// `target` is none of them.
     fn perform_option_action(
         &mut self,
         target: &str,
@@ -1784,8 +1473,6 @@ impl WindowSearch {
 }
 
 impl Widget for WindowSearch {
-    /// The window lays the search out by hand in its bar ([`Self::place`]);
-    /// as a leaf of its own it takes no room.
     fn build_layout(
         &mut self,
         taffy: &mut taffy::TaffyTree<()>,
@@ -1840,8 +1527,6 @@ impl Widget for WindowSearch {
         if (self.trailing || self.field_rect.x0 < self.anchor.x0)
             && let Some(ground) = self.ground
         {
-            // Over an app's slots, or a narrow window's tabs, the open
-            // search covers what it stands on.
             let end = self
                 .parts
                 .last()
@@ -1885,7 +1570,6 @@ impl Widget for WindowSearch {
         }
     }
 
-    /// The options panel, in the window's top layer over the app.
     fn draw_overlay(
         &mut self,
         scene: &mut Scene,
@@ -1902,16 +1586,6 @@ impl Widget for WindowSearch {
             .paint(scene, transform, text, theme, presence, shown);
     }
 
-    /// A resting search is clean: its field draws only while the search is
-    /// open, and an open one repaints off its own motion, its panel and the
-    /// caret in its field. A search that opens or closes, or whose resting
-    /// control changes, moves, and motion already answers here. A folded
-    /// search asks nothing of the field it does not draw: a field that keeps
-    /// state of its own would otherwise keep the window drawing frames
-    /// nothing shows.
-    /// What the search holds is clean once the frame drew it, or once the
-    /// frame chose not to: a closed search draws nothing, so what its field
-    /// and panel hold was not shown and is made again when it opens.
     fn mark_drawn(&mut self) {
         crate::widget::Widget::mark_drawn(&mut self.field);
         crate::widget::Widget::mark_drawn(&mut self.panel.replace_field);
@@ -1935,7 +1609,6 @@ impl Widget for WindowSearch {
     }
 
     fn next_wake_deadline(&self) -> Option<crate::time::Instant> {
-        // The caret's blink, while a field holds the keyboard.
         self.has_keyboard()
             .then(|| self.keyboard_field().next_wake_deadline())
             .flatten()
@@ -1973,7 +1646,6 @@ impl Widget for WindowSearch {
             Part::Next => tr("find-bar-next"),
             Part::Options => self.options_label(),
             Part::Close => tr("window-search-close"),
-            // Labelled buttons say what they do already.
             Part::App | Part::Everywhere => return None,
         };
         Some((*rect, name))
@@ -2143,15 +1815,12 @@ mod tests {
         taffy.widget_leaf(taffy::Style::default(), node_map, widget)
     }
 
-    /// A document that keeps what it found, which match is current and
-    /// whether it was told to stop.
     #[derive(Default)]
     struct Doc {
         text: String,
         found: usize,
         current: Option<usize>,
         cleared: bool,
-        /// A find the document ran on its own, for the search to take over.
         own: Option<crate::widget::find_bar::OwnFind>,
     }
 
@@ -2197,7 +1866,6 @@ mod tests {
         }
     }
 
-    /// A list of names that narrows to what contains the query.
     struct Names {
         all: Vec<&'static str>,
         shown: usize,
@@ -2284,7 +1952,6 @@ mod tests {
         search.open(InPlace::Document, MotionSource::Keyboard);
         search.drive(&mut doc);
 
-        // An action went to the third match of "cat" (an agent's result).
         let whole_word = FindOptions {
             whole_word: true,
             ..FindOptions::default()
@@ -2358,7 +2025,6 @@ mod tests {
         assert_eq!(names.shown, 4, "the whole list is back");
     }
 
-    /// An app whose views are queries: it records what the search told it.
     #[derive(Default)]
     struct Views {
         opened: usize,
@@ -2433,9 +2099,6 @@ mod tests {
         assert_eq!(views.opened, 1);
     }
 
-    /// The resting magnifier sits beside the app's own controls, so it says
-    /// what it searches and the key that opens it, to the pointer and to
-    /// assistive technology alike.
     #[test]
     fn the_resting_control_names_what_it_searches_and_its_key() {
         let mut search = WindowSearch::new();
@@ -2451,9 +2114,6 @@ mod tests {
         assert_eq!(node.name.as_deref(), Some("Search in this window"));
     }
 
-    /// A folded search draws one control: the field it holds is not drawn,
-    /// so its own paint state must not keep the window drawing frames
-    /// nothing of it shows. Opening it asks for the frames that show it.
     #[test]
     fn a_folded_search_asks_for_no_frame() {
         let mut search = WindowSearch::new();
@@ -2482,8 +2142,6 @@ mod tests {
                 WindowSearchRequest::Widen(SearchReach::Everywhere)
             ]
         );
-        // With nothing to search in place, the control opens the platform
-        // search: the window asks to open and decides where.
         let mut closed = WindowSearch::new();
         closed.place(Rect::new(100.0, 8.0, 128.0, 36.0), 600.0);
         assert!(!closed.is_open());
@@ -2539,8 +2197,6 @@ mod tests {
             "it grows from where the control stands"
         );
 
-        // A phone-wide bar: the steps give way, Previous first, but the
-        // options (the mode, Replace) and Close stay.
         let narrow = |reach: f64, search: &mut WindowSearch, text: &mut TextRenderer| {
             search.place(Rect::new(40.0, 6.0, 68.0, 34.0), 40.0 + reach);
             search.layout(1.0, text, &theme);

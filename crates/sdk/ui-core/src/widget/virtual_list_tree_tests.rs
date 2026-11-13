@@ -60,7 +60,6 @@ impl ListModel for Nested {
 fn nested() -> VirtualList<Nested> {
     let model = Nested {
         keys: vec![0, 1, 2, 3, 4],
-        // 1 and 2 nest under 0, one under the other; 4 names 0 from away from it.
         parents: HashMap::from([(1, 0), (2, 1), (4, 0)]),
         groups: HashMap::new(),
     };
@@ -75,8 +74,6 @@ fn nested() -> VirtualList<Nested> {
     .with_viewport_height(200.0)
 }
 
-/// The tree's rows as the list works them out: each row's depth, whether it has subtasks, and
-/// whether it stands under the row it follows.
 fn shape(list: &VirtualList<Nested>, marks: &TreeMarks<u64>) -> Vec<(u64, u32, bool, bool)> {
     (0..list.model.len())
         .map(|index| {
@@ -91,7 +88,6 @@ fn shape(list: &VirtualList<Nested>, marks: &TreeMarks<u64>) -> Vec<(u64, u32, b
         .collect()
 }
 
-/// Press and let go at `x`/`y`.
 fn press<M: ListModel + 'static>(
     list: &mut VirtualList<M>,
     x: f64,
@@ -128,7 +124,6 @@ fn a_list_indents_a_row_under_the_row_it_names_and_folds_it_away() {
     let row = 20.0;
     assert!((list.viewport.content_extent() - 5.0 * row).abs() < 0.5);
 
-    // Folding a row takes the room its subtasks had, down the chain.
     assert!(list.fold_row(&0, true), "the row has subtasks to fold");
     let (taffy, node) = super::tests::lay_out(&mut list, 300.0);
     assert!(list.row_folded(&0));
@@ -137,8 +132,6 @@ fn a_list_indents_a_row_under_the_row_it_names_and_folds_it_away() {
     assert_eq!(list.viewport.item_height(2), Some(0.0), "the whole chain");
     assert_eq!(list.viewport.item_height(3), Some(row));
 
-    // Its disclosure shows them again, where the list says the person presses: the box the row
-    // shows its chevron in.
     let at = list
         .disclosure_rect(&0)
         .expect("the folded row shows its disclosure")
@@ -148,7 +141,6 @@ fn a_list_indents_a_row_under_the_row_it_names_and_folds_it_away() {
     assert!(!list.row_folded(&0), "the press unfolded it");
     assert!((list.viewport.content_extent() - 5.0 * row).abs() < 0.5);
 
-    // Deeper in, the chevron stands one indent further in, and folds only what is under it.
     let at = list
         .disclosure_rect(&1)
         .expect("the branch one depth in shows its disclosure")
@@ -171,8 +163,6 @@ fn a_row_whose_parent_stands_in_another_group_stands_on_the_groups_first_level()
     let marks = Rc::new(TreeMarks::default());
     let model = Nested {
         keys: vec![0, 1, 2, 3],
-        // 1 is a step of 0; 2 and 3 are steps of 0 too, and the sort put them under another
-        // day than the task they belong to.
         parents: HashMap::from([(1, 0), (2, 0), (3, 2)]),
         groups: HashMap::from([
             (0, "Monday".to_owned()),
@@ -197,7 +187,6 @@ fn a_row_whose_parent_stands_in_another_group_stands_on_the_groups_first_level()
         vec![
             (0, 0, true, false),
             (1, 1, false, true),
-            // The group's first row stands on its own level, naming the task it is a step of.
             (2, 0, true, false),
             // A row whose parent stands in its own group keeps its place under it.
             (3, 1, false, true),
@@ -206,15 +195,11 @@ fn a_row_whose_parent_stands_in_another_group_stands_on_the_groups_first_level()
     );
 }
 
-/// A row standing open into its item folds its branch: the rows under it are what the item's
-/// document lists, so the list keeps them out of its own, and closing the row brings them
-/// back where they stood. What the person folded stays folded underneath.
 #[test]
 fn a_row_standing_open_folds_its_branch_and_closing_it_brings_the_rows_back() {
     let marks = Rc::new(TreeMarks::default());
     let list = OpenableTree {
         keys: vec![0, 1, 2, 3],
-        // 1 and 2 nest under 0, one under the other; 3 stands beside them.
         parents: HashMap::from([(1, 0), (2, 1)]),
     };
     let mut list = VirtualList::new(list, 20.0, |_, _, key| {
@@ -366,7 +351,6 @@ fn a_tree_keeps_its_chevrons_column_while_its_rows_stay() {
         list.bleed
     );
 
-    // The subtask leaves the list; the rows it stood among stay.
     list.update_model(|model| model.keys = vec![0, 2]);
     let _ = super::tests::lay_out(&mut list, 300.0);
     assert!(
@@ -375,7 +359,6 @@ fn a_tree_keeps_its_chevrons_column_while_its_rows_stay() {
         list.lead
     );
 
-    // Other rows altogether: the list reads them anew, and nothing of them folds.
     list.update_model(|model| {
         model.keys = vec![5, 6];
         model.parents.clear();
@@ -388,7 +371,6 @@ fn a_tree_keeps_its_chevrons_column_while_its_rows_stay() {
         list.bleed
     );
 
-    // A row of them comes to hold a subtask: its chevron takes the column at once.
     list.update_model(|model| {
         model.keys = vec![5, 7, 6];
         model.parents.insert(7, 5);
@@ -401,8 +383,6 @@ fn a_tree_keeps_its_chevrons_column_while_its_rows_stay() {
     );
 }
 
-/// A tree reads as a tree: the list says what it is, each row says how deep it stands, and a
-/// row with subtasks says whether they show.
 #[test]
 fn a_tree_reads_as_a_tree_and_says_how_deep_each_row_stands() {
     use crate::a11y::Role;
@@ -435,7 +415,6 @@ fn a_tree_reads_as_a_tree_and_says_how_deep_each_row_stands() {
         "a row with nothing under it has no disclosure"
     );
 
-    // Folded away, the branch says so, and the rows under it leave the tree with their rows.
     assert!(list.fold_row(&0, true));
     let _ = super::tests::lay_out(&mut list, 300.0);
     let semantics = list.accessibility().expect("the list has a node");
@@ -447,8 +426,6 @@ fn a_tree_reads_as_a_tree_and_says_how_deep_each_row_stands() {
     assert_eq!(semantics.children[0].state.expanded, Some(false));
 }
 
-/// The left and right keys fold a branch as its disclosure does under the pointer, and step in
-/// and out of what it holds.
 #[test]
 fn the_left_and_right_keys_fold_a_branch_and_step_in_and_out_of_it() {
     let marks = Rc::new(TreeMarks::default());
@@ -462,7 +439,6 @@ fn the_left_and_right_keys_fold_a_branch_and_step_in_and_out_of_it() {
         "the keyboard starts on the first row"
     );
 
-    // Right steps into the row that stands under it, and into the row under that.
     assert!(list.on_key(&key(NamedKey::ArrowRight), false, false));
     assert_eq!(list.focused_key, Some(1));
     assert!(list.on_key(&key(NamedKey::ArrowRight), false, false));
@@ -472,8 +448,6 @@ fn the_left_and_right_keys_fold_a_branch_and_step_in_and_out_of_it() {
         "a row with nothing under it has nowhere to step"
     );
 
-    // Left steps back out to the row it stands under; on a branch that shows its subtasks it
-    // folds them away, as the chevron does, and right shows them again.
     assert!(list.on_key(&key(NamedKey::ArrowLeft), false, false));
     assert_eq!(list.focused_key, Some(1));
     assert!(list.on_key(&key(NamedKey::ArrowLeft), false, false));
@@ -487,8 +461,6 @@ fn the_left_and_right_keys_fold_a_branch_and_step_in_and_out_of_it() {
     assert!(!list.row_folded(&1), "right shows what it folded away");
 }
 
-/// A tree whose rows a host moves: a drop lands what it moved where it names, so a move the
-/// list places is the move its person sees.
 struct Movable {
     keys: Vec<u64>,
     parents: HashMap<u64, u64>,
@@ -535,7 +507,6 @@ impl ListModel for Movable {
     }
 }
 
-/// Where `key` stands: under `ancestor`, following the parents it names.
 fn stands_under(parents: &HashMap<u64, u64>, key: u64, ancestor: u64) -> bool {
     let mut cursor = key;
     for _ in 0..64 {
@@ -550,8 +521,6 @@ fn stands_under(parents: &HashMap<u64, u64>, key: u64, ancestor: u64) -> bool {
     false
 }
 
-/// Where a host lands a drop: the row moves beside the row it names, into it as its last
-/// subtask, and takes the depth of where it landed.
 fn land(model: &mut Movable, dropped: ReorderDrop<u64>) -> bool {
     if dropped.source == dropped.target.key {
         return false;
@@ -618,7 +587,6 @@ fn movable(keys: Vec<u64>, parents: &[(u64, u64)]) -> VirtualList<Movable> {
     .with_viewport_height(200.0)
 }
 
-/// Send `event` to the list as the window would.
 fn send<M: ListModel + 'static>(
     list: &mut VirtualList<M>,
     event: &WindowEvent,
@@ -630,7 +598,6 @@ fn send<M: ListModel + 'static>(
         .handled
 }
 
-/// Send `event` with `modifiers` held.
 fn send_with<M: ListModel + 'static>(
     list: &mut VirtualList<M>,
     event: &WindowEvent,
@@ -657,7 +624,6 @@ fn tab_indents_the_focused_row_into_the_row_above_it_and_shift_tab_steps_it_back
     assert!(list.reveal(&2));
     assert_eq!(list.focused_key(), Some(&2));
 
-    // Tab moves it under the row above it at its own depth, as an outliner does.
     assert!(send(
         &mut list,
         &crate::synthetic_input::named_key(NamedKey::Tab),
@@ -676,7 +642,6 @@ fn tab_indents_the_focused_row_into_the_row_above_it_and_shift_tab_steps_it_back
         "the moved row keeps the keyboard"
     );
 
-    // Shift+Tab steps it back out, directly after the row it stood under.
     assert!(send_with(
         &mut list,
         &crate::synthetic_input::named_key(NamedKey::Tab),
@@ -726,8 +691,6 @@ fn the_alt_arrows_move_a_row_through_its_tree_and_ctrl_moves_it_beside_its_sibli
     let alt = winit::keyboard::ModifiersState::ALT;
     let ctrl = winit::keyboard::ModifiersState::CONTROL;
 
-    // Alt+Right indents it into the row it stands beside, the row above at its own depth;
-    // Alt+Left steps it back out beside that row.
     assert!(list.reveal(&2));
     assert!(send_with(
         &mut list,
@@ -770,7 +733,6 @@ fn a_drop_into_the_middle_of_a_row_lands_the_dragged_row_inside_it() {
     let (taffy, node) = super::tests::lay_out(&mut list, 300.0);
     let laid_out = (&taffy, node);
 
-    // Pick row 2 up and hold it over the middle of row 0.
     send(
         &mut list,
         &crate::synthetic_input::cursor_moved(20.0, 50.0),
@@ -809,7 +771,6 @@ fn the_seam_below_an_open_branch_lands_at_the_first_row_it_holds() {
     let (taffy, node) = super::tests::lay_out(&mut list, 300.0);
     let laid_out = (&taffy, node);
 
-    // Row 0 holds row 1; the foot of row 0 is the seam above row 1, not row 0's next sibling.
     send(
         &mut list,
         &crate::synthetic_input::cursor_moved(20.0, 50.0),
@@ -980,7 +941,6 @@ fn escape_cancels_a_rename_and_a_press_elsewhere_commits_it() {
         &crate::synthetic_input::char_key("y"),
         laid_out
     ));
-    // A press on the row below is outside the field: it commits the title and reaches the row.
     send(
         &mut list,
         &crate::synthetic_input::cursor_moved(20.0, 30.0),
@@ -1034,7 +994,6 @@ fn a_double_click_renames_the_row_it_lands_on_instead_of_opening_it() {
 #[test]
 fn a_tree_row_keeps_its_own_height_and_the_ends_and_pages_reach_its_rows() {
     let marks = Rc::new(TreeMarks::default());
-    // Row 1 draws taller than its siblings, as a row with two lines does.
     let model = Movable {
         labels: (0..3).map(|key| (key, format!("row {key}"))).collect(),
         keys: vec![0, 1, 2],
@@ -1071,8 +1030,6 @@ fn a_tree_row_keeps_its_own_height_and_the_ends_and_pages_reach_its_rows() {
     assert_eq!(list.focused_key(), Some(&2), "a page down the flat rows");
 }
 
-/// A tree whose rows stand under a group heading, as a project page's first task and its
-/// subtask do.
 struct Headed {
     keys: Vec<u64>,
     parents: HashMap<u64, u64>,
@@ -1122,7 +1079,6 @@ fn a_first_row_under_a_heading_draws_its_chevron_on_its_own_row() {
     let marks = Rc::new(TreeMarks::default());
     let model = Headed {
         keys: vec![0, 1, 2],
-        // The first row of the list is a parent: its subtask follows it.
         parents: HashMap::from([(1, 0)]),
         groups: vec![
             Some(RowGroup::heading("Jun 30".to_owned())),
@@ -1143,7 +1099,6 @@ fn a_first_row_under_a_heading_draws_its_chevron_on_its_own_row() {
     let _ = super::tests::lay_out(&mut list, 300.0);
     let _ = super::tests::lay_out(&mut list, 300.0);
 
-    // The viewport holds the first row with the band of the heading over it in one item.
     let item_height = list.viewport.item_height(0).expect("the first row");
     let row = list.row_box(0).expect("the first row stands somewhere");
     let band = list.groups.height;
@@ -1178,7 +1133,6 @@ fn a_first_row_under_a_heading_draws_its_chevron_on_its_own_row() {
         chevron.center().y
     );
 
-    // A phone's narrow column lays the heading and the row out the same way.
     let _ = super::tests::lay_out(&mut list, 180.0);
     let narrow = list.row_box(0).expect("the first row on a phone");
     let (chevron, _) = list
@@ -1192,7 +1146,6 @@ fn a_first_row_under_a_heading_draws_its_chevron_on_its_own_row() {
         narrow.center().y
     );
 
-    // The press that folds the subtask is read where the chevron stands, on the row.
     let (taffy, node) = super::tests::lay_out(&mut list, 300.0);
     let row = list.row_box(0).expect("the first row stands somewhere");
     let (chevron, _) = list
@@ -1245,8 +1198,6 @@ fn a_branch_row_starts_on_the_column_its_neighbours_do() {
         leaf.x0
     );
 
-    // The top level stands the one step its chevron takes in from the list's leading edge:
-    // the rows' column is `lead` in, and the chevron hangs in the step in front of it.
     let column = branch.x0 + list.lead;
     assert!(
         (column - (branch.x0 + TREE_INDENT)).abs() < 0.5,
@@ -1274,8 +1225,6 @@ fn a_branch_row_starts_on_the_column_its_neighbours_do() {
     );
 }
 
-/// A tree whose rows open the item into a document of its own where they stand, one under
-/// another: the rows say how they nest, and hold the fields that edit them.
 struct OpenableTree {
     keys: Vec<u64>,
     parents: HashMap<u64, u64>,
@@ -1310,8 +1259,6 @@ impl ListModel for OpenableTree {
     }
 }
 
-/// A tree row standing open into the item's document: its title field, the page under it and
-/// the box that ticks it off.
 #[test]
 fn a_tree_row_open_in_its_place_hands_a_reader_what_it_holds() {
     use crate::a11y::Action;

@@ -42,29 +42,18 @@ impl<M: ListModel> VirtualList<M> {
         self
     }
 
-    /// A press on a row opens it ([`Self::on_activate_view`]), rather than moving the selection
-    /// onto it and waiting for a second click. The rows of a list that stands for things to
-    /// open — a task, a folder — open on the press itself, as a tree's rows do with a single
-    /// click; the row a keyboard or a reader moves to still only takes the keyboard.
     #[must_use]
     pub fn open_on_press(mut self) -> Self {
         self.open_on_press = true;
         self
     }
 
-    /// Whether a row with an item opens into it where it stands, or the item opens in front of
-    /// the list. A window too narrow to hold the item under the row shows one thing at a time:
-    /// the row's press then opens the item in front, where the window's back leads to the list
-    /// again, and a row the host held open closes as the window narrows. Default `true`.
     #[must_use]
     pub fn in_place(mut self, in_place: bool) -> Self {
         self.in_place = in_place;
         self
     }
 
-    /// The row the keyboard is on: the mounted row holding the focus — a control inside it
-    /// counts, as `Tab` leaves it there — else the row this list's own keys last took. The
-    /// row a key that acts on one row acts on.
     pub(super) fn focused_row_key(&self) -> Option<M::Key> {
         self.mounted
             .iter()
@@ -73,9 +62,6 @@ impl<M: ListModel> VirtualList<M> {
             .or_else(|| self.focused_key.clone())
     }
 
-    /// The rows an agent may choose, by semantic key alone (a renamed row
-    /// leaves what the list publishes as it was); as many as an enumeration
-    /// carries.
     fn entries(&self) -> Vec<String> {
         const MAX_ENTRIES: usize = 500;
         let Some(encode) = self.semantic_key.as_ref() else {
@@ -88,8 +74,6 @@ impl<M: ListModel> VirtualList<M> {
 }
 
 impl<M: ListModel + 'static> VirtualList<M> {
-    /// Answer a `select` or an `open` addressed to this list: show the row
-    /// addressed and report it, whoever chose it.
     fn start_view(
         &mut self,
         op: &crate::widget::ResourceOperation<'_>,
@@ -231,8 +215,6 @@ mod tests {
         .with_viewport_height(200.0)
     }
 
-    /// Choosing a row is the list's published view action, by the rows'
-    /// semantic keys: an agent's choice selects the row and reaches the app.
     #[test]
     fn an_agent_chooses_a_row_through_the_published_view_action() {
         let chosen = Rc::new(RefCell::new(Vec::new()));

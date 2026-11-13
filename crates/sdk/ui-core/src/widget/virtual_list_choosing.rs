@@ -4,10 +4,6 @@
 use super::{Choosing, ListModel, VirtualList};
 
 impl<M: ListModel> VirtualList<M> {
-    /// Choose `key` as the gesture says: `toggle` adds it to a choice or takes it away, and
-    /// `extend` grows the choice to it. A gesture that only changes a choice does not open
-    /// what it touches, so only a plain choice tells the row's listener it was chosen. A list
-    /// whose rows are read chooses none ([`VirtualList::reading`]).
     pub(super) fn apply_selection(
         &mut self,
         key: M::Key,
@@ -33,8 +29,6 @@ impl<M: ListModel> VirtualList<M> {
         self.report_selection(choosing);
     }
 
-    /// Move the selection onto `key` without reporting the choice: an action that opens
-    /// the row moves it there on the way, and the opening is what the host hears.
     pub(super) fn choose_quietly(&mut self, key: M::Key) {
         if self.reading {
             return;
@@ -52,8 +46,6 @@ impl<M: ListModel> VirtualList<M> {
     }
 
     pub(super) fn emit_selection(&mut self, key: M::Key) {
-        // A row that opens where it stands shows what it was chosen for under itself: the
-        // item is the document the list just opened, not something the host paints elsewhere.
         if self
             .model
             .index_of(&key)
@@ -63,8 +55,6 @@ impl<M: ListModel> VirtualList<M> {
         }
         let selected = self.selection.is_selected(&key);
         if let Some((_, handler)) = &mut self.view {
-            // The person's choice is the published view action's own run:
-            // no host decides a view or records it.
             if selected {
                 handler(key);
             }
@@ -73,11 +63,6 @@ impl<M: ListModel> VirtualList<M> {
         }
     }
 
-    /// Tell a listener which rows are selected now, in the order they stand.
-    ///
-    /// What a window keeps of a choice is a choice the person made by hand, a choice of more
-    /// than one row, and the way back from one of many to one row or none: a selection that
-    /// only followed the focus or the row that opened is the list's own.
     pub(super) fn report_selection(&mut self, choosing: Choosing) {
         if self.on_selected.is_none() {
             return;
@@ -94,7 +79,6 @@ impl<M: ListModel> VirtualList<M> {
         }
     }
 
-    /// Every selected row's key, in the order the rows stand: a select-all names all of them.
     pub(super) fn selected_keys(&self) -> Vec<M::Key> {
         let mut keys: Vec<M::Key> = if self.selection.is_select_all() {
             (0..self.model.len())

@@ -43,8 +43,6 @@ impl TextInput {
         handled: &mut bool,
     ) {
         let logical_pos = Point::new(position.x / scale_factor, position.y / scale_factor);
-        // Hover damage updates this field, but siblings still need the same
-        // motion to clear/arm their hover state. Only an owned drag consumes it.
         self.update_pointer_position(logical_pos);
         let over_accessory = self
             .accessory_rect()
@@ -112,7 +110,6 @@ impl TextInput {
         self.is_dragging = true;
     }
 
-    /// Arms a word-granularity drag so dragging beyond it extends by whole words.
     fn click_select_word(&mut self, pos: usize) {
         self.core.select_word(&self.text, pos);
         self.drag_unit = DragUnit::Word;
@@ -149,7 +146,6 @@ impl TextInput {
             Granularity::Char => self.click_place_caret(pos, position.affinity, modifiers),
             Granularity::Word => self.click_select_word(pos),
             Granularity::Line if self.multiline => self.click_select_line(pos),
-            // A single-line field has exactly one line, so this is select-all.
             Granularity::Line => self.click_select_line(pos),
         }
         *handled = true;
@@ -164,10 +160,6 @@ impl TextInput {
         handled: &mut bool,
     ) {
         match element_state {
-            // The tap the toolkit synthesises when a finger lifts: that
-            // finger's own lift, which follows, presses once
-            // (`text_input_touch.rs`), and a second press would count as a
-            // double click.
             ElementState::Pressed if self.active_touch.is_some() => *handled = true,
             ElementState::Pressed if self.is_hovered && self.press_accessory() => {
                 *handled = true;
@@ -233,8 +225,6 @@ impl TextInput {
         *handled = true;
     }
 
-    /// One step left or right in visual order through the shaped layout,
-    /// when the field has one (bidi runs move the way they read).
     fn visual_step(&self, forward: bool) -> Option<TextPosition> {
         if (self.multiline && !self.multiline_shaped) || self.masked() {
             return None;
@@ -307,7 +297,6 @@ impl TextInput {
             .then(|| self.autocorrect_previous_word())
             .flatten();
         if self.enter_submits && !shift {
-            // What is submitted is the corrected word.
             if let Some(correction) = correction {
                 self.apply_autocorrection(correction);
             }
@@ -429,8 +418,6 @@ impl TextInput {
             Key::Named(NamedKey::End) => self.handle_end(shift, ctrl, handled),
             Key::Named(NamedKey::Enter) => self.handle_enter_key(shift, handled),
             Key::Named(NamedKey::Escape) if self.entry && !self.text.is_empty() => {
-                // A list's entry is a draft until it is committed: Escape drops it, leaving no
-                // item behind.
                 self.set_text("");
                 *handled = true;
             }
@@ -463,8 +450,6 @@ impl TextInput {
         }
     }
 
-    /// The keys a read-only field takes: moving and selecting, select all and
-    /// copy. The rest are the app's.
     fn read_only_key(key: &Key, ctrl: bool) -> bool {
         match key {
             Key::Named(
@@ -498,7 +483,6 @@ impl TextInput {
         } else if t.chars().all(char::is_control) {
             self.core.clear_preedit();
         } else if let Some((boundary_at, boundary)) = trailing_boundary {
-            // A committed word plus its boundary autocorrects like typing.
             self.core.clear_preedit();
             if let Some(prefix) = t.get(..boundary_at)
                 && !prefix.is_empty()

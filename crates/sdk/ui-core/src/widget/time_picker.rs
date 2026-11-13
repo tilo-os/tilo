@@ -1,15 +1,4 @@
 //! `TimePicker` — three side-by-side vertical spinners for `HH : MM : SS`.
-//!
-//! Each spinner is a column of three regions: an up-arrow, the two-digit
-//! value cell, and a down-arrow. Clicking an arrow steps the value by 1
-//! with wrap-around (hours 0..=23, minutes/seconds 0..=59); scrolling the
-//! wheel over a value cell does the same.
-//!
-//! The seconds spinner is hidden unless the value contains seconds. The
-//! selected time can stay widget-local, bind to typed process-local state with
-//! [`TimePicker::from_state`], or be observed with `on_change` for an
-//! app-owned durable mutation.
-
 use crate::i18n::widget_text;
 use crate::widget::{AppModel, ModelPath};
 use taffy::{NodeId, Size, Style, TaffyTree};
@@ -29,9 +18,7 @@ mod component;
 use crate::widget::Widget;
 pub use component::TimePickerProps;
 
-/// Maximum hour value (inclusive). 24-hour clock — wraps 23 → 0.
 const HOUR_MAX: u8 = 23;
-/// Maximum minute/second value (inclusive). Wraps 59 → 0.
 const MINSEC_MAX: u8 = 59;
 
 /// Fixed width of one spinner cell. Picked so the two-digit value reads
@@ -41,7 +28,6 @@ const SPINNER_WIDTH: f32 = 44.0;
 /// (arrow, value, arrow) of 24 px each — the value cell ends up matching the
 /// `lg` text height with some breathing room.
 const PICKER_HEIGHT: f32 = 132.0;
-/// Width of the colon separator between spinners.
 const COLON_WIDTH: f32 = 8.0;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -51,7 +37,6 @@ pub enum TimeCell {
     Seconds,
 }
 
-/// Typed value shared by a [`TimePicker`] and application state.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TimeValue {
     pub hours: u8,
@@ -84,10 +69,8 @@ impl TimeValue {
     }
 }
 
-/// `(hours, minutes, seconds)`.
 type TimeChange = Box<dyn FnMut(u8, u8, Option<u8>)>;
 
-/// The time of day `at` is, when it names one: its instant, or the time of the day it names.
 fn time_of(at: &str) -> Option<TimeValue> {
     if let Ok(instant) = chrono::DateTime::parse_from_rfc3339(at) {
         let time = instant.time();
@@ -106,12 +89,8 @@ fn time_of(at: &str) -> Option<TimeValue> {
     })
 }
 
-/// Three-spinner time picker. See module docs.
 pub struct TimePicker {
-    /// Stable semantic/action id. Callers rendering more than one picker in a
-    /// retained tree set this explicitly with [`Self::with_id`].
     id: String,
-    /// Fluent message id spoken for the complete time control.
     accessible_name: Option<String>,
     hours: u8,           // 0..=23
     minutes: u8,         // 0..=59
@@ -123,21 +102,11 @@ pub struct TimePicker {
     minute_rect: Rect,
     second_rect: Rect, // ZERO when seconds == None
     last_cursor: Point,
-    /// The pointer is over the picker, so the arrow under it lifts.
     pointer_inside: bool,
     is_focused: bool,
-    /// Which cell consumes the next digit key. Set by clicking a
-    /// value cell or by Tab cycling. `None` while no cell is in
-    /// edit mode — digit keys then fall through to the rest of the
-    /// tree as usual.
     focused_cell: Option<TimeCell>,
-    /// Per-cell digit accumulator. Two characters max — the third
-    /// digit closes the cell and starts a fresh sequence on the next
-    /// cell. Cleared when a cell is entered or when Esc is pressed.
     digit_buffer: String,
 
-    /// Input or a new document value changed what this widget paints: it
-    /// repaints once, and rests after the frame draws it.
     dirty: bool,
 }
 
@@ -168,11 +137,6 @@ impl TimePicker {
         }
     }
 
-    /// Create a time picker bound to typed process-local state.
-    ///
-    /// Pointer, keyboard, wheel, and semantic changes update `state`;
-    /// mutations through any clone update this picker on the next
-    /// synchronization pass.
     pub fn from_state(state: &crate::LocalState<TimeValue>) -> Self {
         let (value, binding) = crate::widget::binding::local(state);
         let value = value.normalized();
@@ -183,8 +147,6 @@ impl TimePicker {
         picker
     }
 
-    /// Create a time picker following a moment held as its ISO text (`"2026-06-30T09:30:00Z"`):
-    /// the time of the day it names, 9:00 when the text names none.
     pub fn from_text_state(state: &crate::LocalState<String>) -> Self {
         let (time, binding) = crate::widget::binding::derived(state, |text| {
             time_of(text).unwrap_or_else(|| TimeValue::new(9, 0))
@@ -196,37 +158,26 @@ impl TimePicker {
         picker
     }
 
-    /// Which cell currently consumes digit keys, if any. Mostly for
-    /// tests; the chrome reads this for visual focus highlighting.
     pub fn focused_cell(&self) -> Option<TimeCell> {
         self.focused_cell
     }
 
-    /// Name the time picker for assistive technology.
     #[must_use]
     pub fn with_accessible_name(mut self, name: impl Into<String>) -> Self {
         self.accessible_name = Some(name.into());
         self
     }
 
-    /// Set the stable semantic/action id used by accessibility, search and
-    /// direct agent invocation.
     #[must_use]
     pub fn with_id(mut self, id: impl Into<String>) -> Self {
         self.id = id.into();
         self
     }
 
-    /// Current per-cell digit accumulator (visible while typing).
     pub fn digit_buffer(&self) -> &str {
         &self.digit_buffer
     }
 
-    /// Append a single digit to the focused cell's accumulator and commit
-    /// it. First digit replaces the cell value (typing "9" into "23" gives
-    /// "09"). Second digit appends if still in range, else replaces the
-    /// buffer with just the new digit ("2" then "5" gives "5", not "25").
-    /// After two valid digits, focus auto-advances to the next cell.
     fn accept_digit(&mut self, d: u8) {
         let Some(cell) = self.focused_cell else {
             return;
@@ -260,9 +211,6 @@ impl TimePicker {
         }
     }
 
-    /// Move focus to the next cell (Tab semantic). Wraps off the
-    /// trailing edge to `None` so the user can step out of the
-    /// picker by tabbing past its last cell.
     fn advance_focus(&mut self) {
         self.focused_cell = match self.focused_cell {
             Some(TimeCell::Hours) => Some(TimeCell::Minutes),
@@ -278,7 +226,6 @@ impl TimePicker {
         self.digit_buffer.clear();
     }
 
-    /// Move focus to the previous cell (Shift+Tab semantic).
     fn retreat_focus(&mut self) {
         self.focused_cell = match self.focused_cell {
             Some(TimeCell::Seconds) => Some(TimeCell::Minutes),
@@ -311,9 +258,6 @@ impl TimePicker {
         value
     }
 
-    /// Enable the seconds spinner with the given initial value (clamped to
-    /// 0..=59). Without this builder call the seconds field stays `None` and
-    /// the third spinner is hidden.
     #[must_use]
     pub fn with_seconds(mut self, seconds: u8) -> Self {
         self.seconds = Some(seconds.min(MINSEC_MAX));
@@ -339,8 +283,6 @@ impl TimePicker {
         }
     }
 
-    /// Install a callback invoked with `(hours, minutes, seconds)` every
-    /// time a user-driven change commits a new value.
     #[must_use]
     pub fn on_change<F: FnMut(u8, u8, Option<u8>) + 'static>(mut self, f: F) -> Self {
         self.on_change = Some(Box::new(f));
@@ -365,10 +307,6 @@ impl TimePicker {
         self.publish_local_state();
     }
 
-    /// Place the picker at an explicit rect without going through taffy — the
-    /// embed path a host uses when it hand-positions the spinner row inside a
-    /// form. Rebuilds the per-spinner hit-rects from `rect` exactly as
-    /// [`Widget::apply_layout`] does, so click/scroll/keyboard all work.
     pub fn apply_layout_external(&mut self, rect: Rect) {
         self.rect = rect;
         let cell_w = f64::from(SPINNER_WIDTH);
@@ -387,17 +325,12 @@ impl TimePicker {
         }
     }
 
-    /// Intrinsic size of the spinner row at the current seconds setting —
-    /// the width/height an embedding host should allocate for
-    /// [`Self::apply_layout_external`].
     pub fn intrinsic_size(&self) -> (f64, f64) {
         let n = if self.seconds.is_some() { 3.0 } else { 2.0 };
         let w = n * f64::from(SPINNER_WIDTH) + (n - 1.0) * f64::from(COLON_WIDTH);
         (w, f64::from(PICKER_HEIGHT))
     }
 
-    /// Compute the three sub-rects (up arrow / value cell / down arrow) for
-    /// a spinner cell. Returned in `(up, value, down)` order.
     fn spinner_subrects(cell: Rect) -> (Rect, Rect, Rect) {
         let third = cell.height() / 3.0;
         let up = Rect::new(cell.x0, cell.y0, cell.x1, cell.y0 + third);
@@ -452,7 +385,6 @@ impl TimePicker {
         self.fire_on_change();
     }
 
-    /// No-op if seconds disabled.
     fn step_seconds(&mut self, delta: i8) {
         let Some(cur) = self.seconds else { return };
         let new = match delta.cmp(&0) {
@@ -464,8 +396,6 @@ impl TimePicker {
         self.fire_on_change();
     }
 
-    /// One step arrow: a chevron from the icon set, lifted while the
-    /// pointer is over it like any quiet control.
     fn draw_step_arrow(
         scene: &mut Scene,
         transform: Affine,
@@ -510,8 +440,6 @@ impl Widget for TimePicker {
     crate::provides!(dyn crate::widget::controls::ActionControls);
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
-        // A sync is a read of what the document holds, not a paint: only the
-        // pull landing a time this picker was not already showing is one.
         if let Some(binding) = &mut self.local_state
             && let crate::widget::binding::Pulled::Value(value) = binding.pull(state, path)
         {
@@ -529,7 +457,6 @@ impl Widget for TimePicker {
         _theme: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        // Total width = spinner + colon + spinner [+ colon + spinner]
         let n_spinners: f32 = if self.seconds.is_some() { 3.0 } else { 2.0 };
         let total_w = n_spinners * SPINNER_WIDTH + (n_spinners - 1.0) * COLON_WIDTH;
         let style = Style {
@@ -545,8 +472,6 @@ impl Widget for TimePicker {
         self.apply_layout_external(crate::widget::layout_rect(taffy, node, origin));
     }
 
-    /// The spinning cells keep one width and height, set by the style it builds: no frame
-    /// marks it for another measure, so a window showing a time stays still.
     fn is_layout_dirty(&self) -> bool {
         false
     }
@@ -560,7 +485,6 @@ impl Widget for TimePicker {
         _presence: &crate::presence::PresenceCtx,
     ) {
         let colors = &theme.tokens.colors;
-        // Each value cell is a control: the control radius.
         let radius = f64::from(theme.tokens.radii.control);
         let text_style = theme.text(TextRole::Heading).numeric();
 
@@ -588,8 +512,6 @@ impl Widget for TimePicker {
                 1 => TimeCell::Minutes,
                 _ => TimeCell::Seconds,
             };
-            // Each value cell is a Control: a rest edge derived from its
-            // surface (HIG §9.5); the focused cell keeps `border_focus`.
             let outline = crate::surface::edge_outline(value_rect, radius);
             let (width, color) = if self.is_focused && self.focused_cell == Some(cell_kind) {
                 (2.0, colors.border_focus)
@@ -623,7 +545,6 @@ impl Widget for TimePicker {
             );
         }
 
-        // Colons at the same point size as the value text so baselines line up.
         let between_h_m_x = f64::midpoint(self.hour_rect.x1, self.minute_rect.x0);
         let centre_y = self.rect.center().y;
         let colon = ":";
@@ -716,7 +637,6 @@ impl Widget for TimePicker {
             self.focused_cell = None;
             self.digit_buffer.clear();
         } else if self.focused_cell.is_none() {
-            // Keyboard-focus entry without a click — default to hours.
             self.focused_cell = Some(TimeCell::Hours);
         }
     }
@@ -724,9 +644,6 @@ impl Widget for TimePicker {
         self.is_focused
     }
 
-    /// The time picker reports `Role::ComboBox` — a selector whose value
-    /// is the chosen time as `HH:MM` (or `HH:MM:SS` when the seconds spinner
-    /// is enabled). The spinners render inline, so `expanded` is left unset.
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
         let value = match self.seconds {
@@ -860,9 +777,6 @@ impl TimePicker {
         }
     }
 
-    /// Tab/Shift+Tab cycle cells, Escape clears the edit buffer, arrows
-    /// step or move focus, Enter commits and advances, and any other key
-    /// falls through to digit entry on the focused cell.
     fn handle_keyboard_input(
         &mut self,
         event: &WindowEvent,
@@ -901,7 +815,6 @@ impl TimePicker {
                 *handled = true;
             }
             Key::Named(NamedKey::Backspace) => {
-                // An empty buffer resets the cell value to zero.
                 if let Some(cell) = self.focused_cell {
                     crate::text_edit::delete_last_grapheme(&mut self.digit_buffer);
                     let v: u8 = self.digit_buffer.parse().unwrap_or(0);
@@ -964,7 +877,6 @@ impl TimePicker {
         }
     }
 
-    /// Wheel up increments, matching native OS time pickers.
     fn handle_mouse_wheel(&mut self, delta: MouseScrollDelta, handled: &mut bool) {
         let p = self.last_cursor;
         let dy = match delta {
@@ -1014,8 +926,6 @@ mod tests {
         crate::synthetic_input::mouse_wheel(0.0, dy)
     }
 
-    /// Populates `hour_rect`/`minute_rect`/`second_rect` by running
-    /// `build_layout` + `apply_layout` through a real taffy tree.
     fn picker_with_layout(tp: &mut TimePicker) {
         use taffy::prelude::TaffyMaxContent;
         let mut taffy = TaffyTree::<()>::new();
@@ -1050,7 +960,6 @@ mod tests {
             assert!(node.state.focused);
         }
 
-        // Case `time_picker_clamps_hours_to_23`.
         {
             let tp = TimePicker::new(25, 30);
             assert_eq!(tp.hours(), 23);
@@ -1059,7 +968,6 @@ mod tests {
             assert_eq!(tp.hours(), 23);
         }
 
-        // Case `time_picker_clamps_minutes_to_59`.
         {
             let tp = TimePicker::new(12, 99);
             assert_eq!(tp.minutes(), 59);
@@ -1103,10 +1011,6 @@ mod tests {
             assert_eq!(tp.focused_cell(), Some(TimeCell::Hours));
         }
 
-        // Case `time_picker_two_digit_input_sets_hours_then_advances`.
-        // Typing two digits into the focused hour cell sets the hour
-        // directly (replaces, not appends). Auto-advances to minutes
-        // after the second digit lands.
         {
             let mut tp = TimePicker::new(0, 0);
             Widget::set_focus(&mut tp, true);
@@ -1122,10 +1026,6 @@ mod tests {
             assert_eq!(tp.focused_cell(), Some(TimeCell::Minutes));
         }
 
-        // Case `time_picker_two_digit_overflow_resets_to_new_digit`.
-        // Typing a second digit that would overflow the max drops the
-        // prior digit and accepts the new one as a fresh first
-        // character — "2" → "5" leaves hours = 5, not 25.
         {
             let mut tp = TimePicker::new(0, 0);
             Widget::set_focus(&mut tp, true);
@@ -1151,8 +1051,6 @@ mod tests {
             assert_eq!(tp.focused_cell(), None);
         }
 
-        // Case `time_picker_retreat_focus_walks_back`.
-        // Shift+Tab equivalent: walking back through the cells.
         {
             let mut tp = TimePicker::new(12, 30).with_seconds(45);
             Widget::set_focus(&mut tp, true);

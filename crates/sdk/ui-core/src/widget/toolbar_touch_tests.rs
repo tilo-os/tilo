@@ -4,8 +4,6 @@ use super::*;
 use crate::icons::Icon;
 use crate::interaction::InteractionEnvironment;
 
-/// Told that a finger reaches it, every command of the row is a finger's target the next time
-/// it is laid out, and told of a pointer again, a pointer's.
 #[test]
 fn on_touch_every_command_is_a_fingers_target() {
     let _settled = crate::motion::testing::settled();

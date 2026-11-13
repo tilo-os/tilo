@@ -9,8 +9,8 @@ use crate::widget::ViewTabs;
 
 crate::component::part_slot!(SegmentProps);
 
-/// A small set of choices, one of which is made: an alignment, a density, a unit. The chosen
-/// one is a thumb lifted off the track. What switches what a window shows is [`ViewTabs`].
+/// A small set of choices, one of which is made: an alignment, a density, a unit. The chosen one is
+/// a thumb lifted off the track.
 #[derive(Component)]
 #[component(name = "ToggleGroup", role = "Group", label = "caption")]
 pub struct ToggleGroupProps {

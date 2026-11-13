@@ -1,14 +1,6 @@
-//! The window search's options: a floating Panel under the open field with
-//! the find's options (Match case, Whole word, and Regular expression or
-//! Text / Hex where the document offers them) and, for a document that can
-//! replace, the replacement with Replace and Replace all.
-//!
-//! The search owns what the panel's choices set and does what they ask; the
-//! panel lays itself out by hand under the field, paints in the window's top
-//! layer and says which choice a point is on. Every row is a whole-row
-//! target at the panel's row height, so a finger hits it as surely as a
-//! pointer does.
-
+//! The window search's options: a floating Panel under the open field with the find's options
+//! (Match case, Whole word, and Regular expression or Text / Hex where the document offers them)
+//! and, for a document that can replace, the replacement with Replace and Replace all.
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, Vec2};
 
@@ -27,7 +19,6 @@ use crate::widget::{
 use super::tr;
 use crate::widget::DrawChild;
 
-/// One choice in the panel.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(super) enum Choice {
     MatchCase,
@@ -40,7 +31,6 @@ pub(super) enum Choice {
 }
 
 impl Choice {
-    /// Every choice, in the panel's order.
     pub(super) const ALL: [Self; 7] = [
         Self::MatchCase,
         Self::WholeWord,
@@ -51,7 +41,6 @@ impl Choice {
         Self::ReplaceAll,
     ];
 
-    /// The choice's action target, for assistive technology and agents.
     pub(super) fn target(self) -> &'static str {
         match self {
             Self::MatchCase => "window-search-match-case",
@@ -76,7 +65,6 @@ impl Choice {
         })
     }
 
-    /// Whether a document offering `abilities` shows this choice.
     pub(super) fn offered(self, abilities: FindAbilities) -> bool {
         match self {
             Self::MatchCase | Self::WholeWord => true,
@@ -86,8 +74,6 @@ impl Choice {
         }
     }
 
-    /// Whether the choice reads as on under `options`; `None` for the
-    /// replace buttons, which are no state.
     pub(super) fn on(self, options: FindOptions) -> Option<bool> {
         match self {
             Self::MatchCase => Some(options.match_case),
@@ -99,8 +85,6 @@ impl Choice {
         }
     }
 
-    /// `options` with this choice applied; unchanged for the replace
-    /// buttons.
     pub(super) fn apply(self, mut options: FindOptions) -> FindOptions {
         match self {
             Self::MatchCase => options.match_case = !options.match_case,
@@ -120,19 +104,15 @@ impl Choice {
     }
 }
 
-/// The panel under the open field.
 pub(super) struct OptionsPanel {
     open: bool,
     appearing: Appearing,
-    /// The options control the panel comes from.
     anchor: Rect,
     rect: Rect,
     choices: Vec<(Choice, Rect)>,
-    /// The replacement, when the document can replace.
     pub(super) replace_field: SearchField,
     replace_rect: Rect,
     hover: Option<Choice>,
-    /// The option boxes, filling as a click checks them.
     faces: crate::widget::FaceMotions,
 }
 
@@ -144,8 +124,6 @@ impl OptionsPanel {
             anchor: Rect::ZERO,
             rect: Rect::ZERO,
             choices: Vec::new(),
-            // The search has one close control: the field clears with the
-            // keyboard, not with an X of its own.
             replace_field: SearchField::new()
                 .with_icon(crate::icons::Icon::Pencil)
                 .with_placeholder(&tr("find-bar-replace-placeholder"))
@@ -161,7 +139,6 @@ impl OptionsPanel {
         self.open
     }
 
-    /// Open or close it; a closed panel takes no input.
     pub(super) fn set_open(&mut self, open: bool) {
         if self.open == open {
             return;
@@ -174,17 +151,14 @@ impl OptionsPanel {
         }
     }
 
-    /// The panel as laid out, while open.
     pub(super) fn rect(&self) -> Option<Rect> {
         self.open.then_some(self.rect)
     }
 
-    /// Whether `point` is on the open panel.
     pub(super) fn contains(&self, point: Point) -> bool {
         self.open && self.rect.contains(point)
     }
 
-    /// The choice at `point` on the open panel.
     pub(super) fn choice_at(&self, point: Point) -> Option<Choice> {
         if !self.open {
             return None;
@@ -195,7 +169,6 @@ impl OptionsPanel {
             .map(|(choice, _)| *choice)
     }
 
-    /// Whether `point` is on the replacement field.
     pub(super) fn on_replace_field(&self, point: Point) -> bool {
         self.open && self.replace_rect.contains(point)
     }
@@ -204,7 +177,6 @@ impl OptionsPanel {
         self.hover = point.and_then(|point| self.choice_at(point));
     }
 
-    /// Where `choice` stands, while the panel is open and shows it.
     pub(super) fn choice_rect(&self, choice: Choice) -> Option<Rect> {
         self.choices
             .iter()
@@ -213,14 +185,10 @@ impl OptionsPanel {
             .filter(|_| self.open)
     }
 
-    /// The replacement field's rect, while the panel shows it.
     pub(super) fn replace_field_rect(&self) -> Option<Rect> {
         (self.open && self.replace_rect.area() > 0.0).then_some(self.replace_rect)
     }
 
-    /// Lay the panel out under `field`, coming from the options control
-    /// `anchor`, within `span` (the bar's reach, left to right), for a
-    /// document offering `abilities`.
     pub(super) fn layout(
         &mut self,
         field: Rect,
@@ -240,7 +208,6 @@ impl OptionsPanel {
         let label_style = theme.text(TextRole::Body);
         let label_x =
             pad + f64::from(theme.tokens.spacing.s3) + crate::widget::checkbox::BOX_EDGE + gap;
-        // The narrowest that shows every label whole.
         let toggles: Vec<Choice> = [Choice::MatchCase, Choice::WholeWord, Choice::Regex]
             .into_iter()
             .filter(|choice| choice.offered(abilities))
@@ -274,7 +241,6 @@ impl OptionsPanel {
         }
         let (lo, hi) = span;
         let width = width.min((hi - lo).max(field.width()));
-        // Under the field, from its leading edge, kept inside the bar's reach.
         let x0 = field.x0.min(hi - width).max(lo);
         let x1 = x0 + width;
         let mut y = field.y1 + f64::from(theme.tokens.spacing.s1) + pad;
@@ -309,8 +275,6 @@ impl OptionsPanel {
         self.rect = Rect::new(x0, y0, x1, y + pad);
     }
 
-    /// Whether it is moving (arriving or leaving).
-    /// Its painted switches ask the motion clock for their own frames.
     pub(super) fn is_moving(&self) -> bool {
         self.appearing.is_moving()
     }
@@ -323,12 +287,10 @@ impl OptionsPanel {
             && (self.is_moving() || self.faces.needs_redraw(crate::motion::frame_now()))
     }
 
-    /// Whether anything of it is drawn.
     pub(super) fn is_drawn(&self) -> bool {
         self.appearing.is_drawn()
     }
 
-    /// Paint the panel in the window's top layer, as `shown` says.
     pub(super) fn paint(
         &mut self,
         scene: &mut Scene,
@@ -364,17 +326,12 @@ impl OptionsPanel {
     }
 }
 
-/// What the panel shows of its owner's state: the options as set, and how
-/// many matches there are to replace (the replace buttons are disabled
-/// without one).
 #[derive(Clone, Copy, Debug)]
 pub(super) struct Shown {
     pub(super) options: FindOptions,
     pub(super) matches: usize,
 }
 
-/// The choices as painted: where each stands, which the pointer is over,
-/// and what they show.
 struct ChoicesFace<'a> {
     choices: &'a [(Choice, Rect)],
     hover: Option<Choice>,
@@ -382,8 +339,6 @@ struct ChoicesFace<'a> {
     faces: &'a crate::widget::FaceMotions,
 }
 
-/// Paint the panel's choices: the toggles as checkbox rows, Text / Hex as
-/// one segmented strip, the replace buttons.
 fn paint_choices(
     scene: &mut Scene,
     transform: Affine,

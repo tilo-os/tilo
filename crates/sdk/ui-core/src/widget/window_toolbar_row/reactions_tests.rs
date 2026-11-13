@@ -34,9 +34,6 @@ fn row_of(toolbar: &WindowToolbar, width: f64, compact: bool) -> ToolbarRow {
     row
 }
 
-/// The reactions stand at the row's end, the add button last, after the
-/// app's actions and clear of them; the app's slots share what is left,
-/// and the location stays.
 #[test]
 fn the_reactions_stand_at_the_rows_end_after_the_apps_slots() {
     let toolbar = reacted(vec![pill("👍", 2, true), pill("🎉", 1, false)], true);
@@ -106,9 +103,6 @@ fn the_reactions_give_way_to_the_app_and_a_compact_window_shows_one() {
     assert_eq!(viewer.slots().reaction_add, Rect::ZERO);
 }
 
-/// A press on a pill is the window's reaction with its emoji; the add
-/// button opens the picker; someone who may not react only sees them.
-/// Assistive technology finds each pill and the add button and runs them.
 #[test]
 fn a_pill_reacts_through_the_window_and_the_add_button_opens_the_picker() {
     let toolbar = reacted(vec![pill("👍", 2, true), pill("🎉", 1, false)], true);

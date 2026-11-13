@@ -1,8 +1,6 @@
-//! What someone else wrote into a field the person has not seen, marked in
-//! their colour where it stands in the text, and their caret where it ends
-//! while they are still at work: the marks a block of text shows of an
-//! agent's write ([`crate::widget::BlockEditor`]), in a field.
-
+//! What someone else wrote into a field the person has not seen, marked in their colour where it
+//! stands in the text, and their caret where it ends while they are still at work: the marks a
+//! block of text shows of an agent's write ([`crate::widget::BlockEditor`]), in a field.
 use vello::Scene;
 use vello::kurbo::{Affine, Rect};
 
@@ -13,18 +11,12 @@ use crate::theme::Theme;
 use automerge::{AutoCommit, ObjId};
 
 impl TextInput {
-    /// Show the text object `locate` finds in the document, found again on every sync: a
-    /// record's text field, with who wrote each run of it, a collaborator's edit landing
-    /// under the caret as they make it ([`Self::bind_text`]).
     #[must_use]
     pub fn bound_at(mut self, locate: impl Fn(&AutoCommit) -> Option<ObjId> + 'static) -> Self {
         self.locate_text = Some(Box::new(locate));
         self
     }
 
-    /// Name this field's characters as an invocation's text anchor does: `region` (the field)
-    /// and `block` (the item holding it, empty for the record's own). What an invocation
-    /// writes there is drawn as its writer's, with its caret where the write ends.
     #[must_use]
     pub fn with_written_at(mut self, region: impl Into<String>, block: impl Into<String>) -> Self {
         self.written_at = Some((region.into(), block.into()));
@@ -60,10 +52,6 @@ impl TextInput {
         Some((start, now.len().saturating_sub(tail)))
     }
 
-    /// The change's characters in its author's colour, and, while that author
-    /// is at work here (a visible action of theirs), their caret where the
-    /// write ends, labelled with what they are doing. The caret is then the
-    /// action's mark: the activity rail does not name it a second time.
     pub(super) fn draw_written(
         &self,
         scene: &mut Scene,
@@ -75,8 +63,6 @@ impl TextInput {
         if self.holds_secret() {
             return;
         }
-        // The runs the text itself records as someone's, in that person's colour: the marks a
-        // body's paragraphs carry, in a field.
         for (range, author) in &self.authored {
             if presence.is_own_identity(author) {
                 continue;
@@ -111,8 +97,6 @@ impl TextInput {
         };
         presence.note_shown(acting.invocation);
         presence.note_drawn(acting.invocation, now);
-        // What it is doing here is editing this field, whatever its action
-        // is called: the field's own name says which.
         let words = if self.accessible_name.trim().is_empty() {
             presence.interaction_status_label(&acting)
         } else {
@@ -140,10 +124,6 @@ impl TextInput {
 }
 
 impl TextInput {
-    /// What an invocation writes into this field, named by its text anchor
-    /// ([`Self::with_written_at`]): the characters glow in its writer's colour and its caret
-    /// stands where they end, the marks a body's line shows of an agent's write. The caret is
-    /// the action's mark: the activity rail does not name it a second time.
     fn draw_invocations_written(
         &self,
         scene: &mut Scene,

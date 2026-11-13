@@ -13,7 +13,6 @@ use automerge::transaction::Transactable as _;
 fn attributed_single_line_is_shaped_during_measure_before_draw() {
     use crate::widget::marks::{Mark, MarkSpan};
     use crate::widget::rich_text_line::RichTextLine;
-    // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();
     for scale in [1.0, 2.0] {
         let theme = Theme::dark().with_text_scale(scale);
@@ -48,7 +47,6 @@ fn attributed_single_line_is_shaped_during_measure_before_draw() {
 #[test]
 fn attributed_single_line_preedit_preserves_utf8_marks_and_commit_route() {
     use crate::widget::marks::{Mark, MarkSpan};
-    // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();
     for scale in [1.0, 2.0] {
         let theme = Theme::dark().with_text_scale(scale);
@@ -108,7 +106,6 @@ fn attributed_single_line_preedit_preserves_utf8_marks_and_commit_route() {
 #[test]
 fn attributed_single_line_chip_and_link_rules_follow_shaped_ranges() {
     use crate::widget::marks::{Mark, MarkSpan};
-    // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();
     for scale in [1.0, 2.0] {
         let theme = Theme::dark().with_text_scale(scale);
@@ -164,7 +161,6 @@ fn attributed_single_line_chip_and_link_rules_follow_shaped_ranges() {
 #[test]
 fn attributed_single_line_style_inputs_invalidate_cached_shape() {
     use crate::richtext::{BaselineShift, FontFamily};
-    // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();
     let mut input = TextInput::local().with_initial_value("WWW");
     input.apply_layout_external(Rect::new(0.0, 0.0, 400.0, 60.0));
@@ -208,7 +204,6 @@ fn attributed_single_line_style_inputs_invalidate_cached_shape() {
 #[test]
 fn attributed_single_line_sync_undo_redo_rebuilds_runs() {
     use crate::widget::marks::{Mark, MarkSpan};
-    // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();
     let mut state = crate::State::new();
     let text = state

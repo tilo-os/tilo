@@ -8,13 +8,10 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
 
-/// What a location's label says, elided to its room, and the word an edited
-/// document's label is followed by when it fits after it.
 pub(super) struct LocationLabel {
     pub(super) line: String,
     pub(super) width: f64,
     pub(super) height: f64,
-    /// The edited word and where it starts after the label's start.
     pub(super) edited: Option<(String, f64)>,
 }
 
@@ -87,8 +84,6 @@ impl LocationLabel {
         }
     }
 
-    /// The words as whoever reads the bar reads them ([`crate::window_toolbar::BarLabel`]): the
-    /// line drawn at `x`, `y`, and the edited word that follows it.
     pub(super) fn bar_label(
         &self,
         widget: &'static str,
@@ -107,14 +102,10 @@ impl LocationLabel {
     }
 }
 
-/// The word that follows an edited document's label.
 pub(super) fn edited_word() -> String {
     crate::i18n::I18nManager::lookup_plain("window-toolbar-edited")
 }
 
-/// The word that follows `location`'s label: "View only" where its person
-/// may only look, which no edit of theirs can follow; else "Edited" for a
-/// document with unsaved changes; else none.
 pub(crate) fn trailing_word(location: &crate::window_toolbar::ToolbarLocation) -> Option<String> {
     if location.view_only {
         Some(crate::i18n::I18nManager::lookup_plain(

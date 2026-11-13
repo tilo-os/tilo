@@ -4,32 +4,6 @@
 //! [`MAX_ACTIONS`](crate::window_toolbar::MAX_ACTIONS) actions stand in the row, fewer when the
 //! location would be squeezed; the rest are in the menu of a trailing overflow button. Every button
 //! names its outcome in a tooltip ([`ToolbarRow::tooltip_at`]).
-//!
-//! The location is text at rest, or a breadcrumb of its levels
-//! ([`super::breadcrumb::Breadcrumb`]) where the app declared them; a click on a level commits it.
-//! An editable location reads as a field, and a click (or [`ToolbarRow::begin_edit`], the bar's
-//! Ctrl+L) turns it into a real [`TextInput`] holding the whole value, all selected, with a go
-//! button at its end ([`AccessoryAction::Submit`]). Enter or the go button commits the typed text
-//! ([`ToolbarEvent::Commit`]); Esc puts the location back. While it is edited the app hears the
-//! text ([`ToolbarEvent::Edit`]) and its suggestions are listed under the field, as wide as it, in
-//! the shared [`SuggestionList`] — the only one, since the app draws none while the bar hosts its
-//! location. The arrow keys move through them; Enter, a click or a tap commits one.
-//!
-//! A location that is one of a few places (its app declared
-//! [`LocationChoice`](crate::window_toolbar::LocationChoice)s) reads as a picker: its label with a
-//! chevron, lifting under the pointer like the bar's buttons. A click, a tap or the location's
-//! accessibility action opens the choices in the shared [`ContextMenu`] under it, the current one
-//! checked; choosing one commits its value ([`ToolbarEvent::Commit`]). The overflow menu is the
-//! shared [`ContextMenu`] too; both paint in the window's top layer
-//! ([`ToolbarRow::paint_popups`]).
-//!
-//! When the window shows another tab, the row's content cross-fades in place
-//! ([`crate::motion::CrossFade`]): the outgoing tab's slots fade out where they stood while the
-//! incoming ones fade in, and slots shown where none stood appear at once. When the app changes the
-//! slots of the showing tab, they move on the standard list change
-//! ([`crate::motion::ListChange`], `slot_change`): added fade in, removed fade out where they
-//! stood, staying ones glide to their new places.
-
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, WindowEvent};
@@ -75,8 +49,6 @@ use paint::picker_width;
 use paint::shows_on;
 pub(crate) use paint::{LocationLift, PickerText, paint_picker};
 
-/// Action targets of the slots, as assistive technology and automation
-/// address them.
 pub const SIDEBAR_TARGET: &str = "window-toolbar-sidebar";
 pub const BACK_TARGET: &str = "window-toolbar-back";
 pub const FORWARD_TARGET: &str = "window-toolbar-forward";
@@ -91,42 +63,25 @@ pub const VIEW_TARGET_PREFIX: &str = "window-toolbar-view:";
 pub const VIEWS_MENU_TARGET: &str = "window-toolbar-views";
 pub const NOTICE_TARGET_PREFIX: &str = "window-toolbar-notice:";
 
-/// The size of the view switcher's segments: a strip no taller than the
-/// bar's buttons.
 const VIEWS_SIZE: super::ControlSize = super::ControlSize::Small;
 
-/// Between the navigation buttons and the location, and between the
-/// location and the actions.
 const SECTION_GAP: f64 = crate::tokens::Spacing::BASE.s2 as f64;
-/// The location's leading icon: a control glyph.
 const LOCATION_ICON_PX: f64 = crate::tokens::Metrics::BASE.icon_control as f64;
 /// A location narrower than this is not shown: the bar keeps its buttons.
 pub(crate) const MIN_LOCATION_PX: f64 = crate::tokens::Metrics::BASE.location_min_width as f64;
-/// Actions move into the overflow menu, last first, while the location
-/// would be narrower than this.
 const COMFORTABLE_LOCATION_PX: f64 = crate::tokens::Metrics::BASE.location_comfortable_width as f64;
 
-/// What a row of the open menu (the overflow's, a menu button's, or the
-/// location's picker) runs.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum MenuEntry {
-    /// The sidebar's toggle, where the row has no room for it.
     Sidebar,
-    /// Forward, where the row has no room for it.
     Forward,
-    /// Declared action `n`.
     Action(usize),
-    /// Leading action `n`, where the row has no room for it.
     Leading(usize),
     View(usize),
-    /// Item `.1` of the menu button `.0` names: the button by its id, so the row the person
-    /// chooses runs for the button it stands under however the app re-declares its slots.
     Item(String, usize),
-    /// The location's choice `n`, committed.
     Choice(usize),
 }
 
-/// A menu row for `action`: its name, icon and state.
 fn menu_item(action: &crate::window_toolbar::ToolbarAction) -> MenuItem {
     let mut item = if action.destructive {
         MenuItem::destructive_selection(action.name.clone())
@@ -143,8 +98,6 @@ fn menu_item(action: &crate::window_toolbar::ToolbarAction) -> MenuItem {
     item
 }
 
-/// What a menu holding `action` lists of it: the action itself, or its items where it is a menu
-/// button, as [`menu_rows`] pushes them.
 fn listed_entries(
     action: &crate::window_toolbar::ToolbarAction,
     entry: MenuEntry,
@@ -157,9 +110,6 @@ fn listed_entries(
         .collect()
 }
 
-/// Push `action` into a menu's rows: an action without items is one row that runs `entry`; a menu
-/// button's row is its name, and then its items, each running for the button it stands under
-/// however the app re-declares its slots.
 fn menu_rows(
     (items, entries): (&mut Vec<MenuItem>, &mut Vec<Option<MenuEntry>>),
     action: &crate::window_toolbar::ToolbarAction,
@@ -180,83 +130,43 @@ fn menu_rows(
     entries.extend(listed_entries(action, entry).into_iter().map(Some));
 }
 
-/// The slots of the tab the window shows, in one row of its bar.
 pub(crate) struct ToolbarRow {
     shown: Option<(u64, WindowToolbar)>,
-    /// The tab whose slots show (`None`: none), cross-fading on a switch.
     fade: CrossFade<Option<u64>>,
-    /// The outgoing tab's slots and where they stood, while they fade out.
     outgoing: Option<(WindowToolbar, Slots)>,
-    /// The slots the tab showed and where they stood before the app changed
-    /// them, until the next paint starts the change's motion.
     changed_from: Option<(WindowToolbar, Slots)>,
-    /// The slots arriving, leaving and moving after the app changed them.
     slot_changes: slot_change::SlotChanges,
     row: Rect,
     slots: Slots,
-    /// Painting measured the row's labels since the last layout took them in.
     measured: bool,
     hover: Option<Slot>,
     pressed: Option<Slot>,
-    /// The command the press under way is on, by its id: the app may declare its slots again
-    /// while the button is down and shift which place of the row that command stands in, and the
-    /// release still ends the command the person pressed.
     pressed_action: Option<String>,
-    /// The location field, while the location is edited.
     field: Option<TextInput>,
-    /// The field's text the app last heard ([`ToolbarEvent::Edit`]).
     heard: String,
-    /// The location's levels as a breadcrumb, while it has them, and the
-    /// labels it was built from.
     crumbs: Option<(Vec<String>, Breadcrumb)>,
-    /// The overflow button's menu or the location's picker, and what each
-    /// of its rows does (`None`: a separator).
     menu: ContextMenu,
     menu_entries: Vec<Option<MenuEntry>>,
-    /// Where a location with choices painted its picker last: what its menu
-    /// hangs from (`Rect::ZERO`: not painted yet, the whole slot).
     choice_trigger: Rect,
-    /// The button the open menu hangs from: the overflow button, a menu
-    /// button, or the location's picker.
     menu_slot: Option<Slot>,
-    /// The action whose menu is open, by its id, while it is a menu button's: the menu stays with
-    /// that button while the app declares its slots again and the commands before it come, go or
-    /// change, rather than following whatever now stands where it once did.
     menu_action: Option<String>,
-    /// The views' sizes as the theme draws them, and the labels and text
-    /// scale they were measured for.
     views_size: Option<Measured>,
-    /// The suggestions under the edited field, and what each commits.
     suggestions: SuggestionList,
     suggestion_values: Vec<String>,
-    /// The person closed the list (a press off it): it stays closed until
-    /// the app suggests something else.
     suggestions_dismissed: bool,
-    /// Where the pointer last was, for the press that follows.
     pointer: Point,
-    /// The suggestion a touch went down on: lifting on it commits it.
     touched: Option<(u64, usize)>,
-    /// What the menus keep inside: the window.
     popup_area: Rect,
     events: Vec<(u64, ToolbarEvent)>,
-    /// What the edited field holds, for the app's suggestions: drafts, not
-    /// things the person did, so they go out apart from [`Self::events`].
     drafts: Vec<(u64, ToolbarEvent)>,
-    /// The window is compact: a notice says itself in its own strip under
-    /// the row ([`strip::NoticeStrip`]), not in the location's place.
     compact: bool,
     strip: strip::NoticeStrip,
-    /// The window's reactions at the row's end, and their emoji picker.
     reactions: reactions::RowReactions,
     /// The window can be carried by its bar (it stands on a canvas): a press
     /// on the location acts when it ends, so a press that becomes a carry
     /// never starts an edit or goes somewhere ([`Self::cancel_press`]).
     carriable: bool,
-    /// Where a press on the location went down, while it waits for its
-    /// release on a carriable bar.
     location_press: Option<Point>,
-    /// The words the row painted in its last paint, each at the place its
-    /// ink stands ([`Self::painted_labels`]).
     labels: Vec<crate::window_toolbar::BarLabel>,
 }
 
@@ -306,14 +216,10 @@ impl ToolbarRow {
         }
     }
 
-    /// The words the row painted in its last paint, each at the place its
-    /// ink stands: its location's label, its pickers', a notice's. No widget
-    /// lays them out, so nothing else reports them.
     pub(crate) fn painted_labels(&self) -> &[crate::window_toolbar::BarLabel] {
         &self.labels
     }
 
-    /// Whether the window can be carried by its bar (it stands on a canvas).
     pub(crate) fn set_carriable(&mut self, carriable: bool) {
         self.carriable = carriable;
         if !carriable {
@@ -321,16 +227,12 @@ impl ToolbarRow {
         }
     }
 
-    /// The press under way became a carry of the window: it does nothing
-    /// when it ends.
     pub(crate) fn cancel_press(&mut self) {
         self.pressed = None;
         self.pressed_action = None;
         self.location_press = None;
     }
 
-    /// Whether `p` is on one of the row's controls: any slot but the
-    /// location, which the window can be carried by.
     pub(crate) fn control_hit(&self, p: Point) -> bool {
         self.active_toolbar_shown() && self.hit_slot(p).is_some_and(|slot| slot != Slot::Location)
     }
@@ -339,9 +241,6 @@ impl ToolbarRow {
         self.toolbar().is_some()
     }
 
-    /// Close whatever the row has open over the window (a menu, the emoji
-    /// picker, the suggestions under the edited location). Whether anything
-    /// was open.
     pub(crate) fn close_popups(&mut self) -> bool {
         let mut closed = false;
         if self.menu.is_open() {
@@ -359,7 +258,6 @@ impl ToolbarRow {
         closed
     }
 
-    /// Show `tab`'s slots (`toolbar`), cross-fading from another tab's.
     pub(crate) fn show(
         &mut self,
         tab: u64,
@@ -396,8 +294,6 @@ impl ToolbarRow {
         let next_tab = next.as_ref().map(|(tab, _)| *tab);
         let previous_tab = self.shown.as_ref().map(|(tab, _)| *tab);
         if next_tab != previous_tab {
-            // Another tab: what the person typed belongs to the tab they
-            // typed it in, and goes with it.
             self.abandon_edit();
             self.close_menu();
             self.hover = None;
@@ -411,12 +307,8 @@ impl ToolbarRow {
                 self.fade
                     .show(next_tab, theme_motion, MotionSource::Pointer, now);
             } else {
-                // Nothing stood here to fade from: a window's first slots
-                // arrive with it, and are at rest at once, so a window that
-                // only declared them asks for no frames of its own.
                 self.fade = CrossFade::new(next_tab);
             }
-            // The new tab's row cross-fades in whole.
             self.changed_from = None;
             self.slot_changes.clear();
         } else if self.changed_from.is_none()
@@ -424,8 +316,6 @@ impl ToolbarRow {
             && let (Some((_, was)), Some((_, toolbar))) = (self.shown.as_ref(), next.as_ref())
             && was != toolbar
         {
-            // The app changed the slots of the tab that shows: the next
-            // paint moves them from where they stood.
             self.changed_from = Some((was.clone(), self.slots.clone()));
         }
         self.shown = next;
@@ -433,7 +323,6 @@ impl ToolbarRow {
         self.sync_suggestions();
     }
 
-    /// The breadcrumb follows the location's levels.
     fn sync_crumbs(&mut self) {
         let labels: Vec<String> = self
             .toolbar()
@@ -460,7 +349,6 @@ impl ToolbarRow {
         }
     }
 
-    /// The list under the field follows the app's latest suggestions.
     fn sync_suggestions(&mut self) {
         let suggestions = self
             .toolbar()
@@ -492,15 +380,12 @@ impl ToolbarRow {
                 row
             })
             .collect();
-        // A new answer is a new list: nothing in it is chosen yet, so Enter
-        // opens what was typed until an arrow chooses a row.
         self.suggestions.set_rows(rows);
         self.suggestions.set_highlight(None);
         self.suggestion_values = values;
         self.place_suggestions();
     }
 
-    /// The list hangs under the location, as wide as it, inside the window.
     fn place_suggestions(&mut self) {
         self.suggestions.set_anchor(self.slots.location);
         if self.popup_area.area() > 0.0 {
@@ -508,37 +393,28 @@ impl ToolbarRow {
         }
     }
 
-    /// Whether the suggestions are listed under the edited field.
     fn suggestions_open(&self) -> bool {
         self.field.is_some() && !self.suggestions_dismissed && self.suggestions.has_content()
     }
 
-    /// The person closed the list: it stays closed until the app suggests
-    /// something else.
     fn dismiss_suggestions(&mut self) {
         self.suggestions_dismissed = true;
         self.suggestions.set_highlight(None);
         self.touched = None;
     }
 
-    /// What the menus keep inside.
     pub(crate) fn popup_area(&self) -> Rect {
         self.popup_area
     }
 
-    /// What the menus keep inside: the window the bar belongs to.
     pub(crate) fn set_popup_area(&mut self, area: Rect) {
         self.popup_area = area;
         self.place_suggestions();
     }
 
-    /// Measure the view switcher and the location's forms as `theme` draws
-    /// them, and lay the row out again when a size changed. Returns whether
-    /// it did.
     pub(crate) fn measure_views(&mut self, theme: &Theme) -> bool {
         if self.measure_reactions(theme) {
             self.lay_out(self.row);
-            // The views measure against the row the reactions leave.
             self.measure_views(theme);
             return true;
         }
@@ -621,7 +497,6 @@ impl ToolbarRow {
         let measured = crate::text_render::with_layout_renderer(theme, |text| {
             let labels: Vec<&str> = key.labels.iter().map(String::as_str).collect();
             let tabs = SegmentedFace::tab_widths(&labels, VIEWS_SIZE, text, theme);
-            // The notice's buttons as text buttons, each its label in it.
             let actions = key
                 .notice
                 .iter()
@@ -690,14 +565,10 @@ impl ToolbarRow {
         self.slots.crowded(self.toolbar(), app_row, forms)
     }
 
-    /// Whether painting measured the row's labels anew, and what it needs to know how wide they
-    /// are: a bar asks after a draw (so its row, and the strip ahead of it, take their places
-    /// knowing the widths), and asking settles it.
     pub(crate) fn take_measured(&mut self) -> bool {
         std::mem::take(&mut self.measured)
     }
 
-    /// Lay the slots out across `row`.
     pub(crate) fn lay_out(&mut self, row: Rect) {
         self.row = row;
         let unmeasured = LocationForms::default();
@@ -712,8 +583,6 @@ impl ToolbarRow {
                         measured.actions.as_slice(),
                     )
                 });
-        // The window's reactions stand at the row's end; the app's slots
-        // share what they leave.
         let (app_row, reactions, reaction_add) = self.place_reactions(row);
         self.slots = self
             .toolbar()
@@ -721,8 +590,6 @@ impl ToolbarRow {
             .unwrap_or_default();
         self.slots.reactions = reactions;
         self.slots.reaction_add = reaction_add;
-        // The views are tabs, each as wide as its label (as `ViewTabs`
-        // packs them), across the strip measured to hold them.
         if let Some(Measured { tabs, .. }) = self.views_size.as_ref()
             && let Some(strip_x0) = self.slots.views.first().map(|tab| tab.x0)
             && tabs.len() == self.slots.views.len()
@@ -739,11 +606,9 @@ impl ToolbarRow {
                 field.apply_layout_external(location);
                 self.place_suggestions();
             } else {
-                // No room for the field any more.
                 self.abandon_edit();
             }
         }
-        // The open menu follows what it hangs from, and goes with it.
         let anchor = match self.menu_slot {
             Some(Slot::Action(_) | Slot::Leading(_)) => self.menu_button_rect(),
             Some(Slot::Location) => self.choice_anchor(),
@@ -757,19 +622,16 @@ impl ToolbarRow {
         }
     }
 
-    /// Whether the location is one of a few places, picked from a menu.
     fn has_choices(&self) -> bool {
         self.toolbar()
             .and_then(|toolbar| toolbar.location.as_ref())
             .is_some_and(|location| !location.editable && !location.choices.is_empty())
     }
 
-    /// Whether the open menu is the location's picker.
     pub(crate) fn choices_open(&self) -> bool {
         self.menu.is_open() && self.menu_slot == Some(Slot::Location)
     }
 
-    /// The labels of the open menu's rows, for tests.
     #[cfg(test)]
     pub(crate) fn menu_labels(&self) -> Vec<String> {
         if !self.menu.is_open() {
@@ -783,7 +645,6 @@ impl ToolbarRow {
             .collect()
     }
 
-    /// Where the open menu's row `label` stands, for a test to press.
     #[cfg(test)]
     pub(crate) fn menu_row(&self, label: &str) -> Option<Rect> {
         if !self.menu.is_open() {
@@ -797,8 +658,6 @@ impl ToolbarRow {
         self.menu.item_rect(index)
     }
 
-    /// What the location's picker hangs from: the label and chevron it
-    /// painted, inside the location's slot.
     fn choice_anchor(&self) -> Rect {
         let slot = self.slots.location;
         if slot.area() <= 0.0 {
@@ -812,8 +671,6 @@ impl ToolbarRow {
         }
     }
 
-    /// Open the location's picker under it: every choice by its label, the
-    /// current one checked, separators where the app grouped them.
     fn open_choices(&mut self) -> bool {
         let Some(location) = self
             .toolbar()
@@ -844,7 +701,6 @@ impl ToolbarRow {
         true
     }
 
-    /// Commit the location's choice `index`, as choosing it does.
     fn commit_choice(&mut self, index: usize) -> bool {
         let Some(value) = self
             .toolbar()
@@ -860,7 +716,6 @@ impl ToolbarRow {
         true
     }
 
-    /// The field goes, and the suggestions with it.
     fn end_edit(&mut self) {
         self.field = None;
         self.heard.clear();
@@ -874,42 +729,31 @@ impl ToolbarRow {
         &self.slots
     }
 
-    /// What the location's breadcrumb painted last ([`Breadcrumb::painted`];
-    /// none: the location has no levels).
     #[cfg(test)]
     pub(crate) fn crumbs_painted(&self) -> Option<(Vec<(Option<String>, Rect)>, Rect)> {
         self.crumbs.as_ref().map(|(_, crumbs)| crumbs.painted())
     }
 
-    /// Say a notice in a strip of its own under the row (`compact`), or in
-    /// the location's place. Takes hold at the next [`Self::show`].
     pub(crate) fn set_compact(&mut self, compact: bool) {
         self.compact = compact;
     }
 
-    /// How tall the notice's strip stands under the row (none: no strip).
     pub(crate) fn strip_height(&self) -> f64 {
         self.strip.height()
     }
 
-    /// Measure the notice's strip as `theme` draws it across `width`.
-    /// Returns whether its height changed.
     pub(crate) fn measure_strip(&mut self, theme: &Theme, width: f64) -> bool {
         self.strip.measure(theme, width)
     }
 
-    /// Stand the notice's strip at `rect`, the room the bar keeps for it.
     pub(crate) fn place_strip(&mut self, rect: Rect) {
         self.strip.place(rect);
     }
 
-    /// Where the notice's strip stands (`Rect::ZERO`: none).
     pub(crate) fn strip_rect(&self) -> Rect {
         self.strip.rect()
     }
 
-    /// The notice up in the strip, where its text stands, whether whole,
-    /// and its buttons (none: no strip).
     pub(crate) fn strip_notice(
         &self,
     ) -> Option<(&crate::window_toolbar::ToolbarNotice, Rect, bool, Vec<Rect>)> {
@@ -922,7 +766,6 @@ impl ToolbarRow {
         ))
     }
 
-    /// The slot at `p`: one of the strip's buttons, else one of the row's.
     fn hit_slot(&self, p: Point) -> Option<Slot> {
         if let Some(i) = self.strip.buttons().iter().position(|r| r.contains(p)) {
             return Some(Slot::Notice(i));
@@ -943,9 +786,6 @@ impl ToolbarRow {
         self.row
     }
 
-    /// Where what the location shows at rest ends: its label as measured with the word that
-    /// follows it, and the notice's buttons after it. `None` with no location, or
-    /// before it is measured.
     pub(crate) fn location_content_end(&self) -> Option<f64> {
         let location = self.slots.location;
         if location.area() <= 0.0 {
@@ -953,8 +793,6 @@ impl ToolbarRow {
         }
         let forms = &self.views_size.as_ref()?.forms;
         let mut label = location.x0 + forms.text.get(self.slots.form)? + forms.chrome;
-        // The word after the label stands where it fits beside it ([`LocationLabel::measure`]),
-        // the label cut short before it.
         if let Some((word, gap)) = forms.trailing
             && location.width() - forms.chrome - word - gap >= word
         {
@@ -964,25 +802,20 @@ impl ToolbarRow {
         Some(notice.fold(label, f64::max).min(location.x1))
     }
 
-    /// Whether the location is being edited.
     pub(crate) fn is_editing(&self) -> bool {
         self.field.is_some()
     }
 
-    /// The breadcrumb level a click at `p` commits, for tests.
     #[cfg(test)]
     pub(crate) fn crumb_at_for_tests(&self, p: Point) -> Option<String> {
         self.crumb_at(p)
     }
 
-    /// The location field's text, while it is edited.
     #[cfg(test)]
     pub(crate) fn field_text(&self) -> Option<&str> {
         self.field.as_ref().map(TextInput::value)
     }
 
-    /// Turn an editable location into a field holding its whole value, all
-    /// of it selected. Returns whether it did.
     pub(crate) fn begin_edit(&mut self) -> bool {
         if self.field.is_some() {
             return true;
@@ -1035,17 +868,12 @@ impl ToolbarRow {
         true
     }
 
-    /// Put the location back, discarding what was typed.
     pub(crate) fn cancel_edit(&mut self) -> bool {
         let editing = self.field.is_some();
         self.abandon_edit();
         editing
     }
 
-    /// End the edit without committing it: the field holds the location
-    /// again, and the app hears so ([`ToolbarEvent::Edit`] with the
-    /// location's value), as it heard each change, so nothing it does for
-    /// typed text goes on for text no longer there.
     fn abandon_edit(&mut self) {
         if self.field.is_none() {
             return;
@@ -1070,7 +898,6 @@ impl ToolbarRow {
         }
     }
 
-    /// Commit the field's text to the app.
     fn commit(&mut self) {
         if let Some(field) = self.field.as_ref() {
             let text = field.value().trim().to_owned();
@@ -1081,7 +908,6 @@ impl ToolbarRow {
         }
     }
 
-    /// Commit suggestion `index`'s value, as choosing it does.
     fn commit_suggestion(&mut self, index: usize) -> bool {
         let Some(value) = self.suggestion_values.get(index).cloned() else {
             return false;
@@ -1091,7 +917,6 @@ impl ToolbarRow {
         true
     }
 
-    /// Tell the app the field's text when it changed since it last heard.
     fn tell_edit(&mut self) {
         let Some(text) = self.field.as_ref().map(|field| field.value().to_owned()) else {
             return;
@@ -1102,8 +927,6 @@ impl ToolbarRow {
         }
     }
 
-    /// Queue the edited field's text for the app (one per tab: only the
-    /// latest matters).
     fn draft(&mut self, text: String) {
         if let Some(tab) = self.shown_tab() {
             self.drafts.retain(|(queued, _)| *queued != tab);
@@ -1111,13 +934,10 @@ impl ToolbarRow {
         }
     }
 
-    /// What the edited fields held since the last call, by tab
-    /// ([`ToolbarEvent::Edit`]).
     pub(crate) fn take_drafts(&mut self) -> Vec<(u64, ToolbarEvent)> {
         std::mem::take(&mut self.drafts)
     }
 
-    /// What the person did since the last call, by tab.
     pub(crate) fn take_events(&mut self) -> Vec<(u64, ToolbarEvent)> {
         std::mem::take(&mut self.events)
     }
@@ -1144,18 +964,12 @@ impl ToolbarRow {
         }
     }
 
-    /// Open the overflow button's menu: the view switcher's choices when
-    /// the row has no room for it, the chosen one checked, then the leading
-    /// actions and the actions the row does not show, by name, each with
-    /// its icon and state.
     fn open_overflow(&mut self) -> bool {
         let Some(toolbar) = self.toolbar() else {
             return false;
         };
         let mut items = Vec::new();
         let mut entries = Vec::new();
-        // The navigation the row has no room for leads the menu, in the
-        // row's order.
         for entry in self.folded_navigation() {
             if let Some(item) = self.navigation_item(entry.clone()) {
                 items.push(item);
@@ -1193,8 +1007,6 @@ impl ToolbarRow {
             let Some(action) = toolbar.actions.get(i) else {
                 continue;
             };
-            // The desktop's own items are a section of their own, after the
-            // app's commands.
             if host_section
                 && action
                     .id
@@ -1221,8 +1033,6 @@ impl ToolbarRow {
         true
     }
 
-    /// The navigation the row has no room for, in the row's order: the
-    /// sidebar's toggle, then Forward.
     fn folded_navigation(&self) -> Vec<MenuEntry> {
         let Some(toolbar) = self.toolbar() else {
             return Vec::new();
@@ -1237,8 +1047,6 @@ impl ToolbarRow {
         entries
     }
 
-    /// The overflow menu's row for a navigation button the row has no room
-    /// for: its name, icon and state, as its button has them.
     fn navigation_item(&self, entry: MenuEntry) -> Option<MenuItem> {
         let toolbar = self.toolbar()?;
         let lookup = crate::i18n::I18nManager::lookup_plain;
@@ -1258,15 +1066,10 @@ impl ToolbarRow {
         }
     }
 
-    /// Whether the overflow menu lists the views: the row has room neither
-    /// for the switcher nor for the views menu.
     fn views_in_overflow(&self) -> bool {
         self.slots.views.is_empty() && self.slots.views_menu.area() <= 0.0
     }
 
-    /// The views as a menu lists them, wherever it opens (the views menu,
-    /// the location as their picker, the overflow menu): every view by its
-    /// label, in order, the chosen one checked.
     fn view_items(&self) -> Vec<(MenuItem, MenuEntry)> {
         let Some(views) = self.toolbar().and_then(|toolbar| toolbar.views.as_ref()) else {
             return Vec::new();
@@ -1283,8 +1086,6 @@ impl ToolbarRow {
             .collect()
     }
 
-    /// Open the views menu under it: every view by its label, the chosen
-    /// one checked.
     fn open_views_menu(&mut self) -> bool {
         let (items, entries): (Vec<MenuItem>, Vec<Option<MenuEntry>>) = self
             .view_items()
@@ -1308,8 +1109,6 @@ impl ToolbarRow {
         true
     }
 
-    /// Open the menu button `slot` stands for under it: its items, by name, each with its icon and
-    /// state. A menu button before the location opens its menu as one after it does.
     fn open_action_menu(&mut self, slot: &Slot) -> bool {
         let Some(action) = self.action_at(slot) else {
             return false;
@@ -1322,8 +1121,6 @@ impl ToolbarRow {
         let Some(anchor) = self.action_rect(slot) else {
             return false;
         };
-        // Under a button at the row's leading end the menu lines up with its leading edge, under one
-        // at its end with its trailing edge.
         let align = if matches!(slot, Slot::Leading(_)) {
             super::PanelAlign::Leading
         } else {
@@ -1350,19 +1147,16 @@ impl ToolbarRow {
         self.menu_action = None;
     }
 
-    /// Close the open menu, and forget the button it hung from.
     fn close_menu(&mut self) {
         self.menu.close();
         self.menu_action = None;
     }
 
-    /// Whether `slot` is a menu button: a leading or trailing action whose press lists its items.
     fn lists_items(&self, slot: &Slot) -> bool {
         self.action_at(slot)
             .is_some_and(|action| !action.items.is_empty())
     }
 
-    /// The action `slot` stands for: one before the location, or one after it.
     fn action_at(&self, slot: &Slot) -> Option<&crate::window_toolbar::ToolbarAction> {
         let toolbar = self.toolbar()?;
         match slot {
@@ -1372,7 +1166,6 @@ impl ToolbarRow {
         }
     }
 
-    /// Where the action `slot` stands in the row (`None`: the row has no room for it).
     fn action_rect(&self, slot: &Slot) -> Option<Rect> {
         match slot {
             Slot::Leading(i) => self.slots.leading.get(*i).copied(),
@@ -1382,7 +1175,6 @@ impl ToolbarRow {
         .filter(|rect| rect.area() > 0.0)
     }
 
-    /// The menu button `id` names, wherever the app declares it in the row.
     fn menu_by_id(&self, id: &str) -> Option<&crate::window_toolbar::ToolbarAction> {
         let toolbar = self.toolbar()?;
         toolbar
@@ -1392,8 +1184,6 @@ impl ToolbarRow {
             .find(|action| action.id == id)
     }
 
-    /// Where the menu button whose menu is open stands now, by the action it is: `Rect::ZERO`
-    /// where the app declares it no longer, or out of the row's way.
     fn menu_button_rect(&self) -> Rect {
         let Some(id) = self.menu_action.as_deref() else {
             return Rect::ZERO;
@@ -1412,7 +1202,6 @@ impl ToolbarRow {
             .unwrap_or(Rect::ZERO)
     }
 
-    /// Run item `item` of the menu button `id` names.
     fn run_item(&mut self, id: &str, item: usize) -> bool {
         let Some(chosen) = self
             .menu_by_id(id)
@@ -1426,7 +1215,6 @@ impl ToolbarRow {
         true
     }
 
-    /// Run declared action `index`.
     fn run_action(&mut self, index: usize) -> bool {
         let Some(action) = self
             .toolbar()
@@ -1440,19 +1228,16 @@ impl ToolbarRow {
         true
     }
 
-    /// The notice up, in the strip or in the location's place.
     fn notice_up(&self) -> Option<&crate::window_toolbar::ToolbarNotice> {
         self.strip
             .notice()
             .or_else(|| self.toolbar()?.notice.as_ref())
     }
 
-    /// The notice's button `index`, while a notice with it is up.
     fn notice_action(&self, index: usize) -> Option<&crate::window_toolbar::ToolbarAction> {
         self.notice_up()?.actions.get(index)
     }
 
-    /// Run leading action `index`.
     fn run_leading(&mut self, index: usize) -> bool {
         let Some(action) = self
             .toolbar()
@@ -1466,7 +1251,6 @@ impl ToolbarRow {
         true
     }
 
-    /// Choose view `index`: the app hears its id.
     fn choose_view(&mut self, index: usize) -> bool {
         let Some(view) = self
             .toolbar()
@@ -1480,7 +1264,6 @@ impl ToolbarRow {
         true
     }
 
-    /// Run what open menu row `row` stands for.
     fn run_menu_entry(&mut self, row: usize) -> bool {
         match self.menu_entries.get(row).cloned().flatten() {
             Some(MenuEntry::Sidebar) => self.activate(&Slot::Sidebar),
@@ -1494,7 +1277,6 @@ impl ToolbarRow {
         }
     }
 
-    /// Run `slot` as a press on it does. Returns whether it acted.
     fn activate(&mut self, slot: &Slot) -> bool {
         if !self.enabled(slot) {
             return false;
@@ -1524,7 +1306,6 @@ impl ToolbarRow {
         true
     }
 
-    /// The pointer moved to `p`. Returns whether what shows changed.
     pub(crate) fn pointer_moved(&mut self, p: Point) -> bool {
         let hover = self.hit_slot(p);
         let changed = hover != self.hover;
@@ -1548,7 +1329,6 @@ impl ToolbarRow {
         changed
     }
 
-    /// What the button at `p` does, for its tooltip: the slot and its name.
     pub(crate) fn tooltip_at(&self, p: Point) -> Option<(Rect, String)> {
         let toolbar = self.toolbar()?;
         let lookup = crate::i18n::I18nManager::lookup_plain;
@@ -1576,7 +1356,6 @@ impl ToolbarRow {
             }
             Slot::Overflow => Some((self.slots.overflow, lookup("window-toolbar-more"))),
             Slot::Reaction(_) | Slot::ReactionAdd => self.reaction_tooltip(p),
-            // A segment, the views menu and the location say what they are.
             Slot::View(_) | Slot::ViewsMenu | Slot::Location => None,
         }
     }
@@ -1590,8 +1369,6 @@ impl ToolbarRow {
                 .is_some_and(|panel| panel.contains(p))
     }
 
-    /// Where each suggestion under the edited field is, best first, while
-    /// the list is open.
     pub(crate) fn suggestion_rects(&self) -> Vec<Rect> {
         if !self.suggestions_open() {
             return Vec::new();
@@ -1601,7 +1378,6 @@ impl ToolbarRow {
             .collect()
     }
 
-    /// The list's panel, while it is open.
     pub(crate) fn suggestions_rect(&self) -> Option<Rect> {
         self.suggestions_open()
             .then(|| self.suggestions.rect())
@@ -1612,9 +1388,6 @@ impl ToolbarRow {
         self.menu.is_open() || self.suggestions_open() || self.picking()
     }
 
-    /// Hand a pointer event to an open menu (the overflow's, or the
-    /// suggestions'): a pick runs, a press off it closes it. Returns
-    /// whether the menu took the event.
     pub(crate) fn popup_event(
         &mut self,
         event: &WindowEvent,
@@ -1643,8 +1416,6 @@ impl ToolbarRow {
                 self.run_menu_entry(row);
                 self.close_menu();
             }
-            // The menu is modal while it is up: the keyboard is its, and so
-            // is the press that closes it.
             if handled || !pointer {
                 *ctx.handled = true;
                 return true;
@@ -1657,10 +1428,6 @@ impl ToolbarRow {
         false
     }
 
-    /// A pointer or touch event while the suggestions are listed: hovering
-    /// lifts a row, a click or a tap commits it, the wheel scrolls the list,
-    /// and a press off it closes the list and goes on (to the field, or to
-    /// whatever ends the edit). Returns whether the list took it.
     fn suggestions_pointer(
         &mut self,
         event: &WindowEvent,
@@ -1682,7 +1449,6 @@ impl ToolbarRow {
                 if let Some(index) = self.suggestions.row_at(self.pointer) {
                     self.commit_suggestion(index)
                 } else if over(self, self.pointer) {
-                    // The panel's inset: no row, but not off the list.
                     true
                 } else {
                     self.dismiss_suggestions();
@@ -1695,7 +1461,6 @@ impl ToolbarRow {
                     MouseScrollDelta::LineDelta(_, y) => f64::from(*y),
                     MouseScrollDelta::PixelDelta(p) => p.y / 40.0,
                 };
-                // Wheel up shows earlier rows.
                 if lines.abs() >= 0.5 {
                     self.suggestions.scroll_by(if lines < 0.0 { 1 } else { -1 });
                 }
@@ -1719,8 +1484,6 @@ impl ToolbarRow {
                     TouchPhase::Moved => self.touched.is_some_and(|(id, _)| id == touch.id),
                     TouchPhase::Ended => match self.touched.take() {
                         Some((id, index)) if id == touch.id => {
-                            // A tap lifts where it went down; a drag off
-                            // the row lets it go.
                             if self.suggestions.row_at(p) == Some(index) {
                                 self.commit_suggestion(index);
                             } else {
@@ -1753,9 +1516,6 @@ impl ToolbarRow {
         self.hit_slot(p).is_some()
     }
 
-    /// Whether a secondary press at `p` is the app's: on a control it put in the row, or in its
-    /// location while that is being edited. The location at rest names the window, as a tab's
-    /// title does, so a secondary press there opens the window's menu.
     pub(crate) fn owns_secondary_press(&self, p: Point) -> bool {
         match self.hit_slot(p) {
             Some(Slot::Location) => self.field.is_some(),
@@ -1763,8 +1523,6 @@ impl ToolbarRow {
         }
     }
 
-    /// A left press at `p`. Returns whether a slot took it. A press
-    /// outside the field while it is edited puts the location back.
     pub(crate) fn press(&mut self, p: Point) -> bool {
         let slot = self.hit_slot(p);
         if self.field.is_some() && slot != Some(Slot::Location) {
@@ -1772,26 +1530,19 @@ impl ToolbarRow {
         }
         match slot {
             Some(Slot::Location) if self.field.is_none() && self.carriable => {
-                // The window may be carried from here: what a click on the
-                // location does waits for the press to end there.
                 self.pressed = Some(Slot::Location);
                 self.location_press = Some(p);
                 true
             }
             Some(Slot::Location) if self.field.is_none() => {
-                // A click on one of the location's levels goes there.
                 if let Some(value) = self.crumb_at(p) {
                     self.push(ToolbarEvent::Commit { text: value });
                     return true;
                 }
-                // One of a few places: the picker opens as the press ends,
-                // as the bar's menu buttons do.
                 if self.has_choices() {
                     self.pressed = Some(Slot::Location);
                     return true;
                 }
-                // Anywhere else on it starts editing at once: the field
-                // takes the press's place, with everything selected.
                 self.begin_edit()
             }
             Some(slot) if slot != Slot::Location => {
@@ -1799,16 +1550,10 @@ impl ToolbarRow {
                 self.pressed = Some(slot);
                 true
             }
-            // The edited field takes its own presses; off the slots, none.
             _ => false,
         }
     }
 
-    /// Whether the press under way is on one of the app's own slots that
-    /// runs as the press ends (its sidebar toggle, a leading action, a mode,
-    /// an action without a menu): a press on the app, after which the
-    /// keyboard stays with the control in the app that had it. The
-    /// location field and the bar's menus take the keyboard themselves.
     pub(crate) fn pressing_app_slot(&self) -> bool {
         match &self.pressed {
             Some(Slot::Sidebar | Slot::View(_) | Slot::Notice(_) | Slot::Reaction(_)) => true,
@@ -1817,8 +1562,6 @@ impl ToolbarRow {
         }
     }
 
-    /// The left button came up at `p`: a press released on the slot it
-    /// started on runs it.
     pub(crate) fn release(&mut self, p: Point) -> bool {
         let Some(pressed) = self.pressed.take() else {
             return false;
@@ -1826,8 +1569,6 @@ impl ToolbarRow {
         if let Some(at) = self.location_press.take()
             && pressed == Slot::Location
         {
-            // A click on a carriable bar's location: a level goes there,
-            // anywhere else does what a press there does on any bar.
             if self.hit_slot(p).as_ref() == Some(&Slot::Location) {
                 match self.crumb_at(at) {
                     Some(value) => self.push(ToolbarEvent::Commit { text: value }),
@@ -1867,9 +1608,6 @@ impl ToolbarRow {
         }
     }
 
-    /// Hand an event to the location field while it is edited. Enter and
-    /// the go button commit, Esc puts the location back. Returns whether the
-    /// field took it.
     pub(crate) fn field_event(
         &mut self,
         event: &WindowEvent,
@@ -1895,8 +1633,6 @@ impl ToolbarRow {
                     *ctx.handled = true;
                     return true;
                 }
-                // Enter commits the chosen row; with none chosen, the field
-                // commits what was typed.
                 Key::Named(NamedKey::Enter) if self.suggestions_open() => {
                     if let Some(row) = self.suggestions.highlight()
                         && self.commit_suggestion(row)
@@ -1954,8 +1690,6 @@ impl ToolbarRow {
             || self.reactions_moving()
     }
 
-    /// The level of the location's breadcrumb at `p`, as its value: an
-    /// ancestor, not the current level.
     fn crumb_at(&self, p: Point) -> Option<String> {
         let (_, crumbs) = self.crumbs.as_ref()?;
         let index = crumbs.ancestor_at(p)?;
@@ -1967,9 +1701,6 @@ impl ToolbarRow {
             .map(|segment| segment.value.clone())
     }
 
-    /// After an entry of the overflow menu or a menu button's ran (`ran`)
-    /// as assistive technology activated it: its open menu closes, as it
-    /// does when its row is picked. Returns `ran`.
     fn ran_from_menu(&mut self, ran: bool) -> bool {
         if ran && self.menu.is_open() && !self.menu_open_for(&Slot::Location) {
             self.close_menu();
@@ -1977,8 +1708,6 @@ impl ToolbarRow {
         ran
     }
 
-    /// The slot at `p`, where it is drawn: a slot gliding to its new place
-    /// is hit where the person sees it, before one arriving under it.
     fn slot_at(&self, p: Point) -> Option<Slot> {
         let now = crate::motion::frame_now();
         let Some(toolbar) = self.toolbar().filter(|_| self.slot_changes.glides(now)) else {
@@ -1998,7 +1727,6 @@ impl ToolbarRow {
     }
 }
 
-/// The name of the sidebar toggle in its present state.
 fn sidebar_key(toolbar: &WindowToolbar) -> &'static str {
     if toolbar.sidebar == Some(true) {
         "window-toolbar-hide-sidebar"

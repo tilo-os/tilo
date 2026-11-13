@@ -1,8 +1,6 @@
-//! The History a tile hosts for its component: installing it, the window
-//! bar's control for it, and History whose code is still on its way
-//! (`lazy-history`): the control is there at once, a press opens it once the
-//! code is in, and a quiet panel stands in its place meanwhile.
-
+//! The History a tile hosts for its component: installing it, the window bar's control for it, and
+//! History whose code is still on its way (`lazy-history`): the control is there at once, a press
+//! opens it once the code is in, and a quiet panel stands in its place meanwhile.
 use vello::Scene;
 use vello::kurbo::{Affine, Rect};
 
@@ -20,8 +18,6 @@ impl TileHost {
         let owner = self.history_owner();
         match crate::history_mode::host::make_history(registration, &AutoCommit::new()) {
             Ok(crate::history_mode::host::MadeHistory::Loading(registration)) => {
-                // The window shows without History until its code is in;
-                // the next layout takes it up.
                 self.pending_history = Some(registration);
             }
             Ok(crate::history_mode::host::MadeHistory::Ready(mut history)) => {
@@ -43,8 +39,6 @@ impl TileHost {
         }
     }
 
-    /// Take up the History registered before its code was in, once it is.
-    /// Whether it was taken up.
     pub(super) fn adopt_loaded_history(&mut self) -> bool {
         if self.pending_history.is_none() || !crate::history_mode::host::history_code_ready() {
             return false;
@@ -61,15 +55,12 @@ impl TileHost {
         true
     }
 
-    /// The History control the window's tab row shows for this tile: open
-    /// or closed, or `None` where the tile has no History to open.
     #[must_use]
     pub fn history_control(&self) -> Option<crate::widget::HistoryControl> {
         match &self.history {
             Some(history) => history
                 .offers_control()
                 .then(|| crate::widget::HistoryControl::of(history.is_open())),
-            // History whose code is on its way has its control already.
             None if self.pending_history.is_some() => {
                 Some(crate::widget::HistoryControl::of(self.history_opening))
             }
@@ -79,19 +70,11 @@ impl TileHost {
         }
     }
 
-    /// Press the window's History control for this tile: open History, or
-    /// close it while it shows, through the same History door the History
-    /// shortcut and the palette use.
-    ///
-    /// # Errors
-    ///
-    /// The tile has no History, or its door refused the operation.
     pub fn invoke_history_control(
         &mut self,
         control: crate::widget::HistoryControl,
     ) -> Result<(), String> {
         if self.history.is_none() && self.pending_history.is_some() {
-            // Its code is on its way: History opens once it is in.
             self.history_opening = control == crate::widget::HistoryControl::Closed;
             self.structure_dirty = true;
             return Ok(());
@@ -107,8 +90,6 @@ impl TileHost {
         Ok(())
     }
 
-    /// While History's code is on its way after the person opened it: a
-    /// quiet panel where History will stand, saying so.
     pub(super) fn draw_history_loading(
         &self,
         scene: &mut Scene,

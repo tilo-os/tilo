@@ -213,8 +213,6 @@ impl Described for Toolbar {
                 .zip(&self.items)
                 .all(|(part, held)| match (part, held) {
                     (ToolbarPart::Button(props), ToolbarItem::Button(command)) => {
-                        // A toggle stays a toggle, a plain command plain, and one with a menu
-                        // keeps one.
                         let is_toggle = props.toggled.is_some();
                         let was_toggle = command.active.is_some();
                         let has_menu = !props.menu.is_empty();

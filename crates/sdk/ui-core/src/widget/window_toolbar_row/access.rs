@@ -9,7 +9,6 @@ use super::{
 };
 
 impl ToolbarRow {
-    /// The slots as assistive technology and automation reach them.
     pub(crate) fn accessibility(&self) -> Vec<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
         let Some(toolbar) = self.toolbar() else {
@@ -73,7 +72,6 @@ impl ToolbarRow {
                 node.role = Role::ToggleButton;
                 node.state.checked = Some(action.on);
             }
-            // A menu button's items are its menu's, as a trailing one's are.
             if !action.items.is_empty() {
                 let slot = Slot::Leading(index);
                 node.state.expanded = Some(self.menu_open_for(&slot));
@@ -116,8 +114,6 @@ impl ToolbarRow {
                     node = node.with_description(word);
                 }
                 if toolbar.notice.is_some() {
-                    // A notice is read out as it arrives, without moving
-                    // the keyboard.
                     node = node.with_live(crate::a11y::Politeness::Polite);
                 }
                 if location.editable || picker {
@@ -130,7 +126,6 @@ impl ToolbarRow {
                         });
                 }
                 if picker && self.choices_open() {
-                    // The open picker's rows: each one goes there.
                     let count = location.choices.len();
                     node = node.with_children(
                         location
@@ -154,7 +149,6 @@ impl ToolbarRow {
                 nodes.push(node);
             }
         }
-        // The location's levels: each ancestor goes there.
         if let Some(location) = toolbar.location.as_ref()
             && self.field.is_none()
             && self.slots.location.area() > 0.0
@@ -169,7 +163,6 @@ impl ToolbarRow {
                 ));
             }
         }
-        // The notice's buttons, in order right after its text.
         if let Some(notice) = toolbar.notice.as_ref() {
             for (action, rect) in notice.actions.iter().zip(&self.slots.notice) {
                 nodes.push(button(
@@ -180,8 +173,6 @@ impl ToolbarRow {
                 ));
             }
         }
-        // A compact window's notice, in its strip under the row: read out
-        // as it arrives, its buttons after it.
         if let Some((notice, text, _, at)) = self.strip_notice() {
             nodes.push(
                 AccessNode::new(Role::StaticText)
@@ -198,8 +189,6 @@ impl ToolbarRow {
                 ));
             }
         }
-        // The views the row shows as tabs, the chosen one selected; without room
-        // they are the overflow menu's.
         if let Some(views) = toolbar.views.as_ref() {
             for (view, rect) in views.choices.iter().zip(&self.slots.views) {
                 let mut node = button(
@@ -215,8 +204,6 @@ impl ToolbarRow {
                 }
                 nodes.push(node);
             }
-            // Folded, the views are a menu that names the chosen one; its
-            // items run while it is closed, as the overflow menu's do.
             if self.slots.views_menu.area() > 0.0 {
                 let chosen = views.chosen_index().and_then(|i| views.choices.get(i));
                 let views_name = if views.name.is_empty() {
@@ -224,8 +211,6 @@ impl ToolbarRow {
                 } else {
                     views.name.clone()
                 };
-                // As the views' picker the location is named by what it
-                // shows, its period, and says it picks the view.
                 let in_location = toolbar
                     .location
                     .as_ref()
@@ -251,7 +236,6 @@ impl ToolbarRow {
                 nodes.push(menu);
             }
         }
-        // The actions the row shows; a menu button's items are its menu's.
         for ((i, action), rect) in toolbar.actions.iter().enumerate().zip(&self.slots.actions) {
             let mut node = button(
                 action.name.clone(),
@@ -277,10 +261,6 @@ impl ToolbarRow {
             }
             nodes.push(node);
         }
-        // What the row has no room for is the overflow menu's. Its items
-        // are there for assistive technology and automation to run even
-        // while it is closed, hidden from a reader until it opens, each
-        // where its row is drawn while it is open.
         if self.slots.overflow.area() > 0.0 {
             let name = crate::i18n::I18nManager::lookup_plain("window-toolbar-more");
             let mut more = button(
@@ -305,10 +285,6 @@ impl ToolbarRow {
         nodes
     }
 
-    /// What the overflow menu lists, in its order: the navigation the row
-    /// has no room for, the views the row has
-    /// no room for, then the leading actions and the actions it does not
-    /// show, a menu button's items in its place.
     pub(super) fn overflow_entries(&self) -> Vec<MenuEntry> {
         let Some(toolbar) = self.toolbar() else {
             return Vec::new();
@@ -335,11 +311,6 @@ impl ToolbarRow {
         entries
     }
 
-    /// `slot`'s menu, named `name`, as assistive technology reaches it:
-    /// one item per entry, each running what its row runs. While the menu
-    /// is open each item is where its row is drawn; while it is closed the
-    /// items are hidden from a reader and stand at `anchor`, the control
-    /// that opens the menu.
     pub(super) fn menu_node(
         &self,
         name: String,
@@ -390,7 +361,6 @@ impl ToolbarRow {
             })
     }
 
-    /// A menu entry's name, action target, whether it runs, and its check.
     pub(super) fn entry_semantics(
         &self,
         entry: MenuEntry,
@@ -448,9 +418,6 @@ impl ToolbarRow {
         }
     }
 
-    /// The listed suggestions as assistive technology reaches them: each
-    /// one an item that commits it, its line under the title its
-    /// description.
     pub(super) fn suggestion_nodes(&self) -> Vec<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
         if !self.suggestions_open() {
@@ -489,7 +456,6 @@ impl ToolbarRow {
         vec![node]
     }
 
-    /// Run the slot `target` names, as assistive technology activates it.
     pub(crate) fn perform(&mut self, target: &str) -> bool {
         if let Some(ran) = self.perform_reaction(target) {
             return ran;
@@ -545,7 +511,6 @@ impl ToolbarRow {
                     else {
                         return false;
                     };
-                    // A menu button opens its menu; any other runs.
                     let opens = self.lists_items(&Slot::Leading(i));
                     let ran = self.activate(&Slot::Leading(i));
                     return if opens { ran } else { self.ran_from_menu(ran) };
@@ -558,7 +523,6 @@ impl ToolbarRow {
                     else {
                         return false;
                     };
-                    // A view in the overflow menu is chosen as one in the row is.
                     let chosen = self.choose_view(i);
                     return self.ran_from_menu(chosen);
                 }
@@ -569,8 +533,6 @@ impl ToolbarRow {
                     return false;
                 };
                 if let Some(i) = toolbar.actions.iter().position(|a| a.id == id) {
-                    // An action in the overflow menu runs as one in the row
-                    // does; a menu button opens its menu.
                     let opens = toolbar.actions.get(i).is_some_and(|a| !a.items.is_empty());
                     let ran = self.activate(&Slot::Action(i));
                     return if opens { ran } else { self.ran_from_menu(ran) };
@@ -590,7 +552,6 @@ impl ToolbarRow {
                 else {
                     return false;
                 };
-                // A menu button's item runs without its menu open.
                 let ran = self.run_item(&action, j);
                 return self.ran_from_menu(ran);
             }

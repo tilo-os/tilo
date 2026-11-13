@@ -43,8 +43,6 @@ fn reports(
         .then(|| change.clone().handler())
         .flatten();
     move |time| {
-        // The time of day changes, the day it is on stays: the moment the field holds is one
-        // value for the day and its time; a time of day on its own stays one.
         let said =
             crate::component::Value::Text(crate::widget::date_field::with_time(&held.get(), time));
         bound.edited(said.clone());

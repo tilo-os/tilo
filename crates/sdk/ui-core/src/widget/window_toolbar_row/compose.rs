@@ -1,9 +1,7 @@
-//! A window bar's row as a page shows it ([`crate::composition`]): each slot
-//! the face it is painted with (its icon or words on the bar's button
-//! ground, in its state), the location as its words, and a compact window's
-//! notice as its icon and text. Keyed by the targets the row's semantics name
-//! the slots by ([`ToolbarRow::accessibility`]).
-
+//! A window bar's row as a page shows it ([`crate::composition`]): each slot the face it is painted
+//! with (its icon or words on the bar's button ground, in its state), the location as its words,
+//! and a compact window's notice as its icon and text. Keyed by the targets the row's semantics
+//! name the slots by ([`ToolbarRow::accessibility`]).
 use super::{
     ACTION_TARGET_PREFIX, BACK_TARGET, FORWARD_TARGET, Icon, LEADING_TARGET_PREFIX,
     LOCATION_ICON_PX, NOTICE_TARGET_PREFIX, OVERFLOW_TARGET, Rect, SIDEBAR_TARGET, Slot, TextRole,
@@ -15,12 +13,9 @@ use crate::widget::window_controls::{ButtonFace, icon_button_face};
 /// Where the row's location stands in its composition (it has no target of
 /// its own unless it can be edited or picked from).
 pub(crate) const LOCATION_KEY: &str = "location";
-/// Where a compact window's notice text stands in its composition.
 pub(crate) const STRIP_KEY: &str = "strip-notice";
 
 impl ToolbarRow {
-    /// What each slot shows, by its target, as [`Self::accessibility`]
-    /// names it, in the faces [`Self::paint`] paints.
     pub(crate) fn composed_slots(&self, theme: &Theme) -> Vec<(String, Rect, Own)> {
         let mut out = Vec::new();
         let Some(toolbar) = self.toolbar() else {
@@ -275,7 +270,6 @@ impl ToolbarRow {
         out
     }
 
-    /// Where a compact window's notice strip stands while one is up.
     pub(crate) fn strip_band(&self) -> Option<Rect> {
         self.strip.notice()?;
         let rect = self.strip.rect();

@@ -194,7 +194,6 @@ impl WindowWell {
 
 impl Drop for WindowWell {
     fn drop(&mut self) {
-        // The place left the screen: its window goes with it.
         if self.on_screen {
             forget(&self.place);
         }
@@ -212,7 +211,6 @@ impl Described for WindowWell {
         if self.place == props.place {
             return true;
         }
-        // The window this well shows is another one: the one it showed leaves the screen.
         if self.on_screen {
             forget(&self.place);
         }
@@ -232,10 +230,6 @@ impl Widget for WindowWell {
         _theme: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        // The well takes the room its frame leaves it; it holds nothing. A frame that names no
-        // height (a column that hugs its content, a page that grows with what it holds) leaves
-        // the well only its width, so its shape stands in for the height: a window is wider than
-        // it is tall, and a well with no height at all would give its window a line to draw in.
         taffy.widget_leaf(
             Style {
                 size: taffy::Size::from_percent(1.0, 1.0),
@@ -251,8 +245,6 @@ impl Widget for WindowWell {
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.rect = crate::widget::layout_rect(taffy, node, origin);
         self.on_screen = true;
-        // Reported on every layout the well is placed by, so a host that installed another
-        // handle since it last laid out finds it (a policy's own handle, a test's).
         report(&self.place, self.rect);
     }
 
@@ -264,7 +256,6 @@ impl Widget for WindowWell {
         _theme: &Theme,
         _presence: &PresenceCtx,
     ) {
-        // The window is composited above the desk layer: the well paints nothing.
     }
 
     /// A well paints nothing, so it is never dirty.

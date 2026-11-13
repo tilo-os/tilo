@@ -42,7 +42,6 @@ fn a_held_window_offers_no_close() {
     assert!(all.iter().any(|t| t == WINDOW_MAXIMIZE_TARGET), "{all:?}");
     assert!(!all.iter().any(|t| t == WINDOW_CLOSE_TARGET), "{all:?}");
     assert!(!all.iter().any(|t| t == "tab-close:1"), "{all:?}");
-    // Someone who opens nothing here is offered no new tab either.
     assert!(all.iter().any(|t| t == "tab-new"), "{all:?}");
     assert!(b.set_new_tab(false));
     let mut all = Vec::new();
@@ -92,10 +91,6 @@ fn the_apps_history_stands_on_the_windows_ground_before_the_pill() {
     assert_eq!(b.window_controls().pill, controls.pill);
 }
 
-/// Hover and press follow what they are on: a window control inside the
-/// pill, the app's History on its own, and the pill's own padding
-/// neither — which a press still claims for the window, so nothing
-/// under the glass receives it.
 #[test]
 fn the_pills_padding_is_the_windows_and_its_controls_hover_alone() {
     let _settled = crate::motion::testing::settled();
@@ -149,10 +144,6 @@ fn the_pills_padding_is_the_windows_and_its_controls_hover_alone() {
     assert!(!b.history_action_pressed);
 }
 
-/// `TILO_WINDOW_BAR_SHOTS=<dir>` shoots a bar that carries an action of
-/// the app's besides the window's own controls: the app's History stands
-/// on the window's ground and looks like the app, so the glass pill
-/// around the window's controls reads as the window's.
 #[test]
 fn window_bar_app_action_shots() {
     let Ok(directory) = std::env::var("TILO_WINDOW_BAR_SHOTS") else {
@@ -221,8 +212,6 @@ fn window_bar_app_action_shots() {
     }
 }
 
-/// A pointer sent to the centre of a window control's accessibility
-/// node lands on the control, not somewhere in the bar.
 #[test]
 fn each_window_control_reports_the_rect_it_is_drawn_in() {
     let _settled = crate::motion::testing::settled();
@@ -252,7 +241,6 @@ fn each_window_control_reports_the_rect_it_is_drawn_in() {
         assert!(drawn.area() > 0.0, "{target} is drawn");
         assert_eq!(bounds.to_rect(), drawn, "{target}");
     }
-    // A pill's close chip, drawn or not, reports exactly what is drawn.
     let mut b = TabBar::new(
         "g2",
         vec![
@@ -297,15 +285,12 @@ fn a_middle_press_closes_the_tab_under_it() {
     assert_eq!(b.pending_close, None);
     assert!(b.closing_tabs.is_empty());
 
-    // A pinned tab stays where it was put.
     let mut b = bar_with_laid_out_rects();
     b.pin(2);
     move_to(&mut b, 95.0, 20.0);
     dispatch(&mut b, &press);
     assert_eq!(b.pending_close, None);
 
-    // A window's only tab is drawn as its icon alone when the app puts
-    // its slots in the title's row, and a middle press still closes it.
     let mut b = solo_bar_with_slots();
     assert!(b.icon_only(1));
     b.tab_rects = vec![Rect::new(0.0, 6.0, 40.0, 34.0)];
@@ -314,7 +299,6 @@ fn a_middle_press_closes_the_tab_under_it() {
     assert_eq!(b.pending_close, Some(1), "the window's only tab closes");
 }
 
-/// A window of one tab whose app puts its slots in the title's row.
 fn solo_bar_with_slots() -> TabBar {
     let mut b = TabBar::new("g1", vec![TabDescriptor::new(1, "DuckDuckGo")], 1);
     b.set_window_controls(true);
@@ -322,9 +306,6 @@ fn solo_bar_with_slots() -> TabBar {
     b
 }
 
-/// A secondary press on a bar whose app put its slots there opens the window's menu wherever it
-/// does not land on one of the app's controls: on the location, which names the window as a title
-/// does, and on the row's empty stretch. One on the app's own control is the app's.
 #[test]
 fn a_secondary_press_on_the_location_opens_the_windows_menu() {
     let mut b = solo_bar_with_slots();
@@ -348,8 +329,6 @@ fn a_secondary_press_on_the_location_opens_the_windows_menu() {
     assert_eq!(b.take_context_menu(), None, "the app's control keeps it");
 }
 
-/// A window's one tab drawn as its icon shows its title while a person names it, and keeps
-/// showing the name they gave it; the app's own title goes back to the icon.
 #[test]
 fn a_windows_only_tab_shows_the_name_a_person_gave_it() {
     let mut b = solo_bar_with_slots();
@@ -394,15 +373,12 @@ fn a_windows_only_tab_says_nothing_beside_the_bars_location() {
         None,
         "and draws no words there: the bar's location names the window"
     );
-    // A bar of one tab with no slots of its own names the window by its title.
     let mut plain = TabBar::new("g2", vec![TabDescriptor::new(1, "DuckDuckGo")], 1);
     plain.set_window_controls(true);
     plain.visible_titles = vec![Some("DuckDuckGo".to_owned())];
     assert_eq!(plain.pill_label(0), Some("DuckDuckGo"));
 }
 
-/// The words the bar paints itself are reported where their ink stands: no widget lays them
-/// out, so nothing else would tell a reader where the window's name is drawn.
 #[test]
 fn the_bar_reports_the_words_it_paints_where_they_stand() {
     let _settled = crate::motion::testing::settled();
@@ -443,11 +419,6 @@ fn the_bar_reports_the_words_it_paints_where_they_stand() {
     );
 }
 
-/// A window's only tab draws its icon alone where the bar's location names the window, so the
-/// bar reports one word there. The words the pill drew before [`TabBar::pill_label`] took them
-/// from the decision that measured them are reported too, at the title's line beside the icon —
-/// past the pill's own box, on the bar's ground where the location's words stand: what a layout
-/// check reads as two words with nothing of their own between them.
 #[test]
 fn the_words_the_old_pill_painted_beside_its_mark_are_reported_where_they_stood() {
     let _settled = crate::motion::testing::settled();

@@ -14,19 +14,10 @@ use super::{ListModel, RowGroup, RowStance, VirtualList};
 use crate::reorder::{DropPlacement, DropTarget, ReorderDrop};
 use crate::theme::Theme;
 
-/// One step of a tree's nesting ([`VirtualList::with_tree`]): the disclosure gutter a row's
-/// content stands in by from the depth above it, where the chevron that folds the row in front
-/// of it hangs. A list leads every row's depth's column by one step, so the top level stands
-/// the one step its chevron takes in from the list's own leading edge.
 pub const TREE_INDENT: f64 =
     (crate::tokens::Metrics::BASE.icon_sm + crate::tokens::Spacing::BASE.rhythm.related) as f64;
-/// How far up a row's chain of parents the list follows it: deeper than anyone nests a row, so
-/// a chain that loops still ends.
 const TREE_DEPTH_GUARD: u32 = 64;
 
-/// Where a tree's rows stand: `x0` the list's leading edge, `lead` where the box of the top level
-/// stands in from it, `column` the chevron column kept inside that box, and `step` the disclosure
-/// gutter every depth indents its content by.
 #[derive(Clone, Copy)]
 pub(super) struct Chevrons {
     pub(super) x0: f64,
@@ -36,7 +27,6 @@ pub(super) struct Chevrons {
 }
 
 impl<M: ListModel> VirtualList<M> {
-    /// The chevrons of a row draw placed where this list's rows stand.
     pub(super) fn chevrons(&self) -> Chevrons {
         Chevrons {
             x0: self.rect.x0,
@@ -48,8 +38,6 @@ impl<M: ListModel> VirtualList<M> {
 }
 
 impl Chevrons {
-    /// The gutter the row `key`'s chevron hangs in, when it has subtasks: the step in front of
-    /// its content, ending where its content starts.
     pub(super) fn gutter<K: Clone + Eq + Hash>(
         &self,
         marks: &TreeMarks<K>,
@@ -58,12 +46,9 @@ impl Chevrons {
         if !marks.is_branch(key) {
             return None;
         }
-        // The step in front of the row's content, one step back for each depth it stands in.
         Some(self.x0 + self.lead + self.column + (f64::from(marks.depth(key)) - 1.0) * self.step)
     }
 
-    /// The box the row `key`'s chevron takes: in its own depth's gutter, centred on the row's
-    /// own box `row`, folded when `folded`. `None` when the row has no subtasks to fold.
     pub(super) fn rect<K: Clone + Eq + Hash>(
         &self,
         marks: &TreeMarks<K>,
@@ -106,8 +91,6 @@ impl Chevrons {
         }
     }
 
-    /// Paint the row `key`'s chevron into the row's own box `row`, at its own depth's gutter,
-    /// folded when `folded`.
     pub(super) fn paint<K: Clone + Eq + Hash>(
         &self,
         marks: &TreeMarks<K>,
@@ -130,27 +113,16 @@ impl Chevrons {
     }
 }
 
-/// What a row is in a tree of rows: the row of the item it is a subtask of, when that item is
-/// one of the list's rows, and how deep it stands when the model says it itself.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TreeRow<K> {
-    /// The row of the item this row is a subtask of, when that item is a row of the list.
     pub parent: Option<K>,
     /// How deep it stands, when the model says: the list indents the row by it rather than by
     /// the rows over it, so a row whose parent stands off screen — a row the host renders as it
     /// is shown, and one of a window deep in a long tree — keeps its place.
     pub depth: Option<u32>,
-    /// The row standing just over this one under the same parent, when the view says it: the
-    /// row `Tab` indents under and `Alt-Up` goes before. What the view shows between the two —
-    /// a branch's own, scrolled away — costs a move nothing, and the row it names need not be
-    /// one the list holds.
     pub above: Option<K>,
 }
 
-/// What a tree list works out of its rows, for the rows it builds: how deep each stands, which
-/// of them are folded away, which have subtasks, and which stand under the row they follow. The
-/// list fills it as it mounts rows; a row's builder reads it, and the person's folding stays
-/// with the list, so a row folded away stays folded while its neighbours come and go.
 #[derive(Debug)]
 pub struct TreeMarks<K> {
     depth: std::cell::RefCell<HashMap<K, u32>>,
@@ -171,17 +143,14 @@ impl<K> Default for TreeMarks<K> {
 }
 
 impl<K: Clone + Eq + Hash> TreeMarks<K> {
-    /// How many rows under its top row `key` stands.
     pub fn depth(&self, key: &K) -> u32 {
         self.depth.borrow().get(key).copied().unwrap_or(0)
     }
 
-    /// Whether the person folded the row's subtasks away.
     pub fn is_folded(&self, key: &K) -> bool {
         self.folded.borrow().contains(key)
     }
 
-    /// Whether the row has subtasks, a disclosure to show.
     pub fn is_branch(&self, key: &K) -> bool {
         self.branches.borrow().contains(key)
     }
@@ -194,18 +163,15 @@ impl<K: Clone + Eq + Hash> TreeMarks<K> {
         self.nested.borrow().contains(key)
     }
 
-    /// The rows whose subtasks the person folded away, as a view saved them.
     #[must_use]
     pub fn folded_keys(&self) -> Vec<K> {
         self.folded.borrow().iter().cloned().collect()
     }
 
-    /// Fold exactly `keys`' subtasks away, showing every other row's: a saved view restored.
     pub fn restore_folded(&self, keys: impl IntoIterator<Item = K>) {
         *self.folded.borrow_mut() = keys.into_iter().collect();
     }
 
-    /// Fold the row's subtasks away, or show them again.
     pub fn fold(&self, key: &K, folded: bool) {
         let mut folded_set = self.folded.borrow_mut();
         if folded {
@@ -216,25 +182,15 @@ impl<K: Clone + Eq + Hash> TreeMarks<K> {
     }
 }
 
-/// One step a row moves through a tree: its order among the rows it stands beside, and how
-/// deep it stands.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TreeMove {
-    /// Before the row above it at its own depth.
     Up,
-    /// After the row below it at its own depth.
     Down,
-    /// Into the row above it at its own depth, as its last subtask.
     Indent,
-    /// Out of the row it stands under, directly after it.
     Outdent,
 }
 
 impl<M: ListModel> VirtualList<M> {
-    /// The rows stand as a tree: each under the row of the item it names as its parent, indented
-    /// by the rows over it, with a disclosure on the rows that have subtasks, folding them away
-    /// where the person folds them. `marks` is what the rows the list builds read, filled as it
-    /// mounts them ([`TreeMarks`]).
     #[must_use]
     pub fn with_tree(mut self, marks: Rc<TreeMarks<M::Key>>) -> Self {
         self.tree = Some(marks);
@@ -260,8 +216,6 @@ impl<M: ListModel> VirtualList<M> {
         self.row_box(self.model.index_of(key)?)
     }
 
-    /// The box the row `key`'s disclosure takes: the chevron in its own depth's gutter, centred
-    /// on the row's own line. `None` for a row with no subtasks, or one not placed.
     #[must_use]
     pub fn disclosure_rect(&self, key: &M::Key) -> Option<Rect> {
         let marks = self.tree.as_ref()?;
@@ -300,13 +254,11 @@ impl<M: ListModel> VirtualList<M> {
         }
     }
 
-    /// How many rows under its top row `key` stands, as the list's tree shows it.
     #[must_use]
     pub fn row_depth(&self, key: &M::Key) -> u32 {
         self.tree.as_ref().map_or(0, |marks| marks.depth(key))
     }
 
-    /// Whether the row `key` has subtasks, a disclosure to show.
     #[must_use]
     pub fn row_is_branch(&self, key: &M::Key) -> bool {
         self.tree.as_ref().is_some_and(|marks| marks.is_branch(key))
@@ -332,7 +284,6 @@ impl<M: ListModel> VirtualList<M> {
         None
     }
 
-    /// How many rows the list shows, counting the rows not folded away.
     #[must_use]
     pub fn visible_len(&self) -> usize {
         (0..self.model.len())
@@ -346,14 +297,11 @@ impl<M: ListModel> VirtualList<M> {
             .count()
     }
 
-    /// Whether a drag past the threshold is in flight over the rows.
     #[must_use]
     pub fn is_dragging(&self) -> bool {
         self.reorder.is_active()
     }
 
-    /// Where the hover action `action` of the row `key` sits, reordering what the row shows:
-    /// the centre a person presses.
     #[must_use]
     pub fn row_action_rect(&self, key: &M::Key, action: usize) -> Option<Rect> {
         let index = self.model.index_of(key)?;
@@ -367,9 +315,6 @@ impl<M: ListModel> VirtualList<M> {
             .copied()
     }
 
-    /// Fold the row's subtasks away, or show them again, as its disclosure, its menu or the
-    /// keyboard does, and remember what a person folded even for a row whose subtasks the
-    /// model has not yet said it holds.
     pub fn fold_row(&mut self, key: &M::Key, folded: bool) -> bool {
         let Some(marks) = self.tree.clone() else {
             return false;
@@ -381,31 +326,20 @@ impl<M: ListModel> VirtualList<M> {
         if let Some(callback) = &mut self.on_fold {
             callback(key, folded);
         }
-        // The row draws the disclosure the other way round.
         self.invalidated.insert(key.clone());
         self.visible_window_changed();
         true
     }
 
-    /// Whether the row folds its subtasks away now.
     #[must_use]
     pub fn row_folded(&self, key: &M::Key) -> bool {
         self.tree.as_ref().is_some_and(|marks| marks.is_folded(key))
     }
 
-    /// What the tree's rows are in `range`: what stands under what, how deep each row stands,
-    /// and which rows a folded one hides. A tree's rows come in order: a row stands under the
-    /// row it follows when it names it, so the walk reads each row of the range once, and only
-    /// the rows in view. A group's heading comes between the rows it holds and the ones above
-    /// it, and the rows under a heading belong together: a subtask whose task the sort put in
-    /// another group stands on the group's own first level, and names what it is in
-    /// ([`TreeMarks::is_nested`] saying it stands under nothing), rather than indented under a
-    /// row that stands under another heading.
     pub(super) fn shape_tree(&mut self, range: &Range<usize>) {
         if self.tree.is_none() {
             return;
         }
-        // Rows rebuilt since the last pass are asked again.
         let rebuilt: Vec<M::Key> = self.invalidated.iter().cloned().collect();
         for key in rebuilt {
             self.tree_rows.remove(&key);
@@ -414,15 +348,11 @@ impl<M: ListModel> VirtualList<M> {
             .clone()
             .filter_map(|index| Some((index, self.model.key_at(index)?)))
             .collect();
-        // The rows over the row being read, outermost first, each with how deep it stands and
-        // whether a row over it hides it.
         let mut over: Vec<(M::Key, u32, bool)> = Vec::new();
         let mut depth: HashMap<M::Key, u32> = HashMap::new();
         let mut hidden: HashSet<M::Key> = HashSet::new();
         let mut branches: Vec<M::Key> = Vec::new();
         let mut nested: Vec<M::Key> = Vec::new();
-        // The group the row above stands in, as the model names it: a row that starts a group
-        // stands under no row of the one before it.
         let mut heading: Option<RowGroup> = None;
         for (index, key) in &rows {
             let group = self.model.group_at(*index);
@@ -436,17 +366,12 @@ impl<M: ListModel> VirtualList<M> {
             let at = parent
                 .as_ref()
                 .and_then(|parent| over.iter().rposition(|(row, _, _)| row == parent));
-            // The row it follows is the row it names, or a row over that one: it stands under
-            // its parent, as deep as its parent plus one.
             let beneath = at.zip(parent.clone());
             let (found, away) = if let Some((at, parent)) = beneath {
                 let (_, depth, hidden) = over[at];
                 branches.push(parent.clone());
                 nested.push(key.clone());
                 over.truncate(at + 1);
-                // A row under the row standing open into its item is what that row's document
-                // lists: the list folds its branch while it stands open, and shows it again
-                // when it closes.
                 let open = self.open.as_ref() == Some(&parent);
                 (depth + 1, hidden || self.folded(&parent) || open)
             } else if let Some(depth) = stated {
@@ -458,8 +383,6 @@ impl<M: ListModel> VirtualList<M> {
                 over.clear();
                 (depth, self.under_open(key))
             } else {
-                // The list holds its order, not a tree: a row whose parent the sort put
-                // elsewhere stands on its own, and names the parent instead.
                 over.clear();
                 (0, self.under_open(key))
             };
@@ -470,8 +393,6 @@ impl<M: ListModel> VirtualList<M> {
             }
             over.push((key.clone(), found, away));
         }
-        // What the model says has subtasks discloses them whether or not any stands in the
-        // list yet: a folder read when it opens.
         for index in range.clone() {
             if self.model.has_subtasks(index)
                 && let Some(key) = self.model.key_at(index)
@@ -479,9 +400,6 @@ impl<M: ListModel> VirtualList<M> {
                 branches.push(key);
             }
         }
-        // Whether a row of the first level holds any: a tree whose first level folds nothing
-        // keeps no column for a chevron, so its rows line up with the words over them. Only
-        // the first level in view says it; a range that holds none leaves the last word.
         let first_level = rows
             .iter()
             .map(|(_, key)| key)
@@ -509,8 +427,6 @@ impl<M: ListModel> VirtualList<M> {
         self.tree_hidden = hidden;
     }
 
-    /// Whether the row of `key` stands under the row standing open into its item, at any depth:
-    /// the document that row shows lists its branch, so the list keeps none of those rows.
     fn under_open(&mut self, key: &M::Key) -> bool {
         let Some(open) = self.open.clone() else {
             return false;
@@ -528,8 +444,6 @@ impl<M: ListModel> VirtualList<M> {
         false
     }
 
-    /// What the model says row `key` is in a tree, read once while its props stand as they
-    /// were.
     fn tree_facts(&mut self, key: &M::Key) -> Option<TreeRow<M::Key>> {
         if let Some(facts) = self.tree_rows.get(key) {
             return Some(facts.clone());
@@ -540,12 +454,10 @@ impl<M: ListModel> VirtualList<M> {
         Some(facts)
     }
 
-    /// Whether the person folded the row's subtasks away.
     fn folded(&self, key: &M::Key) -> bool {
         self.tree.as_ref().is_some_and(|marks| marks.is_folded(key))
     }
 
-    /// The tree as the model gives it changed: its rows are read again.
     pub(super) fn forget_tree(&mut self) {
         self.tree_rows.clear();
         self.tree_hidden.clear();
@@ -596,7 +508,6 @@ impl<M: ListModel> VirtualList<M> {
         self.invalidate_rows(mounted);
     }
 
-    /// Whether the pointer is over the disclosure the list shows for the row `key`.
     fn disclosure_at(&self, key: &M::Key) -> bool {
         self.last_cursor.is_some_and(|cursor| {
             self.disclosure_rect(key)
@@ -604,13 +515,8 @@ impl<M: ListModel> VirtualList<M> {
         })
     }
 
-    /// A completed click on the row of `key`: its disclosure folds what is under it, and
-    /// anywhere else the click is the row's.
     pub(super) fn press_row(&mut self, key: M::Key, modifiers: winit::event::Modifiers) {
         if self.disclosure_at(&key) {
-            // A row standing open shows its branch in its item's document: the rows it holds
-            // are no rows of the list, and its chevron reads folded. A press there folds them
-            // back into the list by closing the row.
             if self.open.as_ref() == Some(&key) {
                 self.open_where_it_stands(key);
                 return;
@@ -619,9 +525,6 @@ impl<M: ListModel> VirtualList<M> {
             self.fold_row(&key, !folded);
             return;
         }
-        // A press on the row standing open landed inside the item it shows — in its
-        // document, or on the row over it — not on a row of the list: what the item's own
-        // controls did not take, the item keeps.
         if self.open.as_ref() == Some(&key) {
             return;
         }
@@ -655,8 +558,6 @@ impl<M: ListModel> VirtualList<M> {
         depth
     }
 
-    /// The row standing over `key` under the same parent: the one the view says it is, or — a
-    /// view that says nothing of it — the row the list shows at `depth` over `index`.
     fn above_of(&mut self, key: &M::Key, index: usize, depth: u32) -> Option<M::Key> {
         if let Some(above) = self.tree_facts(key).and_then(|facts| facts.above) {
             return Some(above);
@@ -665,14 +566,12 @@ impl<M: ListModel> VirtualList<M> {
         self.model.key_at(above)
     }
 
-    /// The row above `index` that stands as deep as `depth`, stepping over the rows under it.
     fn sibling_above(&mut self, index: usize, depth: u32) -> Option<usize> {
         let mut at = index;
         while let Some(above) = at.checked_sub(1) {
             let key = self.model.key_at(above)?;
             match self.depth_of(&key) {
                 found if found == depth => return Some(above),
-                // A row less deep is the parent it stands under: no row beside it above.
                 found if found < depth => return None,
                 _ => at = above,
             }
@@ -680,13 +579,11 @@ impl<M: ListModel> VirtualList<M> {
         None
     }
 
-    /// The row below `index` that stands as deep as `depth`, stepping over the rows under it.
     fn sibling_below(&mut self, index: usize, depth: u32) -> Option<usize> {
         let mut at = index.saturating_add(1);
         while let Some(key) = self.model.key_at(at) {
             match self.depth_of(&key) {
                 found if found == depth => return Some(at),
-                // A row less deep is the parent it stands under: no row beside it below.
                 found if found < depth => return None,
                 _ => at = at.saturating_add(1),
             }
@@ -694,9 +591,6 @@ impl<M: ListModel> VirtualList<M> {
         None
     }
 
-    /// The drop target that performs `movement` on the row of `key`, when the tree has room
-    /// for it: a row only indents into a row that takes subtasks, and a top row has nowhere
-    /// to step out to.
     pub(super) fn move_target(
         &mut self,
         key: &M::Key,
@@ -716,14 +610,10 @@ impl<M: ListModel> VirtualList<M> {
                     DropPlacement::After,
                 ))
             }
-            // Under the row over it, which the view names: whether it takes subtasks is the
-            // owner's to refuse, whose validator knows the row even when the list has not built
-            // it.
             TreeMove::Indent => {
                 let above = self.above_of(key, index, depth)?;
                 Some(DropTarget::new(above, DropPlacement::Inside))
             }
-            // Out of the row it stands under, directly after it: a top row stays where it is.
             TreeMove::Outdent => {
                 let parent = self.tree_facts(key).and_then(|facts| facts.parent)?;
                 Some(DropTarget::new(parent, DropPlacement::After))
@@ -760,9 +650,6 @@ impl<M: ListModel> VirtualList<M> {
         true
     }
 
-    /// Move the focused row one step through its tree ([`TreeMove`]). Whether it moved: no
-    /// focused row, a row with the keyboard elsewhere, or a step the tree has no room for
-    /// moves nothing.
     pub fn move_focused_step(&mut self, movement: TreeMove) -> bool {
         let Some(key) = self.focused_row_key() else {
             return false;
@@ -770,8 +657,6 @@ impl<M: ListModel> VirtualList<M> {
         self.move_row(&key, movement)
     }
 
-    /// The move `key` with `modifiers` asks of a tree that reorders: the arrows with `Alt`,
-    /// and `Tab`/`Shift+Tab` where the list [indents with it](super::VirtualList::tab_indents).
     pub(super) fn tree_move_chord(
         &self,
         key: &Key,
@@ -801,10 +686,6 @@ impl<M: ListModel> VirtualList<M> {
         }
     }
 
-    /// The drop a pointer on the row of `key`, standing on its box `row`, offers this tree: a
-    /// row that takes subtasks takes a drop into it from its middle, and the seam below an
-    /// open branch lands above the first row it holds, where the line is drawn. `None` for a
-    /// list whose rows stand no tree.
     pub(super) fn tree_candidate(
         &mut self,
         index: usize,
@@ -824,9 +705,6 @@ impl<M: ListModel> VirtualList<M> {
         };
         let mut target = key.clone();
         let mut seam = if fraction < 0.5 { row.y0 } else { row.y1 };
-        // Below an open branch the seam sits above the first row it holds: a drop there lands
-        // as that row's predecessor, where the line is drawn, not as the branch's next sibling
-        // far under everything it holds.
         if placement == DropPlacement::After
             && marks.is_branch(key)
             && !marks.is_folded(key)
@@ -837,8 +715,6 @@ impl<M: ListModel> VirtualList<M> {
             placement = DropPlacement::Before;
             seam = row.y1;
         }
-        // Where the rows at that depth begin: a dropped row lands in its own column, clear of
-        // the step its chevron takes.
         let indent = self.rect.x0
             + self.lead
             + self.chevron_column
@@ -860,17 +736,10 @@ impl<M: ListModel> VirtualList<M> {
         })
     }
 
-    /// The row a drop hovered into a folded branch shows, as a tree's disclosure does: what
-    /// it holds comes into view where it will land.
     pub(super) fn unfold_for_drop(&mut self, key: &M::Key) -> bool {
         self.fold_row(key, false)
     }
 
-    /// A fold step of the keyboard, as the disclosure makes it under the pointer: `open` (the
-    /// right key) opens the focused branch, or steps into the row that stands under it; `!open`
-    /// (the left key) folds the focused branch away, or steps out to the row it stands under.
-    /// Whether it folded or moved; `false` where the key has no place: no tree, no focused row,
-    /// or a leaf with nothing to step into.
     pub(super) fn fold_step(&mut self, open: bool) -> bool {
         let Some(marks) = self.tree.clone() else {
             return false;
@@ -886,16 +755,12 @@ impl<M: ListModel> VirtualList<M> {
             if marks.is_branch(&key) && marks.is_folded(&key) {
                 return self.fold_row(&key, false);
             }
-            // What stands under the row follows it, one depth deeper; a row of its own depth
-            // follows a leaf, and the key leaves the keyboard where it is.
             let under = index
                 .checked_add(1)
                 .and_then(|below| self.model.key_at(below))
                 .is_some_and(|below| marks.depth(&below) == depth + 1);
             under && self.focus_index(index + 1, false)
         } else {
-            // A row standing open shows its branch in its item's document: the left key closes
-            // it, and the rows it holds come back to the list.
             if self.open.as_ref() == Some(&key) {
                 self.open_where_it_stands(key);
                 return true;

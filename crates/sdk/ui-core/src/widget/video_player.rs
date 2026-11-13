@@ -34,10 +34,7 @@ use crate::tokens::TextRole;
 use crate::widget::{FullscreenProvider, Widget};
 
 const CONTROLS_AUTO_HIDE: Duration = Duration::from_secs(3);
-/// Height of the controls Panel at 1x: a Panel row (`metrics.panel_row_height`).
 const CONTROLS_BAR_HEIGHT: f64 = 44.0;
-/// The transport glyphs are the standard glyph (`metrics.icon_md`), each in
-/// a [`MIN_TARGET`] hit rect.
 const PLAY_BUTTON_SIZE: f64 = 20.0;
 /// Minimum pointer target for every control in the bar (HIG §9.6: a 20 px
 /// glyph gets a 32 px hit rect). Glyphs keep their painted size; the hit
@@ -45,18 +42,12 @@ const PLAY_BUTTON_SIZE: f64 = 20.0;
 /// each axis, clamped to the bar's height.
 const MIN_TARGET: f64 = 32.0;
 const SCRUB_TRACK_HEIGHT: f64 = 5.0;
-/// The unfilled scrub / volume track is the bar's own dim ink at this
-/// alpha: derived from the scrim like every other mark on the bar, so it
-/// reads on both themes' scrims where a declared `border_standard` did not.
 const TRACK_INK_ALPHA: f32 = 0.35;
-/// The selected menu option's lift: one translucent step off the panel
-/// ground, polarity chosen the way `hairline_on` chooses it (HIG §9.3).
 const MENU_SELECTED_ALPHA: u8 = 56;
 const SCRUB_THUMB_RADIUS: f64 = 7.0;
 const VOLUME_WIDTH: f64 = 78.0;
 const KEY_SEEK_STEP: Duration = Duration::from_secs(5);
 
-/// Push mode has no engine to report a real duration, so this stands in.
 const PUSH_MODE_DEFAULT_DURATION_MS: u64 = 60_000;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -71,14 +62,11 @@ const MENU_WIDTH: f64 = 224.0;
 const MENU_WIDTH_F32: f32 = 224.0;
 const MIN_SCRUB_WIDTH: f64 = 48.0;
 
-/// The embedding app owns the *meaning*; the player owns the *rendering* and
-/// reports interactions back via [`VideoPlayer::take_setting_events`].
 #[derive(Clone, Debug, PartialEq)]
 pub enum PlayerSettingControl {
     Toggle {
         on: bool,
     },
-    /// Activating opens a themed option list; picking one selects it.
     Choice {
         options: Vec<String>,
         selected: usize,
@@ -86,15 +74,10 @@ pub enum PlayerSettingControl {
     Button,
 }
 
-/// `priority` decides placement: `0` tucks inside the settings-gear menu;
-/// `>= 1` promotes to its own icon button when there is room, highest first,
-/// with overflow falling back into the gear.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PlayerSetting {
-    /// Stable key the host uses to read back changes.
     pub id: String,
     pub icon: Icon,
-    /// The tooltip and the gear-menu label.
     pub name: String,
     pub priority: i32,
     pub control: PlayerSettingControl,
@@ -151,7 +134,6 @@ impl PlayerSetting {
     }
 }
 
-/// Drained by the host each frame via [`VideoPlayer::take_setting_events`].
 #[derive(Clone, Debug, PartialEq)]
 pub enum PlayerSettingEvent {
     Toggled { id: String, on: bool },
@@ -176,48 +158,33 @@ fn setting_value(setting: &PlayerSetting) -> String {
     }
 }
 
-/// A control word in the desktop's language: the toolkit's own media words
-/// ([`crate::i18n`]), so a German desktop plays, mutes and seeks in German.
 fn said(key: &str) -> Cow<'static, str> {
     Cow::Owned(crate::i18n::widget_format(key, &[]))
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum OpenMenu {
-    /// Lists every priority-0 + overflowed setting.
     Gear,
-    /// A single [`PlayerSettingControl::Choice`]'s option list, anchored on its
-    /// own bar icon (`usize` = index into `settings`).
     Choice(usize),
 }
 
-/// A hit region inside an open menu, recorded each paint so `handle_event` can
-/// route a click without re-deriving the layout.
 #[derive(Clone, Copy, Debug)]
 enum MenuHit {
     Setting(usize),
-    /// `(setting index, option index)`.
     Option(usize, usize),
 }
 
-/// One row to be painted inside an open settings menu.
 enum MenuRow {
     Setting(usize),
-    /// `(setting index, option index)`.
     Option(usize, usize),
 }
 
-/// The rows an open menu should paint, plus where to anchor the panel and
-/// its optional header (a [`OpenMenu::Choice`] popover names itself; the
-/// gear list doesn't).
 struct MenuPanel {
     rows: Vec<MenuRow>,
     anchor: Rect,
     title: Option<String>,
 }
 
-/// Supplied so the player can publish it to the desktop media controls
-/// (MPRIS: media keys + the top-bar widget).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct NowPlaying {
     pub track_id: String,
@@ -226,9 +193,6 @@ pub struct NowPlaying {
     pub art_url: String,
 }
 
-// Six independent lifecycle/interaction flags (mute, fullscreen intent vs.
-// touched, drag state, focus, dirty), not a combinatorial state machine —
-// grouping them into an enum would obscure rather than clarify.
 #[allow(
     clippy::struct_excessive_bools,
     reason = "flags are independent widget state, not related toggles"
@@ -238,48 +202,33 @@ pub struct NowPlaying {
     "the player surface `ui.VideoPlayer` is built from, over its app's engine"
 )]
 pub struct VideoPlayer {
-    /// `None` in push mode.
     engine: Option<media::MediaEngine>,
     /// Lazily constructed on the first non-empty push so engine-mode
     /// consumers never start a decode pipeline. Rebuilt when the pushed
     /// codec changes.
     decoder: Option<media::RealtimeDecoder>,
     decoder_codec: Option<media::StreamCodec>,
-    /// Shared render cache for both the engine and push paths.
     latest_frame: Option<PenikoImage>,
-    /// What shows before the first frame: a still of the video.
     poster: Option<crate::widget::MediaSource>,
     poster_image: Option<PenikoImage>,
-    /// So engine-mode `sync` only rebuilds the peniko image when the
-    /// picture actually changed.
     last_frame_pts: Option<u64>,
     state: PlaybackState,
     position_ms: u64,
     duration_ms: u64,
-    /// Buffered-range indicator, 0..=100.
     buffering: u8,
     volume: f32,
     muted: bool,
     transport_enabled: bool,
-    /// So a fresh player expresses no opinion until asked — see
-    /// [`FullscreenProvider::fullscreen_intent`].
     fullscreen: bool,
     fullscreen_touched: bool,
-    /// Push-mode consumers that own their own clock: told the position each seek reached, so
-    /// a host playing on its own reports where the person took the playhead.
     on_seek: Option<Box<dyn FnMut(Duration)>>,
-    /// Bounds + hit regions, recomputed each draw.
     rect: Rect,
     play_button_rect: Rect,
     scrub_track_rect: Rect,
     volume_track_rect: Rect,
     mute_button_rect: Rect,
     fullscreen_button_rect: Rect,
-    /// Painted rect of the elapsed/duration label, `Rect::ZERO` when the bar
-    /// had no room for even the position. Not a pointer target; recorded so
-    /// the no-overlap contract can include the one non-control in the bar.
     time_label_rect: Rect,
-    /// `None` means hidden.
     controls_visible_until: Option<Instant>,
     /// The controls were shown and no frame has drawn them yet. A page
     /// that presents a frame every few seconds would otherwise let a
@@ -289,8 +238,6 @@ pub struct VideoPlayer {
     /// The last frame drew the controls, at least half opaque: what is on
     /// screen until the next frame, and what the semantics tree lists.
     controls_on_screen: bool,
-    /// The played part of the progress line the last paint drew; zero
-    /// while the controls showed instead.
     progress_line_painted: Rect,
     scrubbing: bool,
     last_cursor: Point,
@@ -299,10 +246,7 @@ pub struct VideoPlayer {
     motion_reduced: bool,
     dirty: bool,
     test_id: Option<&'static str>,
-    /// Duration-fraction bands painted on the scrub track — e.g. Tube's
-    /// `SponsorBlock`. Empty by default, so other consumers are unaffected.
     scrub_marks: Vec<(f32, f32, Color)>,
-    /// Rendered as priority icons on the bar and/or under the settings gear.
     settings: Vec<PlayerSetting>,
     setting_events: Vec<PlayerSettingEvent>,
     /// Terminal engine events are owned by the widget's frame pump, but the
@@ -314,36 +258,24 @@ pub struct VideoPlayer {
     media_events: Vec<media::MediaEvent>,
     open_menu: Option<OpenMenu>,
     gear_expanded: Option<usize>,
-    /// ZERO when not shown.
     gear_button_rect: Rect,
-    /// `(settings index, rect)`, recomputed each draw.
     setting_icon_rects: Vec<(usize, Rect)>,
-    /// Priority-0 + overflow, in menu order. Recomputed each draw.
     gear_entries: Vec<usize>,
     menu_hit_rects: Vec<(MenuHit, Rect)>,
     now_playing: NowPlaying,
-    /// Inert until [`Self::enable_mpris`].
     mpris: crate::mpris::MprisHandle,
     fullscreen_target: crate::fullscreen::FullscreenTarget,
 }
 
-/// Shared geometry threaded through `paint_controls`'s helpers, bundled so
-/// none of them needs more than a handful of parameters. `cluster_x0` starts
-/// as a placeholder and is filled in by `paint_settings_cluster`.
 #[derive(Clone, Copy)]
 struct ControlsLayout {
     bar: Rect,
     mid_y: f64,
     pad: f64,
     icon: f64,
-    /// Side of the square hit rect every button gets: `MIN_TARGET` clamped
-    /// to the bar. Painted glyph rects stay `icon`-sized inside it.
     hit: f64,
     play_btn: Rect,
     cluster_x0: f64,
-    /// Ink that clears contrast over the controls scrim, picked by the
-    /// theme — `text_primary` is near-black on light themes and vanishes
-    /// on the dark scrim.
     ink: Color,
     ink_dim: Color,
 }
@@ -364,9 +296,6 @@ impl ControlsLayout {
         )
     }
 
-    /// The hit rect for a horizontal track painted `SCRUB_TRACK_HEIGHT`
-    /// tall: the same x-range (so a click maps to the same fraction the
-    /// paint shows) but `hit` tall, centred on the bar's centre line.
     fn track_hit_rect(&self, track: Rect) -> Rect {
         Rect::new(
             track.x0,
@@ -377,13 +306,9 @@ impl ControlsLayout {
     }
 }
 
-/// The elapsed/duration label, pre-measured once so every layout helper that
-/// needs it shares the same measurement.
 struct TimeLabel<'a> {
     text: &'a str,
     width: f32,
-    /// Measured line-box height; the label is centred on this, not on
-    /// `size`, so it holds the bar's centre line at every text scale.
     height: f32,
     style: TextStyle,
 }
@@ -442,17 +367,12 @@ impl VideoPlayer {
         }
     }
 
-    /// A still that shows, contain-fitted on the letterbox, until the first
-    /// frame arrives. A [`MediaSource::Url`](crate::widget::MediaSource) loads
-    /// in the background; a `Paint` source paints the host's own art on a
-    /// 16:9 picture. The controls stand over either.
     #[must_use]
     pub fn with_poster(mut self, poster: crate::widget::MediaSource) -> Self {
         self.set_poster(Some(poster));
         self
     }
 
-    /// Replace or clear the poster.
     pub fn set_poster(&mut self, poster: Option<crate::widget::MediaSource>) {
         self.poster_image = match &poster {
             Some(crate::widget::MediaSource::Image(image)) => Some(image.clone()),
@@ -473,12 +393,7 @@ impl VideoPlayer {
         }
     }
 
-    /// Marks are fractions `0.0..=1.0` of the duration with an RGB colour.
-    /// Only repaints when the set actually changes, so a host may call this
-    /// every rebuild.
     pub fn set_sponsor_marks(&mut self, marks: Vec<(f32, f32, Color)>) {
-        // Exact equality is the point here — this is change detection for a
-        // dirty flag, not a numerical comparison that needs a tolerance.
         #[allow(
             clippy::float_cmp,
             reason = "exact-change detection for a dirty flag, not numerical comparison"
@@ -494,8 +409,6 @@ impl VideoPlayer {
         }
     }
 
-    /// Replaces an existing setting with the same `id`, so a host may push its
-    /// current settings every rebuild.
     pub fn set_setting(&mut self, setting: PlayerSetting) {
         if let Some(existing) = self.settings.iter_mut().find(|s| s.id == setting.id) {
             if *existing != setting {
@@ -530,8 +443,6 @@ impl VideoPlayer {
         self.settings.iter().find(|s| s.id == id)
     }
 
-    /// Syncs a choice's selected index from the host (e.g. after the backend
-    /// confirms a resolution switch) without emitting an event.
     pub fn set_choice_selection(&mut self, id: &str, index: usize) {
         if let Some(s) = self.settings.iter_mut().find(|s| s.id == id)
             && let PlayerSettingControl::Choice { options, selected } = &mut s.control
@@ -557,8 +468,6 @@ impl VideoPlayer {
         std::mem::take(&mut self.media_events)
     }
 
-    /// Reveals the controls so the menu is visible; lays out on the next paint.
-    /// `expand` optionally pre-expands a choice entry by id.
     pub fn open_settings_menu(&mut self, expand: Option<&str>) {
         self.open_menu = Some(OpenMenu::Gear);
         self.gear_expanded = expand.and_then(|id| self.settings.iter().position(|s| s.id == id));
@@ -570,7 +479,6 @@ impl VideoPlayer {
         self.open_menu.is_some()
     }
 
-    /// `None` if the setting overflowed into the gear (or controls are hidden).
     pub fn setting_icon_rect(&self, id: &str) -> Option<Rect> {
         let idx = self.settings.iter().position(|s| s.id == id)?;
         self.setting_icon_rects
@@ -586,7 +494,6 @@ impl VideoPlayer {
         }
     }
 
-    /// Republished automatically whenever it or the transport state changes.
     pub fn set_now_playing(&mut self, np: NowPlaying) {
         if self.now_playing != np {
             self.now_playing = np;
@@ -595,8 +502,6 @@ impl VideoPlayer {
         }
     }
 
-    /// Tell the engine what plays, for the system's now-playing controls it
-    /// reaches itself (a page's Media Session).
     fn describe_now_playing(&mut self) {
         let Some(engine) = self.engine.as_mut() else {
             return;
@@ -626,14 +531,10 @@ impl VideoPlayer {
         self.mpris = crate::mpris::MprisHandle::spawn(config, self.mpris_snapshot());
     }
 
-    /// Call once per frame; inert without an active MPRIS service.
     pub fn pump_media_controls(&mut self) {
         for cmd in self.mpris.drain_commands() {
             self.apply_media_command(cmd);
         }
-        // The engine's own system controls (a page's Media Session) already
-        // played, paused or moved the media; the player follows, so its
-        // controls say what the media does.
         let pressed = self
             .engine
             .as_mut()
@@ -649,7 +550,6 @@ impl VideoPlayer {
                 {
                     self.pause();
                 }
-                // One clip has no next or previous; a seek is applied already.
                 _ => {}
             }
         }
@@ -682,7 +582,6 @@ impl VideoPlayer {
                 reason = "volume fraction in 0.0..=1.0; f32 precision is sufficient"
             )]
             C::SetVolume(v) => self.set_volume(v as f32),
-            // No single-clip meaning here; a host can observe these once it wires a playlist.
             C::Next | C::Previous | C::Raise | C::Quit => {}
         }
     }
@@ -755,8 +654,6 @@ impl VideoPlayer {
         engine
     }
 
-    /// So the host can `open` a source or drive collaborative transport
-    /// (`apply_transport` / `transport_state`).
     pub fn engine_mut(&mut self) -> Option<&mut media::MediaEngine> {
         self.engine.as_mut()
     }
@@ -779,15 +676,10 @@ impl VideoPlayer {
         self
     }
 
-    /// Push one H.264 access unit (Annex-B). Returns `true` when a frame was
-    /// decoded and `latest_frame` updated.
     pub fn feed_frame(&mut self, nalus: &[u8]) -> bool {
         self.feed_encoded(media::StreamCodec::H264, nalus)
     }
 
-    /// Push one access unit of `codec`. Returns `true` when a frame was
-    /// decoded and `latest_frame` updated. Units before the stream's first
-    /// keyframe decode to nothing.
     pub fn feed_encoded(&mut self, codec: media::StreamCodec, unit: &[u8]) -> bool {
         if unit.is_empty() {
             return false;
@@ -826,8 +718,6 @@ impl VideoPlayer {
         self.latest_frame.as_ref()
     }
 
-    /// Whether a source is loaded, including the asynchronous interval before
-    /// its first decoded frame arrives.
     pub fn has_media(&self) -> bool {
         self.latest_frame.is_some()
             || self
@@ -884,8 +774,6 @@ impl VideoPlayer {
         self.duration_ms
     }
 
-    /// Tell `f` the position each seek reaches: a host playing on its own reports where the
-    /// person took the playhead, as a described component's event does.
     #[must_use]
     pub fn on_seek<F: FnMut(Duration) + 'static>(mut self, f: F) -> Self {
         self.on_seek = Some(Box::new(f));
@@ -911,7 +799,6 @@ impl VideoPlayer {
         }
     }
 
-    /// Also unmutes.
     pub fn set_volume(&mut self, v: f32) {
         self.volume = v.clamp(0.0, 1.0);
         self.muted = false;
@@ -936,8 +823,6 @@ impl VideoPlayer {
         self.dirty = true;
     }
 
-    /// Disable local play/seek input while a collaborative follower is bound
-    /// to an authoritative host. Audio volume and presentation stay local.
     pub fn set_transport_enabled(&mut self, enabled: bool) {
         if self.transport_enabled != enabled {
             self.transport_enabled = enabled;
@@ -955,7 +840,6 @@ impl VideoPlayer {
         self.dirty = true;
     }
 
-    /// Reflected through [`FullscreenProvider::fullscreen_params`].
     pub fn set_fullscreen_target(&mut self, target: crate::fullscreen::FullscreenTarget) {
         self.fullscreen_target = target;
     }
@@ -987,8 +871,6 @@ impl VideoPlayer {
         self.controls_pinned() || self.reveal_unpainted || self.controls_shown_for_a_while()
     }
 
-    /// Shown by the pointer, a key or playback starting, until the
-    /// auto-hide deadline.
     fn controls_shown_for_a_while(&self) -> bool {
         match self.controls_visible_until {
             Some(deadline) => crate::time::now() < deadline,
@@ -1012,8 +894,6 @@ impl VideoPlayer {
         if self.motion_reduced {
             return 1.0;
         }
-        // Woken at once by the pointer, gone over the standard exit by the
-        // deadline (`motion::Transient`).
         crate::motion::Transient::opacity(
             crate::motion::Transient::CONFIRMATION,
             (now, deadline),
@@ -1022,9 +902,6 @@ impl VideoPlayer {
         )
     }
 
-    /// An app that floats its own affordance over the video (e.g. an Open
-    /// button) reads this so its overlay hides in lockstep with the
-    /// player's own controls.
     pub fn controls_visible(&self) -> bool {
         self.controls_visible_now() || self.open_menu.is_some()
     }
@@ -1060,10 +937,6 @@ impl VideoPlayer {
         )
     }
 
-    /// The scrub track's progress as a line along the picture's bottom
-    /// edge, as thick as the track, painted while the controls are hidden:
-    /// the played part in media ink over a scrim, so it reads on a bright
-    /// picture and a dark one alike.
     fn paint_progress_line(&mut self, scene: &mut Scene, transform: Affine, theme: &Theme) {
         self.progress_line_painted = Rect::ZERO;
         if self.duration_ms == 0 || !self.has_media() || self.rect.width() <= 0.0 {
@@ -1099,22 +972,13 @@ impl VideoPlayer {
         }
     }
 
-    /// Split out of `sync` so the borrow of `self.engine` is fully released
-    /// before the fields it mirrors into are written.
     fn pump_engine(&mut self) {
-        // Read before borrowing the engine, so the clone-guard decision below
-        // can be made inside the closure without a second borrow of `self`.
         let last_pts = self.last_frame_pts;
         let have_frame = self.latest_frame.is_some();
         let snapshot = self.engine.as_mut().map(|engine| {
-            // In a page the renderer copies each picture from the media
-            // element on the GPU (`element_pictures`): none is read back.
             engine.prefer_element_pictures();
             let events = engine.poll();
             let element_picture = engine.take_element_picture();
-            // Clone the (multi-megabyte) RGBA buffer only on a real pts
-            // change — the scroll path re-syncs every frame, so cloning
-            // unconditionally was a per-frame memcpy this guard discards.
             let cur_pts = engine.latest_frame().map(|f| f.pts_ms);
             let frame = if element_picture.is_none()
                 && cur_pts.is_some()
@@ -1161,8 +1025,6 @@ impl VideoPlayer {
             PlaybackState::Paused
         };
         if self.state != new_state {
-            // Playback starting shows the controls before they hide, so
-            // a video that begins on its own shows how to stop it.
             if new_state == PlaybackState::Playing {
                 self.show_controls();
             }
@@ -1179,15 +1041,11 @@ impl VideoPlayer {
         if let Some(picture) = element_picture {
             self.show_element_picture(picture);
         }
-        // `publish` dedups sub-second position jitter, so this is quiet on the bus.
         if self.mpris.is_active() {
             self.publish_mpris();
         }
     }
 
-    /// Show a picture the renderer copies from the page's media element
-    /// (`element_pictures`): an image of its own per picture, so the frame
-    /// that shows it differs from the last one exactly where it is drawn.
     fn show_element_picture(&mut self, picture: media::ElementPicture) {
         let image = rgba_image(picture.width, picture.height, Arc::new(Vec::new()));
         crate::element_pictures::show(image.clone(), picture.element);
@@ -1232,7 +1090,6 @@ impl VideoPlayer {
             &self.rect,
         );
 
-        // Latest frame, contain-fit; before it, the poster; else nothing.
         if let Some(img) = self
             .latest_frame
             .clone()
@@ -1248,9 +1105,6 @@ impl VideoPlayer {
                 let dh = ih * scale;
                 let dx = self.rect.x0 + (rw - dw) * 0.5;
                 let dy = self.rect.y0 + (rh - dh) * 0.5;
-                // Affine composition on f64 fields; see `translated`'s
-                // doc comment for why `arithmetic_side_effects` is a
-                // false positive here.
                 #[allow(
                     clippy::arithmetic_side_effects,
                     reason = "Affine composition of f64 transforms; cannot meaningfully overflow"
@@ -1268,8 +1122,6 @@ impl VideoPlayer {
                 );
             }
         } else if let Some(crate::widget::MediaSource::Paint(paint)) = &self.poster {
-            // Art the host paints (a video with no still of its own), on a
-            // 16:9 picture contain-fitted like a frame, under the controls.
             let (rw, rh) = (self.rect.width(), self.rect.height());
             let (dw, dh) = if rw * 9.0 > rh * 16.0 {
                 (rh * 16.0 / 9.0, rh)
@@ -1301,7 +1153,6 @@ impl VideoPlayer {
         self.progress_line_painted = Rect::ZERO;
         let opacity = self.controls_opacity();
         if opacity <= 0.0 {
-            // Nothing of the controls is drawn: none may be hit or read.
             self.forget_control_rects();
             return;
         }
@@ -1341,8 +1192,6 @@ impl VideoPlayer {
         self.controls_on_screen
     }
 
-    /// The controls a person can see and reach now, with where they are
-    /// drawn: what the semantics tree lists, in order.
     fn seen_controls(&self) -> Vec<(String, crate::a11y::AccessNode, Rect)> {
         if !self.controls_seen() {
             return Vec::new();
@@ -1364,9 +1213,6 @@ impl VideoPlayer {
         if bar.width() <= 0.0 || bar.height() <= 0.0 {
             return;
         }
-        // Chrome over media is the floating material on the media: a Panel
-        // shaped to the controls, blurring the picture behind it. Everything
-        // on it is inked for the panel ground.
         crate::widget::floating_surface::paint(scene, transform, bar, theme);
         let panel_theme = theme.on_ground(crate::chrome::panel_ground(theme));
         let theme = &panel_theme;
@@ -1390,8 +1236,6 @@ impl VideoPlayer {
             mid_y + icon * 0.5,
         );
 
-        // Feeds the left reserve that bounds how many setting icons can fit
-        // without crushing the scrubber.
         let time_text = format!(
             "{} / {}",
             format_ms(self.position_ms),
@@ -1399,11 +1243,6 @@ impl VideoPlayer {
         );
         let time_style = theme.text(TextRole::Caption);
         let (tw, th) = text_renderer.measure_style(&time_text, None, &time_style);
-        // The cluster reserves room for the label's *shortest* useful form
-        // (the position alone): controls outrank the full "m:ss / m:ss",
-        // which yields to them, so folding a setting icon into the gear to
-        // protect a label that is then not painted would hide a reachable
-        // control for nothing.
         let (position_w, _) =
             text_renderer.measure_style(&format_ms(self.position_ms), None, &time_style);
 
@@ -1433,10 +1272,6 @@ impl VideoPlayer {
         self.paint_menu(scene, transform, text_renderer, theme);
     }
 
-    /// Large text uses two intentional rows: an uninterrupted timeline, then
-    /// the complete transport/audio/settings cluster. This keeps every semantic
-    /// control reachable without shrinking type or letting the time label eat
-    /// the scrubber on phone-width surfaces.
     fn paint_large_text_controls(
         &mut self,
         scene: &mut Scene,
@@ -1633,12 +1468,6 @@ impl VideoPlayer {
         }
     }
 
-    /// Right cluster `[ setting icons ][ gear ][ fullscreen ]`, packed from
-    /// the right so fullscreen stays pinned to the corner. Priority `>= 1`
-    /// settings get their own icon, highest first; overflow (plus every
-    /// priority-0 setting) collapses into the gear. Writes the leftmost
-    /// edge the cluster reached into `layout.cluster_x0`, so the caller
-    /// knows where the volume control has room to end.
     fn paint_settings_cluster(
         &mut self,
         scene: &mut Scene,
@@ -1733,12 +1562,7 @@ impl VideoPlayer {
             leftmost_glyph_x0.unwrap_or(if gear_needed { gear_btn.x0 } else { fs_btn.x0 });
     }
 
-    /// Priority `>= 1` settings (highest first, ties broken by original
-    /// index) and priority-0 settings, both as indices into `self.settings`.
     fn settings_priority_lists(&self) -> (Vec<usize>, Vec<usize>) {
-        // Indices only ever come from `0..self.settings.len()`, so they stay
-        // valid for the lifetime of any caller — `.get()` still guards each
-        // use since `self.settings` isn't provably immutable to the reader.
         let mut prio: Vec<usize> = self
             .settings
             .iter()
@@ -1761,10 +1585,6 @@ impl VideoPlayer {
         (prio, zero)
     }
 
-    /// Draws each of `shown`'s setting icons leftward from `start_cx`,
-    /// pushing its hit rect into `setting_icon_rects`. Returns the leftmost
-    /// painted glyph edge, so the caller can lay the volume control out
-    /// against what is visible rather than against the wider hit rect.
     fn paint_setting_icons(
         &mut self,
         scene: &mut Scene,
@@ -1797,8 +1617,6 @@ impl VideoPlayer {
         leftmost
     }
 
-    /// Volume slider, elapsed/duration text, and the scrub track (with
-    /// buffering, sponsor marks and the playhead thumb).
     fn paint_volume_time_track(
         &mut self,
         scene: &mut Scene,
@@ -1819,13 +1637,6 @@ impl VideoPlayer {
 
         let track_x0 = play_btn.x1 + pad;
         let time_x1 = vol_x0 - pad;
-        // The label yields before the scrubber does. Its right edge is fixed
-        // by the volume control; when the full "m:ss / m:ss" would push the
-        // track under `MIN_SCRUB_WIDTH` — a narrow bar, a long duration,
-        // large type — it degrades to the position alone, and then to
-        // nothing, rather than painting over the track or the controls
-        // beside it (the old `max(play_btn.x1 + pad)` clamp moved the
-        // label's left edge but let its right end run under the volume).
         let room = time_x1 - (track_x0 + MIN_SCRUB_WIDTH + pad);
         let shown = if f64::from(time.width) <= room {
             Some((time.text.to_string(), time.width))
@@ -1854,8 +1665,6 @@ impl VideoPlayer {
         self.paint_scrub_track(scene, transform, layout, track_x0, track_x1);
     }
 
-    /// Draws the speaker glyph and volume level track. Returns its left
-    /// edge, so the caller knows where the time label has room to end.
     fn paint_volume_slider(
         &mut self,
         scene: &mut Scene,
@@ -1922,9 +1731,6 @@ impl VideoPlayer {
         vol_x0
     }
 
-    /// Draws the scrub track — background, buffered range, played range,
-    /// sponsor-style marks and the playhead thumb — between `track_x0` and
-    /// `track_x1`. A non-positive-width range just hides the track.
     fn paint_scrub_track(
         &mut self,
         scene: &mut Scene,
@@ -1965,9 +1771,6 @@ impl VideoPlayer {
                 track.x0 + track.width() * buf_frac,
                 track.y1,
             );
-            // Buffered range in the bar's own dim ink: `text_dim` is chosen
-            // against the app surface, not the scrim, and vanished on the
-            // light theme's dark scrim.
             scene.fill(
                 Fill::NonZero,
                 transform,
@@ -1990,8 +1793,6 @@ impl VideoPlayer {
             None,
             &RoundedRect::from_rect(played, SCRUB_TRACK_HEIGHT * 0.5),
         );
-        // SponsorBlock-style marks as slightly-taller bands, visible on the
-        // ONE timeline before playback rather than a separate bar.
         let mid_y = track.center().y;
         let band_h = SCRUB_TRACK_HEIGHT + 3.0;
         for (s, e, color) in &self.scrub_marks {
@@ -2021,17 +1822,12 @@ impl VideoPlayer {
         );
     }
 
-    /// Walks `menu`'s entries into paintable [`MenuRow`]s. `None` only for a
-    /// [`OpenMenu::Choice`] whose setting has since vanished (e.g. the host
-    /// removed it while the popover was open).
     fn build_menu_rows(&self, menu: OpenMenu) -> Option<MenuPanel> {
         let mut rows = Vec::new();
         let (anchor, title) = match menu {
             OpenMenu::Gear => {
                 for &idx in &self.gear_entries {
                     rows.push(MenuRow::Setting(idx));
-                    // Options appear indented only while this is the expanded
-                    // entry, so the gear reads as a tidy list until drilled in.
                     if self.gear_expanded == Some(idx)
                         && let Some(PlayerSettingControl::Choice { options, .. }) =
                             self.settings.get(idx).map(|s| &s.control)
@@ -2065,7 +1861,6 @@ impl VideoPlayer {
         })
     }
 
-    /// Records `menu_hit_rects` for `handle_event`.
     fn paint_menu(
         &mut self,
         scene: &mut Scene,
@@ -2087,8 +1882,6 @@ impl VideoPlayer {
         let row_h = MENU_ROW_H * text_scale * if theme.text_scale > 1.25 { 1.35 } else { 1.0 };
         let pad = f64::from(theme.tokens.spacing.s2);
         let title_h = if panel.title.is_some() { row_h } else { 0.0 };
-        // The row count is a small UI list (settings + their options), well
-        // under any precision limit `f64` could impose.
         #[allow(
             clippy::cast_precision_loss,
             reason = "menu row count is a small UI list, well within f64 precision"
@@ -2097,16 +1890,12 @@ impl VideoPlayer {
         let width = (MENU_WIDTH * text_scale.min(1.5))
             .min(self.rect.width() - 8.0)
             .max(80.0);
-        // Right-aligned to the anchor, clamped inside the surface.
         let x1 = panel.anchor.x1.min(self.rect.x1 - 4.0);
         let x0 = (x1 - width).max(self.rect.x0 + 4.0);
         let y1 = (panel.anchor.y0 - pad * 0.5).max(self.rect.y0 + panel_h + 4.0);
         let y0 = y1 - panel_h;
         let panel_rect = Rect::new(x0, y0, x1, y1);
 
-        // Panel role (HIG §9.1): a settings menu floats over the video, so it
-        // takes the panel ground and the panel edge — the declared
-        // `border_standard` this replaces vanished on the dark preset.
         crate::widget::floating_surface::paint(scene, transform, panel_rect, theme);
 
         let mut y = y0 + pad * 0.5;
@@ -2138,9 +1927,6 @@ impl VideoPlayer {
         }
     }
 
-    /// Paints one row of an open settings menu and records its hit rect.
-    /// `row_rect` alone determines the row's geometry, so the two row kinds
-    /// only need it plus their own indices.
     fn paint_menu_row(
         &mut self,
         scene: &mut Scene,
@@ -2168,8 +1954,6 @@ impl VideoPlayer {
         }
     }
 
-    /// Paints a [`MenuRow::Setting`] row: icon, name, and its current value
-    /// (On/Off, the selected choice, or nothing for a bare button).
     fn paint_setting_row(
         &mut self,
         scene: &mut Scene,
@@ -2208,8 +1992,6 @@ impl VideoPlayer {
             y + row_h - 7.0 * text_scale,
         );
         s.icon.draw(scene, transform, icon_r, colors.text_primary);
-        // Control label and value are both `scale.sm` (HIG §9.6), centred on
-        // the row from their measured line box.
         let label_style = theme.text(TextRole::Caption);
         let (_, lh) = text_renderer.measure_style(&s.name, None, &label_style);
         let label_top = y + (row_h - f64::from(lh)) * 0.5;
@@ -2292,8 +2074,6 @@ impl VideoPlayer {
         self.menu_hit_rects.push((MenuHit::Setting(idx), row_rect));
     }
 
-    /// Paints a [`MenuRow::Option`] row: a [`PlayerSettingControl::Choice`]
-    /// option label, highlighted and checked when it's the selected one.
     fn paint_option_row(
         &mut self,
         scene: &mut Scene,
@@ -2319,17 +2099,12 @@ impl VideoPlayer {
         let accent = colors.text_primary;
 
         let selected = *selected == oi;
-        // The standalone popover has no header, so no indent.
         let indent = if matches!(menu, OpenMenu::Gear) {
             26.0
         } else {
             10.0
         };
         if selected {
-            // Selection is a lift, not an accent wash (HIG §9.3): one step
-            // off the panel it sits on under an edge derived from the panel.
-            // `Colors::lift` is measured against the desktop and has no
-            // purchase on a panel, so the step derives from the panel itself.
             let hl_rect = Rect::new(
                 row_rect.x0 + 2.0,
                 y + 1.0,
@@ -2386,13 +2161,8 @@ impl VideoPlayer {
             .push((MenuHit::Option(idx, oi), row_rect));
     }
 
-    /// A player with no frame shows only its letterbox: the embedding app
-    /// says what is missing (an empty state, an error), and no glyph is
-    /// ever painted under that text.
     fn paint_empty_placeholder(&self, _scene: &mut Scene, _transform: Affine, _theme: &Theme) {}
 
-    /// Play and pause are solid marks, each inside the same square glyph box
-    /// as every other transport glyph, inset alike on every side.
     fn draw_play_glyph(&self, scene: &mut Scene, transform: Affine, r: Rect, color: Color) {
         let side = r.width().min(r.height());
         if side <= 0.0 {
@@ -2449,8 +2219,6 @@ fn rgba_image(width: u32, height: u32, rgba: Arc<Vec<u8>>) -> PenikoImage {
     }
 }
 
-/// Every transport glyph is a `ui::icons` icon in one square box, centred
-/// in the control's rect so its insets are the same on every side.
 fn transport_glyph(scene: &mut Scene, transform: Affine, r: Rect, icon: Icon, color: Color) {
     let side = r.width().min(r.height());
     if side <= 0.0 {
@@ -2476,8 +2244,6 @@ fn draw_fullscreen_glyph(
     color: Color,
     active: bool,
 ) {
-    // The corners, not the window's diagonal arrows: the window bar's
-    // maximize already wears those.
     let icon = if active {
         Icon::Minimize
     } else {
@@ -2534,10 +2300,6 @@ impl Widget for VideoPlayer {
         _theme: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        // Fill whatever the host gives us — the same `percent(1.0)` leaf as
-        // `ImageViewer`. `auto` only fills when a flex parent stretches the
-        // node; as the root of a tree (a gallery cell, a harness) it
-        // resolved to 0×0 and the placeholder glyph landed on the origin.
         let style = Style {
             size: Size {
                 width: Dimension::percent(1.0),
@@ -2590,8 +2352,6 @@ impl Widget for VideoPlayer {
                     return;
                 }
                 *ctx.focus_target = Some(ctx.node_id);
-                // Control hit regions are ZERO while hidden, so this naturally
-                // falls through to the surface play/pause toggle.
                 if self.press_at_cursor() {
                     *ctx.handled = true;
                 }
@@ -2665,14 +2425,10 @@ impl Widget for VideoPlayer {
     }
 
     fn wants_pointer_capture(&self) -> bool {
-        // Owns the pointer mid-drag so the seek tracks the cursor even after it
-        // leaves the thin track band.
         self.scrubbing
     }
 
     fn needs_animation_frame(&self) -> bool {
-        // A paused player's pinned controls are still: only a deadline
-        // that ends a fade needs frames.
         self.is_playing() || self.controls_shown_for_a_while()
     }
 

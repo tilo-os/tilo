@@ -39,14 +39,10 @@ fn a_scroll_that_carries_on_mounts_rows_ahead_and_a_jump_only_what_it_shows() {
     );
     let mounted = keys(&list);
 
-    // Two rows further the view and its overscan stay within the rows
-    // mounted: nothing mounts.
     list.set_scroll_offset(60.0);
     let _ = lay_out(&mut list, 300.0);
     assert_eq!(keys(&list), mounted);
 
-    // Further still the view reaches past what the band holds: it moves as a whole, and the
-    // rows behind let go.
     list.set_scroll_offset(400.0);
     let _ = lay_out(&mut list, 300.0);
     assert_eq!(list.mounted_range, 18..43);
@@ -65,7 +61,6 @@ fn a_scroll_that_carries_on_mounts_rows_ahead_and_a_jump_only_what_it_shows() {
     );
     assert_eq!(list.mounted.len(), list.visible_range().len());
 
-    // Back up: the rows ahead are above.
     list.set_scroll_offset(1_980.0);
     let _ = lay_out(&mut list, 300.0);
     assert_eq!(list.mounted_range, 87..112);
@@ -73,8 +68,6 @@ fn a_scroll_that_carries_on_mounts_rows_ahead_and_a_jump_only_what_it_shows() {
 
 #[test]
 fn a_changed_row_is_mounted_again_in_place_and_alone() {
-    // A row is reported changed one at a time, or by a model that renders its rows (a
-    // described list's); both mount that row again, alone and where it was.
     for model_reported in [false, true] {
         let built = Rc::new(Cell::new(0_u32));
         let counted = Rc::clone(&built);
@@ -98,7 +91,6 @@ fn a_changed_row_is_mounted_again_in_place_and_alone() {
         } else {
             list.invalidate_rows([3]);
         }
-        // The host syncs before it asks what changed.
         let doc = automerge::AutoCommit::new();
         crate::widget::Widget::sync(&mut list, &doc, &automerge::ROOT);
         assert_eq!(
@@ -116,9 +108,6 @@ fn a_changed_row_is_mounted_again_in_place_and_alone() {
     }
 }
 
-/// A row built anew in a sync, before the host remounts it, leaves the layout the host holds
-/// as it was: the row it replaces stays alive and stands in the layout walk until the
-/// remount lets go of its node, and the remount leaves no node behind.
 #[test]
 fn a_row_replaced_before_its_remount_is_let_go_of_by_the_remount() {
     let model = VecListModel::new((0..10_u64).collect(), |key| *key).unwrap();

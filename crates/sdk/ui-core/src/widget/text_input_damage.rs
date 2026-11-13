@@ -1,8 +1,6 @@
-//! What a shaped multiline field repaints. A frame that only scrolled it
-//! offers its host a copy of what stays on screen ([`crate::scroll_copy`]);
-//! one that changed some of its lines in place repaints those lines and
-//! where its caret, selection and marks were and are, not the field.
-
+//! What a shaped multiline field repaints. A frame that only scrolled it offers its host a copy of
+//! what stays on screen ([`crate::scroll_copy`]); one that changed some of its lines in place
+//! repaints those lines and where its caret, selection and marks were and are, not the field.
 use std::hash::{Hash, Hasher};
 
 use vello::kurbo::{Affine, Rect, Vec2};
@@ -13,11 +11,8 @@ use crate::scroll_copy::{Piece, Showing, Since};
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 
-/// How one frame showed a shaped multiline field: its lines and marks
-/// (caret, current line, selection, a host's diagnostics) as pieces.
 pub(super) type FieldShown = Showing<FieldLook>;
 
-/// What the whole field's paint depends on besides its lines and marks.
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct FieldLook {
     states: [bool; 6],
@@ -26,7 +21,6 @@ pub(super) struct FieldLook {
     colors: [Color; 6],
 }
 
-/// The keys of marks among the pieces, after every line's.
 const MARK: u64 = 1 << 63;
 
 fn fingerprint(value: impl Hash) -> u64 {
@@ -44,11 +38,6 @@ fn mark(index: usize, rect: Rect) -> Piece {
 }
 
 impl TextInput {
-    /// Note what this frame shows of a shaped multiline field, once its
-    /// draw is done. Each line is a piece where it paints: its rows' bands
-    /// and the ink that reaches past them
-    /// ([`TextRenderer::rich_line_ink_reach`]), for every line whose ink
-    /// may show in the field, as its draw takes them.
     pub(super) fn note_shown(&self, transform: Affine, theme: &Theme, renderer: &mut TextRenderer) {
         let Some(layout) = self
             .single_layout
@@ -69,7 +58,6 @@ impl TextInput {
         let caret_byte = self.text_to_layout_position(self.caret_position()).byte;
         let current_line = (self.is_focused && !self.shows_placeholder())
             .then(|| layout.logical_line_index(caret_byte));
-        // Pieces are where they paint with the field unscrolled.
         let unscrolled = origin_y + self.shown_scroll_y();
         let band = |top: f32, bottom: f32| {
             Rect::new(
@@ -151,9 +139,6 @@ impl TextInput {
         });
     }
 
-    /// What this model does not follow (a placeholder, a composition,
-    /// spelling, an autocorrection, styled spans, an accessory): the frame
-    /// is left unnoted, and the field repaints whole.
     fn untracked(&self) -> bool {
         self.shows_placeholder()
             || self.core.has_preedit()
@@ -188,8 +173,6 @@ impl TextInput {
         }
     }
 
-    /// A field with chrome paints its border and rounded corners over the
-    /// rows.
     fn field_overlays(&self, theme: &Theme) -> Vec<Rect> {
         if self.plain {
             return Vec::new();
@@ -228,8 +211,6 @@ impl TextInput {
         crate::draw_cull::Keep::scrolled(transform, self.rect, delta, &overlays)
     }
 
-    /// The line numbers in the gutter beside the rows `visible` shows, but
-    /// for the lines `leave_out` (ascending) whose numbers the frame keeps.
     pub(super) fn draw_gutter_line_numbers(
         &self,
         scene: &mut vello::Scene,
@@ -407,10 +388,6 @@ impl TextInput {
         kept
     }
 
-    /// Add `marks` (on screen) to what this frame shows painted over the
-    /// field's rows, for a host that paints over them (a code editor's
-    /// diagnostics): a frame where they changed repaints where they were
-    /// and are.
     pub fn note_marks(&self, marks: impl IntoIterator<Item = Rect>) {
         if let Some(mut shown) = self.shown.drawing_mut() {
             let scroll = shown.scroll;
@@ -428,10 +405,6 @@ impl TextInput {
         }
     }
 
-    /// This field's damage since the frame on screen, for a host that draws
-    /// it as part of `owner` (itself, as a widget in the tree): a scroll is
-    /// offered as a copy, the lines and marks that changed repaint where
-    /// they were and are, anything else repaints the field.
     pub fn collect_damage_for<T: ?Sized>(&self, owner: &T, regions: &mut Vec<Rect>) {
         let since = self.shown.damage(owner, regions);
         if since == Since::Repaint {
@@ -439,7 +412,6 @@ impl TextInput {
         }
     }
 
-    /// From the host's `mark_drawn`: the frame just drawn is on screen.
     pub fn mark_shown(&mut self) {
         self.shown.present();
     }

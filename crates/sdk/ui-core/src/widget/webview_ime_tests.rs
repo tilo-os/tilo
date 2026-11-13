@@ -30,7 +30,6 @@ fn the_input_method_opens_where_the_page_reports_its_caret() {
     let (mut view, tree, node) = laid_out(engine.clone());
     let doc = AutoCommit::new();
     view.set_focus(true);
-    // An engine that reports no field leaves the page to deferred text.
     assert_eq!(view.ime_cursor_rect(), None);
     assert!(view.ime_refuses_ordinary_commits());
 
@@ -47,14 +46,12 @@ fn the_input_method_opens_where_the_page_reports_its_caret() {
         view.ime_content().map(|content| content.purpose),
         Some(crate::ime::InputPurpose::Search)
     );
-    // Serving the input method grants no dictation: that needs a lease.
     assert_eq!(view.ime_edit_fingerprint(&[7; 32]), None);
     assert_eq!(
         view.ime_cursor_rect(),
         Some(Rect::new(20.0, 40.0, 220.0, 70.0))
     );
 
-    // While composing, the caret is the composed text, and follows it.
     dispatch(
         &mut view,
         &tree,
@@ -76,8 +73,6 @@ fn the_input_method_opens_where_the_page_reports_its_caret() {
         Some(Rect::new(60.0, 44.0, 108.0, 66.0))
     );
 
-    // An emptied preedit followed by its commit is the commit alone: the
-    // page's composition ends with the committed text.
     dispatch(
         &mut view,
         &tree,
@@ -101,13 +96,11 @@ fn the_input_method_opens_where_the_page_reports_its_caret() {
             WebViewCommand::ImeCommit("日本".into()),
         ]
     );
-    // A stale composition box no longer counts once nothing composes.
     assert_eq!(
         view.ime_cursor_rect(),
         Some(Rect::new(20.0, 40.0, 220.0, 70.0))
     );
 
-    // An emptied preedit nothing commits withdraws the composition.
     dispatch(
         &mut view,
         &tree,
@@ -160,7 +153,6 @@ fn the_input_method_opens_where_the_page_reports_its_caret() {
     assert_eq!(view.ime_content(), None);
     assert_eq!(view.ime_cursor_rect(), None);
 
-    // Nor does anything once the page loses the keyboard.
     engine.set_text_field(Some(field));
     view.set_focus(false);
     assert_eq!(view.ime_cursor_rect(), None);

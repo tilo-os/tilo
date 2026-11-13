@@ -37,12 +37,6 @@ type DocumentTextSource = Box<dyn FnMut(&AutoCommit, &ObjId) -> String>;
 /// font size.
 pub use crate::text_metrics::centered_text_top;
 
-/// Test helper shared by the widgets that centre a line
-/// with [`centered_text_top`]: asserts that glyph run `run_index` of `scene` sits
-/// where `text` in `style` lands when its *measured* line is centred in the
-/// band `band_y0 ..= band_y0 + band_height`. The expectation is a reference
-/// `draw_style` at the computed top rather than an assumed baseline offset,
-/// so the check follows the renderer's own line metrics.
 #[cfg(test)]
 pub(crate) fn assert_glyph_run_centred_in_band(
     scene: &Scene,
@@ -93,8 +87,6 @@ pub(crate) fn assert_glyph_run_centred_in_band(
     );
 }
 
-/// What a [`Text`] layers on its role. Every field is an override; an unset
-/// one leaves the role's own value.
 #[derive(Clone, Debug)]
 struct TextModifiers {
     weight: Option<TextWeight>,
@@ -104,8 +96,6 @@ struct TextModifiers {
     line_height: Option<f32>,
     kind: Option<TextKind>,
     content_size: Option<f32>,
-    /// Carries the OpenType features, variations, paragraph and
-    /// hyphenation choices; its size, weight and family are unused.
     layered: TextStyle,
 }
 
@@ -132,18 +122,10 @@ enum TextSource {
 pub struct Text {
     label: String,
     test_id: Option<String>,
-    /// Returns `Some` only when a bound value should replace `label`.
     source: Option<TextSource>,
-    /// Named variables interpolated into the label's Fluent placeables. Held
-    /// owned so a localized string like `counter = Count is { $count }` resolves
-    /// to `Count is 5` (not the literal `{$count}`) every frame, even though the
-    /// widget caches its rendered scene. Empty for plain, variable-free labels.
     args: Vec<(String, ArgValue)>,
     i18n_revision: u64,
-    /// What this text is. It drives the typography and the accessible
-    /// heading level.
     role: TextRole,
-    /// Emphasis and typographic choices layered on the role.
     modifiers: TextModifiers,
     /// The role resolved against the last theme seen, with the modifiers
     /// applied. `measure` has no theme parameter, so build/draw keep it here.
@@ -152,26 +134,17 @@ pub struct Text {
     renderer_epoch: Option<std::sync::Arc<()>>,
     observed_renderer_text_scale: f32,
     heading_level: Option<u8>,
-    /// The most lines it takes: what does not fit is elided at the last of
-    /// them, so a clamp holds however long the words are.
     max_lines: Option<u32>,
     /// It elides at the room it is given instead of wrapping wider: it never
     /// holds its longest word's width, so a title in a narrow card ends in an
     /// ellipsis rather than standing the card up.
     truncate: bool,
-    /// Announce changes to this text without moving keyboard focus. Static
-    /// copy leaves this unset; status and error text opt in explicitly.
     live: Option<crate::a11y::Politeness>,
     layout_engine: Option<Box<dyn TextLayoutEngine>>,
     engine_revision: u64,
-    /// `None` (default) renders with the theme's `text_primary`.
     color: Option<vello::peniko::Color>,
-    /// Resolve to the active theme's secondary ink.
     dimmed: bool,
-    /// Resolve to this status tone's ink, measured against the ground at
-    /// draw time (a validation message, a "Running" state).
     tone: Option<super::Tone>,
-    /// How assistive technology meets this text.
     access: TextAccess,
     /// What assistive technology reads instead of the shown words: a
     /// failure's headline shown, its whole reason spoken.
@@ -179,31 +152,20 @@ pub struct Text {
     rect: vello::kurbo::Rect,
     presence_path: Vec<PathSegment>,
     permission_scope: Option<PermissionScope>,
-    /// The last drawn label, appended again while it holds, so an
-    /// unchanged Text contributes almost no shaping or encoding per frame.
     face: crate::widget::CachedPaint,
-    /// The ink `face` was drawn in, so a theme change redraws it.
     drawn_color: Option<vello::peniko::Color>,
     /// Whether the label needs drawing again, flipped on when the *size*
     /// of `self.rect` changes: a move (`Scrollable` offsetting its
     /// children) keeps the face.
     dirty: bool,
-    /// A content change can alter intrinsic size as well as paint output.
     layout_dirty: bool,
-    /// Whether the label is a message of the app's catalogue, as of the
-    /// catalogue revision it was looked up at.
     interface: std::cell::Cell<Option<(u64, bool)>>,
 }
 
-/// How assistive technology meets a [`Text`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum TextAccess {
-    /// Static text (or a heading at its level).
     Text,
-    /// The visible name of a control that already carries it as its own
-    /// accessible name: read once, through the control.
     Presentational,
-    /// The label of a value beside it (a read-only form field).
     Label,
 }
 
@@ -250,9 +212,6 @@ impl Text {
         }
     }
 
-    /// Whether this text is the app's own copy: a message of its catalogue
-    /// with nothing of the moment in it. A bound value, an argument or a
-    /// literal string is content.
     fn interface_copy(&self) -> bool {
         if self.spoken.is_some() || self.source.is_some() || !self.args.is_empty() {
             return false;
@@ -268,18 +227,12 @@ impl Text {
         interface
     }
 
-    /// Give this retained text node a stable address for inspection and
-    /// headless scenarios.
     #[must_use]
     pub fn with_id(mut self, id: impl Into<String>) -> Self {
         self.test_id = Some(id.into());
         self
     }
 
-    /// Text recomputed during widget synchronization.
-    ///
-    /// Prefer [`Self::from_state`] for [`LocalState`](crate::LocalState): it
-    /// uses the state's revision to skip the formatter when unchanged.
     pub fn dynamic(mut source: impl FnMut() -> String + 'static) -> Self {
         let initial = source();
         let mut text = Self::new(&initial);
@@ -287,7 +240,6 @@ impl Text {
         text
     }
 
-    /// Bind rendered text to typed process-local state.
     pub fn from_state<T: 'static>(
         state: &crate::LocalState<T>,
         mut render: impl FnMut(&T) -> String + 'static,
@@ -310,17 +262,12 @@ impl Text {
         text
     }
 
-    /// Derive text from the shared Automerge model during the standard sync
-    /// pass. Several views can read the same fields without notifications or
-    /// app-owned fan-out; each invalidates only when its rendered value changes.
     pub fn from_document(render: impl FnMut(&AutoCommit, &ObjId) -> String + 'static) -> Self {
         let mut text = Self::new("");
         text.source = Some(TextSource::Document(Box::new(render)));
         text
     }
 
-    /// Display a string scalar or Automerge `Text` object stored under `key`;
-    /// use [`Self::from_document`] for projections.
     pub fn from_document_string(key: impl Into<String>) -> Self {
         use automerge::{ObjType, ReadDoc, ScalarValue, Value};
 
@@ -337,9 +284,6 @@ impl Text {
         })
     }
 
-    /// Construct text from a key whose Fluent message takes variables, e.g.
-    /// `Text::with_args("counter", &[("count", 5.into())])` resolving
-    /// `counter = Count is { $count }` to `Count is 5`.
     pub fn with_args(key: &str, args: &[(&str, ArgValue)]) -> Self {
         let mut text = Self::new(key);
         text.args = args
@@ -349,17 +293,12 @@ impl Text {
         text
     }
 
-    /// Supply one Fluent variable for the label's placeables. Chainable, so
-    /// multiple variables can be set: `Text::new("greeting").with_arg("name",
-    /// "Ada").with_arg("count", 3)`. Accepts numbers and strings.
     #[must_use]
     pub fn with_arg(mut self, name: &str, value: impl Into<ArgValue>) -> Self {
         self.args.push((name.to_string(), value.into()));
         self
     }
 
-    /// Resolve the label through the i18n layer, interpolating any variables
-    /// supplied via [`with_arg`](Self::with_arg) / [`with_args`](Self::with_args).
     pub(crate) fn resolved_label(&self) -> String {
         if self.args.is_empty() {
             widget_text(&self.label)
@@ -373,9 +312,6 @@ impl Text {
         }
     }
 
-    /// Replace measurement and painting while retaining Text's localization,
-    /// accessibility, Taffy lifecycle, caching, and inspection behavior. The
-    /// engine receives the resolved role style.
     #[must_use]
     pub fn with_layout_engine<E>(mut self, engine: E) -> Self
     where
@@ -416,11 +352,6 @@ impl Text {
         }
     }
 
-    /// Whether the language, its catalogue or the formats moved since this
-    /// text last looked and it now reads differently. Most text reads the
-    /// same after a formats change (only numbers and dates in its message
-    /// move), so what it shaped and drew stays: every label redrawn and
-    /// relaid on that change repainted every view that showed one.
     fn shows_stale_copy(&self) -> bool {
         if self.i18n_revision == crate::i18n::I18nManager::revision() {
             return false;
@@ -432,11 +363,6 @@ impl Text {
         shown.is_none_or(|shown| shown.text() != self.resolved_label())
     }
 
-    /// Say what this text is. The role picks face, size, weight and leading
-    /// from the active theme and follows its text and UI scale when the
-    /// retained widget is laid out again. Text without a role is
-    /// [`TextRole::Body`]. Modifiers such as [`Self::strong`] layer on top of
-    /// the role in any order.
     #[must_use]
     pub fn with_role(mut self, role: TextRole) -> Self {
         self.role = role;
@@ -511,28 +437,21 @@ impl Text {
         }
     }
 
-    /// The role this text was given.
     #[must_use]
     pub fn role(&self) -> TextRole {
         self.role
     }
 
-    /// Emphasis inside the role: the next emphasis weight (regular and
-    /// medium become semibold, semibold becomes bold).
     #[must_use]
     pub fn strong(self) -> Self {
         self.modify(|m| m.strong = true)
     }
 
-    /// Tabular lining figures, for numbers in a column or a changing readout.
     #[must_use]
     pub fn numeric(self) -> Self {
         self.with_kind(TextKind::Numeric)
     }
 
-    /// Say what the text is ([`TextKind`]): the toolkit picks its OpenType
-    /// features from that against the face it is set in. `Code` also sets it
-    /// in the theme's mono face.
     #[must_use]
     pub fn with_kind(self, kind: TextKind) -> Self {
         self.modify(|m| m.kind = Some(kind))
@@ -552,7 +471,6 @@ impl Text {
         self.set_style(style);
     }
 
-    /// The role resolved against `typography` with every modifier applied.
     fn resolve(&self, typography: &Typography) -> TextStyle {
         let modifiers = &self.modifiers;
         let mut style = typography.style(self.role);
@@ -576,15 +494,12 @@ impl Text {
             style.line_height = line_height;
         }
         if matches!(modifiers.kind, Some(TextKind::Numeric | TextKind::Secret)) {
-            // A kind that decides the figures replaces the role's.
             style
                 .font_features
                 .retain(|f| !FIGURE_TAGS.contains(&f.tag));
         }
         let layered = &modifiers.layered;
         style.hyphenation = layered.hyphenation.clone();
-        // Explicit features layer over the role's own (the Reading role's
-        // old-style figures); an explicit figure style replaces the role's.
         if layered
             .font_features
             .iter()
@@ -627,17 +542,12 @@ impl Text {
         self.set_style(style);
     }
 
-    /// Change one modifier and re-resolve against the stock theme until a
-    /// real theme is seen.
     fn modify(mut self, change: impl FnOnce(&mut TextModifiers)) -> Self {
         change(&mut self.modifiers);
         self.restyle_default();
         self
     }
 
-    /// Override the screen-reader heading level while retaining the selected
-    /// visual role. Levels are clamped to the platform-supported 1–6 range.
-    /// Without an override the role decides ([`TextRole::heading_level`]).
     #[must_use]
     pub fn with_heading_level(mut self, level: u8) -> Self {
         self.heading_level = Some(level.clamp(1, 6));
@@ -669,14 +579,11 @@ impl Text {
         self.heading_level.or(self.role.heading_level())
     }
 
-    /// Override the role's leading (a line-height multiplier).
     #[must_use]
     pub fn with_line_height(self, multiplier: f32) -> Self {
         self.modify(|m| m.line_height = Some(multiplier.max(0.1)))
     }
 
-    /// Enable TeX/Liang automatic hyphenation for this text block using a
-    /// BCP-47 language tag such as `"en-US"` or `"de"`.
     #[must_use]
     pub fn with_auto_hyphenation(self, language: impl Into<String>) -> Self {
         let language = language.into();
@@ -693,7 +600,6 @@ impl Text {
         self.modify(|m| m.layered = m.layered.clone().with_hyphenator(hyphenator))
     }
 
-    /// Override the role's weight. Prefer [`Self::strong`] for emphasis.
     #[must_use]
     pub fn with_weight(self, weight: TextWeight) -> Self {
         self.modify(|m| m.weight = Some(weight))
@@ -806,7 +712,6 @@ impl Text {
         }
     }
 
-    /// The most lines it takes, `None` for as many as its width needs.
     #[must_use]
     pub fn max_lines(&self) -> Option<u32> {
         self.max_lines
@@ -818,8 +723,6 @@ impl Text {
         self.truncate
     }
 
-    /// The most lines it takes: `lines`, one for a text that only truncates, and `None` for
-    /// one that wraps as far as its words need.
     fn elided_lines(&self) -> Option<usize> {
         self.max_lines
             .or(self.truncate.then_some(1))
@@ -827,22 +730,15 @@ impl Text {
             .and_then(|lines| usize::try_from(lines).ok())
     }
 
-    /// Mutate the font-family override after construction. `None` restores
-    /// the role's family.
     pub fn set_font_family(&mut self, family: Option<FontChoice>) {
         self.modifiers.family = family;
         self.restyle_default();
     }
 
-    /// The resolved style measurement and painting use: the role in the last
-    /// theme seen, with every modifier applied.
     pub fn text_style(&self) -> &TextStyle {
         &self.style
     }
 
-    /// Bound text (`from_state`, `dynamic`, `from_document`) that currently
-    /// renders nothing takes no room and no gap. A static empty `Text::new`
-    /// stays an empty line.
     fn collapsed(&self) -> bool {
         self.source.is_some() && self.label.is_empty()
     }
@@ -855,9 +751,6 @@ impl Text {
         }
     }
 
-    /// External-layout assignment for callers placing this label outside
-    /// the taffy tree. Mirrors
-    /// [`crate::widget::TextInput::apply_layout_external`].
     pub fn apply_layout_external(&mut self, rect: vello::kurbo::Rect) {
         let size_changed = self.face.resized(rect);
         self.rect = rect;
@@ -867,9 +760,6 @@ impl Text {
         }
     }
 
-    /// Pass a Theme token (e.g. `theme.text_dim` or
-    /// `theme.tokens.colors.semantic.danger`) so the choice still tracks
-    /// the active theme.
     #[must_use]
     pub fn with_color(mut self, color: vello::peniko::Color) -> Self {
         self.color = Some(color);
@@ -877,9 +767,6 @@ impl Text {
         self
     }
 
-    /// Use the active theme's secondary text colour. This avoids freezing a
-    /// dark-palette colour into a widget that may render in light or
-    /// high-contrast mode.
     #[must_use]
     pub fn dimmed(mut self) -> Self {
         self.color = None;
@@ -888,34 +775,23 @@ impl Text {
         self
     }
 
-    /// The theme's danger ink, measured against the ground: a validation
-    /// message under the control it is about ([`crate::widget::Field::with_error`]).
     #[must_use]
     pub(crate) fn danger(self) -> Self {
         self.tone(super::Tone::Danger)
     }
 
-    /// The visible label of a control that is already named by it: hidden
-    /// from assistive technology, so the name is read once, on the control.
     #[must_use]
     pub(crate) fn naming_its_control(mut self) -> Self {
         self.access = TextAccess::Presentational;
         self
     }
 
-    /// The label of a value beside it, announced as a label.
     #[must_use]
     pub(crate) fn announced_as_label(mut self) -> Self {
         self.access = TextAccess::Label;
         self
     }
 
-    /// Status text in `tone`'s ink: "Running" in success, "Stopped" in
-    /// danger, a person's name in their presence colour. The ink is
-    /// resolved when the text is drawn, against the ground it is drawn on,
-    /// and stepped out until it reads at the role's size, so it follows
-    /// the theme and stays legible in a sidebar, an inspector or a popover.
-    /// `Tone::Neutral` is the secondary ink.
     #[must_use]
     pub fn tone(mut self, tone: super::Tone) -> Self {
         self.color = None;
@@ -925,14 +801,12 @@ impl Text {
         self
     }
 
-    /// Opt this widget into presence tracking by binding it to a CRDT-style path.
     #[must_use]
     pub fn with_presence(mut self, path: Vec<PathSegment>) -> Self {
         self.presence_path = path;
         self
     }
 
-    /// Gate this widget behind a permission scope.
     #[must_use]
     pub fn with_permission_scope(mut self, scope: PermissionScope) -> Self {
         self.permission_scope = Some(scope);
@@ -1010,8 +884,6 @@ impl Widget for Text {
         let style = Style {
             display: self.flow_display(),
             size: Size::auto(),
-            // flex_shrink 1.0 lets Taffy propose a smaller width than
-            // natural_w — critical for wrapping.
             flex_shrink: 1.0,
             flex_grow: 0.0,
             ..Default::default()
@@ -1019,8 +891,6 @@ impl Widget for Text {
         taffy.widget_leaf(style, node_map, self)
     }
 
-    /// A bound text that has nothing to say leaves its container's flow,
-    /// so its container skips the gap it would have taken.
     fn adjust_layout_style(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -1091,16 +961,12 @@ impl Widget for Text {
                 reason = "a text elides at a handful of lines, exact in f32"
             )]
             let clamp = lines as f32 * self.style.line_height_px_at(text_renderer.text_scale());
-            // A truncating text gives up its longest word: it takes the room it is given and
-            // no more, so a parent may shrink it to nothing and it ends in an ellipsis.
             let width = if self.truncate
                 && known_dimensions.width.is_none()
                 && matches!(available_space.width, taffy::AvailableSpace::MinContent)
             {
                 0.0
             } else {
-                // Tiny epsilon on width so rounding in Row/Column doesn't read the
-                // text as "just a bit too big" and wrap it unnecessarily.
                 w + 0.1
             };
             return taffy::Size {
@@ -1109,8 +975,6 @@ impl Widget for Text {
             };
         }
 
-        // Tiny epsilon on width so rounding in Row/Column doesn't read the
-        // text as "just a bit too big" and wrap it unnecessarily.
         taffy::Size {
             width: w + 0.1,
             height: h,
@@ -1119,8 +983,6 @@ impl Widget for Text {
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.rect = crate::widget::layout_rect(taffy, node, origin);
-        // Without this, scrolling a 1000-widget tree would invalidate every
-        // cache every frame and the per-widget cache goes net-negative.
         if self.face.resized(self.rect) {
             self.dirty = true;
         }
@@ -1146,8 +1008,6 @@ impl Widget for Text {
         let color = self.color.unwrap_or({
             let colors = &theme.tokens.colors;
             if let Some(tone) = self.tone {
-                // Small type needs the stronger floor to read once
-                // anti-aliased; larger roles hold body-text contrast.
                 let floor = if matches!(self.role, TextRole::Caption | TextRole::Label) {
                     crate::tokens::colors::SMALL_TEXT_MIN_CONTRAST
                 } else {
@@ -1185,8 +1045,6 @@ impl Widget for Text {
                 max_height: Some(self.rect.height() as f32),
             };
             if let Some((lines, label, style)) = elided {
-                // What it says, wrapped into the lines it takes and elided at the last one:
-                // each kept line stands whole, one line box below the one before.
                 let line = f64::from(style.line_height_px_at(text_renderer.text_scale()));
                 let shown = text_renderer.clamp_to_lines_style(
                     &label,
@@ -1255,30 +1113,20 @@ impl Widget for Text {
         self.test_id.as_deref()
     }
 
-    /// Opt into incremental redraw: true while the cache is unwritten or
-    /// invalidated by a rect change. The App's redraw gate uses this to
-    /// skip frames where no Text widget changed.
     fn needs_redraw(&self) -> bool {
         self.dirty || self.shows_stale_copy()
     }
 
-    /// Clears the cache-stale flag after the App consumes the scene.
     fn mark_drawn(&mut self) {
         self.dirty = false;
     }
 
-    /// Text's intrinsic size is fixed at construction, so once
-    /// `apply_layout` sets a non-zero `self.rect` this reports `false` —
-    /// an unrelated sibling reflow shouldn't drag a re-shape along.
-    /// `Rect::ZERO` means "not laid out yet," so the first frame still runs.
     fn is_layout_dirty(&self) -> bool {
         (self.rect == vello::kurbo::Rect::ZERO && !self.collapsed())
             || self.layout_dirty
             || self.shows_stale_copy()
     }
 
-    /// A label the solver measured has the size it asked for, whether or not
-    /// a frame draws it: a label in a shut container finds no `mark_drawn`.
     fn layout_measured(&mut self) {
         self.layout_dirty = false;
     }
@@ -1299,8 +1147,6 @@ impl Widget for Text {
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, Role};
-        // The FTL-resolved text *is* the accessible name. Empty text carries no
-        // meaning, so it stays presentational (collapses out of the tree).
         let label = self.spoken.clone().unwrap_or_else(|| self.resolved_label());
         if label.is_empty() || self.access == TextAccess::Presentational {
             return None;
@@ -1356,7 +1202,6 @@ mod tests {
         );
     }
 
-    /// Lay `w` out on its own in `width`, as a card gives a title the width of its column.
     fn lay_out_at(w: &mut dyn Widget, width: f32) -> TextRenderer {
         let theme = Theme::dark();
         let mut taffy = TaffyTree::<()>::new();
@@ -1382,7 +1227,6 @@ mod tests {
         renderer
     }
 
-    /// What `w` paints, as the id of the last glyph of each glyph run: its last line.
     fn drawn_glyph_runs(w: &mut dyn Widget, renderer: &mut TextRenderer) -> Vec<u32> {
         let mut scene = Scene::new();
         w.draw(
@@ -1407,7 +1251,6 @@ mod tests {
             .collect()
     }
 
-    /// The id of the glyph [`crate::text_render::ELLIPSIS`] is set as, in `style`.
     fn ellipsis_glyph(renderer: &mut TextRenderer, style: &TextStyle) -> u32 {
         let mut scene = Scene::new();
         renderer.draw_style(
@@ -1421,8 +1264,6 @@ mod tests {
         scene.encoding().resources.glyphs[0].id
     }
 
-    /// A truncating text takes the room it is given and no more, however long its longest
-    /// word: it ends in an ellipsis on one line, and a parent may shrink it to nothing.
     #[test]
     fn a_truncating_text_measures_to_its_box_and_ends_in_an_ellipsis() {
         let said = "Quarterly planning review with the whole team";
@@ -1474,7 +1315,6 @@ mod tests {
         );
     }
 
-    /// `lines` holds the text to that many, eliding what its words would have run on to.
     #[test]
     fn lines_clamps_a_text_at_that_many_lines() {
         let said = "Review the launch announcement, compact navigation, translated labels, and \
@@ -2020,11 +1860,6 @@ mod tests {
             );
         }
 
-        // Case `font_family_override_label_resolves_to_named_family`.
-        // A label with a font-family override resolves to that family: after
-        // it draws once, re-shaping the same string in the SAME named family
-        // is a shape-cache hit, while the role's face is a distinct miss —
-        // proving the override reaches the family-aware path.
         {
             use crate::presence::PresenceCtx;
             let mut tr = crate::font_catalog::fixture_renderer();
@@ -2038,12 +1873,10 @@ mod tests {
             let presence = PresenceCtx::empty();
 
             let mut label = Text::new("Reading").with_font_family(FontChoice::Named(fam.clone()));
-            // The label draws with a max_width of `rect.width() + 1.0`.
             label.apply_layout_external(vello::kurbo::Rect::new(0.0, 0.0, 400.0, 40.0));
             let mut scene = Scene::new();
             label.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
 
-            // Same string, style, wrap width (401.0) and family → a hit.
             let _ = tr.take_shape_stats();
             tr.draw_style(
                 &mut scene,
@@ -2135,11 +1968,6 @@ mod tests {
 
     use crate::i18n::I18nManager;
 
-    // The i18n manager is a thread-local, so these tests are isolated per test
-    // thread; each re-inits a fresh bundle and asserts only on its own keys.
-
-    /// A catalogue change redraws and relays out the text it rewords, and
-    /// leaves the text that reads the same as it was drawn.
     #[test]
     fn a_revision_that_does_not_reword_a_text_keeps_what_it_drew() {
         I18nManager::init("en-US");
@@ -2210,7 +2038,6 @@ mod tests {
 
         {
             I18nManager::init("en-US");
-            // No resource for this key at all.
             let t = Text::new("totally-unknown-key").with_arg("x", 1);
             let node = Widget::accessibility(&t).expect("resolved");
             assert_eq!(node.name.as_deref(), Some("totally-unknown-key"));

@@ -1,6 +1,5 @@
-//! Single-line (optionally multiline) text input; edits replay through `AutoCommit::splice_text`.
-//! Text and caret both centre against the same `line_height = font_size * 1.25` band
-//! (`text_baseline_centred_with_caret`), so glyphs don't drift below the caret.
+//! Text input: a field for single-line or wrapping text, with a caret, selection,
+//! completion and spelling. Its edits splice the text it shows.
 
 use crate::i18n::widget_text;
 use crate::time::Instant;
@@ -55,7 +54,6 @@ use preparation::Preparation;
 /// the final width).
 const MAX_ALTERNATE_LAYOUTS: usize = 2;
 
-/// A shaped multiline paragraph kept for another width.
 struct AlternateLayout {
     layout: RichTextLayout,
     preparation: Option<Preparation>,
@@ -97,8 +95,6 @@ mod written;
 mod report;
 use report::Edited;
 
-/// Outline a field whose content was refused (a wrong password) in the
-/// danger colour, over the field's own edge at the control radius.
 pub fn paint_invalid_edge(scene: &mut Scene, transform: Affine, field: Rect, theme: &Theme) {
     scene.stroke(
         &vello::kurbo::Stroke::new(1.5),
@@ -112,9 +108,6 @@ pub fn paint_invalid_edge(scene: &mut Scene, transform: Affine, field: Rect, the
     );
 }
 
-/// Paint the pending input method composition on a shaped line. Editors
-/// supply the segment from their own projection (proportional formula text
-/// or a fixed-width code line); its appearance follows the shared input role.
 pub fn paint_preedit_underline(
     scene: &mut Scene,
     transform: Affine,
@@ -136,9 +129,6 @@ struct RegisteredTextAction {
     label: String,
 }
 
-/// A selected-text command requested from a field's context menu. The host can
-/// execute this asynchronously (translate, rewrite, explain, grammar review)
-/// without putting model or network work in the widget's input path.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TextActionRequest {
     pub id: String,
@@ -147,9 +137,6 @@ pub struct TextActionRequest {
 }
 
 impl TextActionRequest {
-    /// What the action made of the requested text (a rewrite, a
-    /// translation, a grammar fix), to write back with
-    /// [`TextInput::apply_text_action_result`].
     #[must_use]
     pub fn result(&self, replacement: impl Into<String>) -> TextActionResult {
         TextActionResult {
@@ -160,9 +147,6 @@ impl TextActionRequest {
     }
 }
 
-/// A text action's result for the range it was requested for. It applies
-/// only while the range still holds `original`: the field may have been
-/// edited, by the person or a collaborator, while the action ran.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TextActionResult {
     pub range: (usize, usize),
@@ -170,8 +154,6 @@ pub struct TextActionResult {
     pub replacement: String,
 }
 
-/// Semantic intent of a field. Ordinary [`TextInput`] construction defaults to
-/// Prose, so apps opt out only for the smaller set of structured fields.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum TextInputKind {
     #[default]
@@ -184,13 +166,9 @@ pub enum TextInputKind {
     Path,
     Code,
     Number,
-    /// A telephone number: the dial pad.
     Phone,
-    /// Digits only, such as a pairing passkey: the digit pad.
     Pin,
     Password,
-    /// A code or key typed or pasted in the clear: verification and
-    /// recovery codes, TOTP secrets, API and licence keys, Wi-Fi keys.
     Secret,
 }
 
@@ -210,14 +188,10 @@ impl TextInputKind {
         }
     }
 
-    /// Whether the kind refuses completion outright: a secret has nothing
-    /// inserted into or echoed from it, and a numeric field's keys are digits.
     fn refuses_completion(self) -> bool {
         matches!(self.text_kind(), TextKind::Secret | TextKind::Numeric)
     }
 
-    /// What the field's text is, for the features it is set with while
-    /// typing.
     #[must_use]
     pub const fn text_kind(self) -> TextKind {
         match self {
@@ -257,17 +231,13 @@ impl TextInputKind {
     }
 }
 
-/// Caret centres against this band, not the font size, to line up with where
-/// cosmic-text draws the glyphs.
 const LINE_HEIGHT_RATIO: f32 = 1.25;
-/// Where a wrapping document line's text starts inside its rect.
 pub(crate) const ML_PAD_X: f64 = 10.0;
 const ML_PAD_Y: f64 = 8.0;
 const GUTTER_DIGIT_RATIO: f64 = 0.62;
 const GUTTER_PAD_L: f64 = 8.0;
 const GUTTER_PAD_R: f64 = 12.0;
 
-/// Unit the in-flight drag snaps to, set from the click ladder on press.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 enum DragUnit {
     Char,
@@ -277,7 +247,6 @@ enum DragUnit {
 
 type TextChangeCallback = Box<dyn FnMut(&str)>;
 
-/// Finds the text object a field shows in the document a sync reads.
 type LocateText = Box<dyn Fn(&AutoCommit) -> Option<ObjId>>;
 
 /// Complete committed-text runs for an unmasked single line. Decorations use
@@ -291,17 +260,10 @@ pub(super) struct SingleLineAttributes {
     pub links: Vec<(usize, usize)>,
 }
 
-/// What a field's prompt said the last time it drew while the field held nothing: the text it
-/// painted and how wide that text wants in the field's own style, against the room one line of
-/// the field gives it. An audit holds [`width`](Self::width) to [`room`](Self::room) to find a
-/// prompt painted past the line it prompts for ([`PlaceholderFit`]).
 #[derive(Clone, Debug, PartialEq)]
 pub struct PromptFit {
-    /// The prompt as it was painted: elided where it was longer than the room.
     pub shown: String,
-    /// How wide the painted prompt wants in the field's own style.
     pub width: f32,
-    /// The room one line of the field gives the prompt.
     pub room: f32,
 }
 
@@ -321,28 +283,16 @@ pub struct TextInput {
     path: Vec<PathSegment>,
     rect: Rect,
     is_hovered: bool,
-    /// The form marked the value invalid ([`Widget::set_invalid`]).
     invalid: bool,
-    /// Someone else changed what it holds and the person has not seen it yet
-    /// ([`Self::with_change`]): their presence identity, which tints the field, and what the
-    /// field says of it on hover.
     change: Option<(String, String)>,
-    /// What the field held before that change, when it is known: what it wrote is the rest.
     change_before: Option<String>,
     /// Who wrote each run of the bound text, as its own document records it: byte ranges of
     /// `text` and the writer's id. Drawn in the writer's colour, one's own runs left plain, the
     /// marks a body's paragraphs carry ([`crate::widget::BlockEditor`]) in a field.
     authored: Vec<(std::ops::Range<usize>, String)>,
     is_focused: bool,
-    /// Paint-only suppression for drag previews; focus, selection and IME remain intact.
     caret_paint_suppressed: bool,
-    /// The host shows this single-line field's text, caret and selection
-    /// itself, as a page shows its own `<input>`, this frame
-    /// ([`crate::scene_parts::native_field`]).
     host_shows_text: bool,
-    /// The caret the last shaped multiline draw painted, or would have
-    /// painted had it not been suppressed, with the clip it paints under:
-    /// what [`Self::draw_caret_apart`] paints.
     ml_caret: Option<(Rect, RoundedRect)>,
     text: String,
     pending_paste: Option<PendingPaste>,
@@ -352,9 +302,7 @@ pub struct TextInput {
     /// The composition shows only in the display layout, never through value, clipboard, CRDT or
     /// a11y.
     core: EditCore,
-    /// Closes a burst of typing into one undo entry.
     typing: TypingRun,
-    /// Forces `wants_pointer_capture` so a drag past the rect edge keeps updating.
     is_dragging: bool,
     /// Exclusive finger ownership for native touch selection. Mouse state is
     /// deliberately separate so a secondary finger cannot steal or complete
@@ -364,39 +312,23 @@ pub struct TextInput {
     touch_origin: winit::dpi::PhysicalPosition<f64>,
     touch_intent: TouchIntent,
     drag_unit: DragUnit,
-    /// Anchor span snapped to `drag_unit` boundaries; the drag extends from
-    /// whichever end is "opposite" the current pointer.
     drag_anchor_span: (usize, usize),
-    /// Session-configured click counting shared by every editable surface.
     drag_select: DragSelect,
     /// An edit waits for the owner to take it ([`Self::take_dirty`]): the
     /// notification is not a pending paint, so it never asks for a frame.
     /// Cleared on `take_dirty()`/`set_text()` — a programmatic write isn't a user edit.
     dirty: bool,
-    /// What this field shows may have moved since the last frame drew it
-    /// (a keystroke, the caret, hover, a model write, a new setting), so a
-    /// frame is due. Cleared by [`Widget::mark_drawn`]: a field that has not
-    /// changed shows what the screen already holds.
     repaint: bool,
     /// The field was placed somewhere else since the last frame drew it.
     /// What it paints is as it was, so a frame is due for where it stands,
     /// not for what it draws: a host that keeps a field's drawing moves it
     /// there instead of painting it again.
     moved: bool,
-    /// The field was made for the person to type in right away (an entry a command just
-    /// opened): it asks for the keyboard once ([`Self::wants_focus`]).
     focus_wanted: bool,
-    /// App-local notification hook. The comparison value prevents cursor,
-    /// selection, and IME-preedit events from repeating the last edit.
     on_change: Option<TextChangeCallback>,
     action: Option<ActionEmitter<Edited>>,
     last_notified_text: String,
-    /// Typed process-local model mirrored in both directions during the
-    /// ordinary widget sync/event lifecycle.
     local_state: Option<crate::local_state::LocalBinding<String>>,
-    /// The text or its shaping changed since the last `measure`, by an edit or a model write, in a
-    /// way measuring reads (multiline or attributed text). Separate from [`Self::dirty`] (not yet
-    /// published): an edit the owner publishes later is measured once, not every frame until taken.
     layout_dirty: bool,
     /// Optional local-only mirror for secrets and other values that must not
     /// enter an Automerge history. The owner controls its lifetime and can
@@ -404,8 +336,6 @@ pub struct TextInput {
     external_buffer: Option<Arc<Mutex<String>>>,
     last_mouse_pos: Point,
     char_x_positions: Vec<f64>,
-    /// Authoritative cosmic-text geometry for a visible, unmasked single-line
-    /// value. Painting, carets, selection, and hit-testing all consume it.
     single_layout: Option<RichTextLayout>,
     single_attributes: Option<SingleLineAttributes>,
     /// The signature [`Self::single_attributes`] was hashed to when it was
@@ -415,108 +345,59 @@ pub struct TextInput {
     single_origin: Point,
     shaped_layout_signature: u64,
     shaped_preparation: Option<Preparation>,
-    /// Renderer epoch invalidates cached glyph geometry when canonical fonts change.
     shaped_layout_epoch: Option<Arc<()>>,
-    /// Syntax palette of the last themed pass (layout build or paint).
-    /// Measurement has no theme and shapes with it, so it builds the very
-    /// paragraph painting will use.
     layout_syntax: Option<SyntaxPalette>,
     /// The multiline paragraph at the other widths one layout pass measures (Taffy asks for min-
     /// and max-content besides the final width), most recently used first. Each width keeps its own
     /// wrap, so a pass visiting all splices an edit into each instead of wrapping every paragraph
     /// again.
     alternate_layouts: Vec<AlternateLayout>,
-    /// Complete authored runs supplied by a shared rich-text widget. They
-    /// participate in the same shaping as wrapping, carets and hit-testing.
     rich_spans: Option<Vec<RichSpan>>,
     scroll_x: f64,
-    /// A wrapped row inside a compound code fence shares its parent's spacing.
     compact_multiline: bool,
-    /// What the field's text is; its 1× size is the role's.
     text_role: TextRole,
-    /// Latest theme role size with accessibility text scale removed; shaping
-    /// applies that scale separately while retaining authored UI/type scale.
     themed_role_size: Option<(TextRole, f32)>,
     /// A document editor built on this field (a heading block, a code view)
     /// sets its own 1× base size instead of a role's.
     font_size_override: Option<f32>,
-    /// Theme scale captured during `build_layout`; direct measurement falls
-    /// back to the renderer when no themed layout pass has occurred.
     layout_text_scale: Option<f32>,
     /// The text scale used for the most recent paint. Code gutter geometry is
     /// derived from the same scale as its shaped line-number text so it never
     /// intrudes into the viewport at accessibility sizes.
     gutter_text_scale: f64,
-    /// Renders without the rounded-rect chrome, for block-editor cells that
-    /// should read as document copy, not a form field.
     plain: bool,
-    /// The Automerge `Text` this input shows, read on every sync. Edits stay
-    /// local for the owner to submit ([`Self::take_dirty`]); how
-    /// `BlockEditor` binds text nested inside a `List`.
     bound_text: Option<ObjId>,
     /// Finds the text object to show in the document each sync reads: a record's text field,
     /// wherever the record keeps it now ([`Self::bound_at`]).
     locate_text: Option<LocateText>,
-    /// The region and block an invocation's text anchor names this field's characters by
-    /// (`title` of issue `7d2b`): what it writes here is drawn as its writer's, with its caret.
     written_at: Option<(String, String)>,
-    /// Where the document stood, and what the field showed, when it last
-    /// read the bound text: a sync over an unchanged document reads nothing.
     adopted: Option<preparation::Adopted>,
-    /// Stamped on every inserted run so peers can highlight "what they wrote".
     local_author: Option<String>,
-    /// Horizontal alignment of wrapped text within the input's width.
     align: TextAlign,
-    /// `self.text` stays the real value; only the render substitutes bullets.
     secret: bool,
     disabled: bool,
     kind: TextInputKind,
-    /// What the field asks a browser or password manager to fill in, when
-    /// its owner said so (`autofill_said`) rather than leaving it to
-    /// [`Self::kind`].
     autofill: Option<crate::a11y::Autofill>,
     autofill_said: bool,
-    /// The inline completion list beside the caret (`:emoji:`, `@mention`).
     completion: CompletionList,
-    /// What the field offers inline. `None` follows the field's kind: prose
-    /// offers both, a field whose `:` and `@` are syntax offers neither.
     completion_setting: Option<TextCompletion>,
-    /// People an app knows of that the workspace's presence does not, offered
-    /// after the roster for `@` completion.
     mention_candidates: Vec<MentionCandidate>,
-    /// What picking "Create …" in a drawer runs.
     on_completion_create: Option<Box<dyn FnMut(char, &str)>>,
-    /// What picking a command from a `/` drawer runs.
     on_command: Option<Box<dyn FnMut(&crate::widget::completion::Candidate)>>,
-    /// What writing a candidate that names a reference runs.
     on_reference_inserted: Option<Box<dyn FnMut(char, std::ops::Range<usize>, &str)>>,
-    /// The roster the last draw saw, merged with `mention_candidates`: what
-    /// a keystroke between draws completes from.
     mention_roster: Vec<MentionCandidate>,
-    /// Prose fields check spelling by default. Purpose-specific wrappers such
-    /// as search/code/number inputs opt out explicitly.
-    /// `None` follows semantic intent; `Some` is the app author's explicit
-    /// opt-in/out. The user's global off switch still wins.
     spellcheck: Option<bool>,
-    /// Per-field override for automatic replacement. `None` follows Settings.
     autocorrect: Option<bool>,
-    /// Untouched form fields do no dictionary work. Focus/edit/right-click
-    /// activates checking for the rest of the widget's lifetime.
     spell_active: bool,
-    /// Hunspell dictionary name / BCP-47-ish language tag.
     spell_language: String,
     /// Cached by (language, text), so drawing idle fields never starts work.
     spell_cache_key: Option<(String, String)>,
-    /// [`spellcheck::dictionaries_generation`] the spans were checked with:
-    /// where the dictionaries load on first use, the text is checked again
-    /// once they are in.
     spell_generation: u64,
     spell_spans: Vec<(usize, usize)>,
     shown: crate::scroll_copy::ShownFrames<damage::FieldShown>,
     /// `spell_spans` were cleared while idle and no longer describe the
     /// cached text, so the next check cannot splice into them.
     spell_spans_stale: bool,
-    /// Per-user vocabulary layered over every installed language.
     spell_dictionary: Option<spellcheck::Dictionary>,
     /// Ephemeral view of the shared host service, never an app vocabulary store.
     personal_spelling: Option<PersonalSpelling>,
@@ -529,100 +410,60 @@ pub struct TextInput {
     /// dictionary for the same caret word.
     autocorrection_preview_key: Option<PreviewKey>,
     autocorrection_preview: Option<AutocorrectionPreview>,
-    /// The word under the caret and how long it has rested there; a settled
-    /// misspelled word gets a suggestion.
     caret_word: CaretWord,
-    /// Where the last painted suggestion chip sits, for click-to-accept.
     suggestion_chip: Option<Rect>,
     last_autocorrection: Option<Autocorrection>,
     /// A correction taken back with Backspace: where the word starts and
     /// the word as typed. It is not corrected again there.
     declined_autocorrection: Option<(usize, String)>,
-    /// Set by a host that records the correction a word boundary makes as
-    /// an edit of its own ([`Self::apply_pending_autocorrection`]), after
-    /// the boundary itself: undoing it then gives back the word as typed.
     defer_autocorrection: bool,
     pending_autocorrection: Option<AutocorrectionPreview>,
     text_actions: Vec<RegisteredTextAction>,
     pending_text_action: Option<TextActionRequest>,
-    /// Reuses [`ContextMenu`]; rendered via the overlay pass so it floats above the field.
     context_menu: Box<ContextMenu>,
-    /// Per-row action parallel to `context_menu`'s items (separators → `None`).
     context_actions: Vec<Option<CtxAction>>,
     accessible_name: String,
-    /// Shown while the field is empty, focused or not: it names what the
-    /// field takes until the first character (or IME preedit) replaces it.
     placeholder: String,
-    /// Measurement switches with this so the caret/selection stay aligned with the draw.
     mono: bool,
-    /// Wins over `mono`; measurement uses the same family as the draw.
     family: Option<FontChoice>,
     multiline: bool,
-    /// Unmasked multiline fields use the shared cosmic-text paragraph,
-    /// including attributed syntax-highlighted code.
     multiline_shaped: bool,
-    /// A multiline field's glide after fingers lift off a touchpad or a
-    /// screen while moving: the shared fling every scroller uses.
     wheel_glide: crate::virtual_viewport::ScrollMomentum,
-    /// Reduced motion, as the latest draw saw it: fingers leave no glide.
     reduce_motion: bool,
     /// Plain `Enter` submits instead of inserting a newline; multiline keeps
     /// `Shift+Enter` for a real newline (chat-composer pattern).
     enter_submits: bool,
     submit_requested: bool,
-    /// A list's inline add: what is typed makes an item when Enter or leaving the field commits
-    /// it, and the field clears; nothing typed leaves nothing (Escape, or leaving it empty).
     entry: bool,
-    /// The field holds a value rather than a draft: leaving it commits what it holds, as Enter
-    /// does, and it goes on showing it. A settings field saves without a Save button.
     leaving_commits: bool,
     /// Trailing show/hide control of a single-line secret field; it owns
     /// the reveal state. The plaintext still never reaches the a11y tree or
     /// `text_review`.
     reveal: RevealToggle,
-    /// The control's layout node while this field is in a layout tree.
     reveal_node: Option<NodeId>,
-    /// Rebuilt by each `draw`; empty in single-line mode.
     lines: Vec<VisualLine>,
-    /// Preserved across consecutive `Up`/`Down`; reset on any other move.
     goal_x: Option<f64>,
     scroll_y: f64,
     preserve_unfocused_scroll: bool,
-    /// The wheel or a finger scrolled the field since its focus last
-    /// changed: an unfocused field keeps that scroll rather than showing
-    /// its start again ([`Self::set_preserve_unfocused_scroll`]).
     hand_scrolled: bool,
     gutter: bool,
-    /// Width measured from the same scaled line-number style used to paint.
     measured_gutter_width: f64,
     highlight_current_line: bool,
-    /// `None` renders the whole body in one colour; `Some` colours per [`Span`] from the theme's syntax palette.
     highlighter: Option<Box<dyn Highlighter>>,
-    /// `Some(0)` inserts a literal `\t`; `None` leaves Tab for focus traversal.
     tab_spaces: Option<usize>,
-    /// Rebuilt only when the exact text or highlighter changes.
     hl_spans: Vec<Vec<Span>>,
     hl_line_starts: Vec<usize>,
     hl_text: Option<Arc<str>>,
-    /// Only re-centres when the caret moves, so a wheel scroll away from it sticks.
     last_scroll_caret: Option<usize>,
-    /// Last configured caret width, retained for the platform IME anchor whose
-    /// trait hook does not receive a theme.
     last_caret_width: f64,
     interaction: crate::interaction::InteractionEnvironment,
-    /// The single-line band's height, shared with buttons of the same size.
     control_size: ControlSize,
     /// A wrapping field is at least this many lines tall.
     min_lines: usize,
-    /// The theme's field inset from the latest layout or paint: the
-    /// horizontal text inset of a chrome'd field, single- or multiline.
     field_pad_x: f64,
     /// The single-line band of the latest layout; a wrapping chrome'd field
     /// is never shorter.
     band_height: f64,
-    /// The field's own width, where nothing else sets it (a row that wraps, a
-    /// run that hugs its items): the theme's `field_min_width`, grown with
-    /// the text. Layout measures a field at this, so none is laid out 0 wide.
     own_width: f32,
     /// The prompt the last frame showed while the field held nothing, so an audit sees a prompt
     /// the field painted past its own edge ([`PlaceholderFit`]); cleared by a wrapping draw,
@@ -635,28 +476,19 @@ pub struct TextInput {
     /// The selection settled ([`Self::with_selection_event`]): what a read-only field's reader
     /// gets of the run someone chose, as `<start>:<end>` bytes, or nothing on a collapse.
     selection_event: Option<crate::component::Event>,
-    /// Route a submitting Enter through an exported resource action.
     submit_action: Option<ActionEmitter<String>>,
-    /// Enter's submit, published as the field's view action `submit`
-    /// ([`Self::on_submit_view`]) and the resource it announces.
     submit_view: Option<(ActionEmitter<()>, tilo_actions::ResourceSpec)>,
     /// The words a submit published and its own handler has not answered yet: an entry clears
     /// itself as it submits, so what it sent is held here for the answer, never read back from
     /// the field once it stands empty.
     submitted: Option<String>,
-    /// A committed edit, published as the field's view action `change`
-    /// ([`Self::on_change_view`]) and answered by its own handler.
     change_verb: Option<super::control_verb::ControlVerb<String>>,
-    /// A trailing icon button inside the field.
     accessory: Option<Accessory>,
     /// `font_size_override` is a document-space size, never grown by the text
     /// scale ([`Self::with_content_size`]).
     content_sized: bool,
-    /// Colours spans of a single-line field's text ([`Self::with_span_highlighter`]).
     span_highlighter: Option<SpanHighlighter>,
-    /// Marks what the owner judges wrong in the text ([`Self::with_mistakes`]).
     mistakes: Option<MistakeMarker>,
-    /// The text can be selected and copied but not changed ([`Self::with_read_only`]).
     read_only: bool,
     /// Link targets over byte ranges of a read-only text
     /// ([`Self::with_links`]); addresses in the prose are linked besides.
@@ -704,8 +536,6 @@ fn link_target(what: crate::text_detect::Detected, text: &str) -> Option<String>
     }
 }
 
-/// [`TextInput::accessibility_state`] — the state, selection and accessory
-/// a field's accessibility node is built from.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct TextAccessibilityState {
     secret: bool,
@@ -714,16 +544,11 @@ pub(crate) struct TextAccessibilityState {
     focused: bool,
     invalid: bool,
     selection: (usize, usize),
-    /// Where the accessory sits while shown, and whether its toggle is on.
     accessory: Option<(Rect, Option<bool>)>,
 }
 
-/// What a field's trailing accessory does when pressed.
 pub enum AccessoryAction {
-    /// Empty the field, as an edit by the person; shown only while the
-    /// field holds text.
     Clear,
-    /// Run the callback.
     Run(Box<dyn FnMut()>),
     /// A toggle that stays pressed (a "clear this for every photo" switch): shown whatever the
     /// field holds, standing on the selection lift while on and announced as a pressed toggle. A
@@ -733,20 +558,13 @@ pub enum AccessoryAction {
         pressed: bool,
         on_toggle: Box<dyn FnMut(bool)>,
     },
-    /// Commit the field, as Enter does in a field that submits: the go button of an address or
-    /// location field. Shown only while editing, dimmed and inert while it holds nothing; a press
-    /// fires the field's submit ([`TextInput::take_submit`], [`TextInput::on_submit`]).
     Submit,
 }
 
-/// The action target of a field's trailing accessory, for agents and
-/// assistive technology.
 const ACCESSORY_TARGET: &str = "text-input-accessory";
 
-/// The operation type of a field's submitting Enter.
 const SUBMIT_TEXT: &str = "tilo.ui.text.submit";
 
-/// The operation type of a field's committed edit.
 const CHANGE_TEXT: &str = "tilo.ui.text.change";
 
 /// What a `tilo.ui.text.submit` operation carries: the field it submits. An entry lets go of
@@ -758,7 +576,6 @@ struct SubmitPayload {
     control: String,
 }
 
-/// A trailing icon button inside a field.
 struct Accessory {
     icon: crate::icons::Icon,
     name: String,
@@ -777,20 +594,14 @@ struct VisualLine {
     /// `false` on a soft-wrapped row: a boundary byte there belongs to the
     /// next row's start, not this row's end.
     hard_break: bool,
-    /// `len() == chars_in_row + 1`; the last entry is the row's total width.
     char_x: Vec<f64>,
-    /// Local coordinates, before `scroll_y`.
     y: f64,
 }
 
-/// Soft-wrap state across one `build_lines` pass: the metrics every
-/// paragraph wraps with, and the rows laid out so far.
 struct LineWrap {
     size: f32,
     wrap_w: f64,
-    /// Row pitch.
     lh: f64,
-    /// Top of the next row.
     y: f64,
     lines: Vec<VisualLine>,
 }
@@ -805,15 +616,10 @@ struct LogicalRows {
     caret_line: usize,
 }
 
-/// One drawable multiline-body run: text, line-relative x offset, colour.
 type Seg = (String, f64, vello::peniko::Color);
 
-/// One visible body row's y offset and its drawable segments, as collected
-/// by [`TextInput::collect_ml_body_rows`].
 type RowDraws = Vec<(f64, Vec<Seg>)>;
 
-/// One gutter line number's y offset, label and "is a wrapped continuation"
-/// flag, as collected by [`TextInput::collect_ml_body_rows`].
 type GutterNums = Vec<(f64, String, bool)>;
 
 impl TextInput {
@@ -838,7 +644,6 @@ impl TextInput {
         }
     }
 
-    /// Empty `path` opts the widget out of presence rendering.
     pub fn new(path: Vec<PathSegment>) -> Self {
         Self::with_language(path, spellcheck::default_language())
     }
@@ -993,8 +798,6 @@ impl TextInput {
         }
     }
 
-    /// `None` disables authorship stamping.
-    /// Align the text within the input's width (a centred title).
     pub fn set_align(&mut self, align: TextAlign) {
         self.repaint = true;
         if self.align != align {
@@ -1005,7 +808,6 @@ impl TextInput {
         }
     }
 
-    /// How the text is aligned within the input's width.
     pub fn align(&self) -> TextAlign {
         self.align
     }
@@ -1015,28 +817,18 @@ impl TextInput {
         self.local_author = author;
     }
 
-    /// Show the text object `obj`, read on every sync. What the user types
-    /// stays local until the owner takes it ([`Self::take_dirty`]) and
-    /// submits it as an action.
     pub fn bind_text(&mut self, obj: ObjId) {
         self.repaint = true;
         self.local_state = None;
         self.bound_text = Some(obj);
     }
 
-    /// Stop showing a text object, keeping what the input shows.
-    ///
-    /// A binding replaces any earlier local mode, so the input stays unbound
-    /// until an owner calls [`Self::bind_text`] again.
     pub fn clear_text_binding(&mut self) {
         self.repaint = true;
         self.bound_text = None;
         self.authored.clear();
     }
 
-    /// Show no authored runs of the bound text: its owner draws them (a body's line, whose
-    /// [BlockEditor](crate::widget::BlockEditor) paints each run in its writer's colour), so a
-    /// field that is that line's text does not tint them a second time.
     pub(crate) fn clear_authored(&mut self) {
         if !self.authored.is_empty() {
             self.repaint = true;
@@ -1050,12 +842,10 @@ impl TextInput {
         &self.authored
     }
 
-    /// For `BlockEditor` to match local blocks to doc list elements by object identity.
     pub fn bound_obj(&self) -> Option<&ObjId> {
         self.bound_text.as_ref()
     }
 
-    /// Adopt only the bound Text and align presentation/edit-notification baselines.
     pub(super) fn adopt_bound_text(
         &mut self,
         state: &AutoCommit,
@@ -1071,8 +861,6 @@ impl TextInput {
         let text = state
             .text(&obj)
             .map_err(|e| crate::view::ThawError::State(e.to_string()))?;
-        // A collaborator's change moves the caret and selection with the text around them,
-        // as typing there would: what the person here was about to type stays where they were.
         let (anchor, caret) = (self.core.anchor(), self.core.caret());
         let (anchor, caret) = (
             written::through_change(&self.text, &text, anchor),
@@ -1111,8 +899,6 @@ impl TextInput {
         authored.sort_by_key(|(range, _)| (range.start, range.end));
         let mut merged: Vec<(std::ops::Range<usize>, String)> = Vec::with_capacity(authored.len());
         for (range, author) in authored {
-            // A run of the same author that starts inside the one before it is
-            // that run: Automerge split one mark where an edit landed inside it.
             let joins = merged.last().is_some_and(|(last, same)| {
                 *same == author
                     && last.end.partial_cmp(&range.start) != Some(std::cmp::Ordering::Less)
@@ -1130,7 +916,6 @@ impl TextInput {
         }
     }
 
-    /// Replace text read from model state without reporting a user edit.
     fn adopt_model_text(&mut self, text: String) {
         if self.text != text {
             self.repaint = true;
@@ -1139,7 +924,6 @@ impl TextInput {
         }
     }
 
-    /// Capture the resolved theme scale before a renderer-backed measurement.
     pub(super) fn capture_layout_text_scale(&mut self, text_scale: f32) {
         if self.layout_text_scale != Some(text_scale) {
             self.layout_text_scale = Some(text_scale);
@@ -1147,7 +931,6 @@ impl TextInput {
         }
     }
 
-    /// Set the field’s text in `role` (default [`TextRole::Body`]).
     #[must_use]
     pub fn with_text_role(mut self, role: TextRole) -> Self {
         self.set_text_role(role);
@@ -1160,7 +943,6 @@ impl TextInput {
         self
     }
 
-    /// Change the field's text role; see [`Self::with_text_role`].
     pub fn set_text_role(&mut self, role: TextRole) {
         self.repaint = true;
         if self.text_role != role || self.font_size_override.is_some() {
@@ -1171,14 +953,11 @@ impl TextInput {
         }
     }
 
-    /// The field's text role.
     #[must_use]
     pub fn text_role(&self) -> TextRole {
         self.text_role
     }
 
-    /// A document editor built on this field (a heading block, a code view)
-    /// sets its own 1× base size; chrome fields take a role.
     pub(crate) fn set_base_size(&mut self, size: f32) {
         if self.font_size_override != Some(size) {
             self.layout_dirty |= self.multiline || self.single_attributes.is_some();
@@ -1232,9 +1011,6 @@ impl TextInput {
         self.kind
     }
 
-    /// Enable or disable spelling assistance for this field. It defaults on
-    /// for ordinary text and is automatically suppressed for secret and
-    /// code-like fields.
     #[must_use]
     pub fn with_spellcheck(mut self, on: bool) -> Self {
         self.spellcheck = Some(on);
@@ -1246,16 +1022,12 @@ impl TextInput {
         self.checks_spelling()
     }
 
-    /// Override automatic correction for this field. Without an override the
-    /// user-wide Spell checker setting applies.
     #[must_use]
     pub fn with_autocorrect(mut self, on: bool) -> Self {
         self.autocorrect = Some(on);
         self
     }
 
-    /// [`Self::with_autocorrect`] on a live field; `None` follows the
-    /// user-wide setting again.
     pub fn set_autocorrect(&mut self, on: Option<bool>) {
         self.repaint = true;
         self.autocorrect = on;
@@ -1273,14 +1045,10 @@ impl TextInput {
         }
     }
 
-    /// Whether a typed word boundary left a correction to apply.
     pub fn has_pending_autocorrection(&self) -> bool {
         self.pending_autocorrection.is_some()
     }
 
-    /// Make the correction the last typed word boundary left pending, while the word and the
-    /// boundary after it are still as typed and the caret right after them. Backspace right after
-    /// reverts it, as for an immediate correction. `false` when there was nothing to make.
     pub fn apply_pending_autocorrection(&mut self) -> bool {
         self.repaint = true;
         let Some(pending) = self.pending_autocorrection.take() else {
@@ -1314,16 +1082,12 @@ impl TextInput {
         true
     }
 
-    /// Write back what a text action made of the text it was handed
-    /// ([`Self::take_text_action_request`]), as [`Self::replace_range`] does.
     pub fn apply_text_action_result(&mut self, result: &TextActionResult) -> bool {
         self.repaint = true;
         let (start, end) = result.range;
         self.replace_range(start..end, &result.original, &result.replacement)
     }
 
-    /// [`Self::replace_range`] with the caret after the replacement; where
-    /// the replacement ends.
     fn replace_step(
         &mut self,
         range: Range<usize>,
@@ -1337,8 +1101,6 @@ impl TextInput {
         {
             return None;
         }
-        // What was typed so far reaches the owner first, so the replacement
-        // does not join it.
         self.notify_user_change(true);
         self.typing.close();
         let edit = self.core.replace(range.clone(), replacement);
@@ -1348,8 +1110,6 @@ impl TextInput {
         }
         self.last_autocorrection = None;
         self.typing.close();
-        // A discrete change of its own, which the typing after it does not
-        // continue.
         self.notify_user_change(false);
         Some(end)
     }
@@ -1361,9 +1121,6 @@ impl TextInput {
                 .unwrap_or_else(|| crate::text_assistance::preferences().auto_correct)
     }
 
-    /// Select a language dictionary, accepting both en-US and `en_US` style
-    /// tags. If that Hunspell dictionary is unavailable, non-English checking
-    /// quietly disables itself; English retains the embedded fallback.
     #[must_use]
     pub fn with_spell_language(mut self, language: &str) -> Self {
         self.set_spell_language(language);
@@ -1409,7 +1166,6 @@ impl TextInput {
         self.pending_text_action.take()
     }
 
-    /// Wins over the mono flag.
     #[must_use]
     pub fn with_font_family(mut self, family: FontChoice) -> Self {
         self.family = Some(family);
@@ -1428,8 +1184,6 @@ impl TextInput {
         self.family.as_ref()
     }
 
-    /// Picks the same family the draw path will use, so `char_x_positions`
-    /// and the drawn glyphs agree.
     fn measure_str(&self, tr: &mut TextRenderer, s: &str, size: f32) -> (f32, f32) {
         if let Some(fam) = &self.family {
             tr.measure_font(s, size, None, TextWeight::Regular, false, fam)
@@ -1485,8 +1239,6 @@ impl TextInput {
         hash.finish()
     }
 
-    /// Give the field the runs its value is drawn in. Returns whether they
-    /// are another set than the ones it held.
     pub(super) fn set_rich_spans(&mut self, spans: Option<Vec<RichSpan>>) -> bool {
         if self.rich_spans == spans {
             return false;
@@ -1506,7 +1258,6 @@ impl TextInput {
         self.palette_display_spans(&theme.tokens.syntax)
     }
 
-    /// [`Self::highlighted_display_spans`] in `syntax`'s colours.
     fn palette_display_spans(&self, syntax: &SyntaxPalette) -> Vec<RichSpan> {
         let mut colored = Vec::<(usize, usize, [u8; 3])>::new();
         if self.highlighter.is_some() {
@@ -1621,9 +1372,6 @@ impl TextInput {
     }
 
     pub(super) fn set_single_line_attributes(&mut self, attributes: SingleLineAttributes) {
-        // Hashed once: the signature kept from the last call stands for the
-        // attributes it set, so re-setting the same ones costs no second hash
-        // over every span.
         let signature = Self::single_attributes_signature(&attributes);
         if self.single_attributes_signature != Some(signature) {
             self.single_attributes_signature = Some(signature);
@@ -1633,8 +1381,6 @@ impl TextInput {
         }
     }
 
-    /// Set the field's attributes without asking whether they changed (a
-    /// highlighter repaints its colours over the value it read).
     fn replace_single_line_attributes(&mut self, attributes: SingleLineAttributes) {
         self.single_attributes_signature = Some(Self::single_attributes_signature(&attributes));
         self.single_attributes = Some(attributes);
@@ -1688,25 +1434,15 @@ impl TextInput {
         display
     }
 
-    /// A field with no document binding.
     pub fn local() -> Self {
         Self::new(Vec::new())
     }
 
-    /// Explicit host language without discovery or background dictionary warmup.
     #[doc(hidden)]
     pub fn local_with_language(language: &str) -> Self {
         Self::with_language(Vec::new(), language.to_owned())
     }
 
-    /// Create a true two-way binding to typed process-local text state.
-    ///
-    /// User edits update `state`; mutations through any clone of `state`
-    /// update this input on the next synchronization pass. Several inputs and
-    /// read-only [`Text`](super::Text) views can therefore share one value
-    /// without initial-value snapshots, callbacks, or app-owned fan-out.
-    /// Selecting a document or external-buffer binding later replaces this
-    /// process-local binding explicitly.
     pub fn from_state(state: &crate::LocalState<String>) -> Self {
         let (value, binding) = crate::local_state::LocalBinding::new(state);
         let mut input = Self::local().with_initial_value(&value);
@@ -1714,41 +1450,30 @@ impl TextInput {
         input
     }
 
-    /// Whether the field follows `state` now.
     pub(crate) fn follows(&self, state: &crate::LocalState<String>) -> bool {
         self.local_state
             .as_ref()
             .is_some_and(|binding| binding.follows(state))
     }
 
-    /// Follow the state a binding now names: the field shows what it holds and writes each
-    /// edit back to it, keeping the keyboard and, where the two hold the same text, the caret.
     pub(crate) fn follow(&mut self, state: &crate::LocalState<String>) {
         let (value, binding) = crate::local_state::LocalBinding::new(state);
         self.local_state = Some(binding);
         self.set_text(&value);
     }
 
-    /// Someone else (`identity`, by their presence) changed what the field holds and the person
-    /// has not seen it: the field is tinted in their colour, and hovering it says `note` (who
-    /// changed it, and what it held before). `None` once it is seen.
     #[must_use]
     pub fn with_change(mut self, change: Option<(String, String)>) -> Self {
         self.change = change;
         self
     }
 
-    /// Key the field's presence by `path`: collaborators editing the field at the same path
-    /// see each other's carets and selections in it.
     #[must_use]
     pub fn with_presence_path(mut self, path: Vec<PathSegment>) -> Self {
         self.path = path;
         self
     }
 
-    /// Admit only characters accepted by `filter` on every insertion path. Deliberately a character
-    /// predicate, not a validator for the whole value: callers still own domain parsing and error
-    /// reporting when the field is submitted.
     #[must_use]
     pub fn with_char_filter(mut self, filter: fn(char) -> bool) -> Self {
         self.core.set_filter(Some(filter));
@@ -1761,7 +1486,6 @@ impl TextInput {
         self
     }
 
-    /// Cursor parks at the end; dirty stays false (programmatic seed).
     #[must_use]
     pub fn with_initial_value(mut self, s: &str) -> Self {
         self.text = s.to_string();
@@ -1817,8 +1541,6 @@ impl TextInput {
         self
     }
 
-    /// Route committed keyboard, paste, IME, and accessibility edits through
-    /// an exported action with the complete current string as input.
     #[must_use]
     pub fn on_action(mut self, binding: tilo_actions::ActionBinding<String>) -> Self {
         self.action = Some(ActionEmitter::new(
@@ -1827,9 +1549,6 @@ impl TextInput {
         self
     }
 
-    /// Route each committed edit through `binding` as the splice it is ([`TextEdit::Splice`]):
-    /// where it writes, what it removes and what it inserts, so the write names its range (its
-    /// writer's caret and tint) and typing on in one word continues one undo step.
     #[must_use]
     pub fn on_text_edit(mut self, binding: tilo_actions::ActionBinding<TextEdit>) -> Self {
         self.action = Some(ActionEmitter::new(binding.map_input(
@@ -1840,18 +1559,12 @@ impl TextInput {
         self
     }
 
-    /// Insert `s` at the caret as the user's edit, reporting it once as any typed edit is: a host
-    /// splicing text a person chose (a touch keyboard's key, a passcode's keypad, an emoji from a
-    /// palette) gives the field the same edit a keystroke gives it, and the field's listeners hear
-    /// it as they hear a keystroke.
     pub fn insert_at_cursor(&mut self, s: &str) {
         self.repaint = true;
         self.insert_str(s);
         self.notify_user_change(false);
     }
 
-    /// Delete the selected text in a host-owned local projection, reporting it once as any typed
-    /// edit is.
     pub(super) fn delete_local_selection(&mut self) {
         self.delete_selection();
         self.notify_user_change(false);
@@ -1861,12 +1574,10 @@ impl TextInput {
         self.core.caret()
     }
 
-    /// The caret's document offset and visual side at an ambiguous boundary.
     pub fn caret_position(&self) -> TextPosition {
         self.core.caret_position()
     }
 
-    /// Does not count as a user edit (dirty stays false).
     pub fn set_cursor_pos(&mut self, pos: usize) {
         self.repaint = true;
         self.pending_paste = None;
@@ -1875,7 +1586,6 @@ impl TextInput {
         self.goal_x = None;
     }
 
-    /// Seat the caret at an exact shaped position without counting as an edit.
     pub fn set_caret_position(&mut self, position: TextPosition) {
         self.repaint = true;
         self.pending_paste = None;
@@ -1890,24 +1600,16 @@ impl TextInput {
         self.selection_range()
     }
 
-    /// The live selection endpoints in anchor/focus order for accessibility
-    /// bridges. Unlike [`Self::selection_range_public`], this preserves the
-    /// direction in which the user extended the selection.
     pub fn selection_anchor_focus_public(&self) -> Option<(usize, usize)> {
         self.core
             .has_selection()
             .then(|| (self.core.anchor(), self.core.caret()))
     }
 
-    /// The selection a host mirroring this field should paint after a
-    /// pointer event: the anchor and caret, collapsed to the caret when
-    /// nothing is selected. A click that collapses a selection has to reach
-    /// the host too, or it keeps painting the selection it used to show.
     pub fn selection_anchor_focus_or_caret(&self) -> (usize, usize) {
         (self.core.anchor(), self.core.caret())
     }
 
-    /// `len()` is `text.len() + 1`; empty until the first draw lands.
     pub fn char_x_positions(&self) -> &[f64] {
         &self.char_x_positions
     }
@@ -1916,8 +1618,6 @@ impl TextInput {
         self.scroll_x
     }
 
-    /// Retain bounded multiline scroll when used as an inert, unfocused source view.
-    /// Does not enable focus, caret painting, input handling or document binding.
     pub fn set_preserve_unfocused_scroll(&mut self, preserve: bool) {
         self.repaint = true;
         self.preserve_unfocused_scroll = preserve;
@@ -1938,12 +1638,10 @@ impl TextInput {
             .map(|layout| layout.buffer.metrics().font_size)
     }
 
-    /// Requires a prior `draw` to have built the metrics.
     pub fn byte_at_point(&self, point: Point) -> usize {
         self.position_at_point(point).byte
     }
 
-    /// Exact caret position under a point, including mixed-BiDi affinity.
     pub fn position_at_point(&self, point: Point) -> TextPosition {
         self.resolve_position(point)
     }
@@ -1960,9 +1658,6 @@ impl TextInput {
         }
     }
 
-    /// Where the field's text starts inside its rect: the multiline inset
-    /// (and code gutter) of a wrapping field, the horizontal padding of a
-    /// single-line one.
     pub fn text_inset_x(&self, theme: &Theme) -> f64 {
         if self.multiline {
             self.ml_left()
@@ -1971,7 +1666,6 @@ impl TextInput {
         }
     }
 
-    /// Single source of truth for both the local and any peer caret, so they line up.
     pub fn text_band(&self) -> (f64, f64) {
         if self.multiline {
             return (
@@ -1993,8 +1687,6 @@ impl TextInput {
         (text_y, line_height)
     }
 
-    /// The first visual row's band, `(top, height)`: where a list marker
-    /// beside a wrapping line sits, whatever the rows below it hold.
     pub(crate) fn first_row_band(&self) -> (f64, f64) {
         if self.multiline {
             (
@@ -2006,14 +1698,10 @@ impl TextInput {
         }
     }
 
-    /// The style a wrapping line is shaped in at `scale`: its size, leading,
-    /// weight and family, so a mark set beside it (a list ordinal) shares
-    /// its baseline.
     pub(crate) fn line_style(&self, scale: f32) -> TextStyle {
         self.multiline_style(scale)
     }
 
-    /// Requires a prior `draw` to have populated `char_x_positions`.
     fn caret_x_at(&self, theme: &Theme, position: TextPosition) -> f64 {
         if (!self.multiline || self.multiline_shaped)
             && !self.masked()
@@ -2065,7 +1753,6 @@ impl TextInput {
         Rect::new(x, text_y, x + theme.caret_width, text_y + line_height)
     }
 
-    /// Single-line only; multiline callers use `selection_rects`.
     pub fn selection_rect(&self, theme: &Theme, start: usize, end: usize) -> Rect {
         if (!self.multiline || self.multiline_shaped)
             && !self.masked()
@@ -2101,7 +1788,6 @@ impl TextInput {
         Rect::new(x0.min(x1), text_y, x0.max(x1), text_y + line_height)
     }
 
-    /// One rect per visual row the range spans.
     pub fn selection_rects(&self, theme: &Theme, start: usize, end: usize) -> Vec<Rect> {
         if (!self.multiline || self.multiline_shaped)
             && !self.masked()
@@ -2178,7 +1864,6 @@ impl TextInput {
         f64::from(self.effective_font_size() * LINE_HEIGHT_RATIO)
     }
 
-    /// Falls back to one row when nothing has been laid out yet.
     pub fn content_height(&self) -> f64 {
         if self.multiline_shaped
             && let Some(layout) = &self.single_layout
@@ -2250,7 +1935,6 @@ impl TextInput {
         Rect::new(cx, cy, cx + width, cy + self.line_height())
     }
 
-    /// Requires a prior `draw` to have built the layout.
     fn cursor_from_point(&self, pt: Point) -> usize {
         if self.lines.is_empty() {
             return 0;
@@ -2353,8 +2037,6 @@ impl TextInput {
         self.goal_x = Some(goal);
     }
 
-    /// Preferred column in editor coordinates, preserving the exact visual
-    /// side of a wrap or bidi boundary when beginning a vertical movement.
     pub(super) fn vertical_goal_x(&self) -> f64 {
         if let Some(goal) = self.goal_x {
             return self.single_origin.x + goal;
@@ -2370,8 +2052,6 @@ impl TextInput {
         self.move_vertical(down, false);
     }
 
-    /// Restore a document selection's active endpoint after its per-block
-    /// bands have been painted, retaining wrap/bidi affinity.
     pub(super) fn set_selection_at(&mut self, anchor: usize, cursor: TextPosition) {
         self.pending_paste = None;
         let anchor = anchor.min(self.text.len());
@@ -2380,7 +2060,6 @@ impl TextInput {
             .set_selection_position(anchor, TextPosition::with_affinity(byte, cursor.affinity));
     }
 
-    /// Whether arrow navigation can stay within this shaped paragraph.
     pub(super) fn has_visual_row(&self, down: bool) -> bool {
         if let Some(layout) = &self.single_layout {
             let (_, top, height) =
@@ -2518,8 +2197,6 @@ impl TextInput {
         push_row(out, y, row_start_k, nchars, hard_break);
     }
 
-    /// Same family choice as `measure_str`, so glyphs stay aligned with the
-    /// measured caret/selection metrics.
     fn draw_text_run(
         &self,
         scene: &mut Scene,
@@ -2550,16 +2227,11 @@ impl TextInput {
         }
     }
 
-    /// Forget every shaped paragraph (the current one and the alternates).
     fn drop_shaped_layouts(&mut self) {
         self.single_layout = None;
         self.alternate_layouts.clear();
     }
 
-    /// Make the paragraph shaped at `width` current, keeping the one it
-    /// replaces as the most recent alternate. A width no alternate has
-    /// rebuilds from a copy of the current paragraph's shaping, or once
-    /// every alternate slot is taken, from the least recently used one's.
     fn select_layout_for_width(&mut self, tr: &mut TextRenderer, width: f32) {
         let Some(current_width) = self
             .shaped_preparation
@@ -2615,10 +2287,6 @@ impl TextInput {
         }
     }
 
-    /// Every unmasked multiline input — attributed source code included — uses the same shaped
-    /// paragraph for paint, wrapping, carets, selection, hit-testing, vertical movement and IME
-    /// composition. Rebuilds `self.single_layout` (and its signature) if the shaped spans, family,
-    /// size or available width changed.
     fn ensure_shaped_layout(
         &mut self,
         tr: &mut TextRenderer,
@@ -2630,17 +2298,12 @@ impl TextInput {
         self.ensure_palette_layout(tr, &theme.tokens.syntax, style, available_width);
     }
 
-    /// Remember the theme's syntax palette for theme-less measurement.
     fn adopt_layout_syntax(&mut self, theme: &Theme) {
         if self.layout_syntax.as_ref() != Some(&theme.tokens.syntax) {
             self.layout_syntax = Some(theme.tokens.syntax.clone());
         }
     }
 
-    /// [`Self::ensure_shaped_layout`] with highlighted runs in `syntax`'s
-    /// colours. Measurement has no theme; it passes the palette of the last
-    /// themed pass, so measuring and painting share one shaped paragraph and
-    /// a keystroke shapes only the paragraphs it changed.
     fn ensure_palette_layout(
         &mut self,
         tr: &mut TextRenderer,
@@ -2660,9 +2323,6 @@ impl TextInput {
         }
         self.refresh_highlight();
         let display = self.layout_display_text();
-        // Syntax colours paint with the visible rows
-        // ([`Self::highlight_color_at`]), so highlighted code is shaped as
-        // plain paragraphs and a keystroke reshapes only its line.
         let spans = if self.paints_highlight() {
             Vec::new()
         } else {
@@ -2681,9 +2341,6 @@ impl TextInput {
             &spans,
         );
         let browser_emoji = tr.browser_color_emoji_installed();
-        // Unstyled text (no highlighter colours or authored runs) is laid out
-        // paragraph by paragraph, so a keystroke prepares and shapes only the
-        // paragraph it edits.
         let mut layout = if spans.iter().all(RichSpan::is_unstyled) {
             RichTextLayout::shape_paragraphs_reusing_browser(
                 &mut tr.font_system,
@@ -2693,7 +2350,6 @@ impl TextInput {
                 self.align,
                 self.single_layout.take(),
                 browser_emoji,
-                // The width measured just before has this text already.
                 self.alternate_layouts
                     .first()
                     .map(|alternate| &alternate.layout),
@@ -2725,10 +2381,6 @@ impl TextInput {
 
     fn multiline_style(&self, scale: f32) -> TextStyle {
         let family = self.family.clone().unwrap_or(self.role_family());
-        // Already grown by the text scale here, so the renderer paints it as
-        // given.
-        // The role sets the weight too: a heading line is semibold in
-        // measurement and paint alike.
         let mut style = TextStyle::new(self.effective_font_size() * scale)
             .with_line_height(LINE_HEIGHT_RATIO)
             .with_weight(self.text_role.weight())
@@ -2736,7 +2388,6 @@ impl TextInput {
         style.scaling = TextScaling::Resolved;
         style.kind = self.kind.text_kind();
         if self.kind == TextInputKind::Code {
-            // Source wraps under its own indentation.
             style.wrap_mode = crate::text_render::TextWrapMode::Indented;
         }
         style
@@ -2813,8 +2464,6 @@ impl TextInput {
         height
     }
 
-    /// Prepare the shared shaped hit-testing geometry for a projected cell
-    /// before its first focus/click, without painting a throwaway scene.
     pub(super) fn prepare_wrapped_layout(&mut self, tr: &mut TextRenderer, theme: &Theme) {
         #[allow(
             clippy::cast_possible_truncation,
@@ -2857,7 +2506,6 @@ impl TextInput {
             &gutter,
         );
         let edge = self.rect.x0 + gutter_width;
-        // Gutter rule derived from the field it divides (HIG §9.5).
         scene.stroke(
             &Stroke::new(1.0),
             transform,
@@ -2867,8 +2515,6 @@ impl TextInput {
         );
     }
 
-    /// The colour a code line is marked with while this field marks its current
-    /// line and is being typed in, and `None` when it marks none.
     fn current_line_band(&self, theme: &Theme) -> Option<vello::peniko::Color> {
         (self.highlight_current_line && self.is_focused && !self.shows_placeholder()).then(|| {
             theme
@@ -2964,8 +2610,6 @@ impl TextInput {
         );
     }
 
-    /// Whether this field paints its caret in a shaped multiline body, the
-    /// caret [`Self::draw_caret_apart`] can paint on its own.
     pub(crate) fn paints_shaped_caret(&self) -> bool {
         self.multiline && !self.masked()
     }
@@ -2990,8 +2634,6 @@ impl TextInput {
             return None;
         }
         let color = theme.tokens.colors.intent.accent_ink;
-        // Clear of the clip's rounded corners, the clip is its rectangle:
-        // the caret's part of it needs no layer of its own.
         let radii = shape.radii();
         let radius = radii
             .top_left
@@ -3035,7 +2677,6 @@ impl TextInput {
         shape: &RoundedRect,
         visible: Rect,
     ) {
-        // A wrapping prompt wraps rather than fitting one line.
         self.prompt_fit = None;
         let size = self.effective_font_size();
         let style = self.multiline_style(self.scale_for(theme.text_scale));
@@ -3058,9 +2699,6 @@ impl TextInput {
             self.text_to_layout_position(self.caret_position())
         };
         let caret_byte = caret_position.byte;
-        // Only a focused field whose caret moved scrolls to it. Resolving the
-        // caret walks the shaped rows' grapheme stops, so every other line of
-        // a document (and every unchanged frame) skips it.
         let scrolls_to_caret = self.is_focused && self.last_scroll_caret != Some(self.core.caret());
         let Some((caret_top, caret_height, layout_height)) =
             self.single_layout.as_ref().map(|layout| {
@@ -3073,7 +2711,6 @@ impl TextInput {
                 (top, height, layout.height())
             })
         else {
-            // Unreachable: `ensure_shaped_layout` just set `self.single_layout` to `Some`.
             return;
         };
         self.update_ml_scroll(caret_top, caret_height, layout_height);
@@ -3106,8 +2743,6 @@ impl TextInput {
             (visible, gutter_width, caret_byte),
         );
 
-        // `Affine * Affine` composes two geometric transforms over f64
-        // coordinates; it has no integer overflow/wrap semantics.
         #[allow(
             clippy::arithmetic_side_effects,
             reason = "Affine transform composition over f64 screen coordinates"
@@ -3130,8 +2765,6 @@ impl TextInput {
             } else {
                 theme.text_primary
             };
-            // A long note is taller than the window: paint only the rows the
-            // field's clip and the viewport let through.
             let syntax = &theme.tokens.syntax;
             let paint = |byte: usize| self.highlight_color_at(byte, syntax);
             #[cfg(test)]
@@ -3165,9 +2798,6 @@ impl TextInput {
         scene.pop_layer();
     }
 
-    /// Adjusts `self.scroll_y` so the caret row stays in view, re-centring
-    /// only on caret movement (matches [`Self::update_ml_scroll`]'s policy
-    /// for the shaped path).
     fn update_ml_body_scroll(&mut self, lh: f64) {
         let (caret_row, _) = self.locate_ml(self.core.caret());
         let caret_top = self.lines.get(caret_row).map_or(0.0, |r| r.y);
@@ -3255,7 +2885,6 @@ impl TextInput {
         }
     }
 
-    /// Collected as owned data so all `self` borrows end before the draw calls.
     fn collect_ml_body_rows(
         &self,
         rows: &LogicalRows,
@@ -3362,7 +2991,6 @@ impl TextInput {
         theme: &Theme,
         shape: &RoundedRect,
     ) {
-        // A wrapping prompt wraps rather than fitting one line.
         self.prompt_fit = None;
         let size = self.effective_font_size();
         let lh = self.line_height();
@@ -3400,7 +3028,6 @@ impl TextInput {
             )]
             let origin = transform
                 * Affine::translate((self.rect.x0 + left, self.multiline_top() - self.scroll_y));
-            // A prompt wraps within the body it prompts for, as the text typed there does.
             tr.draw_style(
                 scene,
                 &placeholder,
@@ -3495,9 +3122,6 @@ impl TextInput {
         out
     }
 
-    /// Test-only view of the attributed paragraph's colour runs, for
-    /// `CodeEditor` tests to assert highlighter spans reach the shared layout.
-    /// Requires a prior draw so the highlight cache is current.
     #[cfg(test)]
     pub(crate) fn code_row_colors(&self, theme: &Theme) -> Vec<(String, vello::peniko::Color)> {
         let default = if self.effectively_disabled() {
@@ -3517,11 +3141,8 @@ impl TextInput {
             .collect()
     }
 
-    /// `Some(text)` if a user-initiated edit landed since the last call.
     pub fn take_dirty(&mut self) -> Option<String> {
         if self.dirty {
-            // The edit marked the layout itself; publishing it changes
-            // nothing measuring reads.
             self.dirty = false;
             Some(self.text.clone())
         } else {
@@ -3533,8 +3154,6 @@ impl TextInput {
         self.layout_dirty = false;
     }
 
-    /// Places the input without a layout tree — only safe on local-mode
-    /// `TextInputs` with no presence path or permission scope.
     pub fn apply_layout_external(&mut self, rect: Rect) {
         self.moved = true;
         self.single_origin.x += rect.x0 - self.rect.x0;
@@ -3626,10 +3245,6 @@ impl TextInput {
         self.secret || matches!(self.kind.text_kind(), TextKind::Secret)
     }
 
-    /// What [`Widget::accessibility`] reads of the field besides its text and its configured parts
-    /// (id, names, placeholder, bound action). An owner keeping the field's node between frames
-    /// compares this and the text to know a fresh node would equal it, but for the names it gives
-    /// the node itself.
     pub(crate) fn accessibility_state(&self) -> TextAccessibilityState {
         TextAccessibilityState {
             secret: self.holds_secret(),
@@ -3652,8 +3267,6 @@ impl TextInput {
         }
     }
 
-    /// Only meaningful together with `with_secret`. Secret fields start
-    /// hidden; a single-line one also offers its own show/hide control.
     #[must_use]
     pub fn with_reveal(mut self, on: bool) -> Self {
         self.reveal.set_revealed(on);
@@ -3665,7 +3278,6 @@ impl TextInput {
         self.reveal.set_revealed(on);
     }
 
-    /// No-op on a non-secret field.
     pub fn toggle_reveal(&mut self) {
         self.repaint = true;
         if self.secret {
@@ -3677,12 +3289,10 @@ impl TextInput {
         self.reveal.revealed()
     }
 
-    /// Whether this field paints and offers the trailing show/hide control.
     pub fn has_reveal_control(&self) -> bool {
         self.secret && !self.multiline
     }
 
-    /// Where the show/hide control sits, or `None` without one.
     pub fn reveal_control_rect(&self) -> Option<Rect> {
         self.has_reveal_control().then(|| self.reveal.get_rect())
     }
@@ -3761,8 +3371,6 @@ impl TextInput {
         self.rect.y0 + room / 2.0
     }
 
-    /// Whether the field's content is one row tall: one line of text, or its placeholder, that
-    /// has not wrapped.
     fn fits_one_line(&self) -> bool {
         if self.multiline_shaped
             && let Some(layout) = &self.single_layout
@@ -3794,7 +3402,6 @@ impl TextInput {
         self.multiline
     }
 
-    // Power `CodeEditor`; every setter below defaults off.
     #[must_use]
     pub fn with_gutter(mut self, on: bool) -> Self {
         self.gutter = on;
@@ -3832,7 +3439,6 @@ impl TextInput {
         self.shaped_preparation = None;
     }
 
-    /// `0` = literal `\t`. `Shift+Tab` outdents by the same width.
     #[must_use]
     pub fn with_tab_width(mut self, n: usize) -> Self {
         self.tab_spaces = Some(n);
@@ -3844,8 +3450,6 @@ impl TextInput {
         self.tab_spaces = Some(n);
     }
 
-    /// Uses measured line-number glyphs after layout, with a font-size
-    /// estimate only before the first measurement.
     fn code_gutter_w(&self) -> f64 {
         if !self.gutter || !self.multiline {
             return 0.0;
@@ -3914,8 +3518,6 @@ impl TextInput {
         span.range.contains(&local).then(|| syntax.color(span.kind))
     }
 
-    /// Threads the cross-line carry over all lines so block comments / fenced
-    /// code stay coherent.
     fn refresh_highlight(&mut self) {
         let Some(hl) = &self.highlighter else {
             self.hl_text = None;
@@ -3940,16 +3542,12 @@ impl TextInput {
         }
     }
 
-    /// Read the signal with `take_submit`.
     #[must_use]
     pub fn with_enter_submits(mut self, on: bool) -> Self {
         self.enter_submits = on;
         self
     }
 
-    /// The entry at the end of a list: Enter or leaving the field with text commits what was
-    /// typed (its submit) and clears it; Escape, or leaving it with nothing typed, leaves
-    /// nothing. The field is its own draft: nothing it holds exists until it is committed.
     #[must_use]
     pub fn with_entry(mut self, on: bool) -> Self {
         self.entry = on;
@@ -3967,7 +3565,6 @@ impl TextInput {
         self
     }
 
-    /// `true` once per submitting `Enter`; clears on read.
     pub fn take_submit(&mut self) -> bool {
         std::mem::take(&mut self.submit_requested)
     }
@@ -3978,7 +3575,6 @@ impl TextInput {
         self
     }
 
-    /// Drops any in-progress drag so the widget doesn't hold pointer capture while inert.
     pub fn set_disabled(&mut self, on: bool) {
         self.repaint = true;
         self.disabled = on;
@@ -3999,9 +3595,6 @@ impl TextInput {
         self
     }
 
-    /// Ask for the keyboard as soon as this field is in the tree: the entry a command just
-    /// opened is where the person types next, and they should not have to point at it. Asked
-    /// once, when the window next lays out.
     #[must_use]
     pub fn wants_focus(mut self) -> Self {
         self.focus_wanted = true;
@@ -4017,7 +3610,6 @@ impl TextInput {
         self
     }
 
-    /// See [`Self::with_accessible_name`].
     pub fn set_accessible_name(&mut self, name: impl Into<String>) {
         self.repaint = true;
         self.accessible_name = name.into();
@@ -4036,15 +3628,12 @@ impl TextInput {
         !self.placeholder.is_empty() && self.text.is_empty() && !self.is_composing()
     }
 
-    /// How tall a single-line field is: the height of a button of the same
-    /// size, so fields and buttons share a row. Regular (32) by default.
     #[must_use]
     pub fn control_size(mut self, size: ControlSize) -> Self {
         self.set_control_size(size);
         self
     }
 
-    /// Change the field's [`ControlSize`]; see [`Self::control_size`].
     pub fn set_control_size(&mut self, size: ControlSize) {
         self.repaint = true;
         if self.control_size != size {
@@ -4080,8 +3669,6 @@ impl TextInput {
         self.on_submit = callback;
     }
 
-    /// Route Enter through an exported resource action with the text as its
-    /// input; see [`Self::on_submit`].
     #[must_use]
     /// Enter submits the field's action. A press whose submission the host has not collected yet is
     /// replaced by the next: two Enters delivered before the next frame submit once, so a repeated
@@ -4107,7 +3694,6 @@ impl TextInput {
         self.selection_event = Some(event);
     }
 
-    /// Tell the reader the selection settled, as [`Self::with_selection_event`] describes it.
     fn report_selection(&self) {
         let Some(event) = self.selection_event.clone() else {
             return;
@@ -4122,9 +3708,6 @@ impl TextInput {
         event.fire(Some(value));
     }
 
-    /// Run `callback` with the text on a submitting Enter, the field as control
-    /// `tilo.control:<id>`, publishing the submit as its view action `submit`: a person's Enter, a
-    /// screen reader, a script and an agent submit through the same action.
     #[must_use]
     #[expect(
         clippy::expect_used,
@@ -4152,19 +3735,12 @@ impl TextInput {
         self
     }
 
-    /// Run `callback` with the text of every committed edit, the field, as
-    /// control `tilo.control:<id>`, publishing the edit as its view action
-    /// `change`: typing, pasting, an IME commit, a screen reader's edit, a
-    /// script's and an agent's all arrive through the same action. The
-    /// control's latest text is what it reports, so a burst of edits the host
-    /// has not collected yet reports once, with the text it now holds.
     #[must_use]
     pub fn on_change_view(mut self, callback: impl FnMut(&str) + 'static) -> Self {
         self.set_on_change_view(callback);
         self
     }
 
-    /// [`Self::on_change_view`] on a field already built.
     pub fn set_on_change_view(&mut self, callback: impl FnMut(&str) + 'static) {
         let id = self.test_id().unwrap_or("text_input").to_owned();
         self.change_verb = Some(super::control_verb::ControlVerb::new(
@@ -4178,14 +3754,11 @@ impl TextInput {
         self.last_notified_text.clone_from(&self.text);
     }
 
-    /// A trailing clear button inside the field while it holds text.
     #[must_use]
     pub fn with_clear_button(self) -> Self {
         self.with_trailing_accessory(crate::icons::Icon::X, "Clear", AccessoryAction::Clear)
     }
 
-    /// A trailing icon button inside the field, named `name` for assistive
-    /// technology (a reveal toggle, a picker).
     #[must_use]
     pub fn with_trailing_accessory(
         mut self,
@@ -4202,7 +3775,6 @@ impl TextInput {
         self
     }
 
-    /// Whether the trailing accessory is a toggle that is on.
     #[must_use]
     pub fn accessory_pressed(&self) -> Option<bool> {
         match self.accessory.as_ref().map(|accessory| &accessory.action) {
@@ -4211,8 +3783,6 @@ impl TextInput {
         }
     }
 
-    /// Turn a toggle accessory on or off (the host syncing from its model).
-    /// No-op for any other accessory.
     pub fn set_accessory_pressed(&mut self, on: bool) {
         self.repaint = true;
         if let Some(Accessory {
@@ -4234,7 +3804,6 @@ impl TextInput {
         self
     }
 
-    /// Change or clear the document-space size of [`Self::with_content_size`].
     pub fn set_content_size(&mut self, px: Option<f32>) {
         self.repaint = true;
         let sized = px.is_some();
@@ -4245,9 +3814,6 @@ impl TextInput {
         }
     }
 
-    /// Colour spans of a single-line field's text (references in a
-    /// formula); see [`SpanHighlighter`]. A wrapping field takes a
-    /// [`Highlighter`] instead.
     #[must_use]
     pub fn with_span_highlighter(
         mut self,
@@ -4296,9 +3862,6 @@ impl TextInput {
         self.read_only
     }
 
-    /// Show `runs` as the text, each in its own weight, slant, size and ink:
-    /// a message body, a help page. A caller that edits the text afterwards
-    /// loses the styling; use it with [`Self::with_read_only`].
     #[must_use]
     pub fn with_runs(mut self, runs: Vec<RichSpan>) -> Self {
         self.set_runs(runs);
@@ -4317,9 +3880,6 @@ impl TextInput {
         self.set_rich_spans(Some(runs));
     }
 
-    /// Lay a wrapping field out in `rect`'s width at `rect`'s top-left
-    /// without a layout tree, for a host that paints it itself; the rect it
-    /// takes is as tall as its text, and that height is returned.
     pub fn place_wrapped(&mut self, rect: Rect, tr: &mut TextRenderer, theme: &Theme) -> f64 {
         self.repaint = true;
         #[allow(clippy::cast_possible_truncation, reason = "bounded widget width")]
@@ -4403,8 +3963,6 @@ impl TextInput {
         self.document_inset = true;
     }
 
-    /// Set the text flush with the field's edge, without the document's inset: a body read
-    /// where it stands under a name, as a message's does.
     pub(crate) fn drop_document_inset(&mut self) {
         self.document_inset = false;
     }
@@ -4441,10 +3999,6 @@ impl TextInput {
         self.accessory_rect().map_or(0.0, |rect| rect.width())
     }
 
-    /// Paint the trailing accessory: a plain icon button, lifted under the
-    /// pointer. One with nothing to do yet (a go button over an empty field)
-    /// is drawn under the toolkit's disabled group alpha, as every other
-    /// control without an effect on the world is.
     fn draw_accessory(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
         let (Some(rect), Some(accessory)) = (self.accessory_rect(), self.accessory.as_ref()) else {
             return;
@@ -4457,8 +4011,6 @@ impl TextInput {
                 accessory.action,
                 AccessoryAction::Toggle { pressed: true, .. }
             );
-        // An "on" toggle is the selection lift, as a toggled toolbar glyph
-        // is, and stays one under the pointer.
         let lift = if on {
             Some(theme.tokens.colors.intent.selection)
         } else {
@@ -4496,9 +4048,6 @@ impl TextInput {
         }
     }
 
-    /// A press on the accessory: run it. Returns whether it took the press.
-    /// One with nothing to do yet takes no press at all: the press is the
-    /// field's, as a press anywhere else in it is.
     fn press_accessory(&mut self) -> bool {
         let Some(rect) = self.accessory_rect() else {
             return false;
@@ -4509,7 +4058,6 @@ impl TextInput {
         self.run_accessory()
     }
 
-    /// Run the trailing accessory, from a press or an accessibility action.
     fn run_accessory(&mut self) -> bool {
         let Some(accessory) = self.accessory.as_mut() else {
             return false;
@@ -4529,7 +4077,6 @@ impl TextInput {
         true
     }
 
-    /// Shape the single line in the span highlighter's colours.
     fn apply_span_highlighter(&mut self, theme: &Theme) {
         let Some(highlight) = &self.span_highlighter else {
             return;
@@ -4571,11 +4118,8 @@ impl TextInput {
         });
     }
 
-    /// A submitting Enter: tell whoever listens.
     fn fire_submit(&mut self) {
         self.submit_requested = true;
-        // A list's entry commits what it holds and lets go of it: what is typed next is a new
-        // item, and an entry left empty is no item at all.
         let text = if self.entry {
             self.text.trim().to_owned()
         } else {
@@ -4598,37 +4142,22 @@ impl TextInput {
             callback(&text);
         }
         if self.entry {
-            // What the field showed before it let go: the clear is a change only for an entry
-            // that held something (one submitted empty cleared nothing, and says nothing).
             let sent = std::mem::take(&mut self.text);
             self.set_text("");
             self.report_cleared(!sent.trim().is_empty());
         }
     }
 
-    /// An entry let go of what it sent: report the empty text as the field's latest edit, so the
-    /// state it is bound to (`ui.TextInput(bind: draft)`, a composer's draft) is emptied too. A
-    /// binding that kept the sent words would be pushed back into the field on the shell's next
-    /// reading, and the person's next words would be typed into the message they already sent.
-    ///
-    /// The submit ran before this ([`Self::fire_submit`]), so the action a press runs has the
-    /// words; only the state it is bound to is cleared after them.
     fn report_cleared(&mut self, cleared: bool) {
-        // `set_text` records what it shows without telling anyone; the entry's clear is the
-        // person's edit all the same, so it goes through the one path that tells the field's
-        // listeners and records what it told.
         if cleared {
             self.report_change(false);
         }
     }
 
-    /// The text scale this field grows by: none for document-space text.
     fn scale_for(&self, scale: f32) -> f32 {
         if self.content_sized { 1.0 } else { scale }
     }
 
-    /// The family the field's text sets in: the app's explicit one, else the
-    /// role's (Reading is serif, Code is mono, the rest the UI face).
     fn role_family(&self) -> FontChoice {
         if self.mono {
             return FontChoice::Monospace;
@@ -4640,8 +4169,6 @@ impl TextInput {
         }
     }
 
-    /// The style the placeholder draws in: the field's own family and size,
-    /// so a serif or mono field shows a serif or mono prompt.
     fn placeholder_style(&self, size: f32) -> TextStyle {
         let mut style = TextStyle::new(size)
             .with_weight(self.text_role.weight())
@@ -4652,9 +4179,6 @@ impl TextInput {
         style
     }
 
-    /// The horizontal inset of a wrapping field's text: the single-line
-    /// inset of a chrome'd field, none for a plain field whose parent
-    /// supplies the gutter, the document's own inside a toolkit document.
     fn ml_pad_x(&self) -> f64 {
         if !self.plain {
             self.field_pad_x
@@ -4670,20 +4194,16 @@ impl TextInput {
             .unwrap_or_else(|| theme.tokens.typography.size(self.text_role) / theme.text_scale)
     }
 
-    /// Prepare fields whose compound owner supplies their external geometry.
     pub(super) fn prepare_theme(&mut self, theme: &Theme) {
         self.capture_layout_text_scale(self.scale_for(theme.text_scale));
         self.adopt_field_theme(theme);
     }
 
-    /// What inputs the host has: a coarse one makes the field a finger's target tall.
     #[must_use]
     pub fn interaction(&self) -> crate::interaction::InteractionEnvironment {
         self.interaction
     }
 
-    /// The single-line band at `scale`: the control height, grown with the
-    /// line plus `spacing.s1` above and below at large text.
     pub(crate) fn band_in(&self, theme: &Theme) -> f64 {
         let line_px = f64::from(
             self.font_size_in(theme) * self.scale_for(theme.text_scale) * LINE_HEIGHT_RATIO,
@@ -4711,15 +4231,11 @@ impl TextInput {
         }
     }
 
-    /// The width a field stands at where nothing else sets it: the theme's
-    /// `field_min_width`, grown with the text it holds.
     #[must_use]
     pub fn own_width_in(theme: &Theme) -> f32 {
         theme.tokens.metrics.field_min_width * crate::tokens::Metrics::text_growth(theme.text_scale)
     }
 
-    /// The band a field of this size stands at: the control height, grown to
-    /// the target a coarse pointer reaches, as a single-line field's band is.
     fn band(&self) -> f64 {
         if self.interaction.supports_hover() {
             self.band_height
@@ -4746,7 +4262,6 @@ impl TextInput {
         self.secret && !self.reveal.revealed()
     }
 
-    /// One bullet per *character* of the real text when masked.
     fn display_text(&self) -> String {
         if self.masked() {
             "•".repeat(self.text.chars().count())
@@ -4858,19 +4373,14 @@ impl TextInput {
         let pos = position.byte.min(self.text.len());
         self.core
             .place_position(TextPosition::with_affinity(pos, position.affinity), extend);
-        // `move_vertical` re-sets this right after calling here, so a run of
-        // Up/Down still tracks its column despite the reset.
         self.goal_x = None;
     }
 
-    /// Apply an [`Edit`] from the core to the shown text, for the owner to
-    /// take as the user's edit. Returns whether the edit landed.
     fn apply_edit(&mut self, edit: &Edit) -> bool {
         if edit.is_noop() {
             return false;
         }
         if edit.char_splice(&self.text).is_none() {
-            // Computed against text that has since moved under the caret.
             self.clamp_to_text();
             return false;
         }
@@ -4884,7 +4394,6 @@ impl TextInput {
         true
     }
 
-    /// No-op if there's no selection.
     fn delete_selection(&mut self) {
         if !self.core.has_selection() {
             return;
@@ -4942,7 +4451,6 @@ impl TextInput {
         }
     }
 
-    /// For `BlockEditor`'s cross-block drag coordinator.
     pub fn is_dragging(&self) -> bool {
         self.is_dragging
     }
@@ -4996,9 +4504,6 @@ impl TextInput {
         handled
     }
 
-    /// For `BlockEditor`'s cross-block drag coordinator, painting a selection
-    /// band on a block being dragged through without it being the click
-    /// target. `anchor == cursor` clears.
     pub fn set_selection(&mut self, anchor: usize, cursor: usize) {
         self.repaint = true;
         self.set_selection_at(anchor, TextPosition::new(cursor));
@@ -5023,8 +4528,6 @@ impl TextInput {
         }
     }
 
-    /// Single-line strips all control characters; multiline keeps newlines
-    /// (normalising `\r\n`/`\r` to `\n`) and tabs.
     fn do_paste(&mut self) {
         self.pending_paste = Some(PendingPaste {
             result: crate::text_selection::request_clipboard_paste(),
@@ -5084,15 +4587,12 @@ impl TextInput {
         }
     }
 
-    /// For wrappers with "focus selects the value" semantics, e.g. `NumberInput`.
     pub fn select_all(&mut self) {
         self.repaint = true;
         self.do_select_all();
     }
 
     fn cursor_from_x(&self, logical_x: f64) -> usize {
-        // Input can arrive before the first draw has populated glyph metrics
-        // (headless tests and a newly focused modal both exercise this path).
         if self.char_x_positions.is_empty() {
             return 0;
         }
@@ -5100,8 +4600,6 @@ impl TextInput {
         let relative_x = logical_x - (self.rect.x0 + padding_x) + self.scroll_x;
         let mut best_dist = f64::MAX;
         let mut best_idx = 0;
-        // Stale if the text changed since the last draw and this fires before
-        // the next one — fall back to skipping rather than panicking.
         for (i, _) in grapheme_indices(&self.text) {
             let Some(&x) = self.char_x_positions.get(i) else {
                 continue;
@@ -5122,7 +4620,6 @@ impl TextInput {
         best_idx
     }
 
-    /// Both require a prior `draw` to have built their metrics.
     fn resolve_position(&self, pt: Point) -> TextPosition {
         if (!self.multiline || self.multiline_shaped)
             && !self.masked()
@@ -5153,7 +4650,6 @@ impl TextInput {
     }
 }
 
-/// How a field stands: what its chrome shows.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 #[allow(
     clippy::struct_excessive_bools,
@@ -5164,15 +4660,9 @@ struct FieldState {
     focused: bool,
     invalid: bool,
     disabled: bool,
-    /// The presence colour of whoever changed the value without the person having seen it:
-    /// washed into the face and drawn as its edge, as their attribution is everywhere.
     changed_by: Option<vello::peniko::Color>,
 }
 
-/// A field's chrome: the raised face, a half lift under the pointer, the
-/// derived rest edge, your colour as the focus ring, danger ink for a
-/// rejected value, and someone else's colour for a change the person has not
-/// seen. Shared by [`TextInput`] and [`FieldFace`].
 fn paint_field_chrome(
     scene: &mut Scene,
     transform: Affine,
@@ -5259,14 +4749,6 @@ fn paint_field_chrome(
     }
 }
 
-/// An immediate-mode text field: the [`TextInput`] look for a painted host
-/// (a formula bar, a cell editor) that shapes and edits its own text.
-///
-/// Size the rect from the face: [`FieldFace::height`] for a field of a
-/// [`ControlSize`], [`FieldFace::text_rect`] for where its text goes.
-/// `paint_chrome` paints only the frame, for a host that draws its own
-/// text (or hosts a [`TextInput`] with plain chrome inside it); `paint`
-/// adds the value, or the placeholder in the weaker placeholder ink.
 pub struct FieldFace<'a> {
     rect: Rect,
     text: &'a str,
@@ -5286,13 +4768,11 @@ impl<'a> FieldFace<'a> {
             state: FieldState::default(),
         }
     }
-    /// Shown, in the placeholder ink, while the text is empty.
     #[must_use]
     pub fn placeholder(mut self, placeholder: &'a str) -> Self {
         self.placeholder = placeholder;
         self
     }
-    /// What the text is (default [`TextRole::Body`]).
     #[must_use]
     pub fn text_role(mut self, role: TextRole) -> Self {
         self.role = role;
@@ -5308,7 +4788,6 @@ impl<'a> FieldFace<'a> {
         self.state.focused = focused;
         self
     }
-    /// The value was rejected: the edge takes danger ink.
     #[must_use]
     pub fn invalid(mut self, invalid: bool) -> Self {
         self.state.invalid = invalid;
@@ -5320,8 +4799,6 @@ impl<'a> FieldFace<'a> {
         self
     }
 
-    /// The height of a single-line field of `size` in `theme`, the height of
-    /// a button of the same size, grown with a Body line at large text.
     #[must_use]
     pub fn height(size: ControlSize, theme: &Theme) -> f64 {
         let line = f64::from(theme.text(TextRole::Body).size * LINE_HEIGHT_RATIO);
@@ -5329,7 +4806,6 @@ impl<'a> FieldFace<'a> {
         size.height(theme).max(grown)
     }
 
-    /// Where the text goes: the field inset by the field's text inset.
     #[must_use]
     pub fn text_rect(&self, theme: &Theme) -> Rect {
         let pad = f64::from(theme.padding_standard).min(self.rect.width() / 2.0);
@@ -5341,14 +4817,11 @@ impl<'a> FieldFace<'a> {
         )
     }
 
-    /// Paint only the frame.
     pub fn paint_chrome(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
         let shape = RoundedRect::from_rect(self.rect, f64::from(theme.tokens.radii.control));
         paint_field_chrome(scene, transform, theme, &shape, self.state);
     }
 
-    /// Paint the frame and the text (or the placeholder), elided to one
-    /// line and centred in the band.
     pub fn paint(
         &self,
         scene: &mut Scene,
@@ -5398,9 +4871,6 @@ impl Drop for TextInput {
 
 impl crate::resources::PublishesResources for TextInput {
     fn resources(&self, _doc: &automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
-        // The field is one resource however many verbs it publishes: a host
-        // keeps one spec per id, so a second spec under the same id would
-        // shadow the first and its verb would answer nothing.
         let mut resource = match (&self.submit_view, &self.change_verb) {
             (None, None) => return Vec::new(),
             (Some((_, submit)), None) => return vec![submit.clone()],
@@ -5414,8 +4884,6 @@ impl crate::resources::PublishesResources for TextInput {
     }
 }
 
-/// The local operations a field answers, indexed by the mask of those it
-/// publishes: an edit, a submit, and the field's own edits in history.
 #[allow(
     clippy::indexing_slicing,
     reason = "the mask is built from the same bits"
@@ -5442,8 +4910,6 @@ impl crate::widget::ResourceOperations for TextInput {
         TEXT_OPERATIONS[mask]
     }
 
-    /// Answer a `submit` or a `change` addressed to this field: hand its text
-    /// to the field's handler, whoever submitted or edited.
     fn start_operation(
         &mut self,
         op: &crate::widget::ResourceOperation<'_>,
@@ -5507,8 +4973,6 @@ impl Widget for TextInput {
             .filter(|shown| !shown.is_empty())
     }
 
-    /// A field made for the person to type in right away takes the keyboard in the tree it
-    /// stands in, once. It names itself as the runner finds it ([`Self::test_id`]).
     fn take_focus_request(&mut self) -> Option<String> {
         std::mem::take(&mut self.focus_wanted)
             .then(|| self.test_id().unwrap_or_default().to_owned())
@@ -5559,9 +5023,6 @@ impl Widget for TextInput {
         {
             value.zeroize();
             value.push_str(&self.text);
-            // This edit has been published. Replaying it on every sync can
-            // resurrect a secret after its owner clears an acknowledged save.
-            // The edit marked its own measurement when it landed.
             self.dirty = false;
         }
         if let Some(locate) = &self.locate_text {
@@ -5586,11 +5047,6 @@ impl Widget for TextInput {
     ) -> NodeId {
         self.prepare_theme(theme);
         self.adopt_layout_syntax(theme);
-        // Multiline is measured (grows with content, see `measure`). Single-
-        // line is the control band of its size (Regular, 32, by default), so
-        // a field and a button share a row — until the scaled line no longer
-        // fits it, when the band grows to the line plus `spacing.s1` above
-        // and below.
         let height = if self.multiline {
             Dimension::auto()
         } else {
@@ -5612,9 +5068,6 @@ impl Widget for TextInput {
                 width: Dimension::percent(1.0),
                 height,
             },
-            // A field with the show/hide control is a node with a child, which
-            // layout does not measure: its own width is its least one instead
-            // (a leaf field is measured at it, see `measure`).
             min_size: Size {
                 width: if self.has_reveal_control() {
                     Dimension::length(self.own_width)
@@ -5626,11 +5079,6 @@ impl Widget for TextInput {
             // A single-line field is its band tall, never squashed to
             // nothing when what is above or below it outgrows a column.
             flex_shrink: if self.multiline { 1.0 } else { 0.0 },
-            // Its only child (the reveal control) is placed absolutely, so
-            // the direction lays nothing out; a column says it is no nested
-            // row, which a `Row` would shrink to its children's width (none,
-            // here) where it lets a full-width field shrink to the room its
-            // siblings leave.
             flex_direction: taffy::FlexDirection::Column,
             ..Default::default()
         };
@@ -5661,9 +5109,6 @@ impl Widget for TextInput {
         text_renderer: &mut TextRenderer,
     ) -> taffy::Size<f32> {
         self.refresh_layout_epoch(text_renderer);
-        // Taffy measures before painting. Retain the renderer scale here too,
-        // so a freshly opened editor reserves its full accessibility gutter
-        // on the very first layout rather than correcting on frame two.
         self.gutter_text_scale = f64::from(self.scale_for(text_renderer.text_scale()));
         if !self.multiline {
             if !self.masked() && self.single_attributes.is_some() {
@@ -5703,9 +5148,6 @@ impl Widget for TextInput {
             )]
             let available_width =
                 (f64::from(width) - self.ml_left() - self.ml_pad_x()).max(1.0) as f32;
-            // After any themed pass this is the paragraph painting uses, built
-            // from the previous one, so a keystroke reshapes only the
-            // paragraphs it touched and painting shapes nothing.
             let syntax = self.layout_syntax.take();
             if let Some(palette) = &syntax {
                 self.ensure_palette_layout(text_renderer, palette, &style, available_width);
@@ -5808,8 +5250,6 @@ impl Widget for TextInput {
         if !self.plain {
             self.draw_field_chrome(scene, transform, theme, &shape);
         } else if let Some((identity, _)) = &self.change {
-            // A field without chrome (a document's large title) still shows someone else's
-            // unseen change: their colour washed under the text.
             let colors = &theme.tokens.colors;
             let tint = colors
                 .presence
@@ -5840,8 +5280,6 @@ impl Widget for TextInput {
                 self.drop_shaped_layouts();
                 self.draw_multiline_body(scene, transform, text_renderer, theme, &shape);
             } else {
-                // Only vertical extent: a scroller may let content bleed
-                // sideways past its viewport.
                 let visible = presence.viewport.get().map_or(self.rect, |viewport| {
                     Rect::new(
                         self.rect.x0,
@@ -5871,7 +5309,6 @@ impl Widget for TextInput {
         let line_height =
             f64::from(text_size * self.scale_for(theme.text_scale) * LINE_HEIGHT_RATIO);
         let padding_x = if self.plain {
-            // The parent already adds whatever gutter the document layout wants.
             0.0
         } else {
             f64::from(theme.padding_standard)
@@ -5986,12 +5423,9 @@ impl Widget for TextInput {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
-        // Single guard that makes both pointer and keyboard input no-ops when disabled.
         if self.effectively_disabled() {
             return;
         }
-        // Hover, the caret, the selection, the scroll and every edit are
-        // things this field shows.
         self.repaint = true;
         if matches!(event,
             WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed
@@ -6242,7 +5676,6 @@ impl Widget for TextInput {
         }))
     }
 
-    /// A disabled input claims no cursor and defers to the host default.
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
         if self.has_reveal_control() && self.reveal.contains(point) {
             Some(winit::window::CursorIcon::Pointer)
@@ -6265,15 +5698,12 @@ impl Widget for TextInput {
         }
     }
 
-    /// Hosts that embed the field without a layout tree still get the
-    /// show/hide control's tooltip.
     fn tooltip_target_at(&self, point: Point) -> Option<(Rect, String)> {
         if self.has_reveal_control()
             && let Some(tip) = self.reveal.tooltip_at(point)
         {
             return Some(tip);
         }
-        // A change the person has not seen says who made it and what the field held before.
         self.change
             .as_ref()
             .filter(|_| self.rect.contains(point))
@@ -6344,9 +5774,6 @@ impl Widget for TextInput {
             self.pending_paste = None;
             self.core.clear_preedit();
             self.completion.close();
-            // A list's entry commits what it holds when the person leaves it: what they typed
-            // is an item, and an entry left empty leaves none. A field holding a value commits
-            // it, empty or not: clearing a status is a value too.
             let entry_commits = self.entry && !self.text.trim().is_empty();
             if left && (entry_commits || self.leaving_commits) {
                 self.fire_submit();
@@ -6356,7 +5783,6 @@ impl Widget for TextInput {
     fn is_focused(&self) -> bool {
         self.is_focused
     }
-    /// An open completion drawer takes Tab to insert its selected row.
     fn wants_tab_input(&self) -> bool {
         self.tab_spaces.is_some() || self.completion.is_open()
     }
@@ -6408,8 +5834,6 @@ impl Widget for TextInput {
             };
         }
         if !content.is_secret() {
-            // Only a field's explicit opt-in adds help; turning the
-            // toolkit's own checking off leaves the input method's defaults.
             content.hints.spellcheck |= self.spellcheck == Some(true);
             content.hints.completion |= self.autocorrect == Some(true);
             content.hints.multiline = self.multiline;
@@ -6457,9 +5881,6 @@ impl Widget for TextInput {
             node = node.with_action_target(self.test_id().unwrap_or("text_input"));
         }
         if secret {
-            // The characters stay here; a page showing this field as HTML
-            // keeps what the person typed and needs to know when the app
-            // dropped it, so the field it shows is cleared with it.
             node = node.with_value_length(self.text.encode_utf16().count());
         } else {
             node = node.with_text_selection(self.core.anchor(), self.core.caret());
@@ -6467,9 +5888,6 @@ impl Widget for TextInput {
         if !self.accessible_name.is_empty() {
             node = node.with_name(widget_text(&self.accessible_name));
         } else if !self.placeholder.is_empty() {
-            // A visible placeholder is already the app author's concise field
-            // description. Reuse it as the accessible name by default; an
-            // explicit name still wins when the prompt is merely an example.
             node = node.with_name(widget_text(&self.placeholder));
         }
         if let (Some(rect), Some(accessory)) = (self.accessory_rect(), self.accessory.as_ref()) {
@@ -6504,8 +5922,6 @@ impl Widget for TextInput {
         (path == [0]).then(|| self.accessory_rect()).flatten()
     }
 
-    /// The trailing accessory is a named control of its own: activating it
-    /// (an agent, a screen reader) does what a press does.
     fn perform_semantic_action(
         &mut self,
         target: &str,
@@ -6548,8 +5964,6 @@ impl Widget for TextInput {
                     value.chars().filter(|c| !c.is_control()).collect()
                 };
                 self.core.select_all(&self.text);
-                // SetValue replaces the complete value, including an empty
-                // replacement. insert_str intentionally ignores empty typing.
                 if cleaned.is_empty() {
                     self.delete_selection();
                 } else {
@@ -6576,14 +5990,10 @@ impl Widget for TextInput {
         }
     }
 
-    /// Keeps receiving cursor events during a drag even if the cursor wanders
-    /// into a sibling widget.
     fn wants_pointer_capture(&self) -> bool {
         self.is_dragging
     }
 
-    /// A glide after the fingers lifted moves the text on in the frames it
-    /// asks for.
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         self.repaint = true;
         self.advance_wheel_glide();
@@ -6608,8 +6018,6 @@ impl Widget for TextInput {
             .then(|| self.typing.last_edit())
             .flatten()
             .map(|edited| edited + SPELL_EDIT_SETTLE);
-        // The suggestion for the word under the caret appears without
-        // further input once that word settles.
         let suggestion = (self.checks_spelling() || self.autocorrect_enabled())
             .then(|| self.caret_word.deadline())
             .flatten();
@@ -6628,8 +6036,6 @@ impl Widget for TextInput {
         Some((self.core.caret(), self.text.clone()))
     }
 
-    /// Paints the open context menu and the candidate list here so they
-    /// float above every sibling regardless of tree order.
     fn draw_overlay(
         &mut self,
         scene: &mut Scene,
@@ -6638,8 +6044,6 @@ impl Widget for TextInput {
         theme: &Theme,
         presence: &crate::presence::PresenceCtx,
     ) {
-        // Drawn while it is open and while it leaves (`motion::Appear`);
-        // a closed menu draws nothing.
         Widget::draw_overlay(
             &mut *self.context_menu,
             scene,
@@ -6690,15 +6094,12 @@ impl crate::undo::UndoPoints for TextInput {
 }
 
 impl crate::presence::capability::PublishesPresence for TextInput {
-    /// The widget's path, so peers editing the same field share carets.
     fn presence_key(&self) -> Option<PresenceKey> {
         (!self.path.is_empty()).then(|| PresenceKey::Widget {
             path: self.path.clone(),
         })
     }
 
-    /// The caret, or the selection when one is extended, while focused. A
-    /// secret field publishes nothing.
     fn presence_payload(&self) -> Option<(PresenceKey, crate::collaboration::PresencePayload)> {
         if !self.is_focused || self.holds_secret() {
             return None;
@@ -6716,8 +6117,6 @@ impl crate::presence::capability::PublishesPresence for TextInput {
         Some((key, payload))
     }
 
-    /// The selected text while focused. A field is no resource item, so it
-    /// names no place; a secret field shares nothing.
     fn shared_selection(&self) -> Option<crate::shared_selection::SharedSelection> {
         self.is_focused
             .then(|| self.shareable_selection())
@@ -6725,8 +6124,6 @@ impl crate::presence::capability::PublishesPresence for TextInput {
             .map(|text| crate::shared_selection::SharedSelection::of_text(text).within(self.rect))
     }
 
-    /// This field's own key, at the very geometry a peer's caret and band are
-    /// drawn at.
     fn presence_range_rects(
         &self,
         theme: &Theme,
@@ -6785,16 +6182,11 @@ impl crate::widget::controls::ActionControls for TextInput {
     }
     fn control_action_bindings(&self) -> Vec<ControlBindingMetadata> {
         let mut bindings = self.field_action_bindings();
-        // The show/hide control changes only this field's own paint: a
-        // process-local view toggle, published through the semantic route.
         if self.has_reveal_control()
             && let Some(reveal) = Widget::test_id(&self.reveal)
         {
             bindings.push(ControlBindingMetadata::semantic(reveal));
         }
-        // The trailing accessory is a control of its own in the semantics
-        // whenever it is shown, activated through the semantic route
-        // (`perform_semantic_action`).
         if self.accessory.is_some() && self.accessory_rect().is_some() {
             bindings.push(ControlBindingMetadata::semantic(ACCESSORY_TARGET));
         }
@@ -6809,9 +6201,6 @@ impl crate::widget::controls::ActionControls for TextInput {
 }
 
 impl TextInput {
-    /// Whether what this field paints is another drawing than the last frame
-    /// made, as opposed to where it stands: a field placed somewhere else
-    /// paints as it did, and a host that kept its drawing moves it there.
     pub(crate) fn paint_changed(&self) -> bool {
         self.repaint || self.layout_dirty || crate::widget::redraw_or_children(false, self)
     }
@@ -6824,9 +6213,6 @@ impl TextInput {
             .is_some_and(|key| presence.shows_anyone_at(&key))
     }
 
-    /// Peers' typing marks, carets and selections — at the field's own
-    /// caret and selection geometry rather than a generic focus ring — then
-    /// the denied-permission overlay.
     fn draw_peers_and_gate(
         &self,
         scene: &mut Scene,
@@ -6840,16 +6226,10 @@ impl TextInput {
             // Peer caret + selection reuse `caret_rect`/`selection_rect`, never a
             // re-derived approximation. `transform` maps the local rect to the scene.
 
-            // Fading "just typed" highlighter under the caret/selection. The
-            // clock is read only when there is a fade to place it on: a field
-            // nobody else is typing in (every line of every document) reads no
-            // clock at all.
             if presence.has_typing_marks() {
                 let now = crate::time::now();
                 for (user, range, alpha) in presence.typing_marks_for_key(&key, now) {
                     let rect = self.selection_rect(theme, range.start, range.end);
-                    // `Affine * Point` is a geometric transform over f64 coordinates,
-                    // not integer arithmetic that can overflow/wrap.
                     #[allow(
                         clippy::arithmetic_side_effects,
                         reason = "Affine*Point transform over f64 screen coordinates, no overflow/wrap semantics"
@@ -6940,7 +6320,6 @@ impl TextInput {
 }
 
 impl TextInput {
-    /// What the field's value is bound to, for the control-binding audit.
     fn value_bindings(&self, control_id: &str) -> Vec<ControlBindingMetadata> {
         if let Some(action) = &self.action {
             vec![action.metadata(control_id)]
@@ -6952,7 +6331,6 @@ impl TextInput {
                 kind: ControlBindingKind::CollaborativeDocument("<nested-text>".to_string()),
             }]
         } else if self.on_change.is_some() {
-            // A callback-only field reaches no door, so it is no binding.
             Vec::new()
         } else {
             vec![ControlBindingMetadata {
@@ -6964,9 +6342,6 @@ impl TextInput {
 }
 
 impl TextInput {
-    /// Overlay color used to dim the control when the permission scope
-    /// resolves to denied. Concept's every-widget convention is
-    /// `bg-black/30` ≈ 0.30 × 255 ≈ 77.
     pub(crate) const PERMISSION_DENIED_OVERLAY: vello::peniko::Color =
         crate::tokens::colors::PERMISSION_DENIED_SCRIM;
 }

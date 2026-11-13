@@ -1,36 +1,16 @@
 //! The window's own furniture in the row its app draws, as widgets of the window.
-//!
-//! A row that holds the window's bar keeps [`RowFurniture`] at its trailing end — the window's
-//! new-tab door, its restore/maximize and its close — and the window paints them over the app's
-//! drawing ([`RowFurniture::paint`]). Each of them is also a widget of the window: a control the
-//! keyboard reaches in the window's Tab order after the app's own header controls, and a node of
-//! its own for assistive technology. Focus, the focus ring, the accessibility tree and the press
-//! all name the same control, so a keyboard-only person reaches what a pointer does.
-//!
-//! [`RowFurniture`]: crate::widget::window_header::RowFurniture
-//! [`RowFurniture::paint`]: crate::widget::window_header::RowFurniture::paint
-
 use super::WindowGroup;
 use crate::widget::Widget;
 use crate::widget::window_header::RowControl;
 use taffy::{NodeId, TaffyTree};
 use vello::kurbo::Rect;
 
-/// One control of the window's furniture in the row its app draws: where the row places it, and
-/// what pressing it asks the window to do.
 pub(crate) struct HeldControl {
-    /// Which of the window's functions it is.
     kind: RowControl,
-    /// Where the row draws it this frame; nothing while the row has no room for it.
     rect: Rect,
-    /// The window shows restore rather than maximize.
     resize: crate::widget::window_controls::Resize,
-    /// It has the keyboard.
     focused: bool,
-    /// A press asked for its action, for the window to run
-    /// ([`WindowGroup::drain_held_controls`]).
     pressed: bool,
-    /// What it paints changed (the keyboard arrived or left): the window paints again.
     dirty: bool,
 }
 
@@ -46,7 +26,6 @@ impl HeldControl {
         }
     }
 
-    /// Where the row draws it this frame, and which way the window's maximize control acts.
     pub(super) fn place(&mut self, rect: Rect, resize: crate::widget::window_controls::Resize) {
         if self.rect != rect || self.resize != resize {
             self.rect = rect;
@@ -64,7 +43,6 @@ impl HeldControl {
         self.kind
     }
 
-    /// Take the press a pointer, the keyboard or assistive technology made on it.
     pub(super) fn take_press(&mut self) -> bool {
         std::mem::take(&mut self.pressed)
     }
@@ -77,15 +55,12 @@ impl HeldControl {
         self.dirty = false;
     }
 
-    /// The control that has the keyboard, when it is this one.
     pub(super) fn keyboard(&self) -> Option<RowControl> {
         self.focused.then_some(self.kind)
     }
 }
 
 impl Widget for HeldControl {
-    /// The window lays it out where the row draws it: as a leaf of its own it takes no room and
-    /// holds no geometry of the layout's ([`HeldControl::place`] is the one place it stands).
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -104,9 +79,6 @@ impl Widget for HeldControl {
         self.rect
     }
 
-    /// It takes no room and measures nothing, so nothing about it ever asks the layout to
-    /// measure again: a leaf's default answer would re-measure the window's whole path to the
-    /// root on every frame.
     fn is_layout_dirty(&self) -> bool {
         false
     }
@@ -140,8 +112,6 @@ impl Widget for HeldControl {
         })
     }
 
-    /// A press — from the keyboard's Enter or Space, or from an assistive technology activating
-    /// its node — asks the window to do what the control shows, as a pointer's does.
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
@@ -163,7 +133,6 @@ impl Widget for HeldControl {
 }
 
 impl WindowGroup {
-    /// The furniture of the row holding the bar, each control where the row places it this frame.
     pub(super) fn place_held_controls(&mut self) {
         let furniture = self.held;
         let resize = self.resize();
@@ -173,8 +142,6 @@ impl WindowGroup {
         }
     }
 
-    /// The window's own furniture in the row holding the bar, as children of the window after the
-    /// app: the keyboard reaches it there, and a screen reader reads it there.
     pub(super) fn held_control_children<'a>(&'a self, children: &mut Vec<&'a dyn Widget>) {
         if self.held_bar.is_some() {
             children.extend(
@@ -185,8 +152,6 @@ impl WindowGroup {
         }
     }
 
-    /// The same furniture as a frame's own nodes: each takes no room of its own — the window puts
-    /// it where the row draws it — but is a stop of the window's focus order there all the same.
     pub(super) fn build_held_controls(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -203,7 +168,6 @@ impl WindowGroup {
         }
     }
 
-    /// Move the furniture of the row holding the bar with the window, as a retained strip draws.
     pub(super) fn offset_held_controls(&mut self, dx: f64) {
         let shift = vello::kurbo::Vec2::new(dx, 0.0);
         self.held.shift(dx);
@@ -214,13 +178,10 @@ impl WindowGroup {
         self.place_held_controls();
     }
 
-    /// Whether the keyboard stands on one of the window's own controls in the row its app draws.
     pub(super) fn held_control_focused(&self) -> bool {
         self.held_controls.iter().any(|control| control.focused)
     }
 
-    /// Whether what is typed is the window's own: the keyboard stands on the furniture of the row
-    /// the app draws, so the app under it hears nothing of it.
     pub(super) fn held_control_takes_keys(&self, event: &winit::event::WindowEvent) -> bool {
         self.held_control_focused()
             && matches!(
@@ -229,7 +190,6 @@ impl WindowGroup {
             )
     }
 
-    /// Whether what the furniture paints changed, so the window paints again.
     pub(super) fn held_control_needs_repaint(&self) -> bool {
         self.held_controls.iter().any(HeldControl::needs_repaint)
     }
@@ -240,9 +200,6 @@ impl WindowGroup {
         }
     }
 
-    /// Run what the keyboard, a pointer or an assistive technology pressed on the window's furniture
-    /// in the row its app draws, through the one path a press on it takes
-    /// ([`WindowGroup::perform_held_furniture_action`]). Whether any ran.
     pub(super) fn drain_held_controls(&mut self) -> bool {
         let mut ran = false;
         for index in 0..self.held_controls.len() {

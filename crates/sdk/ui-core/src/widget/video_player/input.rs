@@ -67,14 +67,9 @@ impl VideoPlayer {
         true
     }
 
-    /// Routes a left-press at `self.last_cursor` through the settings menu,
-    /// the setting icons + gear, then the standard transport controls, in
-    /// that priority order.
     pub(super) fn press_at_cursor(&mut self) -> bool {
         let p = self.last_cursor;
 
-        // An open menu owns the click: a row wins, a click off the menu (and
-        // off the buttons that could re-open it) dismisses it.
         if self.open_menu.is_some() {
             if let Some(hit) = self
                 .menu_hit_rects
@@ -150,7 +145,6 @@ impl VideoPlayer {
             return true;
         }
 
-        // A plain click on the video surface toggles play/pause.
         if self.has_media() {
             self.toggle_play();
         }

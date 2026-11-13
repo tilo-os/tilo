@@ -10,8 +10,6 @@ use crate::widget::find_bar::FindOptions;
 use crate::widget::search_field::Filterable;
 use crate::widget::{Column, InPlace, SearchDriver, Text, Widget, WindowSearch};
 
-/// The rows both views narrow: what a [`Filterable`] list narrows and what a
-/// query view answers with.
 const ROWS: [&str; 4] = ["Ada's change", "Bo's change", "Ada again", "Cy's change"];
 
 fn found(query: &str) -> usize {
@@ -21,17 +19,12 @@ fn found(query: &str) -> usize {
         .count()
 }
 
-/// What the view built for `query` kept of the rows.
 fn kept(query: &str) -> FilterCount {
     FilterCount::new(found(query), ROWS.len())
 }
 
-/// What the window's search told the view, in order.
 type Told = Rc<RefCell<Vec<String>>>;
 
-/// The app's view of the rows `query` leaves: a function of the query, as a
-/// framework app's `view` is a function of its resource, wrapped in the query
-/// view that answers the window's bar.
 fn view(query: &str, told: &Told) -> QueryView {
     let mut rows = Column::new();
     for row in ROWS {
@@ -86,7 +79,6 @@ fn a_functions_view_offers_the_bars_search_and_is_told_what_is_typed() {
         Some("2 of 4")
     );
 
-    // Closing returns the view to the one before the search opened.
     assert!(driver.drive(&mut narrowed, "ada", FindOptions::default(), None, true));
     assert_eq!(
         told.borrow().last().map(String::as_str),
@@ -97,7 +89,6 @@ fn a_functions_view_offers_the_bars_search_and_is_told_what_is_typed() {
     assert_eq!(driver.in_place(), InPlace::Nothing);
 }
 
-/// The same rows as a list that narrows itself, which the field counts.
 struct Names {
     shown: usize,
 }
@@ -144,7 +135,6 @@ fn the_bars_field_counts_a_query_view_as_it_counts_a_narrowed_list() {
     assert!(listed.drive(&mut names));
 
     let told = Told::default();
-    // As the app's view returns it: an element, boxed.
     let mut root: Box<dyn Widget> = Box::new(view("", &told));
     let mut asked = WindowSearch::new();
     asked.open(InPlace::of(&mut *root), MotionSource::Keyboard);

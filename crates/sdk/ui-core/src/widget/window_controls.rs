@@ -1,19 +1,4 @@
-//! The window's own controls at the trailing end of its bar: maximize or
-//! restore, and close.
-//!
-//! They belong to the window, not to a tab: they stand in the same place
-//! whether the window shows one tab or several, and act on the active tab.
-//! They are the one thing in the bar that is not the app's — the app's
-//! actions (its search, its History, the slots it publishes) stand on the
-//! window's ground and look like the app; these stand in a pill of the
-//! floating material over it, so the bar says which controls belong to the
-//! window and which to what the window shows.
-//!
-//! A Tilo window has no minimized state — it is a tab in a group, and its
-//! group is what a person puts away — so the pill offers no minimize there.
-//! A window of the app's own on a desktop that leaves decorations to it does
-//! have one ([`WindowControls::lay_out_own_window`]).
-
+//! The window's own controls at the trailing end of its bar: maximize or restore, and close.
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use vello::peniko::Fill;
@@ -29,17 +14,9 @@ pub enum WindowControl {
     Close,
 }
 
-/// Side of each control's square: a bar control.
 pub const CONTROL_PX: f64 = crate::tokens::Metrics::BASE.bar_control_height as f64;
-/// The pill's own padding: between its edge and the control faces, and
-/// between two faces. It is also how far a hover ring stands off the
-/// pill's edge, so the ring stays concentric with the capsule it sits in.
 pub const PILL_PAD: f64 = crate::tokens::Spacing::BASE.s1 as f64;
-/// Between two of the bar's other controls: the app's slots
-/// ([`crate::window_toolbar`]), the new-tab button, and the room the
-/// window keeps for the app's search control.
 pub const CONTROL_GAP: f64 = crate::tokens::Spacing::BASE.s1 as f64;
-/// Between the pill and the window's trailing edge.
 pub const EDGE_INSET: f64 = crate::tokens::Spacing::BASE.s2 as f64;
 /// Between the pill and whatever stands before it in the row: the window's
 /// controls are a section of their own, apart from the app's by the gap
@@ -47,60 +24,36 @@ pub const EDGE_INSET: f64 = crate::tokens::Spacing::BASE.s2 as f64;
 /// by a drawn line. One step below the gap between groups, so the app's
 /// content keeps the room it names its place with in a narrow window.
 pub const LEAD_GAP: f64 = crate::tokens::Spacing::BASE.rhythm.section as f64;
-/// Between the app's own slots and the History toggle after them: the gap
-/// two of the app's controls keep, so History reads as one more of the
-/// app's actions rather than the first of the window's.
 pub const HISTORY_GAP: f64 = CONTROL_GAP;
-/// The box the maximize/restore glyph is drawn in: a small icon.
 const ACTION_GLYPH_PX: f64 = crate::tokens::Metrics::BASE.icon_sm as f64;
-/// The box the close glyph is drawn in. Lucide's × spans the middle 12 of
-/// its 24 units while restore spans 18, so drawn in the same box the ×
-/// would read lighter than the glyph beside it.
 const CLOSE_GLYPH_PX: f64 = ACTION_GLYPH_PX * 1.5;
-/// How strong the hover ring over the pill's ground is: white over a dark
-/// pill, black over a light one ([`crate::tokens::Colors::hairline_on`]).
 const HOVER_TINT_ALPHA: u8 = 64;
-/// Close is the control that ends the window, so its ring is the danger
-/// fill and its glyph white — the same pair the tabs' own × wears.
 const CLOSE_RING_ALPHA: f32 = 0.8;
 
-/// Where each control sits, and the pill behind them; `Rect::ZERO` for one
-/// the window doesn't offer.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct WindowControls {
     /// The glass pill around every control: the window's own, not a
     /// control's, so it never changes with hover, press or focus.
     pub pill: Rect,
-    /// The window of the app's own, on a desktop that leaves its frame to the
-    /// app, is the one control a Tilo window has no state for.
     pub minimize: Rect,
     pub maximize: Rect,
     pub close: Rect,
 }
 
-/// What the controls show this frame.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct ControlsState {
     pub hovered: Option<WindowControl>,
     pub pressed: Option<WindowControl>,
     pub resize: Resize,
-    /// How far each control's hover ring has come in, by control
-    /// ([`WindowControl::index`]): on the toolkit's spring, so a ring
-    /// fades in and out rather than appearing and vanishing.
     pub lifts: [f32; 3],
 }
 
-/// What the maximize control does for where the window stands now.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Resize {
-    /// The window takes the whole strip.
     #[default]
     Maximize,
-    /// The maximized window takes its width back.
     Restore,
-    /// The window floating over the desk goes back into its strip, where it stood.
     Snap,
-    /// The card folded to its header opens again: its collapse control points up while it is shut.
     Expand,
 }
 
@@ -131,7 +84,6 @@ impl Resize {
 }
 
 impl WindowControl {
-    /// Its slot in [`ControlsState::lifts`].
     #[must_use]
     pub fn index(self) -> usize {
         match self {
@@ -141,14 +93,10 @@ impl WindowControl {
         }
     }
 
-    /// The control's name in the window's locale: what a screen reader says
-    /// and an agent presses it by.
     #[must_use]
     pub fn name_key(self, resize: Resize) -> &'static str {
         match (self, resize) {
-            // A window floating as a card folds to its header, as every card over the desk does.
             (WindowControl::Minimize, Resize::Snap) => "host-window-collapse",
-            // Folded to its header, the same control opens it again.
             (WindowControl::Minimize, Resize::Expand) => "host-window-expand",
             (WindowControl::Minimize, _) => "host-window-minimize",
             (WindowControl::Maximize, Resize::Maximize) => "host-window-maximize",
@@ -158,7 +106,6 @@ impl WindowControl {
         }
     }
 
-    /// The control's glyph.
     #[must_use]
     pub fn icon(self, resize: Resize) -> icons::Icon {
         match (self, resize) {
@@ -172,7 +119,6 @@ impl WindowControl {
         }
     }
 
-    /// The target assistive technology and automation press it by.
     #[must_use]
     pub fn target(self) -> &'static str {
         match self {
@@ -182,7 +128,6 @@ impl WindowControl {
         }
     }
 
-    /// The control the accessibility target `target` names.
     #[must_use]
     pub fn of_target(target: &str) -> Option<Self> {
         [Self::Minimize, Self::Maximize, Self::Close]
@@ -192,23 +137,16 @@ impl WindowControl {
 }
 
 impl WindowControls {
-    /// The controls at the trailing end of `row`, centred on its centre
-    /// line, inside one pill.
     #[must_use]
     pub fn lay_out(row: Rect) -> Self {
         Self::place(row, false)
     }
 
-    /// The controls of a window the app draws the frame of itself (a desktop
-    /// that leaves decorations to the client): minimize joins maximize and
-    /// close, in the order desktops put them.
     #[must_use]
     pub fn lay_out_own_window(row: Rect) -> Self {
         Self::place(row, true)
     }
 
-    /// The controls of a window floating as a card: collapse, snap back and close, standing flat
-    /// on the card's own ground as a card's header controls do, with no pill of their own.
     #[must_use]
     pub fn lay_out_card(row: Rect) -> Self {
         Self {
@@ -252,9 +190,6 @@ impl WindowControls {
         }
     }
 
-    /// The controls of a window this person may not close (someone else's,
-    /// or one they only watch): no close, and the pill closes around the
-    /// one control left.
     #[must_use]
     pub fn without_close(self) -> Self {
         if self.close.area() <= 0.0 {
@@ -279,10 +214,6 @@ impl WindowControls {
         }
     }
 
-    /// The pill around any window's own controls, laid out on `bar`: as tall as a bar control
-    /// with the pill's padding, centred on the bar's centre line, from `controls`' leading
-    /// edge less the padding to its trailing edge less the window's own inset. `Rect::ZERO`
-    /// for no controls.
     #[must_use]
     pub fn around(bar: Rect, controls: Rect) -> Rect {
         if controls.area() <= 0.0 || bar.height() <= 0.0 || controls.width() <= 0.0 {
@@ -299,9 +230,6 @@ impl WindowControls {
         )
     }
 
-    /// Where the controls begin, less the gap anything before them keeps: the pill's start, or the
-    /// first control's on a card, whose controls stand with no pill; the row's trailing edge for
-    /// none.
     #[must_use]
     pub fn content_limit(&self, row: Rect) -> f64 {
         let lead = if self.pill.area() > 0.0 {
@@ -329,8 +257,6 @@ impl WindowControls {
         self.iter().find(|(_, r)| r.contains(p)).map(|(c, _)| c)
     }
 
-    /// Whether `p` is on the pill at all: the window's own chrome, covering
-    /// the padding around the controls.
     #[must_use]
     pub fn on_pill(&self, p: Point) -> bool {
         self.pill.area() > 0.0 && self.pill.contains(p)
@@ -349,7 +275,6 @@ impl WindowControls {
         }
     }
 
-    /// Paint the pill and its controls.
     pub fn paint(&self, scene: &mut Scene, transform: Affine, theme: &Theme, state: ControlsState) {
         if self.iter().next().is_none() {
             return;
@@ -419,10 +344,6 @@ impl WindowControls {
     }
 }
 
-/// Paint the floating pill the window's own controls stand in: the panel ground of the
-/// floating material, at the selector's radius, over the window's own ground or over the app's
-/// header row. Every window's controls stand in this one pill, so a bar says the same thing
-/// about them wherever the frame puts them.
 pub fn paint_pill(scene: &mut Scene, transform: Affine, pill: Rect, theme: &Theme) {
     if pill.area() <= 0.0 {
         return;
@@ -431,7 +352,6 @@ pub fn paint_pill(scene: &mut Scene, transform: Affine, pill: Rect, theme: &Them
     crate::surface::panel_unsnapped(scene, transform, pill, radius, theme);
 }
 
-/// `alpha` of an opaque line, `progress` of the way in.
 fn scale_alpha(alpha: u8, progress: f64) -> u8 {
     let scaled = f64::from(alpha) * progress.clamp(0.0, 1.0);
     crate::num::u8_of_f64(scaled)
@@ -447,27 +367,18 @@ fn square_at(c: Point, side: f64) -> Rect {
     )
 }
 
-/// How one icon button of the window's bar shows this frame.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ButtonFace {
     pub hovered: bool,
     pub pressed: bool,
     pub on: bool,
-    /// It can act now.
     pub enabled: bool,
-    /// It ends, removes or discards something: the destructive role's face.
     pub destructive: bool,
     /// It is the app's one main action: the primary role's face, the glyph on the accent, so
     /// the bar still says what the window is for where its words do not fit.
     pub primary: bool,
 }
 
-/// Paint one icon button of a window's bar with the shared button face
-/// ([`crate::widget::Button::paint`]): the app's slots
-/// ([`crate::window_toolbar`]), the History toggle and the new-tab button
-/// are the same control, so everything the app provides in the bar stands on
-/// the window's ground as one row of them — the window's own controls are
-/// the pill's, not these.
 pub fn paint_icon_button(
     scene: &mut Scene,
     transform: Affine,
@@ -485,8 +396,6 @@ pub fn paint_icon_button(
     );
 }
 
-/// The face [`paint_icon_button`] paints: the bar's small icon button in the
-/// role and state `face` says.
 #[must_use]
 pub fn icon_button_face(
     rect: Rect,
@@ -517,8 +426,6 @@ mod tests {
         Rect::new(0.0, 0.0, 800.0, 40.0)
     }
 
-    /// A card folded to its header: its collapse control points up and says it opens the card,
-    /// where an open one points down.
     #[test]
     fn a_folded_cards_collapse_control_points_up() {
         assert_eq!(Resize::of_window(false, true, false), Resize::Snap);

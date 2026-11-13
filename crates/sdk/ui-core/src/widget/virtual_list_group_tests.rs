@@ -6,10 +6,8 @@ use crate::testing::Dispatch;
 use crate::theme::Theme;
 use crate::widget::section::band_height;
 
-/// A list whose rows name their group, and which counts how often it is asked.
 struct Grouped {
     groups: Vec<Option<RowGroup>>,
-    /// The rows whose item the person has finished with.
     finished: Vec<usize>,
     asked: Rc<Cell<usize>>,
 }
@@ -23,7 +21,6 @@ impl Grouped {
         }
     }
 
-    /// The rows `rows`' items are done with, as a checked box leaves them.
     fn finished(mut self, rows: &[usize]) -> Self {
         self.finished = rows.to_vec();
         self
@@ -71,13 +68,10 @@ fn grouped(groups: Vec<Option<RowGroup>>) -> VirtualList<Grouped> {
     listed(Grouped::new(groups))
 }
 
-/// The rows `groups` name, the ones `finished` standing done with: a task checked off whose
-/// row stays where it stands.
 fn grouped_finished(groups: Vec<Option<RowGroup>>, finished: &[usize]) -> VirtualList<Grouped> {
     listed(Grouped::new(groups).finished(finished))
 }
 
-/// A list of `model`'s rows, each a probe of its own.
 fn listed(model: Grouped) -> VirtualList<Grouped> {
     VirtualList::new(model, ROW, |_, index, _| {
         Box::new(super::tests::ProbeRow::new(
@@ -90,7 +84,6 @@ fn listed(model: Grouped) -> VirtualList<Grouped> {
     .with_viewport_height(400.0)
 }
 
-/// Two tasks due Monday, two due Tuesday, and two done with.
 fn week() -> VirtualList<Grouped> {
     grouped(vec![
         heading("Monday"),
@@ -103,8 +96,6 @@ fn week() -> VirtualList<Grouped> {
     .with_tail_title("Done")
 }
 
-/// Lay the list out until the rows' measured heights are placed: the first pass measures them,
-/// the second stands their bands where the heights put them.
 fn settle(list: &mut VirtualList<Grouped>) -> (TaffyTree<()>, NodeId) {
     let _ = super::tests::lay_out(list, 300.0);
     super::tests::lay_out(list, 300.0)
@@ -122,7 +113,6 @@ fn mounted_indexes(list: &VirtualList<Grouped>) -> Vec<usize> {
     list.mounted.iter().map(|row| row.index).collect()
 }
 
-/// Point at `y` and press there, then let go: a band folds on the release.
 fn press(list: &mut VirtualList<Grouped>, y: f64, taffy: &TaffyTree<()>, node: NodeId) -> bool {
     let at = crate::synthetic_input::cursor_moved(20.0, y);
     let hovered = Dispatch::new().layout(taffy, node).send(list, &at).handled;
@@ -151,7 +141,6 @@ fn a_grouped_list_heads_each_run_and_keeps_the_done_tail_folded() {
             ("Done".to_owned(), 4.0 * row + 2.0 * band, true),
         ]
     );
-    // The folded rows take no room: the list ends under the tail's heading.
     let done = 4.0 * row + 2.0 * band;
     assert!((list.viewport.content_extent() - (done + band)).abs() < 0.5);
     let mounted = mounted_indexes(&list);
@@ -174,7 +163,6 @@ fn a_press_on_a_heading_opens_and_closes_its_group() {
         "the tail opened: {:?}",
         mounted_indexes(&list)
     );
-    // A day's group closes the same way, and its rows let go.
     let (taffy, node) = settle(&mut list);
     assert!(press(&mut list, band / 2.0, &taffy, node));
     let _ = settle(&mut list);
@@ -196,7 +184,6 @@ fn the_heading_over_the_top_of_the_box_stays_there_while_its_group_scrolls() {
             .collect(),
     );
     let _ = settle(&mut list);
-    // Scroll into Tuesday's run, past its heading.
     let inside = list.viewport.item_top(12).unwrap_or_default() + 5.0;
     list.set_scroll_offset(inside);
     let _ = settle(&mut list);
@@ -215,7 +202,6 @@ fn a_heading_stays_over_the_top_as_a_scroll_moves_it_without_a_layout() {
             .collect(),
     );
     let _ = settle(&mut list);
-    // Scroll past Tuesday's heading, the rows still those the last layout mounted.
     let inside = list.viewport.item_top(12).unwrap_or_default() + 5.0;
     list.set_scroll_offset(inside);
     let shown = list.bands_in_view();
@@ -243,7 +229,6 @@ fn a_long_list_asks_the_model_about_the_rows_in_view_only() {
     );
 }
 
-/// Press `key` on the focused list.
 fn key(
     list: &mut VirtualList<Grouped>,
     key: NamedKey,
@@ -267,7 +252,6 @@ fn a_finger_gets_a_heading_band_it_can_hit() {
         "the band is a target a finger presses: {} of {target}",
         list.groups.height
     );
-    // The band is still the heading's to press wherever it stands.
     let middle = list.groups.height / 2.0;
     assert!(press(&mut list, middle, &taffy, node));
     let _ = settle(&mut list);
@@ -337,7 +321,6 @@ fn a_heading_keeps_one_gap_to_the_row_it_heads_at_every_width() {
     );
 }
 
-/// The heading holding the keyboard, by name.
 fn focused_heading(list: &VirtualList<Grouped>) -> Option<&str> {
     list.focused_group
         .as_ref()
@@ -351,8 +334,6 @@ fn the_keyboard_walks_the_headings_and_folds_their_groups() {
     list.set_focus(true);
     assert_eq!(list.focused_key(), None);
 
-    // Down from nothing lands on the first row, as a list without headings does; up from
-    // there reaches the heading over it.
     assert!(key(&mut list, NamedKey::ArrowDown, &taffy, node));
     assert_eq!(list.focused_key(), Some(&0));
     assert_eq!(focused_heading(&list), None);
@@ -360,15 +341,12 @@ fn the_keyboard_walks_the_headings_and_folds_their_groups() {
     assert_eq!(focused_heading(&list), Some("Monday"));
     assert_eq!(list.focused_key(), None, "a heading is not one of the rows");
 
-    // Down again steps into the group the heading heads, and up returns to it.
     assert!(key(&mut list, NamedKey::ArrowDown, &taffy, node));
     assert_eq!(list.focused_key(), Some(&0));
     assert_eq!(focused_heading(&list), None);
     assert!(key(&mut list, NamedKey::ArrowUp, &taffy, node));
     assert_eq!(focused_heading(&list), Some("Monday"));
 
-    // Enter folds the group under the heading: its rows go, and the next stop is the next
-    // heading's.
     assert!(key(&mut list, NamedKey::Enter, &taffy, node));
     let (taffy, node) = settle(&mut list);
     assert!(
@@ -386,7 +364,6 @@ fn the_keyboard_walks_the_headings_and_folds_their_groups() {
     assert!(key(&mut list, NamedKey::ArrowDown, &taffy, node));
     assert_eq!(focused_heading(&list), Some("Tuesday"));
 
-    // Space unfolds it where the keyboard already is.
     assert!(key(&mut list, NamedKey::ArrowUp, &taffy, node));
     assert_eq!(focused_heading(&list), Some("Monday"));
     assert!(key(&mut list, NamedKey::Space, &taffy, node));
@@ -403,13 +380,10 @@ fn the_keyboard_walks_the_headings_and_folds_their_groups() {
         "its rows come back: {:?}",
         mounted_indexes(&list)
     );
-    // End reaches the last stop: the folded tail's own heading.
     assert!(key(&mut list, NamedKey::End, &taffy, node));
     assert_eq!(focused_heading(&list), Some("Done"));
 }
 
-/// A row whose item has not arrived names no group yet: it stands under the heading over the
-/// rows before it, and that heading counts it, so the count is the rows it stands over.
 #[test]
 fn a_heading_counts_the_row_on_its_way_that_stands_under_it() {
     let mut list = grouped(vec![heading("Today"), None, heading("Tomorrow")]);
@@ -453,7 +427,6 @@ fn a_heading_is_a_disclosure_in_the_lists_accessibility_children() {
         ],
         "each heading stands before the rows it holds"
     );
-    // Read as disclosures: the name, how many rows the group holds, and whether they show.
     let monday = &tree.children[0];
     assert_eq!(monday.role, crate::a11y::Role::Button);
     assert_eq!(monday.value.as_deref(), Some("2"));
@@ -475,7 +448,6 @@ fn a_heading_is_a_disclosure_in_the_lists_accessibility_children() {
     );
 }
 
-/// The AccessKit nodes the person's screen reader is handed for the list.
 fn access_nodes(list: &mut VirtualList<Grouped>) -> Vec<(accesskit::NodeId, accesskit::Node)> {
     let _ = settle(list);
     let theme = Theme::dark();
@@ -522,7 +494,6 @@ fn an_agent_reads_and_toggles_a_heading_as_a_control() {
             &automerge::ROOT,
         )
     }
-    // Focus and activate: the tail opens, and the keyboard moves to it.
     assert!(send(&mut list, &name("Done"), &Action::Activate));
     assert_eq!(focused_heading(&list), Some("Done"));
     let _ = settle(&mut list);
@@ -531,7 +502,6 @@ fn an_agent_reads_and_toggles_a_heading_as_a_control() {
         "the tail's rows show: {:?}",
         mounted_indexes(&list)
     );
-    // Read back through the tree the agent reads.
     let tree = Widget::accessibility(&list).expect("list semantics");
     let done = tree
         .children
@@ -539,7 +509,6 @@ fn an_agent_reads_and_toggles_a_heading_as_a_control() {
         .find(|child| child.name.as_deref() == Some("Done"))
         .expect("the tail's heading");
     assert_eq!(done.state.expanded, Some(true));
-    // Fold and unfold a day from outside the keyboard.
     assert!(send(&mut list, &name("Monday"), &Action::Collapse));
     let _ = settle(&mut list);
     assert!(
@@ -558,14 +527,12 @@ fn an_agent_reads_and_toggles_a_heading_as_a_control() {
         "Monday unfolded: {:?}",
         bands(&list)
     );
-    // Focusing a heading moves the keyboard to it, and it scrolls into view.
     assert!(send(&mut list, &name("Tuesday"), &Action::Focus));
     assert_eq!(focused_heading(&list), Some("Tuesday"));
     // A heading that is not there is not acted on.
     assert!(!send(&mut list, &name("Wednesday"), &Action::Activate));
 }
 
-/// The list painted as a window paints it, rasterised to RGBA rows `300` wide.
 fn painted(list: &mut VirtualList<Grouped>, theme: &Theme) -> Vec<u8> {
     let mut text = TextRenderer::new();
     text.set_text_scale(theme.text_scale);
@@ -672,8 +639,6 @@ fn a_list_with_nothing_to_disclose_keeps_no_chevron_room() {
 
 #[test]
 fn a_view_titled_like_its_one_group_heads_nothing_over_the_rows() {
-    // Two tasks due today, in a window whose title already says "Today 2": the heading over
-    // them would say it again.
     let mut list = grouped(vec![heading("Today"), heading("Today")])
         .in_view("Today", Some(2))
         .in_column();
@@ -685,8 +650,6 @@ fn a_view_titled_like_its_one_group_heads_nothing_over_the_rows() {
     );
     let row = f64::from(ROW);
     assert_eq!(mounted_indexes(&list), vec![0, 1], "both rows are built");
-    // A heading the list leaves out takes no room: the rows stand where a page's first block
-    // does, one content gutter below the list's top, and no ghost band stands empty over them.
     let inset = crate::chrome::column_gutter(&Theme::dark());
     assert!(
         (list.band_room(0) - 0.0).abs() < 0.5,
@@ -713,7 +676,6 @@ fn a_view_titled_like_its_one_group_heads_nothing_over_the_rows() {
 
 #[test]
 fn a_heading_counts_only_where_the_number_says_something() {
-    // One row under "Today" says its own presence: the heading draws no number over it.
     let mut one = grouped(vec![heading("Today")]);
     let _ = settle(&mut one);
     let band = one
@@ -727,7 +689,6 @@ fn a_heading_counts_only_where_the_number_says_something() {
         None,
         "a group of one counts nothing"
     );
-    // Two say how many.
     let mut two = grouped(vec![heading("Today"), heading("Today")]);
     let _ = settle(&mut two);
     let band = two
@@ -743,7 +704,6 @@ fn a_heading_counts_only_where_the_number_says_something() {
     );
 }
 
-/// The heading over the rows a figure stands beside: the first, which stands over them all.
 fn open_count(list: &mut VirtualList<Grouped>) -> Option<usize> {
     let _ = settle(list);
     let band = list
@@ -757,15 +717,12 @@ fn open_count(list: &mut VirtualList<Grouped>) -> Option<usize> {
 
 #[test]
 fn a_heading_counts_the_rows_left_to_do() {
-    // Two tasks due today, one of them just checked off and still standing struck through: the
-    // heading says what is left to do, which is the one task under it.
     let mut one = grouped_finished(vec![heading("Today"), heading("Today")], &[1]);
     assert_eq!(
         open_count(&mut one),
         None,
         "one task is left: the number would restate the row under it"
     );
-    // Three due today, two of them left: so the heading says.
     let mut two = grouped_finished(
         vec![heading("Today"), heading("Today"), heading("Today")],
         &[2],
@@ -841,9 +798,6 @@ fn a_heading_a_reader_hears_counts_the_rows_left_to_do() {
 
 #[test]
 fn a_lone_group_heading_starts_the_rows_on_the_content_gutter() {
-    // Three tasks under two headings, and the same first two under a title that names their
-    // one group: either way the first band starts on the column's content gutter, which is the
-    // heading's own place where the list draws it and its first row's where it leaves it out.
     let mut headed = grouped(vec![
         heading("Today"),
         heading("Today"),
@@ -887,9 +841,6 @@ fn a_list_of_rows_that_name_no_group_leads_with_them() {
     );
 }
 
-/// The room a list keeps over the first band it draws, as it states it to a layout audit: the
-/// column's content gutter where its rows name a group, whether or not the list draws the heading
-/// over them, and nothing where they are one block or the list stands outside a column.
 #[test]
 fn a_list_states_the_room_it_keeps_over_its_first_band() {
     let inset = crate::chrome::column_gutter(&Theme::dark());
@@ -908,8 +859,6 @@ fn a_list_states_the_room_it_keeps_over_its_first_band() {
         "the heading starts on the content gutter: {}",
         under_a_heading.lead
     );
-    // A title that names the rows' one group leaves the heading out: the audit reads the same
-    // room over the row no heading stands on.
     let mut lone = grouped(vec![heading("Today"), heading("Today")])
         .in_view("Today", Some(2))
         .in_column();
@@ -921,13 +870,11 @@ fn a_list_states_the_room_it_keeps_over_its_first_band() {
         "the row starts on the content gutter: {}",
         under_the_title.lead
     );
-    // Rows that name no group are one block: the list leads with them.
     let mut plain = grouped(vec![None, None]);
     let _ = settle(&mut plain);
     let plain = stated(&plain);
     assert!(!plain.heads_rows);
     assert!(plain.lead.abs() < 0.5);
-    // A list that is no column's body brings its own spacing: it keeps nothing of the column's.
     let mut alone = grouped(vec![heading("Today"), heading("Today")]);
     let _ = settle(&mut alone);
     assert!(stated(&alone).lead.abs() < 0.5);
@@ -956,8 +903,6 @@ fn the_room_over_a_lists_first_band_is_no_part_of_it() {
 
 #[test]
 fn a_list_of_two_groups_keeps_their_headings_under_a_title() {
-    // One overdue task and one due today: the headings tell the two runs apart, and the title
-    // over them names only where the window is.
     let mut list = grouped(vec![
         heading("Overdue"),
         heading("Overdue"),
@@ -978,8 +923,6 @@ fn a_list_of_two_groups_keeps_their_headings_under_a_title() {
 
 #[test]
 fn a_title_counting_other_rows_keeps_the_heading_that_counts_these() {
-    // The window counts three tasks, two of them here: the heading is the only thing that says
-    // how many rows stand under it.
     let mut list = grouped(vec![heading("Today"), heading("Today")]).in_view("Today", Some(3));
     let _ = settle(&mut list);
     assert_eq!(
@@ -994,7 +937,6 @@ fn a_title_counting_other_rows_keeps_the_heading_that_counts_these() {
 
 #[test]
 fn a_list_whose_group_names_another_run_keeps_its_heading() {
-    // A day under a window titled for the place: "Tomorrow" says something "Upcoming" does not.
     let mut list =
         grouped(vec![heading("Tomorrow"), heading("Tomorrow")]).in_view("Upcoming", Some(2));
     let _ = settle(&mut list);
@@ -1040,8 +982,6 @@ fn the_title_a_list_stands_under_takes_its_heading_away_and_gives_it_back() {
 
 #[test]
 fn the_title_counting_what_is_left_takes_the_heading_over_a_finished_row_too() {
-    // The window's title says "Today 1", counting the one task left: the heading over the task
-    // and the one just finished under it would say the same words and the same number.
     let mut list =
         grouped_finished(vec![heading("Today"), heading("Today")], &[1]).in_view("Today", Some(1));
     let _ = settle(&mut list);
@@ -1050,8 +990,6 @@ fn the_title_counting_what_is_left_takes_the_heading_over_a_finished_row_too() {
         "the title says it: no heading stands over the rows ({:?})",
         bands(&list)
     );
-    // A title counting the finished row as well says something else: the heading comes back,
-    // with the number of what is left, which is one, and so with no number at all.
     let mut list =
         grouped_finished(vec![heading("Today"), heading("Today")], &[1]).in_view("Today", Some(2));
     let _ = settle(&mut list);

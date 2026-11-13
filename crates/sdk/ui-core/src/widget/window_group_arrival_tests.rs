@@ -1,11 +1,8 @@
-//! An opening window's content is an arrival ([`crate::arriving`]): a first
-//! frame from this device inside its frame budget shows with no placeholder
-//! on any frame; a later one, or one from another device, reserves the
-//! window's place, shows the skeleton after the grace period (for at least
-//! its minimum), says where it comes from, and cross-fades in without
-//! moving anything; a failure takes the same place; and a window waiting
-//! between two steps asks for no frames.
-
+//! An opening window's content is an arrival ([`crate::arriving`]): a first frame from this device
+//! inside its frame budget shows with no placeholder on any frame; a later one, or one from another
+//! device, reserves the window's place, shows the skeleton after the grace period (for at least its
+//! minimum), says where it comes from, and cross-fades in without moving anything; a failure takes
+//! the same place; and a window waiting between two steps asks for no frames.
 use super::*;
 use crate::arriving::{GRACE, MIN_SHOWN, NAME_SOURCE_AFTER, Source, Step, frame_budget};
 use crate::widget::{AppKind, TabDescriptor, TileContent};
@@ -13,11 +10,9 @@ use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-/// A window's content whose first frame lands when the test says so.
 struct FirstFrame {
     landed: Rc<Cell<bool>>,
     from: Source,
-    /// How many frames drew it.
     drawn: Rc<Cell<u32>>,
 }
 
@@ -70,7 +65,6 @@ struct Opening {
     t0: Instant,
 }
 
-/// A window asked for at `t0`, its first frame coming from `from`.
 fn opening(from: Source) -> Opening {
     let t0 = crate::time::now();
     let landed = Rc::new(Cell::new(false));
@@ -94,14 +88,10 @@ fn opening(from: Source) -> Opening {
     }
 }
 
-/// What one frame showed of the window.
 #[derive(Debug)]
 struct Shown {
-    /// Whether the window drew anything at all.
     painted: bool,
-    /// The placeholder step standing in it after the frame, if any.
     step: Option<Step>,
-    /// The window's and its tile's rects.
     rects: (Rect, Rect),
 }
 
@@ -164,7 +154,6 @@ impl Opening {
         })
     }
 
-    /// When the window's content next wakes the host by itself.
     fn next_wake(&self, ms: u64) -> Option<Instant> {
         self.at(ms, || self.host().next_wake_deadline())
     }
@@ -296,8 +285,6 @@ fn a_window_that_fails_to_start_shows_its_failure_in_the_place_it_reserved() {
     let grace = u64::try_from(GRACE.as_millis()).unwrap();
     let skeleton = w.frame(grace + 100);
     assert_eq!(skeleton.step, Some(Step::Skeleton));
-    // The shell answers a failed start by putting the failure, with its
-    // retry, in the tab's place.
     let t0 = w.t0;
     crate::time::testing::with_monotonic_time(t0 + Duration::from_millis(grace + 100), || {
         w.group

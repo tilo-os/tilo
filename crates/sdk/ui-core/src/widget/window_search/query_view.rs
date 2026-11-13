@@ -1,20 +1,5 @@
-//! A view that answers the window bar's search: the query view of an app
-//! whose view is a function of its resource.
-//!
-//! The window's search reaches an app through its widgets: it opens on what
-//! they show ([`InPlace`](super::InPlace)) and, on a query view, hands the
-//! query to the first [`Queryable`] in the tree. An app that is a widget
-//! itself implements that on itself. An app whose view is a function — a
-//! framework `ResourceApp`'s `view`, returning the view it draws — has no
-//! widget of its own to implement it on, so it wraps the view it returns in
-//! a [`QueryView`]: the bar's search then offers "Search `<app>`" in place,
-//! hands over what is typed as it changes, and shows the count the view
-//! kept, as it shows a [`Filterable`](crate::widget::Filterable) list's.
-//!
-//! The view keeps the query where its resource keeps it and answers with the
-//! count its build left: the search holds no state of its own beyond the
-//! query it drives with, on the same count a filtered list reports.
-
+//! A view that answers the window bar's search: the query view of an app whose view is a function
+//! of its resource.
 use crate::widget::capability::{Request, RequestMut};
 use crate::widget::decorator::concrete;
 use crate::widget::search_field::FilterCount;
@@ -46,17 +31,12 @@ pub struct QueryView {
     view: Element,
     kept: Option<FilterCount>,
     answer: Box<dyn FnMut(&str)>,
-    /// Whether the view answers the search now ([`Self::offered_while`]).
     offered: Option<Box<dyn Fn() -> bool>>,
-    /// What the view does as the search opens ([`Self::on_open`]).
     opened: Option<Box<dyn FnMut()>>,
-    /// What the view does as the search closes ([`Self::on_close`]).
     closed: Option<Box<dyn FnMut()>>,
 }
 
 impl QueryView {
-    /// `view`, the app's view, answers what is typed in the window's bar
-    /// through `answer`.
     pub fn new(view: Element, answer: impl FnMut(&str) + 'static) -> Self {
         Self {
             view,
@@ -77,29 +57,22 @@ impl QueryView {
         self
     }
 
-    /// Run `opened` as the search opens on the view, before anything is
-    /// typed (the view notes what it answers for, or warms its sources).
     #[must_use]
     pub fn opening(mut self, opened: impl FnMut() + 'static) -> Self {
         self.opened = Some(Box::new(opened));
         self
     }
 
-    /// Run `closed` as the search closes, in place of telling the view the
-    /// query is empty: the view goes back to what it showed before it
-    /// opened.
     #[must_use]
     pub fn closing(mut self, closed: impl FnMut() + 'static) -> Self {
         self.closed = Some(Box::new(closed));
         self
     }
 
-    /// Whether the view answers the search now.
     fn offers(&self) -> bool {
         self.offered.as_ref().is_none_or(|offered| offered())
     }
 
-    /// The view kept `kept` of what it holds.
     #[must_use]
     pub fn kept(mut self, kept: FilterCount) -> Self {
         self.kept = Some(kept);
@@ -132,8 +105,6 @@ impl Queryable for QueryView {
     }
 }
 
-// Not the blanket `Decorator`: apps box a query view, so its `Widget` methods
-// are compiled once, here (`concrete_decorator_widget!` in decorator.rs).
 impl concrete::Decorator for QueryView {
     type Inner = dyn Widget;
 

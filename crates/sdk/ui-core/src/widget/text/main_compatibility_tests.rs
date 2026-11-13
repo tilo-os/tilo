@@ -93,8 +93,6 @@ fn main_actual_text_dimmed_and_explicit_colors_preserve_original_transition_orde
     assert_eq!(hot.drawn_color, Some(vello::peniko::Color::WHITE));
 }
 
-// Main already exposes the original full structural comparator. Retain every
-// stream and late resource comparison; no count/hash-only replacement.
 fn exact_scene_encoding_eq(left: &vello::Scene, right: &vello::Scene) -> bool {
     left.encoding_eq(right)
 }
