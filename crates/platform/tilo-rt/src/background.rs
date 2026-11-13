@@ -1,29 +1,15 @@
 //! Background work and timers, provided by the host.
 //!
-//! `tilo_host::background` and `ui::background` re-export this module.
+//! A toolkit service that must not block a frame (image decoding, transport calls,
+//! periodic refreshes) hands its work to a [`Background`] rather than spawning
+//! threads or sleeping. The host decides how it runs: [`ThreadPool`] when no
+//! executor is entered, [`Pumped`] for deterministic tests and hosts that drive
+//! work from their own loop, the page's own executor in a browser, or any other
+//! [`Executor`] installed with [`Background::enter`].
 //!
-//! Toolkit services that must not block a frame (image decoding, file-history
-//! transport calls, periodic refreshes) hand their work to a [`Background`]
-//! rather than spawning threads or sleeping themselves. The host decides how
-//! that work runs:
-//!
-//! * [`ThreadPool`] — the default when no executor is entered: a bounded pool
-//!   of named threads plus one timer thread, so native behaviour needs no
-//!   setup;
-//! * [`Pumped`] — a queue and a virtual clock that run only when their owner
-//!   pumps them, for deterministic headless tests and for hosts that drive
-//!   work from their own loop;
-//! * `PageExecutor` — the default in a browser page, which has one thread:
-//!   jobs run from the page's microtask queue and timers are `setTimeout`s;
-//! * any other [`Executor`] a host installs with [`Background::enter`].
-//!
-//! Like [`crate::wake::WakeScope`], the executor is captured when a service is
-//! constructed: enter it around construction, and the service keeps using it
-//! from any thread afterwards.
-//!
-//! An executor may refuse work with [`Unsupported`] — a host with no threads
-//! of its own, for example. Callers must degrade (report the feature as
-//! unavailable, settle a request as failed) instead of retrying forever.
+//! The executor is captured when a service is constructed, so enter it around
+//! construction. An executor may refuse work with [`Unsupported`]: callers degrade
+//! instead of retrying forever.
 
 use std::cell::RefCell;
 use std::collections::{BinaryHeap, VecDeque};
