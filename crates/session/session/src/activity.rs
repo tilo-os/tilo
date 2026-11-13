@@ -1,5 +1,5 @@
-//! The workspace's activity: the desk's own document ([`crate::desk_doc`]) and the records its apps
-//! keep in the store, served to the Activity app and to presence.
+//! The workspace's activity: the workspaces' layout records and the records its apps keep in the
+//! store, served to the Activity app and to presence.
 //! A record is read away from the loop ([`crate::platform::records::Reading`]) and a change asks the desk for
 //! the frame that lists it; what this device has seen of a workspace is its own ([`HistoryMaps`]) and
 //! never reaches a shared record.
@@ -30,7 +30,7 @@ use tilo_desktop_surface::session::{ActivityRequests, activity_requests};
 use tilo_lock::MutexRecover as _;
 
 use crate::activity_provider::ActivityWire;
-use crate::desk_doc::{DeskDoc, Kept};
+use crate::device_state::DeviceState;
 use crate::platform::Store;
 use crate::platform::apps::Apps;
 use crate::platform::authors::{People, Writers};
@@ -63,8 +63,61 @@ pub(crate) fn now_seconds() -> i64 {
 #[cfg(target_os = "linux")]
 type ToldRefusal = (String, [u8; 32], neighbour_wire::RefusalReason);
 
+/// What this session's desk shows, kept where its state is: the layouts the pane reads, and the
+/// space beside them it keeps its own read state in.
+/// Where the pane reads the desk's own history, and writes what a model says of its changes: the
+/// workspaces' layout records, or a page's copy of the desk.
+pub trait DeskHistory {
+    /// The history of the desk in the workspace `slot` of `tree`.
+    fn history(&self, tree: &DesktopTree, slot: WorkspaceSlot) -> Option<ActivitySnapshot>;
+    /// The layout of each workspace `tree` shows, as this host holds it.
+    fn documents(&self, tree: &DesktopTree) -> Vec<(WorkspaceSlot, automerge::AutoCommit)>;
+    /// Write what `write` changes in the layout of `slot`. Whether anything was written.
+    fn describe(
+        &self,
+        tree: &DesktopTree,
+        slot: WorkspaceSlot,
+        write: &mut dyn FnMut(&mut automerge::AutoCommit) -> bool,
+    ) -> bool;
+    /// A number that moves whenever the desk's layout does.
+    fn moved(&self) -> u64;
+    /// Read and write the layouts through `engine`, once this session opened it.
+    fn attach_engine(&self, _engine: &std::sync::Arc<crate::engine::Engine>) {}
+}
+
+impl DeskHistory for std::rc::Rc<tilo_session_core::desk::Desk> {
+    fn history(&self, tree: &DesktopTree, _slot: WorkspaceSlot) -> Option<ActivitySnapshot> {
+        Some(ActivitySnapshot::of_desktop(tree.clone(), self.document()))
+    }
+
+    fn documents(&self, tree: &DesktopTree) -> Vec<(WorkspaceSlot, automerge::AutoCommit)> {
+        let document = self.document();
+        tree.workspaces
+            .iter()
+            .map(|workspace| (workspace.slot, document.clone()))
+            .collect()
+    }
+
+    fn describe(
+        &self,
+        _tree: &DesktopTree,
+        _slot: WorkspaceSlot,
+        write: &mut dyn FnMut(&mut automerge::AutoCommit) -> bool,
+    ) -> bool {
+        self.write_metadata(|document| write(document))
+    }
+
+    fn moved(&self) -> u64 {
+        use std::hash::{Hash as _, Hasher as _};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        self.heads().hash(&mut hasher);
+        hasher.finish()
+    }
+}
+
 pub struct Given {
-    pub desk: DeskDoc,
+    /// Where the desk's own history is read from and written to.
+    pub layouts: Box<dyn DeskHistory>,
     /// Who sits here.
     pub person: String,
     pub store: Option<Store>,
@@ -86,7 +139,10 @@ pub struct Given {
 pub struct Activity(Rc<Inner>);
 
 struct Inner {
-    desk: DeskDoc,
+    /// Where the desk's own history is read from and written to.
+    layouts: Box<dyn DeskHistory>,
+    /// What this device shows: the workspace in front, and the displays' partition.
+    shown: DeviceState,
     /// What the devices answered when one asked to be unlocked.
     #[cfg(target_os = "linux")]
     unlock: UnlockHistory,
@@ -142,12 +198,13 @@ struct Inner {
     told_refusals: RefCell<BTreeSet<ToldRefusal>>,
     /// What the desk's history says its changes were, as a model answered it.
     describer: RefCell<Describer>,
-    /// Answers the model gave, waiting for the desk's thread to write them.
-    described: Arc<Mutex<Vec<(Job, String)>>>,
+    /// Answers the model gave, waiting for the desk's thread to write them, each with the workspace
+    /// whose layout it was asked about.
+    described: Arc<Mutex<Vec<(WorkspaceSlot, Job, String)>>>,
     /// One request at a time keeps a long history from spending the person's provider on a burst.
     describing: Arc<AtomicBool>,
     /// The desk's changes the describer last read, so a pass with nothing new asks nothing.
-    described_heads: RefCell<Vec<automerge::ChangeHash>>,
+    described_heads: Cell<u64>,
     /// When a model was last looked for.
     looked_for_model: Cell<Option<Instant>>,
     /// What [`Activity::own_actions`] read of each record, by its origin: a tick reads only the
@@ -178,11 +235,11 @@ impl Activity {
         changes: crate::platform::records::Changes,
         apps: Option<Arc<dyn Apps>>,
         wake: Option<tilo_service::Wake>,
+        layouts: Box<dyn DeskHistory>,
     ) -> Self {
-        let desk = DeskDoc::load(state, &person);
         let unlock = UnlockHistory::new(state, &person);
         let given = Given {
-            desk,
+            layouts,
             person,
             store,
             state: state.map(std::path::Path::to_path_buf),
@@ -210,7 +267,7 @@ impl Activity {
 
     fn assemble(given: Given, #[cfg(target_os = "linux")] unlock: UnlockHistory) -> Self {
         let Given {
-            desk,
+            layouts,
             person,
             store,
             state,
@@ -225,8 +282,10 @@ impl Activity {
         let woken = Arc::new(AtomicBool::new(false));
         let requests = activity_requests(Arc::clone(&woken));
         let seen = (changes.moved(), 0);
+        let shown = DeviceState::load(state.as_deref());
         Self(Rc::new(Inner {
-            desk,
+            layouts,
+            shown,
             #[cfg(target_os = "linux")]
             unlock,
             maps: HistoryMaps::load(store.clone(), state.as_deref()),
@@ -260,7 +319,7 @@ impl Activity {
             describer: RefCell::default(),
             described: Arc::default(),
             describing: Arc::default(),
-            described_heads: RefCell::default(),
+            described_heads: Cell::default(),
             looked_for_model: Cell::default(),
             own_reads: RefCell::default(),
             wake,
@@ -311,11 +370,6 @@ impl Activity {
         let engine = crate::options::open_engine(options, handle)?;
         self.attach_engine(Arc::clone(&engine));
         Some(engine)
-    }
-
-    /// The desk this device left, and what became of the desk on disk if it did not open it.
-    pub fn opened_desk(&self) -> Kept {
-        self.0.desk.opened()
     }
 
     /// What the windows ask of the activity and follow.
@@ -412,40 +466,15 @@ impl Activity {
         }
     }
 
-    /// Record the desk as `tree` holds it, at `time` , by the person here. Whether it changed.
-    pub fn record_desk(
-        &self,
-        tree: &DesktopTree,
-        time: i64,
-        shows: &[(tilo_desktop_model::TabId, String)],
-    ) -> bool {
-        self.0.desk.record(tree, time, shows)
+    /// Show what this device left in `tree`: the workspace in front and the displays' partition.
+    /// Whether anything changed.
+    pub fn show(&self, tree: &mut DesktopTree) -> bool {
+        self.0.shown.applied(tree)
     }
 
-    /// [`Self::record_desk`], and write even how the desk looks: what ends the session.
-    pub fn record_desk_now(
-        &self,
-        tree: &DesktopTree,
-        time: i64,
-        shows: &[(tilo_desktop_model::TabId, String)],
-    ) -> bool {
-        self.0.desk.record_now(tree, time, shows)
-    }
-
-    /// [`Self::record_desk_now`] for a session whose workspace records hold the person's view of the
-    /// layout: the document keeps the desk and what this device's displays show.
-    pub fn record_displays_now(
-        &self,
-        tree: &DesktopTree,
-        time: i64,
-        shows: &[(tilo_desktop_model::TabId, String)],
-    ) -> bool {
-        self.0.desk.record_displays_now(tree, time, shows)
-    }
-
-    /// The desk document, which the arrangement reads and changes too.
-    pub fn desk(&self) -> std::rc::Rc<tilo_session_core::desk::Desk> {
-        self.0.desk.desk()
+    /// Keep what `tree` shows of this device: the workspace in front and the displays' partition.
+    pub fn keep_shown(&self, tree: &DesktopTree) -> bool {
+        self.0.shown.keep(tree)
     }
 
     /// The workspace a change the model wrote back leaves the desk at, if one is waiting.
@@ -474,40 +503,47 @@ impl Activity {
     }
 
     /// Say what the desk's changes were when the desk moved: one request at a time, off the desk's
-    /// thread. Whether the document changed.
-    pub fn describe(&self) -> bool {
+    /// thread. Whether a layout changed.
+    pub fn describe(&self, tree: &DesktopTree) -> bool {
         let mut wrote = false;
         let answers = std::mem::take(&mut *self.0.described.lock_recover());
         {
             let mut describer = self.0.describer.borrow_mut();
-            for (job, answer) in answers {
+            for (slot, job, answer) in answers {
                 wrote |= if answer.is_empty() {
                     // No model answered: nothing is described in its place.
                     describer.failed(&job);
                     false
                 } else {
                     self.0
-                        .desk
-                        .write_metadata(|doc| describer.apply(doc, &job, &answer))
+                        .layouts
+                        .describe(tree, slot, &mut |doc| describer.apply(doc, &job, &answer))
                 };
             }
         }
         if self.0.describing.load(Ordering::Acquire) {
             return wrote;
         }
-        let heads = self.0.desk.heads();
+        let moved = self.0.layouts.moved();
         let look_again = self
             .0
             .looked_for_model
             .get()
             .is_none_or(|at| at.elapsed() >= LOOK_FOR_MODEL);
-        if heads == *self.0.described_heads.borrow() && !look_again {
+        if moved == self.0.described_heads.get() && !look_again {
             return wrote;
         }
-        *self.0.described_heads.borrow_mut() = heads;
+        self.0.described_heads.set(moved);
         let mut describer = self.0.describer.borrow_mut();
         describer.set_enabled(self.0.models.is_some());
-        let Some(job) = describer.next(&mut self.0.desk.document()) else {
+        let mut asked = None;
+        for (slot, mut doc) in self.0.layouts.documents(tree) {
+            if let Some(job) = describer.next(&mut doc) {
+                asked = Some((slot, job));
+                break;
+            }
+        }
+        let Some((slot, job)) = asked else {
             self.0.looked_for_model.set(Some(Instant::now()));
             return wrote;
         };
@@ -521,7 +557,7 @@ impl Activity {
         let models = self.0.models.clone();
         let ask = move || async move {
             let answer = crate::activity_models::answer(models.as_deref(), &job).await;
-            answers.lock_recover().push((job, answer));
+            answers.lock_recover().push((slot, job, answer));
             describing.store(false, Ordering::Release);
             // The desk draws a frame to write the answer where it belongs.
             ask_for_frame(&woken, wake.as_ref());
@@ -645,10 +681,7 @@ impl HistorySource for Activity {
         workspace: WorkspaceSlot,
     ) -> Option<ActivitySnapshot> {
         Self::id_of(tree, workspace)?;
-        // The desk as it stands is the newest change of it: a workspace made this pass is in the
-        // document the pane reads, not only in the tree.
-        self.record_desk(tree, now_seconds(), &[]);
-        let mut snapshot = ActivitySnapshot::of_desktop(tree.clone(), self.0.desk.document());
+        let mut snapshot = self.0.layouts.history(tree, workspace)?;
         snapshot.desktop.active = workspace;
         let restored = Rc::downgrade(&self.0);
         let commit = Rc::new(move |tree: &DesktopTree| {
@@ -686,19 +719,12 @@ impl HistorySource for Activity {
     fn register_authors(&self, authors: &mut ui::AuthorDirectory) {
         // Who this host's own mounts write as: a record's changes by the person who made them.
         (self.0.writers.register)(authors);
-        // The names the desk's changes are known by: the person here, and whoever the desk came
-        // from when it was read into its document.
-        let known = self.0.desk.authors();
         let people = &*self.0.people;
-        history_log::register_authors(authors, &known, people);
-        // The changes this device made are the person's own: they read as presence shows them here,
-        // not as another participant.
-        let mine = self.0.person.clone();
-        for (actor, author) in &known {
-            if *author == mine {
-                authors.register_local_identity(actor);
-            }
-        }
+        // A change of a workspace's layout is the person's: the record is written as them, so it
+        // reads as presence shows them here and never as another participant.
+        authors.register_local_identity(
+            &automerge::ActorId::from(self.0.person.as_bytes()).to_hex_string(),
+        );
         // The devices that answered a boot are named as their own snapshots name them, and this one
         // of them is the person here.
 
@@ -717,7 +743,7 @@ impl HistorySource for Activity {
         #[cfg(target_os = "linux")]
         self.0.unlock.absorb();
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        self.0.desk.heads().hash(&mut hasher);
+        self.0.layouts.moved().hash(&mut hasher);
         #[cfg(target_os = "linux")]
         self.0.unlock.heads().hash(&mut hasher);
         // What the records say moved, and the reads of them that landed since: a history open on
@@ -1029,14 +1055,22 @@ impl Activity {
         let Some(workspace_id) = Self::id_of(tree, workspace) else {
             return Vec::new();
         };
+        // What each window shows, as the workspace's layout holds it.
         let shown: HashMap<String, TabId> = self
             .0
-            .desk
-            .desk()
-            .records()
+            .layouts
+            .documents(tree)
             .into_iter()
-            .map(|(tab, record)| (record, tab))
-            .collect();
+            .find(|(slot, _)| *slot == workspace)
+            .and_then(|(_, doc)| tilo_desktop_model::shared_record::read(&doc, None))
+            .map(|layout| {
+                layout
+                    .records
+                    .into_iter()
+                    .map(|(tab, record)| (record, tab))
+                    .collect()
+            })
+            .unwrap_or_default();
         let titles: HashMap<TabId, &str> = tree
             .tabs()
             .map(|tab| (tab.id, tab.title.as_str()))
@@ -1360,6 +1394,7 @@ mod tests {
     //! command is the workspace's own changes, and what they restore from it reaches the desk.
 
     use super::*;
+    use automerge::transaction::Transactable as _;
 
     fn step(
         kind: tilo_actions::StepKind,
@@ -1443,12 +1478,80 @@ mod tests {
         Caller::local_person("ada").in_workspace("workspace")
     }
 
+    /// The workspaces' layouts, as a test session keeps them: one record per workspace, written
+    /// from the desk on each frame.
+    #[derive(Clone, Default)]
+    struct Records(std::rc::Rc<RefCell<HashMap<WorkspaceSlot, ui::automerge::AutoCommit>>>);
+
+    impl Records {
+        /// Write `workspace` of `tree` into its layout record, as a pass does.
+        fn keep(&self, workspace: &tilo_desktop_model::Workspace) {
+            let layout = tilo_desktop_model::ownership::SharedDesktop {
+                tree: DesktopTree {
+                    workspaces: vec![workspace.clone()],
+                    active: workspace.slot,
+                    ..DesktopTree::default()
+                },
+                ..Default::default()
+            };
+            let mut held = self.0.borrow_mut();
+            let record = held.entry(workspace.slot).or_default();
+            if tilo_desktop_model::shared_record::write(record, &layout).unwrap_or(false) {
+                let _ = tilo_resource::history::commit_stamped(record);
+            }
+        }
+
+        fn of(&self, slot: WorkspaceSlot) -> Option<ui::automerge::AutoCommit> {
+            self.0.borrow().get(&slot).cloned()
+        }
+    }
+
+    impl DeskHistory for Records {
+        fn history(&self, tree: &DesktopTree, slot: WorkspaceSlot) -> Option<ActivitySnapshot> {
+            Some(ActivitySnapshot::of_layout(tree.clone(), self.of(slot)?))
+        }
+
+        fn documents(&self, tree: &DesktopTree) -> Vec<(WorkspaceSlot, ui::automerge::AutoCommit)> {
+            tree.workspaces
+                .iter()
+                .filter_map(|workspace| Some((workspace.slot, self.of(workspace.slot)?)))
+                .collect()
+        }
+
+        fn describe(
+            &self,
+            _tree: &DesktopTree,
+            slot: WorkspaceSlot,
+            write: &mut dyn FnMut(&mut ui::automerge::AutoCommit) -> bool,
+        ) -> bool {
+            let Some(mut record) = self.of(slot) else {
+                return false;
+            };
+            if !write(&mut record) {
+                return false;
+            }
+            let _ = tilo_resource::history::commit_stamped(&mut record);
+            self.0.borrow_mut().insert(slot, record);
+            true
+        }
+
+        fn moved(&self) -> u64 {
+            use std::hash::{Hash as _, Hasher as _};
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            for record in self.0.borrow().values() {
+                record.base_heads().hash(&mut hasher);
+            }
+            hasher.finish()
+        }
+    }
+
     /// A desk of one workspace with Notes open, its activity served as this session serves it.
     struct Desk {
         surface: DesktopSurface,
         handle: DesktopHandle,
         activity: Activity,
         workspace: WorkspaceSlot,
+        records: Records,
     }
 
     impl Desk {
@@ -1474,6 +1577,7 @@ mod tests {
             let tree = seed(&mut minter, notes);
             let workspace = tree.active;
             let (mut surface, handle) = DesktopSurface::new(tree, 7, Box::new(Tiles));
+            let records = Records::default();
             let activity = Activity::new(
                 None,
                 "ada".to_string(),
@@ -1481,6 +1585,7 @@ mod tests {
                 crate::platform::records::Changes::default(),
                 None,
                 None,
+                Box::new(records.clone()),
             );
             surface.set_history_source(Box::new(activity.clone()));
             surface.serve_activity(activity.requests());
@@ -1489,14 +1594,17 @@ mod tests {
                 handle,
                 activity,
                 workspace,
+                records,
             }
         }
 
-        /// One pass of the desk: the desk as it stood is recorded, then what the windows asked is
-        /// answered.
+        /// One pass of the desk: the desk as it stood is written into the workspaces' layouts, then
+        /// what the windows asked is answered.
         fn frame(&mut self) {
-            let tree = self.handle.read(Clone::clone);
-            self.activity.record_desk(&tree, now_seconds(), &[]);
+            let workspaces = self.handle.read(|tree| tree.workspaces.clone());
+            for workspace in &workspaces {
+                self.records.keep(workspace);
+            }
             ui::Widget::update(
                 &mut self.surface,
                 &ui::automerge::AutoCommit::new(),
@@ -1646,7 +1754,7 @@ mod tests {
         write(&mut notebook, 2);
 
         desk.activity = Activity::over(Given {
-            desk: DeskDoc::load(None, "ada"),
+            layouts: Box::<Records>::default(),
             person: "ada".into(),
             store: Some(Arc::clone(&store)),
             state: None,
@@ -1757,7 +1865,7 @@ mod tests {
         };
         write(&mut notebook, 2_000);
         let activity = Activity::over(Given {
-            desk: DeskDoc::load(None, "ada"),
+            layouts: Box::<Records>::default(),
             person: "ada".into(),
             store: Some(Arc::clone(&store)),
             state: None,
@@ -1860,62 +1968,68 @@ mod tests {
         );
     }
 
-    /// An arrangement action is one step the person takes back, staged for the next pass.
+    /// A change of a workspace's layout is one step of the person's in its own history: the person
+    /// takes it back by their name, and another person's undo never reaches it.
     #[test]
-    fn an_arrangements_action_is_one_step_the_person_takes_back() {
-        let mut desk = Desk::new();
-        desk.open_history();
-        desk.rename("Plans");
-        desk.frame();
-        assert_eq!(desk.name(), "Plans");
+    fn a_change_of_the_layout_is_one_step_of_the_persons_in_its_history() {
+        use tilo_desktop_model::shared_record;
+        use ui::permissions::UserId;
+        use ui::state::UndoLog;
 
-        // An agent moves the desk as the person asked it to: the change it made is recorded as that
-        // action, not as a change of the desk's own.
-        desk.rename("Lounge");
-        let tree = desk.handle.read(Clone::clone);
-        let asked = tilo_actions::ActionContext {
-            invoker: Some(tilo_actions::ActionInvoker::actor(
-                "agent-task:reading".to_owned(),
-            )),
-            what: Some(tilo_actions::Did::Verb(tilo_actions::VerbCall::new(
-                tilo_actions::ActionKey::new("so.tilo.session", "arrangement", "move"),
-                std::iter::empty(),
-            ))),
-            ..tilo_actions::ActionContext::default()
+        let mut doc = ui::automerge::AutoCommit::new();
+        doc.set_actor(tilo_session_core::desk::actor_of_person("ada"));
+        let mut log = UndoLog::new(&mut doc);
+        let before = doc.base_heads();
+        // The person opens a window: one change of the workspace's layout.
+        let tree = Desk::new();
+        let opened = tree.handle.read(Clone::clone);
+        let layout = tilo_desktop_model::ownership::SharedDesktop {
+            tree: opened.clone(),
+            ..Default::default()
         };
-        let document = desk.activity.desk();
         assert!(
-            document.record_action(&tree, now_seconds(), &asked, &[]),
-            "the desk keeps the move"
+            shared_record::write(&mut doc, &layout).expect("a record that takes the layout"),
+            "the layout holds the window"
         );
-        assert_eq!(
-            document.last_step("ada"),
-            Some(("agent-task:reading".to_owned(), "move".to_owned())),
-            "the step names who asked and what they did"
-        );
+        shared_record::commit_change(&mut doc, "ada", now_seconds(), None);
+        assert!(log.record_committed_action_authored(
+            &mut doc,
+            before,
+            None,
+            None,
+            Some(UserId("ada".to_owned()))
+        ));
 
-        // The person takes it back: the move is undone, and the rename before it is still there —
-        // the two are separate steps.
-        assert!(document.undo("ada"), "the person takes it back");
-        let restored = document.tree().expect("the desk the step took it back to");
-        assert_eq!(
-            restored
-                .active_workspace()
-                .map(|workspace| workspace.name.as_str()),
-            Some("Plans"),
-            "exactly the move is undone"
+        let ada = UserId("ada".to_owned());
+        let bob = UserId("bob".to_owned());
+        assert!(
+            log.can_undo_as(&doc, Some(&ada)),
+            "the person takes it back"
         );
-        assert!(document.undo("ada"), "the rename before it is its own step");
-        let restored = document
-            .tree()
-            .expect("and the desk before it is there too");
-        assert_eq!(
-            restored
-                .active_workspace()
-                .map(|workspace| workspace.name.as_str()),
-            Some("Studio"),
-            "the desk the session started on"
+        assert!(
+            !log.can_undo_as(&doc, Some(&bob)),
+            "another person's undo never reaches it"
         );
+        assert!(
+            log.undo_as(&mut doc, Some(&ada), None, None).is_some(),
+            "the step is one change of the layout"
+        );
+        let undone = shared_record::read(&doc, None).expect("the layout it came to");
+        assert!(
+            windows(&undone.tree) == 0,
+            "the window the step opened is gone: {} left",
+            windows(&undone.tree)
+        );
+    }
+
+    /// Every window `tree` holds.
+    fn windows(tree: &DesktopTree) -> usize {
+        tree.workspaces
+            .iter()
+            .flat_map(|workspace| &workspace.strips)
+            .flat_map(|strip| &strip.window_groups)
+            .map(|group| group.tabs.len())
+            .sum()
     }
 
     /// A version restored from the history reaches the desk, as a change of it.

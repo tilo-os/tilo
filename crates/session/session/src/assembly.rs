@@ -316,7 +316,7 @@ pub(crate) struct Shared {
     /// device that shows a workspace puts on its own desk, and what this one
     /// writes back.
     #[cfg(target_os = "linux")]
-    pub(crate) desktops: crate::shared_desktop::SharedDesktops,
+    pub(crate) desktops: Rc<crate::shared_desktop::SharedDesktops>,
     /// What each window this session runs shows, read from the broker every
     /// pass: the desk's reading of it, and the record noted beside the window
     /// in its workspace's layout.

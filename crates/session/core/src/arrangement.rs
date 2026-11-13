@@ -577,15 +577,83 @@ impl Busy {
 /// device, the registry's names on the page.
 pub type Names = Rc<dyn Fn(&str, &str) -> String>;
 
+/// Where a host keeps a desk's layout: the document its changes are written in, and the history a
+/// step of it is taken back from. The session keeps the workspace's layout, which every member
+/// shows; a page keeps its own copy of the desk.
+pub trait Layouts {
+    /// Take back (`redo` false) or bring back `person`'s last step of the layout.
+    fn step(&self, person: &str, redo: bool) -> Stepped;
+    /// The last step of the layout `person` can take back, as who made it and what it did.
+    fn last_step(&self, person: &str) -> Option<(String, String)>;
+    /// Note that `asked` made `action` of the desk `tree`, and that the windows in `shows` show the
+    /// records they name: what the change the desk now makes is named by.
+    fn acted(
+        &self,
+        tree: &DesktopTree,
+        asked: &str,
+        action: &ArrangementAction,
+        shows: &[(TabId, String)],
+    );
+    /// The record each window shows, by its tab: what a place put on a record was placed on.
+    fn shown(&self) -> BTreeMap<TabId, String>;
+}
+
+/// What a step of the layout came to.
+pub enum Stepped {
+    /// There was no step of the person's to take.
+    None,
+    /// The step was taken, and the host shows what it came to itself.
+    Taken,
+    /// The step was taken, and this is the desk it left.
+    Desk(DesktopTree),
+}
+
+impl Layouts for Desk {
+    fn step(&self, person: &str, redo: bool) -> Stepped {
+        let stepped = if redo {
+            self.redo(person)
+        } else {
+            self.undo(person)
+        };
+        match stepped.then(|| self.tree()).flatten() {
+            Some(tree) => Stepped::Desk(tree),
+            None => Stepped::None,
+        }
+    }
+
+    fn last_step(&self, person: &str) -> Option<(String, String)> {
+        Desk::last_step(self, person)
+    }
+
+    fn acted(
+        &self,
+        tree: &DesktopTree,
+        asked: &str,
+        action: &ArrangementAction,
+        shows: &[(TabId, String)],
+    ) {
+        self.record_action(
+            tree,
+            ui::time::unix_now_i64(),
+            &crate::arrangement::step_context(asked, action),
+            shows,
+        );
+    }
+
+    fn shown(&self) -> BTreeMap<TabId, String> {
+        self.records().into_iter().collect()
+    }
+}
+
 /// The person's arrangement, and the changes waiting for the person to finish what they are doing.
 pub struct Arrangement {
     /// The person whose record it is.
     person: String,
     /// The desk itself: what the arrangement reads, and whose change every arranging action is.
     handle: DesktopHandle,
-    /// The document that keeps the desk: the record the workspace shares,
-    /// whose own changes are its history.
-    desk: Rc<Desk>,
+    /// Where the desk's layout is kept: the record the workspace shares, whose own changes are its
+    /// history.
+    layouts: Rc<dyn Layouts>,
     /// What the host calls a window, by [`Names`].
     names: Names,
     /// The resources the session publishes now, by id: what a place made from a resource reads its
@@ -597,15 +665,20 @@ pub struct Arrangement {
 }
 
 impl Arrangement {
-    /// `person` 's arrangement of `handle` 's desk, whose changes `desk` keeps, naming windows
+    /// `person` 's arrangement of `handle` 's desk, whose layout `layouts` keeps, naming windows
     /// through `names`. A host brings over whatever an older build kept of the arrangement before
     /// it makes one: what it holds is the desk.
     #[must_use]
-    pub fn new(person: &str, handle: DesktopHandle, desk: Rc<Desk>, names: Names) -> Self {
+    pub fn new(
+        person: &str,
+        handle: DesktopHandle,
+        layouts: Rc<dyn Layouts>,
+        names: Names,
+    ) -> Self {
         Self {
             person: person.to_owned(),
             handle,
-            desk,
+            layouts,
             names,
             catalog: Rc::new(RefCell::new(Catalog::default())),
             waiting: RefCell::new(VecDeque::new()),
@@ -957,7 +1030,7 @@ impl Arrangement {
     /// The record each window shows, by tab, as the desk keeps it: what a place put on a record was
     /// placed on, and what a window took up.
     fn records(&self) -> BTreeMap<TabId, String> {
-        self.desk.records().into_iter().collect()
+        self.layouts.shown()
     }
 
     /// Every record a place of the desk shows, by the id of the workspace (a hex device key) the
@@ -1082,7 +1155,7 @@ impl Arrangement {
     #[must_use]
     pub fn last_step(&self) -> Option<(String, String)> {
         let person = self.person.clone();
-        self.desk.last_step(&person)
+        self.layouts.last_step(&person)
     }
 
     /// The person's own change, made as their gesture's end says: their own
@@ -1095,30 +1168,26 @@ impl Arrangement {
         self.write(&person, action)
     }
 
-    /// Undo `person` 's last change of the arrangement: one step of the desk's own history, taken
+    /// Undo `person` 's last change of the arrangement: one step of the layout's own history, taken
     /// back in the desk it was made in. Whether there was one.
     pub fn undo(&mut self, person: &str) -> bool {
-        let stepped = self.desk.undo(person);
-        if stepped {
-            self.take_the_desk_back();
-        }
-        stepped
+        self.show(self.layouts.step(person, false))
     }
 
     /// Redo `person` 's last undone change of the arrangement.
     pub fn redo(&mut self, person: &str) -> bool {
-        let stepped = self.desk.redo(person);
-        if stepped {
-            self.take_the_desk_back();
-        }
-        stepped
+        self.show(self.layouts.step(person, true))
     }
 
-    /// Show the desk the step took it back to: the record is the desk, so undoing in the desk is
-    /// undoing in the record.
-    fn take_the_desk_back(&self) {
-        if let Some(tree) = self.desk.tree() {
-            self.handle.replace_tree(tree);
+    /// Show a step of the layout, and whether there was one to take.
+    fn show(&self, stepped: Stepped) -> bool {
+        match stepped {
+            Stepped::None => false,
+            Stepped::Taken => true,
+            Stepped::Desk(tree) => {
+                self.handle.replace_tree(tree);
+                true
+            }
         }
     }
 
@@ -1148,26 +1217,21 @@ impl Arrangement {
         // The desk is the record the workspace shares, and its own changes are its history: the
         // change this action made says who asked for it and what they did, and is one step of the
         // person's to take back.
-        self.desk.record_action(
-            &tree,
-            ui::time::unix_now_i64(),
-            &Self::step_context(asked, action),
-            &shows,
-        );
+        self.layouts.acted(&tree, asked, action, &shows);
         Ok(())
     }
+}
 
-    /// What `action`, asked for by `asked`, is: who asked and what they did,
-    /// as the change of the desk it makes names it.
-    fn step_context(asked: &str, action: &ArrangementAction) -> tilo_actions::ActionContext {
-        tilo_actions::ActionContext {
-            invoker: Some(tilo_actions::ActionInvoker::actor(asked.to_owned())),
-            what: Some(tilo_actions::Did::Verb(tilo_actions::VerbCall::new(
-                tilo_actions::ActionKey::new("so.tilo.session", "arrangement", verb(action)),
-                std::iter::empty(),
-            ))),
-            ..tilo_actions::ActionContext::default()
-        }
+/// What `action`, asked for by `asked`, is: who asked and what they did, as the change of the desk
+/// it makes names it.
+pub(crate) fn step_context(asked: &str, action: &ArrangementAction) -> tilo_actions::ActionContext {
+    tilo_actions::ActionContext {
+        invoker: Some(tilo_actions::ActionInvoker::actor(asked.to_owned())),
+        what: Some(tilo_actions::Did::Verb(tilo_actions::VerbCall::new(
+            tilo_actions::ActionKey::new("so.tilo.session", "arrangement", verb(action)),
+            std::iter::empty(),
+        ))),
+        ..tilo_actions::ActionContext::default()
     }
 }
 
@@ -1764,7 +1828,7 @@ fn clamp_side(value: i64) -> u32 {
 const PEER_MASK: u64 = tilo_desktop_model::PEER_ID_COUNTER_MASK;
 
 /// The verb `action` is, as its step names it.
-fn verb(action: &ArrangementAction) -> &'static str {
+pub fn verb(action: &ArrangementAction) -> &'static str {
     match action {
         ArrangementAction::Move { .. } => "move",
         ArrangementAction::Resize { .. } => "resize",

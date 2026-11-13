@@ -1,11 +1,14 @@
-//! The records of a workspace's layout: the layout itself — its strips, groups and windows, which
-//! every member shows and changes ([`tilo_desktop_model::shared_record`]) — and each person's view
-//! of it, where they are looking and how wide their windows are
-//! ([`tilo_desktop_model::person_view`]).
-//! Both are records of the workspace, read from the engine's copy of it, which holds what the
-//! workspace admitted and what it held before this device joined. Nothing here decides whether a
-//! write may land: that is the workspace's, decided where the engine takes it in. A record that did
-//! not move since the last look is neither read nor written again, and a write runs off the loop
+//! A workspace's layout: its strips, groups and windows, which every member shows and changes
+//! ([`tilo_desktop_model::shared_record`]), and each person's view of it, where they are looking
+//! and how wide their windows are ([`tilo_desktop_model::person_view`]).
+//! The layout is the workspace's, so it is where the live desk is kept: the tree this session draws
+//! is what the layout and the person's view say, and every change a window makes is written there
+//! ([`Self::capture`]) and read back from it ([`Self::follow`]). Undo and redo of a layout change
+//! are taken from its own history ([`Self::step`]).
+//! Both documents are read from the engine's copy of the workspace, which holds what the workspace
+//! admitted and what it held before this device joined. Nothing here decides whether a write may
+//! land: that is the workspace's, decided where the engine takes it in. A record that did not move
+//! since the last look is neither read nor written again, and a write runs off the loop
 //! ([`crate::engine_write`]).
 
 // Nothing compiled for the web reads this module's roles yet: the page's session wires them with
@@ -20,6 +23,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::rc::Rc;
 use std::sync::Arc;
 
 use automerge::ChangeHash;
@@ -28,11 +32,20 @@ use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_RECORD, OpenedBy};
 use tilo_desktop_model::person_view::{self, PersonView};
 use tilo_desktop_model::shared_record::{self, device};
 use tilo_desktop_model::{DesktopTree, Workspace, WorkspaceId, WorkspaceSlot, peer_salt_of};
+use ui::permissions::UserId;
+use ui::state::UndoLog;
 
 use tilo_broker_core::custody::OwnerCustody as _;
 
 use crate::engine::{Engine, SealKeys};
 use crate::sync::Client as Sync;
+use tilo_desktop_surface::DesktopHandle;
+use tilo_session_core::desk::actor_of_person;
+
+/// The person `person`, as a history names them.
+fn user(person: &str) -> UserId {
+    UserId(person.to_owned())
+}
 
 /// A record of a workspace: the app it belongs to and its name there.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -92,16 +105,31 @@ struct Held {
     /// The view that changed since the last write, and did not move on: written on the look after
     /// the one that found it, so a drag or a burst of switches is one write when it is over.
     pending: Option<PersonView>,
+    /// The layout's history, as this session drives it: each change this device made of it is one
+    /// step of the person's, and the next undo takes back all of the last one.
+    undo: Option<UndoLog>,
+    /// An undo (`false`) or redo (`true`) the person asked for while a write of the layout was
+    /// under way: taken on the look after the workspace answered it.
+    pending_step: Option<bool>,
+    /// What the arrangement just did to this layout, for the change that follows it to name.
+    acted: Option<Acted>,
     /// The write of the record under way.
     writing: Option<Going>,
     /// Whether the record was read here.
     read: bool,
 }
 
+/// What an arranging action did to a layout: the change it makes names who asked and what they did,
+/// and the windows it placed show the records they name.
+struct Acted {
+    message: String,
+    shows: Vec<(tilo_desktop_model::TabId, String)>,
+}
+
 /// A write of a record under way. Boxed: each holds a document, and the state beside it is small.
 enum Going {
-    /// The view's: written here, and published off the loop.
-    View(Box<Publishing>),
+    /// The view's or a step's: written here, and published off the loop.
+    Write(Box<Publishing>),
     /// The layout's: made and written off the loop, since folding the record and writing this
     /// device's desk into it is what a save of it costs.
     Layout(Box<Laying>),
@@ -136,6 +164,8 @@ struct Publishing {
 /// The layout's write under way, and what the look that made it holds about it.
 struct Laying {
     writing: crate::engine_write::Polled<Laid>,
+    /// The person whose step the change is.
+    person: String,
     /// The tree revision and the record each window showed, as the write was made from them.
     own: u64,
     notes: Vec<(u64, String)>,
@@ -162,6 +192,8 @@ enum Laid {
 struct Taken {
     record: Box<automerge::AutoCommit>,
     windows: BTreeSet<u64>,
+    /// The record's heads the change was written on: what the step it makes is bracketed from.
+    before: Vec<ChangeHash>,
     took: crate::engine_write::Written,
 }
 
@@ -182,6 +214,8 @@ struct Save {
     /// The tree revision and the record each window showed.
     own: u64,
     notes: Vec<(u64, String)>,
+    /// The message the change is committed with: an arranging action's, else this person's edit.
+    message: Option<String>,
     sealed: Sealing,
 }
 
@@ -205,6 +239,7 @@ impl Save {
             written,
             own,
             notes,
+            message,
             sealed,
         } = self;
         let here = windows_of(&workspace);
@@ -219,16 +254,10 @@ impl Save {
                 windows,
             };
         }
-        // The record is every member's: what this device writes into it goes in as this person on
-        // this device, never under the actor the copy here was last written by, which two devices
-        // writing at once would number the same.
+        // A change of a layout is the person's, whichever of their devices made it: the record is
+        // every member's, and a step taken back later is found by the actor they write as.
         let mut candidate = base;
-        candidate.set_actor(automerge::ActorId::from(
-            ui::history_source::authors::device_actor(
-                person,
-                &automerge::ActorId::from(engine.identity().device_cert.device_public_key.to_vec()),
-            ),
-        ));
+        candidate.set_actor(actor_of_person(person));
         let mine = |id: u64| peer_salt_of(id) == local;
         let by_tab: BTreeMap<u64, String> = notes.into_iter().collect();
         let records = |id: u64| by_tab.get(&id).cloned();
@@ -259,8 +288,9 @@ impl Save {
         // Every change a device signs says what it is and who made it: the edit of the record this
         // person just made here.
         candidate.commit_with(
-            automerge::transaction::CommitOptions::default()
-                .with_message(shared_record::change_message(Some(person))),
+            automerge::transaction::CommitOptions::default().with_message(
+                message.unwrap_or_else(|| shared_record::change_message(Some(person))),
+            ),
         );
         let changes = candidate.save_after(&heads);
         // A write on no history is the whole record: the one that founds it.
@@ -277,6 +307,7 @@ impl Save {
         Laid::Wrote(Box::new(Taken {
             record: Box::new(candidate),
             windows,
+            before: heads,
             took,
         }))
     }
@@ -309,6 +340,13 @@ pub(crate) struct SharedDesktops {
     told: RefCell<Option<String>>,
     /// The session's loop, which a write under way wakes as it moves on.
     wake: tilo_service::LoopWake,
+    /// This device's publisher, as the fold of a layout resolves the windows that run here.
+    device: RefCell<String>,
+    /// The engine this session keeps its workspaces in, once it opened them.
+    engine: RefCell<Option<Arc<Engine>>>,
+    /// Moves whenever a layout is read or written here: what a history open on this device is
+    /// served again for.
+    moved: Cell<u64>,
     /// The person at this device, whose view of each workspace is theirs.
     person: RefCell<Option<String>>,
     /// Every record of every workspace this device reads and writes.
@@ -363,7 +401,7 @@ impl SharedDesktops {
             .held
             .borrow()
             .values()
-            .all(|held| held.pending.is_none())
+            .all(|held| held.pending.is_none() && held.pending_step.is_none())
             && self.seen.get() == Some((revision, tree.external_revision))
             && tree
                 .workspaces
@@ -404,12 +442,36 @@ impl SharedDesktops {
     /// resolves a window that runs here to the window it shows here. Returns whether anything
     /// changed.
     pub(crate) fn follow(&self, engine: &Engine, device: &str, tree: &mut DesktopTree) -> bool {
-        self.follow_layout(engine, device, tree) | self.follow_view(engine, tree)
+        let changed = self.follow_layout(engine, device, tree) | self.follow_view(engine, tree);
+        if self.device.borrow().as_str() != device {
+            device.clone_into(&mut self.device.borrow_mut());
+        }
+        changed
+    }
+
+    /// A number that moves whenever a layout is read or written here.
+    pub(crate) fn moved(&self) -> u64 {
+        self.moved.get()
+    }
+
+    /// Read and write the workspaces' layouts through `engine` from now on.
+    pub(crate) fn attach_engine(&self, engine: &Arc<Engine>) {
+        *self.engine.borrow_mut() = Some(Arc::clone(engine));
+    }
+
+    /// The engine this session keeps its workspaces in, once it opened them.
+    fn engine(&self) -> Option<Arc<Engine>> {
+        self.engine.borrow().clone()
+    }
+
+    /// The layout of `room`, as this device last read it.
+    pub(crate) fn layout(&self, room: WorkspaceId) -> Option<automerge::AutoCommit> {
+        self.held(&(room, Route::layout()), |held| held.kept.clone())
     }
 
     /// Fold the layout of every workspace in the engine's copy into `tree`.
     fn follow_layout(&self, engine: &Engine, device: &str, tree: &mut DesktopTree) -> bool {
-        let local = tree.salt;
+        let salt = tree.salt;
         let mut changed = false;
         for workspace in &mut tree.workspaces {
             let room = workspace.id();
@@ -417,7 +479,12 @@ impl SharedDesktops {
                 continue;
             }
             let key = (room, Route::layout());
-            let known = self.held(&key, |held| held.revision);
+            let (known, writing) = self.held(&key, |held| (held.revision, held.writing.is_some()));
+            // A write of this layout under way holds what the person just changed: the record has
+            // not taken it yet, and folding the record over the desk would put it back.
+            if writing {
+                continue;
+            }
             let Some((mut doc, revision)) = Self::record(engine, &key, known).ok().flatten() else {
                 // A workspace this device holds no record of (not its own, or one still arriving)
                 // says nothing of its layout yet: its record is read again next pass.
@@ -427,48 +494,78 @@ impl SharedDesktops {
                 });
                 continue;
             };
-            self.held(&key, |held| {
+            // The layout's own history is what a step of it is taken back from: a session that
+            // finds it here counts what it already holds as somebody's step, not as its own open
+            // change.
+            let folding = self.held(&key, |held| {
                 held.read = true;
                 held.revision = Some(revision);
+                if held.undo.is_none() {
+                    held.undo = Some(UndoLog::new(&mut doc));
+                }
+                if held.kept.is_none() {
+                    held.kept = Some(doc.clone());
+                    held.based = Some(revision);
+                }
+                let heads = doc.get_heads();
+                if held.folded.as_ref() == Some(&heads) {
+                    return None;
+                }
+                held.folded = Some(heads);
+                Some(doc.clone())
             });
-            let heads = doc.get_heads();
-            if self.held(&key, |held| held.folded.clone()).as_ref() == Some(&heads) {
+            let Some(doc) = folding else {
                 continue;
-            }
-            self.held(&key, |held| held.folded = Some(heads));
+            };
             let Some(desk) = shared_record::read(&doc, None) else {
                 // A record that holds no layout yet: nothing of it to show.
                 continue;
             };
-            self.opened_by.borrow_mut().insert(room, desk.opened_by);
-            let mine = |id: u64| local != 0 && peer_salt_of(id) == local;
-            let closed = self.closed_since_written(room, workspace);
-            let recorded = self.recorded.borrow_mut().insert(room, tabs_of(&desk.tree));
-            // A desk this session has not laid out from the record yet keeps nothing apart: what it
-            // holds that the record does not may be what someone closed while it was away.
-            let opened_here = |id: u64| {
-                mine(id)
-                    && recorded
-                        .as_ref()
-                        .is_some_and(|recorded| !recorded.contains(&id))
-            };
-            let kept = device::Kept {
-                // A strip this device made and left empty stays on its own desk: the record never
-                // holds an empty strip it made, and an empty row arriving here is nobody else's to
-                // see.
-                mine: &mine,
-                // A window this device opened that the record does not hold yet stays: another
-                // member's change that arrives before this device's own write comes back is no
-                // close of it.
-                private: &opened_here,
-                // A window this device closed is not laid back into its desk from the record: the
-                // write that follows takes its entry out instead.
-                closed: &|id| closed.contains(&id),
-                writing: false,
-            };
-            changed |= device::fold(&doc, workspace, device, &kept);
+            self.opened_by
+                .borrow_mut()
+                .insert(room, desk.opened_by.clone());
+            changed |= self.fold_into(room, &doc, &desk, workspace, salt, device);
         }
         changed
+    }
+
+    /// Show the layout `desk` says in `workspace`, keeping what this device decides alone: a strip
+    /// or a window this device made that the layout does not hold yet. Whether anything changed.
+    fn fold_into(
+        &self,
+        room: WorkspaceId,
+        doc: &automerge::AutoCommit,
+        desk: &tilo_desktop_model::ownership::SharedDesktop,
+        workspace: &mut Workspace,
+        salt: u16,
+        device: &str,
+    ) -> bool {
+        let mine = |id: u64| salt != 0 && peer_salt_of(id) == salt;
+        let closed = self.closed_since_written(room, workspace);
+        let recorded = self.recorded.borrow_mut().insert(room, tabs_of(&desk.tree));
+        // A desk this session has not laid out from the record yet keeps nothing apart: what it
+        // holds that the record does not may be what someone closed while it was away.
+        let opened_here = |id: u64| {
+            mine(id)
+                && recorded
+                    .as_ref()
+                    .is_some_and(|recorded| !recorded.contains(&id))
+        };
+        let kept = device::Kept {
+            // A strip this device made and left empty stays on its own desk: the record never
+            // holds an empty strip it made, and an empty row arriving here is nobody else's to
+            // see.
+            mine: &mine,
+            // A window this device opened that the record does not hold yet stays: another
+            // member's change that arrives before this device's own write comes back is no
+            // close of it.
+            private: &opened_here,
+            // A window this device closed is not laid back into its desk from the record: the
+            // write that follows takes its entry out instead.
+            closed: &|id| closed.contains(&id),
+            writing: false,
+        };
+        device::fold(doc, workspace, device, &kept)
     }
 
     /// Show every workspace in `tree` as the person here last left it.
@@ -587,6 +684,19 @@ impl SharedDesktops {
         if reached.is_none() && !holds && !shares {
             return;
         }
+        // What an arranging action just did is the change this write makes: it names who asked and
+        // what they did, and the windows it placed show the records they name.
+        let acted = self.held(&key, |held| held.acted.take());
+        let mut notes = self.notes.of_workspace(room);
+        let mut message = None;
+        if let Some(acted) = acted {
+            for (tab, record) in acted.shows {
+                if !notes.iter().any(|(held, _)| *held == tab) {
+                    notes.push((tab, record));
+                }
+            }
+            message = Some(acted.message);
+        }
         self.lay(
             engine,
             person,
@@ -599,7 +709,8 @@ impl SharedDesktops {
                 reached,
                 written: self.held(&key, |held| held.written.clone()),
                 own: tree.external_revision,
-                notes: self.notes.of_workspace(room),
+                notes,
+                message,
                 sealed,
             },
         );
@@ -609,6 +720,7 @@ impl SharedDesktops {
     /// already.
     fn lay(&self, engine: &Arc<Engine>, person: &str, revision: Option<[u8; 32]>, save: Save) {
         let engine = Arc::clone(engine);
+        let whose = person.to_owned();
         let person = person.to_owned();
         let key = (save.room, Route::layout());
         let (own, notes) = (save.own, save.notes.clone());
@@ -625,6 +737,7 @@ impl SharedDesktops {
         );
         let mut laying = Laying {
             writing,
+            person: whose,
             own,
             notes,
             revision,
@@ -653,12 +766,28 @@ impl SharedDesktops {
                 self.held(key, |held| held.written = Some(written));
                 self.keep(key, *record, laying.revision);
             }
-            Laid::Wrote(taken) => match taken.took {
+            Laid::Wrote(mut taken) => match taken.took {
                 Ok(_) => {
                     let written = written(&taken.record);
                     self.written_windows
                         .borrow_mut()
                         .insert(room, taken.windows);
+                    // The change is one step of this person's in the layout's own history: an undo
+                    // takes it back, whichever of their devices asks for it.
+                    let after = taken.record.get_heads();
+                    self.held(key, |held| {
+                        if let Some(log) = held.undo.as_mut() {
+                            log.record_committed_span(
+                                &taken.record,
+                                taken.before.clone(),
+                                after,
+                                None,
+                                None,
+                                Some(user(&laying.person)),
+                                None,
+                            );
+                        }
+                    });
                     self.held(key, |held| held.written = Some(written));
                     self.keep(key, *taken.record, laying.revision);
                 }
@@ -683,6 +812,197 @@ impl SharedDesktops {
                 self.say(&error, "the workspace's layout was not kept", room);
             }
         }
+    }
+
+    /// The last step of `room`'s layout `person` can take back, as who made it and what it did.
+    pub(crate) fn last_step(&self, room: WorkspaceId, person: &str) -> Option<(String, String)> {
+        use tilo_actions::Did;
+        let key = (room, Route::layout());
+        self.held(&key, |held| {
+            let entry = held
+                .undo
+                .as_ref()?
+                .next_undo_as(held.kept.as_ref()?, Some(&user(person)))?;
+            let step = entry.step?;
+            // Who asked for it: the invoker the step records, else the person whose desk it is.
+            let who = step
+                .invoker
+                .map_or_else(|| person.to_owned(), |invoker| invoker.actor);
+            let what = match step.what {
+                Some(Did::Verb(call)) => call.action.action,
+                _ => String::new(),
+            };
+            Some((who, what))
+        })
+    }
+
+    /// Take back (`redo` false) or bring back `person`'s last step of `room`'s layout, show what it
+    /// came to on this device's desk, and publish it. Whether a step was taken.
+    pub(crate) fn step(
+        &self,
+        room: WorkspaceId,
+        person: &str,
+        redo: bool,
+        handle: &DesktopHandle,
+    ) -> bool {
+        let Some(engine) = self.engine() else {
+            return false;
+        };
+        let engine = &engine;
+        let key = (room, Route::layout());
+        if self.held(&key, |held| held.writing.is_some()) {
+            // The layout is being written: the step is taken on the look that follows that write.
+            self.held(&key, |held| held.pending_step = Some(redo));
+            return false;
+        }
+        let Some(sealed) = self.sealed(engine, &key) else {
+            return false;
+        };
+        let (reached, revision, _) = self.reached(engine, &key);
+        let kept = self.held(&key, |held| held.kept.clone());
+        let mut doc = base_of(room, kept, reached);
+        doc.set_actor(actor_of_person(person));
+        let before = doc.get_heads();
+        let mut log = self
+            .held(&key, |held| held.undo.take())
+            .unwrap_or_else(|| UndoLog::new(&mut doc));
+        let stepped = if redo {
+            log.redo_as(&mut doc, Some(&user(person)), None, None)
+        } else {
+            log.undo_as(&mut doc, Some(&user(person)), None, None)
+        };
+        if stepped.is_none() {
+            self.held(&key, |held| held.undo = Some(log));
+            return false;
+        }
+        // What the step came to is what this device shows, as any other change of the layout is.
+        let device = self.device.borrow().clone();
+        let mut tree = handle.read(Clone::clone);
+        let salt = tree.salt;
+        if let Some(desk) = shared_record::read(&doc, None)
+            && let Some(workspace) = tree.workspaces.iter_mut().find(|held| held.id() == room)
+        {
+            self.fold_into(room, &doc, &desk, workspace, salt, &device);
+        }
+        handle.replace_tree(tree);
+        let own = handle.revision();
+        let heads = doc.committed_heads();
+        let notes = self.notes.of_workspace(room);
+        self.held(&key, |held| {
+            held.undo = Some(log);
+            held.folded = Some(heads.clone());
+        });
+        self.keep(&key, doc.clone(), revision);
+        self.publish(
+            engine,
+            &key,
+            doc,
+            Some(Written::Layout(heads, own, notes)),
+            &before,
+            revision,
+            sealed,
+        );
+        true
+    }
+
+    /// Note that `asked` made `action` of `room`'s layout: the change that follows it names who
+    /// asked and what they did, and the windows it placed show the records they name.
+    pub(crate) fn performed(
+        &self,
+        room: WorkspaceId,
+        asked: &str,
+        action: &tilo_session_core::arrangement::ArrangementAction,
+        shows: &[(tilo_desktop_model::TabId, String)],
+    ) {
+        let message = tilo_actions::ActionContext {
+            invoker: Some(tilo_actions::ActionInvoker::actor(asked.to_owned())),
+            what: Some(tilo_actions::Did::Verb(tilo_actions::VerbCall::new(
+                tilo_actions::ActionKey::new(
+                    "so.tilo.session",
+                    "arrangement",
+                    tilo_session_core::arrangement::verb(action),
+                ),
+                std::iter::empty(),
+            ))),
+            ..tilo_actions::ActionContext::default()
+        }
+        .change_message()
+        .unwrap_or_else(|| shared_record::change_message(Some(asked)));
+        self.held(&(room, Route::layout()), |held| {
+            held.acted = Some(Acted {
+                message,
+                shows: shows.to_vec(),
+            });
+        });
+    }
+
+    /// Take the undo or redo the person asked for while the layout was being written, now that the
+    /// workspace answered.
+    pub(crate) fn retry_step(&self, person: &str, handle: &DesktopHandle) {
+        let Some(room) = handle.read(|tree| tree.active_workspace().map(Workspace::id)) else {
+            return;
+        };
+        let key = (room, Route::layout());
+        let asked = self.held(&key, |held| {
+            if held.writing.is_some() {
+                None
+            } else {
+                held.pending_step.take()
+            }
+        });
+        if let Some(redo) = asked {
+            self.step(room, person, redo, handle);
+        }
+    }
+
+    /// Write what `edit` changes in `room`'s layout — what a change of it was, a name over a run of
+    /// them — and publish it. `own` is the tree revision the desk stands at. Whether anything was
+    /// written.
+    pub(crate) fn edit(
+        &self,
+        room: WorkspaceId,
+        person: &str,
+        own: u64,
+        edit: impl FnOnce(&mut automerge::AutoCommit) -> bool,
+    ) -> bool {
+        let Some(engine) = self.engine() else {
+            return false;
+        };
+        let engine = &engine;
+        let key = (room, Route::layout());
+        if self.held(&key, |held| held.writing.is_some()) {
+            return false;
+        }
+        let Some(sealed) = self.sealed(engine, &key) else {
+            return false;
+        };
+        let (reached, revision, _) = self.reached(engine, &key);
+        let kept = self.held(&key, |held| held.kept.clone());
+        let mut doc = base_of(room, kept, reached);
+        doc.set_actor(actor_of_person(person));
+        let before = doc.get_heads();
+        if !edit(&mut doc) {
+            doc.rollback();
+            return false;
+        }
+        if doc.pending_ops() == 0 {
+            return false;
+        }
+        shared_record::commit_change(&mut doc, person, crate::activity::now_seconds(), None);
+        let heads = doc.committed_heads();
+        let notes = self.notes.of_workspace(room);
+        self.held(&key, |held| held.folded = Some(heads.clone()));
+        self.keep(&key, doc.clone(), revision);
+        self.publish(
+            engine,
+            &key,
+            doc,
+            Some(Written::Layout(heads, own, notes)),
+            &before,
+            revision,
+            sealed,
+        );
+        true
     }
 
     /// Write the person here's view of every workspace whose view they changed into that
@@ -728,7 +1048,7 @@ impl SharedDesktops {
                 self.keep(&key, held, revision);
                 continue;
             }
-            wrote |= self.publish_view(
+            wrote |= self.publish(
                 engine,
                 &key,
                 held,
@@ -781,7 +1101,7 @@ impl SharedDesktops {
     /// sealed change. Members read a sealed record from its sealed history alone, so a record
     /// founded in the clear would leave them a genesis they cannot account for and a record they
     /// could never read.
-    fn publish_view(
+    fn publish(
         &self,
         engine: &Arc<Engine>,
         key: &Key,
@@ -796,12 +1116,14 @@ impl SharedDesktops {
             return false;
         }
         // Every change a device signs says what it is and who made it: the edit of the record this
-        // person just made here.
-        let author = self.person.borrow().clone();
-        candidate.commit_with(
-            automerge::transaction::CommitOptions::default()
-                .with_message(shared_record::change_message(author.as_deref())),
-        );
+        // person just made here. A step taken from the history is its own change already.
+        if candidate.pending_ops() > 0 {
+            let author = self.person.borrow().clone();
+            candidate.commit_with(
+                automerge::transaction::CommitOptions::default()
+                    .with_message(shared_record::change_message(author.as_deref())),
+            );
+        }
         let changes = candidate.save_after(heads);
         // A write on no history is the whole record: the one that founds it.
         let founding = heads.is_empty();
@@ -818,11 +1140,11 @@ impl SharedDesktops {
                 .await
         });
         if let Some(written) = writing.done() {
-            self.view_published(key, written, candidate, replaced, revision);
+            self.published(key, written, candidate, replaced, revision);
             return false;
         }
         self.held(key, |held| {
-            held.writing = Some(Going::View(Box::new(Publishing {
+            held.writing = Some(Going::Write(Box::new(Publishing {
                 writing,
                 candidate,
                 replaced,
@@ -840,10 +1162,10 @@ impl SharedDesktops {
                 continue;
             };
             let going = match going {
-                Going::View(mut publishing) => match publishing.writing.done() {
+                Going::Write(mut publishing) => match publishing.writing.done() {
                     Some(written) => {
                         let publishing = *publishing;
-                        self.view_published(
+                        self.published(
                             &key,
                             written,
                             publishing.candidate,
@@ -852,7 +1174,7 @@ impl SharedDesktops {
                         );
                         continue;
                     }
-                    None => Going::View(publishing),
+                    None => Going::Write(publishing),
                 },
                 Going::Layout(mut laying) => match laying.writing.done() {
                     Some(laid) => {
@@ -868,9 +1190,9 @@ impl SharedDesktops {
         idle
     }
 
-    /// What the workspace did with `candidate`, this device's write of the person's view of `key`'s
-    /// record: what it took is the view the next look writes on, and what it refused is dropped.
-    fn view_published(
+    /// What the workspace did with `candidate`, this device's write of `key`'s record: what it took
+    /// is what the next look writes on, and what it refused is dropped.
+    fn published(
         &self,
         key: &Key,
         written: crate::engine_write::Written,
@@ -881,7 +1203,7 @@ impl SharedDesktops {
         let room = key.0;
         match written {
             Ok(_write) => {
-                let Some(written @ Written::View(_)) = replaced else {
+                let Some(written) = replaced else {
                     return;
                 };
                 self.held(key, |held| held.written = Some(written));
@@ -889,11 +1211,13 @@ impl SharedDesktops {
             }
             Err(error) => {
                 // The record is not the workspace's until it takes it: the next look writes it
-                // again, on what the workspace holds and not on the write it refused.
+                // again, on what the workspace holds and not on the write it refused. A history
+                // over the refused copy names changes the workspace does not hold.
                 self.held(key, |held| {
                     held.written = None;
                     held.kept = None;
                     held.based = None;
+                    held.undo = None;
                 });
                 self.say(&error, "the workspace's layout was not published", room);
             }
@@ -936,6 +1260,7 @@ impl SharedDesktops {
     /// Keep `record` as this device's copy of `key`'s record, read at `revision` when this look
     /// read it; one read against an unchanged revision keeps the revision it already had.
     fn keep(&self, key: &Key, record: automerge::AutoCommit, revision: Option<[u8; 32]>) {
+        self.moved.set(self.moved.get().wrapping_add(1));
         self.held(key, |held| {
             held.kept = Some(record);
             if revision.is_some() {
@@ -1105,7 +1430,7 @@ mod tests {
             "the record was not read"
         );
         held.read = true;
-        held.writing = Some(Going::View(Box::new(Publishing {
+        held.writing = Some(Going::Write(Box::new(Publishing {
             writing: crate::engine_write::Writing::write(
                 std::sync::Arc::new(|| {}) as tilo_service::Wake,
                 async { Err("the test writes nothing".to_owned()) },
@@ -1129,6 +1454,7 @@ mod tests {
                 async { Laid::Failed("the test writes nothing".to_owned(), None) },
                 unused,
             ),
+            person: "ada".to_owned(),
             own: 7,
             notes: vec![(3, "so.tilo.notes".to_owned())],
             revision: Some([1; 32]),
@@ -1216,6 +1542,7 @@ mod tests {
                     async { std::future::pending::<Laid>().await },
                     || Laid::Failed("the test's write never answers".to_owned(), None),
                 ),
+                person: "ada".to_owned(),
                 own: 7,
                 notes: Vec::new(),
                 revision: None,
@@ -1229,5 +1556,137 @@ mod tests {
             desktops.held(&key, |held| held.writing.is_some()),
             "the write is still under way"
         );
+    }
+}
+
+/// The workspaces' layouts, as the pane reads the desk's own history: the record of each, and the
+/// model's word for what its changes were.
+pub(crate) struct LayoutHistory {
+    layouts: Rc<SharedDesktops>,
+    person: String,
+}
+
+impl LayoutHistory {
+    pub(crate) fn new(layouts: Rc<SharedDesktops>, person: &str) -> Self {
+        Self {
+            layouts,
+            person: person.to_owned(),
+        }
+    }
+
+    fn room_of(tree: &DesktopTree, slot: WorkspaceSlot) -> Option<WorkspaceId> {
+        let room = tree
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.slot == slot)
+            .map(Workspace::id)?;
+        (!room.is_nil()).then_some(room)
+    }
+}
+
+impl crate::activity::DeskHistory for LayoutHistory {
+    fn history(
+        &self,
+        tree: &DesktopTree,
+        slot: WorkspaceSlot,
+    ) -> Option<tilo_desktop_surface::activity::ActivitySnapshot> {
+        let room = Self::room_of(tree, slot)?;
+        Some(tilo_desktop_surface::activity::ActivitySnapshot::of_layout(
+            tree.clone(),
+            self.layouts.layout(room)?,
+        ))
+    }
+
+    fn documents(&self, tree: &DesktopTree) -> Vec<(WorkspaceSlot, automerge::AutoCommit)> {
+        tree.workspaces
+            .iter()
+            .filter_map(|workspace| Some((workspace.slot, self.layouts.layout(workspace.id())?)))
+            .collect()
+    }
+
+    fn describe(
+        &self,
+        tree: &DesktopTree,
+        slot: WorkspaceSlot,
+        write: &mut dyn FnMut(&mut automerge::AutoCommit) -> bool,
+    ) -> bool {
+        let Some(room) = Self::room_of(tree, slot) else {
+            return false;
+        };
+        self.layouts
+            .edit(room, &self.person, tree.external_revision, |doc| write(doc))
+    }
+
+    fn moved(&self) -> u64 {
+        self.layouts.moved()
+    }
+
+    fn attach_engine(&self, engine: &Arc<Engine>) {
+        self.layouts.attach_engine(engine);
+    }
+}
+
+/// The workspaces `handle`'s desk shows, by id.
+fn tree_workspaces(handle: &DesktopHandle) -> Vec<WorkspaceId> {
+    handle.read(|tree| tree.workspaces.iter().map(Workspace::id).collect())
+}
+
+/// The desk's layout as the arrangement keeps it: the layout of the workspace in front, which every
+/// member shows.
+pub(crate) struct Steps {
+    layouts: Rc<SharedDesktops>,
+    handle: DesktopHandle,
+}
+
+impl Steps {
+    pub(crate) fn new(layouts: Rc<SharedDesktops>, handle: DesktopHandle) -> Self {
+        Self { layouts, handle }
+    }
+
+    fn room(&self) -> Option<WorkspaceId> {
+        let room = self
+            .handle
+            .read(|tree| tree.active_workspace().map(Workspace::id))?;
+        (!room.is_nil()).then_some(room)
+    }
+}
+
+impl tilo_session_core::arrangement::Layouts for Steps {
+    fn step(&self, person: &str, redo: bool) -> tilo_session_core::arrangement::Stepped {
+        use tilo_session_core::arrangement::Stepped;
+        let Some(room) = self.room() else {
+            return Stepped::None;
+        };
+        if self.layouts.step(room, person, redo, &self.handle) {
+            Stepped::Taken
+        } else {
+            Stepped::None
+        }
+    }
+
+    fn last_step(&self, person: &str) -> Option<(String, String)> {
+        self.layouts.last_step(self.room()?, person)
+    }
+
+    fn acted(
+        &self,
+        tree: &DesktopTree,
+        asked: &str,
+        action: &tilo_session_core::arrangement::ArrangementAction,
+        shows: &[(tilo_desktop_model::TabId, String)],
+    ) {
+        let Some(room) = tree.active_workspace().map(Workspace::id) else {
+            return;
+        };
+        self.layouts.performed(room, asked, action, shows);
+    }
+
+    fn shown(&self) -> std::collections::BTreeMap<tilo_desktop_model::TabId, String> {
+        tree_workspaces(&self.handle)
+            .into_iter()
+            .filter_map(|room| self.layouts.layout(room))
+            .filter_map(|doc| shared_record::read(&doc, None))
+            .flat_map(|desk| desk.records)
+            .collect()
     }
 }

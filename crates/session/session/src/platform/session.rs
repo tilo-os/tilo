@@ -274,6 +274,15 @@ impl Session {
             .map_or_else(crate::platform::records::Changes::default, |records| {
                 records.changes()
             });
+        // What each open window shows, as the broker knows it: the desk offers the windows a person
+        // may share from, and the sharing doors read it.
+        let notes = options.launches.notes();
+        // The workspaces' layouts, which hold the desk itself: what every member shows, and what a
+        // change of it is written into.
+        let desktops = Rc::new(crate::shared_desktop::SharedDesktops::new(
+            std::sync::Arc::clone(&notes),
+            options.wake.clone(),
+        ));
         let activity = crate::activity::Activity::new(
             options.state.as_deref(),
             options.person.clone(),
@@ -282,6 +291,10 @@ impl Session {
             Some(std::sync::Arc::new(options.lists.clone())
                 as std::sync::Arc<dyn crate::platform::apps::Apps>),
             Some(options.wake.handle()),
+            Box::new(crate::shared_desktop::LayoutHistory::new(
+                Rc::clone(&desktops),
+                &options.person,
+            )),
         );
         tilo_startup_metrics::mark("session-activity-done");
         // When each display's bar shows over the window covering it: the desk's
@@ -313,33 +326,16 @@ impl Session {
         desktop.set_theme(presentation.theme.clone());
         tilo_startup_metrics::mark("desk-build-done");
         let handle = desktop.with_policy(|policy| policy.handle().clone());
-        // The desk as this device left it: its workspaces, the windows they
-        // held, and the apps those windows open again.
-        let mut restore = crate::desk_restore::Restore::default();
-        match activity.opened_desk() {
-            crate::desk_doc::Kept::Desk(kept) => {
-                let mut kept = *kept;
-                // A launch that no window came for is not a window this start
-                // restores, and keeping it would leave one more of them on the
-                // desk with every restart.
-                crate::desk_restore::without_unfilled(&mut kept);
-                restore = crate::desk_restore::Restore::of(&kept);
-                handle.replace_tree(kept);
-            }
-            // The person's desk is on disk and this session did not open it:
-            // they are looking at a desk that is not theirs, and have to be
-            // told where their own still is.
-            crate::desk_doc::Kept::Refused(refusal) => {
-                crate::notices::tell_desk_not_opened(&notifications, &refusal);
-            }
-            crate::desk_doc::Kept::None => {}
+        // The desk is the workspaces' layouts, which the first pass lays out as their records hold
+        // them; what this device keeps of its own is what it showed.
+        let restore = crate::desk_restore::Restore::default();
+        let mut tree = handle.read(Clone::clone);
+        if activity.show(&mut tree) {
+            handle.replace_tree(tree);
         }
-        // What each window shows, as the broker knows it: the desk offers the
-        // windows a person may share from, and the sharing doors read it.
-        let notes = options.launches.notes();
-        // The person's arrangement: the desk this session holds, which the
-        // workspace shares as its own desk record.
-        let arrangement = crate::arrangement::open(&options.person, handle.clone(), &activity);
+        // The person's arrangement: the desk this session holds, whose layout the workspaces keep.
+        let arrangement =
+            crate::arrangement::open(&options.person, handle.clone(), Rc::clone(&desktops));
         let arrangement = Rc::new(RefCell::new(arrangement));
         // Whether the person is mid-gesture or typing, as only the
         // compositor knows: what an arranging action that is not their own
@@ -1484,10 +1480,7 @@ impl Session {
             folder_import: RefCell::new(None),
             sync,
             engine,
-            desktops: crate::shared_desktop::SharedDesktops::new(
-                std::sync::Arc::clone(&notes),
-                options.wake.clone(),
-            ),
+            desktops,
             notes,
             membership_fed: std::cell::RefCell::new(None),
             landings,

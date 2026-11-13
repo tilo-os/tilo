@@ -564,13 +564,9 @@ impl WorkspaceActivityPane {
                 t.set_show_day_headings(true);
                 t
             },
-            // A workspace is a cluster of windows saved/reopened collaboratively. Which workspace,
-            // strip or window shows, and how wide it is, is the device's view, written on every
-            // switch and drag: no history, and no place in the window, which switching back and
-            // forth used to fill until nothing anyone did was left.
-            source: HistorySource::new()
-                .with_artifact_kind(ArtifactKind::Cluster)
-                .passing_over(tilo_desktop_model::desktop_doc::only_moves_the_view),
+            // A workspace is a cluster of windows saved/reopened collaboratively: what its layout
+            // record holds is one row per change of the desk.
+            source: HistorySource::new().with_artifact_kind(ArtifactKind::Cluster),
             revert_intent,
             name_intent,
             undo_intent,

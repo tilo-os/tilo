@@ -1,6 +1,6 @@
 //! A causal workspace and a host for the activity pane's own tests.
-//! [`TestTree`] pairs a desktop projection with its workspace document and writes through the same
-//! `desktop_doc` mutations a native host uses, so the pane reads real Automerge history.
+//! [`TestTree`] pairs a desktop with the workspace's layout record and writes through the same
+//! record a session does, so the pane reads real Automerge history.
 //! [`TestHost`] answers for a device with a fixed local user and keeps its private read state in
 //! memory.
 use super::{ActivityHost, ActivityTree, WorkspaceDeparture, WorkspaceSeenFrontier};
@@ -157,53 +157,95 @@ impl TestTree {
         let _ = tilo_resource::history::commit_stamped(&mut self.doc);
     }
 
-    pub fn seed_doc_from_cache(&mut self) {
-        tilo_desktop_model::desktop_doc::seed(&mut self.doc, &self.desktop);
-        self.commit_workspace_change();
+    /// Write the desk into the workspace's layout record, as a session's pass does, and say whether
+    /// it changed anything.
+    pub fn seed_doc_from_cache(&mut self) -> bool {
+        let layout = tilo_desktop_model::ownership::SharedDesktop {
+            tree: self.desktop.clone(),
+            ..Default::default()
+        };
+        let wrote =
+            tilo_desktop_model::shared_record::write(&mut self.doc, &layout).unwrap_or(false);
+        if wrote {
+            self.commit_workspace_change();
+        }
+        wrote
     }
 
+    /// Show the desk the layout record holds, as the pane's next read of it does.
     pub fn resync_cache_from_doc(&mut self) {
-        tilo_desktop_model::desktop_doc::rebuild(&self.doc, &mut self.desktop);
-    }
-
-    pub fn set_active(&mut self, id: WorkspaceSlot) {
-        if self.desktop.workspaces.iter().any(|w| w.slot == id) {
-            self.desktop.active = id;
-            tilo_desktop_model::desktop_doc::set_active(&mut self.doc, id);
+        let Some(layout) = tilo_desktop_model::shared_record::read(&self.doc, None) else {
+            return;
+        };
+        for workspace in &mut self.desktop.workspaces {
+            if let Some(found) = layout
+                .tree
+                .workspaces
+                .iter()
+                .find(|found| found.id() == workspace.id())
+            {
+                workspace.strips.clone_from(&found.strips);
+            }
         }
     }
 
+    /// Show `id`, which the device shows alone: no record holds which workspace is in front.
+    pub fn set_active(&mut self, id: WorkspaceSlot) {
+        if self.desktop.workspaces.iter().any(|w| w.slot == id) {
+            self.desktop.active = id;
+        }
+    }
+
+    /// A workspace on the desk. Which workspaces a desk shows is the workspace list's, which no
+    /// record of the layout holds.
     pub fn append_empty_workspace(&mut self, name: &str) -> WorkspaceSlot {
         let slot = WorkspaceSlot(next_id());
         let strip_id = StripId(next_id());
         let workspace = empty_workspace(slot, name, vec![Strip::new(strip_id, "Main")]);
-        let identity = workspace.id();
         self.desktop.active_strip.insert(slot, strip_id);
         self.desktop.workspaces.push(workspace);
-        tilo_desktop_model::desktop_doc::append_workspace(&mut self.doc, slot, name, identity);
         slot
     }
 
+    /// A window opened into the first group of the workspace in front, as a launch into it is: the
+    /// desk shows it and the layout record holds it.
     pub fn doc_append_tab_to_first_group_of_active_workspace(
         &mut self,
         tab_id: u64,
         title: String,
         tile_blob: Vec<u8>,
     ) -> bool {
-        tilo_desktop_model::desktop_doc::append_tab(
-            &mut self.doc,
-            self.desktop.active,
-            None,
-            tab_id,
+        let Some(workspace) = self
+            .desktop
+            .workspaces
+            .iter_mut()
+            .find(|workspace| workspace.slot == self.desktop.active)
+        else {
+            return false;
+        };
+        let Some(group) = workspace
+            .strips
+            .iter_mut()
+            .find_map(|strip| strip.window_groups.first_mut())
+        else {
+            return false;
+        };
+        let tile = serde_json::from_slice(&tile_blob).unwrap_or(TileContent::Stub {
+            kind: AppKind::Other(String::new()),
+            label: title.clone(),
+        });
+        group.tabs.push(Tab {
+            id: tab_id,
             title,
-            tile_blob,
-        )
-    }
-
-    fn doc_insert_sandbox(&mut self, slot: WorkspaceSlot, cap: &CapOverride) {
-        if tilo_desktop_model::desktop_doc::insert_sandbox(&mut self.doc, slot, cap) {
-            self.commit_workspace_change();
+            tile,
+            app_title: None,
+            view: String::new(),
+            pinned: false,
+        });
+        if group.active_tab == 0 {
+            group.active_tab = tab_id;
         }
+        self.seed_doc_from_cache()
     }
 
     /// Let an app reach a sandboxed resource, as `grantor` , who must be allowed to grant in the
@@ -228,8 +270,7 @@ impl TestTree {
         }
         let id = workspace
             .grant_sandbox(cap.granted_by(collab_types::caps::Principal::Person(grantor.clone())));
-        let stored = workspace.sandbox.iter().find(|c| c.id == id).cloned()?;
-        self.doc_insert_sandbox(slot, &stored);
+        let _ = workspace.sandbox.iter().find(|c| c.id == id)?;
         Some(id)
     }
 
@@ -250,9 +291,6 @@ impl TestTree {
         {
             return false;
         }
-        if tilo_desktop_model::desktop_doc::revoke_sandbox(&mut self.doc, slot, cap_id) {
-            self.commit_workspace_change();
-        }
         true
     }
 
@@ -262,21 +300,6 @@ impl TestTree {
             if workspace.owner().is_none() {
                 workspace.set_owner(user.clone());
                 adopted.push(workspace.slot);
-            }
-        }
-        for id in &adopted {
-            if tilo_desktop_model::desktop_doc::set_owner(&mut self.doc, *id, user.as_str()) {
-                self.commit_workspace_change();
-            }
-            let caps = self
-                .desktop
-                .workspaces
-                .iter()
-                .find(|w| w.slot == *id)
-                .map(|w| w.sandbox.clone())
-                .unwrap_or_default();
-            for cap in caps {
-                self.doc_insert_sandbox(*id, &cap);
             }
         }
         adopted
@@ -319,10 +342,7 @@ impl TestTree {
             status,
             completed_at: tilo_clock::unix_now_i64(),
         };
-        workspace.effect_receipts.push(receipt.clone());
-        if tilo_desktop_model::desktop_doc::upsert_effect_receipt(&mut self.doc, slot, &receipt) {
-            self.commit_workspace_change();
-        }
+        workspace.effect_receipts.push(receipt);
         true
     }
 

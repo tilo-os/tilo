@@ -19,7 +19,6 @@ use tilo_notifications_service::Notifications;
 use tilo_system_service::update;
 use ui::format::NaiveDate;
 
-use crate::desk_doc::StateNotice;
 use crate::drives::Medium;
 use crate::i18n::{t, t_args};
 use crate::notifications::tell_daemon;
@@ -190,22 +189,6 @@ pub fn wake_notice(event: &crate::platform::fabric::wake::WakeEvent) -> Option<N
 }
 
 /// Tell the person the desk this device saved was not opened, and stays until they let it go: it is
-/// untouched on disk, and a desk that is not theirs looks exactly like theirs. Which file it is and
-/// what it said goes to the record beside it and the log, where whoever fixes it reads it.
-pub(crate) fn tell_desk_not_opened(
-    notifications: &std::cell::RefCell<crate::notifications::SessionNotifications>,
-    refusal: &StateNotice,
-) {
-    notifications.borrow().tell(
-        &Notice::new(
-            t("desk-not-opened-app-name"),
-            2,
-            refusal.title(),
-            t("desk-not-opened-nothing-written"),
-        )
-        .staying(Some(Duration::ZERO)),
-    );
-}
 
 /// Tell the person the desk style they chose did not load or failed, as `shell.md` §6 has it: the
 /// desk draws the built-in strips while their choice stays as it was.

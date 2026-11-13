@@ -41,6 +41,8 @@ pub(crate) struct Restore {
     held: Vec<Saved>,
     /// When [`Self::held`] was last read against admission: once a second, not on every pass.
     held_checked: Option<Instant>,
+    /// Whether the desk has been laid out from the workspaces' layouts, which happens once.
+    seeded: bool,
 }
 
 /// A window the person left open, and the app that opens it again.
@@ -63,18 +65,21 @@ struct Opening {
 }
 
 impl Restore {
-    /// The windows of `tree` that open again, in the order they are asked: the ones on the desk in
-    /// front first, then the rest in the order the person left them.
-    pub(crate) fn of(tree: &DesktopTree) -> Self {
+    /// Take up the windows `tree` holds the first time this session lays the desk out from the
+    /// workspaces' layouts: every window that opens again, the ones on the desk in front first, then
+    /// the rest in the order the person left them. Whether this is that first time, in which case
+    /// what it took is all of them and no window is one that arrived.
+    pub(crate) fn start(&mut self, tree: &mut DesktopTree) -> bool {
+        if self.seeded {
+            return false;
+        }
+        self.seeded = true;
+        without_unfilled(tree);
         let mut saved = waiting_in(tree, |_| true);
         // Stable, so the desk's own order stands within each workspace.
         saved.sort_by_key(|(workspace, _)| *workspace != tree.active);
-        Self {
-            waiting: saved.into_iter().map(|(_, saved)| saved).collect(),
-            opening: None,
-            held: Vec::new(),
-            held_checked: None,
-        }
+        self.waiting = saved.into_iter().map(|(_, saved)| saved).collect();
+        true
     }
 
     /// Ask, after what is waiting already, for the windows of the workspace `slot` of `tree` that

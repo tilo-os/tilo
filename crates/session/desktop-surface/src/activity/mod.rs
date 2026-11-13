@@ -51,13 +51,24 @@ type Commit = std::rc::Rc<dyn Fn(&DesktopTree)>;
 pub struct ActivitySnapshot {
     pub desktop: DesktopTree,
     pub doc: AutoCommit,
-    /// The workspace whose document this is, or `None` when it is the device's own document of the
-    /// whole desk.
+    /// The workspace whose document this is, or `None` when the document is the desk's own.
     workspace: Option<tilo_desktop_model::WorkspaceId>,
+    /// What the document holds the desk as.
+    shape: Shape,
     /// What takes a change the model wrote back to the desk it came from: a host that keeps the
     /// workspace's own layout applies it here, and a host whose history is read only keeps none.
     commit: Option<Commit>,
 }
+/// What a snapshot's document holds the desk as.
+#[derive(Clone, Copy)]
+enum Shape {
+    /// The device's whole desk, as [`tilo_desktop_model::desktop_doc`] keeps it.
+    Devices,
+    /// One workspace's layout, as the workspace's
+    /// [`tilo_desktop_model::shared_record`] holds it.
+    Layout,
+}
+
 impl ActivitySnapshot {
     /// Snapshot the active workspace of `desktop` from its admitted owner document.
     pub fn new(desktop: DesktopTree, doc: AutoCommit) -> Result<Self, String> {
@@ -69,6 +80,7 @@ impl ActivitySnapshot {
             desktop,
             doc,
             workspace: Some(workspace),
+            shape: Shape::Devices,
             commit: None,
         };
         tilo_desktop_model::projection::apply_admitted_workspace(
@@ -87,6 +99,22 @@ impl ActivitySnapshot {
             desktop,
             doc,
             workspace: None,
+            shape: Shape::Devices,
+            commit: None,
+        };
+        let _ = snapshot.resync_activity_cache();
+        snapshot
+    }
+
+    /// Snapshot the desk of `desktop` from a workspace's layout record: the strips, window groups
+    /// and windows it holds, and the changes of it a history lists.
+    #[must_use]
+    pub fn of_layout(desktop: DesktopTree, doc: AutoCommit) -> Self {
+        let mut snapshot = Self {
+            desktop,
+            doc,
+            workspace: None,
+            shape: Shape::Layout,
             commit: None,
         };
         let _ = snapshot.resync_activity_cache();
@@ -129,10 +157,32 @@ impl ActivityTree for ActivitySnapshot {
     }
     fn resync_activity_cache(&mut self) -> Result<(), String> {
         let Some(workspace) = self.workspace else {
-            // The whole desk, out of the device's document: its topology,
-            // and the view it was left in.
-            tilo_desktop_model::desktop_doc::rebuild(&self.doc, &mut self.desktop);
-            tilo_desktop_model::desktop_doc::rebuild_view(&self.doc, &mut self.desktop);
+            match self.shape {
+                // The whole desk, out of the device's document: its topology, and the view it was
+                // left in.
+                Shape::Devices => {
+                    tilo_desktop_model::desktop_doc::rebuild(&self.doc, &mut self.desktop);
+                    tilo_desktop_model::desktop_doc::rebuild_view(&self.doc, &mut self.desktop);
+                }
+                // The layout one workspace holds, and no other: what it says is what the window
+                // showed then.
+                Shape::Layout => {
+                    let Some(layout) = tilo_desktop_model::shared_record::read(&self.doc, None)
+                    else {
+                        return Ok(());
+                    };
+                    for held in &mut self.desktop.workspaces {
+                        if let Some(found) = layout
+                            .tree
+                            .workspaces
+                            .iter()
+                            .find(|found| found.id() == held.id())
+                        {
+                            held.strips.clone_from(&found.strips);
+                        }
+                    }
+                }
+            }
             return Ok(());
         };
         // A historical projection must not retain tabs that only exist in the current cache.

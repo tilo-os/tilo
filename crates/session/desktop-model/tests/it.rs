@@ -17,8 +17,6 @@ pub mod closed_tabs;
 pub mod collaborator;
 #[path = "commands.rs"]
 pub mod commands;
-#[path = "desktop_doc.rs"]
-pub mod desktop_doc;
 #[path = "history.rs"]
 pub mod history;
 #[path = "one_desk.rs"]

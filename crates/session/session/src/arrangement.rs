@@ -18,9 +18,6 @@ use tilo_desktop_surface::DesktopHandle;
 use tilo_session_core::arrangement::Door;
 use tilo_session_core::door::{Look, Published};
 
-#[cfg(target_os = "linux")]
-use crate::activity::Activity;
-
 pub use tilo_session_core::arrangement::{
     Arrangement, ArrangementAction, Ask, Busy, Catalog, Find, FindDone, Found, Item, OPERATION,
     PLACE_KIND, PlaceReading, RECORD_RESOURCE, RESOURCE, ROW_KIND, Reading, RowReading, STRIP_KIND,
@@ -28,12 +25,17 @@ pub use tilo_session_core::arrangement::{
     place_kind_resource, placed, resources, row_kind_resource, strip_kind_resource, tab_app,
 };
 
-/// `person` 's arrangement of `handle` 's desk, whose changes `activity` keeps.
+/// `person` 's arrangement of `handle` 's desk, whose layout `layouts` keeps.
 #[cfg(target_os = "linux")]
 #[must_use]
-pub(crate) fn open(person: &str, handle: DesktopHandle, activity: &Activity) -> Arrangement {
+pub(crate) fn open(
+    person: &str,
+    handle: DesktopHandle,
+    layouts: Rc<crate::shared_desktop::SharedDesktops>,
+) -> Arrangement {
     let names = Rc::new(crate::app_names::window_name);
-    Arrangement::new(person, handle, activity.desk(), names)
+    let steps = crate::shared_desktop::Steps::new(layouts, handle.clone());
+    Arrangement::new(person, handle, Rc::new(steps), names)
 }
 
 /// What this session's compositor knows of the person's gesture and typing, as the arrangement's

@@ -1,10 +1,9 @@
-//! The device's whole-desktop document: every workspace this machine holds, as one
-//! automerge document the host keeps for local history and recovery. It describes
-//! every workspace, so it is never handed to a peer. This module is the only
-//! definition of its shape: [`seed`] writes it from a [`DesktopTree`], [`rebuild`]
-//! reads it back, and every other function is a narrow edit that mirrors one change
-//! the tree already made. Topology is [`crate::topology`]'s; the host owns the
-//! document, decides when to commit, and stamps history.
+//! A desk kept as one document: every workspace a host holds, its strips, groups and windows, and
+//! how that host showed it. A native session keeps no such document — its desk is the workspaces'
+//! layout records, which every member shows — and a page keeps its own copy of the desk here.
+//! This module is the only definition of the shape: [`seed`] writes it from a [`DesktopTree`],
+//! [`rebuild`] reads it back. Topology is [`crate::topology`]'s; the host owns the document, decides
+//! when to commit, and stamps history.
 //! Shape: `{ active: uint, authors_v1?: {actor → author},
 //! window_records_v1?: {tab id → record id}, window_authors_v1?: {strip or
 //! tab id → person}, window_opened_by_v1?: {tab id → json agent run},
@@ -27,8 +26,7 @@ use tilo_sort::CompactSort as _;
 use automerge::{
     AutoCommit, ObjId, ObjType, Prop, ROOT, ReadDoc, ScalarValue, Value, transaction::Transactable,
 };
-use collab_types::caps::CapOverride;
-use tilo_action_policy::{Grant, GrantId, Preset, Role, Subject, WorkspacePolicy};
+use tilo_action_policy::{Grant, Preset, Role, Subject, WorkspacePolicy};
 
 use crate::app::AppKind;
 use crate::arrangement::{Arrangement, ArrangementKind, CanvasPlace, FloatPlace};
@@ -40,7 +38,6 @@ use crate::projection::{
 };
 use crate::receipt::WorkspaceEffectReceipt;
 use crate::serde_ids::deserialize_id_map;
-use crate::topology::{DropTarget, TabMove};
 use crate::tree::DesktopTree;
 use crate::width::WindowWidth;
 use crate::workspace::{UserId, Workspace};
@@ -48,7 +45,6 @@ use crate::workspace::{UserId, Workspace};
 const WORKSPACES_KEY: &str = "workspaces";
 pub(crate) const ACTIVE_KEY: &str = "active";
 const VIEW_KEY: &str = "view_v1";
-const DISPLAYS_KEY: &str = "displays_v1";
 const LOCAL_KEY: &str = "local_v1";
 const AUTHORS_KEY: &str = "authors_v1";
 const GRANTS_KEY: &str = "grants";
@@ -65,8 +61,8 @@ const RECORDS_KEY: &str = "window_records_v1";
 const WINDOW_AUTHORS_KEY: &str = "window_authors_v1";
 const OPENED_BY_KEY: &str = "window_opened_by_v1";
 
-/// The map key a named grant set is stored under: a digest of its
-/// case-folded name, so two spellings of one name share a slot.
+/// The map key a named grant set is stored under: a digest of its case-folded name, so two
+/// spellings of one name share a slot.
 pub fn preset_key(name: &str) -> String {
     blake3::hash(name.trim().to_lowercase().as_bytes())
         .to_hex()
@@ -75,13 +71,6 @@ pub fn preset_key(name: &str) -> String {
 
 fn obj(doc: &AutoCommit, parent: &ObjId, prop: impl Into<Prop>) -> Option<ObjId> {
     doc.get(parent, prop).ok().flatten().map(|(_, id)| id)
-}
-
-fn map_or_create(doc: &mut AutoCommit, parent: &ObjId, key: &str) -> Option<ObjId> {
-    match obj(doc, parent, key) {
-        Some(id) => Some(id),
-        None => doc.put_object(parent, key, ObjType::Map).ok(),
-    }
 }
 
 fn workspace_entries(doc: &AutoCommit) -> Vec<(u64, ObjId)> {
@@ -94,91 +83,6 @@ fn workspace_entries(doc: &AutoCommit) -> Vec<(u64, ObjId)> {
             Some((doc.uint_at(&entry, "id")?, entry))
         })
         .collect()
-}
-
-/// Every strip entry `(strip id, strip entry, window_groups list)`.
-fn strip_entries(doc: &AutoCommit) -> Vec<(u64, ObjId, Option<ObjId>)> {
-    let mut out = Vec::new();
-    for (_, ws) in workspace_entries(doc) {
-        let Some(strips) = obj(doc, &ws, STRIPS_KEY) else {
-            continue;
-        };
-        for i in 0..doc.length(&strips) {
-            let Some(entry) = obj(doc, &strips, i) else {
-                continue;
-            };
-            let Some(id) = doc.uint_at(&entry, "id") else {
-                continue;
-            };
-            let groups = obj(doc, &entry, GROUPS_KEY);
-            out.push((id, entry, groups));
-        }
-    }
-    out
-}
-
-/// The `window_groups` list of `strip_id`, if the document holds it.
-fn strip_groups(doc: &AutoCommit, strip_id: StripId) -> Option<ObjId> {
-    strip_entries(doc)
-        .into_iter()
-        .find(|(id, _, _)| *id == strip_id.raw())
-        .and_then(|(_, _, groups)| groups)
-}
-
-/// Position of the group `group_id` in a `window_groups` list.
-fn group_index(doc: &AutoCommit, groups: &ObjId, group_id: GroupId) -> Option<usize> {
-    (0..doc.length(groups)).find(|&i| {
-        obj(doc, groups, i).is_some_and(|entry| doc.uint_at(&entry, "id") == Some(group_id))
-    })
-}
-
-/// The tab list holding `tab_id` somewhere in `strip_id`, and its index.
-fn tab_in_strip(doc: &AutoCommit, strip_id: StripId, tab_id: TabId) -> Option<(ObjId, usize)> {
-    let groups = strip_groups(doc, strip_id)?;
-    (0..doc.length(&groups)).find_map(|g| {
-        let tabs = obj(doc, &obj(doc, &groups, g)?, TABS_KEY)?;
-        let idx = (0..doc.length(&tabs))
-            .find(|&i| obj(doc, &tabs, i).is_some_and(|t| doc.uint_at(&t, "id") == Some(tab_id)))?;
-        Some((tabs, idx))
-    })
-}
-
-/// The group list holding `group_id` in any strip, and its index.
-fn group_anywhere(doc: &AutoCommit, group_id: GroupId) -> Option<(ObjId, usize)> {
-    strip_entries(doc).into_iter().find_map(|(_, _, groups)| {
-        let groups = groups?;
-        let idx = group_index(doc, &groups, group_id)?;
-        Some((groups, idx))
-    })
-}
-
-fn put_tab(doc: &mut AutoCommit, tabs: &ObjId, index: usize, tab: &Tab) -> Option<()> {
-    let entry = doc.insert_object(tabs, index, ObjType::Map).ok()?;
-    doc.put(&entry, "id", ScalarValue::Uint(tab.id)).ok()?;
-    doc.put(&entry, "title", tab.title.clone()).ok()?;
-    if let Some(app_title) = &tab.app_title {
-        doc.put(&entry, "app_title", app_title.clone()).ok()?;
-    }
-    let blob = serde_json::to_vec(&tab.tile).ok()?;
-    doc.put(&entry, "tile_json", ScalarValue::Bytes(blob))
-        .ok()?;
-    Some(())
-}
-
-/// Serialize one group into a `window_groups` list. Every topology writer
-/// goes through here, so seeding, reordering and splitting cannot drift in
-/// the fields they persist.
-fn insert_group(doc: &mut AutoCommit, groups: &ObjId, index: usize, group: &WindowGroup) {
-    let Ok(entry) = doc.insert_object(groups, index, ObjType::Map) else {
-        return;
-    };
-    let _ = doc.put(&entry, "id", ScalarValue::Uint(group.id));
-    let Ok(tabs) = doc.put_object(&entry, TABS_KEY, ObjType::List) else {
-        return;
-    };
-    for (i, tab) in group.tabs.iter().enumerate() {
-        let _ = put_tab(doc, &tabs, i, tab);
-    }
 }
 
 /// The child `key` of `parent` as an object of type `kind`: the existing one
@@ -542,25 +446,6 @@ impl View {
     }
 }
 
-/// What this device's displays show of the desk: the windows they are partitioned into, and the
-/// group covering its display. A display is the device's, so nothing of this reaches a workspace.
-#[derive(Debug, Default, Serialize, Deserialize)]
-struct Displays {
-    #[serde(default, skip_serializing_if = "OutputPartition::is_empty")]
-    outputs: OutputPartition,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    fullscreen: Option<GroupId>,
-}
-
-/// Whether a document keeps the whole view of the desk or the displays' part of it alone.
-#[derive(Clone, Copy)]
-enum Showing {
-    /// Every field of [`View`]: a host whose document is the only store of the desk.
-    Whole,
-    /// [`Displays`] alone: a host whose workspace records hold the layout and the person's view.
-    Displays,
-}
-
 /// What a workspace holds that this device reads and no other device needs:
 /// the defaults for opening each kind of resource, and which windows this
 /// device streams to which peer.
@@ -611,39 +496,11 @@ pub fn seed(doc: &mut AutoCommit, desktop: &DesktopTree) {
 /// that keeps every change of the desk as its history uses this to write a drag once
 /// it is over: a resize writes the view on every frame.
 pub fn seed_of_the_view(doc: &mut AutoCommit, desktop: &DesktopTree) -> bool {
-    seed_showing(doc, desktop, Showing::Whole)
-}
-
-/// [`seed_of_the_view`] for a host whose workspace records hold the layout and each person's view
-/// of it: the document keeps the desk and what this device's displays show of it alone.
-pub fn seed_of_displays(doc: &mut AutoCommit, desktop: &DesktopTree) -> bool {
-    seed_showing(doc, desktop, Showing::Displays)
-}
-
-fn seed_showing(doc: &mut AutoCommit, desktop: &DesktopTree, showing: Showing) -> bool {
     let before = doc.pending_ops();
     if doc.uint_at(&ROOT, ACTIVE_KEY) != Some(desktop.active.raw()) {
         let _ = doc.put(&ROOT, ACTIVE_KEY, ScalarValue::Uint(desktop.active.raw()));
     }
-    match showing {
-        Showing::Whole => {
-            put_json_if_changed(doc, &ROOT, VIEW_KEY, &View::of(desktop));
-        }
-        Showing::Displays => {
-            // The person's view of the layout is a record of the workspace: this document keeps
-            // none of it.
-            delete_if_present(doc, &ROOT, VIEW_KEY);
-            let displays = Displays {
-                outputs: desktop.outputs.clone(),
-                fullscreen: desktop.fullscreen,
-            };
-            if displays.outputs.is_empty() && displays.fullscreen.is_none() {
-                delete_if_present(doc, &ROOT, DISPLAYS_KEY);
-            } else {
-                put_json_if_changed(doc, &ROOT, DISPLAYS_KEY, &displays);
-            }
-        }
-    }
+    put_json_if_changed(doc, &ROOT, VIEW_KEY, &View::of(desktop));
     let after_view = doc.pending_ops();
     if let Some(list) = child_object(doc, &ROOT, WORKSPACES_KEY, ObjType::List) {
         sync_list(
@@ -943,18 +800,6 @@ pub fn rebuild_view(doc: &AutoCommit, desktop: &mut DesktopTree) {
     }
 }
 
-/// Read what [`seed_of_displays`] recorded of this device's displays into `desktop`.
-pub fn rebuild_displays(doc: &AutoCommit, desktop: &mut DesktopTree) {
-    let Some(bytes) = doc.bytes_at(&ROOT, DISPLAYS_KEY) else {
-        return;
-    };
-    let Ok(displays) = serde_json::from_slice::<Displays>(&bytes) else {
-        return;
-    };
-    desktop.outputs = displays.outputs;
-    desktop.fullscreen = displays.fullscreen;
-}
-
 fn view_of(doc: &AutoCommit) -> Option<View> {
     let bytes = doc.bytes_at(&ROOT, VIEW_KEY)?;
     serde_json::from_slice(&bytes).ok()
@@ -1051,68 +896,6 @@ fn fold_group(strip: &mut Strip, group_id: GroupId, doc_tabs: &[DocTab]) {
     group.tabs = tabs;
 }
 
-fn workspace_entry(doc: &AutoCommit, slot: WorkspaceSlot) -> Option<ObjId> {
-    workspace_entries(doc)
-        .into_iter()
-        .find(|(id, _)| *id == slot.raw())
-        .map(|(_, entry)| entry)
-}
-
-/// Append a new workspace entry with its workspace's default grants. Its strips reach
-/// the document through later edits or the next [`seed`]. The workspace and its
-/// initial authority travel in the same change, so a later grant revocation can
-/// remove a real document key.
-pub fn append_workspace(
-    doc: &mut AutoCommit,
-    slot: WorkspaceSlot,
-    name: &str,
-    identity: WorkspaceId,
-) -> bool {
-    let Some(list) = obj(doc, &ROOT, WORKSPACES_KEY)
-        .or_else(|| doc.put_object(&ROOT, WORKSPACES_KEY, ObjType::List).ok())
-    else {
-        return false;
-    };
-    let index = doc.length(&list);
-    let Ok(entry) = doc.insert_object(&list, index, ObjType::Map) else {
-        return false;
-    };
-    let _ = doc.put(&entry, "id", ScalarValue::Uint(slot.raw()));
-    let _ = doc.put(&entry, "name", name.to_string());
-    let _ = doc.put(&entry, "room", identity.to_string());
-    let workspace = Workspace::in_workspace(slot, identity, name);
-    sync_blob_map(
-        doc,
-        &entry,
-        GRANTS_KEY,
-        workspace
-            .policy
-            .grants
-            .iter()
-            .map(|grant| (grant.id.as_str().to_owned(), grant)),
-    );
-    true
-}
-
-/// Record which workspace is showing.
-pub fn set_active(doc: &mut AutoCommit, slot: WorkspaceSlot) {
-    let _ = doc.put(&ROOT, ACTIVE_KEY, ScalarValue::Uint(slot.raw()));
-}
-
-/// Whether `change` did nothing but change how this device shows the desk: every
-/// operation puts one of the two root keys that hold none of the desk's content,
-/// [`ACTIVE_KEY`] and [`VIEW_KEY`].
-pub fn only_moves_the_view(change: &automerge::Change) -> bool {
-    use automerge::legacy::{Key, ObjectId, OpType};
-    !change.is_empty()
-        && change.decode().operations.iter().all(|op| {
-            op.obj == ObjectId::Root
-                && !op.insert
-                && matches!(op.action, OpType::Put(_))
-                && matches!(&op.key, Key::Map(key) if key == ACTIVE_KEY || key == VIEW_KEY || key == DISPLAYS_KEY)
-        })
-}
-
 /// The names this document's changes are known by, by actor (hex), when a
 /// host recorded them: a desk read into this document from one that named its
 /// changes' authors keeps the names people already saw.
@@ -1125,21 +908,6 @@ pub fn author_names(doc: &AutoCommit) -> std::collections::BTreeMap<String, Stri
 /// Record the names [`author_names`] reads.
 pub fn set_author_names(doc: &mut AutoCommit, names: &std::collections::BTreeMap<String, String>) {
     put_json_if_changed(doc, &ROOT, AUTHORS_KEY, names);
-}
-
-/// Record a workspace's owner.
-pub fn set_owner(doc: &mut AutoCommit, slot: WorkspaceSlot, owner: &str) -> bool {
-    workspace_entry(doc, slot).is_some_and(|entry| doc.put(&entry, "owner", owner).is_ok())
-}
-
-/// How many workspaces `doc` holds: none on a device that has not used its
-/// desk yet, or on a document of another shape.
-#[must_use]
-pub fn workspaces(doc: &impl ReadDoc) -> usize {
-    match doc.get(&ROOT, WORKSPACES_KEY) {
-        Ok(Some((Value::Object(ObjType::List), list))) => doc.length(&list),
-        _ => 0,
-    }
 }
 
 /// Whether `doc` holds the desk this module writes: a root holding the
@@ -1311,279 +1079,4 @@ pub fn write_shared(
         }
     }
     doc.pending_ops() > before
-}
-
-fn upsert_blob(
-    doc: &mut AutoCommit,
-    slot: WorkspaceSlot,
-    map_key: &str,
-    key: &str,
-    value: &impl serde::Serialize,
-) -> bool {
-    let Some(entry) = workspace_entry(doc, slot) else {
-        return false;
-    };
-    let Some(map) = map_or_create(doc, &entry, map_key) else {
-        return false;
-    };
-    let Ok(blob) = serde_json::to_vec(value) else {
-        return false;
-    };
-    doc.put(&map, key, ScalarValue::Bytes(blob)).is_ok()
-}
-
-fn delete_blob(doc: &mut AutoCommit, slot: WorkspaceSlot, map_key: &str, key: &str) -> bool {
-    let Some(entry) = workspace_entry(doc, slot) else {
-        return false;
-    };
-    let Some(map) = obj(doc, &entry, map_key) else {
-        return false;
-    };
-    doc.delete(&map, key).is_ok()
-}
-
-/// Delete a grant, so a revocation is not only local.
-pub fn revoke_grant(doc: &mut AutoCommit, slot: WorkspaceSlot, id: &GrantId) -> bool {
-    delete_blob(doc, slot, GRANTS_KEY, id.as_str())
-}
-
-/// Record a sandbox capability.
-pub fn insert_sandbox(doc: &mut AutoCommit, slot: WorkspaceSlot, cap: &CapOverride) -> bool {
-    upsert_blob(doc, slot, SANDBOX_KEY, &cap.id, cap)
-}
-
-/// Delete a sandbox capability.
-pub fn revoke_sandbox(doc: &mut AutoCommit, slot: WorkspaceSlot, cap_id: &str) -> bool {
-    delete_blob(doc, slot, SANDBOX_KEY, cap_id)
-}
-
-/// Record a shortcut under its id, replacing any earlier version of it.
-pub fn upsert_shortcut(
-    doc: &mut AutoCommit,
-    slot: WorkspaceSlot,
-    shortcut: &tilo_automation::SavedShortcut,
-) -> bool {
-    upsert_blob(
-        doc,
-        slot,
-        WORKSPACE_AUTOMATIONS_KEY,
-        shortcut.id(),
-        shortcut,
-    )
-}
-
-/// Delete a shortcut, so the deletion is not only local.
-pub fn remove_shortcut(doc: &mut AutoCommit, slot: WorkspaceSlot, shortcut_id: &str) -> bool {
-    let Some(entry) = workspace_entry(doc, slot) else {
-        return false;
-    };
-    let Some(shortcuts) = obj(doc, &entry, WORKSPACE_AUTOMATIONS_KEY) else {
-        return false;
-    };
-    doc.get(&shortcuts, shortcut_id).ok().flatten().is_some()
-        && doc.delete(&shortcuts, shortcut_id).is_ok()
-}
-
-/// Record an effect receipt under its invocation.
-pub fn upsert_effect_receipt(
-    doc: &mut AutoCommit,
-    slot: WorkspaceSlot,
-    receipt: &WorkspaceEffectReceipt,
-) -> bool {
-    let key = receipt.invocation.0.to_string();
-    upsert_blob(doc, slot, WORKSPACE_EFFECT_RECEIPTS_KEY, &key, receipt)
-}
-
-pub fn remove_tab(
-    doc: &mut AutoCommit,
-    strip_id: StripId,
-    group_id: GroupId,
-    tab_id: TabId,
-    remove_group: bool,
-) -> bool {
-    if remove_group {
-        return group_anywhere(doc, group_id)
-            .is_some_and(|(groups, idx)| doc.delete(&groups, idx).is_ok());
-    }
-    tab_in_strip(doc, strip_id, tab_id).is_some_and(|(tabs, idx)| doc.delete(&tabs, idx).is_ok())
-}
-
-/// Record a tab move the tree made, at the exact index or seam the tree used.
-/// `src_strip` and `dst_strip` may be the same strip. All-or-nothing: `false` leaves
-/// `doc` as it was.
-pub fn apply_tab_move(
-    doc: &mut AutoCommit,
-    src_strip: StripId,
-    dst_strip: StripId,
-    moved: &TabMove,
-) -> bool {
-    all_or_nothing(doc, |doc| {
-        try_apply_tab_move(doc, src_strip, dst_strip, moved)
-    })
-}
-
-/// Run `edit`, leaving `doc` as it was when it gives up: its operations are
-/// rolled back when they are the only uncommitted ones, else `doc` is
-/// restored from a copy.
-fn all_or_nothing(doc: &mut AutoCommit, edit: impl FnOnce(&mut AutoCommit) -> Option<()>) -> bool {
-    if doc.pending_ops() == 0 {
-        let done = edit(doc).is_some();
-        if !done {
-            doc.rollback();
-        }
-        return done;
-    }
-    let before = doc.clone();
-    let done = edit(doc).is_some();
-    if !done {
-        *doc = before;
-    }
-    done
-}
-
-fn try_apply_tab_move(
-    doc: &mut AutoCommit,
-    src_strip: StripId,
-    dst_strip: StripId,
-    moved: &TabMove,
-) -> Option<()> {
-    let tab = moved.new_group.tabs.first()?;
-    let (src_tabs, src_tab_idx) = tab_in_strip(doc, src_strip, tab.id)?;
-    let src_groups = strip_groups(doc, src_strip)?;
-    let dst_groups = strip_groups(doc, dst_strip)?;
-    let src_group_idx = group_index(doc, &src_groups, moved.source_group)?;
-    let dst_existing_tabs = match moved.target {
-        DropTarget::ExistingGroup { group_id, .. } => {
-            let idx = group_index(doc, &dst_groups, group_id)?;
-            Some(obj(doc, &obj(doc, &dst_groups, idx)?, TABS_KEY)?)
-        }
-        DropTarget::GroupGap { .. } => None,
-    };
-    if moved.source_group_removed {
-        doc.delete(&src_groups, src_group_idx).ok()?;
-    } else {
-        doc.delete(&src_tabs, src_tab_idx).ok()?;
-    }
-    match moved.target {
-        DropTarget::GroupGap { gap_index } => {
-            let index = gap_index.min(doc.length(&dst_groups));
-            let group_entry = doc.insert_object(&dst_groups, index, ObjType::Map).ok()?;
-            doc.put(&group_entry, "id", ScalarValue::Uint(moved.new_group.id))
-                .ok()?;
-            let tabs = doc.put_object(&group_entry, TABS_KEY, ObjType::List).ok()?;
-            put_tab(doc, &tabs, 0, tab)
-        }
-        DropTarget::ExistingGroup { tab_index, .. } => {
-            let tabs = dst_existing_tabs?;
-            let index = tab_index.min(doc.length(&tabs));
-            put_tab(doc, &tabs, index, tab)
-        }
-    }
-}
-
-/// Record a group reorder: the group moves to `new_index` as a unit,
-/// rewritten from the tree's copy so it cannot drift.
-pub fn reorder_group(
-    doc: &mut AutoCommit,
-    strip_id: StripId,
-    group: &WindowGroup,
-    new_index: usize,
-) -> bool {
-    let Some(groups) = strip_groups(doc, strip_id) else {
-        return false;
-    };
-    let Some(current) = group_index(doc, &groups, group.id) else {
-        return false;
-    };
-    if doc.delete(&groups, current).is_err() {
-        return false;
-    }
-    let index = new_index.min(doc.length(&groups));
-    insert_group(doc, &groups, index, group);
-    true
-}
-
-/// Record a group moved whole into `strip_id` at `index`, out of whichever
-/// strip held it, rewritten from the tree's copy so it cannot drift.
-/// All-or-nothing: `false` leaves `doc` as it was.
-pub fn move_group(
-    doc: &mut AutoCommit,
-    strip_id: StripId,
-    group: &WindowGroup,
-    index: usize,
-) -> bool {
-    all_or_nothing(doc, |doc| {
-        let (_, strip_entry, _) = strip_entries(doc)
-            .into_iter()
-            .find(|(id, _, _)| *id == strip_id.raw())?;
-        let (source, at) = group_anywhere(doc, group.id)?;
-        doc.delete(&source, at).ok()?;
-        let groups = child_object(doc, &strip_entry, GROUPS_KEY, ObjType::List)?;
-        let index = index.min(doc.length(&groups));
-        insert_group(doc, &groups, index, group);
-        Some(())
-    })
-}
-
-/// Replace one group's tab list with `tabs`, in order.
-pub fn rewrite_group_tabs(doc: &mut AutoCommit, group_id: GroupId, tabs: &[Tab]) -> bool {
-    let Some(group_entry) =
-        group_anywhere(doc, group_id).and_then(|(groups, idx)| obj(doc, &groups, idx))
-    else {
-        return false;
-    };
-    let Ok(list) = doc.put_object(&group_entry, TABS_KEY, ObjType::List) else {
-        return false;
-    };
-    for (i, tab) in tabs.iter().enumerate() {
-        let _ = put_tab(doc, &list, i, tab);
-    }
-    true
-}
-
-/// Append a tab to a group of `slot`: the group `group_id`, or with
-/// `None` the first group of the first strip. An empty `tile_blob` leaves
-/// the tile unset.
-pub fn append_tab(
-    doc: &mut AutoCommit,
-    slot: WorkspaceSlot,
-    group_id: Option<GroupId>,
-    tab_id: TabId,
-    title: String,
-    tile_blob: Vec<u8>,
-) -> bool {
-    let Some(entry) = workspace_entry(doc, slot) else {
-        return false;
-    };
-    let Some(strips) = obj(doc, &entry, STRIPS_KEY) else {
-        return false;
-    };
-    let group_entry = match group_id {
-        None => obj(doc, &strips, 0_usize)
-            .and_then(|strip| obj(doc, &strip, GROUPS_KEY))
-            .and_then(|groups| obj(doc, &groups, 0_usize)),
-        Some(group_id) => (0..doc.length(&strips)).find_map(|i| {
-            let groups = obj(doc, &obj(doc, &strips, i)?, GROUPS_KEY)?;
-            let idx = group_index(doc, &groups, group_id)?;
-            obj(doc, &groups, idx)
-        }),
-    };
-    let Some(group_entry) = group_entry else {
-        return false;
-    };
-    let Some(tabs) = obj(doc, &group_entry, TABS_KEY)
-        .or_else(|| doc.put_object(&group_entry, TABS_KEY, ObjType::List).ok())
-    else {
-        return false;
-    };
-    let index = doc.length(&tabs);
-    let Ok(tab_entry) = doc.insert_object(&tabs, index, ObjType::Map) else {
-        return false;
-    };
-    let _ = doc.put(&tab_entry, "id", ScalarValue::Uint(tab_id));
-    let _ = doc.put(&tab_entry, "title", title);
-    if !tile_blob.is_empty() {
-        let _ = doc.put(&tab_entry, "tile_json", ScalarValue::Bytes(tile_blob));
-    }
-    true
 }

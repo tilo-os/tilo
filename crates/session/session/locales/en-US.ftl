@@ -68,12 +68,6 @@ workspaces-unreadable-body = The list of your own workspaces that this computer 
 
 ## The desk this device saved could not be opened: the person's own desk is
 ## still on disk and this session starts empty, so it is never written over.
-desk-not-opened-app-name = Desktop
-desk-not-opened-nothing-written = It is unchanged. This session starts on an empty desk and will not save over it.
-desk-not-opened-newer-title = Your desk was not opened
-desk-not-opened-newer-detail = { $path } was saved by a newer version of Tilo (layout { $found }; this one understands { $understood }). It has not been changed: this session starts on an empty desk and keeps nothing, so it cannot be written over.
-desk-not-opened-unreadable-title = Your desk could not be read
-desk-not-opened-unreadable-detail = { $path } is there but could not be read ({ $error }). It has not been changed: this session starts on an empty desk and keeps nothing, so it cannot be written over.
 
 ## The desk from the version before this one, which was not brought over: it
 ## is still on disk, untouched, and this session has its own desk instead.

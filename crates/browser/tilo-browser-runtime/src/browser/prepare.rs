@@ -94,7 +94,7 @@ pub(super) fn serve_history(
     });
     let people = crate::page_activity::person_of(here, people, config.author());
     let activity = tilo_session::activity::Activity::over(tilo_session::activity::Given {
-        desk: tilo_session::desk_doc::DeskDoc::over(persistence.desk()),
+        layouts: Box::new(persistence.desk()),
         person: config.author(),
         store: Some(store),
         state: None,

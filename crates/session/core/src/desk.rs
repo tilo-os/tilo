@@ -1,5 +1,7 @@
-//! The desk as a device keeps it: one automerge document, whose own change history is what happened
-//! to the desk, who did it and when.
+//! The desk a page keeps: one automerge document, whose own change history is what happened to the
+//! desk, who did it and when.
+//! A native session keeps no such document: its desk is the workspaces' layout records, which every
+//! member shows ([`tilo_desktop_model::shared_record`]).
 //! The desk is no second copy anywhere: the tree a host draws is a projection of this document, a
 //! pass that finds the desk changed writes one change of it, and a version restored from the
 //! history is another change on top. What is written is the form that opens again — a running
@@ -27,16 +29,6 @@ const SCHEMA_KEY: &str = "schema";
 /// How long a drag or a burst of switches waits for its last frame before how the desk looks is
 /// written.
 const DRAG_QUIET: Duration = Duration::from_secs(2);
-
-/// What a host's own document keeps of how the desk looks.
-#[derive(Clone, Copy)]
-enum Shows {
-    /// Everything: the desk of a host no workspace holds, whose document is the only store of it.
-    All,
-    /// What this device's displays show alone: the layout and the person's view of it are records
-    /// of the workspace ([`tilo_desktop_model::person_view`]).
-    Displays,
-}
 
 /// Where a host keeps the desk's document: its bytes, written off the frame that changed them.
 pub trait Store {
@@ -175,7 +167,6 @@ impl Desk {
         let mut tree = DesktopTree::default();
         desktop_doc::rebuild(&doc, &mut tree);
         desktop_doc::rebuild_view(&doc, &mut tree);
-        desktop_doc::rebuild_displays(&doc, &mut tree);
         (!tree.workspaces.is_empty()).then_some(tree)
     }
 
@@ -192,19 +183,7 @@ impl Desk {
         records: &[(TabId, String)],
         authors: Option<&Authors>,
     ) -> bool {
-        self.write(desktop, time, true, None, records, authors, Shows::All)
-    }
-
-    /// [`Self::record`] for a host whose workspace records hold the layout and the person's view of
-    /// it: the document keeps the desk and what this device's displays show.
-    pub fn record_displays(
-        &self,
-        desktop: &DesktopTree,
-        time: i64,
-        records: &[(TabId, String)],
-        authors: Option<&Authors>,
-    ) -> bool {
-        self.write(desktop, time, true, None, records, authors, Shows::Displays)
+        self.write(desktop, time, true, None, records, authors)
     }
 
     /// [`Self::record`] the tree `desktop` reads, at `revision` of it, unless the desk was last
@@ -217,35 +196,12 @@ impl Desk {
         time: i64,
         records: &[(TabId, String)],
     ) -> bool {
-        self.record_at_showing(revision, desktop, time, records, Shows::All)
-    }
-
-    /// [`Self::record_at`] for a host whose workspace records hold the person's view of the layout:
-    /// what this device's displays show is written here, and where the person is looking is not.
-    pub fn record_displays_at(
-        &self,
-        revision: u64,
-        desktop: impl FnOnce() -> DesktopTree,
-        time: i64,
-        records: &[(TabId, String)],
-    ) -> bool {
-        self.record_at_showing(revision, desktop, time, records, Shows::Displays)
-    }
-
-    fn record_at_showing(
-        &self,
-        revision: u64,
-        desktop: impl FnOnce() -> DesktopTree,
-        time: i64,
-        records: &[(TabId, String)],
-        shows: Shows,
-    ) -> bool {
         let heads = self.doc.borrow_mut().get_heads();
         let kept = (revision, records.to_vec(), heads);
         if self.kept.borrow().as_ref() == Some(&kept) {
             return false;
         }
-        let wrote = self.write(&desktop(), time, true, None, records, None, shows);
+        let wrote = self.write(&desktop(), time, true, None, records, None);
         // How the desk looks within a drag is written once the drag rests: until then, the same
         // desk is written again.
         let (revision, records, _) = kept;
@@ -263,27 +219,7 @@ impl Desk {
         records: &[(TabId, String)],
         authors: Option<&Authors>,
     ) -> bool {
-        self.write(desktop, time, false, None, records, authors, Shows::All)
-    }
-
-    /// [`Self::record_now`] for a host whose workspace records hold the layout and the person's
-    /// view: the document keeps the desk and what this device's displays show of it.
-    pub fn record_displays_now(
-        &self,
-        desktop: &DesktopTree,
-        time: i64,
-        records: &[(TabId, String)],
-        authors: Option<&Authors>,
-    ) -> bool {
-        self.write(
-            desktop,
-            time,
-            false,
-            None,
-            records,
-            authors,
-            Shows::Displays,
-        )
+        self.write(desktop, time, false, None, records, authors)
     }
 
     /// Record `desktop` as it stands as `asked`'s arranging action: one change of the desk whose own
@@ -297,15 +233,7 @@ impl Desk {
         asked: &ActionContext,
         records: &[(TabId, String)],
     ) -> bool {
-        self.write(
-            desktop,
-            time,
-            false,
-            Some(asked),
-            records,
-            None,
-            Shows::Displays,
-        )
+        self.write(desktop, time, false, Some(asked), records, None)
     }
 
     /// Record how this device shows `desktop` alone: a host whose workspace holds the desk itself
@@ -331,7 +259,6 @@ impl Desk {
         asked: Option<&ActionContext>,
         records: &[(TabId, String)],
         authors: Option<&Authors>,
-        shows: Shows,
     ) -> bool {
         let mut doc = self.doc.borrow_mut();
         // Where this change starts: taken before the schema is stamped, so the stamp is part of the
@@ -341,10 +268,7 @@ impl Desk {
         // A document with no desk holds one after this change: the desk is being opened, here or as
         // it arrived from the workspace, and that is no change of the person's to take back.
         let opened = !desktop_doc::holds(&*doc);
-        let looks_only = match shows {
-            Shows::All => desktop_doc::seed_of_the_view(&mut doc, &relaunchable(desktop)),
-            Shows::Displays => desktop_doc::seed_of_displays(&mut doc, &relaunchable(desktop)),
-        };
+        let looks_only = desktop_doc::seed_of_the_view(&mut doc, &relaunchable(desktop));
         // What each window shows is the desk's, not how this device shows it, and it is written like
         // the view is: what a window opened is no step of the person's on its own, and an action
         // that places a resource is a step because it was asked for. A window's record arrives with

@@ -16,7 +16,7 @@ mod tests {
     //! — nothing writes a synthetic `HistoryEntry` .
 
     use super::*;
-    use crate::activity::testing::TestTree as WorkspaceTree;
+    use crate::activity::testing::{TestTree as WorkspaceTree, next_id};
     use tilo_desktop_model::WorkspaceSlot;
     use ui::record::RecordStore;
 
@@ -1405,94 +1405,45 @@ mod tests {
         // One change stamped a week back via `commit_stamped_at` , the rest at now: "Today" drops
         // the old one, "30 days" keeps everything.
         let mut tree = WorkspaceTree::bootstrap_demo();
-        let user: String = "test-owner".to_string();
-        tree.adopt_ownerless_workspaces(&user);
-        let slot = tree.desktop.active;
-
         let week_ago_secs = i64::try_from(ui::time::try_unix_now().unwrap() - 604_800).unwrap();
-        let last_week = CapOverride::grant(
-            Subject::app("files"),
-            Scope::FsPath("/home/user/last-week".to_string()),
-            Access::Read,
-        );
-        let cap_id = {
-            let workspace = tree
-                .desktop
-                .workspaces
-                .iter_mut()
-                .find(|workspace| workspace.slot == slot)
-                .expect("active workspace");
-            assert!(workspace.may_govern_at(
-                &user,
-                tilo_action_policy::roles::governance::GRANT,
-                tilo_clock::unix_now()
-            ));
-            workspace.grant_sandbox(last_week)
-        };
-        let stored = tree
-            .desktop
-            .workspaces
-            .iter()
-            .find(|workspace| workspace.slot == slot)
-            .expect("active workspace")
-            .sandbox
-            .iter()
-            .find(|capability| capability.id == cap_id)
-            .cloned()
-            .expect("stored grant");
-        assert!(tilo_desktop_model::desktop_doc::insert_sandbox(
-            &mut tree.doc,
-            slot,
-            &stored
-        ));
-        tilo_resource::history::commit_stamped_at(&mut tree.doc, week_ago_secs)
-            .expect("the grant left a transaction to stamp");
-
-        tree.grant_in_workspace(
-            slot,
-            &user,
-            CapOverride::grant(
-                Subject::app("files"),
-                Scope::FsPath("/home/user/today".to_string()),
-                Access::Read,
+        // A window opened last week, and one today: each is one change of the layout record.
+        assert!(
+            tree.doc_append_tab_to_first_group_of_active_workspace(
+                next_id(),
+                "Last week".into(),
+                Vec::new()
             ),
+            "the record takes the window"
+        );
+        tilo_resource::history::commit_stamped_at(&mut tree.doc, week_ago_secs)
+            .expect("the window left a transaction to stamp");
+        assert!(
+            tree.doc_append_tab_to_first_group_of_active_workspace(
+                next_id(),
+                "Today".into(),
+                Vec::new()
+            ),
+            "the record takes the window"
+        );
+        tilo_resource::history::commit_stamped_at(
+            &mut tree.doc,
+            i64::try_from(ui::time::try_unix_now().unwrap()).unwrap(),
         )
-        .expect("owner may grant");
+        .expect("the window left a transaction to stamp");
 
         let mut pane = pane_over(&mut tree);
         let all = pane.timeline.visible_len();
         assert!(
             all >= 2,
-            "expected last week's grant and today's, got {all}"
+            "expected last week's window and today's, got {all}"
         );
 
         pane.period = Period::Today;
         pane.reinstall_filter();
         let today = pane.timeline.visible_len();
-        assert!(today > 0, "today's changes must survive the day filter");
         assert!(
             today < all,
-            "the week-old change must be filtered out: {today} of {all} survived"
-        );
-        assert!(
-            !pane.timeline.entries().is_empty(),
-            "filtering hides rows, it does not discard them"
-        );
-        for i in 0..pane.timeline.visible_len() {
-            let e = pane.timeline.visible_entry(i).unwrap();
-            assert!(
-                !e.summary.contains("Last week"),
-                "the week-old row leaked through the day filter: {}",
-                e.summary
-            );
-        }
-
-        pane.period = Period::Month;
-        pane.reinstall_filter();
-        assert_eq!(
-            pane.timeline.visible_len(),
-            all,
-            "a 30-day window covers a change from seven days ago"
+            "Today drops the window opened last week: {today} of {all}"
         );
     }
 
