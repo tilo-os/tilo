@@ -1,4 +1,7 @@
 //! Wi-Fi, SSH login keys and identity, written onto the disk an install writes.
+//!
+//! The profile records the network name and whether to enroll; the passphrase, the
+//! login keys and the human root secret never enter it.
 
 use std::fs::{self, OpenOptions};
 use std::io::{self, Seek, SeekFrom, Write};
