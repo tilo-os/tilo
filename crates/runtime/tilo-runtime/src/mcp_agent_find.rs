@@ -4,15 +4,16 @@
 use super::*;
 
 impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
-    /// What the workspace holds, by the one search the desktop runs: the
-    /// palette's ranking and `place_found`'s, so a text an agent asks for
-    /// answers what the person sees, in the person's order. Each result is
-    /// named by the path `tilo_ls` and `tilo_do` take, an action as
-    /// `path#action(params)`, so the next call acts on what this one found.
+    /// What the workspace holds, by the host's own search: on a desktop the
+    /// one search it runs, the palette's ranking and `place_found`'s, so a
+    /// text an agent asks for answers what the person sees, in the person's
+    /// order; on a host with no desktop its ranking of the records it holds.
+    /// Each result is named by the path `tilo_ls` and `tilo_do` take, an
+    /// action as `path#action(params)`, so the next call acts on what this
+    /// one found.
     ///
-    /// A host with no search of its own (a standalone runtime, which speaks
-    /// for no desk) is told so: answering by its apps' own directories would
-    /// be the second ranking `find` stopped having.
+    /// A host with no search of its own is told so: answering by its apps'
+    /// own directories here would be a second ranking beside the host's.
     pub(super) async fn agent_find(
         &self,
         args: FindArgs,
@@ -24,15 +25,15 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         let limit = args.limit.unwrap_or(FIND_HITS).clamp(1, 100);
         let Some(search) = self.host.resource_search() else {
             return Err(
-                "this host runs no desktop search: find answers what the desktop's one search \
-                 finds, so list an app's directory instead (tilo_ls names the apps)"
+                "this host keeps no search of its workspace: list an app's directory instead \
+                 (tilo_ls names the apps)"
                     .into(),
             );
         };
         let found = search
             .find(&self.caller, &args.query)
             .await
-            .ok_or("the desktop's search stopped answering")?
+            .ok_or("the host's search stopped answering")?
             .map_err(|error| error.to_string())?;
         if found.is_empty() {
             return Ok(Reply::ok(format!(

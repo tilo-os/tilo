@@ -112,6 +112,9 @@ pub struct McpServer<H> {
     /// with where its latest phase falls in the watch's sequence
     /// ([`crate::mcp::watch`]).
     pub(super) runs: std::sync::Mutex<Vec<agent::watch::Run>>,
+    /// What this session's invocations changed, oldest first: where taking
+    /// one's run back finds its changes ([`McpServer::undo_run`]).
+    pub(super) undoable: std::sync::Mutex<std::collections::VecDeque<agent::Undoable>>,
 }
 
 pub use agent::{PersonStep, literals_in};
@@ -695,6 +698,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             changed: std::sync::Mutex::default(),
             changing: std::sync::Mutex::default(),
             runs: std::sync::Mutex::default(),
+            undoable: std::sync::Mutex::default(),
         }
     }
 
