@@ -42,6 +42,10 @@ pub(crate) fn failure(failure: Failure) -> NotAvailable {
             std::io::ErrorKind::BrokenPipe,
             failure.to_string(),
         )),
+        Failure::Unreadable(_) => NotAvailable::ConnectionFailed(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            failure.to_string(),
+        )),
     }
 }
 
@@ -1398,7 +1402,9 @@ impl ChannelHandle {
                     || crate::LocalDocumentActionError::Uncertain(reason.clone()),
                     |reason| crate::LocalDocumentActionError::Rejected(reason.to_owned()),
                 ),
-                Failure::Closed => crate::LocalDocumentActionError::Uncertain(error.to_string()),
+                Failure::Closed | Failure::Unreadable(_) => {
+                    crate::LocalDocumentActionError::Uncertain(error.to_string())
+                }
             })?;
         let Reply::Admitted(observation) = reply else {
             return Err(crate::LocalDocumentActionError::Uncertain(format!(
