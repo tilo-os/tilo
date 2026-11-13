@@ -339,7 +339,6 @@ impl TwoDevices {
 /// guest's store, which whatever kept it tells the store
 /// ([`ui::record::RecordStore::note_kept`]). Nothing looks on a clock: until
 /// told, the window opens nothing, however long it waits.
-#[test]
 fn a_kept_part_waits_for_word_of_its_arrival_not_a_clock() {
     let devices = TwoDevices::new();
     let seen = devices.guest_syncs();
@@ -358,7 +357,6 @@ fn a_kept_part_waits_for_word_of_its_arrival_not_a_clock() {
 /// A store told that a record arrived ([`ui::record::RecordStore::note_kept`],
 /// as the browser's workspace replication tells it) has the window look at its
 /// next settle, not a moment later.
-#[test]
 fn a_store_told_of_a_kept_part_has_the_window_look_at_once() {
     let devices = TwoDevices::new();
     let seen = devices.guest_syncs();
@@ -373,7 +371,6 @@ fn a_store_told_of_a_kept_part_has_the_window_look_at_once() {
 /// guest's window is told a peer wrote it, starts the same part itself
 /// (each part's genesis is the same everywhere), and the poster's changes
 /// then apply on it with nothing missing, as they arrive on its route.
-#[test]
 fn a_part_a_peer_started_is_started_here_and_takes_the_peers_changes() {
     let devices = TwoDevices::new();
     devices
@@ -401,11 +398,22 @@ fn a_part_a_peer_started_is_started_here_and_takes_the_peers_changes() {
     assert_eq!(devices.guest_reads().last().unwrap(), "the first post");
 }
 
+/// How a part another device started reaches a window that already holds the chain.
+/// Each case was a test of its own, on a fixture of its own; a failure
+/// names the cases that failed.
+#[test]
+fn a_part_reaches_another_device_when_its_store_is_told() {
+    crate::testing::cases!(
+        a_kept_part_waits_for_word_of_its_arrival_not_a_clock,
+        a_store_told_of_a_kept_part_has_the_window_look_at_once,
+        a_part_a_peer_started_is_started_here_and_takes_the_peers_changes,
+    );
+}
+
 /// A direct conversation's unread count follows the chain, as the read mark
 /// does, though a message written elsewhere carries an earlier time than the
 /// message before it: a clock behind another device's does not make a message
 /// read.
-#[test]
 fn unread_messages_are_counted_in_the_order_the_part_holds_them() {
     let channel = Id::from_raw("c_direct");
     let mut part = ChatPart::default();
@@ -443,7 +451,6 @@ fn unread_messages_are_counted_in_the_order_the_part_holds_them() {
 /// same order. The order is the one the part records hold
 /// ([`Messages::iter`]), which every replica computes from the same records,
 /// so it stays the same whether a change arrives before or after another.
-#[test]
 fn replicas_taking_the_same_posts_in_opposite_orders_read_one_timeline() {
     let chat = crate::demo::demo(crate::model::ME);
     // A part holding one message written with a time after every post that
@@ -526,7 +533,6 @@ fn replicas_taking_the_same_posts_in_opposite_orders_read_one_timeline() {
 
 /// A post's step says which channel it went to, as everyone sees it
 /// named: what the automatic status reads to say "Writing in #general".
-#[test]
 fn a_post_records_the_channel_it_went_to() {
     let mut workspace = Workspace::demo().unwrap();
     workspace
@@ -548,6 +554,18 @@ fn a_post_records_the_channel_it_went_to() {
         })
         .collect();
     assert!(places.iter().any(|place| place == "#general"), "{places:?}");
+}
+
+/// The order messages are read and counted in, and the place a post records.
+/// Each case was a test of its own, on a fixture of its own; a failure
+/// names the cases that failed.
+#[test]
+fn the_timeline_and_unread_counts_follow_the_order_the_parts_hold() {
+    crate::testing::cases!(
+        unread_messages_are_counted_in_the_order_the_part_holds_them,
+        replicas_taking_the_same_posts_in_opposite_orders_read_one_timeline,
+        a_post_records_the_channel_it_went_to,
+    );
 }
 
 /// A device back from away shows a conversation before the part its messages

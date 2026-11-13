@@ -161,7 +161,6 @@ fn visible_controls_publish_unique_accessible_semantics() {
     }
 }
 
-#[test]
 fn a_mention_completed_with_tab_is_sent_as_a_marked_reference() {
     let (mut app, mut doc) = app_with_doc();
     app.focus = Focus::Main;
@@ -200,7 +199,6 @@ fn a_mention_completed_with_tab_is_sent_as_a_marked_reference() {
     assert!(!app.body_views.borrow().is_empty());
 }
 
-#[test]
 fn editing_a_formatted_message_keeps_its_formatting() {
     let (mut app, mut doc) = app_with_doc();
     app.focus = Focus::Main;
@@ -237,7 +235,6 @@ fn editing_a_formatted_message_keeps_its_formatting() {
     assert_eq!(edited.history.last().unwrap().text, "plain bold");
 }
 
-#[test]
 fn composer_accessibility_keeps_a_backward_browser_selection_direction() {
     let (mut app, mut doc) = app_with_doc();
     crate::testing::write_draft(&mut app, &mut doc, "Ae\u{301}👋B");
@@ -265,6 +262,18 @@ fn composer_accessibility_keeps_a_backward_browser_selection_direction() {
             focus: 4
         }),
         "the semantic bridge must retain the anchor at the right edge while Shift+Left moves focus backward"
+    );
+}
+
+/// What the composer keeps of a mention, of formatting and of a selection.
+/// Each case was a test of its own, on a fixture of its own; a failure
+/// names the cases that failed.
+#[test]
+fn the_composer_keeps_mentions_formatting_and_selection() {
+    crate::testing::cases!(
+        a_mention_completed_with_tab_is_sent_as_a_marked_reference,
+        editing_a_formatted_message_keeps_its_formatting,
+        composer_accessibility_keeps_a_backward_browser_selection_direction,
     );
 }
 
@@ -377,7 +386,6 @@ fn reactions_toggle_through_the_picker_and_chips_on_the_shared_route() {
 
 // --- members roster (right flap "members" half was unimplemented) ---
 
-#[test]
 fn the_roster_shows_who_the_workspace_says_is_here_not_who_once_introduced_themselves() {
     use crate::model::Presence;
     let (mut app, _) = app_with_doc();
@@ -417,7 +425,6 @@ fn the_roster_shows_who_the_workspace_says_is_here_not_who_once_introduced_thems
 /// A workspace that answers with nobody in it — every visitor closed their tab,
 /// or this is the first one in — reads as empty rather than as everybody who
 /// ever introduced themselves still being online.
-#[test]
 fn a_workspace_whose_answer_names_nobody_marks_everyone_else_offline() {
     use crate::model::Presence;
     let (mut app, _) = app_with_doc();
@@ -448,7 +455,6 @@ fn a_workspace_whose_answer_names_nobody_marks_everyone_else_offline() {
 
 /// An agent a person admitted is named with them, as presence knows whom it acts for: "Helper
 /// for Ada" to everyone else, "Helper for you" to Ada.
-#[test]
 fn an_agent_is_named_with_the_person_it_acts_for() {
     use ui::permissions::UserId;
     let (mut app, _) = app_with_doc();
@@ -462,7 +468,6 @@ fn an_agent_is_named_with_the_person_it_acts_for() {
     assert_eq!(app.user_name("agent:helper"), "Helper for you");
 }
 
-#[test]
 fn the_workspaces_call_places_its_people_in_the_voice_channel_by_person() {
     let (mut app, _) = app_with_doc();
     let people = app.users.len();
@@ -481,6 +486,19 @@ fn the_workspaces_call_places_its_people_in_the_voice_channel_by_person() {
             "nobody is shown by their raw id"
         );
     }
+}
+
+/// Who the roster and the voice channel list, and under which names.
+/// Each case was a test of its own, on a fixture of its own; a failure
+/// names the cases that failed.
+#[test]
+fn the_roster_and_voice_channel_show_who_the_workspace_says_is_here() {
+    crate::testing::cases!(
+        the_roster_shows_who_the_workspace_says_is_here_not_who_once_introduced_themselves,
+        a_workspace_whose_answer_names_nobody_marks_everyone_else_offline,
+        an_agent_is_named_with_the_person_it_acts_for,
+        the_workspaces_call_places_its_people_in_the_voice_channel_by_person,
+    );
 }
 
 #[test]
@@ -526,7 +544,6 @@ fn present(app: &mut ChatApp) {
     app.apply_layout(&taffy, node, vello::kurbo::Point::ORIGIN);
 }
 
-#[test]
 fn headless_host_worker_sync_never_authors_read_receipts() {
     // A hosted/headless worker only pumps the model (update + sync) and
     // never lays out: read state belongs to the person's device, so the
@@ -931,7 +948,6 @@ fn a_kept_message_names_its_author_as_the_record_kept_them_and_never_by_their_id
     );
 }
 
-#[test]
 fn a_read_receipt_the_door_refused_is_not_sent_again_until_the_person_reads_further() {
     let (mut app, mut doc) = app_with_doc();
     // Only receipts are submitted here.
@@ -969,4 +985,15 @@ fn a_read_receipt_the_door_refused_is_not_sent_again_until_the_person_reads_furt
     app.reload(&doc);
     app.mark_active_read(&doc);
     assert_eq!(marks(&app), 2, "reading further asks the door again");
+}
+
+/// When a read receipt is written.
+/// Each case was a test of its own, on a fixture of its own; a failure
+/// names the cases that failed.
+#[test]
+fn a_read_receipt_is_written_by_a_reader_and_not_resent_once_refused() {
+    crate::testing::cases!(
+        headless_host_worker_sync_never_authors_read_receipts,
+        a_read_receipt_the_door_refused_is_not_sent_again_until_the_person_reads_further,
+    );
 }

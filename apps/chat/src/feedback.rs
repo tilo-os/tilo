@@ -308,7 +308,6 @@ mod tests {
         })
     }
 
-    #[test]
     fn retry_after_reload_keeps_one_attributed_message_and_report() {
         use ui::tilo_resource::Resource as _;
         let (mut doc, submission) = seeded();
@@ -377,7 +376,6 @@ mod tests {
         assert_eq!(doc.get_heads(), before);
     }
 
-    #[test]
     fn concurrent_first_submissions_both_survive() {
         let (mut doc, submission) = seeded();
         let mut peer = doc.fork();
@@ -391,7 +389,6 @@ mod tests {
         assert!(report(&doc, &other.id).unwrap().is_some());
     }
 
-    #[test]
     fn triage_is_attributed_and_preserves_the_issue() {
         let (mut doc, submission) = seeded();
         apply_as(&mut doc, "visitor:one", action(&submission)).unwrap();
@@ -437,7 +434,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn concurrent_retry_deduplicates_the_visible_report_message() {
         let (mut doc, submission) = seeded();
         let mut peer = doc.fork();
@@ -454,13 +450,25 @@ mod tests {
         );
     }
 
+    /// Filing a report and triaging it, retried, reloaded and merged.
+    /// Each case was a test of its own, on a fixture of its own; a failure
+    /// names the cases that failed.
+    #[test]
+    fn submissions_and_triage_are_attributed_and_survive_retries_and_merges() {
+        crate::testing::cases!(
+            retry_after_reload_keeps_one_attributed_message_and_report,
+            concurrent_first_submissions_both_survive,
+            triage_is_attributed_and_preserves_the_issue,
+            concurrent_retry_deduplicates_the_visible_report_message,
+        );
+    }
+
     /// Seed the demo and file `submission` as `visitor:one` in `doc`.
     fn filed(doc: &mut Doc, submission: &Submission) {
         crate::demo::seed(doc).unwrap();
         apply_as(doc, "visitor:one", action(submission)).unwrap();
     }
 
-    #[test]
     fn canonical_owner_receipt_refuses_newer_unsaved_edits_and_memory_only_records() {
         use ui::record::{RecordCheckout, RecordId, RecordKind, RecordOwners, RecordStore};
         let (_, submission) = seeded();
@@ -536,7 +544,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn primary_chat_receipt_uses_its_saved_store_namespace_without_a_fake_record_stamp() {
         use ui::record::{RecordCheckout, RecordKind, RecordOwners};
         let (_, submission) = seeded();
@@ -723,7 +730,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn receipt_requires_saved_destination_and_canonical_attributed_message() {
         use ui::record::RecordSaveStatus;
         let (mut doc, submission) = seeded();
@@ -753,6 +759,18 @@ mod tests {
         elsewhere.room = "other-room".into();
         assert!(
             durable_receipt(&doc, &submission.id, &elsewhere, &RecordSaveStatus::Saved).is_err()
+        );
+    }
+
+    /// When a filed report earns its durable receipt.
+    /// Each case was a test of its own, on a fixture of its own; a failure
+    /// names the cases that failed.
+    #[test]
+    fn a_receipt_is_given_only_for_a_saved_attributed_report() {
+        crate::testing::cases!(
+            canonical_owner_receipt_refuses_newer_unsaved_edits_and_memory_only_records,
+            primary_chat_receipt_uses_its_saved_store_namespace_without_a_fake_record_stamp,
+            receipt_requires_saved_destination_and_canonical_attributed_message,
         );
     }
 }

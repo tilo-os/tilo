@@ -161,7 +161,6 @@ fn reply(parent: &Id, text: &str) -> Invoke<ChatPart> {
     })
 }
 
-#[test]
 fn a_new_chat_starts_with_its_creator_and_the_workspaces_two_channels() {
     let ada = workspace();
     let chat = ada.state().unwrap();
@@ -198,7 +197,6 @@ fn workspace_channels(chat: &Chat) -> Vec<(String, String, ChannelKind)> {
         .collect()
 }
 
-#[test]
 fn first_opens_on_two_devices_converge_on_exactly_chat_and_voice() {
     let mut genesis = Replica::<Chat>::new().as_author(ADA);
     // Each device seeds the record it found empty, at once: Ada's laptop
@@ -253,7 +251,6 @@ fn first_opens_on_two_devices_converge_on_exactly_chat_and_voice() {
     );
 }
 
-#[test]
 fn posting_records_its_author_time_and_mentions() {
     let mut ada = Talk::new();
     ada.set_now_ms(1_234_000);
@@ -287,7 +284,6 @@ fn a_member_cannot_backdate_a_post() {
     );
 }
 
-#[test]
 fn a_post_that_says_nothing_or_is_misplaced_is_refused() {
     let mut ada = Talk::new();
     assert!(ada.apply(post("   ")).is_err(), "an empty message");
@@ -344,7 +340,6 @@ fn post_fields(channel: &str, text: &str) -> NewMessage {
     }
 }
 
-#[test]
 fn a_reply_to_a_missing_or_deleted_message_is_refused() {
     let mut ada = Talk::new();
     assert!(
@@ -366,7 +361,6 @@ fn a_reply_to_a_missing_or_deleted_message_is_refused() {
     );
 }
 
-#[test]
 fn an_attachment_is_posted_by_its_content_address() {
     let mut ada = Talk::new();
     let blob = "ab".repeat(32);
@@ -398,7 +392,6 @@ fn an_attachment_is_posted_by_its_content_address() {
     );
 }
 
-#[test]
 fn a_resource_a_session_places_is_attachable_by_its_published_address() {
     // A tlolang app publishes each of its resources by its address (`tl:<app>:<id>`, the root
     // of Tasks among them): a reference to one names the address and the app the address
@@ -486,7 +479,6 @@ fn a_resource_reference_with_no_kind_yet_attaches_until_a_catalogue_names_it() {
     }
 }
 
-#[test]
 fn threads_answer_top_level_messages_of_their_channel() {
     let mut ada = Talk::new();
     ada.apply(post("the plan")).unwrap();
@@ -502,7 +494,6 @@ fn threads_answer_top_level_messages_of_their_channel() {
     assert_eq!(ada.messages().top_level(&id("c_chat")), 1);
 }
 
-#[test]
 fn reactions_are_each_persons_own() {
     let mut ada = Talk::new();
     ada.apply(post("ship it")).unwrap();
@@ -538,7 +529,6 @@ fn reactions_are_each_persons_own() {
     assert!(bo.apply(react("")).is_err());
 }
 
-#[test]
 fn an_edit_keeps_the_earlier_text_and_a_delete_removes_the_message() {
     let mut ada = Talk::new();
     ada.set_now_ms(10_000);
@@ -578,7 +568,6 @@ fn an_edit_keeps_the_earlier_text_and_a_delete_removes_the_message() {
     );
 }
 
-#[test]
 fn channels_and_categories_are_made_moved_and_deleted() {
     let mut ada = workspace();
     ada.apply(Chat::CREATE_CATEGORY.with(chat::CreateCategory {
@@ -677,7 +666,6 @@ fn channels_and_categories_are_made_moved_and_deleted() {
 /// Categories and channels are put in an order at once, each channel under
 /// the category named; what is not named keeps its place, and a category
 /// moves one place at a time.
-#[test]
 fn the_workspaces_channels_are_arranged_in_one_go() {
     let mut ada = workspace();
     for name in ["A", "B"] {
@@ -780,7 +768,6 @@ fn the_workspaces_channels_are_arranged_in_one_go() {
     }
 }
 
-#[test]
 fn a_channel_is_filed_only_under_a_category_that_exists() {
     let mut ada = workspace();
     let create = |category| {
@@ -819,7 +806,6 @@ fn a_channel_is_filed_only_under_a_category_that_exists() {
     );
 }
 
-#[test]
 fn deleting_a_channel_takes_its_read_marks() {
     let mut ada = Talk::new();
     ada.apply(post("hello")).unwrap();
@@ -847,7 +833,6 @@ fn deleting_a_channel_takes_its_read_marks() {
     );
 }
 
-#[test]
 fn a_read_mark_is_the_readers_own_and_never_counts_unseen_messages() {
     let mut ada = Talk::new();
     for text in ["one", "two", "three"] {
@@ -877,7 +862,21 @@ fn a_read_mark_is_the_readers_own_and_never_counts_unseen_messages() {
     );
 }
 
+/// The workspace's channels and categories, and how far each person read them.
+/// Each case was a test of its own, on a fixture of its own; a failure
+/// names the cases that failed.
 #[test]
+fn channels_categories_and_read_marks_are_kept_in_the_chat_record() {
+    crate::testing::cases!(
+        a_new_chat_starts_with_its_creator_and_the_workspaces_two_channels,
+        channels_and_categories_are_made_moved_and_deleted,
+        the_workspaces_channels_are_arranged_in_one_go,
+        a_channel_is_filed_only_under_a_category_that_exists,
+        deleting_a_channel_takes_its_read_marks,
+        a_read_mark_is_the_readers_own_and_never_counts_unseen_messages,
+    );
+}
+
 fn an_agent_records_its_work_on_its_own_reply_to_the_summons() {
     const AGENT: &str = "agent-task:22222222-2222-4222-8222-222222222222";
     let mut ada = Talk::new();
@@ -1078,7 +1077,6 @@ fn messages_channels_and_categories_change_only_through_their_actions() {
     assert_eq!(chat.state().unwrap(), before);
 }
 
-#[test]
 fn two_replicas_converge_on_concurrent_posts_reactions_and_renames() {
     let mut ada = Talk::new();
     ada.apply(post("base")).unwrap();
@@ -1114,7 +1112,6 @@ fn two_replicas_converge_on_concurrent_posts_reactions_and_renames() {
     );
 }
 
-#[test]
 fn replaying_the_log_reproduces_the_record() {
     let mut ada = Talk::new();
     let mut fresh = ada.part.fork();
@@ -1140,6 +1137,18 @@ fn replaying_the_log_reproduces_the_record() {
             .message_rows(&Messages::single(right), "c_chat")
             .len(),
         2
+    );
+}
+
+/// Concurrent writers and a replayed log end in one record.
+/// Each case was a test of its own, on a fixture of its own; a failure
+/// names the cases that failed.
+#[test]
+fn replicas_converge_and_a_replayed_log_reproduces_the_record() {
+    crate::testing::cases!(
+        first_opens_on_two_devices_converge_on_exactly_chat_and_voice,
+        two_replicas_converge_on_concurrent_posts_reactions_and_renames,
+        replaying_the_log_reproduces_the_record,
     );
 }
 
@@ -1752,7 +1761,6 @@ fn reactors(group: &crate::model::Reaction) -> Vec<String> {
         .collect()
 }
 
-#[test]
 fn a_person_the_workspace_has_no_name_for_goes_by_their_tag() {
     let mut ada = workspace();
     let mut bo = ada.fork().as_author(BO);
@@ -1791,7 +1799,6 @@ fn a_person_the_workspace_has_no_name_for_goes_by_their_tag() {
 /// A conversation's participants say who it is with, not who may use it:
 /// every member reads any conversation, and a member who is not one of its
 /// participants posts to it like anyone else.
-#[test]
 fn a_conversation_is_about_its_participants_not_who_may_read_it() {
     const CY: &str = "u_cy";
     let with_bo = Chat::direct_id([MemberId::person(ADA), MemberId::person(BO)]);
@@ -1820,7 +1827,6 @@ fn a_conversation_is_about_its_participants_not_who_may_read_it() {
 /// Two devices opening the same conversation at once make one: its id names
 /// its participants, so neither has to write it first and neither can make a
 /// second.
-#[test]
 fn two_devices_opening_the_same_conversation_at_once_share_one() {
     let mut ada = Talk::new();
     let mut bo = ada.fork_as(BO);
@@ -1848,10 +1854,21 @@ fn two_devices_opening_the_same_conversation_at_once_share_one() {
     );
 }
 
+/// A direct conversation: its name for each participant, who posts to it and its one id.
+/// Each case was a test of its own, on a fixture of its own; a failure
+/// names the cases that failed.
+#[test]
+fn a_conversation_is_named_and_shared_by_its_participants() {
+    crate::testing::cases!(
+        a_person_the_workspace_has_no_name_for_goes_by_their_tag,
+        a_conversation_is_about_its_participants_not_who_may_read_it,
+        two_devices_opening_the_same_conversation_at_once_share_one,
+    );
+}
+
 /// A retry asks the agent again on the same message by moving it to its next attempt: the reply
 /// the agent writes then is a reply of its own, and the reply the person gave up on is never
 /// reused. A stale press — one whose reply is no longer the message's attempt — asks nothing.
-#[test]
 fn a_retry_moves_the_question_to_its_next_attempt_and_a_stale_press_asks_nothing() {
     let mut ada = Talk::new();
     ada.apply(post("Add the revenue curve")).unwrap();
@@ -1924,7 +1941,19 @@ fn a_retry_moves_the_question_to_its_next_attempt_and_a_stale_press_asks_nothing
     );
 }
 
+/// What changes a message after it was posted.
+/// Each case was a test of its own, on a fixture of its own; a failure
+/// names the cases that failed.
 #[test]
+fn reactions_edits_agent_work_and_retries_change_a_message() {
+    crate::testing::cases!(
+        reactions_are_each_persons_own,
+        an_edit_keeps_the_earlier_text_and_a_delete_removes_the_message,
+        an_agent_records_its_work_on_its_own_reply_to_the_summons,
+        a_retry_moves_the_question_to_its_next_attempt_and_a_stale_press_asks_nothing,
+    );
+}
+
 fn a_reply_that_quotes_a_span_stores_the_span_and_its_words() {
     // A reply answering a run of a message carries the run as it read when it was written, and
     // where it stands in the answered message, so the quote draws those words and pressing it
@@ -1981,7 +2010,6 @@ fn a_reply_that_quotes_a_span_stores_the_span_and_its_words() {
     );
 }
 
-#[test]
 fn a_quote_outside_its_answered_message_is_refused() {
     // A quoted span names a run of the message it answers: one past the end, backwards, or of a
     // message that is not the one answered is refused, so a quote never opens on nothing.
@@ -2011,4 +2039,50 @@ fn a_quote_outside_its_answered_message_is_refused() {
             "a run {start}..{end} is no span of the answered message"
         );
     }
+    // A run that ends inside a character is no span either.
+    ada.apply(post("n\u{e9}")).unwrap();
+    let accented = ada.said("n\u{e9}");
+    assert!(
+        ada.apply(ChatPart::POST.with(chat_part::Post {
+            message: NewMessage {
+                channel: id("c_chat"),
+                text: "an answer".into(),
+                parent: Some(accented),
+                quoted: Some(quote(0, 2)),
+                body: None,
+                attachments: Vec::new(),
+                mentions: None,
+                written: None,
+            },
+        }))
+        .is_err(),
+        "a run 0..2 splits the second character"
+    );
+}
+
+/// The longest text a message may hold is taken whole; one byte more is
+/// refused (`a_post_that_says_nothing_or_is_misplaced_is_refused`).
+fn a_message_of_exactly_the_longest_text_is_taken() {
+    let mut ada = Talk::new();
+    ada.apply(post(&"x".repeat(MAX_MESSAGE_TEXT_BYTES)))
+        .unwrap();
+    assert_eq!(ada.rows("c_chat")[0].text.len(), MAX_MESSAGE_TEXT_BYTES);
+}
+
+/// What a post, a reply, a quote and an attachment record, and which of them are refused.
+/// Each case was a test of its own, on a fixture of its own; a failure
+/// names the cases that failed.
+#[test]
+fn posts_replies_quotes_and_attachments_are_recorded_or_refused() {
+    crate::testing::cases!(
+        posting_records_its_author_time_and_mentions,
+        a_post_that_says_nothing_or_is_misplaced_is_refused,
+        a_reply_to_a_missing_or_deleted_message_is_refused,
+        an_attachment_is_posted_by_its_content_address,
+        a_resource_a_session_places_is_attachable_by_its_published_address,
+        threads_answer_top_level_messages_of_their_channel,
+        a_reply_that_quotes_a_span_stores_the_span_and_its_words,
+        a_quote_outside_its_answered_message_is_refused,
+        a_message_of_exactly_the_longest_text_is_taken,
+    );
 }

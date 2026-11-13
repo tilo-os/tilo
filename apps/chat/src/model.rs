@@ -733,7 +733,6 @@ mod tests {
         }
     }
 
-    #[test]
     fn timeline_groups_top_level_runs_and_counts_thread_replies() {
         // Phase: grouping_merges_same_author_within_window.
         {
@@ -813,7 +812,6 @@ mod tests {
         }
     }
 
-    #[test]
     fn timestamps_format_as_the_persons_clock_and_a_relative_day() {
         // Phase: clock_reads_the_time_of_day_in_the_configured_style.
         {
@@ -831,6 +829,17 @@ mod tests {
             assert_eq!(day_label(now - 86_400, now), "Yesterday");
             assert_eq!(day_label(now - 3 * 86_400, now), "3 days ago");
         }
+    }
+
+    /// The timeline's runs and thread counts, and the times it shows.
+    /// Each case was a test of its own, on a fixture of its own; a failure
+    /// names the cases that failed.
+    #[test]
+    fn the_timeline_groups_its_rows_and_formats_their_times() {
+        crate::testing::cases!(
+            timeline_groups_top_level_runs_and_counts_thread_replies,
+            timestamps_format_as_the_persons_clock_and_a_relative_day,
+        );
     }
 }
 

@@ -938,7 +938,6 @@ mod tests {
         let _ = doc;
     }
 
-    #[test]
     fn media_cards_keep_the_picture_shape_inside_a_regular_card() {
         let theme = Theme::dark();
         let max_h = MediaSize::Regular.extent(&theme);
@@ -973,7 +972,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn a_file_card_names_the_file_and_never_a_path() {
         let file = tilo_reference::Attached::File {
             name: "transport-notes.md".into(),
@@ -984,7 +982,6 @@ mod tests {
         assert_eq!(ui::format::size(18_944), "18.9 kB");
     }
 
-    #[test]
     fn agent_work_says_it_is_working_then_folds_what_it_did_under_the_answer() {
         let working = |state| AgentWorkPresentation::of(&AgentWork::new(state, 42), false, false);
         let doing = AgentWorkState::Doing {
@@ -1061,7 +1058,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn agent_work_projection_keeps_every_recorded_step_and_row_reserves_the_card() {
         let steps = (0..7)
             .map(|index| {
@@ -1108,6 +1104,19 @@ mod tests {
             row.height(),
             103.0,
             "an empty agent reply reserves its work card"
+        );
+    }
+
+    /// Media and file cards, and an agent's work under its answer.
+    /// Each case was a test of its own, on a fixture of its own; a failure
+    /// names the cases that failed.
+    #[test]
+    fn cards_and_agent_work_draw_what_the_message_holds() {
+        crate::testing::cases!(
+            media_cards_keep_the_picture_shape_inside_a_regular_card,
+            a_file_card_names_the_file_and_never_a_path,
+            agent_work_says_it_is_working_then_folds_what_it_did_under_the_answer,
+            agent_work_projection_keeps_every_recorded_step_and_row_reserves_the_card,
         );
     }
 }

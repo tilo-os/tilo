@@ -93,7 +93,6 @@ mod tests {
         }
     }
 
-    #[test]
     fn a_body_reads_back_as_plain_text_and_its_mentions() {
         let mut first = BlockContent::paragraph("a", "hi @Ada");
         first.marks = vec![MarkSpan::new(3..7, Mark::Mention("u-ada".into()))];
@@ -111,7 +110,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn an_old_message_shows_its_text_with_its_mentions_marked() {
         let text = "ping @Ada\nsecond line";
         let mentions = [Mention {
@@ -134,6 +132,17 @@ mod tests {
         assert!(
             legacy("m1", text, &stale)[0].marks.is_empty(),
             "a stale offset is skipped"
+        );
+    }
+
+    /// A message body read back, as it is written now and as an old message kept it.
+    /// Each case was a test of its own, on a fixture of its own; a failure
+    /// names the cases that failed.
+    #[test]
+    fn a_body_reads_as_text_and_mentions_new_or_old() {
+        crate::testing::cases!(
+            a_body_reads_back_as_plain_text_and_its_mentions,
+            an_old_message_shows_its_text_with_its_mentions_marked,
         );
     }
 }

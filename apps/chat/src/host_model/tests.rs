@@ -309,7 +309,6 @@ fn stream_display_names_do_not_change_person_bot_or_agent_identity() {
     assert!(!app.is_provider_output(&message));
 }
 
-#[test]
 fn a_bridged_author_reads_via_their_service_and_the_bot_after_it() {
     let (mut app, mut doc) = chat(backend("Answer"));
     let start = app.model_command("c_chat", "ask").unwrap();
@@ -371,7 +370,6 @@ fn a_bridged_author_reads_via_their_service_and_the_bot_after_it() {
 /// still one of the workspace's people: their bridged message is theirs, by
 /// their name with Discord's mark, never "Dana · Discord" as if a namesake
 /// wrote it.
-#[test]
 fn a_member_writing_only_from_a_linked_account_reads_as_themselves() {
     let (mut app, mut doc) = chat(backend("Answer"));
     let start = app.model_command("c_chat", "ask").unwrap();
@@ -417,7 +415,6 @@ fn a_member_writing_only_from_a_linked_account_reads_as_themselves() {
     );
 }
 
-#[test]
 fn a_messages_name_says_which_file_it_shares() {
     let (mut app, mut doc) = chat(backend("Answer"));
     let start = app.model_command("c_chat", "ask").unwrap();
@@ -435,6 +432,18 @@ fn a_messages_name_says_which_file_it_shares() {
     assert!(
         app.model_message_label(&message)
             .ends_with(": see this\nplan.txt")
+    );
+}
+
+/// The name a message is read out under.
+/// Each case was a test of its own, on a fixture of its own; a failure
+/// names the cases that failed.
+#[test]
+fn a_message_is_named_by_who_wrote_it_and_what_it_shares() {
+    crate::testing::cases!(
+        a_bridged_author_reads_via_their_service_and_the_bot_after_it,
+        a_member_writing_only_from_a_linked_account_reads_as_themselves,
+        a_messages_name_says_which_file_it_shares,
     );
 }
 
@@ -505,7 +514,6 @@ fn denial_retains_partial_output_and_retry_uses_a_fresh_reply() {
     assert_eq!(reply(&doc, &retry["reply"]).text, "Partial");
 }
 
-#[test]
 fn truncation_continue_keeps_the_original_answer_and_sends_explicit_context() {
     let backend = backend("Partial answer");
     backend.finish.set(true);
@@ -536,7 +544,6 @@ fn truncation_continue_keeps_the_original_answer_and_sends_explicit_context() {
     assert!(requests[1].tools.is_empty());
 }
 
-#[test]
 fn stop_preserves_partial_output_and_blocks_replacement_until_terminal_publish() {
     let backend = backend("Keep this");
     let (mut app, mut doc) = chat(backend);
@@ -560,7 +567,6 @@ fn stop_preserves_partial_output_and_blocks_replacement_until_terminal_publish()
     assert!(app.model_controls("c_chat").contains(&"retry"));
 }
 
-#[test]
 fn stop_before_first_pump_still_records_cancellation() {
     let (mut app, mut doc) = chat(backend("Never polled"));
     let first = app.model_command("c_chat", "ask").unwrap();
@@ -574,7 +580,6 @@ fn stop_before_first_pump_still_records_cancellation() {
     );
 }
 
-#[test]
 fn empty_chat_hides_ask_and_stale_activation_reports_the_refusal() {
     let backend = backend("Answer");
     let mut doc = automerge::AutoCommit::new();
@@ -589,6 +594,19 @@ fn empty_chat_hides_ask_and_stale_activation_reports_the_refusal() {
             .is_some_and(|message| !message.is_empty())
     );
     assert!(backend.requests.borrow().is_empty());
+}
+
+/// Stopping and continuing a model's turn, and asking in an empty chat.
+/// Each case was a test of its own, on a fixture of its own; a failure
+/// names the cases that failed.
+#[test]
+fn a_model_turn_stops_continues_and_hides_ask_where_there_is_nothing_to_ask() {
+    crate::testing::cases!(
+        truncation_continue_keeps_the_original_answer_and_sends_explicit_context,
+        stop_preserves_partial_output_and_blocks_replacement_until_terminal_publish,
+        stop_before_first_pump_still_records_cancellation,
+        empty_chat_hides_ask_and_stale_activation_reports_the_refusal,
+    );
 }
 
 fn message_resource<'a>(

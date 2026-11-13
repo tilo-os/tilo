@@ -24,7 +24,6 @@ fn held(app: &mut TestApp<ChatShell>, channel: &str) -> Vec<(String, crate::reco
         .collect()
 }
 
-#[test]
 fn a_channel_made_under_a_chosen_id_takes_posts_there_and_is_made_once() {
     let mut app = app();
     app.call(
@@ -55,7 +54,6 @@ fn a_channel_made_under_a_chosen_id_takes_posts_there_and_is_made_once() {
     assert_eq!(held(&mut app, "launch-workspace")[0].1.text, "first post");
 }
 
-#[test]
 fn a_delivered_message_shows_its_authors_name_to_readers_and_stays_the_deliverers() {
     let mut app = app();
     deliver(
@@ -84,7 +82,6 @@ fn a_delivered_message_shows_its_authors_name_to_readers_and_stays_the_deliverer
     );
 }
 
-#[test]
 fn delivering_the_same_message_at_the_same_time_again_changes_nothing() {
     let mut app = app();
     let delivery = json!({"channel": "c_chat", "author": "Dana", "body": "hello",
@@ -98,7 +95,6 @@ fn delivering_the_same_message_at_the_same_time_again_changes_nothing() {
     assert_eq!(count, 1);
 }
 
-#[test]
 fn a_delivery_to_a_voice_channel_or_without_an_author_is_refused() {
     let mut app = app();
     assert!(
@@ -119,7 +115,6 @@ fn a_delivery_to_a_voice_channel_or_without_an_author_is_refused() {
     );
 }
 
-#[test]
 fn export_content_keeps_the_channels_transcript_as_content() {
     let mut app = app();
     deliver(
@@ -182,7 +177,20 @@ fn export_content_keeps_the_channels_transcript_as_content() {
     );
 }
 
+/// A bridge's deliveries into a channel, and a channel's exported transcript.
+/// Each case was a test of its own, on a fixture of its own; a failure
+/// names the cases that failed.
 #[test]
+fn deliveries_and_exports_go_through_the_chats_own_actions() {
+    crate::testing::cases!(
+        a_channel_made_under_a_chosen_id_takes_posts_there_and_is_made_once,
+        a_delivered_message_shows_its_authors_name_to_readers_and_stays_the_deliverers,
+        delivering_the_same_message_at_the_same_time_again_changes_nothing,
+        a_delivery_to_a_voice_channel_or_without_an_author_is_refused,
+        export_content_keeps_the_channels_transcript_as_content,
+    );
+}
+
 fn delivered_ids_derive_from_what_the_delivery_says() {
     let channel = Id::from_raw("c_chat");
     let id = delivered_id(&channel, "Dana", 5, "hi");
@@ -191,8 +199,25 @@ fn delivered_ids_derive_from_what_the_delivery_says() {
     assert_ne!(id, delivered_id(&channel, "Dana", 5, "hi!"));
 }
 
-#[test]
 fn rfc3339_prints_unix_seconds_in_utc() {
     assert_eq!(rfc3339(0), "1970-01-01T00:00:00Z");
     assert_eq!(rfc3339(1_700_000_000), "2023-11-14T22:13:20Z");
+    assert_eq!(rfc3339(-1), "1969-12-31T23:59:59Z", "before the epoch");
+    assert_eq!(
+        rfc3339(86_399),
+        "1970-01-01T23:59:59Z",
+        "a day's last second"
+    );
+    assert_eq!(rfc3339(951_782_400), "2000-02-29T00:00:00Z", "a leap day");
+}
+
+/// The id a delivery derives and the time a transcript prints.
+/// Each case was a test of its own, on a fixture of its own; a failure
+/// names the cases that failed.
+#[test]
+fn delivered_ids_and_times_are_derived_the_same_everywhere() {
+    crate::testing::cases!(
+        delivered_ids_derive_from_what_the_delivery_says,
+        rfc3339_prints_unix_seconds_in_utc,
+    );
 }

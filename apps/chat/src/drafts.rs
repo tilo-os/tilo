@@ -104,7 +104,6 @@ mod tests {
 
     use super::*;
 
-    #[test]
     fn a_draft_is_rich_text_edited_at_its_key() {
         let mut ada = Replica::<ChatDrafts>::new().as_author("u_ada");
         let append = ChatDrafts::paths()
@@ -141,7 +140,6 @@ mod tests {
     }
 
     /// A draft is found by the words that were typed, opening the conversation it is written in.
-    #[test]
     fn the_words_not_yet_sent_are_found() {
         let mut ada = Replica::<ChatDrafts>::new().as_author("u_ada");
         let append = ChatDrafts::paths()
@@ -164,6 +162,17 @@ mod tests {
             entries[0].anchor.as_deref(),
             Some("chat.workspace/channels/c_general"),
             "the conversation it is written in"
+        );
+    }
+
+    /// A person's drafts: edited apart, and found by search.
+    /// Each case was a test of its own, on a fixture of its own; a failure
+    /// names the cases that failed.
+    #[test]
+    fn a_draft_is_edited_at_its_key_and_found_by_its_words() {
+        crate::testing::cases!(
+            a_draft_is_rich_text_edited_at_its_key,
+            the_words_not_yet_sent_are_found,
         );
     }
 }

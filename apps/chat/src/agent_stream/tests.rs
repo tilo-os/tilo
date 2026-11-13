@@ -35,7 +35,6 @@ fn stream(doc: &Workspace) -> AgentStream {
     message(doc).work.unwrap().stream.unwrap()
 }
 
-#[test]
 fn live_events_append_unicode_exactly_once_and_preserve_partial_answer_on_failure() {
     let mut doc = fixture();
     apply(
@@ -97,7 +96,6 @@ fn live_events_append_unicode_exactly_once_and_preserve_partial_answer_on_failur
     assert_eq!(kept.detail, "Connection lost");
 }
 
-#[test]
 fn terminal_outcomes_remain_distinct_and_a_retry_cannot_reuse_a_reply() {
     for finish in [
         AgentFinish::Complete,
@@ -238,7 +236,6 @@ fn reasoning_history_grows_linearly_with_received_content() {
     assert_eq!(kept.sequence, 192);
 }
 
-#[test]
 fn work_updates_do_not_erase_provider_stream_or_trace() {
     let mut doc = fixture();
     let summons = Id::from_raw("m_concept");
@@ -308,6 +305,18 @@ fn work_updates_do_not_erase_provider_stream_or_trace() {
     assert_eq!(work.trace.len(), 1);
     assert_eq!(work.trace[0].label, "Read");
     assert_eq!(message.text, "Answer");
+}
+
+/// What a streamed reply records of its events.
+/// Each case was a test of its own, on a fixture of its own; a failure
+/// names the cases that failed.
+#[test]
+fn a_reply_stream_keeps_its_text_work_and_outcome() {
+    crate::testing::cases!(
+        live_events_append_unicode_exactly_once_and_preserve_partial_answer_on_failure,
+        terminal_outcomes_remain_distinct_and_a_retry_cannot_reuse_a_reply,
+        work_updates_do_not_erase_provider_stream_or_trace,
+    );
 }
 
 #[test]

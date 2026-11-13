@@ -1062,7 +1062,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn an_unanswered_join_wakes_the_window_to_give_up() {
         let now = ui::time::now();
         let mut voice = LocalVoice::default();
@@ -1086,7 +1085,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn a_join_is_held_while_its_answer_crosses_to_the_host() {
         let now = ui::time::now();
         let mut voice = LocalVoice::default();
@@ -1105,7 +1103,6 @@ mod tests {
         assert_eq!(voice.client_issue, None);
     }
 
-    #[test]
     fn a_stalled_app_does_not_give_up_a_call_it_could_not_hear_from() {
         let now = ui::time::now();
         let mut voice = LocalVoice::default();
@@ -1148,7 +1145,6 @@ mod tests {
         assert_eq!(voice.snapshot.state, State::Unavailable);
     }
 
-    #[test]
     fn a_reply_lost_while_running_gives_up_after_the_grace_a_stall_gets() {
         let now = ui::time::now();
         let sent = now;
@@ -1163,7 +1159,6 @@ mod tests {
         assert_eq!(rearmed + REPLY_LOST, woken + AFTER_STALL);
     }
 
-    #[test]
     fn newer_join_response_retires_prior_pending_intents() {
         let now = ui::time::now();
         let mut voice = LocalVoice::default();
@@ -1196,7 +1191,6 @@ mod tests {
         )));
     }
 
-    #[test]
     fn lost_status_reply_clears_retained_inventory_and_fences_late_response() {
         let now = ui::time::now();
         let mut voice = LocalVoice::default();
@@ -1235,7 +1229,20 @@ mod tests {
         assert_eq!(voice.snapshot.state, State::Unavailable);
     }
 
+    /// What the call's client does when an answer never comes.
+    /// Each case was a test of its own, on a fixture of its own; a failure
+    /// names the cases that failed.
     #[test]
+    fn a_lost_reply_gives_up_on_its_deadline_and_a_stall_does_not() {
+        crate::testing::cases!(
+            an_unanswered_join_wakes_the_window_to_give_up,
+            a_join_is_held_while_its_answer_crosses_to_the_host,
+            a_stalled_app_does_not_give_up_a_call_it_could_not_hear_from,
+            a_reply_lost_while_running_gives_up_after_the_grace_a_stall_gets,
+            lost_status_reply_clears_retained_inventory_and_fences_late_response,
+        );
+    }
+
     fn join_stays_muted_and_unjoined_until_service_response() {
         let mut voice = LocalVoice::default();
         voice
@@ -1256,7 +1263,6 @@ mod tests {
         assert_eq!(voice.channel.as_deref(), Some("voice"));
     }
 
-    #[test]
     fn leave_fences_late_join_and_unmute_results() {
         let mut voice = LocalVoice::default();
         voice
@@ -1316,7 +1322,6 @@ mod tests {
         }
     }
 
-    #[test]
     fn one_watch_is_outstanding_and_the_next_waits_past_what_was_seen() {
         let now = ui::time::now();
         let mut voice = LocalVoice::default();
@@ -1361,7 +1366,6 @@ mod tests {
         assert_eq!(voice.snapshot.rosters.len(), 1);
     }
 
-    #[test]
     fn a_watch_answered_under_a_newer_intent_takes_only_who_is_in_the_call() {
         let now = ui::time::now();
         let mut voice = LocalVoice::default();
@@ -1388,7 +1392,6 @@ mod tests {
         voice.complete(request_id(&unmute[0]), &Ok(live()));
     }
 
-    #[test]
     fn semantic_status_reads_coalesce_beside_the_watch() {
         let now = ui::time::now();
         let mut doc = automerge::AutoCommit::new();
@@ -1432,7 +1435,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn coalesced_status_keeps_service_failures_terminal_and_leave_immediate() {
         let now = ui::time::now();
         let mut voice = LocalVoice::default();
@@ -1461,6 +1463,19 @@ mod tests {
         assert!(voice.channel.is_none());
         assert!(voice.snapshot.muted);
         assert!(!voice.snapshot.capture_active);
+    }
+
+    /// The held watch and the status reads asked beside it.
+    /// Each case was a test of its own, on a fixture of its own; a failure
+    /// names the cases that failed.
+    #[test]
+    fn one_watch_follows_the_call_and_status_reads_coalesce_beside_it() {
+        crate::testing::cases!(
+            one_watch_is_outstanding_and_the_next_waits_past_what_was_seen,
+            a_watch_answered_under_a_newer_intent_takes_only_who_is_in_the_call,
+            semantic_status_reads_coalesce_beside_the_watch,
+            coalesced_status_keeps_service_failures_terminal_and_leave_immediate,
+        );
     }
 
     #[test]
@@ -1543,7 +1558,6 @@ mod tests {
     /// A join the workspace refuses, or a grant that never comes, leaves the
     /// voice card up saying why, never a card stuck joining or one that
     /// vanishes; leaving closes it.
-    #[test]
     fn a_refused_join_keeps_the_card_with_its_reason_until_left() {
         let now = ui::time::now();
         let mut doc = automerge::AutoCommit::new();
@@ -1635,7 +1649,6 @@ mod tests {
     /// Muting shows at once on the control, but the call says the
     /// microphone stopped only once the service did: a status that still
     /// reports capture keeps saying so, however the person asked.
-    #[test]
     fn mute_reports_capture_stopped_only_once_the_service_stopped_it() {
         let now = ui::time::now();
         let mut voice = LocalVoice::default();
@@ -1687,7 +1700,6 @@ mod tests {
         assert!(!voice.snapshot.capture_active);
     }
 
-    #[test]
     fn status_polling_and_pending_commands_are_bounded_and_mute_always_fits() {
         let now = ui::time::now();
         let mut voice = LocalVoice::default();
@@ -1712,7 +1724,6 @@ mod tests {
         assert!(voice.snapshot.muted);
     }
 
-    #[test]
     fn a_voice_channel_says_who_is_in_its_call() {
         let mut doc = automerge::AutoCommit::new();
         crate::demo::seed(&mut doc).unwrap();
@@ -1786,7 +1797,6 @@ mod tests {
 
     /// A join is listening, muted; a refused microphone keeps the person in
     /// the call, muted, and the call says why instead of ending.
-    #[test]
     fn a_join_is_muted_and_a_refused_microphone_stays_in_the_call() {
         let mut voice = LocalVoice::default();
         voice
@@ -1822,7 +1832,21 @@ mod tests {
         );
     }
 
+    /// Joining, leaving, muting and the pending-command bound of the call's client.
+    /// Each case was a test of its own, on a fixture of its own; a failure
+    /// names the cases that failed.
     #[test]
+    fn a_join_waits_for_the_service_and_later_intents_fence_earlier_answers() {
+        crate::testing::cases!(
+            join_stays_muted_and_unjoined_until_service_response,
+            leave_fences_late_join_and_unmute_results,
+            newer_join_response_retires_prior_pending_intents,
+            a_join_is_muted_and_a_refused_microphone_stays_in_the_call,
+            mute_reports_capture_stopped_only_once_the_service_stopped_it,
+            status_polling_and_pending_commands_are_bounded_and_mute_always_fits,
+        );
+    }
+
     fn joining_panel_is_visible_without_claiming_live_capture_or_streams() {
         let mut doc = automerge::AutoCommit::new();
         crate::demo::seed(&mut doc).unwrap();
@@ -1845,11 +1869,22 @@ mod tests {
         assert!(app.native_voice.snapshot.publishers.is_empty());
     }
 
+    /// What the voice card and the channel's rows show of a call.
+    /// Each case was a test of its own, on a fixture of its own; a failure
+    /// names the cases that failed.
+    #[test]
+    fn the_call_card_and_its_channel_say_what_the_service_said() {
+        crate::testing::cases!(
+            a_refused_join_keeps_the_card_with_its_reason_until_left,
+            a_voice_channel_says_who_is_in_its_call,
+            joining_panel_is_visible_without_claiming_live_capture_or_streams,
+        );
+    }
+
     fn person(n: u8) -> String {
         format!("{n:02x}").repeat(32)
     }
 
-    #[test]
     fn a_tile_asks_for_the_smallest_layer_that_covers_it() {
         use ui::native_media::{PictureLayer, PictureSource};
         assert_eq!(
@@ -1869,9 +1904,24 @@ mod tests {
             layer_for(480.0, 270.0, PictureSource::Screen),
             PictureLayer::High
         );
+        // Each layer covers a tile up to its own size, and not a pixel past it.
+        for (width, height, source, layer) in [
+            (320.0, 180.0, PictureSource::Camera, PictureLayer::Low),
+            (321.0, 180.0, PictureSource::Camera, PictureLayer::Mid),
+            (320.0, 181.0, PictureSource::Camera, PictureLayer::Mid),
+            (640.0, 360.0, PictureSource::Camera, PictureLayer::Mid),
+            (641.0, 360.0, PictureSource::Camera, PictureLayer::High),
+            (320.0, 180.0, PictureSource::Screen, PictureLayer::Low),
+            (321.0, 180.0, PictureSource::Screen, PictureLayer::High),
+        ] {
+            assert_eq!(
+                layer_for(width, height, source),
+                layer,
+                "a {width} x {height} tile of a {source:?}"
+            );
+        }
     }
 
-    #[test]
     fn the_call_is_asked_for_exactly_the_pictures_its_tiles_show_of_people_who_show_them() {
         use ui::native_media::{PictureLayer, PictureSource, Roster, Shown};
         let mut doc = automerge::AutoCommit::new();
@@ -1919,7 +1969,6 @@ mod tests {
         assert!(app.wanted_pictures().is_empty());
     }
 
-    #[test]
     fn a_live_call_tells_the_service_what_shows_and_keeps_one_collection_outstanding() {
         use ui::native_media::{Picture, PictureLayer, PictureSource, Shown};
         let now = ui::time::now();
@@ -1992,7 +2041,6 @@ mod tests {
         app
     }
 
-    #[test]
     fn a_participants_volume_is_told_once_the_call_is_live_and_again_in_the_next() {
         let now = ui::time::now();
         let mut app = standup();
@@ -2052,5 +2100,18 @@ mod tests {
         );
         let (_, _, percent, _) = volume(&app.native_voice.take_requests(now)).expect("heard again");
         assert_eq!(percent, 150);
+    }
+
+    /// Picture layers, the pictures asked for and collected, and a participant's volume.
+    /// Each case was a test of its own, on a fixture of its own; a failure
+    /// names the cases that failed.
+    #[test]
+    fn the_service_is_told_which_pictures_show_and_how_loud_each_person_is() {
+        crate::testing::cases!(
+            a_tile_asks_for_the_smallest_layer_that_covers_it,
+            the_call_is_asked_for_exactly_the_pictures_its_tiles_show_of_people_who_show_them,
+            a_live_call_tells_the_service_what_shows_and_keeps_one_collection_outstanding,
+            a_participants_volume_is_told_once_the_call_is_live_and_again_in_the_next,
+        );
     }
 }

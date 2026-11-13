@@ -24,7 +24,6 @@ fn registered_person_effect_ids_match_the_native_broker_protocol() {
 
 /// The conversation two people have is named by the two of them, whichever
 /// order they are named in, once.
-#[test]
 fn a_conversation_is_named_by_its_participants_once() {
     let ada = MemberId::person("ad".repeat(32));
     let bob = MemberId::person("b0".repeat(32));
@@ -39,7 +38,6 @@ fn a_conversation_is_named_by_its_participants_once() {
     assert_eq!(Chat::direct_participants(&"c_general".into()), None);
 }
 
-#[test]
 fn an_agent_and_a_person_converse_apart_from_the_pair_of_people() {
     let ada = MemberId::person("ad".repeat(32));
     let agent = MemberId::agent("ag".repeat(32));
@@ -47,6 +45,17 @@ fn an_agent_and_a_person_converse_apart_from_the_pair_of_people() {
         Chat::direct_id([ada.clone(), agent]),
         Chat::direct_id([ada, MemberId::person("ag".repeat(32))]),
         "who someone is names the conversation"
+    );
+}
+
+/// The id of a direct conversation.
+/// Each case was a test of its own, on a fixture of its own; a failure
+/// names the cases that failed.
+#[test]
+fn a_conversations_id_names_its_participants_people_or_agents() {
+    crate::testing::cases!(
+        a_conversation_is_named_by_its_participants_once,
+        an_agent_and_a_person_converse_apart_from_the_pair_of_people,
     );
 }
 

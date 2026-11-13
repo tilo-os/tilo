@@ -216,7 +216,6 @@ fn channel_context_menu_delete_through_the_palette_action() {
     }
 }
 
-#[test]
 fn with_no_channel_open_the_composer_takes_no_text() {
     // A chat with no channels yet, as a workspace opens one its operator named
     // none for.
@@ -398,7 +397,6 @@ fn offers_undo(app: &mut ChatApp, doc: &crate::testing::Workspace) -> bool {
 /// Delete in a message's menu asks first, as Discord's does: the message
 /// stays until the person agrees. Once they do it goes, and the Undo under
 /// the composer brings it back through the history of its part.
-#[test]
 fn deleting_your_own_message_from_its_menu_asks_first_and_undo_brings_it_back() {
     ui::widget::note_shift(false);
     let (mut app, mut doc) = app_with_doc();
@@ -437,7 +435,6 @@ fn deleting_your_own_message_from_its_menu_asks_first_and_undo_brings_it_back() 
 
 /// With Shift held, Delete in the menu goes at once, unasked, and Undo
 /// brings it back.
-#[test]
 fn shift_deletes_your_own_message_from_its_menu_at_once() {
     let (mut app, mut doc) = app_with_doc();
     let id = send_own(&mut app, &mut doc, "a slip of the keys");
@@ -471,7 +468,6 @@ fn shift_deletes_your_own_message_from_its_menu_at_once() {
 /// The pointer over a message lifts its row and shows its bar: react,
 /// reply, edit (one's own) and More. Shift grows the quick actions, and
 /// its delete goes at once; Undo brings the message back.
-#[test]
 fn hovering_a_message_shows_its_bar_and_shift_its_quick_actions() {
     ui::widget::note_shift(false);
     let (mut app, mut doc) = app_with_doc();
@@ -538,7 +534,6 @@ fn hovering_a_message_shows_its_bar_and_shift_its_quick_actions() {
 }
 
 /// The bar's More opens the message's whole menu, as a right click does.
-#[test]
 fn the_bars_more_opens_the_messages_menu() {
     ui::widget::note_shift(false);
     let (mut app, mut doc) = app_with_doc();
@@ -607,7 +602,6 @@ fn a_refused_post_keeps_its_text_and_says_it_was_not_sent() {
 
 /// A post the workspace refuses after this window showed it as sent comes
 /// back to the composer, marked as not sent.
-#[test]
 fn a_post_the_workspace_refuses_comes_back_to_the_composer() {
     let (mut app, mut doc) = app_with_doc();
     app.active_channel = "c_general".into();
@@ -640,7 +634,6 @@ fn a_post_the_workspace_refuses_comes_back_to_the_composer() {
     );
 }
 
-#[test]
 fn semantic_send_reports_acceptance_only_when_it_appends_a_message() {
     let (mut app, mut doc) = app_with_doc();
     app.active_channel = "c_general".into();
@@ -678,7 +671,6 @@ fn semantic_send_reports_acceptance_only_when_it_appends_a_message() {
     );
 }
 
-#[test]
 fn live_start_selects_the_workspaces_first_real_channel() {
     // Against a real (minimal) starter document whose ids differ from the
     // demo defaults the app boots with, the reload must re-home the
@@ -698,6 +690,19 @@ fn live_start_selects_the_workspaces_first_real_channel() {
     assert!(app.thread_open.is_none(), "stale demo thread dropped");
     // And nothing fake leaked in.
     assert!(app.users.iter().all(|u| u.id == model::ME));
+}
+
+/// Where the composer writes, and what it says of a post that was not taken.
+/// Each case was a test of its own, on a fixture of its own; a failure
+/// names the cases that failed.
+#[test]
+fn the_composer_sends_only_where_a_channel_takes_the_post() {
+    crate::testing::cases!(
+        with_no_channel_open_the_composer_takes_no_text,
+        a_post_the_workspace_refuses_comes_back_to_the_composer,
+        semantic_send_reports_acceptance_only_when_it_appends_a_message,
+        live_start_selects_the_workspaces_first_real_channel,
+    );
 }
 
 #[test]
@@ -912,7 +917,6 @@ fn attachments_are_picked_imported_and_posted_as_real_portable_cards() {
     }
 }
 
-#[test]
 fn switching_to_voice_channel_starts_a_muted_service_join_without_membership_write() {
     let (mut app, mut doc) = app_with_doc();
     let before = doc.save();
@@ -931,7 +935,6 @@ fn switching_to_voice_channel_starts_a_muted_service_join_without_membership_wri
     assert_eq!(doc.save(), before);
 }
 
-#[test]
 fn expanding_a_call_preserves_verified_streams_without_rewriting_legacy_history() {
     let (mut app, mut doc) = app_with_doc();
     app.on_hit(
@@ -1053,7 +1056,6 @@ fn call_overlay_keeps_the_roster_and_fills_its_surface_at_every_size() {
     }
 }
 
-#[test]
 fn leaving_a_call_clears_local_service_state_without_rewriting_history() {
     let (mut app, mut doc) = app_with_doc();
     app.on_hit(
@@ -1190,7 +1192,6 @@ fn channels_and_categories_are_created_renamed_and_reordered_from_the_sidebar() 
     }
 }
 
-#[test]
 fn message_lines_keep_a_readable_length_on_a_wide_screen() {
     use ui::theme::Theme;
     use vello::kurbo::Rect;
@@ -1209,7 +1210,6 @@ fn message_lines_keep_a_readable_length_on_a_wide_screen() {
     );
 }
 
-#[test]
 fn an_empty_channel_invites_the_first_message() {
     let (mut app, _doc) = app_with_doc();
     let id = app.active_channel.clone();
@@ -1294,7 +1294,6 @@ fn the_pickers_add_emoji_tile_is_a_named_action() {
     assert_eq!(chosen.get(), 1, "it asks for a picture to add");
 }
 
-#[test]
 fn a_reaction_pill_says_how_many_reacted() {
     let (mut app, _doc) = app_with_doc();
     render_frame(&mut app, 1280.0, 720.0);
@@ -1330,7 +1329,6 @@ fn a_reaction_pill_says_how_many_reacted() {
     );
 }
 
-#[test]
 fn the_message_menu_adds_a_first_reaction_and_starts_a_thread() {
     // The reaction row's "+" and the thread bar exist only once a
     // message has reactions or replies, so the menu is how anyone
@@ -1384,6 +1382,21 @@ fn the_message_menu_adds_a_first_reaction_and_starts_a_thread() {
         app.thread_open.as_deref(),
         Some(id.as_str()),
         "replying again keeps the thread open"
+    );
+}
+
+/// A message's hover bar, its menu, its reactions and its deletion.
+/// Each case was a test of its own, on a fixture of its own; a failure
+/// names the cases that failed.
+#[test]
+fn a_message_is_reached_reacted_to_and_deleted_from_its_bar_and_menu() {
+    crate::testing::cases!(
+        deleting_your_own_message_from_its_menu_asks_first_and_undo_brings_it_back,
+        shift_deletes_your_own_message_from_its_menu_at_once,
+        hovering_a_message_shows_its_bar_and_shift_its_quick_actions,
+        the_bars_more_opens_the_messages_menu,
+        a_reaction_pill_says_how_many_reacted,
+        the_message_menu_adds_a_first_reaction_and_starts_a_thread,
     );
 }
 
@@ -2351,7 +2364,6 @@ fn chat_without_the_keyboard_leaves_typed_text_to_the_focused_window() {
 /// The shell keeps the channels docked while the conversation beside them
 /// keeps a reading column; at that narrowest, every composer control still
 /// fits.
-#[test]
 fn the_composer_fits_the_narrowest_conversation_beside_the_channels() {
     let (mut app, _doc) = app_with_doc();
     let narrowest =
@@ -2373,7 +2385,6 @@ fn the_composer_fits_the_narrowest_conversation_beside_the_channels() {
 
 /// A message's author line in a narrow window, as a card's: a long name ends in an ellipsis
 /// and the time beside it stays whole, inside the conversation.
-#[test]
 fn a_narrow_window_keeps_a_messages_time_whole_beside_a_long_name() {
     let (mut app, mut doc) = app_with_doc();
     let name = "Book the room for the whole marketing team on Friday";
@@ -2566,7 +2577,6 @@ mod workspace_state;
 
 /// Every participant in the expanded call is their own tile, named as their
 /// messages read, and opens how loud they play here.
-#[test]
 fn each_participant_in_an_expanded_call_gets_their_own_tile_and_volume() {
     use ui::native_media::Roster;
     let (mut app, mut doc) = app_with_doc();
@@ -2612,6 +2622,19 @@ fn each_participant_in_an_expanded_call_gets_their_own_tile_and_volume() {
     assert_eq!((listening.percent, listening.silenced), (50, false));
 }
 
+/// Joining, expanding and leaving a call from the window.
+/// Each case was a test of its own, on a fixture of its own; a failure
+/// names the cases that failed.
+#[test]
+fn a_call_is_joined_expanded_and_left_without_writing_the_record() {
+    crate::testing::cases!(
+        switching_to_voice_channel_starts_a_muted_service_join_without_membership_write,
+        expanding_a_call_preserves_verified_streams_without_rewriting_legacy_history,
+        leaving_a_call_clears_local_service_state_without_rewriting_history,
+        each_participant_in_an_expanded_call_gets_their_own_tile_and_volume,
+    );
+}
+
 /// Every node under `node`, depth first.
 fn access_nodes(node: &ui::a11y::AccessNode) -> Vec<&ui::a11y::AccessNode> {
     std::iter::once(node)
@@ -2619,7 +2642,6 @@ fn access_nodes(node: &ui::a11y::AccessNode) -> Vec<&ui::a11y::AccessNode> {
         .collect()
 }
 
-#[test]
 fn the_composers_controls_are_chats_own_copy() {
     let (mut app, _doc) = app_with_doc();
     render_frame(&mut app, 1280.0, 720.0);
@@ -2643,7 +2665,6 @@ fn the_composers_controls_are_chats_own_copy() {
     assert!(!message.interface_name);
 }
 
-#[test]
 fn a_messages_texts_are_read_where_they_are_drawn() {
     let (mut app, _doc) = app_with_doc();
     render_frame(&mut app, 1280.0, 720.0);
@@ -2686,6 +2707,21 @@ fn a_messages_texts_are_read_where_they_are_drawn() {
         }
     }
     assert!(headed, "a message that starts a group shows its author");
+}
+
+/// The layout and the reading of a conversation's text and composer.
+/// Each case was a test of its own, on a fixture of its own; a failure
+/// names the cases that failed.
+#[test]
+fn the_conversation_lays_out_its_text_composer_and_controls() {
+    crate::testing::cases!(
+        message_lines_keep_a_readable_length_on_a_wide_screen,
+        an_empty_channel_invites_the_first_message,
+        the_composer_fits_the_narrowest_conversation_beside_the_channels,
+        a_narrow_window_keeps_a_messages_time_whole_beside_a_long_name,
+        the_composers_controls_are_chats_own_copy,
+        a_messages_texts_are_read_where_they_are_drawn,
+    );
 }
 
 /// A browser page's Save dialog: every place chosen is one the host keeps,

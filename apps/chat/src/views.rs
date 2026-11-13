@@ -1412,7 +1412,6 @@ mod tests {
             .expect("the view is one the host builds");
     }
 
-    #[test]
     fn the_page_draws_the_channels_name_and_its_messages() {
         let channel = demo_channel();
         let cx = view_cx(&channel);
@@ -1521,7 +1520,6 @@ mod tests {
         Channel::read(&chat, &rows, "c_ask", me, &names)
     }
 
-    #[test]
     fn a_real_sessions_person_is_named_never_shown_their_id() {
         // A session's Chat record is the ask's, and the ask never told it who reads it: the
         // person's message is authored by their root key, a 64-hex routing id. The page draws
@@ -1567,7 +1565,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn an_agents_answer_is_signed_with_its_name() {
         // An agent's reply is authored `agent:<id>`: the page draws the agent's name, the one
         // the workspace keeps for it, never its id.
@@ -1596,7 +1593,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn a_departed_agents_answer_is_named_with_the_person_it_wrote_for() {
         // Ada's agent answered and left: neither the record nor the workspace names it any more,
         // and its answer keeps what its send pinned — the name it went by and the person it
@@ -1624,7 +1620,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn a_person_the_record_cannot_name_is_never_shown_their_id() {
         // Someone neither the record nor the reading's names know: the page says the honest
         // placeholder Chat uses for an unnamed person, never the routing key it holds.
@@ -1663,7 +1658,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn each_message_says_who_wrote_it_and_when() {
         let channel = demo_channel();
         let cx = view_cx(&channel);
@@ -1722,7 +1716,20 @@ mod tests {
         }
     }
 
+    /// Who the page says wrote each message.
+    /// Each case was a test of its own, on a fixture of its own; a failure
+    /// names the cases that failed.
     #[test]
+    fn the_page_names_each_author_and_never_shows_an_id() {
+        crate::testing::cases!(
+            a_real_sessions_person_is_named_never_shown_their_id,
+            an_agents_answer_is_signed_with_its_name,
+            a_departed_agents_answer_is_named_with_the_person_it_wrote_for,
+            a_person_the_record_cannot_name_is_never_shown_their_id,
+            each_message_says_who_wrote_it_and_when,
+        );
+    }
+
     fn a_day_divider_stands_between_two_days() {
         // Two messages a day apart: the transcript marks the second day with a divider, the
         // toolkit's own, labelled as the person reads a day.
@@ -1761,7 +1768,6 @@ mod tests {
         }
     }
 
-    #[test]
     fn a_run_of_one_person_names_them_once() {
         // Two messages from one person within the run window: one avatar-and-name run, so the
         // second message leaves the name to the first, as every conversation draws a run.
@@ -1809,7 +1815,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn a_messages_attachment_chip_can_be_dragged_out() {
         // A record an attachment holds is a drag source as well as a row: dragging it carries
         // the resource's address, so a drop target elsewhere — the canvas — takes it.
@@ -1854,7 +1859,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn a_resource_attachments_chip_shows_its_title_not_its_id() {
         // A resource the session placed is attached by its published address
         // (`tl:so.tilo.lang.tasks:root-fjqi4yze`): the chip the message draws says what the
@@ -1912,7 +1916,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn the_composer_is_full_width_with_attach_and_send() {
         let channel = demo_channel();
         let cx = view_cx(&channel);
@@ -1960,7 +1963,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn the_composer_sends_the_typed_text_to_the_conversation() {
         let channel = demo_channel();
         let cx = view_cx(&channel);
@@ -2003,7 +2005,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn an_attachments_press_is_the_systems_open() {
         let mut channel = demo_channel();
         let shared = ResourceRef {
@@ -2042,7 +2043,20 @@ mod tests {
         );
     }
 
+    /// Attachment chips and the composer of the page.
+    /// Each case was a test of its own, on a fixture of its own; a failure
+    /// names the cases that failed.
     #[test]
+    fn the_page_offers_attachments_and_a_composer_that_sends() {
+        crate::testing::cases!(
+            a_messages_attachment_chip_can_be_dragged_out,
+            a_resource_attachments_chip_shows_its_title_not_its_id,
+            the_composer_is_full_width_with_attach_and_send,
+            the_composer_sends_the_typed_text_to_the_conversation,
+            an_attachments_press_is_the_systems_open,
+        );
+    }
+
     fn a_reading_that_has_not_arrived_still_draws_the_page() {
         let channel = Channel::default();
         let cx = view_cx(&channel);
@@ -2054,7 +2068,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn a_reply_to_the_message_above_it_carries_no_quote() {
         // An agent answering the message right above it needs no quote: the person reads what is
         // answered just over the answer. A reply to anything else keeps its quote.
@@ -2132,7 +2145,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn a_reply_carrying_a_span_draws_that_span_in_its_quote() {
         // A reply that answers a run of a message quotes the words the person chose, never the
         // whole message's start: the quote over it draws exactly the selected words, and the
@@ -2223,7 +2235,17 @@ mod tests {
         );
     }
 
+    /// The quote a reply draws.
+    /// Each case was a test of its own, on a fixture of its own; a failure
+    /// names the cases that failed.
     #[test]
+    fn a_reply_draws_its_quote_only_when_it_carries_a_span_or_stands_apart() {
+        crate::testing::cases!(
+            a_reply_to_the_message_above_it_carries_no_quote,
+            a_reply_carrying_a_span_draws_that_span_in_its_quote,
+        );
+    }
+
     fn a_messages_avatar_stands_on_its_author_line() {
         // Every message's avatar leads the line its author's name and the time stand on: the
         // row starts its own children at the top, so the avatar of a message that carries a
@@ -2294,7 +2316,6 @@ mod tests {
         }
     }
 
-    #[test]
     fn a_messages_time_is_the_clock_the_person_reads() {
         // A message's line says when it was sent by the clock ("5:16 AM"), never the day alone:
         // the day it falls on is the divider over its run, so a time showing "Jun 26" repeats
@@ -2331,7 +2352,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn a_new_authors_row_stands_a_runs_gap_under_the_one_before() {
         // Two people's messages, then a third: each new author's row stands as a run of its
         // own, and the column's section gap separates runs, so a name never sits jammed
@@ -2434,7 +2454,6 @@ mod tests {
         channel
     }
 
-    #[test]
     fn a_reply_being_written_says_so_beside_the_words_it_has_so_far() {
         // A turn the agent has taken and not ended draws a quiet "Writing…" row, in place, and
         // the words streamed so far are the message's own text: nothing jumps when more arrive.
@@ -2469,7 +2488,6 @@ mod tests {
         }
     }
 
-    #[test]
     fn a_failed_turn_says_what_happened_and_offers_a_retry() {
         // A turn that ended without an answer the person can read leaves a row saying what
         // happened, and a Retry that asks the agent again on the very same message.
@@ -2537,7 +2555,6 @@ mod tests {
         }
     }
 
-    #[test]
     fn a_failed_row_says_what_happened_and_keeps_the_runs_record_behind_a_disclosure() {
         // A failed turn's row says the run's own sentence for a person — one line of what
         // happened — never the working record a person would read as the model's reasoning or
@@ -2600,7 +2617,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn a_reply_of_an_earlier_attempt_offers_no_retry() {
         // A retry moves the question to its next attempt, and the answer is a reply of its own:
         // the reply that failed stands as history, and a Retry there would ask a third time.
@@ -2640,7 +2656,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn a_failed_reply_is_the_one_a_retry_asks_again() {
         // The failed reply of the question's current attempt is the one a Retry asks again: the
         // page reads the record's own work — a provider end from an earlier turn beside a state
@@ -2715,7 +2730,20 @@ mod tests {
         );
     }
 
+    /// An agent's turn while it is written and after it failed.
+    /// Each case was a test of its own, on a fixture of its own; a failure
+    /// names the cases that failed.
     #[test]
+    fn a_turn_being_written_or_failed_says_so_and_offers_its_retry() {
+        crate::testing::cases!(
+            a_reply_being_written_says_so_beside_the_words_it_has_so_far,
+            a_failed_turn_says_what_happened_and_offers_a_retry,
+            a_failed_row_says_what_happened_and_keeps_the_runs_record_behind_a_disclosure,
+            a_reply_of_an_earlier_attempt_offers_no_retry,
+            a_failed_reply_is_the_one_a_retry_asks_again,
+        );
+    }
+
     fn a_message_still_being_sent_says_so_in_place_of_its_time() {
         // Sent from here while its conversation's messages arrive: the page shows it as the
         // window does, with "Sending…" where its time will stand.
@@ -2745,6 +2773,23 @@ mod tests {
         assert!(
             keyed(&tree, "ui.Time", "@when-m_sent").is_empty(),
             "no time yet"
+        );
+    }
+
+    /// The transcript's rows: dividers, runs, avatars, gaps and times.
+    /// Each case was a test of its own, on a fixture of its own; a failure
+    /// names the cases that failed.
+    #[test]
+    fn the_page_lays_out_its_rows_days_runs_and_times() {
+        crate::testing::cases!(
+            the_page_draws_the_channels_name_and_its_messages,
+            a_day_divider_stands_between_two_days,
+            a_run_of_one_person_names_them_once,
+            a_reading_that_has_not_arrived_still_draws_the_page,
+            a_messages_avatar_stands_on_its_author_line,
+            a_messages_time_is_the_clock_the_person_reads,
+            a_new_authors_row_stands_a_runs_gap_under_the_one_before,
+            a_message_still_being_sent_says_so_in_place_of_its_time,
         );
     }
 }

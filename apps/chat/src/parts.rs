@@ -139,7 +139,6 @@ pub struct ReadMark {
 mod tests {
     use super::*;
 
-    #[test]
     fn parts_are_numbered_records_of_one_chain() {
         let first = part(0);
         assert_eq!(part_index(&first), Some(0));
@@ -155,17 +154,38 @@ mod tests {
         );
     }
 
-    #[test]
     fn a_post_goes_to_the_next_part_once_the_head_is_full() {
         assert_eq!(post_part(4, PART_MESSAGES - 1, 0), 4);
         assert_eq!(post_part(4, PART_MESSAGES, 0), 5);
         assert_eq!(post_part(4, 10, PART_TEXT_BYTES), 5);
+        assert_eq!(post_part(4, 0, 0), 4, "an empty head takes the post");
+        assert_eq!(
+            post_part(4, 10, PART_TEXT_BYTES - 1),
+            4,
+            "one byte short of full"
+        );
+        assert_eq!(
+            post_part(u64::MAX, PART_MESSAGES, 0),
+            u64::MAX,
+            "the last part there can be has no next"
+        );
     }
 
-    #[test]
     fn a_later_read_mark_is_further() {
         let early = ReadMark { part: 2, seen: 900 };
         let later = ReadMark { part: 3, seen: 1 };
         assert!(later > early);
+    }
+
+    /// Part ids, the part a post goes to, and the order of read marks.
+    /// Each case was a test of its own, on a fixture of its own; a failure
+    /// names the cases that failed.
+    #[test]
+    fn parts_number_one_chain_and_posts_and_read_marks_move_along_it() {
+        crate::testing::cases!(
+            parts_are_numbered_records_of_one_chain,
+            a_post_goes_to_the_next_part_once_the_head_is_full,
+            a_later_read_mark_is_further,
+        );
     }
 }

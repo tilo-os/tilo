@@ -418,3 +418,31 @@ impl MountedChat for ui::framework::testing::TestApp<crate::ChatShell> {
         self.with_surface::<crate::ChatWindow, _>(|window| visit(&mut window.state()))
     }
 }
+
+/// Runs each of `cases` and fails naming every one that failed. A case is a
+/// scenario that was a test of its own and still builds its own fixture; one
+/// test function runs several, and a failure says which of them broke.
+pub(crate) fn run_cases(cases: &[(&str, fn())]) {
+    let mut failed = Vec::new();
+    for (name, case) in cases {
+        if std::panic::catch_unwind(*case).is_err() {
+            failed.push(*name);
+        }
+    }
+    assert!(failed.is_empty(), "failed cases: {failed:?}");
+}
+
+/// One row of [`run_cases`]: a case under the name a failure reports it by.
+pub(crate) fn case(name: &'static str, run: fn()) -> (&'static str, fn()) {
+    (name, run)
+}
+
+/// [`run_cases`] over the named functions, each reported by its own name.
+macro_rules! cases {
+    ($($case:ident),+ $(,)?) => {
+        $crate::testing::run_cases(&[
+            $($crate::testing::case(stringify!($case), $case)),+
+        ])
+    };
+}
+pub(crate) use cases;

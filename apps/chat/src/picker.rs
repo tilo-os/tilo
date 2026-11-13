@@ -139,7 +139,6 @@ mod tests {
         p
     }
 
-    #[test]
     fn listings_offer_only_their_kind_and_flag_videos() {
         // Phase: video_extension_detection.
         {
@@ -159,7 +158,6 @@ mod tests {
         }
     }
 
-    #[test]
     fn listing_descends_one_level_and_tolerates_missing_paths() {
         // Phase: descends_one_subdirectory_level.
         {
@@ -174,5 +172,16 @@ mod tests {
         {
             assert!(list_attachments(Path::new("/definitely/not/here/at/all")).is_empty());
         }
+    }
+
+    /// What the attachment picker lists.
+    /// Each case was a test of its own, on a fixture of its own; a failure
+    /// names the cases that failed.
+    #[test]
+    fn the_attachment_listing_offers_files_one_level_deep() {
+        crate::testing::cases!(
+            listings_offer_only_their_kind_and_flag_videos,
+            listing_descends_one_level_and_tolerates_missing_paths,
+        );
     }
 }

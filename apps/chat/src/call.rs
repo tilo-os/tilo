@@ -210,7 +210,6 @@ impl SpeakingRings {
 mod tests {
     use super::*;
 
-    #[test]
     fn a_face_rings_while_its_person_is_heard_and_settles_to_nothing() {
         let motion = ui::tokens::EffectiveMotion::new(ui::tokens::Motion::default(), false);
         let now = ui::time::now();
@@ -226,7 +225,6 @@ mod tests {
         assert!(!rings.animating, "a quiet call costs no frames");
     }
 
-    #[test]
     fn native_voice_starts_unjoined_and_each_join_is_muted_audio_only() {
         let mut state = CallState::default();
         assert!(!state.active);
@@ -244,14 +242,18 @@ mod tests {
         assert!(state.muted);
     }
 
-    #[test]
     fn participant_list_auto_expands_only_for_small_calls() {
         assert!(CallState::auto_participants_expanded(3));
         assert!(CallState::auto_participants_expanded(8));
         assert!(!CallState::auto_participants_expanded(9));
+        assert!(CallState::auto_participants_expanded(0), "an empty call");
+        assert!(CallState::auto_participants_expanded(1), "alone in it");
+        assert!(
+            !CallState::auto_participants_expanded(usize::MAX),
+            "the largest count there is"
+        );
     }
 
-    #[test]
     fn join_leave_and_deafen_reset_audio_overlay_and_share_state() {
         // Phase: join_and_leave_reset_overlay_layout.
         {
@@ -289,7 +291,6 @@ mod tests {
         }
     }
 
-    #[test]
     fn call_hands_off_to_the_shared_floating_host_as_a_semantic_element() {
         // Phase: call_uses_shared_floating_handoff.
         {
@@ -322,5 +323,19 @@ mod tests {
                 }
             );
         }
+    }
+
+    /// The call's local state: its rings, its resets and its handoff to the floating host.
+    /// Each case was a test of its own, on a fixture of its own; a failure
+    /// names the cases that failed.
+    #[test]
+    fn call_state_and_speaking_rings_follow_joins_leaves_and_handoff() {
+        crate::testing::cases!(
+            a_face_rings_while_its_person_is_heard_and_settles_to_nothing,
+            native_voice_starts_unjoined_and_each_join_is_muted_audio_only,
+            participant_list_auto_expands_only_for_small_calls,
+            join_leave_and_deafen_reset_audio_overlay_and_share_state,
+            call_hands_off_to_the_shared_floating_host_as_a_semantic_element,
+        );
     }
 }

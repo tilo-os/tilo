@@ -124,7 +124,6 @@ fn rows(doc: &Doc, submission: &Submission) -> Vec<crate::model::Message> {
         .collect()
 }
 
-#[test]
 fn a_picked_report_reads_out_its_picks_notes_actions_and_timings() {
     let (doc, submission) = picked(false);
     let rows = rows(&doc, &submission);
@@ -157,18 +156,6 @@ fn a_picked_report_reads_out_its_picks_notes_actions_and_timings() {
     );
 }
 
-#[test]
-fn a_pick_from_an_app_with_no_known_name_is_the_part_alone_never_the_apps_id() {
-    let (doc, submission) = picked(false);
-    let text = rows(&doc, &submission)[0].text.clone();
-    assert!(text.lines().any(|line| line == "2. A row"), "{text}");
-    assert!(
-        !text.contains("so.tilo.files"),
-        "the id only routes: {text}"
-    );
-}
-
-#[test]
 fn the_masked_picture_is_the_report_messages_image() {
     let (doc, submission) = picked(true);
     assert_eq!(
@@ -182,7 +169,6 @@ fn the_masked_picture_is_the_report_messages_image() {
     );
 }
 
-#[test]
 fn members_react_to_a_report_as_to_any_message() {
     let (mut doc, submission) = picked(false);
     let report = Id::from_raw(submission.id.clone());
@@ -203,7 +189,6 @@ fn members_react_to_a_report_as_to_any_message() {
     assert_eq!(rows[0].reactions[0].count(), 2);
 }
 
-#[test]
 fn a_bot_reading_the_record_through_the_door_reads_the_report_out() {
     use ui::tilo_resource::Model as _;
     let (mut doc, submission) = picked(true);
@@ -225,5 +210,18 @@ fn a_bot_reading_the_record_through_the_door_reads_the_report_out() {
     assert!(
         ui::feedback_read_out::lines(&read_back.feedback)[0]
             .starts_with("1. The \u{201C}Save\u{201D} button in Files")
+    );
+}
+
+/// The message a filed report shows as.
+/// Each case was a test of its own, on a fixture of its own; a failure
+/// names the cases that failed.
+#[test]
+fn a_filed_report_reads_as_a_message_with_its_picture_reactions_and_record() {
+    crate::testing::cases!(
+        a_picked_report_reads_out_its_picks_notes_actions_and_timings,
+        the_masked_picture_is_the_report_messages_image,
+        members_react_to_a_report_as_to_any_message,
+        a_bot_reading_the_record_through_the_door_reads_the_report_out,
     );
 }

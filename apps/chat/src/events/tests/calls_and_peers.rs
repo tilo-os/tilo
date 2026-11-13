@@ -143,7 +143,6 @@ fn voice_joins(app: &mut ChatApp) -> Vec<ui::native_media::Command> {
         .collect()
 }
 
-#[test]
 fn start_call_joins_the_workspaces_voice_channel_creating_one_when_text_only() {
     use crate::effects::ChatEffect;
     // A text-only workspace gains a voice channel, and the call starts in
@@ -198,7 +197,6 @@ fn start_call_joins_the_workspaces_voice_channel_creating_one_when_text_only() {
     assert!(app.call.active && app.call.expanded);
 }
 
-#[test]
 fn a_video_call_turns_the_camera_on_once_the_call_is_live() {
     let (mut app, mut doc) = app_with_doc();
     let before = doc.save();
@@ -266,7 +264,6 @@ fn refuse_voice(app: &mut ChatApp) -> usize {
     sent
 }
 
-#[test]
 fn a_refused_voice_service_is_not_asked_again_on_every_frame() {
     // Phase: not_in_a_call.
     {
@@ -300,7 +297,6 @@ fn a_refused_voice_service_is_not_asked_again_on_every_frame() {
     }
 }
 
-#[test]
 fn microphone_intent_waits_for_local_service_and_never_writes_membership() {
     let (mut app, mut doc) = app_with_doc();
     app.on_hit(
@@ -767,7 +763,6 @@ fn a_view_only_peer_cannot_post_react_or_hydrate_embeds() {
     }
 }
 
-#[test]
 fn two_peers_join_through_native_service_without_publishing_legacy_tickets() {
     let mut doc_a = AutoCommit::new();
     crate::testing::starter(&mut doc_a, "u_alice", "Alice", "AL");
@@ -836,7 +831,6 @@ fn in_a_call_the_window_bar_names_the_call_and_offers_leave() {
     assert!(!destructive(Hit::CallMute), "muting is undone with a press");
 }
 
-#[test]
 fn everyone_sees_who_is_muted_and_this_person_their_own_mute_at_once() {
     let (mut app, _doc) = app_with_doc();
     app.call.join("c_huddle");
@@ -905,7 +899,6 @@ fn deafen_is_in_the_bar_and_asks_the_service() {
     assert!(!app.call.deafened);
 }
 
-#[test]
 fn everyone_sees_who_is_deafened() {
     let (mut app, _doc) = app_with_doc();
     app.call.join("c_huddle");
@@ -932,7 +925,6 @@ fn everyone_sees_who_is_deafened() {
     render_frame(&mut app, 1280.0, 800.0);
 }
 
-#[test]
 fn whoever_the_call_hears_rings_and_a_quiet_face_settles() {
     let (mut app, _doc) = app_with_doc();
     service_streams(&mut app, "c_huddle", 2);
@@ -1001,7 +993,6 @@ fn connected_call() -> (
     (app, doc, live)
 }
 
-#[test]
 fn opening_the_voice_channel_of_the_call_one_is_in_shows_it_without_joining_again() {
     let (mut app, mut doc, live) = connected_call();
     app.on_hit(
@@ -1110,7 +1101,6 @@ fn a_browser_that_cannot_join_calls_says_so_plainly() {
     );
 }
 
-#[test]
 fn the_docked_call_shows_the_other_person_large_and_follows_who_speaks() {
     let (mut app, _doc) = app_with_doc();
     app.call.join("c_huddle");
@@ -1147,7 +1137,6 @@ fn the_docked_call_shows_the_other_person_large_and_follows_who_speaks() {
     );
 }
 
-#[test]
 fn the_call_panel_says_who_is_in_the_call_where_it_paints_it() {
     let (mut app, _doc) = app_with_doc();
     service_streams(&mut app, "c_huddle", 1);
@@ -1186,7 +1175,6 @@ fn the_call_panel_says_who_is_in_the_call_where_it_paints_it() {
     );
 }
 
-#[test]
 fn a_call_with_several_people_names_two_and_counts_the_rest() {
     let (mut app, _doc) = app_with_doc();
     service_streams(&mut app, "c_huddle", 4);
@@ -1221,7 +1209,6 @@ fn a_call_with_several_people_names_two_and_counts_the_rest() {
     );
 }
 
-#[test]
 fn the_card_names_people_briefly_and_the_reading_keeps_their_full_names() {
     let (mut app, _doc) = app_with_doc();
     app.call.join("c_huddle");
@@ -1257,7 +1244,6 @@ fn the_card_names_people_briefly_and_the_reading_keeps_their_full_names() {
     );
 }
 
-#[test]
 fn a_muted_or_deafened_call_shows_it_on_its_microphone() {
     let (mut app, _doc) = app_with_doc();
     app.call.join("c_huddle");
@@ -1283,7 +1269,23 @@ fn a_muted_or_deafened_call_shows_it_on_its_microphone() {
     assert!(app.call_control_engaged(&Hit::CallScreen));
 }
 
+/// Who the call's card and panel name, and how they show mute, deafen and speech.
+/// Each case was a test of its own, on a fixture of its own; a failure
+/// names the cases that failed.
 #[test]
+fn the_call_names_who_is_in_it_and_what_their_microphones_do() {
+    crate::testing::cases!(
+        everyone_sees_who_is_muted_and_this_person_their_own_mute_at_once,
+        everyone_sees_who_is_deafened,
+        whoever_the_call_hears_rings_and_a_quiet_face_settles,
+        the_docked_call_shows_the_other_person_large_and_follows_who_speaks,
+        the_call_panel_says_who_is_in_the_call_where_it_paints_it,
+        a_call_with_several_people_names_two_and_counts_the_rest,
+        the_card_names_people_briefly_and_the_reading_keeps_their_full_names,
+        a_muted_or_deafened_call_shows_it_on_its_microphone,
+    );
+}
+
 fn a_call_that_ended_for_a_reason_no_longer_counts_you_in_it() {
     use ui::presence::capability::PublishesPresence;
     let (mut app, _doc) = app_with_doc();
@@ -1311,7 +1313,22 @@ fn a_call_that_ended_for_a_reason_no_longer_counts_you_in_it() {
     );
 }
 
+/// What the window asks the voice service for, and what it does with the answer.
+/// Each case was a test of its own, on a fixture of its own; a failure
+/// names the cases that failed.
 #[test]
+fn the_voice_service_is_asked_once_and_its_answer_decides_the_call() {
+    crate::testing::cases!(
+        start_call_joins_the_workspaces_voice_channel_creating_one_when_text_only,
+        a_video_call_turns_the_camera_on_once_the_call_is_live,
+        a_refused_voice_service_is_not_asked_again_on_every_frame,
+        microphone_intent_waits_for_local_service_and_never_writes_membership,
+        a_call_that_ended_for_a_reason_no_longer_counts_you_in_it,
+        two_peers_join_through_native_service_without_publishing_legacy_tickets,
+        opening_the_voice_channel_of_the_call_one_is_in_shows_it_without_joining_again,
+    );
+}
+
 fn the_sidebar_chooses_the_call_while_its_stage_fills_the_window() {
     let (mut app, mut doc) = app_with_doc();
     let chosen = |app: &ChatApp| app.places.shown().and_then(|(_, selected)| selected);
@@ -1470,7 +1487,6 @@ fn the_call_cards_own_frame_answers_its_presses() {
     );
 }
 
-#[test]
 fn a_live_calls_reading_serves_the_next_second_it_draws() {
     let (mut app, _doc) = app_with_doc();
     app.call.join("c_huddle");
@@ -1496,7 +1512,6 @@ fn a_live_calls_reading_serves_the_next_second_it_draws() {
     );
 }
 
-#[test]
 fn the_pointer_leaving_the_card_leaves_no_control_hovered() {
     let (mut app, mut doc) = app_with_doc();
     app.call.join("c_huddle");
@@ -1527,7 +1542,6 @@ fn the_pointer_leaving_the_card_leaves_no_control_hovered() {
     );
 }
 
-#[test]
 fn the_card_names_each_control_on_hover_and_the_microphone_says_its_state() {
     let (mut app, _doc) = app_with_doc();
     app.call.join("c_huddle");
@@ -1561,4 +1575,17 @@ fn the_card_names_each_control_on_hover_and_the_microphone_says_its_state() {
     }
     assert_eq!(tip(&app, camera), crate::i18n::t("chat-call-camera-on"));
     assert_eq!(tip(&app, leave), crate::i18n::t("chat-call-leave-action"));
+}
+
+/// The call card under the pointer, across a second, and beside the sidebar.
+/// Each case was a test of its own, on a fixture of its own; a failure
+/// names the cases that failed.
+#[test]
+fn the_call_card_follows_the_pointer_the_clock_and_the_sidebar() {
+    crate::testing::cases!(
+        the_sidebar_chooses_the_call_while_its_stage_fills_the_window,
+        a_live_calls_reading_serves_the_next_second_it_draws,
+        the_pointer_leaving_the_card_leaves_no_control_hovered,
+        the_card_names_each_control_on_hover_and_the_microphone_says_its_state,
+    );
 }

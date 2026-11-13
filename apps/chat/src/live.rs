@@ -108,7 +108,6 @@ mod tests {
 
     /// A running call reads as who it is with, how long it has run, and the
     /// two things the person does from the card.
-    #[test]
     fn a_call_reads_as_who_and_for_how_long() {
         let call = CallState {
             active: true,
@@ -144,7 +143,6 @@ mod tests {
     }
 
     /// A call that is not running shows nothing at all.
-    #[test]
     fn no_call_is_no_activity() {
         let shown = published(&CallState::default(), "Ada", "", started());
         assert!(shown.summary.is_none());
@@ -152,7 +150,6 @@ mod tests {
     }
 
     /// The elapsed time reads as a clock past the hour.
-    #[test]
     fn a_long_call_reads_in_hours() {
         let long_ago = started()
             .checked_sub(ui::time::Duration::from_secs(3725))
@@ -167,5 +164,44 @@ mod tests {
             .summary
             .expect("a summary");
         assert_eq!(summary.value, "1:02:05");
+
+        // The clock turns over at the minute and at the hour, and a call
+        // started after the moment it is read at has run for no time.
+        let now = started();
+        let hour = ui::time::Duration::from_secs(3600);
+        let read_at = |started: Option<Instant>| {
+            let call = CallState {
+                active: true,
+                channel: "voice".into(),
+                started,
+                ..CallState::default()
+            };
+            published(&call, "Ada", "", now)
+                .summary
+                .expect("a summary")
+                .value
+        };
+        for (secs, reads) in [
+            (59, "0:59"),
+            (60, "1:00"),
+            (3599, "59:59"),
+            (3600, "1:00:00"),
+        ] {
+            let ago = ui::time::Duration::from_secs(secs);
+            assert_eq!(read_at(now.checked_sub(ago)), reads, "after {secs} s");
+        }
+        assert_eq!(read_at(now.checked_add(hour)), "0:00", "not started yet");
+    }
+
+    /// What the call's live activity says.
+    /// Each case was a test of its own, on a fixture of its own; a failure
+    /// names the cases that failed.
+    #[test]
+    fn a_call_publishes_its_card_and_no_call_publishes_nothing() {
+        crate::testing::cases!(
+            a_call_reads_as_who_and_for_how_long,
+            no_call_is_no_activity,
+            a_long_call_reads_in_hours,
+        );
     }
 }

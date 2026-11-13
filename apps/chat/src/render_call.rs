@@ -2164,7 +2164,6 @@ mod tests {
     };
     use vello::kurbo::Rect;
 
-    #[test]
     fn overlay_metrics_size_header_buttons_and_lower_chrome() {
         // Phase: overlay_metrics_fall_back_to_the_theme_before_the_first_paint.
         {
@@ -2207,7 +2206,6 @@ mod tests {
         }
     }
 
-    #[test]
     fn member_tile_centres_an_honest_caption_clear_of_the_name_plate() {
         // Phase: the_block_centres_clear_of_the_name_plate_by_the_token_gap.
         {
@@ -2276,7 +2274,6 @@ mod tests {
         }
     }
 
-    #[test]
     fn filmstrip_is_a_single_centred_row_inside_its_region_or_empty() {
         // Phase: filmstrip_is_a_single_centred_row_inside_its_region.
         {
@@ -2325,7 +2322,6 @@ mod tests {
         }
     }
 
-    #[test]
     fn grid_packs_every_count_inside_the_region_and_covers_it() {
         // Phase: grid_tiles_stay_inside_region_at_every_count_and_width.
         // The packer must keep every tile inside the region it is handed, at any
@@ -2427,5 +2423,18 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// The geometry of the call overlay.
+    /// Each case was a test of its own, on a fixture of its own; a failure
+    /// names the cases that failed.
+    #[test]
+    fn the_call_overlay_lays_out_its_chrome_tiles_filmstrip_and_grid() {
+        crate::testing::cases!(
+            overlay_metrics_size_header_buttons_and_lower_chrome,
+            member_tile_centres_an_honest_caption_clear_of_the_name_plate,
+            filmstrip_is_a_single_centred_row_inside_its_region_or_empty,
+            grid_packs_every_count_inside_the_region_and_covers_it,
+        );
     }
 }
