@@ -35,107 +35,111 @@ fn only(app: &TestApp<TypstEditorShell>) -> TypstFile {
     state.files.values().next().unwrap().clone()
 }
 
-#[test]
-fn verbs_and_field_edits_change_one_file() {
-    let mut workspace = Replica::<Workspace>::new();
-    workspace
-        .apply(new_file(" report.typ ", None, "= Report\n"))
-        .unwrap();
-    let state = workspace.state().unwrap();
-    let id = first(&state);
-    let created = state.file(&id).unwrap();
-    assert_eq!(created.name.0, "report.typ", "the name is trimmed");
-    assert_eq!(created.source, "= Report\n");
-    assert!(created.path.is_none());
+tilo_test_env::scenario! {
+    fn the_workspace_record_changes_and_converges;
 
-    let paths = Workspace::paths().files.item(&id);
-    edit(&mut workspace, &paths.name.set(Atom("draft.typ".into()))).unwrap();
-    edit(&mut workspace, &paths.source.splice(9, 0, "Body")).unwrap();
-    assert!(
-        edit(&mut workspace, &paths.path.set(Some(Atom("/x.typ".into())))).is_err(),
-        "only saving and opening move a file"
-    );
-    workspace
-        .apply(Workspace::SAVED_AT.with(workspace::SavedAt {
-            file: id.clone(),
-            path: "/docs/final.typ".into(),
-        }))
-        .unwrap();
-    let saved = workspace.state().unwrap().file(&id).cloned().unwrap();
-    assert_eq!(
-        saved.name.0, "final.typ",
-        "a saved file takes its path's name"
-    );
-    assert_eq!(saved.path, Some(Atom("/docs/final.typ".into())));
-    assert_eq!(saved.source, "= Report\nBody");
+    phase verbs_and_field_edits_change_one_file;
+    {
+        let mut workspace = Replica::<Workspace>::new();
+        workspace
+            .apply(new_file(" report.typ ", None, "= Report\n"))
+            .unwrap();
+        let state = workspace.state().unwrap();
+        let id = first(&state);
+        let created = state.file(&id).unwrap();
+        assert_eq!(created.name.0, "report.typ", "the name is trimmed");
+        assert_eq!(created.source, "= Report\n");
+        assert!(created.path.is_none());
 
-    workspace
-        .apply(Workspace::LOAD.with(workspace::Load {
-            file: id.clone(),
-            name: "other.typ".into(),
-            path: Some("/docs/other.typ".into()),
-            source: "= Other\n".into(),
-        }))
-        .unwrap();
-    let loaded = workspace.state().unwrap().file(&id).cloned().unwrap();
-    assert_eq!(
-        (loaded.name.0.as_str(), loaded.source.as_str()),
-        ("other.typ", "= Other\n")
-    );
-    // A file chosen where files have no paths (a browser page) takes its
-    // name and lives nowhere until saved.
-    workspace
-        .apply(Workspace::LOAD.with(workspace::Load {
-            file: id.clone(),
-            name: "picked.typ".into(),
-            path: None,
-            source: "= Picked\n".into(),
-        }))
-        .unwrap();
-    let picked = workspace.state().unwrap().file(&id).cloned().unwrap();
-    assert_eq!(
-        (
-            picked.name.0.as_str(),
-            picked.path.as_ref(),
-            picked.source.as_str()
-        ),
-        ("picked.typ", None, "= Picked\n")
-    );
-
-    // Undo takes a closed file back, so closing runs at once.
-    workspace
-        .apply(Workspace::CLOSE_FILE.with(id.clone()))
-        .expect("an undoable close runs at once");
-    assert!(workspace.state().unwrap().files.is_empty());
-    assert!(
+        let paths = Workspace::paths().files.item(&id);
+        edit(&mut workspace, &paths.name.set(Atom("draft.typ".into()))).unwrap();
+        edit(&mut workspace, &paths.source.splice(9, 0, "Body")).unwrap();
+        assert!(
+            edit(&mut workspace, &paths.path.set(Some(Atom("/x.typ".into())))).is_err(),
+            "only saving and opening move a file"
+        );
         workspace
             .apply(Workspace::SAVED_AT.with(workspace::SavedAt {
-                file: id,
-                path: "/gone.typ".into(),
+                file: id.clone(),
+                path: "/docs/final.typ".into(),
             }))
-            .is_err(),
-        "a file that is gone is not saved"
-    );
-}
+            .unwrap();
+        let saved = workspace.state().unwrap().file(&id).cloned().unwrap();
+        assert_eq!(
+            saved.name.0, "final.typ",
+            "a saved file takes its path's name"
+        );
+        assert_eq!(saved.path, Some(Atom("/docs/final.typ".into())));
+        assert_eq!(saved.source, "= Report\nBody");
 
-#[test]
-fn concurrent_edits_converge() {
-    let mut ours = Replica::<Workspace>::new();
-    ours.apply(new_file("notes.typ", None, "= Notes\n"))
-        .unwrap();
-    let id = first(&ours.state().unwrap());
-    let paths = Workspace::paths().files.item(&id);
-    let mut theirs = ours.fork();
+        workspace
+            .apply(Workspace::LOAD.with(workspace::Load {
+                file: id.clone(),
+                name: "other.typ".into(),
+                path: Some("/docs/other.typ".into()),
+                source: "= Other\n".into(),
+            }))
+            .unwrap();
+        let loaded = workspace.state().unwrap().file(&id).cloned().unwrap();
+        assert_eq!(
+            (loaded.name.0.as_str(), loaded.source.as_str()),
+            ("other.typ", "= Other\n")
+        );
+        // A file chosen where files have no paths (a browser page) takes its
+        // name and lives nowhere until saved.
+        workspace
+            .apply(Workspace::LOAD.with(workspace::Load {
+                file: id.clone(),
+                name: "picked.typ".into(),
+                path: None,
+                source: "= Picked\n".into(),
+            }))
+            .unwrap();
+        let picked = workspace.state().unwrap().file(&id).cloned().unwrap();
+        assert_eq!(
+            (
+                picked.name.0.as_str(),
+                picked.path.as_ref(),
+                picked.source.as_str()
+            ),
+            ("picked.typ", None, "= Picked\n")
+        );
 
-    edit(&mut theirs, &paths.source.splice(8, 0, "theirs\n")).unwrap();
-    edit(&mut theirs, &paths.name.set(Atom("theirs.typ".into()))).unwrap();
-    edit(&mut ours, &paths.source.splice(2, 5, "Minutes")).unwrap();
+        // Undo takes a closed file back, so closing runs at once.
+        workspace
+            .apply(Workspace::CLOSE_FILE.with(id.clone()))
+            .expect("an undoable close runs at once");
+        assert!(workspace.state().unwrap().files.is_empty());
+        assert!(
+            workspace
+                .apply(Workspace::SAVED_AT.with(workspace::SavedAt {
+                    file: id,
+                    path: "/gone.typ".into(),
+                }))
+                .is_err(),
+            "a file that is gone is not saved"
+        );
+    }
 
-    ours.sync_with(&mut theirs).unwrap();
-    assert_eq!(ours.state().unwrap(), theirs.state().unwrap());
-    let merged = ours.state().unwrap().file(&id).cloned().unwrap();
-    assert_eq!(merged.source, "= Minutes\ntheirs\n");
-    assert_eq!(merged.name.0, "theirs.typ");
+    phase concurrent_edits_converge;
+    {
+        let mut ours = Replica::<Workspace>::new();
+        ours.apply(new_file("notes.typ", None, "= Notes\n"))
+            .unwrap();
+        let id = first(&ours.state().unwrap());
+        let paths = Workspace::paths().files.item(&id);
+        let mut theirs = ours.fork();
+
+        edit(&mut theirs, &paths.source.splice(8, 0, "theirs\n")).unwrap();
+        edit(&mut theirs, &paths.name.set(Atom("theirs.typ".into()))).unwrap();
+        edit(&mut ours, &paths.source.splice(2, 5, "Minutes")).unwrap();
+
+        ours.sync_with(&mut theirs).unwrap();
+        assert_eq!(ours.state().unwrap(), theirs.state().unwrap());
+        let merged = ours.state().unwrap().file(&id).cloned().unwrap();
+        assert_eq!(merged.source, "= Minutes\ntheirs\n");
+        assert_eq!(merged.name.0, "theirs.typ");
+    }
 }
 
 #[test]

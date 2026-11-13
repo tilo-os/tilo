@@ -261,65 +261,69 @@ impl Outline {
 mod tests {
     use super::*;
 
-    #[test]
-    fn headings_are_read_from_syntax_with_one_based_lines() {
-        assert_eq!(
-            headings("intro\n= Café λ\n\n=== Deep\n== Sibling\n"),
-            vec![
-                Heading {
-                    line: 2,
-                    level: 1,
-                    title: "Café λ".into()
-                },
-                Heading {
-                    line: 4,
-                    level: 3,
-                    title: "Deep".into()
-                },
-                Heading {
-                    line: 5,
-                    level: 2,
-                    title: "Sibling".into()
-                },
-            ]
-        );
-        let ignored = "// = Comment\n/*\n== Block comment\n*/\n```typ\n= Raw example\n```\n#let example = \"= String\"\n= Real\n";
-        assert_eq!(
-            headings(ignored),
-            vec![Heading {
-                line: 9,
-                level: 1,
-                title: "Real".into(),
-            }]
-        );
-        assert_eq!(
-            headings("= *Bold* _italic_ `code` \\# café <intro>\n")[0].title,
-            "Bold italic code # café"
-        );
-        assert_eq!(
-            headings("é\r\n#block[\r\n== Inside\r\n]\r\n= Outside")
-                .iter()
-                .map(|heading| heading.line)
-                .collect::<Vec<_>>(),
-            [3, 5]
-        );
-        assert!(headings("").is_empty());
-    }
+    tilo_test_env::scenario! {
+        fn headings_are_read_and_nested;
 
-    #[test]
-    fn each_heading_nests_under_the_nearest_shallower_one() {
-        let items = outline_items(&headings(
-            "== First\n==== Deep\n=== Middle\n= Root\n== Child\n= Last",
-        ));
-        let labels = |items: &[NavItem]| {
-            items
-                .iter()
-                .map(|item| item.label.clone())
-                .collect::<Vec<_>>()
-        };
-        assert_eq!(labels(&items), ["First", "Root", "Last"]);
-        assert_eq!(labels(&items[0].children), ["Deep", "Middle"]);
-        assert_eq!(labels(&items[1].children), ["Child"]);
+        phase headings_are_read_from_syntax_with_one_based_lines;
+        {
+            assert_eq!(
+                headings("intro\n= Café λ\n\n=== Deep\n== Sibling\n"),
+                vec![
+                    Heading {
+                        line: 2,
+                        level: 1,
+                        title: "Café λ".into()
+                    },
+                    Heading {
+                        line: 4,
+                        level: 3,
+                        title: "Deep".into()
+                    },
+                    Heading {
+                        line: 5,
+                        level: 2,
+                        title: "Sibling".into()
+                    },
+                ]
+            );
+            let ignored = "// = Comment\n/*\n== Block comment\n*/\n```typ\n= Raw example\n```\n#let example = \"= String\"\n= Real\n";
+            assert_eq!(
+                headings(ignored),
+                vec![Heading {
+                    line: 9,
+                    level: 1,
+                    title: "Real".into(),
+                }]
+            );
+            assert_eq!(
+                headings("= *Bold* _italic_ `code` \\# café <intro>\n")[0].title,
+                "Bold italic code # café"
+            );
+            assert_eq!(
+                headings("é\r\n#block[\r\n== Inside\r\n]\r\n= Outside")
+                    .iter()
+                    .map(|heading| heading.line)
+                    .collect::<Vec<_>>(),
+                [3, 5]
+            );
+            assert!(headings("").is_empty());
+        }
+
+        phase each_heading_nests_under_the_nearest_shallower_one;
+        {
+            let items = outline_items(&headings(
+                "== First\n==== Deep\n=== Middle\n= Root\n== Child\n= Last",
+            ));
+            let labels = |items: &[NavItem]| {
+                items
+                    .iter()
+                    .map(|item| item.label.clone())
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(labels(&items), ["First", "Root", "Last"]);
+            assert_eq!(labels(&items[0].children), ["Deep", "Middle"]);
+            assert_eq!(labels(&items[1].children), ["Child"]);
+        }
     }
 
     #[test]
