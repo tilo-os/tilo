@@ -14,6 +14,11 @@
 //! blocks' drag handles, which fade three seconds later, and a frame that
 //! fades them is not a scroll alone and does not copy. Read off the machine,
 //! how many scroll frames met the fade followed how fast the test ran.
+//!
+//! After the runs down and up each note is taken to its ends
+//! ([`scroll_to_the_ends`]): a wheel for more than the way to the top, a wheel
+//! against the top, and a wheel for more than the window is tall. Those frames
+//! are presented and checked like the others.
 
 #![allow(
     clippy::arithmetic_side_effects,
@@ -51,6 +56,10 @@ const HEIGHT: u32 = 900;
 /// Eighteen of the twenty frames down and all ten back up copy, on every
 /// run.
 const FRAME_STEP: Duration = Duration::from_millis(160);
+
+/// A wheel for one and a half windows: further than the window is tall, so
+/// nothing the window showed before it stays on screen.
+const JUMP: f64 = 1350.0;
 
 /// Run `operation` at `clock` when the host steps one, else at the machine's.
 fn at<T>(clock: Option<Instant>, operation: impl FnOnce() -> T) -> T {
@@ -420,6 +429,58 @@ fn scroll(app: &mut App, host: &mut Host, label: &str, (step, frames): (f64, usi
     run
 }
 
+/// How far down its note the first notes panel in `widget`'s tree shows it,
+/// in logical pixels.
+fn note_scroll(widget: &mut dyn ui::Widget) -> Option<f64> {
+    if let Some(any) = widget.as_any_mut()
+        && let Some(panel) = any.downcast_mut::<notes::MainPanel>()
+    {
+        return Some(panel.scroll_y_for_test());
+    }
+    widget.children_mut().into_iter().find_map(note_scroll)
+}
+
+/// How far down the note the window shows it, in logical pixels.
+fn scrolled(app: &mut App) -> f64 {
+    note_scroll(app.root_widget_mut()).expect("the window shows a note")
+}
+
+/// The ends of the note and a jump between them, each frame presented and
+/// checked against a full render like any scroll frame: a wheel for more than
+/// the way to the top stops the note at its top, a wheel against the top
+/// moves nothing and so copies nothing, and a wheel for [`JUMP`] moves the
+/// note by that or to its end. Returns how far that last wheel moved it.
+fn scroll_to_the_ends(app: &mut App, host: &mut Host, name: &str) -> f64 {
+    let away = scrolled(app);
+    assert!(
+        away > 0.0,
+        "{name}: the runs down and up left the note away from its top (at {away})"
+    );
+    scroll(app, host, &format!("{name}: to the top"), (-100_000.0, 1));
+    let top = scrolled(app);
+    assert!(
+        top.abs() < f64::EPSILON,
+        "{name}: a wheel for more than the way to the top stops the note at its top, not at {top}"
+    );
+    let held = scroll(app, host, &format!("{name}: against the top"), (-40.0, 1));
+    let still = scrolled(app);
+    assert!(
+        still.abs() < f64::EPSILON,
+        "{name}: a wheel against the top leaves the note at its top, not at {still}"
+    );
+    assert_eq!(
+        held.copied_frames, 0,
+        "{name}: a wheel against the top moves nothing to copy ({held:?})"
+    );
+    scroll(app, host, &format!("{name}: a jump down"), (JUMP, 1));
+    let jumped = scrolled(app);
+    assert!(
+        jumped > 0.0,
+        "{name}: a wheel for {JUMP} px moves the note off its top"
+    );
+    jumped
+}
+
 #[test]
 fn scrolling_a_long_note_copies_what_stays_on_screen() {
     for (name, theme) in THEMES {
@@ -452,6 +513,14 @@ fn scrolling_a_long_note_copies_what_stays_on_screen() {
                      surroundings, not the note ({per_frame:.0} px, {run:?})"
                 );
             }
+            // 120 paragraphs are many windows long: the jump is not cut
+            // short by the note's end, and leaves nothing on screen to copy.
+            let jumped = scroll_to_the_ends(app, &mut host, name);
+            assert!(
+                jumped >= f64::from(HEIGHT),
+                "{name}: a wheel for {JUMP} px moves a long note further than the window is \
+                 tall ({jumped} px)"
+            );
         })
         .unwrap();
     }
@@ -513,6 +582,7 @@ fn scrolling_a_note_with_lists_and_code_copies_what_stays_on_screen() {
                      ({per_frame:.0} px, {run:?})"
                 );
             }
+            scroll_to_the_ends(app, &mut host, name);
         })
         .unwrap();
     }
