@@ -226,95 +226,99 @@ mod tests {
         Ok(bytes)
     }
 
-    #[test]
-    fn a_file_document_covers_its_own_name_and_nothing_beside_it() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("chosen.pdf"), b"chosen").unwrap();
-        std::fs::write(dir.path().join("secret.txt"), b"secret").unwrap();
-        let documents = Documents::new();
-        let path = documents
-            .grant(&key(), &dir.path().join("chosen.pdf"), Kind::Read)
-            .unwrap();
-        let target = resolve(&documents, &key(), &path).unwrap();
-        assert_eq!(read(&target).unwrap(), b"chosen");
-        let folder = path.parent().unwrap();
-        for beside in [
-            "secret.txt",
-            ".chosen.pdf.tilo-save",
-            "chosen.pdf/x",
-            "../x",
-        ] {
+    tilo_test_env::scenario! {
+        fn a_document_covers_exactly_what_was_chosen;
+
+        phase a_file_document_covers_its_own_name_and_nothing_beside_it;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::write(dir.path().join("chosen.pdf"), b"chosen").unwrap();
+            std::fs::write(dir.path().join("secret.txt"), b"secret").unwrap();
+            let documents = Documents::new();
+            let path = documents
+                .grant(&key(), &dir.path().join("chosen.pdf"), Kind::Read)
+                .unwrap();
+            let target = resolve(&documents, &key(), &path).unwrap();
+            assert_eq!(read(&target).unwrap(), b"chosen");
+            let folder = path.parent().unwrap();
+            for beside in [
+                "secret.txt",
+                ".chosen.pdf.tilo-save",
+                "chosen.pdf/x",
+                "../x",
+            ] {
+                assert!(
+                    resolve(&documents, &key(), &folder.join(beside)).is_none(),
+                    "{beside}"
+                );
+            }
+            let elsewhere = AppKey::new("workspace", "so.tilo.files").unwrap();
+            assert!(resolve(&documents, &elsewhere, &path).is_none());
+        }
+
+        phase a_link_planted_in_place_of_a_chosen_file_is_not_followed;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let chosen = dir.path().join("chosen.txt");
+            std::fs::write(&chosen, b"chosen").unwrap();
+            std::fs::write(dir.path().join("secret.txt"), b"secret").unwrap();
+            let documents = Documents::new();
+            let path = documents.grant(&key(), &chosen, Kind::Read).unwrap();
+            std::fs::remove_file(&chosen).unwrap();
+            std::os::unix::fs::symlink(dir.path().join("secret.txt"), &chosen).unwrap();
+            let target = resolve(&documents, &key(), &path).unwrap();
+            assert!(read(&target).is_err(), "the link is refused, not followed");
+        }
+
+        phase a_folder_document_covers_what_is_beneath_it_and_cannot_climb_out;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let folder = dir.path().join("backups");
+            std::fs::create_dir_all(folder.join("2026")).unwrap();
+            std::fs::write(folder.join("2026/a.tar"), b"a").unwrap();
+            std::fs::write(dir.path().join("secret.txt"), b"secret").unwrap();
+            std::os::unix::fs::symlink(dir.path().join("secret.txt"), folder.join("out")).unwrap();
+            let documents = Documents::new();
+            let path = documents
+                .grant(&key(), &folder, Kind::Folder { write: false })
+                .unwrap();
+            let inside = resolve(&documents, &key(), &path.join("2026/a.tar")).unwrap();
+            assert_eq!(read(&inside).unwrap(), b"a");
+            assert!(resolve(&documents, &key(), &path.join("../secret.txt")).is_none());
+            let link = resolve(&documents, &key(), &path.join("out")).unwrap();
             assert!(
-                resolve(&documents, &key(), &folder.join(beside)).is_none(),
-                "{beside}"
+                read(&link).is_err(),
+                "a link out of the folder is not followed"
             );
         }
-        let elsewhere = AppKey::new("workspace", "so.tilo.files").unwrap();
-        assert!(resolve(&documents, &elsewhere, &path).is_none());
-    }
 
-    #[test]
-    fn a_link_planted_in_place_of_a_chosen_file_is_not_followed() {
-        let dir = tempfile::tempdir().unwrap();
-        let chosen = dir.path().join("chosen.txt");
-        std::fs::write(&chosen, b"chosen").unwrap();
-        std::fs::write(dir.path().join("secret.txt"), b"secret").unwrap();
-        let documents = Documents::new();
-        let path = documents.grant(&key(), &chosen, Kind::Read).unwrap();
-        std::fs::remove_file(&chosen).unwrap();
-        std::os::unix::fs::symlink(dir.path().join("secret.txt"), &chosen).unwrap();
-        let target = resolve(&documents, &key(), &path).unwrap();
-        assert!(read(&target).is_err(), "the link is refused, not followed");
-    }
-
-    #[test]
-    fn a_folder_document_covers_what_is_beneath_it_and_cannot_climb_out() {
-        let dir = tempfile::tempdir().unwrap();
-        let folder = dir.path().join("backups");
-        std::fs::create_dir_all(folder.join("2026")).unwrap();
-        std::fs::write(folder.join("2026/a.tar"), b"a").unwrap();
-        std::fs::write(dir.path().join("secret.txt"), b"secret").unwrap();
-        std::os::unix::fs::symlink(dir.path().join("secret.txt"), folder.join("out")).unwrap();
-        let documents = Documents::new();
-        let path = documents
-            .grant(&key(), &folder, Kind::Folder { write: false })
-            .unwrap();
-        let inside = resolve(&documents, &key(), &path.join("2026/a.tar")).unwrap();
-        assert_eq!(read(&inside).unwrap(), b"a");
-        assert!(resolve(&documents, &key(), &path.join("../secret.txt")).is_none());
-        let link = resolve(&documents, &key(), &path.join("out")).unwrap();
-        assert!(
-            read(&link).is_err(),
-            "a link out of the folder is not followed"
-        );
-    }
-
-    #[test]
-    fn a_save_covers_its_new_file_and_its_save_sibling() {
-        let dir = tempfile::tempdir().unwrap();
-        let documents = Documents::new();
-        let path = documents
-            .grant(&key(), &dir.path().join("export.log"), Kind::Save)
-            .unwrap();
-        let file = resolve(&documents, &key(), &path).unwrap();
-        assert!(file.writable());
-        let fd = file
-            .open(
-                OFlags::WRONLY | OFlags::CREATE | OFlags::TRUNC,
-                Mode::from_raw_mode(0o644),
-            )
-            .unwrap();
-        drop(fd);
-        assert!(dir.path().join("export.log").is_file());
-        let sibling = path.with_file_name(".export.log.tilo-save");
-        let sibling = resolve(&documents, &key(), &sibling).unwrap();
-        assert_eq!(
-            sibling.host_path(),
-            dir.path()
-                .canonicalize()
-                .unwrap()
-                .join(".export.log.tilo-save")
-        );
-        assert!(resolve(&documents, &key(), &path.with_file_name("other.log")).is_none());
+        phase a_save_covers_its_new_file_and_its_save_sibling;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let documents = Documents::new();
+            let path = documents
+                .grant(&key(), &dir.path().join("export.log"), Kind::Save)
+                .unwrap();
+            let file = resolve(&documents, &key(), &path).unwrap();
+            assert!(file.writable());
+            let fd = file
+                .open(
+                    OFlags::WRONLY | OFlags::CREATE | OFlags::TRUNC,
+                    Mode::from_raw_mode(0o644),
+                )
+                .unwrap();
+            drop(fd);
+            assert!(dir.path().join("export.log").is_file());
+            let sibling = path.with_file_name(".export.log.tilo-save");
+            let sibling = resolve(&documents, &key(), &sibling).unwrap();
+            assert_eq!(
+                sibling.host_path(),
+                dir.path()
+                    .canonicalize()
+                    .unwrap()
+                    .join(".export.log.tilo-save")
+            );
+            assert!(resolve(&documents, &key(), &path.with_file_name("other.log")).is_none());
+        }
     }
 }
