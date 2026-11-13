@@ -1,12 +1,10 @@
-//! What a write finishes on a disk that already carries its installed system
-//! and account, after the staged files are copied onto it.
+//! What a write finishes on a disk that already carries its installed system and
+//! account, after the staged files are copied onto it.
 //!
-//! An installer medium hands its owner SSH keys to `tilo-install`, which
-//! knows the account it creates. A full-disk image (a board card, a VM disk)
-//! never runs the installer: its account exists already, so the write gives
-//! that account the same key-only SSH login, places the operator's files in
-//! its home, and labels everything it placed with the image's own `SELinux`
-//! policy. An enforcing boot ignores a Wi-Fi profile, an SSH key or a
+//! A full-disk image (a board card, a VM disk) never runs the installer: its account
+//! exists already, so the write gives that account a key-only SSH login, places the
+//! operator's files in its home, and labels everything it placed with the image's own
+//! `SELinux` policy. An enforcing boot ignores a Wi-Fi profile, an SSH key or a
 //! hostname that kept the setup machine's labels.
 
 use std::fs;
@@ -23,7 +21,6 @@ pub struct Requests {
     pub valid_home_name: fn(&str) -> bool,
 }
 
-/// sshd's unit, as the image's enablement link names it.
 const SSHD_UNIT: &str = "/usr/lib/systemd/system/sshd.service";
 
 /// The key-only login `tilo-install-dev-ssh` configures on a self-install.
@@ -35,9 +32,9 @@ fn bringup_sshd_config(username: &str) -> String {
     )
 }
 
-/// Paths the copy is about to create, recorded before it runs so the
-/// labelling touches only what the write placed: files, and directories
-/// that did not exist before.
+/// Paths the copy is about to create, recorded before it runs so the labelling
+/// touches only what the write placed: files, and directories that did not exist
+/// before.
 #[derive(Debug, Default)]
 pub struct Placed {
     etc: Vec<PathBuf>,
@@ -320,7 +317,6 @@ fn installed_home(var: &Path, account: &Account) -> io::Result<PathBuf> {
     Ok(home)
 }
 
-/// Copy the staged home files into the account's home, owned by it.
 fn place_home_files(
     var: &Path,
     account: &Account,
@@ -443,9 +439,9 @@ mod tests {
     const KEY_B: &str =
         "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEB";
 
-    /// A mounted composefs root with one login account and no policy. The
-    /// account is this test's own user when that is a regular one, so its
-    /// home files can be given to it without root.
+    /// A mounted composefs root with one login account and no policy. The account is
+    /// this test's own user when that is a regular one, so its home files can be given
+    /// to it without root.
     fn disk() -> (tempfile::TempDir, PathBuf, PathBuf) {
         use std::fmt::Write as _;
         use std::os::unix::fs::MetadataExt;

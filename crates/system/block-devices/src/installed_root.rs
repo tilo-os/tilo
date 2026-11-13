@@ -11,8 +11,8 @@ use std::path::Path;
 /// # Errors
 /// Returns an error for unavailable or incomplete partition discovery, failed
 /// mounts, or the caller's copy failure. Returns `false` only for a root-free
-/// listing or a failed loop attachment; the caller must verify image kind
-/// before using an installer-medium fallback.
+/// listing or a failed loop attachment; the caller must verify image kind before
+/// using an installer-medium fallback.
 #[cfg(target_os = "linux")]
 pub fn with_written_root(
     device: &Path,
@@ -22,9 +22,9 @@ pub fn with_written_root(
     with_written_root_observed(device, mountpoint, copy, |_| {})
 }
 
-/// Visit the root while recording the actual loop attachment outcome.
-/// The observer runs after the bounded losetup attempt, even when it fails
-/// to start; direct block-device roots do not need a loop and emit no event.
+/// Visit the root while recording the actual loop attachment outcome. The observer
+/// runs after the bounded losetup attempt, even when it fails; a direct
+/// block-device root needs no loop and emits no event.
 #[cfg(target_os = "linux")]
 pub fn with_written_root_observed(
     device: &Path,
@@ -117,9 +117,9 @@ pub fn with_written_root_observed(
 
 /// Ask the kernel for `device`'s partition table until a node appears.
 ///
-/// A single `partx` right after the image is attached often reports that it
-/// could not read the table. The installed root is then missing and the
-/// Wi-Fi profile and device key are not copied.
+/// A single `partx` right after the image is attached often reports that it could
+/// not read the table, and the installed root is then missing: the Wi-Fi profile and
+/// device key are not copied.
 #[cfg(target_os = "linux")]
 fn publish_partition_table(device: &str) {
     for _ in 0..20 {
@@ -134,8 +134,8 @@ fn publish_partition_table(device: &str) {
 
 /// Copy onto a root that is already part of the written disk.
 ///
-/// Failure stays a failure. Slack is only for a live installer medium, which
-/// has no installed root; a full-disk boot never reads that slack.
+/// Failure stays a failure. Slack is only for a live installer medium, which has no
+/// installed root; a full-disk boot never reads that slack.
 #[cfg(target_os = "linux")]
 pub fn with_mounted_root(
     root_part: &str,
@@ -178,8 +178,8 @@ pub fn with_mounted_root(
     copy(mountpoint)
 }
 
-/// The mount has to go away on every exit, including a remount that fails
-/// before the copy.
+/// The mount has to go away on every exit, including a remount that fails before the
+/// copy.
 #[cfg(target_os = "linux")]
 struct UnmountOnDrop<'a>(&'a Path);
 
@@ -202,8 +202,8 @@ enum RootProbe {
     /// Partition nodes were listed and none is a Tilo root. An installer
     /// stick looks like this; its handoff belongs in the slack.
     Absent,
-    /// The listing stayed empty for the whole wait. The nodes may still
-    /// appear, so this is not an installer stick.
+    /// The listing stayed empty for the whole wait: the nodes may still appear, so this
+    /// is not an installer stick.
     Unpublished,
     /// `lsblk` could not be run, so an installed root may still be there.
     Unavailable,
@@ -218,12 +218,10 @@ fn handoff_not_applied() -> io::Error {
 
 #[cfg(target_os = "linux")]
 fn find_tilo_root_partition(loop_dev: &str) -> RootProbe {
-    // Partition nodes appear before blkid fills in the type. A failed probe
-    // is not "no root": embedding the handoff then reports success while the
-    // installed system never reads it. A card that was just overwritten can
-    // take several seconds to publish those nodes. Giving up on an empty
-    // listing after the first half-second stores Wi-Fi and identity where
-    // the boot never reads them.
+    // Partition nodes appear before blkid fills in the type. A failed probe is not
+    // "no root": embedding the handoff then reports success while the installed system
+    // never reads it. A card that was just overwritten can take several seconds to
+    // publish those nodes.
     const PROBES: u32 = 40;
     for attempt in 1..=PROBES {
         let output = Tool::new("lsblk")
@@ -243,10 +241,9 @@ fn find_tilo_root_partition(loop_dev: &str) -> RootProbe {
         if let Some(part) = select_tilo_root_partition(loop_dev, &text) {
             return RootProbe::Found(part);
         }
-        // A partition node with no filesystem type is not "no root". blkid
-        // fills the type in after the node appears. Treating that listing as
-        // absent stores Wi-Fi and identity in slack the booted system never
-        // reads, and the write is reported successful.
+        // A partition node with no filesystem type is not "no root": blkid fills the
+        // type in after the node appears. Treating that listing as absent stores Wi-Fi
+        // and identity in slack the booted system never reads, and reports success.
         if root_listing_waits_for_filesystem_type(loop_dev, &text) {
             if attempt == PROBES {
                 return RootProbe::Unavailable;
@@ -259,10 +256,9 @@ fn find_tilo_root_partition(loop_dev: &str) -> RootProbe {
                 .next()
                 .is_some_and(|path| is_partition_of(loop_dev, path))
         });
-        // Typed partitions and no Tilo root is a finished listing: the
-        // installer stick. An empty listing is not. The nodes can show up
-        // seconds after the table is reread, and treating that as "no root"
-        // stores the handoff where a boot never reads it.
+        // Typed partitions and no Tilo root is a finished listing: the installer stick.
+        // An empty listing is not: the nodes can show up seconds after the table is
+        // reread.
         if has_child {
             return RootProbe::Absent;
         }
@@ -301,10 +297,9 @@ pub fn root_listing_waits_for_filesystem_type(device: &str, lsblk_text: &str) ->
     })
 }
 
-/// Prefer a btrfs child. Tilo's root is btrfs; an earlier ext4 boot partition
-/// is not the installed system. Landing Wi-Fi and the device key there leaves
-/// the booted machine without them. An ext4 or xfs child is the root only
-/// when the disk has no btrfs. A single filesystem on the disk itself is last.
+/// Prefer a btrfs child: Tilo's root is btrfs, and an earlier ext4 boot partition is
+/// not the installed system. An ext4 or xfs child is the root only when the disk has
+/// no btrfs. A single filesystem on the disk itself is last.
 pub fn select_tilo_root_partition(loop_dev: &str, lsblk_text: &str) -> Option<String> {
     let mut btrfs_child = None;
     let mut other_child = None;

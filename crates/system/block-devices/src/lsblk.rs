@@ -1,26 +1,24 @@
 //! `lsblk -J -b` as a typed device tree.
 //!
-//! Each tool asks for exactly the columns it reads ([`Lsblk::new`]); a column
-//! that was not requested simply parses as absent. Parsing is a pure function
-//! over the JSON document ([`parse`]), so callers test their classification
-//! against captured output with no real `lsblk`.
+//! Each tool asks for exactly the columns it reads ([`Lsblk::new`]); a column that
+//! was not requested parses as absent. Parsing is a pure function over the JSON
+//! document ([`parse`]), so callers test against captured output with no `lsblk`.
 
 use std::time::Duration;
 
 use serde_json::Value;
 
-/// One `lsblk` row and the devices stacked on it (partitions, LUKS mappings,
-/// LVM volumes). Absent, `null` and blank columns read as `None`, `0`, `false`
-/// or empty; strings are trimmed of lsblk's padding.
+/// One `lsblk` row and the devices stacked on it (partitions, LUKS mappings, LVM
+/// volumes). Absent, `null` and blank columns read as `None`, `0`, `false` or empty;
+/// strings are trimmed of lsblk's padding.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct BlockDevice {
-    /// `NAME`: the kernel name (`sda1`), or the full path (`/dev/sda1`) when
-    /// listed with [`Lsblk::full_paths`]. A device-mapper device is listed by
-    /// its mapping's name (`home`), not its kernel name.
+    /// `NAME`: the kernel name (`sda1`), or the full path when listed with
+    /// [`Lsblk::full_paths`]. A device-mapper device is listed by its mapping's name
+    /// (`home`), not its kernel name.
     pub name: String,
     /// `KNAME`: the kernel's own name (`dm-1` for the mapping `home`).
     pub kname: Option<String>,
-    /// `TYPE`: `disk`, `part`, `crypt`, `lvm`, `loop`, `rom`, ...
     pub kind: String,
     /// `SIZE` in bytes.
     pub size: u64,
@@ -29,20 +27,16 @@ pub struct BlockDevice {
     pub model: Option<String>,
     pub serial: Option<String>,
     pub wwn: Option<String>,
-    /// `TRAN`: `nvme`, `sata`, `usb`, ...
     pub tran: Option<String>,
-    /// `ROTA`.
     pub rotational: bool,
-    /// `RM`.
     pub removable: bool,
     /// `RO`.
     pub read_only: bool,
     pub fstype: Option<String>,
-    /// `FSVER`: the filesystem's (or container's) version, `2` for LUKS2.
+    /// `FSVER`: the filesystem's or container's version, `2` for LUKS2.
     pub fsver: Option<String>,
     pub label: Option<String>,
     pub uuid: Option<String>,
-    /// `FSUSED` in bytes.
     pub fsused: Option<u64>,
     /// `MOUNTPOINT`: the one mount lsblk picked when a filesystem has several.
     pub mountpoint: Option<String>,
@@ -57,13 +51,11 @@ pub struct BlockDevice {
     pub ptuuid: Option<String>,
     /// `LOG-SEC`: logical sector size in bytes.
     pub log_sec: Option<u64>,
-    /// `MAJ:MIN`.
     pub maj_min: Option<String>,
     pub children: Vec<BlockDevice>,
 }
 
 impl BlockDevice {
-    /// Build a device from one `blockdevices` entry.
     pub fn from_json(value: &Value) -> Self {
         Self {
             name: string(value, "name").unwrap_or_default(),
@@ -112,8 +104,6 @@ impl BlockDevice {
         }
     }
 
-    /// Every mount of this device: `MOUNTPOINTS` when it was listed, else the
-    /// single `MOUNTPOINT`.
     pub fn all_mountpoints(&self) -> Vec<&str> {
         if self.mountpoints.is_empty() {
             self.mountpoint.as_deref().into_iter().collect()
@@ -122,7 +112,6 @@ impl BlockDevice {
         }
     }
 
-    /// This device followed by all of its descendants, depth first.
     pub fn descendants(&self) -> impl Iterator<Item = &BlockDevice> {
         let mut stack = vec![self];
         std::iter::from_fn(move || {
@@ -144,8 +133,8 @@ pub fn parse_slice(output: &[u8]) -> Option<Vec<BlockDevice>> {
     parse(&serde_json::from_slice(output).ok()?)
 }
 
-/// One `lsblk -J -b` invocation: the columns a tool reads and the bounds on
-/// the child process.
+/// One `lsblk -J -b` invocation: the columns a tool reads, and the bounds on the
+/// child process.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Lsblk {
     columns: String,
@@ -166,7 +155,6 @@ impl Lsblk {
         }
     }
 
-    /// `-p`: name devices by full path (`/dev/sda1`).
     #[must_use]
     pub fn full_paths(mut self, on: bool) -> Self {
         self.full_paths = on;
@@ -185,7 +173,6 @@ impl Lsblk {
         self
     }
 
-    /// The argument vector passed to `lsblk`.
     pub fn args(&self) -> Vec<&str> {
         let mut args = vec!["-J", "-b"];
         if self.full_paths {
@@ -210,8 +197,6 @@ impl Lsblk {
         out.status.success().then_some(out.stdout)
     }
 
-    /// Run lsblk and parse its devices; `None` when it could not be run or
-    /// its output is malformed.
     pub fn list(&self) -> Option<Vec<BlockDevice>> {
         parse_slice(&self.output()?)
     }

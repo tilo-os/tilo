@@ -1,6 +1,6 @@
-//! `UDisks2`: the object path of a block device, and (with the `udisks`
-//! feature) the calls the disk tools make on it over the system bus. Polkit
-//! authorises every privileged call; nothing here needs root.
+//! `UDisks2`: the object path of a block device and, with the `udisks` feature, the
+//! calls the disk tools make on it over the system bus. Polkit authorises every
+//! privileged call; nothing here needs root.
 
 use std::fmt::Write as _;
 
@@ -10,9 +10,8 @@ pub const IFACE_FILESYSTEM: &str = "org.freedesktop.UDisks2.Filesystem";
 pub const IFACE_DRIVE: &str = "org.freedesktop.UDisks2.Drive";
 
 /// The `UDisks2` `block_devices` object path for a kernel device name (`sda1`,
-/// `/dev/nvme0n1p2`, `dm-0`). Every byte outside `[A-Za-z0-9]` becomes
-/// `_<hex>`, the `GDBus` object-path escaping `UDisks2` uses, so `dm-0` maps
-/// to `dm_2d0`.
+/// `/dev/nvme0n1p2`, `dm-0`). Every byte outside `[A-Za-z0-9]` becomes `_<hex>`, the
+/// `GDBus` escaping `UDisks2` uses, so `dm-0` maps to `dm_2d0`.
 pub fn object_path(device: &str) -> String {
     let leaf = device.strip_prefix("/dev/").unwrap_or(device);
     let mut path = String::from("/org/freedesktop/UDisks2/block_devices/");
@@ -59,29 +58,24 @@ mod client {
         IFACE_BLOCK, IFACE_DRIVE, IFACE_FILESYSTEM, ReadOnlyFilesystem, SERVICE, object_path,
     };
 
-    /// Empty `a{sv}` options: `UDisks2` picks its defaults (automatic mount
-    /// point, default mkfs options).
+    /// Empty `a{sv}` options: `UDisks2` picks its defaults.
     fn no_options() -> HashMap<&'static str, Value<'static>> {
         HashMap::new()
     }
 
-    /// A system-bus connection to `UDisks2`, addressed by kernel device name.
     pub struct Udisks {
         connection: Connection,
     }
 
     impl Udisks {
-        /// Connect to the system bus.
         pub fn system() -> zbus::Result<Self> {
             Connection::system().map(|connection| Self { connection })
         }
 
-        /// The device's `org.freedesktop.UDisks2.Block` interface.
         pub fn block(&self, device: &str) -> zbus::Result<Proxy<'_>> {
             Proxy::new(&self.connection, SERVICE, object_path(device), IFACE_BLOCK)
         }
 
-        /// The device's `org.freedesktop.UDisks2.Filesystem` interface.
         pub fn filesystem(&self, device: &str) -> zbus::Result<Proxy<'_>> {
             Proxy::new(
                 &self.connection,
@@ -91,18 +85,16 @@ mod client {
             )
         }
 
-        /// `Filesystem.Mount`; returns where `UDisks2` mounted it.
         pub fn mount(&self, device: &str) -> zbus::Result<String> {
             self.filesystem(device)?.call("Mount", &(no_options(),))
         }
 
-        /// Refresh kernel partition and filesystem information after imaging.
         pub fn rescan(&self, device: &str) -> zbus::Result<()> {
             self.block(device)?.call("Rescan", &(no_options(),))
         }
 
         /// Mount the verified installer's FAT filesystem for encrypted setup.
-        /// Permission remains with Polkit; these options never permit execution.
+        /// Polkit decides permission; these options never permit execution.
         pub fn mount_setup(&self, device: &str, uid: u32, gid: u32) -> zbus::Result<String> {
             let mount_options = format!("rw,nodev,nosuid,noexec,uid={uid},gid={gid},umask=0077");
             let options = HashMap::from([
@@ -112,9 +104,9 @@ mod client {
             self.filesystem(device)?.call("Mount", &(options,))
         }
 
-        /// Mount an explicitly selected migration source without journal replay.
-        /// The caller must additionally attest the returned mount against the
-        /// current kernel mount table and filesystem read-only flag.
+        /// Mount an explicitly selected migration source without journal replay. The
+        /// caller must additionally attest the returned mount against the current
+        /// kernel mount table and filesystem read-only flag.
         pub fn mount_read_only(
             &self,
             device: &str,
@@ -124,8 +116,8 @@ mod client {
             self.filesystem(device)?.call("Mount", &(options,))
         }
 
-        /// Mount an explicitly selected retained Linux filesystem for shared edits.
-        /// No forced recovery or ownership change is requested.
+        /// Mount an explicitly selected retained Linux filesystem for shared edits. No
+        /// forced recovery or ownership change is requested.
         pub fn mount_shared_files(
             &self,
             device: &str,
@@ -141,7 +133,6 @@ mod client {
             self.filesystem(device)?.call("Mount", &(options,))
         }
 
-        /// `Filesystem.Unmount`.
         pub fn unmount(&self, device: &str) -> zbus::Result<()> {
             self.filesystem(device)?.call("Unmount", &(no_options(),))
         }
@@ -154,8 +145,8 @@ mod client {
             Ok(std::fs::File::from(std::os::fd::OwnedFd::from(descriptor)))
         }
 
-        /// Format only a caller-attested new migration partition as ext4.
-        /// Ownership is assigned by the daemon to its authorized caller.
+        /// Format only a caller-attested new migration partition as ext4. The daemon
+        /// assigns ownership to its authorized caller.
         pub fn format_migration(&self, device: &str) -> zbus::Result<()> {
             let options = HashMap::from([
                 ("label", Value::from("Tilo migration")),
@@ -178,7 +169,6 @@ mod client {
             self.filesystem(device)?.call("Mount", &(options,))
         }
 
-        /// `Block.Format` with `fstype` (`ext4`, `vfat`, ...).
         pub fn format(&self, device: &str, fstype: &str) -> zbus::Result<()> {
             self.block(device)?.call("Format", &(fstype, no_options()))
         }
