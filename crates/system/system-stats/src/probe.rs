@@ -647,31 +647,35 @@ fn parse_passwd(text: &str) -> HashMap<u32, String> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_process_name_with_parentheses_and_spaces_reads_whole() {
-        let stat = "4242 (Web (Content) 1) S 4000 4242 4242 0 -1 4194560 1 0 0 0 \
-                    150 50 0 0 20 0 7 0 98765 123456789 2000 18446744073709551615";
-        let process = parse_stat(4242, stat).unwrap();
-        assert_eq!(process.name, "Web (Content) 1");
-        assert_eq!(process.state, 'S');
-        assert_eq!(process.ppid, Some(4000));
-        assert_eq!(process.cpu_ticks, 200);
-        assert_eq!(process.threads, 7);
-        assert_eq!(process.started_at, 98765);
-        assert_eq!(process.virtual_bytes, 123_456_789);
-        assert!(!process.kernel_thread);
-        let kthread = "2 (kthreadd) S 0 0 0 0 -1 2129984 0 0 0 0 0 0 0 0 20 0 1 0 5 0 0";
-        let kthread = parse_stat(2, kthread).unwrap();
-        assert!(kthread.kernel_thread);
-        assert_eq!(kthread.ppid, None);
-    }
+    tilo_test_env::scenario! {
+        fn kernel_text_is_parsed_into_processes_and_partitions;
 
-    #[test]
-    fn partitions_belong_to_their_disk() {
-        assert!(is_partition_of("nvme0n1p2", "nvme0n1"));
-        assert!(is_partition_of("sda1", "sda"));
-        assert!(!is_partition_of("sdab", "sda"));
-        assert!(!is_partition_of("nvme0n10", "nvme0n1p"));
-        assert_eq!(unescape_mount("/run/media/a\\040b"), "/run/media/a b");
+        phase a_process_name_with_parentheses_and_spaces_reads_whole;
+        {
+            let stat = "4242 (Web (Content) 1) S 4000 4242 4242 0 -1 4194560 1 0 0 0 \
+                    150 50 0 0 20 0 7 0 98765 123456789 2000 18446744073709551615";
+            let process = parse_stat(4242, stat).unwrap();
+            assert_eq!(process.name, "Web (Content) 1");
+            assert_eq!(process.state, 'S');
+            assert_eq!(process.ppid, Some(4000));
+            assert_eq!(process.cpu_ticks, 200);
+            assert_eq!(process.threads, 7);
+            assert_eq!(process.started_at, 98765);
+            assert_eq!(process.virtual_bytes, 123_456_789);
+            assert!(!process.kernel_thread);
+            let kthread = "2 (kthreadd) S 0 0 0 0 -1 2129984 0 0 0 0 0 0 0 0 20 0 1 0 5 0 0";
+            let kthread = parse_stat(2, kthread).unwrap();
+            assert!(kthread.kernel_thread);
+            assert_eq!(kthread.ppid, None);
+        }
+
+        phase partitions_belong_to_their_disk;
+        {
+            assert!(is_partition_of("nvme0n1p2", "nvme0n1"));
+            assert!(is_partition_of("sda1", "sda"));
+            assert!(!is_partition_of("sdab", "sda"));
+            assert!(!is_partition_of("nvme0n10", "nvme0n1p"));
+            assert_eq!(unescape_mount("/run/media/a\\040b"), "/run/media/a b");
+        }
     }
 }
