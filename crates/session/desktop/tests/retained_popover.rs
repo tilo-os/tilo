@@ -309,13 +309,24 @@ impl Kept {
             .unwrap();
         let kept = read(&self.device, &self.queue, &self.texture);
         let whole = read(&self.device, &self.queue, texture);
+        // The first pixel that differs, as (column, row). The rows the two frames hold alike,
+        // nearly all of them, are passed by whole: only a row that differs is read pixel by pixel.
+        let row = DEVICE.0 as usize * 4;
         let differing = kept
-            .chunks(4)
-            .zip(whole.chunks(4))
-            .position(|(kept, whole)| kept.iter().zip(whole).any(|(a, b)| a.abs_diff(*b) > 2));
+            .chunks(row)
+            .zip(whole.chunks(row))
+            .enumerate()
+            .filter(|(_, (kept, whole))| kept != whole)
+            .find_map(|(y, (kept, whole))| {
+                kept.chunks(4)
+                    .zip(whole.chunks(4))
+                    .position(|(kept, whole)| {
+                        kept.iter().zip(whole).any(|(a, b)| a.abs_diff(*b) > 2)
+                    })
+                    .map(|x| (x, y))
+            });
         assert_eq!(
-            differing.map(|at| (at % DEVICE.0 as usize, at / DEVICE.0 as usize)),
-            None,
+            differing, None,
             "on the CPU, after {what}, the kept frame differs from the frame at that pixel"
         );
     }
