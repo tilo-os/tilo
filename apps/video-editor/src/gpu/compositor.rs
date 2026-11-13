@@ -1,13 +1,8 @@
-//! The wgpu compute pipeline that composites a timeline frame.
+//! The wgpu compute pipeline that composites one timeline frame: one compute pass
+//! per layer, bottom to top, ping-ponging between two accumulation textures.
 //!
-//! One [`VideoCompositor`] owns the pipelines and a pair of accumulation
-//! textures. [`VideoCompositor::render_rgba`] walks the
-//! [`crate::preview::plan_layers`] stack bottom-to-top, dispatching one
-//! compute pass per layer that reads the accumulation, blends the layer over
-//! it, and writes the other accumulation — then reads the result back.
-//!
-//! Both the preview canvas and the export call the *same* method, so what
-//! is encoded is what was on screen.
+//! The preview canvas and the export call the same method, so what is encoded is
+//! what was on screen.
 
 use std::sync::Arc;
 
@@ -18,21 +13,16 @@ use crate::preview::{self, Layer};
 
 use super::{FrameSource, SourceTexture};
 
-/// Effects beyond this per clip are ignored by the shader (its uniform
-/// carries a fixed-size array). Kept in sync with `MAX_EFFECTS` in
-/// `composite.wgsl`.
+/// Kept in sync with `MAX_EFFECTS` in `composite.wgsl`, whose uniform carries a
+/// fixed-size array.
 pub const MAX_SHADER_EFFECTS: usize = 8;
 
-/// Bytes of the uniform struct in `composite.wgsl`: thirteen `vec4<f32>`
-/// headers plus the effect array.
 const PARAMS_BYTES: usize = (13 + MAX_SHADER_EFFECTS) * 16;
 
 struct Gpu {
     layer_pipeline: wgpu::ComputePipeline,
     bgl: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
-    /// A 1×1 texture bound wherever a pass has no real input, so one bind
-    /// group layout serves every pass.
     dummy: wgpu::TextureView,
     uniform_stride: u32,
 }
@@ -44,54 +34,33 @@ struct Accum {
     views: [wgpu::TextureView; 2],
 }
 
-/// One of the two accumulation targets. Passes ping-pong between them, so an
-/// index names a target by its parity alone.
 fn ping_pong<T>(pair: &[T; 2], i: usize) -> &T {
     let [even, odd] = pair;
     if i.is_multiple_of(2) { even } else { odd }
 }
 
-/// The baked tone curves for one composite: `LUT_SIZE` entries across, one
-/// row per layer.
-///
-/// It is rebuilt only when some layer actually carries a curve — a timeline
-/// nobody has graded allocates and uploads nothing, and its layers bind the
-/// 1×1 dummy at the LUT slot instead.
+/// Rebuilt only when some layer carries a curve: a timeline nobody has graded
+/// allocates nothing and binds the 1×1 dummy at the LUT slot.
 struct Lut {
     rows: u32,
     texture: wgpu::Texture,
     view: wgpu::TextureView,
-    /// The bytes currently on the GPU, so a held playhead re-uploads
-    /// nothing. A curve only changes when the user shapes it or an animated
-    /// mix moves, both of which change these bytes.
+    /// The bytes on the GPU, so a held playhead re-uploads nothing.
     uploaded: Vec<u8>,
 }
 
-/// The single compositor used by the preview and the export.
 #[derive(Default)]
 pub struct VideoCompositor {
     gpu: Option<Gpu>,
     accum: Option<Accum>,
     uniform: Option<(wgpu::Buffer, u32)>,
     lut: Option<Lut>,
-    /// Draws title layers. A title's picture comes from the document, not
-    /// from a decoder, so the compositor makes it itself rather than asking
-    /// the frame source — which is what lets a title render with no media
-    /// pipeline at all.
+    /// A title's picture comes from the document, not a decoder, which is what lets
+    /// a title render with no media pipeline at all.
     titles: super::title::TitleRaster,
-    /// Uploaded title pictures, keyed by the raster they came from, so a
-    /// held title is uploaded once instead of every frame.
     title_textures: std::collections::HashMap<usize, SourceTexture>,
-    /// The buffer the finished frame is copied into to be read back, kept
-    /// across frames with the size it was made for.
-    ///
-    /// An export reads back every frame at full resolution — 8 MB at 1080p —
-    /// and this used to be allocated and freed for each one. Allocating a
-    /// buffer that size thirty times a second is real work for the driver's
-    /// allocator, and it is pure waste: the size only changes when the output
-    /// size does. The accumulation textures beside it were already kept this
-    /// way; the readback buffer was the one thing in the frame still being
-    /// rebuilt from scratch.
+    /// An export reads back every frame at full resolution, 8 MB at 1080p, and the
+    /// size only changes when the output size does.
     readback: Option<(wgpu::Buffer, u32, u32)>,
 }
 
@@ -160,13 +129,8 @@ impl VideoCompositor {
         self.uniform = Some((buffer, stride));
     }
 
-    /// Bake every layer's tone curve into one `LUT_SIZE × layers` texture,
-    /// returning `true` when at least one layer has a curve to look up.
-    ///
-    /// A layer with no curve still gets a row — the identity ramp — so the
-    /// row index is simply the layer index and there is no mapping to keep
-    /// in step. Its uniform says `lut.x = 0` regardless, so that row is
-    /// never read.
+    /// A layer with no curve still gets the identity row, so the row index is the
+    /// layer index; its uniform says `lut.x = 0`, so that row is never read.
     fn ensure_lut(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, layers: &[Layer]) -> bool {
         use crate::curve::LUT_SIZE;
         if layers.iter().all(|l| l.curve.is_identity()) {
@@ -177,8 +141,6 @@ impl VideoCompositor {
         for l in layers {
             bytes.extend_from_slice(&l.curve.bake());
         }
-        // `layers` is never empty on this branch (an empty stack has no
-        // curve), but the texture must still have the row it was sized for.
         bytes.resize(LUT_SIZE * 4 * rows as usize, 255);
 
         let lut = match &mut self.lut {
@@ -207,8 +169,6 @@ impl VideoCompositor {
                 })
             }
         };
-        // Re-upload only when the baked bytes actually differ, so holding a
-        // playhead over a graded clip costs one comparison.
         if lut.uploaded != bytes {
             queue.write_texture(
                 wgpu::TexelCopyTextureInfo {
@@ -234,17 +194,13 @@ impl VideoCompositor {
         true
     }
 
-    /// Composite the timeline at `playhead` and read the frame back as a
-    /// tightly-packed `width * height * 4` RGBA buffer.
-    ///
-    /// This is the export's frame source. It runs the identical layer
-    /// stack, grade, effect chain and transition math the preview shows,
-    /// so the encoded file *is* the preview.
+    /// This is the export's frame source, running the identical layer stack, grade,
+    /// effect chain and transition math the preview shows, so the encoded file is the
+    /// preview.
     ///
     /// # Panics
     ///
-    /// When the GPU fails to map the readback buffer — the frame cannot be
-    /// read at all then.
+    /// When the GPU fails to map the readback buffer.
     #[expect(
         clippy::expect_used,
         reason = "the accumulation and readback buffer are built just above; a failed map is fatal"
@@ -262,9 +218,6 @@ impl VideoCompositor {
         let (w, h) = (width.max(1), height.max(1));
         let layers = preview::plan_layers(project, playhead);
         let last = self.accumulate(device, queue, w, h, &layers, sources);
-        // Re-use the buffer whenever the output size is unchanged, which is
-        // every frame of an export and every frame of a preview that is not
-        // being resized.
         if !matches!(self.readback, Some((_, rw, rh)) if rw == w && rh == h) {
             self.readback = Some((readback_buffer(device, w, h), w, h));
         }
@@ -285,10 +238,10 @@ impl VideoCompositor {
         unpad(staging, w, h)
     }
 
-    /// [`Self::render_rgba`] without waiting for the GPU: the frame is
-    /// composited and its read-back started, and [`PendingFrame::try_take`]
-    /// has the pixels once the GPU hands them over. A browser page cannot
-    /// wait for its GPU, so its preview and export composite this way.
+    /// The frame is composited and its read-back started;
+    /// [`PendingFrame::try_take`] has the pixels once the GPU hands them over. A
+    /// browser page cannot wait for its GPU, so its preview and export composite
+    /// this way.
     pub fn render_rgba_later(
         &mut self,
         device: &wgpu::Device,
@@ -302,8 +255,8 @@ impl VideoCompositor {
         let (w, h) = (width.max(1), height.max(1));
         let layers = preview::plan_layers(project, playhead);
         let last = self.accumulate(device, queue, w, h, &layers, sources);
-        // A buffer of its own: the last one may still be mapped by whoever
-        // has not taken its pixels yet.
+        // A buffer of its own: the last one may still be mapped by whoever has not
+        // taken its pixels yet.
         let buffer = readback_buffer(device, w, h);
         self.copy_out(device, queue, last, &buffer);
         let mapped = Arc::new(std::sync::Mutex::new(None));
@@ -313,8 +266,8 @@ impl VideoCompositor {
                 *slot = Some(r.is_ok());
             }
         });
-        // Native wgpu calls the callback only from a poll; a page calls it
-        // from its event loop, and this does nothing there.
+        // Native wgpu calls the callback only from a poll; a page calls it from its
+        // event loop.
         let _ = device.poll(wgpu::PollType::Poll);
         PendingFrame {
             buffer,
@@ -324,7 +277,6 @@ impl VideoCompositor {
         }
     }
 
-    /// Copy the finished accumulation target `last` into `staging`.
     #[expect(
         clippy::expect_used,
         reason = "the accumulation is built by accumulate just before"
@@ -365,8 +317,6 @@ impl VideoCompositor {
         queue.submit([enc.finish()]);
     }
 
-    /// Raster a title at the frame size and upload it, re-using the upload
-    /// when the same raster comes back.
     fn title_texture(
         &mut self,
         device: &wgpu::Device,
@@ -376,15 +326,13 @@ impl VideoCompositor {
         h: u32,
     ) -> Option<SourceTexture> {
         let rgba = self.titles.raster(text, w, h)?;
-        // The `Arc`'s address identifies the raster: the cache hands back
-        // the same allocation for the same text, style and size, so a held
-        // title uploads once.
+        // The `Arc`'s address identifies the raster: the cache hands back the same
+        // allocation for the same text, style and size.
         let key = std::sync::Arc::as_ptr(&rgba) as usize;
         if let Some(hit) = self.title_textures.get(&key) {
             return Some(hit.clone());
         }
-        // Uploads are cheap to keep but not free; a handful of live titles
-        // is the realistic working set.
+        // A handful of live titles is the realistic working set.
         if self.title_textures.len() > 8 {
             self.title_textures.clear();
         }
@@ -393,8 +341,7 @@ impl VideoCompositor {
         Some(tex)
     }
 
-    /// Run every layer pass. Returns which accumulation index holds the
-    /// finished frame.
+    /// The accumulation index holding the finished frame.
     #[expect(
         clippy::expect_used,
         reason = "the pipelines, accumulation and uniform buffer are ensured at the top"
@@ -417,14 +364,13 @@ impl VideoCompositor {
         self.ensure_uniform(device, stride, layers.len());
         let has_lut = self.ensure_lut(device, queue, layers);
 
-        // Resolve every layer's picture up front: `sources` may want the
-        // device, and holding the borrow across the pass loop would clash
-        // with the &mut self the pipelines live behind.
+        // Resolve every layer's picture up front: `sources` may want the device, and
+        // holding that borrow across the pass loop would clash with the `&mut self`
+        // the pipelines live behind.
         sources.begin_frame();
         let resolved: Vec<Option<SourceTexture>> = layers
             .iter()
             .map(|l| match &l.title {
-                // A title is drawn, not decoded.
                 Some(t) => self.title_texture(device, queue, t, w, h),
                 None => sources.resolve(device, queue, l.media, l.source_time),
             })
@@ -433,16 +379,15 @@ impl VideoCompositor {
         let gpu = self.gpu.as_ref().expect("gpu built above");
         let accum = self.accum.as_ref().expect("accum built above");
         let (buffer, _) = self.uniform.as_ref().expect("uniform built above");
-        // Every pass binds something at the LUT slot so one bind group
-        // layout serves them all; with no curve anywhere that is the 1×1
-        // dummy, and no uniform names a row.
+        // With no curve anywhere the dummy fills the slot, and no uniform names a
+        // row.
         let lut_view: &wgpu::TextureView = match (has_lut, self.lut.as_ref()) {
             (true, Some(l)) => &l.view,
             _ => &gpu.dummy,
         };
 
-        // With no layers at all the frame is letterbox black; a single
-        // clearing pass still has to run so the accumulation is not stale.
+        // With no layers the frame is letterbox black, but one clearing pass still
+        // has to run so the accumulation is not stale.
         let passes = layers.len().max(1);
         let mut bind_groups = Vec::with_capacity(passes);
         let mut offsets = Vec::with_capacity(passes);
@@ -513,8 +458,6 @@ impl VideoCompositor {
     }
 }
 
-/// The uniform for pass `i` of a `w × h` composite: `layer` over the
-/// accumulation, or — with no layer at all — the clearing pass.
 fn layer_params(
     w: u32,
     h: u32,
@@ -533,8 +476,7 @@ fn layer_params(
         ..Params::default()
     };
     let Some(layer) = layer else {
-        // The empty-timeline clear: fully transparent coverage
-        // leaves the frame at black.
+        // Transparent coverage leaves the frame at black.
         params.grade = [1.0, 1.0, 1.0, 0.0];
         return params;
     };
@@ -567,8 +509,7 @@ fn layer_params(
         params.wipe[0] = wp.progress as f32;
         params.wipe[1] = wp.softness as f32;
     }
-    // Geometry. `Layer::transform` is already sampled at this
-    // instant, so an animated move arrives here as a number.
+    // `Layer::transform` is already sampled at this instant.
     let xf = &layer.transform;
     params.xform_a = [
         xf.scale_x as f32,
@@ -584,9 +525,8 @@ fn layer_params(
         if layer.source_alpha { 1.0 } else { 0.0 },
     ];
     params.crop = [cl as f32, ct as f32, cr as f32, cb as f32];
-    // A key or a mask that is switched off is passed as
-    // inactive rather than as neutral numbers, so the shader
-    // takes neither branch on the ordinary clip.
+    // A key or mask that is switched off is passed as inactive rather than as
+    // neutral numbers, so the shader takes neither branch on an ordinary clip.
     if layer.key.is_active() {
         let [kr, kg, kb] = layer.key.color;
         params.key_a = [
@@ -597,8 +537,7 @@ fn layer_params(
         ];
         params.key_b = [kr as f32, kg as f32, kb as f32, 0.0];
     }
-    // A curve is a baked table this layer looks up; an identity
-    // one is left inactive so the shader takes no lookup at all.
+    // An identity curve is left inactive, so the shader takes no lookup at all.
     if has_lut && !layer.curve.is_identity() {
         params.lut = [1.0, i as f32, 0.0, 0.0];
     }
@@ -632,7 +571,6 @@ fn effect_index(kind: crate::model::EffectKind) -> u32 {
     }
 }
 
-/// Host-side mirror of the shader's `Params` uniform.
 #[derive(Clone, Copy)]
 struct Params {
     frame: [f32; 4],
@@ -655,23 +593,17 @@ impl Default for Params {
     fn default() -> Self {
         Self {
             frame: [0.0; 4],
-            // An identity grade at full coverage.
             grade: [1.0, 1.0, 1.0, 1.0],
             palette: [0.0; 4],
             src: [0.0; 4],
             wipe: [0.0; 4],
-            // The identity placement: unit scale, no offset, no rotation,
-            // centre anchor, opaque source.
             xform_a: [1.0, 1.0, 0.0, 0.0],
             xform_b: [0.0, 0.5, 0.5, 0.0],
-            // The whole source is visible.
             crop: [0.0, 0.0, 1.0, 1.0],
-            // No key and no mask: every pixel of the layer contributes.
             key_a: [0.0; 4],
             key_b: [0.0; 4],
             mask_a: [0.0; 4],
             mask_b: [0.0; 4],
-            // No baked tone curve: the shader takes no lookup at all.
             lut: [0.0; 4],
             effects: [[0.0; 4]; MAX_SHADER_EFFECTS],
         }
@@ -765,8 +697,6 @@ fn build_gpu(device: &wgpu::Device) -> Gpu {
                 },
                 count: None,
             },
-            // The baked tone-curve table: read with `textureLoad`, never
-            // sampled, so it is unfilterable as far as the layout cares.
             wgpu::BindGroupLayoutEntry {
                 binding: 5,
                 visibility: wgpu::ShaderStages::COMPUTE,
@@ -833,10 +763,9 @@ fn build_gpu(device: &wgpu::Device) -> Gpu {
     }
 }
 
-/// Upload a tightly-packed RGBA8 picture into a fresh texture.
-/// `copy_texture_to_buffer` requires each row to start on a
-/// `COPY_BYTES_PER_ROW_ALIGNMENT` boundary, so the staging buffer is padded
-/// and the rows are re-packed after the map.
+/// `copy_texture_to_buffer` needs each row to start on a
+/// `COPY_BYTES_PER_ROW_ALIGNMENT` boundary, so the staging buffer is padded and the
+/// rows are re-packed after the map.
 fn padded_row(width: u32) -> u32 {
     let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
     (width * 4).div_ceil(align) * align
@@ -851,13 +780,11 @@ fn readback_buffer(device: &wgpu::Device, width: u32, height: u32) -> wgpu::Buff
     })
 }
 
-/// The tightly packed pixels of a mapped `staging` buffer, which it unmaps.
 fn unpad(staging: &wgpu::Buffer, width: u32, height: u32) -> Vec<u8> {
     let slice = staging.slice(..);
     let mapped = slice.get_mapped_range();
     let row = (width * 4) as usize;
     let mut out = Vec::with_capacity(row * height as usize);
-    // The buffer holds exactly `height` padded rows, each at least `row` long.
     for padded in mapped
         .chunks(padded_row(width) as usize)
         .take(height as usize)
@@ -871,24 +798,18 @@ fn unpad(staging: &wgpu::Buffer, width: u32, height: u32) -> Vec<u8> {
     out
 }
 
-/// A composite whose pixels are on their way back from the GPU
-/// ([`VideoCompositor::render_rgba_later`]).
 pub struct PendingFrame {
     buffer: wgpu::Buffer,
     width: u32,
     height: u32,
-    /// Set once the map finished: whether it worked.
     mapped: Arc<std::sync::Mutex<Option<bool>>>,
 }
 
 impl PendingFrame {
-    /// The frame's size.
     pub fn size(&self) -> (u32, u32) {
         (self.width, self.height)
     }
 
-    /// The tightly packed RGBA once the GPU has handed it over: `None` while
-    /// it has not, `Some(Err)` when the read-back failed.
     pub fn try_take(&self) -> Option<Result<Vec<u8>, String>> {
         let mapped = self.mapped.lock().ok().and_then(|slot| *slot)?;
         if !mapped {
@@ -900,8 +821,8 @@ impl PendingFrame {
 
 impl Drop for PendingFrame {
     fn drop(&mut self) {
-        // A page keeps a dropped buffer until its garbage collector runs;
-        // one per composite would pile up.
+        // A page keeps a dropped buffer until its garbage collector runs; one per
+        // composite would pile up.
         self.buffer.destroy();
     }
 }

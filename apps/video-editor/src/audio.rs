@@ -1,20 +1,11 @@
-//! The timeline's audio: which clips are audible at an instant, and what
-//! the mixed signal is.
+//! The timeline's audio: which clips are audible at an instant, and what the
+//! mixed block is.
 //!
-//! Audio was the editor's largest silence. `Clip::volume` and `Track::muted`
-//! existed in the CRDT and in the inspector but reached no audio path at all,
-//! and export was a single video `appsrc` with no audio branch — so every
-//! audio track in a project was discarded without a word.
-//!
-//! This module is the mixing half, and it is deliberately pure: given the
-//! project and a [`PcmSource`] that can hand back samples for a media, it
-//! produces the interleaved block a muxer (or a monitor) wants. That keeps
-//! the semantics — per-clip volume, the fade envelope, track mute and solo,
-//! and summing overlapping clips — testable without a decoder.
-//!
-//! It mirrors [`crate::preview::plan_layers`] on purpose: the same visibility
-//! rules, expressed for sound. A track that is muted contributes nothing; a
-//! soloed track silences its unsoloed siblings.
+//! The mixing is pure — a project and a [`PcmSource`] in, an interleaved block
+//! out — so per-clip volume, the fade envelope, track mute and solo, pan and
+//! summing overlapping clips are testable without a decoder. It mirrors
+//! [`crate::preview::plan_layers`]: a muted track contributes nothing, a soloed
+//! one silences its unsoloed siblings.
 
 use std::cmp::Ordering;
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
@@ -26,50 +17,38 @@ use ui::lock::MutexRecover as _;
 /// Everything mixes at one rate, so summing never has to resample.
 pub const SAMPLE_RATE: u32 = 48_000;
 
-/// Stereo throughout. Mono sources are duplicated into both channels by the
-/// [`PcmSource`], so the mixer only ever sees interleaved pairs.
+/// Mono sources are duplicated into both channels by the [`PcmSource`], so the
+/// mixer only ever sees interleaved pairs.
 pub const CHANNELS: usize = 2;
 
-/// Where samples come from. Injected so the mixer can be exercised without a
-/// decoder, exactly as the video compositor takes its textures.
 pub trait PcmSource {
     /// `frames` interleaved stereo frames starting `from_secs` into `media`.
     ///
-    /// Returns `None` when the media cannot be read (a reference whose bytes
-    /// have not hydrated, or a file with no audio stream) — that clip then
-    /// contributes silence rather than failing the mix. Short reads past the
-    /// end of a source are padded with silence by the caller.
+    /// `None` when the media cannot be read, and the clip then mixes as silence.
+    /// A short read past the end of the source is padded by the caller.
     fn samples(&mut self, media: MediaId, from_secs: f64, frames: usize) -> Option<Vec<f32>>;
 }
 
-/// One audible clip at an instant, with the gain it contributes at.
 #[derive(Clone, Debug, PartialEq)]
 pub struct AudioLayer {
     pub clip: ClipId,
     pub media: MediaId,
-    /// The lane it sits on — which is what the meter attributes its level to,
-    /// so "the mix is clipping" can be narrowed to "on A1".
+    /// The lane the meter attributes the level to, so "the mix is clipping" can
+    /// be narrowed to "on A1".
     pub track: TrackId,
-    /// Seconds into the source this clip is playing.
     pub source_time: f64,
     /// **Clip volume × fade envelope × the lane's fader.**
     ///
-    /// The first two are a 0..1 *trim*: they can only ever take away from what
-    /// the source recorded, which is why a quiet clip could not be fixed at
-    /// all before the lane had a fader. The third is
-    /// [`Track::gain`](crate::model::Track::gain), which reaches
-    /// [`MAX_GAIN_DB`](crate::model::MAX_GAIN_DB) — so this product runs
-    /// `0.0 ..= 4.0` and a single loud layer can be over full scale on its
-    /// own. That is deliberate and it is what the meter is for.
+    /// The first two are a 0..1 trim; the third reaches
+    /// [`MAX_GAIN_DB`](crate::model::MAX_GAIN_DB), so this runs `0.0 ..= 4.0` and
+    /// a loud layer can be over full scale on its own. That is what the meter is
+    /// for.
     pub gain: f64,
-    /// The lane's pan, `-1`..`1`. Applied as
-    /// [`Track::pan_gains`](crate::model::Track::pan_gains) when the block is
-    /// summed, rather than folded into `gain`, because it is per channel and
-    /// `gain` is not.
+    /// `-1`..`1`, applied as [`Track::pan_gains`](crate::model::Track::pan_gains)
+    /// when the block is summed, because it is per channel and `gain` is not.
     pub pan: f64,
-    /// Signed playback rate: how many source seconds pass per timeline
-    /// second, negative when the clip is reversed. 1.0 at normal speed, and
-    /// then the mixer reads the source one-for-one.
+    /// Signed: source seconds per timeline second, negative when the clip is
+    /// reversed.
     pub rate: f64,
 }
 
@@ -79,26 +58,13 @@ fn soloing(project: &Project, kind: TrackKind) -> bool {
 
 /// Whether this clip contributes sound.
 ///
-/// Three cases, and the third is the one that is easy to get wrong:
+/// A clip on an audio lane always does. So does one on a picture lane, carrying
+/// its source's own sound (`has_audio` from the container, read at import) —
+/// unless that sound has been split off onto an audio clip of its own
+/// ([`Clip::sound_split`]), which would otherwise play the shot twice.
 ///
-///  * A clip on an **audio** lane always contributes. That is what the lane is.
-///  * A clip on a **picture** lane contributes its source's own sound, because
-///    a video file lands on a video track and the mixer used to read only from
-///    audio tracks — so a talking-head clip was silent in the preview and
-///    silent in the exported file, with nothing anywhere admitting it.
-///    `has_audio` comes from the container, read at import, so this asks the
-///    file rather than guessing from the track.
-///  * …**unless** that sound has been split off onto an audio clip of its own
-///    ([`Clip::sound_split`]). Reading it from both would play the shot twice,
-///    at double level, and — the moment the two are slid apart — as an echo of
-///    itself.
-///
-/// The third test asks the picture clip, not the link, and that distinction is
-/// load-bearing. Unlinking a pair must not make the sound double, and linking a
-/// music bed to a shot must not silence the shot; only *splitting the sound
-/// off* moves where the sound comes from. `sound_split` is false in every
-/// project written before linked audio existed, which is why those still play:
-/// they have no audio clip, so their picture clip still carries the sound.
+/// The test asks the picture clip, not the link: unlinking a pair must not double
+/// its sound, and linking a music bed to a shot must not silence the shot.
 fn carries_sound(project: &Project, clip: &crate::model::Clip, track_kind: TrackKind) -> bool {
     if track_kind == TrackKind::Audio {
         return true;
@@ -113,13 +79,11 @@ fn carries_sound(project: &Project, clip: &crate::model::Clip, track_kind: Track
         .is_some_and(|m| m.has_audio)
 }
 
-/// The audio clips audible at timeline time `t`.
-///
 /// Mute wins over solo, matching the picture: a muted track stays silent even
 /// when it is one of the soloed ones.
 pub fn plan_audio(project: &Project, t: f64) -> Vec<AudioLayer> {
-    // Solo is asked per track kind, so soloing a music bed does not silence
-    // the sound coming off the picture, and vice versa.
+    // Solo is asked per track kind, so soloing a music bed does not silence the
+    // sound coming off the picture, and vice versa.
     let audio_soloed = soloing(project, TrackKind::Audio);
     let video_soloed = soloing(project, TrackKind::Video);
     let mut out = Vec::new();
@@ -131,8 +95,7 @@ pub fn plan_audio(project: &Project, t: f64) -> Vec<AudioLayer> {
             continue;
         }
         // Mute and solo belong to the track the clip sits on, so muting the
-        // video track silences that clip's sound too — which is what a person
-        // means by muting the track their footage is on.
+        // video track silences that clip's sound too.
         let soloed = match track.kind {
             TrackKind::Audio => audio_soloed,
             TrackKind::Video => video_soloed,
@@ -143,16 +106,11 @@ pub fn plan_audio(project: &Project, t: f64) -> Vec<AudioLayer> {
         if !clip.covers(t) {
             continue;
         }
-        // Volume goes through the animation door, so a keyframed level is
-        // just a different number here.
         let level = clip.param_at(crate::param::Param::Volume, t);
-        // How the two levels compose, in one line: the clip's own volume and
-        // its fade envelope are a **trim** — 0..1, never more than the source
-        // gave — and the track's fader then scales whatever the clips on it
-        // are doing. So turning a clip down is never undone by the lane, and
-        // all the make-up gain lives in one place. The upper clamp that used
-        // to be here is gone with the fader that replaces it: capping the
-        // product at 1.0 is exactly what made a quiet clip unfixable.
+        // Volume goes through the animation door, so a keyframed level is just a
+        // different number here. Clip volume and envelope are a 0..1 trim and the
+        // lane's fader scales the result, so no clamp at 1.0: that is what made a
+        // quiet clip unfixable.
         let gain = (level * clip.envelope(t)).clamp(0.0, 1.0) * track.gain();
         out.push(AudioLayer {
             clip: clip.id,
@@ -167,16 +125,11 @@ pub fn plan_audio(project: &Project, t: f64) -> Vec<AudioLayer> {
     out
 }
 
-/// Whether this lane can contribute sound at all.
+/// An audio lane always can; a picture lane only when something on it carries its
+/// source's own sound.
 ///
-/// An audio lane always can — that is what the lane is, empty or not. A
-/// picture lane can only when something on it carries its source's own sound,
-/// which is a fact about the files, not about the track.
-///
-/// What it is for: a meter that can never move is a meter that reads as a
-/// broken output. The master strip already refuses to draw one on a
-/// picture-only timeline; a lane needs the same refusal, or every video track
-/// wears a level that is not merely at zero but *unreachable*.
+/// A meter that can never move reads as a broken output, so a lane without sound
+/// gets no meter rather than one at zero.
 pub fn track_carries_sound(project: &Project, track: TrackId) -> bool {
     let Some(t) = project.track(track) else {
         return false;
@@ -191,8 +144,8 @@ pub fn track_carries_sound(project: &Project, track: TrackId) -> bool {
         .any(|c| carries_sound(project, c, t.kind))
 }
 
-/// Whether this project has anything to mix at all. An export asks first, so
-/// a video-only timeline is muxed without an empty audio track.
+/// An export asks first, so a video-only timeline is muxed without an empty audio
+/// track.
 pub fn has_audio(project: &Project) -> bool {
     project.clips.iter().any(|c| {
         project
@@ -201,14 +154,12 @@ pub fn has_audio(project: &Project) -> bool {
     })
 }
 
-/// The peak absolute sample in an interleaved block, for a level meter.
 pub fn peak(block: &[f32]) -> f32 {
     block.iter().fold(0.0f32, |m, s| m.max(s.abs()))
 }
 
-/// The peak of one channel of an interleaved block. [`peak`] over both
-/// together answers "how loud", this answers "how loud on which side", which
-/// is what a stereo meter draws and what makes a pan visible on it.
+/// [`peak`] over both channels answers "how loud", this answers "how loud on
+/// which side", which is what a stereo meter draws.
 pub fn channel_peak(block: &[f32], channel: usize) -> f32 {
     block
         .iter()
@@ -217,16 +168,11 @@ pub fn channel_peak(block: &[f32], channel: usize) -> f32 {
         .fold(0.0f32, |m, s| m.max(s.abs()))
 }
 
-/// What one mixed block measured, per channel.
-///
-/// **Before the clamp**, always. After it every overloaded block reads exactly
-/// `1.0` and "just touched full scale" is indistinguishable from "three times
-/// over" — which is the difference between a mix that is fine and one that is
-/// ruined, and the number a person needs in order to know how far to come
-/// down.
+/// **Before the clamp**, always: after it every overloaded block reads exactly
+/// `1.0`, and "just touched full scale" is indistinguishable from "three times
+/// over".
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct BlockMeter {
-    /// Peak absolute sample, left then right. `1.0` is full scale.
     pub peak: [f32; 2],
 }
 
@@ -237,47 +183,30 @@ impl BlockMeter {
         }
     }
 
-    /// The louder channel.
     pub fn loudest(&self) -> f32 {
         self.peak[0].max(self.peak[1])
     }
 
-    /// Whether this block asked for more than the format can carry, and so
-    /// came out of the mixer distorted.
     pub fn over(&self) -> bool {
         self.loudest() > 1.0
     }
 }
 
-/// What a metered mix measured: the master, and each lane's own contribution
-/// to it.
-///
-/// The per-track numbers are what let the warning say *which* lane, rather
-/// than leaving a person to solo their way down the timeline looking for it.
+/// The per-track numbers are what let a warning say *which* lane, rather than
+/// leaving a person to solo their way down the timeline.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct MixReport {
     pub master: BlockMeter,
     pub tracks: Vec<(TrackId, BlockMeter)>,
 }
 
-/// Mix `frames` interleaved stereo frames starting at timeline second
-/// `start`.
+/// Mix `frames` interleaved stereo frames starting at timeline second `start`.
 ///
-/// Overlapping clips sum, which is what a mix *is* — two clips playing at
-/// once are heard at once. The sum is then clamped to the representable
-/// range so a loud overlap distorts rather than wrapping around into noise,
-/// which is what a naive cast would do.
+/// Overlapping clips sum, and the sum is clamped to the representable range, so a
+/// loud overlap distorts rather than wrapping into noise.
 ///
-/// Gain is evaluated per block rather than per sample: at the block sizes an
-/// export uses (a video frame's worth, ~20ms) a fade moves by well under a
-/// decibel across one, and per-sample evaluation would mean re-walking the
-/// clip list 48,000 times a second for no audible difference.
-///
-/// The clamp is still here and still silent — see [`mix_block_metered`],
-/// which is the same mix with the measurement kept. Everything a person
-/// *sees* about level goes through that one; this is the plain path an
-/// encoder wants, and it allocates nothing extra to serve a meter nobody is
-/// watching.
+/// Gain is evaluated once per block, not per sample: across a 20 ms block a fade
+/// moves by well under a decibel.
 pub fn mix_block(
     project: &Project,
     start: f64,
@@ -289,13 +218,9 @@ pub fn mix_block(
     out
 }
 
-/// [`mix_block`], with what it measured on the way past.
-///
-/// This is the mix the *monitor* runs, because a meter that is fed by a
-/// second, parallel analysis is a meter that can disagree with what you are
-/// hearing. The measurement is taken from the summed block before the clamp,
-/// so it costs one pass over samples that are already in cache and no decode
-/// at all — the number is carried to the UI rather than recomputed there.
+/// [`mix_block`], with what it measured on the way past, taken from the summed
+/// block before the clamp — so the meter cannot disagree with what is heard, and
+/// nothing is analysed twice.
 pub fn mix_block_metered(
     project: &Project,
     start: f64,
@@ -315,21 +240,16 @@ pub fn mix_block_metered(
     (out, report)
 }
 
-/// Saturate a summed block into the representable range. Split out so the
-/// metered path can read the true peak *first* — the whole point of the
-/// measurement is that it survives this.
+/// Split out so the metered path reads the true peak before it.
 fn clamp_block(out: &mut [f32]) {
     for s in out.iter_mut() {
         *s = s.clamp(-1.0, 1.0);
     }
 }
 
-/// The summed, **unclamped** block, and — when `per_track` is given — each
-/// lane's own contribution to it.
-///
-/// One core so the plain and the metered mix can never drift apart about what
-/// is audible. `per_track` is `None` for the encoder's path, which wants no
-/// buffer it is not going to read.
+/// The summed, **unclamped** block, and each lane's own contribution when
+/// `per_track` is given. One core, so the plain and the metered mix cannot drift
+/// apart about what is audible.
 fn mix_core(
     project: &Project,
     start: f64,
@@ -341,26 +261,23 @@ fn mix_core(
     if frames == 0 {
         return out;
     }
-    // Gains are read at the middle of the block so a ramp is centred on it
-    // rather than lagging or leading by a whole block.
+    // Gains are read at the middle of the block, so a ramp is centred on it.
     let mid = start + (frames as f64 / f64::from(SAMPLE_RATE)) * 0.5;
     for mut layer in plan_audio(project, mid) {
         if layer.gain <= 0.0 {
             continue;
         }
-        // The *gain* belongs at the block's middle; the read position does
-        // not. Planning at the middle and reading there too made every
-        // block start half a block into the source it should have covered
-        // — a constant offset between the sound and the picture.
+        // The gain belongs at the block's middle; the read position does not.
+        // Planning and reading both at the middle put every block half a block
+        // into the source, an offset between sound and picture.
         if let Some(clip) = project.clip(layer.clip) {
             layer.source_time = clip.source_time(start);
         }
         let Some(samples) = fetch_at_rate(source, &layer, frames) else {
             continue;
         };
-        // Pan is per channel, so the per-sample multiplier alternates. At the
-        // default centre both are the lane's plain gain and this is the same
-        // arithmetic it always was.
+        // Per channel, so the multiplier alternates; at centre both are the
+        // lane's plain gain.
         let (pl, pr) = project
             .track(layer.track)
             .map_or((1.0, 1.0), crate::model::Track::pan_gains);
@@ -373,8 +290,8 @@ fn mix_core(
                 buckets.len() - 1
             }
         });
-        // A short read means the source ran out; the rest of the block stays
-        // silent rather than repeating whatever was last there.
+        // A short read means the source ran out: the rest stays silent rather
+        // than repeating the last sample.
         for (i, s) in samples.iter().enumerate().take(out.len()) {
             let v = s * g.get(i % CHANNELS).copied().unwrap_or_default();
             if let Some(output) = out.get_mut(i) {
@@ -391,16 +308,9 @@ fn mix_core(
     out
 }
 
-/// Read `frames` output frames for `layer`, resampling when it does not
-/// play at normal speed.
-///
-/// At rate 1.0 this is the plain read it always was. Otherwise it pulls the
-/// span of source the block covers and resamples it, which changes the
-/// pitch along with the tempo — the tape-speed behaviour, not a
-/// time-stretch. That is deliberate: a pitch-preserving stretch is a real
-/// signal-processing job (overlap-add or a phase vocoder), and shipping a
-/// half-built one that smears transients would be worse than an honest
-/// varispeed the user can hear is a varispeed.
+/// At rate 1.0 this is the plain read. Otherwise it resamples, which changes the
+/// pitch along with the tempo — tape speed, not a time-stretch. A half-built
+/// phase vocoder would smear transients, which is worse than an honest varispeed.
 fn fetch_at_rate(
     source: &mut dyn PcmSource,
     layer: &AudioLayer,
@@ -414,11 +324,10 @@ fn fetch_at_rate(
         return None;
     }
     let span = frames as f64 * rate.abs();
-    // One extra frame so the last output sample has a right-hand neighbour
-    // to interpolate toward.
+    // One extra frame, so the last output sample has a right-hand neighbour.
     let need = span.ceil() as usize + 2;
-    // Reversed, the block covers the source *behind* the current position,
-    // so the read starts there and the samples are walked backwards.
+    // Reversed, the block covers the source behind the current position, so the
+    // read starts there and the samples are walked backwards.
     let from = if rate < 0.0 {
         (layer.source_time - span / f64::from(SAMPLE_RATE)).max(0.0)
     } else {
@@ -433,12 +342,9 @@ fn fetch_at_rate(
     let (src_frames, _) = src.as_chunks::<CHANNELS>();
     let (out_frames, _) = out.as_chunks_mut::<CHANNELS>();
     for (i, out_frame) in out_frames.iter_mut().enumerate() {
-        // Where this output frame falls in the source block.
-        //
-        // Reversed, the block covers `(source_time - span, source_time]`,
-        // so its first output frame is the *last sample before* the source
-        // time — not the sample at it, which for a clip whose out-point is
-        // the end of the media is one frame past anything that exists.
+        // Reversed, the block covers `(source_time - span, source_time]`, so its
+        // first output frame is the last sample before the source time — not the
+        // one at it, which for a clip ending at the media's end does not exist.
         let pos = if rate < 0.0 {
             span - ((i as f64 + 1.0) * rate.abs())
         } else {
@@ -449,15 +355,12 @@ fn fetch_at_rate(
         }
         let j = pos.floor() as usize;
         let Some(left) = src_frames.get(j) else {
-            // Past what the source gave: the rest of the block is silent
-            // rather than a repeat of the last frame.
             break;
         };
         let frac = (pos - j as f64) as f32;
-        // The window's final sample has no right-hand neighbour to
-        // interpolate toward. Hold it for that one frame rather than
-        // ramping into a zero the source never contained, which would
-        // put a click on the edge of every block that lands there.
+        // The window's last sample has no right-hand neighbour. Hold it rather
+        // than ramping into a zero the source never had, which would click on the
+        // edge of every block that lands there.
         let right = src_frames.get(j + 1).unwrap_or(left);
         for ((o, &a), &b) in out_frame.iter_mut().zip(left).zip(right) {
             *o = a + (b - a) * frac;
@@ -466,8 +369,8 @@ fn fetch_at_rate(
     Some(out)
 }
 
-/// Interleaved `f32` in -1..1 as little-endian signed 16-bit, which is what
-/// the export's audio `appsrc` is fed.
+/// Interleaved `f32` in -1..1 as little-endian signed 16-bit, which is what the
+/// export's audio `appsrc` is fed.
 pub fn to_s16le(block: &[f32]) -> Vec<u8> {
     let mut out = Vec::with_capacity(block.len() * 2);
     for s in block {
@@ -479,13 +382,9 @@ pub fn to_s16le(block: &[f32]) -> Vec<u8> {
     out
 }
 
-/// A [`PcmSource`] that decodes the project's media for real.
-///
 /// Each source is decoded once, in full, to interleaved stereo `f32` at
-/// [`SAMPLE_RATE`] and kept in memory. A minute of stereo audio is about
-/// 23 MB, which is cheap next to re-running a decoder for every 20ms block an
-/// export asks for — and an export asks for every block of every clip, in
-/// order, so a cache that holds the whole thing never misses twice.
+/// [`SAMPLE_RATE`] and kept: an export asks for every block of every clip, in
+/// order, so a cache holding the whole source never misses twice.
 #[cfg(any(feature = "gst", feature = "decode"))]
 pub struct DecodedPcm {
     sources: std::collections::HashMap<MediaId, media::Source>,
@@ -494,8 +393,8 @@ pub struct DecodedPcm {
 
 #[cfg(any(feature = "gst", feature = "decode"))]
 impl DecodedPcm {
-    /// Index every media in `project` whose bytes are readable. A reference
-    /// that has not hydrated is simply absent, and its clips mix as silence.
+    /// A reference that has not hydrated is absent, and its clips mix as
+    /// silence.
     pub fn new(project: &Project) -> Self {
         let sources = project
             .media
@@ -540,11 +439,9 @@ impl PcmSource for DecodedPcm {
     }
 }
 
-/// Decode a whole source to interleaved stereo `f32` at [`SAMPLE_RATE`].
-///
-/// `None` when the source yields no audio at all — a silent video is not an
-/// error. A decode that stalls past its budget mixes as silence rather than
-/// freezing an export.
+/// `None` when the source yields no audio at all: a silent video is not an error.
+/// A decode that stalls past its budget mixes as silence rather than freezing an
+/// export.
 #[cfg(any(feature = "gst", feature = "decode"))]
 pub(crate) fn decode_pcm(source: &media::Source) -> Option<Vec<f32>> {
     let mut out = Vec::new();
@@ -561,79 +458,53 @@ pub(crate) fn decode_pcm(source: &media::Source) -> Option<Vec<f32>> {
     (!out.is_empty()).then_some(out)
 }
 
-// ---------------------------------------------------------------------------
-// Metering — what the mix measured, kept where the UI can read it.
-// ---------------------------------------------------------------------------
-
-/// How fast a meter falls, in decibels per second.
-///
-/// A peak meter rises instantly and falls slowly: the rise is the event you
-/// are trying to see and the fall is only there so the next one is legible.
-/// 24 dB/s is between the broadcast PPM (about 12) and the near-instant fall
-/// of a DAW meter — slow enough that a transient is still on screen when your
-/// eye gets to it, fast enough that the bar tracks a phrase rather than
-/// smearing into a ceiling.
+/// A peak meter rises instantly and falls slowly: the rise is the event and the
+/// fall only makes the next one legible. 24 dB/s sits between the broadcast PPM
+/// and a DAW's near-instant fall.
 const METER_RELEASE_DB_PER_SEC: f64 = 24.0;
 
-/// Two overloads closer together than this are one event.
-///
-/// Without it a second of sustained clipping is 47 separate entries, a list
-/// nobody can use and a count that says "47 places" about one place.
+/// Without it a second of sustained clipping is 47 entries, and a count that says
+/// "47 places" about one place.
 const OVER_MERGE_SECS: f64 = 0.5;
 
-/// How many distinct overloads are remembered. Past this the list stops
-/// growing rather than the oldest being dropped: the *first* place the mix
-/// went over is the one to fix, and a list that forgot it in favour of the
-/// sixty-fifth would be worse than no list.
+/// Past this the list stops growing rather than dropping the oldest: the *first*
+/// place the mix went over is the one to fix.
 const MAX_OVERS: usize = 64;
 
-/// One lane's measured level, as the UI draws it.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct TrackLevel {
     pub track: TrackId,
-    /// Falling peak per channel — what the bar shows.
     pub level: [f32; 2],
-    /// The loudest this lane has been since the meter was last cleared.
     pub hold: f32,
-    /// **Latched.** True from the moment this lane's own contribution went
-    /// past full scale until the meter is cleared, which is what turns a
-    /// one-frame flash into something a person who was looking at the
-    /// timeline can still find afterwards.
+    /// **Latched.** True from the first moment this lane's own contribution went
+    /// past full scale until the meter is cleared, so a one-frame flash is still
+    /// there to find afterwards.
     pub clipped: bool,
 }
 
-/// Everything the UI needs from the meter, in one cheap copy.
-///
-/// Taken once per `sync` and read from plain fields during `draw`, so the
-/// paint path never takes the mixing thread's lock and never allocates.
+/// Taken once per `sync` and read from plain fields during `draw`, so the paint
+/// path never takes the mixing thread's lock and never allocates.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct MixSnapshot {
-    /// Falling master peak per channel.
     pub master: [f32; 2],
-    /// The loudest the master has been since the last clear.
     pub master_hold: f32,
     pub tracks: Vec<TrackLevel>,
-    /// The worst pre-clamp peak seen while over full scale, `0.0` when the
-    /// mix has never gone over. `1.6` here means the mix asked for 60% more
-    /// than the format can carry.
+    /// The worst pre-clamp peak seen while over full scale: `1.6` means the mix
+    /// asked for 60% more than the format carries.
     pub worst: f32,
-    /// Timeline seconds where the mix went over, in the order they happened.
-    /// This is the answer to "where", and it is why the warning is worth
-    /// having rather than merely alarming.
+    /// Timeline seconds where the mix went over, in the order they happened: the
+    /// answer to "where".
     pub overs: Vec<f64>,
-    /// Whether anything has been measured at all since the last clear. A
-    /// quiet meter and a meter nobody has fed look identical, and telling a
-    /// person their levels are fine when nothing has played would be a lie.
+    /// Whether anything has been measured since the last clear. Telling a person
+    /// their levels are fine when nothing has played would be a lie.
     pub monitored: bool,
 }
 
 impl MixSnapshot {
-    /// Whether the mix has gone over since the meter was last cleared.
     pub fn clipped(&self) -> bool {
         !self.overs.is_empty()
     }
 
-    /// How far over, in decibels. `0.0` when it never went over.
     pub fn worst_over_db(&self) -> f64 {
         if self.worst <= 1.0 {
             return 0.0;
@@ -641,16 +512,13 @@ impl MixSnapshot {
         20.0 * f64::from(self.worst).log10()
     }
 
-    /// The master peak-hold in decibels relative to full scale, or `None`
-    /// when nothing has been measured.
     pub fn hold_db(&self) -> Option<f64> {
         self.monitored
             .then(|| crate::model::linear_to_db(f64::from(self.master_hold)))
     }
 
-    /// The first overload strictly after `t`, wrapping to the first one when
-    /// there is none — so pressing the warning repeatedly walks the list and
-    /// then starts again, rather than parking on the last one.
+    /// Wrapping to the first one after the last, so pressing the warning walks the
+    /// list and starts again.
     pub fn next_over_after(&self, t: f64) -> Option<f64> {
         self.overs
             .iter()
@@ -663,17 +531,13 @@ impl MixSnapshot {
         self.tracks.iter().find(|t| t.track == id)
     }
 
-    /// Every lane that contributed to what was measured, clipped or not.
-    ///
-    /// The distinction from [`Self::clipped_tracks`] is the whole of what a
-    /// trim has to know: the lanes to *name* in a warning are the ones caught
-    /// over, and the lanes to *move* are all of them, because the mix is their
-    /// sum. See [`Project::lanes_trimmed_by`](crate::model::Project::lanes_trimmed_by).
+    /// The lanes to name in a warning are the ones caught over; the lanes to move
+    /// are all of them, because the mix is their sum. See
+    /// [`Project::lanes_trimmed_by`](crate::model::Project::lanes_trimmed_by).
     pub fn measured_tracks(&self) -> Vec<TrackId> {
         self.tracks.iter().map(|t| t.track).collect()
     }
 
-    /// The lanes that have clipped, loudest first — what a warning names.
     pub fn clipped_tracks(&self) -> Vec<TrackId> {
         let mut hot: Vec<&TrackLevel> = self.tracks.iter().filter(|t| t.clipped).collect();
         hot.sort_by(|a, b| b.hold.partial_cmp(&a.hold).unwrap_or(Ordering::Equal));
@@ -691,13 +555,8 @@ struct MeterState {
     monitored: bool,
 }
 
-/// The level the mix is running at, shared between the thread that mixes and
-/// the one that draws.
-///
-/// It exists because [`peak`] was written "for a level meter" and had no
-/// caller: the measurement was already being thrown away every block, and a
-/// mix that clamped in silence was the result. Nothing here re-analyses
-/// anything — the mixer hands over what it already computed.
+/// Shared between the thread that mixes and the one that draws. Nothing here
+/// re-analyses anything: the mixer hands over what it already computed.
 #[derive(Default)]
 pub struct MixMeters {
     state: Mutex<MeterState>,
@@ -708,11 +567,9 @@ impl MixMeters {
         Self::default()
     }
 
-    /// Take in what one block measured, at timeline second `at`.
-    ///
-    /// Levels only ever *rise* here; the fall is [`Self::decay`]'s job, driven
-    /// by the frame clock. Splitting them is what keeps the meter's fall rate
-    /// a property of time rather than of how often the mixer happened to run.
+    /// Levels only ever rise here; the fall is [`Self::decay`]'s job, driven by the
+    /// frame clock, so the fall rate is a property of time rather than of how often
+    /// the mixer ran.
     pub fn record(&self, at: f64, report: &MixReport) {
         let Ok(mut s) = self.state.lock() else {
             return;
@@ -732,7 +589,6 @@ impl MixMeters {
                 });
                 s.tracks.len() - 1
             };
-            // `i` was just found or pushed.
             let Some(t) = s.tracks.get_mut(i) else {
                 continue;
             };
@@ -740,8 +596,6 @@ impl MixMeters {
                 *level = level.max(peak);
             }
             t.hold = t.hold.max(m.loudest());
-            // Latched, never cleared by a quieter block: the point of the
-            // indicator is that it outlives the moment.
             t.clipped |= m.over();
         }
         if !report.master.over() {
@@ -759,9 +613,8 @@ impl MixMeters {
         }
     }
 
-    /// Let the meters fall by `dt` seconds' worth. Called from the frame
-    /// clock, so the bar falls at the same rate whether the mixer is running
-    /// at 1024-sample blocks or not running at all.
+    /// The bar falls at the same rate whether the mixer runs at 1024-sample blocks
+    /// or not at all.
     pub fn decay(&self, dt: f64) {
         if dt <= 0.0 {
             return;
@@ -780,13 +633,8 @@ impl MixMeters {
         }
     }
 
-    /// Forget what was measured: the latched overs, the holds and the worst
-    /// overshoot.
-    ///
-    /// Called when the mix itself changes (see [`mix_signature`]), because a
-    /// warning about levels the user has since altered is a warning about a
-    /// mix that no longer exists — and one that never went away would train
-    /// people to ignore the one that matters.
+    /// Called when the mix itself changes (see [`mix_signature`]): a warning about
+    /// levels the user has since altered describes a mix that no longer exists.
     pub fn clear(&self) {
         let Ok(mut s) = self.state.lock() else {
             return;
@@ -809,15 +657,12 @@ impl MixMeters {
     }
 }
 
-/// A hash of everything that decides what the mix sounds like.
-///
-/// Used to tell "the warning still describes this timeline" from "the user has
-/// changed the levels since". Deliberately narrow: renaming a track or
-/// recolouring a clip must not throw away a clipping report, and moving an
-/// audible clip must.
+/// Tells "the warning still describes this timeline" from "the levels changed".
+/// Deliberately narrow: renaming a track must not throw a clipping report away,
+/// and moving an audible clip must.
 pub fn mix_signature(project: &Project) -> u64 {
-    // FNV-1a: stable across runs and machines, and this is a change detector
-    // rather than a security boundary.
+    // FNV-1a: stable across runs and machines; a change detector, not a security
+    // boundary.
     let mut hasher = fnv::FnvHasher::default();
     let mut eat = |bytes: &[u8]| std::hash::Hasher::write(&mut hasher, bytes);
     for t in &project.tracks {
@@ -852,27 +697,18 @@ pub fn mix_signature(project: &Project) -> u64 {
     std::hash::Hasher::finish(&hasher)
 }
 
-// ---------------------------------------------------------------------------
-// Monitoring — hearing the timeline while it plays.
-// ---------------------------------------------------------------------------
-
-/// How much audio the monitor mixes per step. Small enough that a pause or a
-/// scrub is acted on promptly, large enough that the mixing thread is not
-/// waking thousands of times a second.
+/// Small enough that a pause or a scrub is acted on promptly, large enough that
+/// the mixing thread is not waking thousands of times a second.
 pub const MONITOR_BLOCK: usize = 1024;
 
-/// Where monitored audio goes. Abstracted so the transport logic — what plays,
-/// from where, and what happens on a seek — is testable without an audio
-/// device, which no CI box has.
+/// Abstracted so the transport logic — what plays, from where, what a seek does —
+/// is testable without an audio device, which no CI box has.
 pub trait MonitorSink: Send {
-    /// Push one block of interleaved `f32`. Returning `false` stops the
-    /// monitor (the device went away).
+    /// Returning `false` stops the monitor: the device went away.
     fn push(&mut self, block: &[f32]) -> bool;
 }
 
-/// A sink that throws audio away. What the editor uses when the machine has
-/// no audio output — playback still runs, it is simply silent, which beats
-/// refusing to play.
+/// What plays on a machine with no audio output: playback still runs, silently.
 pub struct NullSink;
 
 impl MonitorSink for NullSink {
@@ -881,11 +717,8 @@ impl MonitorSink for NullSink {
     }
 }
 
-/// The best output this machine offers: the system sink where one opens,
-/// [`NullSink`] where none does.
-///
-/// A box with no audio device is a normal state, not a failure — a headless
-/// CI runner is one — so it plays silently rather than refusing to play.
+/// The system sink where one opens, [`NullSink`] where none does: a headless CI
+/// runner is a normal state, not a failure.
 #[cfg(any(feature = "gst", feature = "decode"))]
 pub fn open_output() -> Box<dyn MonitorSink> {
     if let Some(s) = media::pcm::Playback::open() {
@@ -896,7 +729,6 @@ pub fn open_output() -> Box<dyn MonitorSink> {
     }
 }
 
-/// What the monitor thread reads and the UI writes.
 struct MonitorState {
     project: Mutex<Project>,
     /// Where the next block is mixed from, in timeline seconds.
@@ -1067,8 +899,7 @@ mod tests {
     )]
     fn mixer_fills_missing_or_short_sources_with_silence() {
         {
-            // An un-hydrated reference must not fail the mix — the rest of the
-            // timeline is still audible.
+            // An un-hydrated reference must not fail the mix: the rest is still audible.
             let (p, _, _, _) = project_with_audio();
             let m2 = p.media[1].id;
             let mut src = constant(&[(m2, 0.4)]); // media 1 absent
@@ -1083,7 +914,6 @@ mod tests {
             struct Short;
             impl PcmSource for Short {
                 fn samples(&mut self, _m: MediaId, _f: f64, _frames: usize) -> Option<Vec<f32>> {
-                    // Two frames' worth, however many were asked for.
                     Some(vec![0.5; 2 * CHANNELS])
                 }
             }
@@ -1110,8 +940,7 @@ mod tests {
         }
     }
 
-    /// A file in the repository, so this test cannot pass by looking at
-    /// nothing.
+    /// A file in the repository, so this test cannot pass by looking at nothing.
     #[cfg(feature = "decode")]
     fn sample(name: &str) -> std::path::PathBuf {
         let p = crate::media::bundled_sample_media()
@@ -1125,8 +954,8 @@ mod tests {
     #[cfg(feature = "decode")]
     #[serial_test::serial(video_editor_gst)]
     fn a_source_that_carries_audio_decodes_to_real_samples() {
-        // A source that really does carry audio has to come back with it. A decoder that returned `None` here would
-        // make every "the export is silent" assertion in this crate vacuous.
+        // A source that really carries audio must come back with it, or every "the
+        // export is silent" assertion here is vacuous.
         if !media_stack::media_stack() {
             return;
         }
@@ -1140,10 +969,8 @@ mod tests {
         assert!(super::peak(&pcm) > 0.01, "and it is not silence");
     }
 
-    /// A source whose samples encode *where they came from*: frame `n` of a
-    /// media is the value `n`. A resampler's output can then be read
-    /// straight back as "which source frames did this block cover", which is
-    /// the only way to check a rate change without hand-waving.
+    /// Frame `n` of a media is the sample value `n`, so a resampler's output reads
+    /// back as which source frames a block covered.
     struct RampSource {
         len: usize,
     }
@@ -1157,10 +984,8 @@ mod tests {
                 if n >= self.len {
                     break;
                 }
-                // Both channels carry the frame index, normalised by the
-                // source length so the ramp never leaves -1..1 and gets
-                // clamped by the mixer (which would erase the very thing
-                // this source exists to report).
+                // Normalised by the source length, so the ramp stays inside -1..1
+                // rather than being clamped (which would erase what it reports).
                 let v = n as f32 / self.len as f32;
                 out.push(v);
                 out.push(v);
@@ -1169,7 +994,6 @@ mod tests {
         }
     }
 
-    /// A project with one audio clip covering `[0, len)` at `rate`.
     fn speed_project(rate: f64, reverse: bool, len: f64) -> (Project, MediaId) {
         let mut p = Project::new("s");
         let mid = Uuid::new_v4();
@@ -1196,20 +1020,15 @@ mod tests {
         (p, mid)
     }
 
-    /// Which source frame a block's first and last output samples came from,
-    /// read back out of the ramp.
     fn span_of(block: &[f32], len: usize) -> (f64, f64) {
         let first = f64::from(block[0]) * len as f64;
         let last = f64::from(block[block.len() - CHANNELS]) * len as f64;
         (first, last)
     }
 
-    /// A project with one audio clip placed at `start` on the timeline,
-    /// sourcing from `in_point` for `len` seconds.
-    ///
-    /// Both offsets are non-zero on purpose. A clip at timeline 0 sourcing
-    /// from 0 makes the timeline second and the source second the same
-    /// number, so a mixer that confuses the two still looks right.
+    /// Both offsets are non-zero on purpose: at zero the timeline second and the
+    /// source second are the same number, so a mixer that confuses them looks
+    /// right.
     fn placed_project(start: f64, in_point: f64, len: f64) -> Project {
         let mut p = Project::new("p");
         let mid = Uuid::new_v4();
@@ -1242,30 +1061,16 @@ mod tests {
         reason = "merged scenario: each former test is a labelled case block with its own fixture"
     )]
     fn audio_blocks_read_their_span_at_the_clip_rate() {
-        // Case `a_block_reads_the_span_it_covers_not_one_offset_from_it`:
-        // A block must read the span of source it *covers*, not one displaced
-        // from it.
-        //
-        // `mix_block` evaluates gain at the middle of the block, so that a fade
-        // ramp is centred on it rather than lagging a whole block behind. The
-        // read position was taken from that same midpoint, which is a different
-        // thing entirely: every block then began half a block into the source it
-        // was supposed to cover. Constant, so nothing sounded stretched — the
-        // sound simply sat a fixed distance from the picture, which at 30fps is
-        // 800 samples, about 17 ms.
-        //
-        // The clip is placed away from the timeline origin and sources from a
-        // non-zero in-point, so the assertion is on the real timeline → source
-        // mapping rather than on an identity.
+        // A block must read the span of source it *covers*, not one displaced from
+        // it: the clip sits away from the timeline origin and sources from a
+        // non-zero in-point, so this asserts the real timeline to source map.
         {
             let (start, in_point, len) = (1.0, 3.0, 5.0);
             let p = placed_project(start, in_point, len);
             let n = (in_point + len) as usize * SAMPLE_RATE as usize;
             let mut src = RampSource { len: n };
 
-            // One video frame's worth at 30fps — the block size an export pushes.
             let frames = SAMPLE_RATE as usize / 30;
-            // A block one second into the clip, which is source second 4.0.
             let at = start + 1.0;
             let block = mix_block(&p, at, frames, &mut src);
             let (a, b) = span_of(&block, n);
@@ -1279,18 +1084,14 @@ mod tests {
              out. Half a block is {:+.0}, which is the read-at-the-midpoint bug.",
                 frames as f64 / 2.0,
             );
-            // And it covers a block's worth from there, rather than reading the
-            // right span at the wrong rate.
             assert!(
                 (b - (want + frames as f64 - 1.0)).abs() < 2.0,
                 "and ends at source frame {}, got {b}",
                 want + frames as f64 - 1.0,
             );
         }
-        // Case `consecutive_blocks_abut_with_no_gap_and_no_overlap`:
-        // Consecutive blocks have to abut, or the export's audio gains or loses
-        // samples every frame and drifts away from the picture over a long
-        // timeline.
+        // Consecutive blocks have to abut, or the export gains or loses samples
+        // every frame and drifts away from the picture.
         {
             let (start, in_point, len) = (1.0, 3.0, 5.0);
             let p = placed_project(start, in_point, len);
@@ -1355,7 +1156,6 @@ mod tests {
             let mut src = RampSource {
                 len: 10 * SAMPLE_RATE as usize,
             };
-            // A block partway in, so there is source on both sides of it.
             let block = mix_block(&p, 2.0, 1000, &mut src);
             let (a, b) = span_of(&block, src.len);
             assert!(
@@ -1375,9 +1175,8 @@ mod tests {
             );
         }
         {
-            // A slow clip has to invent samples between source frames. Those
-            // must lie between their neighbours — a resampler that returned
-            // zeroes would show up as a block full of holes.
+            // Invented samples must lie between their neighbours: zeroes would
+            // show as a block full of holes.
             let (p, _) = speed_project(0.25, false, 10.0);
             let mut src = RampSource {
                 len: 10 * SAMPLE_RATE as usize,
@@ -1387,8 +1186,6 @@ mod tests {
                 block.iter().all(|s| s.is_finite()),
                 "no NaNs or infinities out of the resampler",
             );
-            // The ramp must be monotonic: every sample at least as large as the
-            // one before it.
             let mono = block
                 .chunks(CHANNELS)
                 .zip(block.chunks(CHANNELS).skip(1))
@@ -1404,8 +1201,7 @@ mod tests {
             );
         }
         {
-            // The whole point: the same timeline instant reads different source
-            // depending on the rate.
+            // The same timeline instant reads different source at different rates.
             let mut src = RampSource {
                 len: 60 * SAMPLE_RATE as usize,
             };
@@ -1456,8 +1252,6 @@ mod tests {
     use crate::model::{MediaItem, MediaKind, Track, TrackKind};
     use uuid::Uuid;
 
-    /// A source that hands back a constant value per media, so what arrives
-    /// in the mix is traceable to the clip that contributed it.
     struct Constant(std::collections::HashMap<MediaId, f32>);
 
     impl PcmSource for Constant {
@@ -1515,8 +1309,6 @@ mod tests {
         Constant(pairs.iter().copied().collect())
     }
 
-    /// Records what the monitor pushed, so the transport can be asserted on
-    /// without an audio device.
     #[derive(Clone, Default)]
     struct Recorder(Arc<Mutex<Vec<f32>>>);
 
@@ -1527,8 +1319,8 @@ mod tests {
         }
     }
 
-    /// Waits for `cond`, or gives up. Polling beats a fixed sleep: the
-    /// monitor runs on its own thread and the box is shared.
+    /// Polling beats a fixed sleep: the monitor runs on its own thread and the box
+    /// is shared.
     fn eventually(mut cond: impl FnMut() -> bool) -> bool {
         let deadline = tilo_test_env::hang_deadline();
         while ui::time::now() < deadline {
@@ -1585,8 +1377,6 @@ mod tests {
             );
         }
         {
-            // The audio clock is the sample count, not wall time, so it cannot
-            // drift away from the picture.
             let (p, _, _, _) = project_with_audio();
             let (m1, m2) = (p.media[0].id, p.media[1].id);
             let monitor = AudioMonitor::new(
@@ -1613,8 +1403,6 @@ mod tests {
         }
         {
             let (mut p, _, _, _) = project_with_audio();
-            // A clip only in the second half of the timeline, so where the
-            // monitor is reading from is audible in what it pushes.
             let c2 = p.clips[1].id;
             {
                 let c = p.clip_mut(c2).unwrap();
@@ -1662,18 +1450,13 @@ mod tests {
                 tap.lock().unwrap().iter().any(|s| *s > 0.3)
             });
 
-            // Mute the track mid-playback: the very setting that reached no
-            // audio path before.
             let mut muted = p;
             muted.tracks[0].muted = true;
             muted.tracks[1].muted = true;
             monitor.set_project(&muted);
             tilo_test_env::wait_until("muting to be heard on the next block", || {
-                // Clear, then look at what arrives *after* the clear. A
-                // single clear before looking would race a block that was
-                // already mixed when the mute landed: one pre-mute sample
-                // in the tap and no later silence could ever clear it,
-                // which is a flake rather than a finding.
+                // Clear, then look at what arrives after the clear: one pre-mute
+                // block already in the tap would otherwise make this a flake.
                 tap.lock().unwrap().clear();
                 tilo_test_env::wait_until("a block after the clear", || {
                     !tap.lock().unwrap().is_empty()
@@ -1699,8 +1482,6 @@ mod tests {
                 monitor.play(1.0);
                 tilo_test_env::wait_until("the sink to be fed", || !tap.lock().unwrap().is_empty());
             }
-            // The drop joins the thread, and the thread owned the sink: with
-            // it gone, nothing holds the sink to feed it.
             assert_eq!(
                 Arc::strong_count(&tap),
                 1,
@@ -1798,9 +1579,8 @@ mod tests {
             );
         }
         {
-            // Summed peaks above full scale must saturate. A plain cast would
-            // wrap +1.2 round to a large negative sample — an audible crack at
-            // exactly the loudest moment.
+            // A plain cast would wrap +1.2 round to a large negative sample: an
+            // audible crack at exactly the loudest moment.
             let (p, _, _, _) = project_with_audio();
             let (m1, m2) = (p.media[0].id, p.media[1].id);
             let mut src = constant(&[(m1, 0.8), (m2, 0.8)]);
@@ -1830,8 +1610,6 @@ mod tests {
         }
     }
 
-    /// Apply a trim to `p` in place, as the `trim-mix` action's document
-    /// write does.
     fn apply_lanes(p: &mut Project, lanes: Vec<Track>) {
         for next in lanes {
             if let Some(dst) = p.tracks.iter_mut().find(|t| t.id == next.id) {
@@ -1846,19 +1624,12 @@ mod tests {
         reason = "merged scenario: each former test is a labelled case block with its own fixture"
     )]
     fn mix_trim_uses_the_measured_overshoot() {
-        // Case `trimming_by_what_the_meter_measured_brings_the_real_mix_back_under`:
-        // The whole loop, through the production mixer at both ends: a mix goes
-        // over, the meter measures how far, the trim comes down by that much and
-        // the *same* mixer now fits.
-        //
-        // Asserted on the peak the mixer really produces rather than on the
-        // gains that were written, because "the numbers went down" is not the
-        // claim — the claim is that the sum fits.
+        // The whole loop through the production mixer at both ends, asserted on the
+        // peak it really produces: "the numbers went down" is not the claim, the
+        // claim is that the sum fits.
         {
             let (mut p, a1, _a2, _) = project_with_audio();
             let (m1, m2) = (p.media[0].id, p.media[1].id);
-            // Two lanes that fit on their own and do not fit together, one of them
-            // pushed up on its fader.
             p.tracks.iter_mut().find(|t| t.id == a1).unwrap().gain_db = 6.0;
             let mut src = constant(&[(m1, 0.5), (m2, 0.4)]);
 
@@ -1883,18 +1654,13 @@ mod tests {
                 after.master,
             );
             // …and it fits by landing *on* full scale, not by being thrown away.
-            // A trim that took twenty decibels off would also pass the line above
-            // and would have ruined the mix to do it.
             assert!(
                 (after.master.loudest() - 1.0).abs() < 0.02,
                 "and it lands at full scale rather than somewhere quiet: {}",
                 after.master.loudest(),
             );
         }
-        // Case `a_trim_moves_the_whole_mix_and_not_the_balance`:
-        // The balance survives. Every lane moves by the same number of decibels,
-        // so what the person mixing decided about the *relationship* between the
-        // lanes is exactly where they left it.
+        // The balance survives: every lane moves by the same number of decibels.
         {
             let (mut p, a1, a2, _) = project_with_audio();
             let (m1, m2) = (p.media[0].id, p.media[1].id);
@@ -1915,14 +1681,11 @@ mod tests {
                 "the lanes are still {was} dB apart, not {}",
                 gap(&p),
             );
-            // And both really did move, so the line above is not passing on a
-            // trim that did nothing at all.
             assert!(p.track(a1).unwrap().gain_db < 6.0 - 1e-9);
             assert!(p.track(a2).unwrap().gain_db < -2.0 - 1e-9);
         }
-        // Case `asking_for_headroom_leaves_headroom`:
-        // Headroom is a real request, not a rounding: asking for three decibels
-        // under lands three decibels under.
+        // Headroom is a real request: asking for three decibels under lands three
+        // decibels under.
         {
             let (mut p, a1, _, _) = project_with_audio();
             let (m1, m2) = (p.media[0].id, p.media[1].id);
@@ -1943,13 +1706,9 @@ mod tests {
                 after.master.loudest(),
             );
         }
-        // Case `a_mix_can_clip_with_no_single_lane_over_and_the_trim_still_fixes_it`:
-        // The case that decides *which* lanes a trim moves.
-        //
-        // Two lanes each comfortably under full scale on their own add up to a
-        // mix that is over. Nothing is in `clipped_tracks` — there is no lane to
-        // blame — so a trim that moved only the lanes caught over would have had
-        // nothing to move and would have left the mix clipping.
+        // Two lanes each under full scale can add up to a mix that is over, and no
+        // lane is in `clipped_tracks` to blame; a trim that moved only those would
+        // leave the mix clipping.
         {
             let (mut p, _, _, _) = project_with_audio();
             let (m1, m2) = (p.media[0].id, p.media[1].id);
@@ -1979,9 +1738,6 @@ mod tests {
                 after.master,
             );
         }
-        // Case `a_trim_of_nothing_writes_nothing`:
-        // Nothing to trim writes nothing. A mix that is already under full scale
-        // must not be quietened by an action that reports success.
         {
             let (p, _, _, _) = project_with_audio();
             let lanes: Vec<TrackId> = p.tracks.iter().map(|t| t.id).collect();
@@ -1989,18 +1745,13 @@ mod tests {
             assert!(p.lanes_trimmed_by(&lanes, -3.0).is_empty());
             assert!(p.lanes_trimmed_by(&lanes, f64::NAN).is_empty());
         }
-        // Case `only_a_lane_that_can_carry_sound_has_a_level`:
-        // Which lanes have a level to show. A meter that can never move is not
-        // a quiet meter, it is a broken one.
+        // A meter that can never move is not a quiet meter, it is a broken one.
         {
             let (mut p, a1, _, _) = project_with_audio();
             assert!(
                 track_carries_sound(&p, a1),
                 "an audio lane is an audio lane whatever is on it",
             );
-            // An empty one too: the lane is what it is before anything is dropped
-            // on it, and a meter that appeared on the first drop would read as the
-            // output coming back to life.
             let empty = Uuid::new_v4();
             p.tracks.push(Track {
                 id: empty,
@@ -2034,15 +1785,12 @@ mod tests {
                 "silent footage gives its lane no level to show",
             );
 
-            // …and the same lane does the moment the footage carries sound, which
-            // is a fact about the file rather than about the track.
             p.media.iter_mut().find(|m| m.id == mid).unwrap().has_audio = true;
             assert!(
                 track_carries_sound(&p, vid),
                 "a talking head on a video lane is heard, so it is metered",
             );
 
-            // A lane that is not in the project at all has no level either.
             assert!(!track_carries_sound(&p, Uuid::new_v4()));
         }
     }
@@ -2053,14 +1801,8 @@ mod tests {
         reason = "merged scenario: each former test is a labelled case block with its own fixture"
     )]
     fn linked_video_sound_is_mixed_exactly_once() {
-        // Case `a_video_clips_own_sound_is_mixed`:
-        // A video file's own sound reaches the mix.
-        //
-        // The timeline puts a video file on a video track, and the mixer used to
-        // read only from audio tracks. So importing a talking-head clip, cutting
-        // it and exporting gave back a silent file — with nothing in the preview,
-        // the bin or the export dialog admitting it. This is the regression that
-        // must never come back.
+        // A video file's own sound reaches the mix: the timeline puts it on a video
+        // track, and a mixer reading only audio tracks exported silence.
         {
             use crate::model::{MediaItem, MediaKind, Project, Track, TrackKind};
 
@@ -2071,7 +1813,6 @@ mod tests {
                 name: "interview.mp4".into(),
                 kind: MediaKind::Video,
                 duration: 30.0,
-                // What the container said: a picture that also carries sound.
                 has_audio: true,
                 ..Default::default()
             });
@@ -2097,8 +1838,6 @@ mod tests {
                 "the video clip's own sound is not in the mix: {layers:?}",
             );
 
-            // Muting the track the footage sits on silences its sound too — which
-            // is what a person means by muting that track.
             p.tracks[0].muted = true;
             assert!(
                 plan_audio(&p, 2.0).iter().all(|l| l.clip != clip),
@@ -2106,8 +1845,6 @@ mod tests {
             );
             p.tracks[0].muted = false;
 
-            // A picture whose file carries no sound contributes none, so a silent
-            // project does not grow an empty audio branch.
             p.media[0].has_audio = false;
             assert!(
                 !has_audio(&p),
@@ -2133,11 +1870,8 @@ mod tests {
                 "2s into a clip cut at 5s reads 7s of source: {l:?}",
             );
         }
-        // Case `a_shot_whose_sound_was_split_off_is_heard_once_not_twice`:
-        // Once a shot's sound has a clip of its own, exactly one of the two
-        // halves may be mixed. This is the correctness trap of the whole feature:
-        // mix both and the shot is heard twice, at double level, and — the moment
-        // the two are slid apart — as an echo of itself.
+        // Once a shot's sound has a clip of its own, exactly one of the two halves
+        // may be mixed: both would play it twice, and as an echo once slid apart.
         {
             use crate::model::{MediaItem, MediaKind, Project, Track, TrackKind};
 
@@ -2170,9 +1904,6 @@ mod tests {
             let picture = p.add_clip(v1, media, 0.0).expect("place the picture");
             p.clip_mut(picture).expect("picture").out_point = 30.0;
 
-            // Before the split: the picture carries the sound, and is mixed at
-            // full level. This is what every project saved before links existed
-            // still does, and it must not change.
             let mut src = constant(&[(media, 0.5)]);
             let before = mix_block(&p, 2.0, 8, &mut src);
             assert!(

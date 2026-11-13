@@ -40,7 +40,7 @@
 "apps/store/src/app.rs" = 6500
 "apps/terminal/src/main_body.rs" = 7000
 "apps/terminal/src/tests.rs" = 5000
-"apps/video-editor/src/app.rs" = 9000
+"apps/video-editor/src/app.rs" = 8500
 "apps/video-editor/src/model.rs" = 5000
 "apps/word-processor/src/widget/tests.rs" = 8500
 "crates/agent/local-model-service/src/lib.rs" = 3500
