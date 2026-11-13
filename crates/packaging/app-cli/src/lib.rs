@@ -835,34 +835,38 @@ mod tests {
 
     use registry_types::{RegistryEntry, RegistryVersion, sign_entry};
 
-    /// A language pack's id names its own language: the pack chosen in
-    /// Settings for `de-DE` is the `de` one, and a tag of its language in
-    /// any spelling names the same pack.
-    #[test]
-    fn a_language_names_the_same_pack_whatever_its_tag() {
-        assert_eq!(language_pack_id("de-DE"), "so.tilo.language-pack.de");
-        assert_eq!(language_pack_id("de_DE"), "so.tilo.language-pack.de");
-        assert_eq!(language_pack_id("pt-BR"), "so.tilo.language-pack.pt");
-    }
+    tilo_test_env::scenario! {
+        fn the_catalogue_language_names_its_pack;
 
-    /// A listing's names and taglines read in the person's language, the same
-    /// one answer the shell speaks, and the pack installed for it is that
-    /// language's own — never the machine's locale, which only stands in when
-    /// the person has chosen none.
-    #[test]
-    fn the_catalogue_language_is_the_persons_not_the_machines() {
-        let document = serde_json::json!({"appearance": {"language": "de-DE"}})
-            .as_object()
-            .cloned()
-            .unwrap_or_default();
-        let _settings = settings_store::scoped_source(Some(std::sync::Arc::new(
-            settings_store::HostDocument::new(document, |_| Ok(())),
-        )));
-        assert_eq!(preferred_locale(), "de-DE");
-        assert_eq!(
-            language_pack_id(&preferred_locale()),
-            "so.tilo.language-pack.de"
-        );
+        phase a_language_names_the_same_pack_whatever_its_tag;
+        // A language pack's id names its own language: the pack chosen in
+        // Settings for `de-DE` is the `de` one, and a tag of its language in
+        // any spelling names the same pack.
+        {
+            assert_eq!(language_pack_id("de-DE"), "so.tilo.language-pack.de");
+            assert_eq!(language_pack_id("de_DE"), "so.tilo.language-pack.de");
+            assert_eq!(language_pack_id("pt-BR"), "so.tilo.language-pack.pt");
+        }
+
+        phase the_catalogue_language_is_the_persons_not_the_machines;
+        // A listing's names and taglines read in the person's language, the same
+        // one answer the shell speaks, and the pack installed for it is that
+        // language's own — never the machine's locale, which only stands in when
+        // the person has chosen none.
+        {
+            let document = serde_json::json!({"appearance": {"language": "de-DE"}})
+                .as_object()
+                .cloned()
+                .unwrap_or_default();
+            let _settings = settings_store::scoped_source(Some(std::sync::Arc::new(
+                settings_store::HostDocument::new(document, |_| Ok(())),
+            )));
+            assert_eq!(preferred_locale(), "de-DE");
+            assert_eq!(
+                language_pack_id(&preferred_locale()),
+                "so.tilo.language-pack.de"
+            );
+        }
     }
 
     fn native_baseline_isa() -> &'static str {
@@ -954,295 +958,298 @@ mod tests {
         )
     }
 
-    #[test]
-    fn an_os_is_offered_only_the_builds_it_can_serve() {
-        let mut e = entry("so.tilo.settings", "Settings", vec!["System"]);
-        let mut newer = e.versions[0].clone();
-        newer.version = "3.0.0".into();
-        newer.tapp_mut().unwrap().target.interfaces = vec!["system@2".into()];
-        e.versions[0].tapp_mut().unwrap().target.interfaces = vec!["system@1".into()];
-        e.versions.push(newer);
-        let stable = tilo_app_package::version::ReleaseChannel::Stable;
-        let offered = |provided: Option<&registry_types::ProvidedInterfaces>| {
-            installable_versions_on(&e, stable, provided)
-                .map(|version| version.version.clone())
-                .collect::<Vec<_>>()
-        };
-        let old_os = registry_types::ProvidedInterfaces::new([("system", 1)], []);
-        let new_os = registry_types::ProvidedInterfaces::new([("system", 2)], []);
-        let elsewhere = registry_types::ProvidedInterfaces::new([("runtime", 1)], ["collab"]);
-        assert_eq!(offered(Some(&old_os)), ["2.0.0"]);
-        assert_eq!(
-            offered(Some(&new_os)),
-            ["3.0.0"],
-            "a build for an older version is not offered either"
-        );
-        assert!(offered(Some(&elsewhere)).is_empty());
-        assert_eq!(offered(None), ["2.0.0", "3.0.0"]);
-    }
+    tilo_test_env::scenario! {
+        fn the_catalogue_offers_only_what_this_os_can_install;
 
-    #[test]
-    fn an_app_whose_newest_build_is_behind_waits_for_its_developer() {
-        let mut e = entry("so.tilo.settings", "Settings", vec!["System"]);
-        e.versions[0].tapp_mut().unwrap().target.interfaces = vec!["system@1".into()];
-        let stable = tilo_app_package::version::ReleaseChannel::Stable;
-        let old_os = registry_types::ProvidedInterfaces::new([("system", 1)], []);
-        let new_os = registry_types::ProvidedInterfaces::new([("system", 2)], []);
-        let newer_os = registry_types::ProvidedInterfaces::new([("system", 0)], []);
-        assert!(
-            !awaiting_developer_on(&e, stable, Some(&old_os)),
-            "a build that fits is offered"
-        );
-        assert!(
-            awaiting_developer_on(&e, stable, Some(&new_os)),
-            "only the developer's next build can fit a newer system"
-        );
-        assert!(
-            !awaiting_developer_on(&e, stable, Some(&newer_os)),
-            "a build ahead of this system waits for the system, not the developer"
-        );
-        assert!(
-            !awaiting_developer_on(&e, stable, None),
-            "a host that declares no interfaces judges none"
-        );
-    }
-
-    #[test]
-    fn a_bot_entry_is_never_an_app_offer() {
-        let hash = "ab".repeat(32);
-        let mut bot = entry("so.tilo.bots.echo", "Echo", vec!["Bots"]);
-        bot.kind = registry_types::EntryKind::Bot;
-        bot.versions = vec![registry_types::RegistryVersion {
-            version: "1.0.0".into(),
-            released_at_unix: 1,
-            artifact: registry_types::VersionArtifact::Bot(registry_types::BotArtifact {
-                program_url: registry_types::bot_program_url("https://apps.tilo.so", &hash),
-                program_blake3_hex: hash,
-                program_size_bytes: 10,
-                requires: registry_types::BotRequirements::default(),
-            }),
-        }];
-        assert_eq!(
-            installable_versions(&bot, tilo_app_package::version::ReleaseChannel::Stable).count(),
-            0
-        );
-        assert!(entry_to_app(&verified(bot), "main").is_none());
-    }
-
-    #[test]
-    fn only_valid_signed_downloadable_entries_become_rows() {
+        phase an_os_is_offered_only_the_builds_it_can_serve;
         {
-            let v = verified(entry("so.tilo.sheets", "Sheets", vec!["Office"]));
-            let app = entry_to_app(&v, "main").expect("an offerable entry");
-            assert_eq!(app.package_id, "so.tilo.sheets");
-            assert_eq!(app.display_name, "Sheets");
-            assert_eq!(app.category.as_deref(), Some("Office"));
-            assert_eq!(app.version, "2.0.0");
-            assert_eq!(app.registry, "main");
-            assert_eq!(
-                app.download_url,
-                "https://apps.tilo.so/artifacts/so.tilo.sheets.tapp"
-            );
-            assert_eq!(app.trust, "publisher-signed");
-        }
-        {
-            let mut e = entry("so.tilo.sheets", "Sheets", vec![]);
-            e.name = "Totally Legit Banking".into();
-            let v = verified(e);
-            assert_eq!(v.trust, TrustLevel::Untrusted);
-            assert!(entry_to_app(&v, "main").is_none());
-        }
-        {
-            let mut e = entry("so.tilo.ghost", "Ghost", vec![]);
-            e.versions.clear();
-            sign_entry(&mut e, &ed25519_dalek::SigningKey::from_bytes(&[9u8; 32]));
-            assert!(entry_to_app(&verified(e), "main").is_none());
-
-            let mut blank = entry("so.tilo.blank", "Blank", vec![]);
-            blank.versions[0].tapp_mut().unwrap().tapp_url = "  ".into();
-            sign_entry(
-                &mut blank,
-                &ed25519_dalek::SigningKey::from_bytes(&[9u8; 32]),
-            );
-            assert!(entry_to_app(&verified(blank), "main").is_none());
-        }
-        {
-            let e = entry("so.tilo.hex-editor", "", vec![]);
-            assert!(e.validate().is_err());
-        }
-    }
-
-    #[test]
-    fn tilo_os_never_offers_an_android_build() {
-        let key = ed25519_dalek::SigningKey::from_bytes(&[9u8; 32]);
-        let mut e = entry("so.tilo.editor", "Editor", vec![]);
-        let mut android = e.versions[0].clone();
-        android.version = "9.0.0".into();
-        android.tapp_mut().unwrap().tapp_url =
-            "https://apps.tilo.so/artifacts/editor-android.tapp".into();
-        android.tapp_mut().unwrap().target = registry_types::RegistryTarget {
-            platform: registry_types::ANDROID_PLATFORM.into(),
-            architecture: std::env::consts::ARCH.into(),
-            isa: std::env::consts::ARCH.into(),
-            runtime: Some("tilo-runtime/2026.07".into()),
-            interfaces: Vec::new(),
-        };
-        assert!(!target_supported(android.tapp().unwrap()));
-        e.versions.push(android.clone());
-        sign_entry(&mut e, &key);
-        let app = entry_to_app(&verified(e), "main").expect("the tilo-os build is offered");
-        assert_eq!(app.version, "2.0.0");
-        assert_eq!(
-            app.download_url,
-            "https://apps.tilo.so/artifacts/so.tilo.editor.tapp"
-        );
-
-        let mut android_only = entry("so.tilo.editor", "Editor", vec![]);
-        android_only.versions = vec![android];
-        sign_entry(&mut android_only, &key);
-        assert!(entry_to_app(&verified(android_only), "main").is_none());
-    }
-
-    #[test]
-    fn the_catalogue_selects_per_channel_first_registry_and_uninstalled_offers() {
-        {
-            let mut e = entry("so.tilo.timeline", "Timeline", vec![]);
-            let older = RegistryVersion {
-                version: "1.0.0".into(),
-                released_at_unix: 100,
-                artifact: registry_types::VersionArtifact::Tapp(registry_types::TappArtifact {
-                    tapp_url: "https://apps.tilo.so/artifacts/timeline-1.tapp".into(),
-                    tapp_root_hash_hex: "11".repeat(32),
-                    tapp_size_bytes: 10,
-                    tapp_blake3_hex: "ef".repeat(32),
-                    target: registry_types::RegistryTarget {
-                        platform: registry_types::TILO_OS_PLATFORM.into(),
-                        architecture: std::env::consts::ARCH.into(),
-                        isa: native_baseline_isa().into(),
-                        runtime: None,
-                        interfaces: Vec::new(),
-                    },
-                }),
+            let mut e = entry("so.tilo.settings", "Settings", vec!["System"]);
+            let mut newer = e.versions[0].clone();
+            newer.version = "3.0.0".into();
+            newer.tapp_mut().unwrap().target.interfaces = vec!["system@2".into()];
+            e.versions[0].tapp_mut().unwrap().target.interfaces = vec!["system@1".into()];
+            e.versions.push(newer);
+            let stable = tilo_app_package::version::ReleaseChannel::Stable;
+            let offered = |provided: Option<&registry_types::ProvidedInterfaces>| {
+                installable_versions_on(&e, stable, provided)
+                    .map(|version| version.version.clone())
+                    .collect::<Vec<_>>()
             };
-            let mut newer = older.clone();
-            newer.version = "2027.01".into();
-            newer.released_at_unix = 200;
-            let tapp = newer.tapp_mut().unwrap();
-            tapp.tapp_url = "https://apps.tilo.so/artifacts/timeline-new.tapp".into();
-            tapp.tapp_root_hash_hex = "22".repeat(32);
-            tapp.tapp_size_bytes = 20;
-            tapp.tapp_blake3_hex = "fe".repeat(32);
-            e.versions = vec![older, newer];
-            sign_entry(&mut e, &ed25519_dalek::SigningKey::from_bytes(&[9u8; 32]));
+            let old_os = registry_types::ProvidedInterfaces::new([("system", 1)], []);
+            let new_os = registry_types::ProvidedInterfaces::new([("system", 2)], []);
+            let elsewhere = registry_types::ProvidedInterfaces::new([("runtime", 1)], ["collab"]);
+            assert_eq!(offered(Some(&old_os)), ["2.0.0"]);
+            assert_eq!(
+                offered(Some(&new_os)),
+                ["3.0.0"],
+                "a build for an older version is not offered either"
+            );
+            assert!(offered(Some(&elsewhere)).is_empty());
+            assert_eq!(offered(None), ["2.0.0", "3.0.0"]);
+        }
 
-            let app = entry_to_app(&verified(e), "main").expect("offerable latest release");
-            assert_eq!(app.version, "2027.01");
+        phase an_app_whose_newest_build_is_behind_waits_for_its_developer;
+        {
+            let mut e = entry("so.tilo.settings", "Settings", vec!["System"]);
+            e.versions[0].tapp_mut().unwrap().target.interfaces = vec!["system@1".into()];
+            let stable = tilo_app_package::version::ReleaseChannel::Stable;
+            let old_os = registry_types::ProvidedInterfaces::new([("system", 1)], []);
+            let new_os = registry_types::ProvidedInterfaces::new([("system", 2)], []);
+            let newer_os = registry_types::ProvidedInterfaces::new([("system", 0)], []);
+            assert!(
+                !awaiting_developer_on(&e, stable, Some(&old_os)),
+                "a build that fits is offered"
+            );
+            assert!(
+                awaiting_developer_on(&e, stable, Some(&new_os)),
+                "only the developer's next build can fit a newer system"
+            );
+            assert!(
+                !awaiting_developer_on(&e, stable, Some(&newer_os)),
+                "a build ahead of this system waits for the system, not the developer"
+            );
+            assert!(
+                !awaiting_developer_on(&e, stable, None),
+                "a host that declares no interfaces judges none"
+            );
+        }
+
+        phase a_bot_entry_is_never_an_app_offer;
+        {
+            let hash = "ab".repeat(32);
+            let mut bot = entry("so.tilo.bots.echo", "Echo", vec!["Bots"]);
+            bot.kind = registry_types::EntryKind::Bot;
+            bot.versions = vec![registry_types::RegistryVersion {
+                version: "1.0.0".into(),
+                released_at_unix: 1,
+                artifact: registry_types::VersionArtifact::Bot(registry_types::BotArtifact {
+                    program_url: registry_types::bot_program_url("https://apps.tilo.so", &hash),
+                    program_blake3_hex: hash,
+                    program_size_bytes: 10,
+                    requires: registry_types::BotRequirements::default(),
+                }),
+            }];
+            assert_eq!(
+                installable_versions(&bot, tilo_app_package::version::ReleaseChannel::Stable).count(),
+                0
+            );
+            assert!(entry_to_app(&verified(bot), "main").is_none());
+        }
+
+        phase only_valid_signed_downloadable_entries_become_rows;
+        {
+            {
+                let v = verified(entry("so.tilo.sheets", "Sheets", vec!["Office"]));
+                let app = entry_to_app(&v, "main").expect("an offerable entry");
+                assert_eq!(app.package_id, "so.tilo.sheets");
+                assert_eq!(app.display_name, "Sheets");
+                assert_eq!(app.category.as_deref(), Some("Office"));
+                assert_eq!(app.version, "2.0.0");
+                assert_eq!(app.registry, "main");
+                assert_eq!(
+                    app.download_url,
+                    "https://apps.tilo.so/artifacts/so.tilo.sheets.tapp"
+                );
+                assert_eq!(app.trust, "publisher-signed");
+            }
+            {
+                let mut e = entry("so.tilo.sheets", "Sheets", vec![]);
+                e.name = "Totally Legit Banking".into();
+                let v = verified(e);
+                assert_eq!(v.trust, TrustLevel::Untrusted);
+                assert!(entry_to_app(&v, "main").is_none());
+            }
+            {
+                let mut e = entry("so.tilo.ghost", "Ghost", vec![]);
+                e.versions.clear();
+                sign_entry(&mut e, &ed25519_dalek::SigningKey::from_bytes(&[9u8; 32]));
+                assert!(entry_to_app(&verified(e), "main").is_none());
+
+                let mut blank = entry("so.tilo.blank", "Blank", vec![]);
+                blank.versions[0].tapp_mut().unwrap().tapp_url = "  ".into();
+                sign_entry(
+                    &mut blank,
+                    &ed25519_dalek::SigningKey::from_bytes(&[9u8; 32]),
+                );
+                assert!(entry_to_app(&verified(blank), "main").is_none());
+            }
+            {
+                let e = entry("so.tilo.hex-editor", "", vec![]);
+                assert!(e.validate().is_err());
+            }
+        }
+
+        phase tilo_os_never_offers_an_android_build;
+        {
+            let key = ed25519_dalek::SigningKey::from_bytes(&[9u8; 32]);
+            let mut e = entry("so.tilo.editor", "Editor", vec![]);
+            let mut android = e.versions[0].clone();
+            android.version = "9.0.0".into();
+            android.tapp_mut().unwrap().tapp_url =
+                "https://apps.tilo.so/artifacts/editor-android.tapp".into();
+            android.tapp_mut().unwrap().target = registry_types::RegistryTarget {
+                platform: registry_types::ANDROID_PLATFORM.into(),
+                architecture: std::env::consts::ARCH.into(),
+                isa: std::env::consts::ARCH.into(),
+                runtime: Some("tilo-runtime/2026.07".into()),
+                interfaces: Vec::new(),
+            };
+            assert!(!target_supported(android.tapp().unwrap()));
+            e.versions.push(android.clone());
+            sign_entry(&mut e, &key);
+            let app = entry_to_app(&verified(e), "main").expect("the tilo-os build is offered");
+            assert_eq!(app.version, "2.0.0");
             assert_eq!(
                 app.download_url,
-                "https://apps.tilo.so/artifacts/timeline-new.tapp"
+                "https://apps.tilo.so/artifacts/so.tilo.editor.tapp"
             );
-            assert_eq!(app.tapp_size_bytes, 20);
+
+            let mut android_only = entry("so.tilo.editor", "Editor", vec![]);
+            android_only.versions = vec![android];
+            sign_entry(&mut android_only, &key);
+            assert!(entry_to_app(&verified(android_only), "main").is_none());
         }
+
+        phase the_catalogue_selects_per_channel_first_registry_and_uninstalled_offers;
         {
-            use tilo_app_package::version::ReleaseChannel;
-            let mut e = entry("so.tilo.channel-test", "Channel", vec![]);
-            let template = e.versions[0].clone();
-            e.versions = ["0.1.0", "0.1.1-dev.9+gffff", "0.1.1-dev.10+gaaaa"]
-                .into_iter()
-                .map(|version| RegistryVersion {
-                    version: version.into(),
-                    ..template.clone()
-                })
-                .collect();
-            sign_entry(&mut e, &ed25519_dalek::SigningKey::from_bytes(&[9u8; 32]));
-            let current = verified(e.clone());
-            assert_eq!(entry_to_app(&current, "main").unwrap().version, "0.1.0");
-            assert_eq!(
-                entry_to_app_for_channel(&current, "main", ReleaseChannel::Development)
-                    .unwrap()
-                    .version,
-                "0.1.1-dev.10+gaaaa"
-            );
-            e.versions.push(RegistryVersion {
-                version: "0.1.1".into(),
-                ..template
-            });
-            sign_entry(&mut e, &ed25519_dalek::SigningKey::from_bytes(&[9u8; 32]));
-            let promoted = verified(e);
-            for channel in [ReleaseChannel::Stable, ReleaseChannel::Development] {
+            {
+                let mut e = entry("so.tilo.timeline", "Timeline", vec![]);
+                let older = RegistryVersion {
+                    version: "1.0.0".into(),
+                    released_at_unix: 100,
+                    artifact: registry_types::VersionArtifact::Tapp(registry_types::TappArtifact {
+                        tapp_url: "https://apps.tilo.so/artifacts/timeline-1.tapp".into(),
+                        tapp_root_hash_hex: "11".repeat(32),
+                        tapp_size_bytes: 10,
+                        tapp_blake3_hex: "ef".repeat(32),
+                        target: registry_types::RegistryTarget {
+                            platform: registry_types::TILO_OS_PLATFORM.into(),
+                            architecture: std::env::consts::ARCH.into(),
+                            isa: native_baseline_isa().into(),
+                            runtime: None,
+                            interfaces: Vec::new(),
+                        },
+                    }),
+                };
+                let mut newer = older.clone();
+                newer.version = "2027.01".into();
+                newer.released_at_unix = 200;
+                let tapp = newer.tapp_mut().unwrap();
+                tapp.tapp_url = "https://apps.tilo.so/artifacts/timeline-new.tapp".into();
+                tapp.tapp_root_hash_hex = "22".repeat(32);
+                tapp.tapp_size_bytes = 20;
+                tapp.tapp_blake3_hex = "fe".repeat(32);
+                e.versions = vec![older, newer];
+                sign_entry(&mut e, &ed25519_dalek::SigningKey::from_bytes(&[9u8; 32]));
+
+                let app = entry_to_app(&verified(e), "main").expect("offerable latest release");
+                assert_eq!(app.version, "2027.01");
                 assert_eq!(
-                    entry_to_app_for_channel(&promoted, "main", channel)
+                    app.download_url,
+                    "https://apps.tilo.so/artifacts/timeline-new.tapp"
+                );
+                assert_eq!(app.tapp_size_bytes, 20);
+            }
+            {
+                use tilo_app_package::version::ReleaseChannel;
+                let mut e = entry("so.tilo.channel-test", "Channel", vec![]);
+                let template = e.versions[0].clone();
+                e.versions = ["0.1.0", "0.1.1-dev.9+gffff", "0.1.1-dev.10+gaaaa"]
+                    .into_iter()
+                    .map(|version| RegistryVersion {
+                        version: version.into(),
+                        ..template.clone()
+                    })
+                    .collect();
+                sign_entry(&mut e, &ed25519_dalek::SigningKey::from_bytes(&[9u8; 32]));
+                let current = verified(e.clone());
+                assert_eq!(entry_to_app(&current, "main").unwrap().version, "0.1.0");
+                assert_eq!(
+                    entry_to_app_for_channel(&current, "main", ReleaseChannel::Development)
                         .unwrap()
                         .version,
-                    "0.1.1"
+                    "0.1.1-dev.10+gaaaa"
+                );
+                e.versions.push(RegistryVersion {
+                    version: "0.1.1".into(),
+                    ..template
+                });
+                sign_entry(&mut e, &ed25519_dalek::SigningKey::from_bytes(&[9u8; 32]));
+                let promoted = verified(e);
+                for channel in [ReleaseChannel::Stable, ReleaseChannel::Development] {
+                    assert_eq!(
+                        entry_to_app_for_channel(&promoted, "main", channel)
+                            .unwrap()
+                            .version,
+                        "0.1.1"
+                    );
+                }
+            }
+            {
+                let a = entry_to_app(&verified(entry("so.tilo.a", "A", vec![])), "main").unwrap();
+                let b = entry_to_app(&verified(entry("so.tilo.b", "B", vec![])), "main").unwrap();
+                let out = dedupe_and_subtract(vec![a, b], &["so.tilo.a".to_string()]);
+                assert_eq!(out.len(), 1, "the installed one is gone: {out:?}");
+                assert_eq!(out[0].package_id, "so.tilo.b");
+            }
+            {
+                let first =
+                    entry_to_app(&verified(entry("so.tilo.a", "A", vec![])), "primary").unwrap();
+                let second =
+                    entry_to_app(&verified(entry("so.tilo.a", "A", vec![])), "mirror").unwrap();
+                let out = dedupe_and_subtract(vec![first, second], &[]);
+                assert_eq!(out.len(), 1);
+                assert_eq!(
+                    out[0].registry, "primary",
+                    "the user's registry ordering breaks the tie"
                 );
             }
         }
-        {
-            let a = entry_to_app(&verified(entry("so.tilo.a", "A", vec![])), "main").unwrap();
-            let b = entry_to_app(&verified(entry("so.tilo.b", "B", vec![])), "main").unwrap();
-            let out = dedupe_and_subtract(vec![a, b], &["so.tilo.a".to_string()]);
-            assert_eq!(out.len(), 1, "the installed one is gone: {out:?}");
-            assert_eq!(out[0].package_id, "so.tilo.b");
-        }
-        {
-            let first =
-                entry_to_app(&verified(entry("so.tilo.a", "A", vec![])), "primary").unwrap();
-            let second =
-                entry_to_app(&verified(entry("so.tilo.a", "A", vec![])), "mirror").unwrap();
-            let out = dedupe_and_subtract(vec![first, second], &[]);
-            assert_eq!(out.len(), 1);
-            assert_eq!(
-                out[0].registry, "primary",
-                "the user's registry ordering breaks the tie"
-            );
-        }
-    }
 
-    #[test]
-    fn json_contract_installed_versions_and_names_resolve_exactly() {
-        // The wire contract with the compositor, pinned by exact field name.
-        // A rename here without a matching change there would silently
-        // produce an empty catalogue rather than an error — both tests must be edited together.
+        phase json_contract_installed_versions_and_names_resolve_exactly;
         {
-            let listing = CatalogueListing {
-                apps: vec![CatalogueApp {
-                    package_id: "so.tilo.sheets".into(),
-                    display_name: "Sheets".into(),
-                    description: "a spreadsheet".into(),
-                    tagline: "Native Tilo OS app".into(),
-                    images: Vec::default(),
-                    supported_languages: vec!["en".into()],
-                    category: Some("Office".into()),
-                    version: "2.0.0".into(),
-                    registry: "main".into(),
-                    download_url: "https://x/y.tapp".into(),
-                    tapp_root_hash_hex: "ab".repeat(32),
-                    tapp_size_bytes: 10,
-                    tapp_blake3_hex: "ef".repeat(32),
-                    architecture: "x86_64".into(),
-                    isa: "x86_64-v3".into(),
-                    runtime: None,
-                    publisher_pubkey_hex: "cd".repeat(32),
-                    trust: "verified".into(),
-                }],
-                unreachable: vec![UnreachableRegistry {
-                    name: "mirror".into(),
-                    detail: "connection refused".into(),
-                }],
-            };
-            let json = serde_json::to_string(&listing).expect("encodes");
-            assert_eq!(
-                json,
-                r#"{"apps":[{"package_id":"so.tilo.sheets","display_name":"Sheets","description":"a spreadsheet","tagline":"Native Tilo OS app","images":[],"supported_languages":["en"],"category":"Office","version":"2.0.0","registry":"main","download_url":"https://x/y.tapp","tapp_root_hash_hex":"abababababababababababababababababababababababababababababababab","tapp_size_bytes":10,"tapp_blake3_hex":"efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef","architecture":"x86_64","isa":"x86_64-v3","runtime":null,"publisher_pubkey_hex":"cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd","trust":"verified"}],"unreachable":[{"name":"mirror","detail":"connection refused"}]}"#
-            );
-        }
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let path = dir.path().join("manifest.toml");
-            std::fs::write(
-                &path,
-                r#"
+            // The wire contract with the compositor, pinned by exact field name.
+            // A rename here without a matching change there would silently
+            // produce an empty catalogue rather than an error — both tests must be edited together.
+            {
+                let listing = CatalogueListing {
+                    apps: vec![CatalogueApp {
+                        package_id: "so.tilo.sheets".into(),
+                        display_name: "Sheets".into(),
+                        description: "a spreadsheet".into(),
+                        tagline: "Native Tilo OS app".into(),
+                        images: Vec::default(),
+                        supported_languages: vec!["en".into()],
+                        category: Some("Office".into()),
+                        version: "2.0.0".into(),
+                        registry: "main".into(),
+                        download_url: "https://x/y.tapp".into(),
+                        tapp_root_hash_hex: "ab".repeat(32),
+                        tapp_size_bytes: 10,
+                        tapp_blake3_hex: "ef".repeat(32),
+                        architecture: "x86_64".into(),
+                        isa: "x86_64-v3".into(),
+                        runtime: None,
+                        publisher_pubkey_hex: "cd".repeat(32),
+                        trust: "verified".into(),
+                    }],
+                    unreachable: vec![UnreachableRegistry {
+                        name: "mirror".into(),
+                        detail: "connection refused".into(),
+                    }],
+                };
+                let json = serde_json::to_string(&listing).expect("encodes");
+                assert_eq!(
+                    json,
+                    r#"{"apps":[{"package_id":"so.tilo.sheets","display_name":"Sheets","description":"a spreadsheet","tagline":"Native Tilo OS app","images":[],"supported_languages":["en"],"category":"Office","version":"2.0.0","registry":"main","download_url":"https://x/y.tapp","tapp_root_hash_hex":"abababababababababababababababababababababababababababababababab","tapp_size_bytes":10,"tapp_blake3_hex":"efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef","architecture":"x86_64","isa":"x86_64-v3","runtime":null,"publisher_pubkey_hex":"cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd","trust":"verified"}],"unreachable":[{"name":"mirror","detail":"connection refused"}]}"#
+                );
+            }
+            {
+                let dir = tempfile::tempdir().unwrap();
+                let path = dir.path().join("manifest.toml");
+                std::fs::write(
+                    &path,
+                    r#"
     [package]
     id = "so.tilo.browser"
     version = "1.2.3"
@@ -1262,29 +1269,30 @@ mod tests {
     [entrypoint]
     bin = "bin/browser"
     "#,
-            )
-            .unwrap();
-            assert_eq!(installed_manifest_version(&path).as_deref(), Some("1.2.3"));
-        }
-        {
-            let browser = entry_to_app(
-                &verified(entry("so.tilo.browser", "Tilo Browser", vec![])),
-                "main",
-            )
-            .unwrap();
-            let apps = vec![browser];
-            assert_eq!(
-                resolve_offer(&apps, "browser").unwrap().package_id,
-                "so.tilo.browser"
-            );
-            assert_eq!(
-                resolve_offer(&apps, "Tilo Browser").unwrap().package_id,
-                "so.tilo.browser"
-            );
-            assert!(
-                resolve_offer(&apps, "browse").is_err(),
-                "partial names must not guess"
-            );
+                )
+                .unwrap();
+                assert_eq!(installed_manifest_version(&path).as_deref(), Some("1.2.3"));
+            }
+            {
+                let browser = entry_to_app(
+                    &verified(entry("so.tilo.browser", "Tilo Browser", vec![])),
+                    "main",
+                )
+                .unwrap();
+                let apps = vec![browser];
+                assert_eq!(
+                    resolve_offer(&apps, "browser").unwrap().package_id,
+                    "so.tilo.browser"
+                );
+                assert_eq!(
+                    resolve_offer(&apps, "Tilo Browser").unwrap().package_id,
+                    "so.tilo.browser"
+                );
+                assert!(
+                    resolve_offer(&apps, "browse").is_err(),
+                    "partial names must not guess"
+                );
+            }
         }
     }
 
@@ -1296,33 +1304,37 @@ mod tests {
         app
     }
 
-    #[test]
-    fn first_open_prefers_a_version_on_an_installed_runtime() {
-        let r1 = "tilo-runtime/2026.07+native.11111111111111111111111111111111";
-        let r2 = "tilo-runtime/2026.07+native.22222222222222222222222222222222";
-        let offers = vec![
-            offer_on("0.1.3", Some(r2)),
-            offer_on("0.1.2", Some(r1)),
-            offer_on("0.1.1", Some(r1)),
-        ];
-        let installed = |runtime: &str| runtime == r1;
-        let chosen = prefer_installed_runtime(&offers, "0.1.3", installed).expect("a local fit");
-        assert_eq!(chosen.version, "0.1.2");
-        assert_eq!(chosen.runtime.as_deref(), Some(r1));
-        let chosen = prefer_installed_runtime(&offers, "0.1.1", installed).expect("a local fit");
-        assert_eq!(chosen.version, "0.1.1");
-        let fat = vec![offer_on("0.1.3", Some(r2)), offer_on("0.1.0", None)];
-        let chosen = prefer_installed_runtime(&fat, "0.1.3", |_| false).expect("needs no runtime");
-        assert_eq!(chosen.version, "0.1.0");
-    }
+    tilo_test_env::scenario! {
+        fn first_open_chooses_a_runnable_version;
 
-    #[test]
-    fn first_open_falls_back_to_newest_without_a_local_runtime() {
-        let r2 = "tilo-runtime/2026.07+native.22222222222222222222222222222222";
-        let r1 = "tilo-runtime/2026.07+native.11111111111111111111111111111111";
-        let offers = vec![offer_on("0.1.3", Some(r2)), offer_on("0.1.2", Some(r1))];
-        assert!(prefer_installed_runtime(&offers, "0.1.3", |_| false).is_none());
-        let fat = offer_on("0.1.3", None);
-        assert_eq!(first_open_offer(&fat), fat);
+        phase first_open_prefers_a_version_on_an_installed_runtime;
+        {
+            let r1 = "tilo-runtime/2026.07+native.11111111111111111111111111111111";
+            let r2 = "tilo-runtime/2026.07+native.22222222222222222222222222222222";
+            let offers = vec![
+                offer_on("0.1.3", Some(r2)),
+                offer_on("0.1.2", Some(r1)),
+                offer_on("0.1.1", Some(r1)),
+            ];
+            let installed = |runtime: &str| runtime == r1;
+            let chosen = prefer_installed_runtime(&offers, "0.1.3", installed).expect("a local fit");
+            assert_eq!(chosen.version, "0.1.2");
+            assert_eq!(chosen.runtime.as_deref(), Some(r1));
+            let chosen = prefer_installed_runtime(&offers, "0.1.1", installed).expect("a local fit");
+            assert_eq!(chosen.version, "0.1.1");
+            let fat = vec![offer_on("0.1.3", Some(r2)), offer_on("0.1.0", None)];
+            let chosen = prefer_installed_runtime(&fat, "0.1.3", |_| false).expect("needs no runtime");
+            assert_eq!(chosen.version, "0.1.0");
+        }
+
+        phase first_open_falls_back_to_newest_without_a_local_runtime;
+        {
+            let r2 = "tilo-runtime/2026.07+native.22222222222222222222222222222222";
+            let r1 = "tilo-runtime/2026.07+native.11111111111111111111111111111111";
+            let offers = vec![offer_on("0.1.3", Some(r2)), offer_on("0.1.2", Some(r1))];
+            assert!(prefer_installed_runtime(&offers, "0.1.3", |_| false).is_none());
+            let fat = offer_on("0.1.3", None);
+            assert_eq!(first_open_offer(&fat), fat);
+        }
     }
 }

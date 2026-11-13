@@ -42,91 +42,95 @@ fn write_tapp(dir: &Path, version: &str) -> String {
     path.display().to_string()
 }
 
-#[test]
-fn a_package_file_installs_by_the_app_hosts_rule() {
-    let home = tempfile::tempdir().unwrap();
-    let config = home.path().join("config");
-    let cache = home.path().join("cache");
-    let apps = home.path().join("apps");
-    let xdg_config = home.path().join("xdg-config");
-    for dir in [&config, &cache, &apps, &xdg_config] {
-        std::fs::create_dir_all(dir).unwrap();
+tilo_test_env::scenario! {
+    fn package_files_install_by_rule;
+
+    phase a_package_file_installs_by_the_app_hosts_rule;
+    {
+        let home = tempfile::tempdir().unwrap();
+        let config = home.path().join("config");
+        let cache = home.path().join("cache");
+        let apps = home.path().join("apps");
+        let xdg_config = home.path().join("xdg-config");
+        for dir in [&config, &cache, &apps, &xdg_config] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        let installer = tilo_install_bin();
+        let _env = scoped_env(&[
+            ("TILO_STORE_CONFIG_DIR", &config),
+            ("TILO_STORE_CACHE_DIR", &cache),
+            ("TILO_APPS_DATA_DIR", &apps),
+            ("XDG_CONFIG_HOME", &xdg_config),
+            ("TILO_INSTALL_BIN", &installer),
+        ]);
+        let first = write_tapp(home.path(), "1.4.0");
+        let second = write_tapp(home.path(), "1.5.0");
+        let publisher = hex::encode(test_publisher().public_key_bytes());
+
+        // Self-signed, nobody to ask: refused, naming the publisher.
+        let refused = app(&["install", &first]);
+        assert!(!refused.status.success(), "{}", text(&refused));
+        let said = text(&refused);
+        assert!(
+            said.contains("unverified publisher") && said.contains(&publisher),
+            "the refusal names the publisher as unverified: {said}"
+        );
+        assert!(said.contains("--yes"), "and says how to go ahead: {said}");
+        assert_eq!(app_cli::installed_version(ID).unwrap(), None);
+
+        let accepted = app(&["install", &first, "--yes"]);
+        assert!(accepted.status.success(), "{}", text(&accepted));
+        assert_eq!(
+            app_cli::installed_version(ID).unwrap().as_deref(),
+            Some("1.4.0")
+        );
+
+        let removed = app(&["remove", ID]);
+        assert!(removed.status.success(), "{}", text(&removed));
+        let expected = app(&["install", &first, "--require-publisher", &publisher]);
+        assert!(expected.status.success(), "{}", text(&expected));
+
+        // `update --from` takes the same rule, and the file must be this app.
+        let refused = app(&["update", "package-file-e2e", "--from", &second]);
+        assert!(!refused.status.success(), "{}", text(&refused));
+        assert_eq!(
+            app_cli::installed_version(ID).unwrap().as_deref(),
+            Some("1.4.0")
+        );
+        let updated = app(&["update", "package-file-e2e", "--from", &second, "--yes"]);
+        assert!(updated.status.success(), "{}", text(&updated));
+        assert_eq!(
+            app_cli::installed_version(ID).unwrap().as_deref(),
+            Some("1.5.0")
+        );
+
+        let reinstalled = app(&["install", &second, "--allow-self-signed"]);
+        assert!(reinstalled.status.success(), "{}", text(&reinstalled));
+
+        // A revoked publisher is refused, --yes or not.
+        let tilo = xdg_config.join("tilo");
+        std::fs::create_dir_all(&tilo).unwrap();
+        RevocationList {
+            revoked: vec![RevokedKey {
+                pubkey_hex: publisher,
+                reason: "test".into(),
+            }],
+        }
+        .save(&tilo.join("revoked-keys.toml"))
+        .unwrap();
+        let revoked = app(&["install", &first, "--yes"]);
+        assert!(!revoked.status.success(), "{}", text(&revoked));
+        assert!(text(&revoked).contains("revoked"), "{}", text(&revoked));
     }
-    let installer = tilo_install_bin();
-    let _env = scoped_env(&[
-        ("TILO_STORE_CONFIG_DIR", &config),
-        ("TILO_STORE_CACHE_DIR", &cache),
-        ("TILO_APPS_DATA_DIR", &apps),
-        ("XDG_CONFIG_HOME", &xdg_config),
-        ("TILO_INSTALL_BIN", &installer),
-    ]);
-    let first = write_tapp(home.path(), "1.4.0");
-    let second = write_tapp(home.path(), "1.5.0");
-    let publisher = hex::encode(test_publisher().public_key_bytes());
 
-    // Self-signed, nobody to ask: refused, naming the publisher.
-    let refused = app(&["install", &first]);
-    assert!(!refused.status.success(), "{}", text(&refused));
-    let said = text(&refused);
-    assert!(
-        said.contains("unverified publisher") && said.contains(&publisher),
-        "the refusal names the publisher as unverified: {said}"
-    );
-    assert!(said.contains("--yes"), "and says how to go ahead: {said}");
-    assert_eq!(app_cli::installed_version(ID).unwrap(), None);
-
-    let accepted = app(&["install", &first, "--yes"]);
-    assert!(accepted.status.success(), "{}", text(&accepted));
-    assert_eq!(
-        app_cli::installed_version(ID).unwrap().as_deref(),
-        Some("1.4.0")
-    );
-
-    let removed = app(&["remove", ID]);
-    assert!(removed.status.success(), "{}", text(&removed));
-    let expected = app(&["install", &first, "--require-publisher", &publisher]);
-    assert!(expected.status.success(), "{}", text(&expected));
-
-    // `update --from` takes the same rule, and the file must be this app.
-    let refused = app(&["update", "package-file-e2e", "--from", &second]);
-    assert!(!refused.status.success(), "{}", text(&refused));
-    assert_eq!(
-        app_cli::installed_version(ID).unwrap().as_deref(),
-        Some("1.4.0")
-    );
-    let updated = app(&["update", "package-file-e2e", "--from", &second, "--yes"]);
-    assert!(updated.status.success(), "{}", text(&updated));
-    assert_eq!(
-        app_cli::installed_version(ID).unwrap().as_deref(),
-        Some("1.5.0")
-    );
-
-    let reinstalled = app(&["install", &second, "--allow-self-signed"]);
-    assert!(reinstalled.status.success(), "{}", text(&reinstalled));
-
-    // A revoked publisher is refused, --yes or not.
-    let tilo = xdg_config.join("tilo");
-    std::fs::create_dir_all(&tilo).unwrap();
-    RevocationList {
-        revoked: vec![RevokedKey {
-            pubkey_hex: publisher,
-            reason: "test".into(),
-        }],
+    phase file_only_options_refuse_a_repository_app;
+    {
+        let refused = app(&["install", "sheets", "--yes"]);
+        assert!(!refused.status.success());
+        assert!(
+            text(&refused).contains("--yes is for a package file"),
+            "{}",
+            text(&refused)
+        );
     }
-    .save(&tilo.join("revoked-keys.toml"))
-    .unwrap();
-    let revoked = app(&["install", &first, "--yes"]);
-    assert!(!revoked.status.success(), "{}", text(&revoked));
-    assert!(text(&revoked).contains("revoked"), "{}", text(&revoked));
-}
-
-#[test]
-fn file_only_options_refuse_a_repository_app() {
-    let refused = app(&["install", "sheets", "--yes"]);
-    assert!(!refused.status.success());
-    assert!(
-        text(&refused).contains("--yes is for a package file"),
-        "{}",
-        text(&refused)
-    );
 }

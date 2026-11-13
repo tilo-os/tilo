@@ -695,111 +695,205 @@ mod tests {
         snapshot
     }
 
-    #[test]
-    fn an_authentic_expired_catalogue_is_told_apart_from_a_failed_one() {
-        let owner = SigningKey::from_bytes(&[8; 32]);
-        let owner_hex = hex::encode(owner.verifying_key().to_bytes());
-        let classified = |snapshot: &CatalogueSnapshot, now| {
-            classify_snapshot(snapshot, &owner_hex, now)
-                .map(|_| ())
-                .map_err(|error| expired_or(error, snapshot, &owner_hex, now))
-        };
-        let genuine = snapshot(&owner);
-        assert!(classified(&genuine, 150).is_ok());
-        assert!(matches!(
-            classified(&genuine, 250),
-            Err(RegistryError::Expired {
-                expired_at_unix: 200
-            })
-        ));
-        let stranger = SigningKey::from_bytes(&[9; 32]);
-        assert!(matches!(
-            classified(&snapshot(&stranger), 250),
-            Err(RegistryError::Proof(_))
-        ));
-    }
+    tilo_test_env::scenario! {
+        fn a_catalogue_is_accepted_only_while_it_verifies;
 
-    #[test]
-    fn a_catalogue_at_another_package_format_is_a_version_skew_not_a_failed_proof() {
-        let owner = SigningKey::from_bytes(&[8; 32]);
-        let owner_hex = hex::encode(owner.verifying_key().to_bytes());
-        let mut skewed = signed_snapshot(&owner, 1);
-        skewed.protocol = registry_types::PACKAGE_FORMAT_VERSION + 1;
-        let refused = classify_snapshot(&CatalogueSnapshot::Full(skewed), &owner_hex, 150)
+        phase an_authentic_expired_catalogue_is_told_apart_from_a_failed_one;
+        {
+            let owner = SigningKey::from_bytes(&[8; 32]);
+            let owner_hex = hex::encode(owner.verifying_key().to_bytes());
+            let classified = |snapshot: &CatalogueSnapshot, now| {
+                classify_snapshot(snapshot, &owner_hex, now)
+                    .map(|_| ())
+                    .map_err(|error| expired_or(error, snapshot, &owner_hex, now))
+            };
+            let genuine = snapshot(&owner);
+            assert!(classified(&genuine, 150).is_ok());
+            assert!(matches!(
+                classified(&genuine, 250),
+                Err(RegistryError::Expired {
+                    expired_at_unix: 200
+                })
+            ));
+            let stranger = SigningKey::from_bytes(&[9; 32]);
+            assert!(matches!(
+                classified(&snapshot(&stranger), 250),
+                Err(RegistryError::Proof(_))
+            ));
+        }
+
+        phase a_catalogue_at_another_package_format_is_a_version_skew_not_a_failed_proof;
+        {
+            let owner = SigningKey::from_bytes(&[8; 32]);
+            let owner_hex = hex::encode(owner.verifying_key().to_bytes());
+            let mut skewed = signed_snapshot(&owner, 1);
+            skewed.protocol = registry_types::PACKAGE_FORMAT_VERSION + 1;
+            let refused = classify_snapshot(&CatalogueSnapshot::Full(skewed), &owner_hex, 150)
+                .map(|_| ())
+                .unwrap_err();
+            assert!(
+                matches!(
+                    refused,
+                    RegistryError::Proof(registry_types::SnapshotError::Protocol { served })
+                        if served == registry_types::PACKAGE_FORMAT_VERSION + 1
+                ),
+                "{refused:?}"
+            );
+            let message = refused.to_string();
+            assert!(!message.contains("proof failed"), "{message}");
+            assert!(message.contains("package format"), "{message}");
+            let stranger = SigningKey::from_bytes(&[9; 32]);
+            let forged = classify_snapshot(
+                &CatalogueSnapshot::Full(signed_snapshot(&stranger, 1)),
+                &owner_hex,
+                150,
+            )
             .map(|_| ())
             .unwrap_err();
-        assert!(
-            matches!(
-                refused,
-                RegistryError::Proof(registry_types::SnapshotError::Protocol { served })
-                    if served == registry_types::PACKAGE_FORMAT_VERSION + 1
-            ),
-            "{refused:?}"
-        );
-        let message = refused.to_string();
-        assert!(!message.contains("proof failed"), "{message}");
-        assert!(message.contains("package format"), "{message}");
-        let stranger = SigningKey::from_bytes(&[9; 32]);
-        let forged = classify_snapshot(
-            &CatalogueSnapshot::Full(signed_snapshot(&stranger, 1)),
-            &owner_hex,
-            150,
-        )
-        .map(|_| ())
-        .unwrap_err();
-        assert!(
-            forged
-                .to_string()
-                .starts_with("registry snapshot proof failed")
-        );
-    }
+            assert!(
+                forged
+                    .to_string()
+                    .starts_with("registry snapshot proof failed")
+            );
+        }
 
-    #[test]
-    fn the_last_accepted_catalogue_is_read_back_only_while_it_still_verifies() {
-        let dir = tempfile::tempdir().unwrap();
-        let checkpoint = dir.path().join("registry-checkpoints/owner.json");
-        let owner = SigningKey::from_bytes(&[8; 32]);
-        let owner_hex = hex::encode(owner.verifying_key().to_bytes());
-        assert!(matches!(
-            last_verified_at(&checkpoint, &owner_hex, 150),
-            Err(RegistryError::NotStored)
-        ));
+        phase the_last_accepted_catalogue_is_read_back_only_while_it_still_verifies;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let checkpoint = dir.path().join("registry-checkpoints/owner.json");
+            let owner = SigningKey::from_bytes(&[8; 32]);
+            let owner_hex = hex::encode(owner.verifying_key().to_bytes());
+            assert!(matches!(
+                last_verified_at(&checkpoint, &owner_hex, 150),
+                Err(RegistryError::NotStored)
+            ));
 
-        let first = signed_snapshot(&owner, 1);
-        let first_bytes = serde_json::to_vec(&first).unwrap();
-        persist_checkpoint_at(&checkpoint, &CatalogueSnapshot::Full(first), &first_bytes).unwrap();
-        let entries = last_verified_at(&checkpoint, &owner_hex, 150).unwrap();
-        assert_eq!(entries[0].entry.name.resolve("en"), Some("Editor"));
-        assert_eq!(entries[0].trust, TrustLevel::PublisherSigned);
+            let first = signed_snapshot(&owner, 1);
+            let first_bytes = serde_json::to_vec(&first).unwrap();
+            persist_checkpoint_at(&checkpoint, &CatalogueSnapshot::Full(first), &first_bytes).unwrap();
+            let entries = last_verified_at(&checkpoint, &owner_hex, 150).unwrap();
+            assert_eq!(entries[0].entry.name.resolve("en"), Some("Editor"));
+            assert_eq!(entries[0].trust, TrustLevel::PublisherSigned);
 
-        assert!(matches!(
-            last_verified_at(&checkpoint, &owner_hex, 250),
-            Err(RegistryError::Proof(
-                registry_types::SnapshotError::Freshness
-            ))
-        ));
-        let stranger = hex::encode(SigningKey::from_bytes(&[9; 32]).verifying_key().to_bytes());
-        assert!(last_verified_at(&checkpoint, &stranger, 150).is_err());
+            assert!(matches!(
+                last_verified_at(&checkpoint, &owner_hex, 250),
+                Err(RegistryError::Proof(
+                    registry_types::SnapshotError::Freshness
+                ))
+            ));
+            let stranger = hex::encode(SigningKey::from_bytes(&[9; 32]).verifying_key().to_bytes());
+            assert!(last_verified_at(&checkpoint, &stranger, 150).is_err());
 
-        let second = signed_snapshot(&owner, 2);
-        let second_bytes = serde_json::to_vec(&second).unwrap();
-        persist_checkpoint_at(&checkpoint, &CatalogueSnapshot::Full(second), &second_bytes)
+            let second = signed_snapshot(&owner, 2);
+            let second_bytes = serde_json::to_vec(&second).unwrap();
+            persist_checkpoint_at(&checkpoint, &CatalogueSnapshot::Full(second), &second_bytes)
+                .unwrap();
+            last_verified_at(&checkpoint, &owner_hex, 150).unwrap();
+            std::fs::write(snapshot_path(&checkpoint), &first_bytes).unwrap();
+            assert!(matches!(
+                last_verified_at(&checkpoint, &owner_hex, 150),
+                Err(RegistryError::Rollback)
+            ));
+
+            let mut tampered = signed_snapshot(&owner, 2);
+            tampered.entries[0].name = "hijacked".into();
+            std::fs::write(
+                snapshot_path(&checkpoint),
+                serde_json::to_vec(&tampered).unwrap(),
+            )
             .unwrap();
-        last_verified_at(&checkpoint, &owner_hex, 150).unwrap();
-        std::fs::write(snapshot_path(&checkpoint), &first_bytes).unwrap();
-        assert!(matches!(
-            last_verified_at(&checkpoint, &owner_hex, 150),
-            Err(RegistryError::Rollback)
-        ));
+            assert!(last_verified_at(&checkpoint, &owner_hex, 150).is_err());
+        }
 
-        let mut tampered = signed_snapshot(&owner, 2);
-        tampered.entries[0].name = "hijacked".into();
-        std::fs::write(
-            snapshot_path(&checkpoint),
-            serde_json::to_vec(&tampered).unwrap(),
-        )
-        .unwrap();
-        assert!(last_verified_at(&checkpoint, &owner_hex, 150).is_err());
+        phase registry_client_accepts_only_authorized_monotonic_snapshots_from_safe_endpoints;
+        {
+            {
+                let owner = SigningKey::from_bytes(&[8; 32]);
+                let snapshot = snapshot(&owner);
+                let out = classify_snapshot(
+                    &snapshot,
+                    &hex::encode(owner.verifying_key().to_bytes()),
+                    150,
+                )
+                .unwrap();
+                assert_eq!(out[0].trust, TrustLevel::PublisherSigned);
+                assert!(out[0].trust.is_offerable());
+
+                assert!(classify_snapshot(&snapshot, &placeholder_owner_pubkey(), 150).is_err());
+                let CatalogueSnapshot::Full(mut tampered) = snapshot else {
+                    unreachable!("the fixture is a full snapshot")
+                };
+                tampered.entries[0].name = "hijacked".into();
+                let tampered = CatalogueSnapshot::Full(tampered);
+                assert!(
+                    classify_snapshot(
+                        &tampered,
+                        &hex::encode(owner.verifying_key().to_bytes()),
+                        150
+                    )
+                    .is_err()
+                );
+            }
+            {
+                let old = SnapshotCheckpoint {
+                    sequence: 8,
+                    snapshot_hash_hex: "aa".repeat(32),
+                };
+                assert_eq!(
+                    validate_checkpoint(&old, 7, &"bb".repeat(32))
+                        .unwrap_err()
+                        .behind_accepted(),
+                    Some(BehindAccepted {
+                        held_sequence: 8,
+                        served_sequence: 7
+                    }),
+                    "an older sequence is a registry behind this device, named as such"
+                );
+                assert!(matches!(
+                    validate_checkpoint(&old, 8, &"bb".repeat(32)),
+                    Err(RegistryError::Rollback)
+                ));
+                validate_checkpoint(&old, 8, &"aa".repeat(32)).unwrap();
+                validate_checkpoint(&old, 9, &"bb".repeat(32)).unwrap();
+            }
+            {
+                for base_url in [
+                    "http://registry.test",
+                    "https://placeholder:placeholder@registry.test",
+                    "https://registry.test/base?next=https://evil.test",
+                ] {
+                    let registry = RegistryConfig {
+                        name: "test".into(),
+                        base_url: base_url.into(),
+                        owner_pubkey_hex: "11".repeat(32),
+                        enabled: true,
+                        channel: tilo_app_package::version::ReleaseChannel::Stable,
+                    };
+                    if base_url.contains('?') {
+                        assert_eq!(
+                            registry_url(&registry, "entries").unwrap().as_str(),
+                            "https://registry.test/base/entries"
+                        );
+                    } else {
+                        assert!(matches!(
+                            registry_url(&registry, "entries"),
+                            Err(RegistryError::UnsafeEndpoint)
+                        ));
+                    }
+                }
+                let loopback = RegistryConfig {
+                    name: "dev".into(),
+                    base_url: "http://127.0.0.1:8080".into(),
+                    owner_pubkey_hex: "11".repeat(32),
+                    enabled: true,
+                    channel: tilo_app_package::version::ReleaseChannel::Stable,
+                };
+                assert_eq!(
+                    registry_url(&loopback, "entries").unwrap().as_str(),
+                    "http://127.0.0.1:8080/entries"
+                );
+            }
+        }
     }
 
     /// The registry checkpoint is the device's anti-rollback record, kept by
@@ -860,95 +954,5 @@ mod tests {
             "the confined half did not run"
         );
         assert_eq!(std::fs::read_dir(&config).unwrap().count(), 0);
-    }
-
-    #[test]
-    fn registry_client_accepts_only_authorized_monotonic_snapshots_from_safe_endpoints() {
-        {
-            let owner = SigningKey::from_bytes(&[8; 32]);
-            let snapshot = snapshot(&owner);
-            let out = classify_snapshot(
-                &snapshot,
-                &hex::encode(owner.verifying_key().to_bytes()),
-                150,
-            )
-            .unwrap();
-            assert_eq!(out[0].trust, TrustLevel::PublisherSigned);
-            assert!(out[0].trust.is_offerable());
-
-            assert!(classify_snapshot(&snapshot, &placeholder_owner_pubkey(), 150).is_err());
-            let CatalogueSnapshot::Full(mut tampered) = snapshot else {
-                unreachable!("the fixture is a full snapshot")
-            };
-            tampered.entries[0].name = "hijacked".into();
-            let tampered = CatalogueSnapshot::Full(tampered);
-            assert!(
-                classify_snapshot(
-                    &tampered,
-                    &hex::encode(owner.verifying_key().to_bytes()),
-                    150
-                )
-                .is_err()
-            );
-        }
-        {
-            let old = SnapshotCheckpoint {
-                sequence: 8,
-                snapshot_hash_hex: "aa".repeat(32),
-            };
-            assert_eq!(
-                validate_checkpoint(&old, 7, &"bb".repeat(32))
-                    .unwrap_err()
-                    .behind_accepted(),
-                Some(BehindAccepted {
-                    held_sequence: 8,
-                    served_sequence: 7
-                }),
-                "an older sequence is a registry behind this device, named as such"
-            );
-            assert!(matches!(
-                validate_checkpoint(&old, 8, &"bb".repeat(32)),
-                Err(RegistryError::Rollback)
-            ));
-            validate_checkpoint(&old, 8, &"aa".repeat(32)).unwrap();
-            validate_checkpoint(&old, 9, &"bb".repeat(32)).unwrap();
-        }
-        {
-            for base_url in [
-                "http://registry.test",
-                "https://placeholder:placeholder@registry.test",
-                "https://registry.test/base?next=https://evil.test",
-            ] {
-                let registry = RegistryConfig {
-                    name: "test".into(),
-                    base_url: base_url.into(),
-                    owner_pubkey_hex: "11".repeat(32),
-                    enabled: true,
-                    channel: tilo_app_package::version::ReleaseChannel::Stable,
-                };
-                if base_url.contains('?') {
-                    assert_eq!(
-                        registry_url(&registry, "entries").unwrap().as_str(),
-                        "https://registry.test/base/entries"
-                    );
-                } else {
-                    assert!(matches!(
-                        registry_url(&registry, "entries"),
-                        Err(RegistryError::UnsafeEndpoint)
-                    ));
-                }
-            }
-            let loopback = RegistryConfig {
-                name: "dev".into(),
-                base_url: "http://127.0.0.1:8080".into(),
-                owner_pubkey_hex: "11".repeat(32),
-                enabled: true,
-                channel: tilo_app_package::version::ReleaseChannel::Stable,
-            };
-            assert_eq!(
-                registry_url(&loopback, "entries").unwrap().as_str(),
-                "http://127.0.0.1:8080/entries"
-            );
-        }
     }
 }
