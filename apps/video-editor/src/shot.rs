@@ -57,6 +57,10 @@ mod tests {
         fingerprint(capture(scenario, size).harness().scene())
     }
 
+    /// The viewport of a plain `--shots`.
+    const FULL: (u32, u32) = (1280, 800);
+
+    /// The captures built three times over.
     const DETERMINISM_SCENARIOS: [Option<&str>; 5] = [
         None,
         Some("markers"),
@@ -65,63 +69,214 @@ mod tests {
         Some("effects"),
     ];
 
-    /// `part` of `parts` near-equal slices of `all`: each capture is a whole app
-    /// build, so the list is spread over tests the runner runs in parallel. The
-    /// last slice takes the remainder, so every entry lands in exactly one part.
-    fn part_of<T>(all: &[T], part: usize, parts: usize) -> &[T] {
-        let per = all.len().div_ceil(parts);
-        let start = (per * part).min(all.len());
-        let end = if part + 1 == parts {
-            all.len()
-        } else {
-            (start + per).min(all.len())
-        };
-        &all[start..end]
+    /// One capture the launcher can be asked for, and what must hold of it. Every row but the
+    /// plain capture itself must compose a scene the plain capture does not: a scenario that
+    /// staged nothing visible, a viewport that changed nothing and a fingerprint that returned a
+    /// constant would each show the plain scene again.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    struct Row {
+        scenario: Option<&'static str>,
+        viewport: (u32, u32),
+        /// How many independent builds must compose the same scene. Three rather than two:
+        /// collections arrive in map-key order and ids are minted per run, and two random
+        /// orders agree often enough that a single pair proves little.
+        builds: usize,
+        /// Whether the capture opens a project. The staged capture is of the scenario, not of
+        /// a blank editor; only the blank capture shows one.
+        opens_a_project: bool,
     }
 
-    /// Three builds rather than two: collections arrive in map-key order and ids
-    /// are minted per run, and two random orders agree often enough that a single
-    /// pair proves little.
-    fn assert_scenarios_compose_the_same_scene_every_time(part: usize) {
-        for &scenario in part_of(&DETERMINISM_SCENARIOS, part, 3) {
-            let first = print_of(scenario, (1280, 800));
-            for again in 1..3 {
+    impl Row {
+        fn name(self) -> String {
+            let (width, height) = self.viewport;
+            format!(
+                "{} at {width}x{height}",
+                self.scenario.unwrap_or("the plain capture")
+            )
+        }
+
+        /// One independent build of the capture: its scene's fingerprint, once the build is
+        /// seen to hold what the row says it opens.
+        fn build(self) -> u64 {
+            let name = self.name();
+            let mut app = capture(self.scenario, self.viewport);
+            let print = fingerprint(app.harness().scene());
+            let project = app.state();
+            if self.opens_a_project {
+                assert!(!project.clips.is_empty(), "{name} shows no timeline");
+                assert!(
+                    app.versions()
+                        .iter()
+                        .any(|version| version.context.as_ref().is_some_and(|c| c.what.is_some())),
+                    "{name}: the load is an attributed version"
+                );
+            } else {
+                assert!(project.clips.is_empty(), "{name} opened a project");
+            }
+            print
+        }
+    }
+
+    /// The plain capture, every scenario the launcher lists, the plain capture at another
+    /// size and the blank capture. The thrice-built rows come first, the plain capture at
+    /// their head, so that dealing the rows out gives each part one of them.
+    fn rows() -> Vec<Row> {
+        let row = |scenario: Option<&'static str>| Row {
+            scenario,
+            viewport: FULL,
+            builds: if DETERMINISM_SCENARIOS.contains(&scenario) {
+                3
+            } else {
+                1
+            },
+            opens_a_project: true,
+        };
+        let mut rows = vec![row(None)];
+        rows.extend(
+            crate::app::ShotScenario::ALL_NAMES
+                .iter()
+                .map(|&name| row(Some(name))),
+        );
+        rows.push(Row {
+            viewport: (900, 700),
+            builds: 1,
+            ..row(None)
+        });
+        rows.push(Row {
+            opens_a_project: false,
+            ..row(Some(crate::app::EMPTY_CAPTURE))
+        });
+        // Stable, so each group keeps the order it was listed in.
+        rows.sort_by_key(|row| std::cmp::Reverse(row.builds));
+        rows
+    }
+
+    /// How many tests the rows are dealt over: each capture is a whole app build, so the
+    /// table is spread over tests the runner runs in parallel.
+    const PARTS: usize = 5;
+
+    /// Every `PARTS`th row from the `part`th on, so every row lands in exactly one part.
+    fn part_of(rows: &[Row], part: usize) -> Vec<Row> {
+        rows.iter().copied().skip(part).step_by(PARTS).collect()
+    }
+
+    fn assert_part(part: usize) {
+        let rows = rows();
+        let plain_row = *rows.first().expect("the table has rows");
+        assert_eq!(
+            (plain_row.scenario, plain_row.viewport),
+            (None, FULL),
+            "the table starts at the plain capture"
+        );
+        let plain = plain_row.build();
+        for row in part_of(&rows, part) {
+            let name = row.name();
+            let first = if row == plain_row {
+                plain
+            } else {
+                let print = row.build();
+                assert_ne!(
+                    print, plain,
+                    "{name} composed the plain capture's scene: it staged nothing visible"
+                );
+                print
+            };
+            for again in 1..row.builds {
                 assert_eq!(
                     first,
-                    print_of(scenario, (1280, 800)),
-                    "{scenario:?} composed a different scene on build {again}",
+                    row.build(),
+                    "{name} composed a different scene on build {again}"
                 );
             }
         }
     }
 
     #[test]
-    fn a_scenario_composes_the_same_scene_every_time_part_1() {
-        assert_scenarios_compose_the_same_scene_every_time(0);
+    fn every_capture_stages_and_composes_one_scene_part_1() {
+        assert_part(0);
     }
 
     #[test]
-    fn a_scenario_composes_the_same_scene_every_time_part_2() {
-        assert_scenarios_compose_the_same_scene_every_time(1);
+    fn every_capture_stages_and_composes_one_scene_part_2() {
+        assert_part(1);
     }
 
     #[test]
-    fn a_scenario_composes_the_same_scene_every_time_part_3() {
-        assert_scenarios_compose_the_same_scene_every_time(2);
+    fn every_capture_stages_and_composes_one_scene_part_3() {
+        assert_part(2);
     }
 
-    /// No scenario is dropped from either check by the split.
+    #[test]
+    fn every_capture_stages_and_composes_one_scene_part_4() {
+        assert_part(3);
+    }
+
+    #[test]
+    fn every_capture_stages_and_composes_one_scene_part_5() {
+        assert_part(4);
+    }
+
+    /// No row is dropped by the split, and the table holds every capture it is meant to.
     #[test]
     fn the_scenario_parts_cover_every_scenario_once() {
-        fn joined<T: Clone>(all: &[T], parts: usize) -> Vec<T> {
-            (0..parts)
-                .flat_map(|part| part_of(all, part, parts).to_vec())
-                .collect()
+        let rows = rows();
+        let dealt: Vec<Row> = (0..PARTS).flat_map(|part| part_of(&rows, part)).collect();
+        assert_eq!(dealt.len(), rows.len(), "the parts hold every row once");
+        for row in &rows {
+            assert_eq!(
+                dealt.iter().filter(|other| *other == row).count(),
+                1,
+                "{} is checked by exactly one part",
+                row.name()
+            );
         }
-        assert_eq!(joined(&DETERMINISM_SCENARIOS, 3), DETERMINISM_SCENARIOS);
+        let full = |scenario: Option<&str>| -> Vec<Row> {
+            rows.iter()
+                .copied()
+                .filter(|row| row.scenario == scenario && row.viewport == FULL)
+                .collect()
+        };
+        for &name in crate::app::ShotScenario::ALL_NAMES {
+            assert_eq!(full(Some(name)).len(), 1, "{name} has one row");
+        }
+        for scenario in DETERMINISM_SCENARIOS {
+            let found = full(scenario);
+            assert_eq!(found.len(), 1, "{scenario:?} has one row");
+            assert!(
+                found.iter().all(|row| row.builds == 3),
+                "{scenario:?} is built three times"
+            );
+        }
         assert_eq!(
-            joined(crate::app::ShotScenario::ALL_NAMES, STAGING_PARTS),
-            crate::app::ShotScenario::ALL_NAMES,
+            rows.iter().filter(|row| row.builds == 3).count(),
+            DETERMINISM_SCENARIOS.len(),
+            "nothing else claims to be"
+        );
+        for part in 0..PARTS {
+            assert_eq!(
+                part_of(&rows, part)
+                    .iter()
+                    .filter(|row| row.builds == 3)
+                    .count(),
+                1,
+                "part {part} builds one capture three times"
+            );
+        }
+        let blank: Vec<Row> = rows
+            .iter()
+            .copied()
+            .filter(|row| !row.opens_a_project)
+            .collect();
+        assert_eq!(blank.len(), 1, "only the blank capture opens no project");
+        assert!(
+            blank
+                .iter()
+                .all(|row| row.scenario == Some(crate::app::EMPTY_CAPTURE))
+        );
+        assert!(
+            rows.iter()
+                .any(|row| row.scenario.is_none() && row.viewport == (900, 700)),
+            "the plain capture at another size is a row"
         );
     }
 
@@ -139,61 +294,6 @@ mod tests {
             0,
             "two runs of one scenario drew different pictures",
         );
-    }
-
-    /// The check above would pass on a function that returned a constant.
-    #[test]
-    fn the_fingerprint_separates_scenes_that_differ() {
-        let live = print_of(None, (1280, 800));
-        assert_ne!(
-            live,
-            print_of(Some("markers"), (1280, 800)),
-            "two different scenarios are two different scenes",
-        );
-        assert_ne!(
-            live,
-            print_of(None, (900, 700)),
-            "the same scenario at another size is a different scene",
-        );
-        assert_ne!(
-            live,
-            print_of(Some(crate::app::EMPTY_CAPTURE), (1280, 800)),
-            "the blank capture is not the demo project",
-        );
-    }
-
-    /// How many tests the launcher's scenario list is spread over.
-    const STAGING_PARTS: usize = 4;
-
-    fn assert_scenarios_stage_through_the_host(part: usize) {
-        let plain = print_of(None, (1280, 800));
-        for name in part_of(crate::app::ShotScenario::ALL_NAMES, part, STAGING_PARTS) {
-            assert_ne!(
-                print_of(Some(name), (1280, 800)),
-                plain,
-                "{name} staged nothing visible"
-            );
-        }
-    }
-
-    #[test]
-    fn every_scenario_stages_through_the_host_part_1() {
-        assert_scenarios_stage_through_the_host(0);
-    }
-
-    #[test]
-    fn every_scenario_stages_through_the_host_part_2() {
-        assert_scenarios_stage_through_the_host(1);
-    }
-
-    #[test]
-    fn every_scenario_stages_through_the_host_part_3() {
-        assert_scenarios_stage_through_the_host(2);
-    }
-
-    #[test]
-    fn every_scenario_stages_through_the_host_part_4() {
-        assert_scenarios_stage_through_the_host(3);
     }
 
     /// `--narrow` reveals the collapsed bin, which only collapses narrow.
@@ -225,18 +325,5 @@ mod tests {
         let project = app.state();
         assert_eq!(project.media.len(), 1, "the launched file was imported");
         assert_eq!(project.clips.len(), 1, "and placed on the timeline");
-    }
-
-    /// The staged capture is of the scenario, not of a blank editor.
-    #[test]
-    fn a_capture_loads_the_demo_project_through_the_host() {
-        let app = capture(Some("split"), (1280, 800));
-        assert!(!app.state().clips.is_empty());
-        assert!(
-            app.versions()
-                .iter()
-                .any(|version| version.context.as_ref().is_some_and(|c| c.what.is_some())),
-            "the load is an attributed version"
-        );
     }
 }
