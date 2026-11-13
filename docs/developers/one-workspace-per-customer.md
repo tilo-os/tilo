@@ -114,6 +114,47 @@ const letterBytes = await review.files.download(String(letter));
 console.log("the letter is", letterBytes.length, "bytes; a person opens it at", await review.link("word-processor"));
 ```
 
+```curl example=workspace-per-customer
+api=$TILO_API_URL/v1
+auth="Authorization: Bearer $TILO_API_KEY"                 # your backend's key
+json="Content-Type: application/json"
+
+for applicant in "Jane Doe" "Amir Haddad"; do               # one per customer, no limit
+  workspace=$(curl -sS --fail-with-body "$api/workspaces" -H "$auth" -H "$json" \
+    -d "{\"name\": \"Applicant: $applicant\"}" | jq -r .id)
+
+  # Their files: the bytes go up once, then an app takes the reference.
+  printf 'a passport scan, in bytes' | curl -sS --fail-with-body "$api/workspaces/$workspace/uploads" \
+    -H "$auth" -H "Content-Type: application/octet-stream" --data-binary @- > /dev/null
+
+  # A key for this applicant's agent: it reaches this workspace alone.
+  key=$(curl -sS --fail-with-body "$api/keys" -H "$auth" -H "$json" \
+    -d "{\"workspace\": \"$workspace\", \"name\": \"$applicant's agent\"}")
+  echo "$applicant: MCP at $(jq -r .mcp_url <<<"$key")"
+  [[ $applicant == "Jane Doe" ]] && jane=$workspace jane_key=$(jq -r .token <<<"$key")
+done
+
+# The customer's agent, with only its own key: it writes the cover letter, as one run.
+agent="Authorization: Bearer $jane_key"
+run=(-H "Tilo-Run: cover-letter" -H "Tilo-Run-Title: Write the cover letter")
+word=$api/workspaces/$jane/resources/word-processor/actions
+for text in "Dear Visa Officer," "My passport and application form are enclosed."; do
+  curl -sS --fail-with-body "$word/append-paragraph" -H "$agent" -H "$json" "${run[@]}" \
+    -d "{\"text\": \"$text\"}" > /dev/null
+done
+letter=$(curl -sS --fail-with-body "$word/export-content" -H "$agent" -H "$json" "${run[@]}" \
+  -d '{"format": "docx"}' | jq -r '[.. | strings | select(startswith("tilo.content:"))][0]')
+
+# The same key cannot reach anyone else, or make a workspace of its own.
+curl -sS "$api/workspaces" -H "$agent" -H "$json" -d '{"name": "Applicant: someone else"}' \
+  | jq -r '"the agent cannot make workspaces: \(.error.code)"'
+
+# Later, for review: your backend takes the letter out and hands a person the link to it.
+bytes=$(curl -sS --fail-with-body "$api/workspaces/$jane/content/$letter" -H "$auth" | wc -c)
+link=$(curl -sS --fail-with-body "$api/workspaces/$jane/links?path=word-processor" -H "$auth" | jq -r .link)
+echo "the letter is $bytes bytes; a person opens it at $link"
+```
+
 Hand the agent its MCP URL and token. Any MCP client connects with them. For example, with Claude Code:
 
 ```sh

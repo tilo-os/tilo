@@ -50,6 +50,24 @@ for (const row of notes.rows) {
 }
 ```
 
+```curl example=find-by-listing
+api=$TILO_API_URL/v1
+auth="Authorization: Bearer $TILO_API_KEY"
+workspace=$(curl -sS --fail-with-body "$api/workspaces" -H "$auth" -H "Content-Type: application/json" \
+  -d '{"name": "Looking for things"}' | jq -r .id)
+resources=$api/workspaces/$workspace/resources
+
+for page in '{"title": "Visa checklist", "markdown": "- passport\n"}' \
+            '{"title": "Packing list", "markdown": "- socks\n"}'; do
+  curl -sS --fail-with-body "$resources/notes/actions/create-page" -H "$auth" \
+    -H "Content-Type: application/json" -d "$page" > /dev/null
+done
+
+curl -sS --fail-with-body "$resources?path=notes" -H "$auth" \
+  | jq -r '.rows[] | select((.label // .name) | ascii_downcase | contains("visa"))
+           | "\(.path) | \(.label) | \(.kind)"'
+```
+
 ## Search by words
 
 `find` is Tilo's one search: the same ranking the desktop's search box uses, over what each app publishes

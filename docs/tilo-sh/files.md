@@ -73,6 +73,30 @@ const bytes = await workspace.files.download(String(letter));
 console.log("the letter is", bytes.length, "bytes, a Word file:", bytes[0] === 0x50 && bytes[1] === 0x4b);
 ```
 
+```curl example=upload-and-export
+api=$TILO_API_URL/v1
+auth="Authorization: Bearer $TILO_API_KEY"
+workspace=$(curl -sS --fail-with-body "$api/workspaces" -H "$auth" -H "Content-Type: application/json" \
+  -d '{"name": "Files and letters"}' | jq -r .id)
+base=$api/workspaces/$workspace
+
+# Bytes go up once, and the reference is what the apps take.
+reference=$(printf 'passport scan, in bytes' | curl -sS --fail-with-body "$base/uploads" -H "$auth" \
+  -H "Content-Type: application/octet-stream" --data-binary @- | jq -r .content)
+echo "uploaded: $reference"
+
+# An action that makes a file answers a reference to it.
+curl -sS --fail-with-body "$base/resources/word-processor/actions/append-paragraph" -H "$auth" \
+  -H "Content-Type: application/json" -d '{"text": "Dear Visa Officer,"}' > /dev/null
+letter=$(curl -sS --fail-with-body "$base/resources/word-processor/actions/export-content" -H "$auth" \
+  -H "Content-Type: application/json" -d '{"format": "docx"}' \
+  | jq -r '[.. | strings | select(startswith("tilo.content:"))][0]')
+
+# And the bytes come back out.
+curl -sS --fail-with-body "$base/content/$letter" -H "$auth" -o letter.docx
+echo "the letter is $(wc -c < letter.docx) bytes, a Word file: $([[ $(head -c 2 letter.docx) == PK ]] && echo yes)"
+```
+
 ## From a shell
 
 ```sh

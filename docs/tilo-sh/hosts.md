@@ -47,6 +47,18 @@ const created = await tilo.workspaces.create("A workspace of my own");
 console.log("created:", created.name, "on", created.host);
 ```
 
+```curl example=workspaces-and-hosts
+api=$TILO_API_URL/v1
+auth="Authorization: Bearer $TILO_API_KEY"
+
+curl -sS --fail-with-body "$api/workspaces" -H "$auth" \
+  | jq -r '.workspaces[] | "\(.name)  on \(.host)  as \(.role // "owner")"'
+
+created=$(curl -sS --fail-with-body "$api/workspaces" -H "$auth" -H "Idempotency-Key: my-own" \
+  -H "Content-Type: application/json" -d '{"name": "A workspace of my own"}')
+echo "created: $(jq -r .name <<<"$created") on $(jq -r .host <<<"$created")"
+```
+
 The rows you list carry the role you hold in each workspace: `owner` for one of your own, else the role
 you were invited with.
 
