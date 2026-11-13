@@ -45,6 +45,16 @@ const SEEDED_PROJECT: &str = "Move flat";
 /// person, and the workspace it founds on its throwaway identity, its channel keys in the file
 /// store `home` keeps. Answers the session once it holds that workspace.
 fn session(home: &mut tilo_test_env::TestHome, root: &std::path::Path) -> (Session, String) {
+    session_launching(home, root, std::sync::Arc::default())
+}
+
+/// [`session`], recording the apps it started in `launches`: a test that speaks as an app's
+/// process says there that it started it.
+fn session_launching(
+    home: &mut tilo_test_env::TestHome,
+    root: &std::path::Path,
+    launches: std::sync::Arc<tilo_session::Launches>,
+) -> (Session, String) {
     let identity = home.config().join("tilo/identity");
     std::fs::create_dir_all(&identity).expect("the identity's directory");
     let system = home.root().join("system");
@@ -68,6 +78,7 @@ fn session(home: &mut tilo_test_env::TestHome, root: &std::path::Path) -> (Sessi
         action_plane: ActionPlane::At(root.join("plane.sock")),
         agent_door: Some(root.join("agent.sock")),
         admit_repl: vec![program],
+        launches,
         ..Options::default()
     });
     let workspace = wait_for(&mut session, "the workspace the desk shows", |session| {
@@ -247,4 +258,184 @@ fn program_find(bytes: &[u8], words: &str) -> String {
         )
         .expect("the find runs");
     answer.to_string()
+}
+
+/// The Tasks app's package, as installed.
+fn tasks_bundle() -> Bundle {
+    let catalog = package_store::Catalog::at(crate::common::app_store(), None);
+    let installed = app_catalogue::apps::read(&catalog).expect("the installed apps");
+    let tasks = installed
+        .iter()
+        .find(|app| app.package_id == TASKS)
+        .expect("Tasks is installed");
+    Bundle::read(&tasks.payload_root).expect("Tasks' payload")
+}
+
+/// The change a window of the Tasks app makes of the record `bytes` when the person checks off the
+/// task `task` (its published id): the app's own `check`, planned with its package over the record
+/// as the window holds it and committed to it as the window's step, past the record it was made on.
+fn checked_in_the_window(bytes: &[u8], task: &str, person: &str) -> Vec<u8> {
+    struct Held(Vec<u8>);
+    impl tilolang_tilo::task_records::RecordSource for Held {
+        fn record(&self, _app: &str, _record: &str) -> Result<Option<Vec<u8>>, String> {
+            Ok(Some(self.0.clone()))
+        }
+    }
+    let reads = tilolang_tilo::task_records::RecordReads::new(
+        &[tasks_bundle()],
+        std::collections::BTreeMap::new(),
+        Some(person),
+        std::rc::Rc::new(Held(bytes.to_vec())),
+    );
+    let planned = reads
+        .plan(
+            &json!({"app": TASKS, "resource": task, "action": "check", "arguments": {"done": true}}),
+            &tilolang_tilo::publish::Caller {
+                actor: person.to_owned(),
+                agent: false,
+                on_behalf_of: None,
+            },
+        )
+        .expect("the window plans the check");
+    let action: tilolang_tilo::action::DynAction =
+        serde_json::from_value(planned).expect("a planned action");
+    let mut record = tilo_resource::Doc::load(bytes).expect("the record is a document");
+    let before = record.get_heads();
+    let host = Host::new(&record, Principal::new(person), || None).expect("a host");
+    host.load_bundle(&tasks_bundle())
+        .expect("Tasks' package loads");
+    let encoded = action.encode().expect("the action encodes");
+    let context = ui::tilo_actions::ActionContext::for_resource(
+        action.resources().first().copied().unwrap_or("room"),
+        &action.kind,
+        &action.kind,
+    )
+    .with_invoker(ui::tilo_actions::ActionInvoker::actor(person.to_owned()));
+    host.with_schemas(|| {
+        ui::tilo_actions::apply_local_with_context(
+            &mut record,
+            &action,
+            encoded,
+            Some(person.as_bytes()),
+            context,
+        )
+    })
+    .expect("the check applies to the record");
+    record.commit();
+    record.save_after(&before)
+}
+
+/// A task checked off in the Tasks app's window is the workspace's change: the window's write, on
+/// its route through the session's plane, reaches the workspace's record of the app, and the
+/// person's REPL at the session's door reads it there.
+#[test]
+fn a_task_checked_in_the_apps_window_is_read_at_the_door() {
+    let _settled = ui::motion::testing::settled();
+    let root = crate::common::private_home();
+    let mut home = tilo_test_env::TestHome::new().expect("a home");
+    let launches = std::sync::Arc::new(tilo_session::Launches::default());
+    let (mut session, workspace) =
+        session_launching(&mut home, root.path(), std::sync::Arc::clone(&launches));
+    tasks_record(
+        &mut session,
+        &workspace,
+        "the seeded tasks in the workspace's record of Tasks",
+        |bytes| program_find(bytes, "haircut").contains("Book a haircut"),
+    );
+    let task = session
+        .resources()
+        .iter()
+        .flat_map(|resource| resource.children.clone())
+        .find(|resource| resource.label == "Book a haircut")
+        .map(|resource| resource.id.as_str().to_owned())
+        .expect("the seeded task is published");
+
+    // The person at this device, as the app's window names them: by their root key.
+    let paths = tilo_identity_host::provisioning::collaboration_identity_paths();
+    let cert = tilo_user_identity::persist::read_device_cert(&paths.device_cert)
+        .expect("this device's certificate");
+    let person = hex::encode(cert.user_public_key);
+    // The app's process is this test's: the session admits its connection as the launch it
+    // recorded.
+    launches.started(std::process::id(), TASKS, &workspace, true);
+    let socket = root.path().join("plane.sock");
+    let workspace_id = uuid::Uuid::parse_str(&workspace).expect("a workspace id");
+    let done = std::sync::atomic::AtomicBool::new(false);
+    let mut repl = Repl::connect(&root.path().join("agent.sock"));
+    std::thread::scope(|scope| {
+        // The window's own path to its workspace: its collaboration connection and its identity,
+        // as the launcher hands an app both, and the manager a tilolang instance joins its record
+        // with ([`collaboration::CollaborationManager::join_instance`]), which seals and sends
+        // what the window committed.
+        let window = scope.spawn(|| -> Result<(), String> {
+            let mut plane =
+                std::os::unix::net::UnixStream::connect(&socket).map_err(|e| e.to_string())?;
+            launcher::services::write_collab_handoff(&mut plane, TASKS, &workspace)
+                .map_err(|e| e.to_string())?;
+            let mut identity =
+                std::os::unix::net::UnixStream::connect(launcher::services::identity_socket())
+                    .map_err(|e| e.to_string())?;
+            launcher::services::write_identity_handshake(&mut identity, TASKS, &workspace)
+                .map_err(|e| e.to_string())?;
+            let manager = collaboration::CollaborationManager::join_instance(
+                &collaboration::record::RecordKind::new(tilolang_tilo::RECORD_KIND),
+                std::os::fd::OwnedFd::from(plane),
+                std::os::fd::AsFd::as_fd(&identity),
+                collaboration::RouteSpec::app(TASKS.to_owned(), workspace_id),
+                Some(person.clone()),
+            )
+            .map_err(|error| format!("the window joins: {error:?}"))?
+            .finish_join()
+            .map_err(|error| format!("the window's record is joined: {error:?}"))?;
+            // The window opens its record as an instance does: the workspace's committed copy.
+            let documents: std::rc::Rc<dyn durable_store::DurableStore> =
+                std::rc::Rc::new(durable_store::MemoryStore::default());
+            let mut record = tilolang_tilo::instance::record::InstanceRecord::open(
+                manager,
+                &documents,
+                person.clone(),
+            )
+            .map_err(|error| format!("the window opens its record: {error}"))?;
+            // The person checks the task off there: the change the window's record sends on.
+            let change = checked_in_the_window(&record.doc().clone().save(), &task, &person);
+            let mut unsent = Some(change);
+            let mut why = String::new();
+            while !done.load(std::sync::atomic::Ordering::Acquire) {
+                let _ = record.manager_mut().poll();
+                if let Some(change) = unsent.take() {
+                    let request =
+                        collaboration::CollabRequest::document_incremental(change.clone());
+                    if let Err(error) = record.manager_mut().try_send(request) {
+                        why = error.to_string();
+                        unsent = Some(change);
+                    }
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            match unsent {
+                Some(_) => Err(format!("the window's change was never sent: {why}")),
+                None => Ok(()),
+            }
+        });
+        repl.opened(&mut session);
+        let mut seen = String::new();
+        let read = crate::common::reached(&mut session, |session| {
+            if window.is_finished() {
+                return true;
+            }
+            let (found, failed) = repl.run(
+                session,
+                "find(tasks.Task).filter(t -> t.title == \"Book a haircut\")",
+            );
+            seen = found;
+            !failed && seen.contains("done: true")
+        });
+        done.store(true, std::sync::atomic::Ordering::Release);
+        let window = window.join().expect("the window's thread");
+        window.unwrap_or_else(|why| panic!("{why}"));
+        assert!(
+            read,
+            "the REPL reads the task the window checked off: {seen}"
+        );
+    });
 }

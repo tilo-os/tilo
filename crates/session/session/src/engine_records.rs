@@ -450,6 +450,7 @@ impl Inner {
         }
         document.synced = Some(heads_of(&bytes));
         document.revision = Some(revision);
+        tracing::debug!(%workspace, %app, %record, first, "a kept record took in the workspace's copy");
     }
 
     /// Write what the services changed in the documents kept in the workspaces into the engine,
