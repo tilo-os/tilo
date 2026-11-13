@@ -67,13 +67,15 @@ fn fresh_lock_path() -> (tempfile::TempDir, std::path::PathBuf) {
     (temp, path)
 }
 
-#[test]
-#[allow(
-    clippy::disallowed_methods,
-    reason = "demonstrates the raw flock behavior the guard exists to prevent"
-)]
-fn the_guard_releases_its_lock_even_while_a_child_inherits_the_descriptor() {
-    // Phase: closing without unlock leaves the lock with an inheriting child.
+tilo_test_env::scenario! {
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "demonstrates the raw flock behavior the guard exists to prevent"
+    )]
+    fn the_guard_releases_its_lock_even_while_a_child_inherits_the_descriptor;
+
+    phase closing_without_unlock_leaves_the_lock_with_an_inheriting_child;
+    // closing without unlock leaves the lock with an inheriting child.
     // The failure the guard exists to prevent: the child's inherited copy of
     // the description keeps a merely closed lock alive.
     {
@@ -88,7 +90,8 @@ fn the_guard_releases_its_lock_even_while_a_child_inherits_the_descriptor() {
         drop(FileLock::try_open(&path, LockMode::Exclusive).unwrap());
     }
 
-    // Phase: dropping the guard releases the lock while a child holds the
+    phase dropping_the_guard_releases_the_lock_while_a_child_holds_the_inherited_fd;
+    // dropping the guard releases the lock while a child holds the
     // inherited fd.
     {
         let (_temp, path) = fresh_lock_path();
@@ -104,7 +107,8 @@ fn the_guard_releases_its_lock_even_while_a_child_inherits_the_descriptor() {
         finish(child);
     }
 
-    // Phase: explicit unlock also releases an inherited lock.
+    phase explicit_unlock_also_releases_an_inherited_lock;
+    // explicit unlock also releases an inherited lock.
     {
         let (_temp, path) = fresh_lock_path();
         let guard = FileLock::open(&path, LockMode::Shared).unwrap();
@@ -115,7 +119,8 @@ fn the_guard_releases_its_lock_even_while_a_child_inherits_the_descriptor() {
         finish(child);
     }
 
-    // Phase: the lock descriptor is close-on-exec.
+    phase the_lock_descriptor_is_close_on_exec;
+    // the lock descriptor is close-on-exec.
     {
         let (_temp, path) = fresh_lock_path();
         let file = File::from(
@@ -140,9 +145,11 @@ fn the_guard_releases_its_lock_even_while_a_child_inherits_the_descriptor() {
     }
 }
 
-#[test]
-fn peers_are_admitted_by_mode_and_by_the_current_holders() {
-    // Phase: try variants fail fast under contention.
+tilo_test_env::scenario! {
+    fn peers_are_admitted_by_mode_and_by_the_current_holders;
+
+    phase try_variants_fail_fast_under_contention;
+    // try variants fail fast under contention.
     {
         let (_temp, path) = fresh_lock_path();
         // The holder keeps its lock until the end of the phase: a try
@@ -152,7 +159,8 @@ fn peers_are_admitted_by_mode_and_by_the_current_holders() {
         assert!(busy(FileLock::try_shared(open_lock_file(&path).unwrap())));
     }
 
-    // Phase: shared holders coexist and exclude an exclusive one.
+    phase shared_holders_coexist_and_exclude_an_exclusive_one;
+    // shared holders coexist and exclude an exclusive one.
     {
         let (_temp, path) = fresh_lock_path();
         let first = FileLock::open(&path, LockMode::Shared).unwrap();
@@ -168,7 +176,8 @@ fn peers_are_admitted_by_mode_and_by_the_current_holders() {
         drop(FileLock::try_open(&path, LockMode::Shared).unwrap());
     }
 
-    // Phase: a blocking lock is granted once the holder drops.
+    phase a_blocking_lock_is_granted_once_the_holder_drops;
+    // a blocking lock is granted once the holder drops.
     {
         let (_temp, path) = fresh_lock_path();
         let held = FileLock::open(&path, LockMode::Shared).unwrap();
@@ -183,7 +192,8 @@ fn peers_are_admitted_by_mode_and_by_the_current_holders() {
         assert_eq!(waiter.join().unwrap(), LockMode::Exclusive);
     }
 
-    // Phase: conversion changes what peers may hold.
+    phase conversion_changes_what_peers_may_hold;
+    // conversion changes what peers may hold.
     {
         let (_temp, path) = fresh_lock_path();
         let guard = FileLock::open(&path, LockMode::Shared).unwrap();
@@ -201,69 +211,74 @@ fn peers_are_admitted_by_mode_and_by_the_current_holders() {
     }
 }
 
-#[test]
-fn an_exclusive_holder_records_its_pid_for_diagnostics() {
-    let (_temp, path) = fresh_lock_path();
-    assert_eq!(owner_pid(&path), None);
-    let shared = FileLock::open(&path, LockMode::Shared).unwrap();
-    assert!(shared.record_owner().is_err());
-    drop(shared);
-    std::fs::write(&path, "a much longer stale record").unwrap();
-    let guard = FileLock::open(&path, LockMode::Exclusive).unwrap();
-    guard.record_owner().unwrap();
-    assert_eq!(owner_pid(&path), Some(std::process::id()));
-}
+tilo_test_env::scenario! {
+    /// What a held `FileLock` records, hands on and follows.
+    fn a_lock_names_its_owner_survives_a_transfer_and_follows_its_name;
 
-#[test]
-fn inherited_file_transfer_preserves_parent_ownership_without_leaking_descriptor() {
-    let (_directory, path) = fresh_lock_path();
-    let parent = FileLock::exclusive(open_lock_file(&path).unwrap()).unwrap();
-    let inherited = FileLock::try_exclusive(parent.file().try_clone().unwrap()).unwrap();
-    let file = inherited.into_file_preserving_lock();
-    assert!(busy(FileLock::try_exclusive(
-        open_lock_file(&path).unwrap()
-    )));
-    drop(file);
-    assert!(busy(FileLock::try_exclusive(
-        open_lock_file(&path).unwrap()
-    )));
-    drop(parent);
-    assert!(FileLock::try_exclusive(open_lock_file(&path).unwrap()).is_ok());
-}
-
-#[test]
-fn open_current_follows_a_replaced_name() {
-    let (_directory, path) = fresh_lock_path();
-    // An exclusive holder retires the lock file while a peer waits on it.
-    let retiring = FileLock::open_current(&path, LockMode::Exclusive).unwrap();
-    let (tid, waiter) = {
-        let path = path.clone();
-        let (sender, tid) = std::sync::mpsc::channel();
-        let waiter = std::thread::spawn(move || {
-            sender
-                .send(tilo_test_env::idle::current_thread_id().ok())
-                .unwrap();
-            FileLock::open_current(&path, LockMode::Shared).unwrap()
-        });
-        (tilo_test_env::recv("the waiter's thread id", &tid), waiter)
-    };
-    // The waiter has opened the old file once it sleeps on its lock. Only
-    // Linux shows that; elsewhere the waiter may open the new file instead.
-    if let Some(tid) = tid {
-        tilo_test_env::wait_until("the waiter to block on the old file", || {
-            std::fs::read_to_string(format!("/proc/self/task/{tid}/stat")).is_ok_and(|stat| {
-                stat.rsplit_once(") ")
-                    .is_some_and(|(_, rest)| rest.starts_with('S'))
-            })
-        });
+    phase an_exclusive_holder_records_its_pid_for_diagnostics;
+    {
+        let (_temp, path) = fresh_lock_path();
+        assert_eq!(owner_pid(&path), None);
+        let shared = FileLock::open(&path, LockMode::Shared).unwrap();
+        assert!(shared.record_owner().is_err());
+        drop(shared);
+        std::fs::write(&path, "a much longer stale record").unwrap();
+        let guard = FileLock::open(&path, LockMode::Exclusive).unwrap();
+        guard.record_owner().unwrap();
+        assert_eq!(owner_pid(&path), Some(std::process::id()));
     }
-    std::fs::remove_file(&path).unwrap();
-    drop(retiring);
-    let shared = waiter.join().unwrap();
-    // The waiter holds the file now at the name, not the removed one, so a
-    // later exclusive taker contends with it.
-    assert!(path.exists());
-    assert!(busy(FileLock::try_open_current(&path, LockMode::Exclusive)));
-    drop(shared);
-    assert!(FileLock::try_open_current(&path, LockMode::Exclusive).is_ok());
+
+    phase inherited_file_transfer_preserves_parent_ownership_without_leaking_descriptor;
+    {
+        let (_directory, path) = fresh_lock_path();
+        let parent = FileLock::exclusive(open_lock_file(&path).unwrap()).unwrap();
+        let inherited = FileLock::try_exclusive(parent.file().try_clone().unwrap()).unwrap();
+        let file = inherited.into_file_preserving_lock();
+        assert!(busy(FileLock::try_exclusive(
+            open_lock_file(&path).unwrap()
+        )));
+        drop(file);
+        assert!(busy(FileLock::try_exclusive(
+            open_lock_file(&path).unwrap()
+        )));
+        drop(parent);
+        assert!(FileLock::try_exclusive(open_lock_file(&path).unwrap()).is_ok());
+    }
+
+    phase open_current_follows_a_replaced_name;
+    {
+        let (_directory, path) = fresh_lock_path();
+        // An exclusive holder retires the lock file while a peer waits on it.
+        let retiring = FileLock::open_current(&path, LockMode::Exclusive).unwrap();
+        let (tid, waiter) = {
+            let path = path.clone();
+            let (sender, tid) = std::sync::mpsc::channel();
+            let waiter = std::thread::spawn(move || {
+                sender
+                    .send(tilo_test_env::idle::current_thread_id().ok())
+                    .unwrap();
+                FileLock::open_current(&path, LockMode::Shared).unwrap()
+            });
+            (tilo_test_env::recv("the waiter's thread id", &tid), waiter)
+        };
+        // The waiter has opened the old file once it sleeps on its lock. Only
+        // Linux shows that; elsewhere the waiter may open the new file instead.
+        if let Some(tid) = tid {
+            tilo_test_env::wait_until("the waiter to block on the old file", || {
+                std::fs::read_to_string(format!("/proc/self/task/{tid}/stat")).is_ok_and(|stat| {
+                    stat.rsplit_once(") ")
+                        .is_some_and(|(_, rest)| rest.starts_with('S'))
+                })
+            });
+        }
+        std::fs::remove_file(&path).unwrap();
+        drop(retiring);
+        let shared = waiter.join().unwrap();
+        // The waiter holds the file now at the name, not the removed one, so a
+        // later exclusive taker contends with it.
+        assert!(path.exists());
+        assert!(busy(FileLock::try_open_current(&path, LockMode::Exclusive)));
+        drop(shared);
+        assert!(FileLock::try_open_current(&path, LockMode::Exclusive).is_ok());
+    }
 }
