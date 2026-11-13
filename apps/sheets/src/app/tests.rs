@@ -23,8 +23,14 @@ pub(crate) fn new_doc() -> AutoCommit {
     ui::tilo_resource::Replica::<Workbook>::new().doc().clone()
 }
 
+/// The sample workbook, as a document of the caller's own. Its recorded edits take a quarter of
+/// a second to build and apply in a test build, and most tests here start several cases from
+/// it: the thread builds it once and each call copies it. Nothing writes to the kept document.
 pub(crate) fn sample_doc() -> AutoCommit {
-    crate::sample::replica().doc().clone()
+    thread_local! {
+        static SAMPLE: AutoCommit = crate::sample::replica().doc().clone();
+    }
+    SAMPLE.with(AutoCommit::clone)
 }
 
 pub(crate) fn doc_workbook(doc: &AutoCommit) -> Workbook {
