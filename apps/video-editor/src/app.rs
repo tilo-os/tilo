@@ -540,10 +540,6 @@ enum NumField {
 }
 
 impl NumField {
-    #[expect(
-        clippy::match_same_arms,
-        reason = "one message per field, in declaration order; a shared word is not a shared field"
-    )]
     fn message(self) -> &'static str {
         match self {
             NumField::Opacity => "video-editor-field-opacity",

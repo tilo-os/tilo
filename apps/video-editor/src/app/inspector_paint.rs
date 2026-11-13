@@ -1687,6 +1687,58 @@ impl VideoEditorApp {
         );
     }
 
+    /// A clip's placement in one line for its folded header — its scale, its
+    /// tilt, and whether it was cropped, moved or keyed — or `None` when it
+    /// sits where it was placed.
+    ///
+    /// The geometry is the one the clip is *playing*, not the constants under
+    /// it: a keyframe supersedes the constant for every other reader, so a
+    /// folded header reading `transform.scale_x` reported 1.00× beside a
+    /// canvas that was pushing in.
+    fn transform_summary(&self, clip: &Clip) -> Option<String> {
+        let g = self.geometry_at_playhead(clip);
+        let animated = Self::transform_is_animated(clip);
+        if clip.transform.is_identity() && !g.is_placed() && !animated {
+            return None;
+        }
+        let mut parts = Vec::new();
+        if (g.scale_x - 1.0).abs() > 1e-6 || (g.scale_y - 1.0).abs() > 1e-6 {
+            parts.push(format!("{:.2}×", g.scale_x));
+        }
+        if g.rotation.abs() > 1e-6 {
+            parts.push(format!("{:.0}°", g.rotation));
+        }
+        if clip.transform.is_cropped() {
+            parts.push(crate::resource::CATALOG.t("video-editor-summary-cropped"));
+        }
+        if animated {
+            parts.push(crate::resource::CATALOG.t("video-editor-summary-animated"));
+        }
+        if parts.is_empty() {
+            parts.push(crate::resource::CATALOG.t("video-editor-summary-moved"));
+        }
+        Some(parts.join(", "))
+    }
+
+    /// What a clip's key is removing, for its folded header. A key that is
+    /// switched on but keying nothing still has to say so: "on" and "removing
+    /// something" are different states, and a fold that reported neither would
+    /// hide both. The tolerance is read at the playhead, because it is
+    /// animatable.
+    fn key_summary(&self, clip: &Clip) -> String {
+        let tolerance = clip.param_at(Param::KeyTolerance, self.playhead);
+        if tolerance <= 1e-6 {
+            return crate::resource::CATALOG.t("video-editor-summary-key-nothing");
+        }
+        crate::resource::CATALOG.t_args(
+            "video-editor-summary-keyed",
+            &[(
+                "percent",
+                ui::i18n::ArgValue::Text(format!("{:.0}", tolerance * 100.0)),
+            )],
+        )
+    }
+
     /// What a folded section reports about itself, or `None` when everything
     /// inside it is at its default and there is nothing to report.
     #[allow(
@@ -1701,34 +1753,7 @@ impl VideoEditorApp {
     ) -> Option<String> {
         match section {
             Section::Curves => curve_summary(clip, self.playhead),
-            Section::Transform => {
-                // The geometry the clip is *playing*, not the constants under
-                // it: a keyframe supersedes the constant for every other
-                // reader, so a folded header reading `transform.scale_x`
-                // reported 1.00× beside a canvas that was pushing in.
-                let g = self.geometry_at_playhead(clip);
-                let animated = Self::transform_is_animated(clip);
-                if clip.transform.is_identity() && !g.is_placed() && !animated {
-                    return None;
-                }
-                let mut parts = Vec::new();
-                if (g.scale_x - 1.0).abs() > 1e-6 || (g.scale_y - 1.0).abs() > 1e-6 {
-                    parts.push(format!("{:.2}×", g.scale_x));
-                }
-                if g.rotation.abs() > 1e-6 {
-                    parts.push(format!("{:.0}°", g.rotation));
-                }
-                if clip.transform.is_cropped() {
-                    parts.push(crate::resource::CATALOG.t("video-editor-summary-cropped"));
-                }
-                if animated {
-                    parts.push(crate::resource::CATALOG.t("video-editor-summary-animated"));
-                }
-                if parts.is_empty() {
-                    parts.push(crate::resource::CATALOG.t("video-editor-summary-moved"));
-                }
-                Some(parts.join(", "))
-            }
+            Section::Transform => self.transform_summary(clip),
             Section::Speed => (!clip.speed.is_normal()).then(|| clip.speed.label()),
             // The lane's fader, and whether it has been caught clipping. The
             // second is the part that must survive a fold: hiding the warning
@@ -1754,20 +1779,7 @@ impl VideoEditorApp {
             // say so: "on" and "removing something" are different states,
             // and a fold that reported neither would hide both. The tolerance
             // is read at the playhead, because it is animatable.
-            Section::Key => clip.key.enabled.then(|| {
-                let tolerance = clip.param_at(Param::KeyTolerance, self.playhead);
-                if tolerance <= 1e-6 {
-                    crate::resource::CATALOG.t("video-editor-summary-key-nothing")
-                } else {
-                    crate::resource::CATALOG.t_args(
-                        "video-editor-summary-keyed",
-                        &[(
-                            "percent",
-                            ui::i18n::ArgValue::Text(format!("{:.0}", tolerance * 100.0)),
-                        )],
-                    )
-                }
-            }),
+            Section::Key => clip.key.enabled.then(|| self.key_summary(clip)),
             Section::Mask => clip.mask.is_active().then(|| {
                 let shape = crate::resource::CATALOG.t(clip.mask.shape.message());
                 if clip.mask.invert {

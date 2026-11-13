@@ -102,14 +102,14 @@ impl std::fmt::Display for ProbeError {
         let words = match self {
             ProbeError::Io(e) => crate::resource::CATALOG.t_args(
                 "video-editor-probe-unreadable",
-                &[("error", ui::i18n::ArgValue::Text(e.to_string()))],
+                &[("error", ui::i18n::ArgValue::Text(e.clone()))],
             ),
             ProbeError::Empty => crate::resource::CATALOG.t("video-editor-probe-empty"),
             ProbeError::NotMedia { detected } => crate::resource::CATALOG.t_args(
                 "video-editor-probe-not-media",
                 &[(
                     "detected",
-                    ui::i18n::ArgValue::Text(crate::resource::CATALOG.t(*detected)),
+                    ui::i18n::ArgValue::Text(crate::resource::CATALOG.t(detected)),
                 )],
             ),
             ProbeError::Unrecognised => {

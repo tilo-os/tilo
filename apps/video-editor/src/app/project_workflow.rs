@@ -135,16 +135,16 @@ impl VideoEditorApp {
             return Notice::ok(named);
         }
         let absent = missing.len();
-        let names: Vec<&str> = missing.iter().take(3).map(|(n, _)| n.as_str()).collect();
-        let listed = names.join(", ");
-        let tail = if absent > names.len() {
+        let sources: Vec<&str> = missing.iter().take(3).map(|(n, _)| n.as_str()).collect();
+        let listed = sources.join(", ");
+        let tail = if absent > sources.len() {
             crate::resource::CATALOG.t_args(
                 "video-editor-import-more",
                 &[
                     ("why", ui::i18n::ArgValue::Text(listed)),
                     (
                         "hidden",
-                        ui::i18n::ArgValue::Number((absent - names.len()) as f64),
+                        ui::i18n::ArgValue::Number((absent - sources.len()) as f64),
                     ),
                 ],
             )

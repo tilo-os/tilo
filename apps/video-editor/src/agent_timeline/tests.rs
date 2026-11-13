@@ -176,7 +176,7 @@ fn a_sealed_reference_imports_the_content_it_opens() {
         format!("tilo.content:{reference}"),
         "the source names the reference that opens it"
     );
-    assert_eq!(app.content().read(&reference), Some(bytes.clone()));
+    assert_eq!(app.content().read(&reference), Some(bytes));
 
     // The reference alone names it, as a plan that carried the content gives
     // it, and answers the source already in the bin.

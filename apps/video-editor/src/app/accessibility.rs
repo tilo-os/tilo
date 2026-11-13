@@ -433,7 +433,7 @@ impl VideoEditorApp {
                 let name = if *action == TransportAction::PlayPause && self.is_moving() {
                     crate::resource::CATALOG.t("video-editor-pause")
                 } else {
-                    crate::resource::CATALOG.t(*message)
+                    crate::resource::CATALOG.t(message)
                 };
                 AccessNode::new(Role::Button)
                     .with_name(name)
@@ -479,6 +479,58 @@ impl VideoEditorApp {
         node
     }
 
+    /// A lane's mute, solo and lock toggles, in painted order.
+    fn a11y_track_toggles(track: &crate::model::Track) -> Vec<AccessNode> {
+        // The written name is what routes, so a toggle keeps its key when the
+        // spoken name changes language.
+        TRACK_TOGGLES
+            .into_iter()
+            .zip([track.muted, track.solo, track.locked])
+            .map(|((key, message), on)| {
+                AccessNode::new(Role::ToggleButton)
+                    .with_name(crate::resource::CATALOG.t_args(
+                        "video-editor-a11y-track-toggle",
+                        &[
+                            (
+                                "toggle",
+                                ui::i18n::ArgValue::Text(crate::resource::CATALOG.t(message)),
+                            ),
+                            ("track", ui::i18n::ArgValue::Text(track.name.clone())),
+                        ],
+                    ))
+                    .with_hashed_key((track.id, key))
+                    .with_state(AccessState::new().focusable(true).checked(on))
+            })
+            .collect()
+    }
+
+    /// What a reader is told about a lane beyond its name: its kind, how many
+    /// clips sit on it, where its fader and pan are, and whether it clipped.
+    fn a11y_track_value(&self, track: &crate::model::Track, clips: usize) -> String {
+        let clipped = self.mix.track(track.id).is_some_and(|l| l.clipped);
+        let kind = crate::resource::CATALOG.t(match track.kind {
+            TrackKind::Video => "video-editor-a11y-track-kind-video",
+            TrackKind::Audio => "video-editor-a11y-track-kind-audio",
+        });
+        crate::resource::CATALOG.t_args(
+            if clipped {
+                "video-editor-a11y-track-value-clipping"
+            } else {
+                "video-editor-a11y-track-value"
+            },
+            &[
+                ("kind", ui::i18n::ArgValue::Text(kind)),
+                ("count", ui::i18n::ArgValue::Number(clips as f64)),
+                (
+                    "plural",
+                    ui::i18n::ArgValue::Text(if clips == 1 { "" } else { "s" }.to_owned()),
+                ),
+                ("gain", ui::i18n::ArgValue::Text(track.gain_words())),
+                ("pan", ui::i18n::ArgValue::Text(track.pan_words())),
+            ],
+        )
+    }
+
     /// Tracks as containers, clips as the items inside them, plus each track's
     /// mute / solo / lock toggles.
     pub(super) fn a11y_timeline(&self) -> AccessNode {
@@ -487,28 +539,7 @@ impl VideoEditorApp {
         let mut tracks: Vec<AccessNode> = Vec::new();
         let track_count = self.project.tracks.len();
         for (ti, track) in self.project.tracks.iter().enumerate() {
-            let mut kids: Vec<AccessNode> = Vec::new();
-            for (key, message, on) in TRACK_TOGGLES
-                .into_iter()
-                .zip([track.muted, track.solo, track.locked])
-                .map(|((key, message), on)| (key, message, on))
-            {
-                kids.push(
-                    AccessNode::new(Role::ToggleButton)
-                        .with_name(crate::resource::CATALOG.t_args(
-                            "video-editor-a11y-track-toggle",
-                            &[
-                                (
-                                    "toggle",
-                                    ui::i18n::ArgValue::Text(crate::resource::CATALOG.t(message)),
-                                ),
-                                ("track", ui::i18n::ArgValue::Text(track.name.clone())),
-                            ],
-                        ))
-                        .with_hashed_key((track.id, key))
-                        .with_state(AccessState::new().focusable(true).checked(on)),
-                );
-            }
+            let mut kids: Vec<AccessNode> = Self::a11y_track_toggles(track);
             let clips = self.project.clips_on(track.id);
             let n = clips.len();
             for (i, clip) in clips.iter().enumerate() {
@@ -533,30 +564,10 @@ impl VideoEditorApp {
             // picture is the one thing a reader cannot have — so everything
             // the bar says has to be said here too, in the place a reader is
             // already standing when they ask about a track.
-            let level = self.mix.track(track.id);
-            let clipped = level.is_some_and(|l| l.clipped);
-            let kind = crate::resource::CATALOG.t(match track.kind {
-                TrackKind::Video => "video-editor-a11y-track-kind-video",
-                TrackKind::Audio => "video-editor-a11y-track-kind-audio",
-            });
-            let plural = if n == 1 { "" } else { "s" };
             tracks.push(
                 AccessNode::new(Role::Group)
                     .with_name(track.name.clone())
-                    .with_value(crate::resource::CATALOG.t_args(
-                        if clipped {
-                            "video-editor-a11y-track-value-clipping"
-                        } else {
-                            "video-editor-a11y-track-value"
-                        },
-                        &[
-                            ("kind", ui::i18n::ArgValue::Text(kind)),
-                            ("count", ui::i18n::ArgValue::Number(n as f64)),
-                            ("plural", ui::i18n::ArgValue::Text(plural.to_owned())),
-                            ("gain", ui::i18n::ArgValue::Text(track.gain_words())),
-                            ("pan", ui::i18n::ArgValue::Text(track.pan_words())),
-                        ],
-                    ))
+                    .with_value(self.a11y_track_value(track, n))
                     .with_hashed_key(track.id)
                     .with_position(ti + 1, track_count)
                     .with_children(kids),
@@ -1067,6 +1078,97 @@ impl VideoEditorApp {
         .any(|p| clip.anim.is_animated(p))
     }
 
+    /// A clip's picture as a reader hears it: where it sits, its scale and its
+    /// tilt, read at the playhead, and whether a curve is moving them.
+    fn a11y_transform_summary(&self, c: &Clip) -> String {
+        let g = self.geometry_at_playhead(c);
+        let geometry = crate::resource::CATALOG.t_args(
+            "video-editor-a11y-geometry",
+            &[
+                (
+                    "scale",
+                    ui::i18n::ArgValue::Text(format!("{:.2}", g.scale_x)),
+                ),
+                ("x", ui::i18n::ArgValue::Text(format!("{:+.2}", g.pos_x))),
+                ("y", ui::i18n::ArgValue::Text(format!("{:+.2}", g.pos_y))),
+                (
+                    "rotation",
+                    ui::i18n::ArgValue::Text(format!("{:.0}", g.rotation)),
+                ),
+            ],
+        );
+        // Whether those numbers are going anywhere. Without it a reader hears
+        // one still frame's worth of a moving picture and has no way to know
+        // the section is animated at all.
+        if Self::transform_is_animated(c) {
+            crate::resource::CATALOG.t_args(
+                "video-editor-a11y-animated",
+                &[("geometry", ui::i18n::ArgValue::Text(geometry))],
+            )
+        } else {
+            geometry
+        }
+    }
+
+    /// What a clip's key is removing, in the three numbers that decide it.
+    fn a11y_key_summary(c: &Clip, at: f64) -> String {
+        let tolerance = c.param_at(Param::KeyTolerance, at);
+        if !c.key.enabled {
+            return crate::resource::CATALOG.t("video-editor-summary-off");
+        }
+        if tolerance <= 1e-6 {
+            return crate::resource::CATALOG.t("video-editor-a11y-key-nothing");
+        }
+        let percent = |value: f64| ui::i18n::ArgValue::Text(format!("{:.0}", value * 100.0));
+        crate::resource::CATALOG.t_args(
+            "video-editor-a11y-key-values",
+            &[
+                ("tolerance", percent(tolerance)),
+                ("softness", percent(c.param_at(Param::KeySoftness, at))),
+                ("spill", percent(c.param_at(Param::KeySpill, at))),
+            ],
+        )
+    }
+
+    /// A clip's mask as a reader hears it: its shape, how much of the frame it
+    /// covers, and which side of the edge survives.
+    fn a11y_mask_summary(c: &Clip, at: f64) -> String {
+        if !c.mask.is_active() {
+            return crate::resource::CATALOG.t("video-editor-summary-off");
+        }
+        crate::resource::CATALOG.t_args(
+            "video-editor-a11y-mask-values",
+            &[
+                (
+                    "shape",
+                    ui::i18n::ArgValue::Text(crate::resource::CATALOG.t(c.mask.shape.message())),
+                ),
+                (
+                    "width",
+                    ui::i18n::ArgValue::Text(format!(
+                        "{:.0}",
+                        c.param_at(Param::MaskW, at) * 100.0
+                    )),
+                ),
+                (
+                    "height",
+                    ui::i18n::ArgValue::Text(format!(
+                        "{:.0}",
+                        c.param_at(Param::MaskH, at) * 100.0
+                    )),
+                ),
+                (
+                    "side",
+                    ui::i18n::ArgValue::Text(crate::resource::CATALOG.t(if c.mask.invert {
+                        "video-editor-a11y-mask-outside"
+                    } else {
+                        "video-editor-a11y-mask-inside"
+                    })),
+                ),
+            ],
+        )
+    }
+
     /// What a folded section says about itself.
     ///
     /// Every animatable number here is read through `param_at` at the playhead
@@ -1079,35 +1181,7 @@ impl VideoEditorApp {
         let clip = self.selected().and_then(|id| self.project.clip(id));
         let at = self.playhead;
         match (section, clip) {
-            (Section::Transform, Some(c)) => {
-                let g = self.geometry_at_playhead(c);
-                let geometry = crate::resource::CATALOG.t_args(
-                    "video-editor-a11y-geometry",
-                    &[
-                        (
-                            "scale",
-                            ui::i18n::ArgValue::Text(format!("{:.2}", g.scale_x)),
-                        ),
-                        ("x", ui::i18n::ArgValue::Text(format!("{:+.2}", g.pos_x))),
-                        ("y", ui::i18n::ArgValue::Text(format!("{:+.2}", g.pos_y))),
-                        (
-                            "rotation",
-                            ui::i18n::ArgValue::Text(format!("{:.0}", g.rotation)),
-                        ),
-                    ],
-                );
-                // Whether those numbers are going anywhere. Without it a
-                // reader hears one still frame's worth of a moving picture and
-                // has no way to know the section is animated at all.
-                if Self::transform_is_animated(c) {
-                    crate::resource::CATALOG.t_args(
-                        "video-editor-a11y-animated",
-                        &[("geometry", ui::i18n::ArgValue::Text(geometry))],
-                    )
-                } else {
-                    geometry
-                }
-            }
+            (Section::Transform, Some(c)) => self.a11y_transform_summary(c),
             (Section::Speed, Some(c)) => c.speed.label(),
             (Section::Mix, Some(c)) => match self.project.track(c.track) {
                 Some(t) => {
@@ -1126,79 +1200,8 @@ impl VideoEditorApp {
             },
             // Worded from the same fields the visible summary reads, so a
             // reader is never told a tidier story than the screen tells.
-            (Section::Key, Some(c)) => {
-                let tolerance = c.param_at(Param::KeyTolerance, at);
-                if !c.key.enabled {
-                    crate::resource::CATALOG.t("video-editor-summary-off")
-                } else if tolerance <= 1e-6 {
-                    crate::resource::CATALOG.t("video-editor-a11y-key-nothing")
-                } else {
-                    crate::resource::CATALOG.t_args(
-                        "video-editor-a11y-key-values",
-                        &[
-                            (
-                                "tolerance",
-                                ui::i18n::ArgValue::Text(format!("{:.0}", tolerance * 100.0)),
-                            ),
-                            (
-                                "softness",
-                                ui::i18n::ArgValue::Text(format!(
-                                    "{:.0}",
-                                    c.param_at(Param::KeySoftness, at) * 100.0
-                                )),
-                            ),
-                            (
-                                "spill",
-                                ui::i18n::ArgValue::Text(format!(
-                                    "{:.0}",
-                                    c.param_at(Param::KeySpill, at) * 100.0
-                                )),
-                            ),
-                        ],
-                    )
-                }
-            }
-            (Section::Mask, Some(c)) => {
-                if c.mask.is_active() {
-                    crate::resource::CATALOG.t_args(
-                        "video-editor-a11y-mask-values",
-                        &[
-                            (
-                                "shape",
-                                ui::i18n::ArgValue::Text(
-                                    crate::resource::CATALOG.t(c.mask.shape.message()),
-                                ),
-                            ),
-                            (
-                                "width",
-                                ui::i18n::ArgValue::Text(format!(
-                                    "{:.0}",
-                                    c.param_at(Param::MaskW, at) * 100.0
-                                )),
-                            ),
-                            (
-                                "height",
-                                ui::i18n::ArgValue::Text(format!(
-                                    "{:.0}",
-                                    c.param_at(Param::MaskH, at) * 100.0
-                                )),
-                            ),
-                            (
-                                "side",
-                                ui::i18n::ArgValue::Text(crate::resource::CATALOG.t(
-                                    if c.mask.invert {
-                                        "video-editor-a11y-mask-outside"
-                                    } else {
-                                        "video-editor-a11y-mask-inside"
-                                    },
-                                )),
-                            ),
-                        ],
-                    )
-                } else {
-                    crate::resource::CATALOG.t("video-editor-summary-off")
-                }
-            }
+            (Section::Key, Some(c)) => Self::a11y_key_summary(c, at),
+            (Section::Mask, Some(c)) => Self::a11y_mask_summary(c, at),
             (Section::Effects, Some(c)) => crate::resource::CATALOG.t_args(
                 "video-editor-summary-effects",
                 &[("count", ui::i18n::ArgValue::Number(c.effects.len() as f64))],
