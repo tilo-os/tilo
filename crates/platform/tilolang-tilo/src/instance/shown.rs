@@ -12,8 +12,9 @@ use std::collections::BTreeSet;
 use tilo_render_protocol::patch::Lane;
 
 use super::{Instance, Shown};
+use crate::host::Host;
 use crate::publish::resource_id;
-use crate::runtime::{UiNode, Value};
+use crate::runtime::{UiNode, Value, ViewInstance};
 
 impl Instance {
     /// The root view and, when a row went somewhere, the detail view.
@@ -23,20 +24,24 @@ impl Instance {
             .filter_map(|lane| self.lane(lane))
     }
 
-    /// The published resources the window shows, as the app publishes them
+    /// The published resources the window shows, as the app that holds each publishes it
     /// (`tl:so.tilo.lang.tasks:root-fjqi4yze`): each lane's own, every resource the view it
-    /// shows refers to, and the items of the rows its lists hold — a row's actions are published
-    /// on its resource, whether or not the list has rendered that row yet.
+    /// shows refers to or runs an action on, and the items of the rows its lists hold — a
+    /// row's actions are published on its resource, whether or not the list has rendered that
+    /// row yet.
     #[must_use]
     pub fn shown_resources(&self) -> BTreeSet<String> {
         let mut out = BTreeSet::new();
+        let host = self.host();
         for shown in self.shown() {
             let view = shown.view.borrow();
             out.insert(resource_id(&self.app, &shown.target.id_string()));
             for path in view.shown_refs() {
-                out.insert(resource_id(&self.app, &path));
+                out.insert(published(host.as_ref(), &path));
             }
-            referents(view.tree(), &self.app, &mut out);
+            let tree = view.tree();
+            referents(tree, host.as_ref(), &mut out);
+            runs(tree, &view, host.as_ref(), &mut out);
         }
         out
     }
@@ -52,31 +57,61 @@ impl Instance {
     }
 }
 
-/// Every resource the props of `node` and its children refer to, as the app publishes it.
-fn referents(node: &UiNode, app: &str, out: &mut BTreeSet<String>) {
+/// The resource `path` names — a record, or an item of one — as the app that holds the record
+/// publishes it. A view of one app shows another's records (Today's places are Tasks' tasks),
+/// and what names one is the app holding it, whichever app's view reached it.
+fn published(host: Option<&Host>, path: &str) -> String {
+    let Some(host) = host else {
+        return path.to_owned();
+    };
+    let doc = path.split('/').next().unwrap_or(path);
+    match host.store().resource_of(doc) {
+        Some((app, _)) => resource_id(&app, path),
+        None => path.to_owned(),
+    }
+}
+
+/// Every resource the props of `node` and its children refer to.
+fn referents(node: &UiNode, host: Option<&Host>, out: &mut BTreeSet<String>) {
     for value in node.props.values() {
-        referred(value, app, out);
+        referred(value, host, out);
     }
     for child in &node.children {
-        referents(child, app, out);
+        referents(child, host, out);
+    }
+}
+
+/// Every resource the actions the controls of `node` and its children run act on: an action's
+/// subject is the record it changes, and what a window draws a control for, it reaches.
+fn runs(node: &UiNode, view: &ViewInstance, host: Option<&Host>, out: &mut BTreeSet<String>) {
+    for event in node.events.keys() {
+        let Some(action) = view.event_action(&node.key, event) else {
+            continue;
+        };
+        for arg in &action.acting().args {
+            referred(arg, host, out);
+        }
+    }
+    for child in &node.children {
+        runs(child, view, host, out);
     }
 }
 
 /// Every resource `value` refers to, at any depth.
-fn referred(value: &Value, app: &str, out: &mut BTreeSet<String>) {
+fn referred(value: &Value, host: Option<&Host>, out: &mut BTreeSet<String>) {
     match value {
         Value::Ref(reference) => {
-            out.insert(resource_id(app, &reference.target.id_string()));
+            out.insert(published(host, &reference.target.id_string()));
         }
         Value::List(items) | Value::Tuple(items) => {
             for item in items {
-                referred(item, app, out);
+                referred(item, host, out);
             }
         }
-        Value::Opt(Some(item)) => referred(item, app, out),
+        Value::Opt(Some(item)) => referred(item, host, out),
         Value::Enum(found) => {
             for field in found.fields.values() {
-                referred(field, app, out);
+                referred(field, host, out);
             }
         }
         _ => {}
