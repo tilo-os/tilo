@@ -89,7 +89,14 @@ impl FilesState {
             } else {
                 app.name.clone()
             };
-            menu.push(MenuItem::action(label, || {}));
+            let mut item = MenuItem::action(label, || {});
+            if let Some(icon) = app.icon.as_deref().and_then(ui::icons::Icon::from_name) {
+                item = item.with_icon(icon);
+            }
+            if let Some(source) = app.source {
+                item = item.with_detail(crate::applications::kind_label(source));
+            }
+            menu.push(item);
             commands.push(Some(FileCommand::OpenWith {
                 path: path.clone(),
                 app_id: app.id.clone(),
@@ -189,11 +196,16 @@ pub(super) fn append_open_with_actions(
                 entry: resource_id.to_string(),
                 app: app.id.clone(),
             };
-            resource.actions.push(crate::effects::row_action(
+            let mut row = crate::effects::row_action(
                 &effect,
                 format!("{OPEN_ONCE_PREFIX}{}", app.id),
                 t_args("files-open-with-app", &[arg("app", name)]),
-            ));
+            );
+            row.type_mut().icon.clone_from(&app.icon);
+            if let Some(source) = app.source {
+                row.type_mut().description = Some(crate::applications::kind_label(source));
+            }
+            resource.actions.push(row);
         }
     }
 }

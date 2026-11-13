@@ -14,9 +14,8 @@ use std::sync::mpsc::SyncSender;
 use std::time::Duration;
 
 use runtime_portal::tools::{
-    AppEntry, DocumentApp, DriveEntry, MAX_LISTED_APPS, MAX_LISTED_DRIVES, MAX_REPLY_BYTES,
-    MAX_WIRE_BYTES, TOOL_PROTOCOL_VERSION, ToolIntent, ToolReply, ToolRequest,
-    WorkspaceSettingsRoute,
+    AppEntry, DriveEntry, MAX_LISTED_APPS, MAX_LISTED_DRIVES, MAX_REPLY_BYTES, MAX_WIRE_BYTES,
+    TOOL_PROTOCOL_VERSION, ToolIntent, ToolReply, ToolRequest, WorkspaceSettingsRoute,
 };
 use tilo_action_broker::services::{
     ApplicationChange, ApplicationServices, DriveChange, DriveServices,
@@ -523,23 +522,9 @@ fn document_apps(inner: &Inner, caller: &Caller, path: &str) -> ToolReply {
         Err(message) => return refused(&message),
     };
     let lists = crate::app_icons::app_lists().unwrap_or_default();
-    let documents = launches
-        .iter()
+    let documents = crate::documents::candidates(&launches, &lists)
+        .into_iter()
         .take(MAX_LISTED_APPS)
-        .enumerate()
-        .filter_map(|(index, launch)| {
-            let id = crate::documents::app_of(launch)?;
-            let name = lists
-                .candidates
-                .iter()
-                .find(|app| app.package_id == id)
-                .map_or_else(|| id.to_owned(), |app| app.display_name.clone());
-            Some(DocumentApp {
-                id: id.to_owned(),
-                name,
-                is_default: index == 0,
-            })
-        })
         .collect();
     ToolReply {
         accepted: true,

@@ -141,11 +141,15 @@ mod open_with_tests {
             DocumentApp {
                 id: "org.gnome.Evince.desktop".into(),
                 name: "Evince".into(),
+                icon: Some("file".into()),
+                source: Some(runtime_portal::tools::AppKind::System),
                 is_default: true,
             },
             DocumentApp {
                 id: "so.tilo.pdf-viewer".into(),
                 name: "PDF Viewer".into(),
+                icon: Some("file".into()),
+                source: None,
                 is_default: false,
             },
         ]
@@ -398,6 +402,25 @@ mod open_with_tests {
                 app_id: "so.tilo.pdf-viewer".into(),
             }
         );
+        // Each row wears the app's own glyph, and a row two apps share a name with says where the
+        // machine got it.
+        let rows: Vec<(Option<ui::icons::Icon>, Option<String>)> = w
+            .chrome()
+            .submenu
+            .items()
+            .iter()
+            .map(|item| match item {
+                ui::widget::context_menu::MenuItem::Action { icon, detail, .. } => {
+                    (*icon, detail.clone())
+                }
+                _ => (None, None),
+            })
+            .collect();
+        assert_eq!(
+            rows[0],
+            (Some(ui::icons::Icon::File), Some("System".into()))
+        );
+        assert_eq!(rows[1], (Some(ui::icons::Icon::File), None));
         w.state().apply_command(viewer);
         settle_opens(&w);
         assert_eq!(asks(), vec!["/docs/slides.pdf so.tilo.pdf-viewer"]);

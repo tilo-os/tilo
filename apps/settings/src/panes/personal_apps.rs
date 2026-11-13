@@ -181,8 +181,22 @@ impl DefaultAppsArea {
                     kind.display_label(),
                 );
                 if let Some(current) = &current {
+                    // What opens the kind, by the name the app goes by here: an id is never a row.
+                    let chosen = candidates
+                        .iter()
+                        .find(|app| app.package_id == current.package_id)
+                        .map_or_else(
+                            || {
+                                let id = current
+                                    .package_id
+                                    .strip_suffix(".desktop")
+                                    .unwrap_or(&current.package_id);
+                                package_store::display_name_for_package_id(id)
+                            },
+                            |app| app.display_name.clone(),
+                        );
                     row = row.presentation(ResourcePresentation {
-                        detail: Some(current.package_id.clone()),
+                        detail: Some(chosen),
                         ..ResourcePresentation::default()
                     });
                 }
@@ -332,7 +346,16 @@ fn page(actions: &Actions<Settings>, candidates: &[AppCandidate], apps: &Default
         let shown_name = named_options
             .iter()
             .find(|(package, _)| *package == state.get())
-            .map_or_else(|| state.get(), |(_, name)| name.clone());
+            .map_or_else(
+                || {
+                    // A choice whose app is gone is still named, as words: never its id.
+                    let id = state.get();
+                    package_store::display_name_for_package_id(
+                        id.strip_suffix(".desktop").unwrap_or(&id),
+                    )
+                },
+                |(_, name)| name.clone(),
+            );
         let named = kind.as_str().to_owned();
         let mut chooser = Dropdown::from_state(options, &state)
             .with_id(&format!("personal-default.{}", kind.as_str()))
@@ -379,8 +402,10 @@ fn open_workspace_defaults() -> Result<(), String> {
     )
 }
 
-/// Read real installed manifests. A type only appears if an installed GUI app
-/// claims it; Settings does not invent handlers.
+/// Read real installed manifests, and the machine's own applications for the types their entries
+/// claim. A type only appears if an app installed here claims it; Settings does not invent
+/// handlers. The machine's entries are the ones the desktop already reads (its search lists them
+/// under the same names), so a default the host set is named here rather than shown as an id.
 pub fn installed_candidates() -> Vec<AppCandidate> {
     let mut out = Vec::new();
     for entry in package_store::list_installed().unwrap_or_default() {
@@ -406,12 +431,31 @@ pub fn installed_candidates() -> Vec<AppCandidate> {
             manifest.opens_secondary,
         ));
     }
+    out.extend(host_candidates(&out));
     out.sort_by(|a, b| {
         a.display_name
             .cmp(&b.display_name)
             .then_with(|| a.package_id.cmp(&b.package_id))
     });
     out
+}
+
+/// The machine's own applications, for the types their desktop entries claim, each by the entry's
+/// name in the person's language — the name its search row and its app list give it.
+fn host_candidates(tilo: &[AppCandidate]) -> Vec<AppCandidate> {
+    let already: std::collections::BTreeSet<String> = tilo
+        .iter()
+        .map(|app| app.package_id.to_ascii_lowercase())
+        .collect();
+    let locales =
+        desktop_entry::locale::language_candidates(ui::i18n::preferred_language().as_deref());
+    desktop_entry::cache::cached_scan(&locales)
+        .entries
+        .iter()
+        .filter(|entry| !entry.no_display && !entry.hidden)
+        .filter(|entry| !already.contains(&entry.id.to_ascii_lowercase()))
+        .filter_map(|entry| AppCandidate::host(&entry.id, entry.name.clone(), &entry.mime_types))
+        .collect()
 }
 
 #[cfg(test)]

@@ -28,6 +28,8 @@ pub struct HostAppEntry {
     pub generic_name: Option<String>,
     pub comment: Option<String>,
     pub keywords: Vec<String>,
+    /// Its first category ("Graphics"), which picks the glyph its rows wear.
+    pub category: Option<String>,
     /// Where the machine got it: a Flatpak, or the system's own package.
     pub kind: HostAppKind,
 }

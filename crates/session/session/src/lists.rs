@@ -388,6 +388,7 @@ fn machine_search_apps(
             generic_name: entry.generic_name.clone(),
             comment: entry.comment.clone(),
             keywords: entry.keywords.clone(),
+            category: entry.categories.first().cloned(),
             kind: match entry.source {
                 desktop_entry::EntrySource::Flatpak { .. } => HostAppKind::Flatpak,
                 desktop_entry::EntrySource::Host => HostAppKind::System,
