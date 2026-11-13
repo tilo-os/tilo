@@ -13,10 +13,8 @@ use std::any::Any;
 use std::fmt;
 use std::ops::Range;
 
-/// The syntactic category a run of source falls into. The editor never
-/// hard-codes a colour for these — the theme's syntax palette resolves each
-/// to a concrete colour, so syntax tracks the active theme in light, dark
-/// and high contrast.
+/// The syntactic category a run of source falls into. The theme's syntax
+/// palette resolves each to a colour, so syntax tracks the active theme.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum TokenKind {
     Keyword,
@@ -75,7 +73,6 @@ pub trait LineState: Send + Sync + fmt::Debug {
     /// adjacent runs of one kind are merged.
     fn highlight_line(&mut self, line: &str) -> Vec<Span>;
 
-    /// This position, to continue from separately.
     fn boxed_clone(&self) -> Box<dyn LineState>;
 
     /// Whether `other` is the same position: a line continues identically
@@ -86,27 +83,21 @@ pub trait LineState: Send + Sync + fmt::Debug {
     fn as_any(&self) -> &dyn Any;
 }
 
-/// A set of grammars, looked up by the names code is labelled with.
 pub trait Grammars: Send + Sync {
     /// The grammar for a file extension (`rs`, `toml`) or a case-insensitive
     /// name (`Rust`, `Dockerfile`), the way a Markdown fence names its
     /// language.
     fn find(&self, token: &str) -> Option<Grammar>;
 
-    /// Plain text: every line is one [`TokenKind::Text`] run.
     fn plain_text(&self) -> Grammar;
 
     /// The grammar's display name (`Rust`, `Plain Text`).
     fn name(&self, grammar: Grammar) -> &'static str;
 
-    /// The parse position at the start of a document.
     fn start(&self, grammar: Grammar) -> Box<dyn LineState>;
 }
 
-/// The entry `libtilo_highlight_engine.so` exports: its grammar set.
 pub type GrammarsEntry = fn() -> &'static dyn Grammars;
 
-/// The engine library holding Tilo's grammar set.
 pub const ENGINE_LIBRARY: &str = "libtilo_highlight_engine.so";
-/// Its [`GrammarsEntry`].
 pub const ENGINE_ENTRY: &str = "tilo_highlight_engine_entry";
