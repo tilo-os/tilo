@@ -1107,148 +1107,406 @@ mod tests {
         }
     }
 
-    /// A store whose host commits in its own time (the page's worker)
-    /// answers every flush with "not yet". That is a write on its way, not a
-    /// record that could not be stored — and a host that reports a failed
-    /// commit is still a failure.
-    #[test]
-    fn a_flush_its_store_commits_on_its_own_thread_is_written_not_failed() {
-        let queued = Rc::new(MemoryStore::queued());
-        let store: Rc<dyn DurableStore> = queued.clone();
-        let owner = Rc::new(
-            DocOwner::acquire(
-                store,
-                StorageKey::document("so.tilo.test", "room", "on-its-way"),
-            )
-            .unwrap(),
-        );
-        let mut doc = owner.new_document();
-        let body = doc.put_object(ROOT, "body", ObjType::Text).unwrap();
-        doc.commit();
-        let mut writer = DocWriter::start_new(&owner, &doc).unwrap();
-        doc.splice_text(&body, 0, 0, "draft").unwrap();
-        doc.commit();
-        writer.request(&doc);
-        assert!(
-            writer.try_flush().is_err(),
-            "a flush that must prove durability still says nothing is committed yet"
-        );
-        assert_eq!(
-            writer.try_flush_written(),
-            Ok(()),
-            "but the bytes are written: the host commits them"
-        );
-        for write in queued.drain() {
-            queued.acknowledge(write.revision, Ok(())).unwrap();
-        }
-        assert_eq!(writer.try_flush(), Ok(()), "and once it has");
-        assert_eq!(writer.try_flush_written(), Ok(()));
+    tilo_test_env::scenario! {
+        /// `DocWriter` and the `DocOwner` it writes through.
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "fixture arithmetic in test bodies, which the lint skips in a plain test"
+        )]
+        fn a_document_writer_stores_through_its_owner;
 
-        // What the host could not commit is said.
-        doc.splice_text(&body, 5, 0, "!").unwrap();
-        doc.commit();
-        writer.request(&doc);
-        for write in queued.drain() {
-            queued
-                .acknowledge(write.revision, Err("the disk is full".into()))
-                .unwrap();
-        }
-        let failed = writer.try_flush_written();
-        assert!(
-            failed
-                .as_ref()
-                .is_err_and(|error| error.contains("disk is full")),
-            "a failed commit is reported: {failed:?}"
-        );
-    }
-
-    /// Opening a record that is already stored must never wait on the disk:
-    /// it runs on the compositor's thread, where a directory sync that blocks
-    /// on a busy journal stops every window. The store's own thread makes the
-    /// read bytes durable, and the writer learns when it has.
-    #[test]
-    fn accepting_a_stored_document_syncs_on_the_stores_thread_not_the_openers() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let root = tmp.path().join("profile");
-        let key = StorageKey::document("so.tilo.test", "room", "opened");
+        phase a_flush_its_store_commits_on_its_own_thread_is_written_not_failed;
+        // A store whose host commits in its own time (the page's worker)
+        // answers every flush with "not yet". That is a write on its way, not a
+        // record that could not be stored — and a host that reports a failed
+        // commit is still a failure.
         {
-            let store: Rc<dyn DurableStore> =
-                Rc::new(FsStore::with_debounce(&root, Duration::ZERO));
-            let owner = Rc::new(DocOwner::acquire(Rc::clone(&store), key.clone()).unwrap());
+            let queued = Rc::new(MemoryStore::queued());
+            let store: Rc<dyn DurableStore> = queued.clone();
+            let owner = Rc::new(
+                DocOwner::acquire(
+                    store,
+                    StorageKey::document("so.tilo.test", "room", "on-its-way"),
+                )
+                .unwrap(),
+            );
             let mut doc = owner.new_document();
             let body = doc.put_object(ROOT, "body", ObjType::Text).unwrap();
-            doc.splice_text(&body, 0, 0, "stored").unwrap();
             doc.commit();
-            let writer = DocWriter::start_new(&owner, &doc).unwrap();
-            writer.try_flush().unwrap();
+            let mut writer = DocWriter::start_new(&owner, &doc).unwrap();
+            doc.splice_text(&body, 0, 0, "draft").unwrap();
+            doc.commit();
+            writer.request(&doc);
+            assert!(
+                writer.try_flush().is_err(),
+                "a flush that must prove durability still says nothing is committed yet"
+            );
+            assert_eq!(
+                writer.try_flush_written(),
+                Ok(()),
+                "but the bytes are written: the host commits them"
+            );
+            for write in queued.drain() {
+                queued.acknowledge(write.revision, Ok(())).unwrap();
+            }
+            assert_eq!(writer.try_flush(), Ok(()), "and once it has");
+            assert_eq!(writer.try_flush_written(), Ok(()));
+
+            // What the host could not commit is said.
+            doc.splice_text(&body, 5, 0, "!").unwrap();
+            doc.commit();
+            writer.request(&doc);
+            for write in queued.drain() {
+                queued
+                    .acknowledge(write.revision, Err("the disk is full".into()))
+                    .unwrap();
+            }
+            let failed = writer.try_flush_written();
+            assert!(
+                failed
+                    .as_ref()
+                    .is_err_and(|error| error.contains("disk is full")),
+                "a failed commit is reported: {failed:?}"
+            );
         }
 
-        let fs = Rc::new(FsStore::with_debounce(&root, Duration::ZERO));
-        let store: Rc<dyn DurableStore> = fs.clone();
-        let opener = std::thread::current().id();
-        let owner = Rc::new(DocOwner::acquire(Rc::clone(&store), key).unwrap());
-        let loaded = owner.load().unwrap().expect("stored document");
-        let mut doc = owner.accept(loaded).unwrap();
-        let writer = DocWriter::try_start(&owner).unwrap();
-        assert_eq!(
-            text(&doc, "body"),
-            "stored",
-            "the document is usable at once"
-        );
-        assert!(
-            !fs.faults().sync_threads.contains(&opener),
-            "opening synced a file or directory on the opening thread"
-        );
+        phase accepting_a_stored_document_syncs_on_the_stores_thread_not_the_openers;
+        // Opening a record that is already stored must never wait on the disk:
+        // it runs on the compositor's thread, where a directory sync that blocks
+        // on a busy journal stops every window. The store's own thread makes the
+        // read bytes durable, and the writer learns when it has.
+        {
+            let tmp = tempfile::TempDir::new().unwrap();
+            let root = tmp.path().join("profile");
+            let key = StorageKey::document("so.tilo.test", "room", "opened");
+            {
+                let store: Rc<dyn DurableStore> =
+                    Rc::new(FsStore::with_debounce(&root, Duration::ZERO));
+                let owner = Rc::new(DocOwner::acquire(Rc::clone(&store), key.clone()).unwrap());
+                let mut doc = owner.new_document();
+                let body = doc.put_object(ROOT, "body", ObjType::Text).unwrap();
+                doc.splice_text(&body, 0, 0, "stored").unwrap();
+                doc.commit();
+                let writer = DocWriter::start_new(&owner, &doc).unwrap();
+                writer.try_flush().unwrap();
+            }
 
-        tilo_test_env::wait_until("the store to confirm the opened document durable", || {
-            writer.durability_snapshot().durable_heads == Some(doc.get_heads())
-        });
-        let sync_threads = fs.faults().sync_threads.clone();
-        assert!(
-            !sync_threads.is_empty() && !sync_threads.contains(&opener),
-            "the sync belongs to the store's thread: {sync_threads:?}"
-        );
-    }
+            let fs = Rc::new(FsStore::with_debounce(&root, Duration::ZERO));
+            let store: Rc<dyn DurableStore> = fs.clone();
+            let opener = std::thread::current().id();
+            let owner = Rc::new(DocOwner::acquire(Rc::clone(&store), key).unwrap());
+            let loaded = owner.load().unwrap().expect("stored document");
+            let mut doc = owner.accept(loaded).unwrap();
+            let writer = DocWriter::try_start(&owner).unwrap();
+            assert_eq!(
+                text(&doc, "body"),
+                "stored",
+                "the document is usable at once"
+            );
+            assert!(
+                !fs.faults().sync_threads.contains(&opener),
+                "opening synced a file or directory on the opening thread"
+            );
 
-    /// What a writer stores is what is committed: a transaction someone
-    /// still holds open is neither stored nor committed by a full save or
-    /// an append, and is still open after both.
-    #[test]
-    fn a_writer_stores_only_committed_changes_and_leaves_a_transaction_open() {
-        for subject in Subject::all() {
-            let owner = subject.owner("pending");
+            tilo_test_env::wait_until("the store to confirm the opened document durable", || {
+                writer.durability_snapshot().durable_heads == Some(doc.get_heads())
+            });
+            let sync_threads = fs.faults().sync_threads.clone();
+            assert!(
+                !sync_threads.is_empty() && !sync_threads.contains(&opener),
+                "the sync belongs to the store's thread: {sync_threads:?}"
+            );
+        }
+
+        phase a_writer_stores_only_committed_changes_and_leaves_a_transaction_open;
+        // What a writer stores is what is committed: a transaction someone
+        // still holds open is neither stored nor committed by a full save or
+        // an append, and is still open after both.
+        {
+            for subject in Subject::all() {
+                let owner = subject.owner("pending");
+                let mut doc = owner.new_document();
+                doc.put(ROOT, "kept", "first").unwrap();
+                doc.commit();
+                doc.put(ROOT, "pending", "full").unwrap();
+                let mut writer = DocWriter::start_new(&owner, &doc).unwrap();
+                doc.rollback();
+                doc.put(ROOT, "kept", "second").unwrap();
+                doc.commit();
+                doc.put(ROOT, "pending", "append").unwrap();
+                writer.request(&doc);
+                subject.flush(&writer).unwrap();
+                assert_eq!(doc.pending_ops(), 1, "{}", subject.name);
+                assert_eq!(
+                    writer.durability_snapshot().durable_heads,
+                    Some(doc.committed_heads()),
+                    "{}",
+                    subject.name
+                );
+                drop((writer, owner));
+                let reopened = subject.reopen("pending");
+                assert_eq!(
+                    reopened.get(ROOT, "kept").unwrap().unwrap().0.into_string(),
+                    Ok("second".to_owned()),
+                    "{}",
+                    subject.name
+                );
+                assert_eq!(
+                    reopened.get(ROOT, "pending").unwrap(),
+                    None,
+                    "{}",
+                    subject.name
+                );
+            }
+        }
+
+        phase a_writer_on_a_thread_that_must_not_wait_leaves_the_commit_to_the_store;
+        // The compositor runs apps on its frame loop: saving, flushing and
+        // closing a document there start the store's commits and never wait
+        // for them, and the edits still reach the disk.
+        {
+            let tmp = tempfile::tempdir().unwrap();
+            let store: Rc<dyn DurableStore> =
+                Rc::new(FsStore::with_debounce(tmp.path(), Duration::from_secs(600)));
+            let key = StorageKey::document("so.tilo.test", "room", "on-the-loop");
+            let owner = Rc::new(DocOwner::acquire(Rc::clone(&store), key.clone()).unwrap());
             let mut doc = owner.new_document();
-            doc.put(ROOT, "kept", "first").unwrap();
+            doc.put(ROOT, "body", "typed").unwrap();
+            {
+                let _loop = durable_store::waiting::forbid_strictly_on_this_thread();
+                doc.commit();
+                let mut writer = DocWriter::start_new(&owner, &doc).unwrap();
+                doc.put(ROOT, "body", "typed more").unwrap();
+                doc.commit();
+                writer.save(&doc);
+                writer
+                    .try_flush()
+                    .expect("accepted writes are not a failure");
+                assert_eq!(writer.last_error(), None);
+                drop(writer);
+            }
+            store.flush(Some(&key)).unwrap();
+            drop(owner);
+            drop(store);
+            let stored = FsStore::new(tmp.path()).read(&key).unwrap().unwrap();
+            assert_eq!(
+                AutoCommit::load(&stored.bytes).unwrap().get_heads(),
+                doc.get_heads()
+            );
+        }
+
+        phase stored_bytes_are_accepted_only_when_decodable_unchanged_and_current;
+        {
+            // Phase `undecodable_bytes_are_refused_and_never_overwritten`.
+            {
+                for subject in Subject::all() {
+                    for (n, bytes) in [b"not automerge".to_vec(), Vec::new()]
+                        .into_iter()
+                        .enumerate()
+                    {
+                        let record = format!("corrupt-{n}");
+                        store_raw(&subject, &record, bytes.clone());
+                        let owner = subject.owner(&record);
+                        assert!(owner.load().is_err(), "{}", subject.name);
+                        assert!(owner.load_complete().is_err(), "{}", subject.name);
+                        assert_eq!(
+                            subject.store.read(owner.key()).unwrap().unwrap().bytes,
+                            bytes,
+                            "{}",
+                            subject.name
+                        );
+                    }
+                }
+            }
+            // Phase `a_torn_tail_is_repaired_only_on_acceptance_by_its_owner`.
+            {
+                for subject in Subject::all() {
+                    let mut doc = AutoCommit::new();
+                    doc.put(ROOT, "body", "prefix").unwrap();
+                    let torn = with_torn_tail(&mut doc);
+                    store_raw(&subject, "torn", torn.clone());
+                    let owner = subject.owner("torn");
+                    assert!(owner.load_complete().is_err(), "{}", subject.name);
+                    let loaded = owner.load().unwrap().unwrap();
+                    assert_eq!(
+                        subject.store.read(owner.key()).unwrap().unwrap().bytes,
+                        torn,
+                        "decoding publishes nothing ({})",
+                        subject.name
+                    );
+                    let other = subject.owner("elsewhere");
+                    assert!(matches!(
+                        other.accept(loaded),
+                        Err(StoreError::SourceChanged { .. })
+                    ));
+                    let loaded = owner.load().unwrap().unwrap();
+                    let mut accepted = owner.accept(loaded).unwrap();
+                    subject.pump();
+                    let writer = DocWriter::try_start(&owner).unwrap();
+                    subject.flush(&writer).unwrap();
+                    assert_eq!(
+                        writer.durability_snapshot().durable_heads,
+                        Some(accepted.get_heads())
+                    );
+                    let repaired = subject.store.read(owner.key()).unwrap().unwrap().bytes;
+                    assert!(AutoCommit::load(&repaired).is_ok(), "{}", subject.name);
+                }
+            }
+            // Phase `a_changed_source_is_never_accepted`.
+            {
+                for subject in Subject::all() {
+                    let mut doc = AutoCommit::new();
+                    doc.put(ROOT, "body", "original").unwrap();
+                    store_raw(&subject, "changed", doc.save());
+                    let owner = subject.owner("changed");
+                    let loaded = owner.load().unwrap().unwrap();
+                    owner
+                        .store()
+                        .write(owner.key(), WriteOp::Replace(b"replacement".to_vec()), None)
+                        .unwrap();
+                    subject.pump();
+                    assert!(matches!(
+                        owner.accept(loaded),
+                        Err(StoreError::SourceChanged { .. })
+                    ));
+                }
+            }
+        }
+
+        phase writer_ownership_is_exclusive_shared_or_disabled;
+        {
+            // Phase `owners_and_writers_are_exclusive`.
+            {
+                for subject in Subject::all() {
+                    let owner = subject.owner("exclusive");
+                    assert!(matches!(
+                        DocOwner::acquire(
+                            Rc::clone(&subject.store),
+                            StorageKey::document("so.tilo.test", "room", "exclusive"),
+                        ),
+                        Err(StoreError::WriterBusy { .. })
+                    ));
+                    let writer = DocWriter::try_start(&owner).unwrap();
+                    assert!(matches!(
+                        DocWriter::try_start(&owner),
+                        Err(StoreError::WriterBusy { .. })
+                    ));
+                    drop(writer);
+                    assert!(DocWriter::try_start(&owner).is_ok());
+                }
+            }
+            // Phase `only_the_primary_shared_writer_continues_the_stored_actor`.
+            {
+                for subject in Subject::all() {
+                    let key = StorageKey::app("so.tilo.shared");
+                    let primary = Rc::new(
+                        DocOwner::acquire_shared(Rc::clone(&subject.store), key.clone()).unwrap(),
+                    );
+                    let mut doc = primary.new_document();
+                    doc.commit();
+                    let writer = DocWriter::start_new(&primary, &doc).unwrap();
+                    subject.flush(&writer).unwrap();
+                    let secondary = Rc::new(
+                        DocOwner::acquire_shared(Rc::clone(&subject.store), key.clone()).unwrap(),
+                    );
+                    assert_ne!(secondary.actor(), primary.actor(), "{}", subject.name);
+                    let mut other = secondary.new_document();
+                    other.put(ROOT, "from", "secondary").unwrap();
+                    other.commit();
+                    let second = DocWriter::start_new(&secondary, &other).unwrap();
+                    subject.flush(&second).unwrap();
+                    let actor = primary.actor();
+                    drop((writer, second, primary, secondary));
+                    let reopened = DocOwner::acquire_shared(Rc::clone(&subject.store), key).unwrap();
+                    assert_eq!(reopened.actor(), actor, "{}", subject.name);
+                }
+            }
+            // Phase `a_disabled_writer_reports_why_and_persists_nothing`.
+            {
+                let mut writer = DocWriter::disabled("no storage");
+                let mut doc = AutoCommit::new();
+                doc.put(ROOT, "k", "v").unwrap();
+                doc.commit();
+                writer.request(&doc);
+                doc.commit();
+                writer.request_checkpoint(&doc);
+                assert!(!writer.is_enabled());
+                assert_eq!(writer.last_error().as_deref(), Some("no storage"));
+                assert!(writer.try_flush().is_err());
+                assert_eq!(writer.document_path(), Path::new(""));
+            }
+        }
+
+        phase a_full_save_keeps_a_load_hint_only_a_load_of_those_bytes_takes;
+        {
+            let tmp = tempfile::tempdir().unwrap();
+            let store: Rc<dyn DurableStore> =
+                Rc::new(FsStore::with_debounce(tmp.path(), Duration::from_secs(600)));
+            let key = StorageKey::document("so.tilo.test", "room", "large");
+            let owner = Rc::new(DocOwner::acquire(Rc::clone(&store), key.clone()).unwrap());
+            let mut doc = owner.new_document();
+            let items = doc.put_object(ROOT, "items", ObjType::Map).unwrap();
+            for i in 0..6_000_u64 {
+                let value = blake3::hash(&i.to_le_bytes()).to_hex().to_string();
+                doc.put(&items, format!("item-{i:05}"), value).unwrap();
+                if i % 50 == 0 {
+                    doc.commit();
+                }
+            }
             doc.commit();
-            doc.put(ROOT, "pending", "full").unwrap();
             let mut writer = DocWriter::start_new(&owner, &doc).unwrap();
-            doc.rollback();
-            doc.put(ROOT, "kept", "second").unwrap();
+            writer.try_flush().unwrap();
+            let saved = store.read(&key).unwrap().unwrap().bytes;
+            assert!(saved.len() >= load_hint::MIN_HINTED_BYTES);
+            let hashes = doc.committed_document().change_hashes().to_vec();
+            let hint = store.read_hint(&key).expect("a full save keeps a hint");
+            assert_eq!(load_hint::hashes_for(&hint, &saved), Some(hashes.clone()));
+
+            // A later edit is appended after the hinted chunk.
+            doc.put(ROOT, "later", "appended").unwrap();
             doc.commit();
-            doc.put(ROOT, "pending", "append").unwrap();
             writer.request(&doc);
-            subject.flush(&writer).unwrap();
-            assert_eq!(doc.pending_ops(), 1, "{}", subject.name);
-            assert_eq!(
-                writer.durability_snapshot().durable_heads,
-                Some(doc.committed_heads()),
-                "{}",
-                subject.name
-            );
-            drop((writer, owner));
-            let reopened = subject.reopen("pending");
-            assert_eq!(
-                reopened.get(ROOT, "kept").unwrap().unwrap().0.into_string(),
-                Ok("second".to_owned()),
-                "{}",
-                subject.name
-            );
-            assert_eq!(
-                reopened.get(ROOT, "pending").unwrap(),
-                None,
-                "{}",
-                subject.name
-            );
+            writer.try_flush().unwrap();
+            let stored = store.read(&key).unwrap().unwrap().bytes;
+            assert!(stored.len() > saved.len() && stored.starts_with(&saved));
+            drop(writer);
+            let appended = doc.committed_document().change_hashes().to_vec();
+            assert_eq!(appended.len(), hashes.len() + 1);
+            let loaded_hashes = |owner: &DocOwner| {
+                let loaded = owner.load().unwrap().expect("stored document");
+                loaded
+                    .document()
+                    .committed_document()
+                    .change_hashes()
+                    .to_vec()
+            };
+            assert_eq!(loaded_hashes(&owner), appended);
+
+            // The load takes the hint as given: two changes listed in swapped
+            // order (heads unchanged) come back swapped, which a rebuild
+            // would never produce.
+            let mut swapped = hashes;
+            swapped.swap(1, 2);
+            store
+                .write_hint(&key, &load_hint::encode(&saved, &swapped).unwrap())
+                .unwrap();
+            let mut expected = appended.clone();
+            expected.swap(1, 2);
+            assert_eq!(loaded_hashes(&owner), expected);
+
+            // A hint made for other bytes is ignored and every change rebuilt.
+            let mut other = doc.fork();
+            other.put(ROOT, "other", 1).unwrap();
+            let other_saved = other.save();
+            let mut other_swapped = other.committed_document().change_hashes().to_vec();
+            other_swapped.swap(1, 2);
+            store
+                .write_hint(
+                    &key,
+                    &load_hint::encode(&other_saved, &other_swapped).unwrap(),
+                )
+                .unwrap();
+            assert_eq!(loaded_hashes(&owner), appended);
         }
     }
 
@@ -1428,41 +1686,6 @@ mod tests {
         }
     }
 
-    /// The compositor runs apps on its frame loop: saving, flushing and
-    /// closing a document there start the store's commits and never wait
-    /// for them, and the edits still reach the disk.
-    #[test]
-    fn a_writer_on_a_thread_that_must_not_wait_leaves_the_commit_to_the_store() {
-        let tmp = tempfile::tempdir().unwrap();
-        let store: Rc<dyn DurableStore> =
-            Rc::new(FsStore::with_debounce(tmp.path(), Duration::from_secs(600)));
-        let key = StorageKey::document("so.tilo.test", "room", "on-the-loop");
-        let owner = Rc::new(DocOwner::acquire(Rc::clone(&store), key.clone()).unwrap());
-        let mut doc = owner.new_document();
-        doc.put(ROOT, "body", "typed").unwrap();
-        {
-            let _loop = durable_store::waiting::forbid_strictly_on_this_thread();
-            doc.commit();
-            let mut writer = DocWriter::start_new(&owner, &doc).unwrap();
-            doc.put(ROOT, "body", "typed more").unwrap();
-            doc.commit();
-            writer.save(&doc);
-            writer
-                .try_flush()
-                .expect("accepted writes are not a failure");
-            assert_eq!(writer.last_error(), None);
-            drop(writer);
-        }
-        store.flush(Some(&key)).unwrap();
-        drop(owner);
-        drop(store);
-        let stored = FsStore::new(tmp.path()).read(&key).unwrap().unwrap();
-        assert_eq!(
-            AutoCommit::load(&stored.bytes).unwrap().get_heads(),
-            doc.get_heads()
-        );
-    }
-
     fn with_torn_tail(doc: &mut AutoCommit) -> Vec<u8> {
         let heads = doc.get_heads();
         let mut bytes = doc.save();
@@ -1490,219 +1713,5 @@ mod tests {
             .unwrap();
         subject.pump();
         subject.store.flush(Some(owner.key())).unwrap();
-    }
-
-    #[test]
-    fn stored_bytes_are_accepted_only_when_decodable_unchanged_and_current() {
-        // Phase `undecodable_bytes_are_refused_and_never_overwritten`.
-        {
-            for subject in Subject::all() {
-                for (n, bytes) in [b"not automerge".to_vec(), Vec::new()]
-                    .into_iter()
-                    .enumerate()
-                {
-                    let record = format!("corrupt-{n}");
-                    store_raw(&subject, &record, bytes.clone());
-                    let owner = subject.owner(&record);
-                    assert!(owner.load().is_err(), "{}", subject.name);
-                    assert!(owner.load_complete().is_err(), "{}", subject.name);
-                    assert_eq!(
-                        subject.store.read(owner.key()).unwrap().unwrap().bytes,
-                        bytes,
-                        "{}",
-                        subject.name
-                    );
-                }
-            }
-        }
-        // Phase `a_torn_tail_is_repaired_only_on_acceptance_by_its_owner`.
-        {
-            for subject in Subject::all() {
-                let mut doc = AutoCommit::new();
-                doc.put(ROOT, "body", "prefix").unwrap();
-                let torn = with_torn_tail(&mut doc);
-                store_raw(&subject, "torn", torn.clone());
-                let owner = subject.owner("torn");
-                assert!(owner.load_complete().is_err(), "{}", subject.name);
-                let loaded = owner.load().unwrap().unwrap();
-                assert_eq!(
-                    subject.store.read(owner.key()).unwrap().unwrap().bytes,
-                    torn,
-                    "decoding publishes nothing ({})",
-                    subject.name
-                );
-                let other = subject.owner("elsewhere");
-                assert!(matches!(
-                    other.accept(loaded),
-                    Err(StoreError::SourceChanged { .. })
-                ));
-                let loaded = owner.load().unwrap().unwrap();
-                let mut accepted = owner.accept(loaded).unwrap();
-                subject.pump();
-                let writer = DocWriter::try_start(&owner).unwrap();
-                subject.flush(&writer).unwrap();
-                assert_eq!(
-                    writer.durability_snapshot().durable_heads,
-                    Some(accepted.get_heads())
-                );
-                let repaired = subject.store.read(owner.key()).unwrap().unwrap().bytes;
-                assert!(AutoCommit::load(&repaired).is_ok(), "{}", subject.name);
-            }
-        }
-        // Phase `a_changed_source_is_never_accepted`.
-        {
-            for subject in Subject::all() {
-                let mut doc = AutoCommit::new();
-                doc.put(ROOT, "body", "original").unwrap();
-                store_raw(&subject, "changed", doc.save());
-                let owner = subject.owner("changed");
-                let loaded = owner.load().unwrap().unwrap();
-                owner
-                    .store()
-                    .write(owner.key(), WriteOp::Replace(b"replacement".to_vec()), None)
-                    .unwrap();
-                subject.pump();
-                assert!(matches!(
-                    owner.accept(loaded),
-                    Err(StoreError::SourceChanged { .. })
-                ));
-            }
-        }
-    }
-
-    #[test]
-    fn writer_ownership_is_exclusive_shared_or_disabled() {
-        // Phase `owners_and_writers_are_exclusive`.
-        {
-            for subject in Subject::all() {
-                let owner = subject.owner("exclusive");
-                assert!(matches!(
-                    DocOwner::acquire(
-                        Rc::clone(&subject.store),
-                        StorageKey::document("so.tilo.test", "room", "exclusive"),
-                    ),
-                    Err(StoreError::WriterBusy { .. })
-                ));
-                let writer = DocWriter::try_start(&owner).unwrap();
-                assert!(matches!(
-                    DocWriter::try_start(&owner),
-                    Err(StoreError::WriterBusy { .. })
-                ));
-                drop(writer);
-                assert!(DocWriter::try_start(&owner).is_ok());
-            }
-        }
-        // Phase `only_the_primary_shared_writer_continues_the_stored_actor`.
-        {
-            for subject in Subject::all() {
-                let key = StorageKey::app("so.tilo.shared");
-                let primary = Rc::new(
-                    DocOwner::acquire_shared(Rc::clone(&subject.store), key.clone()).unwrap(),
-                );
-                let mut doc = primary.new_document();
-                doc.commit();
-                let writer = DocWriter::start_new(&primary, &doc).unwrap();
-                subject.flush(&writer).unwrap();
-                let secondary = Rc::new(
-                    DocOwner::acquire_shared(Rc::clone(&subject.store), key.clone()).unwrap(),
-                );
-                assert_ne!(secondary.actor(), primary.actor(), "{}", subject.name);
-                let mut other = secondary.new_document();
-                other.put(ROOT, "from", "secondary").unwrap();
-                other.commit();
-                let second = DocWriter::start_new(&secondary, &other).unwrap();
-                subject.flush(&second).unwrap();
-                let actor = primary.actor();
-                drop((writer, second, primary, secondary));
-                let reopened = DocOwner::acquire_shared(Rc::clone(&subject.store), key).unwrap();
-                assert_eq!(reopened.actor(), actor, "{}", subject.name);
-            }
-        }
-        // Phase `a_disabled_writer_reports_why_and_persists_nothing`.
-        {
-            let mut writer = DocWriter::disabled("no storage");
-            let mut doc = AutoCommit::new();
-            doc.put(ROOT, "k", "v").unwrap();
-            doc.commit();
-            writer.request(&doc);
-            doc.commit();
-            writer.request_checkpoint(&doc);
-            assert!(!writer.is_enabled());
-            assert_eq!(writer.last_error().as_deref(), Some("no storage"));
-            assert!(writer.try_flush().is_err());
-            assert_eq!(writer.document_path(), Path::new(""));
-        }
-    }
-
-    #[test]
-    fn a_full_save_keeps_a_load_hint_only_a_load_of_those_bytes_takes() {
-        let tmp = tempfile::tempdir().unwrap();
-        let store: Rc<dyn DurableStore> =
-            Rc::new(FsStore::with_debounce(tmp.path(), Duration::from_secs(600)));
-        let key = StorageKey::document("so.tilo.test", "room", "large");
-        let owner = Rc::new(DocOwner::acquire(Rc::clone(&store), key.clone()).unwrap());
-        let mut doc = owner.new_document();
-        let items = doc.put_object(ROOT, "items", ObjType::Map).unwrap();
-        for i in 0..6_000_u64 {
-            let value = blake3::hash(&i.to_le_bytes()).to_hex().to_string();
-            doc.put(&items, format!("item-{i:05}"), value).unwrap();
-            if i % 50 == 0 {
-                doc.commit();
-            }
-        }
-        doc.commit();
-        let mut writer = DocWriter::start_new(&owner, &doc).unwrap();
-        writer.try_flush().unwrap();
-        let saved = store.read(&key).unwrap().unwrap().bytes;
-        assert!(saved.len() >= load_hint::MIN_HINTED_BYTES);
-        let hashes = doc.committed_document().change_hashes().to_vec();
-        let hint = store.read_hint(&key).expect("a full save keeps a hint");
-        assert_eq!(load_hint::hashes_for(&hint, &saved), Some(hashes.clone()));
-
-        // A later edit is appended after the hinted chunk.
-        doc.put(ROOT, "later", "appended").unwrap();
-        doc.commit();
-        writer.request(&doc);
-        writer.try_flush().unwrap();
-        let stored = store.read(&key).unwrap().unwrap().bytes;
-        assert!(stored.len() > saved.len() && stored.starts_with(&saved));
-        drop(writer);
-        let appended = doc.committed_document().change_hashes().to_vec();
-        assert_eq!(appended.len(), hashes.len() + 1);
-        let loaded_hashes = |owner: &DocOwner| {
-            let loaded = owner.load().unwrap().expect("stored document");
-            loaded
-                .document()
-                .committed_document()
-                .change_hashes()
-                .to_vec()
-        };
-        assert_eq!(loaded_hashes(&owner), appended);
-
-        // The load takes the hint as given: two changes listed in swapped
-        // order (heads unchanged) come back swapped, which a rebuild
-        // would never produce.
-        let mut swapped = hashes;
-        swapped.swap(1, 2);
-        store
-            .write_hint(&key, &load_hint::encode(&saved, &swapped).unwrap())
-            .unwrap();
-        let mut expected = appended.clone();
-        expected.swap(1, 2);
-        assert_eq!(loaded_hashes(&owner), expected);
-
-        // A hint made for other bytes is ignored and every change rebuilt.
-        let mut other = doc.fork();
-        other.put(ROOT, "other", 1).unwrap();
-        let other_saved = other.save();
-        let mut other_swapped = other.committed_document().change_hashes().to_vec();
-        other_swapped.swap(1, 2);
-        store
-            .write_hint(
-                &key,
-                &load_hint::encode(&other_saved, &other_swapped).unwrap(),
-            )
-            .unwrap();
-        assert_eq!(loaded_hashes(&owner), appended);
     }
 }

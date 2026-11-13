@@ -1023,58 +1023,205 @@ mod tests {
         }
     }
 
-    #[test]
-    fn canonical_and_complete_loads_refuse_truncated_documents() {
-        // Phase `complete_load_refuses_truncated_increment_without_accepting_or_rewriting_it`.
+    tilo_test_env::scenario! {
+        /// `DocStore` opened at an explicit place, without the environment.
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "fixture arithmetic in test bodies, which the lint skips in a plain test"
+        )]
+        fn a_doc_store_refuses_what_is_unsafe_and_keeps_its_load_hint;
+
+        phase canonical_and_complete_loads_refuse_truncated_documents;
         {
-            let tmp = tempfile::tempdir().unwrap();
-            let mut store = DocStore::open_in("dev.tilo.complete-load", tmp.path()).unwrap();
-            let mut doc = store.new_document();
-            doc.put(ROOT, "body", "first").unwrap();
-            let mut bytes = doc.save();
-            doc.put(ROOT, "body", "later version").unwrap();
-            let increment = doc.save_incremental();
-            assert!(increment.len() > 8);
-            bytes.extend_from_slice(&increment[..increment.len() - 3]);
-            fs::write(store.document_path(), &bytes).unwrap();
-            let before = store.persisted.clone();
-            assert!(
-                store.load_complete().is_err(),
-                "checked admission cannot accept a valid prefix with a truncated appended change"
-            );
-            assert_eq!(
-                store.persisted, before,
-                "refused content cannot become the admitted persisted frontier"
-            );
-            assert_eq!(fs::read(store.document_path()).unwrap(), bytes);
-            let legacy = store.load().unwrap().unwrap();
-            assert_eq!(
-                legacy.get(ROOT, "body").unwrap().unwrap().0.as_str(),
-                Some("first"),
-                "ordinary legacy recovery retains its prior partial-load behavior"
-            );
+            // Phase `complete_load_refuses_truncated_increment_without_accepting_or_rewriting_it`.
+            {
+                let tmp = tempfile::tempdir().unwrap();
+                let mut store = DocStore::open_in("dev.tilo.complete-load", tmp.path()).unwrap();
+                let mut doc = store.new_document();
+                doc.put(ROOT, "body", "first").unwrap();
+                let mut bytes = doc.save();
+                doc.put(ROOT, "body", "later version").unwrap();
+                let increment = doc.save_incremental();
+                assert!(increment.len() > 8);
+                bytes.extend_from_slice(&increment[..increment.len() - 3]);
+                fs::write(store.document_path(), &bytes).unwrap();
+                let before = store.persisted.clone();
+                assert!(
+                    store.load_complete().is_err(),
+                    "checked admission cannot accept a valid prefix with a truncated appended change"
+                );
+                assert_eq!(
+                    store.persisted, before,
+                    "refused content cannot become the admitted persisted frontier"
+                );
+                assert_eq!(fs::read(store.document_path()).unwrap(), bytes);
+                let legacy = store.load().unwrap().unwrap();
+                assert_eq!(
+                    legacy.get(ROOT, "body").unwrap().unwrap().0.as_str(),
+                    Some("first"),
+                    "ordinary legacy recovery retains its prior partial-load behavior"
+                );
+            }
+            // Phase `complete_load_accepts_full_history_and_distinguishes_missing_from_empty`.
+            {
+                let tmp = tempfile::tempdir().unwrap();
+                let mut store = DocStore::open_in("dev.tilo.complete-load", tmp.path()).unwrap();
+                assert!(store.load_complete().unwrap().is_none());
+                fs::write(store.document_path(), []).unwrap();
+                assert!(matches!(
+                    store.load_complete(),
+                    Err(StoreError::EmptyExistingDocument { .. })
+                ));
+                let mut doc = store.new_document();
+                doc.put(ROOT, "body", "first").unwrap();
+                let mut bytes = doc.save();
+                doc.put(ROOT, "body", "second").unwrap();
+                bytes.extend_from_slice(&doc.save_incremental());
+                let heads = doc.get_heads();
+                fs::write(store.document_path(), &bytes).unwrap();
+                let mut loaded = store.load_complete().unwrap().unwrap();
+                assert_eq!(loaded.get_heads(), heads);
+                assert_eq!(store.persisted, heads);
+                assert_eq!(fs::read(store.document_path()).unwrap(), bytes);
+            }
         }
-        // Phase `complete_load_accepts_full_history_and_distinguishes_missing_from_empty`.
+
+        phase store_gates_locks_and_directories_fail_closed;
         {
-            let tmp = tempfile::tempdir().unwrap();
-            let mut store = DocStore::open_in("dev.tilo.complete-load", tmp.path()).unwrap();
-            assert!(store.load_complete().unwrap().is_none());
-            fs::write(store.document_path(), []).unwrap();
-            assert!(matches!(
-                store.load_complete(),
-                Err(StoreError::EmptyExistingDocument { .. })
-            ));
-            let mut doc = store.new_document();
-            doc.put(ROOT, "body", "first").unwrap();
-            let mut bytes = doc.save();
-            doc.put(ROOT, "body", "second").unwrap();
-            bytes.extend_from_slice(&doc.save_incremental());
-            let heads = doc.get_heads();
-            fs::write(store.document_path(), &bytes).unwrap();
-            let mut loaded = store.load_complete().unwrap().unwrap();
-            assert_eq!(loaded.get_heads(), heads);
-            assert_eq!(store.persisted, heads);
-            assert_eq!(fs::read(store.document_path()).unwrap(), bytes);
+            // Phase `canonical_gate_blocks_legacy_before_actor_creation`.
+            {
+                let tmp = TempDir::new().unwrap();
+                // The exclusive owner holds this gate before touching actor or document.
+                let gate = DocStore::open_canonical_at("so.tilo.test", tmp.path()).unwrap();
+                let result = DocStore::open_in("so.tilo.test", tmp.path());
+                assert!(
+                    result.is_err(),
+                    "a legacy opener must respect the canonical gate"
+                );
+                assert!(!tmp.path().join(ACTOR_FILE).exists());
+                assert!(!tmp.path().join(DOCUMENT_FILE).exists());
+                drop(gate);
+                assert!(DocStore::open_in("so.tilo.test", tmp.path()).is_ok());
+            }
+            // Phase `writer_lock_is_exclusive_and_released_with_its_handle`.
+            {
+                let tmp = TempDir::new().unwrap();
+                let path = tmp.path().join("writer.lock");
+                let first = acquire_writer_lock(&path).expect("first writer lock");
+                assert!(
+                    acquire_writer_lock(&path).is_none(),
+                    "a second live handle must not acquire the writer lock"
+                );
+                drop(first);
+                assert!(
+                    acquire_writer_lock(&path).is_some(),
+                    "dropping the owner must release the writer lock"
+                );
+            }
+            // Phase `an_uncreatable_state_dir_is_still_an_error`.
+            // A state directory that genuinely cannot be created must still surface as
+            // an error — idempotent create must not paper over a real filesystem failure.
+            {
+                // A file where a parent directory needs to be fails ENOTDIR for any
+                // uid — unlike a read-only directory, which root would sail past.
+                let tmp = TempDir::new().unwrap();
+                let blocker = tmp.path().join("blocker");
+                fs::write(&blocker, b"not a directory").unwrap();
+
+                let result = DocStore::shared(
+                    Rc::new(FsStore::new(blocker.join("sub"))),
+                    StorageKey::app("so.tilo.blocked"),
+                );
+
+                match result {
+                    Err(StoreError::Io { .. }) => {}
+                    Err(other) => {
+                        panic!(
+                            "expected an Io error from an uncreatable state directory, got {other:?}"
+                        )
+                    }
+                    Ok(_) => panic!(
+                        "an uncreatable state directory must surface as an error, not be \
+                     masked by the idempotent create"
+                    ),
+                }
+            }
+        }
+
+        phase a_docstore_save_keeps_a_load_hint_its_next_load_takes;
+        {
+            let tmp = TempDir::new().unwrap();
+            let store: Rc<dyn DurableStore> = Rc::new(FsStore::new(tmp.path()));
+            let key = StorageKey::workspace_index("so.tilo.test", "room");
+            let mut primary = DocStore::shared(Rc::clone(&store), key.clone()).unwrap();
+            assert!(primary.is_exclusive_writer());
+            // The desktop document's shape: many small changes, few bytes.
+            let mut doc = primary.new_document();
+            for i in 0..load_hint::MIN_HINTED_CHANGES {
+                doc.put(&ROOT, "active", u64::try_from(i % 6).unwrap())
+                    .unwrap();
+                doc.commit();
+            }
+            primary.save(&mut doc).unwrap();
+            let saved = store.read(&key).unwrap().unwrap().bytes;
+            assert!(saved.len() < load_hint::MIN_HINTED_BYTES);
+            let hashes = doc.committed_document().change_hashes().to_vec();
+            let hint = store.read_hint(&key).expect("a save keeps a hint");
+            assert_eq!(load_hint::hashes_for(&hint, &saved), Some(hashes.clone()));
+
+            let loaded_hashes = |store: &mut DocStore| {
+                store
+                    .load()
+                    .unwrap()
+                    .expect("stored document")
+                    .committed_document()
+                    .change_hashes()
+                    .to_vec()
+            };
+            assert_eq!(loaded_hashes(&mut primary), hashes);
+
+            // Phase `the_load_takes_the_hint_as_given`: two changes listed in
+            // swapped order (heads unchanged) come back swapped, which a rebuild
+            // never produces.
+            let mut swapped = hashes.clone();
+            swapped.swap(1, 2);
+            store
+                .write_hint(&key, &load_hint::encode(&saved, &swapped).unwrap())
+                .unwrap();
+            assert_eq!(loaded_hashes(&mut primary), swapped);
+
+            // Phase `a_hint_for_other_bytes_is_ignored`.
+            let mut other = doc.fork();
+            other.put(&ROOT, "other", 1).unwrap();
+            other.commit();
+            let mut other_swapped = other.committed_document().change_hashes().to_vec();
+            other_swapped.swap(1, 2);
+            store
+                .write_hint(
+                    &key,
+                    &load_hint::encode(&other.save(), &other_swapped).unwrap(),
+                )
+                .unwrap();
+            assert_eq!(loaded_hashes(&mut primary), hashes);
+
+            // Phase `a_shared_secondary_writer_keeps_none`.
+            let mut secondary = DocStore::shared(Rc::clone(&store), key.clone()).unwrap();
+            assert!(!secondary.is_exclusive_writer());
+            let before = store.read_hint(&key);
+            let mut copy = secondary.load().unwrap().unwrap();
+            copy.put(&ROOT, "secondary", 1).unwrap();
+            copy.commit();
+            secondary.save(&mut copy).unwrap();
+            assert_eq!(
+                store.read_hint(&key),
+                before,
+                "the secondary's save kept no hint"
+            );
+            assert_eq!(
+                loaded_hashes(&mut secondary),
+                copy.committed_document().change_hashes(),
+                "its bytes load in full past the primary's stale hint"
+            );
         }
     }
 
@@ -1122,68 +1269,6 @@ mod tests {
                     matches!(err, StoreError::AppId(..)),
                     "app id {bad:?} rejected for the wrong reason: {err}"
                 );
-            }
-        }
-    }
-
-    #[test]
-    fn store_gates_locks_and_directories_fail_closed() {
-        // Phase `canonical_gate_blocks_legacy_before_actor_creation`.
-        {
-            let tmp = TempDir::new().unwrap();
-            // The exclusive owner holds this gate before touching actor or document.
-            let gate = DocStore::open_canonical_at("so.tilo.test", tmp.path()).unwrap();
-            let result = DocStore::open_in("so.tilo.test", tmp.path());
-            assert!(
-                result.is_err(),
-                "a legacy opener must respect the canonical gate"
-            );
-            assert!(!tmp.path().join(ACTOR_FILE).exists());
-            assert!(!tmp.path().join(DOCUMENT_FILE).exists());
-            drop(gate);
-            assert!(DocStore::open_in("so.tilo.test", tmp.path()).is_ok());
-        }
-        // Phase `writer_lock_is_exclusive_and_released_with_its_handle`.
-        {
-            let tmp = TempDir::new().unwrap();
-            let path = tmp.path().join("writer.lock");
-            let first = acquire_writer_lock(&path).expect("first writer lock");
-            assert!(
-                acquire_writer_lock(&path).is_none(),
-                "a second live handle must not acquire the writer lock"
-            );
-            drop(first);
-            assert!(
-                acquire_writer_lock(&path).is_some(),
-                "dropping the owner must release the writer lock"
-            );
-        }
-        // Phase `an_uncreatable_state_dir_is_still_an_error`.
-        // A state directory that genuinely cannot be created must still surface as
-        // an error — idempotent create must not paper over a real filesystem failure.
-        {
-            // A file where a parent directory needs to be fails ENOTDIR for any
-            // uid — unlike a read-only directory, which root would sail past.
-            let tmp = TempDir::new().unwrap();
-            let blocker = tmp.path().join("blocker");
-            fs::write(&blocker, b"not a directory").unwrap();
-
-            let result = DocStore::shared(
-                Rc::new(FsStore::new(blocker.join("sub"))),
-                StorageKey::app("so.tilo.blocked"),
-            );
-
-            match result {
-                Err(StoreError::Io { .. }) => {}
-                Err(other) => {
-                    panic!(
-                        "expected an Io error from an uncreatable state directory, got {other:?}"
-                    )
-                }
-                Ok(_) => panic!(
-                    "an uncreatable state directory must surface as an error, not be \
-                     masked by the idempotent create"
-                ),
             }
         }
     }
@@ -1445,81 +1530,5 @@ mod tests {
                 .unwrap();
             autosave2.flush();
         }
-    }
-
-    #[test]
-    fn a_docstore_save_keeps_a_load_hint_its_next_load_takes() {
-        let tmp = TempDir::new().unwrap();
-        let store: Rc<dyn DurableStore> = Rc::new(FsStore::new(tmp.path()));
-        let key = StorageKey::workspace_index("so.tilo.test", "room");
-        let mut primary = DocStore::shared(Rc::clone(&store), key.clone()).unwrap();
-        assert!(primary.is_exclusive_writer());
-        // The desktop document's shape: many small changes, few bytes.
-        let mut doc = primary.new_document();
-        for i in 0..load_hint::MIN_HINTED_CHANGES {
-            doc.put(&ROOT, "active", u64::try_from(i % 6).unwrap())
-                .unwrap();
-            doc.commit();
-        }
-        primary.save(&mut doc).unwrap();
-        let saved = store.read(&key).unwrap().unwrap().bytes;
-        assert!(saved.len() < load_hint::MIN_HINTED_BYTES);
-        let hashes = doc.committed_document().change_hashes().to_vec();
-        let hint = store.read_hint(&key).expect("a save keeps a hint");
-        assert_eq!(load_hint::hashes_for(&hint, &saved), Some(hashes.clone()));
-
-        let loaded_hashes = |store: &mut DocStore| {
-            store
-                .load()
-                .unwrap()
-                .expect("stored document")
-                .committed_document()
-                .change_hashes()
-                .to_vec()
-        };
-        assert_eq!(loaded_hashes(&mut primary), hashes);
-
-        // Phase `the_load_takes_the_hint_as_given`: two changes listed in
-        // swapped order (heads unchanged) come back swapped, which a rebuild
-        // never produces.
-        let mut swapped = hashes.clone();
-        swapped.swap(1, 2);
-        store
-            .write_hint(&key, &load_hint::encode(&saved, &swapped).unwrap())
-            .unwrap();
-        assert_eq!(loaded_hashes(&mut primary), swapped);
-
-        // Phase `a_hint_for_other_bytes_is_ignored`.
-        let mut other = doc.fork();
-        other.put(&ROOT, "other", 1).unwrap();
-        other.commit();
-        let mut other_swapped = other.committed_document().change_hashes().to_vec();
-        other_swapped.swap(1, 2);
-        store
-            .write_hint(
-                &key,
-                &load_hint::encode(&other.save(), &other_swapped).unwrap(),
-            )
-            .unwrap();
-        assert_eq!(loaded_hashes(&mut primary), hashes);
-
-        // Phase `a_shared_secondary_writer_keeps_none`.
-        let mut secondary = DocStore::shared(Rc::clone(&store), key.clone()).unwrap();
-        assert!(!secondary.is_exclusive_writer());
-        let before = store.read_hint(&key);
-        let mut copy = secondary.load().unwrap().unwrap();
-        copy.put(&ROOT, "secondary", 1).unwrap();
-        copy.commit();
-        secondary.save(&mut copy).unwrap();
-        assert_eq!(
-            store.read_hint(&key),
-            before,
-            "the secondary's save kept no hint"
-        );
-        assert_eq!(
-            loaded_hashes(&mut secondary),
-            copy.committed_document().change_hashes(),
-            "its bytes load in full past the primary's stale hint"
-        );
     }
 }

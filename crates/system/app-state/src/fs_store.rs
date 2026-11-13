@@ -1866,46 +1866,446 @@ mod tests {
         StorageKey::document("so.tilo.test", "room-a", name)
     }
 
-    /// An idle frame loop told "not yet" hears when the answer is ready:
-    /// nothing else happens on it, and its wake is called once, however
-    /// often it asked, after which asking again answers.
-    #[test]
-    fn an_idle_thread_that_must_not_wait_is_woken_once_its_read_is_done() {
-        let tmp = TempDir::new().unwrap();
-        let fs = FsStore::with_debounce(tmp.path(), Duration::ZERO);
-        let key = record("idle");
+    tilo_test_env::scenario! {
+        /// `FsStore`, on threads that leave their waiting rule as they found it.
+        fn the_file_store_wakes_leases_and_commits;
+
+        phase an_idle_thread_that_must_not_wait_is_woken_once_its_read_is_done;
+        // An idle frame loop told "not yet" hears when the answer is ready:
+        // nothing else happens on it, and its wake is called once, however
+        // often it asked, after which asking again answers.
         {
-            let _lease = fs.lease(&key).unwrap();
-            fs.write(&key, WriteOp::Replace(b"kept".to_vec()), Some(b"me"))
-                .unwrap();
-            fs.flush(Some(&key)).unwrap();
+            let tmp = TempDir::new().unwrap();
+            let fs = FsStore::with_debounce(tmp.path(), Duration::ZERO);
+            let key = record("idle");
+            {
+                let _lease = fs.lease(&key).unwrap();
+                fs.write(&key, WriteOp::Replace(b"kept".to_vec()), Some(b"me"))
+                    .unwrap();
+                fs.flush(Some(&key)).unwrap();
+            }
+            let (release, held) = std::sync::mpsc::channel();
+            fs.faults().prepare_hold = Some(held);
+            let woken = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let (notify, notified) = std::sync::mpsc::channel();
+            let counted = Arc::clone(&woken);
+            let wake: ReadyWake = Arc::new(move || {
+                counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let _ = notify.send(());
+            });
+            {
+                let _loop = durable_store::waiting::forbid_strictly_on_this_thread().waking(wake);
+                assert!(matches!(fs.read(&key), Err(SeamError::Opening(_))));
+                assert!(matches!(fs.read(&key), Err(SeamError::Opening(_))));
+                assert!(
+                    notified.try_recv().is_err(),
+                    "woken before the work was done"
+                );
+                release.send(()).unwrap();
+                tilo_test_env::recv("the wake once the read is done", &notified);
+                let stored = fs.read(&key).unwrap().unwrap();
+                assert_eq!(stored.bytes, b"kept");
+                assert_eq!(stored.writer.as_deref(), Some(&b"me"[..]));
+            }
+            // Dropping the store joins its thread: every wake it would call has been.
+            drop(fs);
+            assert_eq!(woken.load(std::sync::atomic::Ordering::SeqCst), 1);
         }
-        let (release, held) = std::sync::mpsc::channel();
-        fs.faults().prepare_hold = Some(held);
-        let woken = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let (notify, notified) = std::sync::mpsc::channel();
-        let counted = Arc::clone(&woken);
-        let wake: ReadyWake = Arc::new(move || {
-            counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            let _ = notify.send(());
-        });
+
+        phase a_write_landing_wakes_who_waits_on_it_once;
+        // A thread that must not wait on the disk (the compositor opening a new
+        // tab's record) is told to come back while the store's thread opens
+        // the document, is woken when it is done, and then leases and reads
+        // what that thread opened and read for it, without the disk.
+        // A window showing "Saving…" hears from the store's thread when the
+        // write lands, once, and is never woken for a key with nothing
+        // outstanding.
         {
-            let _loop = durable_store::waiting::forbid_strictly_on_this_thread().waking(wake);
-            assert!(matches!(fs.read(&key), Err(SeamError::Opening(_))));
-            assert!(matches!(fs.read(&key), Err(SeamError::Opening(_))));
+            let tmp = TempDir::new().unwrap();
+            // Nothing commits unless flushed: the wake cannot come early.
+            let fs = FsStore::with_debounce(tmp.path(), Duration::from_secs(3600));
+            let key = record("saving");
+            let _lease = fs.lease(&key).unwrap();
+            let (wake, notified) = thread_wake();
+            assert_eq!(
+                fs.wake_when_settled(&key, Arc::clone(&wake)),
+                SettleWatch::Settled,
+                "nothing written, nothing to wait for"
+            );
+            let revision = fs
+                .write(&key, WriteOp::Replace(b"draft".to_vec()), Some(b"me"))
+                .unwrap();
+            assert_eq!(
+                fs.wake_when_settled(&key, Arc::clone(&wake)),
+                SettleWatch::Armed
+            );
+            assert_eq!(
+                fs.wake_when_settled(&key, Arc::clone(&wake)),
+                SettleWatch::Armed,
+                "the same wake armed again is called once"
+            );
             assert!(
                 notified.try_recv().is_err(),
-                "woken before the work was done"
+                "woken before the write landed"
             );
-            release.send(()).unwrap();
-            tilo_test_env::recv("the wake once the read is done", &notified);
-            let stored = fs.read(&key).unwrap().unwrap();
-            assert_eq!(stored.bytes, b"kept");
-            assert_eq!(stored.writer.as_deref(), Some(&b"me"[..]));
+            fs.flush(Some(&key)).unwrap();
+            // Woken before the flush returned.
+            let worker = notified.try_recv().expect("the landed write's wake");
+            assert_ne!(
+                worker,
+                thread::current().id(),
+                "the store's thread wakes it"
+            );
+            assert_eq!(fs.durability(&key, revision), Durability::Durable);
+            assert!(notified.try_recv().is_err(), "woken once");
+            assert_eq!(fs.wake_when_settled(&key, wake), SettleWatch::Settled);
         }
-        // Dropping the store joins its thread: every wake it would call has been.
-        drop(fs);
-        assert_eq!(woken.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+        phase a_read_on_a_thread_that_must_not_wait_sees_unwritten_writes;
+        // A frame loop reads back what it just wrote while the store's thread
+        // has yet to commit it, and while it commits: from memory, never by
+        // waiting for that thread. The strict guard fails the test on a wait.
+        {
+            let tmp = TempDir::new().unwrap();
+            // A long debounce: nothing commits unless asked to.
+            let fs = FsStore::with_debounce(tmp.path(), Duration::from_secs(3600));
+            let key = record("typed");
+            let _lease = fs.lease(&key).unwrap();
+            fs.write(&key, WriteOp::Replace(b"ab".to_vec()), Some(b"me"))
+                .unwrap();
+            {
+                let _loop = durable_store::waiting::forbid_strictly_on_this_thread();
+                let stored = fs.read(&key).unwrap().unwrap();
+                assert_eq!(stored.bytes, b"ab", "a queued replacement");
+                assert_eq!(stored.writer.as_deref(), Some(&b"me"[..]));
+            }
+            fs.flush(Some(&key)).unwrap();
+
+            // An append the writer thread holds after noting where it starts.
+            let (reached_tx, reached) = std::sync::mpsc::channel();
+            let (release, held) = std::sync::mpsc::channel();
+            fs.faults().append_hold = Some((reached_tx, held));
+            fs.write(&key, WriteOp::Append(b"cd".to_vec()), None)
+                .unwrap();
+            let (wake, notified) = thread_wake();
+            {
+                let _loop = durable_store::waiting::forbid_strictly_on_this_thread().waking(wake);
+                assert!(matches!(
+                    fs.flush_where_allowed(&key),
+                    Err(SeamError::Pending(_))
+                ));
+                tilo_test_env::recv("the writer thread to take the append", &reached);
+                fs.write(&key, WriteOp::Append(b"ef".to_vec()), None)
+                    .unwrap();
+                assert!(
+                    matches!(fs.read(&key), Err(SeamError::Opening(_))),
+                    "what only the file holds is the store's thread to read"
+                );
+            }
+            let stored = fs.read(&key).unwrap().unwrap();
+            assert_eq!(
+                stored.bytes, b"abcdef",
+                "the file, the append under way and the queued one, once each"
+            );
+            assert_eq!(stored.writer.as_deref(), Some(&b"me"[..]), "from the file");
+            release.send(()).unwrap();
+            tilo_test_env::recv("the store's thread to read the file", &notified);
+            {
+                let _loop = durable_store::waiting::forbid_strictly_on_this_thread();
+                let stored = fs.read(&key).unwrap().unwrap();
+                assert_eq!(
+                    stored.bytes, b"abcdef",
+                    "read for it: the file with the queued append, once"
+                );
+                assert_eq!(stored.writer.as_deref(), Some(&b"me"[..]), "from the file");
+            }
+            fs.flush(Some(&key)).unwrap();
+            assert_eq!(fs.read(&key).unwrap().unwrap().bytes, b"abcdef");
+            let Target::Document(directory) = fs.target(&key).unwrap() else {
+                panic!("a record is a document");
+            };
+            assert_eq!(fs::read(directory.join(DOCUMENT_FILE)).unwrap(), b"abcdef");
+        }
+
+        phase a_write_outlives_its_lease_and_keeps_the_document_until_it_lands;
+        // A caller that may not wait lets go of its lease while its last write
+        // is still queued: the write lands anyway, and nobody else, in this
+        // process or another, can lease the document until it has.
+        {
+            let tmp = TempDir::new().unwrap();
+            let fs = FsStore::with_debounce(tmp.path(), Duration::from_secs(3600));
+            let key = record("closing");
+            let lease = fs.lease(&key).unwrap();
+            let revision = fs
+                .write(&key, WriteOp::Replace(b"last words".to_vec()), Some(b"me"))
+                .unwrap();
+            drop(lease);
+            let other = FsStore::new(tmp.path());
+            assert!(
+                matches!(other.lease(&key), Err(SeamError::Busy(_))),
+                "another process waits for the queued write"
+            );
+            assert!(
+                matches!(fs.lease(&key), Err(SeamError::Busy(_))),
+                "so does a new owner in this one"
+            );
+            fs.flush(Some(&key)).unwrap();
+            assert_eq!(fs.durability(&key, revision), Durability::Durable);
+            drop(other.lease(&key).unwrap());
+            let Target::Document(directory) = fs.target(&key).unwrap() else {
+                panic!("a record is a document");
+            };
+            assert_eq!(
+                fs::read(directory.join(DOCUMENT_FILE)).unwrap(),
+                b"last words"
+            );
+        }
+
+        phase records_lists_one_workspaces_committed_documents_sorted;
+        {
+            let tmp = TempDir::new().unwrap();
+            let store = FsStore::with_debounce(tmp.path(), Duration::ZERO);
+            assert!(
+                store
+                    .documents("so.tilo.test", "room-a")
+                    .unwrap()
+                    .is_empty()
+            );
+            for (workspace, name, bytes) in [
+                ("room-a", "b-rec", b"doc".as_slice()),
+                ("room-a", "a-rec", b"doc"),
+                ("room-a", "empty", b""),
+                ("room-b", "elsewhere", b"doc"),
+            ] {
+                let key = StorageKey::document("so.tilo.test", workspace, name);
+                let _lease = store.lease(&key).unwrap();
+                store
+                    .write(&key, WriteOp::Replace(bytes.to_vec()), None)
+                    .unwrap();
+                store.flush(Some(&key)).unwrap();
+            }
+            assert_eq!(
+                store.documents("so.tilo.test", "room-a").unwrap(),
+                ["a-rec", "b-rec"]
+            );
+            assert!(store.documents("so.tilo.test", "../room-a").is_err());
+        }
+
+        phase accepted_writes_become_durable_on_debounce_flush_drop_and_reopen;
+        {
+            // Phase `passes_the_shared_conformance_suite_and_survives_reopening`.
+            {
+                let tmp = TempDir::new().unwrap();
+                let root = tmp.path().join("profile");
+                let store = FsStore::with_debounce(&root, Duration::from_millis(5));
+                let subject = durable_store::conformance::Subject {
+                    store: &store,
+                    settle: &|| {},
+                };
+                durable_store::conformance::run(&subject);
+                durable_store::conformance::reopen(&subject, &|| Box::new(FsStore::new(&root)));
+            }
+            // Phase `writes_coalesce_until_their_debounce_or_a_flush`.
+            {
+                let tmp = TempDir::new().unwrap();
+                let store = FsStore::with_debounce(tmp.path(), Duration::from_secs(600));
+                let key = StorageKey::view("D", "A", 1);
+                let first = store
+                    .write(&key, WriteOp::Replace(b"a".to_vec()), None)
+                    .unwrap();
+                let second = store
+                    .write(&key, WriteOp::Append(b"b".to_vec()), None)
+                    .unwrap();
+                assert_eq!(store.durability(&key, first), Durability::Pending);
+                assert!(!tmp.path().join(INSTANCE_VIEWS_DIR).exists());
+                store.flush(Some(&key)).unwrap();
+                assert_eq!(store.durability(&key, first), Durability::Durable);
+                assert_eq!(store.durability(&key, second), Durability::Durable);
+                assert_eq!(store.read(&key).unwrap().unwrap().bytes, b"ab");
+            }
+            // Phase `dropping_the_store_commits_accepted_writes`.
+            {
+                let tmp = TempDir::new().unwrap();
+                let key = StorageKey::view("D", "A", 1);
+                {
+                    let store = FsStore::with_debounce(tmp.path(), Duration::from_secs(600));
+                    store
+                        .write(&key, WriteOp::Replace(b"kept".to_vec()), None)
+                        .unwrap();
+                }
+                assert_eq!(
+                    FsStore::new(tmp.path()).read(&key).unwrap().unwrap().bytes,
+                    b"kept"
+                );
+            }
+        }
+
+        phase a_dropped_view_lease_keeps_queued_commits_exclusive_until_settled;
+        {
+            let tmp = TempDir::new().unwrap();
+            let store = FsStore::with_debounce(tmp.path(), Duration::from_secs(600));
+            let peer = FsStore::new(tmp.path());
+            let key = StorageKey::view("private-action-history", "owner", 0);
+            let lease = store.lease(&key).unwrap();
+            let revision = store
+                .write(&key, WriteOp::Replace(b"evidence".to_vec()), None)
+                .unwrap();
+            drop(lease);
+            assert!(matches!(peer.lease(&key), Err(SeamError::Busy(_))));
+            store.flush(Some(&key)).unwrap();
+            assert_eq!(store.durability(&key, revision), Durability::Durable);
+            // The worker must release the gate before flush wakes its caller.
+            let _next = peer.lease(&key).unwrap();
+            assert_eq!(peer.read(&key).unwrap().unwrap().bytes, b"evidence");
+        }
+
+        phase view_creation_syncs_new_ancestors_once_and_retries_failed_durability;
+        {
+            for initial in [
+                WriteOp::Replace(b"checkpoint".to_vec()),
+                WriteOp::Append(b"checkpoint".to_vec()),
+            ] {
+                let tmp = TempDir::new().unwrap();
+                let ancestor = fs::canonicalize(tmp.path()).unwrap().join("new");
+                let root = ancestor.join("profile");
+                let store = FsStore::with_debounce(&root, Duration::from_secs(600));
+                let key = StorageKey::view("D", "A", 1);
+                // Even an earlier flush of a missing key does not prove that its
+                // not-yet-created parent chain is durable.
+                store.flush(Some(&key)).unwrap();
+                assert!(!ancestor.exists());
+                store.faults().sync_failure = Some(ancestor.clone());
+                let replacement = initial.is_replace();
+                let first = store.write(&key, initial, None).unwrap();
+                assert!(store.flush(Some(&key)).is_err());
+                assert!(matches!(
+                    store.durability(&key, first),
+                    Durability::Failed(message) if message.contains("injected directory sync failure")
+                ));
+                assert!(!store.is_settled(&key));
+                if replacement {
+                    assert!(
+                        store.read(&key).unwrap().is_none(),
+                        "no publication before durable parents"
+                    );
+                } else {
+                    assert_eq!(store.read(&key).unwrap().unwrap().bytes, b"checkpoint");
+                }
+
+                {
+                    let mut faults = store.faults();
+                    faults.sync_failure = None;
+                    faults.sync_threads.clear();
+                }
+                let retry = store
+                    .write(&key, WriteOp::Replace(b"checkpoint".to_vec()), None)
+                    .unwrap();
+                store.flush(Some(&key)).unwrap();
+                assert_eq!(store.durability(&key, retry), Durability::Durable);
+                assert!(store.is_settled(&key));
+                assert!(!store.faults().sync_threads.is_empty());
+
+                // Re-arm the same ancestor failure: later edits must not revisit
+                // the established chain (the atomic rename still syncs its parent).
+                {
+                    let mut faults = store.faults();
+                    faults.sync_threads.clear();
+                    faults.sync_failure = Some(ancestor);
+                }
+                for edit in [
+                    WriteOp::Replace(b"next".to_vec()),
+                    WriteOp::Append(b" edit".to_vec()),
+                ] {
+                    let revision = store.write(&key, edit, None).unwrap();
+                    store.flush(Some(&key)).unwrap();
+                    assert_eq!(store.durability(&key, revision), Durability::Durable);
+                    assert!(store.faults().sync_threads.is_empty());
+                }
+                assert_eq!(store.read(&key).unwrap().unwrap().bytes, b"next edit");
+            }
+        }
+
+        phase failed_writes_stay_unacknowledged_until_a_safe_replacement;
+        {
+            // Phase `a_torn_append_requires_a_replacement_without_duplicating_bytes`.
+            {
+                let tmp = TempDir::new().unwrap();
+                let store = FsStore::with_debounce(tmp.path(), Duration::from_secs(600));
+                let key = record("rec");
+                let _lease = store.lease(&key).unwrap();
+                let base = store
+                    .write(&key, WriteOp::Replace(b"base".to_vec()), None)
+                    .unwrap();
+                store.flush(Some(&key)).unwrap();
+                store.faults().append_prefix = Some(2);
+                let torn = store
+                    .write(&key, WriteOp::Append(b"+one".to_vec()), None)
+                    .unwrap();
+                assert!(store.flush(Some(&key)).is_err());
+                assert!(matches!(
+                    store.durability(&key, torn),
+                    Durability::Failed(_)
+                ));
+                assert_eq!(store.durability(&key, base), Durability::Durable);
+                let refused = store
+                    .write(&key, WriteOp::Append(b"+two".to_vec()), None)
+                    .unwrap();
+                assert!(store.flush(Some(&key)).is_err());
+                assert!(matches!(
+                    store.durability(&key, refused),
+                    Durability::Failed(_)
+                ));
+                assert_eq!(store.read(&key).unwrap().unwrap().bytes, b"base+o");
+                let replaced = store
+                    .write(&key, WriteOp::Replace(b"base+one+two".to_vec()), None)
+                    .unwrap();
+                store.flush(Some(&key)).unwrap();
+                assert_eq!(store.durability(&key, replaced), Durability::Durable);
+                assert_eq!(store.read(&key).unwrap().unwrap().bytes, b"base+one+two");
+            }
+            // Phase `directory_sync_failure_leaves_the_replacement_unacknowledged`.
+            {
+                let tmp = TempDir::new().unwrap();
+                let store = FsStore::with_debounce(tmp.path(), Duration::ZERO);
+                let key = record("rec");
+                let _lease = store.lease(&key).unwrap();
+                let directory =
+                    DocStore::workspace_document_dir_at(tmp.path(), "so.tilo.test", "room-a", "rec")
+                        .unwrap();
+                store.faults().sync_failure = Some(fs::canonicalize(&directory).unwrap());
+                let revision = store
+                    .write(&key, WriteOp::Replace(b"visible".to_vec()), None)
+                    .unwrap();
+                assert!(store.flush(Some(&key)).is_err());
+                assert!(matches!(
+                    store.durability(&key, revision),
+                    Durability::Failed(_)
+                ));
+                store.faults().sync_failure = None;
+                let retry = store
+                    .write(&key, WriteOp::Replace(b"visible".to_vec()), None)
+                    .unwrap();
+                store.flush(Some(&key)).unwrap();
+                assert_eq!(store.durability(&key, retry), Durability::Durable);
+            }
+            // Phase `a_replaced_record_directory_is_never_written_or_recreated`.
+            {
+                let tmp = TempDir::new().unwrap();
+                let store = FsStore::with_debounce(tmp.path(), Duration::ZERO);
+                let key = record("rec");
+                let _lease = store.lease(&key).unwrap();
+                let directory =
+                    DocStore::workspace_document_dir_at(tmp.path(), "so.tilo.test", "room-a", "rec")
+                        .unwrap();
+                fs::remove_file(directory.join(CANONICAL_GATE)).unwrap();
+                fs::write(directory.join(CANONICAL_GATE), b"replacement").unwrap();
+                store
+                    .write(&key, WriteOp::Replace(b"forbidden".to_vec()), None)
+                    .unwrap();
+                assert!(store.flush(Some(&key)).is_err());
+                assert!(!directory.join(DOCUMENT_FILE).exists());
+            }
+        }
     }
 
     /// A wake that reports which thread called it.
@@ -1915,55 +2315,6 @@ mod tests {
             let _ = notify.send(thread::current().id());
         });
         (wake, notified)
-    }
-
-    /// A thread that must not wait on the disk (the compositor opening a new
-    /// tab's record) is told to come back while the store's thread opens
-    /// the document, is woken when it is done, and then leases and reads
-    /// what that thread opened and read for it, without the disk.
-    /// A window showing "Saving…" hears from the store's thread when the
-    /// write lands, once, and is never woken for a key with nothing
-    /// outstanding.
-    #[test]
-    fn a_write_landing_wakes_who_waits_on_it_once() {
-        let tmp = TempDir::new().unwrap();
-        // Nothing commits unless flushed: the wake cannot come early.
-        let fs = FsStore::with_debounce(tmp.path(), Duration::from_secs(3600));
-        let key = record("saving");
-        let _lease = fs.lease(&key).unwrap();
-        let (wake, notified) = thread_wake();
-        assert_eq!(
-            fs.wake_when_settled(&key, Arc::clone(&wake)),
-            SettleWatch::Settled,
-            "nothing written, nothing to wait for"
-        );
-        let revision = fs
-            .write(&key, WriteOp::Replace(b"draft".to_vec()), Some(b"me"))
-            .unwrap();
-        assert_eq!(
-            fs.wake_when_settled(&key, Arc::clone(&wake)),
-            SettleWatch::Armed
-        );
-        assert_eq!(
-            fs.wake_when_settled(&key, Arc::clone(&wake)),
-            SettleWatch::Armed,
-            "the same wake armed again is called once"
-        );
-        assert!(
-            notified.try_recv().is_err(),
-            "woken before the write landed"
-        );
-        fs.flush(Some(&key)).unwrap();
-        // Woken before the flush returned.
-        let worker = notified.try_recv().expect("the landed write's wake");
-        assert_ne!(
-            worker,
-            thread::current().id(),
-            "the store's thread wakes it"
-        );
-        assert_eq!(fs.durability(&key, revision), Durability::Durable);
-        assert!(notified.try_recv().is_err(), "woken once");
-        assert_eq!(fs.wake_when_settled(&key, wake), SettleWatch::Settled);
     }
 
     #[test]
@@ -2104,106 +2455,6 @@ mod tests {
         assert!(matches!(fs.lease(&key), Err(SeamError::Busy(_))));
     }
 
-    /// A frame loop reads back what it just wrote while the store's thread
-    /// has yet to commit it, and while it commits: from memory, never by
-    /// waiting for that thread. The strict guard fails the test on a wait.
-    #[test]
-    fn a_read_on_a_thread_that_must_not_wait_sees_unwritten_writes() {
-        let tmp = TempDir::new().unwrap();
-        // A long debounce: nothing commits unless asked to.
-        let fs = FsStore::with_debounce(tmp.path(), Duration::from_secs(3600));
-        let key = record("typed");
-        let _lease = fs.lease(&key).unwrap();
-        fs.write(&key, WriteOp::Replace(b"ab".to_vec()), Some(b"me"))
-            .unwrap();
-        {
-            let _loop = durable_store::waiting::forbid_strictly_on_this_thread();
-            let stored = fs.read(&key).unwrap().unwrap();
-            assert_eq!(stored.bytes, b"ab", "a queued replacement");
-            assert_eq!(stored.writer.as_deref(), Some(&b"me"[..]));
-        }
-        fs.flush(Some(&key)).unwrap();
-
-        // An append the writer thread holds after noting where it starts.
-        let (reached_tx, reached) = std::sync::mpsc::channel();
-        let (release, held) = std::sync::mpsc::channel();
-        fs.faults().append_hold = Some((reached_tx, held));
-        fs.write(&key, WriteOp::Append(b"cd".to_vec()), None)
-            .unwrap();
-        let (wake, notified) = thread_wake();
-        {
-            let _loop = durable_store::waiting::forbid_strictly_on_this_thread().waking(wake);
-            assert!(matches!(
-                fs.flush_where_allowed(&key),
-                Err(SeamError::Pending(_))
-            ));
-            tilo_test_env::recv("the writer thread to take the append", &reached);
-            fs.write(&key, WriteOp::Append(b"ef".to_vec()), None)
-                .unwrap();
-            assert!(
-                matches!(fs.read(&key), Err(SeamError::Opening(_))),
-                "what only the file holds is the store's thread to read"
-            );
-        }
-        let stored = fs.read(&key).unwrap().unwrap();
-        assert_eq!(
-            stored.bytes, b"abcdef",
-            "the file, the append under way and the queued one, once each"
-        );
-        assert_eq!(stored.writer.as_deref(), Some(&b"me"[..]), "from the file");
-        release.send(()).unwrap();
-        tilo_test_env::recv("the store's thread to read the file", &notified);
-        {
-            let _loop = durable_store::waiting::forbid_strictly_on_this_thread();
-            let stored = fs.read(&key).unwrap().unwrap();
-            assert_eq!(
-                stored.bytes, b"abcdef",
-                "read for it: the file with the queued append, once"
-            );
-            assert_eq!(stored.writer.as_deref(), Some(&b"me"[..]), "from the file");
-        }
-        fs.flush(Some(&key)).unwrap();
-        assert_eq!(fs.read(&key).unwrap().unwrap().bytes, b"abcdef");
-        let Target::Document(directory) = fs.target(&key).unwrap() else {
-            panic!("a record is a document");
-        };
-        assert_eq!(fs::read(directory.join(DOCUMENT_FILE)).unwrap(), b"abcdef");
-    }
-
-    /// A caller that may not wait lets go of its lease while its last write
-    /// is still queued: the write lands anyway, and nobody else, in this
-    /// process or another, can lease the document until it has.
-    #[test]
-    fn a_write_outlives_its_lease_and_keeps_the_document_until_it_lands() {
-        let tmp = TempDir::new().unwrap();
-        let fs = FsStore::with_debounce(tmp.path(), Duration::from_secs(3600));
-        let key = record("closing");
-        let lease = fs.lease(&key).unwrap();
-        let revision = fs
-            .write(&key, WriteOp::Replace(b"last words".to_vec()), Some(b"me"))
-            .unwrap();
-        drop(lease);
-        let other = FsStore::new(tmp.path());
-        assert!(
-            matches!(other.lease(&key), Err(SeamError::Busy(_))),
-            "another process waits for the queued write"
-        );
-        assert!(
-            matches!(fs.lease(&key), Err(SeamError::Busy(_))),
-            "so does a new owner in this one"
-        );
-        fs.flush(Some(&key)).unwrap();
-        assert_eq!(fs.durability(&key, revision), Durability::Durable);
-        drop(other.lease(&key).unwrap());
-        let Target::Document(directory) = fs.target(&key).unwrap() else {
-            panic!("a record is a document");
-        };
-        assert_eq!(
-            fs::read(directory.join(DOCUMENT_FILE)).unwrap(),
-            b"last words"
-        );
-    }
-
     /// A blocking flush on a thread that must not wait is reported: a test
     /// that forbids waits strictly fails, naming the flush.
     #[test]
@@ -2244,85 +2495,6 @@ mod tests {
         ));
         // Reported once; the next call tries again.
         assert!(matches!(fs.lease_shared(&key), Err(SeamError::Opening(_))));
-    }
-
-    #[test]
-    fn records_lists_one_workspaces_committed_documents_sorted() {
-        let tmp = TempDir::new().unwrap();
-        let store = FsStore::with_debounce(tmp.path(), Duration::ZERO);
-        assert!(
-            store
-                .documents("so.tilo.test", "room-a")
-                .unwrap()
-                .is_empty()
-        );
-        for (workspace, name, bytes) in [
-            ("room-a", "b-rec", b"doc".as_slice()),
-            ("room-a", "a-rec", b"doc"),
-            ("room-a", "empty", b""),
-            ("room-b", "elsewhere", b"doc"),
-        ] {
-            let key = StorageKey::document("so.tilo.test", workspace, name);
-            let _lease = store.lease(&key).unwrap();
-            store
-                .write(&key, WriteOp::Replace(bytes.to_vec()), None)
-                .unwrap();
-            store.flush(Some(&key)).unwrap();
-        }
-        assert_eq!(
-            store.documents("so.tilo.test", "room-a").unwrap(),
-            ["a-rec", "b-rec"]
-        );
-        assert!(store.documents("so.tilo.test", "../room-a").is_err());
-    }
-
-    #[test]
-    fn accepted_writes_become_durable_on_debounce_flush_drop_and_reopen() {
-        // Phase `passes_the_shared_conformance_suite_and_survives_reopening`.
-        {
-            let tmp = TempDir::new().unwrap();
-            let root = tmp.path().join("profile");
-            let store = FsStore::with_debounce(&root, Duration::from_millis(5));
-            let subject = durable_store::conformance::Subject {
-                store: &store,
-                settle: &|| {},
-            };
-            durable_store::conformance::run(&subject);
-            durable_store::conformance::reopen(&subject, &|| Box::new(FsStore::new(&root)));
-        }
-        // Phase `writes_coalesce_until_their_debounce_or_a_flush`.
-        {
-            let tmp = TempDir::new().unwrap();
-            let store = FsStore::with_debounce(tmp.path(), Duration::from_secs(600));
-            let key = StorageKey::view("D", "A", 1);
-            let first = store
-                .write(&key, WriteOp::Replace(b"a".to_vec()), None)
-                .unwrap();
-            let second = store
-                .write(&key, WriteOp::Append(b"b".to_vec()), None)
-                .unwrap();
-            assert_eq!(store.durability(&key, first), Durability::Pending);
-            assert!(!tmp.path().join(INSTANCE_VIEWS_DIR).exists());
-            store.flush(Some(&key)).unwrap();
-            assert_eq!(store.durability(&key, first), Durability::Durable);
-            assert_eq!(store.durability(&key, second), Durability::Durable);
-            assert_eq!(store.read(&key).unwrap().unwrap().bytes, b"ab");
-        }
-        // Phase `dropping_the_store_commits_accepted_writes`.
-        {
-            let tmp = TempDir::new().unwrap();
-            let key = StorageKey::view("D", "A", 1);
-            {
-                let store = FsStore::with_debounce(tmp.path(), Duration::from_secs(600));
-                store
-                    .write(&key, WriteOp::Replace(b"kept".to_vec()), None)
-                    .unwrap();
-            }
-            assert_eq!(
-                FsStore::new(tmp.path()).read(&key).unwrap().unwrap().bytes,
-                b"kept"
-            );
-        }
     }
 
     #[test]
@@ -2448,173 +2620,6 @@ mod tests {
             for bad in ["", "a", "zz", "é0"] {
                 assert_eq!(unhex(bad), None, "{bad}");
             }
-        }
-    }
-
-    #[test]
-    fn a_dropped_view_lease_keeps_queued_commits_exclusive_until_settled() {
-        let tmp = TempDir::new().unwrap();
-        let store = FsStore::with_debounce(tmp.path(), Duration::from_secs(600));
-        let peer = FsStore::new(tmp.path());
-        let key = StorageKey::view("private-action-history", "owner", 0);
-        let lease = store.lease(&key).unwrap();
-        let revision = store
-            .write(&key, WriteOp::Replace(b"evidence".to_vec()), None)
-            .unwrap();
-        drop(lease);
-        assert!(matches!(peer.lease(&key), Err(SeamError::Busy(_))));
-        store.flush(Some(&key)).unwrap();
-        assert_eq!(store.durability(&key, revision), Durability::Durable);
-        // The worker must release the gate before flush wakes its caller.
-        let _next = peer.lease(&key).unwrap();
-        assert_eq!(peer.read(&key).unwrap().unwrap().bytes, b"evidence");
-    }
-
-    #[test]
-    fn view_creation_syncs_new_ancestors_once_and_retries_failed_durability() {
-        for initial in [
-            WriteOp::Replace(b"checkpoint".to_vec()),
-            WriteOp::Append(b"checkpoint".to_vec()),
-        ] {
-            let tmp = TempDir::new().unwrap();
-            let ancestor = fs::canonicalize(tmp.path()).unwrap().join("new");
-            let root = ancestor.join("profile");
-            let store = FsStore::with_debounce(&root, Duration::from_secs(600));
-            let key = StorageKey::view("D", "A", 1);
-            // Even an earlier flush of a missing key does not prove that its
-            // not-yet-created parent chain is durable.
-            store.flush(Some(&key)).unwrap();
-            assert!(!ancestor.exists());
-            store.faults().sync_failure = Some(ancestor.clone());
-            let replacement = initial.is_replace();
-            let first = store.write(&key, initial, None).unwrap();
-            assert!(store.flush(Some(&key)).is_err());
-            assert!(matches!(
-                store.durability(&key, first),
-                Durability::Failed(message) if message.contains("injected directory sync failure")
-            ));
-            assert!(!store.is_settled(&key));
-            if replacement {
-                assert!(
-                    store.read(&key).unwrap().is_none(),
-                    "no publication before durable parents"
-                );
-            } else {
-                assert_eq!(store.read(&key).unwrap().unwrap().bytes, b"checkpoint");
-            }
-
-            {
-                let mut faults = store.faults();
-                faults.sync_failure = None;
-                faults.sync_threads.clear();
-            }
-            let retry = store
-                .write(&key, WriteOp::Replace(b"checkpoint".to_vec()), None)
-                .unwrap();
-            store.flush(Some(&key)).unwrap();
-            assert_eq!(store.durability(&key, retry), Durability::Durable);
-            assert!(store.is_settled(&key));
-            assert!(!store.faults().sync_threads.is_empty());
-
-            // Re-arm the same ancestor failure: later edits must not revisit
-            // the established chain (the atomic rename still syncs its parent).
-            {
-                let mut faults = store.faults();
-                faults.sync_threads.clear();
-                faults.sync_failure = Some(ancestor);
-            }
-            for edit in [
-                WriteOp::Replace(b"next".to_vec()),
-                WriteOp::Append(b" edit".to_vec()),
-            ] {
-                let revision = store.write(&key, edit, None).unwrap();
-                store.flush(Some(&key)).unwrap();
-                assert_eq!(store.durability(&key, revision), Durability::Durable);
-                assert!(store.faults().sync_threads.is_empty());
-            }
-            assert_eq!(store.read(&key).unwrap().unwrap().bytes, b"next edit");
-        }
-    }
-
-    #[test]
-    fn failed_writes_stay_unacknowledged_until_a_safe_replacement() {
-        // Phase `a_torn_append_requires_a_replacement_without_duplicating_bytes`.
-        {
-            let tmp = TempDir::new().unwrap();
-            let store = FsStore::with_debounce(tmp.path(), Duration::from_secs(600));
-            let key = record("rec");
-            let _lease = store.lease(&key).unwrap();
-            let base = store
-                .write(&key, WriteOp::Replace(b"base".to_vec()), None)
-                .unwrap();
-            store.flush(Some(&key)).unwrap();
-            store.faults().append_prefix = Some(2);
-            let torn = store
-                .write(&key, WriteOp::Append(b"+one".to_vec()), None)
-                .unwrap();
-            assert!(store.flush(Some(&key)).is_err());
-            assert!(matches!(
-                store.durability(&key, torn),
-                Durability::Failed(_)
-            ));
-            assert_eq!(store.durability(&key, base), Durability::Durable);
-            let refused = store
-                .write(&key, WriteOp::Append(b"+two".to_vec()), None)
-                .unwrap();
-            assert!(store.flush(Some(&key)).is_err());
-            assert!(matches!(
-                store.durability(&key, refused),
-                Durability::Failed(_)
-            ));
-            assert_eq!(store.read(&key).unwrap().unwrap().bytes, b"base+o");
-            let replaced = store
-                .write(&key, WriteOp::Replace(b"base+one+two".to_vec()), None)
-                .unwrap();
-            store.flush(Some(&key)).unwrap();
-            assert_eq!(store.durability(&key, replaced), Durability::Durable);
-            assert_eq!(store.read(&key).unwrap().unwrap().bytes, b"base+one+two");
-        }
-        // Phase `directory_sync_failure_leaves_the_replacement_unacknowledged`.
-        {
-            let tmp = TempDir::new().unwrap();
-            let store = FsStore::with_debounce(tmp.path(), Duration::ZERO);
-            let key = record("rec");
-            let _lease = store.lease(&key).unwrap();
-            let directory =
-                DocStore::workspace_document_dir_at(tmp.path(), "so.tilo.test", "room-a", "rec")
-                    .unwrap();
-            store.faults().sync_failure = Some(fs::canonicalize(&directory).unwrap());
-            let revision = store
-                .write(&key, WriteOp::Replace(b"visible".to_vec()), None)
-                .unwrap();
-            assert!(store.flush(Some(&key)).is_err());
-            assert!(matches!(
-                store.durability(&key, revision),
-                Durability::Failed(_)
-            ));
-            store.faults().sync_failure = None;
-            let retry = store
-                .write(&key, WriteOp::Replace(b"visible".to_vec()), None)
-                .unwrap();
-            store.flush(Some(&key)).unwrap();
-            assert_eq!(store.durability(&key, retry), Durability::Durable);
-        }
-        // Phase `a_replaced_record_directory_is_never_written_or_recreated`.
-        {
-            let tmp = TempDir::new().unwrap();
-            let store = FsStore::with_debounce(tmp.path(), Duration::ZERO);
-            let key = record("rec");
-            let _lease = store.lease(&key).unwrap();
-            let directory =
-                DocStore::workspace_document_dir_at(tmp.path(), "so.tilo.test", "room-a", "rec")
-                    .unwrap();
-            fs::remove_file(directory.join(CANONICAL_GATE)).unwrap();
-            fs::write(directory.join(CANONICAL_GATE), b"replacement").unwrap();
-            store
-                .write(&key, WriteOp::Replace(b"forbidden".to_vec()), None)
-                .unwrap();
-            assert!(store.flush(Some(&key)).is_err());
-            assert!(!directory.join(DOCUMENT_FILE).exists());
         }
     }
 }

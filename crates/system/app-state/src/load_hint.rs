@@ -147,58 +147,67 @@ mod tests {
         doc
     }
 
-    #[test]
-    fn a_hint_names_exactly_the_document_chunk_it_was_made_for() {
-        let mut doc = large();
-        let saved = doc.save();
-        let hashes = doc.committed_document().change_hashes().to_vec();
-        let hint = encode(&saved, &hashes).expect("a large document is hinted");
-        assert_eq!(hashes_for(&hint, &saved), Some(hashes.clone()));
+    tilo_test_env::scenario! {
+        /// The load hint of a saved document.
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "fixture arithmetic in test bodies, which the lint skips in a plain test"
+        )]
+        fn a_load_hint_is_made_for_the_documents_worth_one;
 
-        let mut grown = saved.clone();
-        let sent = doc.get_heads();
-        doc.put(ROOT, "later", 1).unwrap();
-        doc.commit();
-        grown.extend(doc.save_after(&sent));
-        assert_eq!(hashes_for(&hint, &grown), Some(hashes));
+        phase a_hint_names_exactly_the_document_chunk_it_was_made_for;
+        {
+            let mut doc = large();
+            let saved = doc.save();
+            let hashes = doc.committed_document().change_hashes().to_vec();
+            let hint = encode(&saved, &hashes).expect("a large document is hinted");
+            assert_eq!(hashes_for(&hint, &saved), Some(hashes.clone()));
 
-        let replaced = doc.save();
-        assert_eq!(hashes_for(&hint, &replaced), None);
-        let mut flipped = saved.clone();
-        let last = flipped.len() - 1;
-        flipped[last] ^= 1;
-        assert_eq!(hashes_for(&hint, &flipped), None);
-        assert_eq!(hashes_for(&hint, &saved[..saved.len() / 2]), None);
-        assert_eq!(hashes_for(&hint, &grown[saved.len()..]), None);
-
-        assert_eq!(hashes_for(&hint[..hint.len() - 1], &saved), None);
-        assert_eq!(hashes_for(&hint[1..], &saved), None);
-        assert_eq!(hashes_for(b"", &saved), None);
-    }
-
-    #[test]
-    fn a_small_document_gets_no_hint() {
-        let mut doc = AutoCommit::new();
-        doc.put(ROOT, "small", 1).unwrap();
-        let saved = doc.save();
-        let hashes = doc.committed_document().change_hashes().to_vec();
-        assert!(saved.len() < MIN_HINTED_BYTES);
-        assert_eq!(encode(&saved, &hashes), None);
-    }
-
-    #[test]
-    fn a_small_document_of_many_changes_gets_a_hint() {
-        // The desktop document's shape: one small change per workspace switch.
-        let mut doc = AutoCommit::new();
-        for i in 0..MIN_HINTED_CHANGES {
-            doc.put(ROOT, "active", u64::try_from(i % 6).unwrap())
-                .unwrap();
+            let mut grown = saved.clone();
+            let sent = doc.get_heads();
+            doc.put(ROOT, "later", 1).unwrap();
             doc.commit();
+            grown.extend(doc.save_after(&sent));
+            assert_eq!(hashes_for(&hint, &grown), Some(hashes));
+
+            let replaced = doc.save();
+            assert_eq!(hashes_for(&hint, &replaced), None);
+            let mut flipped = saved.clone();
+            let last = flipped.len() - 1;
+            flipped[last] ^= 1;
+            assert_eq!(hashes_for(&hint, &flipped), None);
+            assert_eq!(hashes_for(&hint, &saved[..saved.len() / 2]), None);
+            assert_eq!(hashes_for(&hint, &grown[saved.len()..]), None);
+
+            assert_eq!(hashes_for(&hint[..hint.len() - 1], &saved), None);
+            assert_eq!(hashes_for(&hint[1..], &saved), None);
+            assert_eq!(hashes_for(b"", &saved), None);
         }
-        let saved = doc.save();
-        let hashes = doc.committed_document().change_hashes().to_vec();
-        assert!(saved.len() < MIN_HINTED_BYTES, "{} bytes", saved.len());
-        let hint = encode(&saved, &hashes).expect("many changes are hinted");
-        assert_eq!(hashes_for(&hint, &saved), Some(hashes));
+
+        phase a_small_document_gets_no_hint;
+        {
+            let mut doc = AutoCommit::new();
+            doc.put(ROOT, "small", 1).unwrap();
+            let saved = doc.save();
+            let hashes = doc.committed_document().change_hashes().to_vec();
+            assert!(saved.len() < MIN_HINTED_BYTES);
+            assert_eq!(encode(&saved, &hashes), None);
+        }
+
+        phase a_small_document_of_many_changes_gets_a_hint;
+        {
+            // The desktop document's shape: one small change per workspace switch.
+            let mut doc = AutoCommit::new();
+            for i in 0..MIN_HINTED_CHANGES {
+                doc.put(ROOT, "active", u64::try_from(i % 6).unwrap())
+                    .unwrap();
+                doc.commit();
+            }
+            let saved = doc.save();
+            let hashes = doc.committed_document().change_hashes().to_vec();
+            assert!(saved.len() < MIN_HINTED_BYTES, "{} bytes", saved.len());
+            let hint = encode(&saved, &hashes).expect("many changes are hinted");
+            assert_eq!(hashes_for(&hint, &saved), Some(hashes));
+        }
     }
 }
