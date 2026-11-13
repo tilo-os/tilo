@@ -933,6 +933,7 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
+        #[allow(clippy::arithmetic_side_effects, reason = "arithmetic the lint skips in a #[test]")]
         fn an_indexed_entry_reads_as_what_it_is_and_opens_what_it_names;
 
         phase a_window_reads_only_its_own_apps_entries;

@@ -139,6 +139,7 @@ fn frames_until(search: &mut DesktopSearch, title: &str) {
 }
 
 tilo_test_env::scenario! {
+    #[allow(clippy::arithmetic_side_effects, reason = "arithmetic the lint skips in a #[test]")]
     fn ready_rows_show_while_a_slow_source_is_out_and_answer_only_their_query;
 
     phase a_content_source_that_takes_seconds_does_not_keep_the_ready_rows_searching;
