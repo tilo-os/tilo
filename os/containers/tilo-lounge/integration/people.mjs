@@ -33,7 +33,8 @@
 import {execFileSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {mkdirSync, writeFileSync} from 'node:fs';
-import {request} from 'node:https';
+import {request as httpRequest} from 'node:http';
+import {request as httpsRequest} from 'node:https';
 import {launch, sleep} from '../../../../tools/web/chrome.mjs';
 import {clock} from './timing.mjs';
 import * as waits from './waits.mjs';
@@ -105,6 +106,10 @@ const failed = async (message, tab) => {
 // The relay's public directory: who is in the Lounge now, as the relay
 // counts them. Its `here` is the relay's HTTPS page sessions, not the live
 // plane's members: a page the plane never carried still counts here.
+// The relay's origin is plain http on the local stack and https behind a
+// TLS front, so the request takes the module its scheme names.
+const request = (url, ...rest) =>
+  (new URL(url).protocol === 'http:' ? httpRequest : httpsRequest)(url, ...rest);
 const directory = () => new Promise((resolve, reject) => {
   const body = Buffer.from('{}');
   const ask = request(`${relay}/peer/v1/directory`, {
