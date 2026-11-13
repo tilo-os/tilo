@@ -254,8 +254,31 @@ fn report(label: &str, samples: &[FrameSample]) {
     }
 }
 
+/// The knobs that make `measure_sustained_scroll` measure something other
+/// than what `sustained_scroll_never_waits_on_rendering` drives and reports.
+const SUSTAINED_SCROLL_KNOBS: [&str; 5] = [
+    "PDF_SCROLL_FILE",
+    "PDF_SCROLL_GPU",
+    "PDF_SCROLL_SIZE",
+    "PDF_SCROLL_SPEED",
+    "PDF_SCROLL_FRAMES",
+];
+
 #[test]
 fn measure_sustained_scroll() {
+    // With no knob set this is `sustained_scroll_never_waits_on_rendering`
+    // again, frame for frame: the same 24 heavy pages, window, 300 frames
+    // and speed, reported by the same line. That test runs and checks it.
+    if SUSTAINED_SCROLL_KNOBS
+        .iter()
+        .all(|knob| std::env::var_os(knob).is_none())
+    {
+        eprintln!(
+            "SCROLL nothing to measure beyond sustained_scroll_never_waits_on_rendering, \
+             which reports this scroll: set one of {SUSTAINED_SCROLL_KNOBS:?}"
+        );
+        return;
+    }
     let dir = tempfile::tempdir().expect("temp dir");
     let path = std::env::var_os("PDF_SCROLL_FILE")
         .map_or_else(|| heavy_pdf(dir.path(), 24), std::path::PathBuf::from);
@@ -977,13 +1000,13 @@ const MAX_DRAWS: usize = 512;
 
 #[test]
 fn measure_zoom() {
+    if std::env::var_os("PDF_SCROLL_ZOOM").is_none() {
+        return;
+    }
     let dir = tempfile::tempdir().expect("temp dir");
     let path = std::env::var_os("PDF_SCROLL_FILE")
         .map_or_else(|| heavy_pdf(dir.path(), 6), std::path::PathBuf::from);
     let top = crate::tiles::TILE_MIN_PAGE_PX / 612.0 * 1.6;
-    if std::env::var_os("PDF_SCROLL_ZOOM").is_none() {
-        return;
-    }
     if let Some(samples) = drive_zoom(&path, (1280, 800), top) {
         eprintln!("{}", zoom_report(&samples));
     }
