@@ -192,6 +192,28 @@ impl TabBar {
         }
     }
 
+    /// Size the pill by the name the person is typing, so the field shows all of it: the text in
+    /// the field at the bar's role, measured, is the tab's own width until the person commits. A
+    /// name longer than the row has room for is a pill the row's own fit squeezes, and the field
+    /// scrolls to its caret inside it.
+    pub(super) fn measure_rename(&mut self, text_renderer: &mut TextRenderer, theme: &Theme) {
+        self.touch();
+        let Some(rename) = self.rename.as_ref() else {
+            return;
+        };
+        let style = theme.text(rename.label.text_role());
+        let text = rename.label.current_text().to_owned();
+        let (width, _) = text_renderer.measure_style(&text, None, &style);
+        // The caret and the field's own breathing room past the last glyph.
+        let measured = f64::from(width) + 4.0;
+        let previous = self
+            .title_advance
+            .insert(rename.tab, (text, style, measured));
+        if previous.is_none_or(|(_, _, w)| (w - measured).abs() > 0.5) {
+            self.advance_changed = true;
+        }
+    }
+
     pub(super) fn draw_rename(
         &mut self,
         scene: &mut Scene,
@@ -201,6 +223,7 @@ impl TabBar {
         presence: &PresenceCtx,
     ) {
         self.touch();
+        self.measure_rename(text_renderer, theme);
         self.lay_out_rename();
         if let Some(rename) = self.rename.as_mut() {
             rename
@@ -252,6 +275,32 @@ mod tests {
         assert_eq!(bar.renaming(), Some(1));
         assert_eq!(bar.rename_text(), Some("~/src"));
         assert!(!bar.begin_rename(9, "Tab name"), "no such tab");
+    }
+
+    /// The pill is as wide as the name being typed, not as wide as the title it started from: the
+    /// field's own measure sizes it, so the whole name shows while the person types it. Only a name
+    /// the bar has no room for makes the field scroll.
+    #[test]
+    fn the_pill_is_as_wide_as_the_name_being_typed() {
+        let mut bar = bar();
+        let theme = Theme::dark();
+        let mut text = crate::TextRenderer::new();
+        assert!(bar.begin_rename(1, "Tab name"));
+        bar.measure_rename(&mut text, &theme);
+        let (_, _, at_first) = bar.title_advance[&1].clone();
+        type_text(&mut bar, "Meeting notes");
+        bar.measure_rename(&mut text, &theme);
+        let (measured_title, _, at_last) = bar.title_advance[&1].clone();
+        assert_eq!(measured_title, "Meeting notes", "measured as it is typed");
+        assert!(
+            at_last > at_first,
+            "the pill grows with the name: {at_first} then {at_last}"
+        );
+        assert_eq!(
+            bar.shaped_title_width(0),
+            at_last,
+            "and the tab is laid out by that measure, not by the title it had"
+        );
     }
 
     #[test]

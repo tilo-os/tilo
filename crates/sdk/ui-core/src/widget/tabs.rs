@@ -2465,6 +2465,12 @@ impl TabBar {
         if self.icon_only(t.id) {
             return None;
         }
+        if self.renaming() == Some(t.id) {
+            // The pill shows the name field where its title stood, and the field's own measure
+            // widens the pill as the person types (`TabBar::measure_rename`): the title it is
+            // being given is not what the bar draws or sizes the pill by.
+            return None;
+        }
         let style = tab_title_style(theme);
         let title = t.title.clone();
         let id = t.id;
